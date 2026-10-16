@@ -4,8 +4,8 @@ Base URL: `http://127.0.0.1:47651`
 
 ## MCP tool surface
 
-`KITSUNE_CAPS=core` is the default (29 tools); `KITSUNE_CAPS=all` registers
-94 tools. The groups are `core`, `tabs`, `network`, `storage`, `parallel`,
+`KITSUNE_CAPS=core` is the default (30 tools); `KITSUNE_CAPS=all` registers
+95 tools. The groups are `core`, `tabs`, `network`, `storage`, `parallel`,
 `devtools`, `windows`, and `session`. A comma list selects those groups only.
 See [README](../README.md#tools) for the complete tool list per group.
 The bridge endpoints below remain available unchanged; MCP tool names and
