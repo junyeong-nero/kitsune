@@ -135,6 +135,12 @@ an agent can work in a background tab without stealing focus.
 
 `browser_js` runs arbitrary JavaScript in the page. Prefer the specific tools.
 
+Every tool includes MCP annotations with a human-readable title and read-only,
+destructive, idempotent, and open-world hints. Clients can use these hints to
+inform permission prompts; enforcement depends on the client. Tools combining
+read and write operations are annotated for their most dangerous operation,
+including when called in a read mode.
+
 ## Configuration
 
 | Variable | Default | Meaning |
