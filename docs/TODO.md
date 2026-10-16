@@ -59,17 +59,17 @@ data, policy/audit) but adopt the snapshot/ref model and a smaller default surfa
      Ref resolution already exists in `resolveElement` but is undocumented.
    - [ ] Actions return a short post-action snapshot (or diff) instead of `{ok: true}`.
 2. **Shrink and group the tool surface**
-   - [ ] Remove `browser_page_text_by_tab_id` (duplicate of `browser_page_text(tab_id)`).
-   - [ ] Merge `wait_for_element/result/url/title/network_idle` into
-     `browser_wait_for(selector|text|text_gone|url|title|network_idle|time)`.
-   - [ ] Merge `screenshot/element_screenshot/full_page_screenshot` into
-     `browser_screenshot(ref?, full_page?)`.
-   - [ ] Merge `type/fill/set_editable_content` into `browser_type(ref, text, mode?)`.
-   - [ ] Merge `tabs/new_tab/close_tab/switch_tab` into `browser_tabs(action=...)`.
-   - [ ] Capability groups via env, e.g. `KITSUNE_CAPS=core,tabs,network,storage,parallel,devtools`;
+   - [x] Remove `browser_page_text_by_tab_id` (duplicate of `browser_page_text(tab_id)`).
+   - [x] Merge `wait_for_element/result/url/title/network_idle` into
+     `browser_wait_for(selector|text|text_gone|js|url|title|network_idle|time)`.
+   - [x] Merge `screenshot/element_screenshot/full_page_screenshot` into
+     `browser_screenshot(selector?, full_page?)`.
+   - [x] Merge `type/fill/set_editable_content` into `browser_type(selector, text, mode?)`.
+   - [x] Merge `tabs/new_tab/close_tab/switch_tab` into `browser_tabs(action=...)`.
+   - [x] Capability groups via env, e.g. `KITSUNE_CAPS=core,tabs,network,storage,parallel,devtools`;
      default `core` (~25 tools). Move keep_alive / pool / tags / broadcast /
      sync_barrier / scheduler into `parallel`.
-   - [ ] Move `browser_wp_html` (WordPress-specific) out of the core tools into a workflow.
+   - [x] Move `browser_wp_html` (WordPress-specific) out of the core tools into a workflow.
 3. **Missing capabilities**
    - [ ] Dialog handling (alert/confirm/prompt), like Playwright's `browser_handle_dialog`.
    - [ ] Screenshots return MCP `ImageContent` so the model sees them; file save optional.
