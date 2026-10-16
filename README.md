@@ -3,6 +3,10 @@
 An MCP server that lets AI agents (Claude Code, Codex, Pi, …) drive the
 Firefox-family browser you already have open: Firefox, Zen, LibreWolf.
 
+![Claude Code asks Kitsune to open Hacker News in Zen, read the top 3 stories and summarize them](docs/demo.gif)
+
+<sub>Frames captured by Kitsune itself (`browser_screenshot`) during a real run, sped up.</sub>
+
 - **Your real browser.** Logged-in sessions, cookies and extensions stay as they are.
 - **No Playwright, no Chromium, no WebDriver.** A WebExtension does the work, so
   there is no `navigator.webdriver` flag or debugging port.
