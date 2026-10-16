@@ -1,6 +1,6 @@
 # Tool surface inventory
 
-Before: 106 tools registered by default. After: 28 default tools, 93 with
+Before: 106 tools registered by default. After: 29 default tools, 94 with
 `KITSUNE_CAPS=all`. The HTTP bridge and extension command surface is unchanged.
 
 ## Before (106)
@@ -38,6 +38,7 @@ Before: 106 tools registered by default. After: 28 default tools, 93 with
 - `browser_focus`
 - `browser_focus_window`
 - `browser_form_fill`
+- `browser_handle_dialog`
 - `browser_forms`
 - `browser_forward`
 - `browser_full_page_metrics`
@@ -112,9 +113,9 @@ Before: 106 tools registered by default. After: 28 default tools, 93 with
 - `browser_workflows`
 - `browser_wp_html`
 
-## After (93)
+## After (94)
 
-### core (default) — 28
+### core (default) — 29
 
 - `browser_back`
 - `browser_check`
@@ -123,6 +124,7 @@ Before: 106 tools registered by default. After: 28 default tools, 93 with
 - `browser_dom`
 - `browser_find`
 - `browser_form_fill`
+- `browser_handle_dialog`
 - `browser_forms`
 - `browser_forward`
 - `browser_hover`

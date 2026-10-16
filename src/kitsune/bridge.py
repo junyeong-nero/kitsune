@@ -564,7 +564,7 @@ WRITE_ACTIONS = {
     "pinTab", "muteTab", "duplicateTab", "reloadTabBrowser", "goBack", "goForward",
     "setZoom", "createWindow", "closeWindow", "moveTab", "detachTab",
     "storageOp", "reloadExtension", "wakeTab", "highlight", "clearHighlight",
-    "uploadFile",
+    "uploadFile", "handleDialog",
 }
 
 
@@ -1460,6 +1460,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "/api/switch-tab": self.handle_switch_tab,
             "/api/new-tab": self.handle_new_tab,
             "/api/wait-for-element": self.handle_wait_for_element,
+            "/api/wait-for-text": self.handle_wait_for_text,
+            "/api/handle-dialog": lambda: self._forward("handleDialog"),
+            "/api/screenshot": self.handle_screenshot,
             "/api/wait-for-result": self.handle_wait_for_result,
             "/api/page-text-by-tab-id": self.handle_page_text_by_tab_id,
             "/api/batch": self.handle_batch,
@@ -1574,13 +1577,14 @@ class BridgeHandler(BaseHTTPRequestHandler):
         })
     
     def handle_screenshot(self):
-        result = self.run_async(send_to_extension("screenshot"))
+        body = self.read_body() if self.command == "POST" else {}
+        result = self.run_async(send_to_extension("screenshot", body))
         if "error" in result:
             self.send_json(500, result)
             return
         
         # Save screenshot to file
-        if result.get("dataUrl"):
+        if result.get("dataUrl") and self.command == "GET":
             os.makedirs(SCREENSHOT_DIR, exist_ok=True)
             filename = f"zen_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
             filepath = os.path.join(SCREENSHOT_DIR, filename)
@@ -1599,14 +1603,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
     
     def handle_page_info(self):
         params = self._tab_params()
-        key = _cache_key("getPageInfo", params)
-        cached = _cache_get(key)
-        if cached:
-            self.send_json(200, {**cached, "_cached": True})
-            return
+        # Dialogs may occur independently of bridge commands; never cache this history.
         result = self.run_async(send_to_extension("getPageInfo", params))
-        if "error" not in result:
-            _cache_set(key, result)
         self.send_json(200, result)
 
     def handle_page_text(self):
@@ -1795,6 +1793,17 @@ class BridgeHandler(BaseHTTPRequestHandler):
         timeout_ms = body.get("timeout", 10000)
         timeout_s = (timeout_ms / 1000) + 5
         result = self.run_async(send_to_extension("waitForElement", body, timeout=timeout_s))
+        self.send_json(200, result)
+
+    def handle_wait_for_text(self):
+        body = self.read_body()
+        timeout_ms = body.get("timeout", 10000)
+        if not isinstance(timeout_ms, (int, float)) or timeout_ms < 0:
+            self.send_json(400, {"error": "timeout must be non-negative milliseconds"})
+            return
+        timeout_s = timeout_ms / 1000 + 5
+        result = self.run_async(
+            send_to_extension("waitForText", body, timeout=timeout_s), timeout=timeout_s + 1)
         self.send_json(200, result)
 
     def handle_wait_for_result(self):

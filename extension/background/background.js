@@ -3,13 +3,22 @@
 
 'use strict';
 
-const EXPECTED_CONTENT_VERSION = 16;
+const EXPECTED_CONTENT_VERSION = 17;
 const WS_URL = 'ws://127.0.0.1:47652';
 let ws = null;
 let reconnectTimer = null;
 let heartbeatTimer = null;
 let reconnectDelay = 1000; // Start at 1s, exponential backoff
 const MAX_RECONNECT_DELAY = 15000;
+
+// Policies survive document navigation, but are cleared when a tab closes.
+const dialogPolicies = new Map();
+browser.tabs.onRemoved.addListener(tabId => dialogPolicies.delete(tabId));
+browser.runtime.onMessage.addListener((msg, sender) => {
+  if (msg.action === 'getDialogPolicy') {
+    return Promise.resolve(dialogPolicies.get(sender.tab?.id) || null);
+  }
+});
 
 // == WebSocket Connection ==
 
@@ -159,7 +168,7 @@ async function handleCommand(command) {
   
   switch (action) {
     // Browser-level commands (handled here)
-    case 'screenshot':   return await captureScreenshot();
+    case 'screenshot':   return await captureScreenshot(params);
     case 'getTabs':      return await getOpenTabs();
     case 'navigate':     return await navigateTab(params.url, params.tabId, params.expectTitle);
     case 'switchTab':    return await switchTab(params.tabId);
@@ -184,8 +193,8 @@ async function handleCommand(command) {
     case 'focusWindow':      return await focusWindow(params.windowId);
     case 'moveTab':          return await moveTabAction(params.tabId, params.windowId, params.index);
     case 'detachTab':        return await detachTab(params.tabId);
-    case 'elementScreenshot':return await elementScreenshot(params.tabId, params.selector, params.scale);
-    case 'fullPageScreenshot': return await fullPageScreenshot(params.tabId);
+    case 'elementScreenshot':return await elementScreenshot(params.tabId, params.selector, params.scale, params.imagePreview);
+    case 'fullPageScreenshot': return await fullPageScreenshot(params.tabId, params.imagePreview);
     case 'cookies':          return await cookiesOp(params.op, params.url, params.name, params.value, params.domain, params.path, params.secure);
     case 'clipboard':        return await clipboardOp(params.op, params.text);
     case 'downloads':        return await downloadsOp(params.op, params.url, params.filename, params.query);
@@ -194,6 +203,16 @@ async function handleCommand(command) {
     case 'clickAndWaitNavigation': return await clickAndWaitNavigation(params.tabId, params.selector, params.timeout);
 
     // Content script commands (forwarded to active tab)
+    case 'handleDialog': {
+      const tabId = params.tabId || await getActiveTabId();
+      const result = await forwardToContent('handleDialog', { ...params, tabId });
+      if (!result.error) {
+        if (params.accept == null) dialogPolicies.delete(tabId);
+        else dialogPolicies.set(tabId, { accept: params.accept, prompt_text: params.prompt_text });
+      }
+      return result;
+    }
+    case 'waitForText':
     case 'getPageInfo':
     case 'getPageText':
     case 'getAccessibilityTree':
@@ -252,13 +271,13 @@ async function handleCommand(command) {
 
 // == Browser Commands ==
 
-async function captureScreenshot() {
+async function captureScreenshot(params = {}) {
   try {
     const dataUrl = await browser.tabs.captureVisibleTab(null, { format: 'png', quality: 90 });
     const tabs = await browser.tabs.query({ active: true, currentWindow: true });
     const tab = tabs[0];
     return {
-      dataUrl,
+      dataUrl: params.imagePreview ? await imagePreview(dataUrl) : dataUrl,
       url: tab?.url || '',
       title: tab?.title || '',
       width: tab?.width || 0,
@@ -595,6 +614,27 @@ async function restoreTabAfterCapture(previousTabId) {
   try { await browser.tabs.update(previousTabId, { active: true }); } catch {}
 }
 
+// Bound inline image payloads without adding a Python imaging dependency.
+async function imagePreview(dataUrl) {
+  const limit = 950000; // base64 characters, leaving room for MCP metadata
+  if (dataUrl.length <= limit) return dataUrl;
+  const img = await loadDataUrl(dataUrl);
+  let width = img.width, height = img.height;
+  for (let i = 0; i < 16; i++) {
+    const canvas = new OffscreenCanvas(Math.max(1, Math.round(width)), Math.max(1, Math.round(height)));
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.8 });
+    const result = arrayBufferToDataUrl(await blob.arrayBuffer(), 'image/jpeg');
+    if (result.length <= limit) return result;
+    width *= 0.75;
+    height *= 0.75;
+  }
+  throw new Error('Unable to fit screenshot preview under 1 MB');
+}
+
 // ── Element / full-page screenshot ──
 // 2.1.0: shared helpers for stitched captures
 const CANVAS_MAX = 32000;   // Firefox canvas dimension limit is 32767
@@ -620,7 +660,7 @@ async function zlRestoreFixed(tabId) {
 
 // 2.1.1: scale (1-4) = output pixels per CSS pixel. captureVisibleTab renders the viewport at that scale, so
 // scale 2 gives a genuinely sharper image (text in article screenshots), not an upscale. Default 1 = old size.
-async function elementScreenshot(tabId, selector, scale) {
+async function elementScreenshot(tabId, selector, scale, preview) {
   let previousTabId = null, hidFixed = false, id = null;
   const want = Math.min(Math.max(Number(scale) || 1, 1), 4);
   try {
@@ -673,7 +713,7 @@ async function elementScreenshot(tabId, selector, scale) {
     const blob = await canvas.convertToBlob({ type: 'image/png' });
     const cropped = arrayBufferToDataUrl(await blob.arrayBuffer(), 'image/png');
     return { ok: true, selector, bounds: { x: m.x, y: m.y, width: W, height: H }, scale: want, segments,
-             complete: covered >= cssH - 1, dataUrl: cropped };
+             complete: covered >= cssH - 1, dataUrl: preview ? await imagePreview(cropped) : cropped };
   } catch (e) { return { error: 'elementScreenshot failed: ' + e.message }; }
   finally {
     if (hidFixed && id) { try { await zlRestoreFixed(id); } catch (e) {} }
@@ -681,7 +721,7 @@ async function elementScreenshot(tabId, selector, scale) {
   }
 }
 
-async function fullPageScreenshot(tabId) {
+async function fullPageScreenshot(tabId, preview) {
   let previousTabId = null, hidFixed = false, id = null;
   try {
     id = tabId || (await getActiveTabId());
@@ -716,7 +756,7 @@ async function fullPageScreenshot(tabId) {
     const blob = await canvas.convertToBlob({ type: 'image/png' });
     const buf = await blob.arrayBuffer();
     return { ok: true, width: canvas.width, height: canvas.height, segments: segments.length,
-             truncated: m.docHeight > CANVAS_MAX, dataUrl: arrayBufferToDataUrl(buf, 'image/png') };
+             truncated: m.docHeight > CANVAS_MAX, dataUrl: preview ? await imagePreview(arrayBufferToDataUrl(buf, 'image/png')) : arrayBufferToDataUrl(buf, 'image/png') };
   } catch (e) { return { error: 'fullPageScreenshot failed: ' + e.message }; }
   finally {
     if (hidFixed && id) { try { await zlRestoreFixed(id); } catch (e) {} }

@@ -117,11 +117,11 @@ Several clients can be configured at once; they share one bridge daemon.
 
 ## Tools
 
-By default, Kitsune registers 28 `browser_*` tools in the `core` capability
+By default, Kitsune registers 29 `browser_*` tools in the `core` capability
 group. Tab-aware tools accept `tab_id` to target background tabs.
 Set `KITSUNE_CAPS` in the MCP server environment before starting it; restart the
 MCP client after changing it. The comma-separated list selects exactly those
-groups (include `core` to retain the default tools). `all` enables all 93 tools.
+groups (include `core` to retain the default tools). `all` enables all 94 tools.
 Whitespace and case are ignored; unknown group names fail at startup.
 
 ```toml
@@ -131,7 +131,7 @@ KITSUNE_CAPS = "core,network,parallel"
 
 | Group | Tools |
 |---|---|
-| `core` (28) | `browser_status`, `browser_tabs`, `browser_page_info`, `browser_page_text`, `browser_forms`, `browser_dom`, `browser_screenshot`, `browser_navigate`, `browser_click`, `browser_type`, `browser_scroll`, `browser_hover`, `browser_find`, `browser_js`, `browser_wait_for`, `browser_workflows`, `browser_workflow`, `browser_markdown`, `browser_select_option`, `browser_check`, `browser_keypress`, `browser_submit_form`, `browser_form_fill`, `browser_upload_file`, `browser_back`, `browser_forward`, `browser_watch_console`, `browser_console_logs` |
+| `core` (29) | `browser_status`, `browser_tabs`, `browser_page_info`, `browser_page_text`, `browser_forms`, `browser_dom`, `browser_screenshot`, `browser_navigate`, `browser_click`, `browser_type`, `browser_scroll`, `browser_hover`, `browser_find`, `browser_js`, `browser_wait_for`, `browser_workflows`, `browser_workflow`, `browser_markdown`, `browser_select_option`, `browser_check`, `browser_keypress`, `browser_submit_form`, `browser_form_fill`, `browser_upload_file`, `browser_back`, `browser_forward`, `browser_watch_console`, `browser_console_logs`, `browser_handle_dialog` |
 | `devtools` (26) | `browser_trusted_click`, `browser_highlight`, `browser_cache`, `browser_reload_extension`, `browser_query`, `browser_html`, `browser_links`, `browser_images`, `browser_meta`, `browser_structured_data`, `browser_bounds`, `browser_computed_style`, `browser_readability`, `browser_iframes`, `browser_explain_selector`, `browser_focus`, `browser_blur`, `browser_double_click`, `browser_drag`, `browser_click_and_wait_navigation`, `browser_full_page_metrics`, `browser_health`, `browser_logs`, `browser_audit`, `browser_set_policy`, `browser_get_policy` |
 | `network` (3) | `browser_downloads`, `browser_intercept`, `browser_capture_network` |
 | `parallel` (15) | `browser_keep_alive`, `browser_keep_alive_stop`, `browser_parallel`, `browser_broadcast`, `browser_sync_barrier`, `browser_tag_tab`, `browser_resolve_tag`, `browser_list_tags`, `browser_untag_tab`, `browser_tab_pool`, `browser_pool_acquire`, `browser_pool_release`, `browser_scheduler`, `browser_retry`, `browser_batch` |
@@ -157,6 +157,32 @@ destructive, idempotent, and open-world hints. Clients can use these hints to
 inform permission prompts; enforcement depends on the client. Tools combining
 read and write operations are annotated for their most dangerous operation,
 including when called in a read mode.
+
+Screenshots return MCP image content by default. Large previews are JPEG-encoded
+and downscaled to fit under roughly 1 MB; pass `save_to="/path/capture.png"` to
+save the full PNG instead. Element and full-page captures retain `data_url=True`
+for callers that need raw PNG data.
+
+`browser_handle_dialog(accept=True, prompt_text=None, tab_id=None)` sets a tab's
+policy for future alerts, confirms, and prompts and returns recent dialog history.
+Capture starts at document start. By default, alerts/confirms/prompts pass through
+to native browser UI and record the user's actual response; `beforeunload` also
+keeps native behavior. Only an explicit policy auto-answers dialogs. Call
+`browser_handle_dialog(accept=None, tab_id=...)` to clear a tab's policy and
+restore native behavior. Dialogs answer synchronously, so recorded answers cannot
+be changed afterward. `browser_page_info` also includes the last 100 dialogs for the
+current document, with type, message, default value, timestamp, and response.
+Policies survive navigation while the extension runs; native behavior applies briefly
+until the tab policy is restored. `accept=True` disarms `beforeunload` like
+`browser_close_tab(force=True)`; `accept=False` leaves native unload handling in
+place. Native prompts already open, scripts that saved original dialog functions
+before injection, and iframe dialogs (including cross-origin frames) cannot be
+controlled. Existing tabs are patched when the extension connects; reload them
+for early capture.
+
+`browser_wait_for(text="Ready")` or `browser_wait_for(text_gone="Loading")` waits
+until the condition holds in the top-level document's rendered text.
+Matching is case-sensitive substring matching.
 
 ## Configuration
 
