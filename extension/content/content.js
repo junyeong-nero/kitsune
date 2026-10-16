@@ -3,7 +3,7 @@
 
 (function() {
   'use strict';
-  const CONTENT_VERSION = 17;
+  const CONTENT_VERSION = 18;
   if (window.__claudeBridgeVersion >= CONTENT_VERSION) return;
   window.__claudeBridgeVersion = CONTENT_VERSION;
 
@@ -106,6 +106,16 @@
   const REF_MAP_LIMIT = 10000;
   const refMap = {};
   let refCounter = 0;
+  // Persist across reinjection; seed per document so navigation cannot reuse refs.
+  let refGeneration = window.__kitsuneRefGeneration ||
+    `${Date.now()}${crypto.getRandomValues(new Uint32Array(1))[0]}`;
+
+  function newRefGeneration() {
+    refGeneration = (BigInt(refGeneration) + 1n).toString();
+    window.__kitsuneRefGeneration = refGeneration;
+    refCounter = 0;
+    for (const key of Object.keys(refMap)) delete refMap[key];
+  }
 
   function pruneRefMap() {
     const keys = Object.keys(refMap);
@@ -123,6 +133,7 @@
       'handleDialog':          () => handleDialog(msg.accept, msg.prompt_text),
       'waitForText':           () => waitForText(msg.text, msg.text_gone, msg.timeout),
       'getPageText':           () => getPageText(msg.selector),
+      'getSnapshot':           () => getSnapshot(msg.maxChars),
       'getAccessibilityTree':  () => getAccessibilityTree(msg.depth || 6),
       'getFormFields':         () => getFormFields(),
       'click':                 () => clickElement(msg.selector, msg.coords),
@@ -144,6 +155,8 @@
       'getImages':             () => getImages(),
       'getMeta':               () => getMeta(),
       'getStructuredData':     () => getStructuredData(),
+      'markScreenshotTarget':  () => markScreenshotTarget(msg.selector),
+      'unmarkScreenshotTarget': () => unmarkScreenshotTarget(msg.attribute),
       'getBounds':             () => getBounds(msg.selector),
       'getComputedStyle':      () => getComputedStyleFor(msg.selector, msg.properties),
       'getReadability':        () => getReadability(),
@@ -295,8 +308,7 @@
 
   // ── Accessibility Tree ──
   function getAccessibilityTree(maxDepth) {
-    pruneRefMap();
-    refCounter = 0;
+    newRefGeneration();
     
     function buildNode(el, depth) {
       if (depth > maxDepth || !el || el.nodeType !== 1) return null;
@@ -313,7 +325,7 @@
       // Skip non-interactive elements with no text and small size
       if (!isInteractive && !text && rect.width < 5 && rect.height < 5) return null;
 
-      const ref = `r${refCounter++}`;
+      const ref = `s${refGeneration}e${refCounter++}`;
       refMap[ref] = el;
 
       const node = { ref, tag };
@@ -355,6 +367,69 @@
     return { tree, refs: refCounter };
   }
 
+  // Compact accessibility-style view (DOM semantics, not a platform AX tree).
+  function getSnapshot(maxChars) {
+    newRefGeneration();
+    const lines = [];
+    const limit = Number.isFinite(maxChars) ? Math.max(0, maxChars) : Infinity;
+    let size = 0;
+    let truncated = false;
+    const landmarks = { MAIN: 'main', NAV: 'navigation', HEADER: 'banner',
+      FOOTER: 'contentinfo', ASIDE: 'complementary', FORM: 'form' };
+    const semanticRoles = new Set(['heading', 'main', 'navigation', 'banner',
+      'contentinfo', 'complementary', 'region', 'form', 'search']);
+    const clean = value => String(value || '').replace(/\s+/g, ' ').trim().slice(0, 160);
+    function nameOf(el) {
+      const labelledBy = el.getAttribute('aria-labelledby');
+      if (labelledBy) {
+        const label = labelledBy.split(/\s+/).map(id => document.getElementById(id)?.textContent || '').join(' ');
+        if (clean(label)) return clean(label);
+      }
+      const explicitRole = el.getAttribute('role');
+      const isLandmark = landmarks[el.tagName] ||
+        (semanticRoles.has(explicitRole) && explicitRole !== 'heading');
+      const isField = ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName);
+      const fallback = isField ? el.placeholder || el.title :
+        (isLandmark ? el.title : el.textContent || el.title);
+      return clean(el.getAttribute('aria-label') || findLabel(el) ||
+        (el.type === 'image' ? el.alt : '') ||
+        (['button', 'submit', 'reset'].includes(el.type) ? el.value : '') || fallback);
+    }
+    function visit(el, depth) {
+      if (!el || el.nodeType !== 1 || isHidden(el) ||
+          el.getAttribute('aria-hidden') === 'true' ||
+          ['SCRIPT', 'STYLE', 'NOSCRIPT', 'SVG'].includes(el.tagName)) return;
+      let role = el.getAttribute('role') || landmarks[el.tagName] ||
+        (/^H[1-6]$/.test(el.tagName) ? 'heading' : inferRole(el));
+      const include = isInteractiveElement(el) || semanticRoles.has(role);
+      if (include) {
+        role = role || (el.isContentEditable ? 'textbox' : 'button');
+        const ref = `s${refGeneration}e${refCounter++}`;
+        const states = [];
+        if (role === 'heading') states.push(`level=${el.getAttribute('aria-level') || el.tagName.slice(1)}`);
+        if ('value' in el && el.type !== 'password') states.push(`value=${JSON.stringify(clean(el.value))}`);
+        if (el.type === 'checkbox' || el.type === 'radio' || el.hasAttribute('aria-checked')) {
+          states.push(`checked=${el.getAttribute('aria-checked') || !!el.checked}`);
+        }
+        if (el.disabled || el.getAttribute('aria-disabled') === 'true') states.push('disabled');
+        for (const state of ['expanded', 'selected', 'pressed']) {
+          if (el.hasAttribute(`aria-${state}`)) states.push(`${state}=${el.getAttribute(`aria-${state}`)}`);
+        }
+        const line = `${'  '.repeat(Math.min(depth, 12))}- ${role} ${JSON.stringify(nameOf(el))} [ref=${ref}]${states.length ? ' [' + states.join(' ') + ']' : ''}`;
+        if (size + line.length + (lines.length ? 1 : 0) > limit) { truncated = true; return; }
+        refMap[ref] = el;
+        lines.push(line);
+        size += line.length + (lines.length > 1 ? 1 : 0);
+      }
+      for (const child of el.children) {
+        if (truncated) break;
+        visit(child, depth + (include ? 1 : 0));
+      }
+    }
+    visit(document.body, 0);
+    return { snapshot: lines.join('\n'), ...(truncated ? { truncated: true } : {}) };
+  }
+
   // ── Find Elements ──
   function findElements(query) {
     pruneRefMap();
@@ -385,7 +460,7 @@
   }
 
   function makeResult(el) {
-    const ref = `r${refCounter++}`;
+    const ref = `s${refGeneration}e${refCounter++}`;
     refMap[ref] = el;
     const rect = el.getBoundingClientRect();
     return {
@@ -711,7 +786,7 @@
       const rect = el.getBoundingClientRect();
       if (rect.width < 2 || rect.height < 2) return;
 
-      const ref = `r${refCounter++}`;
+      const ref = `s${refGeneration}e${refCounter++}`;
       refMap[ref] = el;
 
       fields.push({
@@ -785,7 +860,7 @@
         const el = document.querySelector(selector);
         if (el && !isHidden(el)) {
           const elapsed = Date.now() - start;
-          const ref = `r${refCounter++}`;
+          const ref = `s${refGeneration}e${refCounter++}`;
           refMap[ref] = el;
           resolve({
             ok: true,
@@ -888,7 +963,13 @@
     if (!selector) return null;
     
     // Try ref map first
-    if (selector.startsWith('r') && refMap[selector]) return refMap[selector];
+    if (/^(?:s\d+e\d+|r\d+)$/.test(selector)) {
+      const el = refMap[selector];
+      if (!selector.startsWith(`s${refGeneration}e`) || !el || !el.isConnected) {
+        throw new Error('stale ref, call browser_snapshot again');
+      }
+      return el;
+    }
     
     // Try CSS selector
     try { return document.querySelector(selector); } catch {}
@@ -913,14 +994,18 @@
   function isInteractiveElement(el) {
     const interactiveTags = new Set(['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'DETAILS', 'SUMMARY']);
     if (interactiveTags.has(el.tagName)) return true;
-    if (el.onclick || el.hasAttribute('tabindex') || el.contentEditable === 'true') return true;
+    if (el.onclick || el.hasAttribute('tabindex') || el.isContentEditable || el.contentEditable === 'true') return true;
     const role = el.getAttribute('role');
-    if (role && ['button', 'link', 'textbox', 'checkbox', 'radio', 'combobox', 'tab', 'menuitem', 'switch', 'slider'].includes(role)) return true;
+    if (role && ['button', 'link', 'textbox', 'checkbox', 'radio', 'combobox', 'tab', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'listbox', 'option', 'treeitem', 'spinbutton', 'searchbox', 'switch', 'slider'].includes(role)) return true;
     return false;
   }
 
   function inferRole(el) {
-    const map = { 'A': 'link', 'BUTTON': 'button', 'INPUT': el.type || 'textbox', 'SELECT': 'combobox', 'TEXTAREA': 'textbox' };
+    const inputRole = { button: 'button', submit: 'button', reset: 'button',
+      checkbox: 'checkbox', radio: 'radio', range: 'slider', number: 'spinbutton',
+      search: 'searchbox' };
+    const map = { A: 'link', BUTTON: 'button', INPUT: inputRole[el.type] || 'textbox',
+      SELECT: 'combobox', TEXTAREA: 'textbox', SUMMARY: 'button', DETAILS: 'group' };
     return map[el.tagName] || '';
   }
 
@@ -1014,6 +1099,22 @@
     const outer = el.outerHTML || '';
     const truncated = outer.length > 100000;
     return { html: outer.slice(0, 100000), length: outer.length, ...(truncated && { truncated: true }) };
+  }
+
+  // A temporary exact selector lets the existing screenshot capture path use refs.
+  function markScreenshotTarget(ref) {
+    const el = resolveElement(ref);
+    if (!el) return { error: 'Element not found' };
+    const attribute = `data-kitsune-capture-${crypto.getRandomValues(new Uint32Array(1))[0]}`;
+    el.setAttribute(attribute, '');
+    return { selector: `[${attribute}]`, attribute };
+  }
+
+  function unmarkScreenshotTarget(attribute) {
+    if (/^data-kitsune-capture-\d+$/.test(attribute)) {
+      document.querySelectorAll(`[${attribute}]`).forEach(el => el.removeAttribute(attribute));
+    }
+    return { ok: true };
   }
 
   function getBounds(selector) {

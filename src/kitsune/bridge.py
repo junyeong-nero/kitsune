@@ -952,6 +952,9 @@ async def _send_to_extension_raw(action, params=None, timeout=30):
     """Send a command over the active extension WebSocket without scheduling."""
     global command_counter
 
+    params = dict(params or {})
+    params.setdefault("includeSnapshot", os.environ.get("KITSUNE_POST_ACTION_SNAPSHOT", "1").lower()
+                      not in {"0", "false", "no", "off"})
     ws = extension_ws
     if not ws:
         return {"error": "Kitsune extension not connected. Open Firefox or Zen and make sure the Kitsune extension is loaded."}
@@ -1188,6 +1191,7 @@ BATCH_ACTION_MAP = {
     'tabs':           'getTabs',
     'forms':          'getFormFields',
     'dom':            'getAccessibilityTree',
+    'snapshot':       'getSnapshot',
     'highlight':      'highlight',
     'wakeTab':        'wakeTab',
     'reloadExtension':'reloadExtension',
@@ -1419,6 +1423,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "/api/page-text": self.handle_page_text,
             "/api/tabs": self.handle_tabs,
             "/api/dom": self.handle_dom,
+            "/api/snapshot": self.handle_snapshot,
             "/api/forms": self.handle_forms,
             "/api/version": self.handle_version,
             "/api/workflows": self.handle_list_workflows,
@@ -1475,6 +1480,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "/api/tabs": self.handle_tabs,
             "/api/forms": self.handle_forms,
             "/api/dom": self.handle_dom,
+            "/api/snapshot": self.handle_snapshot,
             # Parallel multi-tab work
             "/api/wake-tab": self.handle_wake_tab,
             "/api/keep-alive": self.handle_keep_alive,
@@ -1633,6 +1639,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
     def handle_dom(self):
         params = {"depth": 6, **self._tab_params()}
         result = self.run_async(send_to_extension("getAccessibilityTree", params))
+        self.send_json(200, result)
+
+    def handle_snapshot(self):
+        result = self.run_async(send_to_extension("getSnapshot", self._tab_params()))
         self.send_json(200, result)
 
     def handle_forms(self):

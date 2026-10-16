@@ -26,9 +26,9 @@ class ToolSurfaceTests(unittest.TestCase):
     def test_registration(self):
         core = self.registered("core")
         all_tools = self.registered("all")
-        self.assertEqual(len(core), 29)
-        self.assertEqual(len(all_tools), 94)
-        self.assertIn("browser_handle_dialog", core)
+        self.assertEqual(len(core), 30)
+        self.assertEqual(len(all_tools), 95)
+        self.assertTrue({"browser_handle_dialog", "browser_snapshot"} <= core)
         removed = {
             "browser_page_text_by_tab_id", "browser_fill", "browser_set_editable_content",
             "browser_new_tab", "browser_close_tab", "browser_switch_tab",

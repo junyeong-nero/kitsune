@@ -141,6 +141,15 @@ def _with_tab(body: dict, tab_id: int | None) -> dict:
     return body
 
 
+def _target(body: dict, ref: str | None, element: str | None) -> dict:
+    """Attach a machine ref and an audit-only human description."""
+    if ref is not None:
+        body["ref"] = ref
+    if element is not None:
+        body["element"] = element
+    return body
+
+
 # ════════════════════════════════════════════════════════════════════
 #  Parallel-work primer (read this if you're driving multiple tabs)
 # ════════════════════════════════════════════════════════════════════
@@ -251,27 +260,42 @@ def browser_dom(tab_id: int | None = None) -> dict:
     return _post("/api/dom", {"tabId": tab_id})
 
 
+@tool("core", annotations=ToolAnnotations(title="Accessibility snapshot", **READ))
+def browser_snapshot(tab_id: int | None = None) -> dict:
+    """Get a compact accessibility-style text tree and fresh element refs.
+
+    Prefer these refs for actions. Each snapshot (including post-action snapshots)
+    or browser_dom rebuild invalidates earlier refs in that tab.
+    """
+    if tab_id is None:
+        return _get("/api/snapshot")
+    return _post("/api/snapshot", {"tabId": tab_id})
+
+
 @tool("core", annotations=ToolAnnotations(title="Take screenshot", **ACT))
 def browser_screenshot(
     selector: str | None = None, full_page: bool = False,
     tab_id: int | None = None, save_to: str | None = None,
-    data_url: bool = False,
+    data_url: bool = False, ref: str | None = None, element: str | None = None,
 ):
     """Capture viewport, one element, or the full page as MCP image content.
 
-    selector and full_page are mutually exclusive. Element/full-page captures
+    For an element, prefer ref from browser_snapshot over selector; element is an
+    audit-only description. selector/ref and full_page are mutually exclusive. Element/full-page captures
     temporarily activate the target tab. Viewport capture with tab_id selects
     that tab and focuses its window. Large inline images are JPEG-encoded or
     downscaled under ~1 MB. save_to writes the full PNG to that path and returns
     metadata instead of image content; data_url also includes the PNG bytes as a
     data URL (large).
     """
+    if ref is not None and selector is None:
+        selector = ""
     if selector is not None and full_page:
         return {"error": "selector and full_page are mutually exclusive"}
     preview = not (save_to or data_url)
     if selector is not None or full_page:
         endpoint = "/api/element-screenshot" if selector is not None else "/api/full-page-screenshot"
-        body = {"selector": selector} if selector is not None else {}
+        body = _target({"selector": selector}, ref, element) if selector is not None else {}
         body["imagePreview"] = preview
         result = _post(endpoint, _with_tab(body, tab_id), timeout=120 if full_page else 45)
         return _screenshot_result(result, save_to, data_url)
@@ -314,8 +338,13 @@ def browser_navigate(url: str, tab_id: int | None = None, raw: bool = False) -> 
 # -- Interaction --------------------------------------------------
 
 @tool("core", annotations=ToolAnnotations(title="Click", **ACT))
-def browser_click(selector: str = "", x: int = 0, y: int = 0, tab_id: int | None = None) -> dict:
-    """Click an element on the page by CSS selector or coordinates.
+def browser_click(
+    selector: str = "", x: int = 0, y: int = 0, tab_id: int | None = None,
+    ref: str | None = None, element: str | None = None,
+) -> dict:
+    """Prefer ref from browser_snapshot; element is an audit-only description.
+
+    Click an element on the page by CSS selector or coordinates.
 
     Args:
         selector: CSS selector to click (e.g. "#submit", ".btn-primary")
@@ -323,8 +352,8 @@ def browser_click(selector: str = "", x: int = 0, y: int = 0, tab_id: int | None
         y: Y coordinate (used if selector is empty)
         tab_id: Optional tab to target. Defaults to active tab.
     """
-    body: dict = {"selector": selector} if selector else {"coords": {"x": x, "y": y}}
-    return _post("/api/click", _with_tab(body, tab_id))
+    body: dict = {"selector": selector} if selector or ref else {"coords": {"x": x, "y": y}}
+    return _post("/api/click", _with_tab(_target(body, ref, element), tab_id))
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Trusted click", **ACT))
@@ -358,10 +387,13 @@ def browser_trusted_click(
 
 @tool("core", annotations=ToolAnnotations(title="Type into element", **ACT))
 def browser_type(
-    selector: str, text: str, mode: Literal["type", "fill", "editable"] = "type",
+    selector: str = "", text: str = "", mode: Literal["type", "fill", "editable"] = "type",
     clear: bool = False, tab_id: int | None = None,
+    ref: str | None = None, element: str | None = None,
 ) -> dict:
-    """Enter text using typing events, direct field fill, or a contenteditable editor.
+    """Prefer ref from browser_snapshot; element is an audit-only description.
+
+    Enter text using typing events, direct field fill, or a contenteditable editor.
 
     type: type text, optionally clearing first.
     fill: replace the field value using native setters and input/change events;
@@ -379,7 +411,7 @@ def browser_type(
         }
     else:
         return {"error": "mode must be type, fill, or editable"}
-    return _post(endpoint, _with_tab(body, tab_id))
+    return _post(endpoint, _with_tab(_target(body, ref, element), tab_id))
 
 
 @tool("core", annotations=ToolAnnotations(title="Scroll", **ACT))
@@ -395,14 +427,16 @@ def browser_scroll(direction: str = "down", amount: int = 500, tab_id: int | Non
 
 
 @tool("core", annotations=ToolAnnotations(title="Hover", **ACT))
-def browser_hover(selector: str, tab_id: int | None = None) -> dict:
-    """Hover over an element on the page.
+def browser_hover(selector: str = "", tab_id: int | None = None, ref: str | None = None, element: str | None = None) -> dict:
+    """Prefer ref from browser_snapshot; element is an audit-only description.
+
+    Hover over an element on the page.
 
     Args:
         selector: CSS selector of the element to hover over
         tab_id: Optional tab to target. Defaults to active tab.
     """
-    return _post("/api/hover", _with_tab({"selector": selector}, tab_id))
+    return _post("/api/hover", _with_tab(_target({"selector": selector}, ref, element), tab_id))
 
 
 # -- Smart Queries ------------------------------------------------
@@ -436,14 +470,16 @@ def browser_js(code: str, tab_id: int | None = None, full: bool = False) -> dict
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Highlight", **ACT))
-def browser_highlight(selector: str, tab_id: int | None = None) -> dict:
-    """Highlight an element on the page with a visual overlay.
+def browser_highlight(selector: str = "", tab_id: int | None = None, ref: str | None = None, element: str | None = None) -> dict:
+    """Prefer ref from browser_snapshot; element is an audit-only description.
+
+    Highlight an element on the page with a visual overlay.
 
     Args:
         selector: CSS selector of the element to highlight
         tab_id: Optional tab to target. Defaults to active tab.
     """
-    return _post("/api/highlight", _with_tab({"selector": selector}, tab_id))
+    return _post("/api/highlight", _with_tab(_target({"selector": selector}, ref, element), tab_id))
 
 
 # -- Wait ---------------------------------------------------------
@@ -767,23 +803,32 @@ def browser_explain_selector(selector: str, tab_id: int | None = None) -> dict:
 
 @tool("core", annotations=ToolAnnotations(title="Select option", **ACT))
 def browser_select_option(
-    selector: str, value: str, by_text: bool = False, tab_id: int | None = None
+    selector: str = "", value: str = "", by_text: bool = False, tab_id: int | None = None,
+    ref: str | None = None, element: str | None = None,
 ) -> dict:
-    """Choose an <option> in a <select>. Default matches by value; pass
+    """Prefer ref from browser_snapshot; element is an audit-only description.
+
+    Choose an <option> in a <select>. Default matches by value; pass
     `by_text=True` to match by visible text."""
-    return _post("/api/select-option", _with_tab({"selector": selector, "value": value, "byText": by_text}, tab_id))
+    return _post("/api/select-option", _with_tab(_target({"selector": selector, "value": value, "byText": by_text}, ref, element), tab_id))
 
 
 @tool("core", annotations=ToolAnnotations(title="Check", **ACT))
-def browser_check(selector: str, checked: bool = True, tab_id: int | None = None) -> dict:
-    """Set a checkbox or radio's checked state."""
-    return _post("/api/check", _with_tab({"selector": selector, "checked": checked}, tab_id))
+def browser_check(
+    selector: str = "", checked: bool = True, tab_id: int | None = None, ref: str | None = None, element: str | None = None,
+) -> dict:
+    """Prefer ref from browser_snapshot; element is an audit-only description.
+
+    Set a checkbox or radio's checked state."""
+    return _post("/api/check", _with_tab(_target({"selector": selector, "checked": checked}, ref, element), tab_id))
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Focus", **ACT))
-def browser_focus(selector: str, tab_id: int | None = None) -> dict:
-    """Move focus to the matched element."""
-    return _post("/api/focus", _with_tab({"selector": selector}, tab_id))
+def browser_focus(selector: str = "", tab_id: int | None = None, ref: str | None = None, element: str | None = None) -> dict:
+    """Prefer ref from browser_snapshot; element is an audit-only description.
+
+    Move focus to the matched element."""
+    return _post("/api/focus", _with_tab(_target({"selector": selector}, ref, element), tab_id))
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Blur", **ACT))
@@ -820,9 +865,11 @@ def browser_keypress(
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Double click", **ACT))
-def browser_double_click(selector: str, tab_id: int | None = None) -> dict:
-    """Dispatch a synthetic double-click on the matched element."""
-    return _post("/api/double-click", _with_tab({"selector": selector}, tab_id))
+def browser_double_click(selector: str = "", tab_id: int | None = None, ref: str | None = None, element: str | None = None) -> dict:
+    """Prefer ref from browser_snapshot; element is an audit-only description.
+
+    Dispatch a synthetic double-click on the matched element."""
+    return _post("/api/double-click", _with_tab(_target({"selector": selector}, ref, element), tab_id))
 
 
 @tool("core", annotations=ToolAnnotations(title="Submit form", **DESTRUCTIVE))
@@ -849,9 +896,15 @@ def browser_form_fill(fields: dict, tab_id: int | None = None) -> dict:
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Drag", **ACT))
-def browser_drag(from_selector: str, to_selector: str, tab_id: int | None = None) -> dict:
-    """Synthetic drag-and-drop from one element to another (HTML5 drag events)."""
-    return _post("/api/drag", _with_tab({"from": from_selector, "to": to_selector}, tab_id))
+def browser_drag(
+    from_selector: str = "", to_selector: str = "", tab_id: int | None = None,
+    ref: str | None = None, element: str | None = None, to_ref: str | None = None,
+) -> dict:
+    """Prefer ref from browser_snapshot; element is an audit-only description.
+
+    Synthetic drag-and-drop from one element to another (HTML5 drag events).
+    ref identifies the source; to_ref identifies the destination."""
+    return _post("/api/drag", _with_tab(_target({"from": from_selector, "to": to_selector, "toRef": to_ref}, ref, element), tab_id))
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Click and wait navigation", **ACT))

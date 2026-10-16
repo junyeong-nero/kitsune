@@ -163,7 +163,35 @@ function isRestrictedUrl(url) {
 
 // == Command Handler ==
 
+const POST_SNAPSHOT_ACTIONS = new Set([
+  'click', 'type', 'fill', 'selectOption', 'checkBox', 'keypress', 'submitForm', 'navigate'
+]);
+
 async function handleCommand(command) {
+  const params = { ...command };
+  // Descriptions are audit metadata only; never use them to locate elements.
+  if (params.ref) params.selector = params.ref;
+  if (params.action === 'drag') {
+    if (params.ref) params.from = params.ref;
+    if (params.toRef) params.to = params.toRef;
+  }
+  const withSnapshot = POST_SNAPSHOT_ACTIONS.has(params.action) && params.includeSnapshot !== false;
+  if (withSnapshot && params.tabId == null) params.tabId = await getActiveTabId();
+  const result = await dispatchCommand(params);
+  if (withSnapshot && result && !result.error && result.ok !== false) {
+    try {
+      const snapshot = await forwardToContent('getSnapshot', { tabId: params.tabId, maxChars: 4000 });
+      if (snapshot.error) result.snapshot_error = snapshot.error;
+      else {
+        result.snapshot = snapshot.snapshot;
+        if (snapshot.truncated) result.snapshot_truncated = true;
+      }
+    } catch (e) { result.snapshot_error = e.message; }
+  }
+  return result;
+}
+
+async function dispatchCommand(command) {
   const { action, id, ...params } = command;
   
   switch (action) {
@@ -215,6 +243,7 @@ async function handleCommand(command) {
     case 'waitForText':
     case 'getPageInfo':
     case 'getPageText':
+    case 'getSnapshot':
     case 'getAccessibilityTree':
     case 'getFormFields':
     case 'click':
@@ -236,6 +265,8 @@ async function handleCommand(command) {
     case 'getImages':
     case 'getMeta':
     case 'getStructuredData':
+    case 'markScreenshotTarget':
+    case 'unmarkScreenshotTarget':
     case 'getBounds':
     case 'getComputedStyle':
     case 'getReadability':
@@ -661,11 +692,17 @@ async function zlRestoreFixed(tabId) {
 // 2.1.1: scale (1-4) = output pixels per CSS pixel. captureVisibleTab renders the viewport at that scale, so
 // scale 2 gives a genuinely sharper image (text in article screenshots), not an upscale. Default 1 = old size.
 async function elementScreenshot(tabId, selector, scale, preview) {
-  let previousTabId = null, hidFixed = false, id = null;
+  let previousTabId = null, hidFixed = false, id = null, captureAttribute = null;
   const want = Math.min(Math.max(Number(scale) || 1, 1), 4);
   try {
     id = tabId || (await getActiveTabId());
     if (!id || !selector) return { error: 'tabId and selector required' };
+    if (/^(?:s\d+e\d+|r\d+)$/.test(selector)) {
+      const target = await forwardToContent('markScreenshotTarget', { tabId: id, selector });
+      if (target.error) return target;
+      selector = target.selector;
+      captureAttribute = target.attribute;
+    }
     const tab = await browser.tabs.get(id);
     if (isRestrictedUrl(tab.url)) return { error: 'Cannot access browser internal page' };
     ({ previousTabId } = await activateTabForCapture(id));
@@ -716,6 +753,9 @@ async function elementScreenshot(tabId, selector, scale, preview) {
              complete: covered >= cssH - 1, dataUrl: preview ? await imagePreview(cropped) : cropped };
   } catch (e) { return { error: 'elementScreenshot failed: ' + e.message }; }
   finally {
+    if (captureAttribute && id) {
+      try { await forwardToContent('unmarkScreenshotTarget', { tabId: id, attribute: captureAttribute }); } catch (e) {}
+    }
     if (hidFixed && id) { try { await zlRestoreFixed(id); } catch (e) {} }
     await restoreTabAfterCapture(previousTabId);
   }

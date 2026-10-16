@@ -31,6 +31,35 @@ agent ──stdio──▶ kitsune (MCP server, one per agent)
 3. The extension keeps reconnecting to the daemon, so it attaches by itself.
 4. The daemon keeps running after the agent exits; the next agent reuses it.
 
+## Snapshot and element refs
+
+Start with `browser_snapshot(tab_id=...)` to get a compact accessibility-style
+text tree of visible controls, headings, and landmarks:
+
+```text
+- main ""
+  - heading "Welcome" [ref=s3e0] [level=1]
+  - button "Log in" [ref=s3e1]
+```
+
+Prefer `browser_click(ref="s3e1", element="Log in", tab_id=...)` and
+`browser_type(ref="...", text="...", mode="fill", tab_id=...)`. `element` is a description
+for audit logs only; CSS `selector` remains supported. For drag, use `ref` for
+the source and `to_ref` for the destination (or the existing selector arguments).
+
+Refs are scoped to the document and snapshot generation. A new snapshot or
+`browser_dom` invalidates earlier refs in that tab; `browser_find` and other
+ref-producing queries use the same scheme. Detached or outdated refs return
+`stale ref, call browser_snapshot again`. Always use refs from the latest result.
+
+Click, type, fill, select, check, keypress, submit, and navigate responses include
+a fresh `snapshot` capped at 4,000 characters (`snapshot_truncated` indicates more
+content). If snapshot capture fails, `snapshot_error` preserves the action result.
+Set `KITSUNE_POST_ACTION_SNAPSHOT=0` in the **bridge daemon's environment** and
+restart the daemon to disable these automatic snapshots. Explicit snapshots
+remain available. This is a DOM-based accessibility approximation, not Firefox's
+platform accessibility tree; closed shadow roots and iframe contents are not traversed.
+
 ## Requirements
 
 - Firefox-family browser, Gecko 142+ (Zen 1.23 / Firefox 142 or newer)
@@ -117,11 +146,11 @@ Several clients can be configured at once; they share one bridge daemon.
 
 ## Tools
 
-By default, Kitsune registers 29 `browser_*` tools in the `core` capability
+By default, Kitsune registers 30 `browser_*` tools in the `core` capability
 group. Tab-aware tools accept `tab_id` to target background tabs.
 Set `KITSUNE_CAPS` in the MCP server environment before starting it; restart the
 MCP client after changing it. The comma-separated list selects exactly those
-groups (include `core` to retain the default tools). `all` enables all 94 tools.
+groups (include `core` to retain the default tools). `all` enables all 95 tools.
 Whitespace and case are ignored; unknown group names fail at startup.
 
 ```toml
@@ -131,7 +160,7 @@ KITSUNE_CAPS = "core,network,parallel"
 
 | Group | Tools |
 |---|---|
-| `core` (29) | `browser_status`, `browser_tabs`, `browser_page_info`, `browser_page_text`, `browser_forms`, `browser_dom`, `browser_screenshot`, `browser_navigate`, `browser_click`, `browser_type`, `browser_scroll`, `browser_hover`, `browser_find`, `browser_js`, `browser_wait_for`, `browser_workflows`, `browser_workflow`, `browser_markdown`, `browser_select_option`, `browser_check`, `browser_keypress`, `browser_submit_form`, `browser_form_fill`, `browser_upload_file`, `browser_back`, `browser_forward`, `browser_watch_console`, `browser_console_logs`, `browser_handle_dialog` |
+| `core` (30) | `browser_status`, `browser_tabs`, `browser_page_info`, `browser_page_text`, `browser_forms`, `browser_dom`, `browser_screenshot`, `browser_navigate`, `browser_click`, `browser_type`, `browser_scroll`, `browser_hover`, `browser_find`, `browser_js`, `browser_wait_for`, `browser_workflows`, `browser_workflow`, `browser_markdown`, `browser_select_option`, `browser_check`, `browser_keypress`, `browser_submit_form`, `browser_form_fill`, `browser_upload_file`, `browser_back`, `browser_forward`, `browser_watch_console`, `browser_console_logs`, `browser_handle_dialog`, `browser_snapshot` |
 | `devtools` (26) | `browser_trusted_click`, `browser_highlight`, `browser_cache`, `browser_reload_extension`, `browser_query`, `browser_html`, `browser_links`, `browser_images`, `browser_meta`, `browser_structured_data`, `browser_bounds`, `browser_computed_style`, `browser_readability`, `browser_iframes`, `browser_explain_selector`, `browser_focus`, `browser_blur`, `browser_double_click`, `browser_drag`, `browser_click_and_wait_navigation`, `browser_full_page_metrics`, `browser_health`, `browser_logs`, `browser_audit`, `browser_set_policy`, `browser_get_policy` |
 | `network` (3) | `browser_downloads`, `browser_intercept`, `browser_capture_network` |
 | `parallel` (15) | `browser_keep_alive`, `browser_keep_alive_stop`, `browser_parallel`, `browser_broadcast`, `browser_sync_barrier`, `browser_tag_tab`, `browser_resolve_tag`, `browser_list_tags`, `browser_untag_tab`, `browser_tab_pool`, `browser_pool_acquire`, `browser_pool_release`, `browser_scheduler`, `browser_retry`, `browser_batch` |
