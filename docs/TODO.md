@@ -71,9 +71,9 @@ data, policy/audit) but adopt the snapshot/ref model and a smaller default surfa
      sync_barrier / scheduler into `parallel`.
    - [x] Move `browser_wp_html` (WordPress-specific) out of the core tools into a workflow.
 3. **Missing capabilities**
-   - [ ] Dialog handling (alert/confirm/prompt), like Playwright's `browser_handle_dialog`.
-   - [ ] Screenshots return MCP `ImageContent` so the model sees them; file save optional.
-   - [ ] Wait for text to appear/disappear.
+   - [x] Dialog handling (alert/confirm/prompt), like Playwright's `browser_handle_dialog`.
+   - [x] Screenshots return MCP `ImageContent` so the model sees them; file save optional.
+   - [x] Wait for text to appear/disappear.
 4. **Metadata**
    - [x] Add `readOnlyHint` / `destructiveHint` tool annotations (feeds client permission
      prompts and the ask-before-act policy below).

@@ -19,6 +19,11 @@
     "clipboardWrite",
     "browsingData"
   ],
+  "content_scripts": [{
+    "matches": ["<all_urls>"],
+    "js": ["content/content.js"],
+    "run_at": "document_start"
+  }],
   "background": {
     "scripts": [
       "background/background.js"

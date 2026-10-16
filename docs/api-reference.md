@@ -4,8 +4,8 @@ Base URL: `http://127.0.0.1:47651`
 
 ## MCP tool surface
 
-`KITSUNE_CAPS=core` is the default (28 tools); `KITSUNE_CAPS=all` registers
-93 tools. The groups are `core`, `tabs`, `network`, `storage`, `parallel`,
+`KITSUNE_CAPS=core` is the default (29 tools); `KITSUNE_CAPS=all` registers
+94 tools. The groups are `core`, `tabs`, `network`, `storage`, `parallel`,
 `devtools`, `windows`, and `session`. A comma list selects those groups only.
 See [README](../README.md#tools) for the complete tool list per group.
 The bridge endpoints below remain available unchanged; MCP tool names and
@@ -58,16 +58,16 @@ an error before contacting the bridge. `timeout` must be positive.
 
 `timeout` is in milliseconds and does not limit an explicit sleep. JS retains
 bridge non-empty-result semantics: `false` and `0` count as results; return
-`null` or an empty string while waiting for a predicate. Text waits generate
-escaped JS expressions that return `null` until ready.
+`null` or an empty string while waiting for a predicate. Text waits use POST `/api/wait-for-text`.
 
 ### `browser_screenshot(selector=None, full_page=False, tab_id=None, save_to=None, data_url=False)`
 
 Replaces `browser_element_screenshot` and `browser_full_page_screenshot`.
-Returns a dict containing the PNG path in `saved_to`, retaining the file-based
-return type. `selector` and `full_page=True` are mutually exclusive.
+Returns `[Image, metadata]` (MCP image content) by default; `save_to` writes the
+full PNG and returns metadata with `saved_to` instead, and `data_url=True` adds the
+raw PNG data URL. `selector` and `full_page=True` are mutually exclusive.
 
-- Default: viewport capture via GET `/api/screenshot`. A supplied `tab_id`
+- Default: viewport capture via POST `/api/screenshot`. A supplied `tab_id`
   selects that tab and focuses its window before capture.
 - `selector`: crop one element via POST `/api/element-screenshot`.
 - `full_page=True`: scroll and stitch up to 30 viewports via POST `/api/full-page-screenshot`.
@@ -103,10 +103,11 @@ Bridge and extension version info.
 { "bridge": "1.1.2", "api": "1", "extension_connected": true, "extension": 11 }
 ```
 
-## Page Data (GET, cached 5s)
+## Page Data (GET, cached 5s except page-info)
 
 ### GET /api/page-info
-Page metadata. Returns `_cached: true` on cache hit.
+Page metadata plus current dialog policy and recent dialog history. Never cached.
+Also accepts POST with `{ "tabId": 123 }`. MCP tool: `browser_page_info(tab_id=None)`.
 ```json
 { "url": "...", "title": "...", "lang": "en", "width": 890, "height": 992, "forms": 0, "links": 1, "images": 0 }
 ```
@@ -133,10 +134,76 @@ Accessibility tree (depth=6).
 All form fields on the page.
 
 ### GET /api/screenshot
-Captures page screenshot, saves to `~/.kitsune/screenshots/`.
+Captures the active page as PNG and saves to the bridge screenshot directory
+(`$KITSUNE_HOME/screenshots`, default `~/.kitsune/screenshots`).
 ```json
 { "url": "...", "title": "...", "saved_to": "...", "filename": "zen_20260313_120000.png" }
 ```
+
+### POST /api/screenshot, /api/element-screenshot, /api/full-page-screenshot
+Return `dataUrl` and capture metadata. Set `imagePreview: true` for an inline preview
+under roughly 1 MB (large images are JPEG-encoded and downscaled in the extension).
+Without that flag, return full PNG data. Element requests require `selector` and
+accept `tabId` and `scale` (1–4); full-page requests accept `tabId`. Captures retain
+existing canvas and scroll/segment limits and can truncate very large documents.
+
+MCP tool `browser_screenshot(selector=None, full_page=False, tab_id=None, save_to=None, data_url=False)`
+returns `[Image, metadata]` by default, giving the model actual MCP image content.
+`save_to` writes a full PNG and returns metadata with `saved_to` instead.
+`data_url=True` returns raw PNG data in metadata.
+Inline preview dimensions can be smaller than the original capture metadata.
+
+### POST /api/handle-dialog
+`{ "accept": true, "prompt_text": "answer", "tabId": 123 }`
+
+MCP tool: `browser_handle_dialog(accept=True, prompt_text=None, tab_id=None)`.
+Sets the tab's policy for subsequent dialogs and returns `{ok, policy, dialogs}`.
+By default, with no policy, original native alert/confirm/prompt functions run and
+the user's actual response is recorded. `beforeunload` also keeps native behavior.
+Only an explicitly configured policy auto-answers dialogs. Clear a policy with
+`browser_handle_dialog(accept=None, tab_id=123)` or HTTP
+`{ "accept": null, "tabId": 123 }` to restore native pass-through.
+Accepted prompts return `prompt_text` if supplied, otherwise the prompt's default;
+dismissed prompts return null and dismissed confirms return false. With a policy
+set, alerts return immediately; in native mode they wait for the user.
+Recent history is also included in `browser_page_info`:
+
+```json
+{ "policy": { "accept": true, "prompt_text": "answer" }, "dialogs": [
+  { "type": "prompt", "message": "Name?", "default_value": "Guest",
+    "timestamp": 1792200000000, "response": "answer", "pending": false }
+] }
+```
+
+The page-world override records every intercepted invocation (last 100 per
+document). Answers are synchronous; `pending: false` means the user's native
+response or configured automatic answer was already returned, and a later tool
+call cannot change it. Alert responses are null (no return value). Policies
+persist across navigation until tab closure or extension restart, with native behavior
+applying until asynchronous restoration completes. Clearing a policy also removes
+it from the per-tab policy store. Capture starts at
+`document_start` for new documents and on connection for existing tabs.
+Scripts holding original references before injection, iframe dialogs (including
+cross-origin frames), browser-internal pages, and already-open native dialogs are
+outside this mechanism. Page scripts can also replace or bypass the overrides.
+
+`accept: true` also disarms `beforeunload` using the same returnValue/preventDefault
+suppression as `browser_close_tab(force=True)`, allowing navigation away. Unload
+events are recorded with type `beforeunload`. `accept: false` leaves native unload
+behavior; the extension cannot answer a native “Leave page?” prompt. Accepting
+temporarily clears `onbeforeunload`; clearing or dismissing the policy restores the
+saved handler if the page has not supplied a replacement.
+Force-closing remains available regardless of dialog policy.
+
+### POST /api/wait-for-text
+`{ "text": "Ready", "text_gone": "Loading", "timeout": 10000, "tabId": 123 }`
+
+MCP tool: `browser_wait_for(text=...)` or `browser_wait_for(text_gone=...)`.
+Provide at least one non-empty condition (the HTTP endpoint accepts both at once). Polls rendered top-level document text
+about every 100 ms, excluding hidden text; if both conditions are provided they
+must both hold. Matching uses case-sensitive substrings. Frames and shadow roots
+are not traversed. Returns `{ok, text, text_gone, elapsed}`; timeout returns
+`ok: false` with an error. A zero timeout performs one immediate check.
 
 ## Navigation (POST)
 

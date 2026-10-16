@@ -26,8 +26,9 @@ class ToolSurfaceTests(unittest.TestCase):
     def test_registration(self):
         core = self.registered("core")
         all_tools = self.registered("all")
-        self.assertEqual(len(core), 28)
-        self.assertEqual(len(all_tools), 93)
+        self.assertEqual(len(core), 29)
+        self.assertEqual(len(all_tools), 94)
+        self.assertIn("browser_handle_dialog", core)
         removed = {
             "browser_page_text_by_tab_id", "browser_fill", "browser_set_editable_content",
             "browser_new_tab", "browser_close_tab", "browser_switch_tab",
@@ -103,11 +104,10 @@ class ToolSurfaceTests(unittest.TestCase):
                 self.assertGreater(post.call_args.kwargs["timeout"], 12)
             for condition in ("text", "text_gone"):
                 needle = 'say "hello"\n\\ world'
-                server.browser_wait_for(**{condition: needle})
-                code = post.call_args.args[1]["code"]
-                self.assertIn(json.dumps(needle), code)
-                self.assertTrue(code.endswith("? 'ready' : null"))
-                self.assertEqual(code.startswith("(!"), condition == "text_gone")
+                server.browser_wait_for(**{condition: needle}, tab_id=9)
+                self.assertEqual(post.call_args.args[0], "/api/wait-for-text")
+                self.assertEqual(post.call_args.args[1][condition], needle)
+                self.assertEqual(post.call_args.args[1]["tabId"], 9)
 
     def test_wait_validation_and_sleep(self):
         with patch.object(server, "_post") as post, patch.object(server, "_sleep") as sleep:
@@ -119,8 +119,8 @@ class ToolSurfaceTests(unittest.TestCase):
             sleep.assert_not_called()
             self.assertEqual(server.browser_wait_for(time=0), {"ok": True, "slept": 0})
             sleep.assert_called_once_with(0)
-            server.browser_wait_for(text="")
-            post.assert_called_once()
+            self.assertIn("error", server.browser_wait_for(text=""))
+            post.assert_not_called()
 
     def test_screenshot_files(self):
         png = b"fake png bytes"
@@ -139,24 +139,36 @@ class ToolSurfaceTests(unittest.TestCase):
                 post.reset_mock()
                 self.assertIn("error", server.browser_screenshot(selector="x", full_page=True))
                 post.assert_not_called()
-            with patch.object(server, "_get", return_value={"saved_to": destination}):
+            with patch.object(server, "_post", return_value={"dataUrl": data}) as post:
                 copied = str(Path(directory) / "copy.png")
                 result = server.browser_screenshot(save_to=copied, data_url=True)
                 self.assertEqual(result["dataUrl"], data)
                 self.assertEqual(Path(copied).read_bytes(), png)
+                post.assert_called_once_with("/api/screenshot", {"imagePreview": False})
 
     def test_viewport_tab_and_errors(self):
-        with patch.object(server, "_get", side_effect=[{"tabs": [{"id": 7, "windowId": 2}]},
-                                                      {"saved_to": "/tmp/screenshot.png"}]), \
-             patch.object(server, "_post", return_value={"ok": True}) as post:
-            self.assertIn("saved_to", server.browser_screenshot(tab_id=7))
+        data = "data:image/png;base64," + base64.b64encode(b"fake png bytes").decode()
+        with patch.object(server, "_get", return_value={"tabs": [{"id": 7, "windowId": 2}]}), \
+             patch.object(server, "_post", side_effect=[{"ok": True}, {"ok": True},
+                                                       {"dataUrl": data, "url": "u"}]) as post:
+            image, meta = server.browser_screenshot(tab_id=7)
+            self.assertIsInstance(image, server.Image)
+            self.assertEqual(meta, {"url": "u"})
             self.assertEqual([c.args[0] for c in post.call_args_list],
-                             ["/api/switch-tab", "/api/focus-window"])
+                             ["/api/switch-tab", "/api/focus-window", "/api/screenshot"])
+            self.assertEqual(post.call_args.args[1], {"imagePreview": True})
         with patch.object(server, "_get", return_value={"error": "offline"}):
             self.assertEqual(server.browser_screenshot(tab_id=7), {"error": "offline"})
         with patch.object(server, "_get", return_value={"tabs": []}), patch.object(server, "_post") as post:
             self.assertIn("error", server.browser_screenshot(tab_id=7))
             post.assert_not_called()
+
+    def test_handle_dialog(self):
+        with patch.object(server, "_post", return_value={"ok": True}) as post:
+            server.browser_handle_dialog(accept=False, tab_id=4)
+            post.assert_called_with("/api/handle-dialog", {"accept": False, "prompt_text": None, "tabId": 4})
+            server.browser_handle_dialog(accept=None)
+            post.assert_called_with("/api/handle-dialog", {"accept": None, "prompt_text": None})
 
     def test_wordpress_workflow(self):
         path = Path(server.__file__).parent / "workflows/wp-html.md"

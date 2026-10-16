@@ -15,7 +15,7 @@ from time import sleep as _sleep
 from typing import Literal
 
 import httpx
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP, Image
 from mcp.types import ToolAnnotations
 
 # Annotation hints describe the whole tool, including its most dangerous operation.
@@ -204,7 +204,7 @@ def browser_tabs(
 
 @tool("core", annotations=ToolAnnotations(title="Page info", **READ))
 def browser_page_info(tab_id: int | None = None) -> dict:
-    """Get current page URL, title, dimensions, and scroll position.
+    """Get current page URL, title, dimensions, scroll position, and recent dialogs.
 
     Args:
         tab_id: Optional tab to target. Defaults to active tab.
@@ -256,21 +256,25 @@ def browser_screenshot(
     selector: str | None = None, full_page: bool = False,
     tab_id: int | None = None, save_to: str | None = None,
     data_url: bool = False,
-) -> dict:
-    """Capture viewport, one element, or the full page; return a PNG file path.
+):
+    """Capture viewport, one element, or the full page as MCP image content.
 
     selector and full_page are mutually exclusive. Element/full-page captures
     temporarily activate the target tab. Viewport capture with tab_id selects
-    that tab and focuses its window. save_to overrides the output path;
-    data_url also includes PNG bytes as a data URL (large).
+    that tab and focuses its window. Large inline images are JPEG-encoded or
+    downscaled under ~1 MB. save_to writes the full PNG to that path and returns
+    metadata instead of image content; data_url also includes the PNG bytes as a
+    data URL (large).
     """
     if selector is not None and full_page:
         return {"error": "selector and full_page are mutually exclusive"}
+    preview = not (save_to or data_url)
     if selector is not None or full_page:
         endpoint = "/api/element-screenshot" if selector is not None else "/api/full-page-screenshot"
         body = {"selector": selector} if selector is not None else {}
+        body["imagePreview"] = preview
         result = _post(endpoint, _with_tab(body, tab_id), timeout=120 if full_page else 45)
-        return _save_png(result, "fullpage" if full_page else "element", save_to, data_url)
+        return _screenshot_result(result, save_to, data_url)
     if tab_id is not None:
         tabs = _get("/api/tabs")
         if "error" in tabs:
@@ -285,21 +289,8 @@ def browser_screenshot(
             result = _post(endpoint, body)
             if "error" in result:
                 return result
-    result = _get("/api/screenshot")
-    # The viewport endpoint already saves the PNG and strips its data URL.
-    if "error" not in result and result.get("saved_to") and (save_to or data_url):
-        import base64
-        from pathlib import Path
-        source = Path(result["saved_to"])
-        if save_to:
-            target = Path(save_to)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            if source.resolve() != target.resolve():
-                target.write_bytes(source.read_bytes())
-            result.update(saved_to=str(target), filename=target.name)
-        if data_url:
-            result["dataUrl"] = "data:image/png;base64," + base64.b64encode(source.read_bytes()).decode("ascii")
-    return result
+    result = _post("/api/screenshot", {"imagePreview": preview})
+    return _screenshot_result(result, save_to, data_url)
 
 
 # -- Navigation ---------------------------------------------------
@@ -457,6 +448,26 @@ def browser_highlight(selector: str, tab_id: int | None = None) -> dict:
 
 # -- Wait ---------------------------------------------------------
 
+@tool("core", annotations=ToolAnnotations(title="Handle page dialogs", **IDEMPOTENT_ACT))
+def browser_handle_dialog(
+    accept: bool | None = True, prompt_text: str | None = None, tab_id: int | None = None
+) -> dict:
+    """Set this tab's policy for future dialogs and return recent recorded dialogs.
+
+    Dialogs answer synchronously; this cannot change an already returned answer.
+    By default dialogs use native UI and record the user's actual response.
+    Pass accept=None to clear this tab's policy and restore native dialogs.
+    With a policy set, dialogs auto-answer. Accepting a prompt uses
+    prompt_text or its default value. accept=True also disarms beforeunload like
+    close_tab(force=True); accept=False leaves native beforeunload behavior intact.
+    History contains the last 100 dialogs in the current document. Policies survive
+    navigation, with native behavior until the policy is restored asynchronously.
+    Native dialogs and scripts holding original functions cannot be answered.
+    """
+    return _post("/api/handle-dialog", _with_tab(
+        {"accept": accept, "prompt_text": prompt_text}, tab_id))
+
+
 @tool("core", annotations=ToolAnnotations(title="Wait for condition", **DESTRUCTIVE))
 def browser_wait_for(
     selector: str | None = None, text: str | None = None,
@@ -487,16 +498,14 @@ def browser_wait_for(
     if selector is not None:
         endpoint = "/api/wait-for-element"
         body.update(selector=selector, pollInterval=200)
-    elif js is not None or text is not None or text_gone is not None:
+    elif text is not None or text_gone is not None:
+        if (text if text is not None else text_gone) == "":
+            return {"error": "text/text_gone must be non-empty"}
+        endpoint = "/api/wait-for-text"
+        body.update(text=text, text_gone=text_gone)
+    elif js is not None:
         endpoint = "/api/wait-for-result"
-        code = js
-        if text is not None or text_gone is not None:
-            needle = json.dumps(text if text is not None else text_gone)
-            match = f"(document.body?.innerText ?? '').includes({needle})"
-            if text_gone is not None:
-                match = f"!{match}"
-            code = f"({match}) ? 'ready' : null"
-        body.update(code=code, pollInterval=500)
+        body.update(code=js, pollInterval=500)
     elif url is not None or title is not None:
         endpoint = "/api/wait-for-url" if url is not None else "/api/wait-for-title"
         body["pattern"] = url if url is not None else title
@@ -890,25 +899,27 @@ def browser_upload_file(path: str | list[str], selector: str | None = None, mode
     return _post("/api/upload-file", _with_tab(body, tab_id), timeout=320)
 
 
-def _save_png(r: dict, prefix: str, save_to: str | None, data_url: bool) -> dict:
-    """Write the bridge's PNG data URL to a file and return the path instead of the image data.
-    (2.1.2: a returned data URL is ~100K+ characters and blew straight into the caller's context.)"""
-    data = r.get("dataUrl") if isinstance(r, dict) else None
-    if not data or "base64," not in data:
+def _screenshot_result(r: dict, save_to: str | None, data_url: bool):
+    """Return MCP Image content by default; explicit file/raw modes retain metadata."""
+    import base64
+    import pathlib
+
+    data = r.get("dataUrl")
+    if not data or ";base64," not in data:
         return r
-    import base64, os, pathlib, time
-    if save_to:
-        path = pathlib.Path(save_to)
-    else:
-        d = pathlib.Path(os.path.expanduser("~")) / "claude-zen-screenshots"
-        path = d / f"{prefix}_{time.strftime('%Y%m%d_%H%M%S')}.png"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(base64.b64decode(data.split("base64,", 1)[1]))
+    mime, encoded = data.split(";base64,", 1)
+    raw = base64.b64decode(encoded)
     out = {k: v for k, v in r.items() if k != "dataUrl"}
-    out["saved_to"] = str(path)
+    if save_to:
+        path = pathlib.Path(save_to).expanduser()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(raw)
+        out["saved_to"] = str(path)
     if data_url:
         out["dataUrl"] = data
-    return out
+    if save_to or data_url:
+        return out
+    return [Image(data=raw, format="jpeg" if mime == "data:image/jpeg" else "png"), out]
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Full page metrics", **READ))

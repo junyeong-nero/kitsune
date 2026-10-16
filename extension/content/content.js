@@ -3,9 +3,104 @@
 
 (function() {
   'use strict';
-  const CONTENT_VERSION = 16;
+  const CONTENT_VERSION = 17;
   if (window.__claudeBridgeVersion >= CONTENT_VERSION) return;
   window.__claudeBridgeVersion = CONTENT_VERSION;
+
+  // Install page-world functions before page scripts run. The script-element path is
+  // shared with fillViaPageContext; Firefox exports also work under strict page CSP.
+  function injectPageScript(code) {
+    if (!document.documentElement) return;
+    const script = document.createElement('script');
+    script.textContent = code;
+    document.documentElement.appendChild(script);
+    script.remove();
+  }
+
+  function installDialogs(W, expose) {
+    if (W.__kitsuneDialogSnapshot) return;
+    const nativeDialogs = { alert: W.alert, confirm: W.confirm, prompt: W.prompt };
+    let savedBeforeUnload = null;
+    const suppressUnloadHandler = () => {
+      if (W.onbeforeunload) savedBeforeUnload = W.onbeforeunload;
+      W.onbeforeunload = null;
+    };
+    const state = { policy: { accept: null, prompt_text: null }, dialogs: [] };
+    const record = (type, message, defaultValue, response) => {
+      state.dialogs.push({ type, message: String(message ?? '').slice(0, 10000),
+        default_value: defaultValue, timestamp: Date.now(), response, pending: false });
+      if (state.dialogs.length > 100) state.dialogs.shift();
+    };
+    W.__kitsuneDialogSnapshot = expose(() => JSON.stringify(state));
+    W.__kitsuneDialogPolicy = expose((json) => {
+      const previousAccept = state.policy.accept;
+      state.policy = JSON.parse(json);
+      // Same semantics as close_tab(force=True), while allowing native mode again.
+      if (state.policy.accept === true) suppressUnloadHandler();
+      else if (previousAccept === true && W.onbeforeunload == null && savedBeforeUnload) {
+        W.onbeforeunload = savedBeforeUnload;
+        savedBeforeUnload = null;
+      }
+    });
+    W.alert = expose((...args) => {
+      // Preserve native argument conversion and blocking behavior in unmanaged tabs.
+      const answer = state.policy.accept == null ? nativeDialogs.alert.apply(W, args) : undefined;
+      record('alert', args[0], null, null);
+      return answer;
+    });
+    W.confirm = expose((...args) => {
+      const answer = state.policy.accept == null
+        ? nativeDialogs.confirm.apply(W, args) : state.policy.accept === true;
+      record('confirm', args[0], null, answer);
+      return answer;
+    });
+    W.prompt = expose((...args) => {
+      const defaultValue = args.length > 1 ? String(args[1]) : '';
+      const answer = state.policy.accept == null ? nativeDialogs.prompt.apply(W, args)
+        : state.policy.accept === true ? String(state.policy.prompt_text ?? defaultValue) : null;
+      record('prompt', args[0], defaultValue, answer);
+      return answer;
+    });
+    W.addEventListener('beforeunload', expose(() => {
+      record('beforeunload', '', null, state.policy.accept === true ? 'leave' : 'native');
+      if (state.policy.accept === true) suppressUnloadHandler();
+    }), true);
+    const proto = W.BeforeUnloadEvent?.prototype;
+    if (proto) {
+      const descriptor = Object.getOwnPropertyDescriptor(proto, 'returnValue');
+      if (descriptor?.configurable && descriptor.get && descriptor.set) {
+        Object.defineProperty(proto, 'returnValue', { configurable: true,
+          get: expose(function() { return descriptor.get.call(this); }),
+          set: expose(function(value) {
+            if (state.policy.accept !== true) descriptor.set.call(this, value);
+          }) });
+      }
+      const preventDefault = W.Event.prototype.preventDefault;
+      W.Event.prototype.preventDefault = expose(function() {
+        if (this.type === 'beforeunload' && state.policy.accept === true) return;
+        return preventDefault.call(this);
+      });
+    }
+  }
+
+  const pageWindow = window.wrappedJSObject || window;
+  injectPageScript('(' + installDialogs.toString() + ')(window, f => f);');
+  if (!pageWindow.__kitsuneDialogSnapshot && typeof exportFunction === 'function') {
+    installDialogs(pageWindow, fn => exportFunction(fn, pageWindow));
+  }
+  function dialogInfo() {
+    if (!pageWindow.__kitsuneDialogSnapshot) return { error: 'Page-world dialog capture unavailable' };
+    return JSON.parse(pageWindow.__kitsuneDialogSnapshot());
+  }
+  function handleDialog(accept, promptText) {
+    if (!pageWindow.__kitsuneDialogPolicy) return dialogInfo();
+    pageWindow.__kitsuneDialogPolicy(JSON.stringify({ accept: accept ?? null, prompt_text: accept == null ? null : promptText ?? null }));
+    return { ok: true, ...dialogInfo() };
+  }
+  // Restore the tab policy after navigation; native dialogs apply until this reply arrives.
+  browser.runtime.sendMessage({ action: 'getDialogPolicy' }).then(policy => {
+    if (policy) handleDialog(policy.accept, policy.prompt_text);
+  }).catch(() => {});
 
   // Element reference map (capped to prevent memory leaks in long sessions)
   const REF_MAP_LIMIT = 10000;
@@ -25,6 +120,8 @@
     const handlers = {
       'ping':                  () => ({ ok: true, version: CONTENT_VERSION }),
       'getPageInfo':           () => getPageInfo(),
+      'handleDialog':          () => handleDialog(msg.accept, msg.prompt_text),
+      'waitForText':           () => waitForText(msg.text, msg.text_gone, msg.timeout),
       'getPageText':           () => getPageText(msg.selector),
       'getAccessibilityTree':  () => getAccessibilityTree(msg.depth || 6),
       'getFormFields':         () => getFormFields(),
@@ -153,6 +250,7 @@
   // ── Page Info ──
   function getPageInfo() {
     return {
+      ...dialogInfo(),
       url: location.href,
       title: document.title,
       lang: document.documentElement.lang || 'unknown',
@@ -533,12 +631,11 @@
     // Last resort: inject script into page context to pierce closed shadow DOM
     // Uses JSON.stringify to safely embed user input and prevent template injection
     return new Promise((resolve) => {
-      const script = document.createElement('script');
       const callbackName = '__claudeFill_' + Date.now();
       const safeSelector = JSON.stringify(selector);
       const safeValue = JSON.stringify(String(value));
       const safeCb = JSON.stringify(callbackName);
-      script.textContent = '(function(){' +
+      const code = '(function(){' +
         'var el=document.querySelector(' + safeSelector + ');' +
         'if(!el){window[' + safeCb + ']="not found";return;}' +
         'var target=el.shadowRoot?(el.shadowRoot.querySelector("input,textarea,select")||el):(el.querySelector("input,textarea,select")||el);' +
@@ -551,8 +648,7 @@
         'target.dispatchEvent(new Event("change",{bubbles:true}));' +
         'window[' + safeCb + ']="ok:"+target.tagName;' +
       '})();';
-      document.documentElement.appendChild(script);
-      script.remove();
+      injectPageScript(code);
       const result = window.wrappedJSObject?.[callbackName] || window[callbackName] || 'unknown';
       resolve(result);
     });
@@ -650,6 +746,32 @@
     } catch (e) {
       return { error: e.message };
     }
+  }
+
+  function waitForText(text, textGone, timeout = 10000) {
+    if ((text == null && textGone == null) ||
+        [text, textGone].some(t => t != null && (typeof t !== 'string' || !t.length)) ||
+        !Number.isFinite(timeout) || timeout < 0) {
+      return { error: 'Provide non-empty text and/or text_gone and a non-negative timeout' };
+    }
+    const start = Date.now();
+    return new Promise(resolve => {
+      function poll() {
+        // innerText follows rendered layout, excluding display:none and hidden text.
+        const body = document.body;
+        const rendered = body && window.getComputedStyle(body).display !== 'none' &&
+          window.getComputedStyle(document.documentElement).display !== 'none';
+        const visibleText = rendered ? body.innerText : '';
+        const appeared = text == null || visibleText.includes(text);
+        const disappeared = textGone == null || !visibleText.includes(textGone);
+        const elapsed = Date.now() - start;
+        if (appeared && disappeared) resolve({ ok: true, text, text_gone: textGone, elapsed });
+        else if (elapsed >= timeout) resolve({ ok: false, text, text_gone: textGone, elapsed,
+          error: `Timed out after ${timeout}ms waiting for visible text` });
+        else setTimeout(poll, Math.min(100, timeout - elapsed));
+      }
+      poll();
+    });
   }
 
   // ── Wait For Element ──
