@@ -75,7 +75,7 @@ data, policy/audit) but adopt the snapshot/ref model and a smaller default surfa
    - [ ] Screenshots return MCP `ImageContent` so the model sees them; file save optional.
    - [ ] Wait for text to appear/disappear.
 4. **Metadata**
-   - [ ] Add `readOnlyHint` / `destructiveHint` tool annotations (feeds client permission
+   - [x] Add `readOnlyHint` / `destructiveHint` tool annotations (feeds client permission
      prompts and the ask-before-act policy below).
 
 ## Cleanup
