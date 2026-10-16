@@ -1,13 +1,100 @@
-# ZenLink Bridge API Reference
+# Kitsune API Reference
 
-Base URL: `http://localhost:8765`
+Base URL: `http://127.0.0.1:47651`
+
+## MCP tool surface
+
+`KITSUNE_CAPS=core` is the default (28 tools); `KITSUNE_CAPS=all` registers
+93 tools. The groups are `core`, `tabs`, `network`, `storage`, `parallel`,
+`devtools`, `windows`, and `session`. A comma list selects those groups only.
+See [README](../README.md#tools) for the complete tool list per group.
+The bridge endpoints below remain available unchanged; MCP tool names and
+parameters are separate from HTTP endpoint names and JSON command actions.
+
+### `browser_tabs(action="list", tab_id=None, url=None, force=False, raw=False)`
+
+Replaces `browser_new_tab`, `browser_close_tab`, and `browser_switch_tab`.
+`action` is `list`, `new`, `close`, or `select`. List uses GET `/api/tabs`;
+new uses POST `/api/new-tab` (default URL `about:blank`), close uses
+`/api/close-tab`, and select uses `/api/switch-tab`. Close and select require
+`tab_id`. `force` disarms beforeunload for close; `raw` bypasses the image URL
+viewer for new tabs. Options for other actions are ignored.
+
+### `browser_page_text(tab_id=None)`
+
+Replaces the duplicate `browser_page_text_by_tab_id`. Uses GET `/api/page-text`
+for the active tab or POST to the same endpoint with `tabId` for a specific tab.
+
+### `browser_type(selector, text, mode="type", clear=False, tab_id=None)`
+
+Replaces `browser_fill` and `browser_set_editable_content`.
+
+| Mode | Behavior | Bridge endpoint |
+|---|---|---|
+| `type` | Type using events; `clear=True` clears first | `/api/type` |
+| `fill` | Always replace the field value with native setter and input/change events; ignores `clear` | `/api/fill` |
+| `editable` | Insert plain text into contenteditable/input/textarea; append by default, replace with `clear=True` | `/api/set-editable-content` |
+
+Editable mode sends `format="text"`. Callers migrating from the old editor tool
+should pass `clear=True` to retain its replace-by-default behavior. For trusted
+HTML insertion use `browser_js`; the underlying endpoint still accepts `format="html"`.
+
+### `browser_wait_for(selector=None, text=None, text_gone=None, js=None, url=None, title=None, network_idle=False, time=None, timeout=10000, tab_id=None)`
+
+Replaces `browser_wait_for_element`, `browser_wait_for_result`,
+`browser_wait_for_url`, `browser_wait_for_title`, and `browser_wait_for_network_idle`.
+Exactly one condition must be supplied, including `time=0` or an empty string.
+`network_idle=False` does not count as a condition. Invalid combinations return
+an error before contacting the bridge. `timeout` must be positive.
+
+| Condition | Meaning | Bridge endpoint |
+|---|---|---|
+| `selector` | Wait for a visible CSS element, poll every 200 ms | `/api/wait-for-element` |
+| `text`, `text_gone` | Literal substring of `document.body.innerText` appears/disappears, poll every 500 ms | `/api/wait-for-result` |
+| `js` | Expression returns a non-empty result, poll every 500 ms | `/api/wait-for-result` |
+| `url`, `title` | JavaScript regex pattern matches | `/api/wait-for-url`, `/api/wait-for-title` |
+| `network_idle=True` | No new network resources for 500 ms | `/api/wait-for-network-idle` |
+| `time` | Sleep a finite, non-negative number of seconds in the MCP server | None |
+
+`timeout` is in milliseconds and does not limit an explicit sleep. JS retains
+bridge non-empty-result semantics: `false` and `0` count as results; return
+`null` or an empty string while waiting for a predicate. Text waits generate
+escaped JS expressions that return `null` until ready.
+
+### `browser_screenshot(selector=None, full_page=False, tab_id=None, save_to=None, data_url=False)`
+
+Replaces `browser_element_screenshot` and `browser_full_page_screenshot`.
+Returns a dict containing the PNG path in `saved_to`, retaining the file-based
+return type. `selector` and `full_page=True` are mutually exclusive.
+
+- Default: viewport capture via GET `/api/screenshot`. A supplied `tab_id`
+  selects that tab and focuses its window before capture.
+- `selector`: crop one element via POST `/api/element-screenshot`.
+- `full_page=True`: scroll and stitch up to 30 viewports via POST `/api/full-page-screenshot`.
+
+Element/full-page capture temporarily activates the target tab. `save_to`
+overrides the file destination; `data_url=True` additionally returns `dataUrl`.
+The former element tool's `scale` option remains available through the bridge
+endpoint; the merged MCP tool uses its default scale of 1.
+
+### WordPress workflow
+
+`browser_wp_html` is removed. Run
+`browser_workflow("wp-html", {"site_url": "https://example.com", "page_id": 5719})`
+from a browser logged into WordPress. The workflow navigates the active tab,
+waits for Elementor preview widgets, then extracts their HTML. Its final step
+returns the JSON string containing widget data inside the workflow's `results`.
+
+## HTTP bridge endpoints
+
+Requests require a bearer token from `~/.kitsune/token` (or `KITSUNE_TOKEN`).
 
 ## Status & Info
 
 ### GET /api/status
 Connection status and config.
 ```json
-{ "status": "running", "extension_connected": true, "port": 8765, "ws_port": 8766, "screenshot_dir": "..." }
+{ "status": "running", "extension_connected": true, "port": 47651, "ws_port": 47652, "screenshot_dir": "..." }
 ```
 
 ### GET /api/version
@@ -46,7 +133,7 @@ Accessibility tree (depth=6).
 All form fields on the page.
 
 ### GET /api/screenshot
-Captures page screenshot, saves to `~/claude-zen-screenshots/`.
+Captures page screenshot, saves to `~/.kitsune/screenshots/`.
 ```json
 { "url": "...", "title": "...", "saved_to": "...", "filename": "zen_20260313_120000.png" }
 ```

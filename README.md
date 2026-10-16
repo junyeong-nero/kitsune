@@ -117,23 +117,40 @@ Several clients can be configured at once; they share one bridge daemon.
 
 ## Tools
 
-106 tools, all named `browser_*`. Tab-aware tools take an optional `tab_id`, so
-an agent can work in a background tab without stealing focus.
+By default, Kitsune registers 28 `browser_*` tools in the `core` capability
+group. Tab-aware tools accept `tab_id` to target background tabs.
+Set `KITSUNE_CAPS` in the MCP server environment before starting it; restart the
+MCP client after changing it. The comma-separated list selects exactly those
+groups (include `core` to retain the default tools). `all` enables all 93 tools.
+Whitespace and case are ignored; unknown group names fail at startup.
 
-| Group | Examples |
+```toml
+[mcp_servers.kitsune.env]
+KITSUNE_CAPS = "core,network,parallel"
+```
+
+| Group | Tools |
 |---|---|
-| Status | `browser_status`, `browser_health`, `browser_tabs` |
-| Navigation | `browser_new_tab`, `browser_navigate`, `browser_back`, `browser_close_tab` |
-| Reading | `browser_markdown`, `browser_readability`, `browser_page_text`, `browser_dom`, `browser_query`, `browser_forms` |
-| Interaction | `browser_click`, `browser_type`, `browser_fill`, `browser_form_fill`, `browser_select_option`, `browser_keypress`, `browser_scroll` |
-| Visual | `browser_screenshot`, `browser_element_screenshot`, `browser_full_page_screenshot` |
-| Waiting | `browser_wait_for_element`, `browser_wait_for_url`, `browser_wait_for_network_idle` |
-| Network / state | `browser_cookies`, `browser_storage`, `browser_intercept`, `browser_capture_network` |
-| Sessions | `browser_save_session`, `browser_load_session` |
-| Parallel work | `browser_parallel`, `browser_tab_pool`, `browser_keep_alive`, `browser_batch` |
-| Policy / logs | `browser_set_policy`, `browser_audit`, `browser_logs` |
+| `core` (28) | `browser_status`, `browser_tabs`, `browser_page_info`, `browser_page_text`, `browser_forms`, `browser_dom`, `browser_screenshot`, `browser_navigate`, `browser_click`, `browser_type`, `browser_scroll`, `browser_hover`, `browser_find`, `browser_js`, `browser_wait_for`, `browser_workflows`, `browser_workflow`, `browser_markdown`, `browser_select_option`, `browser_check`, `browser_keypress`, `browser_submit_form`, `browser_form_fill`, `browser_upload_file`, `browser_back`, `browser_forward`, `browser_watch_console`, `browser_console_logs` |
+| `devtools` (26) | `browser_trusted_click`, `browser_highlight`, `browser_cache`, `browser_reload_extension`, `browser_query`, `browser_html`, `browser_links`, `browser_images`, `browser_meta`, `browser_structured_data`, `browser_bounds`, `browser_computed_style`, `browser_readability`, `browser_iframes`, `browser_explain_selector`, `browser_focus`, `browser_blur`, `browser_double_click`, `browser_drag`, `browser_click_and_wait_navigation`, `browser_full_page_metrics`, `browser_health`, `browser_logs`, `browser_audit`, `browser_set_policy`, `browser_get_policy` |
+| `network` (3) | `browser_downloads`, `browser_intercept`, `browser_capture_network` |
+| `parallel` (15) | `browser_keep_alive`, `browser_keep_alive_stop`, `browser_parallel`, `browser_broadcast`, `browser_sync_barrier`, `browser_tag_tab`, `browser_resolve_tag`, `browser_list_tags`, `browser_untag_tab`, `browser_tab_pool`, `browser_pool_acquire`, `browser_pool_release`, `browser_scheduler`, `browser_retry`, `browser_batch` |
+| `session` (4) | `browser_save_session`, `browser_load_session`, `browser_list_sessions`, `browser_delete_session` |
+| `storage` (4) | `browser_cookies`, `browser_storage`, `browser_clipboard`, `browser_clear_browsing_data` |
+| `tabs` (7) | `browser_wake_tab`, `browser_pin_tab`, `browser_mute_tab`, `browser_duplicate_tab`, `browser_reload_tab`, `browser_get_zoom`, `browser_set_zoom` |
+| `windows` (6) | `browser_windows`, `browser_create_window`, `browser_close_window`, `browser_focus_window`, `browser_move_tab`, `browser_detach_tab` |
 
-`browser_js` runs arbitrary JavaScript in the page. Prefer the specific tools.
+The consolidated tools use options for related operations:
+
+- `browser_tabs(action="list"|"new"|"close"|"select", ...)`
+- `browser_type(selector, text, mode="type"|"fill"|"editable", ...)`
+- `browser_wait_for(selector=...|text=...|text_gone=...|js=...|url=...|title=...|network_idle=True|time=...)` (exactly one)
+- `browser_screenshot(selector=None, full_page=False, ...)` returns a saved PNG path.
+
+`browser_js` runs JavaScript in the page. WordPress Elementor extraction is
+available as `browser_workflow("wp-html", {"site_url": "https://example.com", "page_id": 5719})`.
+See the [API reference](docs/api-reference.md) for merged tool signatures and behavior,
+and the [before/after inventory](docs/tool-surface.md) for the complete tool lists.
 
 Every tool includes MCP annotations with a human-readable title and read-only,
 destructive, idempotent, and open-world hints. Clients can use these hints to
@@ -145,6 +162,7 @@ including when called in a read mode.
 
 | Variable | Default | Meaning |
 |---|---|---|
+| `KITSUNE_CAPS` | `core` | Comma-separated capability groups above; `all` enables everything |
 | `KITSUNE_HOME` | `~/.kitsune` | Data directory (0700) |
 | `KITSUNE_HTTP_PORT` | `47651` | Bridge HTTP API |
 | `KITSUNE_WS_PORT` | `47652` | Extension WebSocket. Change `WS_URL` in `extension/background/background.js` too |

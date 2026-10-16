@@ -5,10 +5,14 @@ as MCP tools. Starts the shared bridge daemon on demand.
 """
 
 import fcntl
+import json
+import math
 import os
 import subprocess
 import sys
 import time
+from time import sleep as _sleep
+from typing import Literal
 
 import httpx
 from mcp.server.fastmcp import FastMCP
@@ -22,7 +26,31 @@ ACT = dict(readOnlyHint=False, destructiveHint=False, idempotentHint=False, open
 IDEMPOTENT_ACT = {**ACT, "idempotentHint": True}
 DESTRUCTIVE = {**ACT, "destructiveHint": True}
 
+
 mcp = FastMCP("Kitsune")
+
+CAPABILITY_GROUPS = frozenset({"core", "tabs", "network", "storage", "parallel", "devtools", "windows", "session"})
+ENABLED_CAPS = frozenset(
+    cap.strip().lower() for cap in os.environ.get("KITSUNE_CAPS", "core").split(",") if cap.strip()
+)
+_unknown_caps = ENABLED_CAPS - CAPABILITY_GROUPS - {"all"}
+if _unknown_caps:
+    raise ValueError(f"Unknown KITSUNE_CAPS: {', '.join(sorted(_unknown_caps))}")
+
+
+def tool(group: str, annotations: ToolAnnotations | None = None):
+    """Register a tool only when its capability group is enabled at startup."""
+    if group not in CAPABILITY_GROUPS:
+        raise ValueError(f"Unknown tool capability group: {group}")
+
+    def decorate(function):
+        if "all" in ENABLED_CAPS or group in ENABLED_CAPS:
+            return mcp.tool(annotations=annotations)(function)
+        return function
+
+    return decorate
+
+
 HTTP_PORT = int(os.environ.get("KITSUNE_HTTP_PORT", "47651"))
 # IPv4 on purpose: the bridge listens only on 127.0.0.1.
 BRIDGE = f"http://127.0.0.1:{HTTP_PORT}"
@@ -123,7 +151,7 @@ def _with_tab(body: dict, tab_id: int | None) -> dict:
 #
 # Recipe for reliable parallel agentic work:
 #
-#   1. `browser_new_tab(...)` for each tab you'll drive; collect the IDs.
+#   1. `browser_tabs(action="new", ...)` for each tab you'll drive; collect the IDs.
 #   2. `browser_keep_alive([id1, id2, ...])` — prevents Zen's Tab Unloader
 #      from discarding inactive tabs mid-batch. Pings each tab every
 #      60s (default) which resets the unloader's idle timer.
@@ -139,19 +167,42 @@ def _with_tab(body: dict, tab_id: int | None) -> dict:
 
 # -- Read Operations ----------------------------------------------
 
-@mcp.tool(annotations=ToolAnnotations(title="Check browser status", **READ))
+@tool("core", annotations=ToolAnnotations(title="Check browser status", **READ))
 def browser_status() -> dict:
     """Check if Kitsune bridge and browser extension are connected."""
     return _get("/api/status")
 
 
-@mcp.tool(annotations=ToolAnnotations(title="List browser tabs", **READ))
-def browser_tabs() -> dict:
-    """List all open browser tabs with their IDs, titles, and URLs."""
-    return _get("/api/tabs")
+@tool("core", annotations=ToolAnnotations(title="Manage browser tabs", **DESTRUCTIVE))
+def browser_tabs(
+    action: Literal["list", "new", "close", "select"] = "list",
+    tab_id: int | None = None, url: str | None = None,
+    force: bool = False, raw: bool = False,
+) -> dict:
+    """List, open, close, or select tabs.
+
+    new: url defaults to about:blank; raw bypasses the image viewer.
+    close/select: tab_id is required. force disarms beforeunload on close.
+    Other action-specific options are ignored.
+    """
+    if action == "list":
+        return _get("/api/tabs")
+    if action == "new":
+        body = {"url": url if url is not None else "about:blank"}
+        if raw:
+            body["raw"] = True
+        return _post("/api/new-tab", body)
+    if action in {"close", "select"}:
+        if tab_id is None:
+            return {"error": f"tab_id is required for action={action}"}
+        body = {"tabId": tab_id}
+        if action == "close" and force:
+            body["force"] = True
+        return _post("/api/close-tab" if action == "close" else "/api/switch-tab", body)
+    return {"error": "action must be list, new, close, or select"}
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Page info", **READ))
+@tool("core", annotations=ToolAnnotations(title="Page info", **READ))
 def browser_page_info(tab_id: int | None = None) -> dict:
     """Get current page URL, title, dimensions, and scroll position.
 
@@ -163,33 +214,20 @@ def browser_page_info(tab_id: int | None = None) -> dict:
     return _post("/api/page-info", {"tabId": tab_id})
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Page text", **READ))
+@tool("core", annotations=ToolAnnotations(title="Page text", **READ))
 def browser_page_text(tab_id: int | None = None) -> dict:
     """Extract all readable text from the current page.
 
     Args:
         tab_id: Optional tab to target. Defaults to active tab. For non-active
-            tabs, prefer this with tab_id over browser_page_text_by_tab_id — they
-            do the same thing now.
+            tabs, pass tab_id to read without switching focus.
     """
     if tab_id is None:
         return _get("/api/page-text")
     return _post("/api/page-text", {"tabId": tab_id})
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Read page text by tab ID", **READ))
-def browser_page_text_by_tab_id(tab_id: int) -> dict:
-    """Get page text from a specific tab by ID without switching to it.
-
-    Args:
-        tab_id: The tab ID to read from (get IDs from browser_tabs)
-
-    Returns the full visible text content of the specified tab.
-    """
-    return _post("/api/page-text-by-tab-id", {"tabId": tab_id})
-
-
-@mcp.tool(annotations=ToolAnnotations(title="Read page forms", **READ))
+@tool("core", annotations=ToolAnnotations(title="Read page forms", **READ))
 def browser_forms(tab_id: int | None = None) -> dict:
     """Get all form fields on the current page with their labels and values.
 
@@ -201,7 +239,7 @@ def browser_forms(tab_id: int | None = None) -> dict:
     return _post("/api/forms", {"tabId": tab_id})
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Read page DOM", **READ))
+@tool("core", annotations=ToolAnnotations(title="Read page DOM", **READ))
 def browser_dom(tab_id: int | None = None) -> dict:
     """Get the accessibility tree of interactive elements on the page.
 
@@ -213,20 +251,60 @@ def browser_dom(tab_id: int | None = None) -> dict:
     return _post("/api/dom", {"tabId": tab_id})
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Screenshot", **ACT))
-def browser_screenshot() -> dict:
-    """Capture a screenshot of the current page. Returns the saved file path.
+@tool("core", annotations=ToolAnnotations(title="Take screenshot", **ACT))
+def browser_screenshot(
+    selector: str | None = None, full_page: bool = False,
+    tab_id: int | None = None, save_to: str | None = None,
+    data_url: bool = False,
+) -> dict:
+    """Capture viewport, one element, or the full page; return a PNG file path.
 
-    Note: screenshots are inherently visual and capture the active tab of the
-    focused window. To screenshot a specific tab, switch to it first with
-    browser_switch_tab.
+    selector and full_page are mutually exclusive. Element/full-page captures
+    temporarily activate the target tab. Viewport capture with tab_id selects
+    that tab and focuses its window. save_to overrides the output path;
+    data_url also includes PNG bytes as a data URL (large).
     """
-    return _get("/api/screenshot")
+    if selector is not None and full_page:
+        return {"error": "selector and full_page are mutually exclusive"}
+    if selector is not None or full_page:
+        endpoint = "/api/element-screenshot" if selector is not None else "/api/full-page-screenshot"
+        body = {"selector": selector} if selector is not None else {}
+        result = _post(endpoint, _with_tab(body, tab_id), timeout=120 if full_page else 45)
+        return _save_png(result, "fullpage" if full_page else "element", save_to, data_url)
+    if tab_id is not None:
+        tabs = _get("/api/tabs")
+        if "error" in tabs:
+            return tabs
+        tab = next((t for t in tabs.get("tabs", []) if t["id"] == tab_id), None)
+        if tab is None:
+            return {"error": f"Tab {tab_id} not found"}
+        for endpoint, body in [
+            ("/api/switch-tab", {"tabId": tab_id}),
+            ("/api/focus-window", {"windowId": tab["windowId"]}),
+        ]:
+            result = _post(endpoint, body)
+            if "error" in result:
+                return result
+    result = _get("/api/screenshot")
+    # The viewport endpoint already saves the PNG and strips its data URL.
+    if "error" not in result and result.get("saved_to") and (save_to or data_url):
+        import base64
+        from pathlib import Path
+        source = Path(result["saved_to"])
+        if save_to:
+            target = Path(save_to)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if source.resolve() != target.resolve():
+                target.write_bytes(source.read_bytes())
+            result.update(saved_to=str(target), filename=target.name)
+        if data_url:
+            result["dataUrl"] = "data:image/png;base64," + base64.b64encode(source.read_bytes()).decode("ascii")
+    return result
 
 
 # -- Navigation ---------------------------------------------------
 
-@mcp.tool(annotations=ToolAnnotations(title="Navigate", **ACT))
+@tool("core", annotations=ToolAnnotations(title="Navigate", **ACT))
 def browser_navigate(url: str, tab_id: int | None = None, raw: bool = False) -> dict:
     """Navigate the active tab to a URL.
 
@@ -242,48 +320,9 @@ def browser_navigate(url: str, tab_id: int | None = None, raw: bool = False) -> 
     return _post("/api/navigate", _with_tab(body, tab_id))
 
 
-@mcp.tool(annotations=ToolAnnotations(title="New tab", **ACT))
-def browser_new_tab(url: str = "about:blank", raw: bool = False) -> dict:
-    """Open a new browser tab.
-
-    Args:
-        url: URL to open in the new tab (default: blank page)
-        raw: Bare image URLs open inside a local viewer page (image = #zlimg) unless raw=True.
-    """
-    body = {"url": url}
-    if raw:
-        body["raw"] = True
-    return _post("/api/new-tab", body)
-
-
-@mcp.tool(annotations=ToolAnnotations(title="Close tab", **DESTRUCTIVE))
-def browser_close_tab(tab_id: int, force: bool = False) -> dict:
-    """Close a browser tab by its ID.
-
-    Args:
-        tab_id: The tab ID to close (get IDs from browser_tabs)
-        force: Disarm "Leave page?" (beforeunload) prompts first - upload/editor pages
-               otherwise hold the tab open and the close times out.
-    """
-    body = {"tabId": tab_id}
-    if force:
-        body["force"] = True
-    return _post("/api/close-tab", body)
-
-
-@mcp.tool(annotations=ToolAnnotations(title="Switch tab", **IDEMPOTENT_ACT))
-def browser_switch_tab(tab_id: int) -> dict:
-    """Switch focus to a specific browser tab.
-
-    Args:
-        tab_id: The tab ID to focus (get IDs from browser_tabs)
-    """
-    return _post("/api/switch-tab", {"tabId": tab_id})
-
-
 # -- Interaction --------------------------------------------------
 
-@mcp.tool(annotations=ToolAnnotations(title="Click", **ACT))
+@tool("core", annotations=ToolAnnotations(title="Click", **ACT))
 def browser_click(selector: str = "", x: int = 0, y: int = 0, tab_id: int | None = None) -> dict:
     """Click an element on the page by CSS selector or coordinates.
 
@@ -297,7 +336,7 @@ def browser_click(selector: str = "", x: int = 0, y: int = 0, tab_id: int | None
     return _post("/api/click", _with_tab(body, tab_id))
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Trusted click", **ACT))
+@tool("devtools", annotations=ToolAnnotations(title="Trusted click", **ACT))
 def browser_trusted_click(
     selector: str = "",
     x: int = 0,
@@ -326,57 +365,33 @@ def browser_trusted_click(
     return _post("/api/trusted-click", _with_tab(body, tab_id))
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Type", **ACT))
-def browser_type(selector: str, text: str, clear: bool = False, tab_id: int | None = None) -> dict:
-    """Type text into an input field.
-
-    Args:
-        selector: CSS selector of the input element
-        text: Text to type
-        clear: Whether to clear existing text first
-        tab_id: Optional tab to target. Defaults to active tab.
-    """
-    return _post("/api/type", _with_tab({"selector": selector, "text": text, "clear": clear}, tab_id))
-
-
-@mcp.tool(annotations=ToolAnnotations(title="Set editable content", **ACT))
-def browser_set_editable_content(
-    selector: str,
-    value: str,
-    format: str = "text",
-    clear: bool = True,
-    tab_id: int | None = None,
+@tool("core", annotations=ToolAnnotations(title="Type into element", **ACT))
+def browser_type(
+    selector: str, text: str, mode: Literal["type", "fill", "editable"] = "type",
+    clear: bool = False, tab_id: int | None = None,
 ) -> dict:
-    """Set text or HTML in a contenteditable editor, input, or textarea in one fast operation.
+    """Enter text using typing events, direct field fill, or a contenteditable editor.
 
-    Use this for rich editors such as Gmail compose bodies where typing long text is slow.
-
-    Args:
-        selector: CSS selector or Kitsune ref for the editable element
-        value: Text or HTML to place into the editor
-        format: "text" for plain text or "html" for trusted HTML
-        clear: Whether to replace existing content instead of appending
-        tab_id: Optional tab to target. Defaults to active tab.
+    type: type text, optionally clearing first.
+    fill: replace the field value using native setters and input/change events;
+        clear is ignored because fill always replaces.
+    editable: insert plain text in an editor/input/textarea, appending unless
+        clear=True. Use browser_js for trusted HTML insertion.
     """
-    return _post(
-        "/api/set-editable-content",
-        _with_tab({"selector": selector, "value": value, "format": format, "clear": clear}, tab_id),
-    )
+    if mode == "type":
+        endpoint, body = "/api/type", {"selector": selector, "text": text, "clear": clear}
+    elif mode == "fill":
+        endpoint, body = "/api/fill", {"selector": selector, "value": text}
+    elif mode == "editable":
+        endpoint, body = "/api/set-editable-content", {
+            "selector": selector, "value": text, "format": "text", "clear": clear,
+        }
+    else:
+        return {"error": "mode must be type, fill, or editable"}
+    return _post(endpoint, _with_tab(body, tab_id))
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Fill", **ACT))
-def browser_fill(selector: str, value: str, tab_id: int | None = None) -> dict:
-    """Set a form field's value directly (faster than typing).
-
-    Args:
-        selector: CSS selector of the input/select element
-        value: Value to set
-        tab_id: Optional tab to target. Defaults to active tab.
-    """
-    return _post("/api/fill", _with_tab({"selector": selector, "value": value}, tab_id))
-
-
-@mcp.tool(annotations=ToolAnnotations(title="Scroll", **ACT))
+@tool("core", annotations=ToolAnnotations(title="Scroll", **ACT))
 def browser_scroll(direction: str = "down", amount: int = 500, tab_id: int | None = None) -> dict:
     """Scroll the page.
 
@@ -388,7 +403,7 @@ def browser_scroll(direction: str = "down", amount: int = 500, tab_id: int | Non
     return _post("/api/scroll", _with_tab({"direction": direction, "amount": amount}, tab_id))
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Hover", **ACT))
+@tool("core", annotations=ToolAnnotations(title="Hover", **ACT))
 def browser_hover(selector: str, tab_id: int | None = None) -> dict:
     """Hover over an element on the page.
 
@@ -401,7 +416,7 @@ def browser_hover(selector: str, tab_id: int | None = None) -> dict:
 
 # -- Smart Queries ------------------------------------------------
 
-@mcp.tool(annotations=ToolAnnotations(title="Find page elements", **READ))
+@tool("core", annotations=ToolAnnotations(title="Find page elements", **READ))
 def browser_find(query: str, tab_id: int | None = None) -> dict:
     """Find elements on the page using natural language description.
 
@@ -412,7 +427,7 @@ def browser_find(query: str, tab_id: int | None = None) -> dict:
     return _post("/api/find", _with_tab({"query": query}, tab_id))
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Execute JavaScript", **DESTRUCTIVE))
+@tool("core", annotations=ToolAnnotations(title="Execute JavaScript", **DESTRUCTIVE))
 def browser_js(code: str, tab_id: int | None = None, full: bool = False) -> dict:
     """Execute JavaScript in the current page context.
 
@@ -429,7 +444,7 @@ def browser_js(code: str, tab_id: int | None = None, full: bool = False) -> dict
     return _post("/api/js", _with_tab(body, tab_id))
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Highlight", **ACT))
+@tool("devtools", annotations=ToolAnnotations(title="Highlight", **ACT))
 def browser_highlight(selector: str, tab_id: int | None = None) -> dict:
     """Highlight an element on the page with a visual overlay.
 
@@ -442,63 +457,64 @@ def browser_highlight(selector: str, tab_id: int | None = None) -> dict:
 
 # -- Wait ---------------------------------------------------------
 
-@mcp.tool(annotations=ToolAnnotations(title="Wait for element", **READ))
-def browser_wait_for_element(
-    selector: str, timeout: int = 10000, poll_interval: int = 200, tab_id: int | None = None
+@tool("core", annotations=ToolAnnotations(title="Wait for condition", **DESTRUCTIVE))
+def browser_wait_for(
+    selector: str | None = None, text: str | None = None,
+    text_gone: str | None = None, js: str | None = None,
+    url: str | None = None, title: str | None = None,
+    network_idle: bool = False, time: float | None = None,
+    timeout: int = 10000, tab_id: int | None = None,
 ) -> dict:
-    """Wait for a CSS selector to appear and become visible on the page.
-    Returns immediately when the element is found, rather than sleeping a fixed duration.
-    Use this instead of sleep when waiting for dynamic/JS-rendered content.
+    """Wait for exactly one condition, or sleep for time seconds.
 
-    Args:
-        selector: CSS selector to wait for (e.g. ".tracking-events", "#results", "[data-loaded]")
-        timeout: Maximum time to wait in milliseconds (default: 10000 = 10s)
-        poll_interval: How often to check in milliseconds (default: 200ms)
-        tab_id: Optional tab to target. Defaults to active tab.
+    selector waits for a visible element; text/text_gone match visible page text
+    (literal substring); js waits for a non-empty expression result (including
+    false/0, matching the bridge semantics). url/title are JavaScript regex
+    patterns. network_idle waits for 500 ms without new resources.
+    timeout is the maximum wait in milliseconds; it does not limit time sleep.
     """
-    timeout_s = (timeout / 1000) + 5  # extra buffer for HTTP round-trip
-    return _post(
-        "/api/wait-for-element",
-        _with_tab({"selector": selector, "timeout": timeout, "pollInterval": poll_interval}, tab_id),
-        timeout=timeout_s,
-    )
+    conditions = [selector, text, text_gone, js, url, title, time]
+    if sum(value is not None for value in conditions) + bool(network_idle) != 1:
+        return {"error": "Provide exactly one of selector, text, text_gone, js, url, title, network_idle, time"}
+    if timeout <= 0:
+        return {"error": "timeout must be positive"}
+    if time is not None:
+        if not math.isfinite(time) or time < 0:
+            return {"error": "time must be a finite non-negative number of seconds"}
+        _sleep(time)
+        return {"ok": True, "slept": time}
+    body = {"timeout": timeout}
+    if selector is not None:
+        endpoint = "/api/wait-for-element"
+        body.update(selector=selector, pollInterval=200)
+    elif js is not None or text is not None or text_gone is not None:
+        endpoint = "/api/wait-for-result"
+        code = js
+        if text is not None or text_gone is not None:
+            needle = json.dumps(text if text is not None else text_gone)
+            match = f"(document.body?.innerText ?? '').includes({needle})"
+            if text_gone is not None:
+                match = f"!{match}"
+            code = f"({match}) ? 'ready' : null"
+        body.update(code=code, pollInterval=500)
+    elif url is not None or title is not None:
+        endpoint = "/api/wait-for-url" if url is not None else "/api/wait-for-title"
+        body["pattern"] = url if url is not None else title
+    else:
+        endpoint = "/api/wait-for-network-idle"
+        body["idleMs"] = 500
+    return _post(endpoint, _with_tab(body, tab_id), timeout=timeout / 1000 + 10)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Wait for result", **DESTRUCTIVE))
-def browser_wait_for_result(
-    code: str, timeout: int = 15000, poll_interval: int = 500, tab_id: int | None = None
-) -> dict:
-    """Poll a JavaScript expression until it returns a non-empty result.
-
-    Annotations are conservative: caller-supplied JavaScript can mutate or delete
-    page data, so this tool is marked destructive and not read-only.
-
-    Args:
-        code: JavaScript expression to evaluate repeatedly
-        timeout: Maximum time to wait in milliseconds
-        poll_interval: How often to check in milliseconds
-        tab_id: Optional tab to target. Defaults to active tab.
-    """
-    timeout_s = (timeout / 1000) + 5
-    return _post(
-        "/api/wait-for-result",
-        _with_tab({"code": code, "timeout": timeout, "pollInterval": poll_interval}, tab_id),
-        timeout=timeout_s,
-    )
-
-
-@mcp.tool(annotations=ToolAnnotations(title="List workflows", **READ))
+@tool("core", annotations=ToolAnnotations(title="List workflows", **READ))
 def browser_workflows() -> dict:
     """List available named Kitsune workflows from the bridge workflow directory."""
     return _get("/api/workflows")
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Run a named workflow", **DESTRUCTIVE))
+@tool("core", annotations=ToolAnnotations(title="Run a named workflow", **DESTRUCTIVE))
 def browser_workflow(name: str, variables: dict | None = None) -> dict:
     """Execute a named Kitsune workflow from the bridge workflow directory.
-
-    Annotations cover the most dangerous nested command, including JavaScript
-    or destructive actions, even when the requested commands only read data.
 
     Args:
         name: Workflow file name without .md
@@ -507,12 +523,9 @@ def browser_workflow(name: str, variables: dict | None = None) -> dict:
     return _post("/api/workflow", {"name": name, "variables": variables or {}}, timeout=300)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Manage response cache", **DESTRUCTIVE))
+@tool("devtools", annotations=ToolAnnotations(title="Manage response cache", **DESTRUCTIVE))
 def browser_cache(action: str = "clear", seconds: int | None = None) -> dict:
     """Control the Kitsune bridge response cache.
-
-    Annotations cover the most dangerous operation: read operations share this
-    tool with writes or deletes, so it is marked destructive and not read-only.
 
     Args:
         action: "clear", "status", or "ttl"
@@ -526,7 +539,7 @@ def browser_cache(action: str = "clear", seconds: int | None = None) -> dict:
 
 # -- Parallel Multi-Tab Work --------------------------------------
 
-@mcp.tool(annotations=ToolAnnotations(title="Wake tab", **IDEMPOTENT_ACT))
+@tool("tabs", annotations=ToolAnnotations(title="Wake tab", **IDEMPOTENT_ACT))
 def browser_wake_tab(tab_id: int) -> dict:
     """Revive a tab that Zen's Tab Unloader may have discarded.
 
@@ -545,7 +558,7 @@ def browser_wake_tab(tab_id: int) -> dict:
     return _post("/api/wake-tab", {"tabId": tab_id}, timeout=25)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Keep alive", **IDEMPOTENT_ACT))
+@tool("parallel", annotations=ToolAnnotations(title="Keep alive", **IDEMPOTENT_ACT))
 def browser_keep_alive(tab_ids: list[int], interval_seconds: int = 60) -> dict:
     """Keep tabs warm so Zen's Tab Unloader won't discard them mid-workflow.
 
@@ -570,7 +583,7 @@ def browser_keep_alive(tab_ids: list[int], interval_seconds: int = 60) -> dict:
     )
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Keep alive stop", **IDEMPOTENT_ACT))
+@tool("parallel", annotations=ToolAnnotations(title="Keep alive stop", **IDEMPOTENT_ACT))
 def browser_keep_alive_stop(tab_ids: list[int] | None = None) -> dict:
     """Stop the keep-alive pinger for some or all tabs.
 
@@ -583,7 +596,7 @@ def browser_keep_alive_stop(tab_ids: list[int] | None = None) -> dict:
     return _post("/api/keep-alive-stop", body)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Reload extension", **ACT))
+@tool("devtools", annotations=ToolAnnotations(title="Reload extension", **ACT))
 def browser_reload_extension() -> dict:
     """Hot-reload the Kitsune extension in the browser.
 
@@ -601,12 +614,9 @@ def browser_reload_extension() -> dict:
     return _post("/api/reload-extension", {}, timeout=10)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Run parallel commands", **DESTRUCTIVE))
+@tool("parallel", annotations=ToolAnnotations(title="Run parallel commands", **DESTRUCTIVE))
 def browser_parallel(sequences: list[list[dict]]) -> dict:
     """Run command sequences in parallel — typically one sequence per tab.
-
-    Annotations cover the most dangerous nested command, including JavaScript
-    or destructive actions, even when the requested commands only read data.
 
     Each inner list is a sequence that runs serially; all sequences run
     concurrently. Commands that target a specific tab (navigate, switchTab,
@@ -639,7 +649,7 @@ def browser_parallel(sequences: list[list[dict]]) -> dict:
 #  1.4.0 — Content extraction
 # ════════════════════════════════════════════════════════════════════
 
-@mcp.tool(annotations=ToolAnnotations(title="Query page elements", **READ))
+@tool("devtools", annotations=ToolAnnotations(title="Query page elements", **READ))
 def browser_query(
     selector: str,
     fields: list[str] | None = None,
@@ -664,43 +674,43 @@ def browser_query(
     return _post("/api/query", _with_tab(body, tab_id))
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Read element HTML", **READ))
+@tool("devtools", annotations=ToolAnnotations(title="Read element HTML", **READ))
 def browser_html(selector: str, tab_id: int | None = None) -> dict:
     """Return the outerHTML of a specific element. Cap 100KB."""
     return _post("/api/html", _with_tab({"selector": selector}, tab_id))
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Read page links", **READ))
+@tool("devtools", annotations=ToolAnnotations(title="Read page links", **READ))
 def browser_links(internal_only: bool = False, tab_id: int | None = None) -> dict:
     """Return every anchor with href + text. Useful as a crawler primitive."""
     return _post("/api/links", _with_tab({"internalOnly": internal_only}, tab_id))
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Read page images", **READ))
+@tool("devtools", annotations=ToolAnnotations(title="Read page images", **READ))
 def browser_images(tab_id: int | None = None) -> dict:
     """Return every <img> with src, alt, and natural dimensions."""
     return _post("/api/images", _with_tab({}, tab_id))
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Read page metadata", **READ))
+@tool("devtools", annotations=ToolAnnotations(title="Read page metadata", **READ))
 def browser_meta(tab_id: int | None = None) -> dict:
     """Return all meta tags + link rels (canonical, RSS, icons, etc.)."""
     return _post("/api/meta", _with_tab({}, tab_id))
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Read structured page data", **READ))
+@tool("devtools", annotations=ToolAnnotations(title="Read structured page data", **READ))
 def browser_structured_data(tab_id: int | None = None) -> dict:
     """Extract JSON-LD blocks, OpenGraph (og:*), and Twitter card meta."""
     return _post("/api/structured-data", _with_tab({}, tab_id))
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Read element bounds", **READ))
+@tool("devtools", annotations=ToolAnnotations(title="Read element bounds", **READ))
 def browser_bounds(selector: str, tab_id: int | None = None) -> dict:
     """Return getBoundingClientRect + viewport/page sizes for an element."""
     return _post("/api/bounds", _with_tab({"selector": selector}, tab_id))
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Computed style", **READ))
+@tool("devtools", annotations=ToolAnnotations(title="Computed style", **READ))
 def browser_computed_style(
     selector: str, properties: list[str] | None = None, tab_id: int | None = None
 ) -> dict:
@@ -710,7 +720,7 @@ def browser_computed_style(
     return _post("/api/computed-style", _with_tab(body, tab_id))
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Extract readable article", **READ))
+@tool("devtools", annotations=ToolAnnotations(title="Extract readable article", **READ))
 def browser_readability(tab_id: int | None = None) -> dict:
     """Extract the main article on the page (title, byline, clean text).
 
@@ -721,7 +731,7 @@ def browser_readability(tab_id: int | None = None) -> dict:
     return _post("/api/readability", _with_tab({}, tab_id))
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Read page as Markdown", **READ))
+@tool("core", annotations=ToolAnnotations(title="Read page as Markdown", **READ))
 def browser_markdown(selector: str | None = None, tab_id: int | None = None) -> dict:
     """Convert the page (or a selector subtree) to Markdown. Cap 80KB."""
     body = {}
@@ -729,13 +739,13 @@ def browser_markdown(selector: str | None = None, tab_id: int | None = None) -> 
     return _post("/api/markdown", _with_tab(body, tab_id))
 
 
-@mcp.tool(annotations=ToolAnnotations(title="List page iframes", **READ))
+@tool("devtools", annotations=ToolAnnotations(title="List page iframes", **READ))
 def browser_iframes(tab_id: int | None = None) -> dict:
     """List all iframes with src + same-origin/accessible flags."""
     return _post("/api/iframes", _with_tab({}, tab_id))
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Explain selector", **READ))
+@tool("devtools", annotations=ToolAnnotations(title="Explain selector", **READ))
 def browser_explain_selector(selector: str, tab_id: int | None = None) -> dict:
     """Diagnose a CSS selector: match count, sample matches, suggestions for
     a more-specific selector if you got too many."""
@@ -746,7 +756,7 @@ def browser_explain_selector(selector: str, tab_id: int | None = None) -> dict:
 #  1.4.0 — Interaction additions
 # ════════════════════════════════════════════════════════════════════
 
-@mcp.tool(annotations=ToolAnnotations(title="Select option", **ACT))
+@tool("core", annotations=ToolAnnotations(title="Select option", **ACT))
 def browser_select_option(
     selector: str, value: str, by_text: bool = False, tab_id: int | None = None
 ) -> dict:
@@ -755,19 +765,19 @@ def browser_select_option(
     return _post("/api/select-option", _with_tab({"selector": selector, "value": value, "byText": by_text}, tab_id))
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Check", **ACT))
+@tool("core", annotations=ToolAnnotations(title="Check", **ACT))
 def browser_check(selector: str, checked: bool = True, tab_id: int | None = None) -> dict:
     """Set a checkbox or radio's checked state."""
     return _post("/api/check", _with_tab({"selector": selector, "checked": checked}, tab_id))
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Focus", **ACT))
+@tool("devtools", annotations=ToolAnnotations(title="Focus", **ACT))
 def browser_focus(selector: str, tab_id: int | None = None) -> dict:
     """Move focus to the matched element."""
     return _post("/api/focus", _with_tab({"selector": selector}, tab_id))
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Blur", **ACT))
+@tool("devtools", annotations=ToolAnnotations(title="Blur", **ACT))
 def browser_blur(selector: str | None = None, tab_id: int | None = None) -> dict:
     """Blur an element (or document.activeElement if no selector)."""
     body = {}
@@ -775,7 +785,7 @@ def browser_blur(selector: str | None = None, tab_id: int | None = None) -> dict
     return _post("/api/blur", _with_tab(body, tab_id))
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Keypress", **ACT))
+@tool("core", annotations=ToolAnnotations(title="Keypress", **ACT))
 def browser_keypress(
     key: str,
     selector: str | None = None,
@@ -800,13 +810,13 @@ def browser_keypress(
     return _post("/api/keypress", _with_tab(body, tab_id))
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Double click", **ACT))
+@tool("devtools", annotations=ToolAnnotations(title="Double click", **ACT))
 def browser_double_click(selector: str, tab_id: int | None = None) -> dict:
     """Dispatch a synthetic double-click on the matched element."""
     return _post("/api/double-click", _with_tab({"selector": selector}, tab_id))
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Submit form", **DESTRUCTIVE))
+@tool("core", annotations=ToolAnnotations(title="Submit form", **DESTRUCTIVE))
 def browser_submit_form(selector: str | None = None, tab_id: int | None = None) -> dict:
     """Submit a form. If selector is omitted, submits the first <form> found."""
     body = {}
@@ -814,7 +824,7 @@ def browser_submit_form(selector: str | None = None, tab_id: int | None = None) 
     return _post("/api/submit-form", _with_tab(body, tab_id))
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Form fill", **ACT))
+@tool("core", annotations=ToolAnnotations(title="Form fill", **ACT))
 def browser_form_fill(fields: dict, tab_id: int | None = None) -> dict:
     """Fill many fields at once via fuzzy matching.
 
@@ -829,13 +839,13 @@ def browser_form_fill(fields: dict, tab_id: int | None = None) -> dict:
     return _post("/api/form-fill", _with_tab({"fields": fields}, tab_id))
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Drag", **ACT))
+@tool("devtools", annotations=ToolAnnotations(title="Drag", **ACT))
 def browser_drag(from_selector: str, to_selector: str, tab_id: int | None = None) -> dict:
     """Synthetic drag-and-drop from one element to another (HTML5 drag events)."""
     return _post("/api/drag", _with_tab({"from": from_selector, "to": to_selector}, tab_id))
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Click and wait navigation", **ACT))
+@tool("devtools", annotations=ToolAnnotations(title="Click and wait navigation", **ACT))
 def browser_click_and_wait_navigation(
     selector: str, timeout: int = 15000, tab_id: int | None = None
 ) -> dict:
@@ -855,7 +865,7 @@ def browser_click_and_wait_navigation(
 #  1.4.0 — Visual additions
 # ════════════════════════════════════════════════════════════════════
 
-@mcp.tool(annotations=ToolAnnotations(title="Upload file", **DESTRUCTIVE))
+@tool("core", annotations=ToolAnnotations(title="Upload file", **DESTRUCTIVE))
 def browser_upload_file(path: str | list[str], selector: str | None = None, mode: str = "auto",
                     tab_id: int | None = None) -> dict:
     """Attach local file(s) to a page's upload control - no OS file dialog.
@@ -901,43 +911,7 @@ def _save_png(r: dict, prefix: str, save_to: str | None, data_url: bool) -> dict
     return out
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Element screenshot", **ACT))
-def browser_element_screenshot(selector: str, tab_id: int | None = None, save_to: str | None = None,
-                           data_url: bool = False, scale: float = 1) -> dict:
-    """Screenshot a single element. Scrolls into view, captures, crops in the
-    extension via OffscreenCanvas. Saves a PNG and returns its path (saved_to).
-
-    Args:
-        selector: CSS selector of the element
-        tab_id: Optional tab to target. Defaults to active tab.
-        save_to: Optional file path (default: ~/claude-zen-screenshots/element_<time>.png)
-        data_url: Also return the PNG data URL (large - only if you really need the bytes inline)
-        scale: 1-4 output pixels per CSS pixel. 2 = genuinely sharper capture at twice the size
-               (needs extension 2.1.1+; older extensions ignore it)
-    """
-    body = {"selector": selector}
-    if scale and scale != 1:
-        body["scale"] = scale
-    r = _post("/api/element-screenshot", _with_tab(body, tab_id), timeout=45)
-    return _save_png(r, "element", save_to, data_url)
-
-
-@mcp.tool(annotations=ToolAnnotations(title="Full page screenshot", **ACT))
-def browser_full_page_screenshot(tab_id: int | None = None, save_to: str | None = None,
-                             data_url: bool = False) -> dict:
-    """Scroll-and-stitch screenshot covering the full document height (up to
-    30 viewports tall). Saves one PNG of the entire page and returns its path (saved_to).
-
-    Args:
-        tab_id: Optional tab to target. Defaults to active tab.
-        save_to: Optional file path (default: ~/claude-zen-screenshots/fullpage_<time>.png)
-        data_url: Also return the PNG data URL (large)
-    """
-    r = _post("/api/full-page-screenshot", _with_tab({}, tab_id), timeout=120)
-    return _save_png(r, "fullpage", save_to, data_url)
-
-
-@mcp.tool(annotations=ToolAnnotations(title="Full page metrics", **READ))
+@tool("devtools", annotations=ToolAnnotations(title="Full page metrics", **READ))
 def browser_full_page_metrics(tab_id: int | None = None) -> dict:
     """Return document/viewport sizes + scroll position + devicePixelRatio."""
     return _post("/api/full-page-metrics", _with_tab({}, tab_id))
@@ -947,61 +921,61 @@ def browser_full_page_metrics(tab_id: int | None = None) -> dict:
 #  1.4.0 — Tab and window management
 # ════════════════════════════════════════════════════════════════════
 
-@mcp.tool(annotations=ToolAnnotations(title="Pin tab", **IDEMPOTENT_ACT))
+@tool("tabs", annotations=ToolAnnotations(title="Pin tab", **IDEMPOTENT_ACT))
 def browser_pin_tab(pinned: bool = True, tab_id: int | None = None) -> dict:
     """Pin or unpin a tab."""
     return _post("/api/pin-tab", _with_tab({"pinned": pinned}, tab_id))
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Mute tab", **IDEMPOTENT_ACT))
+@tool("tabs", annotations=ToolAnnotations(title="Mute tab", **IDEMPOTENT_ACT))
 def browser_mute_tab(muted: bool = True, tab_id: int | None = None) -> dict:
     """Mute or unmute a tab."""
     return _post("/api/mute-tab", _with_tab({"muted": muted}, tab_id))
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Duplicate tab", **ACT))
+@tool("tabs", annotations=ToolAnnotations(title="Duplicate tab", **ACT))
 def browser_duplicate_tab(tab_id: int | None = None) -> dict:
     """Duplicate a tab. Returns the new tab id."""
     return _post("/api/duplicate-tab", _with_tab({}, tab_id))
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Reload tab", **ACT))
+@tool("tabs", annotations=ToolAnnotations(title="Reload tab", **ACT))
 def browser_reload_tab(bypass_cache: bool = False, tab_id: int | None = None) -> dict:
     """Reload a tab. Pass `bypass_cache=True` for a hard reload."""
     return _post("/api/reload-tab", _with_tab({"bypassCache": bypass_cache}, tab_id))
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Back", **ACT))
+@tool("core", annotations=ToolAnnotations(title="Back", **ACT))
 def browser_back(tab_id: int | None = None) -> dict:
     """Go back in history (browser back button)."""
     return _post("/api/back", _with_tab({}, tab_id))
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Forward", **ACT))
+@tool("core", annotations=ToolAnnotations(title="Forward", **ACT))
 def browser_forward(tab_id: int | None = None) -> dict:
     """Go forward in history."""
     return _post("/api/forward", _with_tab({}, tab_id))
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Get zoom", **READ))
+@tool("tabs", annotations=ToolAnnotations(title="Get zoom", **READ))
 def browser_get_zoom(tab_id: int | None = None) -> dict:
     """Return the current zoom factor (1.0 = 100%)."""
     return _post("/api/get-zoom", _with_tab({}, tab_id))
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Set zoom", **IDEMPOTENT_ACT))
+@tool("tabs", annotations=ToolAnnotations(title="Set zoom", **IDEMPOTENT_ACT))
 def browser_set_zoom(factor: float, tab_id: int | None = None) -> dict:
     """Set zoom factor. 0.3 to 5.0 typical; 1.0 = 100%."""
     return _post("/api/set-zoom", _with_tab({"factor": factor}, tab_id))
 
 
-@mcp.tool(annotations=ToolAnnotations(title="List browser windows", **READ))
+@tool("windows", annotations=ToolAnnotations(title="List browser windows", **READ))
 def browser_windows() -> dict:
     """List all open browser windows with their tabs."""
     return _post("/api/windows", {})
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Create window", **ACT))
+@tool("windows", annotations=ToolAnnotations(title="Create window", **ACT))
 def browser_create_window(url: str | None = None, incognito: bool = False) -> dict:
     """Open a new browser window. Pass a URL to load it at start."""
     body = {"incognito": incognito}
@@ -1009,19 +983,19 @@ def browser_create_window(url: str | None = None, incognito: bool = False) -> di
     return _post("/api/create-window", body)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Close window", **DESTRUCTIVE))
+@tool("windows", annotations=ToolAnnotations(title="Close window", **DESTRUCTIVE))
 def browser_close_window(window_id: int) -> dict:
     """Close a browser window by ID (from browser_windows)."""
     return _post("/api/close-window", {"windowId": window_id})
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Focus window", **IDEMPOTENT_ACT))
+@tool("windows", annotations=ToolAnnotations(title="Focus window", **IDEMPOTENT_ACT))
 def browser_focus_window(window_id: int) -> dict:
     """Bring a browser window to the foreground."""
     return _post("/api/focus-window", {"windowId": window_id})
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Move tab", **ACT))
+@tool("windows", annotations=ToolAnnotations(title="Move tab", **ACT))
 def browser_move_tab(tab_id: int, window_id: int | None = None, index: int = -1) -> dict:
     """Move a tab to a position (and optionally to a different window). -1 = end."""
     body = {"tabId": tab_id, "index": index}
@@ -1029,7 +1003,7 @@ def browser_move_tab(tab_id: int, window_id: int | None = None, index: int = -1)
     return _post("/api/move-tab", body)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Detach tab", **ACT))
+@tool("windows", annotations=ToolAnnotations(title="Detach tab", **ACT))
 def browser_detach_tab(tab_id: int) -> dict:
     """Pop a tab out into its own new window."""
     return _post("/api/detach-tab", {"tabId": tab_id})
@@ -1039,7 +1013,7 @@ def browser_detach_tab(tab_id: int) -> dict:
 #  1.4.0 — Network, cookies, storage, clipboard, downloads
 # ════════════════════════════════════════════════════════════════════
 
-@mcp.tool(annotations=ToolAnnotations(title="Manage cookies", **DESTRUCTIVE))
+@tool("storage", annotations=ToolAnnotations(title="Manage cookies", **DESTRUCTIVE))
 def browser_cookies(
     op: str,
     url: str | None = None,
@@ -1050,9 +1024,6 @@ def browser_cookies(
     secure: bool = False,
 ) -> dict:
     """Cookie operations: "get", "set", "remove", "clear".
-
-    Annotations cover the most dangerous operation: read operations share this
-    tool with writes or deletes, so it is marked destructive and not read-only.
 
     - get: returns matching cookies (use url/domain/name to filter).
     - set: requires url + name + value.
@@ -1065,7 +1036,7 @@ def browser_cookies(
     return _post("/api/cookies", body)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Manage page storage", **DESTRUCTIVE))
+@tool("storage", annotations=ToolAnnotations(title="Manage page storage", **DESTRUCTIVE))
 def browser_storage(
     kind: str,
     op: str,
@@ -1074,9 +1045,6 @@ def browser_storage(
     tab_id: int | None = None,
 ) -> dict:
     """localStorage / sessionStorage ops.
-
-    Annotations cover the most dangerous operation: read operations share this
-    tool with writes or deletes, so it is marked destructive and not read-only.
 
     Args:
         kind: "local" or "session".
@@ -1092,12 +1060,9 @@ def browser_storage(
     return _post("/api/storage", _with_tab(body, tab_id))
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Read or write clipboard", **DESTRUCTIVE))
+@tool("storage", annotations=ToolAnnotations(title="Read or write clipboard", **DESTRUCTIVE))
 def browser_clipboard(op: str, text: str | None = None) -> dict:
     """Read or write the system clipboard.
-
-    Annotations cover the most dangerous operation: read operations share this
-    tool with writes or deletes, so it is marked destructive and not read-only.
 
     Args:
         op: "read" or "write".
@@ -1108,7 +1073,7 @@ def browser_clipboard(op: str, text: str | None = None) -> dict:
     return _post("/api/clipboard", body)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Manage downloads", **DESTRUCTIVE))
+@tool("network", annotations=ToolAnnotations(title="Manage downloads", **DESTRUCTIVE))
 def browser_downloads(
     op: str,
     url: str | None = None,
@@ -1116,9 +1081,6 @@ def browser_downloads(
     query: dict | None = None,
 ) -> dict:
     """Downloads operations.
-
-    Annotations cover the most dangerous operation: read operations share this
-    tool with writes or deletes, so it is marked destructive and not read-only.
 
     Args:
         op: "download" | "list" | "cancel".
@@ -1133,7 +1095,7 @@ def browser_downloads(
     return _post("/api/downloads", body)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Clear browsing data", **DESTRUCTIVE))
+@tool("storage", annotations=ToolAnnotations(title="Clear browsing data", **DESTRUCTIVE))
 def browser_clear_browsing_data(
     types: list[str] | None = None, since_ms: int | None = None
 ) -> dict:
@@ -1150,16 +1112,13 @@ def browser_clear_browsing_data(
     return _post("/api/clear-browsing-data", body, timeout=60)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Manage request interception", **DESTRUCTIVE))
+@tool("network", annotations=ToolAnnotations(title="Manage request interception", **DESTRUCTIVE))
 def browser_intercept(
     op: str,
     patterns: list[str] | None = None,
     effect: str = "block",
 ) -> dict:
     """Block, log, or redirect HTTP requests by URL regex.
-
-    Annotations cover the most dangerous operation: read operations share this
-    tool with writes or deletes, so it is marked destructive and not read-only.
 
     Useful to suppress analytics/ads during agent runs (3–10× page speed-up)
     or to log what an SPA actually fetches.
@@ -1174,12 +1133,9 @@ def browser_intercept(
     return _post("/api/intercept", body)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Manage network capture", **DESTRUCTIVE))
+@tool("network", annotations=ToolAnnotations(title="Manage network capture", **DESTRUCTIVE))
 def browser_capture_network(op: str = "read", since: int = 0, tab_id: int | None = None) -> dict:
     """Capture network requests via the page's PerformanceObserver.
-
-    Annotations cover the most dangerous operation: read operations share this
-    tool with writes or deletes, so it is marked destructive and not read-only.
 
     Args:
         op: "start" begins capturing fresh, "stop" pauses, "read" returns
@@ -1190,39 +1146,7 @@ def browser_capture_network(op: str = "read", since: int = 0, tab_id: int | None
     return _post("/api/capture-network", _with_tab({"op": op, "since": since}, tab_id))
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Wait for network idle", **READ))
-def browser_wait_for_network_idle(
-    idle_ms: int = 500, timeout: int = 10000, tab_id: int | None = None
-) -> dict:
-    """Wait until no new network resources have started for `idle_ms`."""
-    return _post(
-        "/api/wait-for-network-idle",
-        _with_tab({"idleMs": idle_ms, "timeout": timeout}, tab_id),
-        timeout=(timeout / 1000) + 10,
-    )
-
-
-@mcp.tool(annotations=ToolAnnotations(title="Wait for url", **READ))
-def browser_wait_for_url(pattern: str, timeout: int = 10000, tab_id: int | None = None) -> dict:
-    """Wait until the tab's URL matches a JS regex pattern."""
-    return _post(
-        "/api/wait-for-url",
-        _with_tab({"pattern": pattern, "timeout": timeout}, tab_id),
-        timeout=(timeout / 1000) + 10,
-    )
-
-
-@mcp.tool(annotations=ToolAnnotations(title="Wait for title", **READ))
-def browser_wait_for_title(pattern: str, timeout: int = 10000, tab_id: int | None = None) -> dict:
-    """Wait until document.title matches a JS regex pattern."""
-    return _post(
-        "/api/wait-for-title",
-        _with_tab({"pattern": pattern, "timeout": timeout}, tab_id),
-        timeout=(timeout / 1000) + 10,
-    )
-
-
-@mcp.tool(annotations=ToolAnnotations(title="Watch console", **ACT))
+@tool("core", annotations=ToolAnnotations(title="Watch console", **ACT))
 def browser_watch_console(enabled: bool = True, tab_id: int | None = None) -> dict:
     """Toggle console capture on a tab. Once enabled, browser console
     messages (log/info/warn/error/debug + window errors) are buffered up to
@@ -1230,7 +1154,7 @@ def browser_watch_console(enabled: bool = True, tab_id: int | None = None) -> di
     return _post("/api/watch-console", _with_tab({"enabled": enabled}, tab_id))
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Console logs", **READ))
+@tool("core", annotations=ToolAnnotations(title="Console logs", **READ))
 def browser_console_logs(
     since: int | None = None, level: str | None = None, tab_id: int | None = None
 ) -> dict:
@@ -1245,12 +1169,9 @@ def browser_console_logs(
 #  1.4.0 — Orchestration
 # ════════════════════════════════════════════════════════════════════
 
-@mcp.tool(annotations=ToolAnnotations(title="Broadcast", **DESTRUCTIVE))
+@tool("parallel", annotations=ToolAnnotations(title="Broadcast", **DESTRUCTIVE))
 def browser_broadcast(tab_ids: list[int], command: dict, timeout: int = 30) -> dict:
     """Fire the same command at every listed tab in parallel.
-
-    Annotations cover the most dangerous nested command, including JavaScript
-    or destructive actions, even when the requested commands only read data.
 
     Each tab gets the command with its own tabId injected. Returns per-tab
     results keyed by tab id.
@@ -1268,7 +1189,7 @@ def browser_broadcast(tab_ids: list[int], command: dict, timeout: int = 30) -> d
     )
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Wait for JavaScript across tabs", **DESTRUCTIVE))
+@tool("parallel", annotations=ToolAnnotations(title="Wait for JavaScript across tabs", **DESTRUCTIVE))
 def browser_sync_barrier(
     tab_ids: list[int],
     predicate: str,
@@ -1276,9 +1197,6 @@ def browser_sync_barrier(
     poll_interval: int = 300,
 ) -> dict:
     """Block until a JS predicate returns truthy on every listed tab.
-
-    Annotations are conservative: caller-supplied JavaScript can mutate or delete
-    page data, so this tool is marked destructive and not read-only.
 
     Replaces hand-rolled "wait for everything to be ready" loops.
 
@@ -1296,36 +1214,34 @@ def browser_sync_barrier(
     )
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Tag tab", **IDEMPOTENT_ACT))
+@tool("parallel", annotations=ToolAnnotations(title="Tag tab", **IDEMPOTENT_ACT))
 def browser_tag_tab(name: str, tab_id: int) -> dict:
     """Give a tab a memorable name. Refer to it later via browser_resolve_tag.
     Names survive bridge restarts only if you re-tag — they live in memory."""
     return _post("/api/tag-tab", {"name": name, "tabId": tab_id})
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Resolve tag", **READ))
+@tool("parallel", annotations=ToolAnnotations(title="Resolve tag", **READ))
 def browser_resolve_tag(name: str) -> dict:
     """Look up the tab id for a tag set via browser_tag_tab."""
     return _post("/api/resolve-tag", {"name": name})
 
 
-@mcp.tool(annotations=ToolAnnotations(title="List tags", **READ))
+@tool("parallel", annotations=ToolAnnotations(title="List tags", **READ))
 def browser_list_tags() -> dict:
     """List all tag → tab id mappings."""
     return _post("/api/list-tags", {})
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Untag tab", **IDEMPOTENT_ACT))
+@tool("parallel", annotations=ToolAnnotations(title="Untag tab", **IDEMPOTENT_ACT))
 def browser_untag_tab(name: str) -> dict:
     """Remove a tag."""
     return _post("/api/untag-tab", {"name": name})
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Resize browser tab pool", **DESTRUCTIVE))
+@tool("parallel", annotations=ToolAnnotations(title="Resize browser tab pool", **DESTRUCTIVE))
 def browser_tab_pool(size: int, url: str = "about:blank") -> dict:
     """Maintain a warm pool of N tabs always ready to be acquired.
-
-    Annotations are destructive because shrinking the pool closes tabs.
 
     Grows or shrinks to `size`. Acquire/release via browser_pool_acquire and
     browser_pool_release. Auto-grows by one if you acquire from an empty pool.
@@ -1333,13 +1249,13 @@ def browser_tab_pool(size: int, url: str = "about:blank") -> dict:
     return _post("/api/tab-pool", {"size": size, "url": url})
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Acquire a pooled tab", **ACT))
+@tool("parallel", annotations=ToolAnnotations(title="Acquire a pooled tab", **ACT))
 def browser_pool_acquire() -> dict:
     """Check out a warm tab from the pool. Returns its tab_id."""
     return _post("/api/pool-acquire", {})
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Release a pooled tab", **IDEMPOTENT_ACT))
+@tool("parallel", annotations=ToolAnnotations(title="Release a pooled tab", **IDEMPOTENT_ACT))
 def browser_pool_release(tab_id: int) -> dict:
     """Return a tab to the pool for reuse."""
     return _post("/api/pool-release", {"tabId": tab_id})
@@ -1349,11 +1265,9 @@ def browser_pool_release(tab_id: int) -> dict:
 #  1.4.0 — Session save/restore (auth-once-use-many)
 # ════════════════════════════════════════════════════════════════════
 
-@mcp.tool(annotations=ToolAnnotations(title="Save session", **DESTRUCTIVE))
+@tool("session", annotations=ToolAnnotations(title="Save session", **DESTRUCTIVE))
 def browser_save_session(name: str, urls: list[str] | None = None) -> dict:
     """Snapshot cookies (and per-origin localStorage if urls given) to disk.
-
-    Annotations are destructive because saving can overwrite an existing session.
 
     Use case: log into a service interactively once, save the session,
     then have parallel agents load it for authenticated work.
@@ -1367,22 +1281,19 @@ def browser_save_session(name: str, urls: list[str] | None = None) -> dict:
     return _post("/api/save-session", {"name": name, "urls": urls or []}, timeout=120)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Load session", **DESTRUCTIVE))
+@tool("session", annotations=ToolAnnotations(title="Load session", **DESTRUCTIVE))
 def browser_load_session(name: str) -> dict:
-    """Restore cookies + localStorage from a previously saved session.
-
-    Annotations are destructive because restoring overwrites cookies and storage.
-    """
+    """Restore cookies + localStorage from a previously saved session."""
     return _post("/api/load-session", {"name": name}, timeout=120)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="List sessions", **READ))
+@tool("session", annotations=ToolAnnotations(title="List sessions", **READ))
 def browser_list_sessions() -> dict:
     """List saved sessions with their metadata."""
     return _post("/api/list-sessions", {})
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Delete session", **DESTRUCTIVE))
+@tool("session", annotations=ToolAnnotations(title="Delete session", **DESTRUCTIVE))
 def browser_delete_session(name: str) -> dict:
     """Delete a saved session file."""
     return _post("/api/delete-session", {"name": name})
@@ -1392,14 +1303,14 @@ def browser_delete_session(name: str) -> dict:
 #  1.4.0 — Observability and policy
 # ════════════════════════════════════════════════════════════════════
 
-@mcp.tool(annotations=ToolAnnotations(title="Check browser health", **READ))
+@tool("devtools", annotations=ToolAnnotations(title="Check browser health", **READ))
 def browser_health() -> dict:
     """Extended health/status: bridge version, ports, keep-alive list,
     pool state, tags, policy, sessions dir, audit/log sizes."""
     return _post("/api/health", {})
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Read bridge logs", **READ))
+@tool("devtools", annotations=ToolAnnotations(title="Read bridge logs", **READ))
 def browser_logs(limit: int = 200, since: str | None = None) -> dict:
     """Return recent bridge log lines (in-memory ring buffer)."""
     body = {"limit": limit}
@@ -1407,14 +1318,14 @@ def browser_logs(limit: int = 200, since: str | None = None) -> dict:
     return _post("/api/logs", body)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Read command audit log", **READ))
+@tool("devtools", annotations=ToolAnnotations(title="Read command audit log", **READ))
 def browser_audit(limit: int = 100, since_ms: int = 0) -> dict:
     """Return recent command audit entries: action, params (JS code stripped),
     success flag, error, duration. Useful for "what did the agent do?" reviews."""
     return _post("/api/audit", {"limit": limit, "since": since_ms})
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Read scheduler state", **READ))
+@tool("parallel", annotations=ToolAnnotations(title="Read scheduler state", **READ))
 def browser_scheduler() -> dict:
     """Return bridge scheduler state for multi-agent/tab work.
 
@@ -1424,7 +1335,7 @@ def browser_scheduler() -> dict:
     return _post("/api/scheduler", {})
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Set policy", **DESTRUCTIVE))
+@tool("devtools", annotations=ToolAnnotations(title="Set policy", **DESTRUCTIVE))
 def browser_set_policy(
     allow: list[str] | None = None,
     deny: list[str] | None = None,
@@ -1442,13 +1353,13 @@ def browser_set_policy(
     return _post("/api/set-policy", body)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Get policy", **READ))
+@tool("devtools", annotations=ToolAnnotations(title="Get policy", **READ))
 def browser_get_policy() -> dict:
     """Return the active URL/readonly policy."""
     return _post("/api/get-policy", {})
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Retry a command", **DESTRUCTIVE))
+@tool("parallel", annotations=ToolAnnotations(title="Retry a command", **DESTRUCTIVE))
 def browser_retry(
     command: dict,
     max_attempts: int = 3,
@@ -1456,9 +1367,6 @@ def browser_retry(
     on_errors: list[str] | None = None,
 ) -> dict:
     """Wrap any command in exponential-backoff retry.
-
-    Annotations cover the most dangerous nested command, including JavaScript
-    or destructive actions, even when the requested commands only read data.
 
     Args:
         command: A command dict (same shape as browser_batch entries).
@@ -1472,73 +1380,11 @@ def browser_retry(
     return _post("/api/retry", body, timeout=60)
 
 
-# -- WordPress / Elementor ----------------------------------------
-
-@mcp.tool(annotations=ToolAnnotations(title="Extract WordPress HTML", **ACT))
-def browser_wp_html(site_url: str, page_id: int) -> dict:
-    """Extract HTML widget content from a WordPress Elementor page.
-
-    Navigates to the Elementor editor for the given page, waits for load,
-    then extracts the innerHTML of all HTML widgets from the Elementor
-    preview iframe. Returns clean HTML/CSS/JS content.
-
-    The browser must already be logged into WP admin for this to work.
-
-    Args:
-        site_url: WordPress site URL (e.g. "https://thankyouexperiences.com")
-        page_id: WordPress page/post ID (e.g. 5719 for Team page)
-    """
-    import time
-    import json as _json
-
-    url = f"{site_url.rstrip('/')}/wp-admin/post.php?post={page_id}&action=elementor"
-
-    # Navigate to Elementor editor
-    nav_result = _post("/api/navigate", {"url": url})
-    if "error" in nav_result:
-        return nav_result
-
-    # Wait for Elementor to load
-    time.sleep(6)
-
-    # Extract HTML widget content from iframe
-    js_code = """
-    (function() {
-        const iframe = document.querySelector('#elementor-preview-iframe');
-        if (!iframe) return JSON.stringify({error: 'No Elementor preview iframe found.'});
-        const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
-        if (!iframeDoc) return JSON.stringify({error: 'Cannot access iframe document.'});
-        const widgets = iframeDoc.querySelectorAll('[data-widget_type="html.default"]');
-        if (widgets.length === 0) return JSON.stringify({error: 'No HTML widgets found on this page.'});
-        const results = [];
-        for (const widget of widgets) {
-            const dataId = widget.getAttribute('data-id');
-            const container = widget.querySelector('.elementor-html');
-            const content = container ? container.innerHTML : widget.innerHTML;
-            results.push({widget_id: dataId, content: content.trim()});
-        }
-        return JSON.stringify({ok: true, page_id: %PAGE_ID%, widget_count: results.length, widgets: results});
-    })();
-    """.replace("%PAGE_ID%", str(page_id))
-
-    result = _post("/api/js", {"code": js_code})
-
-    if "result" in result:
-        try:
-            parsed = _json.loads(result["result"])
-            return parsed
-        except (_json.JSONDecodeError, TypeError):
-            return result
-    return result
-
 # -- Batch --------------------------------------------------------
 
-@mcp.tool(annotations=ToolAnnotations(title="Run command batch", **DESTRUCTIVE))
+@tool("parallel", annotations=ToolAnnotations(title="Run command batch", **DESTRUCTIVE))
 def browser_batch(commands: list[dict]) -> dict:
     """Run multiple commands in a single request for speed.
-
-    Annotations cover the most dangerous nested command, including JavaScript
-    or destructive actions, even when the requested commands only read data.
 
     Each command is a dict with "action" and parameters. Add "tabId" to any
     command to target a specific tab instead of the active one. For true
