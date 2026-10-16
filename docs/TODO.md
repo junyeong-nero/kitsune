@@ -39,6 +39,45 @@
   `browser_js`, cookie reads), similar to Aside. `browser_set_policy` has
   allow/deny/readonly to build on.
 
+## Tool design (vs. Playwright MCP)
+
+Kitsune exposes ~120 tools; Playwright MCP exposes ~25 core tools built around
+an accessibility snapshot + element refs. Keep Kitsune's strengths (real logged-in
+profile, multi-tab parallel without focus stealing, readability/markdown/structured
+data, policy/audit) but adopt the snapshot/ref model and a smaller default surface.
+
+1. **Snapshot + ref as the primary interaction model** (highest impact)
+   - [ ] Add `browser_snapshot`: compact YAML/text tree of interactive elements plus
+     headings/landmarks, e.g. `- button "Log in" [ref=e5]`. Replaces the noisy JSON
+     of `browser_dom`.
+   - [ ] Make refs generation-scoped (e.g. `s3e5`). Today `refCounter = 0` resets on
+     every tree build (`content.js` `getAccessibilityTree`), so an old ref can
+     silently resolve to a different element. Return a "stale ref, re-snapshot"
+     error on mismatch.
+   - [ ] Every action tool (click, type, hover, select, check, drag, ...) takes
+     `ref` + human-readable `element`; docstrings say "get ref from browser_snapshot".
+     Ref resolution already exists in `resolveElement` but is undocumented.
+   - [ ] Actions return a short post-action snapshot (or diff) instead of `{ok: true}`.
+2. **Shrink and group the tool surface**
+   - [ ] Remove `browser_page_text_by_tab_id` (duplicate of `browser_page_text(tab_id)`).
+   - [ ] Merge `wait_for_element/result/url/title/network_idle` into
+     `browser_wait_for(selector|text|text_gone|url|title|network_idle|time)`.
+   - [ ] Merge `screenshot/element_screenshot/full_page_screenshot` into
+     `browser_screenshot(ref?, full_page?)`.
+   - [ ] Merge `type/fill/set_editable_content` into `browser_type(ref, text, mode?)`.
+   - [ ] Merge `tabs/new_tab/close_tab/switch_tab` into `browser_tabs(action=...)`.
+   - [ ] Capability groups via env, e.g. `KITSUNE_CAPS=core,tabs,network,storage,parallel,devtools`;
+     default `core` (~25 tools). Move keep_alive / pool / tags / broadcast /
+     sync_barrier / scheduler into `parallel`.
+   - [ ] Move `browser_wp_html` (WordPress-specific) out of the core tools into a workflow.
+3. **Missing capabilities**
+   - [ ] Dialog handling (alert/confirm/prompt), like Playwright's `browser_handle_dialog`.
+   - [ ] Screenshots return MCP `ImageContent` so the model sees them; file save optional.
+   - [ ] Wait for text to appear/disappear.
+4. **Metadata**
+   - [ ] Add `readOnlyHint` / `destructiveHint` tool annotations (feeds client permission
+     prompts and the ask-before-act policy below).
+
 ## Cleanup
 
 - [ ] Rename leftover branding: `[Claude Bridge]` log prefix and header comment in
