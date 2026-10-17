@@ -1645,7 +1645,14 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.send_json(200, result)
 
     def handle_snapshot(self):
-        result = self.run_async(send_to_extension("getSnapshot", self._tab_params()))
+        body = self.read_body() if self.command == 'POST' else {}
+        params = {key: body[key] for key in ('tabId', 'selector', 'ref', 'maxDepth')
+                  if body.get(key) is not None}
+        max_depth = params.get('maxDepth')
+        if max_depth is not None and (type(max_depth) is not int or max_depth < 0):
+            self.send_json(200, {"error": "max_depth must be a non-negative integer"})
+            return
+        result = self.run_async(send_to_extension("getSnapshot", params))
         self.send_json(200, result)
 
     def handle_forms(self):

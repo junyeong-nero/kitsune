@@ -3,7 +3,7 @@
 
 (function() {
   'use strict';
-  const CONTENT_VERSION = 20;
+  const CONTENT_VERSION = 21;
   if (window.__claudeBridgeVersion >= CONTENT_VERSION) return;
   window.__claudeBridgeVersion = CONTENT_VERSION;
 
@@ -134,7 +134,7 @@
       'handleDialog':          () => handleDialog(msg.accept, msg.prompt_text),
       'waitForText':           () => waitForText(msg.text, msg.text_gone, msg.timeout),
       'getPageText':           () => getPageText(msg.selector),
-      'getSnapshot':           () => getSnapshot(msg.maxChars, msg.focusLastAction),
+      'getSnapshot':           () => getSnapshot(msg.maxChars, msg.focusLastAction, msg.ref || msg.selector, msg.maxDepth),
       'getAccessibilityTree':  () => getAccessibilityTree(msg.depth || 6),
       'getFormFields':         () => getFormFields(),
       'click':                 () => clickElement(msg.selector, msg.coords),
@@ -372,7 +372,13 @@
   }
 
   // Compact accessibility-style view (DOM semantics, not a platform AX tree).
-  function getSnapshot(maxChars, focusLastAction) {
+  function getSnapshot(maxChars, focusLastAction, selector, maxDepth) {
+    if (maxDepth != null && (!Number.isInteger(maxDepth) || maxDepth < 0)) {
+      return { error: 'max_depth must be a non-negative integer' };
+    }
+    // Resolve subtree refs before invalidating the previous snapshot's generation.
+    const root = selector ? resolveElement(selector) : document.body;
+    if (!root) return { error: 'Selector not found: ' + selector };
     // Keep the DOM element, not its old ref: starting a snapshot invalidates refs.
     const target = focusLastAction && lastActedElement?.isConnected ? lastActedElement : null;
     lastActedElement = null;
@@ -385,8 +391,49 @@
       FOOTER: 'contentinfo', ASIDE: 'complementary', FORM: 'form' };
     const semanticRoles = new Set(['heading', 'main', 'navigation', 'banner',
       'contentinfo', 'complementary', 'region', 'form', 'search']);
-    const clean = value => String(value || '').replace(/\s+/g, ' ').trim().slice(0, 160);
-    function nameOf(el) {
+    const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
+    const clean = value => normalize(value).slice(0, 160);
+    const nativeTags = new Set(['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'DETAILS', 'SUMMARY']);
+    const metadata = new WeakMap();
+    const signatures = new Map();
+    const targetAncestors = new Set();
+    for (let el = target; el; el = el.parentElement) targetAncestors.add(el);
+    function ignored(el) {
+      return !el || el.nodeType !== 1 || isHidden(el) ||
+        el.getAttribute('aria-hidden') === 'true' ||
+        ['SCRIPT', 'STYLE', 'NOSCRIPT', 'SVG'].includes(el.tagName);
+    }
+    // Bottom-up metadata avoids repeatedly scanning large clickable ancestor trees.
+    function measure(el, domDepth = 0) {
+      if (ignored(el)) return null;
+      const children = Array.from(el.children, child => measure(child, domDepth + 1)).filter(Boolean);
+      const shape = JSON.stringify([el.tagName, el.getAttribute('role'), el.type || '',
+        children.map(child => child.signature)]);
+      if (!signatures.has(shape)) signatures.set(shape, signatures.size);
+      const data = {
+        signature: signatures.get(shape),
+        nodes: 1 + children.reduce((sum, child) => sum + child.nodes, 0),
+        interactive: children.reduce((sum, child) => sum + child.interactive, 0),
+        native: children.reduce((sum, child) => sum + child.native, 0),
+      };
+      // One native descendant or two custom controls makes a generic click handler
+      // a delegation wrapper, not a separate button. Explicit roles remain intact.
+      data.wrapper = !nativeTags.has(el.tagName) && !el.getAttribute('role') &&
+        !el.isContentEditable && el.contentEditable !== 'true' &&
+        (data.native > 0 || data.interactive >= 2);
+      const interactive = isInteractiveElement(el);
+      const role = el.getAttribute('role') || landmarks[el.tagName] ||
+        (/^H[1-6]$/.test(el.tagName) ? 'heading' : inferRole(el));
+      data.useful = (maxDepth == null || domDepth <= maxDepth) &&
+        (children.some(child => child.useful) || (interactive && !data.wrapper) ||
+          semanticRoles.has(role) || el === target);
+      data.interactive += interactive ? 1 : 0;
+      data.native += nativeTags.has(el.tagName) ? 1 : 0;
+      metadata.set(el, data);
+      return data;
+    }
+    measure(root);
+    function nameOf(el, interactive) {
       const labelledBy = el.getAttribute('aria-labelledby');
       if (labelledBy) {
         const label = labelledBy.split(/\s+/).map(id => document.getElementById(id)?.textContent || '').join(' ');
@@ -396,19 +443,31 @@
       const isLandmark = landmarks[el.tagName] ||
         (semanticRoles.has(explicitRole) && explicitRole !== 'heading');
       const isField = ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName);
+      if (interactive && !nativeTags.has(el.tagName)) {
+        const name = clean(el.getAttribute('aria-label') || el.getAttribute('title') ||
+          el.getAttribute('alt') || directText(el));
+        if (name) return name;
+        const text = metadata.get(el).nodes <= 5 ? normalize(el.textContent) : '';
+        return text.length <= 80 ? text : '';
+      }
       const fallback = isField ? el.placeholder || el.title :
         (isLandmark ? el.title : el.textContent || el.title);
       return clean(el.getAttribute('aria-label') || findLabel(el) ||
         (el.type === 'image' ? el.alt : '') ||
         (['button', 'submit', 'reset'].includes(el.type) ? el.value : '') || fallback);
     }
-    function visit(el, depth, parent = -1) {
-      if (!el || el.nodeType !== 1 || isHidden(el) ||
-          el.getAttribute('aria-hidden') === 'true' ||
-          ['SCRIPT', 'STYLE', 'NOSCRIPT', 'SVG'].includes(el.tagName)) return;
+    function append(entry) {
+      const cost = entry.line.length + (entries.length ? 1 : 0);
+      if (!target && size + cost > limit) { truncated = true; return false; }
+      entries.push(entry);
+      size += cost;
+      return true;
+    }
+    function visit(el, depth, parent = -1, domDepth = 0) {
+      if (!metadata.has(el) || (maxDepth != null && domDepth > maxDepth)) return;
       let role = el.getAttribute('role') || landmarks[el.tagName] ||
         (/^H[1-6]$/.test(el.tagName) ? 'heading' : inferRole(el));
-      const interactive = isInteractiveElement(el);
+      const interactive = isInteractiveElement(el) && !metadata.get(el).wrapper;
       const include = interactive || semanticRoles.has(role) || el === target;
       if (include) {
         role = role || (el.isContentEditable ? 'textbox' : el === target ? el.tagName.toLowerCase() : 'button');
@@ -423,18 +482,41 @@
         for (const state of ['expanded', 'selected', 'pressed']) {
           if (el.hasAttribute(`aria-${state}`)) states.push(`${state}=${el.getAttribute(`aria-${state}`)}`);
         }
-        const line = `${'  '.repeat(Math.min(depth, 12))}- ${role} ${JSON.stringify(nameOf(el))} [ref=${ref}]${states.length ? ' [' + states.join(' ') + ']' : ''}`;
-        if (!target && size + line.length + (entries.length ? 1 : 0) > limit) { truncated = true; return; }
-        entries.push({ el, ref, line, parent, interactive });
+        const line = `${'  '.repeat(Math.min(depth, 12))}- ${role} ${JSON.stringify(nameOf(el, interactive || el === target))} [ref=${ref}]${states.length ? ' [' + states.join(' ') + ']' : ''}`;
+        if (!append({ el, ref, line, parent, interactive })) return;
         parent = entries.length - 1;
-        size += line.length + (entries.length > 1 ? 1 : 0);
       }
-      for (const child of el.children) {
-        if (truncated) break;
-        visit(child, depth + (include ? 1 : 0), parent);
+      if (maxDepth != null && domDepth >= maxDepth) return;
+      const childDepth = depth + (include ? 1 : 0);
+      const children = Array.from(el.children).filter(child => metadata.get(child)?.useful);
+      // Only composite children / list items collapse: a toolbar of leaf controls
+      // should remain fully discoverable. Text, IDs and classes are not structure.
+      const repeatable = child => child.children.length > 0 || child.tagName === 'LI' ||
+        child.getAttribute('role') === 'listitem';
+      for (let start = 0; start < children.length && !truncated;) {
+        let end = start + 1;
+        if (repeatable(children[start])) {
+          while (end < children.length &&
+              metadata.get(children[end]).signature === metadata.get(children[start]).signature) end++;
+        }
+        let omitted = 0;
+        function flushOmitted() {
+          if (!omitted || truncated) return;
+          append({ line: `${'  '.repeat(Math.min(childDepth, 12))}- … ${omitted} more similar items`,
+            parent, interactive: false });
+          omitted = 0;
+        }
+        for (let i = start; i < end && !truncated; i++) {
+          if (i - start < 5 || targetAncestors.has(children[i])) {
+            flushOmitted();
+            if (!truncated) visit(children[i], childDepth, parent, domDepth + 1);
+          } else omitted++;
+        }
+        flushOmitted();
+        start = end;
       }
     }
-    visit(document.body, 0);
+    visit(root, 0);
 
     const targetIndex = entries.findIndex(entry => entry.el === target);
     let selected = entries;
@@ -483,7 +565,9 @@
       selected = entries.filter((_, i) => kept.has(i));
       truncated = selected.length < entries.length;
     }
-    for (const entry of selected) refMap[entry.ref] = entry.el;
+    for (const entry of selected) {
+      if (entry.ref) refMap[entry.ref] = entry.el;
+    }
     return {
       snapshot: selected.map(entry => entry.line).join('\n'),
       ...(truncated ? { truncated: true } : {}),
