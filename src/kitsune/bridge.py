@@ -1268,6 +1268,9 @@ async def run_command(cmd):
 
         # Simple forwarding actions (the majority)
         if action in BATCH_ACTION_MAP:
+            if effective_action in ('waitForUrl', 'waitForTitle'):
+                timeout_s = params.get('timeout', 10000) / 1000 + 5
+                return await send_to_extension(effective_action, params, timeout=timeout_s)
             return await send_to_extension(BATCH_ACTION_MAP[action], params)
 
         # Actions with custom logic
@@ -1874,6 +1877,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
         _invalidate_cache_for_action(action)
         t0 = time.time()
         try:
+            if action in ('waitForUrl', 'waitForTitle'):
+                default_timeout = body.get('timeout', 10000) / 1000 + 5
             result = self.run_async(send_to_extension(action, body, timeout=default_timeout), timeout=default_timeout + 5)
         except Exception as e:
             result = {"error": str(e)}
