@@ -22,13 +22,15 @@
 
 ## Bridge daemon
 
-- [ ] Add `kitsune-bridge stop` / `status` commands (today: `pkill -f kitsune.bridge`).
+- [x] Add `kitsune-bridge stop` / `status` commands (authenticated shutdown with
+  verified PID fallback; no broad `pkill`).
 - [ ] Optional idle shutdown when no MCP client has called for a while.
 - [ ] Migrate from the deprecated `websockets.server.serve` (legacy API) to
   `websockets.asyncio.server.serve`; its `origins=` option can replace the
   manual origin check.
-- [ ] Report the Kitsune version in `browser_status` (`BRIDGE_VERSION` still says 2.1.0).
-- [ ] Create `bridge.lock` with 0600 like the token.
+- [x] Report the package version and source build in `browser_status`; automatically
+  replace mismatched daemons on MCP startup (`KITSUNE_NO_BRIDGE_RESTART=1` opts out).
+- [x] Create `bridge.lock` and the daemon's `bridge.pid` with 0600 like the token.
 
 ## Features
 

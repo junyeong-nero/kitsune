@@ -27,7 +27,8 @@ agent ──stdio──▶ kitsune (MCP server, one per agent)
 
 1. The agent launches `kitsune` over stdio.
 2. If no bridge is answering, `kitsune` spawns `python -m kitsune.bridge` as a
-   detached daemon. A file lock makes sure only one agent spawns it.
+   detached daemon. If its build differs, Kitsune safely replaces it first.
+   A file lock serializes starts and replacements across agents.
 3. The extension keeps reconnecting to the daemon, so it attaches by itself.
 4. The daemon keeps running after the agent exits; the next agent reuses it.
 
@@ -80,6 +81,39 @@ platform accessibility tree; closed shadow roots and iframe contents are not tra
    [TODO](docs/TODO.md).
 4. **Check**: restart the agent and ask it to call `browser_status`. It should
    report `"extension_connected": true`.
+
+## Updating Kitsune
+
+1. Pull the latest checkout (`git pull`, then `uv sync`), or upgrade your installed
+   `kitsune-mcp` package using the same installer you originally used.
+2. Reconnect/restart the MCP server. It compares the running bridge's `build`
+   (package version plus a source hash, including extension JS/JSON in a checkout)
+   with its own and automatically restarts an outdated bridge. This briefly
+   interrupts all clients sharing that bridge. Set `KITSUNE_NO_BRIDGE_RESTART=1`
+   in the **MCP server's environment** to opt out of automatic replacement.
+   You can also stop it explicitly; the next MCP connection starts a fresh daemon:
+   ```bash
+   uv run kitsune-bridge status  # JSON; includes bridge_version and build
+   uv run kitsune-bridge stop
+   ```
+   Plain `uv run kitsune-bridge` (or `kitsune-bridge start`) still runs the daemon
+   in the foreground. `status` and `stop` never start a daemon. All commands use
+   the same `KITSUNE_HOME`, token, and port environment settings as the server.
+3. Reload the extension in `about:debugging#/runtime/this-firefox` (click **Reload**
+   on Kitsune, or load the updated `extension/manifest.json` again). A bridge
+   restart reconnects the extension but does **not** reload its browser-side code;
+   reload it explicitly after extension updates, and reload existing tabs if
+   their content scripts are still outdated.
+4. Reconnect the MCP client again if needed (in Claude Code, use `/mcp` to
+   reconnect Kitsune), then call `browser_status`. Check `extension_connected`,
+   `bridge_version`, and `build`.
+
+Shutdown uses a token-authenticated endpoint, with a verified, locked PID file
+as the termination fallback; it never uses a broad `pkill`. Very old daemons
+that have neither the shutdown endpoint nor a PID file require a **one-time
+manual stop of the specific old bridge process**. Kitsune reports this instead
+of guessing a PID or launching another daemon over it. After that, automatic
+replacement and `kitsune-bridge stop` work normally.
 
 ## MCP clients
 
