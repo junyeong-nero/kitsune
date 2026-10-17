@@ -100,6 +100,7 @@ async function testContent() {
   const capped = await send({ action: 'getSnapshot', maxChars: 4000 });
   assert.ok(capped.snapshot.length <= 4000);
   assert.equal(capped.truncated, true);
+  assert.doesNotMatch(capped.snapshot, /more similar items/, 'leaf controls are not collapsed');
 
   // Exercise the complete action -> capped snapshot path with a target past 4,000 chars.
   const background = fs.readFileSync('extension/background/background.js', 'utf8');
@@ -221,6 +222,102 @@ async function testContent() {
   const small = await bridge.handleCommand({ action: 'type', selector: '#search', text: 'small', clear: true });
   assert.equal(small.snapshot_truncated, undefined);
   assert.ok(small.snapshot.includes(`[ref=${small.target_ref}] [value="small"]`));
+
+  // Identical names came from nested delegated-click wrappers reading the same
+  // subtree, not duplicate traversal. Preserve their real controls exactly once.
+  const headerControls = [new Element('BUTTON', 'Search'), new Element('A', 'Cart')];
+  const wrapperText = 'Whole header '.repeat(30);
+  const innerWrapper = Object.assign(new Element('DIV', wrapperText, {}, headerControls), { onclick() {} });
+  const outerWrapper = Object.assign(new Element('DIV', wrapperText, {}, [innerWrapper]), { onclick() {} });
+  body.children = [outerWrapper];
+  const wrappers = await send({ action: 'getSnapshot' });
+  assert.doesNotMatch(wrappers.snapshot, /Whole header/);
+  assert.equal(wrappers.snapshot.split('\n').length, 2);
+  assert.equal((wrappers.snapshot.match(/button "Search"/g) || []).length, 1);
+  assert.equal((wrappers.snapshot.match(/link "Cart"/g) || []).length, 1);
+  const originalListener = listener;
+  vm.runInContext(fs.readFileSync('extension/content/content.js', 'utf8'), context);
+  assert.equal(listener, originalListener, 'reinjection does not register a second listener');
+
+  const customChildren = [new Element('SPAN', 'One', { role: 'button' }), new Element('SPAN', 'Two', { tabindex: '0' })];
+  body.children = [Object.assign(new Element('DIV', 'Custom wrapper', {}, customChildren), { onclick() {} })];
+  assert.doesNotMatch((await send({ action: 'getSnapshot' })).snapshot, /Custom wrapper/);
+  body.children = [Object.assign(new Element('DIV', 'Explicit wrapper', { role: 'button' }, headerControls), { onclick() {} })];
+  assert.match((await send({ action: 'getSnapshot' })).snapshot, /button "Explicit wrapper"/);
+
+  const descendant = new Element('SPAN', 'Hidden in the control name '.repeat(20));
+  const directControl = new Element('DIV', 'Show details ' + descendant.textContent, { role: 'button' }, [descendant]);
+  directControl.childNodes = [{ nodeType: 3, textContent: 'Show details ' }, descendant];
+  const fallback = new Element('DIV', 'Small icon label', { role: 'button' }, [new Element('SPAN', 'Small icon label')]);
+  fallback.childNodes = fallback.children;
+  const large = new Element('DIV', descendant.textContent, { role: 'button' }, [descendant]);
+  large.childNodes = large.children;
+  const labelled = new Element('DIV', 'Direct name', { role: 'button', 'aria-label': 'Explicit label', title: 'Title' });
+  const titled = new Element('DIV', 'Direct name', { role: 'button', title: 'Title label' });
+  const alt = new Element('DIV', 'Direct name', { role: 'button', alt: 'Alt label' });
+  body.children = [directControl, fallback, large, labelled, titled, alt];
+  const names = (await send({ action: 'getSnapshot' })).snapshot;
+  for (const name of ['Show details', 'Small icon label', '', 'Explicit label', 'Title label', 'Alt label']) {
+    assert.ok(names.includes(`button ${JSON.stringify(name)} [ref=`), `non-native name: ${name}`);
+  }
+  assert.doesNotMatch(names, /Hidden in the control name|Direct name/);
+
+  const cards = Array.from({ length: 10 }, (_, i) => new Element('ARTICLE', '', {}, [
+    new Element('H2', `Product ${i}`), new Element('BUTTON', `Buy ${i}`),
+  ]));
+  const catalog = new Element('MAIN', '', {}, [new Element('H1', 'Catalog'), new Element('SECTION', '', {}, cards)]);
+  const outside = new Element('BUTTON', 'Outside catalog');
+  body.children = [catalog, outside];
+  for (const child of body.children) child.parentElement = body;
+  context.document.querySelector = selector => ({ '#catalog': catalog, '#card-8': cards[8], '#buy-8': cards[8].children[1] })[selector] || null;
+  const collapsed = await send({ action: 'getSnapshot' });
+  assert.match(collapsed.snapshot, /- … 5 more similar items/);
+  for (let i = 0; i < 5; i++) assert.match(collapsed.snapshot, new RegExp(`Product ${i}`));
+  assert.doesNotMatch(collapsed.snapshot, /Product [5-9]|Buy [5-9]/);
+  const visibleRefs = [...collapsed.snapshot.matchAll(/ref=(s\d+e(\d+))/g)];
+  assert.deepEqual(visibleRefs.map(match => Number(match[2])), visibleRefs.map((_, i) => i), 'collapsed items allocate no refs');
+  const generation = visibleRefs[0][1].match(/^s\d+e/)[0];
+  assert.equal((await send({ action: 'focusElement', selector: generation + visibleRefs.length })).error,
+    'stale ref, call browser_snapshot again', 'no hidden item is registered in refMap');
+
+  await send({ action: 'keypress', selector: '#buy-8', key: 'Enter' });
+  const focusedCard = await send({ action: 'getSnapshot', focusLastAction: true, maxChars: 4000 });
+  assert.ok(focusedCard.snapshot.includes(`button "Buy 8" [ref=${focusedCard.target_ref}]`));
+  assert.match(focusedCard.snapshot, /Product 8/);
+  assert.match(focusedCard.snapshot, /- … 3 more similar items/);
+  assert.match(focusedCard.snapshot, /- … 1 more similar items/);
+  assert.doesNotMatch(focusedCard.snapshot, /Product [5-79]|Buy [5-79]/);
+  await send({ action: 'keypress', selector: '#buy-8', key: 'Enter' });
+  const tinyTarget = await send({ action: 'getSnapshot', focusLastAction: true, maxChars: 100 });
+  assert.ok(tinyTarget.snapshot.includes(`button "Buy 8" [ref=${tinyTarget.target_ref}]`));
+
+  const scoped = await send({ action: 'getSnapshot', selector: '#card-8' });
+  assert.match(scoped.snapshot, /Product 8/);
+  assert.match(scoped.snapshot, /Buy 8/);
+  assert.doesNotMatch(scoped.snapshot, /Catalog|Outside|more similar/);
+  const catalogOnly = await send({ action: 'getSnapshot', selector: '#catalog', maxDepth: 0 });
+  assert.match(catalogOnly.snapshot, /^- main "" \[ref=s\d+e0\]$/);
+  const catalogRef = catalogOnly.snapshot.match(/ref=(s\d+e0)/)[1];
+  const byRef = await send({ action: 'getSnapshot', ref: catalogRef, selector: '#card-8', maxDepth: 1 });
+  assert.match(byRef.snapshot, /Catalog/);
+  assert.doesNotMatch(byRef.snapshot, /Product|Buy|Outside/);
+  assert.equal((await send({ action: 'getSnapshot', ref: catalogRef })).error, 'stale ref, call browser_snapshot again');
+  const shallowCatalog = await send({ action: 'getSnapshot', selector: '#catalog', maxDepth: 2 });
+  assert.match(shallowCatalog.snapshot, /Catalog/);
+  assert.doesNotMatch(shallowCatalog.snapshot, /Product|Buy|more similar/, 'no summary for items below the depth limit');
+  const cardDepth = await send({ action: 'getSnapshot', selector: '#card-8', maxDepth: 1 });
+  assert.match(cardDepth.snapshot, /Product 8/);
+  assert.match(cardDepth.snapshot, /Buy 8/);
+  const bodyDepth = await send({ action: 'getSnapshot', maxDepth: 1 });
+  assert.match(bodyDepth.snapshot, /Outside catalog/);
+  assert.doesNotMatch(bodyDepth.snapshot, /Catalog|Product|Buy/);
+  assert.equal((await send({ action: 'getSnapshot', selector: '#missing' })).error, 'Selector not found: #missing');
+  assert.match((await send({ action: 'getSnapshot', selector: '[' })).error, /Selector not found/);
+  for (const maxDepth of [-1, 1.5, true]) {
+    assert.equal((await send({ action: 'getSnapshot', maxDepth })).error, 'max_depth must be a non-negative integer');
+  }
+  body.children = Array.from({ length: 12 }, () => new Element('DIV', '', {}, [new Element('SPAN', 'Decoration')]));
+  assert.equal((await send({ action: 'getSnapshot' })).snapshot, '', 'non-semantic decorations do not generate collapse noise');
 }
 
 async function testBackground() {

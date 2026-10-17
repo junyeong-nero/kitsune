@@ -54,6 +54,37 @@ viewer for new tabs. Options for other actions are ignored.
 Replaces the duplicate `browser_page_text_by_tab_id`. Uses GET `/api/page-text`
 for the active tab or POST to the same endpoint with `tabId` for a specific tab.
 
+### `browser_snapshot(tab_id=None, selector=None, ref=None, max_depth=None)`
+
+Returns a compact accessibility-style text tree with fresh refs. With no arguments,
+reads the full page via GET `/api/snapshot`. Optional arguments use POST to the same
+endpoint (`tabId`, `selector`, `ref`, `maxDepth` in the JSON body).
+
+- `selector` scopes the snapshot to a CSS-selected subtree, including its root.
+- `ref` scopes to an existing snapshot element and takes precedence over `selector`.
+  It is resolved before generating fresh refs. Missing selectors and stale refs
+  return errors rather than silently falling back to the full page.
+- `max_depth` is a non-negative integer DOM depth relative to that root (`body`
+  without a scope). `0` considers only the root, `1` also considers its immediate
+  element children, and `None` traverses all depths. Non-semantic containers still
+  count toward DOM depth, even when they produce no snapshot line.
+
+Every successful snapshot, even a scoped one, invalidates earlier refs in that tab.
+Only emitted elements receive usable refs. Generic clickable wrappers with any
+native interactive descendant or at least two interactive descendants are not
+reported as buttons; their children remain discoverable. Explicit roles and native
+controls are preserved. Custom controls use explicit labels/title/alt, then direct
+text; subtree text is used only when at most 80 characters and five elements long.
+
+Consecutive composite siblings (children containing elements, or list items) with
+identical tag/role/input-type structure show the first five items, followed by
+`- … N more similar items`. Names, IDs and classes do not affect the signature.
+Leaf controls such as toolbar buttons are not collapsed. Hidden items are excluded
+from grouping; collapsed items have no refs. Scope a specific card/list item to
+inspect it fully. Post-action snapshots additionally keep the acted-on target's
+item, even beyond the first five, and return a fresh `target_ref`. Character-limit
+truncation can still omit other context but never the visible acted-on target.
+
 ### `browser_type(selector="", text="", mode="type", clear=False, tab_id=None, ref=None, element=None)`
 
 Replaces `browser_fill` and `browser_set_editable_content`.

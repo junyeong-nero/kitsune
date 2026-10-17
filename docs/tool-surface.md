@@ -21,6 +21,23 @@ Collection/selector-diagnostic tools (`browser_query`, `browser_explain_selector
 and the specialized OS-click/file-upload tools (`browser_trusted_click`,
 `browser_upload_file`) retain their existing selector interfaces.
 
+## Snapshot scope and compactness
+
+`browser_snapshot(tab_id=None, selector=None, ref=None, max_depth=None)` retains
+full-page behavior when called without arguments. `selector` or `ref` selects a
+subtree (ref wins); `max_depth` limits DOM depth from that root, or `body` when
+unscoped. The root is depth `0`, and `None` means unlimited depth. Each successful
+snapshot invalidates all older refs in the tab, including its input scope ref.
+
+Snapshots suppress generic delegated-click wrappers and avoid whole-subtree names
+for custom controls. Consecutive structurally identical composite siblings/list
+items show the first five and a `- … N more similar items` line. Collapsed items
+receive no refs; inspect a specific item with a scoped snapshot. Post-action
+snapshots also preserve the acted-on target's item and return its fresh
+`target_ref`, even when it would otherwise be collapsed or character-truncated.
+See [API reference](api-reference.md#browser_snapshottab_idnone-selectornone-refnone-max_depthnone)
+for depth, grouping, naming and HTTP parameter details.
+
 ## Before (106)
 
 - `browser_audit`

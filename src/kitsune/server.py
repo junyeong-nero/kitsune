@@ -261,15 +261,36 @@ def browser_dom(tab_id: int | None = None) -> dict:
 
 
 @tool("core", annotations=ToolAnnotations(title="Accessibility snapshot", **READ))
-def browser_snapshot(tab_id: int | None = None) -> dict:
+def browser_snapshot(
+    tab_id: int | None = None, selector: str | None = None,
+    ref: str | None = None, max_depth: int | None = None,
+) -> dict:
     """Get a compact accessibility-style text tree and fresh element refs.
 
     Prefer these refs for actions. Each snapshot (including post-action snapshots)
-    or browser_dom rebuild invalidates earlier refs in that tab.
+    or browser_dom rebuild invalidates earlier refs in that tab. Repeated composite
+    siblings show the first five items; post-action snapshots also keep the target.
+
+    Args:
+        tab_id: Optional tab to target. Defaults to active tab.
+        selector: Optional CSS selector for a subtree, including its root.
+        ref: Existing snapshot ref for a subtree; takes precedence over selector.
+            Resolved before this snapshot invalidates earlier refs.
+        max_depth: Non-negative DOM depth relative to the subtree root (body by
+            default). Zero includes only the root; None traverses all depths.
     """
-    if tab_id is None:
+    if max_depth is not None and (type(max_depth) is not int or max_depth < 0):
+        return {"error": "max_depth must be a non-negative integer"}
+    body = _with_tab({}, tab_id)
+    if selector is not None:
+        body["selector"] = selector
+    if ref is not None:
+        body["ref"] = ref
+    if max_depth is not None:
+        body["maxDepth"] = max_depth
+    if not body:
         return _get("/api/snapshot")
-    return _post("/api/snapshot", {"tabId": tab_id})
+    return _post("/api/snapshot", body)
 
 
 @tool("core", annotations=ToolAnnotations(title="Take screenshot", **ACT))

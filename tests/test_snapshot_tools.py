@@ -3,7 +3,7 @@ import asyncio
 import json
 import os
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from kitsune import bridge, server
 
@@ -16,6 +16,62 @@ class SnapshotToolsTests(unittest.TestCase):
         with patch.object(server, '_post', return_value={'snapshot': 'tree'}) as post:
             server.browser_snapshot(tab_id=7)
             post.assert_called_once_with('/api/snapshot', {'tabId': 7})
+
+    def test_snapshot_scope_and_depth(self):
+        cases = [
+            ({'selector': '#catalog'}, {'selector': '#catalog'}),
+            ({'ref': 's2e0'}, {'ref': 's2e0'}),
+            ({'max_depth': 0}, {'maxDepth': 0}),
+            ({'tab_id': 7, 'selector': '#fallback', 'ref': 's2e0', 'max_depth': 2},
+             {'tabId': 7, 'selector': '#fallback', 'ref': 's2e0', 'maxDepth': 2}),
+        ]
+        for kwargs, expected in cases:
+            with self.subTest(kwargs=kwargs), patch.object(server, '_post', return_value={'snapshot': 'tree'}) as post:
+                self.assertEqual(server.browser_snapshot(**kwargs), {'snapshot': 'tree'})
+                post.assert_called_once_with('/api/snapshot', expected)
+        with patch.object(server, '_post') as post, patch.object(server, '_get') as get:
+            invalid_cases: list[dict] = [{'max_depth': value} for value in (-1, 1.5, True, '2')]
+            for kwargs in invalid_cases:
+                with self.subTest(kwargs=kwargs):
+                    self.assertEqual(server.browser_snapshot(**kwargs), {
+                        'error': 'max_depth must be a non-negative integer',
+                    })
+            post.assert_not_called()
+            get.assert_not_called()
+
+    def test_bridge_snapshot_scope_routes(self):
+        for command, body, expected in [
+            ('GET', {}, {}),
+            ('POST', {'tabId': 7}, {'tabId': 7}),
+            ('POST', {'selector': '#catalog', 'ref': 's2e0', 'maxDepth': 0, 'tabId': 7,
+                      'ignored': 'not forwarded'},
+             {'selector': '#catalog', 'ref': 's2e0', 'maxDepth': 0, 'tabId': 7}),
+        ]:
+            with self.subTest(command=command, body=body):
+                handler = bridge.BridgeHandler.__new__(bridge.BridgeHandler)
+                handler.command = command
+                handler.read_body = Mock(return_value=body)
+                handler.send_json = Mock()
+                handler.run_async = Mock(side_effect=asyncio.run)
+                with patch.object(bridge, 'send_to_extension', return_value={'snapshot': 'tree'}) as send:
+                    handler.handle_snapshot()
+                    send.assert_called_once_with('getSnapshot', expected)
+                handler.send_json.assert_called_once_with(200, {'snapshot': 'tree'})
+                self.assertEqual(handler.read_body.call_count, int(command == 'POST'))
+
+    def test_bridge_snapshot_rejects_invalid_depth(self):
+        for max_depth in (-1, 1.5, True, '2'):
+            with self.subTest(max_depth=max_depth):
+                handler = bridge.BridgeHandler.__new__(bridge.BridgeHandler)
+                handler.command = 'POST'
+                handler.read_body = Mock(return_value={'maxDepth': max_depth})
+                handler.run_async = Mock()
+                handler.send_json = Mock()
+                handler.handle_snapshot()
+                handler.run_async.assert_not_called()
+                handler.send_json.assert_called_once_with(200, {
+                    'error': 'max_depth must be a non-negative integer',
+                })
 
     def test_actions_accept_ref_without_selector_and_keep_audit_description(self):
         cases = [
