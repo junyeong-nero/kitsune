@@ -3,7 +3,7 @@
 
 (function() {
   'use strict';
-  const CONTENT_VERSION = 19;
+  const CONTENT_VERSION = 20;
   if (window.__claudeBridgeVersion >= CONTENT_VERSION) return;
   window.__claudeBridgeVersion = CONTENT_VERSION;
 
@@ -106,6 +106,7 @@
   const REF_MAP_LIMIT = 10000;
   const refMap = {};
   let refCounter = 0;
+  let lastActedElement = null;
   // Persist across reinjection; seed per document so navigation cannot reuse refs.
   let refGeneration = window.__kitsuneRefGeneration ||
     `${Date.now()}${crypto.getRandomValues(new Uint32Array(1))[0]}`;
@@ -133,7 +134,7 @@
       'handleDialog':          () => handleDialog(msg.accept, msg.prompt_text),
       'waitForText':           () => waitForText(msg.text, msg.text_gone, msg.timeout),
       'getPageText':           () => getPageText(msg.selector),
-      'getSnapshot':           () => getSnapshot(msg.maxChars),
+      'getSnapshot':           () => getSnapshot(msg.maxChars, msg.focusLastAction),
       'getAccessibilityTree':  () => getAccessibilityTree(msg.depth || 6),
       'getFormFields':         () => getFormFields(),
       'click':                 () => clickElement(msg.selector, msg.coords),
@@ -192,6 +193,9 @@
     if (!handler) return false;
 
     try {
+      if (['click', 'type', 'fill', 'selectOption', 'checkBox', 'keypress', 'submitForm'].includes(msg.action)) {
+        lastActedElement = null;
+      }
       const result = handler();
       if (result && typeof result.then === 'function') {
         // Async handler — keep message channel open
@@ -368,9 +372,12 @@
   }
 
   // Compact accessibility-style view (DOM semantics, not a platform AX tree).
-  function getSnapshot(maxChars) {
+  function getSnapshot(maxChars, focusLastAction) {
+    // Keep the DOM element, not its old ref: starting a snapshot invalidates refs.
+    const target = focusLastAction && lastActedElement?.isConnected ? lastActedElement : null;
+    lastActedElement = null;
     newRefGeneration();
-    const lines = [];
+    const entries = [];
     const limit = Number.isFinite(maxChars) ? Math.max(0, maxChars) : Infinity;
     let size = 0;
     let truncated = false;
@@ -395,15 +402,16 @@
         (el.type === 'image' ? el.alt : '') ||
         (['button', 'submit', 'reset'].includes(el.type) ? el.value : '') || fallback);
     }
-    function visit(el, depth) {
+    function visit(el, depth, parent = -1) {
       if (!el || el.nodeType !== 1 || isHidden(el) ||
           el.getAttribute('aria-hidden') === 'true' ||
           ['SCRIPT', 'STYLE', 'NOSCRIPT', 'SVG'].includes(el.tagName)) return;
       let role = el.getAttribute('role') || landmarks[el.tagName] ||
         (/^H[1-6]$/.test(el.tagName) ? 'heading' : inferRole(el));
-      const include = isInteractiveElement(el) || semanticRoles.has(role);
+      const interactive = isInteractiveElement(el);
+      const include = interactive || semanticRoles.has(role) || el === target;
       if (include) {
-        role = role || (el.isContentEditable ? 'textbox' : 'button');
+        role = role || (el.isContentEditable ? 'textbox' : el === target ? el.tagName.toLowerCase() : 'button');
         const ref = `s${refGeneration}e${refCounter++}`;
         const states = [];
         if (role === 'heading') states.push(`level=${el.getAttribute('aria-level') || el.tagName.slice(1)}`);
@@ -416,18 +424,71 @@
           if (el.hasAttribute(`aria-${state}`)) states.push(`${state}=${el.getAttribute(`aria-${state}`)}`);
         }
         const line = `${'  '.repeat(Math.min(depth, 12))}- ${role} ${JSON.stringify(nameOf(el))} [ref=${ref}]${states.length ? ' [' + states.join(' ') + ']' : ''}`;
-        if (size + line.length + (lines.length ? 1 : 0) > limit) { truncated = true; return; }
-        refMap[ref] = el;
-        lines.push(line);
-        size += line.length + (lines.length > 1 ? 1 : 0);
+        if (!target && size + line.length + (entries.length ? 1 : 0) > limit) { truncated = true; return; }
+        entries.push({ el, ref, line, parent, interactive });
+        parent = entries.length - 1;
+        size += line.length + (entries.length > 1 ? 1 : 0);
       }
       for (const child of el.children) {
         if (truncated) break;
-        visit(child, depth + (include ? 1 : 0));
+        visit(child, depth + (include ? 1 : 0), parent);
       }
     }
     visit(document.body, 0);
-    return { snapshot: lines.join('\n'), ...(truncated ? { truncated: true } : {}) };
+
+    const targetIndex = entries.findIndex(entry => entry.el === target);
+    let selected = entries;
+    if (size > limit) {
+      const kept = new Set();
+      let used = 0;
+      function add(index, withAncestors = true) {
+        const pending = [];
+        for (let i = index; i >= 0 && !kept.has(i); i = withAncestors ? entries[i].parent : -1) {
+          pending.push(i);
+        }
+        const cost = pending.reduce((sum, i) => sum + entries[i].line.length + 1, 0);
+        if (used + cost > limit + 1) return;
+        for (const i of pending) kept.add(i);
+        used += cost;
+      }
+      if (targetIndex >= 0) {
+        // The target's complete line wins even if an unusually small cap cannot fit it.
+        kept.add(targetIndex);
+        used = entries[targetIndex].line.length + 1;
+        const ancestors = [];
+        for (let i = entries[targetIndex].parent; i >= 0; i = entries[i].parent) ancestors.push(i);
+        for (const i of ancestors.reverse()) add(i, false);
+
+        // Prefer immediate siblings and nearby controls on either side of the target.
+        for (const predicate of [
+          entry => entry.parent === entries[targetIndex].parent,
+          entry => entry.interactive,
+        ]) {
+          for (const direction of [-1, 1]) {
+            let count = 0;
+            for (let i = targetIndex + direction; i >= 0 && i < entries.length; i += direction) {
+              if (predicate(entries[i])) {
+                add(i);
+                if (++count === 2) break;
+              }
+            }
+          }
+        }
+      }
+      // With no surviving target this is the usual document-order prefix.
+      for (let i = 0; i < entries.length; i++) {
+        if (targetIndex < 0 && used + entries[i].line.length + 1 > limit + 1) break;
+        add(i);
+      }
+      selected = entries.filter((_, i) => kept.has(i));
+      truncated = selected.length < entries.length;
+    }
+    for (const entry of selected) refMap[entry.ref] = entry.el;
+    return {
+      snapshot: selected.map(entry => entry.line).join('\n'),
+      ...(truncated ? { truncated: true } : {}),
+      ...(targetIndex >= 0 ? { target_ref: entries[targetIndex].ref } : {}),
+    };
   }
 
   // ── Find Elements ──
@@ -503,6 +564,7 @@
       el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
     }
 
+    lastActedElement = el;
     const rect = el.getBoundingClientRect();
     const x = coords ? coords.x : rect.x + rect.width / 2;
     const y = coords ? coords.y : rect.y + rect.height / 2;
@@ -539,6 +601,7 @@
   function typeText(selector, text, clear) {
     const el = resolveElement(selector);
     if (!el) return { error: 'Element not found' };
+    lastActedElement = el;
 
     el.focus();
     
@@ -711,6 +774,7 @@
 
     // Auto-pierce shadow DOM: if element isn't a standard input, look inside shadow root
     const target = getFillTarget(el);
+    lastActedElement = target;
 
     if (target.type === 'checkbox' || target.type === 'radio') {
       target.checked = !!value;
@@ -1391,6 +1455,7 @@
       }
     }
     if (!matched) return { error: `No matching option for ${byText ? 'text' : 'value'}: ${value}` };
+    lastActedElement = el;
     el.value = matched.value;
     el.dispatchEvent(new Event('change', { bubbles: true }));
     el.dispatchEvent(new Event('input', { bubbles: true }));
@@ -1401,6 +1466,7 @@
     const el = resolveElement(selector);
     if (!el) return { error: 'Element not found' };
     if (el.type !== 'checkbox' && el.type !== 'radio') return { error: 'Element is not a checkbox/radio' };
+    lastActedElement = el;
     el.checked = !!checked;
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
@@ -1424,6 +1490,7 @@
   function keypress(selector, key, modifiers, text) {
     const target = selector ? resolveElement(selector) : (document.activeElement || document.body);
     if (!target) return { error: 'No target' };
+    lastActedElement = selector || target !== document.body ? target : null;
     const mods = modifiers || {};
     const opts = {
       key,
@@ -1474,6 +1541,7 @@
     if (selector) {
       const el = resolveElement(selector);
       if (!el) return { error: 'Element not found' };
+      lastActedElement = el;
       form = el.tagName === 'FORM' ? el : el.closest('form');
     } else {
       form = document.querySelector('form');
