@@ -180,11 +180,14 @@ async function handleCommand(command) {
   const result = await dispatchCommand(params);
   if (withSnapshot && result && !result.error && result.ok !== false) {
     try {
-      const snapshot = await forwardToContent('getSnapshot', { tabId: params.tabId, maxChars: 4000 });
+      const snapshot = await forwardToContent('getSnapshot', {
+        tabId: params.tabId, maxChars: 4000, focusLastAction: params.action !== 'navigate',
+      });
       if (snapshot.error) result.snapshot_error = snapshot.error;
       else {
         result.snapshot = snapshot.snapshot;
         if (snapshot.truncated) result.snapshot_truncated = true;
+        if (snapshot.target_ref) result.target_ref = snapshot.target_ref;
       }
     } catch (e) { result.snapshot_error = e.message; }
   }

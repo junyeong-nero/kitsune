@@ -32,6 +32,8 @@ async function testContent() {
   let listener;
   const context = vm.createContext({
     console, crypto: webcrypto, CSS: { escape: x => x }, setTimeout,
+    Event: class { constructor(type, options) { Object.assign(this, { type }, options); } },
+    HTMLInputElement: class {}, HTMLTextAreaElement: class {},
     KeyboardEvent: class { constructor(type, options) { Object.assign(this, { type }, options); } },
     window: { getComputedStyle: () => ({ display: 'block', visibility: 'visible' }) },
     document: { body,
@@ -98,6 +100,127 @@ async function testContent() {
   const capped = await send({ action: 'getSnapshot', maxChars: 4000 });
   assert.ok(capped.snapshot.length <= 4000);
   assert.equal(capped.truncated, true);
+
+  // Exercise the complete action -> capped snapshot path with a target past 4,000 chars.
+  const background = fs.readFileSync('extension/background/background.js', 'utf8');
+  const bridge = vm.createContext({
+    getActiveTabId: async () => 42,
+    dispatchCommand: send,
+    forwardToContent: (action, params) => send({ action, ...params }),
+  });
+  vm.runInContext(background.slice(background.indexOf('const POST_SNAPSHOT_ACTIONS'), background.indexOf('async function dispatchCommand')), bridge);
+  const search = Object.assign(new Element('INPUT', '', { 'aria-label': 'Deep search' }), { value: '', type: 'search' });
+  const before = new Element('BUTTON', 'Previous control');
+  const after = new Element('BUTTON', 'Next control');
+  const nearby = new Element('BUTTON', 'Nearby nested control');
+  const form = new Element('FORM', '', { 'aria-label': 'Search form' }, [before, search, after, new Element('DIV', '', {}, [nearby])]);
+  const deepMain = new Element('MAIN', '', {}, [form]);
+  const leading = Array.from({ length: 100 }, (_, i) => new Element('BUTTON', `Leading ${i} ${'long name '.repeat(12)}`));
+  const trailing = new Element('BUTTON', 'Trailing control');
+  body.children = [...leading, deepMain, trailing];
+  for (const child of body.children) child.parentElement = body;
+  const full = await send({ action: 'getSnapshot' });
+  const oldRef = full.snapshot.match(/searchbox "Deep search" \[ref=(s\d+e\d+)\]/)[1];
+  assert.ok(full.snapshot.indexOf(`ref=${oldRef}`) > 4000);
+  const typed = await bridge.handleCommand({ action: 'type', ref: oldRef, text: 'kitsune', clear: true });
+  assert.equal(typed.ok, true);
+  assert.equal(typed.snapshot_truncated, true);
+  assert.ok(typed.snapshot.length <= 4000);
+  assert.match(typed.target_ref, /^s\d+e\d+$/);
+  assert.notEqual(typed.target_ref, oldRef);
+  assert.ok(typed.snapshot.includes(`    - searchbox "Deep search" [ref=${typed.target_ref}] [value="kitsune"]`));
+  assert.match(typed.snapshot, /- main ""/);
+  assert.match(typed.snapshot, /\n  - form "Search form"/);
+  for (const name of ['Previous control', 'Next control', 'Nearby nested control', 'Leading 0']) {
+    assert.ok(typed.snapshot.includes(name), `includes context and document-order fill: ${name}`);
+  }
+  const fullOrder = full.snapshot.split('\n').map(line => line.replace(/s\d+e\d+/g, 'REF').replace(/value="[^"]*"/g, 'VALUE'));
+  const selectedOrder = typed.snapshot.split('\n').map(line => fullOrder.indexOf(line.replace(/s\d+e\d+/g, 'REF').replace(/value="[^"]*"/g, 'VALUE')));
+  assert.ok(selectedOrder.every((index, i) => index >= 0 && (!i || index > selectedOrder[i - 1])), 'keeps document order and indentation');
+  assert.equal((await send({ action: 'focusElement', selector: oldRef })).error, 'stale ref, call browser_snapshot again');
+  const entered = await bridge.handleCommand({ action: 'keypress', ref: typed.target_ref, key: 'Enter' });
+  assert.equal(entered.ok, true, 'fresh ref works for the next action');
+  assert.ok(entered.snapshot.includes(`[ref=${entered.target_ref}] [value="kitsune"]`));
+
+  // Fill must remember the actual child input, rather than its non-semantic wrapper.
+  context.document.querySelector = selector => selector === '#wrapper' ? form : null;
+  form.querySelector = () => search;
+  const filled = await bridge.handleCommand({ action: 'fill', selector: '#wrapper', value: 'updated' });
+  assert.ok(filled.snapshot.includes(`[ref=${filled.target_ref}] [value="updated"]`));
+
+  // A full snapshot does not inherit action focus, and consumes any remembered target.
+  const ordinary = await send({ action: 'getSnapshot', maxChars: 4000 });
+  assert.equal(ordinary.target_ref, undefined);
+  assert.doesNotMatch(ordinary.snapshot, /Deep search/);
+  assert.equal((await send({ action: 'getSnapshot', maxChars: 4000, focusLastAction: true })).target_ref, undefined);
+
+  const deepCheck = Object.assign(new Element('INPUT', '', { 'aria-label': 'Deep checkbox' }), { type: 'checkbox', checked: false, value: 'on' });
+  form.children.push(deepCheck);
+  deepCheck.parentElement = form;
+  context.document.querySelector = selector => {
+    if (selector === '#checkbox') return deepCheck;
+    return selector === '#search' ? search : null;
+  };
+  const checked = await bridge.handleCommand({ action: 'checkBox', selector: '#checkbox', checked: true });
+  assert.ok(checked.snapshot.includes(`[ref=${checked.target_ref}] [value="on" checked=true]`));
+
+  context.document.activeElement = search;
+  const active = await bridge.handleCommand({ action: 'keypress', key: 'Enter' });
+  assert.ok(active.snapshot.includes(`searchbox "Deep search" [ref=${active.target_ref}]`));
+
+  // Clicks remember the effective interactive ancestor when a coordinate hits its child.
+  const icon = new Element('SPAN', 'Icon');
+  icon.parentElement = after;
+  context.document.elementFromPoint = () => icon;
+  context.MouseEvent = context.KeyboardEvent;
+  after.click = () => {};
+  const clicked = await bridge.handleCommand({ action: 'click', coords: { x: 5, y: 5 } });
+  assert.ok(clicked.snapshot.includes(`button "Next control" [ref=${clicked.target_ref}]`));
+
+  const select = Object.assign(new Element('SELECT', '', { 'aria-label': 'Deep select' }), {
+    value: 'old', options: [{ value: 'new', text: 'New option' }],
+  });
+  form.children.push(select);
+  select.parentElement = form;
+  const querySelector = context.document.querySelector;
+  context.document.querySelector = selector => selector === '#select' ? select : querySelector(selector);
+  const selected = await bridge.handleCommand({ action: 'selectOption', selector: '#select', value: 'new' });
+  assert.ok(selected.snapshot.includes(`combobox "Deep select" [ref=${selected.target_ref}] [value="new"]`));
+
+  search.closest = selector => selector === 'form' ? form : null;
+  form.querySelector = () => after;
+  const formResult = await bridge.handleCommand({ action: 'submitForm', selector: '#search' });
+  assert.ok(formResult.snapshot.includes(`searchbox "Deep search" [ref=${formResult.target_ref}]`));
+
+  // No-target keypress must not reuse the previous action's target.
+  context.document.activeElement = body;
+  const noTarget = await bridge.handleCommand({ action: 'keypress', key: 'Escape' });
+  assert.equal(noTarget.target_ref, undefined);
+  assert.doesNotMatch(noTarget.snapshot, /Deep checkbox/);
+
+  // Removed/hidden targets are not resurrected just to supply a target ref.
+  await send({ action: 'type', selector: '#search', text: 'removed', clear: true });
+  search.isConnected = false;
+  const removed = await send({ action: 'getSnapshot', maxChars: 4000, focusLastAction: true });
+  assert.equal(removed.target_ref, undefined);
+  assert.doesNotMatch(removed.snapshot, /Deep search/);
+  search.isConnected = true;
+  await send({ action: 'type', selector: '#search', text: 'hidden', clear: true });
+  search.hidden = true;
+  const invisible = await send({ action: 'getSnapshot', maxChars: 4000, focusLastAction: true });
+  assert.equal(invisible.target_ref, undefined);
+  assert.doesNotMatch(invisible.snapshot, /Deep search/);
+  search.hidden = false;
+
+  // Uncapped and already-small snapshots also report a valid fresh target ref.
+  await send({ action: 'type', selector: '#search', text: 'uncapped', clear: true });
+  const uncapped = await send({ action: 'getSnapshot', focusLastAction: true });
+  assert.equal(uncapped.truncated, undefined);
+  assert.ok(uncapped.snapshot.includes(`[ref=${uncapped.target_ref}] [value="uncapped"]`));
+  body.children = [deepMain];
+  const small = await bridge.handleCommand({ action: 'type', selector: '#search', text: 'small', clear: true });
+  assert.equal(small.snapshot_truncated, undefined);
+  assert.ok(small.snapshot.includes(`[ref=${small.target_ref}] [value="small"]`));
 }
 
 async function testBackground() {
@@ -108,7 +231,7 @@ async function testBackground() {
     dispatchCommand: async params => { calls.push(params); return actionError ? { error: 'stale ref' } : { ok: true }; },
     forwardToContent: async (action, params) => {
       calls.push({ action, ...params });
-      return snapshotError ? { error: 'restricted page' } : { snapshot: 'tree', truncated: true };
+      return snapshotError ? { error: 'restricted page' } : { snapshot: 'tree', truncated: true, ...(params.focusLastAction ? { target_ref: 's2e100' } : {}) };
     },
   });
   vm.runInContext(source.slice(source.indexOf('const POST_SNAPSHOT_ACTIONS'), source.indexOf('async function dispatchCommand')), context);
@@ -122,6 +245,8 @@ async function testBackground() {
     assert.equal(calls[1].action, 'getSnapshot');
     assert.equal(calls[1].maxChars, 4000);
     assert.equal(calls[1].tabId, 42);
+    assert.equal(calls[1].focusLastAction, action !== 'navigate');
+    assert.equal(result.target_ref, action !== 'navigate' ? 's2e100' : undefined);
   }
   for (const action of ['scroll', 'waitForElement', 'blurElement', 'getHTML', 'getBounds',
                          'getComputedStyle', 'clickAndWaitNavigation', 'getMarkdown']) {
