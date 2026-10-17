@@ -517,7 +517,8 @@
       buttons: 1,
     };
 
-    for (const type of ['pointerover', 'pointerenter', 'pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+    // el.click() below emits the click and performs native activation exactly once.
+    for (const type of ['pointerover', 'pointerenter', 'pointerdown', 'mousedown', 'pointerup', 'mouseup']) {
       const EventCtor = type.startsWith('pointer') && window.PointerEvent ? PointerEvent : MouseEvent;
       el.dispatchEvent(new EventCtor(type, {
         ...eventInit,
