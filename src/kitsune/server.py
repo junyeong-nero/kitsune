@@ -4,7 +4,6 @@ Exposes the Kitsune browser extension (Firefox, Zen and other Gecko browsers)
 as MCP tools. Starts the shared bridge daemon on demand.
 """
 
-import fcntl
 import json
 import math
 import os
@@ -17,6 +16,10 @@ from typing import Literal
 import httpx
 from mcp.server.fastmcp import FastMCP, Image
 from mcp.types import ToolAnnotations
+
+from . import bridge_control
+from .bridge_control import BRIDGE, LOG_FILE, headers as _headers
+from .version import BRIDGE_BUILD
 
 # Annotation hints describe the whole tool, including its most dangerous operation.
 # Idempotence means repeating identical arguments adds no further side effects;
@@ -51,60 +54,43 @@ def tool(group: str, annotations: ToolAnnotations | None = None):
     return decorate
 
 
-HTTP_PORT = int(os.environ.get("KITSUNE_HTTP_PORT", "47651"))
-# IPv4 on purpose: the bridge listens only on 127.0.0.1.
-BRIDGE = f"http://127.0.0.1:{HTTP_PORT}"
-DATA_DIR = os.environ.get("KITSUNE_HOME", os.path.join(os.path.expanduser("~"), ".kitsune"))
-TOKEN_FILE = os.path.join(DATA_DIR, "token")
-LOCK_FILE = os.path.join(DATA_DIR, "bridge.lock")
-LOG_FILE = os.path.join(DATA_DIR, "bridge.log")
 BRIDGE_START_TIMEOUT = 15
 
 
-def _headers() -> dict:
-    """Read the token on every call so a bridge restart that creates it is picked up."""
-    token = os.environ.get("KITSUNE_TOKEN")
-    if not token:
-        try:
-            with open(TOKEN_FILE, encoding="utf-8") as f:
-                token = f.read().strip()
-        except OSError:
-            token = ""
-    return {"Authorization": f"Bearer {token}"} if token else {}
-
-
-def _bridge_alive() -> bool:
-    try:
-        return httpx.get(f"{BRIDGE}/api/status", headers=_headers(), timeout=2).status_code == 200
-    except httpx.HTTPError:
-        return False
+def _bridge_matches(status: dict) -> bool:
+    return status.get("build") == BRIDGE_BUILD or os.environ.get("KITSUNE_NO_BRIDGE_RESTART") == "1"
 
 
 def _ensure_bridge() -> str | None:
-    """Start the bridge daemon if it is not running. Returns an error message on failure.
-
-    Several agents may start at once, so a file lock makes sure only one of
-    them spawns the daemon; the others wait and then reuse it.
-    """
-    if _bridge_alive():
-        return None
-    os.makedirs(DATA_DIR, mode=0o700, exist_ok=True)
-    with open(LOCK_FILE, "w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        if _bridge_alive():
+    """Start or replace the shared bridge, serializing lifecycle changes."""
+    try:
+        status = bridge_control.status()
+        if status is not None and _bridge_matches(status):
             return None
-        with open(LOG_FILE, "ab") as log:
-            subprocess.Popen(
-                [sys.executable, "-m", "kitsune.bridge"],
-                stdin=subprocess.DEVNULL, stdout=log, stderr=log,
-                start_new_session=True,  # outlive this MCP server
-                env={**os.environ, "PYTHONUNBUFFERED": "1"},
-            )
-        deadline = time.monotonic() + BRIDGE_START_TIMEOUT
-        while time.monotonic() < deadline:
-            if _bridge_alive():
-                return None
-            time.sleep(0.3)
+        with bridge_control.lifecycle_lock():
+            # Another MCP server may already have replaced it while we waited.
+            status = bridge_control.status()
+            if status is not None:
+                if _bridge_matches(status):
+                    return None
+                error = bridge_control.stop()
+                if error:
+                    return error
+            with open(LOG_FILE, "ab") as log:
+                subprocess.Popen(
+                    [sys.executable, "-m", "kitsune.bridge"],
+                    stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                    start_new_session=True,  # outlive this MCP server
+                    env={**os.environ, "PYTHONUNBUFFERED": "1"},
+                )
+            deadline = time.monotonic() + BRIDGE_START_TIMEOUT
+            while time.monotonic() < deadline:
+                status = bridge_control.status()
+                if status is not None and status.get("build") == BRIDGE_BUILD:
+                    return None
+                time.sleep(0.3)
+    except (httpx.HTTPError, OSError, ValueError) as exc:
+        return f"Cannot start Kitsune bridge: {exc}. See {LOG_FILE}"
     return f"Kitsune bridge did not start within {BRIDGE_START_TIMEOUT}s. See {LOG_FILE}"
 
 
@@ -1560,7 +1546,9 @@ def browser_batch(commands: list[dict]) -> dict:
 
 def main():
     """Entry point for the Kitsune MCP server."""
-    _ensure_bridge()  # warm start; tools retry if this fails
+    error = _ensure_bridge()  # warm start; tools retry if this fails
+    if error:
+        print(error, file=sys.stderr)
     mcp.run(transport="stdio")
 
 

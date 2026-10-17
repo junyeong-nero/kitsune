@@ -21,7 +21,10 @@ If you solve a new site, add a playbook so future agents benefit.
 ------------------------------------------------------------------------
 """
 
+import argparse
 import asyncio
+import fcntl
+import signal
 import json
 import base64
 import os
@@ -45,8 +48,11 @@ try:
 except ImportError:
     sys.exit("websockets is not installed. Reinstall kitsune with its dependencies.")
 
+from . import bridge_control
+from .version import BRIDGE_BUILD, PACKAGE_VERSION
+
 # ── Config ──
-BRIDGE_VERSION = "2.1.0"
+BRIDGE_VERSION = PACKAGE_VERSION
 API_VERSION = "1"
 HTTP_PORT = int(os.environ.get("KITSUNE_HTTP_PORT", "47651"))
 WS_PORT = int(os.environ.get("KITSUNE_WS_PORT", "47652"))
@@ -1451,6 +1457,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         if not self.authorized():
             return
         routes = {
+            "/api/shutdown": self.handle_shutdown,
             "/api/click": self.handle_click,
             "/api/trusted-click": self.handle_trusted_click,
             "/api/type": self.handle_type,
@@ -1580,11 +1587,17 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "ws_port": WS_PORT,
             "screenshot_dir": SCREENSHOT_DIR,
             "bridge_version": BRIDGE_VERSION,
+            "build": BRIDGE_BUILD,
             "extension_generation": extension_ws_generation,
             "scheduler": _scheduler_snapshot(),
             "keep_alive_tabs": [tid for tid, t in _keep_alive_tasks.items() if not t.done()],
         })
     
+    def handle_shutdown(self):
+        assert loop is not None and shutdown_event is not None
+        self.send_json(200, {"status": "stopping"})
+        loop.call_soon_threadsafe(shutdown_event.set)
+
     def handle_screenshot(self):
         body = self.read_body() if self.command == "POST" else {}
         result = self.run_async(send_to_extension("screenshot", body))
@@ -2185,10 +2198,14 @@ def now():
 # ══════════════════════════════════════════════
 
 loop = None
+shutdown_event = None
 
 async def main():
-    global loop
+    global loop, shutdown_event
     loop = asyncio.get_running_loop()
+    shutdown_event = asyncio.Event()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, shutdown_event.set)
     
     # Start WebSocket server
     # 2.1.0: websockets defaults to a 1 MiB message cap - a full-page screenshot is several MB and the
@@ -2196,54 +2213,94 @@ async def main():
     ws_server = await ws_serve(ws_handler, "127.0.0.1", WS_PORT, max_size=256 * 1024 * 1024)
     print(f"[{now()}] 🔌 WebSocket server on ws://localhost:{WS_PORT}")
     
-    # Start HTTP server in thread
-    http_server = ThreadingHTTPServer(("127.0.0.1", HTTP_PORT), BridgeHandler)
-    http_thread = Thread(target=http_server.serve_forever, daemon=True)
-    http_thread.start()
-    print(f"[{now()}] 🌐 HTTP API server on http://localhost:{HTTP_PORT}")
-    
-    print(f"[{now()}] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    print(f"[{now()}] Kitsune bridge is ready!")
-    print(f"[{now()}] Waiting for extension to connect...")
-    print(f"[{now()}] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    print()
-    print("API Endpoints:")
-    print(f"  GET  http://localhost:{HTTP_PORT}/api/status             - Connection status")
-    print(f"  GET  http://localhost:{HTTP_PORT}/api/screenshot          - Capture page")
-    print(f"  GET  http://localhost:{HTTP_PORT}/api/page-info           - Page metadata")
-    print(f"  GET  http://localhost:{HTTP_PORT}/api/page-text           - Page text content")
-    print(f"  GET  http://localhost:{HTTP_PORT}/api/tabs                - List open tabs")
-    print(f"  GET  http://localhost:{HTTP_PORT}/api/dom                 - Accessibility tree")
-    print(f"  GET  http://localhost:{HTTP_PORT}/api/forms               - Form fields")
-    print(f"  POST http://localhost:{HTTP_PORT}/api/click               - Click element")
-    print(f"  POST http://localhost:{HTTP_PORT}/api/type                - Type text")
-    print(f"  POST http://localhost:{HTTP_PORT}/api/scroll              - Scroll page")
-    print(f"  POST http://localhost:{HTTP_PORT}/api/hover               - Hover element")
-    print(f"  POST http://localhost:{HTTP_PORT}/api/fill                - Fill form field")
-    print(f"  POST http://localhost:{HTTP_PORT}/api/navigate            - Go to URL")
-    print(f"  POST http://localhost:{HTTP_PORT}/api/find                - Find elements")
-    print(f"  POST http://localhost:{HTTP_PORT}/api/js                  - Execute JavaScript")
-    print(f"  POST http://localhost:{HTTP_PORT}/api/highlight           - Highlight element")
-    print(f"  POST http://localhost:{HTTP_PORT}/api/wait-for-element    - Wait for element to appear")
-    print(f"  POST http://localhost:{HTTP_PORT}/api/wait-for-result     - Poll JS expression until non-empty")
-    print(f"  GET  http://localhost:{HTTP_PORT}/api/version             - Bridge/extension version info")
-    print(f"  GET  http://localhost:{HTTP_PORT}/api/workflows           - List available workflows")
-    print(f"  POST http://localhost:{HTTP_PORT}/api/workflow            - Execute a named workflow")
-    print(f"  POST http://localhost:{HTTP_PORT}/api/cache               - Cache control (clear/status/ttl)")
-    print(f"  POST http://localhost:{HTTP_PORT}/api/wake-tab            - Reload a discarded tab and wait for ready")
-    print(f"  POST http://localhost:{HTTP_PORT}/api/keep-alive          - Pin a list of tabs against the Tab Unloader")
-    print(f"  POST http://localhost:{HTTP_PORT}/api/keep-alive-stop     - Stop keep-alive (omit tabIds to stop all)")
-    print()
-    
-    # Keep running
-    await asyncio.Future()
-
-
-def run():
+    http_server = None
     try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print(f"\n[{now()}] Shutting down...")
+        # Start HTTP server in thread
+        http_server = ThreadingHTTPServer(("127.0.0.1", HTTP_PORT), BridgeHandler)
+        http_thread = Thread(target=http_server.serve_forever, daemon=True)
+        http_thread.start()
+        print(f"[{now()}] 🌐 HTTP API server on http://localhost:{HTTP_PORT}")
+    
+        print(f"[{now()}] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print(f"[{now()}] Kitsune bridge is ready!")
+        print(f"[{now()}] Waiting for extension to connect...")
+        print(f"[{now()}] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print()
+        print("API Endpoints:")
+        print(f"  GET  http://localhost:{HTTP_PORT}/api/status             - Connection status")
+        print(f"  GET  http://localhost:{HTTP_PORT}/api/screenshot          - Capture page")
+        print(f"  GET  http://localhost:{HTTP_PORT}/api/page-info           - Page metadata")
+        print(f"  GET  http://localhost:{HTTP_PORT}/api/page-text           - Page text content")
+        print(f"  GET  http://localhost:{HTTP_PORT}/api/tabs                - List open tabs")
+        print(f"  GET  http://localhost:{HTTP_PORT}/api/dom                 - Accessibility tree")
+        print(f"  GET  http://localhost:{HTTP_PORT}/api/forms               - Form fields")
+        print(f"  POST http://localhost:{HTTP_PORT}/api/click               - Click element")
+        print(f"  POST http://localhost:{HTTP_PORT}/api/type                - Type text")
+        print(f"  POST http://localhost:{HTTP_PORT}/api/scroll              - Scroll page")
+        print(f"  POST http://localhost:{HTTP_PORT}/api/hover               - Hover element")
+        print(f"  POST http://localhost:{HTTP_PORT}/api/fill                - Fill form field")
+        print(f"  POST http://localhost:{HTTP_PORT}/api/navigate            - Go to URL")
+        print(f"  POST http://localhost:{HTTP_PORT}/api/find                - Find elements")
+        print(f"  POST http://localhost:{HTTP_PORT}/api/js                  - Execute JavaScript")
+        print(f"  POST http://localhost:{HTTP_PORT}/api/highlight           - Highlight element")
+        print(f"  POST http://localhost:{HTTP_PORT}/api/wait-for-element    - Wait for element to appear")
+        print(f"  POST http://localhost:{HTTP_PORT}/api/wait-for-result     - Poll JS expression until non-empty")
+        print(f"  GET  http://localhost:{HTTP_PORT}/api/version             - Bridge/extension version info")
+        print(f"  GET  http://localhost:{HTTP_PORT}/api/workflows           - List available workflows")
+        print(f"  POST http://localhost:{HTTP_PORT}/api/workflow            - Execute a named workflow")
+        print(f"  POST http://localhost:{HTTP_PORT}/api/cache               - Cache control (clear/status/ttl)")
+        print(f"  POST http://localhost:{HTTP_PORT}/api/wake-tab            - Reload a discarded tab and wait for ready")
+        print(f"  POST http://localhost:{HTTP_PORT}/api/keep-alive          - Pin a list of tabs against the Tab Unloader")
+        print(f"  POST http://localhost:{HTTP_PORT}/api/keep-alive-stop     - Stop keep-alive (omit tabIds to stop all)")
+        print()
+    
+        await shutdown_event.wait()
+
+    finally:
+        if http_server is not None:
+            await asyncio.to_thread(http_server.shutdown)
+            http_server.server_close()
+        ws_server.close()
+        await ws_server.wait_closed()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            loop.remove_signal_handler(sig)
+
+
+def run(argv=None):
+    parser = argparse.ArgumentParser(description="Kitsune shared browser bridge")
+    parser.add_argument("command", nargs="?", choices=("start", "stop", "status"), default="start")
+    args = parser.parse_args(argv)
+    if args.command == "status":
+        try:
+            status = bridge_control.status()
+        except (bridge_control.httpx.HTTPError, ValueError) as exc:
+            parser.exit(1, f"Cannot read Kitsune bridge status: {exc}\n")
+        print(json.dumps(status if status is not None else {"status": "stopped"}, indent=2))
+        return
+    if args.command == "stop":
+        with bridge_control.lifecycle_lock():
+            error = bridge_control.stop()
+        if error:
+            parser.exit(1, error + "\n")
+        print("Kitsune bridge stopped.")
+        return
+
+    # Separate from the short-lived lifecycle lock held by the spawning MCP
+    # server. Keep this inode locked until all network servers have closed.
+    fd = os.open(bridge_control.PID_FILE, os.O_RDWR | os.O_CREAT, 0o600)
+    with os.fdopen(fd, "r+") as pid_file:
+        try:
+            fcntl.flock(pid_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            parser.exit(1, "Kitsune bridge is already running.\n")
+        pid_file.seek(0)
+        pid_file.truncate()
+        pid_file.write(str(os.getpid()))
+        pid_file.flush()
+        try:
+            asyncio.run(main())
+        except KeyboardInterrupt:
+            print(f"\n[{now()}] Shutting down...")
 
 
 if __name__ == "__main__":
