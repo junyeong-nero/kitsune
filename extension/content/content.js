@@ -625,22 +625,53 @@
 
   // ── Scroll ──
   function scrollPage(direction, amount, selector) {
-    const target = selector ? resolveElement(selector) : null;
+    let target = (selector ? resolveElement(selector) : null) || window;
     // amount is pixels; keep this aligned with the MCP tool contract.
     const parsed = Number(amount);
     const dist = Number.isFinite(parsed) ? Math.round(parsed) : 500;
-    const opts = { behavior: 'smooth' };
+    const horizontal = direction === 'left' || direction === 'right';
+    const opts = { behavior: 'instant' };
+    const position = el => el === window
+      ? (horizontal ? window.scrollX : window.scrollY)
+      : (horizontal ? el.scrollLeft : el.scrollTop);
+    const scroll = el => {
+      const before = position(el);
+      if (direction === 'top') {
+        el.scrollTo({ top: 0, ...opts });
+      } else if (direction === 'bottom') {
+        const height = el === window
+          ? Math.max(document.documentElement?.scrollHeight || 0, document.body?.scrollHeight || 0)
+          : el.scrollHeight;
+        el.scrollTo({ top: height, ...opts });
+      } else {
+        const deltas = { up: { top: -dist }, down: { top: dist }, left: { left: -dist }, right: { left: dist } };
+        el.scrollBy({ ...deltas[direction || 'down'], ...opts });
+      }
+      return position(el) - before;
+    };
 
-    if (direction === 'top') {
-      (target || window).scrollTo({ top: 0, ...opts });
-    } else if (direction === 'bottom') {
-      (target || window).scrollTo({ top: document.body.scrollHeight, ...opts });
-    } else {
-      const deltas = { up: { top: -dist }, down: { top: dist }, left: { left: -dist }, right: { left: dist } };
-      (target || window).scrollBy({ ...deltas[direction || 'down'], ...opts });
+    let scrolledBy = scroll(target);
+    // A page may scroll an inner container instead of the document. Try the
+    // nearest scrollable ancestor that can actually move in this direction.
+    if (target === window && !selector && scrolledBy === 0 && (dist !== 0 || direction === 'top' || direction === 'bottom')) {
+      let el = document.elementFromPoint(window.innerWidth / 2, window.innerHeight / 2);
+      for (; el; el = el.parentElement) {
+        if (el === document.scrollingElement) continue;
+        const style = window.getComputedStyle(el);
+        const overflow = horizontal ? style.overflowX : style.overflowY;
+        const hasRange = horizontal ? el.scrollWidth > el.clientWidth : el.scrollHeight > el.clientHeight;
+        if (!/^(auto|scroll)$/.test(overflow) || !hasRange) continue;
+        scrolledBy = scroll(el);
+        if (scrolledBy !== 0) {
+          target = el;
+          break;
+        }
+      }
     }
 
-    return { ok: true, scrollY: window.scrollY, scrollX: window.scrollX, scrolledPx: dist };
+    return { ok: true, scrollY: window.scrollY, scrollX: window.scrollX,
+      scrolled_by: scrolledBy, scrolledPx: scrolledBy,
+      target: target === window ? 'window' : buildSelector(target) };
   }
 
   // ── Hover ──

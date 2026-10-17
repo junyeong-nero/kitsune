@@ -416,12 +416,19 @@ def browser_type(
 
 @tool("core", annotations=ToolAnnotations(title="Scroll", **ACT))
 def browser_scroll(direction: str = "down", amount: int = 500, tab_id: int | None = None) -> dict:
-    """Scroll the page.
+    """Scroll instantly, falling back to a scrollable container at viewport center.
 
     Args:
-        direction: Scroll direction - "up", "down", "left", or "right"
-        amount: Pixels to scroll
+        direction: "up", "down", "left", "right", "top", or "bottom"
+        amount: Pixels to scroll (ignored for top/bottom)
         tab_id: Optional tab to target. Defaults to active tab.
+
+    Returns:
+        scrolled_by: Actual signed pixel movement on the requested axis; 0 is a no-op.
+        target: "window" or a short selector describing the container that scrolled.
+        scrollY, scrollX: Window offsets (even when a container scrolled).
+        scrolledPx: Compatibility alias for scrolled_by; ok indicates command handling,
+            not whether any movement occurred.
     """
     return _post("/api/scroll", _with_tab({"direction": direction, "amount": amount}, tab_id))
 
