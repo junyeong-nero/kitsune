@@ -198,6 +198,8 @@ async function dispatchCommand(command) {
     // Browser-level commands (handled here)
     case 'screenshot':   return await captureScreenshot(params);
     case 'getTabs':      return await getOpenTabs();
+    case 'waitForUrl':   return await waitForTabProperty('url', params);
+    case 'waitForTitle': return await waitForTabProperty('title', params);
     case 'navigate':     return await navigateTab(params.url, params.tabId, params.expectTitle);
     case 'switchTab':    return await switchTab(params.tabId);
     case 'newTab':       return await createTab(params.url);
@@ -280,8 +282,6 @@ async function dispatchCommand(command) {
     case 'submitForm':
     case 'formFill':
     case 'drag':
-    case 'waitForUrl':
-    case 'waitForTitle':
     case 'waitForNetworkIdle':
     case 'captureNetwork':
     case 'watchConsole':
@@ -301,6 +301,68 @@ async function dispatchCommand(command) {
 }
 
 // == Browser Commands ==
+
+// Tab metadata survives document replacement; never send these waits to content.
+async function waitForTabProperty(property, { tabId, pattern, timeout = 10000 }) {
+  try {
+    const re = new RegExp(pattern);
+    if (!Number.isFinite(timeout) || timeout < 0) {
+      return { error: 'timeout must be non-negative milliseconds' };
+    }
+    const targetTabId = tabId ?? await getActiveTabId();
+    if (targetTabId == null) return { error: 'No active tab found' };
+    const start = Date.now();
+    return await new Promise(resolve => {
+      let settled = false;
+      let value = '';
+      let revision = 0;
+      const finish = result => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(deadline);
+        clearInterval(poll);
+        browser.tabs.onUpdated.removeListener(onUpdated);
+        browser.tabs.onRemoved.removeListener(onRemoved);
+        resolve(result);
+      };
+      const checkTab = tab => {
+        value = tab[property] || '';
+        if (re.test(value)) {
+          finish({ ok: true, [property]: value, elapsed: Date.now() - start });
+        }
+      };
+      const check = async () => {
+        const currentRevision = ++revision;
+        try {
+          const tab = await browser.tabs.get(targetTabId);
+          if (!settled && currentRevision === revision) checkTab(tab);
+        } catch (e) {
+          if (!settled && currentRevision === revision) finish({ error: e.message });
+        }
+      };
+      function onUpdated(updatedTabId, changeInfo, tab) {
+        if (updatedTabId !== targetTabId || settled) return;
+        // Ignore older in-flight reads once a newer tab update is available.
+        revision++;
+        if (tab && tab[property] != null) checkTab(tab);
+        else check();
+      }
+      function onRemoved(removedTabId) {
+        if (removedTabId === targetTabId) finish({ error: 'Tab closed while waiting for ' + property });
+      }
+      const deadline = setTimeout(() => {
+        finish({ ok: false, [property]: value, error: 'Timed out' });
+      }, timeout);
+      const poll = setInterval(check, 200);
+      // Subscribe before the initial read so navigation in that gap is not lost.
+      browser.tabs.onUpdated.addListener(onUpdated);
+      browser.tabs.onRemoved.addListener(onRemoved);
+      check();
+    });
+  } catch (e) {
+    return { error: e.message };
+  }
+}
 
 async function captureScreenshot(params = {}) {
   try {

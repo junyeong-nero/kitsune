@@ -517,7 +517,11 @@ def browser_wait_for(
     selector waits for a visible element; text/text_gone match visible page text
     (literal substring); js waits for a non-empty expression result (including
     false/0, matching the bridge semantics). url/title are JavaScript regex
-    patterns. network_idle waits for 500 ms without new resources.
+    patterns checked via tab metadata, so they survive document navigation.
+    Other conditions run in the current document and should be started after
+    navigation. Mixed conditions are rejected; wait for URL/title first, then
+    the desired document condition. network_idle waits for 500 ms without new
+    resources.
     timeout is the maximum wait in milliseconds; it does not limit time sleep.
     """
     conditions = [selector, text, text_gone, js, url, title, time]
@@ -1461,10 +1465,10 @@ def browser_batch(commands: list[dict]) -> dict:
     Args:
         commands: List of command dicts, e.g. [{"action": "navigate", "url": "..."}, {"action": "waitForElement", "selector": ".results", "timeout": 10000}, {"action": "pageText"}]
     """
-    # Use a generous timeout to accommodate waitForElement commands
+    # Allow element and navigation metadata waits to reach their own deadlines.
     max_timeout = 15
     for cmd in commands:
-        if cmd.get("action") == "waitForElement":
+        if cmd.get("action") in ("waitForElement", "waitForUrl", "waitForTitle"):
             ms = cmd.get("timeout", 10000)
             max_timeout = max(max_timeout, (ms / 1000) + 10)
     return _post("/api/batch", {"commands": commands}, timeout=max_timeout)
