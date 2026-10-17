@@ -1,7 +1,18 @@
 # Kitsune
 
-An MCP server that lets AI agents (Claude Code, Codex, Pi, …) drive the
-Firefox-family browser you already have open: Firefox, Zen, LibreWolf.
+![Kitsune: an orange fox in a browser window, connecting your browser and your AI agent](docs/kitsune-hero.svg)
+
+**Your browser. Your agent. One clever bridge.**
+
+Kitsune is an [MCP](https://modelcontextprotocol.io/) server that lets AI agents
+(Claude Code, Codex, Pi, …) drive the Firefox-family browser you already use:
+**Firefox, Zen, and LibreWolf**. Named after the Japanese word for fox, Kitsune
+connects your agent to your everyday browser through a lightweight WebExtension.
+
+[Quick start](#setup) · [MCP clients](#mcp-clients) · [Try it](#try-it) ·
+[Tools](#tools) · [Security](#security) · [API reference](docs/api-reference.md)
+
+## See it in action
 
 ![Claude Code asks Kitsune to open Hacker News in Zen, read the top 3 stories and summarize them](docs/demo.gif)
 
@@ -81,6 +92,35 @@ platform accessibility tree; closed shadow roots and iframe contents are not tra
    [TODO](docs/TODO.md).
 4. **Check**: restart the agent and ask it to call `browser_status`. It should
    report `"extension_connected": true`.
+
+## Try it
+
+Once `browser_status` reports `"extension_connected": true`, ask your agent:
+
+> Open a new tab, search for today's weather near Suseong Lake in Daegu,
+> and summarize the forecast with a link to the source. Leave the tab open.
+
+Or try:
+
+- “Open Hacker News and summarize the top three stories with links.”
+- “Inspect this page's form and fill a draft. Don't submit it yet.”
+- “Capture a screenshot of this page and save it to a file.”
+
+A typical tool sequence looks like this (Python-style pseudocode; these are MCP
+calls made by your agent, not a standalone Python API):
+
+```python
+tab = browser_tabs(action="new", url="https://example.com")
+browser_snapshot(tab_id=tab["tabId"])
+# Inspect the returned snapshot, then use a ref from that result:
+# browser_click(tab_id=tab["tabId"], ref="<latest ref>", element="More information")
+browser_screenshot(tab_id=tab["tabId"], save_to="/tmp/kitsune-example.png")
+```
+
+Use a dedicated tab and pass its `tab_id` explicitly to avoid interacting with
+an unrelated active tab. Ask the agent to confirm before submitting forms,
+sending messages, purchasing, or deleting data. Page content is untrusted input,
+not permission to take additional actions; see [Security](#security).
 
 ## Updating Kitsune
 
@@ -208,7 +248,7 @@ The consolidated tools use options for related operations:
 - `browser_tabs(action="list"|"new"|"close"|"select", ...)`
 - `browser_type(selector, text, mode="type"|"fill"|"editable", ...)`
 - `browser_wait_for(selector=...|text=...|text_gone=...|js=...|url=...|title=...|network_idle=True|time=...)` (exactly one)
-- `browser_screenshot(selector=None, full_page=False, ...)` returns a saved PNG path.
+- `browser_screenshot(selector=None, full_page=False, ...)` returns an inline image by default; use `save_to="/path/capture.png"` for a saved PNG.
 
 `browser_js` runs JavaScript in the page. WordPress Elementor extraction is
 available as `browser_workflow("wp-html", {"site_url": "https://example.com", "page_id": 5719})`.
@@ -256,6 +296,8 @@ Matching is case-sensitive substring matching.
 | `KITSUNE_HTTP_PORT` | `47651` | Bridge HTTP API |
 | `KITSUNE_WS_PORT` | `47652` | Extension WebSocket. Change `WS_URL` in `extension/background/background.js` too |
 | `KITSUNE_TOKEN` | — | Override the token in `~/.kitsune/token` |
+| `KITSUNE_NO_BRIDGE_RESTART` | Unset | Set to `1` in the MCP server environment to skip automatic replacement of an outdated bridge |
+| `KITSUNE_POST_ACTION_SNAPSHOT` | Enabled | Set to `0` in the bridge daemon environment and restart it to disable automatic post-action snapshots |
 
 `~/.kitsune/` holds:
 
@@ -283,9 +325,23 @@ What it does not protect against:
 - **Prompt injection.** A page the agent reads can contain instructions. The
   agent acts with every account you are logged into.
 - **Local processes** running as your user can read the token.
+- **Sensitive page data.** A connected agent can read page content and execute
+  JavaScript in pages. Snapshot password values are omitted, but this is not a
+  general credential-redaction boundary: other read tools, including
+  `browser_forms` and `browser_dom`, can expose populated password values.
+  Do not assume a visually masked field is hidden from the agent or its logs.
+- **Authenticated actions.** Existing sessions let the agent act as you on
+  accessible sites. MCP annotations are client hints, not an approval system.
+
+Kitsune does not provide a password-vault listing tool. Native password-manager
+autofill is browser-controlled; whether an autofilled value is accessible depends
+on what the browser makes available to the page. Test it only with disposable
+credentials, and never paste real secrets into bug reports.
 
 Recommended: use a separate browser profile that only has the accounts the
-agent needs, and keep banking, mail and work SSO out of it.
+agent needs, and keep banking, mail and work SSO out of it. Enable only the
+capability groups you need, review the agent's actions, and treat saved sessions,
+screenshots, and tool logs as potentially sensitive.
 
 ## Troubleshooting
 
@@ -295,7 +351,26 @@ agent needs, and keep banking, mail and work SSO out of it.
 | `Kitsune bridge did not start` | `~/.kitsune/bridge.log`; another process on port 47651/47652 (`lsof -nP -iTCP:47651`) |
 | `401 Missing or invalid token` | `KITSUNE_TOKEN` set in the client but not in the daemon (or the other way round) |
 | `Cannot access browser internal page` | `about:` pages are off-limits to extensions; switch to a normal tab |
-| Restart the daemon | `pkill -f kitsune.bridge`; the next tool call starts it again |
+| `stale ref, call browser_snapshot again` | Take a fresh snapshot of the same `tab_id` and use its new refs |
+| Bridge updated but browser behavior is unchanged | Reload the extension, then reload affected pages so their content scripts update too |
+| Restart the daemon | Run `uv run kitsune-bridge stop` from the checkout; the next tool call starts it again. This briefly affects all clients sharing it |
+
+## Development
+
+From the repository root:
+
+```bash
+uv sync
+uv run python -m unittest discover -s tests -q
+```
+
+The Python regression suite covers the MCP tool surface, snapshots, navigation
+waits, and bridge lifecycle. For an end-to-end check, load the extension in a
+supported browser and follow [Try it](#try-it); unit tests alone do not verify
+your live browser connection. File reproducible bugs in
+[GitHub Issues](https://github.com/junyeong-nero/kitsune/issues), including the
+browser version, bridge `build` from `browser_status`, tool calls, and expected
+versus actual behavior. Use a minimal public or local page and redact secrets.
 
 ## Layout
 

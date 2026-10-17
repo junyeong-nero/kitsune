@@ -1,0 +1,94 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="600" viewBox="0 0 1280 600" fill="none" role="img" aria-labelledby="title description">
+  <title id="title">Kitsune — a clever bridge to your browser</title>
+  <desc id="description">An orange fox with flowing tails sits inside a browser window on a dark green background. Kitsune connects AI agents to the Firefox-family browser you already use.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1280" y2="600" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#101F22"/>
+      <stop offset="1" stop-color="#183C37"/>
+    </linearGradient>
+    <linearGradient id="fur" x1="853" y1="216" x2="1052" y2="437" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFBD73"/>
+      <stop offset="1" stop-color="#EF753E"/>
+    </linearGradient>
+    <linearGradient id="tail" x1="1097" y1="239" x2="886" y2="480" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FEC78B"/>
+      <stop offset="0.55" stop-color="#F28A4C"/>
+      <stop offset="1" stop-color="#CD5437"/>
+    </linearGradient>
+    <radialGradient id="glow">
+      <stop stop-color="#B6D9AE" stop-opacity="0.14"/>
+      <stop offset="1" stop-color="#B6D9AE" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="dots" width="28" height="28" patternUnits="userSpaceOnUse">
+      <circle cx="1" cy="1" r="1" fill="#C5DED0" fill-opacity="0.09"/>
+    </pattern>
+  </defs>
+  <rect width="1280" height="600" rx="24" fill="url(#background)"/>
+  <rect width="1280" height="600" rx="24" fill="url(#dots)"/>
+  <circle cx="985" cy="310" r="330" fill="url(#glow)"/>
+  <path d="M609 376H657Q681 376 681 352V290Q681 266 705 266H742" stroke="#9BBEAB" stroke-opacity="0.45" stroke-width="2" stroke-dasharray="5 8"/>
+  <circle cx="609" cy="376" r="5" fill="#F5A56A"/>
+  <circle cx="742" cy="266" r="5" fill="#F5A56A"/>
+
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+    <rect x="72" y="70" width="178" height="30" rx="15" fill="#C2D5BE" fill-opacity="0.08" stroke="#C2D5BE" stroke-opacity="0.2"/>
+    <circle cx="89" cy="85" r="4" fill="#B9D7A6"/>
+    <text x="103" y="90" font-size="11" font-weight="600" letter-spacing="1.7" fill="#C2D5BE">BROWSER × AGENT</text>
+    <text x="67" y="218" font-size="96" font-weight="750" letter-spacing="-5" fill="#FFF0DC">Kitsune<tspan fill="#F5A56A">.</tspan></text>
+    <text x="73" y="278" font-size="27" font-weight="500" fill="#F4E8D7">Your browser. Your agent.</text>
+    <text x="73" y="316" font-size="27" font-weight="500" fill="#F4E8D7">One clever bridge.</text>
+    <text x="73" y="373" font-size="17" fill="#ADC2B8">An MCP server for the real browser</text>
+    <text x="73" y="400" font-size="17" fill="#ADC2B8">you already have open.</text>
+    <g font-size="13" fill="none">
+      <rect x="73" y="452" width="85" height="32" rx="16" stroke="#607D70" stroke-opacity="0.65"/>
+      <text x="94" y="473" fill="#D3DED0">Firefox</text>
+      <rect x="168" y="452" width="62" height="32" rx="16" stroke="#607D70" stroke-opacity="0.65"/>
+      <text x="187" y="473" fill="#D3DED0">Zen</text>
+      <rect x="240" y="452" width="100" height="32" rx="16" stroke="#607D70" stroke-opacity="0.65"/>
+      <text x="258" y="473" fill="#D3DED0">LibreWolf</text>
+    </g>
+    <text x="73" y="540" font-size="11" letter-spacing="2" fill="#8EA99B">NO WEBDRIVER. JUST YOUR BROWSER.</text>
+  </g>
+
+  <rect x="740" y="108" width="461" height="393" rx="23" fill="#081B19" fill-opacity="0.25"/>
+  <rect x="724" y="92" width="461" height="393" rx="23" fill="#142C2B" stroke="#607F70" stroke-opacity="0.65"/>
+  <path d="M725 145H1184" stroke="#607F70" stroke-opacity="0.4"/>
+  <circle cx="749" cy="119" r="5" fill="#ECA176"/>
+  <circle cx="768" cy="119" r="5" fill="#C6BE8C"/>
+  <circle cx="787" cy="119" r="5" fill="#93B89C"/>
+  <rect x="820" y="106" width="270" height="26" rx="8" fill="#0E2322"/>
+  <text x="842" y="123" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" letter-spacing="0.5" fill="#9FB9AB">Your everyday browser</text>
+  <path d="M1150 113V125M1144 119H1156" stroke="#9FB9AB" stroke-width="1.5" stroke-linecap="round"/>
+  <circle cx="951" cy="316" r="132" stroke="#A1BFA9" stroke-opacity="0.1"/>
+  <circle cx="951" cy="316" r="106" stroke="#A1BFA9" stroke-opacity="0.08"/>
+  <ellipse cx="955" cy="447" rx="146" ry="17" fill="#071A18" fill-opacity="0.5"/>
+
+  <!-- Flowing, flame-like tails evoke the fox spirit without external assets. -->
+  <path d="M948 423C1067 458 1149 382 1126 273C1116 332 1076 344 1048 359C1128 306 1112 239 1072 206C1088 276 1021 300 995 354C1029 283 997 239 972 230C990 302 930 326 920 373Z" fill="url(#tail)"/>
+  <path d="M1126 273C1135 317 1125 352 1106 379C1114 345 1095 339 1081 340C1103 321 1118 302 1126 273Z" fill="#FFE8C8"/>
+  <path d="M1072 206C1099 228 1110 257 1104 283C1097 263 1084 257 1070 261C1076 244 1077 226 1072 206Z" fill="#FFE8C8"/>
+  <path d="M972 230C990 237 1004 257 1006 280C995 266 983 269 975 275C979 260 977 243 972 230Z" fill="#FFE8C8"/>
+  <path d="M939 338C893 345 877 391 865 435C913 461 982 456 1021 425C988 415 977 373 960 350Z" fill="#E77B42"/>
+  <path d="M920 350C910 381 908 408 913 438C937 444 961 441 979 434C946 414 943 380 944 352Z" fill="#FFE8C8"/>
+  <!-- Angular ears, soft cheeks, and closed eyes form the Kitsune mascot. -->
+  <path d="M835 290L823 200L891 238C917 228 945 228 971 238L1032 200L1023 294L964 352Q932 380 899 351Z" fill="url(#fur)"/>
+  <path d="M837 225L845 274L874 246Z" fill="#763E36"/>
+  <path d="M1018 225L983 247L1010 275Z" fill="#763E36"/>
+  <path d="M835 290C866 289 892 305 929 338C913 357 901 358 887 346Z" fill="#FFF0DC"/>
+  <path d="M1023 294C991 286 963 309 929 338C941 358 955 359 971 345Z" fill="#FFF0DC"/>
+  <path d="M862 294Q877 310 893 297M965 297Q981 310 996 294" stroke="#343D33" stroke-width="5" stroke-linecap="round"/>
+  <path d="M918 332Q929 327 940 332L932 342Q929 345 926 342Z" fill="#343D33"/>
+  <path d="M929 344V351" stroke="#343D33" stroke-width="2.5" stroke-linecap="round"/>
+  <path d="M928 262L934 275L928 288L922 275Z" fill="#FFE8C8"/>
+
+  <g stroke="#BBD0B3" stroke-width="2" stroke-linecap="round">
+    <path d="M790 191V205M783 198H797"/>
+    <path d="M1126 411V425M1119 418H1133"/>
+    <path d="M1094 174V182M1090 178H1098"/>
+  </g>
+  <circle cx="797" cy="385" r="3" fill="#F5A56A"/>
+  <circle cx="1142" cy="227" r="3" fill="#F5A56A"/>
+  <rect x="889" y="470" width="133" height="29" rx="14.5" fill="#D4E1C9"/>
+  <circle cx="906" cy="484.5" r="3.5" fill="#47745B"/>
+  <text x="919" y="489" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="600" fill="#254537">Bridge connected</text>
+</svg>
