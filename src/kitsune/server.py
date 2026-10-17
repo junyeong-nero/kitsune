@@ -415,8 +415,14 @@ def browser_type(
 
 
 @tool("core", annotations=ToolAnnotations(title="Scroll", **ACT))
-def browser_scroll(direction: str = "down", amount: int = 500, tab_id: int | None = None) -> dict:
-    """Scroll instantly, falling back to a scrollable container at viewport center.
+def browser_scroll(
+    direction: str = "down", amount: int = 500, tab_id: int | None = None,
+    selector: str | None = None, ref: str | None = None, element: str | None = None,
+) -> dict:
+    """Prefer ref from browser_snapshot; element is an audit-only description.
+
+    Scroll the target instantly. Without selector/ref, scroll the window,
+    falling back to a scrollable container at viewport center.
 
     Args:
         direction: "up", "down", "left", "right", "top", or "bottom"
@@ -430,7 +436,9 @@ def browser_scroll(direction: str = "down", amount: int = 500, tab_id: int | Non
         scrolledPx: Compatibility alias for scrolled_by; ok indicates command handling,
             not whether any movement occurred.
     """
-    return _post("/api/scroll", _with_tab({"direction": direction, "amount": amount}, tab_id))
+    body = {"direction": direction, "amount": amount}
+    if selector: body["selector"] = selector
+    return _post("/api/scroll", _with_tab(_target(body, ref, element), tab_id))
 
 
 @tool("core", annotations=ToolAnnotations(title="Hover", **ACT))
@@ -518,10 +526,13 @@ def browser_wait_for(
     url: str | None = None, title: str | None = None,
     network_idle: bool = False, time: float | None = None,
     timeout: int = 10000, tab_id: int | None = None,
+    ref: str | None = None, element: str | None = None,
 ) -> dict:
     """Wait for exactly one condition, or sleep for time seconds.
 
-    selector waits for a visible element; text/text_gone match visible page text
+    Prefer ref from browser_snapshot; element is an audit-only description.
+    selector/ref waits for a visible element (ref takes precedence if both are
+    supplied); text/text_gone match visible page text
     (literal substring); js waits for a non-empty expression result (including
     false/0, matching the bridge semantics). url/title are JavaScript regex
     patterns checked via tab metadata, so they survive document navigation.
@@ -531,9 +542,10 @@ def browser_wait_for(
     resources.
     timeout is the maximum wait in milliseconds; it does not limit time sleep.
     """
-    conditions = [selector, text, text_gone, js, url, title, time]
-    if sum(value is not None for value in conditions) + bool(network_idle) != 1:
-        return {"error": "Provide exactly one of selector, text, text_gone, js, url, title, network_idle, time"}
+    element_condition = selector is not None or ref is not None
+    conditions = [text, text_gone, js, url, title, time]
+    if element_condition + sum(value is not None for value in conditions) + bool(network_idle) != 1:
+        return {"error": "Provide exactly one of selector/ref, text, text_gone, js, url, title, network_idle, time"}
     if timeout <= 0:
         return {"error": "timeout must be positive"}
     if time is not None:
@@ -542,9 +554,10 @@ def browser_wait_for(
         _sleep(time)
         return {"ok": True, "slept": time}
     body = {"timeout": timeout}
-    if selector is not None:
+    if element_condition:
         endpoint = "/api/wait-for-element"
         body.update(selector=selector, pollInterval=200)
+        _target(body, ref, element)
     elif text is not None or text_gone is not None:
         if (text if text is not None else text_gone) == "":
             return {"error": "text/text_gone must be non-empty"}
@@ -731,9 +744,15 @@ def browser_query(
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Read element HTML", **READ))
-def browser_html(selector: str, tab_id: int | None = None) -> dict:
-    """Return the outerHTML of a specific element. Cap 100KB."""
-    return _post("/api/html", _with_tab({"selector": selector}, tab_id))
+def browser_html(
+    selector: str = "", tab_id: int | None = None,
+    ref: str | None = None, element: str | None = None,
+) -> dict:
+    """Prefer ref from browser_snapshot; element is an audit-only description.
+
+    Return the outerHTML of a specific element. Cap 100KB.
+    """
+    return _post("/api/html", _with_tab(_target({"selector": selector}, ref, element), tab_id))
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Read page links", **READ))
@@ -761,19 +780,29 @@ def browser_structured_data(tab_id: int | None = None) -> dict:
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Read element bounds", **READ))
-def browser_bounds(selector: str, tab_id: int | None = None) -> dict:
-    """Return getBoundingClientRect + viewport/page sizes for an element."""
-    return _post("/api/bounds", _with_tab({"selector": selector}, tab_id))
+def browser_bounds(
+    selector: str = "", tab_id: int | None = None,
+    ref: str | None = None, element: str | None = None,
+) -> dict:
+    """Prefer ref from browser_snapshot; element is an audit-only description.
+
+    Return getBoundingClientRect + viewport/page sizes for an element.
+    """
+    return _post("/api/bounds", _with_tab(_target({"selector": selector}, ref, element), tab_id))
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Computed style", **READ))
 def browser_computed_style(
-    selector: str, properties: list[str] | None = None, tab_id: int | None = None
+    selector: str = "", properties: list[str] | None = None, tab_id: int | None = None,
+    ref: str | None = None, element: str | None = None,
 ) -> dict:
-    """Return computed CSS for an element. Defaults to the layout-relevant set."""
+    """Prefer ref from browser_snapshot; element is an audit-only description.
+
+    Return computed CSS for an element. Defaults to the layout-relevant set.
+    """
     body = {"selector": selector}
     if properties: body["properties"] = properties
-    return _post("/api/computed-style", _with_tab(body, tab_id))
+    return _post("/api/computed-style", _with_tab(_target(body, ref, element), tab_id))
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Extract readable article", **READ))
@@ -788,11 +817,17 @@ def browser_readability(tab_id: int | None = None) -> dict:
 
 
 @tool("core", annotations=ToolAnnotations(title="Read page as Markdown", **READ))
-def browser_markdown(selector: str | None = None, tab_id: int | None = None) -> dict:
-    """Convert the page (or a selector subtree) to Markdown. Cap 80KB."""
+def browser_markdown(
+    selector: str | None = None, tab_id: int | None = None,
+    ref: str | None = None, element: str | None = None,
+) -> dict:
+    """Prefer ref from browser_snapshot; element is an audit-only description.
+
+    Convert the page (or a selector/ref subtree) to Markdown. Cap 80KB.
+    """
     body = {}
     if selector: body["selector"] = selector
-    return _post("/api/markdown", _with_tab(body, tab_id))
+    return _post("/api/markdown", _with_tab(_target(body, ref, element), tab_id))
 
 
 @tool("devtools", annotations=ToolAnnotations(title="List page iframes", **READ))
@@ -843,11 +878,17 @@ def browser_focus(selector: str = "", tab_id: int | None = None, ref: str | None
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Blur", **ACT))
-def browser_blur(selector: str | None = None, tab_id: int | None = None) -> dict:
-    """Blur an element (or document.activeElement if no selector)."""
+def browser_blur(
+    selector: str | None = None, tab_id: int | None = None,
+    ref: str | None = None, element: str | None = None,
+) -> dict:
+    """Prefer ref from browser_snapshot; element is an audit-only description.
+
+    Blur an element (or document.activeElement if no selector/ref).
+    """
     body = {}
     if selector: body["selector"] = selector
-    return _post("/api/blur", _with_tab(body, tab_id))
+    return _post("/api/blur", _with_tab(_target(body, ref, element), tab_id))
 
 
 @tool("core", annotations=ToolAnnotations(title="Keypress", **ACT))
@@ -857,14 +898,19 @@ def browser_keypress(
     modifiers: dict | None = None,
     text: str | None = None,
     tab_id: int | None = None,
+    ref: str | None = None,
+    element: str | None = None,
 ) -> dict:
-    """Dispatch a synthetic keyboard event. Use modifiers like
+    """Prefer ref from browser_snapshot; element is an audit-only description.
+
+    Dispatch a synthetic keyboard event. Use modifiers like
     `{"ctrl": True, "shift": True}`. Pass `text` to also insert characters
     into editable targets.
 
     Args:
         key: Key name, e.g. "Enter", "Tab", "Escape", "ArrowDown", "a".
-        selector: Optional element to target. Defaults to document.activeElement.
+        selector: Optional CSS target; ref takes precedence. Without either,
+            defaults to document.activeElement (or document.body).
         modifiers: {"ctrl"|"shift"|"alt"|"meta": True}.
         text: If set, also insert this text into editable targets.
     """
@@ -872,7 +918,7 @@ def browser_keypress(
     if selector: body["selector"] = selector
     if modifiers: body["modifiers"] = modifiers
     if text is not None: body["text"] = text
-    return _post("/api/keypress", _with_tab(body, tab_id))
+    return _post("/api/keypress", _with_tab(_target(body, ref, element), tab_id))
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Double click", **ACT))
@@ -884,11 +930,18 @@ def browser_double_click(selector: str = "", tab_id: int | None = None, ref: str
 
 
 @tool("core", annotations=ToolAnnotations(title="Submit form", **DESTRUCTIVE))
-def browser_submit_form(selector: str | None = None, tab_id: int | None = None) -> dict:
-    """Submit a form. If selector is omitted, submits the first <form> found."""
+def browser_submit_form(
+    selector: str | None = None, tab_id: int | None = None,
+    ref: str | None = None, element: str | None = None,
+) -> dict:
+    """Prefer ref from browser_snapshot; element is an audit-only description.
+
+    Submit the target form (or the target element's enclosing form).
+    Without selector/ref, submit the first <form> found.
+    """
     body = {}
     if selector: body["selector"] = selector
-    return _post("/api/submit-form", _with_tab(body, tab_id))
+    return _post("/api/submit-form", _with_tab(_target(body, ref, element), tab_id))
 
 
 @tool("core", annotations=ToolAnnotations(title="Form fill", **ACT))
@@ -920,16 +973,19 @@ def browser_drag(
 
 @tool("devtools", annotations=ToolAnnotations(title="Click and wait navigation", **ACT))
 def browser_click_and_wait_navigation(
-    selector: str, timeout: int = 15000, tab_id: int | None = None
+    selector: str = "", timeout: int = 15000, tab_id: int | None = None,
+    ref: str | None = None, element: str | None = None,
 ) -> dict:
-    """Click an element, then wait for the resulting navigation to complete.
+    """Prefer ref from browser_snapshot; element is an audit-only description.
+
+    Click an element, then wait for the resulting navigation to complete.
 
     Atomic operation — far more reliable than `browser_click` followed by
     `browser_wait_for_url` for links/submit buttons. Listens for
     tabs.onUpdated(status='complete')."""
     return _post(
         "/api/click-and-wait-navigation",
-        _with_tab({"selector": selector, "timeout": timeout}, tab_id),
+        _with_tab(_target({"selector": selector, "timeout": timeout}, ref, element), tab_id),
         timeout=(timeout / 1000) + 10,
     )
 

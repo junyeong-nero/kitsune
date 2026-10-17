@@ -3,6 +3,24 @@
 Before: 106 tools registered by default. After: 30 default tools, 95 with
 `KITSUNE_CAPS=all`. The HTTP bridge and extension command surface is unchanged.
 
+## Element targeting
+
+Single-element tools accept `ref=None` from `browser_snapshot` and
+`element=None` (an audit-only description). Refs take precedence over CSS
+selectors; descriptions never locate elements. The ref surface includes
+`browser_keypress`, `browser_submit_form`, `browser_scroll`, `browser_wait_for`,
+`browser_blur`, `browser_html`, `browser_bounds`, `browser_computed_style`,
+`browser_click_and_wait_navigation`, and `browser_markdown`, as well as the
+existing click/type/hover/highlight/select/check/focus/double-click/drag/screenshot
+tools. `browser_scroll` additionally accepts `selector=None` to target a container
+without changing its existing positional arguments. In `browser_wait_for`,
+selector/ref is one condition and cannot be combined with other wait conditions.
+See [API reference](api-reference.md#element-targets) for parameters and defaults.
+
+Collection/selector-diagnostic tools (`browser_query`, `browser_explain_selector`)
+and the specialized OS-click/file-upload tools (`browser_trusted_click`,
+`browser_upload_file`) retain their existing selector interfaces.
+
 ## Before (106)
 
 - `browser_audit`

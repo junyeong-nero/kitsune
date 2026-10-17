@@ -16,6 +16,8 @@ class Element {
   removeAttribute(key) { delete this.attrs[key]; }
   closest() { return null; }
   focus() { this.focused = true; }
+  blur() { this.blurred = true; }
+  dispatchEvent(event) { (this.events ??= []).push(event); return true; }
   getBoundingClientRect() { return { x: 0, y: 0, width: 100, height: 30 }; }
 }
 
@@ -29,11 +31,15 @@ async function testContent() {
   const body = new Element('BODY', '', {}, [new Element('DIV', 'Prose should not appear'), main]);
   let listener;
   const context = vm.createContext({
-    console, crypto: webcrypto, CSS: { escape: x => x },
+    console, crypto: webcrypto, CSS: { escape: x => x }, setTimeout,
+    KeyboardEvent: class { constructor(type, options) { Object.assign(this, { type }, options); } },
     window: { getComputedStyle: () => ({ display: 'block', visibility: 'visible' }) },
     document: { body,
       getElementById: id => id === 'email-label' ? { textContent: 'Email address' } : null,
-      querySelector: selector => selector === '#login' ? button : null,
+      querySelector: selector => {
+        if (selector === '[') throw new Error('Invalid CSS selector');
+        return selector === '#login' ? button : null;
+      },
       querySelectorAll: selector => selector === 'button' ? [button] : [button, input, checkbox],
     },
     browser: { runtime: { onMessage: { addListener: fn => { listener = fn; } },
@@ -50,6 +56,24 @@ async function testContent() {
   const ref = first.snapshot.match(/button "Log in" \[ref=(s\d+e\d+)\]/)[1];
   assert.equal((await send({ action: 'focusElement', selector: ref })).ok, true);
   assert.equal(button.focused, true);
+  const waited = await send({ action: 'waitForElement', selector: ref });
+  assert.equal(waited.ok, true);
+  assert.equal(waited.tag, 'button');
+  assert.match(waited.ref, /^s\d+e\d+$/);
+  assert.equal((await send({ action: 'waitForElement', selector: '#login' })).ok, true);
+  assert.equal((await send({ action: 'waitForElement', selector: '[' })).error, 'Invalid CSS selector');
+  assert.equal((await send({ action: 'keypress', selector: ref, key: 'Enter', modifiers: { ctrl: true } })).ok, true);
+  assert.deepEqual(button.events.map(event => event.type), ['keydown', 'keyup']);
+  assert.equal(button.events[0].ctrlKey, true);
+  assert.equal((await send({ action: 'blurElement', selector: ref })).ok, true);
+  assert.equal(button.blurred, true);
+  let submitted = false;
+  button.closest = selector => selector === 'form' ? {
+    querySelector: () => ({ click: () => { submitted = true; } }),
+  } : null;
+  assert.equal((await send({ action: 'submitForm', selector: ref })).ok, true);
+  assert.equal(submitted, true);
+  assert.equal((await send({ action: 'getMarkdown', selector: ref })).markdown, 'Log in');
   const marker = await send({ action: 'markScreenshotTarget', selector: ref });
   assert.equal(button.hasAttribute(marker.attribute), true);
   const found = (await send({ action: 'find', query: 'button' })).results[0].ref;
@@ -57,7 +81,14 @@ async function testContent() {
   assert.equal((await send({ action: 'focusElement', selector: found })).ok, true);
   button.isConnected = false;
   assert.equal((await send({ action: 'focusElement', selector: ref })).error, 'stale ref, call browser_snapshot again');
+  assert.equal((await send({ action: 'waitForElement', selector: ref })).error, 'stale ref, call browser_snapshot again');
   button.isConnected = true;
+  button.hidden = true;
+  const pendingWait = send({ action: 'waitForElement', selector: ref, pollInterval: 1 });
+  button.isConnected = false;
+  assert.equal((await pendingWait).error, 'stale ref, call browser_snapshot again');
+  button.isConnected = true;
+  button.hidden = false;
   await send({ action: 'getAccessibilityTree', depth: 6 });
   for (const stale of [ref, found, 'r0']) {
     assert.equal((await send({ action: 'focusElement', selector: stale })).error, 'stale ref, call browser_snapshot again');
@@ -92,6 +123,17 @@ async function testBackground() {
     assert.equal(calls[1].maxChars, 4000);
     assert.equal(calls[1].tabId, 42);
   }
+  for (const action of ['scroll', 'waitForElement', 'blurElement', 'getHTML', 'getBounds',
+                         'getComputedStyle', 'clickAndWaitNavigation', 'getMarkdown']) {
+    calls = [];
+    await context.handleCommand({ action, selector: '#fallback', ref: 's1e0', element: 'audit only' });
+    assert.equal(calls[0].selector, 's1e0');
+    assert.equal(calls[0].element, 'audit only');
+    assert.equal(calls.length, 1);
+  }
+  calls = [];
+  await context.handleCommand({ action: 'keypress', element: '#not-a-selector', includeSnapshot: false });
+  assert.equal(calls[0].selector, undefined, 'audit descriptions never become selectors');
   calls = [];
   assert.equal((await context.handleCommand({ action: 'click', includeSnapshot: false })).snapshot, undefined);
   assert.equal(calls.length, 1);

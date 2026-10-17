@@ -3,7 +3,7 @@
 
 (function() {
   'use strict';
-  const CONTENT_VERSION = 18;
+  const CONTENT_VERSION = 19;
   if (window.__claudeBridgeVersion >= CONTENT_VERSION) return;
   window.__claudeBridgeVersion = CONTENT_VERSION;
 
@@ -889,7 +889,15 @@
 
     return new Promise((resolve) => {
       function poll() {
-        const el = document.querySelector(selector);
+        let el;
+        try {
+          // Preserve native CSS selector errors while resolving snapshot refs.
+          el = /^(?:s\d+e\d+|r\d+)$/.test(selector)
+            ? resolveElement(selector) : document.querySelector(selector);
+        } catch (e) {
+          resolve({ error: e.message });
+          return;
+        }
         if (el && !isHidden(el)) {
           const elapsed = Date.now() - start;
           const ref = `s${refGeneration}e${refCounter++}`;
@@ -1302,7 +1310,7 @@
 
   // ── Markdown export (in-house, DOM walker) ──
   function getMarkdown(selector) {
-    const root = selector ? document.querySelector(selector) : document.body;
+    const root = selector ? resolveElement(selector) : document.body;
     if (!root) return { error: 'Element not found' };
     function walk(node, depth) {
       if (node.nodeType === 3) return node.textContent.replace(/\s+/g, ' ');

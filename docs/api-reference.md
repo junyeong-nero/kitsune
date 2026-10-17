@@ -11,6 +11,35 @@ See [README](../README.md#tools) for the complete tool list per group.
 The bridge endpoints below remain available unchanged; MCP tool names and
 parameters are separate from HTTP endpoint names and JSON command actions.
 
+### Element targets
+
+For single-element tools, prefer `ref` from `browser_snapshot` over a CSS
+`selector`. When both are supplied, `ref` takes precedence, as for `browser_click`.
+`element` is an audit-only human description, never a selector or fallback target.
+A stale/disconnected ref returns an error; take another snapshot to refresh it.
+Existing positional selector arguments remain supported.
+
+These tools also accept refs (all new parameters are optional):
+
+| MCP tool | Parameters |
+|---|---|
+| `browser_keypress` | `key, selector=None, modifiers=None, text=None, tab_id=None, ref=None, element=None` |
+| `browser_submit_form` | `selector=None, tab_id=None, ref=None, element=None` |
+| `browser_scroll` | `direction="down", amount=500, tab_id=None, selector=None, ref=None, element=None` |
+| `browser_blur` | `selector=None, tab_id=None, ref=None, element=None` |
+| `browser_html`, `browser_bounds` | `selector="", tab_id=None, ref=None, element=None` |
+| `browser_computed_style` | `selector="", properties=None, tab_id=None, ref=None, element=None` |
+| `browser_click_and_wait_navigation` | `selector="", timeout=15000, tab_id=None, ref=None, element=None` |
+| `browser_markdown` | `selector=None, tab_id=None, ref=None, element=None` |
+
+Without selector/ref, keypress targets the active element (or body), blur targets
+the active element, submit-form submits the first form, and Markdown reads the
+whole page. Submit-form can target a form or an element inside it. Scroll accepts
+an explicit container selector/ref; otherwise it scrolls the window and falls
+back to a scrollable container at viewport center. HTML, bounds, computed-style,
+and click-and-wait-navigation require a selector or ref for a successful action.
+See `browser_wait_for` below for its element condition.
+
 ### `browser_tabs(action="list", tab_id=None, url=None, force=False, raw=False)`
 
 Replaces `browser_new_tab`, `browser_close_tab`, and `browser_switch_tab`.
@@ -25,7 +54,7 @@ viewer for new tabs. Options for other actions are ignored.
 Replaces the duplicate `browser_page_text_by_tab_id`. Uses GET `/api/page-text`
 for the active tab or POST to the same endpoint with `tabId` for a specific tab.
 
-### `browser_type(selector, text, mode="type", clear=False, tab_id=None)`
+### `browser_type(selector="", text="", mode="type", clear=False, tab_id=None, ref=None, element=None)`
 
 Replaces `browser_fill` and `browser_set_editable_content`.
 
@@ -39,17 +68,20 @@ Editable mode sends `format="text"`. Callers migrating from the old editor tool
 should pass `clear=True` to retain its replace-by-default behavior. For trusted
 HTML insertion use `browser_js`; the underlying endpoint still accepts `format="html"`.
 
-### `browser_wait_for(selector=None, text=None, text_gone=None, js=None, url=None, title=None, network_idle=False, time=None, timeout=10000, tab_id=None)`
+### `browser_wait_for(selector=None, text=None, text_gone=None, js=None, url=None, title=None, network_idle=False, time=None, timeout=10000, tab_id=None, ref=None, element=None)`
 
 Replaces `browser_wait_for_element`, `browser_wait_for_result`,
 `browser_wait_for_url`, `browser_wait_for_title`, and `browser_wait_for_network_idle`.
 Exactly one condition must be supplied, including `time=0` or an empty string.
-`network_idle=False` does not count as a condition. Invalid combinations return
-an error before contacting the bridge. `timeout` must be positive.
+`network_idle=False` does not count as a condition. `selector` and/or `ref` count
+as one element condition (ref takes precedence); combining it with text, URL,
+sleep, or any other condition is invalid. `element` alone is not a condition.
+Invalid combinations return an error before contacting the bridge.
+`timeout` must be positive.
 
 | Condition | Meaning | Bridge endpoint |
 |---|---|---|
-| `selector` | Wait for a visible CSS element, poll every 200 ms | `/api/wait-for-element` |
+| `selector` / `ref` | Wait for a visible element, poll every 200 ms | `/api/wait-for-element` |
 | `text`, `text_gone` | Literal substring of `document.body.innerText` appears/disappears, poll every 500 ms | `/api/wait-for-result` |
 | `js` | Expression returns a non-empty result, poll every 500 ms | `/api/wait-for-result` |
 | `url`, `title` | JavaScript regex pattern matches | `/api/wait-for-url`, `/api/wait-for-title` |
@@ -60,12 +92,12 @@ an error before contacting the bridge. `timeout` must be positive.
 bridge non-empty-result semantics: `false` and `0` count as results; return
 `null` or an empty string while waiting for a predicate. Text waits use POST `/api/wait-for-text`.
 
-### `browser_screenshot(selector=None, full_page=False, tab_id=None, save_to=None, data_url=False)`
+### `browser_screenshot(selector=None, full_page=False, tab_id=None, save_to=None, data_url=False, ref=None, element=None)`
 
 Replaces `browser_element_screenshot` and `browser_full_page_screenshot`.
 Returns `[Image, metadata]` (MCP image content) by default; `save_to` writes the
 full PNG and returns metadata with `saved_to` instead, and `data_url=True` adds the
-raw PNG data URL. `selector` and `full_page=True` are mutually exclusive.
+raw PNG data URL. `selector`/`ref` and `full_page=True` are mutually exclusive.
 
 - Default: viewport capture via POST `/api/screenshot`. A supplied `tab_id`
   selects that tab and focuses its window before capture.
@@ -147,7 +179,7 @@ Without that flag, return full PNG data. Element requests require `selector` and
 accept `tabId` and `scale` (1–4); full-page requests accept `tabId`. Captures retain
 existing canvas and scroll/segment limits and can truncate very large documents.
 
-MCP tool `browser_screenshot(selector=None, full_page=False, tab_id=None, save_to=None, data_url=False)`
+MCP tool `browser_screenshot(selector=None, full_page=False, tab_id=None, save_to=None, data_url=False, ref=None, element=None)`
 returns `[Image, metadata]` by default, giving the model actual MCP image content.
 `save_to` writes a full PNG and returns metadata with `saved_to` instead.
 `data_url=True` returns raw PNG data in metadata.
@@ -235,7 +267,8 @@ Returns `{ "ok": true, "tabId": 123 }`
 Handles shadow DOM, React/Vue state, with automatic fallbacks.
 
 ### POST /api/scroll
-`{ "direction": "down", "amount": 500 }`
+`{ "direction": "down", "amount": 500 }` — optional container `selector` or `ref`;
+`element` is an audit-only description.
 
 ### POST /api/hover
 `{ "selector": "a.link" }`
