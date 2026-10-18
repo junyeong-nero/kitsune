@@ -344,7 +344,8 @@
       if (text) node.text = text;
       if (el.name) node.name = el.name;
       if (el.type && el.tagName === 'INPUT') node.type = el.type;
-      if (el.value && isInteractive) node.value = String(el.value).slice(0, 80);
+      if (isSensitiveField(el)) Object.assign(node, redactedValue(el));
+      else if (el.value && isInteractive) node.value = String(el.value).slice(0, 80);
       if (el.placeholder) node.placeholder = el.placeholder;
       if (el.href) node.href = el.href.slice(0, 200);
       if (el.ariaLabel) node.label = el.ariaLabel;
@@ -474,7 +475,7 @@
         const ref = `s${refGeneration}e${refCounter++}`;
         const states = [];
         if (role === 'heading') states.push(`level=${el.getAttribute('aria-level') || el.tagName.slice(1)}`);
-        if ('value' in el && el.type !== 'password') states.push(`value=${JSON.stringify(clean(el.value))}`);
+        if ('value' in el && !isSensitiveField(el)) states.push(`value=${JSON.stringify(clean(el.value))}`);
         if (el.type === 'checkbox' || el.type === 'radio' || el.hasAttribute('aria-checked')) {
           states.push(`checked=${el.getAttribute('aria-checked') || !!el.checked}`);
         }
@@ -628,7 +629,8 @@
       [el.alt, 3],
       [el.id, 3],
       [el.name, 2],
-      [el.value, 2],
+      // Matching on a password would let queries probe its value.
+      [isSensitiveField(el) ? '' : el.value, 2],
     ];
     for (const [val, weight] of fields) {
       if (val && String(val).toLowerCase().includes(query)) score += weight;
@@ -976,7 +978,7 @@
         name: el.name || '',
         id: el.id || '',
         placeholder: el.placeholder || '',
-        value: (el.value || '').slice(0, 100),
+        ...(isSensitiveField(el) ? redactedValue(el) : { value: (el.value || '').slice(0, 100) }),
         label: findLabel(el),
         required: el.required,
         selector: buildSelector(el),
@@ -1197,6 +1199,16 @@
     return map[el.tagName] || '';
   }
 
+  // Structural reads never return password values or lengths; browser_js is a
+  // separate, unrestricted trust boundary.
+  function isSensitiveField(el) {
+    return el.tagName === 'INPUT' && el.type === 'password';
+  }
+
+  function redactedValue(el) {
+    return { redacted: true, hasValue: !!el.value };
+  }
+
   function directText(el) {
     let t = '';
     for (const n of el.childNodes) {
@@ -1254,6 +1266,7 @@
           if (f === 'text') row.text = (el.innerText || el.textContent || '').trim().slice(0, 400);
           else if (f === 'html') row.html = el.innerHTML.slice(0, 4000);
           else if (f === 'href') row.href = el.href || el.getAttribute('href') || undefined;
+          else if (f === 'value' && isSensitiveField(el)) Object.assign(row, redactedValue(el));
           else if (f === 'value') row.value = (el.value != null) ? String(el.value).slice(0, 400) : undefined;
           else if (f === 'src') row.src = el.src || el.getAttribute('src') || undefined;
           else if (f === 'alt') row.alt = el.alt || el.getAttribute('alt') || undefined;

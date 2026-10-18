@@ -326,9 +326,10 @@ What it does not protect against:
   agent acts with every account you are logged into.
 - **Local processes** running as your user can read the token.
 - **Sensitive page data.** A connected agent can read page content and execute
-  JavaScript in pages. Snapshot password values are omitted, but this is not a
-  general credential-redaction boundary: other read tools, including
-  `browser_forms` and `browser_dom`, can expose populated password values.
+  JavaScript in pages. Structural read tools (`browser_snapshot`,
+  `browser_forms`, `browser_dom`, `browser_query`, `browser_find`) redact
+  password input values, but this is not a credential sandbox: `browser_js` is a
+  separate, unrestricted trust boundary that can read any value the page can.
   Do not assume a visually masked field is hidden from the agent or its logs.
 - **Authenticated actions.** Existing sessions let the agent act as you on
   accessible sites. MCP annotations are client hints, not an approval system.
