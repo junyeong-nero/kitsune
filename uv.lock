@@ -354,7 +354,7 @@ wheels = [
 ]
 
 [[package]]
-name = "kitsune-mcp"
+name = "kitsune-browser-mcp"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

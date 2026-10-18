@@ -348,6 +348,8 @@ your live browser connection. File reproducible bugs in
 browser version, bridge `build` from `browser_status`, tool calls, and expected
 versus actual behavior. Use a minimal public or local page and redact secrets.
 
+To publish a new version to PyPI, see [Releasing](releasing.md).
+
 ## Layout
 
 ```

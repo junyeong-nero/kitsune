@@ -252,9 +252,10 @@ for test in tests/*.cjs; do node "$test"; done
 
 These paths are **planned and not available yet**:
 
-- **PyPI.** Publishing `kitsune-mcp` would allow
-  `uvx --from kitsune-mcp kitsune` with versioned releases. It is not published
-  today; use the Git URL above.
+- **PyPI.** Kitsune will be published as `kitsune-browser-mcp`, allowing
+  `uvx --from kitsune-browser-mcp kitsune` with versioned releases. It is not
+  published yet; use the Git URL above. Do not install `kitsune-mcp`: that PyPI
+  name belongs to an unrelated project.
 - **Signed extension.** A Mozilla-signed XPI or an addons.mozilla.org listing
   would make the extension persist across browser restarts. Installing it would
   still require your approval in the browser. Until then, use the temporary
