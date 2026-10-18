@@ -74,23 +74,31 @@ platform accessibility tree; closed shadow roots and iframe contents are not tra
 
 ## Requirements
 
-- Firefox-family browser, Gecko 142+ (Zen 1.23 / Firefox 142 or newer)
-- Python 3.10+ and [uv](https://docs.astral.sh/uv/)
+- [uv](https://docs.astral.sh/uv/) (provides `uvx`) and Git
+- Firefox-family browser, Gecko 142+ (Firefox 142+, Zen 1.23+, LibreWolf)
 - macOS or Linux (Windows untested since the fork)
 
 ## Setup
 
-1. **Clone**
+Setup has two separate parts: registering the MCP server with your agent, and
+installing the extension in your browser.
+
+1. **Register the MCP server.** For Claude Code:
    ```bash
-   git clone https://github.com/junyeong-nero/kitsune ~/workspace/kitsune
+   claude mcp add --scope user kitsune -- uvx --from git+https://github.com/junyeong-nero/kitsune.git kitsune
    ```
-2. **Register the MCP server** in your agent. See [MCP clients](#mcp-clients).
-3. **Load the extension**: open `about:debugging#/runtime/this-firefox` →
+   uv downloads and runs Kitsune when the agent starts it; no checkout is needed.
+   For other clients, version pinning, and upgrades, see
+   [Installation](docs/installation.md).
+2. **Install the extension.** Download and unzip the
+   [repository ZIP](https://github.com/junyeong-nero/kitsune/archive/refs/heads/main.zip)
+   (or clone the repository). Open `about:debugging#/runtime/this-firefox` →
    **Load Temporary Add-on…** → pick `extension/manifest.json`
    (in the macOS file dialog, Cmd+Shift+G lets you paste the path).
-   Temporary add-ons disappear when the browser restarts; signing is on the
-   [TODO](docs/TODO.md).
-4. **Check**: restart the agent and ask it to call `browser_status`. It should
+   Temporary add-ons are removed when the browser restarts, so load it again
+   after each restart until a signed XPI is available (planned, see the
+   [TODO](docs/TODO.md)).
+3. **Check**: restart the agent and ask it to call `browser_status`. It should
    report `"extension_connected": true`.
 
 ## Try it
@@ -124,8 +132,9 @@ not permission to take additional actions; see [Security](#security).
 
 ## Updating Kitsune
 
-1. Pull the latest checkout (`git pull`, then `uv sync`), or upgrade your installed
-   `kitsune-mcp` package using the same installer you originally used.
+1. Upgrade the server the way you installed it: restart the MCP client for an
+   unpinned `uvx` install, change the pinned ref, or run `git pull` and `uv sync`
+   in a checkout. See [Upgrading](docs/installation.md#upgrading).
 2. Reconnect/restart the MCP server. It compares the running bridge's `build`
    (package version plus a source hash, including extension JS/JSON in a checkout)
    with its own and automatically restarts an outdated bridge. This briefly
@@ -136,6 +145,9 @@ not permission to take additional actions; see [Security](#security).
    uv run kitsune-bridge status  # JSON; includes bridge_version and build
    uv run kitsune-bridge stop
    ```
+   These run from a checkout. For a `uvx` install, use
+   `uvx --from git+https://github.com/junyeong-nero/kitsune.git kitsune-bridge …`
+   with the same source as your clients.
    Plain `uv run kitsune-bridge` (or `kitsune-bridge start`) still runs the daemon
    in the foreground. `status` and `stop` never start a daemon. All commands use
    the same `KITSUNE_HOME`, token, and port environment settings as the server.
@@ -159,63 +171,13 @@ replacement and `kitsune-bridge stop` work normally.
 
 Kitsune is a stdio MCP server. Every client runs the same command:
 
-```
-uv run --directory /path/to/kitsune kitsune
-```
-
-Config files do not expand `~`, so use an absolute path there. If the client
-cannot find `uv` (common for GUI apps), use its full path from `which uv`.
-
-**Claude Code**
-
-```bash
-claude mcp add -s user kitsune -- uv run --directory ~/workspace/kitsune kitsune
+```text
+uvx --from git+https://github.com/junyeong-nero/kitsune.git kitsune
 ```
 
-**Codex CLI**
-
-```bash
-codex mcp add kitsune -- uv run --directory ~/workspace/kitsune kitsune
-```
-
-or in `~/.codex/config.toml`:
-
-```toml
-[mcp_servers.kitsune]
-command = "uv"
-args = ["run", "--directory", "/Users/you/workspace/kitsune", "kitsune"]
-```
-
-**opencode**: `~/.config/opencode/opencode.json` (global) or `opencode.json` at a git repo root
-(project). Write it by hand: `opencode mcp add` (v2.0.28) writes `mcp.servers`, which `opencode mcp list` does not pick up.
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "mcp": {
-    "kitsune": {
-      "type": "local",
-      "command": ["uv", "run", "--directory", "/Users/you/workspace/kitsune", "kitsune"],
-      "enabled": true
-    }
-  }
-}
-```
-
-**Claude Desktop / Cursor / other `mcpServers` clients**
-(`claude_desktop_config.json`, `~/.cursor/mcp.json`, …):
-
-```json
-{
-  "mcpServers": {
-    "kitsune": {
-      "command": "uv",
-      "args": ["run", "--directory", "/Users/you/workspace/kitsune", "kitsune"]
-    }
-  }
-}
-```
-
+See [Installation](docs/installation.md#1-register-the-mcp-server) for Claude
+Code, Codex CLI, Claude Desktop, Cursor, and opencode configuration, and for
+[running from a checkout](docs/installation.md#development-setup-from-a-checkout).
 Several clients can be configured at once; they share one bridge daemon.
 
 ## Tools
@@ -353,7 +315,7 @@ screenshots, and tool logs as potentially sensitive.
 | `Cannot access browser internal page` | `about:` pages are off-limits to extensions; switch to a normal tab |
 | `stale ref, call browser_snapshot again` | Take a fresh snapshot of the same `tab_id` and use its new refs |
 | Bridge updated but browser behavior is unchanged | Reload the extension, then reload affected pages so their content scripts update too |
-| Restart the daemon | Run `uv run kitsune-bridge stop` from the checkout; the next tool call starts it again. This briefly affects all clients sharing it |
+| Restart the daemon | Run `kitsune-bridge stop` with your clients' source (`uvx --from … kitsune-bridge stop`, or `uv run kitsune-bridge stop` in a checkout); the next tool call starts it again. This briefly affects all clients sharing it |
 
 ## Development
 
@@ -380,7 +342,7 @@ src/kitsune/
   server.py         MCP server, starts the bridge on demand
   bridge.py         Bridge daemon (HTTP API + WebSocket)
   workflows/        Named workflows for browser_workflow
-docs/               API reference, scraping playbooks, TODO
+docs/               Installation, API reference, scraping playbooks, TODO
 ```
 
 ## Credits
