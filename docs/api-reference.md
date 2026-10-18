@@ -50,11 +50,28 @@ label, selector, and ref are kept, so the field remains interactable.
 `browser_find` does not match queries against password values. There is no
 opt-in to reveal them through these tools.
 
+Frameworks such as React mirror a typed value into the `value` attribute, so
+markup and attribute paths drop that attribute from password inputs, whether it
+was server-rendered or synced: `browser_html` and `browser_query` `html` omit it
+from every password input in the returned markup, and `browser_query` `attrs` or
+a field named `value` in any letter case never return it. Other inputs keep
+their `value` attribute. The page DOM is not modified.
+
+While any password input on the page carries a `value` attribute,
+`browser_find`, `browser_query`, and `browser_explain_selector` refuse
+selectors that test the `value` attribute, because
+`input[type=password][value^="K"]`, or a combinator or `:has()` form of it,
+would reveal the value one character at a time. `browser_query` and
+`browser_explain_selector` return the error `value-attribute selectors are
+disabled while a password field has a value attribute`; `browser_find` skips
+its CSS branch and falls back to text search. A selector counts as testing
+`value` if it contains `[value` (any case, optionally with a namespace prefix
+such as `[*|value`), or if it contains `[` together with a backslash escape or
+a `/*` comment.
+
 This is not a sandbox: `browser_js` runs arbitrary page JavaScript and can read
 any value the page can, including password fields. Treat access to `browser_js`
-as a separate, unrestricted trust boundary. Markup-returning tools
-(`browser_html`, `browser_query` `html`/`attrs`) report a server-rendered
-`value` attribute verbatim, but not a typed or filled value.
+as a separate, unrestricted trust boundary.
 
 ### `browser_tabs(action="list", tab_id=None, url=None, force=False, raw=False)`
 

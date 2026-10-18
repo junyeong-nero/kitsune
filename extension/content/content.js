@@ -584,6 +584,7 @@
 
     // Try as CSS selector
     try {
+      if (valueSelectorBlocked(query)) throw new Error(VALUE_SELECTOR_ERROR);
       const matches = document.querySelectorAll(query);
       if (matches.length > 0 && matches.length < 50) {
         matches.forEach(el => {
@@ -1209,6 +1210,37 @@
     return { redacted: true, hasValue: !!el.value };
   }
 
+  // Frameworks such as React mirror the live value into the `value` attribute,
+  // so markup is serialized from a clone with password value attributes removed.
+  function redactMarkup(el, outer) {
+    const clone = el.cloneNode(true);
+    if (isSensitiveField(clone)) clone.removeAttribute('value');
+    for (const input of clone.querySelectorAll('input')) {
+      if (isSensitiveField(input)) input.removeAttribute('value');
+    }
+    return (outer ? clone.outerHTML : clone.innerHTML) || '';
+  }
+
+  // A `[value^="K"]` selector would let callers guess a password value attribute
+  // character by character, including through combinators and :has(). Escapes
+  // and comments inside a selector with attribute blocks can spell `value`, so
+  // they are treated the same way.
+  function isValueAttributeSelector(selector) {
+    selector = String(selector);
+    return /\[\s*(?:(?:[\w-]+|\*)?\|)?\s*value/i.test(selector) ||
+      (selector.includes('[') && (selector.includes('\\') || selector.includes('/*')));
+  }
+
+  function valueSelectorBlocked(selector) {
+    if (!isValueAttributeSelector(selector)) return false;
+    for (const input of document.querySelectorAll('input')) {
+      if (isSensitiveField(input) && input.hasAttribute('value')) return true;
+    }
+    return false;
+  }
+
+  const VALUE_SELECTOR_ERROR = 'value-attribute selectors are disabled while a password field has a value attribute';
+
   function directText(el) {
     let t = '';
     for (const n of el.childNodes) {
@@ -1253,6 +1285,7 @@
 
   function queryElements(selector, fields, limit) {
     if (!selector) return { error: 'queryElements requires selector' };
+    if (valueSelectorBlocked(selector)) return { error: VALUE_SELECTOR_ERROR };
     let nodes;
     try { nodes = document.querySelectorAll(selector); } catch (e) { return { error: 'Invalid selector: ' + e.message }; }
     const cap = Math.min(limit || QUERY_LIMIT, QUERY_LIMIT);
@@ -1261,12 +1294,14 @@
     for (let i = 0; i < nodes.length && items.length < cap; i++) {
       const el = nodes[i];
       const row = { tag: el.tagName.toLowerCase() };
+      const sensitive = isSensitiveField(el);
       for (const f of want) {
+        const name = String(f).toLowerCase();
         try {
           if (f === 'text') row.text = (el.innerText || el.textContent || '').trim().slice(0, 400);
-          else if (f === 'html') row.html = el.innerHTML.slice(0, 4000);
+          else if (f === 'html') row.html = redactMarkup(el, false).slice(0, 4000);
           else if (f === 'href') row.href = el.href || el.getAttribute('href') || undefined;
-          else if (f === 'value' && isSensitiveField(el)) Object.assign(row, redactedValue(el));
+          else if (name === 'value' && sensitive) Object.assign(row, redactedValue(el));
           else if (f === 'value') row.value = (el.value != null) ? String(el.value).slice(0, 400) : undefined;
           else if (f === 'src') row.src = el.src || el.getAttribute('src') || undefined;
           else if (f === 'alt') row.alt = el.alt || el.getAttribute('alt') || undefined;
@@ -1277,7 +1312,10 @@
             row.bounds = [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)];
           } else if (f === 'attrs') {
             const a = {};
-            for (const att of el.attributes) a[att.name] = att.value.slice(0, 200);
+            for (const att of el.attributes) {
+              if (sensitive && att.name.toLowerCase() === 'value') continue;
+              a[att.name] = att.value.slice(0, 200);
+            }
             row.attrs = a;
           } else {
             // arbitrary attribute name
@@ -1297,7 +1335,7 @@
   function getHTML(selector) {
     const el = resolveElement(selector);
     if (!el) return { error: 'Element not found' };
-    const outer = el.outerHTML || '';
+    const outer = redactMarkup(el, true);
     const truncated = outer.length > 100000;
     return { html: outer.slice(0, 100000), length: outer.length, ...(truncated && { truncated: true }) };
   }
@@ -1927,6 +1965,7 @@
   // ── explain selector ──
   function explainSelector(selector) {
     if (!selector) return { error: 'selector required' };
+    if (valueSelectorBlocked(selector)) return { error: VALUE_SELECTOR_ERROR };
     let nodes;
     try { nodes = document.querySelectorAll(selector); } catch (e) { return { error: 'Invalid: ' + e.message }; }
     const samples = [];

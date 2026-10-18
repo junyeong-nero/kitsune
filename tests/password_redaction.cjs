@@ -12,8 +12,26 @@ class Element {
       childNodes: [{ nodeType: 3, textContent }], isConnected: true });
     children.forEach(child => { child.parentElement = this; });
   }
-  getAttribute(key) { return this.attrs[key] ?? null; }
+  getAttribute(key) { return this.attrs[key.toLowerCase()] ?? null; }
   hasAttribute(key) { return key in this.attrs; }
+  removeAttribute(key) { delete this.attrs[key]; }
+  get attributes() { return Object.entries(this.attrs).map(([name, value]) => ({ name, value })); }
+  get innerHTML() { return this.textContent + this.children.map(child => child.outerHTML).join(''); }
+  get outerHTML() {
+    const tag = this.tagName.toLowerCase();
+    const attrs = Object.entries(this.attrs).map(([name, value]) => ` ${name}="${value}"`).join('');
+    return `<${tag}${attrs}>${this.innerHTML}</${tag}>`;
+  }
+  cloneNode() {
+    const { tagName, textContent, attrs, children, parentElement, ...props } = this;
+    return Object.assign(new Element(tagName, textContent, { ...attrs },
+      children.map(child => child.cloneNode(true))), props);
+  }
+  querySelectorAll(selector) {
+    assert.equal(selector, 'input');
+    return this.children.flatMap(child =>
+      [...(child.tagName === 'INPUT' ? [child] : []), ...child.querySelectorAll(selector)]);
+  }
   closest() { return null; }
   focus() { this.focused = true; }
   dispatchEvent() { return true; }
@@ -21,7 +39,7 @@ class Element {
 }
 
 (async () => {
-  const email = Object.assign(new Element('INPUT', '', { 'aria-label': 'Email' }),
+  const email = Object.assign(new Element('INPUT', '', { 'aria-label': 'Email', value: 'a@b' }),
     { id: 'email', name: 'email', type: 'email', value: 'a@b' });
   const password = Object.assign(new Element('INPUT'),
     { id: 'password', name: 'password', type: 'password', value: '' });
@@ -29,7 +47,17 @@ class Element {
     { id: 'confirm', name: 'confirm', type: 'password', value: '' });
   const button = new Element('BUTTON', 'Log in');
   const inputs = [email, password, confirm];
-  const body = new Element('BODY', '', {}, [new Element('FORM', '', {}, [...inputs, button])]);
+  const form = new Element('FORM', '', {}, [...inputs, button]);
+  const body = new Element('BODY', '', {}, [form]);
+  const valueSelectorTargets = {
+    'input[type=password][value^="K"]': [password],
+    'input[value^="K"]': [password],
+    'input[type=password][value^="K"] + button': [button],
+    'form:has(input[type=password][value^="K"])': [form],
+    '[*|VALUE^="K"]': [password],
+    '[val\\ue^="K"]': [password],
+    '[\\76 alue^="K"]': [password],
+  };
   let listener;
   const context = vm.createContext({
     console, crypto: webcrypto, CSS: { escape: x => x }, setTimeout,
@@ -40,10 +68,12 @@ class Element {
       getElementById: () => null,
       querySelector: selector => {
         if (selector === 'label[for="password"]') return { textContent: 'Password' };
-        return { '#password': password, '#confirm': confirm }[selector] || null;
+        return { '#password': password, '#confirm': confirm, '#email': email, form }[selector] || null;
       },
       querySelectorAll: selector => {
         if (selector === 'input' || selector === 'input, select, textarea') return inputs;
+        if (selector in valueSelectorTargets) return valueSelectorTargets[selector];
+        if (selector === 'form') return [form];
         return selector.startsWith('a, button, input') ? [...inputs, button] : [];
       },
     },
@@ -56,6 +86,8 @@ class Element {
   // Populate the field the same way browser_type(mode="fill") does.
   assert.equal((await send({ action: 'fill', selector: '#password', value: DUMMY })).ok, true);
   assert.equal(password.value, DUMMY);
+  // React-controlled inputs mirror the live value into the value attribute.
+  password.attrs.value = DUMMY;
 
   const outputs = {};
   const assertNoLeak = (label, result) => {
@@ -114,6 +146,43 @@ class Element {
   assert.equal(byValue.results[0].selector, '#email');
   assert.ok(scoreOf(byValue, '#email') > scoreOf(byValue, '#confirm'));
 
-  assert.deepEqual(Object.keys(outputs), ['snapshot', 'forms', 'dom', 'query', 'find']);
+  // Markup and attribute paths drop the synced password value attribute only.
+  const passwordHtml = await send({ action: 'getHTML', selector: '#password' });
+  assertNoLeak('html', passwordHtml);
+  assert.equal(passwordHtml.html, '<input></input>');
+  const formHtml = await send({ action: 'getHTML', selector: 'form' });
+  assertNoLeak('formHtml', formHtml);
+  assert.match(formHtml.html, /value="a@b"/);
+  assert.equal(password.getAttribute('value'), DUMMY, 'redaction does not mutate the page');
+
+  const markup = await send({ action: 'query', selector: 'input', fields: ['html', 'attrs', 'Value', 'value'] });
+  assertNoLeak('markup', markup);
+  const [emailRow, passwordRow] = markup.items;
+  assert.equal(emailRow.attrs.value, 'a@b');
+  assert.equal(emailRow.Value, 'a@b');
+  assert.equal('value' in passwordRow.attrs, false);
+  assert.equal('Value' in passwordRow, false);
+  assert.deepEqual([passwordRow.redacted, passwordRow.hasValue], [true, true]);
+  const formRow = await send({ action: 'query', selector: 'form', fields: ['html'] });
+  assertNoLeak('formRow', formRow);
+  assert.match(formRow.items[0].html, /value="a@b"/);
+
+  // Value-attribute selectors cannot be used as a character-by-character oracle.
+  for (const selector of Object.keys(valueSelectorTargets)) {
+    const queried = await send({ action: 'query', selector, fields: ['tag'] });
+    assertNoLeak(`query ${selector}`, queried);
+    assert.match(queried.error, /value-attribute selectors are disabled/, selector);
+    const explained = await send({ action: 'explainSelector', selector });
+    assertNoLeak(`explain ${selector}`, explained);
+    assert.match(explained.error, /value-attribute selectors are disabled/, selector);
+    const found = await send({ action: 'find', query: selector });
+    assertNoLeak(`find ${selector}`, found);
+    assert.ok(found.results.every(r => r.score !== undefined), `find ${selector} skips the CSS branch`);
+  }
+  delete password.attrs.value;
+  const unsynced = await send({ action: 'query', selector: 'input[value^="K"]', fields: ['tag'] });
+  assert.equal(unsynced.error, undefined, 'value selectors work when no password value attribute exists');
+
+  assert.deepEqual(Object.keys(outputs).slice(0, 5), ['snapshot', 'forms', 'dom', 'query', 'find']);
   console.log('Password redaction checks passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });
