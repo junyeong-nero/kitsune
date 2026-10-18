@@ -1528,21 +1528,27 @@
   }
 
   // ── Interaction additions ──
+  function findSelectOption(el, value, byText) {
+    for (const opt of el.options) {
+      if (byText ? (opt.text === value || opt.text.trim() === String(value).trim()) : opt.value === value) return opt;
+    }
+    return null;
+  }
+
+  function applySelectOption(el, opt) {
+    el.value = opt.value;
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
   function selectOption(selector, value, byText) {
     const el = resolveElement(selector);
     if (!el) return { error: 'Element not found' };
     if (el.tagName !== 'SELECT') return { error: 'Element is not a <select>' };
-    let matched = null;
-    for (const opt of el.options) {
-      if (byText ? (opt.text === value || opt.text.trim() === String(value).trim()) : opt.value === value) {
-        matched = opt; break;
-      }
-    }
+    const matched = findSelectOption(el, value, byText);
     if (!matched) return { error: `No matching option for ${byText ? 'text' : 'value'}: ${value}` };
     lastActedElement = el;
-    el.value = matched.value;
-    el.dispatchEvent(new Event('change', { bubbles: true }));
-    el.dispatchEvent(new Event('input', { bubbles: true }));
+    applySelectOption(el, matched);
     return { ok: true, value: el.value, text: matched.text };
   }
 
@@ -1668,8 +1674,10 @@
       if (!el) { results[key] = { error: 'Not found' }; continue; }
       try {
         if (el.tagName === 'SELECT') {
-          el.value = value;
-          el.dispatchEvent(new Event('change', { bubbles: true }));
+          // Assigning an unknown value would silently clear the selection.
+          const matched = findSelectOption(el, String(value), false);
+          if (!matched) { results[key] = { error: `No matching option for value: ${value}` }; continue; }
+          applySelectOption(el, matched);
           results[key] = { ok: true, tag: 'select', value: el.value };
         } else if (el.type === 'checkbox' || el.type === 'radio') {
           el.checked = !!value;
