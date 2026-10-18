@@ -24,7 +24,8 @@ to that daemon by itself once both are installed.
 
 - [uv](https://docs.astral.sh/uv/getting-started/installation/), which provides `uvx`.
   uv downloads a supported Python (3.10+) if none is installed.
-- Git. uv uses it to fetch the `git+https://` source.
+- Git, only if you install from the Git source instead of PyPI
+  (see [Pinning a version](#pinning-a-version)).
 - A Firefox-family browser, Gecko 142+: Firefox 142+, Zen 1.23+, or LibreWolf.
 - macOS or Linux. Windows is untested.
 
@@ -33,18 +34,19 @@ to that daemon by itself once both are installed.
 Every client runs the same stdio command:
 
 ```text
-uvx --from git+https://github.com/junyeong-nero/kitsune.git kitsune
+uvx --from kitsune-browser-mcp kitsune
 ```
 
 The first start downloads Kitsune and its dependencies into the uv cache, which
-takes a few seconds. Later starts reuse the cache. Without a pinned ref, uv
-checks for the latest commit on the default branch at each start (see
-[Pinning a version](#pinning-a-version)).
+takes a few seconds. Later starts reuse the cached version until you upgrade
+(see [Upgrading](#upgrading)). Kitsune is published on PyPI as
+`kitsune-browser-mcp`; `kitsune-mcp` is an unrelated project, so do not install
+that name.
 
 Optionally, warm the cache and check the install before you register it:
 
 ```bash
-uvx --from git+https://github.com/junyeong-nero/kitsune.git kitsune-bridge status
+uvx --from kitsune-browser-mcp kitsune-bridge status
 ```
 
 This prints `{"status": "stopped"}` (or the running bridge's status) and never
@@ -54,7 +56,7 @@ MCP server itself, starts the bridge, and waits for an MCP client on stdin.
 ### Claude Code
 
 ```bash
-claude mcp add --scope user kitsune -- uvx --from git+https://github.com/junyeong-nero/kitsune.git kitsune
+claude mcp add --scope user kitsune -- uvx --from kitsune-browser-mcp kitsune
 ```
 
 `--scope user` makes Kitsune available in every project. Leave it out to register
@@ -64,7 +66,7 @@ with `-e`, for example `-e KITSUNE_CAPS=core,network` before the `--`.
 ### Codex CLI
 
 ```bash
-codex mcp add kitsune -- uvx --from git+https://github.com/junyeong-nero/kitsune.git kitsune
+codex mcp add kitsune -- uvx --from kitsune-browser-mcp kitsune
 ```
 
 or in `~/.codex/config.toml`:
@@ -72,7 +74,7 @@ or in `~/.codex/config.toml`:
 ```toml
 [mcp_servers.kitsune]
 command = "uvx"
-args = ["--from", "git+https://github.com/junyeong-nero/kitsune.git", "kitsune"]
+args = ["--from", "kitsune-browser-mcp", "kitsune"]
 
 # Optional
 [mcp_servers.kitsune.env]
@@ -90,7 +92,7 @@ on macOS) or `~/.cursor/mcp.json` (Cursor):
   "mcpServers": {
     "kitsune": {
       "command": "uvx",
-      "args": ["--from", "git+https://github.com/junyeong-nero/kitsune.git", "kitsune"]
+      "args": ["--from", "kitsune-browser-mcp", "kitsune"]
     }
   }
 }
@@ -110,7 +112,7 @@ root (project) by hand.
   "mcp": {
     "kitsune": {
       "type": "local",
-      "command": ["uvx", "--from", "git+https://github.com/junyeong-nero/kitsune.git", "kitsune"],
+      "command": ["uvx", "--from", "kitsune-browser-mcp", "kitsune"],
       "enabled": true
     }
   }
@@ -134,54 +136,64 @@ Until a signed XPI is available (see [Planned distribution](#planned-distributio
 it is loaded as a **temporary add-on**. Temporary add-ons are removed when the
 browser restarts, so you must load the extension again after every restart.
 
-1. Get the extension files from the same ref as the server. Either download
-   and unzip <https://github.com/junyeong-nero/kitsune/archive/refs/heads/main.zip>,
-   or clone the repository:
-   ```bash
-   git clone https://github.com/junyeong-nero/kitsune ~/kitsune
-   ```
-   The server does not use these files. You only need them to load the extension.
+1. Download `kitsune-extension-<version>.zip` for the same version as the
+   server from [GitHub Releases](https://github.com/junyeong-nero/kitsune/releases)
+   and unzip it. (For an unreleased commit, use the repository ZIP or a clone
+   instead; the files are under `extension/`.) The server does not use these
+   files. You only need them to load the extension.
 2. Open `about:debugging#/runtime/this-firefox` and click
    **Load Temporary Add-on…**.
-3. Select `extension/manifest.json` from the files you downloaded. In the macOS
-   file dialog, press Cmd+Shift+G to paste a path.
+3. Select `manifest.json` from the unzipped folder (`extension/manifest.json`
+   in a repository ZIP or clone). In the macOS file dialog, press Cmd+Shift+G to
+   paste a path.
 4. Restart or reconnect your MCP client and ask it to call `browser_status`. It
    should report `"extension_connected": true`.
 
 ## Pinning a version
 
-Add `@<ref>` to the Git URL to run a fixed commit, tag, or branch instead of the
-latest default-branch commit:
+Pin a released version with `==`:
 
 ```bash
-claude mcp add --scope user kitsune -- uvx --from git+https://github.com/junyeong-nero/kitsune.git@<commit-sha> kitsune
+claude mcp add --scope user kitsune -- uvx --from kitsune-browser-mcp==0.1.0 kitsune
 ```
 
-There are no release tags yet, so pin a full commit SHA for a reproducible
-setup. Once releases are tagged, `@<tag>` works the same way. Get the extension
-from the same ref:
+Releases are listed on [PyPI](https://pypi.org/project/kitsune-browser-mcp/#history)
+and [GitHub Releases](https://github.com/junyeong-nero/kitsune/releases), which
+also carries the matching extension zip.
+
+To run a commit, tag, or branch that is not on PyPI, use the Git source with
+`@<ref>` (requires Git):
+
+```bash
+claude mcp add --scope user kitsune -- uvx --from git+https://github.com/junyeong-nero/kitsune.git@<ref> kitsune
+```
+
+Without `@<ref>`, the Git source follows the latest default-branch commit. Get
+the extension from the same ref:
 `https://github.com/junyeong-nero/kitsune/archive/<ref>.zip`, or
 `git checkout <ref>` in a clone.
 
 ## Upgrading
 
-- **Unpinned** (`git+https://github.com/junyeong-nero/kitsune.git`): uv checks for
-  the latest default-branch commit each time the MCP server starts (observed
-  with uv 0.7.20). Restart or reconnect the MCP client to pick up new commits
-  (in Claude Code, `/mcp`). If uv keeps running an old build, refresh its cache
-  once:
+- **Unpinned PyPI** (`--from kitsune-browser-mcp`): uvx keeps using the cached
+  version. To move to the newest release, refresh it once, then restart or
+  reconnect the MCP client (in Claude Code, `/mcp`):
   ```bash
-  uvx --refresh --from git+https://github.com/junyeong-nero/kitsune.git kitsune-bridge status
+  uvx --refresh --from kitsune-browser-mcp kitsune-bridge status
   ```
-- **Pinned**: change the ref in the client config. For Claude Code, run
-  `claude mcp remove --scope user kitsune`, then run the `claude mcp add`
-  command again with the new ref.
+  To check for a new release on every start instead, register
+  `--from kitsune-browser-mcp@latest`.
+- **Pinned** (`==<version>` or Git `@<ref>`): change the version in the client
+  config. For Claude Code, run `claude mcp remove --scope user kitsune`, then run
+  the `claude mcp add` command again with the new version.
+- **Unpinned Git source**: uv checks for the latest default-branch commit each
+  time the MCP server starts (observed with uv 0.7.20).
 
 After the server is upgraded, the next MCP connection detects that the running
 bridge has a different `build` and replaces it automatically. This briefly
 interrupts all clients sharing that bridge; set `KITSUNE_NO_BRIDGE_RESTART=1` in
 the MCP server environment to opt out. Then update the extension files to the
-same ref and click **Reload** on Kitsune in `about:debugging`. A bridge restart
+same version and click **Reload** on Kitsune in `about:debugging`. A bridge restart
 does not reload the extension's code. Reload open tabs if their content scripts
 are still outdated. See [Updating Kitsune](guide.md#updating-kitsune) for
 bridge lifecycle details.
@@ -189,7 +201,8 @@ bridge lifecycle details.
 ## Extension and server compatibility
 
 - The server and the extension are developed in the same repository and are
-  only tested together at the same commit. Install both from the same ref.
+  only tested together at the same commit. Install both from the same release
+  (or ref).
   There is no separate compatibility matrix yet.
 - `browser_status` reports the bridge's `bridge_version` (package version) and
   `build` (package version plus a hash of the bridge code). An installed
@@ -209,11 +222,12 @@ bridge lifecycle details.
 |---|---|
 | Client reports the server failed to start or `uvx` was not found | Use the full path from `which uvx` (GUI apps). Run the `kitsune-bridge status` command above in a terminal to see uv's error |
 | First start times out in the client | Run the `kitsune-bridge status` command once to fill the uv cache, then reconnect |
-| uv cannot fetch the `git+https://` source | Check that `git` is installed and on the client's `PATH`, and that GitHub is reachable |
+| uv cannot find `kitsune-browser-mcp` | Check that PyPI is reachable (or your configured index mirrors it) |
+| uv cannot fetch a `git+https://` source | Check that `git` is installed and on the client's `PATH`, and that GitHub is reachable |
 | An upgrade is not picked up | Restart the MCP client; then refresh with `uvx --refresh …` (see [Upgrading](#upgrading)) |
 | The bridge restarts every time a different client starts | Clients use different sources or refs (see [compatibility](#extension-and-server-compatibility)) |
 | `extension_connected: false` | Extension loaded? Browser restarted, so the temporary add-on is gone? |
-| Stop or inspect the bridge | `uvx --from git+https://github.com/junyeong-nero/kitsune.git kitsune-bridge status` (or `stop`) with the same source as your clients |
+| Stop or inspect the bridge | `uvx --from kitsune-browser-mcp kitsune-bridge status` (or `stop`) with the same source as your clients |
 
 See the guide's [Troubleshooting](guide.md#troubleshooting) table for bridge,
 token, and page errors.
@@ -226,8 +240,8 @@ cd ~/workspace/kitsune
 uv sync
 ```
 
-Register the checkout instead of the Git URL so the client runs your working
-tree directly:
+Register the checkout instead of the PyPI package so the client runs your
+working tree directly:
 
 ```bash
 claude mcp add --scope user kitsune -- uv run --directory ~/workspace/kitsune kitsune
@@ -250,12 +264,8 @@ for test in tests/*.cjs; do node "$test"; done
 
 ## Planned distribution
 
-These paths are **planned and not available yet**:
+This path is **planned and not available yet**:
 
-- **PyPI.** Kitsune will be published as `kitsune-browser-mcp`, allowing
-  `uvx --from kitsune-browser-mcp kitsune` with versioned releases. It is not
-  published yet; use the Git URL above. Do not install `kitsune-mcp`: that PyPI
-  name belongs to an unrelated project.
 - **Signed extension.** A Mozilla-signed XPI or an addons.mozilla.org listing
   would make the extension persist across browser restarts. Installing it would
   still require your approval in the browser. Until then, use the temporary
