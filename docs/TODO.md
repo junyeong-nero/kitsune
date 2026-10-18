@@ -17,9 +17,11 @@
   - Bump `manifest.json` `version` on every signed upload.
 - [ ] Check whether Zen honours `xpinstall.signatures.required=false` (unsigned
   install). Firefox release ignores it.
-- [ ] Publish `kitsune-mcp` to PyPI so `uvx --from kitsune-mcp kitsune` works with
-  versioned releases. Today the documented command runs a `git+https://` source
-  (see [Installation](installation.md)); tag releases for pinning.
+- [ ] Publish `kitsune-browser-mcp` to PyPI so `uvx --from kitsune-browser-mcp kitsune`
+  works with versioned releases (`kitsune-mcp` is taken by an unrelated project).
+  The release workflow is in place; see [Releasing](releasing.md). After the first
+  release, switch the README, guide, and installation docs to the PyPI command and
+  keep the `git+https://` source as a fallback.
 
 ## Bridge daemon
 

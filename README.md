@@ -1,6 +1,6 @@
 # Kitsune
 
-![Kitsune: an orange fox in a browser window, connecting your browser and your AI agent](docs/kitsune-hero.svg)
+![Kitsune: an orange fox in a browser window, connecting your browser and your AI agent](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/docs/kitsune-hero.svg)
 
 **Your browser. Your agent. One clever bridge.**
 
@@ -18,7 +18,7 @@ extensions stay in place. No Playwright, Chromium, or WebDriver required.
 - **Work across tabs.** Keep research and tasks in separate tabs without
   replacing the page you're using.
 
-![Claude Code uses Kitsune to open Hacker News and summarize the top three stories](docs/demo.gif)
+![Claude Code uses Kitsune to open Hacker News and summarize the top three stories](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/docs/demo.gif)
 
 <sub>A real browser session, captured with Kitsune and sped up.</sub>
 
@@ -30,9 +30,9 @@ extensions stay in place. No Playwright, Chromium, or WebDriver required.
    claude mcp add --scope user kitsune -- uvx --from git+https://github.com/junyeong-nero/kitsune.git kitsune
    ```
 
-   Then [load the browser extension](docs/installation.md#2-install-the-browser-extension).
+   Then [load the browser extension](https://github.com/junyeong-nero/kitsune/blob/main/docs/installation.md#2-install-the-browser-extension).
    You'll need a supported Firefox-family browser, uv, and Git. For other
-   agents, version pinning, and upgrades, see [Installation](docs/installation.md).
+   agents, version pinning, and upgrades, see [Installation](https://github.com/junyeong-nero/kitsune/blob/main/docs/installation.md).
 2. **Keep your browser open.** Kitsune starts its shared bridge automatically.
    Ask your agent to check the connection before your first task.
 3. **Ask in plain language.** For example:
@@ -46,16 +46,16 @@ extensions stay in place. No Playwright, Chromium, or WebDriver required.
 
 Use a dedicated browser profile and only give access to accounts the agent
 needs. Ask for confirmation before sending, purchasing, or deleting anything.
-Read the [security guidance](docs/guide.md#security) before using sensitive accounts.
+Read the [security guidance](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#security) before using sensitive accounts.
 
-For the details: [Tools](docs/guide.md#tools) ·
-[Configuration](docs/guide.md#configuration) ·
-[Troubleshooting](docs/guide.md#troubleshooting) ·
-[Updating](docs/guide.md#updating-kitsune) ·
-[API reference](docs/api-reference.md) ·
-[Development](docs/guide.md#development)
+For the details: [Tools](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#tools) ·
+[Configuration](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#configuration) ·
+[Troubleshooting](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#troubleshooting) ·
+[Updating](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#updating-kitsune) ·
+[API reference](https://github.com/junyeong-nero/kitsune/blob/main/docs/api-reference.md) ·
+[Development](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#development)
 
 ---
 
 MIT · Based on ZenLink and ZenLink-MCP by Jay-Quan.
-[Credits](docs/guide.md#credits) · [License](LICENSE)
+[Credits](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#credits) · [License](https://github.com/junyeong-nero/kitsune/blob/main/LICENSE)
