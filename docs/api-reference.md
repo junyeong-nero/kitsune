@@ -7,7 +7,7 @@ Base URL: `http://127.0.0.1:47651`
 `KITSUNE_CAPS=core` is the default (30 tools); `KITSUNE_CAPS=all` registers
 95 tools. The groups are `core`, `tabs`, `network`, `storage`, `parallel`,
 `devtools`, `windows`, and `session`. A comma list selects those groups only.
-See [README](../README.md#tools) for the complete tool list per group.
+See [Tools and capabilities](guide.md#tools) for the complete tool list per group.
 The bridge endpoints below remain available unchanged; MCP tool names and
 parameters are separate from HTTP endpoint names and JSON command actions.
 
@@ -132,6 +132,21 @@ Replaces `browser_fill` and `browser_set_editable_content`.
 Editable mode sends `format="text"`. Callers migrating from the old editor tool
 should pass `clear=True` to retain its replace-by-default behavior. For trusted
 HTML insertion use `browser_js`; the underlying endpoint still accepts `format="html"`.
+
+### `browser_form_fill(fields, tab_id=None)`
+
+Fills several fields in one call via POST `/api/form-fill`. Each key is matched
+as a CSS selector, then `name` attribute, label text, and placeholder; results
+are returned per key, and one failing key does not stop the others.
+
+For a `<select>`, the value must equal an option's `value`, the same rule as
+`browser_select_option`. A match sets it and dispatches `change` and `input`.
+An unmatched value returns `{"error": "No matching option for value: X"}` for
+that key, leaves the previous selection untouched, and dispatches no events.
+
+```json
+{ "results": { "Email": { "ok": true, "tag": "input" }, "Color": { "error": "No matching option for value: purple" } } }
+```
 
 ### `browser_wait_for(selector=None, text=None, text_gone=None, js=None, url=None, title=None, network_idle=False, time=None, timeout=10000, tab_id=None, ref=None, element=None)`
 

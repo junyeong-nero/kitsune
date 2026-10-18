@@ -41,6 +41,11 @@
 - [ ] Ask-before-act policy for sensitive actions (submit, payment pages,
   `browser_js`, cookie reads), similar to Aside. `browser_set_policy` has
   allow/deny/readonly to build on.
+- [ ] `browser_form_fill` checkbox/radio uses `el.checked = !!value`, so the string
+  `"false"` checks a box and unchecking a radio can leave its group empty.
+- [ ] Password redaction gaps: password inputs inside shadow DOM, masked fields that
+  are not `type=password`, and a possible explicit opt-in to reveal values. Test
+  native password-manager autofill with disposable credentials only.
 
 ## Tool design (vs. Playwright MCP)
 
