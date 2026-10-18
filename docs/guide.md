@@ -18,13 +18,13 @@ Kitsune is a stdio MCP server. Every client runs the same command; uv downloads
 and runs it, so no checkout is needed:
 
 ```text
-uvx --from git+https://github.com/junyeong-nero/kitsune.git kitsune
+uvx --from kitsune-browser-mcp kitsune
 ```
 
 **Claude Code**
 
 ```bash
-claude mcp add --scope user kitsune -- uvx --from git+https://github.com/junyeong-nero/kitsune.git kitsune
+claude mcp add --scope user kitsune -- uvx --from kitsune-browser-mcp kitsune
 ```
 
 **Claude Desktop / Cursor / other `mcpServers` clients**
@@ -35,13 +35,13 @@ claude mcp add --scope user kitsune -- uvx --from git+https://github.com/junyeon
   "mcpServers": {
     "kitsune": {
       "command": "uvx",
-      "args": ["--from", "git+https://github.com/junyeong-nero/kitsune.git", "kitsune"]
+      "args": ["--from", "kitsune-browser-mcp", "kitsune"]
     }
   }
 }
 ```
 
-Codex CLI, opencode, GUI apps that cannot find `uvx`, and pinning a commit are
+Codex CLI, opencode, GUI apps that cannot find `uvx`, and pinning a version are
 covered in [Installation](installation.md#1-register-the-mcp-server). To run
 your own working tree instead, register `uv run --directory /path/to/kitsune
 kitsune`; see [Development setup](installation.md#development-setup-from-a-checkout).
@@ -101,7 +101,7 @@ platform accessibility tree; closed shadow roots and iframe contents are not tra
 ## Requirements
 
 - Firefox-family browser, Gecko 142+ (Firefox 142+, Zen 1.23+, LibreWolf)
-- [uv](https://docs.astral.sh/uv/) and Git. uv downloads Python 3.10+ if needed.
+- [uv](https://docs.astral.sh/uv/). uv downloads Python 3.10+ if needed.
 - macOS or Linux (Windows untested since the fork)
 
 ## Setup
@@ -110,11 +110,11 @@ Setup has two separate parts: registering the server with your agent, and
 installing the extension in your browser.
 
 1. **Register the MCP server** in your agent. See [MCP clients](#mcp-clients).
-2. **Load the extension**: download and unzip the
-   [repository ZIP](https://github.com/junyeong-nero/kitsune/archive/refs/heads/main.zip)
-   (or clone the repository), open `about:debugging#/runtime/this-firefox` →
-   **Load Temporary Add-on…** → pick `extension/manifest.json`
-   (in the macOS file dialog, Cmd+Shift+G lets you paste the path).
+2. **Load the extension**: download and unzip `kitsune-extension-<version>.zip`
+   from [GitHub Releases](https://github.com/junyeong-nero/kitsune/releases),
+   open `about:debugging#/runtime/this-firefox` → **Load Temporary Add-on…** →
+   pick its `manifest.json` (in the macOS file dialog, Cmd+Shift+G lets you
+   paste the path).
    Temporary add-ons disappear when the browser restarts; a signed XPI is
    planned (see [Installation](installation.md#planned-distribution)).
 3. **Check**: restart the agent and ask it to call `browser_status`. It should
@@ -151,11 +151,11 @@ not permission to take additional actions; see [Security](#security).
 
 ## Updating Kitsune
 
-1. Update the server. An unpinned `uvx --from git+…` registration picks up the
-   latest commit when the MCP server next starts; if it keeps an old build, run
-   `uvx --refresh --from git+https://github.com/junyeong-nero/kitsune.git kitsune-bridge status`
-   once. For a pinned ref, change the ref (see [Upgrading](installation.md#upgrading)).
-   From a checkout, run `git pull`, then `uv sync`.
+1. Update the server. uvx keeps using the cached release, so run
+   `uvx --refresh --from kitsune-browser-mcp kitsune-bridge status` once to
+   move to the newest one. For a pinned version, change the version (see
+   [Upgrading](installation.md#upgrading)). From a checkout, run `git pull`,
+   then `uv sync`.
 2. Reconnect/restart the MCP server. It compares the running bridge's `build`
    (package version plus a source hash, including extension JS/JSON in a checkout)
    with its own and automatically restarts an outdated bridge. This briefly
@@ -163,14 +163,14 @@ not permission to take additional actions; see [Security](#security).
    in the **MCP server's environment** to opt out of automatic replacement.
    You can also stop it explicitly; the next MCP connection starts a fresh daemon:
    ```bash
-   uvx --from git+https://github.com/junyeong-nero/kitsune.git kitsune-bridge status  # JSON; includes bridge_version and build
-   uvx --from git+https://github.com/junyeong-nero/kitsune.git kitsune-bridge stop
+   uvx --from kitsune-browser-mcp kitsune-bridge status  # JSON; includes bridge_version and build
+   uvx --from kitsune-browser-mcp kitsune-bridge stop
    ```
    From a checkout, use `uv run kitsune-bridge status` / `stop` instead.
    Plain `kitsune-bridge` (or `kitsune-bridge start`) still runs the daemon
    in the foreground. `status` and `stop` never start a daemon. All commands use
    the same `KITSUNE_HOME`, token, and port environment settings as the server.
-3. Update the extension files to the same ref as the server, then reload the
+3. Download the extension zip for the same version as the server, then reload the
    extension in `about:debugging#/runtime/this-firefox` (click **Reload** on
    Kitsune, or load the updated `extension/manifest.json` again). A bridge
    restart reconnects the extension but does **not** reload its browser-side code;

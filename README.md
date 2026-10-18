@@ -27,11 +27,11 @@ extensions stay in place. No Playwright, Chromium, or WebDriver required.
 1. **Connect once.** Register Kitsune with your agent—for Claude Code, one line:
 
    ```bash
-   claude mcp add --scope user kitsune -- uvx --from git+https://github.com/junyeong-nero/kitsune.git kitsune
+   claude mcp add --scope user kitsune -- uvx --from kitsune-browser-mcp kitsune
    ```
 
    Then [load the browser extension](https://github.com/junyeong-nero/kitsune/blob/main/docs/installation.md#2-install-the-browser-extension).
-   You'll need a supported Firefox-family browser, uv, and Git. For other
+   You'll need a supported Firefox-family browser and uv. For other
    agents, version pinning, and upgrades, see [Installation](https://github.com/junyeong-nero/kitsune/blob/main/docs/installation.md).
 2. **Keep your browser open.** Kitsune starts its shared bridge automatically.
    Ask your agent to check the connection before your first task.
