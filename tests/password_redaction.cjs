@@ -178,6 +178,17 @@ class Element {
     const found = await send({ action: 'find', query: selector });
     assertNoLeak(`find ${selector}`, found);
     assert.ok(found.results.every(r => r.score !== undefined), `find ${selector} skips the CSS branch`);
+    // Found vs. not-found on any selector-taking tool is the same oracle.
+    for (const msg of [
+      { action: 'getHTML', selector },
+      { action: 'getBounds', selector },
+      { action: 'focusElement', selector },
+      { action: 'getPageText', selector },
+      { action: 'formFill', fields: { [selector]: 'x' } },
+    ]) {
+      const res = await send(msg);
+      assert.match(res.error, /value-attribute selectors are disabled/, `${msg.action} ${selector}`);
+    }
   }
   delete password.attrs.value;
   const unsynced = await send({ action: 'query', selector: 'input[value^="K"]', fields: ['tag'] });

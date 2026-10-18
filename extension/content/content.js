@@ -196,6 +196,13 @@
       if (['click', 'type', 'fill', 'selectOption', 'checkBox', 'keypress', 'submitForm'].includes(msg.action)) {
         lastActedElement = null;
       }
+      // Found/not-found on any selector-taking tool is a value oracle too, so
+      // every caller-supplied selector is checked here (find handles its own).
+      const selectors = [msg.selector, msg.from, msg.to, ...Object.keys(msg.fields || {})];
+      if (selectors.some(s => typeof s === 'string' && valueSelectorBlocked(s))) {
+        sendResponse({ error: VALUE_SELECTOR_ERROR });
+        return false;
+      }
       const result = handler();
       if (result && typeof result.then === 'function') {
         // Async handler — keep message channel open

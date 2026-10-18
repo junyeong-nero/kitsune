@@ -57,14 +57,15 @@ from every password input in the returned markup, and `browser_query` `attrs` or
 a field named `value` in any letter case never return it. Other inputs keep
 their `value` attribute. The page DOM is not modified.
 
-While any password input on the page carries a `value` attribute,
-`browser_find`, `browser_query`, and `browser_explain_selector` refuse
-selectors that test the `value` attribute, because
+While any password input on the page carries a `value` attribute, every tool
+that takes a selector (`browser_query`, `browser_explain_selector`,
+`browser_html`, `browser_click`, `browser_wait_for`, `browser_form_fill` keys,
+…) refuses selectors that test the `value` attribute, because
 `input[type=password][value^="K"]`, or a combinator or `:has()` form of it,
-would reveal the value one character at a time. `browser_query` and
-`browser_explain_selector` return the error `value-attribute selectors are
-disabled while a password field has a value attribute`; `browser_find` skips
-its CSS branch and falls back to text search. A selector counts as testing
+would reveal the value one character at a time through found/not-found
+results. These tools return the error `value-attribute selectors are
+disabled while a password field has a value attribute`; `browser_find` instead
+skips its CSS branch and falls back to text search. A selector counts as testing
 `value` if it contains `[value` (any case, optionally with a namespace prefix
 such as `[*|value`), or if it contains `[` together with a backslash escape or
 a `/*` comment.
