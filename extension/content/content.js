@@ -196,6 +196,13 @@
       if (['click', 'type', 'fill', 'selectOption', 'checkBox', 'keypress', 'submitForm'].includes(msg.action)) {
         lastActedElement = null;
       }
+      // Found/not-found on any selector-taking tool is a value oracle too, so
+      // every caller-supplied selector is checked here (find handles its own).
+      const selectors = [msg.selector, msg.from, msg.to, ...Object.keys(msg.fields || {})];
+      if (selectors.some(s => typeof s === 'string' && valueSelectorBlocked(s))) {
+        sendResponse({ error: VALUE_SELECTOR_ERROR });
+        return false;
+      }
       const result = handler();
       if (result && typeof result.then === 'function') {
         // Async handler — keep message channel open
@@ -344,7 +351,8 @@
       if (text) node.text = text;
       if (el.name) node.name = el.name;
       if (el.type && el.tagName === 'INPUT') node.type = el.type;
-      if (el.value && isInteractive) node.value = String(el.value).slice(0, 80);
+      if (isSensitiveField(el)) Object.assign(node, redactedValue(el));
+      else if (el.value && isInteractive) node.value = String(el.value).slice(0, 80);
       if (el.placeholder) node.placeholder = el.placeholder;
       if (el.href) node.href = el.href.slice(0, 200);
       if (el.ariaLabel) node.label = el.ariaLabel;
@@ -474,7 +482,7 @@
         const ref = `s${refGeneration}e${refCounter++}`;
         const states = [];
         if (role === 'heading') states.push(`level=${el.getAttribute('aria-level') || el.tagName.slice(1)}`);
-        if ('value' in el && el.type !== 'password') states.push(`value=${JSON.stringify(clean(el.value))}`);
+        if ('value' in el && !isSensitiveField(el)) states.push(`value=${JSON.stringify(clean(el.value))}`);
         if (el.type === 'checkbox' || el.type === 'radio' || el.hasAttribute('aria-checked')) {
           states.push(`checked=${el.getAttribute('aria-checked') || !!el.checked}`);
         }
@@ -583,6 +591,7 @@
 
     // Try as CSS selector
     try {
+      if (valueSelectorBlocked(query)) throw new Error(VALUE_SELECTOR_ERROR);
       const matches = document.querySelectorAll(query);
       if (matches.length > 0 && matches.length < 50) {
         matches.forEach(el => {
@@ -628,7 +637,8 @@
       [el.alt, 3],
       [el.id, 3],
       [el.name, 2],
-      [el.value, 2],
+      // Matching on a password would let queries probe its value.
+      [isSensitiveField(el) ? '' : el.value, 2],
     ];
     for (const [val, weight] of fields) {
       if (val && String(val).toLowerCase().includes(query)) score += weight;
@@ -976,7 +986,7 @@
         name: el.name || '',
         id: el.id || '',
         placeholder: el.placeholder || '',
-        value: (el.value || '').slice(0, 100),
+        ...(isSensitiveField(el) ? redactedValue(el) : { value: (el.value || '').slice(0, 100) }),
         label: findLabel(el),
         required: el.required,
         selector: buildSelector(el),
@@ -1197,6 +1207,47 @@
     return map[el.tagName] || '';
   }
 
+  // Structural reads never return password values or lengths; browser_js is a
+  // separate, unrestricted trust boundary.
+  function isSensitiveField(el) {
+    return el.tagName === 'INPUT' && el.type === 'password';
+  }
+
+  function redactedValue(el) {
+    return { redacted: true, hasValue: !!el.value };
+  }
+
+  // Frameworks such as React mirror the live value into the `value` attribute,
+  // so markup is serialized from a clone with password value attributes removed.
+  function redactMarkup(el, outer) {
+    const clone = el.cloneNode(true);
+    if (isSensitiveField(clone)) clone.removeAttribute('value');
+    for (const input of clone.querySelectorAll('input')) {
+      if (isSensitiveField(input)) input.removeAttribute('value');
+    }
+    return (outer ? clone.outerHTML : clone.innerHTML) || '';
+  }
+
+  // A `[value^="K"]` selector would let callers guess a password value attribute
+  // character by character, including through combinators and :has(). Escapes
+  // and comments inside a selector with attribute blocks can spell `value`, so
+  // they are treated the same way.
+  function isValueAttributeSelector(selector) {
+    selector = String(selector);
+    return /\[\s*(?:(?:[\w-]+|\*)?\|)?\s*value/i.test(selector) ||
+      (selector.includes('[') && (selector.includes('\\') || selector.includes('/*')));
+  }
+
+  function valueSelectorBlocked(selector) {
+    if (!isValueAttributeSelector(selector)) return false;
+    for (const input of document.querySelectorAll('input')) {
+      if (isSensitiveField(input) && input.hasAttribute('value')) return true;
+    }
+    return false;
+  }
+
+  const VALUE_SELECTOR_ERROR = 'value-attribute selectors are disabled while a password field has a value attribute';
+
   function directText(el) {
     let t = '';
     for (const n of el.childNodes) {
@@ -1241,6 +1292,7 @@
 
   function queryElements(selector, fields, limit) {
     if (!selector) return { error: 'queryElements requires selector' };
+    if (valueSelectorBlocked(selector)) return { error: VALUE_SELECTOR_ERROR };
     let nodes;
     try { nodes = document.querySelectorAll(selector); } catch (e) { return { error: 'Invalid selector: ' + e.message }; }
     const cap = Math.min(limit || QUERY_LIMIT, QUERY_LIMIT);
@@ -1249,11 +1301,14 @@
     for (let i = 0; i < nodes.length && items.length < cap; i++) {
       const el = nodes[i];
       const row = { tag: el.tagName.toLowerCase() };
+      const sensitive = isSensitiveField(el);
       for (const f of want) {
+        const name = String(f).toLowerCase();
         try {
           if (f === 'text') row.text = (el.innerText || el.textContent || '').trim().slice(0, 400);
-          else if (f === 'html') row.html = el.innerHTML.slice(0, 4000);
+          else if (f === 'html') row.html = redactMarkup(el, false).slice(0, 4000);
           else if (f === 'href') row.href = el.href || el.getAttribute('href') || undefined;
+          else if (name === 'value' && sensitive) Object.assign(row, redactedValue(el));
           else if (f === 'value') row.value = (el.value != null) ? String(el.value).slice(0, 400) : undefined;
           else if (f === 'src') row.src = el.src || el.getAttribute('src') || undefined;
           else if (f === 'alt') row.alt = el.alt || el.getAttribute('alt') || undefined;
@@ -1264,7 +1319,10 @@
             row.bounds = [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)];
           } else if (f === 'attrs') {
             const a = {};
-            for (const att of el.attributes) a[att.name] = att.value.slice(0, 200);
+            for (const att of el.attributes) {
+              if (sensitive && att.name.toLowerCase() === 'value') continue;
+              a[att.name] = att.value.slice(0, 200);
+            }
             row.attrs = a;
           } else {
             // arbitrary attribute name
@@ -1284,7 +1342,7 @@
   function getHTML(selector) {
     const el = resolveElement(selector);
     if (!el) return { error: 'Element not found' };
-    const outer = el.outerHTML || '';
+    const outer = redactMarkup(el, true);
     const truncated = outer.length > 100000;
     return { html: outer.slice(0, 100000), length: outer.length, ...(truncated && { truncated: true }) };
   }
@@ -1922,6 +1980,7 @@
   // ── explain selector ──
   function explainSelector(selector) {
     if (!selector) return { error: 'selector required' };
+    if (valueSelectorBlocked(selector)) return { error: VALUE_SELECTOR_ERROR };
     let nodes;
     try { nodes = document.querySelectorAll(selector); } catch (e) { return { error: 'Invalid: ' + e.message }; }
     const samples = [];
