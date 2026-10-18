@@ -35,7 +35,8 @@ async function testContent() {
     Event: class { constructor(type, options) { Object.assign(this, { type }, options); } },
     HTMLInputElement: class {}, HTMLTextAreaElement: class {},
     KeyboardEvent: class { constructor(type, options) { Object.assign(this, { type }, options); } },
-    window: { getComputedStyle: () => ({ display: 'block', visibility: 'visible' }) },
+    window: { getComputedStyle: () => ({ display: 'block', visibility: 'visible',
+      getPropertyValue: property => `computed:${property}` }) },
     document: { body,
       getElementById: id => id === 'email-label' ? { textContent: 'Email address' } : null,
       querySelector: selector => {
@@ -76,6 +77,25 @@ async function testContent() {
   assert.equal((await send({ action: 'submitForm', selector: ref })).ok, true);
   assert.equal(submitted, true);
   assert.equal((await send({ action: 'getMarkdown', selector: ref })).markdown, 'Log in');
+  const customStyle = await send({ action: 'getComputedStyle', selector: ref, properties: ['color', '--accent'] });
+  assert.deepEqual({ ...customStyle.computed }, { color: 'computed:color', '--accent': 'computed:--accent' });
+  const defaultStyle = await send({ action: 'getComputedStyle', selector: ref });
+  const emptyStyle = await send({ action: 'getComputedStyle', selector: ref, properties: [] });
+  assert.equal(defaultStyle.computed.display, 'computed:display');
+  assert.equal(defaultStyle.computed.overflow, 'computed:overflow');
+  assert.deepEqual({ ...emptyStyle.computed }, { ...defaultStyle.computed });
+
+  const originalChildren = button.childNodes;
+  const listItems = [new Element('LI', 'First'), new Element('LI', 'Second')];
+  for (const tagName of ['UL', 'OL']) {
+    const list = new Element(tagName);
+    list.querySelectorAll = () => listItems;
+    button.childNodes = [list];
+    const markdown = await send({ action: 'getMarkdown', selector: ref });
+    const expected = tagName === 'UL' ? '- First\n- Second' : '1. First\n2. Second';
+    assert.equal(markdown.markdown, expected);
+  }
+  button.childNodes = originalChildren;
   const marker = await send({ action: 'markScreenshotTarget', selector: ref });
   assert.equal(button.hasAttribute(marker.attribute), true);
   const found = (await send({ action: 'find', query: 'button' })).results[0].ref;

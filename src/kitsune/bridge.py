@@ -975,7 +975,7 @@ async def _send_to_extension_raw(action, params=None, timeout=30):
     # "Unknown action: start"/"block".)
     command = {
         "id": cmd_id,
-        **(params or {}),
+        **params,
         "action": action,
     }
     
@@ -984,7 +984,7 @@ async def _send_to_extension_raw(action, params=None, timeout=30):
         "future": future,
         "ws": ws,
         "action": action,
-        "tabId": (params or {}).get("tabId"),
+        "tabId": params.get("tabId"),
         "started": time.time(),
     }
     
@@ -995,7 +995,7 @@ async def _send_to_extension_raw(action, params=None, timeout=30):
             await ws.send(json.dumps(command))
         result = await asyncio.wait_for(future, timeout=timeout)
         if action == "closeTab" and not (isinstance(result, dict) and result.get("error")):
-            _cleanup_tab_scheduler_state((params or {}).get("tabId"))
+            _cleanup_tab_scheduler_state(params.get("tabId"))
         return result
     except asyncio.TimeoutError:
         return {"error": f"Command timed out after {timeout}s"}
@@ -1277,7 +1277,7 @@ async def run_command(cmd):
             if effective_action in ('waitForUrl', 'waitForTitle'):
                 timeout_s = params.get('timeout', 10000) / 1000 + 5
                 return await send_to_extension(effective_action, params, timeout=timeout_s)
-            return await send_to_extension(BATCH_ACTION_MAP[action], params)
+            return await send_to_extension(effective_action, params)
 
         # Actions with custom logic
         if action == 'screenshot':
@@ -1387,14 +1387,11 @@ async def run_command(cmd):
         elif action == 'sequence':
             # Run a list of commands with variable substitution between them
             inner = params.get('do', [])
-            prior = []
-            out = []
-            for c in inner:
-                resolved = _substitute_vars(c, prior)
-                r = await run_command(resolved)
-                prior.append(r)
-                out.append(r)
-            return {'results': out}
+            results = []
+            for command in inner:
+                resolved = _substitute_vars(command, results)
+                results.append(await run_command(resolved))
+            return {'results': results}
         else:
             return {'error': f'Unknown batch action: {action}'}
     except Exception as e:
@@ -1704,6 +1701,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
         _invalidate_cache_for_action(action)
         t0 = time.time()
         try:
+            if action in ('waitForUrl', 'waitForTitle'):
+                timeout = body.get('timeout', 10000) / 1000 + 5
             result = self.run_async(send_to_extension(action, body, timeout=timeout), timeout=timeout + 5)
         except Exception as e:
             result = {"error": str(e)}
@@ -1889,21 +1888,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     def _forward(self, action, default_timeout=15):
         """Forward body + policy check + audit to a named extension action."""
-        body = self.read_body()
-        policy_err = _check_policy(action, body)
-        if policy_err:
-            self.send_json(403, policy_err)
-            return
-        _invalidate_cache_for_action(action)
-        t0 = time.time()
-        try:
-            if action in ('waitForUrl', 'waitForTitle'):
-                default_timeout = body.get('timeout', 10000) / 1000 + 5
-            result = self.run_async(send_to_extension(action, body, timeout=default_timeout), timeout=default_timeout + 5)
-        except Exception as e:
-            result = {"error": str(e)}
-        _audit(action, body, isinstance(result, dict) and not result.get("error"), (result or {}).get("error") if isinstance(result, dict) else None, (time.time() - t0) * 1000)
-        self.send_json(200, result)
+        self._send_extension_action(action, self.read_body(), timeout=default_timeout)
 
     # ── 1.4.0 orchestration ──
 

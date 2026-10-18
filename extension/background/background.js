@@ -541,10 +541,10 @@ async function forwardToContent(action, params) {
 
   try {
     const response = await browser.tabs.sendMessage(tabId, { action, ...params });
-    if (response?.error?.includes('HTMLInputElement') || response?.error?.includes('HTMLTextAreaElement')) {
-      if (action === 'fill' && params.selector && params.value != null) {
-        return await fillViaExecScript(tabId, params.selector, String(params.value));
-      }
+    const needsPageContext = response?.error?.includes('HTMLInputElement') ||
+      response?.error?.includes('HTMLTextAreaElement');
+    if (needsPageContext && action === 'fill' && params.selector && params.value != null) {
+      return await fillViaExecScript(tabId, params.selector, String(params.value));
     }
     return response || { error: 'No response from content script' };
   } catch (e) {
@@ -658,8 +658,10 @@ async function getWindowsList() {
 
 async function createWindow(url, incognito) {
   try {
+    let urls;
+    if (url) urls = Array.isArray(url) ? url : [url];
     const w = await browser.windows.create({
-      url: url ? (Array.isArray(url) ? url : [url]) : undefined,
+      url: urls,
       incognito: !!incognito,
     });
     return { ok: true, windowId: w.id, tabIds: (w.tabs || []).map(t => t.id) };
@@ -859,9 +861,9 @@ async function fullPageScreenshot(tabId, preview) {
       ctx.drawImage(img, 0, 0, img.width, drawH * scale, 0, seg.y, vw, drawH);
     }
     const blob = await canvas.convertToBlob({ type: 'image/png' });
-    const buf = await blob.arrayBuffer();
+    const dataUrl = arrayBufferToDataUrl(await blob.arrayBuffer(), 'image/png');
     return { ok: true, width: canvas.width, height: canvas.height, segments: segments.length,
-             truncated: m.docHeight > CANVAS_MAX, dataUrl: preview ? await imagePreview(arrayBufferToDataUrl(buf, 'image/png')) : arrayBufferToDataUrl(buf, 'image/png') };
+             truncated: m.docHeight > CANVAS_MAX, dataUrl: preview ? await imagePreview(dataUrl) : dataUrl };
   } catch (e) { return { error: 'fullPageScreenshot failed: ' + e.message }; }
   finally {
     if (hidFixed && id) { try { await zlRestoreFixed(id); } catch (e) {} }

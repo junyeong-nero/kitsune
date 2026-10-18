@@ -56,8 +56,12 @@
     });
     W.prompt = expose((...args) => {
       const defaultValue = args.length > 1 ? String(args[1]) : '';
-      const answer = state.policy.accept == null ? nativeDialogs.prompt.apply(W, args)
-        : state.policy.accept === true ? String(state.policy.prompt_text ?? defaultValue) : null;
+      let answer = null;
+      if (state.policy.accept == null) {
+        answer = nativeDialogs.prompt.apply(W, args);
+      } else if (state.policy.accept === true) {
+        answer = String(state.policy.prompt_text ?? defaultValue);
+      }
       record('prompt', args[0], defaultValue, answer);
       return answer;
     });
@@ -458,8 +462,10 @@
         const text = metadata.get(el).nodes <= 5 ? normalize(el.textContent) : '';
         return text.length <= 80 ? text : '';
       }
-      const fallback = isField ? el.placeholder || el.title :
-        (isLandmark ? el.title : el.textContent || el.title);
+      let fallback;
+      if (isField) fallback = el.placeholder || el.title;
+      else if (isLandmark) fallback = el.title;
+      else fallback = el.textContent || el.title;
       return clean(el.getAttribute('aria-label') || findLabel(el) ||
         (el.type === 'image' ? el.alt : '') ||
         (['button', 'submit', 'reset'].includes(el.type) ? el.value : '') || fallback);
@@ -478,7 +484,11 @@
       const interactive = isInteractiveElement(el) && !metadata.get(el).wrapper;
       const include = interactive || semanticRoles.has(role) || el === target;
       if (include) {
-        role = role || (el.isContentEditable ? 'textbox' : el === target ? el.tagName.toLowerCase() : 'button');
+        if (!role) {
+          if (el.isContentEditable) role = 'textbox';
+          else if (el === target) role = el.tagName.toLowerCase();
+          else role = 'button';
+        }
         const ref = `s${refGeneration}e${refCounter++}`;
         const states = [];
         if (role === 'heading') states.push(`level=${el.getAttribute('aria-level') || el.tagName.slice(1)}`);
@@ -788,9 +798,10 @@
     const dist = Number.isFinite(parsed) ? Math.round(parsed) : 500;
     const horizontal = direction === 'left' || direction === 'right';
     const opts = { behavior: 'instant' };
-    const position = el => el === window
-      ? (horizontal ? window.scrollX : window.scrollY)
-      : (horizontal ? el.scrollLeft : el.scrollTop);
+    const position = el => {
+      if (el === window) return horizontal ? window.scrollX : window.scrollY;
+      return horizontal ? el.scrollLeft : el.scrollTop;
+    };
     const scroll = el => {
       const before = position(el);
       if (direction === 'top') {
@@ -1380,15 +1391,11 @@
     const el = resolveElement(selector);
     if (!el) return { error: 'Element not found' };
     const cs = window.getComputedStyle(el);
-    if (properties && properties.length) {
-      const out = {};
-      for (const p of properties) out[p] = cs.getPropertyValue(p);
-      return { computed: out };
-    }
     // No props specified → return commonly-needed ones
     const common = ['display','position','visibility','opacity','width','height','color','background-color','font-size','font-family','font-weight','margin','padding','border','z-index','overflow','cursor'];
+    const requested = properties && properties.length ? properties : common;
     const out = {};
-    for (const p of common) out[p] = cs.getPropertyValue(p);
+    for (const property of requested) out[property] = cs.getPropertyValue(property);
     return { computed: out };
   }
 
@@ -1475,7 +1482,6 @@
     const score = (el) => {
       const text = (el.innerText || '').trim();
       if (text.length < 200) return 0;
-      const links = el.querySelectorAll('a').length;
       const paras = el.querySelectorAll('p').length;
       const linkDensity = (el.querySelectorAll('a').reduce ? 0 : Array.from(el.querySelectorAll('a')).reduce((s,a)=>s+(a.innerText||'').length,0)) / text.length;
       return text.length * (1 + paras * 0.05) * (1 - Math.min(0.9, linkDensity));
@@ -1518,12 +1524,12 @@
   function getMarkdown(selector) {
     const root = selector ? resolveElement(selector) : document.body;
     if (!root) return { error: 'Element not found' };
-    function walk(node, depth) {
+    function walk(node) {
       if (node.nodeType === 3) return node.textContent.replace(/\s+/g, ' ');
       if (node.nodeType !== 1) return '';
       const tag = node.tagName.toLowerCase();
       if (['script','style','noscript','svg','iframe','nav','aside','footer','header','form'].includes(tag)) return '';
-      const children = () => Array.from(node.childNodes).map(c => walk(c, depth+1)).join('');
+      const children = () => Array.from(node.childNodes).map(walk).join('');
       switch (tag) {
         case 'h1': return '\n\n# ' + children().trim() + '\n\n';
         case 'h2': return '\n\n## ' + children().trim() + '\n\n';
@@ -1554,14 +1560,14 @@
         case 'ul': {
           let out = '\n';
           for (const li of node.querySelectorAll(':scope > li')) {
-            out += '- ' + Array.from(li.childNodes).map(c => walk(c, depth+1)).join('').trim() + '\n';
+            out += '- ' + Array.from(li.childNodes).map(walk).join('').trim() + '\n';
           }
           return out + '\n';
         }
         case 'ol': {
           let out = '\n', i = 1;
           for (const li of node.querySelectorAll(':scope > li')) {
-            out += (i++) + '. ' + Array.from(li.childNodes).map(c => walk(c, depth+1)).join('').trim() + '\n';
+            out += (i++) + '. ' + Array.from(li.childNodes).map(walk).join('').trim() + '\n';
           }
           return out + '\n';
         }
@@ -1580,7 +1586,7 @@
         default: return children();
       }
     }
-    const md = walk(root, 0).replace(/\n{3,}/g, '\n\n').trim();
+    const md = walk(root).replace(/\n{3,}/g, '\n\n').trim();
     const truncated = md.length > 80000;
     return { markdown: md.slice(0, 80000), length: md.length, ...(truncated && { truncated: true }) };
   }
