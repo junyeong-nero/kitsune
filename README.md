@@ -55,6 +55,10 @@ For the details: [Tools](https://github.com/junyeong-nero/kitsune/blob/main/docs
 [API reference](https://github.com/junyeong-nero/kitsune/blob/main/docs/api-reference.md) ·
 [Development](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#development)
 
+For architecture and product trade-offs, see
+[Browser MCP comparisons](docs/browser-mcp-comparison.md) and the detailed
+[ExecuteAutomation comparison](docs/positioning-vs-executeautomation.md).
+
 ---
 
 MIT · Based on ZenLink and ZenLink-MCP by Jay-Quan.

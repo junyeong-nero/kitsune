@@ -1,5 +1,111 @@
 # TODO
 
+## Product direction and priorities
+
+**Build a reliable ongoing browser workspace for an external agent, not simply
+another MCP with more browser automation tools.** Start with the Firefox-family
+users Kitsune already serves. Firefox/Zen support is an entry point, not a lasting
+advantage by itself; completing useful work with less user intervention is the
+advantage to validate.
+
+Keep three outcomes in focus:
+
+1. Give the agent enough relevant state to choose the next action, without
+   unnecessary page content.
+2. Carry multi-step work across tabs without losing ownership, state, or progress.
+3. Make failures explicit and recoverable instead of silently reporting success.
+
+Existing snapshots, action feedback, batch/parallel tools, workflows, and tab
+recovery are foundations to harden and evaluate, not features to reimplement.
+See [Browser MCP comparisons](browser-mcp-comparison.md) and the
+[ExecuteAutomation deep dive](positioning-vs-executeautomation.md) for context.
+
+### P0 — Interaction reliability and safe failure
+
+- [ ] Define and test a consistent waiting/actionability/timeout contract across
+  action tools. Borrow Playwright's reliability principles without claiming DOM
+  or synthetic-event actions have identical input semantics.
+- [ ] Distinguish dispatching an action from observing its expected outcome.
+  Report missing/failed post-action observations explicitly; do not treat a sent
+  command or `{ok: true}` alone as proof the user's task succeeded.
+- [ ] Make missing, hidden/covered, stale-ref, navigating, closed/unloaded-tab, and
+  disconnected-extension failures distinguishable, with the current state and a
+  useful recovery hint where available.
+- [ ] Verify tab/document/ref identity before mutation and fail explicitly when
+  the intended target is no longer valid. Test focus changes and navigation races.
+- [ ] Add regression cases for dynamic forms, delayed content, tab unloads, and
+  reconnects. Prioritize silent wrong-target actions over adding more tools.
+- [ ] Ensure recovery does not blindly repeat consequential operations. Separate
+  safe retries from submissions, payments, messages, and deletions; connect this
+  to the ask-before-act policy in [Features](#features).
+
+### P1 — Observation efficiency without losing correctness
+
+- [ ] Evaluate and tune existing compact snapshots, repeated-item compaction,
+  subtree/depth controls, and post-action feedback for long/repetitive pages.
+- [ ] Test whether fresh refs and action feedback reduce wrong-target actions,
+  stale-ref errors, and unnecessary re-observation without hiding required state.
+- [ ] Measure total input/output tokens and task success, not just snapshot size
+  or call count. Larger action responses and tool schemas can erase local savings.
+- [ ] Run within-Kitsune comparisons with compaction or action feedback toggled
+  to separate their effects from differences between browser-control libraries.
+
+### P2 — Multi-tab continuity and repeatable work
+
+- [ ] Harden explicit tab ownership and routing for batch/parallel sequences;
+  prove that focus changes cannot send one task's action to another task's tab.
+- [ ] Evaluate existing keep-alive/recovery and workflow primitives together on
+  realistic research → comparison → draft workflows, not only isolated commands.
+- [ ] Add inspectable per-step execution state/results and explicit partial-failure
+  reporting. Determine which workflow steps can safely resume after interruption.
+- [ ] Design checkpoint/resume behavior that never silently repeats an already
+  completed submission or other non-idempotent action.
+- [ ] Make task targets, progress, and pending consequential actions understandable
+  to the user, without introducing a separate internal LLM agent loop.
+
+### Learn from competitors without copying their entire product
+
+| Reference | Principle to adopt |
+| --- | --- |
+| Playwright-based MCPs | Actionability checks, predictable waiting/timeouts, useful errors |
+| Chrome DevTools MCP | Enough diagnostics to explain a failure, not every developer-tool feature |
+| Browser MCP / Chrome MCP Server | Clear installation, connection, and session-access boundaries |
+| Browser Harness MCP | Easy integration with existing coding agents and explicit tool contracts |
+| BrowserOS | Visible task targets/progress and understandable user control |
+
+- [ ] Review install/connect/reconnect UX with real users; distinguish extension,
+  bridge, and agent-configuration failures without changing their normal profiles
+  or granting access to unrelated accounts.
+- [ ] Add the minimum failure diagnostics needed to explain an unsuccessful
+  operation while protecting page data and credentials in logs.
+
+### Validate with useful tasks and users
+
+- [ ] Establish three resettable workload families:
+  - Long-page information lookup: answer correctness, observation volume, tokens.
+  - Dynamic-form drafting: completion, wrong actions, recovery; no real submission.
+  - Multi-tab research → draft: output correctness, tab interference, interventions.
+- [ ] Report success/failure rates first, then user interventions, elapsed time,
+  tokens, and resources per successful task, alongside the costs of failed attempts.
+  A quick failure is not an efficient solution.
+- [ ] Fix model/harness, initial state, seeds, effective viewport, budgets, and
+  permitted capability class; repeat trials and counterbalance execution order.
+- [ ] Separate cold-start from warm-ready costs and count owned browser/bridge/
+  driver/sidecar resources. An existing browser is not zero-cost, and summed RSS
+  is not unique physical memory.
+- [ ] Keep UI-only and full-native capability tracks separate. A benchmark that
+  excludes batch/workflow/code cannot validate the complete orchestration design.
+- [ ] Validate actual demand with Firefox-family users doing these workflows;
+  revisit the positioning if it does not reduce meaningful user effort.
+
+### Not priorities for now
+
+- Supporting every browser engine before establishing a strong Firefox-family use case.
+- Becoming a test-code generator or a complete HTTP/API testing product.
+- Building a proprietary LLM agent loop or cloud-browser service.
+- Increasing tool count as a product goal.
+- Claiming lower latency, tokens, or memory before controlled measurements show it.
+
 ## Install and distribution
 
 - [ ] **Sign the extension on AMO (unlisted channel)** so it survives browser restarts.
@@ -49,10 +155,12 @@
 
 ## Tool design (vs. Playwright MCP)
 
-Kitsune exposes ~120 tools; Playwright MCP exposes ~25 core tools built around
-an accessibility snapshot + element refs. Keep Kitsune's strengths (real logged-in
-profile, multi-tab parallel without focus stealing, readability/markdown/structured
-data, policy/audit) but adopt the snapshot/ref model and a smaller default surface.
+The original consolidation below adopted snapshots/refs and a smaller grouped
+default surface. Keep these completed items as implementation history; tool counts
+vary by version and enabled capabilities and are not a success metric. The next
+priority is to validate reliability and useful work, as described above. Existing
+browser/session access and snapshot/ref interfaces are shared with competitors,
+not exclusive Kitsune features.
 
 1. **Snapshot + ref as the primary interaction model** (highest impact)
    - [x] Add `browser_snapshot`: compact YAML/text tree of interactive elements plus
