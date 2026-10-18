@@ -183,7 +183,7 @@ interrupts all clients sharing that bridge; set `KITSUNE_NO_BRIDGE_RESTART=1` in
 the MCP server environment to opt out. Then update the extension files to the
 same ref and click **Reload** on Kitsune in `about:debugging`. A bridge restart
 does not reload the extension's code. Reload open tabs if their content scripts
-are still outdated. See [Updating Kitsune](../README.md#updating-kitsune) for
+are still outdated. See [Updating Kitsune](guide.md#updating-kitsune) for
 bridge lifecycle details.
 
 ## Extension and server compatibility
@@ -215,7 +215,7 @@ bridge lifecycle details.
 | `extension_connected: false` | Extension loaded? Browser restarted, so the temporary add-on is gone? |
 | Stop or inspect the bridge | `uvx --from git+https://github.com/junyeong-nero/kitsune.git kitsune-bridge status` (or `stop`) with the same source as your clients |
 
-See the README [Troubleshooting](../README.md#troubleshooting) table for bridge,
+See the guide's [Troubleshooting](guide.md#troubleshooting) table for bridge,
 token, and page errors.
 
 ## Development setup from a checkout

@@ -961,6 +961,8 @@ def browser_form_fill(fields: dict, tab_id: int | None = None) -> dict:
     label text (case-insensitive contains) → placeholder. Each value is
     applied via the appropriate setter (.value for inputs/textareas, .checked
     for checkboxes/radios, value for selects). Returns per-key results.
+    A select value must match an option value; otherwise that key returns an
+    error and the current selection is left unchanged.
 
     Args:
         fields: {"email": "foo@bar", "Password": "...", "#submit-target": true}
