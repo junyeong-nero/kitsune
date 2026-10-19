@@ -1,6 +1,6 @@
 # Kitsune
 
-![Kitsune: an orange fox in a browser window, connecting your browser and your AI agent](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/docs/kitsune-hero.svg)
+![Kitsune: an orange fox in a browser window, connecting your browser and your AI agent](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/kitsune-hero.svg)
 
 **Your browser. Your agent. One clever bridge.**
 
@@ -18,7 +18,7 @@ extensions stay in place. No Playwright, Chromium, or WebDriver required.
 - **Work across tabs.** Keep research and tasks in separate tabs without
   replacing the page you're using.
 
-![Claude Code uses Kitsune to open Hacker News and summarize the top three stories](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/docs/demo.gif)
+![Claude Code uses Kitsune to open Hacker News and summarize the top three stories](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/demo.gif)
 
 <sub>A real browser session, captured with Kitsune and sped up.</sub>
 
