@@ -81,11 +81,30 @@ args = ["--from", "kitsune-browser-mcp", "kitsune"]
 KITSUNE_CAPS = "core,network"
 ```
 
-### Claude Desktop, Cursor, and other `mcpServers` clients
+### Pi
+
+With [Pi's built-in MCP support](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/mcp.md):
+
+```bash
+pi mcp add kitsune -- uvx --from kitsune-browser-mcp kitsune
+pi mcp list
+```
+
+This writes user-level configuration to `~/.pi/agent/mcp.json`. Add `--local`
+before `kitsune` to write `.pi/mcp.json` in the current project instead; project
+configuration is loaded only after project trust is granted. In a running
+session, use `/reload` to pick up the change and `/mcp` to inspect the connection.
+
+You can also edit the JSON config directly using the `mcpServers` example below.
+If an MCP adapter extension overrides built-in MCP support, use that extension's
+configuration instructions instead.
+
+### Claude Desktop, Cursor, Pi, and other `mcpServers` clients
 
 Edit the client's JSON config, for example
 `~/Library/Application Support/Claude/claude_desktop_config.json` (Claude Desktop
-on macOS) or `~/.cursor/mcp.json` (Cursor):
+on macOS), `~/.cursor/mcp.json` (Cursor), or `~/.pi/agent/mcp.json` (Pi's built-in
+MCP support). Merge the entry with any existing servers:
 
 ```json
 {
@@ -101,7 +120,7 @@ on macOS) or `~/.cursor/mcp.json` (Cursor):
 Add an `"env": {"KITSUNE_CAPS": "core,network"}` object next to `args` to set
 environment variables.
 
-### opencode
+### OpenCode
 
 Edit `~/.config/opencode/opencode.json` (global) or `opencode.json` at a git repo
 root (project) by hand.
