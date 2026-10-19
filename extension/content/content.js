@@ -3,9 +3,16 @@
 
 (function() {
   'use strict';
-  const CONTENT_VERSION = 21;
+  const CONTENT_VERSION = 22;
   if (window.__claudeBridgeVersion >= CONTENT_VERSION) return;
   window.__claudeBridgeVersion = CONTENT_VERSION;
+
+  // scripts/build_extension.py sets 'signed' and strips @kitsune-dev-only regions:
+  // Mozilla policy forbids running code that is not part of the signed package.
+  const KITSUNE_BUILD = 'dev';
+  const DEV_BUILD_ACTIONS = new Set(['executeJS', 'waitForResult']);
+  const DEV_BUILD_REQUIRED = 'Agent-supplied JavaScript needs the Kitsune developer extension build; ' +
+    'the signed build cannot run it (Mozilla add-on policy). See docs/installation.md#developer-build';
 
   // Install page-world functions before page scripts run. The script-element path is
   // shared with fillViaPageContext; Firefox exports also work under strict page CSP.
@@ -148,11 +155,22 @@
       'hover':                 () => hoverElement(msg.selector, msg.coords),
       'fill':                  () => fillFieldSafe(msg.selector, msg.value),
       'find':                  () => findElements(msg.query),
+      // @kitsune-dev-only:start
       'executeJS':             () => executeJS(msg.code),
+      'waitForResult':         () => waitForResult(msg.code, msg.timeout, msg.pollInterval),
+      // @kitsune-dev-only:end
       'highlight':             () => highlightElement(msg.selector),
       'clearHighlight':        () => clearHighlight(),
       'waitForElement':        () => waitForElement(msg.selector, msg.timeout, msg.pollInterval),
-      'waitForResult':         () => waitForResult(msg.code, msg.timeout, msg.pollInterval),
+      // Fixed operations the bridge and background used to send as code strings.
+      'keepAlive':             () => ({ ok: true }),
+      'neuterUnload':          () => neuterUnload(),
+      'screenPoint':           () => screenPoint(msg.selector, msg.x, msg.y),
+      'captureMeasure':        () => captureMeasure(msg.selector),
+      'captureScrollIntoView': () => captureScrollIntoView(msg.selector, msg.block),
+      'captureScroll':         () => captureScroll(msg.to, msg.by),
+      'hideFixed':             () => hideFixed(msg.selector),
+      'restoreFixed':          () => restoreFixed(),
       // ── 1.4.0 additions ──
       'query':                 () => queryElements(msg.selector, msg.fields, msg.limit),
       'getHTML':               () => getHTML(msg.selector),
@@ -194,7 +212,10 @@
     // Only respond if we're the latest version
     if (window.__claudeBridgeVersion !== CONTENT_VERSION) return false;
     const handler = handlers[msg.action];
-    if (!handler) return false;
+    if (!handler) {
+      if (DEV_BUILD_ACTIONS.has(msg.action)) sendResponse({ error: DEV_BUILD_REQUIRED, devBuildRequired: true });
+      return false;
+    }
 
     try {
       if (['click', 'type', 'fill', 'selectOption', 'checkBox', 'keypress', 'submitForm'].includes(msg.action)) {
@@ -743,6 +764,9 @@
 
   // ── Set Editable Content ──
   function setEditableContent(selector, value, format, clear) {
+    if (format === 'html' && KITSUNE_BUILD !== 'dev') {
+      return { error: DEV_BUILD_REQUIRED, devBuildRequired: true };
+    }
     const el = resolveElement(selector);
     if (!el) return { error: 'Element not found' };
 
@@ -754,11 +778,10 @@
 
     if (target.isContentEditable || target.contentEditable === 'true') {
       if (clear) {
-        if (format === 'html') {
-          target.innerHTML = text;
-        } else {
-          target.innerText = text;
-        }
+        // @kitsune-dev-only:start
+        if (format === 'html') target.innerHTML = text; else
+        // @kitsune-dev-only:end
+        target.innerText = text;
       } else {
         document.execCommand(format === 'html' ? 'insertHTML' : 'insertText', false, text);
       }
@@ -903,28 +926,30 @@
     return { ok: true, pierced: target !== el, tag: target.tagName.toLowerCase() };
   }
 
+  // Runs in the page world (closed shadow DOM). Only this packaged function is injected;
+  // the selector and value travel as JSON arguments, never as generated code.
+  function pageFill(selector, value, callbackName) {
+    const el = document.querySelector(selector);
+    if (!el) { window[callbackName] = 'not found'; return; }
+    const target = el.shadowRoot
+      ? (el.shadowRoot.querySelector('input,textarea,select') || el)
+      : (el.querySelector('input,textarea,select') || el);
+    target.focus();
+    const proto = target.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, 'value');
+    if (setter && setter.set) setter.set.call(target, value);
+    else target.value = value;
+    target.dispatchEvent(new Event('input', { bubbles: true }));
+    target.dispatchEvent(new Event('change', { bubbles: true }));
+    window[callbackName] = 'ok:' + target.tagName;
+  }
+
   function fillViaPageContext(selector, value) {
-    // Last resort: inject script into page context to pierce closed shadow DOM
-    // Uses JSON.stringify to safely embed user input and prevent template injection
+    // Last resort: pierce closed shadow DOM from the page context.
     return new Promise((resolve) => {
       const callbackName = '__claudeFill_' + Date.now();
-      const safeSelector = JSON.stringify(selector);
-      const safeValue = JSON.stringify(String(value));
-      const safeCb = JSON.stringify(callbackName);
-      const code = '(function(){' +
-        'var el=document.querySelector(' + safeSelector + ');' +
-        'if(!el){window[' + safeCb + ']="not found";return;}' +
-        'var target=el.shadowRoot?(el.shadowRoot.querySelector("input,textarea,select")||el):(el.querySelector("input,textarea,select")||el);' +
-        'target.focus();' +
-        'var proto=target.tagName==="TEXTAREA"?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;' +
-        'var setter=Object.getOwnPropertyDescriptor(proto,"value");' +
-        'if(setter&&setter.set)setter.set.call(target,' + safeValue + ');' +
-        'else target.value=' + safeValue + ';' +
-        'target.dispatchEvent(new Event("input",{bubbles:true}));' +
-        'target.dispatchEvent(new Event("change",{bubbles:true}));' +
-        'window[' + safeCb + ']="ok:"+target.tagName;' +
-      '})();';
-      injectPageScript(code);
+      const args = [selector, String(value), callbackName].map(arg => JSON.stringify(arg)).join(',');
+      injectPageScript('(' + pageFill.toString() + ')(' + args + ');');
       const result = window.wrappedJSObject?.[callbackName] || window[callbackName] || 'unknown';
       resolve(result);
     });
@@ -1010,6 +1035,7 @@
   // ── Execute JS ──
   const JS_RESULT_LIMIT = 8000000; // 2.1.0: bridge WebSocket now takes up to 256 MB (was 50 KB under the old 1 MB socket limit)
 
+  // @kitsune-dev-only:start
   function executeJS(code) {
     try {
       const result = eval(code);
@@ -1023,6 +1049,7 @@
       return { error: e.message };
     }
   }
+  // @kitsune-dev-only:end
 
   function waitForText(text, textGone, timeout = 10000) {
     if ((text == null && textGone == null) ||
@@ -1097,6 +1124,7 @@
   }
 
   // ── Wait For Result (poll JS expression until non-empty) ──
+  // @kitsune-dev-only:start
   function waitForResult(code, timeout, pollInterval) {
     const maxWait = timeout || 15000;
     const interval = pollInterval || 500;
@@ -1134,6 +1162,102 @@
       }
       poll();
     });
+  }
+  // @kitsune-dev-only:end
+
+  // ── Fixed page operations (replace bridge/background code strings) ──
+  function neuterUnload() {
+    // Same effect as the former NEUTER_UNLOAD_JS: stop "Leave page?" prompts before a forced close.
+    try {
+      const W = window.wrappedJSObject || window;
+      W.onbeforeunload = null;
+      window.onbeforeunload = null;
+      if (typeof exportFunction === 'function' && W.BeforeUnloadEvent) {
+        Object.defineProperty(W.BeforeUnloadEvent.prototype, 'returnValue', { configurable: true,
+          get: exportFunction(function () { return ''; }, W), set: exportFunction(function () {}, W) });
+        const EP = W.Event.prototype, orig = EP.preventDefault;
+        EP.preventDefault = exportFunction(function () {
+          if (this.type === 'beforeunload') return;
+          return orig.call(this);
+        }, W);
+      }
+      return { ok: true };
+    } catch (e) {
+      return { error: String(e) };
+    }
+  }
+
+  function screenPoint(selector, x, y) {
+    // Viewport point (element centre or x/y) plus its desktop position for OS-level clicks.
+    if (selector) {
+      const el = resolveElement(selector);
+      if (!el) return { error: 'Element not found' };
+      el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
+      const rect = el.getBoundingClientRect();
+      x = rect.left + rect.width / 2;
+      y = rect.top + rect.height / 2;
+    }
+    if (x == null || y == null) return { error: 'No target point' };
+    const viewportLeft = Number.isFinite(window.mozInnerScreenX)
+      ? window.mozInnerScreenX
+      : window.screenX + Math.max(0, (window.outerWidth - window.innerWidth) / 2);
+    const viewportTop = Number.isFinite(window.mozInnerScreenY)
+      ? window.mozInnerScreenY
+      : window.screenY + Math.max(0, window.outerHeight - window.innerHeight);
+    return {
+      title: document.title,
+      viewportX: x,
+      viewportY: y,
+      screenX: viewportLeft + x,
+      screenY: viewportTop + y,
+      devicePixelRatio: window.devicePixelRatio || 1,
+    };
+  }
+
+  function captureMeasure(selector) {
+    const el = document.querySelector(selector);
+    if (!el) return { missing: true };
+    const b = el.getBoundingClientRect();
+    return { x: b.left, y: b.top, w: b.width, h: b.height, vw: innerWidth, vh: innerHeight,
+      sy: scrollY, dpr: devicePixelRatio || 1 };
+  }
+
+  function captureScrollIntoView(selector, block) {
+    const el = document.querySelector(selector);
+    if (!el) return { error: 'Element not found' };
+    el.scrollIntoView({ block: block === 'start' ? 'start' : 'center', inline: 'center', behavior: 'instant' });
+    return { ok: true };
+  }
+
+  function captureScroll(to, by) {
+    if (Number.isFinite(to)) window.scrollTo(0, to);
+    else if (Number.isFinite(by)) window.scrollBy(0, by);
+    return { sy: scrollY };
+  }
+
+  // Hide position:fixed/sticky elements (headers, cookie bars) so they don't repeat in every
+  // stitched screenshot segment. Elements containing the capture target are left alone.
+  function hideFixed(selector) {
+    const target = selector ? document.querySelector(selector) : null;
+    let hidden = 0;
+    document.querySelectorAll('body *').forEach(el => {
+      const style = getComputedStyle(el);
+      if ((style.position === 'fixed' || style.position === 'sticky') && !(target && el.contains(target)) &&
+          style.visibility !== 'hidden') {
+        el.setAttribute('data-zl-fixed', el.style.visibility || '');
+        el.style.visibility = 'hidden';
+        hidden++;
+      }
+    });
+    return { hidden };
+  }
+
+  function restoreFixed() {
+    document.querySelectorAll('[data-zl-fixed]').forEach(el => {
+      el.style.visibility = el.getAttribute('data-zl-fixed');
+      el.removeAttribute('data-zl-fixed');
+    });
+    return { ok: true };
   }
 
   // ── Highlight ──

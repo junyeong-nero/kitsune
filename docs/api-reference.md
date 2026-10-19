@@ -70,6 +70,10 @@ skips its CSS branch and falls back to text search. A selector counts as testing
 such as `[*|value`), or if it contains `[` together with a backslash escape or
 a `/*` comment.
 
+`browser_js`, the `js` condition of `browser_wait_for`, `browser_sync_barrier`,
+and `format="html"` need the developer extension build; the signed build returns
+an error with `"devBuildRequired": true`.
+
 This is not a sandbox: `browser_js` runs arbitrary page JavaScript and can read
 any value the page can, including password fields. Treat access to `browser_js`
 as a separate, unrestricted trust boundary.
@@ -131,7 +135,8 @@ Replaces `browser_fill` and `browser_set_editable_content`.
 
 Editable mode sends `format="text"`. Callers migrating from the old editor tool
 should pass `clear=True` to retain its replace-by-default behavior. For trusted
-HTML insertion use `browser_js`; the underlying endpoint still accepts `format="html"`.
+HTML insertion use `browser_js`; the underlying endpoint still accepts `format="html"`
+(both developer build only).
 
 ### `browser_form_fill(fields, tab_id=None)`
 

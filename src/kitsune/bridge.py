@@ -95,6 +95,7 @@ AUTH_TOKEN = _load_or_create_token()
 # ── State ──
 extension_ws = None  # WebSocket connection to extension
 extension_ws_generation = 0
+extension_info = {}  # {"version", "build"} from the extension's hello message
 pending_commands = {}  # id -> {"future": asyncio.Future, "ws": websocket, ...}
 command_counter = 0
 _ws_send_lock = None
@@ -474,49 +475,10 @@ async def trusted_click(params):
             "focusRequested": bool(focus),
         }
 
-    selector_json = json.dumps(selector)
-    x_json = json.dumps(x)
-    y_json = json.dumps(y)
-    code = f"""
-(() => {{
-  const selector = {selector_json};
-  let x = {x_json};
-  let y = {y_json};
-  const el = selector ? document.querySelector(selector) : null;
-  if (el) {{
-    el.scrollIntoView({{ behavior: 'instant', block: 'center', inline: 'center' }});
-    const rect = el.getBoundingClientRect();
-    x = rect.left + rect.width / 2;
-    y = rect.top + rect.height / 2;
-  }}
-  if (x == null || y == null) return JSON.stringify({{ error: 'No target point' }});
-  const viewportLeft = Number.isFinite(window.mozInnerScreenX)
-    ? window.mozInnerScreenX
-    : window.screenX + Math.max(0, (window.outerWidth - window.innerWidth) / 2);
-  const viewportTop = Number.isFinite(window.mozInnerScreenY)
-    ? window.mozInnerScreenY
-    : window.screenY + Math.max(0, window.outerHeight - window.innerHeight);
-  return JSON.stringify({{
-    title: document.title,
-    viewportX: x,
-    viewportY: y,
-    screenX: viewportLeft + x,
-    screenY: viewportTop + y,
-    devicePixelRatio: window.devicePixelRatio || 1
-  }});
-}})()
-"""
-    js_params = {"code": code}
+    point_params = {"selector": selector, "x": x, "y": y}
     if params.get("tabId") is not None:
-        js_params["tabId"] = params.get("tabId")
-    result = await send_to_extension("executeJS", js_params)
-    if "error" in result:
-        return result
-
-    try:
-        point = json.loads(result.get("result") or "{}")
-    except json.JSONDecodeError:
-        return {"error": "trustedClick could not parse browser point", "raw": result}
+        point_params["tabId"] = params.get("tabId")
+    point = await send_to_extension("screenPoint", point_params)
 
     if "error" in point:
         return point
@@ -645,6 +607,8 @@ async def _sync_barrier_async(tab_ids, predicate, timeout=30000, poll_interval=3
         all_pass = True
         for tid in tab_ids:
             r = await send_to_extension("executeJS", {"tabId": tid, "code": predicate}, timeout=10)
+            if isinstance(r, dict) and r.get("devBuildRequired"):
+                return {"ok": False, **r}
             last[tid] = r
             val = (r or {}).get("result")
             if val in (None, "", "0", "false", "null", "undefined"):
@@ -815,7 +779,7 @@ async def _keep_alive_loop(tab_id, interval):
         while True:
             await asyncio.sleep(interval)
             try:
-                await send_to_extension("executeJS", {"tabId": tab_id, "code": "1"}, timeout=10)
+                await send_to_extension("keepAlive", {"tabId": tab_id}, timeout=10)
             except Exception:
                 pass
     except asyncio.CancelledError:
@@ -884,7 +848,7 @@ def _ws_origin(websocket):
 
 
 async def ws_handler(websocket):
-    global extension_ws, extension_ws_generation
+    global extension_ws, extension_ws_generation, extension_info
     # Reject before touching extension_ws: a web page connecting here would
     # otherwise replace the real extension and receive its commands.
     origin = _ws_origin(websocket)
@@ -917,6 +881,11 @@ async def ws_handler(websocket):
             # Heartbeat ping - just ignore
             if data.get("type") == "ping":
                 continue
+            if data.get("type") == "hello":
+                if extension_ws is websocket:
+                    extension_info = {"version": data.get("version"), "build": data.get("build")}
+                    _log(f"Extension {extension_info['version']} ({extension_info['build']} build)")
+                continue
 
             if cmd_id and cmd_id in pending_commands:
                 entry = pending_commands[cmd_id]
@@ -930,6 +899,7 @@ async def ws_handler(websocket):
     finally:
         if extension_ws is websocket:
             extension_ws = None
+            extension_info = {}
         else:
             _log(f"↩ Stale extension connection closed (generation {my_generation}); active connection kept")
 
@@ -1016,45 +986,6 @@ async def _send_to_extension_raw(action, params=None, timeout=30):
 # stays well under the websocket's 1 MiB frame limit.
 UPLOAD_CHUNK_BYTES = 384 * 1024
 UPLOAD_MAX_BYTES = 1024 * 1024 * 1024
-UPLOAD_ATTACH_JS = r"""function(parts, selector, files, mode) {
-    var toBytes = function (b64) { var bin = atob(b64), a = new Uint8Array(bin.length); for (var i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i); return a; };
-    // 2.0.9: build the File + DataTransfer with the PAGE's own constructors when we can (Firefox content
-    // script: wrappedJSObject + cloneInto). Content-script Files were silently dropped by some uploaders
-    // (YouTube thumbnail, TikTok/Instagram covers) - page-side Files look exactly like a user pick.
-    var W = (typeof cloneInto === 'function' && window.wrappedJSObject) ? window.wrappedJSObject : null;
-    var objs = files.map(function (f) {
-      var bytes = parts.slice(f.start, f.end).map(toBytes), opts = { type: f.type || 'application/octet-stream', lastModified: Date.now() };
-      return W ? new W.File(cloneInto(bytes, W), f.name, cloneInto(opts, W)) : new File(bytes, f.name, opts);
-    });
-    var target = null;
-    if (selector) { target = document.querySelector(selector); if (!target) return { error: 'No element matches: ' + selector }; }
-    var input = null;
-    if (mode !== 'drop') {
-      if (target) input = target.matches('input[type=file]') ? target : target.querySelector('input[type=file]');
-      if (!input && (!target || mode === 'input')) input = document.querySelector('input[type=file]');
-      if (!input && mode === 'input') return { error: 'No input[type=file] found' };
-    }
-    var dt = W ? new W.DataTransfer() : new DataTransfer();
-    objs.forEach(function (f) { dt.items.add(f); });
-    var info = objs.map(function (f) { return { name: f.name, size: f.size, type: f.type }; });
-    if (input) {
-      if (!input.multiple && objs.length > 1) return { error: 'This input takes one file; got ' + objs.length };
-      if (W) input.wrappedJSObject.files = dt.files; else input.files = dt.files;
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-      input.dispatchEvent(new Event('change', { bubbles: true }));
-      return { ok: true, mode: 'input', files: info, accept: input.accept || null, pageFiles: !!W };
-    }
-    var zone = target || document.body;
-    ['dragenter', 'dragover', 'drop'].forEach(function (t) {
-      if (W) {
-        var init = new W.Object(); init.bubbles = true; init.cancelable = true; init.dataTransfer = dt;
-        zone.wrappedJSObject.dispatchEvent(new W.DragEvent(t, init));
-      } else {
-        zone.dispatchEvent(new DragEvent(t, { bubbles: true, cancelable: true, dataTransfer: dt }));
-      }
-    });
-    return { ok: true, mode: 'drop', files: info, pageFiles: !!W };
-  }"""
 
 
 async def _upload_files_async(body):
@@ -1079,7 +1010,7 @@ async def _upload_files_async(body):
             return {"error": "no active tab - pass tabId"}
         tab_id = active[0]["id"]
     uid = uuid.uuid4().hex[:12]
-    native, files, idx, total, t0 = True, [], 0, 0, time.time()
+    files, idx, total, t0 = [], 0, 0, time.time()
     for p in resolved:
         start = idx
         with open(p, "rb") as fh:
@@ -1088,15 +1019,7 @@ async def _upload_files_async(body):
                 if not raw:
                     break
                 b64 = base64.b64encode(raw).decode("ascii")
-                r = None
-                if native:
-                    r = await send_to_extension("uploadChunk", {"tabId": tab_id, "uploadId": uid, "index": idx, "data": b64}, timeout=30)
-                    if isinstance(r, dict) and "Unknown action" in str(r.get("error", "")):
-                        native = False  # older extension: fall back to executeJS transport
-                if not native:
-                    code = ("((window.__zlUp=window.__zlUp||{})[%s]=window.__zlUp[%s]||[])[%d]=%s;'ok'"
-                            % (json.dumps(uid), json.dumps(uid), idx, json.dumps(b64)))
-                    r = await send_to_extension("executeJS", {"tabId": tab_id, "code": code}, timeout=30)
+                r = await send_to_extension("uploadChunk", {"tabId": tab_id, "uploadId": uid, "index": idx, "data": b64}, timeout=30)
                 if isinstance(r, dict) and r.get("error"):
                     return {"error": f"chunk {idx} failed: {r['error']}"}
                 idx += 1
@@ -1104,23 +1027,11 @@ async def _upload_files_async(body):
         files.append({"name": os.path.basename(p), "type": mimetypes.guess_type(p)[0] or "application/octet-stream",
                       "start": start, "end": idx})
     sel, mode = body.get("selector"), body.get("mode") or "auto"
-    if native:
-        r = await send_to_extension("uploadCommit", {"tabId": tab_id, "uploadId": uid, "selector": sel,
-                                                     "files": files, "mode": mode}, timeout=60)
-    else:
-        code = ("(function(){var P=(window.__zlUp||{})[%s];if(window.__zlUp)delete window.__zlUp[%s];"
-                "if(!P)return JSON.stringify({error:'upload chunks missing'});"
-                "return JSON.stringify((%s)(P,%s,%s,%s));})()"
-                % (json.dumps(uid), json.dumps(uid), UPLOAD_ATTACH_JS, json.dumps(sel), json.dumps(files), json.dumps(mode)))
-        r = await send_to_extension("executeJS", {"tabId": tab_id, "code": code}, timeout=60)
-        if isinstance(r, dict) and "result" in r:
-            try:
-                r = json.loads(r["result"])
-            except Exception:
-                r = {"error": f"unexpected commit result: {str(r['result'])[:200]}"}
+    r = await send_to_extension("uploadCommit", {"tabId": tab_id, "uploadId": uid, "selector": sel,
+                                                 "files": files, "mode": mode}, timeout=60)
     if isinstance(r, dict) and not r.get("error"):
         r.update({"tabId": tab_id, "chunks": idx, "bytes": total,
-                  "transport": "native" if native else "executeJS", "seconds": round(time.time() - t0, 1)})
+                  "seconds": round(time.time() - t0, 1)})
     return r
 
 
@@ -1146,18 +1057,6 @@ async def _js_full_async(body):
     out = "".join(parts)
     return {"result": out, "length": len(out), "chunks": len(parts), "complete": len(out) == n}
 
-
-# 2.0.9 - {"force": true} on /api/close-tab: stop "Leave page?" prompts from holding the tab open
-NEUTER_UNLOAD_JS = r"""(function(){try{
-  var W = window.wrappedJSObject || window; W.onbeforeunload = null; window.onbeforeunload = null;
-  if (typeof exportFunction === 'function' && W.BeforeUnloadEvent) {
-    Object.defineProperty(W.BeforeUnloadEvent.prototype, 'returnValue', {configurable: true,
-      get: exportFunction(function () { return ''; }, W), set: exportFunction(function () {}, W)});
-    var EP = W.Event.prototype, orig = EP.preventDefault;
-    EP.preventDefault = exportFunction(function () { if (this.type === 'beforeunload') return; return orig.call(this); }, W);
-  }
-  return 'ok';
-}catch(e){return 'err '+e;}})()"""
 
 _IMAGE_URL = _re.compile(r"^https?://[^?#]+\.(?:jpe?g|png|gif|webp|avif|bmp)(?:[?#].*)?$", _re.I)
 
@@ -1580,6 +1479,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.send_json(200, {
             "status": "running",
             "extension_connected": extension_ws is not None,
+            "extension_version": extension_info.get("version"),
+            "extension_build": extension_info.get("build"),
             "port": HTTP_PORT,
             "ws_port": WS_PORT,
             "screenshot_dir": SCREENSHOT_DIR,
@@ -1674,6 +1575,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "bridge": BRIDGE_VERSION,
             "api": API_VERSION,
             "extension_connected": extension_ws is not None,
+            "extension_version": extension_info.get("version"),
+            "extension_build": extension_info.get("build"),
         }
         if extension_ws:
             try:
@@ -1808,7 +1711,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         body = self.read_body()
         if body.get("force"):
             try:
-                self.run_async(send_to_extension("executeJS", {"tabId": body.get("tabId"), "code": NEUTER_UNLOAD_JS}, timeout=8), timeout=10)
+                self.run_async(send_to_extension("neuterUnload", {"tabId": body.get("tabId")}, timeout=8), timeout=10)
             except Exception:
                 pass   # tab may be hung or already gone - still try to close it
         self._send_extension_action("closeTab", body)
@@ -2017,6 +1920,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "bridge_version": BRIDGE_VERSION,
             "api_version": API_VERSION,
             "extension_connected": extension_ws is not None,
+            "extension_version": extension_info.get("version"),
+            "extension_build": extension_info.get("build"),
             "extension_generation": extension_ws_generation,
             "ports": {"http": HTTP_PORT, "ws": WS_PORT},
             "keep_alive_tabs": active_keep_alive,

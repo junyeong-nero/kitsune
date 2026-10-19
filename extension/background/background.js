@@ -3,8 +3,10 @@
 
 'use strict';
 
-const EXPECTED_CONTENT_VERSION = 21;
+const EXPECTED_CONTENT_VERSION = 22;
 const WS_URL = 'ws://127.0.0.1:47652';
+// scripts/build_extension.py sets 'signed' for the AMO build (see content.js).
+const KITSUNE_BUILD = 'dev';
 let ws = null;
 let reconnectTimer = null;
 let heartbeatTimer = null;
@@ -33,6 +35,7 @@ function connect() {
       console.log('[Claude Bridge] Connected to bridge server');
       reconnectDelay = 1000; // Reset backoff
       stopReconnect();
+      ws.send(JSON.stringify({ type: 'hello', version: browser.runtime.getManifest().version, build: KITSUNE_BUILD }));
       startHeartbeat();
       injectAllTabs(); // Inject content scripts into all existing tabs
     };
@@ -296,6 +299,9 @@ async function dispatchCommand(command) {
     case 'uploadChunk':
     case 'uploadCommit':
     case 'uploadAbort':
+    case 'keepAlive':
+    case 'neuterUnload':
+    case 'screenPoint':
       return await forwardToContent(action, params);
 
     default:
@@ -541,11 +547,6 @@ async function forwardToContent(action, params) {
 
   try {
     const response = await browser.tabs.sendMessage(tabId, { action, ...params });
-    const needsPageContext = response?.error?.includes('HTMLInputElement') ||
-      response?.error?.includes('HTMLTextAreaElement');
-    if (needsPageContext && action === 'fill' && params.selector && params.value != null) {
-      return await fillViaExecScript(tabId, params.selector, String(params.value));
-    }
     return response || { error: 'No response from content script' };
   } catch (e) {
     return { error: `Content script error: ${e.message}` };
@@ -555,23 +556,6 @@ async function forwardToContent(action, params) {
 async function getActiveTabId() {
   const tabs = await browser.tabs.query({ active: true, currentWindow: true });
   return tabs[0]?.id || null;
-}
-
-async function fillViaExecScript(tabId, selector, value) {
-  try {
-    const escaped = (s) => s.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-    const sel = escaped(selector);
-    const val = escaped(value);
-    const code = "(function(){const el=document.querySelector('" + sel + "');if(!el)return 'not found';const target=el.shadowRoot?(el.shadowRoot.querySelector('input,textarea,select')||el):(el.querySelector('input,textarea,select')||el);target.focus();const proto=target.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;const setter=Object.getOwnPropertyDescriptor(proto,'value');if(setter&&setter.set)setter.set.call(target,'" + val + "');else target.value='" + val + "';target.dispatchEvent(new Event('input',{bubbles:true}));target.dispatchEvent(new Event('change',{bubbles:true}));return 'ok:'+target.tagName.toLowerCase();})();";
-    const results = await browser.tabs.executeScript(tabId, { code });
-    const r = results?.[0];
-    if (r && r.startsWith('ok:')) {
-      return { ok: true, pierced: true, method: 'execScript', tag: r.split(':')[1] };
-    }
-    return { error: r || 'fillViaExecScript failed' };
-  } catch (e) {
-    return { error: 'execScript fill error: ' + e.message };
-  }
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -738,22 +722,23 @@ async function imagePreview(dataUrl) {
 const CANVAS_MAX = 32000;   // Firefox canvas dimension limit is 32767
 const zlSleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-async function zlEval(tabId, code) {
-  const r = await forwardToContent('executeJS', { tabId, code });
-  return r && !r.error ? r.result : null;
+// Capture helpers call named content.js operations; no code strings leave the package.
+async function zlContent(tabId, action, params = {}) {
+  const r = await forwardToContent(action, { tabId, ...params });
+  return r && !r.error ? r : null;
 }
 
-// Hide position:fixed / sticky elements (headers, cookie bars) so they don't repeat in every stitched
-// segment. Elements that contain the capture target are left alone.
 async function zlHideFixed(tabId, selector) {
-  await zlEval(tabId, `(()=>{const t=${selector ? `document.querySelector(${JSON.stringify(selector)})` : 'null'};
-    let n=0;document.querySelectorAll('body *').forEach(e=>{const s=getComputedStyle(e);
-      if((s.position==='fixed'||s.position==='sticky')&&!(t&&e.contains(t))&&s.visibility!=='hidden'){
-        e.setAttribute('data-zl-fixed',e.style.visibility||'');e.style.visibility='hidden';n++;}});return String(n);})()`);
+  await zlContent(tabId, 'hideFixed', { selector });
 }
 
 async function zlRestoreFixed(tabId) {
-  await zlEval(tabId, `(()=>{document.querySelectorAll('[data-zl-fixed]').forEach(e=>{e.style.visibility=e.getAttribute('data-zl-fixed');e.removeAttribute('data-zl-fixed');});return '1';})()`);
+  await zlContent(tabId, 'restoreFixed');
+}
+
+async function zlScroll(tabId, scroll) {
+  const r = await zlContent(tabId, 'captureScroll', scroll);
+  return r ? r.sy : null;
 }
 
 // 2.1.1: scale (1-4) = output pixels per CSS pixel. captureVisibleTab renders the viewport at that scale, so
@@ -773,17 +758,15 @@ async function elementScreenshot(tabId, selector, scale, preview) {
     const tab = await browser.tabs.get(id);
     if (isRestrictedUrl(tab.url)) return { error: 'Cannot access browser internal page' };
     ({ previousTabId } = await activateTabForCapture(id));
-    const sel = JSON.stringify(selector);
     const measure = async () => {
-      const r = await zlEval(id, `(()=>{const e=document.querySelector(${sel});if(!e)return '';const b=e.getBoundingClientRect();
-        return JSON.stringify({x:b.left,y:b.top,w:b.width,h:b.height,vw:innerWidth,vh:innerHeight,sy:scrollY,dpr:devicePixelRatio||1});})()`);
-      return r ? JSON.parse(r) : null;
+      const r = await zlContent(id, 'captureMeasure', { selector });
+      return r && !r.missing ? r : null;
     };
     let m = await measure();
     if (!m) return { error: 'No element matches: ' + selector };
     if (m.w < 1 || m.h < 1) return { error: 'Element has no size: ' + selector };
     const tall = m.h > m.vh;
-    await zlEval(id, `(()=>{const e=document.querySelector(${sel});e.scrollIntoView({block:'${tall ? 'start' : 'center'}',inline:'center',behavior:'instant'});return '1';})()`);
+    await zlContent(id, 'captureScrollIntoView', { selector, block: tall ? 'start' : 'center' });
     await zlSleep(150);
     m = await measure();
     const cssW = Math.min(m.w, CANVAS_MAX / want), cssH = Math.min(m.h, CANVAS_MAX / want);
@@ -809,7 +792,7 @@ async function elementScreenshot(tabId, selector, scale, preview) {
       if (covered >= cssH) break;
       if (!hidFixed) { await zlHideFixed(id, selector); hidFixed = true; }
       const before = m.sy;
-      await zlEval(id, `window.scrollBy(0, ${Math.max(50, Math.floor(m.vh * 0.85))}); '1'`);
+      await zlScroll(id, { by: Math.max(50, Math.floor(m.vh * 0.85)) });
       await zlSleep(160);
       m = await measure();
       if (!m || m.sy === before) break;   // can't scroll any further
@@ -843,9 +826,9 @@ async function fullPageScreenshot(tabId, preview) {
     const segments = [];
     let y = 0;
     for (let i = 0; i < 40 && y < docH; i++) {
-      await zlEval(id, `window.scrollTo(0, ${y}); '1'`);
+      await zlScroll(id, { to: y });
       await zlSleep(150);   // let lazy content settle
-      const sy = Number(await zlEval(id, 'String(scrollY)')) || 0;   // the page may clamp the last scroll
+      const sy = Number(await zlScroll(id, {})) || 0;   // the page may clamp the last scroll
       segments.push({ y: sy, data: await browser.tabs.captureVisibleTab(tab.windowId, { format: 'png' }) });
       if (!hidFixed) { await zlHideFixed(id, null); hidFixed = true; }
       if (sy + vh >= docH) break;

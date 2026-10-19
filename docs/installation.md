@@ -18,7 +18,6 @@ to that daemon by itself once both are installed.
 - [Extension and server compatibility](#extension-and-server-compatibility)
 - [Troubleshooting](#troubleshooting)
 - [Development setup from a checkout](#development-setup-from-a-checkout)
-- [Planned distribution](#planned-distribution)
 
 ## Prerequisites
 
@@ -150,23 +149,53 @@ Register them all with the same source and ref (see
 
 ## 2. Install the browser extension
 
-The extension is not part of the Python package, so download it separately.
-Until a signed XPI is available (see [Planned distribution](#planned-distribution)),
-it is loaded as a **temporary add-on**. Temporary add-ons are removed when the
-browser restarts, so you must load the extension again after every restart.
+The extension is not part of the Python package, so download it separately,
+for the **same version** as the server. There are two builds:
 
-1. Download `kitsune-extension-<version>.zip` for the same version as the
-   server from [GitHub Releases](https://github.com/junyeong-nero/kitsune/releases)
-   and unzip it. (For an unreleased commit, use the repository ZIP or a clone
-   instead; the files are under `extension/`.) The server does not use these
-   files. You only need them to load the extension.
+| | Signed build (`kitsune-<version>.xpi`) | Developer build (`kitsune-extension-dev-<version>.zip`) |
+|---|---|---|
+| Install | Once; survives browser restarts | Temporary add-on; load it again after every restart |
+| Signed by Mozilla | Yes (self-distributed, not listed on AMO) | No |
+| `browser_js`, JS conditions in `browser_wait_for` / `browser_sync_barrier`, HTML mode of editable typing, bundled workflows that use `js` steps | Not available | Available |
+| Everything else | Available | Available |
+
+The signed build cannot run JavaScript supplied by the agent, because Mozilla's
+[add-on policies](https://extensionworkshop.com/documentation/publish/add-on-policies/)
+forbid executing code that is not part of the signed package. Those tools return
+an error that names the developer build. `browser_status` reports which build is
+connected (`extension_build`: `signed` or `dev`).
+
+### Signed build (recommended)
+
+Signed XPIs are attached to releases after 0.1.0. For 0.1.0, use the developer
+build below.
+
+1. Download `kitsune-<version>.xpi` from
+   [GitHub Releases](https://github.com/junyeong-nero/kitsune/releases).
+2. Open `about:addons`, click the gear icon, choose **Install Add-on From File…**,
+   and select the XPI. Dragging the file onto a browser window also works.
+3. Approve the permission prompt. The browser asks every time; nothing is
+   installed silently.
+4. Restart or reconnect your MCP client and ask it to call `browser_status`. It
+   should report `"extension_connected": true` and `"extension_build": "signed"`.
+
+### Developer build
+
+Use this for `browser_js`, or to run an unreleased commit.
+
+1. Download `kitsune-extension-dev-<version>.zip` from
+   [GitHub Releases](https://github.com/junyeong-nero/kitsune/releases) and unzip
+   it. For 0.1.0 the file is named `kitsune-extension-0.1.0.zip`. For an
+   unreleased commit, use the `extension/` folder of a repository ZIP or clone.
 2. Open `about:debugging#/runtime/this-firefox` and click
    **Load Temporary Add-on…**.
 3. Select `manifest.json` from the unzipped folder (`extension/manifest.json`
    in a repository ZIP or clone). In the macOS file dialog, press Cmd+Shift+G to
    paste a path.
-4. Restart or reconnect your MCP client and ask it to call `browser_status`. It
-   should report `"extension_connected": true`.
+4. Call `browser_status`; it should report `"extension_build": "dev"`.
+
+Both builds use the same add-on ID. While a developer build is loaded, it
+replaces the signed one; after a browser restart the signed build is back.
 
 ## Pinning a version
 
@@ -178,7 +207,7 @@ claude mcp add --scope user kitsune -- uvx --from kitsune-browser-mcp==0.1.0 kit
 
 Releases are listed on [PyPI](https://pypi.org/project/kitsune-browser-mcp/#history)
 and [GitHub Releases](https://github.com/junyeong-nero/kitsune/releases), which
-also carries the matching extension zip.
+also carries the matching signed XPI and developer-build zip.
 
 To run a commit, tag, or branch that is not on PyPI, use the Git source with
 `@<ref>` (requires Git):
@@ -211,10 +240,12 @@ the extension from the same ref:
 After the server is upgraded, the next MCP connection detects that the running
 bridge has a different `build` and replaces it automatically. This briefly
 interrupts all clients sharing that bridge; set `KITSUNE_NO_BRIDGE_RESTART=1` in
-the MCP server environment to opt out. Then update the extension files to the
-same version and click **Reload** on Kitsune in `about:debugging`. A bridge restart
-does not reload the extension's code. Reload open tabs if their content scripts
-are still outdated. See [Updating Kitsune](guide.md#updating-kitsune) for
+the MCP server environment to opt out. Then update the extension to the same
+version: install the new release's XPI the same way as the first time (signed
+build; it replaces the old version and keeps no separate copy), or load the new
+developer build and click **Reload** on Kitsune in `about:debugging`. The signed
+build does not update itself yet. A bridge restart does not reload the extension's
+code. Reload open tabs if their content scripts are still outdated. See [Updating Kitsune](guide.md#updating-kitsune) for
 bridge lifecycle details.
 
 ## Extension and server compatibility
@@ -233,7 +264,12 @@ bridge lifecycle details.
   different builds share a bridge, each one replaces the bridge when it starts.
   If you need to mix sources, set `KITSUNE_NO_BRIDGE_RESTART=1` in the MCP server
   environments and manage the bridge with `kitsune-bridge stop`.
-- Browsers: Gecko 142+ (Firefox 142+, Zen 1.23+, LibreWolf).
+- `browser_status` also reports the connected extension's `extension_version`
+  and `extension_build`. If `extension_version` differs from `bridge_version`,
+  install the matching extension.
+- Browsers: Gecko 142+ (Firefox 142+, Zen 1.23+, LibreWolf). Firefox release
+  and beta builds install only signed extensions, which is why the developer build
+  is a temporary add-on.
 
 ## Troubleshooting
 
@@ -245,7 +281,8 @@ bridge lifecycle details.
 | uv cannot fetch a `git+https://` source | Check that `git` is installed and on the client's `PATH`, and that GitHub is reachable |
 | An upgrade is not picked up | Restart the MCP client; then refresh with `uvx --refresh …` (see [Upgrading](#upgrading)) |
 | The bridge restarts every time a different client starts | Clients use different sources or refs (see [compatibility](#extension-and-server-compatibility)) |
-| `extension_connected: false` | Extension loaded? Browser restarted, so the temporary add-on is gone? |
+| `extension_connected: false` | Extension installed and enabled in `about:addons`? With the developer build, the browser restarted, so the temporary add-on is gone? |
+| A tool says it needs the developer extension build | The signed build cannot run agent-supplied JavaScript; load the [developer build](#developer-build) |
 | Stop or inspect the bridge | `uvx --from kitsune-browser-mcp kitsune-bridge status` (or `stop`) with the same source as your clients |
 
 See the guide's [Troubleshooting](guide.md#troubleshooting) table for bridge,
@@ -268,7 +305,13 @@ claude mcp add --scope user kitsune -- uv run --directory ~/workspace/kitsune ki
 
 In JSON or TOML configs, use `"command": "uv"` with
 `["run", "--directory", "/Users/you/workspace/kitsune", "kitsune"]`. Load the
-extension from the checkout's `extension/manifest.json`.
+extension from the checkout's `extension/manifest.json` (that is the developer
+build). To try the signed variant locally, build it and load
+`build/extension-signed/manifest.json` the same way:
+
+```bash
+uv run python scripts/build_extension.py signed
+```
 
 To test the installed-package path of a branch, run `uvx --from . kitsune` from the
 checkout. uv installs a snapshot and does not rebuild it after you edit files;
@@ -280,12 +323,3 @@ Run the tests from the repository root:
 uv run python -m unittest discover -s tests -q
 for test in tests/*.cjs; do node "$test"; done
 ```
-
-## Planned distribution
-
-This path is **planned and not available yet**:
-
-- **Signed extension.** A Mozilla-signed XPI or an addons.mozilla.org listing
-  would make the extension persist across browser restarts. Installing it would
-  still require your approval in the browser. Until then, use the temporary
-  add-on steps above. Track progress in [issue #21](https://github.com/junyeong-nero/kitsune/issues/21).
