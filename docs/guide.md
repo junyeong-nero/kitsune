@@ -222,7 +222,7 @@ The consolidated tools use options for related operations:
 `browser_js` runs JavaScript in the page. WordPress Elementor extraction is
 available as `browser_workflow("wp-html", {"site_url": "https://example.com", "page_id": 5719})`.
 See the [API reference](api-reference.md) for merged tool signatures and behavior,
-and the [before/after inventory](tool-surface.md) for the complete tool lists.
+and the [tool list](tool-list.md) for the current tools by capability group.
 
 Every tool includes MCP annotations with a human-readable title and read-only,
 destructive, idempotent, and open-world hints. Clients can use these hints to

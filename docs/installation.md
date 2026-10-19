@@ -288,4 +288,4 @@ This path is **planned and not available yet**:
 - **Signed extension.** A Mozilla-signed XPI or an addons.mozilla.org listing
   would make the extension persist across browser restarts. Installing it would
   still require your approval in the browser. Until then, use the temporary
-  add-on steps above. See [TODO](TODO.md).
+  add-on steps above. Track progress in [issue #21](https://github.com/junyeong-nero/kitsune/issues/21).
