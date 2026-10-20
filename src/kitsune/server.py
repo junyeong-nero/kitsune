@@ -966,6 +966,11 @@ def browser_form_fill(fields: dict, tab_id: int | None = None) -> dict:
     for checkboxes/radios, value for selects). Returns per-key results.
     A select value must match an option value; otherwise that key returns an
     error and the current selection is left unchanged.
+    Checkbox/radio values must be true/false, 1/0, or a case-insensitive
+    "true"/"false", "on"/"off", "yes"/"no", "1"/"0" string; anything else
+    returns an error for that key. A selected radio cannot be set to false
+    (that would empty its group): set another radio in the group to true.
+    False on an unselected radio is a no-op.
 
     Args:
         fields: {"email": "foo@bar", "Password": "...", "#submit-target": true}
