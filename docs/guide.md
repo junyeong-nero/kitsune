@@ -328,6 +328,12 @@ What it does not protect against:
   This is not a sandbox: `browser_js` can read anything the page can, and the
   detection is heuristic. Do not assume a visually masked field is hidden from
   the agent or its logs.
+- **Typed values outside the bridge.** The bridge audit log (`browser_audit`)
+  keeps the action, target, tab, timing and outcome of each write action but
+  replaces typed text (`browser_type`, `browser_form_fill` values,
+  `browser_keypress` text) with `"[redacted]"`; see
+  [Audit log](api-reference.md#audit-log). The page and the MCP client's own
+  transcript still see whatever the agent sent.
 - **Authenticated actions.** Existing sessions let the agent act as you on
   accessible sites. MCP annotations are client hints, not an approval system.
 

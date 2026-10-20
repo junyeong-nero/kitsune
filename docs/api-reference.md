@@ -163,6 +163,24 @@ This is not a sandbox: `browser_js` runs arbitrary page JavaScript and can read
 any value the page can, including sensitive fields. Treat access to `browser_js`
 as a separate, unrestricted trust boundary.
 
+### Audit log
+
+`browser_audit` (`/api/audit`) returns recent write-action entries:
+`{ts, action, params, ok, error, ms}`. `params` never contains JavaScript bodies
+(`code`) or typed text. Typed values are replaced with `"[redacted]"`:
+
+- `text` of `type` and `keypress`;
+- `value` of `fill` and `setEditableContent`;
+- every value of `formFill` `fields`. The field keys (selectors, names or labels)
+  are kept.
+
+The action, `selector`/`ref`/`element`, `tabId`, other options (`key`,
+`modifiers`, `clear`, …), duration and outcome are kept. Nested commands (`batch`
+`commands`, `parallel` `sequences`, `retry`/`broadcast` `command`,
+`if`/`while`/`try` blocks) follow the same rule. `uploadFile` entries keep their
+file paths; file contents are never logged. The extension still receives the
+unredacted value. Only the audit copy is scrubbed.
+
 ### `browser_tabs(action="list", tab_id=None, url=None, force=False, raw=False, wait=False, timeout=15000)`
 
 Replaces `browser_new_tab`, `browser_close_tab`, and `browser_switch_tab`.

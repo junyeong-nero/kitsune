@@ -640,11 +640,51 @@ def _log(msg):
         del _log_buffer[: len(_log_buffer) - _LOG_MAX]
 
 
+AUDIT_REDACTED = "[redacted]"
+# Params holding text the agent typed into the page; selectors, refs and tabId stay.
+_AUDIT_TYPED_PARAMS = {
+    "type": ("text",),
+    "fill": ("value",),
+    "setEditableContent": ("value",),
+    "keypress": ("text",),
+}
+
+
+def _audit_params(action, params):
+    """Copy params for the audit log without JS bodies or typed values.
+
+    Nested commands (batch, parallel, broadcast, retry, if/while/try, sequence)
+    are dicts with their own "action" and get the same treatment.
+    """
+    def scrub(value):
+        if isinstance(value, dict):
+            if isinstance(value.get("action"), str):
+                return _audit_params(value["action"], value)
+            return {k: scrub(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [scrub(v) for v in value]
+        return value
+
+    typed = _AUDIT_TYPED_PARAMS.get(action, ())
+    out = {}
+    for k, v in (params or {}).items():
+        if k == "code":  # don't log JS bodies
+            continue
+        if k in typed:
+            out[k] = AUDIT_REDACTED
+        elif action == "formFill" and k == "fields":
+            # Keys are selectors/labels and stay; every value is typed content.
+            out[k] = {f: AUDIT_REDACTED for f in v} if isinstance(v, dict) else AUDIT_REDACTED
+        else:
+            out[k] = scrub(v)
+    return out
+
+
 def _audit(action, params, ok, error, ms):
     _audit_log.append({
         "ts": int(time.time() * 1000),
         "action": action,
-        "params": {k: v for k, v in (params or {}).items() if k != "code"},  # don't log JS bodies
+        "params": _audit_params(action, params),
         "ok": bool(ok),
         "error": error,
         "ms": int(ms),
