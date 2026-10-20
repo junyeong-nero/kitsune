@@ -666,6 +666,11 @@ WRITE_ACTIONS = {
 }
 
 
+# Repeating these after an unknown outcome could duplicate a side effect (a submit,
+# message, payment or deletion), so their timeouts and disconnects are not retryable.
+_REPEAT_UNSAFE_ACTIONS = WRITE_ACTIONS | {"uploadCommit", "focusElement", "blurElement"}
+
+
 def _check_policy(action, params):
     """Return error dict if action/url violates current policy, else None."""
     if _policy["readonly"] and action in WRITE_ACTIONS:
@@ -1034,7 +1039,8 @@ async def ws_handler(websocket):
             ws = entry.get("ws") if isinstance(entry, dict) else websocket
             if ws is websocket:
                 if not future.done():
-                    future.set_result({"error": "Extension disconnected"})
+                    action = entry.get("action") if isinstance(entry, dict) else None
+                    future.set_result(_disconnected_error("Extension disconnected", action))
                 pending_commands.pop(cmd_id, None)
 
 
@@ -1048,6 +1054,31 @@ def serve_extension_ws(port):
     # oversized frame closed the socket ("Extension disconnected"). Allow big frames.
     return ws_serve(ws_handler, "127.0.0.1", port, origins=ALLOWED_WS_ORIGINS,
                     process_response=_log_rejected_ws_origin, max_size=256 * 1024 * 1024)
+
+
+# Action error contract (docs/api-reference.md#action-errors): `error` keeps its text;
+# code, retryable, hint and state are additive and machine-readable.
+def _action_error(message, code, *, retryable, hint, **state):
+    error = {"error": message, "code": code, "retryable": retryable, "hint": hint}
+    if state:
+        error["state"] = state
+    return error
+
+
+def _safe_to_repeat(action):
+    """Whether repeating a command whose outcome is unknown cannot duplicate a side effect."""
+    return action is not None and action not in _REPEAT_UNSAFE_ACTIONS
+
+
+def _disconnected_error(message, action, sent=True):
+    return _action_error(
+        message, "extension_disconnected",
+        retryable=not sent or _safe_to_repeat(action),
+        hint=("The extension disconnected after the command was sent, so its effect is unknown; "
+              "check the page with browser_snapshot before repeating it." if sent else
+              "Check browser_status; the extension reconnects automatically while the browser runs."),
+        connected=extension_ws is not None,
+    )
 
 
 async def send_to_extension(action, params=None, timeout=30):
@@ -1068,7 +1099,9 @@ async def _send_to_extension_raw(action, params=None, timeout=30):
                       not in {"0", "false", "no", "off"})
     ws = extension_ws
     if not ws:
-        return {"error": "Kitsune extension not connected. Open Firefox or Zen and make sure the Kitsune extension is loaded."}
+        return _disconnected_error(
+            "Kitsune extension not connected. Open Firefox or Zen and make sure the Kitsune extension is loaded.",
+            action, sent=False)
     
     command_counter += 1
     cmd_id = f"cmd_{command_counter}_{int(time.time())}"
@@ -1096,16 +1129,25 @@ async def _send_to_extension_raw(action, params=None, timeout=30):
     try:
         async with _get_ws_send_lock():
             if extension_ws is not ws:
-                return {"error": "Extension reconnected before command could be sent"}
+                return _disconnected_error("Extension reconnected before command could be sent", action, sent=False)
             await ws.send(json.dumps(command))
         result = await asyncio.wait_for(future, timeout=timeout)
         if action == "closeTab" and not (isinstance(result, dict) and result.get("error")):
             _cleanup_tab_scheduler_state(params.get("tabId"))
+        # The extension cannot tell reads from writes; repeating a read is always safe.
+        if isinstance(result, dict) and result.get("code") and _safe_to_repeat(action):
+            result["retryable"] = True
         return result
     except asyncio.TimeoutError:
-        return {"error": f"Command timed out after {timeout}s"}
+        return _action_error(
+            f"Command timed out after {timeout}s", "timeout",
+            retryable=_safe_to_repeat(action),
+            hint="No reply arrived in time, so the command's effect is unknown; check the page "
+                 "with browser_snapshot before repeating it.",
+            timeoutSeconds=timeout,
+        )
     except websockets.exceptions.ConnectionClosed:
-        return {"error": "Extension disconnected while waiting for response"}
+        return _disconnected_error("Extension disconnected while waiting for response", action)
     except Exception as e:
         return {"error": str(e)}
     finally:
@@ -1373,6 +1415,9 @@ async def run_command(cmd):
                 last = await run_command(inner)
                 if not (isinstance(last, dict) and last.get('error')):
                     return {'ok': True, 'attempts': i + 1, 'result': last}
+                # Never blindly repeat a command that may already have taken effect.
+                if last.get('retryable') is False:
+                    return {'ok': False, 'attempts': i + 1, 'result': last, 'reason': 'not retryable'}
                 if on_errors and not any(substr in last.get('error', '') for substr in on_errors):
                     return {'ok': False, 'attempts': i + 1, 'result': last, 'reason': 'error not in onErrors'}
                 await asyncio.sleep((backoff_ms / 1000) * (2 ** i))

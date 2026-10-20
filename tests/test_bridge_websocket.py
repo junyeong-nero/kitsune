@@ -114,6 +114,32 @@ class ExtensionWebSocketTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(bridge.extension_ws_generation, 1)
             await extension.ping()
 
+    async def test_disconnect_after_send_is_not_retryable_for_writes(self):
+        for action, retryable in (("submitForm", False), ("getSnapshot", True)):
+            with self.subTest(action=action):
+                async with self.connect() as client:
+                    await self.wait_until(lambda: bridge.extension_ws is not None)
+                    command = asyncio.create_task(bridge._send_to_extension_raw(action, timeout=5))
+                    self.assertEqual(json.loads(await client.recv())["action"], action)
+                result = await command
+                self.assertEqual(result["error"], "Extension disconnected")
+                self.assertEqual(result["code"], "extension_disconnected")
+                self.assertIs(result["retryable"], retryable)
+                self.assertEqual(result["state"], {"connected": False})
+                await self.wait_until(lambda: bridge.extension_ws is None)
+
+    async def test_extension_error_codes_are_retryable_for_reads(self):
+        unknown = {"error": "No response from content script", "code": "content_unavailable",
+                   "retryable": False, "hint": "inspect", "state": {"tabId": 7}}
+        async with self.connect() as client:
+            await self.wait_until(lambda: bridge.extension_ws is not None)
+            for action, retryable in (("click", False), ("getSnapshot", True)):
+                with self.subTest(action=action):
+                    command = asyncio.create_task(bridge._send_to_extension_raw(action, {"tabId": 7}, timeout=5))
+                    sent = json.loads(await client.recv())
+                    await client.send(json.dumps({"id": sent["id"], "result": unknown}))
+                    self.assertEqual(await command, {**unknown, "retryable": retryable})
+
     async def test_shutdown_closes_extension_and_fails_pending_commands(self):
         async with self.connect() as client:
             await self.wait_until(lambda: bridge.extension_ws is not None)
@@ -121,7 +147,9 @@ class ExtensionWebSocketTests(unittest.IsolatedAsyncioTestCase):
             json.loads(await client.recv())
 
             await self.close_server()
-            self.assertEqual(await command, {"error": "Extension disconnected"})
+            result = await command
+            self.assertEqual(result["error"], "Extension disconnected")
+            self.assertEqual((result["code"], result["retryable"]), ("extension_disconnected", True))
             with self.assertRaises(ConnectionClosed) as closed:
                 await asyncio.wait_for(client.recv(), 5)
             self.assertEqual(closed.exception.rcvd.code, 1001)

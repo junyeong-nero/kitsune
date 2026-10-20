@@ -3,7 +3,7 @@
 
 'use strict';
 
-const EXPECTED_CONTENT_VERSION = 22;
+const EXPECTED_CONTENT_VERSION = 23;
 const WS_URL = 'ws://127.0.0.1:47652';
 // scripts/build_extension.py sets 'signed' for the AMO build (see content.js).
 const KITSUNE_BUILD = 'dev';
@@ -451,8 +451,9 @@ function waitForTabLoad(tabId, startNavigation, { reload = false, timeout = 1500
 }
 
 async function navigateTab(url, tabId, expectTitle) {
+  let targetTabId = null;
   try {
-    const targetTabId = tabId || (await getActiveTabId());
+    targetTabId = tabId || (await getActiveTabId());
     if (!targetTabId) return { error: 'No active tab' };
     const target = urlWithoutFragment(url);
     const sameUrl = target !== null && target === urlWithoutFragment((await browser.tabs.get(targetTabId)).url);
@@ -479,7 +480,7 @@ async function navigateTab(url, tabId, expectTitle) {
     }
     return result;
   } catch (e) {
-    return { error: e.message };
+    return await tabApiError(targetTabId, e);
   }
 }
 
@@ -488,7 +489,7 @@ async function switchTab(tabId) {
     await browser.tabs.update(tabId, { active: true });
     return { ok: true };
   } catch (e) {
-    return { error: e.message };
+    return await tabApiError(tabId, e);
   }
 }
 
@@ -517,7 +518,7 @@ async function closeTab(tabId) {
     await browser.tabs.remove(tabId);
     return { ok: true };
   } catch (e) {
-    return { error: e.message };
+    return await tabApiError(tabId, e);
   }
 }
 
@@ -550,17 +551,63 @@ async function wakeTab(tabId) {
 
 // == Forward to Content Script ==
 
+// Error contract (see docs/api-reference.md#action-errors): `error` keeps its text; code,
+// retryable, hint and state are machine-readable. retryable is false when the message may
+// have reached the page, so its outcome is unknown; the bridge relaxes that for reads.
+const TAB_FAILURE_HINTS = {
+  tab_closed: 'The tab no longer exists; list tabs with browser_tabs and target an open tab.',
+  tab_unloaded: 'The tab was unloaded; wake it with browser_wake_tab, then take a new browser_snapshot.',
+  navigating: 'The tab is loading a new document; wait for it with browser_wait_for, then take a new browser_snapshot.',
+  content_unavailable: 'The page did not answer; inspect it with browser_snapshot before repeating the action.',
+  restricted_page: 'Browser-internal pages cannot be scripted; navigate the tab to a web page or target another tab.',
+};
+
+async function tabState(tabId) {
+  try {
+    const tab = await browser.tabs.get(tabId);
+    return { tabId, url: tab.url, status: tab.status, ...(tab.discarded ? { discarded: true } : {}) };
+  } catch {
+    return null;
+  }
+}
+
+function tabError(message, code, state, retryable = true) {
+  return { error: message, code, retryable, hint: TAB_FAILURE_HINTS[code], state };
+}
+
+async function tabFailure(tabId, message, dispatched) {
+  const state = await tabState(tabId);
+  if (!state) return tabError(message, 'tab_closed', { tabId });
+  const code = state.discarded ? 'tab_unloaded' : state.status === 'loading' ? 'navigating' : 'content_unavailable';
+  return tabError(message, code, state, !dispatched);
+}
+
+// Tab APIs fail opaquely; name the common case of a tab that no longer exists.
+async function tabApiError(tabId, e) {
+  if (tabId != null && !(await tabState(tabId))) return tabError(e.message, 'tab_closed', { tabId });
+  return { error: e.message };
+}
+
+// A target that vanished while the tab loads is a navigation race, not a missing element.
+async function withTabState(tabId, response) {
+  const state = { ...response.state, ...(await tabState(tabId) || { tabId }) };
+  if (state.status === 'loading' && (response.code === 'not_found' || response.code === 'stale_ref')) {
+    return { ...response, code: 'navigating', hint: TAB_FAILURE_HINTS.navigating,
+      state: { ...state, cause: response.code } };
+  }
+  return { ...response, state };
+}
+
 async function forwardToContent(action, params) {
   const tabId = params.tabId || (await getActiveTabId());
   if (!tabId) return { error: 'No active tab found' };
-  
-  // Check for restricted pages
-  try {
-    const tab = await browser.tabs.get(tabId);
-    if (isRestrictedUrl(tab.url)) {
-      return { error: `Cannot access browser internal page: ${tab.url.split('?')[0]}` };
-    }
-  } catch {}
+
+  // Verify the target tab before anything can reach a page.
+  const state = await tabState(tabId);
+  if (!state) return tabError(`Tab ${tabId} no longer exists`, 'tab_closed', { tabId });
+  if (isRestrictedUrl(state.url)) {
+    return tabError(`Cannot access browser internal page: ${state.url.split('?')[0]}`, 'restricted_page', state);
+  }
   
   // Check if content script is loaded and up-to-date
   let needsInject = false;
@@ -576,16 +623,20 @@ async function forwardToContent(action, params) {
       await browser.tabs.executeScript(tabId, { file: '/content/content.js' });
       await new Promise(r => setTimeout(r, 150));
     } catch (e) {
-      return { error: `Cannot inject content script: ${e.message}` };
+      return await tabFailure(tabId, `Cannot inject content script: ${e.message}`, false);
     }
   }
 
+  let response;
   try {
-    const response = await browser.tabs.sendMessage(tabId, { action, ...params });
-    return response || { error: 'No response from content script' };
+    response = await browser.tabs.sendMessage(tabId, { action, ...params });
   } catch (e) {
-    return { error: `Content script error: ${e.message}` };
+    // Without a receiver the message never reached the page.
+    return await tabFailure(tabId, `Content script error: ${e.message}`,
+      !/Receiving end does not exist/.test(e.message));
   }
+  if (!response) return await tabFailure(tabId, 'No response from content script', true);
+  return response.code ? await withTabState(tabId, response) : response;
 }
 
 async function getActiveTabId() {
