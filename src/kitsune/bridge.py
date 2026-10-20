@@ -44,7 +44,7 @@ import stat
 # not run pip on its own.
 try:
     import websockets
-    from websockets.server import serve as ws_serve
+    from websockets.asyncio.server import serve as ws_serve
 except ImportError:
     sys.exit("websockets is not installed. Reinstall kitsune with its dependencies.")
 
@@ -841,21 +841,14 @@ def _parse_workflow(filepath, variables=None):
 #  WebSocket Server (Extension connects here)
 # ══════════════════════════════════════════════
 
-def _ws_origin(websocket):
-    request = getattr(websocket, "request", None)
-    headers = request.headers if request is not None else getattr(websocket, "request_headers", {})
-    return headers.get("Origin") or ""
+# websockets rejects any other Origin (or a missing one) with HTTP 403 during
+# the handshake, before ws_handler runs: a web page connecting here would
+# otherwise replace the real extension and receive its commands.
+ALLOWED_WS_ORIGINS = [_re.compile(_re.escape(ALLOWED_WS_ORIGIN_PREFIX) + ".*")]
 
 
 async def ws_handler(websocket):
     global extension_ws, extension_ws_generation, extension_info
-    # Reject before touching extension_ws: a web page connecting here would
-    # otherwise replace the real extension and receive its commands.
-    origin = _ws_origin(websocket)
-    if not origin.startswith(ALLOWED_WS_ORIGIN_PREFIX):
-        _log(f"⛔ Rejected WebSocket connection from origin {origin or '(none)'!r}")
-        await websocket.close(code=1008, reason="origin not allowed")
-        return
     old_ws = extension_ws
     extension_ws_generation += 1
     my_generation = extension_ws_generation
@@ -913,6 +906,18 @@ async def ws_handler(websocket):
                 if not future.done():
                     future.set_result({"error": "Extension disconnected"})
                 pending_commands.pop(cmd_id, None)
+
+
+def _log_rejected_ws_origin(connection, request, response):
+    if response.status_code == 403:
+        _log(f"⛔ Rejected WebSocket connection from origin {request.headers.get('Origin') or '(none)'!r}")
+
+
+def serve_extension_ws(port):
+    # 2.1.0: websockets defaults to a 1 MiB message cap - a full-page screenshot is several MB and the
+    # oversized frame closed the socket ("Extension disconnected"). Allow big frames.
+    return ws_serve(ws_handler, "127.0.0.1", port, origins=ALLOWED_WS_ORIGINS,
+                    process_response=_log_rejected_ws_origin, max_size=256 * 1024 * 1024)
 
 
 async def send_to_extension(action, params=None, timeout=30):
@@ -2097,10 +2102,7 @@ async def main():
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, shutdown_event.set)
     
-    # Start WebSocket server
-    # 2.1.0: websockets defaults to a 1 MiB message cap - a full-page screenshot is several MB and the
-    # oversized frame closed the socket ("Extension disconnected"). Allow big frames.
-    ws_server = await ws_serve(ws_handler, "127.0.0.1", WS_PORT, max_size=256 * 1024 * 1024)
+    ws_server = await serve_extension_ws(WS_PORT)
     print(f"[{now()}] 🔌 WebSocket server on ws://localhost:{WS_PORT}")
     
     http_server = None
