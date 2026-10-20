@@ -43,6 +43,19 @@ class AuditRedactionTests(unittest.TestCase):
         })
         self.assertEqual(self.audited("formFill", {"fields": TYPED})["params"], {"fields": REDACTED})
 
+    def test_stored_secrets_are_redacted_and_identifiers_kept(self):
+        for action, params, secret_key in [
+            ("cookies", {"op": "set", "url": "https://example.test/", "name": "sid",
+                         "value": TYPED, "domain": "example.test", "path": "/", "secure": True}, "value"),
+            ("storageOp", {"kind": "local", "op": "set", "key": "token", "value": TYPED, "tabId": 5}, "value"),
+            ("storageOp", {"kind": "local", "op": "restore", "value": {"token": TYPED}, "tabId": 5}, "value"),
+            ("clipboard", {"op": "write", "text": TYPED}, "text"),
+        ]:
+            with self.subTest(action=action, op=params["op"]):
+                entry = self.audited(action, params)
+                self.assertEqual(entry["params"], {**params, secret_key: REDACTED})
+                self.assertNotIn(TYPED, json.dumps(entry))
+
     def test_nested_commands_get_the_same_rule(self):
         params = {
             "commands": [
@@ -53,6 +66,11 @@ class AuditRedactionTests(unittest.TestCase):
             "command": {"action": "formFill", "fields": {"#c": TYPED}},
             "do": [{"action": "keypress", "key": "a", "text": TYPED}],
             "catch": [{"action": "click", "selector": "#retry"}],
+            "then": [
+                {"action": "cookies", "op": "set", "name": "sid", "value": TYPED},
+                {"action": "storageOp", "op": "set", "key": "token", "value": TYPED},
+                {"action": "clipboard", "op": "write", "text": TYPED},
+            ],
         }
         entry = self.audited("batch", params)
         self.assertNotIn(TYPED, json.dumps(entry))
@@ -66,12 +84,19 @@ class AuditRedactionTests(unittest.TestCase):
             "command": {"action": "formFill", "fields": {"#c": REDACTED}},
             "do": [{"action": "keypress", "key": "a", "text": REDACTED}],
             "catch": [{"action": "click", "selector": "#retry"}],
+            "then": [
+                {"action": "cookies", "op": "set", "name": "sid", "value": REDACTED},
+                {"action": "storageOp", "op": "set", "key": "token", "value": REDACTED},
+                {"action": "clipboard", "op": "write", "text": REDACTED},
+            ],
         })
 
     def test_other_actions_are_unchanged_except_js_bodies(self):
         for action, params in [
             ("click", {"selector": "#go", "text": "Go", "tabId": 4}),
             ("captureNetwork", {"action": "start", "tabId": 4}),
+            ("intercept", {"op": "add", "patterns": ["analytics\\.example\\.test"], "effect": "block"}),
+            ("cookies", {"op": "get", "url": "https://example.test/", "name": "sid"}),
             ("uploadFile", {"paths": ["/tmp/fixture.txt"], "selector": "#file", "mode": "auto"}),
         ]:
             with self.subTest(action=action):

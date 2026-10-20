@@ -641,17 +641,21 @@ def _log(msg):
 
 
 AUDIT_REDACTED = "[redacted]"
-# Params holding text the agent typed into the page; selectors, refs and tabId stay.
-_AUDIT_TYPED_PARAMS = {
+# Params holding typed text or stored secrets (cookie, storage and clipboard
+# contents); selectors, refs, tabId, op, name, url and key stay.
+_AUDIT_SECRET_PARAMS = {
     "type": ("text",),
     "fill": ("value",),
     "setEditableContent": ("value",),
     "keypress": ("text",),
+    "cookies": ("value",),
+    "storageOp": ("value",),
+    "clipboard": ("text",),
 }
 
 
 def _audit_params(action, params):
-    """Copy params for the audit log without JS bodies or typed values.
+    """Copy params for the audit log without JS bodies, typed values or secrets.
 
     Nested commands (batch, parallel, broadcast, retry, if/while/try, sequence)
     are dicts with their own "action" and get the same treatment.
@@ -665,12 +669,12 @@ def _audit_params(action, params):
             return [scrub(v) for v in value]
         return value
 
-    typed = _AUDIT_TYPED_PARAMS.get(action, ())
+    secret = _AUDIT_SECRET_PARAMS.get(action, ())
     out = {}
     for k, v in (params or {}).items():
         if k == "code":  # don't log JS bodies
             continue
-        if k in typed:
+        if k in secret:
             out[k] = AUDIT_REDACTED
         elif action == "formFill" and k == "fields":
             # Keys are selectors/labels and stay; every value is typed content.

@@ -167,15 +167,21 @@ as a separate, unrestricted trust boundary.
 
 `browser_audit` (`/api/audit`) returns recent write-action entries:
 `{ts, action, params, ok, error, ms}`. `params` never contains JavaScript bodies
-(`code`) or typed text. Typed values are replaced with `"[redacted]"`:
+(`code`), typed text or stored secrets. These values are replaced with
+`"[redacted]"`:
 
 - `text` of `type` and `keypress`;
 - `value` of `fill` and `setEditableContent`;
 - every value of `formFill` `fields`. The field keys (selectors, names or labels)
-  are kept.
+  are kept;
+- `value` of `cookies` (`browser_cookies`);
+- `value` of `storageOp` (`browser_storage` set and restore);
+- `text` of `clipboard` (`browser_clipboard` write).
 
-The action, `selector`/`ref`/`element`, `tabId`, other options (`key`,
-`modifiers`, `clear`, …), duration and outcome are kept. Nested commands (`batch`
+The action, `selector`/`ref`/`element`, `tabId`, other options (`op`, `name`,
+`url`, `domain`, `kind`, `key`, `modifiers`, `clear`, …), duration
+and outcome are kept. `intercept` takes only URL patterns and an effect, never a
+response body, so its entries are logged as sent. Nested commands (`batch`
 `commands`, `parallel` `sequences`, `retry`/`broadcast` `command`,
 `if`/`while`/`try` blocks) follow the same rule. `uploadFile` entries keep their
 file paths; file contents are never logged. The extension still receives the
