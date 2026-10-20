@@ -25,7 +25,7 @@ These tools also accept refs (all new parameters are optional):
 
 | MCP tool | Parameters |
 |---|---|
-| `browser_keypress` | `key, selector=None, modifiers=None, text=None, tab_id=None, ref=None, element=None` |
+| `browser_keypress` | `key, selector=None, modifiers=None, text=None, tab_id=None, ref=None, element=None, wait=False, timeout=10000` |
 | `browser_submit_form` | `selector=None, tab_id=None, ref=None, element=None` |
 | `browser_scroll` | `direction="down", amount=500, tab_id=None, selector=None, ref=None, element=None` |
 | `browser_blur` | `selector=None, tab_id=None, ref=None, element=None` |
@@ -109,7 +109,8 @@ only `error`. MCP tools return these failures with `isError: true` (see
 
 | `code` | Meaning | `retryable` |
 |---|---|---|
-| `not_found` | No element matches the selector (also `No target`, `from/to element not found`) | true |
+| `not_found` | No element matches the selector (also `No target`, `from/to element not found`); after an [actionability wait](#actionability-wait), `state` has `timeoutMs` and `elapsed` | true |
+| `not_actionable` | An [actionability wait](#actionability-wait) timed out on a target that exists but never rendered (`state.reason: "not_rendered"`, `timeoutMs`, `elapsed`); nothing was dispatched | true |
 | `stale_ref` | The ref is no longer valid; `state.reason` is `element_removed`, `not_in_snapshot`, `snapshot_replaced` (a newer snapshot of this document), or `other_document` (the tab navigated, or the ref came from another tab) | true |
 | `navigating` | The tab is loading: a `not_found`/`stale_ref` while loading (`state.cause`), or the page unloaded while handling the command | true before dispatch; false for writes after |
 | `tab_closed` | The target tab no longer exists | true |
@@ -146,6 +147,38 @@ the success result adds a warning. With `stopOnWarning`, a batch stops there.
 ```
 
 Zero-size and transparent targets count as rendered. Covering overlays are not detected.
+
+### Actionability wait
+
+Action tools act immediately by default. With `wait=True` (`"wait": true` on the
+bridge endpoint or batch command), the page first waits up to `timeout` ms
+(default 10000) for the target, then dispatches exactly as in immediate mode.
+Nothing is dispatched while waiting or on timeout.
+
+| Action | MCP tools | Waits until the target |
+|---|---|---|
+| `click`, `doubleClick`, `hover`, `drag` (both ends) | `browser_click`, `browser_double_click`, `browser_hover`, `browser_drag` | exists, is connected, and is rendered |
+| `type`, `fill`, `setEditableContent`, `selectOption`, `checkBox`, `keypress` | `browser_type`, `browser_select_option`, `browser_check`, `browser_keypress` | exists and is connected |
+
+Rendered means the same as for the `hidden_or_covered` warning above. Value
+actions don't need a rendered target, so a hidden native checkbox or select
+behind a custom widget still works in wait mode. A target that never resolves
+returns `not_found`; a pointer target that exists but never renders returns
+`not_actionable`. Both carry the last observed state and are retryable, because
+nothing reached the page. `timeout` is not used here; that code means a command
+was sent and its outcome is unknown. A ref that goes stale while waiting fails
+at once with `stale_ref`. Coordinate clicks and keypresses without a
+selector/ref have no target and run immediately. Other actions ignore `wait`.
+The bridge and MCP transport timeouts grow by the wait bound. Batch commands run in
+sequence, so a batch's timeout covers the sum of its waits (actionability waits,
+element/URL/title/result waits, `newTab` waits and sleeps); for `parallel`, the slowest sequence counts.
+
+These are reliability checks borrowed from Playwright. They don't make the
+events trusted input: dispatch is still synthetic DOM events. A rendered target
+can still be covered by an overlay, which isn't detected. If the page unloads
+during the wait, the command fails like any other unload (`navigating` or
+`content_unavailable`, `retryable: false` for writes), because the background
+can't tell whether the action ran.
 
 ### MCP error results
 
@@ -309,7 +342,7 @@ inspect it fully. Post-action snapshots additionally keep the acted-on target's
 item, even beyond the first five, and return a fresh `target_ref`. Character-limit
 truncation can still omit other context but never the visible acted-on target.
 
-### `browser_type(selector="", text="", mode="type", clear=False, tab_id=None, ref=None, element=None)`
+### `browser_type(selector="", text="", mode="type", clear=False, tab_id=None, ref=None, element=None, wait=False, timeout=10000)`
 
 Replaces `browser_fill` and `browser_set_editable_content`.
 
@@ -319,7 +352,7 @@ Replaces `browser_fill` and `browser_set_editable_content`.
 | `fill` | Always replace the field value with native setter and input/change events; ignores `clear` | `/api/fill` |
 | `editable` | Insert plain text into contenteditable/input/textarea; append by default, replace with `clear=True` | `/api/set-editable-content` |
 
-Editable mode sends `format="text"`. Callers migrating from the old editor tool
+All modes accept the [actionability wait](#actionability-wait). Editable mode sends `format="text"`. Callers migrating from the old editor tool
 should pass `clear=True` to retain its replace-by-default behavior. For trusted
 HTML insertion use `browser_js`; the underlying endpoint still accepts `format="html"`
 (both developer build only).
@@ -579,6 +612,8 @@ On timeout the tab stays open and the result is
 
 ### POST /api/click
 `{ "selector": "button.submit" }` — also accepts `ref`, `position`.
+Add `"wait": true, "timeout": 10000` to wait for the target first (see
+[Actionability wait](#actionability-wait)); the other action endpoints accept the same keys.
 
 ### POST /api/trusted-click
 `{ "selector": "button.submit", "focus": true }` or
