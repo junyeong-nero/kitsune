@@ -139,6 +139,22 @@ def _with_tab(body: dict, tab_id: int | None) -> dict:
     return body
 
 
+# Actions that accept the opt-in actionability wait (same set as bridge.ACTIONABILITY_WAIT_ACTIONS).
+ACTIONABILITY_WAIT_ACTIONS = frozenset({
+    "click", "doubleClick", "hover", "drag",
+    "type", "fill", "setEditableContent", "selectOption", "checkBox", "keypress",
+})
+
+
+def _post_action(endpoint: str, body: dict, wait: bool, timeout: int) -> dict:
+    """POST an action; wait=True lets the page wait up to timeout ms for the target first."""
+    if not wait:
+        return _post(endpoint, body)
+    if timeout <= 0:
+        return {"error": "timeout must be positive"}
+    return _post(endpoint, {**body, "wait": True, "timeout": timeout}, timeout=timeout / 1000 + 15)
+
+
 def _target(body: dict, ref: str | None, element: str | None) -> dict:
     """Attach a machine ref and an audit-only human description."""
     if ref is not None:
@@ -370,7 +386,7 @@ def browser_navigate(url: str, tab_id: int | None = None, raw: bool = False) -> 
 @tool("core", annotations=ToolAnnotations(title="Click", **ACT))
 def browser_click(
     selector: str = "", x: int = 0, y: int = 0, tab_id: int | None = None,
-    ref: str | None = None, element: str | None = None,
+    ref: str | None = None, element: str | None = None, wait: bool = False, timeout: int = 10000,
 ) -> dict:
     """Prefer ref from browser_snapshot; element is an audit-only description.
 
@@ -381,9 +397,12 @@ def browser_click(
         x: X coordinate (used if selector is empty)
         y: Y coordinate (used if selector is empty)
         tab_id: Optional tab to target. Defaults to active tab.
+        wait: Wait up to timeout ms for the selector/ref target to exist and be rendered
+            before clicking (default: click immediately). On timeout returns not_found
+            or not_actionable without clicking.
     """
     body: dict = {"selector": selector} if selector or ref else {"coords": {"x": x, "y": y}}
-    return _post("/api/click", _with_tab(_target(body, ref, element), tab_id))
+    return _post_action("/api/click", _with_tab(_target(body, ref, element), tab_id), wait, timeout)
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Trusted click", **ACT))
@@ -420,7 +439,7 @@ def browser_trusted_click(
 def browser_type(
     selector: str = "", text: str = "", mode: Literal["type", "fill", "editable"] = "type",
     clear: bool = False, tab_id: int | None = None,
-    ref: str | None = None, element: str | None = None,
+    ref: str | None = None, element: str | None = None, wait: bool = False, timeout: int = 10000,
 ) -> dict:
     """Prefer ref from browser_snapshot; element is an audit-only description.
 
@@ -431,6 +450,8 @@ def browser_type(
         clear is ignored because fill always replaces.
     editable: insert plain text in an editor/input/textarea, appending unless
         clear=True. Use browser_js for trusted HTML insertion.
+    wait: wait up to timeout ms for the target to exist before entering text
+        (default: immediately). On timeout returns not_found without typing.
     """
     if mode == "type":
         endpoint, body = "/api/type", {"selector": selector, "text": text, "clear": clear}
@@ -442,7 +463,7 @@ def browser_type(
         }
     else:
         return {"error": "mode must be type, fill, or editable"}
-    return _post(endpoint, _with_tab(_target(body, ref, element), tab_id))
+    return _post_action(endpoint, _with_tab(_target(body, ref, element), tab_id), wait, timeout)
 
 
 @tool("core", annotations=ToolAnnotations(title="Scroll", **ACT))
@@ -473,7 +494,10 @@ def browser_scroll(
 
 
 @tool("core", annotations=ToolAnnotations(title="Hover", **ACT))
-def browser_hover(selector: str = "", tab_id: int | None = None, ref: str | None = None, element: str | None = None) -> dict:
+def browser_hover(
+    selector: str = "", tab_id: int | None = None, ref: str | None = None, element: str | None = None,
+    wait: bool = False, timeout: int = 10000,
+) -> dict:
     """Prefer ref from browser_snapshot; element is an audit-only description.
 
     Hover over an element on the page.
@@ -481,8 +505,12 @@ def browser_hover(selector: str = "", tab_id: int | None = None, ref: str | None
     Args:
         selector: CSS selector of the element to hover over
         tab_id: Optional tab to target. Defaults to active tab.
+        wait: Wait up to timeout ms for the target to exist and be rendered before
+            hovering (default: hover immediately). On timeout returns not_found or
+            not_actionable without hovering.
     """
-    return _post("/api/hover", _with_tab(_target({"selector": selector}, ref, element), tab_id))
+    return _post_action("/api/hover", _with_tab(_target({"selector": selector}, ref, element), tab_id),
+                        wait, timeout)
 
 
 # -- Smart Queries ------------------------------------------------
@@ -884,23 +912,28 @@ def browser_explain_selector(selector: str, tab_id: int | None = None) -> dict:
 @tool("core", annotations=ToolAnnotations(title="Select option", **ACT))
 def browser_select_option(
     selector: str = "", value: str = "", by_text: bool = False, tab_id: int | None = None,
-    ref: str | None = None, element: str | None = None,
+    ref: str | None = None, element: str | None = None, wait: bool = False, timeout: int = 10000,
 ) -> dict:
     """Prefer ref from browser_snapshot; element is an audit-only description.
 
     Choose an <option> in a <select>. Default matches by value; pass
-    `by_text=True` to match by visible text."""
-    return _post("/api/select-option", _with_tab(_target({"selector": selector, "value": value, "byText": by_text}, ref, element), tab_id))
+    `by_text=True` to match by visible text. wait=True first waits up to timeout ms
+    for the select to exist (not_found on timeout)."""
+    return _post_action("/api/select-option", _with_tab(_target({"selector": selector, "value": value, "byText": by_text}, ref, element), tab_id),
+                        wait, timeout)
 
 
 @tool("core", annotations=ToolAnnotations(title="Check", **ACT))
 def browser_check(
     selector: str = "", checked: bool = True, tab_id: int | None = None, ref: str | None = None, element: str | None = None,
+    wait: bool = False, timeout: int = 10000,
 ) -> dict:
     """Prefer ref from browser_snapshot; element is an audit-only description.
 
-    Set a checkbox or radio's checked state."""
-    return _post("/api/check", _with_tab(_target({"selector": selector, "checked": checked}, ref, element), tab_id))
+    Set a checkbox or radio's checked state. wait=True first waits up to timeout ms
+    for it to exist (not_found on timeout); hidden native inputs need not render."""
+    return _post_action("/api/check", _with_tab(_target({"selector": selector, "checked": checked}, ref, element), tab_id),
+                        wait, timeout)
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Focus", **ACT))
@@ -934,6 +967,8 @@ def browser_keypress(
     tab_id: int | None = None,
     ref: str | None = None,
     element: str | None = None,
+    wait: bool = False,
+    timeout: int = 10000,
 ) -> dict:
     """Prefer ref from browser_snapshot; element is an audit-only description.
 
@@ -947,20 +982,27 @@ def browser_keypress(
             defaults to document.activeElement (or document.body).
         modifiers: {"ctrl"|"shift"|"alt"|"meta": True}.
         text: If set, also insert this text into editable targets.
+        wait: With selector/ref, wait up to timeout ms for the target to exist before
+            dispatching (default: immediately). On timeout returns not_found.
     """
     body = {"key": key}
     if selector: body["selector"] = selector
     if modifiers: body["modifiers"] = modifiers
     if text is not None: body["text"] = text
-    return _post("/api/keypress", _with_tab(_target(body, ref, element), tab_id))
+    return _post_action("/api/keypress", _with_tab(_target(body, ref, element), tab_id), wait, timeout)
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Double click", **ACT))
-def browser_double_click(selector: str = "", tab_id: int | None = None, ref: str | None = None, element: str | None = None) -> dict:
+def browser_double_click(
+    selector: str = "", tab_id: int | None = None, ref: str | None = None, element: str | None = None,
+    wait: bool = False, timeout: int = 10000,
+) -> dict:
     """Prefer ref from browser_snapshot; element is an audit-only description.
 
-    Dispatch a synthetic double-click on the matched element."""
-    return _post("/api/double-click", _with_tab(_target({"selector": selector}, ref, element), tab_id))
+    Dispatch a synthetic double-click on the matched element. wait=True first waits
+    up to timeout ms for it to exist and be rendered (not_found/not_actionable on timeout)."""
+    return _post_action("/api/double-click", _with_tab(_target({"selector": selector}, ref, element), tab_id),
+                        wait, timeout)
 
 
 @tool("core", annotations=ToolAnnotations(title="Submit form", **DESTRUCTIVE))
@@ -1004,12 +1046,16 @@ def browser_form_fill(fields: dict, tab_id: int | None = None) -> dict:
 def browser_drag(
     from_selector: str = "", to_selector: str = "", tab_id: int | None = None,
     ref: str | None = None, element: str | None = None, to_ref: str | None = None,
+    wait: bool = False, timeout: int = 10000,
 ) -> dict:
     """Prefer ref from browser_snapshot; element is an audit-only description.
 
     Synthetic drag-and-drop from one element to another (HTML5 drag events).
-    ref identifies the source; to_ref identifies the destination."""
-    return _post("/api/drag", _with_tab(_target({"from": from_selector, "to": to_selector, "toRef": to_ref}, ref, element), tab_id))
+    ref identifies the source; to_ref identifies the destination. wait=True first
+    waits up to timeout ms for both to exist and be rendered (not_found/not_actionable
+    on timeout)."""
+    return _post_action("/api/drag", _with_tab(_target({"from": from_selector, "to": to_selector, "toRef": to_ref}, ref, element), tab_id),
+                        wait, timeout)
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Click and wait navigation", **ACT))
@@ -1568,6 +1614,10 @@ def browser_batch(commands: list[dict]) -> dict:
     setEditableContent, fill, scroll, hover, find, js, pageInfo, pageText, screenshot, tabs,
     forms, dom, sleep, waitForElement, pageTextByTabId, wakeTab, parallel
 
+    click, doubleClick, hover, drag, type, fill, setEditableContent, selectOption,
+    checkBox and keypress accept "wait": true and "timeout" (ms, default 10000) to
+    wait for their target first, like the matching tools.
+
     Args:
         commands: List of command dicts, e.g. [{"action": "navigate", "url": "..."}, {"action": "waitForElement", "selector": ".results", "timeout": 10000}, {"action": "pageText"}]
     """
@@ -1579,6 +1629,8 @@ def browser_batch(commands: list[dict]) -> dict:
             max_timeout = max(max_timeout, (ms / 1000) + 10)
         elif cmd.get("action") == "newTab" and cmd.get("wait"):
             max_timeout = max(max_timeout, (cmd.get("timeout", 15000) / 1000) + 10)
+        elif cmd.get("action") in ACTIONABILITY_WAIT_ACTIONS and cmd.get("wait"):
+            max_timeout = max(max_timeout, (cmd.get("timeout", 10000) / 1000) + 15)
     return _post("/api/batch", {"commands": commands}, timeout=max_timeout)
 
 

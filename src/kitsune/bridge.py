@@ -1333,6 +1333,20 @@ BATCH_ACTION_MAP = {
 }
 
 
+# With an opt-in `wait`, the content script waits up to `timeout` ms for these actions' targets.
+ACTIONABILITY_WAIT_ACTIONS = {
+    'click', 'doubleClick', 'hover', 'drag',
+    'type', 'fill', 'setEditableContent', 'selectOption', 'checkBox', 'keypress',
+}
+
+
+def _actionability_wait_seconds(action, params):
+    """Time an action may spend waiting for its target before dispatch; 0 in immediate mode."""
+    if action not in ACTIONABILITY_WAIT_ACTIONS or not params.get('wait'):
+        return 0
+    return params.get('timeout', 10000) / 1000
+
+
 async def run_command(cmd):
     """Execute a single batch command asynchronously."""
     action = cmd.get('action', '')
@@ -1356,6 +1370,9 @@ async def run_command(cmd):
             if effective_action == 'newTab' and params.get('wait'):
                 timeout_s = params.get('timeout', 15000) / 1000 + 5
                 return await send_to_extension(effective_action, params, timeout=timeout_s)
+            wait_s = _actionability_wait_seconds(effective_action, params)
+            if wait_s:
+                return await send_to_extension(effective_action, params, timeout=30 + wait_s)
             return await send_to_extension(effective_action, params)
 
         # Actions with custom logic
@@ -1841,6 +1858,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 timeout = body.get('timeout', 10000) / 1000 + 5
             elif action == 'newTab' and body.get('wait'):
                 timeout = body.get('timeout', 15000) / 1000 + 5
+            else:
+                timeout += _actionability_wait_seconds(action, body)
             result = self.run_async(send_to_extension(action, body, timeout=timeout), timeout=timeout + 5)
         except Exception as e:
             result = {"error": str(e)}

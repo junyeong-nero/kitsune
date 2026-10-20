@@ -3,7 +3,7 @@
 
 (function() {
   'use strict';
-  const CONTENT_VERSION = 23;
+  const CONTENT_VERSION = 24;
   if (window.__claudeBridgeVersion >= CONTENT_VERSION) return;
   window.__claudeBridgeVersion = CONTENT_VERSION;
 
@@ -173,13 +173,70 @@
     return new ActionError(error, details);
   }
 
+  // Zero-size and transparent elements count as rendered (custom checkbox inputs).
+  function isRendered(el) {
+    return !isHidden(el) && (typeof el.getClientRects !== 'function' || el.getClientRects().length > 0);
+  }
+
   // Synthetic events still reach an unrendered target, so pointer actions report it instead of refusing.
   function notRenderedWarning(el) {
-    const rendered = !isHidden(el) && (typeof el.getClientRects !== 'function' || el.getClientRects().length > 0);
-    if (rendered) return {};
+    if (isRendered(el)) return {};
     return { warning: { code: 'hidden_or_covered', state: { reason: 'not_rendered' },
       hint: 'Events were dispatched to a hidden element a user could not click; ' +
         'prefer its label or visible control from a new browser_snapshot.' } };
+  }
+
+  // ── Actionability wait ──
+  // Opt-in (msg.wait): poll before dispatch until every target resolves and is connected.
+  // Pointer actions also need it rendered; value actions do not, so label-driven hidden
+  // native checkboxes/selects keep working. Stale refs fail at once: they cannot come back.
+  const POINTER_WAIT_ACTIONS = new Set(['click', 'doubleClick', 'hover', 'drag']);
+  const VALUE_WAIT_ACTIONS = new Set(['type', 'fill', 'setEditableContent', 'selectOption', 'checkBox', 'keypress']);
+  const ACTION_WAIT_TIMEOUT = 10000;
+
+  function waitForActionable(msg) {
+    const timeout = msg.timeout ?? ACTION_WAIT_TIMEOUT;
+    if (!Number.isFinite(timeout) || timeout < 0) {
+      return Promise.resolve({ error: 'timeout must be non-negative milliseconds' });
+    }
+    // Coordinate clicks and keypresses on the active element have no target to wait for.
+    const targets = msg.action === 'drag' ? [msg.from, msg.to] : [msg.selector];
+    const pointer = POINTER_WAIT_ACTIONS.has(msg.action);
+    const start = Date.now();
+    return new Promise((resolve, reject) => {
+      function poll() {
+        let pending = -1, el = null;
+        try {
+          pending = targets.findIndex(selector => {
+            if (!selector) return false;
+            el = resolveElement(selector);
+            return !el || !el.isConnected || (pointer && !isRendered(el));
+          });
+        } catch (e) {
+          reject(e);
+          return;
+        }
+        const elapsed = Date.now() - start;
+        if (pending < 0) resolve(null);
+        else if (elapsed >= timeout) resolve(actionWaitTimeout(msg.action, pending, el, timeout, elapsed));
+        else setTimeout(poll, Math.min(100, timeout - elapsed));
+      }
+      poll();
+    });
+  }
+
+  // The last observed state: the target never resolved, or resolved but never rendered.
+  function actionWaitTimeout(action, index, el, timeoutMs, elapsed) {
+    const state = { timeoutMs, elapsed };
+    if (!el || !el.isConnected) {
+      const message = action === 'drag' ? `${index ? 'to' : 'from'} element not found`
+        : action === 'keypress' ? 'No target' : undefined;
+      return { ...notFound(message), state };
+    }
+    return actionError(`Timed out after ${timeoutMs}ms waiting for the target to render`, 'not_actionable',
+      'The target stayed hidden; act on its label or visible control from a new browser_snapshot, ' +
+        'or repeat without wait to dispatch to the hidden element anyway.',
+      { reason: 'not_rendered', ...state });
   }
 
   function pruneRefMap() {
@@ -280,6 +337,11 @@
       if (selectors.some(s => typeof s === 'string' && valueSelectorBlocked(s))) {
         sendResponse({ error: VALUE_SELECTOR_ERROR });
         return false;
+      }
+      if (msg.wait && (POINTER_WAIT_ACTIONS.has(msg.action) || VALUE_WAIT_ACTIONS.has(msg.action))) {
+        waitForActionable(msg).then(failure => failure || handler())
+          .then(r => sendResponse(r)).catch(e => sendResponse(errorResult(e)));
+        return true;
       }
       const result = handler();
       if (result && typeof result.then === 'function') {
