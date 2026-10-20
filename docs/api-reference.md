@@ -78,14 +78,16 @@ This is not a sandbox: `browser_js` runs arbitrary page JavaScript and can read
 any value the page can, including password fields. Treat access to `browser_js`
 as a separate, unrestricted trust boundary.
 
-### `browser_tabs(action="list", tab_id=None, url=None, force=False, raw=False)`
+### `browser_tabs(action="list", tab_id=None, url=None, force=False, raw=False, wait=False, timeout=15000)`
 
 Replaces `browser_new_tab`, `browser_close_tab`, and `browser_switch_tab`.
 `action` is `list`, `new`, `close`, or `select`. List uses GET `/api/tabs`;
 new uses POST `/api/new-tab` (default URL `about:blank`), close uses
 `/api/close-tab`, and select uses `/api/switch-tab`. Close and select require
 `tab_id`. `force` disarms beforeunload for close; `raw` bypasses the image URL
-viewer for new tabs. Options for other actions are ignored.
+viewer for new tabs. List is never cached. New returns immediately unless
+`wait=True`, which waits up to `timeout` ms for the page to load and returns
+the actual URL and load status. Options for other actions are ignored.
 
 ### `browser_page_text(tab_id=None)`
 
@@ -344,7 +346,13 @@ are not traversed. Returns `{ok, text, text_gone, elapsed}`; timeout returns
 
 ### POST /api/new-tab
 `{ "url": "https://example.com" }` — url optional, defaults to about:blank.
-Returns `{ "ok": true, "tabId": 123 }`
+Returns `{ "ok": true, "tabId": 123 }` immediately.
+
+`{ "url": "https://example.com", "wait": true, "timeout": 15000 }` waits up to
+`timeout` ms (default 15000) for the load and returns
+`{ "ok": true, "tabId": 123, "url": "https://example.com/after-redirect", "status": "complete" }`.
+On timeout the tab stays open and the result is
+`{ "ok": false, "timedOut": true, "tabId": 123, "url": "...", "status": "loading" }`.
 
 ### POST /api/switch-tab
 `{ "tabId": 123 }`
@@ -451,7 +459,7 @@ Returns `{ "workflow": "test", "steps": 4, "results": [...] }`
 ## Cache Control (NEW)
 
 ### POST /api/cache
-Control the response cache (pageInfo, pageText, tabs are cached for 5s by default).
+Control the response cache (pageText is cached for 5s by default; tab inventories are always read fresh).
 
 Clear cache: `{ "action": "clear" }`
 Check status: `{ "action": "status" }` → `{ "entries": 3, "ttl": 5 }`
