@@ -252,6 +252,27 @@ class SensitiveActionTests(AskBeforeActTestCase):
         self.assertEqual(self.forward("click", {"selector": "#send", "tabId": 7}), (200, {"ok": True}))
 
 
+    def test_expect_outcome_not_observed_is_held_before_repeating(self):
+        # #67: a dispatched write whose expected outcome did not happen is retryable: false,
+        # so repeating the identical call (expect included) needs confirmation.
+        fake = self.extension
+        original = fake.__call__
+
+        async def replies(action, params=None, timeout=30):
+            if action == "waitForText":
+                fake.sent.append((action, dict(params or {})))
+                return {"ok": False, "error": "Timed out waiting for text"}
+            return await original(action, params, timeout)
+
+        self.extension = replies
+        body = {"selector": "#send", "tabId": 7, "expect": {"text": "Sent", "timeout": 50}}
+        status, result = self.forward("click", body)
+        self.assertEqual(result["code"], "outcome_not_observed")
+        self.assertIs(result["retryable"], False)
+        held = self.held(lambda h: h._forward("click"), body)
+        self.assertEqual(held["state"]["reason"], "unknown_outcome")
+
+
 class NoAutoConfirmTests(AskBeforeActTestCase):
     def test_batch_never_honors_tokens_and_stops_at_held_step(self):
         token = self.held(lambda h: h._forward("submitForm"), {"selector": "#pay"})["state"]["confirmToken"]

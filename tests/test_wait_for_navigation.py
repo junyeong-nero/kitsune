@@ -45,7 +45,7 @@ class WaitForNavigationTests(unittest.TestCase):
             with self.subTest(action=action), patch.object(server, "_post", return_value={"ok": True}) as post:
                 commands = [{"action": action, "pattern": "Ready", "timeout": 60000, "tabId": 7}]
                 server.browser_batch(commands)
-                post.assert_called_once_with("/api/batch", {"commands": commands}, timeout=70)
+                post.assert_called_once_with("/api/batch", {"commands": commands}, timeout=75)
 
     def test_mixed_navigation_and_document_conditions_still_rejected(self):
         with patch.object(server, "_post") as post:
