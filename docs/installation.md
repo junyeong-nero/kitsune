@@ -167,7 +167,7 @@ connected (`extension_build`: `signed` or `dev`).
 
 ### Signed build (recommended)
 
-Signed XPIs are attached to releases after 0.1.0. For 0.1.0, use the developer
+Signed XPIs are attached to releases from 0.2.0 on. For 0.1.0, use the developer
 build below.
 
 1. Download `kitsune-<version>.xpi` from
@@ -202,7 +202,7 @@ replaces the signed one; after a browser restart the signed build is back.
 Pin a released version with `==`:
 
 ```bash
-claude mcp add --scope user kitsune -- uvx --from kitsune-browser-mcp==0.1.0 kitsune
+claude mcp add --scope user kitsune -- uvx --from kitsune-browser-mcp==0.2.0 kitsune
 ```
 
 Releases are listed on [PyPI](https://pypi.org/project/kitsune-browser-mcp/#history)
