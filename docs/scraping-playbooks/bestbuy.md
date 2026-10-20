@@ -29,14 +29,14 @@ selector is `.product-list-item` (confirmed March 2026).
 
 ### Step 2 — Scroll to trigger lazy loading, then wait for results
 ```json
-{ "action": "scroll", "direction": "down", "amount": 1 },
+{ "action": "scroll", "direction": "down", "amount": 800 },
 { "action": "sleep", "ms": 1500 },
-{ "action": "scroll", "direction": "down", "amount": 1 },
+{ "action": "scroll", "direction": "down", "amount": 800 },
 { "action": "sleep", "ms": 1500 },
-{ "action": "scroll", "direction": "down", "amount": 1 },
+{ "action": "scroll", "direction": "down", "amount": 800 },
 { "action": "sleep", "ms": 2000 }
 ```
-`amount: 1` = one full viewport height. Each scroll triggers intersection observers
+`amount` is in pixels; 800 is roughly one viewport height. Each scroll triggers intersection observers
 to render the next batch of lazy-loaded product cards.
 
 ### Step 3 — Extract using correct 2026 selectors

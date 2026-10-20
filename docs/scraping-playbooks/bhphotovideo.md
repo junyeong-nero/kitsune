@@ -46,11 +46,11 @@ const rating = el.innerText?.match(/(\d+) Reviews/)?.[1];
 ```json
 { "action": "navigate", "url": "https://www.bhphotovideo.com/c/search?Ntt=gaming+desktop+pc&MaxPrice=2000&SortOrder=CustomerRankDsc", "expectTitle": "gaming" },
 { "action": "sleep", "ms": 3000 },
-{ "action": "scroll", "direction": "down", "amount": 1 },
+{ "action": "scroll", "direction": "down", "amount": 800 },
 { "action": "sleep", "ms": 1500 },
-{ "action": "scroll", "direction": "down", "amount": 1 },
+{ "action": "scroll", "direction": "down", "amount": 800 },
 { "action": "sleep", "ms": 1500 },
-{ "action": "scroll", "direction": "down", "amount": 1 },
+{ "action": "scroll", "direction": "down", "amount": 800 },
 { "action": "sleep", "ms": 1500 },
 { "action": "js", "code": "JSON.stringify([...document.querySelectorAll('[class*=\"product_\"]')].slice(0,10).map(el => { const lines = el.innerText?.split('\\n').filter(l => l.trim()); const name = lines?.find(l => l.match(/desktop|gaming|tower|pc/i) && !l.match(/compare|cart|stock|reviews|Promo|GHz|DDR|SSD|RTX|More|Save|Free|Add/i)); const priceMatch = el.innerText?.match(/\\$(\\d[\\d,]+)\\s*\\n?\\s*(\\d{2})/); const price = priceMatch ? ('$' + priceMatch[1] + '.' + priceMatch[2]) : el.innerText?.match(/\\$[\\d,]+/)?.[0]; const rating = el.innerText?.match(/(\\d+) Reviews/)?.[1]; return name ? {name: name.trim(), price, rating: rating ? rating + ' reviews' : null} : null }).filter(Boolean))" }
 ```
@@ -69,7 +69,7 @@ const rating = el.innerText?.match(/(\d+) Reviews/)?.[1];
   across deploys. This works for B&H and any other CSS-Modules-based site.
 - If `[class*="product_"]` stops matching, re-sniff with the class discovery
   snippet in Step 1 to find the new prefix.
-- B&H lazy-loads but `scroll` with `amount: 1` (one viewport height) works reliably (same as Best Buy).
+- B&H lazy-loads but `scroll` with `amount: 800` (pixels, roughly one viewport height) works reliably (same as Best Buy).
 - `SortOrder=CustomerRankDsc` sorts by customer rating descending — most useful
   for "best" queries.
 - Watch out for nav/filter `[class*="item_"]` elements — they look similar but

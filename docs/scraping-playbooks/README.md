@@ -1,4 +1,4 @@
-# ZenLink Scraping Playbooks
+# Kitsune Scraping Playbooks
 
 > **🤖 AI INSTRUCTION — READ THIS FIRST**
 >
@@ -9,11 +9,16 @@
 >
 > **Available playbooks:**
 > - [`amazon.md`](./amazon.md) — Bot detection, scroll-then-extract pattern
-> - [`bestbuy.md`](./bestbuy.md) — Lazy loading, `window.scrollTo` fix, correct 2026 selectors
+> - [`bestbuy.md`](./bestbuy.md) — Lazy loading, `scroll` (`scrollBy`) fix, correct 2026 selectors
 > - [`newegg.md`](./newegg.md) — Silent category redirects, use `/p/pl?d=` search URL
 > - [`bhphotovideo.md`](./bhphotovideo.md) — CSS Modules hashed classes, wildcard selector pattern
 >
 > If a playbook doesn't exist for the target site, create one after you solve it.
+>
+> Playbook steps are [`/api/batch`](../api-reference.md#post-apibatch) commands.
+> Run them with the `browser_batch` MCP tool, which is in the `parallel` group
+> (for example `KITSUNE_CAPS=core,parallel`). The `js` and `waitForResult`
+> actions need the developer extension build.
 
 ---
 
@@ -24,7 +29,7 @@
 | Site | Main Challenge | Key Fix | Playbook |
 |------|---------------|---------|---------|
 | **Amazon** | Bot detection on JS injection | Navigate normally, scroll, read rendered DOM only | [amazon.md](./amazon.md) |
-| **Best Buy** | Intersection-observer lazy loading | `scroll amount:1` + correct selector `.product-list-item` | [bestbuy.md](./bestbuy.md) |
+| **Best Buy** | Intersection-observer lazy loading | `scroll amount:800` + correct selector `.product-list-item` | [bestbuy.md](./bestbuy.md) |
 | **Newegg** | SubCategory URLs silently redirect | Use `/p/pl?d=keywords` search URL instead | [newegg.md](./newegg.md) |
 | **B&H Photo** | CSS Modules hashed class names | `[class*="product_"]` wildcard + innerText parsing | [bhphotovideo.md](./bhphotovideo.md) |
 
@@ -33,14 +38,14 @@
 ## Common Patterns (Quick Reference)
 
 ### Lazy-loading sites (Best Buy, B&H)
-Use `scroll` with `amount: 1` (one full viewport height) to trigger intersection
+Use `scroll` with `amount: 800` (pixels, roughly one viewport height) to trigger intersection
 observers. Repeat with sleeps between to let cards render:
 ```json
-{ "action": "scroll", "direction": "down", "amount": 1 },
+{ "action": "scroll", "direction": "down", "amount": 800 },
 { "action": "sleep", "ms": 1500 },
-{ "action": "scroll", "direction": "down", "amount": 1 },
+{ "action": "scroll", "direction": "down", "amount": 800 },
 { "action": "sleep", "ms": 1500 },
-{ "action": "scroll", "direction": "down", "amount": 1 },
+{ "action": "scroll", "direction": "down", "amount": 800 },
 { "action": "sleep", "ms": 2000 }
 ```
 

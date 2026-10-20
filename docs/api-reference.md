@@ -227,7 +227,7 @@ Connection status and config.
 ### GET /api/version
 Bridge and extension version info.
 ```json
-{ "bridge": "1.1.2", "api": "1", "extension_connected": true, "extension": 11 }
+{ "bridge": "0.2.1", "api": "1", "extension_connected": true, "extension_version": "0.2.1", "extension_build": "dev", "extension": 22 }
 ```
 
 ## Page Data (GET, cached 5s except page-info)
@@ -269,7 +269,7 @@ instead of `value` (see [Password redaction](#password-redaction)).
 Captures the active page as PNG and saves to the bridge screenshot directory
 (`$KITSUNE_HOME/screenshots`, default `~/.kitsune/screenshots`).
 ```json
-{ "url": "...", "title": "...", "saved_to": "...", "filename": "zen_20260313_120000.png" }
+{ "url": "...", "title": "...", "saved_to": "...", "filename": "kitsune_20260313_120000.png" }
 ```
 
 ### POST /api/screenshot, /api/element-screenshot, /api/full-page-screenshot
@@ -443,9 +443,9 @@ Note: `navigate` and `switchTab` inside parallel sequences **must** have explici
 ## Workflows (NEW)
 
 ### GET /api/workflows
-List available workflow files.
+List workflow files bundled in the `kitsune/workflows` package directory.
 ```json
-{ "workflows": ["test", "amazon-tracking"], "directory": "D:\\ZenLink\\workflows" }
+{ "workflows": ["gmail-template-draft", "test", "wp-html"], "directory": ".../site-packages/kitsune/workflows" }
 ```
 
 ### POST /api/workflow
@@ -468,7 +468,7 @@ Set TTL: `{ "action": "ttl", "seconds": 10 }`
 ## Error Handling
 
 All endpoints return `{ "error": "message" }` on failure. Common errors:
-- `"Zen Browser extension not connected"` — extension not loaded or browser closed
+- `"Kitsune extension not connected. Open Firefox or Zen and make sure the Kitsune extension is loaded."` — extension not loaded or browser closed
 - `"Extension disconnected"` — extension dropped mid-command (fails fast, no timeout wait)
 - `"Command timed out after Ns"` — extension didn't respond in time
 - `"Cannot access browser internal page: about:..."` — can't inject into restricted pages

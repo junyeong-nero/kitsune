@@ -21,7 +21,7 @@ Both redirected to office supplies (Correction Fluids & Erasers) in March 2026.
 Always verify with `document.title` before trusting results — if the title doesn't
 match your category, you've been silently redirected.
 
-**Use `expectTitle` on navigate** to catch redirects automatically — ZenLink will
+**Use `expectTitle` on navigate** to catch redirects automatically — Kitsune will
 return a `warning` and `redirected: true` if the page title doesn't match.
 
 ## What WORKS — The `/p/pl` Search URL
@@ -38,9 +38,9 @@ https://www.newegg.com/p/pl?d=gaming+desktop+rtx&Order=RATING&Price=-200000
 ```json
 { "action": "navigate", "url": "https://www.newegg.com/p/pl?d=gaming+desktop+rtx&Order=RATING&Price=-200000", "expectTitle": "gaming" },
 { "action": "sleep", "ms": 3000 },
-{ "action": "scroll", "direction": "down", "amount": 1 },
+{ "action": "scroll", "direction": "down", "amount": 800 },
 { "action": "sleep", "ms": 1500 },
-{ "action": "scroll", "direction": "down", "amount": 1 },
+{ "action": "scroll", "direction": "down", "amount": 800 },
 { "action": "sleep", "ms": 1500 },
 {
   "action": "js",

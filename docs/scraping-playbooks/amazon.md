@@ -29,11 +29,11 @@ Use `s=review-rank` for best-rated first. Use `rh=p_36%3A-200000` for under $200
 
 ### Step 2 — Scroll to trigger hydration
 ```json
-{ "action": "scroll", "direction": "down", "amount": 1 },
+{ "action": "scroll", "direction": "down", "amount": 800 },
 { "action": "waitForElement", "selector": "[data-component-type='s-search-result']", "timeout": 12000 },
-{ "action": "scroll", "direction": "down", "amount": 1 }
+{ "action": "scroll", "direction": "down", "amount": 800 }
 ```
-`amount: 1` = one full viewport height. Triggers hydration of lazy-loaded cards.
+`amount` is in pixels; 800 is roughly one viewport height. Triggers hydration of lazy-loaded cards.
 
 ### Step 3 — Extract AFTER scrolling (products are now rendered)
 ```json
@@ -52,7 +52,7 @@ Use `s=review-rank` for best-rated first. Use `rh=p_36%3A-200000` for under $200
 | Star rating | `.a-icon-alt` |
 
 ## Notes
-- ZenLink runs as a **real browser extension in a real browser session** — this is
+- Kitsune runs as a **real browser extension in a real browser session** — this is
   the core advantage. Amazon can't distinguish it from a normal user browsing.
 - Never use `fetch()` or `XMLHttpRequest` via `js` action to hit Amazon endpoints —
   those are fingerprinted. Only read the already-rendered DOM.
