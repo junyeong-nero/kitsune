@@ -16,7 +16,8 @@ parameters are separate from HTTP endpoint names and JSON command actions.
 For single-element tools, prefer `ref` from `browser_snapshot` over a CSS
 `selector`. When both are supplied, `ref` takes precedence, as for `browser_click`.
 `element` is an audit-only human description, never a selector or fallback target.
-A stale/disconnected ref returns an error; take another snapshot to refresh it.
+A stale/disconnected ref returns a `stale_ref` error (see [Action errors](#action-errors));
+take another snapshot to refresh it.
 Existing positional selector arguments remain supported.
 
 These tools also accept refs (all new parameters are optional):
@@ -39,6 +40,67 @@ an explicit container selector/ref; otherwise it scrolls the window and falls
 back to a scrollable container at viewport center. HTML, bounds, computed-style,
 and click-and-wait-navigation require a selector or ref for a successful action.
 See `browser_wait_for` below for its element condition.
+
+### Action errors
+
+Failures keep the human-readable `error` string (its text is unchanged) and, when
+classified, add machine-readable fields. Errors that are not yet classified have
+only `error`. The MCP transport is unchanged: errors are still returned as tool results.
+
+```json
+{ "error": "Element not found", "code": "navigating", "retryable": true,
+  "hint": "The tab is loading a new document; wait for it with browser_wait_for, then take a new browser_snapshot.",
+  "state": { "cause": "not_found", "tabId": 7, "url": "https://example.com/next", "status": "loading" } }
+```
+
+- `code`: stable identifier; branch on it, not on `error` text.
+- `retryable`: `true` means repeating the same command cannot duplicate a side
+  effect, because it never reached the page or is a read. It does not promise that
+  an identical retry succeeds; follow `hint` first (for example, take a new snapshot).
+  `false` means a write may already have taken effect (a submit, message, payment
+  or deletion can be behind any click or keypress); inspect the page before acting again.
+- `hint`: a short recovery step. `state`: the current state that explains the
+  failure, where available (for page targets: `tabId`, `url`, `status`).
+
+| `code` | Meaning | `retryable` |
+|---|---|---|
+| `not_found` | No element matches the selector (also `No target`, `from/to element not found`) | true |
+| `stale_ref` | The ref is no longer valid; `state.reason` is `element_removed`, `not_in_snapshot`, `snapshot_replaced` (a newer snapshot of this document), or `other_document` (the tab navigated, or the ref came from another tab) | true |
+| `navigating` | The tab is loading: a `not_found`/`stale_ref` while loading (`state.cause`), or the page unloaded while handling the command | true before dispatch; false for writes after |
+| `tab_closed` | The target tab no longer exists | true |
+| `tab_unloaded` | The tab is discarded and its page cannot be reached; use `browser_wake_tab` | true |
+| `restricted_page` | Browser-internal page (`about:`, `moz-extension:`, …) | true |
+| `content_unavailable` | The page's content script could not be injected or did not answer | true before dispatch; false for writes after |
+| `extension_disconnected` | The extension is not connected, reconnected before sending, or disconnected while waiting (`state.connected`) | true if not sent; false for writes after |
+| `timeout` | The bridge sent the command but no reply arrived in time (`state.timeoutSeconds`); from the MCP server, the bridge did not answer | false for writes (MCP: POST) |
+| `bridge_unavailable` | The MCP server cannot reach or start the bridge | true |
+
+Writes are the bridge's read-only-mode write actions plus file-upload commits,
+focus, and blur. For a read, the bridge always reports `retryable: true`.
+
+Identity is checked before mutation. A missing or browser-internal target tab fails
+before any message reaches a page. Refs encode their document: a ref used after
+navigation, or on a different tab after a focus change, fails as
+`stale_ref`/`other_document` instead of acting on another element. Without
+`tab_id`, a command and its post-action snapshot target the tab that was active
+when the command started. CSS selectors carry no identity, so pass `tab_id`
+when focus can change.
+
+The batch/`browser_retry` `retry` action stops after the first attempt that
+returns `retryable: false`, with `reason: "not retryable"`, even if `onErrors`
+matches. Other errors are retried as before.
+
+Pointer actions (`browser_click` by selector/ref, `browser_double_click`,
+`browser_hover`) still dispatch to a target that is not rendered (`hidden`,
+`display: none`, `visibility: hidden`, or inside a `display: none` ancestor), but
+the success result adds a warning. With `stopOnWarning`, a batch stops there.
+
+```json
+{ "ok": true, "tag": "input", "warning": { "code": "hidden_or_covered",
+  "state": { "reason": "not_rendered" }, "hint": "... prefer its label or visible control ..." } }
+```
+
+Zero-size and transparent targets count as rendered. Covering overlays are not detected.
 
 ### Sensitive-field redaction
 
@@ -527,8 +589,9 @@ Set TTL: `{ "action": "ttl", "seconds": 10 }`
 
 ## Error Handling
 
-All endpoints return `{ "error": "message" }` on failure. Common errors:
-- `"Kitsune extension not connected. Open Firefox or Zen and make sure the Kitsune extension is loaded."` — extension not loaded or browser closed
-- `"Extension disconnected"` — extension dropped mid-command (fails fast, no timeout wait)
-- `"Command timed out after Ns"` — extension didn't respond in time
-- `"Cannot access browser internal page: about:..."` — can't inject into restricted pages
+All endpoints return `{ "error": "message" }` on failure; classified failures add
+`code`, `retryable`, `hint`, and `state` (see [Action errors](#action-errors)). Common errors:
+- `"Kitsune extension not connected. Open Firefox or Zen and make sure the Kitsune extension is loaded."` (`extension_disconnected`) — extension not loaded or browser closed
+- `"Extension disconnected"` (`extension_disconnected`) — extension dropped mid-command (fails fast, no timeout wait)
+- `"Command timed out after Ns"` (`timeout`) — extension didn't respond in time
+- `"Cannot access browser internal page: about:..."` (`restricted_page`) — can't inject into restricted pages

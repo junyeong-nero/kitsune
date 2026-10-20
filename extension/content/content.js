@@ -3,7 +3,7 @@
 
 (function() {
   'use strict';
-  const CONTENT_VERSION = 22;
+  const CONTENT_VERSION = 23;
   if (window.__claudeBridgeVersion >= CONTENT_VERSION) return;
   window.__claudeBridgeVersion = CONTENT_VERSION;
 
@@ -121,12 +121,65 @@
   // Persist across reinjection; seed per document so navigation cannot reuse refs.
   let refGeneration = window.__kitsuneRefGeneration ||
     `${Date.now()}${crypto.getRandomValues(new Uint32Array(1))[0]}`;
+  // Generations in [refSeed, refGeneration] belong to this document; others name another one.
+  const refSeed = window.__kitsuneRefSeed || (window.__kitsuneRefSeed = refGeneration);
 
   function newRefGeneration() {
     refGeneration = (BigInt(refGeneration) + 1n).toString();
     window.__kitsuneRefGeneration = refGeneration;
     refCounter = 0;
     for (const key of Object.keys(refMap)) delete refMap[key];
+  }
+
+  // ── Action errors ──
+  // `error` keeps its historical text; code/retryable/hint/state are the stable contract.
+  // Content-script failures happen before any mutation, so repeating them is always safe.
+  class ActionError extends Error {
+    constructor(message, details) {
+      super(message);
+      this.details = details;
+    }
+  }
+
+  function actionError(message, code, hint, state) {
+    return { error: message, code, retryable: true, hint, ...(state ? { state } : {}) };
+  }
+
+  function errorResult(e) {
+    return e instanceof ActionError ? { error: e.message, ...e.details } : { error: e.message };
+  }
+
+  function notFound(message = 'Element not found') {
+    return actionError(message, 'not_found',
+      'No element matches; take a new browser_snapshot, or browser_wait_for the element if the page is still updating.');
+  }
+
+  const STALE_REF_HINTS = {
+    element_removed: 'The element was removed from the page; take a new browser_snapshot and use its refs.',
+    not_in_snapshot: 'The latest snapshot did not issue this ref; take a new browser_snapshot and use its refs.',
+    snapshot_replaced: 'A newer snapshot replaced this ref; use refs from the latest browser_snapshot.',
+    other_document: 'The ref belongs to another document: the tab navigated or a different tab is targeted. ' +
+      'Pass tab_id and take a new browser_snapshot.',
+  };
+
+  function staleRef(ref, el) {
+    const generation = /^s(\d+)e\d+$/.exec(ref)?.[1];
+    let reason = 'snapshot_replaced';  // legacy r<n> refs predate generations
+    if (generation === refGeneration) reason = el ? 'element_removed' : 'not_in_snapshot';
+    else if (generation && (BigInt(generation) < BigInt(refSeed) ||
+        BigInt(generation) > BigInt(refGeneration))) reason = 'other_document';
+    const { error, ...details } = actionError('stale ref, call browser_snapshot again', 'stale_ref',
+      STALE_REF_HINTS[reason], { reason, ref });
+    return new ActionError(error, details);
+  }
+
+  // Synthetic events still reach an unrendered target, so pointer actions report it instead of refusing.
+  function notRenderedWarning(el) {
+    const rendered = !isHidden(el) && (typeof el.getClientRects !== 'function' || el.getClientRects().length > 0);
+    if (rendered) return {};
+    return { warning: { code: 'hidden_or_covered', state: { reason: 'not_rendered' },
+      hint: 'Events were dispatched to a hidden element a user could not click; ' +
+        'prefer its label or visible control from a new browser_snapshot.' } };
   }
 
   function pruneRefMap() {
@@ -231,12 +284,12 @@
       const result = handler();
       if (result && typeof result.then === 'function') {
         // Async handler — keep message channel open
-        result.then(r => sendResponse(r)).catch(e => sendResponse({ error: e.message }));
+        result.then(r => sendResponse(r)).catch(e => sendResponse(errorResult(e)));
         return true;
       }
       sendResponse(result);
     } catch (e) {
-      sendResponse({ error: e.message });
+      sendResponse(errorResult(e));
     }
     return false;
   });
@@ -681,8 +734,10 @@
   // ── Click ──
   function clickElement(selector, coords) {
     let el = resolveElement(selector, coords);
-    if (!el) return { error: 'Element not found' };
+    if (!el) return notFound();
 
+    // Coordinates resolve to a rendered element by construction.
+    const warning = selector ? notRenderedWarning(el) : {};
     if (coords) {
       el = nearestInteractiveAncestor(el) || el;
     } else {
@@ -719,13 +774,13 @@
       el.click();
     }
 
-    return { ok: true, tag: el.tagName.toLowerCase(), text: (el.textContent || '').trim().slice(0, 60) };
+    return { ok: true, tag: el.tagName.toLowerCase(), text: (el.textContent || '').trim().slice(0, 60), ...warning };
   }
 
   // ── Type ──
   function typeText(selector, text, clear) {
     const el = resolveElement(selector);
-    if (!el) return { error: 'Element not found' };
+    if (!el) return notFound();
     lastActedElement = el;
 
     el.focus();
@@ -768,7 +823,7 @@
       return { error: DEV_BUILD_REQUIRED, devBuildRequired: true };
     }
     const el = resolveElement(selector);
-    if (!el) return { error: 'Element not found' };
+    if (!el) return notFound();
 
     const target = getEditableTarget(el);
     if (!target) return { error: 'Element is not editable' };
@@ -868,7 +923,7 @@
   // ── Hover ──
   function hoverElement(selector, coords) {
     const el = resolveElement(selector, coords);
-    if (!el) return { error: 'Element not found' };
+    if (!el) return notFound();
 
     const rect = el.getBoundingClientRect();
     const x = rect.x + rect.width / 2;
@@ -878,13 +933,13 @@
       el.dispatchEvent(new MouseEvent(type, { bubbles: true, clientX: x, clientY: y }));
     }
 
-    return { ok: true, tag: el.tagName.toLowerCase() };
+    return { ok: true, tag: el.tagName.toLowerCase(), ...(selector ? notRenderedWarning(el) : {}) };
   }
 
   // ── Fill Form ──
   async function fillFieldSafe(selector, value) {
     let result;
-    try { result = fillField(selector, value); } catch(e) { result = { error: e.message }; }
+    try { result = fillField(selector, value); } catch(e) { result = errorResult(e); }
     if (result.error && (result.error.includes('HTMLInputElement') || result.error.includes('HTMLTextAreaElement'))) {
       // Shadow DOM not accessible from content script — use page context
       const pageResult = await fillViaPageContext(selector, value);
@@ -898,7 +953,7 @@
 
   function fillField(selector, value) {
     const el = resolveElement(selector);
-    if (!el) return { error: 'Element not found' };
+    if (!el) return notFound();
 
     // Auto-pierce shadow DOM: if element isn't a standard input, look inside shadow root
     const target = getFillTarget(el);
@@ -1091,7 +1146,7 @@
           el = /^(?:s\d+e\d+|r\d+)$/.test(selector)
             ? resolveElement(selector) : document.querySelector(selector);
         } catch (e) {
-          resolve({ error: e.message });
+          resolve(errorResult(e));
           return;
         }
         if (el && !isHidden(el)) {
@@ -1191,7 +1246,7 @@
     // Viewport point (element centre or x/y) plus its desktop position for OS-level clicks.
     if (selector) {
       const el = resolveElement(selector);
-      if (!el) return { error: 'Element not found' };
+      if (!el) return notFound();
       el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
       const rect = el.getBoundingClientRect();
       x = rect.left + rect.width / 2;
@@ -1224,7 +1279,7 @@
 
   function captureScrollIntoView(selector, block) {
     const el = document.querySelector(selector);
-    if (!el) return { error: 'Element not found' };
+    if (!el) return notFound();
     el.scrollIntoView({ block: block === 'start' ? 'start' : 'center', inline: 'center', behavior: 'instant' });
     return { ok: true };
   }
@@ -1266,7 +1321,7 @@
   function highlightElement(selector) {
     clearHighlight();
     const el = resolveElement(selector);
-    if (!el) return { error: 'Element not found' };
+    if (!el) return notFound();
 
     const rect = el.getBoundingClientRect();
     highlightOverlay = document.createElement('div');
@@ -1298,9 +1353,7 @@
     // Try ref map first
     if (/^(?:s\d+e\d+|r\d+)$/.test(selector)) {
       const el = refMap[selector];
-      if (!selector.startsWith(`s${refGeneration}e`) || !el || !el.isConnected) {
-        throw new Error('stale ref, call browser_snapshot again');
-      }
+      if (!selector.startsWith(`s${refGeneration}e`) || !el || !el.isConnected) throw staleRef(selector, el);
       return el;
     }
     
@@ -1534,7 +1587,7 @@
   // ── HTML / bounds / computed style ──
   function getHTML(selector) {
     const el = resolveElement(selector);
-    if (!el) return { error: 'Element not found' };
+    if (!el) return notFound();
     const outer = redactMarkup(el, true);
     const truncated = outer.length > 100000;
     return { html: outer.slice(0, 100000), length: outer.length, ...(truncated && { truncated: true }) };
@@ -1543,7 +1596,7 @@
   // A temporary exact selector lets the existing screenshot capture path use refs.
   function markScreenshotTarget(ref) {
     const el = resolveElement(ref);
-    if (!el) return { error: 'Element not found' };
+    if (!el) return notFound();
     const attribute = `data-kitsune-capture-${crypto.getRandomValues(new Uint32Array(1))[0]}`;
     el.setAttribute(attribute, '');
     return { selector: `[${attribute}]`, attribute };
@@ -1558,7 +1611,7 @@
 
   function getBounds(selector) {
     const el = resolveElement(selector);
-    if (!el) return { error: 'Element not found' };
+    if (!el) return notFound();
     const r = el.getBoundingClientRect();
     return {
       x: r.x, y: r.y, width: r.width, height: r.height,
@@ -1571,7 +1624,7 @@
 
   function getComputedStyleFor(selector, properties) {
     const el = resolveElement(selector);
-    if (!el) return { error: 'Element not found' };
+    if (!el) return notFound();
     const cs = window.getComputedStyle(el);
     // No props specified → return commonly-needed ones
     const common = ['display','position','visibility','opacity','width','height','color','background-color','font-size','font-family','font-weight','margin','padding','border','z-index','overflow','cursor'];
@@ -1705,7 +1758,7 @@
   // ── Markdown export (in-house, DOM walker) ──
   function getMarkdown(selector) {
     const root = selector ? resolveElement(selector) : document.body;
-    if (!root) return { error: 'Element not found' };
+    if (!root) return notFound();
     function walk(node) {
       if (node.nodeType === 3) return node.textContent.replace(/\s+/g, ' ');
       if (node.nodeType !== 1) return '';
@@ -1789,7 +1842,7 @@
 
   function selectOption(selector, value, byText) {
     const el = resolveElement(selector);
-    if (!el) return { error: 'Element not found' };
+    if (!el) return notFound();
     if (el.tagName !== 'SELECT') return { error: 'Element is not a <select>' };
     const matched = findSelectOption(el, value, byText);
     if (!matched) return { error: `No matching option for ${byText ? 'text' : 'value'}: ${value}` };
@@ -1800,7 +1853,7 @@
 
   function checkBox(selector, checked) {
     const el = resolveElement(selector);
-    if (!el) return { error: 'Element not found' };
+    if (!el) return notFound();
     if (el.type !== 'checkbox' && el.type !== 'radio') return { error: 'Element is not a checkbox/radio' };
     lastActedElement = el;
     el.checked = !!checked;
@@ -1811,21 +1864,21 @@
 
   function focusEl(selector) {
     const el = resolveElement(selector);
-    if (!el) return { error: 'Element not found' };
+    if (!el) return notFound();
     el.focus();
     return { ok: true, active: document.activeElement === el };
   }
 
   function blurEl(selector) {
     const el = selector ? resolveElement(selector) : document.activeElement;
-    if (!el) return { error: 'Element not found' };
+    if (!el) return notFound();
     if (typeof el.blur === 'function') el.blur();
     return { ok: true };
   }
 
   function keypress(selector, key, modifiers, text) {
     const target = selector ? resolveElement(selector) : (document.activeElement || document.body);
-    if (!target) return { error: 'No target' };
+    if (!target) return notFound('No target');
     lastActedElement = selector || target !== document.body ? target : null;
     const mods = modifiers || {};
     const opts = {
@@ -1858,7 +1911,7 @@
 
   function doubleClick(selector) {
     const el = resolveElement(selector);
-    if (!el) return { error: 'Element not found' };
+    if (!el) return notFound();
     el.scrollIntoView({ behavior: 'instant', block: 'center' });
     const r = el.getBoundingClientRect();
     const init = { bubbles: true, cancelable: true, composed: true, view: window, clientX: r.x + r.width/2, clientY: r.y + r.height/2, button: 0 };
@@ -1869,14 +1922,14 @@
     el.dispatchEvent(new MouseEvent('mouseup', init));
     el.dispatchEvent(new MouseEvent('click', init));
     el.dispatchEvent(new MouseEvent('dblclick', { ...init, detail: 2 }));
-    return { ok: true };
+    return { ok: true, ...notRenderedWarning(el) };
   }
 
   function submitForm(selector) {
     let form;
     if (selector) {
       const el = resolveElement(selector);
-      if (!el) return { error: 'Element not found' };
+      if (!el) return notFound();
       lastActedElement = el;
       form = el.tagName === 'FORM' ? el : el.closest('form');
     } else {
@@ -1973,8 +2026,8 @@
   function dragElement(fromSel, toSel) {
     const from = resolveElement(fromSel);
     const to = resolveElement(toSel);
-    if (!from) return { error: 'from element not found' };
-    if (!to) return { error: 'to element not found' };
+    if (!from) return notFound('from element not found');
+    if (!to) return notFound('to element not found');
     const fr = from.getBoundingClientRect();
     const tr = to.getBoundingClientRect();
     const fx = fr.x + fr.width/2, fy = fr.y + fr.height/2;
