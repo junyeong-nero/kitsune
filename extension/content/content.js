@@ -1,4 +1,4 @@
-// Claude Bridge for Zen - Content Script
+// Kitsune - Content Script
 // Handles all DOM interaction on web pages
 
 (function() {
