@@ -53,6 +53,7 @@ except ImportError:
 
 from . import bridge_control
 from .version import BRIDGE_BUILD, PACKAGE_VERSION
+from .waits import actionability_wait_seconds, batch_wait_seconds
 
 # ── Config ──
 BRIDGE_VERSION = PACKAGE_VERSION
@@ -641,11 +642,55 @@ def _log(msg):
         del _log_buffer[: len(_log_buffer) - _LOG_MAX]
 
 
+AUDIT_REDACTED = "[redacted]"
+# Params holding typed text or stored secrets (cookie, storage and clipboard
+# contents); selectors, refs, tabId, op, name, url and key stay.
+_AUDIT_SECRET_PARAMS = {
+    "type": ("text",),
+    "fill": ("value",),
+    "setEditableContent": ("value",),
+    "keypress": ("text",),
+    "cookies": ("value",),
+    "storageOp": ("value",),
+    "clipboard": ("text",),
+}
+
+
+def _audit_params(action, params):
+    """Copy params for the audit log without JS bodies, typed values or secrets.
+
+    Nested commands (batch, parallel, broadcast, retry, if/while/try, sequence)
+    are dicts with their own "action" and get the same treatment.
+    """
+    def scrub(value):
+        if isinstance(value, dict):
+            if isinstance(value.get("action"), str):
+                return _audit_params(value["action"], value)
+            return {k: scrub(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [scrub(v) for v in value]
+        return value
+
+    secret = _AUDIT_SECRET_PARAMS.get(action, ())
+    out = {}
+    for k, v in (params or {}).items():
+        if k == "code":  # don't log JS bodies
+            continue
+        if k in secret:
+            out[k] = AUDIT_REDACTED
+        elif action == "formFill" and k == "fields":
+            # Keys are selectors/labels and stay; every value is typed content.
+            out[k] = {f: AUDIT_REDACTED for f in v} if isinstance(v, dict) else AUDIT_REDACTED
+        else:
+            out[k] = scrub(v)
+    return out
+
+
 def _audit(action, params, ok, error, ms):
     _audit_log.append({
         "ts": int(time.time() * 1000),
         "action": action,
-        "params": {k: v for k, v in (params or {}).items() if k != "code"},  # don't log JS bodies
+        "params": _audit_params(action, params),
         "ok": bool(ok),
         "error": error,
         "ms": int(ms),
@@ -1534,13 +1579,18 @@ async def run_command(cmd):
                 spec, problem = _parse_expect(effective_action, params.pop('expect'))
                 if problem:
                     return {'error': problem}
-                return await _send_with_expectation(effective_action, params, spec)
+                return await _send_with_expectation(
+                    effective_action, params, spec,
+                    timeout=30 + actionability_wait_seconds(effective_action, params))
             if effective_action in ('waitForUrl', 'waitForTitle'):
                 timeout_s = params.get('timeout', 10000) / 1000 + 5
                 return await send_to_extension(effective_action, params, timeout=timeout_s)
             if effective_action == 'newTab' and params.get('wait'):
                 timeout_s = params.get('timeout', 15000) / 1000 + 5
                 return await send_to_extension(effective_action, params, timeout=timeout_s)
+            wait_s = actionability_wait_seconds(effective_action, params)
+            if wait_s:
+                return await send_to_extension(effective_action, params, timeout=30 + wait_s)
             return await send_to_extension(effective_action, params)
 
         # Actions with custom logic
@@ -2032,6 +2082,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 timeout = body.get('timeout', 10000) / 1000 + 5
             elif action == 'newTab' and body.get('wait'):
                 timeout = body.get('timeout', 15000) / 1000 + 5
+            else:
+                timeout += actionability_wait_seconds(action, body)
             if spec is None:
                 result = self.run_async(send_to_extension(action, body, timeout=timeout), timeout=timeout + 5)
             else:
@@ -2411,7 +2463,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     break
             return results
 
-        results = self.run_async(run_all(), timeout=300)
+        # Commands run in sequence, so the deadline must cover every wait in the batch.
+        results = self.run_async(run_all(), timeout=max(300, batch_wait_seconds(commands) + 15))
         self.send_json(200, {'results': results})
 
     def handle_cache(self):

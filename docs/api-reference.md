@@ -17,14 +17,15 @@ For single-element tools, prefer `ref` from `browser_snapshot` over a CSS
 `selector`. When both are supplied, `ref` takes precedence, as for `browser_click`.
 `element` is an audit-only human description, never a selector or fallback target.
 A stale/disconnected ref returns a `stale_ref` error (see [Action errors](#action-errors));
-take another snapshot to refresh it.
+take another snapshot to refresh it. See [Ref lifetime](#ref-lifetime) for which
+calls replace refs.
 Existing positional selector arguments remain supported.
 
 These tools also accept refs (all new parameters are optional):
 
 | MCP tool | Parameters |
 |---|---|
-| `browser_keypress` | `key, selector=None, modifiers=None, text=None, tab_id=None, ref=None, element=None` |
+| `browser_keypress` | `key, selector=None, modifiers=None, text=None, tab_id=None, ref=None, element=None, wait=False, timeout=10000` |
 | `browser_submit_form` | `selector=None, tab_id=None, ref=None, element=None` |
 | `browser_scroll` | `direction="down", amount=500, tab_id=None, selector=None, ref=None, element=None` |
 | `browser_blur` | `selector=None, tab_id=None, ref=None, element=None` |
@@ -41,11 +42,55 @@ back to a scrollable container at viewport center. HTML, bounds, computed-style,
 and click-and-wait-navigation require a selector or ref for a successful action.
 See `browser_wait_for` below for its element condition.
 
+### Ref lifetime
+
+A ref names one element in one document of one tab, for one ref generation.
+Use refs only from the latest observation of that tab.
+
+| Call | Effect on refs in that tab |
+|---|---|
+| `browser_snapshot` (also scoped), `browser_dom` | Starts a new generation: earlier refs fail as `stale_ref`/`snapshot_replaced`. A `ref` argument to `browser_snapshot` is resolved first |
+| Successful `browser_click`, `browser_type` (`type`/`fill`), `browser_select_option`, `browser_check`, `browser_keypress`, `browser_submit_form`, `browser_navigate` | Their post-action `snapshot` starts a new generation, like `browser_snapshot` |
+| Navigation, reload, or back/forward to another document | Earlier refs fail as `stale_ref`/`other_document` |
+| `browser_find`, `browser_forms`, `browser_wait_for(selector/ref)` | Add refs to the current generation; earlier refs stay valid |
+| Failed actions, other reads, `browser_hover`, `browser_scroll`, `browser_type(mode="editable")` and other actions without a post-action snapshot | No change, unless the page itself removes the element (`element_removed`) |
+
+Snapshots in one tab do not affect refs in another tab. Pass `tab_id` when more
+than one tab is in use: a ref sent to the wrong tab fails as `other_document` and
+never acts on another element.
+
+After an action, use the refs in its `snapshot`. `target_ref` is the new ref of
+the acted-on element (absent for `browser_navigate`, or when that element is gone),
+so a follow-up such as `browser_keypress(key="Enter", ref=target_ref)` needs no
+extra snapshot. Only emitted lines carry usable refs: when `snapshot_truncated`
+is set and the element you need is missing, or when `snapshot_error` replaces the
+snapshot, call `browser_snapshot` before using any ref. With the post-action
+snapshot disabled (`KITSUNE_POST_ACTION_SNAPSHOT=0`, or `includeSnapshot: false`
+in a batch), actions leave refs unchanged.
+
+Recovering without repeating a consequential action:
+
+- `stale_ref` and `not_found` fail before anything is dispatched to the page.
+  Take a new `browser_snapshot` of the same `tab_id`, find the element again,
+  and retry with its new ref. Do not fall back to another element by its
+  `element` description.
+- To get fresh refs after a successful write, use its `snapshot`/`target_ref` or
+  call `browser_snapshot`. Never repeat the write.
+- After a failure with `retryable: false` (a write whose outcome is unknown),
+  observe first (`browser_snapshot`, `browser_page_info`, `browser_wait_for`) and
+  act again only if the page shows the effect did not happen.
+- In a batch, earlier commands may already have run. Resume from the failed
+  command instead of re-running the whole batch.
+
+Refs are not stable across snapshots: an unchanged element gets a new ref in
+each generation.
+
 ### Action errors
 
 Failures keep the human-readable `error` string (its text is unchanged) and, when
 classified, add machine-readable fields. Errors that are not yet classified have
-only `error`. The MCP transport is unchanged: errors are still returned as tool results.
+only `error`. MCP tools return these failures with `isError: true` (see
+[MCP error results](#mcp-error-results)).
 
 ```json
 { "error": "Element not found", "code": "navigating", "retryable": true,
@@ -64,7 +109,8 @@ only `error`. The MCP transport is unchanged: errors are still returned as tool 
 
 | `code` | Meaning | `retryable` |
 |---|---|---|
-| `not_found` | No element matches the selector (also `No target`, `from/to element not found`) | true |
+| `not_found` | No element matches the selector (also `No target`, `from/to element not found`); after an [actionability wait](#actionability-wait), `state` has `timeoutMs` and `elapsed` | true |
+| `not_actionable` | An [actionability wait](#actionability-wait) timed out on a target that exists but never rendered (`state.reason: "not_rendered"`, `timeoutMs`, `elapsed`); nothing was dispatched | true |
 | `stale_ref` | The ref is no longer valid; `state.reason` is `element_removed`, `not_in_snapshot`, `snapshot_replaced` (a newer snapshot of this document), or `other_document` (the tab navigated, or the ref came from another tab) | true |
 | `navigating` | The tab is loading: a `not_found`/`stale_ref` while loading (`state.cause`), or the page unloaded while handling the command | true before dispatch; false for writes after |
 | `tab_closed` | The target tab no longer exists | true |
@@ -102,6 +148,68 @@ the success result adds a warning. With `stopOnWarning`, a batch stops there.
 ```
 
 Zero-size and transparent targets count as rendered. Covering overlays are not detected.
+
+### Actionability wait
+
+Action tools act immediately by default. With `wait=True` (`"wait": true` on the
+bridge endpoint or batch command), the page first waits up to `timeout` ms
+(default 10000) for the target, then dispatches exactly as in immediate mode.
+Nothing is dispatched while waiting or on timeout.
+
+| Action | MCP tools | Waits until the target |
+|---|---|---|
+| `click`, `doubleClick`, `hover`, `drag` (both ends) | `browser_click`, `browser_double_click`, `browser_hover`, `browser_drag` | exists, is connected, and is rendered |
+| `type`, `fill`, `setEditableContent`, `selectOption`, `checkBox`, `keypress` | `browser_type`, `browser_select_option`, `browser_check`, `browser_keypress` | exists and is connected |
+
+Rendered means the same as for the `hidden_or_covered` warning above. Value
+actions don't need a rendered target, so a hidden native checkbox or select
+behind a custom widget still works in wait mode. A target that never resolves
+returns `not_found`; a pointer target that exists but never renders returns
+`not_actionable`. Both carry the last observed state and are retryable, because
+nothing reached the page. `timeout` is not used here; that code means a command
+was sent and its outcome is unknown. A ref that goes stale while waiting fails
+at once with `stale_ref`. Coordinate clicks and keypresses without a
+selector/ref have no target and run immediately. Other actions ignore `wait`.
+The bridge and MCP transport timeouts grow by the wait bound. Batch commands run in
+sequence, so a batch's timeout covers the sum of its waits (actionability waits,
+element/URL/title/result waits, `newTab` waits and sleeps); for `parallel`, the slowest sequence counts.
+
+These are reliability checks borrowed from Playwright. They don't make the
+events trusted input: dispatch is still synthetic DOM events. A rendered target
+can still be covered by an overlay, which isn't detected. If the page unloads
+during the wait, the command fails like any other unload (`navigating` or
+`content_unavailable`, `retryable: false` for writes), because the background
+can't tell whether the action ran.
+
+### MCP error results
+
+An MCP tool call returns `isError: true` when the tool's own top-level result
+reports a failure: a non-empty `error`, or `ok: false`. The content is the same
+JSON text as before, so `error`, `code`, `retryable`, `hint`, `state`, and any other
+fields (`timedOut`, `tabId`, …) are kept. This covers bridge and extension errors
+(`stale_ref`, `not_found`, `extension_disconnected`, `bridge_unavailable`, …),
+argument errors reported by the MCP server, `ok: false` results such as
+`browser_navigate` or `browser_tabs(action="new", wait=True)` load timeouts (the
+tab stays open), and a `browser_retry` that gave up. Errors raised by FastMCP
+itself, such as invalid arguments, were already `isError`.
+
+These results are not errors:
+
+- A success with a `warning` (for example `hidden_or_covered`): the action was
+  dispatched.
+- Results nested inside a successful result, such as
+  `browser_click_and_wait_navigation`'s `navigation: {ok: false, timedOut: true}`
+  after `clicked: true`.
+- Container results: `browser_batch`, `browser_parallel`, `browser_broadcast`, and
+  `browser_workflow` report each command's outcome in `results`. A failed command
+  there does not make the call an error, because commands before it may already
+  have taken effect and must not be re-sent blindly. Inspect each entry. The
+  container call itself is an error only when it fails as a whole (for example
+  `bridge_unavailable`).
+- Reads that describe state, such as `browser_status` with
+  `extension_connected: false`.
+
+HTTP bridge endpoints are unchanged; this applies only to MCP tool results.
 
 ### Action outcomes
 
@@ -173,6 +281,8 @@ as not met with `observed.redacted: true`, and the expected value is not echoed.
 The post-action snapshot is taken right after dispatch; after a delayed outcome,
 take a new `browser_snapshot` to see the updated page. Without `expect`, results are unchanged.
 
+`wait` and `expect` can be combined: `wait` runs before dispatch and `expect` after it. A batch's timeout also covers each command's `expect.timeout`.
+
 ### Sensitive-field redaction
 
 Structural read tools never return the value (or its length) of a sensitive
@@ -234,6 +344,30 @@ This is not a sandbox: `browser_js` runs arbitrary page JavaScript and can read
 any value the page can, including sensitive fields. Treat access to `browser_js`
 as a separate, unrestricted trust boundary.
 
+### Audit log
+
+`browser_audit` (`/api/audit`) returns recent write-action entries:
+`{ts, action, params, ok, error, ms}`. `params` never contains JavaScript bodies
+(`code`), typed text or stored secrets. These values are replaced with
+`"[redacted]"`:
+
+- `text` of `type` and `keypress`;
+- `value` of `fill` and `setEditableContent`;
+- every value of `formFill` `fields`. The field keys (selectors, names or labels)
+  are kept;
+- `value` of `cookies` (`browser_cookies`);
+- `value` of `storageOp` (`browser_storage` set and restore);
+- `text` of `clipboard` (`browser_clipboard` write).
+
+The action, `selector`/`ref`/`element`, `tabId`, other options (`op`, `name`,
+`url`, `domain`, `kind`, `key`, `modifiers`, `clear`, …), duration
+and outcome are kept. `intercept` takes only URL patterns and an effect, never a
+response body, so its entries are logged as sent. Nested commands (`batch`
+`commands`, `parallel` `sequences`, `retry`/`broadcast` `command`,
+`if`/`while`/`try` blocks) follow the same rule. `uploadFile` entries keep their
+file paths; file contents are never logged. The extension still receives the
+unredacted value. Only the audit copy is scrubbed.
+
 ### `browser_tabs(action="list", tab_id=None, url=None, force=False, raw=False, wait=False, timeout=15000)`
 
 Replaces `browser_new_tab`, `browser_close_tab`, and `browser_switch_tab`.
@@ -281,7 +415,7 @@ inspect it fully. Post-action snapshots additionally keep the acted-on target's
 item, even beyond the first five, and return a fresh `target_ref`. Character-limit
 truncation can still omit other context but never the visible acted-on target.
 
-### `browser_type(selector="", text="", mode="type", clear=False, tab_id=None, ref=None, element=None)`
+### `browser_type(selector="", text="", mode="type", clear=False, tab_id=None, ref=None, element=None, wait=False, timeout=10000)`
 
 Replaces `browser_fill` and `browser_set_editable_content`.
 
@@ -291,7 +425,7 @@ Replaces `browser_fill` and `browser_set_editable_content`.
 | `fill` | Always replace the field value with native setter and input/change events; ignores `clear` | `/api/fill` |
 | `editable` | Insert plain text into contenteditable/input/textarea; append by default, replace with `clear=True` | `/api/set-editable-content` |
 
-Editable mode sends `format="text"`. Callers migrating from the old editor tool
+All modes accept the [actionability wait](#actionability-wait). Editable mode sends `format="text"`. Callers migrating from the old editor tool
 should pass `clear=True` to retain its replace-by-default behavior. For trusted
 HTML insertion use `browser_js`; the underlying endpoint still accepts `format="html"`
 (both developer build only).
@@ -551,6 +685,8 @@ On timeout the tab stays open and the result is
 
 ### POST /api/click
 `{ "selector": "button.submit" }` — also accepts `ref`, `position`.
+Add `"wait": true, "timeout": 10000` to wait for the target first (see
+[Actionability wait](#actionability-wait)); the other action endpoints accept the same keys.
 
 ### POST /api/trusted-click
 `{ "selector": "button.submit", "focus": true }` or
@@ -661,7 +797,9 @@ Set TTL: `{ "action": "ttl", "seconds": 10 }`
 ## Error Handling
 
 All endpoints return `{ "error": "message" }` on failure; classified failures add
-`code`, `retryable`, `hint`, and `state` (see [Action errors](#action-errors)). Common errors:
+`code`, `retryable`, `hint`, and `state` (see [Action errors](#action-errors)). The
+matching MCP tools mark these results `isError: true` (see
+[MCP error results](#mcp-error-results)). Common errors:
 - `"Kitsune extension not connected. Open Firefox or Zen and make sure the Kitsune extension is loaded."` (`extension_disconnected`) — extension not loaded or browser closed
 - `"Extension disconnected"` (`extension_disconnected`) — extension dropped mid-command (fails fast, no timeout wait)
 - `"Command timed out after Ns"` (`timeout`) — extension didn't respond in time
