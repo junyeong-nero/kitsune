@@ -20,6 +20,7 @@ from mcp.types import ToolAnnotations
 from . import bridge_control
 from .bridge_control import BRIDGE, LOG_FILE, headers as _headers
 from .version import BRIDGE_BUILD
+from .waits import batch_wait_seconds, command_wait_seconds
 
 # Annotation hints describe the whole tool, including its most dangerous operation.
 # Idempotence means repeating identical arguments adds no further side effects;
@@ -137,13 +138,6 @@ def _with_tab(body: dict, tab_id: int | None) -> dict:
     if tab_id is not None:
         body["tabId"] = tab_id
     return body
-
-
-# Actions that accept the opt-in actionability wait (same set as bridge.ACTIONABILITY_WAIT_ACTIONS).
-ACTIONABILITY_WAIT_ACTIONS = frozenset({
-    "click", "doubleClick", "hover", "drag",
-    "type", "fill", "setEditableContent", "selectOption", "checkBox", "keypress",
-})
 
 
 def _post_action(endpoint: str, body: dict, wait: bool, timeout: int) -> dict:
@@ -769,11 +763,9 @@ def browser_parallel(sequences: list[list[dict]]) -> dict:
                    {"action": "pageText", "tabId": 13}]
                 ]
     """
-    return _post(
-        "/api/batch",
-        {"commands": [{"action": "parallel", "sequences": sequences}]},
-        timeout=300,
-    )
+    command = {"action": "parallel", "sequences": sequences}
+    return _post("/api/batch", {"commands": [command]},
+                 timeout=max(300, command_wait_seconds(command) + 15))
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -1621,17 +1613,8 @@ def browser_batch(commands: list[dict]) -> dict:
     Args:
         commands: List of command dicts, e.g. [{"action": "navigate", "url": "..."}, {"action": "waitForElement", "selector": ".results", "timeout": 10000}, {"action": "pageText"}]
     """
-    # Allow element and navigation metadata waits to reach their own deadlines.
-    max_timeout = 15
-    for cmd in commands:
-        if cmd.get("action") in ("waitForElement", "waitForUrl", "waitForTitle"):
-            ms = cmd.get("timeout", 10000)
-            max_timeout = max(max_timeout, (ms / 1000) + 10)
-        elif cmd.get("action") == "newTab" and cmd.get("wait"):
-            max_timeout = max(max_timeout, (cmd.get("timeout", 15000) / 1000) + 10)
-        elif cmd.get("action") in ACTIONABILITY_WAIT_ACTIONS and cmd.get("wait"):
-            max_timeout = max(max_timeout, (cmd.get("timeout", 10000) / 1000) + 15)
-    return _post("/api/batch", {"commands": commands}, timeout=max_timeout)
+    # Commands run in sequence, so every wait in the batch must fit in the deadline.
+    return _post("/api/batch", {"commands": commands}, timeout=batch_wait_seconds(commands) + 15)
 
 
 def main():

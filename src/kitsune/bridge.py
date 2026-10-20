@@ -52,6 +52,7 @@ except ImportError:
 
 from . import bridge_control
 from .version import BRIDGE_BUILD, PACKAGE_VERSION
+from .waits import actionability_wait_seconds, batch_wait_seconds
 
 # ── Config ──
 BRIDGE_VERSION = PACKAGE_VERSION
@@ -1333,20 +1334,6 @@ BATCH_ACTION_MAP = {
 }
 
 
-# With an opt-in `wait`, the content script waits up to `timeout` ms for these actions' targets.
-ACTIONABILITY_WAIT_ACTIONS = {
-    'click', 'doubleClick', 'hover', 'drag',
-    'type', 'fill', 'setEditableContent', 'selectOption', 'checkBox', 'keypress',
-}
-
-
-def _actionability_wait_seconds(action, params):
-    """Time an action may spend waiting for its target before dispatch; 0 in immediate mode."""
-    if action not in ACTIONABILITY_WAIT_ACTIONS or not params.get('wait'):
-        return 0
-    return params.get('timeout', 10000) / 1000
-
-
 async def run_command(cmd):
     """Execute a single batch command asynchronously."""
     action = cmd.get('action', '')
@@ -1370,7 +1357,7 @@ async def run_command(cmd):
             if effective_action == 'newTab' and params.get('wait'):
                 timeout_s = params.get('timeout', 15000) / 1000 + 5
                 return await send_to_extension(effective_action, params, timeout=timeout_s)
-            wait_s = _actionability_wait_seconds(effective_action, params)
+            wait_s = actionability_wait_seconds(effective_action, params)
             if wait_s:
                 return await send_to_extension(effective_action, params, timeout=30 + wait_s)
             return await send_to_extension(effective_action, params)
@@ -1859,7 +1846,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             elif action == 'newTab' and body.get('wait'):
                 timeout = body.get('timeout', 15000) / 1000 + 5
             else:
-                timeout += _actionability_wait_seconds(action, body)
+                timeout += actionability_wait_seconds(action, body)
             result = self.run_async(send_to_extension(action, body, timeout=timeout), timeout=timeout + 5)
         except Exception as e:
             result = {"error": str(e)}
@@ -2234,7 +2221,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     break
             return results
 
-        results = self.run_async(run_all(), timeout=300)
+        # Commands run in sequence, so the deadline must cover every wait in the batch.
+        results = self.run_async(run_all(), timeout=max(300, batch_wait_seconds(commands) + 15))
         self.send_json(200, {'results': results})
 
     def handle_cache(self):

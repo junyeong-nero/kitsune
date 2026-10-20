@@ -124,7 +124,9 @@ nothing reached the page. `timeout` is not used here; that code means a command
 was sent and its outcome is unknown. A ref that goes stale while waiting fails
 at once with `stale_ref`. Coordinate clicks and keypresses without a
 selector/ref have no target and run immediately. Other actions ignore `wait`.
-The bridge and MCP transport timeouts grow by the wait bound.
+The bridge and MCP transport timeouts grow by the wait bound. Batch commands run in
+sequence, so a batch's timeout covers the sum of its waits (actionability waits,
+element/URL/title/result waits, `newTab` waits and sleeps); for `parallel`, the slowest sequence counts.
 
 These are reliability checks borrowed from Playwright. They don't make the
 events trusted input: dispatch is still synthetic DOM events. A rendered target
