@@ -74,6 +74,7 @@ only `error`. The MCP transport is unchanged: errors are still returned as tool 
 | `extension_disconnected` | The extension is not connected, reconnected before sending, or disconnected while waiting (`state.connected`) | true if not sent; false for writes after |
 | `timeout` | The bridge sent the command but no reply arrived in time (`state.timeoutSeconds`); from the MCP server, the bridge did not answer | false for writes (MCP: POST) |
 | `bridge_unavailable` | The MCP server cannot reach or start the bridge | true |
+| `outcome_not_observed` | The action was dispatched, but the outcome given in `expect` did not happen in time (see [Action outcomes](#action-outcomes)) | false for writes |
 
 Writes are the bridge's read-only-mode write actions plus file-upload commits,
 focus, and blur. For a read, the bridge always reports `retryable: true`.
@@ -101,6 +102,76 @@ the success result adds a warning. With `stopOnWarning`, a batch stops there.
 ```
 
 Zero-size and transparent targets count as rendered. Covering overlays are not detected.
+
+### Action outcomes
+
+A successful action result (`ok: true`, no `error`) only means the command was
+dispatched: the click, keypress or submit reached the page. It does not prove the
+task succeeded, because a submit can be blocked by validation or a click can do nothing.
+To check, pass an optional `expect` object. After dispatch, the bridge waits up to
+`expect.timeout` ms (default 5000) for that outcome in the same tab. Without `tab_id`,
+the bridge first resolves the active tab and sends the action to that tab, so the
+action and the check cannot target different tabs after a focus change.
+
+`expect` takes exactly one condition:
+
+| `expect` | Observed when |
+|---|---|
+| `{"url": "<regex>"}` | the tab URL matches the JavaScript regex (tab metadata, survives navigation) |
+| `{"url_changed": true}` | the tab URL differs from its URL before dispatch (navigation, including a hash change) |
+| `{"selector": "<css>"}` | a matching element is visible |
+| `{"selector": "<css>", "gone": true}` | no matching element is visible (removed or hidden) |
+| `{"selector": "<css>", "value": "<str>"}` | the first matching element's value equals the string |
+| `{"text": "<str>"}` / `{"text_gone": "<str>"}` | the visible page text contains / no longer contains the literal substring |
+
+```json
+{ "selector": ".toast", "timeout": 3000 }
+```
+
+Supported on `browser_click`, `browser_type`, `browser_keypress`, `browser_submit_form`,
+`browser_select_option`, `browser_check`, and `browser_navigate`. Over HTTP and in batch
+commands (including `retry`), `expect` is also accepted by the other page actions on one
+existing tab: double-click, hover, scroll, drag, focus, blur, form-fill, back/forward/reload,
+and click-and-wait-navigation. Element conditions take a CSS selector, not a ref, because
+the post-action snapshot replaces the refs from earlier snapshots. An invalid `expect` is
+rejected before anything is dispatched.
+
+When the condition is met, the result is the usual action result plus two fields:
+
+```json
+{ "ok": true, "snapshot": "...", "dispatched": true,
+  "outcome": { "expected": { "text": "Saved", "timeout": 5000 }, "met": true,
+               "observed": { "source": "snapshot", "textVisible": true }, "elapsed": 0 } }
+```
+
+`observed.source` names where the outcome was seen: `snapshot`, `tab` (tab
+metadata), or `page` (a read of the current document). For `text`, the post-action
+snapshot already in the result is searched first, so no further read is needed when
+it contains the text. Snapshot text includes accessible names and non-sensitive
+field values, so it can match text that the page read would not.
+
+When the condition is not met in time, the result is an [action error](#action-errors)
+that keeps the dispatch result (`dispatched: true`, the post-action `snapshot`, any
+`warning`) and adds `outcome.met: false`, `ok: false`, `code: "outcome_not_observed"`,
+and the current tab state:
+
+```json
+{ "ok": false, "dispatched": true, "error": "Expected outcome not observed within 5000ms",
+  "code": "outcome_not_observed", "retryable": false, "hint": "...",
+  "state": { "tabId": 7, "url": "https://shop.example/checkout", "title": "Checkout" },
+  "outcome": { "expected": { "url_changed": true, "timeout": 5000 }, "met": false,
+               "observed": { "source": "tab", "url": "https://shop.example/checkout" },
+               "elapsed": 5003, "state": { "...": "same as state" } } }
+```
+
+`retryable` is `false` for writes, because the action already ran. The batch `retry`
+action does not repeat it either. Inspect the page before acting again. If the check
+itself could not read the page, `observed` has its `error` and `code`. A tab that is
+navigating is checked again until the deadline. If the tab closed, `state.closed` is
+`true`. Sensitive fields are never read back, so a `value` outcome on one is reported
+as not met with `observed.redacted: true`, and the expected value is not echoed.
+The post-action snapshot is taken right after dispatch; after a delayed outcome,
+take a new `browser_snapshot` to see the updated page. Without `expect`, results are unchanged.
 
 ### Sensitive-field redaction
 

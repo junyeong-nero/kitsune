@@ -139,6 +139,19 @@ def _with_tab(body: dict, tab_id: int | None) -> dict:
     return body
 
 
+OUTCOME_TIMEOUT_MS = 5000  # default expect.timeout; matches bridge.OUTCOME_TIMEOUT_MS
+
+
+def _post_action(endpoint: str, body: dict, expect: dict | None) -> dict:
+    """POST a page action; with expect, also wait for the bridge's bounded outcome check."""
+    if expect is None:
+        return _post(endpoint, body)
+    wait_ms = expect.get("timeout", OUTCOME_TIMEOUT_MS) if isinstance(expect, dict) else 0
+    if isinstance(wait_ms, bool) or not isinstance(wait_ms, (int, float)) or not math.isfinite(wait_ms):
+        wait_ms = 0  # the bridge rejects it before dispatch
+    return _post(endpoint, {**body, "expect": expect}, timeout=15 + max(0, wait_ms) / 1000 + 45)
+
+
 def _target(body: dict, ref: str | None, element: str | None) -> dict:
     """Attach a machine ref and an audit-only human description."""
     if ref is not None:
@@ -350,7 +363,9 @@ def browser_screenshot(
 # -- Navigation ---------------------------------------------------
 
 @tool("core", annotations=ToolAnnotations(title="Navigate", **ACT))
-def browser_navigate(url: str, tab_id: int | None = None, raw: bool = False) -> dict:
+def browser_navigate(
+    url: str, tab_id: int | None = None, raw: bool = False, expect: dict | None = None,
+) -> dict:
     """Navigate the active tab to a URL.
 
     Args:
@@ -358,11 +373,12 @@ def browser_navigate(url: str, tab_id: int | None = None, raw: bool = False) -> 
         tab_id: Optional tab to navigate. Defaults to active tab.
         raw: Bare image URLs (.jpg/.png/...) open inside a small local viewer page
              (image = #zlimg) so the extension can still script them. True opens the raw image.
+        expect: Optional expected outcome; see browser_click.
     """
     body = {"url": url}
     if raw:
         body["raw"] = True
-    return _post("/api/navigate", _with_tab(body, tab_id))
+    return _post_action("/api/navigate", _with_tab(body, tab_id), expect)
 
 
 # -- Interaction --------------------------------------------------
@@ -370,20 +386,28 @@ def browser_navigate(url: str, tab_id: int | None = None, raw: bool = False) -> 
 @tool("core", annotations=ToolAnnotations(title="Click", **ACT))
 def browser_click(
     selector: str = "", x: int = 0, y: int = 0, tab_id: int | None = None,
-    ref: str | None = None, element: str | None = None,
+    ref: str | None = None, element: str | None = None, expect: dict | None = None,
 ) -> dict:
     """Prefer ref from browser_snapshot; element is an audit-only description.
 
-    Click an element on the page by CSS selector or coordinates.
+    Click an element on the page by CSS selector or coordinates. ok=true only
+    means the click was dispatched, not that the intended effect happened.
 
     Args:
         selector: CSS selector to click (e.g. "#submit", ".btn-primary")
         x: X coordinate (used if selector is empty)
         y: Y coordinate (used if selector is empty)
         tab_id: Optional tab to target. Defaults to active tab.
+        expect: Optional outcome to verify after dispatch, with exactly one of
+            {"url": regex}, {"url_changed": True}, {"selector": css} (visible;
+            add "gone": True for hidden/removed, or "value": str for a field value),
+            {"text": str} or {"text_gone": str}, plus "timeout" ms (default 5000).
+            The result adds dispatched=true and outcome {expected, observed, met}.
+            If not met in time: ok=false, code="outcome_not_observed" and the
+            current tab state; the action already ran, so do not blindly repeat it.
     """
     body: dict = {"selector": selector} if selector or ref else {"coords": {"x": x, "y": y}}
-    return _post("/api/click", _with_tab(_target(body, ref, element), tab_id))
+    return _post_action("/api/click", _with_tab(_target(body, ref, element), tab_id), expect)
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Trusted click", **ACT))
@@ -420,7 +444,7 @@ def browser_trusted_click(
 def browser_type(
     selector: str = "", text: str = "", mode: Literal["type", "fill", "editable"] = "type",
     clear: bool = False, tab_id: int | None = None,
-    ref: str | None = None, element: str | None = None,
+    ref: str | None = None, element: str | None = None, expect: dict | None = None,
 ) -> dict:
     """Prefer ref from browser_snapshot; element is an audit-only description.
 
@@ -431,6 +455,7 @@ def browser_type(
         clear is ignored because fill always replaces.
     editable: insert plain text in an editor/input/textarea, appending unless
         clear=True. Use browser_js for trusted HTML insertion.
+    expect: optional expected outcome; see browser_click.
     """
     if mode == "type":
         endpoint, body = "/api/type", {"selector": selector, "text": text, "clear": clear}
@@ -442,7 +467,7 @@ def browser_type(
         }
     else:
         return {"error": "mode must be type, fill, or editable"}
-    return _post(endpoint, _with_tab(_target(body, ref, element), tab_id))
+    return _post_action(endpoint, _with_tab(_target(body, ref, element), tab_id), expect)
 
 
 @tool("core", annotations=ToolAnnotations(title="Scroll", **ACT))
@@ -884,23 +909,24 @@ def browser_explain_selector(selector: str, tab_id: int | None = None) -> dict:
 @tool("core", annotations=ToolAnnotations(title="Select option", **ACT))
 def browser_select_option(
     selector: str = "", value: str = "", by_text: bool = False, tab_id: int | None = None,
-    ref: str | None = None, element: str | None = None,
+    ref: str | None = None, element: str | None = None, expect: dict | None = None,
 ) -> dict:
     """Prefer ref from browser_snapshot; element is an audit-only description.
 
     Choose an <option> in a <select>. Default matches by value; pass
-    `by_text=True` to match by visible text."""
-    return _post("/api/select-option", _with_tab(_target({"selector": selector, "value": value, "byText": by_text}, ref, element), tab_id))
+    `by_text=True` to match by visible text. expect: see browser_click."""
+    return _post_action("/api/select-option", _with_tab(_target({"selector": selector, "value": value, "byText": by_text}, ref, element), tab_id), expect)
 
 
 @tool("core", annotations=ToolAnnotations(title="Check", **ACT))
 def browser_check(
     selector: str = "", checked: bool = True, tab_id: int | None = None, ref: str | None = None, element: str | None = None,
+    expect: dict | None = None,
 ) -> dict:
     """Prefer ref from browser_snapshot; element is an audit-only description.
 
-    Set a checkbox or radio's checked state."""
-    return _post("/api/check", _with_tab(_target({"selector": selector, "checked": checked}, ref, element), tab_id))
+    Set a checkbox or radio's checked state. expect: see browser_click."""
+    return _post_action("/api/check", _with_tab(_target({"selector": selector, "checked": checked}, ref, element), tab_id), expect)
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Focus", **ACT))
@@ -934,6 +960,7 @@ def browser_keypress(
     tab_id: int | None = None,
     ref: str | None = None,
     element: str | None = None,
+    expect: dict | None = None,
 ) -> dict:
     """Prefer ref from browser_snapshot; element is an audit-only description.
 
@@ -947,12 +974,13 @@ def browser_keypress(
             defaults to document.activeElement (or document.body).
         modifiers: {"ctrl"|"shift"|"alt"|"meta": True}.
         text: If set, also insert this text into editable targets.
+        expect: Optional expected outcome; see browser_click.
     """
     body = {"key": key}
     if selector: body["selector"] = selector
     if modifiers: body["modifiers"] = modifiers
     if text is not None: body["text"] = text
-    return _post("/api/keypress", _with_tab(_target(body, ref, element), tab_id))
+    return _post_action("/api/keypress", _with_tab(_target(body, ref, element), tab_id), expect)
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Double click", **ACT))
@@ -966,16 +994,17 @@ def browser_double_click(selector: str = "", tab_id: int | None = None, ref: str
 @tool("core", annotations=ToolAnnotations(title="Submit form", **DESTRUCTIVE))
 def browser_submit_form(
     selector: str | None = None, tab_id: int | None = None,
-    ref: str | None = None, element: str | None = None,
+    ref: str | None = None, element: str | None = None, expect: dict | None = None,
 ) -> dict:
     """Prefer ref from browser_snapshot; element is an audit-only description.
 
     Submit the target form (or the target element's enclosing form).
-    Without selector/ref, submit the first <form> found.
+    Without selector/ref, submit the first <form> found. ok=true only means
+    the submit was dispatched; pass expect (see browser_click) to verify it.
     """
     body = {}
     if selector: body["selector"] = selector
-    return _post("/api/submit-form", _with_tab(_target(body, ref, element), tab_id))
+    return _post_action("/api/submit-form", _with_tab(_target(body, ref, element), tab_id), expect)
 
 
 @tool("core", annotations=ToolAnnotations(title="Form fill", **ACT))

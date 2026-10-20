@@ -27,6 +27,7 @@ import fcntl
 import signal
 import json
 import base64
+import math
 import os
 import shutil
 import subprocess
@@ -1154,6 +1155,185 @@ async def _send_to_extension_raw(action, params=None, timeout=30):
         pending_commands.pop(cmd_id, None)
 
 
+# Action outcome contract (docs/api-reference.md#action-outcomes): a reply without an
+# error only proves the command was dispatched. With `expect`, the bridge then checks,
+# within a bounded time, that the caller's expected outcome actually happened.
+OUTCOME_TIMEOUT_MS = 5000
+OUTCOME_POLL_SECONDS = 0.2
+_OUTCOME_CONDITIONS = ("url", "url_changed", "selector", "text", "text_gone")
+# A check that hit one of these may succeed on the next document, so keep polling.
+_OUTCOME_TRANSIENT_CODES = {"navigating", "content_unavailable"}
+# Page actions on one existing tab; the outcome is observed in that tab.
+_OUTCOME_ACTIONS = {
+    "click", "doubleClick", "type", "fill", "setEditableContent", "selectOption", "checkBox",
+    "keypress", "submitForm", "formFill", "hover", "scroll", "drag", "focusElement", "blurElement",
+    "navigate", "goBack", "goForward", "reloadTabBrowser", "clickAndWaitNavigation",
+}
+
+
+def _parse_expect(action, expect):
+    """Validate an `expect` object; return (spec, None) or (None, error message)."""
+    if action not in _OUTCOME_ACTIONS:
+        return None, f"expect is not supported for action: {action}"
+    if not isinstance(expect, dict):
+        return None, "expect must be an object"
+    if "ref" in expect:
+        return None, ("expect.ref is not supported because the post-action snapshot replaces refs; "
+                      "use expect.selector")
+    unknown = set(expect) - {*_OUTCOME_CONDITIONS, "gone", "value", "timeout"}
+    if unknown:
+        return None, "Unknown expect keys: " + ", ".join(sorted(unknown))
+    kinds = [key for key in _OUTCOME_CONDITIONS if expect.get(key) is not None]
+    if len(kinds) != 1:
+        return None, "expect needs exactly one of " + ", ".join(_OUTCOME_CONDITIONS)
+    kind = kinds[0]
+    if kind == "url_changed":
+        if expect[kind] is not True:
+            return None, "expect.url_changed must be true"
+    elif not isinstance(expect[kind], str) or not expect[kind]:
+        return None, f"expect.{kind} must be a non-empty string"
+    gone, value = expect.get("gone", False), expect.get("value")
+    if not isinstance(gone, bool):
+        return None, "expect.gone must be a boolean"
+    if (gone or value is not None) and kind != "selector":
+        return None, "expect.gone and expect.value require expect.selector"
+    if gone and value is not None:
+        return None, "expect.gone and expect.value are mutually exclusive"
+    if value is not None and not isinstance(value, str):
+        return None, "expect.value must be a string"
+    timeout = expect.get("timeout", OUTCOME_TIMEOUT_MS)
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) \
+            or not math.isfinite(timeout) or timeout <= 0:
+        return None, "expect.timeout must be positive milliseconds"
+    spec = {kind: expect[kind], "timeout": timeout}
+    if gone:
+        spec["gone"] = True
+    if value is not None:
+        spec["value"] = value
+    return spec, None
+
+
+def _outcome_budget_seconds(spec):
+    """Time to allow beyond dispatch: the bounded wait plus the tab reads around it."""
+    return spec["timeout"] / 1000 + 45
+
+
+async def _tab_state(tab_id):
+    """Current url/title of a tab, for outcome checks and failure state."""
+    tabs = await send_to_extension("getTabs", {}, timeout=10)
+    if not isinstance(tabs, dict) or tabs.get("error"):
+        return {"tabId": tab_id}
+    tab = next((t for t in tabs.get("tabs", []) if t.get("id") == tab_id), None)
+    if tab is None:
+        return {"tabId": tab_id, "closed": True}
+    return {"tabId": tab_id, "url": tab.get("url"), "title": tab.get("title")}
+
+
+async def _check_outcome(spec, tab_id, before_url, remaining_ms):
+    """One observation bounded by remaining_ms; returns (met, observed, final)."""
+    wait_s = remaining_ms / 1000 + 5
+    waited = True  # a wait that ends unmet has used up the remaining time
+    if "url" in spec or "url_changed" in spec:
+        # Tab metadata survives document replacement, unlike content-script reads.
+        pattern = spec.get("url") or "^(?!%s$)" % _re.escape(before_url or "")
+        r = await send_to_extension("waitForUrl", {"tabId": tab_id, "pattern": pattern,
+                                                  "timeout": remaining_ms}, timeout=wait_s)
+        observed = {"source": "tab", "url": r.get("url")}
+        met = r.get("ok") is True
+    elif "text" in spec or "text_gone" in spec:
+        r = await send_to_extension("waitForText", {"tabId": tab_id, "text": spec.get("text"),
+                                                   "text_gone": spec.get("text_gone"),
+                                                   "timeout": remaining_ms}, timeout=wait_s)
+        met = r.get("ok") is True
+        observed = {"source": "page", "textVisible": met if "text" in spec else not met}
+    elif "value" in spec:
+        waited = False
+        r = await send_to_extension("query", {"tabId": tab_id, "selector": spec["selector"],
+                                             "fields": ["value"], "limit": 1}, timeout=10)
+        item = (r.get("items") or [None])[0]
+        if item is None:
+            observed, met = {"source": "page", "found": False}, False
+        elif item.get("redacted"):
+            # Sensitive values are never read back, so this outcome cannot be verified.
+            return False, {"source": "page", "found": True, "redacted": True,
+                           "hasValue": item.get("hasValue")}, True
+        else:
+            observed = {"source": "page", "found": True, "value": item.get("value")}
+            met = item.get("value") == spec["value"]
+    else:
+        # A 1 ms waitForElement is a single visibility check; otherwise wait for it to appear.
+        waited = not spec.get("gone")
+        check_ms = max(1, remaining_ms) if waited else 1
+        r = await send_to_extension("waitForElement", {"tabId": tab_id, "selector": spec["selector"],
+                                                      "timeout": check_ms, "pollInterval": 100},
+                                    timeout=check_ms / 1000 + 5)
+        visible = r.get("found") is True
+        observed = {"source": "page", "visible": visible}
+        met = r.get("found") is False if spec.get("gone") else visible
+    # Waits report a timeout as ok:false with an error; anything else failed to observe.
+    if r.get("error") and r.get("ok") is not False:
+        observed = {"source": observed["source"], "error": r["error"],
+                    **({"code": r["code"]} if r.get("code") else {})}
+        return False, observed, r.get("code") not in _OUTCOME_TRANSIENT_CODES
+    return met, observed, waited
+
+
+async def _observe_outcome(spec, tab_id, before_url, snapshot):
+    """Poll until the expected outcome is observed or spec['timeout'] ms pass."""
+    start = time.monotonic()
+    # Reuse the post-action snapshot: text already in it needs no further read.
+    if "text" in spec and isinstance(snapshot, str) and spec["text"] in snapshot:
+        return {"met": True, "observed": {"source": "snapshot", "textVisible": True}, "elapsed": 0}
+    deadline = start + spec["timeout"] / 1000
+    while True:
+        remaining_ms = max(0, math.ceil((deadline - time.monotonic()) * 1000))
+        met, observed, final = await _check_outcome(spec, tab_id, before_url, remaining_ms)
+        if met or final or time.monotonic() >= deadline:
+            break
+        await asyncio.sleep(min(OUTCOME_POLL_SECONDS, max(0, deadline - time.monotonic())))
+    return {"met": met, "observed": observed, "elapsed": int((time.monotonic() - start) * 1000)}
+
+
+async def _send_with_expectation(action, params, spec, timeout=30):
+    """Dispatch an action, then report whether the caller's expected outcome was observed."""
+    params = dict(params)
+    tab_id = params.get("tabId")
+    if tab_id is None:
+        # getZoom resolves a missing tabId exactly like the action will (the current
+        # window's active tab), so dispatch and observation target the same tab.
+        active = await send_to_extension("getZoom", {}, timeout=10)
+        if not isinstance(active, dict) or active.get("error"):
+            return active
+        tab_id = params["tabId"] = active["tabId"]
+    before_url = None
+    if "url_changed" in spec:
+        before_url = (await _tab_state(tab_id)).get("url")
+        if before_url is None:
+            return {"error": f"Cannot read the URL of tab {tab_id} before dispatch"}
+    result = await send_to_extension(action, params, timeout=timeout)
+    if not isinstance(result, dict) or result.get("error") or result.get("ok") is False:
+        return result
+    outcome = await _observe_outcome(spec, tab_id, before_url, result.get("snapshot"))
+    expected = dict(spec)
+    if outcome["observed"].get("redacted"):
+        expected.pop("value")  # never echo a value meant for a sensitive field
+    result["dispatched"] = True
+    result["outcome"] = {"expected": expected, **outcome}
+    if outcome["met"]:
+        return result
+    state = await _tab_state(tab_id)
+    result["outcome"]["state"] = state
+    result.update(_action_error(
+        f"Expected outcome not observed within {spec['timeout']}ms", "outcome_not_observed",
+        retryable=_safe_to_repeat(action),
+        hint="The command was dispatched but the expected outcome did not happen; inspect the page "
+             "with browser_snapshot before acting again.",
+        **state,
+    ))
+    result["ok"] = False
+    return result
+
+
 # ══════════════════════════════════════════════
 #  2.1.0 — File upload (browser_upload_file)
 # ══════════════════════════════════════════════
@@ -1350,6 +1530,11 @@ async def run_command(cmd):
 
         # Simple forwarding actions (the majority)
         if action in BATCH_ACTION_MAP:
+            if 'expect' in params:
+                spec, problem = _parse_expect(effective_action, params.pop('expect'))
+                if problem:
+                    return {'error': problem}
+                return await _send_with_expectation(effective_action, params, spec)
             if effective_action in ('waitForUrl', 'waitForTitle'):
                 timeout_s = params.get('timeout', 10000) / 1000 + 5
                 return await send_to_extension(effective_action, params, timeout=timeout_s)
@@ -1834,6 +2019,12 @@ class BridgeHandler(BaseHTTPRequestHandler):
         if policy_err:
             self.send_json(403, policy_err)
             return
+        spec = None
+        if 'expect' in body:
+            spec, problem = _parse_expect(action, body['expect'])
+            if problem:
+                self.send_json(200, {"error": problem})
+                return
         _invalidate_cache_for_action(action)
         t0 = time.time()
         try:
@@ -1841,7 +2032,12 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 timeout = body.get('timeout', 10000) / 1000 + 5
             elif action == 'newTab' and body.get('wait'):
                 timeout = body.get('timeout', 15000) / 1000 + 5
-            result = self.run_async(send_to_extension(action, body, timeout=timeout), timeout=timeout + 5)
+            if spec is None:
+                result = self.run_async(send_to_extension(action, body, timeout=timeout), timeout=timeout + 5)
+            else:
+                params = {k: v for k, v in body.items() if k != 'expect'}
+                result = self.run_async(_send_with_expectation(action, params, spec, timeout=timeout),
+                                        timeout=timeout + _outcome_budget_seconds(spec))
         except Exception as e:
             result = {"error": str(e)}
         _audit(
