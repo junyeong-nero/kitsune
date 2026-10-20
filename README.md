@@ -26,9 +26,9 @@ extensions stay in place. No Playwright, Chromium, or WebDriver required.
 
 1. **Connect once.** Install [uv](https://docs.astral.sh/uv/getting-started/installation/),
    then follow the [MCP setup](#mcp-setup) for your agent below.
-   [Load the browser extension](https://github.com/junyeong-nero/kitsune/blob/main/docs/installation.md#2-install-the-browser-extension)
-   in Firefox, Zen, or LibreWolf. The extension is currently a temporary add-on;
-   load it again after each browser restart.
+   [Install the browser extension](https://github.com/junyeong-nero/kitsune/blob/main/docs/installation.md#2-install-the-browser-extension)
+   in Firefox, Zen, or LibreWolf: the signed build installs once, while the
+   developer build (needed for `browser_js`) is a temporary add-on.
 2. **Keep your browser open.** Kitsune starts its shared bridge automatically.
    Ask your agent to check the connection before your first task.
 3. **Ask in plain language.** For example:

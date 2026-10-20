@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 dist/
 web-ext-artifacts/
+build/
+*.xpi
+kitsune-extension-*.zip

@@ -480,6 +480,9 @@ def browser_find(query: str, tab_id: int | None = None) -> dict:
 def browser_js(code: str, tab_id: int | None = None, full: bool = False) -> dict:
     """Execute JavaScript in the current page context.
 
+    Needs the developer extension build; the signed build returns an error
+    (browser_status reports extension_build).
+
     Args:
         code: JavaScript code to run (e.g. "document.title" or "document.querySelectorAll('a').length")
         tab_id: Optional tab to target. Defaults to active tab.
@@ -543,7 +546,7 @@ def browser_wait_for(
     selector/ref waits for a visible element (ref takes precedence if both are
     supplied); text/text_gone match visible page text
     (literal substring); js waits for a non-empty expression result (including
-    false/0, matching the bridge semantics). url/title are JavaScript regex
+    false/0, matching the bridge semantics; developer extension build only). url/title are JavaScript regex
     patterns checked via tab metadata, so they survive document navigation.
     Other conditions run in the current document and should be started after
     navigation. Mixed conditions are rejected; wait for URL/title first, then
@@ -1341,6 +1344,7 @@ def browser_sync_barrier(
     """Block until a JS predicate returns truthy on every listed tab.
 
     Replaces hand-rolled "wait for everything to be ready" loops.
+    Needs the developer extension build.
 
     Args:
         tab_ids: Tabs to monitor.

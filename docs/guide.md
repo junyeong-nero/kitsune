@@ -110,13 +110,13 @@ Setup has two separate parts: registering the server with your agent, and
 installing the extension in your browser.
 
 1. **Register the MCP server** in your agent. See [MCP clients](#mcp-clients).
-2. **Load the extension**: download and unzip `kitsune-extension-<version>.zip`
-   from [GitHub Releases](https://github.com/junyeong-nero/kitsune/releases),
-   open `about:debugging#/runtime/this-firefox` → **Load Temporary Add-on…** →
-   pick its `manifest.json` (in the macOS file dialog, Cmd+Shift+G lets you
-   paste the path).
-   Temporary add-ons disappear when the browser restarts; a signed XPI is
-   planned (see [Installation](installation.md#planned-distribution)).
+2. **Install the extension** for the same version as the server, from
+   [GitHub Releases](https://github.com/junyeong-nero/kitsune/releases): the
+   signed `kitsune-<version>.xpi` via `about:addons` → gear → **Install Add-on
+   From File…** (persistent), or the developer build as a temporary add-on via
+   `about:debugging#/runtime/this-firefox` → **Load Temporary Add-on…**. Only the
+   developer build runs agent-supplied JavaScript (`browser_js`). See
+   [Installation](installation.md#2-install-the-browser-extension).
 3. **Check**: restart the agent and ask it to call `browser_status`. It should
    report `"extension_connected": true`.
 
@@ -170,9 +170,10 @@ not permission to take additional actions; see [Security](#security).
    Plain `kitsune-bridge` (or `kitsune-bridge start`) still runs the daemon
    in the foreground. `status` and `stop` never start a daemon. All commands use
    the same `KITSUNE_HOME`, token, and port environment settings as the server.
-3. Download the extension zip for the same version as the server, then reload the
-   extension in `about:debugging#/runtime/this-firefox` (click **Reload** on
-   Kitsune, or load the updated `extension/manifest.json` again). A bridge
+3. Install the extension for the same version as the server: the new signed XPI
+   from `about:addons` → gear → **Install Add-on From File…**, or, for the
+   developer build, reload it in `about:debugging#/runtime/this-firefox` (click
+   **Reload** on Kitsune, or load the updated `manifest.json` again). A bridge
    restart reconnects the extension but does **not** reload its browser-side code;
    reload it explicitly after extension updates, and reload existing tabs if
    their content scripts are still outdated.
@@ -319,7 +320,8 @@ screenshots, and tool logs as potentially sensitive.
 
 | Symptom | Check |
 |---|---|
-| `extension_connected: false` | Extension loaded? Browser restarted (temporary add-on gone)? |
+| `extension_connected: false` | Extension installed and enabled? Developer build: browser restarted (temporary add-on gone)? |
+| "needs the Kitsune developer extension build" | The signed build cannot run agent-supplied JavaScript; load the developer build |
 | `Kitsune bridge did not start` | `~/.kitsune/bridge.log`; another process on port 47651/47652 (`lsof -nP -iTCP:47651`) |
 | `401 Missing or invalid token` | `KITSUNE_TOKEN` set in the client but not in the daemon (or the other way round) |
 | `Cannot access browser internal page` | `about:` pages are off-limits to extensions; switch to a normal tab |

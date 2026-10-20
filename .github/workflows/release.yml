@@ -1,6 +1,7 @@
 # Publishes kitsune-browser-mcp with PyPI Trusted Publishing (no API tokens).
-# - Push a tag `vX.Y.Z` matching pyproject.toml's version: test, build, publish
-#   to PyPI, and create a GitHub release with the dist files and extension zip.
+# - Push a tag `vX.Y.Z` matching pyproject.toml's version: test, build, sign the
+#   extension on AMO (unlisted), publish to PyPI, and create a GitHub release with
+#   the dist files, the signed XPI, and the developer-build zip.
 # - Run manually (workflow_dispatch) to publish the current ref to TestPyPI.
 # See docs/releasing.md.
 name: Release
@@ -39,10 +40,16 @@ jobs:
           uv build
           uvx twine check dist/*
 
-      - name: Package extension
+      - name: Build extension variants
         run: |
           version=$(uv run --no-project python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
-          (cd extension && zip -qr "../kitsune-extension-$version.zip" .)
+          uv run --no-project python scripts/build_extension.py signed --out build/extension-signed
+          uv run --no-project python scripts/build_extension.py dev --out build/extension-dev \
+            --zip "kitsune-extension-dev-$version.zip"
+
+      # AMO runs the same validator; keep the signed build free of warnings.
+      - name: Lint signed extension
+        run: npx --yes web-ext@10 lint --source-dir build/extension-signed --warnings-as-errors
 
       - uses: actions/upload-artifact@v4
         with:
@@ -50,8 +57,38 @@ jobs:
           path: dist/
       - uses: actions/upload-artifact@v4
         with:
-          name: extension
-          path: kitsune-extension-*.zip
+          name: extension-dev
+          path: kitsune-extension-dev-*.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: extension-signed-source
+          path: build/extension-signed/
+
+  sign-extension:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    environment: amo
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: extension-signed-source
+          path: extension-signed/
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Sign on AMO (unlisted)
+        env:
+          WEB_EXT_API_KEY: ${{ secrets.AMO_JWT_ISSUER }}
+          WEB_EXT_API_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+        run: |
+          npx --yes web-ext@10 sign --channel unlisted --source-dir extension-signed \
+            --artifacts-dir signed --approval-timeout 1800000
+          mv signed/*.xpi "kitsune-${GITHUB_REF_NAME#v}.xpi"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: extension-xpi
+          path: kitsune-*.xpi
 
   testpypi:
     if: github.event_name == 'workflow_dispatch'
@@ -70,7 +107,7 @@ jobs:
 
   pypi:
     if: github.ref_type == 'tag'
-    needs: build
+    needs: [build, sign-extension]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
@@ -92,6 +129,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
+          pattern: "{dist,extension-dev,extension-xpi}"
           path: artifacts/
           merge-multiple: true
       - env:

@@ -28,11 +28,20 @@ API token is stored in the repository or in GitHub secrets.
 3. **GitHub environments.** In the repository, open *Settings → Environments*
    and create `pypi` (and `testpypi`). Adding yourself as a required reviewer on
    `pypi` makes every publish wait for your approval.
+4. **AMO signing credentials.** Sign in to <https://addons.mozilla.org>, open
+   [API credentials](https://addons.mozilla.org/developers/addon/api/key/), and
+   generate a JWT issuer and secret. In the repository, create a GitHub
+   environment named `amo` and add them as environment secrets
+   `AMO_JWT_ISSUER` and `AMO_JWT_SECRET`. Never commit them, post them in issues,
+   or paste them into chats; regenerate them on AMO if they leak. The first
+   signed upload creates the add-on (ID `kitsune@junyeong-nero.github.io`) as
+   self-distributed (unlisted) on your AMO account.
 
 ## Releasing a version
 
-1. Bump `version` in `pyproject.toml`, run `uv lock`, and merge the change to
-   `main`.
+1. Bump `version` in `pyproject.toml` **and** `extension/manifest.json` (a test
+   checks they match), run `uv lock`, and merge the change to `main`. AMO accepts
+   each extension version only once, so a failed signing also needs a new version.
 2. Optional dry run: build and check locally.
    ```bash
    rm -rf dist && uv build && uvx twine check dist/*
@@ -52,8 +61,18 @@ API token is stored in the repository or in GitHub secrets.
    git push origin v<version>
    ```
    The workflow checks that the tag matches `pyproject.toml`, runs the Python and
-   Node tests, builds the wheel and sdist, publishes them to PyPI, and creates a
-   GitHub release with the dist files and `kitsune-extension-<version>.zip`.
+   Node tests, builds the wheel and sdist, and builds both extension variants
+   (`scripts/build_extension.py`). The signed variant must pass `web-ext lint`
+   with no warnings. It is then signed on AMO (unlisted, `amo` environment). Only
+   after signing succeeds does the workflow publish to PyPI and create a GitHub
+   release with the dist files, `kitsune-<version>.xpi` (signed), and
+   `kitsune-extension-dev-<version>.zip` (developer build).
+
+   Automated signing usually takes minutes; the job waits up to 30 minutes. If
+   AMO selects the version for manual review and the job times out, nothing is
+   published. Once AMO approves it, download the signed XPI from the
+   [Developer Hub](https://addons.mozilla.org/developers/addons), then run the
+   remaining jobs manually or attach the XPI to the release yourself.
 5. Verify:
    ```bash
    uvx --refresh --from kitsune-browser-mcp==<version> kitsune-bridge status
@@ -66,8 +85,20 @@ is broken, yank it on PyPI and release a new patch version.
 
 - **Wheel:** `src/kitsune` only (server, bridge, bundled workflows). The browser
   extension is not part of the Python package; users get it from the GitHub
-  release zip or the repository at the same tag.
+  release (signed XPI or developer zip) or the repository at the same tag.
 - **sdist:** `src/kitsune`, `tests`, `README.md`, `LICENSE`, and `pyproject.toml`.
 
 The README is also the PyPI project description, so it uses absolute GitHub URLs
 for links and images.
+
+## Extension builds
+
+`extension/` is the developer build as-is. `scripts/build_extension.py signed`
+removes every `// @kitsune-dev-only:start` … `// @kitsune-dev-only:end` region,
+sets `KITSUNE_BUILD` to `'signed'`, stamps the manifest version, and fails if any
+`eval`, `new Function`, `executeScript({ code })`, `innerHTML`/`outerHTML`
+assignment, `insertAdjacentHTML`, `document.write`, or string timer remains.
+Mozilla's add-on policy forbids executing code that is not in the package, and
+self-distributed add-ons can be reviewed and blocked at any time. Keep new
+features that run agent-supplied code inside dev-only regions, and implement
+fixed page operations as named `content.js` handlers instead of code strings.
