@@ -368,7 +368,7 @@ dependencies = [
 requires-dist = [
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "mcp", extras = ["cli"], specifier = ">=1.2.0,<2" },
-    { name = "websockets", specifier = ">=12" },
+    { name = "websockets", specifier = ">=14.2" },
 ]
 
 [[package]]
