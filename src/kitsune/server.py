@@ -4,6 +4,7 @@ Exposes the Kitsune browser extension (Firefox, Zen and other Gecko browsers)
 as MCP tools. Starts the shared bridge daemon on demand.
 """
 
+import functools
 import json
 import math
 import os
@@ -15,7 +16,7 @@ from typing import Literal
 
 import httpx
 from mcp.server.fastmcp import FastMCP, Image
-from mcp.types import ToolAnnotations
+from mcp.types import CallToolResult, TextContent, ToolAnnotations
 
 from . import bridge_control
 from .bridge_control import BRIDGE, LOG_FILE, headers as _headers
@@ -41,14 +42,39 @@ if _unknown_caps:
     raise ValueError(f"Unknown KITSUNE_CAPS: {', '.join(sorted(_unknown_caps))}")
 
 
+def _failed(result) -> bool:
+    """Whether a tool's own result reports failure: a non-empty top-level error or ok=false.
+
+    Warnings accompany successes, and batch/parallel/broadcast/workflow results report
+    per-command outcomes that may include completed writes, so neither marks the call failed.
+    """
+    return isinstance(result, dict) and (bool(result.get("error")) or result.get("ok") is False)
+
+
+def _mcp_errors(function):
+    """Return failed results as MCP errors (isError) with the same JSON text content."""
+    @functools.wraps(function)
+    def call(*args, **kwargs):
+        result = function(*args, **kwargs)
+        if not _failed(result):
+            return result
+        text = json.dumps(result, indent=2, ensure_ascii=False, default=str)
+        return CallToolResult(content=[TextContent(type="text", text=text)], isError=True)
+
+    return call
+
+
 def tool(group: str, annotations: ToolAnnotations | None = None):
-    """Register a tool only when its capability group is enabled at startup."""
+    """Register a tool only when its capability group is enabled at startup.
+
+    Only the MCP registration marks failures as errors; Python callers get the plain result.
+    """
     if group not in CAPABILITY_GROUPS:
         raise ValueError(f"Unknown tool capability group: {group}")
 
     def decorate(function):
         if "all" in ENABLED_CAPS or group in ENABLED_CAPS:
-            return mcp.tool(annotations=annotations)(function)
+            mcp.tool(annotations=annotations)(_mcp_errors(function))
         return function
 
     return decorate
@@ -276,9 +302,15 @@ def browser_snapshot(
 ) -> dict:
     """Get a compact accessibility-style text tree and fresh element refs.
 
-    Prefer these refs for actions. Each snapshot (including post-action snapshots)
-    or browser_dom rebuild invalidates earlier refs in that tab. Repeated composite
-    siblings show the first five items; post-action snapshots also keep the target.
+    Prefer these refs for actions. Refs belong to one document in one tab. Each
+    snapshot, browser_dom, and the post-action snapshot of a successful click,
+    type/fill, select_option, check, keypress, submit_form or navigate replaces
+    earlier refs in that tab; navigation invalidates them too. browser_find,
+    browser_forms and wait_for(selector) add refs without replacing any. After an
+    action, use its snapshot refs and target_ref (the acted-on element). On
+    stale_ref, take a new snapshot; never repeat a write just to refresh refs.
+    Repeated composite siblings show the first five items; post-action snapshots
+    also keep the target.
 
     Args:
         tab_id: Optional tab to target. Defaults to active tab.
@@ -353,6 +385,8 @@ def browser_screenshot(
 def browser_navigate(url: str, tab_id: int | None = None, raw: bool = False) -> dict:
     """Navigate the active tab to a URL.
 
+    Success returns a fresh snapshot whose refs replace earlier ones (see browser_snapshot).
+
     Args:
         url: The URL to navigate to (e.g. "https://example.com")
         tab_id: Optional tab to navigate. Defaults to active tab.
@@ -375,6 +409,8 @@ def browser_click(
     """Prefer ref from browser_snapshot; element is an audit-only description.
 
     Click an element on the page by CSS selector or coordinates.
+    Success returns a fresh snapshot whose refs replace earlier ones; target_ref is the
+    clicked element's new ref (see browser_snapshot).
 
     Args:
         selector: CSS selector to click (e.g. "#submit", ".btn-primary")
@@ -425,6 +461,8 @@ def browser_type(
     """Prefer ref from browser_snapshot; element is an audit-only description.
 
     Enter text using typing events, direct field fill, or a contenteditable editor.
+    type/fill success returns a fresh snapshot whose refs replace earlier ones;
+    target_ref is the field's new ref (see browser_snapshot).
 
     type: type text, optionally clearing first.
     fill: replace the field value using native setters and input/change events;
@@ -889,7 +927,8 @@ def browser_select_option(
     """Prefer ref from browser_snapshot; element is an audit-only description.
 
     Choose an <option> in a <select>. Default matches by value; pass
-    `by_text=True` to match by visible text."""
+    `by_text=True` to match by visible text. Success returns a fresh snapshot whose
+    refs replace earlier ones; target_ref is the select's new ref."""
     return _post("/api/select-option", _with_tab(_target({"selector": selector, "value": value, "byText": by_text}, ref, element), tab_id))
 
 
@@ -899,7 +938,8 @@ def browser_check(
 ) -> dict:
     """Prefer ref from browser_snapshot; element is an audit-only description.
 
-    Set a checkbox or radio's checked state."""
+    Set a checkbox or radio's checked state. Success returns a fresh snapshot whose
+    refs replace earlier ones; target_ref is the control's new ref."""
     return _post("/api/check", _with_tab(_target({"selector": selector, "checked": checked}, ref, element), tab_id))
 
 
@@ -939,7 +979,8 @@ def browser_keypress(
 
     Dispatch a synthetic keyboard event. Use modifiers like
     `{"ctrl": True, "shift": True}`. Pass `text` to also insert characters
-    into editable targets.
+    into editable targets. Success returns a fresh snapshot whose refs replace
+    earlier ones; target_ref is the target's new ref.
 
     Args:
         key: Key name, e.g. "Enter", "Tab", "Escape", "ArrowDown", "a".
@@ -971,7 +1012,9 @@ def browser_submit_form(
     """Prefer ref from browser_snapshot; element is an audit-only description.
 
     Submit the target form (or the target element's enclosing form).
-    Without selector/ref, submit the first <form> found.
+    Without selector/ref, submit the first <form> found. Success returns a fresh
+    snapshot whose refs replace earlier ones. On a failure with retryable=false,
+    inspect the page before submitting again.
     """
     body = {}
     if selector: body["selector"] = selector
@@ -1563,7 +1606,9 @@ def browser_batch(commands: list[dict]) -> dict:
 
     Each command is a dict with "action" and parameters. Add "tabId" to any
     command to target a specific tab instead of the active one. For true
-    concurrency across tabs, prefer browser_parallel.
+    concurrency across tabs, prefer browser_parallel. A failed command does not
+    make the call an MCP error: inspect each result and resume from the failed
+    command, because earlier commands may already have taken effect.
 
     Available actions: navigate, newTab, closeTab, switchTab, click, type,
     setEditableContent, fill, scroll, hover, find, js, pageInfo, pageText, screenshot, tabs,
