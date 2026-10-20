@@ -40,42 +40,65 @@ back to a scrollable container at viewport center. HTML, bounds, computed-style,
 and click-and-wait-navigation require a selector or ref for a successful action.
 See `browser_wait_for` below for its element condition.
 
-### Password redaction
+### Sensitive-field redaction
 
-Structural read tools never return the value (or its length) of an
-`<input type="password">`. `browser_snapshot` omits the `value=` state;
-`browser_forms`, `browser_dom`, and `browser_query`'s `value` field replace
-`value` with `"redacted": true` and `"hasValue": <bool>`. Tag, type, name, id,
-label, selector, and ref are kept, so the field remains interactable.
-`browser_find` does not match queries against password values. There is no
-opt-in to reveal them through these tools.
+Structural read tools never return the value (or its length) of a sensitive
+field. A field is sensitive if it is:
+
+- an `<input type="password">`;
+- an input whose `autocomplete` contains `current-password`, `new-password`,
+  `one-time-code`, `cc-number` or `cc-csc`;
+- a `text`, `search`, `tel` or `number` input whose name, id, placeholder or
+  `aria-label` contains a secret word such as password, passcode, pin, otp,
+  cvv/cvc/csc, security code, verification code or card number (so a password
+  field whose show/hide toggle switched it to `type=text` stays redacted), or an
+  `inputmode="numeric"` input named like a code or digit box (zip/postal codes
+  excepted);
+- an input masked with `-webkit-text-security`;
+- an input the browser or password manager has autofilled (`:autofill`), until
+  the autofill state is cleared;
+- a custom element (e.g. a web-component text field) or other element with a
+  `value` property that either has `type="password"` or a sensitive
+  `autocomplete`, or whose shadow root contains a sensitive field. Closed shadow roots are
+  checked too, through Firefox's `openOrClosedShadowRoot`.
+
+`browser_snapshot` omits the `value=` state; `browser_forms`, `browser_dom`, and
+`browser_query`'s `value` field replace `value` with `"redacted": true` and
+`"hasValue": <bool>`. Tag, type, name, id, label, selector, and ref are kept, so
+the field remains interactable. `browser_find` does not match queries against
+sensitive values. Results and errors of write actions on sensitive fields
+(`browser_type`, `browser_form_fill`, …) do not echo the typed value. There is
+no opt-in to reveal values through these tools.
 
 Frameworks such as React mirror a typed value into the `value` attribute, so
-markup and attribute paths drop that attribute from password inputs, whether it
+markup and attribute paths drop that attribute from sensitive fields, whether it
 was server-rendered or synced: `browser_html` and `browser_query` `html` omit it
-from every password input in the returned markup, and `browser_query` `attrs` or
-a field named `value` in any letter case never return it. Other inputs keep
+from every sensitive field in the returned markup, and `browser_query` `attrs` or
+a field named `value` in any letter case never return it. Other elements keep
 their `value` attribute. The page DOM is not modified.
 
-While any password input on the page carries a `value` attribute, every tool
+While any sensitive field on the page carries a `value` attribute, every tool
 that takes a selector (`browser_query`, `browser_explain_selector`,
 `browser_html`, `browser_click`, `browser_wait_for`, `browser_form_fill` keys,
 …) refuses selectors that test the `value` attribute, because
 `input[type=password][value^="K"]`, or a combinator or `:has()` form of it,
 would reveal the value one character at a time through found/not-found
 results. These tools return the error `value-attribute selectors are
-disabled while a password field has a value attribute`; `browser_find` instead
+disabled while a sensitive field has a value attribute`; `browser_find` instead
 skips its CSS branch and falls back to text search. A selector counts as testing
 `value` if it contains `[value` (any case, optionally with a namespace prefix
 such as `[*|value`), or if it contains `[` together with a backslash escape or
 a `/*` comment.
+
+These rules are heuristics: a field that is masked some other way (canvas,
+custom fonts) or named without a recognizable word is not detected.
 
 `browser_js`, the `js` condition of `browser_wait_for`, `browser_sync_barrier`,
 and `format="html"` need the developer extension build; the signed build returns
 an error with `"devBuildRequired": true`.
 
 This is not a sandbox: `browser_js` runs arbitrary page JavaScript and can read
-any value the page can, including password fields. Treat access to `browser_js`
+any value the page can, including sensitive fields. Treat access to `browser_js`
 as a separate, unrestricted trust boundary.
 
 ### `browser_tabs(action="list", tab_id=None, url=None, force=False, raw=False, wait=False, timeout=15000)`
@@ -256,11 +279,11 @@ Accessibility tree (depth=6).
 ```json
 { "tree": { "ref": "r0", "tag": "body", "children": [...] } }
 ```
-Password inputs report `redacted`/`hasValue` instead of `value`.
+Sensitive fields report `redacted`/`hasValue` instead of `value`.
 
 ### GET /api/forms
-All form fields on the page. Password fields have `redacted`/`hasValue`
-instead of `value` (see [Password redaction](#password-redaction)).
+All form fields on the page. Sensitive fields have `redacted`/`hasValue`
+instead of `value` (see [Sensitive-field redaction](#sensitive-field-redaction)).
 ```json
 { "fields": [{ "ref": "s1e0", "tag": "input", "type": "password", "name": "password", "id": "password", "placeholder": "", "redacted": true, "hasValue": true, "label": "Password", "required": false, "selector": "#password", "bounds": [...] }] }
 ```

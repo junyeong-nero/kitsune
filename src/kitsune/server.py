@@ -235,7 +235,7 @@ def browser_page_text(tab_id: int | None = None) -> dict:
 def browser_forms(tab_id: int | None = None) -> dict:
     """Get all form fields on the current page with their labels and values.
 
-    Password values are redacted (`redacted`/`hasValue` replace `value`).
+    Password and other sensitive values are redacted (`redacted`/`hasValue` replace `value`).
 
     Args:
         tab_id: Optional tab to target. Defaults to active tab.
