@@ -17,7 +17,8 @@ For single-element tools, prefer `ref` from `browser_snapshot` over a CSS
 `selector`. When both are supplied, `ref` takes precedence, as for `browser_click`.
 `element` is an audit-only human description, never a selector or fallback target.
 A stale/disconnected ref returns a `stale_ref` error (see [Action errors](#action-errors));
-take another snapshot to refresh it.
+take another snapshot to refresh it. See [Ref lifetime](#ref-lifetime) for which
+calls replace refs.
 Existing positional selector arguments remain supported.
 
 These tools also accept refs (all new parameters are optional):
@@ -41,11 +42,55 @@ back to a scrollable container at viewport center. HTML, bounds, computed-style,
 and click-and-wait-navigation require a selector or ref for a successful action.
 See `browser_wait_for` below for its element condition.
 
+### Ref lifetime
+
+A ref names one element in one document of one tab, for one ref generation.
+Use refs only from the latest observation of that tab.
+
+| Call | Effect on refs in that tab |
+|---|---|
+| `browser_snapshot` (also scoped), `browser_dom` | Starts a new generation: earlier refs fail as `stale_ref`/`snapshot_replaced`. A `ref` argument to `browser_snapshot` is resolved first |
+| Successful `browser_click`, `browser_type` (`type`/`fill`), `browser_select_option`, `browser_check`, `browser_keypress`, `browser_submit_form`, `browser_navigate` | Their post-action `snapshot` starts a new generation, like `browser_snapshot` |
+| Navigation, reload, or back/forward to another document | Earlier refs fail as `stale_ref`/`other_document` |
+| `browser_find`, `browser_forms`, `browser_wait_for(selector/ref)` | Add refs to the current generation; earlier refs stay valid |
+| Failed actions, other reads, `browser_hover`, `browser_scroll`, `browser_type(mode="editable")` and other actions without a post-action snapshot | No change, unless the page itself removes the element (`element_removed`) |
+
+Snapshots in one tab do not affect refs in another tab. Pass `tab_id` when more
+than one tab is in use: a ref sent to the wrong tab fails as `other_document` and
+never acts on another element.
+
+After an action, use the refs in its `snapshot`. `target_ref` is the new ref of
+the acted-on element (absent for `browser_navigate`, or when that element is gone),
+so a follow-up such as `browser_keypress(key="Enter", ref=target_ref)` needs no
+extra snapshot. Only emitted lines carry usable refs: when `snapshot_truncated`
+is set and the element you need is missing, or when `snapshot_error` replaces the
+snapshot, call `browser_snapshot` before using any ref. With the post-action
+snapshot disabled (`KITSUNE_POST_ACTION_SNAPSHOT=0`, or `includeSnapshot: false`
+in a batch), actions leave refs unchanged.
+
+Recovering without repeating a consequential action:
+
+- `stale_ref` and `not_found` fail before anything is dispatched to the page.
+  Take a new `browser_snapshot` of the same `tab_id`, find the element again,
+  and retry with its new ref. Do not fall back to another element by its
+  `element` description.
+- To get fresh refs after a successful write, use its `snapshot`/`target_ref` or
+  call `browser_snapshot`. Never repeat the write.
+- After a failure with `retryable: false` (a write whose outcome is unknown),
+  observe first (`browser_snapshot`, `browser_page_info`, `browser_wait_for`) and
+  act again only if the page shows the effect did not happen.
+- In a batch, earlier commands may already have run. Resume from the failed
+  command instead of re-running the whole batch.
+
+Refs are not stable across snapshots: an unchanged element gets a new ref in
+each generation.
+
 ### Action errors
 
 Failures keep the human-readable `error` string (its text is unchanged) and, when
 classified, add machine-readable fields. Errors that are not yet classified have
-only `error`. The MCP transport is unchanged: errors are still returned as tool results.
+only `error`. MCP tools return these failures with `isError: true` (see
+[MCP error results](#mcp-error-results)).
 
 ```json
 { "error": "Element not found", "code": "navigating", "retryable": true,
@@ -101,6 +146,36 @@ the success result adds a warning. With `stopOnWarning`, a batch stops there.
 ```
 
 Zero-size and transparent targets count as rendered. Covering overlays are not detected.
+
+### MCP error results
+
+An MCP tool call returns `isError: true` when the tool's own top-level result
+reports a failure: a non-empty `error`, or `ok: false`. The content is the same
+JSON text as before, so `error`, `code`, `retryable`, `hint`, `state`, and any other
+fields (`timedOut`, `tabId`, …) are kept. This covers bridge and extension errors
+(`stale_ref`, `not_found`, `extension_disconnected`, `bridge_unavailable`, …),
+argument errors reported by the MCP server, `ok: false` results such as
+`browser_navigate` or `browser_tabs(action="new", wait=True)` load timeouts (the
+tab stays open), and a `browser_retry` that gave up. Errors raised by FastMCP
+itself, such as invalid arguments, were already `isError`.
+
+These results are not errors:
+
+- A success with a `warning` (for example `hidden_or_covered`): the action was
+  dispatched.
+- Results nested inside a successful result, such as
+  `browser_click_and_wait_navigation`'s `navigation: {ok: false, timedOut: true}`
+  after `clicked: true`.
+- Container results: `browser_batch`, `browser_parallel`, `browser_broadcast`, and
+  `browser_workflow` report each command's outcome in `results`. A failed command
+  there does not make the call an error, because commands before it may already
+  have taken effect and must not be re-sent blindly. Inspect each entry. The
+  container call itself is an error only when it fails as a whole (for example
+  `bridge_unavailable`).
+- Reads that describe state, such as `browser_status` with
+  `extension_connected: false`.
+
+HTTP bridge endpoints are unchanged; this applies only to MCP tool results.
 
 ### Sensitive-field redaction
 
@@ -590,7 +665,9 @@ Set TTL: `{ "action": "ttl", "seconds": 10 }`
 ## Error Handling
 
 All endpoints return `{ "error": "message" }` on failure; classified failures add
-`code`, `retryable`, `hint`, and `state` (see [Action errors](#action-errors)). Common errors:
+`code`, `retryable`, `hint`, and `state` (see [Action errors](#action-errors)). The
+matching MCP tools mark these results `isError: true` (see
+[MCP error results](#mcp-error-results)). Common errors:
 - `"Kitsune extension not connected. Open Firefox or Zen and make sure the Kitsune extension is loaded."` (`extension_disconnected`) — extension not loaded or browser closed
 - `"Extension disconnected"` (`extension_disconnected`) — extension dropped mid-command (fails fast, no timeout wait)
 - `"Command timed out after Ns"` (`timeout`) — extension didn't respond in time
