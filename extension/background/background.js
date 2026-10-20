@@ -3,7 +3,7 @@
 
 'use strict';
 
-const EXPECTED_CONTENT_VERSION = 23;
+const EXPECTED_CONTENT_VERSION = 24;
 const WS_URL = 'ws://127.0.0.1:47652';
 // scripts/build_extension.py sets 'signed' for the AMO build (see content.js).
 const KITSUNE_BUILD = 'dev';
@@ -237,6 +237,7 @@ async function dispatchCommand(command) {
     case 'clearBrowsingData':return await clearBrowsingData(params.types, params.since);
     case 'intercept':        return await interceptOp(params.op, params.patterns, params.effect);
     case 'clickAndWaitNavigation': return await clickAndWaitNavigation(params.tabId, params.selector, params.timeout);
+    case 'describeTarget':   return await describeTarget(params);
 
     // Content script commands (forwarded to active tab)
     case 'handleDialog': {
@@ -1090,6 +1091,19 @@ function removeInterceptListener() {
     browser.webRequest.onBeforeRequest.removeListener(interceptListener);
     __intercept.listening = false;
   } catch {}
+}
+
+// ── Ask-before-act (bridge policy) ──
+// Read-only: the tab a command would target and, with inspect, whether acting on its
+// target element can submit a form. The bridge holds the command when it cannot tell.
+async function describeTarget(params) {
+  const tabId = params.tabId ?? await getActiveTabId();
+  if (tabId == null) return { error: 'No active tab found' };
+  const state = await tabState(tabId);
+  if (!state) return tabError(`Tab ${tabId} no longer exists`, 'tab_closed', { tabId });
+  if (!params.inspect) return { tabId, url: state.url };
+  const target = await forwardToContent('describeTarget', { ...params, tabId });
+  return target.error ? target : { tabId, url: state.url, target };
 }
 
 // ── Click and wait for navigation ──

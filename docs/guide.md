@@ -251,7 +251,9 @@ Every tool includes MCP annotations with a human-readable title and read-only,
 destructive, idempotent, and open-world hints. Clients can use these hints to
 inform permission prompts; enforcement depends on the client. Tools combining
 read and write operations are annotated for their most dangerous operation,
-including when called in a read mode.
+including when called in a read mode. The hints are not enforced policy. The bridge
+enforces only `browser_set_policy` (`readonly`, `allow`/`deny`, and
+[ask-before-act](api-reference.md#ask-before-act)).
 
 Screenshots return MCP image content by default. Large previews are JPEG-encoded
 and downscaled to fit under roughly 1 MB; pass `save_to="/path/capture.png"` to
@@ -290,6 +292,7 @@ Matching is case-sensitive substring matching.
 | `KITSUNE_TOKEN` | — | Override the token in `~/.kitsune/token` |
 | `KITSUNE_NO_BRIDGE_RESTART` | Unset | Set to `1` in the MCP server environment to skip automatic replacement of an outdated bridge |
 | `KITSUNE_BRIDGE_IDLE_TIMEOUT` | `0` (never) | Seconds without client activity before the bridge exits; see [Idle shutdown](#idle-shutdown-opt-in) |
+| `KITSUNE_ASK_BEFORE_ACT` | Unset | Set to `1` in the MCP server environment to start the bridge with [ask-before-act](#ask-before-act) locked on |
 | `KITSUNE_POST_ACTION_SNAPSHOT` | Enabled | Set to `0` in the bridge daemon environment and restart it to disable automatic post-action snapshots |
 
 `~/.kitsune/` holds:
@@ -330,6 +333,8 @@ What it does not protect against:
   the agent or its logs.
 - **Authenticated actions.** Existing sessions let the agent act as you on
   accessible sites. MCP annotations are client hints, not an approval system.
+  Ask-before-act (below) requires an explicit second step, but it is not human
+  approval either.
 
 Kitsune does not provide a password-vault listing tool. Native password-manager
 autofill is browser-controlled; whether an autofilled value is accessible depends
@@ -340,6 +345,36 @@ Recommended: use a separate browser profile that only has the accounts the
 agent needs, and keep banking, mail and work SSO out of it. Enable only the
 capability groups you need, review the agent's actions, and treat saved sessions,
 screenshots, and tool logs as potentially sensitive.
+
+### Ask-before-act
+
+Ask-before-act is an opt-in policy. In this mode the bridge does not run form
+submits, submit-button clicks, Enter in form fields, `browser_js` and other agent
+JavaScript, cookie and session access, navigation to payment-like URLs, or page
+actions on such pages. Each such call returns a `confirmation_required` error. The
+error describes the pending action and carries a single-use token that expires in
+120 seconds and is bound to that exact action, its parameters, and its tab. After
+asking you, the agent repeats the identical call with `confirm_token`. Batch, retry,
+parallel, broadcast, and workflow commands never accept a token. Details are in the
+[API reference](api-reference.md#ask-before-act).
+
+There are two ways to turn it on:
+
+- `browser_set_policy(ask=True)`: the agent can also turn this off again, so it
+  only guards against accidents.
+- Locked: set `KITSUNE_ASK_BEFORE_ACT=1` in the MCP server environment, or run
+  `kitsune-bridge start --ask-before-act`. The policy can then only be tightened
+  until the bridge stops. A bridge that is already running keeps its policy, so
+  run `kitsune-bridge stop` after changing the setting.
+
+```toml
+[mcp_servers.kitsune.env]
+KITSUNE_ASK_BEFORE_ACT = "1"
+```
+
+The token goes back to the agent, so it proves an explicit second step, not that
+you approved. For real approval, also have your MCP client prompt you before tool
+calls, or at least before calls that carry `confirm_token`.
 
 ## Troubleshooting
 
