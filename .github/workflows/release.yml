@@ -1,7 +1,7 @@
 # Publishes kitsune-browser-mcp with PyPI Trusted Publishing (no API tokens).
 # - Push a tag `vX.Y.Z` matching pyproject.toml's version: test, build, sign the
 #   extension on AMO (unlisted), publish to PyPI, and create a GitHub release with
-#   the dist files, the signed XPI, and the developer-build zip.
+#   the dist files, the signed XPI, its updates.json, and the developer-build zip.
 # - Run manually (workflow_dispatch) to publish the current ref to TestPyPI.
 # See docs/releasing.md.
 name: Release
@@ -47,9 +47,10 @@ jobs:
           uv run --no-project python scripts/build_extension.py dev --out build/extension-dev \
             --zip "kitsune-extension-dev-$version.zip"
 
-      # AMO runs the same validator; keep the signed build free of warnings.
+      # AMO runs the same validator (--self-hosted for unlisted uploads, which allows
+      # update_url); keep the signed build free of warnings.
       - name: Lint signed extension
-        run: npx --yes web-ext@10 lint --source-dir build/extension-signed --warnings-as-errors
+        run: npx --yes web-ext@10 lint --self-hosted --source-dir build/extension-signed --warnings-as-errors
 
       - uses: actions/upload-artifact@v4
         with:
@@ -127,11 +128,16 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           pattern: "{dist,extension-dev,extension-xpi}"
           path: artifacts/
           merge-multiple: true
+      # Signed installs fetch releases/latest/download/updates.json, so this release
+      # must be marked latest. It is created only after the PyPI publish succeeds.
+      - name: Generate update manifest
+        run: python3 scripts/update_manifest.py "artifacts/kitsune-${GITHUB_REF_NAME#v}.xpi" --out artifacts/updates.json
       - env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" artifacts/* --repo "$GITHUB_REPOSITORY" --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" artifacts/* --repo "$GITHUB_REPOSITORY" --generate-notes --latest

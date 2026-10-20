@@ -62,17 +62,22 @@ API token is stored in the repository or in GitHub secrets.
    ```
    The workflow checks that the tag matches `pyproject.toml`, runs the Python and
    Node tests, builds the wheel and sdist, and builds both extension variants
-   (`scripts/build_extension.py`). The signed variant must pass `web-ext lint`
-   with no warnings. It is then signed on AMO (unlisted, `amo` environment). Only
-   after signing succeeds does the workflow publish to PyPI and create a GitHub
-   release with the dist files, `kitsune-<version>.xpi` (signed), and
+   (`scripts/build_extension.py`). The signed variant must pass
+   `web-ext lint --self-hosted` with no warnings. It is then signed on AMO
+   (unlisted, `amo` environment). Only after signing succeeds does the workflow
+   publish to PyPI and create a GitHub release, marked as latest, with the dist
+   files, `kitsune-<version>.xpi` (signed), `updates.json` (see
+   [Extension updates](#extension-updates)), and
    `kitsune-extension-dev-<version>.zip` (developer build).
 
    Automated signing usually takes minutes; the job waits up to 30 minutes. If
    AMO selects the version for manual review and the job times out, nothing is
    published. Once AMO approves it, download the signed XPI from the
    [Developer Hub](https://addons.mozilla.org/developers/addons), then run the
-   remaining jobs manually or attach the XPI to the release yourself.
+   remaining jobs manually or attach the XPI to the release yourself. In that
+   case, rename it to `kitsune-<version>.xpi`, run
+   `python3 scripts/update_manifest.py kitsune-<version>.xpi`, and attach the
+   resulting `updates.json` too.
 5. Verify:
    ```bash
    uvx --refresh --from kitsune-browser-mcp==<version> kitsune-bridge status
@@ -80,6 +85,33 @@ API token is stored in the repository or in GitHub secrets.
 
 PyPI does not allow re-uploading a version, even after deleting it. If a release
 is broken, yank it on PyPI and release a new patch version.
+
+## Extension updates
+
+The signed build's manifest sets `browser_specific_settings.gecko.update_url` to
+`https://github.com/junyeong-nero/kitsune/releases/latest/download/updates.json`.
+The `github-release` job writes that file with `scripts/update_manifest.py`: one
+entry for the release's version, the download link of its
+`kitsune-<version>.xpi`, the XPI's SHA-256 hash, and the manifest's
+`strict_min_version`
+([update manifest format](https://extensionworkshop.com/documentation/manage/updating-your-extension/)).
+Installed copies check about once a day and update when the listed version is
+newer than theirs.
+
+- The URL follows GitHub's **latest** release. The workflow marks each new
+  release as latest; any release marked latest by hand must also carry an
+  `updates.json`, or update checks fail until the next release.
+- The job runs only after the PyPI publish succeeds, so the extension update is
+  never offered before the matching server can be installed.
+- The update URL is read from the installed version. Moving `updates.json`
+  elsewhere would require one release that points at the new URL first.
+
+To withdraw a release's extension update, delete `updates.json` from that release
+on GitHub (or replace it with the previous release's file). This stops further
+updates; copies that already updated keep that version, because Firefox never
+downgrades through an update manifest. Keep the XPI asset while `updates.json`
+links to it. To fix the copies that already updated, release a new patch
+version.
 
 ## What is in the package
 
@@ -95,7 +127,9 @@ for links and images.
 
 `extension/` is the developer build as-is. `scripts/build_extension.py signed`
 removes every `// @kitsune-dev-only:start` … `// @kitsune-dev-only:end` region,
-sets `KITSUNE_BUILD` to `'signed'`, stamps the manifest version, and fails if any
+sets `KITSUNE_BUILD` to `'signed'`, stamps the manifest version, adds the
+`update_url` (lint it with `--self-hosted`, as AMO does for unlisted uploads,
+because `update_url` is otherwise an error), and fails if any
 `eval`, `new Function`, `executeScript({ code })`, `innerHTML`/`outerHTML`
 assignment, `insertAdjacentHTML`, `document.write`, or string timer remains.
 Mozilla's add-on policy forbids executing code that is not in the package, and

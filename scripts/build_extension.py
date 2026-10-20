@@ -7,6 +7,7 @@ signed: the AMO (Mozilla-signed) build. Every `// @kitsune-dev-only:start` ...
         `// @kitsune-dev-only:end` region is removed and KITSUNE_BUILD becomes
         'signed', because Mozilla's add-on policy forbids executing code that is
         not part of the package. The build fails if code execution remains.
+        It also gets gecko.update_url so installed copies update from releases.
 dev:    the full extension (browser_js etc.), loaded as a temporary add-on.
 
 Both stamp manifest.json with the pyproject version so extension and server match.
@@ -28,6 +29,8 @@ SOURCE = ROOT / "extension"
 START, END = "@kitsune-dev-only:start", "@kitsune-dev-only:end"
 BUILD_LINE = "const KITSUNE_BUILD = 'dev';"
 BUILD_FILES = ("content/content.js", "background/background.js")
+# Update manifest (scripts/update_manifest.py) attached to every GitHub release.
+UPDATE_URL = "https://github.com/junyeong-nero/kitsune/releases/latest/download/updates.json"
 # Code execution or HTML injection that must not ship in the signed build.
 FORBIDDEN = {
     "eval": re.compile(r"\beval\s*\("),
@@ -88,6 +91,8 @@ def build(variant: str, out: Path, version: str) -> Path:
     manifest_path = out / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["version"] = version
+    if variant == "signed":
+        manifest["browser_specific_settings"]["gecko"]["update_url"] = UPDATE_URL
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
     for path in sorted(out.rglob("*.js")):

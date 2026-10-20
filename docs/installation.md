@@ -15,6 +15,7 @@ to that daemon by itself once both are installed.
 - [2. Install the browser extension](#2-install-the-browser-extension)
 - [Pinning a version](#pinning-a-version)
 - [Upgrading](#upgrading)
+- [Automatic extension updates](#automatic-extension-updates)
 - [Extension and server compatibility](#extension-and-server-compatibility)
 - [Troubleshooting](#troubleshooting)
 - [Development setup from a checkout](#development-setup-from-a-checkout)
@@ -179,6 +180,9 @@ build below.
 4. Restart or reconnect your MCP client and ask it to call `browser_status`. It
    should report `"extension_connected": true` and `"extension_build": "signed"`.
 
+Signed builds released after 0.2.0 update themselves (see
+[Automatic extension updates](#automatic-extension-updates)).
+
 ### Developer build
 
 Use this for `browser_js`, or to run an unreleased commit.
@@ -241,12 +245,33 @@ After the server is upgraded, the next MCP connection detects that the running
 bridge has a different `build` and replaces it automatically. This briefly
 interrupts all clients sharing that bridge; set `KITSUNE_NO_BRIDGE_RESTART=1` in
 the MCP server environment to opt out. Then update the extension to the same
-version: install the new release's XPI the same way as the first time (signed
-build; it replaces the old version and keeps no separate copy), or load the new
-developer build and click **Reload** on Kitsune in `about:debugging`. The signed
-build does not update itself yet. A bridge restart does not reload the extension's
-code. Reload open tabs if their content scripts are still outdated. See [Updating Kitsune](guide.md#updating-kitsune) for
+version: the signed build updates itself (see
+[Automatic extension updates](#automatic-extension-updates)); for 0.2.0, or to
+update right away, install the new release's XPI the same way as the first time
+(it replaces the old version and keeps no separate copy). For the developer
+build, load the new release and click **Reload** on Kitsune in `about:debugging`.
+A bridge restart does not reload the extension's code. Reload open tabs if their
+content scripts are still outdated. See [Updating Kitsune](guide.md#updating-kitsune) for
 bridge lifecycle details.
+
+## Automatic extension updates
+
+The signed build checks
+`https://github.com/junyeong-nero/kitsune/releases/latest/download/updates.json`
+and installs the signed XPI of the latest release. This works from the release
+after 0.2.0 on: the 0.2.0 XPI has no update URL, so install the next release's
+XPI once by hand (see [Signed build](#signed-build-recommended)); later releases
+then arrive automatically. The developer build never updates itself.
+
+- The browser checks about once a day. To check now, open `about:addons`, click
+  the gear icon, and choose **Check for Updates**. Updates can be turned off per
+  add-on on Kitsune's page in `about:addons` (**Allow automatic updates**).
+- A release's `updates.json` is published only after its server is on PyPI, but
+  uvx keeps using its cached server (see [Upgrading](#upgrading)). Until you
+  refresh it, the extension can be newer than the server; `browser_status` then
+  reports an `extension_version` that differs from `bridge_version`.
+- If you pin an older server version, turn off automatic updates for Kitsune and
+  install the matching XPI from that release.
 
 ## Extension and server compatibility
 
@@ -266,7 +291,8 @@ bridge lifecycle details.
   environments and manage the bridge with `kitsune-bridge stop`.
 - `browser_status` also reports the connected extension's `extension_version`
   and `extension_build`. If `extension_version` differs from `bridge_version`,
-  install the matching extension.
+  upgrade the server (the signed extension updates itself, so it is usually the
+  newer one) or install the matching extension.
 - Browsers: Gecko 142+ (Firefox 142+, Zen 1.23+, LibreWolf). Firefox release
   and beta builds install only signed extensions, which is why the developer build
   is a temporary add-on.
