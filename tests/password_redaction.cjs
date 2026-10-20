@@ -28,9 +28,8 @@ class Element {
       children.map(child => child.cloneNode(true))), props);
   }
   querySelectorAll(selector) {
-    assert.equal(selector, 'input');
-    return this.children.flatMap(child =>
-      [...(child.tagName === 'INPUT' ? [child] : []), ...child.querySelectorAll(selector)]);
+    assert.equal(selector, '*');
+    return this.children.flatMap(child => [child, ...child.querySelectorAll(selector)]);
   }
   closest() { return null; }
   focus() { this.focused = true; }
@@ -72,6 +71,7 @@ class Element {
       },
       querySelectorAll: selector => {
         if (selector === 'input' || selector === 'input, select, textarea') return inputs;
+        if (selector === '[value]') return inputs.filter(input => input.hasAttribute('value'));
         if (selector in valueSelectorTargets) return valueSelectorTargets[selector];
         if (selector === 'form') return [form];
         return selector.startsWith('a, button, input') ? [...inputs, button] : [];

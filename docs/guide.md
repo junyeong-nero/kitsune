@@ -301,11 +301,13 @@ What it does not protect against:
 - **Sensitive page data.** A connected agent can read page content and execute
   JavaScript in pages. Structural read tools (`browser_snapshot`, `browser_forms`,
   `browser_dom`, `browser_query`, `browser_html`, `browser_find`) redact
-  `type=password` values, and selectors that probe a password's `value`
-  attribute are refused; see [Password redaction](api-reference.md#password-redaction).
-  This is not a sandbox: `browser_js` can read anything the page can, and
-  masked fields that are not `type=password` (or sit inside shadow DOM) are not
-  redacted. Do not assume a visually masked field is hidden from the agent or its logs.
+  password, one-time-code, card-number/CSC, secret-named, CSS-masked and
+  autofilled fields, including web-component fields with a shadow root, and
+  selectors that probe a sensitive field's `value` attribute are refused; see
+  [Sensitive-field redaction](api-reference.md#sensitive-field-redaction).
+  This is not a sandbox: `browser_js` can read anything the page can, and the
+  detection is heuristic. Do not assume a visually masked field is hidden from
+  the agent or its logs.
 - **Authenticated actions.** Existing sessions let the agent act as you on
   accessible sites. MCP annotations are client hints, not an approval system.
 
@@ -331,7 +333,7 @@ screenshots, and tool logs as potentially sensitive.
 | `stale ref, call browser_snapshot again` | Take a fresh snapshot of the same `tab_id` and use its new refs |
 | Bridge updated but browser behavior is unchanged | Reload the extension, then reload affected pages so their content scripts update too |
 | Restart the daemon | Run `kitsune-bridge stop` with the same source as your clients (`uvx --from git+…` or `uv run` in a checkout); the next tool call starts it again. This briefly affects all clients sharing it |
-| `value-attribute selectors are disabled …` | A password field on the page has a `value` attribute; target it by ref, label, or a selector that does not test `value` |
+| `value-attribute selectors are disabled …` | A sensitive field on the page has a `value` attribute; target it by ref, label, or a selector that does not test `value` |
 | Setup, uv, or upgrade problems | See [Installation troubleshooting](installation.md#troubleshooting) |
 
 ## Development

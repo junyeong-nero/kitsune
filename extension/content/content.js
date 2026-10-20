@@ -668,7 +668,7 @@
       [el.alt, 3],
       [el.id, 3],
       [el.name, 2],
-      // Matching on a password would let queries probe its value.
+      // Matching on a sensitive value would let queries probe it.
       [isSensitiveField(el) ? '' : el.value, 2],
     ];
     for (const [val, weight] of fields) {
@@ -1342,10 +1342,63 @@
     return map[el.tagName] || '';
   }
 
-  // Structural reads never return password values or lengths; browser_js is a
+  // Structural reads never return sensitive values or lengths; browser_js is a
   // separate, unrestricted trust boundary.
+  const SENSITIVE_AUTOCOMPLETE = new Set(['current-password', 'new-password', 'one-time-code',
+    'cc-number', 'cc-csc']);
+  const TEXT_ENTRY_TYPES = new Set(['text', 'search', 'tel', 'number']);
+  // Matched against whole words of name/id/placeholder/aria-label, so a password
+  // field whose show/hide toggle switched it to type=text stays redacted.
+  const SECRET_NAME = /(?:^| )(?:pass(?:word|wd|code)?|pwd|secret|otp|totp|mfa|2fa|pin|cvv|cvc|csc|one time|two factor|security code|verification code|card number|cc num(?:ber)?|api key)(?: |$)/;
+  const NUMERIC_CODE_NAME = /(?:^| )(?:code|digit)(?: |$)/;
+  const ADDRESS_CODE_NAME = /(?:^| )(?:zip|postal)(?: |$)/;
+  const AUTOFILL_SELECTORS = [':autofill', ':-webkit-autofill', ':-moz-autofill'];
+  const TEXT_SECURITY_MASKS = new Set(['disc', 'circle', 'square']);
+
+  function identifierWords(value) {
+    return String(value || '').replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase()
+      .split(/[^a-z0-9]+/).filter(Boolean).join(' ');
+  }
+
+  function hasSensitiveAutocomplete(el) {
+    return String(el.getAttribute('autocomplete') || '').toLowerCase().split(/\s+/)
+      .some(token => SENSITIVE_AUTOCOMPLETE.has(token));
+  }
+
+  function hasSecretName(el) {
+    const names = [el.name, el.id, el.placeholder, el.getAttribute('aria-label')].map(identifierWords);
+    if (names.some(name => SECRET_NAME.test(name))) return true;
+    // Numeric one-time codes, e.g. <input inputmode="numeric" name="code">.
+    return el.getAttribute('inputmode') === 'numeric' &&
+      names.some(name => NUMERIC_CODE_NAME.test(name)) && !names.some(name => ADDRESS_CODE_NAME.test(name));
+  }
+
+  // Password-manager autofill; unsupported pseudo-classes throw and are skipped.
+  function isAutofilled(el) {
+    return AUTOFILL_SELECTORS.some(selector => {
+      try { return el.matches(selector); } catch { return false; }
+    });
+  }
+
+  function isMasked(el) {
+    const style = window.getComputedStyle(el);
+    const security = style.webkitTextSecurity || style.getPropertyValue?.('-webkit-text-security');
+    return TEXT_SECURITY_MASKS.has(security);
+  }
+
   function isSensitiveField(el) {
-    return el.tagName === 'INPUT' && el.type === 'password';
+    if (el.tagName === 'INPUT') {
+      return el.type === 'password' || hasSensitiveAutocomplete(el) ||
+        (TEXT_ENTRY_TYPES.has(el.type) && hasSecretName(el)) || isAutofilled(el) || isMasked(el);
+    }
+    // Custom controls such as <x-input type="password"> expose their inner input's
+    // value as a property (and sometimes a reflected attribute) on the host.
+    // Xray wrappers hide page-defined properties, so custom element names count too.
+    if (!el.tagName.includes('-') && !('value' in el)) return false;
+    if (String(el.getAttribute('type')).toLowerCase() === 'password' || hasSensitiveAutocomplete(el)) return true;
+    // Firefox content scripts can also see closed roots through openOrClosedShadowRoot.
+    const root = el.openOrClosedShadowRoot || el.shadowRoot;
+    return !!root && Array.from(root.querySelectorAll('*')).some(isSensitiveField);
   }
 
   function redactedValue(el) {
@@ -1353,17 +1406,22 @@
   }
 
   // Frameworks such as React mirror the live value into the `value` attribute,
-  // so markup is serialized from a clone with password value attributes removed.
+  // so markup is serialized from a clone with sensitive value attributes removed.
+  // Sensitivity is decided on the live elements (autofill, styles, shadow roots);
+  // a clone that does not mirror the original tree loses every value attribute.
   function redactMarkup(el, outer) {
     const clone = el.cloneNode(true);
-    if (isSensitiveField(clone)) clone.removeAttribute('value');
-    for (const input of clone.querySelectorAll('input')) {
-      if (isSensitiveField(input)) input.removeAttribute('value');
-    }
+    const originals = [el, ...el.querySelectorAll('*')];
+    const copies = [clone, ...clone.querySelectorAll('*')];
+    const aligned = copies.length === originals.length &&
+      copies.every((copy, i) => copy.tagName === originals[i].tagName);
+    copies.forEach((copy, i) => {
+      if (!aligned || isSensitiveField(originals[i])) copy.removeAttribute('value');
+    });
     return (outer ? clone.outerHTML : clone.innerHTML) || '';
   }
 
-  // A `[value^="K"]` selector would let callers guess a password value attribute
+  // A `[value^="K"]` selector would let callers guess a sensitive value attribute
   // character by character, including through combinators and :has(). Escapes
   // and comments inside a selector with attribute blocks can spell `value`, so
   // they are treated the same way.
@@ -1375,13 +1433,13 @@
 
   function valueSelectorBlocked(selector) {
     if (!isValueAttributeSelector(selector)) return false;
-    for (const input of document.querySelectorAll('input')) {
-      if (isSensitiveField(input) && input.hasAttribute('value')) return true;
+    for (const el of document.querySelectorAll('[value]')) {
+      if (isSensitiveField(el)) return true;
     }
     return false;
   }
 
-  const VALUE_SELECTOR_ERROR = 'value-attribute selectors are disabled while a password field has a value attribute';
+  const VALUE_SELECTOR_ERROR = 'value-attribute selectors are disabled while a sensitive field has a value attribute';
 
   function directText(el) {
     let t = '';
