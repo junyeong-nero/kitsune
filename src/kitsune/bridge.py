@@ -1176,6 +1176,9 @@ async def run_command(cmd):
             if effective_action in ('waitForUrl', 'waitForTitle'):
                 timeout_s = params.get('timeout', 10000) / 1000 + 5
                 return await send_to_extension(effective_action, params, timeout=timeout_s)
+            if effective_action == 'newTab' and params.get('wait'):
+                timeout_s = params.get('timeout', 15000) / 1000 + 5
+                return await send_to_extension(effective_action, params, timeout=timeout_s)
             return await send_to_extension(effective_action, params)
 
         # Actions with custom logic
@@ -1540,14 +1543,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.send_json(200, result)
 
     def handle_tabs(self):
-        key = _cache_key("getTabs", {})
-        cached = _cache_get(key)
-        if cached:
-            self.send_json(200, {**cached, "_cached": True})
-            return
+        # Tabs change through async navigation and outside the bridge; never cache the inventory.
         result = self.run_async(send_to_extension("getTabs"))
-        if "error" not in result:
-            _cache_set(key, result)
         self.send_json(200, result)
 
     def handle_dom(self):
@@ -1606,6 +1603,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
         try:
             if action in ('waitForUrl', 'waitForTitle'):
                 timeout = body.get('timeout', 10000) / 1000 + 5
+            elif action == 'newTab' and body.get('wait'):
+                timeout = body.get('timeout', 15000) / 1000 + 5
             result = self.run_async(send_to_extension(action, body, timeout=timeout), timeout=timeout + 5)
         except Exception as e:
             result = {"error": str(e)}

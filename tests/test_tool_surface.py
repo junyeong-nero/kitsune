@@ -81,6 +81,12 @@ class ToolSurfaceTests(unittest.TestCase):
             post.assert_called_with("/api/new-tab", {"url": "about:blank", "raw": True})
             server.browser_tabs("new", url="https://example.com")
             post.assert_called_with("/api/new-tab", {"url": "https://example.com"})
+            server.browser_tabs("new", url="https://example.com", wait=True, timeout=30000)
+            post.assert_called_with("/api/new-tab", {"url": "https://example.com", "wait": True,
+                                                      "timeout": 30000}, timeout=40)
+            post.reset_mock()
+            self.assertIn("error", server.browser_tabs("new", wait=True, timeout=0))
+            post.assert_not_called()
             server.browser_tabs("close", tab_id=7, force=True)
             post.assert_called_with("/api/close-tab", {"tabId": 7, "force": True})
             server.browser_tabs("select", tab_id=7)

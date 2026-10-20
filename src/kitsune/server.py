@@ -172,11 +172,15 @@ def browser_status() -> dict:
 def browser_tabs(
     action: Literal["list", "new", "close", "select"] = "list",
     tab_id: int | None = None, url: str | None = None,
-    force: bool = False, raw: bool = False,
+    force: bool = False, raw: bool = False, wait: bool = False, timeout: int = 15000,
 ) -> dict:
     """List, open, close, or select tabs.
 
-    new: url defaults to about:blank; raw bypasses the image viewer.
+    list: always a fresh read of the browser's tabs.
+    new: url defaults to about:blank; raw bypasses the image viewer. Returns tabId
+    immediately unless wait=True, which waits up to timeout ms for the page to load
+    and returns tabId, actual url (after redirects) and status. On timeout the tab
+    stays open and the result has ok=false, timedOut=true.
     close/select: tab_id is required. force disarms beforeunload on close.
     Other action-specific options are ignored.
     """
@@ -186,7 +190,12 @@ def browser_tabs(
         body = {"url": url if url is not None else "about:blank"}
         if raw:
             body["raw"] = True
-        return _post("/api/new-tab", body)
+        if not wait:
+            return _post("/api/new-tab", body)
+        if timeout <= 0:
+            return {"error": "timeout must be positive"}
+        return _post("/api/new-tab", {**body, "wait": True, "timeout": timeout},
+                     timeout=timeout / 1000 + 10)
     if action in {"close", "select"}:
         if tab_id is None:
             return {"error": f"tab_id is required for action={action}"}
@@ -1549,6 +1558,8 @@ def browser_batch(commands: list[dict]) -> dict:
         if cmd.get("action") in ("waitForElement", "waitForUrl", "waitForTitle"):
             ms = cmd.get("timeout", 10000)
             max_timeout = max(max_timeout, (ms / 1000) + 10)
+        elif cmd.get("action") == "newTab" and cmd.get("wait"):
+            max_timeout = max(max_timeout, (cmd.get("timeout", 15000) / 1000) + 10)
     return _post("/api/batch", {"commands": commands}, timeout=max_timeout)
 
 

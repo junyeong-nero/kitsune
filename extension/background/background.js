@@ -208,7 +208,7 @@ async function dispatchCommand(command) {
     case 'waitForTitle': return await waitForTabProperty('title', params);
     case 'navigate':     return await navigateTab(params.url, params.tabId, params.expectTitle);
     case 'switchTab':    return await switchTab(params.tabId);
-    case 'newTab':       return await createTab(params.url);
+    case 'newTab':       return await createTab(params.url, params);
     case 'closeTab':     return await closeTab(params.tabId);
     case 'wakeTab':      return await wakeTab(params.tabId);
     case 'reloadExtension': return reloadExtensionAction();
@@ -492,10 +492,21 @@ async function switchTab(tabId) {
   }
 }
 
-async function createTab(url) {
+// Immediate by default. With wait, resolves once the tab loads (or the timeout passes, leaving
+// the tab open) and reports the actual URL, so redirects are visible.
+async function createTab(url, { wait = false, timeout = 15000 } = {}) {
   try {
-    const tab = await browser.tabs.create({ url: url || 'about:blank' });
-    return { ok: true, tabId: tab.id };
+    const target = url || 'about:blank';
+    const tab = await browser.tabs.create({ url: target });
+    if (!wait) return { ok: true, tabId: tab.id };
+    // A new tab has no previous document, so any non-about: 'complete' is the destination.
+    const loaded = target.startsWith('about:')
+      || await waitForTabLoad(tab.id, () => {}, { reload: true, timeout });
+    const current = await browser.tabs.get(tab.id);
+    return {
+      ok: loaded, ...(loaded ? {} : { timedOut: true }),
+      tabId: tab.id, url: current.url, status: current.status,
+    };
   } catch (e) {
     return { error: e.message };
   }
