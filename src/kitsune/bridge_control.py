@@ -54,6 +54,18 @@ def lifecycle_lock():
         yield
 
 
+def try_lifecycle_lock():
+    """Non-blocking lifecycle_lock for the daemon; close the returned file to release it."""
+    os.makedirs(DATA_DIR, mode=0o700, exist_ok=True)
+    lock = os.fdopen(os.open(LOCK_FILE, os.O_RDWR | os.O_CREAT, 0o600), "r+")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock.close()
+        return None
+    return lock
+
+
 def _locked_pid() -> int | None:
     """Only trust the PID while a daemon holds the pid-file lock.
 

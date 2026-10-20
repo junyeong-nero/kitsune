@@ -191,6 +191,25 @@ manual stop of the specific old bridge process**. Kitsune reports this instead
 of guessing a PID or launching another daemon over it. After that, automatic
 replacement and `kitsune-bridge stop` work normally.
 
+### Idle shutdown (opt-in)
+
+By default the shared bridge keeps running until it is stopped. To have it exit
+when no client has used it for a while, set `KITSUNE_BRIDGE_IDLE_TIMEOUT` (in
+seconds) in the **MCP server's environment**, or run the daemon yourself with
+`kitsune-bridge start --idle-timeout SECONDS`. `0` (the default) disables it.
+
+- Every HTTP call to the bridge counts as activity; MCP servers make one per tool
+  call. The extension's WebSocket connection does not count.
+- The timer only runs while nothing is in flight: no HTTP request, no command
+  waiting on the extension, and no `browser_keep_alive` loop. Call
+  `browser_keep_alive_stop` when you no longer need one, or the bridge never
+  goes idle.
+- The next tool call from any client starts a fresh bridge automatically.
+  While an idle bridge is exiting, a client that needs one waits for it to finish
+  instead of racing it.
+- The bridge is shared, so the first MCP server that starts it decides the
+  timeout; the setting in other clients takes effect the next time they start it.
+
 ## Tools
 
 By default, Kitsune registers 30 `browser_*` tools in the `core` capability
@@ -270,6 +289,7 @@ Matching is case-sensitive substring matching.
 | `KITSUNE_WS_PORT` | `47652` | Extension WebSocket. Change `WS_URL` in `extension/background/background.js` too |
 | `KITSUNE_TOKEN` | — | Override the token in `~/.kitsune/token` |
 | `KITSUNE_NO_BRIDGE_RESTART` | Unset | Set to `1` in the MCP server environment to skip automatic replacement of an outdated bridge |
+| `KITSUNE_BRIDGE_IDLE_TIMEOUT` | `0` (never) | Seconds without client activity before the bridge exits; see [Idle shutdown](#idle-shutdown-opt-in) |
 | `KITSUNE_POST_ACTION_SNAPSHOT` | Enabled | Set to `0` in the bridge daemon environment and restart it to disable automatic post-action snapshots |
 
 `~/.kitsune/` holds:

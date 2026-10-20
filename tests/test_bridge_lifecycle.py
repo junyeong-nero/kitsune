@@ -218,7 +218,7 @@ class BridgeCliAndStatusTests(unittest.TestCase):
             with patch.object(loop, "add_signal_handler"), patch.object(loop, "remove_signal_handler"), \
                     patch.object(bridge.asyncio, "Event", return_value=event), \
                     patch.object(bridge, "ws_serve", new=AsyncMock(return_value=websocket_server)), \
-                    patch.object(bridge, "ThreadingHTTPServer", return_value=http_server), \
+                    patch.object(bridge, "BridgeHTTPServer", return_value=http_server), \
                     patch.object(bridge, "Thread"), patch("builtins.print"), \
                     patch.object(bridge.asyncio, "to_thread", new=AsyncMock()) as to_thread:
                 await bridge.main()
@@ -261,6 +261,168 @@ class BridgeCliAndStatusTests(unittest.TestCase):
         self.assertIn("extension_connected", data)
         with patch.object(server, "_get", return_value=data):
             self.assertEqual(server.browser_status()["build"], server.BRIDGE_BUILD)
+
+
+class BridgeIdleShutdownTests(unittest.TestCase):
+    """Opt-in idle shutdown: configuration, activity accounting and the watcher."""
+
+    def setUp(self):
+        self.activity = bridge._ClientActivity()
+        for name, value in (("_client_activity", self.activity), ("_idle_shutdown_lock", None),
+                            ("IDLE_POLL_SECONDS", 0.01), ("pending_commands", {}), ("_keep_alive_tasks", {})):
+            patcher = patch.object(bridge, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.lock = Mock(name="lifecycle-lock")
+        try_lock = patch.object(control, "try_lifecycle_lock", return_value=self.lock)
+        self.try_lock = try_lock.start()
+        self.addCleanup(try_lock.stop)
+
+    def watch(self, idle_timeout, during=None, run_for=1.0):
+        """Run the watcher; return seconds until shutdown, or None if it never fired."""
+        async def exercise():
+            bridge.shutdown_event = asyncio.Event()
+            self.activity.touch()
+            watcher = asyncio.create_task(bridge._idle_shutdown_watch(idle_timeout))
+            started = asyncio.get_running_loop().time()
+            if during is not None:
+                await during()
+            try:
+                await asyncio.wait_for(bridge.shutdown_event.wait(), run_for)
+            except asyncio.TimeoutError:
+                watcher.cancel()
+                return None
+            await watcher
+            return asyncio.get_running_loop().time() - started
+        with patch.object(bridge, "shutdown_event", None), patch("builtins.print"):
+            return asyncio.run(exercise())
+
+    def test_idle_timeout_is_disabled_by_default_and_configurable(self):
+        cases = [([], {}, 0), ([], {bridge.IDLE_TIMEOUT_ENV: ""}, 0), ([], {bridge.IDLE_TIMEOUT_ENV: "30"}, 30),
+                 (["start", "--idle-timeout", "5"], {bridge.IDLE_TIMEOUT_ENV: "30"}, 5),
+                 (["--idle-timeout", "0"], {bridge.IDLE_TIMEOUT_ENV: "30"}, 0)]
+        for args, env, expected in cases:
+            environ = {k: v for k, v in os.environ.items() if k != bridge.IDLE_TIMEOUT_ENV}
+            with self.subTest(args=args, env=env), patch.dict(os.environ, {**environ, **env}, clear=True), \
+                    patch.object(bridge.os, "open", return_value=42), \
+                    patch.object(bridge.os, "fdopen", mock_open()), patch.object(bridge.fcntl, "flock"), \
+                    patch.object(bridge, "main", new=Mock(return_value="coroutine")) as main, \
+                    patch.object(bridge.asyncio, "run"):
+                bridge.run(args)
+                main.assert_called_once_with(expected)
+
+    def test_invalid_idle_timeout_is_rejected_before_start(self):
+        cases = [(["--idle-timeout", "soon"], {}), (["--idle-timeout", "-1"], {}),
+                 (["--idle-timeout", "inf"], {}), ([], {bridge.IDLE_TIMEOUT_ENV: "nan"}),
+                 (["stop", "--idle-timeout", "5"], {}), (["status", "--idle-timeout", "5"], {})]
+        for args, env in cases:
+            with self.subTest(args=args, env=env), patch.dict(os.environ, env), \
+                    patch.object(bridge.asyncio, "run") as run, patch.object(control, "stop") as stop, \
+                    patch("sys.stderr", new_callable=io.StringIO):
+                with self.assertRaises(SystemExit) as raised:
+                    bridge.run(args)
+                self.assertEqual(raised.exception.code, 2)
+                run.assert_not_called()
+                stop.assert_not_called()
+
+    def test_activity_accounting_tracks_in_flight_and_last_request(self):
+        with patch.object(bridge.time, "monotonic", side_effect=[0, 10, 20, 25, 40, 45]):
+            activity = bridge._ClientActivity()        # t=0
+            activity.begin()                           # t=10
+            activity.begin()                           # t=20: a concurrent client
+            activity.end()                             # t=25
+            self.assertEqual(activity.in_flight(), 1)
+            self.assertEqual(activity.idle_seconds(), 0)  # never idle while one is in flight
+            activity.end()                             # t=40
+            self.assertEqual(activity.in_flight(), 0)
+            self.assertEqual(activity.idle_seconds(), 5)  # t=45, measured from the last request
+
+    def test_http_server_counts_request_until_handler_thread_ends(self):
+        server_ = bridge.BridgeHTTPServer.__new__(bridge.BridgeHTTPServer)
+        with patch.object(bridge.ThreadingHTTPServer, "process_request") as process, \
+                patch.object(bridge.ThreadingHTTPServer, "process_request_thread", side_effect=OSError) as thread:
+            server_.process_request("request", "client")
+            process.assert_called_once_with("request", "client")
+            self.assertEqual(self.activity.in_flight(), 1)
+            with self.assertRaises(OSError):
+                server_.process_request_thread("request", "client")
+            thread.assert_called_once_with("request", "client")
+            self.assertEqual(self.activity.in_flight(), 0)
+        with patch.object(bridge.ThreadingHTTPServer, "process_request", side_effect=RuntimeError):
+            with self.assertRaises(RuntimeError):
+                server_.process_request("request", "client")
+            self.assertEqual(self.activity.in_flight(), 0)
+
+    def test_idle_shutdown_fires_and_holds_lifecycle_lock(self):
+        elapsed = self.watch(0.1)
+        self.assertIsNotNone(elapsed)
+        self.assertGreaterEqual(elapsed, 0.09)
+        self.try_lock.assert_called_once_with()
+        self.assertIs(bridge._idle_shutdown_lock, self.lock)
+
+    def test_client_activity_resets_idle_timer(self):
+        async def keep_calling():
+            for _ in range(6):
+                self.activity.begin()
+                self.activity.end()
+                await asyncio.sleep(0.05)
+        elapsed = self.watch(0.15, keep_calling)
+        self.assertIsNotNone(elapsed)
+        self.assertGreaterEqual(elapsed, 0.25 + 0.14)  # last call at ~0.25s
+
+    def test_in_flight_request_blocks_shutdown(self):
+        self.activity.begin()
+        self.assertIsNone(self.watch(0.05, run_for=0.3))
+        self.try_lock.assert_not_called()
+        self.activity.end()
+        self.assertIsNotNone(self.watch(0.05))
+
+    def test_pending_extension_command_or_keep_alive_blocks_shutdown(self):
+        for name, value in (("pending_commands", {1: {}}), ("_keep_alive_tasks", {7: Mock(done=Mock(return_value=False))})):
+            with self.subTest(name=name), patch.object(bridge, name, value):
+                self.assertIsNone(self.watch(0.05, run_for=0.3))
+                self.try_lock.assert_not_called()
+        finished = {7: Mock(done=Mock(return_value=True))}
+        with patch.object(bridge, "_keep_alive_tasks", finished):
+            self.assertIsNotNone(self.watch(0.05))
+
+    def test_client_holding_lifecycle_lock_defers_shutdown(self):
+        self.try_lock.side_effect = [None, None, self.lock]
+        self.assertIsNotNone(self.watch(0.05))
+        self.assertEqual(self.try_lock.call_count, 3)
+        self.assertIs(bridge._idle_shutdown_lock, self.lock)
+
+    def test_idle_shutdown_drains_accepted_requests_before_closing(self):
+        async def exercise():
+            loop = asyncio.get_running_loop()
+            event = asyncio.Event()
+            event.set()
+            closed_with = []
+            websocket_server = Mock(wait_closed=AsyncMock())
+            websocket_server.close.side_effect = lambda: closed_with.append(self.activity.in_flight())
+            self.activity.begin()  # accepted just before the listener closed
+            loop.call_later(0.2, self.activity.end)
+            with patch.object(loop, "add_signal_handler"), patch.object(loop, "remove_signal_handler"), \
+                    patch.object(bridge.asyncio, "Event", return_value=event), \
+                    patch.object(bridge, "ws_serve", new=AsyncMock(return_value=websocket_server)), \
+                    patch.object(bridge, "BridgeHTTPServer", return_value=Mock()), \
+                    patch.object(bridge, "_idle_shutdown_lock", self.lock), \
+                    patch.object(bridge, "Thread"), patch("builtins.print"), \
+                    patch.object(bridge.asyncio, "to_thread", new=AsyncMock()):
+                await bridge.main(idle_timeout=60)
+            self.assertEqual(closed_with, [0])
+        asyncio.run(exercise())
+
+    def test_run_releases_lifecycle_lock_after_pid_lock(self):
+        order = []
+        pid_file = mock_open()
+        pid_file.return_value.__exit__.side_effect = lambda *args: order.append("pid")
+        self.lock.close.side_effect = lambda: order.append("lifecycle")
+        with patch.object(bridge.os, "open", return_value=42), patch.object(bridge.os, "fdopen", pid_file), \
+                patch.object(bridge.fcntl, "flock"), patch.object(bridge, "main", new=Mock()), \
+                patch.object(bridge.asyncio, "run", side_effect=lambda _: setattr(bridge, "_idle_shutdown_lock", self.lock)):
+            bridge.run(["--idle-timeout", "1"])
+        self.assertEqual(order, ["pid", "lifecycle"])
 
 
 class BridgeVersionTests(unittest.TestCase):

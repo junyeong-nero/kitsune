@@ -35,7 +35,7 @@ import time
 import ctypes
 from contextlib import asynccontextmanager
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
-from threading import Thread
+from threading import Lock, Thread
 from datetime import datetime
 
 import hmac
@@ -58,6 +58,10 @@ BRIDGE_VERSION = PACKAGE_VERSION
 API_VERSION = "1"
 HTTP_PORT = int(os.environ.get("KITSUNE_HTTP_PORT", "47651"))
 WS_PORT = int(os.environ.get("KITSUNE_WS_PORT", "47652"))
+# Opt-in idle shutdown in seconds (0 = never). The MCP server passes its
+# environment to the bridge it spawns, so clients can set this in their config.
+IDLE_TIMEOUT_ENV = "KITSUNE_BRIDGE_IDLE_TIMEOUT"
+IDLE_POLL_SECONDS = 1.0
 # Everything the bridge writes (token, cookies from saved sessions,
 # screenshots, logs) stays in one user-only directory.
 DATA_DIR = os.environ.get("KITSUNE_HOME", os.path.join(os.path.expanduser("~"), ".kitsune"))
@@ -1431,6 +1435,62 @@ async def run_command(cmd):
         return {'error': str(e)}
 
 
+class _ClientActivity:
+    """HTTP requests in flight and when the bridge last had one, for idle shutdown."""
+
+    def __init__(self):
+        self._lock = Lock()
+        self._in_flight = 0
+        self._last = time.monotonic()
+
+    def begin(self):
+        with self._lock:
+            self._in_flight += 1
+            self._last = time.monotonic()
+
+    def end(self):
+        with self._lock:
+            self._in_flight -= 1
+            self._last = time.monotonic()
+
+    def touch(self):
+        with self._lock:
+            self._last = time.monotonic()
+
+    def in_flight(self):
+        with self._lock:
+            return self._in_flight
+
+    def idle_seconds(self):
+        with self._lock:
+            return 0.0 if self._in_flight else time.monotonic() - self._last
+
+
+_client_activity = _ClientActivity()
+
+
+class BridgeHTTPServer(ThreadingHTTPServer):
+    """Counts each request from accept until its handler thread ends.
+
+    process_request runs in the serve_forever thread, so once shutdown() returns
+    every accepted request is already counted and an idle shutdown can drain it.
+    """
+
+    def process_request(self, request, client_address):
+        _client_activity.begin()
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            _client_activity.end()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            _client_activity.end()
+
+
 class BridgeHandler(BaseHTTPRequestHandler):
 
     def canonical_path(self):
@@ -2219,8 +2279,44 @@ def now():
 
 loop = None
 shutdown_event = None
+_idle_shutdown_lock = None  # lifecycle lock an idle shutdown holds until the pid lock is released
 
-async def main():
+
+def _idle_timeout_seconds(value):
+    try:
+        seconds = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"invalid seconds: {value!r}") from None
+    if not 0 <= seconds < float("inf"):
+        raise argparse.ArgumentTypeError(f"must be a finite number >= 0, got {value!r}")
+    return seconds
+
+
+def _bridge_busy():
+    """Client-started work that has no HTTP request in flight but must not be cut off."""
+    return bool(pending_commands) or any(not t.done() for t in _keep_alive_tasks.values())
+
+
+async def _idle_shutdown_watch(idle_timeout):
+    global _idle_shutdown_lock
+    while True:
+        await asyncio.sleep(min(IDLE_POLL_SECONDS, idle_timeout))
+        if _bridge_busy():
+            _client_activity.touch()
+            continue
+        if _client_activity.idle_seconds() < idle_timeout:
+            continue
+        # Holding lifecycle_lock until exit makes a client that restarts the
+        # bridge on demand wait for this daemon instead of racing its pid lock.
+        _idle_shutdown_lock = bridge_control.try_lifecycle_lock()
+        if _idle_shutdown_lock is None:
+            continue  # A client is starting or stopping the bridge right now.
+        print(f"[{now()}] 💤 No client activity for {idle_timeout:g}s; shutting down")
+        shutdown_event.set()
+        return
+
+
+async def main(idle_timeout=0):
     global loop, shutdown_event
     loop = asyncio.get_running_loop()
     shutdown_event = asyncio.Event()
@@ -2231,9 +2327,10 @@ async def main():
     print(f"[{now()}] 🔌 WebSocket server on ws://localhost:{WS_PORT}")
     
     http_server = None
+    idle_watch = None
     try:
         # Start HTTP server in thread
-        http_server = ThreadingHTTPServer(("127.0.0.1", HTTP_PORT), BridgeHandler)
+        http_server = BridgeHTTPServer(("127.0.0.1", HTTP_PORT), BridgeHandler)
         http_thread = Thread(target=http_server.serve_forever, daemon=True)
         http_thread.start()
         print(f"[{now()}] 🌐 HTTP API server on http://localhost:{HTTP_PORT}")
@@ -2270,13 +2367,24 @@ async def main():
         print(f"  POST http://localhost:{HTTP_PORT}/api/keep-alive          - Pin a list of tabs against the Tab Unloader")
         print(f"  POST http://localhost:{HTTP_PORT}/api/keep-alive-stop     - Stop keep-alive (omit tabIds to stop all)")
         print()
+
+        if idle_timeout:
+            _client_activity.touch()
+            idle_watch = asyncio.create_task(_idle_shutdown_watch(idle_timeout))
+            print(f"[{now()}] Idle shutdown after {idle_timeout:g}s without client activity")
     
         await shutdown_event.wait()
 
     finally:
+        if idle_watch is not None:
+            idle_watch.cancel()
         if http_server is not None:
             await asyncio.to_thread(http_server.shutdown)
             http_server.server_close()
+            if _idle_shutdown_lock is not None:
+                # Requests accepted before the listener closed still run on this loop.
+                while _client_activity.in_flight():
+                    await asyncio.sleep(0.05)
         ws_server.close()
         await ws_server.wait_closed()
         for sig in (signal.SIGTERM, signal.SIGINT):
@@ -2286,7 +2394,13 @@ async def main():
 def run(argv=None):
     parser = argparse.ArgumentParser(description="Kitsune shared browser bridge")
     parser.add_argument("command", nargs="?", choices=("start", "stop", "status"), default="start")
+    parser.add_argument(
+        "--idle-timeout", type=_idle_timeout_seconds, metavar="SECONDS",
+        help=f"start: exit after SECONDS without client HTTP calls (default: ${IDLE_TIMEOUT_ENV}, else 0 = never)",
+    )
     args = parser.parse_args(argv)
+    if args.command != "start" and args.idle_timeout is not None:
+        parser.error("--idle-timeout only applies to start")
     if args.command == "status":
         try:
             status = bridge_control.status()
@@ -2301,6 +2415,12 @@ def run(argv=None):
             parser.exit(1, error + "\n")
         print("Kitsune bridge stopped.")
         return
+    idle_timeout = args.idle_timeout
+    if idle_timeout is None:
+        try:
+            idle_timeout = _idle_timeout_seconds(os.environ.get(IDLE_TIMEOUT_ENV) or "0")
+        except argparse.ArgumentTypeError as exc:
+            parser.error(f"{IDLE_TIMEOUT_ENV}: {exc}")
 
     # Separate from the short-lived lifecycle lock held by the spawning MCP
     # server. Keep this inode locked until all network servers have closed.
@@ -2315,9 +2435,11 @@ def run(argv=None):
         pid_file.write(str(os.getpid()))
         pid_file.flush()
         try:
-            asyncio.run(main())
+            asyncio.run(main(idle_timeout))
         except KeyboardInterrupt:
             print(f"\n[{now()}] Shutting down...")
+    if _idle_shutdown_lock is not None:
+        _idle_shutdown_lock.close()
 
 
 if __name__ == "__main__":
