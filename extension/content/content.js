@@ -3,7 +3,7 @@
 
 (function() {
   'use strict';
-  const CONTENT_VERSION = 24;
+  const CONTENT_VERSION = 25;
   if (window.__claudeBridgeVersion >= CONTENT_VERSION) return;
   window.__claudeBridgeVersion = CONTENT_VERSION;
 
@@ -301,6 +301,7 @@
       'keypress':              () => keypress(msg.selector, msg.key, msg.modifiers, msg.text),
       'doubleClick':           () => doubleClick(msg.selector),
       'submitForm':            () => submitForm(msg.selector),
+      'describeTarget':        () => describeTarget(msg.selector, msg.coords, msg.key),
       'formFill':              () => formFill(msg.fields),
       'drag':                  () => dragElement(msg.from, msg.to),
       'waitForUrl':            () => waitForUrl(msg.pattern, msg.timeout),
@@ -1985,6 +1986,28 @@
     el.dispatchEvent(new MouseEvent('click', init));
     el.dispatchEvent(new MouseEvent('dblclick', { ...init, detail: 2 }));
     return { ok: true, ...notRenderedWarning(el) };
+  }
+
+  const NON_TEXT_INPUT_TYPES = new Set(['button', 'checkbox', 'radio', 'file', 'reset', 'hidden',
+    'color', 'range', 'submit', 'image']);
+
+  // Ask-before-act: whether clicking the target (or pressing Enter on it, with key) can submit
+  // a form. Resolves the target the way click/keypress do and reports no field values.
+  function describeTarget(selector, coords, key) {
+    let el = selector || coords ? resolveElement(selector, coords)
+      : (document.activeElement || document.body);
+    if (!el) return notFound();
+    if (coords) el = nearestInteractiveAncestor(el) || el;
+    const control = el.closest ? el.closest('button, input') || el : el;
+    const tag = control.tagName?.toLowerCase();
+    const type = String(control.type || '').toLowerCase();
+    const submitControl = !!control.form &&
+      ((tag === 'button' && type === 'submit') || (tag === 'input' && (type === 'submit' || type === 'image')));
+    const enterSubmits = key === 'Enter' && !!control.form && tag === 'input' && !NON_TEXT_INPUT_TYPES.has(type);
+    const label = control.getAttribute?.('aria-label') || control.textContent ||
+      (submitControl && tag === 'input' ? control.value : '') || '';
+    return { ok: true, tag, type, inForm: !!control.form, submits: submitControl || enterSubmits,
+      text: String(label).trim().slice(0, 80) };
   }
 
   function submitForm(selector) {

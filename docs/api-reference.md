@@ -120,6 +120,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `extension_disconnected` | The extension is not connected, reconnected before sending, or disconnected while waiting (`state.connected`) | true if not sent; false for writes after |
 | `timeout` | The bridge sent the command but no reply arrived in time (`state.timeoutSeconds`); from the MCP server, the bridge did not answer | false for writes (MCP: POST) |
 | `bridge_unavailable` | The MCP server cannot reach or start the bridge | true |
+| `confirmation_required` | [Ask-before-act](#ask-before-act) held a sensitive action; nothing ran (`state.confirmToken`, `state.reason`) | true |
 | `outcome_not_observed` | The action was dispatched, but the outcome given in `expect` did not happen in time (see [Action outcomes](#action-outcomes)) | false for writes |
 
 Writes are the bridge's read-only-mode write actions plus file-upload commits,
@@ -135,7 +136,8 @@ when focus can change.
 
 The batch/`browser_retry` `retry` action stops after the first attempt that
 returns `retryable: false`, with `reason: "not retryable"`, even if `onErrors`
-matches. Other errors are retried as before.
+matches. It also stops on `confirmation_required`, with
+`reason: "confirmation required"`. Other errors are retried as before.
 
 Pointer actions (`browser_click` by selector/ref, `browser_double_click`,
 `browser_hover`) still dispatch to a target that is not rendered (`hidden`,
@@ -282,6 +284,107 @@ The post-action snapshot is taken right after dispatch; after a delayed outcome,
 take a new `browser_snapshot` to see the updated page. Without `expect`, results are unchanged.
 
 `wait` and `expect` can be combined: `wait` runs before dispatch and `expect` after it. A batch's timeout also covers each command's `expect.timeout`.
+
+### Ask-before-act
+
+Ask-before-act is an opt-in bridge policy. It holds sensitive actions without running
+them and asks the caller for an explicit, action-bound second step. It is off by
+default; when it is off, behavior is unchanged. Turn it on with
+`browser_set_policy(ask=True)` (`POST /api/set-policy {"ask": true}`), or lock it on
+for a bridge (see below).
+
+In ask mode the bridge holds:
+
+| `state.reason` | Actions |
+|---|---|
+| `submit` | `browser_submit_form` (`submitForm`) |
+| `submit_control` | Click, double-click, trusted click, or click-and-wait-navigation on a submit control (`button` whose type is submit, `input type=submit/image`, or an element inside one, with a form). Also Enter (`browser_keypress`) on a text-like `input` in a form or on a submit control |
+| `javascript` | Agent-supplied JavaScript: `browser_js` (including `full=True`), `browser_wait_for(js=...)`, `browser_sync_barrier`, batch `js`, and batch `if`/`while` conditions |
+| `cookies` | `browser_cookies` (every op, including `get`), `browser_save_session`, `browser_load_session` |
+| `payment_url` | Navigation, new tabs, or new windows whose URL matches an `askUrls` pattern |
+| `payment_page` | Page actions (click, type/fill, form fill, select, check, keypress, drag, submit, upload, dialog policy, page storage, JavaScript) on a tab whose current URL matches `askUrls` |
+| `unknown_outcome` | Repeating a write whose identical previous attempt ended `retryable: false` (a timeout or disconnect after sending, see [Action errors](#action-errors)) |
+| `uninspectable_target` | A click or Enter whose target the bridge could not inspect (for example, an extension older than this bridge, or a screen-coordinate trusted click). Inspection fails closed |
+
+`askUrls` are case-insensitive regular expressions. The default list is
+`checkout`, `payment`, `billing`, `/pay\b`, `purchase`, and `/order`. Replace it with
+`browser_set_policy(ask_urls=[...])`; `[]` disables URL matching. `ask` must be a
+boolean and `askUrls` a list of non-empty strings that compile as regular expressions.
+Any other value (for example a bare string `"checkout"`) returns `invalid_policy`
+(HTTP 400), and none of the request is applied, in locked mode too.
+
+A held call returns `confirmation_required` (HTTP 403 from the bridge) and does not
+run. `retryable` is `true` because nothing reached the page:
+
+```json
+{ "error": "Confirmation required: clicks a submit control (Place order)",
+  "code": "confirmation_required", "retryable": true, "hint": "Nothing ran. Ask the user ...",
+  "state": { "confirmToken": "…", "expiresInSeconds": 120, "action": "click",
+             "reason": "submit_control", "description": "clicks a submit control (Place order)",
+             "tabId": 7, "url": "https://shop.example/cart", "params": { "ref": "s3e12" } } }
+```
+
+To approve the action, the client asks the user. It then repeats the identical call
+with the token: MCP tools take `confirm_token`, and HTTP and batch bodies take
+`confirmToken`. The token:
+
+- is bound to the exact action, its parameters, and the resolved target tab. Without
+  `tab_id`, that is the tab that was active when the call was held. A different action,
+  any changed parameter, or another active tab is rejected;
+- is single-use. Any presentation spends it, including a mismatched one;
+- expires after 120 seconds;
+- is honored only on a direct tool call. Inside `browser_batch`, `browser_parallel`,
+  `browser_retry`, `browser_broadcast`, workflows, and batch `sequence`/`if`/`while`,
+  a token is spent and the step stays held. Batch `if`/`while` can therefore not run
+  in ask mode.
+
+A rejected token returns a fresh `confirmation_required` error with
+`state.tokenRejected` set to `unknown`, `used`, `expired`, `mismatch`, or `not_direct`.
+A batch, workflow, parallel sequence, or batch `sequence` stops at the first held
+step, so later steps that may depend on it do not run. A held batch result has
+`_stopped: true`.
+
+The audit log (`browser_audit`) records each held call
+(`params.confirmation: "required"`, `error: "confirmation_required"`) and each
+accepted token (`params.confirmation: "accepted"`), followed by the action's normal
+entry. The token itself is never logged.
+
+**What the token proves.** The token goes back to the agent that made the call, so
+it enforces an explicit second step bound to one exact action. It does not prove that
+a human approved. Real approval has to come from the client, for example a
+permission prompt for the tool call that carries `confirm_token`. An agent that
+can call `browser_set_policy` can also turn agent-settable ask mode off. That mode
+guards against accidents only.
+
+**Locked mode.** Start the bridge with `KITSUNE_ASK_BEFORE_ACT=1` in its environment
+(the MCP server passes its environment to a bridge it starts) or with
+`kitsune-bridge start --ask-before-act`. Ask mode then starts on and is locked for
+that bridge's lifetime. `browser_set_policy` can still add `askUrls` patterns.
+Setting `ask=False` or dropping a pattern returns `policy_locked` (HTTP 403), and none
+of the request is applied. `allow`, `deny`, and `readonly` stay settable.
+`browser_get_policy` reports `ask`, `askUrls`, and `askLocked`. The bridge is shared:
+if one is already running without the lock, stop it (`kitsune-bridge stop`) so that
+the next start applies it.
+
+The lock lives in the bridge process, not in a file. Any restart starts a new bridge
+from the environment of whatever starts it: `kitsune-bridge stop` followed by the next
+tool call, an idle shutdown, or an MCP server that replaces an outdated bridge. If that
+environment lacks `KITSUNE_ASK_BEFORE_ACT=1`, the new bridge starts unlocked with ask
+mode off. Set the variable in the configuration of **every** MCP server that uses
+Kitsune, not only on a bridge you start by hand, and check `askLocked` with
+`browser_get_policy`.
+
+**Check-then-act window.** The bridge inspects the target (tab, URL, and whether a
+click or Enter submits a form) with `describeTarget` before it dispatches the action.
+The page can change between the two: it can navigate to a payment-like URL, or a
+script can turn the target into a submit control. Such a change is not caught. Passing
+`tab_id` removes the active-tab part of this window, but not changes inside the page.
+
+**Annotations are not policy.** MCP `ToolAnnotations` (`readOnlyHint`,
+`destructiveHint`, `idempotentHint`, `openWorldHint`) are static, per-tool metadata.
+Clients may use them for their own permission prompts. The bridge never reads them,
+and they do not change when ask mode is on. Enforcement comes from the bridge policy
+alone: `readonly`, `allow`/`deny`, and `ask`.
 
 ### Sensitive-field redaction
 
@@ -548,7 +651,7 @@ Connection status and config.
 ### GET /api/version
 Bridge and extension version info.
 ```json
-{ "bridge": "0.2.1", "api": "1", "extension_connected": true, "extension_version": "0.2.1", "extension_build": "dev", "extension": 22 }
+{ "bridge": "0.2.1", "api": "1", "extension_connected": true, "extension_version": "0.2.1", "extension_build": "dev", "extension": 25 }
 ```
 
 ## Page Data (GET, cached 5s except page-info)

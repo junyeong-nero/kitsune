@@ -24,6 +24,8 @@ from .version import BRIDGE_BUILD
 from .waits import batch_wait_seconds, command_wait_seconds
 
 # Annotation hints describe the whole tool, including its most dangerous operation.
+# They are advisory metadata for the client's permission prompts; the bridge never reads
+# them. Enforcement is the bridge policy (browser_set_policy: readonly, allow/deny, ask).
 # Idempotence means repeating identical arguments adds no further side effects;
 # keep it false for page interactions that can trigger application event handlers.
 READ = dict(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True)
@@ -166,6 +168,13 @@ def _with_tab(body: dict, tab_id: int | None) -> dict:
     return body
 
 
+def _confirm(body: dict, confirm_token: str | None) -> dict:
+    """Attach a token from a confirmation_required error (ask-before-act policy)."""
+    if confirm_token is not None:
+        body["confirmToken"] = confirm_token
+    return body
+
+
 OUTCOME_TIMEOUT_MS = 5000  # default expect.timeout; matches bridge.OUTCOME_TIMEOUT_MS
 
 
@@ -239,6 +248,7 @@ def browser_tabs(
     action: Literal["list", "new", "close", "select"] = "list",
     tab_id: int | None = None, url: str | None = None,
     force: bool = False, raw: bool = False, wait: bool = False, timeout: int = 15000,
+    confirm_token: str | None = None,
 ) -> dict:
     """List, open, close, or select tabs.
 
@@ -249,6 +259,7 @@ def browser_tabs(
     stays open and the result has ok=false, timedOut=true.
     close/select: tab_id is required. force disarms beforeunload on close.
     Other action-specific options are ignored.
+    confirm_token: from a confirmation_required error, after the user approved (new only).
     """
     if action == "list":
         return _get("/api/tabs")
@@ -256,6 +267,7 @@ def browser_tabs(
         body = {"url": url if url is not None else "about:blank"}
         if raw:
             body["raw"] = True
+        _confirm(body, confirm_token)
         if not wait:
             return _post("/api/new-tab", body)
         if timeout <= 0:
@@ -411,7 +423,7 @@ def browser_screenshot(
 
 @tool("core", annotations=ToolAnnotations(title="Navigate", **ACT))
 def browser_navigate(
-    url: str, tab_id: int | None = None, raw: bool = False, expect: dict | None = None,
+    url: str, tab_id: int | None = None, raw: bool = False, expect: dict | None = None, confirm_token: str | None = None,
 ) -> dict:
     """Navigate the active tab to a URL.
 
@@ -423,11 +435,12 @@ def browser_navigate(
         raw: Bare image URLs (.jpg/.png/...) open inside a small local viewer page
              (image = #zlimg) so the extension can still script them. True opens the raw image.
         expect: Optional expected outcome; see browser_click.
+        confirm_token: From a confirmation_required error, after the user approved this action.
     """
     body = {"url": url}
     if raw:
         body["raw"] = True
-    return _post_action("/api/navigate", _with_tab(body, tab_id), expect=expect)
+    return _post_action("/api/navigate", _confirm(_with_tab(body, tab_id), confirm_token), expect=expect)
 
 
 # -- Interaction --------------------------------------------------
@@ -436,7 +449,7 @@ def browser_navigate(
 def browser_click(
     selector: str = "", x: int = 0, y: int = 0, tab_id: int | None = None,
     ref: str | None = None, element: str | None = None, wait: bool = False, timeout: int = 10000,
-    expect: dict | None = None,
+    expect: dict | None = None, confirm_token: str | None = None,
 ) -> dict:
     """Prefer ref from browser_snapshot; element is an audit-only description.
 
@@ -460,9 +473,10 @@ def browser_click(
             The result adds dispatched=true and outcome {expected, observed, met}.
             If not met in time: ok=false, code="outcome_not_observed" and the
             current tab state; the action already ran, so do not blindly repeat it.
+        confirm_token: From a confirmation_required error, after the user approved this action.
     """
     body: dict = {"selector": selector} if selector or ref else {"coords": {"x": x, "y": y}}
-    return _post_action("/api/click", _with_tab(_target(body, ref, element), tab_id), wait, timeout, expect)
+    return _post_action("/api/click", _confirm(_with_tab(_target(body, ref, element), tab_id), confirm_token), wait, timeout, expect)
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Trusted click", **ACT))
@@ -473,6 +487,7 @@ def browser_trusted_click(
     coordinate_space: str = "viewport",
     focus: bool = False,
     tab_id: int | None = None,
+    confirm_token: str | None = None,
 ) -> dict:
     """Click using the real OS mouse pointer for pages that reject synthetic DOM events.
 
@@ -487,12 +502,13 @@ def browser_trusted_click(
         coordinate_space: "viewport" for browser viewport coords or "screen" for desktop coords.
         focus: Whether to try to foreground the browser (Zen, Firefox, LibreWolf) first. Defaults to false.
         tab_id: Optional tab to resolve the selector against (viewport coords only).
+        confirm_token: From a confirmation_required error, after the user approved this action.
     """
     if selector:
         body = {"selector": selector, "focus": focus}
     else:
         body = {"coords": {"x": x, "y": y}, "coordinateSpace": coordinate_space, "focus": focus}
-    return _post("/api/trusted-click", _with_tab(body, tab_id))
+    return _post("/api/trusted-click", _confirm(_with_tab(body, tab_id), confirm_token))
 
 
 @tool("core", annotations=ToolAnnotations(title="Type into element", **ACT))
@@ -500,7 +516,7 @@ def browser_type(
     selector: str = "", text: str = "", mode: Literal["type", "fill", "editable"] = "type",
     clear: bool = False, tab_id: int | None = None,
     ref: str | None = None, element: str | None = None, wait: bool = False, timeout: int = 10000,
-    expect: dict | None = None,
+    expect: dict | None = None, confirm_token: str | None = None,
 ) -> dict:
     """Prefer ref from browser_snapshot; element is an audit-only description.
 
@@ -516,6 +532,7 @@ def browser_type(
     wait: wait up to timeout ms for the target to exist before entering text
         (default: immediately). On timeout returns not_found without typing.
     expect: optional expected outcome; see browser_click.
+    confirm_token: From a confirmation_required error, after the user approved this action.
     """
     if mode == "type":
         endpoint, body = "/api/type", {"selector": selector, "text": text, "clear": clear}
@@ -527,7 +544,7 @@ def browser_type(
         }
     else:
         return {"error": "mode must be type, fill, or editable"}
-    return _post_action(endpoint, _with_tab(_target(body, ref, element), tab_id), wait, timeout, expect)
+    return _post_action(endpoint, _confirm(_with_tab(_target(body, ref, element), tab_id), confirm_token), wait, timeout, expect)
 
 
 @tool("core", annotations=ToolAnnotations(title="Scroll", **ACT))
@@ -591,7 +608,8 @@ def browser_find(query: str, tab_id: int | None = None) -> dict:
 
 
 @tool("core", annotations=ToolAnnotations(title="Execute JavaScript", **DESTRUCTIVE))
-def browser_js(code: str, tab_id: int | None = None, full: bool = False) -> dict:
+def browser_js(code: str, tab_id: int | None = None, full: bool = False,
+               confirm_token: str | None = None) -> dict:
     """Execute JavaScript in the current page context.
 
     Needs the developer extension build; the signed build returns an error
@@ -602,8 +620,9 @@ def browser_js(code: str, tab_id: int | None = None, full: bool = False) -> dict
         tab_id: Optional tab to target. Defaults to active tab.
         full: Results are capped at 8 MB (50 KB on extensions older than 2.1.0). full=True runs the
               code once and reads the result back in slices, so any size comes back complete.
+        confirm_token: From a confirmation_required error, after the user approved this action.
     """
-    body = {"code": code}
+    body = _confirm({"code": code}, confirm_token)
     if full:
         body["full"] = True
         return _post("/api/js", _with_tab(body, tab_id), timeout=180)
@@ -627,7 +646,8 @@ def browser_highlight(selector: str = "", tab_id: int | None = None, ref: str | 
 
 @tool("core", annotations=ToolAnnotations(title="Handle page dialogs", **IDEMPOTENT_ACT))
 def browser_handle_dialog(
-    accept: bool | None = True, prompt_text: str | None = None, tab_id: int | None = None
+    accept: bool | None = True, prompt_text: str | None = None, tab_id: int | None = None,
+    confirm_token: str | None = None,
 ) -> dict:
     """Set this tab's policy for future dialogs and return recent recorded dialogs.
 
@@ -641,8 +661,8 @@ def browser_handle_dialog(
     navigation, with native behavior until the policy is restored asynchronously.
     Native dialogs and scripts holding original functions cannot be answered.
     """
-    return _post("/api/handle-dialog", _with_tab(
-        {"accept": accept, "prompt_text": prompt_text}, tab_id))
+    return _post("/api/handle-dialog", _confirm(_with_tab(
+        {"accept": accept, "prompt_text": prompt_text}, tab_id), confirm_token))
 
 
 @tool("core", annotations=ToolAnnotations(title="Wait for condition", **DESTRUCTIVE))
@@ -652,7 +672,7 @@ def browser_wait_for(
     url: str | None = None, title: str | None = None,
     network_idle: bool = False, time: float | None = None,
     timeout: int = 10000, tab_id: int | None = None,
-    ref: str | None = None, element: str | None = None,
+    ref: str | None = None, element: str | None = None, confirm_token: str | None = None,
 ) -> dict:
     """Wait for exactly one condition, or sleep for time seconds.
 
@@ -667,6 +687,7 @@ def browser_wait_for(
     the desired document condition. network_idle waits for 500 ms without new
     resources.
     timeout is the maximum wait in milliseconds; it does not limit time sleep.
+    confirm_token: from a confirmation_required error (js waits), after the user approved.
     """
     element_condition = selector is not None or ref is not None
     conditions = [text, text_gone, js, url, title, time]
@@ -692,6 +713,7 @@ def browser_wait_for(
     elif js is not None:
         endpoint = "/api/wait-for-result"
         body.update(code=js, pollInterval=500)
+        _confirm(body, confirm_token)
     elif url is not None or title is not None:
         endpoint = "/api/wait-for-url" if url is not None else "/api/wait-for-title"
         body["pattern"] = url if url is not None else title
@@ -975,30 +997,34 @@ def browser_explain_selector(selector: str, tab_id: int | None = None) -> dict:
 def browser_select_option(
     selector: str = "", value: str = "", by_text: bool = False, tab_id: int | None = None,
     ref: str | None = None, element: str | None = None, wait: bool = False, timeout: int = 10000,
-    expect: dict | None = None,
+    expect: dict | None = None, confirm_token: str | None = None,
 ) -> dict:
     """Prefer ref from browser_snapshot; element is an audit-only description.
 
     Choose an <option> in a <select>. Default matches by value; pass
     `by_text=True` to match by visible text. wait=True first waits up to timeout ms
     for the select to exist (not_found on timeout). expect: see browser_click.
-    Success returns a fresh snapshot whose refs replace earlier ones; target_ref is the select's new ref."""
-    return _post_action("/api/select-option", _with_tab(_target({"selector": selector, "value": value, "byText": by_text}, ref, element), tab_id),
+    Success returns a fresh snapshot whose refs replace earlier ones; target_ref is the select's new ref.
+    confirm_token: From a confirmation_required error, after the user approved this action.
+    """
+    return _post_action("/api/select-option", _confirm(_with_tab(_target({"selector": selector, "value": value, "byText": by_text}, ref, element), tab_id), confirm_token),
                         wait, timeout, expect)
 
 
 @tool("core", annotations=ToolAnnotations(title="Check", **ACT))
 def browser_check(
     selector: str = "", checked: bool = True, tab_id: int | None = None, ref: str | None = None, element: str | None = None,
-    wait: bool = False, timeout: int = 10000, expect: dict | None = None,
+    wait: bool = False, timeout: int = 10000, expect: dict | None = None, confirm_token: str | None = None,
 ) -> dict:
     """Prefer ref from browser_snapshot; element is an audit-only description.
 
     Set a checkbox or radio's checked state. wait=True first waits up to timeout ms
     for it to exist (not_found on timeout); hidden native inputs need not render.
     expect: see browser_click.
-    Success returns a fresh snapshot whose refs replace earlier ones; target_ref is the control's new ref."""
-    return _post_action("/api/check", _with_tab(_target({"selector": selector, "checked": checked}, ref, element), tab_id),
+    Success returns a fresh snapshot whose refs replace earlier ones; target_ref is the control's new ref.
+    confirm_token: From a confirmation_required error, after the user approved this action.
+    """
+    return _post_action("/api/check", _confirm(_with_tab(_target({"selector": selector, "checked": checked}, ref, element), tab_id), confirm_token),
                         wait, timeout, expect)
 
 
@@ -1035,7 +1061,7 @@ def browser_keypress(
     element: str | None = None,
     wait: bool = False,
     timeout: int = 10000,
-    expect: dict | None = None,
+    expect: dict | None = None, confirm_token: str | None = None,
 ) -> dict:
     """Prefer ref from browser_snapshot; element is an audit-only description.
 
@@ -1053,31 +1079,34 @@ def browser_keypress(
         wait: With selector/ref, wait up to timeout ms for the target to exist before
             dispatching (default: immediately). On timeout returns not_found.
         expect: Optional expected outcome; see browser_click.
+        confirm_token: From a confirmation_required error, after the user approved this action.
     """
     body = {"key": key}
     if selector: body["selector"] = selector
     if modifiers: body["modifiers"] = modifiers
     if text is not None: body["text"] = text
-    return _post_action("/api/keypress", _with_tab(_target(body, ref, element), tab_id), wait, timeout, expect)
+    return _post_action("/api/keypress", _confirm(_with_tab(_target(body, ref, element), tab_id), confirm_token), wait, timeout, expect)
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Double click", **ACT))
 def browser_double_click(
     selector: str = "", tab_id: int | None = None, ref: str | None = None, element: str | None = None,
-    wait: bool = False, timeout: int = 10000,
+    wait: bool = False, timeout: int = 10000, confirm_token: str | None = None,
 ) -> dict:
     """Prefer ref from browser_snapshot; element is an audit-only description.
 
     Dispatch a synthetic double-click on the matched element. wait=True first waits
-    up to timeout ms for it to exist and be rendered (not_found/not_actionable on timeout)."""
-    return _post_action("/api/double-click", _with_tab(_target({"selector": selector}, ref, element), tab_id),
+    up to timeout ms for it to exist and be rendered (not_found/not_actionable on timeout).
+    confirm_token: From a confirmation_required error, after the user approved this action.
+    """
+    return _post_action("/api/double-click", _confirm(_with_tab(_target({"selector": selector}, ref, element), tab_id), confirm_token),
                         wait, timeout)
 
 
 @tool("core", annotations=ToolAnnotations(title="Submit form", **DESTRUCTIVE))
 def browser_submit_form(
     selector: str | None = None, tab_id: int | None = None,
-    ref: str | None = None, element: str | None = None, expect: dict | None = None,
+    ref: str | None = None, element: str | None = None, expect: dict | None = None, confirm_token: str | None = None,
 ) -> dict:
     """Prefer ref from browser_snapshot; element is an audit-only description.
 
@@ -1086,14 +1115,15 @@ def browser_submit_form(
     the submit was dispatched; pass expect (see browser_click) to verify it.
     Success returns a fresh snapshot whose refs replace earlier ones. On a failure
     with retryable=false, inspect the page before submitting again.
+    confirm_token: From a confirmation_required error, after the user approved this action.
     """
     body = {}
     if selector: body["selector"] = selector
-    return _post_action("/api/submit-form", _with_tab(_target(body, ref, element), tab_id), expect=expect)
+    return _post_action("/api/submit-form", _confirm(_with_tab(_target(body, ref, element), tab_id), confirm_token), expect=expect)
 
 
 @tool("core", annotations=ToolAnnotations(title="Form fill", **ACT))
-def browser_form_fill(fields: dict, tab_id: int | None = None) -> dict:
+def browser_form_fill(fields: dict, tab_id: int | None = None, confirm_token: str | None = None) -> dict:
     """Fill many fields at once via fuzzy matching.
 
     Each key in `fields` is matched as: CSS selector → name attribute →
@@ -1111,29 +1141,31 @@ def browser_form_fill(fields: dict, tab_id: int | None = None) -> dict:
     Args:
         fields: {"email": "foo@bar", "Password": "...", "#submit-target": true}
     """
-    return _post("/api/form-fill", _with_tab({"fields": fields}, tab_id))
+    return _post("/api/form-fill", _confirm(_with_tab({"fields": fields}, tab_id), confirm_token))
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Drag", **ACT))
 def browser_drag(
     from_selector: str = "", to_selector: str = "", tab_id: int | None = None,
     ref: str | None = None, element: str | None = None, to_ref: str | None = None,
-    wait: bool = False, timeout: int = 10000,
+    wait: bool = False, timeout: int = 10000, confirm_token: str | None = None,
 ) -> dict:
     """Prefer ref from browser_snapshot; element is an audit-only description.
 
     Synthetic drag-and-drop from one element to another (HTML5 drag events).
     ref identifies the source; to_ref identifies the destination. wait=True first
     waits up to timeout ms for both to exist and be rendered (not_found/not_actionable
-    on timeout)."""
-    return _post_action("/api/drag", _with_tab(_target({"from": from_selector, "to": to_selector, "toRef": to_ref}, ref, element), tab_id),
+    on timeout).
+    confirm_token: From a confirmation_required error, after the user approved this action.
+    """
+    return _post_action("/api/drag", _confirm(_with_tab(_target({"from": from_selector, "to": to_selector, "toRef": to_ref}, ref, element), tab_id), confirm_token),
                         wait, timeout)
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Click and wait navigation", **ACT))
 def browser_click_and_wait_navigation(
     selector: str = "", timeout: int = 15000, tab_id: int | None = None,
-    ref: str | None = None, element: str | None = None,
+    ref: str | None = None, element: str | None = None, confirm_token: str | None = None,
 ) -> dict:
     """Prefer ref from browser_snapshot; element is an audit-only description.
 
@@ -1144,7 +1176,7 @@ def browser_click_and_wait_navigation(
     tabs.onUpdated(status='complete')."""
     return _post(
         "/api/click-and-wait-navigation",
-        _with_tab(_target({"selector": selector, "timeout": timeout}, ref, element), tab_id),
+        _confirm(_with_tab(_target({"selector": selector, "timeout": timeout}, ref, element), tab_id), confirm_token),
         timeout=(timeout / 1000) + 10,
     )
 
@@ -1155,7 +1187,7 @@ def browser_click_and_wait_navigation(
 
 @tool("core", annotations=ToolAnnotations(title="Upload file", **DESTRUCTIVE))
 def browser_upload_file(path: str | list[str], selector: str | None = None, mode: str = "auto",
-                    tab_id: int | None = None) -> dict:
+                    tab_id: int | None = None, confirm_token: str | None = None) -> dict:
     """Attach local file(s) to a page's upload control - no OS file dialog.
 
     The bridge reads the file from disk and streams it into the page, which builds
@@ -1175,7 +1207,7 @@ def browser_upload_file(path: str | list[str], selector: str | None = None, mode
     body = {"paths": path if isinstance(path, list) else [path], "mode": mode}
     if selector:
         body["selector"] = selector
-    return _post("/api/upload-file", _with_tab(body, tab_id), timeout=320)
+    return _post("/api/upload-file", _confirm(_with_tab(body, tab_id), confirm_token), timeout=320)
 
 
 def _screenshot_result(r: dict, save_to: str | None, data_url: bool):
@@ -1266,11 +1298,12 @@ def browser_windows() -> dict:
 
 
 @tool("windows", annotations=ToolAnnotations(title="Create window", **ACT))
-def browser_create_window(url: str | None = None, incognito: bool = False) -> dict:
+def browser_create_window(url: str | None = None, incognito: bool = False,
+                          confirm_token: str | None = None) -> dict:
     """Open a new browser window. Pass a URL to load it at start."""
     body = {"incognito": incognito}
     if url: body["url"] = url
-    return _post("/api/create-window", body)
+    return _post("/api/create-window", _confirm(body, confirm_token))
 
 
 @tool("windows", annotations=ToolAnnotations(title="Close window", **DESTRUCTIVE))
@@ -1312,6 +1345,7 @@ def browser_cookies(
     domain: str | None = None,
     path: str | None = None,
     secure: bool = False,
+    confirm_token: str | None = None,
 ) -> dict:
     """Cookie operations: "get", "set", "remove", "clear".
 
@@ -1323,7 +1357,7 @@ def browser_cookies(
     body = {"op": op}
     for k, v in [("url", url), ("name", name), ("value", value), ("domain", domain), ("path", path), ("secure", secure)]:
         if v is not None: body[k] = v
-    return _post("/api/cookies", body)
+    return _post("/api/cookies", _confirm(body, confirm_token))
 
 
 @tool("storage", annotations=ToolAnnotations(title="Manage page storage", **DESTRUCTIVE))
@@ -1333,6 +1367,7 @@ def browser_storage(
     key: str | None = None,
     value: str | None = None,
     tab_id: int | None = None,
+    confirm_token: str | None = None,
 ) -> dict:
     """localStorage / sessionStorage ops.
 
@@ -1347,7 +1382,7 @@ def browser_storage(
     body = {"kind": kind, "op": op}
     if key is not None: body["key"] = key
     if value is not None: body["value"] = value
-    return _post("/api/storage", _with_tab(body, tab_id))
+    return _post("/api/storage", _confirm(_with_tab(body, tab_id), confirm_token))
 
 
 @tool("storage", annotations=ToolAnnotations(title="Read or write clipboard", **DESTRUCTIVE))
@@ -1485,6 +1520,7 @@ def browser_sync_barrier(
     predicate: str,
     timeout: int = 30000,
     poll_interval: int = 300,
+    confirm_token: str | None = None,
 ) -> dict:
     """Block until a JS predicate returns truthy on every listed tab.
 
@@ -1500,7 +1536,8 @@ def browser_sync_barrier(
     """
     return _post(
         "/api/sync-barrier",
-        {"tabIds": tab_ids, "predicate": predicate, "timeout": timeout, "pollInterval": poll_interval},
+        _confirm({"tabIds": tab_ids, "predicate": predicate, "timeout": timeout, "pollInterval": poll_interval},
+                 confirm_token),
         timeout=(timeout / 1000) + 10,
     )
 
@@ -1557,7 +1594,7 @@ def browser_pool_release(tab_id: int) -> dict:
 # ════════════════════════════════════════════════════════════════════
 
 @tool("session", annotations=ToolAnnotations(title="Save session", **DESTRUCTIVE))
-def browser_save_session(name: str, urls: list[str] | None = None) -> dict:
+def browser_save_session(name: str, urls: list[str] | None = None, confirm_token: str | None = None) -> dict:
     """Snapshot cookies (and per-origin localStorage if urls given) to disk.
 
     Use case: log into a service interactively once, save the session,
@@ -1569,13 +1606,13 @@ def browser_save_session(name: str, urls: list[str] | None = None) -> dict:
         urls: Origins whose cookies + localStorage to snapshot. Each gets
             opened briefly in a temp tab so localStorage can be read.
     """
-    return _post("/api/save-session", {"name": name, "urls": urls or []}, timeout=120)
+    return _post("/api/save-session", _confirm({"name": name, "urls": urls or []}, confirm_token), timeout=120)
 
 
 @tool("session", annotations=ToolAnnotations(title="Load session", **DESTRUCTIVE))
-def browser_load_session(name: str) -> dict:
+def browser_load_session(name: str, confirm_token: str | None = None) -> dict:
     """Restore cookies + localStorage from a previously saved session."""
-    return _post("/api/load-session", {"name": name}, timeout=120)
+    return _post("/api/load-session", _confirm({"name": name}, confirm_token), timeout=120)
 
 
 @tool("session", annotations=ToolAnnotations(title="List sessions", **READ))
@@ -1632,22 +1669,35 @@ def browser_set_policy(
     allow: list[str] | None = None,
     deny: list[str] | None = None,
     readonly: bool | None = None,
+    ask: bool | None = None,
+    ask_urls: list[str] | None = None,
 ) -> dict:
-    """Set URL allow/deny regex lists and/or read-only mode.
+    """Set URL allow/deny regex lists, read-only mode, and/or ask-before-act mode.
 
     Read-only mode blocks write actions (click/type/navigate/cookies set/etc.)
     while still allowing read ops. Useful for "let the agent observe only."
+
+    Ask mode (ask=True) holds sensitive actions without running them: form submits and
+    submit-control clicks or Enter in a form field, browser_js and other agent JavaScript,
+    cookies and sessions, navigation to ask_urls (payment-like regexes, case-insensitive), and
+    page actions on such pages. A held call returns code "confirmation_required" with
+    state.confirmToken; ask the user, then repeat the identical call with confirm_token
+    within 120s. The token is single-use, bound to that action, its parameters and tab, and
+    is never honored inside batch/retry/parallel/broadcast/workflows. A bridge started with
+    KITSUNE_ASK_BEFORE_ACT=1 locks ask mode on; then ask=False or dropping ask_urls fails.
     """
     body = {}
     if allow is not None: body["allow"] = allow
     if deny is not None: body["deny"] = deny
     if readonly is not None: body["readonly"] = readonly
+    if ask is not None: body["ask"] = ask
+    if ask_urls is not None: body["askUrls"] = ask_urls
     return _post("/api/set-policy", body)
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Get policy", **READ))
 def browser_get_policy() -> dict:
-    """Return the active URL/readonly policy."""
+    """Return the active URL/readonly/ask policy."""
     return _post("/api/get-policy", {})
 
 

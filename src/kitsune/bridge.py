@@ -39,6 +39,7 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from threading import Lock, Thread
 from datetime import datetime
 
+import hashlib
 import hmac
 import secrets
 import stat
@@ -135,7 +136,10 @@ _audit_log = []  # list of {ts, action, params, ok, error, ms}
 _AUDIT_MAX = 2000
 _log_buffer = []  # mirrors bridge stdout lines
 _LOG_MAX = 5000
-_policy = {"allow": [], "deny": [], "readonly": False}
+# Ask-before-act is opt-in. askUrls are payment-like URL patterns it guards (case-insensitive).
+DEFAULT_ASK_URLS = [r"checkout", r"payment", r"billing", r"/pay\b", r"purchase", r"/order"]
+_policy = {"allow": [], "deny": [], "readonly": False,
+           "ask": False, "askUrls": list(DEFAULT_ASK_URLS), "askLocked": False}
 _sessions_dir = os.path.join(DATA_DIR, "sessions")
 
 def _cache_key(action, params):
@@ -748,6 +752,195 @@ def _check_policy(action, params):
     return None
 
 
+# ── Ask-before-act (docs/api-reference.md#ask-before-act) ──
+# Held actions do not run: they return confirmation_required with a token bound to the exact
+# action, parameters and tab. The token goes back to the agent, so it enforces an explicit second
+# step, not proof that a human approved.
+ASK_BEFORE_ACT_ENV = "KITSUNE_ASK_BEFORE_ACT"
+CONFIRM_TOKEN_TTL = 120
+_UNKNOWN_OUTCOME_TTL = 600
+_ASK_JS_ACTIONS = {"executeJS", "waitForResult", "syncBarrier", "if", "while"}
+_ASK_COOKIE_ACTIONS = {"cookies", "saveSession", "loadSession"}
+_ASK_NAVIGATION_ACTIONS = {"navigate", "newTab", "createWindow"}
+_ASK_CLICK_ACTIONS = {"click", "doubleClick", "trustedClick", "clickAndWaitNavigation"}
+# Page actions held on payment-like pages; they target one tab, which the token is bound to.
+_ASK_PAGE_ACTIONS = _ASK_CLICK_ACTIONS | {
+    "keypress", "type", "setEditableContent", "fill", "formFill", "selectOption", "checkBox",
+    "drag", "submitForm", "uploadFile", "handleDialog", "storageOp", "executeJS", "waitForResult",
+}
+_ASK_TAB_ACTIONS = _ASK_PAGE_ACTIONS | {"navigate"}
+_confirm_tokens = {}     # token -> {"binding", "expires", "used"}
+_unknown_outcomes = {}   # outcome key -> expiry, for writes that ended retryable: false
+
+
+def _ask_url_match(url):
+    for pat in _policy.get("askUrls", []):
+        try:
+            if url and _re.search(pat, url, _re.I):
+                return pat
+        except _re.error:
+            pass
+    return None
+
+
+def _outcome_key(action, params):
+    payload = {"action": action, "params": {k: v for k, v in (params or {}).items() if k != "confirmToken"}}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def _confirmation_binding(action, params, tab_id):
+    return _outcome_key(action, {**(params or {}), "__tab": tab_id})
+
+
+def _remember_outcome(action, params, result):
+    """Under ask mode, remember writes whose outcome is unknown so repeating them is held."""
+    if not _policy["ask"] or not isinstance(result, dict) or result.get("retryable") is not False:
+        return
+    now_s = time.monotonic()
+    for key in [k for k, exp in _unknown_outcomes.items() if exp < now_s]:
+        del _unknown_outcomes[key]
+    _unknown_outcomes[_outcome_key(action, params)] = now_s + _UNKNOWN_OUTCOME_TTL
+    while len(_unknown_outcomes) > 200:
+        del _unknown_outcomes[next(iter(_unknown_outcomes))]
+
+
+def _issue_confirm_token(binding):
+    now_s = time.monotonic()
+    for token in [t for t, entry in _confirm_tokens.items() if entry["expires"] < now_s]:
+        del _confirm_tokens[token]
+    while len(_confirm_tokens) >= 100:
+        del _confirm_tokens[next(iter(_confirm_tokens))]
+    token = secrets.token_urlsafe(24)
+    _confirm_tokens[token] = {"binding": binding, "expires": now_s + CONFIRM_TOKEN_TTL, "used": False}
+    return token
+
+
+def _spend_confirm_token(token, binding):
+    """Burn a presented token; return None if it confirms binding, else why it was rejected."""
+    entry = _confirm_tokens.get(token) if isinstance(token, str) else None
+    if entry is None:
+        return "unknown"
+    if entry["used"]:
+        return "used"
+    entry["used"] = True
+    if entry["expires"] < time.monotonic():
+        return "expired"
+    if entry["binding"] != binding:
+        return "mismatch"
+    return None
+
+
+async def _describe_target(params, inspect):
+    target = {key: params[key] for key in ("tabId", "selector", "ref", "key") if params.get(key) is not None}
+    coords = params.get("coords") or ({"x": params["x"], "y": params["y"]} if "x" in params and "y" in params else None)
+    if coords and not target.get("selector") and not target.get("ref"):
+        target["coords"] = coords
+    return await send_to_extension("describeTarget", {**target, "inspect": inspect}, timeout=10)
+
+
+async def _held_reason(action, params):
+    """Return (reason, description, tab_id, url) when ask mode holds this action, else None."""
+    reason = description = None
+    url = params.get("url") if action in _ASK_NAVIGATION_ACTIONS else None
+    if action in _ASK_JS_ACTIONS:
+        reason, description = "javascript", "runs agent-supplied JavaScript in the page"
+    elif action in _ASK_COOKIE_ACTIONS:
+        reason, description = "cookies", "reads or writes browser cookies"
+    elif action == "submitForm":
+        reason, description = "submit", "submits a form"
+    elif _ask_url_match(url):
+        reason, description = "payment_url", f"opens a payment-like URL ({_ask_url_match(url)}): {url}"
+    elif _outcome_key(action, params) in _unknown_outcomes:
+        reason, description = "unknown_outcome", "repeats a write whose previous outcome is unknown"
+
+    tab_id = url_now = None
+    if action in _ASK_TAB_ACTIONS:
+        submit_key = action == "keypress" and params.get("key") == "Enter"
+        screen = action == "trustedClick" and (params.get("coordinateSpace") or params.get("space")) == "screen"
+        inspect = reason is None and (action in _ASK_CLICK_ACTIONS or submit_key) and not screen
+        described = await _describe_target(params, inspect)
+        if not isinstance(described, dict) or described.get("error"):
+            # Fail closed: an action that cannot be inspected is held.
+            error = described.get("error") if isinstance(described, dict) else described
+            return (reason or "uninspectable_target",
+                    description or f"acts on a target that could not be inspected ({error})",
+                    _coerce_tab_id(params.get("tabId")), None)
+        tab_id, url_now = described.get("tabId"), described.get("url")
+        target = described.get("target") or {}
+        if reason is None and action in _ASK_PAGE_ACTIONS and _ask_url_match(url_now):
+            reason, description = "payment_page", f"acts on a payment-like page ({_ask_url_match(url_now)})"
+        elif reason is None and screen:
+            reason, description = "uninspectable_target", "clicks screen coordinates that cannot be inspected"
+        elif reason is None and target.get("submits"):
+            what = "presses Enter in a form field" if submit_key else "clicks a submit control"
+            label = target.get("text") or target.get("tag") or ""
+            reason, description = "submit_control", f"{what} ({label})" if label else what
+    if reason is None:
+        return None
+    return reason, description, tab_id, url_now or url
+
+
+async def _ask_before_act(action, params, *, direct):
+    """Return a confirmation_required error when ask mode holds this action, else None.
+
+    Removes confirmToken from params. Tokens are only honored on direct calls, so batch,
+    retry, parallel, broadcast and workflows never confirm an action.
+    """
+    token = params.pop("confirmToken", None) if isinstance(params, dict) else None
+    if not _policy["ask"]:
+        return None
+    held = await _held_reason(action, params)
+    if held is None:
+        return None
+    reason, description, tab_id, url = held
+    binding = _confirmation_binding(action, params, tab_id)
+    rejected = None
+    if token is not None:
+        rejected = _spend_confirm_token(token, binding)
+        if rejected is None and not direct:
+            rejected = "not_direct"
+        if rejected is None:
+            _unknown_outcomes.pop(_outcome_key(action, params), None)
+            _audit(action, {**params, "confirmation": "accepted", "reason": reason}, True, None, 0)
+            return None
+    _audit(action, {**params, "confirmation": "required", "reason": reason}, False, "confirmation_required", 0)
+    state = {"confirmToken": _issue_confirm_token(binding), "expiresInSeconds": CONFIRM_TOKEN_TTL,
+             "action": action, "reason": reason, "description": description,
+             "tabId": tab_id, "url": url, "params": dict(params)}
+    if rejected:
+        state["tokenRejected"] = rejected
+    return _action_error(
+        f"Confirmation required: {description}", "confirmation_required", retryable=True,
+        hint=("Nothing ran. Ask the user to approve this exact action, then repeat the identical call "
+              f"with confirmToken (MCP: confirm_token) within {CONFIRM_TOKEN_TTL}s. The token works once, "
+              "only for this action, parameters and tab, and only on a direct tool call (never inside "
+              "batch, retry, parallel, broadcast or workflows)."),
+        **state,
+    )
+
+
+def _invalid_ask_policy(body):
+    """Return why set-policy's ask/askUrls are invalid, else None; nothing is coerced."""
+    if "ask" in body and not isinstance(body["ask"], bool):
+        return "ask must be true or false"
+    if "askUrls" in body:
+        urls = body["askUrls"]
+        if not isinstance(urls, list):
+            return "askUrls must be a list of regular expressions"
+        for pat in urls:
+            if not isinstance(pat, str) or not pat:
+                return f"askUrls entries must be non-empty strings: {pat!r}"
+            try:
+                _re.compile(pat)
+            except _re.error as exc:
+                return f"askUrls entry {pat!r} is not a valid regular expression: {exc}"
+    return None
+
+
+def _is_held(result):
+    return isinstance(result, dict) and result.get("code") == "confirmation_required"
+
+
 def _invalidate_cache_for_action(action):
     if action in WRITE_ACTIONS or action in ("elementScreenshot", "fullPageScreenshot"):
         _cache_clear(action)
@@ -1129,11 +1322,13 @@ def _disconnected_error(message, action, sent=True):
 
 async def send_to_extension(action, params=None, timeout=30):
     """Send command to extension and wait for response."""
-    return await _run_in_command_scope(
+    result = await _run_in_command_scope(
         action,
         params,
         lambda: _send_to_extension_raw(action, params=params, timeout=timeout),
     )
+    _remember_outcome(action, params, result)
+    return result
 
 
 async def _send_to_extension_raw(action, params=None, timeout=30):
@@ -1339,7 +1534,15 @@ async def _observe_outcome(spec, tab_id, before_url, snapshot):
     return {"met": met, "observed": observed, "elapsed": int((time.monotonic() - start) * 1000)}
 
 
-async def _send_with_expectation(action, params, spec, timeout=30):
+async def _send_with_expectation(action, params, spec, timeout=30, remember=None):
+    result = await _dispatch_with_expectation(action, params, spec, timeout)
+    if remember is not None:
+        # Ask-before-act keys repeats by the caller's params, which include expect.
+        _remember_outcome(action, remember, result)
+    return result
+
+
+async def _dispatch_with_expectation(action, params, spec, timeout):
     """Dispatch an action, then report whether the caller's expected outcome was observed."""
     params = dict(params)
     tab_id = params.get("tabId")
@@ -1571,17 +1774,21 @@ async def run_command(cmd):
         policy_err = _check_policy(effective_action, params)
         if policy_err:
             return policy_err
+        held = await _ask_before_act(effective_action, params, direct=False)
+        if held:
+            return held
         _invalidate_cache_for_action(effective_action)
 
         # Simple forwarding actions (the majority)
         if action in BATCH_ACTION_MAP:
             if 'expect' in params:
+                remember = dict(params)
                 spec, problem = _parse_expect(effective_action, params.pop('expect'))
                 if problem:
                     return {'error': problem}
                 return await _send_with_expectation(
                     effective_action, params, spec,
-                    timeout=30 + actionability_wait_seconds(effective_action, params))
+                    timeout=30 + actionability_wait_seconds(effective_action, params), remember=remember)
             if effective_action in ('waitForUrl', 'waitForTitle'):
                 timeout_s = params.get('timeout', 10000) / 1000 + 5
                 return await send_to_extension(effective_action, params, timeout=timeout_s)
@@ -1629,6 +1836,8 @@ async def run_command(cmd):
                 results = []
                 for c in seq:
                     results.append(await run_command(c))
+                    if _is_held(results[-1]):
+                        break  # later steps may depend on the held one
                 return results
             return list(await asyncio.gather(*[run_sequence(s) for s in sequences]))
         elif action == 'broadcast':
@@ -1650,6 +1859,9 @@ async def run_command(cmd):
                 last = await run_command(inner)
                 if not (isinstance(last, dict) and last.get('error')):
                     return {'ok': True, 'attempts': i + 1, 'result': last}
+                # Retrying cannot confirm a held action; only the caller can.
+                if _is_held(last):
+                    return {'ok': False, 'attempts': i + 1, 'result': last, 'reason': 'confirmation required'}
                 # Never blindly repeat a command that may already have taken effect.
                 if last.get('retryable') is False:
                     return {'ok': False, 'attempts': i + 1, 'result': last, 'reason': 'not retryable'}
@@ -1708,6 +1920,8 @@ async def run_command(cmd):
             for command in inner:
                 resolved = _substitute_vars(command, results)
                 results.append(await run_command(resolved))
+                if _is_held(results[-1]):
+                    break
             return {'results': results}
         else:
             return {'error': f'Unknown batch action: {action}'}
@@ -2064,6 +2278,16 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     # ── POST Handlers ──
 
+    def _held(self, action, body):
+        """Apply ask-before-act to a direct call; send the held error and return True if held."""
+        if not _policy["ask"]:
+            body.pop("confirmToken", None)
+            return False
+        held = self.run_async(_ask_before_act(action, body, direct=True))
+        if held:
+            self.send_json(403, held)
+        return bool(held)
+
     def _send_extension_action(self, action, body, timeout=35):
         policy_err = _check_policy(action, body)
         if policy_err:
@@ -2075,6 +2299,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
             if problem:
                 self.send_json(200, {"error": problem})
                 return
+        if self._held(action, body):
+            return
         _invalidate_cache_for_action(action)
         t0 = time.time()
         try:
@@ -2088,7 +2314,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 result = self.run_async(send_to_extension(action, body, timeout=timeout), timeout=timeout + 5)
             else:
                 params = {k: v for k, v in body.items() if k != 'expect'}
-                result = self.run_async(_send_with_expectation(action, params, spec, timeout=timeout),
+                result = self.run_async(_send_with_expectation(action, params, spec, timeout=timeout,
+                                                               remember=dict(body)),
                                         timeout=timeout + _outcome_budget_seconds(spec))
         except Exception as e:
             result = {"error": str(e)}
@@ -2106,6 +2333,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
         policy_err = _check_policy("uploadFile", body)
         if policy_err:
             self.send_json(403, policy_err)
+            return
+        if self._held("uploadFile", body):
             return
         _invalidate_cache_for_action("uploadFile")
         t0 = time.time()
@@ -2125,6 +2354,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
         policy_err = _check_policy("trustedClick", body)
         if policy_err:
             self.send_json(403, policy_err)
+            return
+        if self._held("trustedClick", body):
             return
         _invalidate_cache_for_action("trustedClick")
         t0 = time.time()
@@ -2176,6 +2407,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
     def handle_js(self):
         body = self.read_body()
         if body.get("full"):
+            if self._held("executeJS", body):
+                return
             try:
                 result = self.run_async(_js_full_async(body), timeout=float(body.get("timeout", 180)))
             except Exception as e:
@@ -2226,6 +2459,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     def handle_wait_for_result(self):
         body = self.read_body()
+        if self._held("waitForResult", body):
+            return
         timeout_ms = body.get("timeout", 15000)
         timeout_s = (timeout_ms / 1000) + 5
         result = self.run_async(send_to_extension("waitForResult", body, timeout=timeout_s))
@@ -2285,6 +2520,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     def handle_sync_barrier(self):
         body = self.read_body()
+        if self._held("syncBarrier", body):
+            return
         result = self.run_async(_sync_barrier_async(
             body.get("tabIds", []),
             body.get("predicate", "1"),
@@ -2371,6 +2608,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     def handle_save_session(self):
         body = self.read_body()
+        if self._held("saveSession", body):
+            return
         name = body.get("name") or "default"
         urls = body.get("urls") or []
         result = self.run_async(_save_session_async(name, urls))
@@ -2378,6 +2617,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     def handle_load_session(self):
         body = self.read_body()
+        if self._held("loadSession", body):
+            return
         name = body.get("name") or "default"
         result = self.run_async(_load_session_async(name))
         self.send_json(200, result)
@@ -2439,6 +2680,25 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     def handle_set_policy(self):
         body = self.read_body()
+        invalid = _invalid_ask_policy(body)
+        if invalid:
+            self.send_json(400, {"error": f"Invalid policy: {invalid}", "code": "invalid_policy",
+                                 "policy": dict(_policy)})
+            return
+        if _policy["askLocked"]:
+            # Started with --ask-before-act: the policy can only be tightened.
+            loosened = []
+            if "ask" in body and not body["ask"]:
+                loosened.append("ask cannot be turned off")
+            if "askUrls" in body and not set(_policy["askUrls"]) <= set(body["askUrls"] or []):
+                loosened.append("askUrls cannot drop patterns")
+            if loosened:
+                self.send_json(403, {"error": "Ask-before-act is locked for this bridge (started with "
+                                              f"{ASK_BEFORE_ACT_ENV}=1 or --ask-before-act): " + "; ".join(loosened),
+                                     "code": "policy_locked", "policy": dict(_policy)})
+                return
+        if "ask" in body: _policy["ask"] = body["ask"]
+        if "askUrls" in body: _policy["askUrls"] = list(body["askUrls"])
         if "allow" in body: _policy["allow"] = list(body["allow"])
         if "deny" in body: _policy["deny"] = list(body["deny"])
         if "readonly" in body: _policy["readonly"] = bool(body["readonly"])
@@ -2457,6 +2717,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
             for cmd in commands:
                 r = await run_command(cmd)
                 results.append(r)
+                # Later commands may depend on a held one, so never run past it.
+                if _is_held(r):
+                    r['_stopped'] = True
+                    break
                 # Stop early if a command returned a warning/redirect and stopOnWarning is set
                 if stop_on_warning and isinstance(r, dict) and (r.get('warning') or r.get('error')):
                     r['_stopped'] = True
@@ -2692,9 +2956,15 @@ def run(argv=None):
         "--idle-timeout", type=_idle_timeout_seconds, metavar="SECONDS",
         help=f"start: exit after SECONDS without client HTTP calls (default: ${IDLE_TIMEOUT_ENV}, else 0 = never)",
     )
+    parser.add_argument(
+        "--ask-before-act", action="store_true",
+        help=f"start: hold sensitive actions for confirmation, locked on (also ${ASK_BEFORE_ACT_ENV}=1)",
+    )
     args = parser.parse_args(argv)
     if args.command != "start" and args.idle_timeout is not None:
         parser.error("--idle-timeout only applies to start")
+    if args.command != "start" and args.ask_before_act:
+        parser.error("--ask-before-act only applies to start")
     if args.command == "status":
         try:
             status = bridge_control.status()
@@ -2715,6 +2985,8 @@ def run(argv=None):
             idle_timeout = _idle_timeout_seconds(os.environ.get(IDLE_TIMEOUT_ENV) or "0")
         except argparse.ArgumentTypeError as exc:
             parser.error(f"{IDLE_TIMEOUT_ENV}: {exc}")
+    if args.ask_before_act or os.environ.get(ASK_BEFORE_ACT_ENV, "").lower() in {"1", "true", "yes", "on"}:
+        _policy.update(ask=True, askLocked=True)
 
     # Separate from the short-lived lifecycle lock held by the spawning MCP
     # server. Keep this inode locked until all network servers have closed.

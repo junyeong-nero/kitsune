@@ -42,6 +42,9 @@ extensions stay in place. No Playwright, Chromium, or WebDriver required.
 
 Use a dedicated browser profile and only give access to accounts the agent
 needs. Ask for confirmation before sending, purchasing, or deleting anything.
+The opt-in [ask-before-act](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#ask-before-act)
+policy makes the bridge hold submits, payment pages, JavaScript, and cookie access
+until the agent repeats the call with a confirmation token.
 Read the [security guidance](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#security) before using sensitive accounts.
 
 ## MCP setup
