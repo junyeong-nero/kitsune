@@ -34,6 +34,16 @@ class BuildExtensionTests(unittest.TestCase):
         self.assertEqual(content.count("eval("), 2)
         self.assertIn("const KITSUNE_BUILD = 'dev';", content)
 
+    def test_only_signed_build_has_update_url(self):
+        signed = json.loads((self.build("signed") / "manifest.json").read_text())
+        self.assertEqual(signed["browser_specific_settings"]["gecko"]["update_url"], build_extension.UPDATE_URL)
+        self.assertEqual(signed["browser_specific_settings"]["gecko"]["id"], "kitsune@junyeong-nero.github.io")
+        for manifest in (
+            json.loads((self.build("dev") / "manifest.json").read_text()),
+            json.loads((ROOT / "extension" / "manifest.json").read_text()),
+        ):
+            self.assertNotIn("update_url", manifest["browser_specific_settings"]["gecko"])
+
     def test_markers_must_balance(self):
         for text, message in (
             ("// @kitsune-dev-only:start\nx\n", "unterminated"),

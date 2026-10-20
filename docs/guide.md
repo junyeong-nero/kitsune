@@ -170,7 +170,10 @@ not permission to take additional actions; see [Security](#security).
    Plain `kitsune-bridge` (or `kitsune-bridge start`) still runs the daemon
    in the foreground. `status` and `stop` never start a daemon. All commands use
    the same `KITSUNE_HOME`, token, and port environment settings as the server.
-3. Install the extension for the same version as the server: the new signed XPI
+3. Install the extension for the same version as the server. Signed builds
+   released after 0.2.0 update themselves
+   ([Automatic extension updates](installation.md#automatic-extension-updates));
+   otherwise install the new signed XPI
    from `about:addons` → gear → **Install Add-on From File…**, or, for the
    developer build, reload it in `about:debugging#/runtime/this-firefox` (click
    **Reload** on Kitsune, or load the updated `manifest.json` again). A bridge
