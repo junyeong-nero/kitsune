@@ -1832,6 +1832,19 @@
     return { ok: true, submitted: 'method' };
   }
 
+  // Strict boolean parsing for checkbox/radio values: JS truthiness would turn "false" into checked.
+  const FORM_TRUE_VALUES = new Set(['true', 'on', 'yes', '1']);
+  const FORM_FALSE_VALUES = new Set(['false', 'off', 'no', '0']);
+  function parseFormBoolean(value) {
+    if (typeof value === 'boolean') return value;
+    if (value === 1 || value === 0) return value === 1;
+    if (typeof value !== 'string') return undefined;
+    const text = value.trim().toLowerCase();
+    if (FORM_TRUE_VALUES.has(text)) return true;
+    if (FORM_FALSE_VALUES.has(text)) return false;
+    return undefined;
+  }
+
   function formFill(fieldMap) {
     if (!fieldMap || typeof fieldMap !== 'object') return { error: 'fields must be an object' };
     const results = {};
@@ -1868,7 +1881,18 @@
           applySelectOption(el, matched);
           results[key] = { ok: true, tag: 'select', value: el.value };
         } else if (el.type === 'checkbox' || el.type === 'radio') {
-          el.checked = !!value;
+          const checked = parseFormBoolean(value);
+          if (checked === undefined) {
+            results[key] = { error: `Invalid ${el.type} value: ${JSON.stringify(value)} (expected true/false, "true"/"false", "on"/"off", "yes"/"no" or "1"/"0")` };
+            continue;
+          }
+          if (el.type === 'radio' && !checked) {
+            // Unchecking would leave the group with no selection; select another radio instead.
+            if (el.checked) { results[key] = { error: 'Cannot uncheck a selected radio; set another option in its group to true' }; continue; }
+            results[key] = { ok: true, tag: el.tagName.toLowerCase(), checked: false };
+            continue;
+          }
+          el.checked = checked;
           el.dispatchEvent(new Event('change', { bubbles: true }));
           results[key] = { ok: true, tag: el.tagName.toLowerCase(), checked: el.checked };
         } else {

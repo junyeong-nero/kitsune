@@ -26,11 +26,29 @@ class SelectElement extends Element {
   set value(value) { this.selectedIndex = this.options.findIndex(opt => opt.value === String(value)); }
 }
 
+// Mirrors the DOM: checking a radio unchecks the rest of its name group.
+class RadioElement extends Element {
+  constructor(name, group) {
+    super('INPUT', { name });
+    Object.assign(this, { type: 'radio', group, _checked: false });
+    group.push(this);
+  }
+  get checked() { return this._checked; }
+  set checked(value) {
+    if (value) for (const radio of this.group) radio._checked = false;
+    this._checked = !!value;
+  }
+}
+
 async function testFormFill() {
   const color = new SelectElement(['red', 'blue']);
   const name = Object.assign(new Element('INPUT'), { type: 'text', value: '' });
   const label = { innerText: 'Color', querySelector: () => color };
-  const elements = { '#name': name, '#color': color };
+  const agree = Object.assign(new Element('INPUT'), { type: 'checkbox', checked: false });
+  const sizes = [];
+  const small = new RadioElement('size', sizes);
+  const medium = new RadioElement('size', sizes);
+  const elements = { '#name': name, '#color': color, '#agree': agree, '#small': small, '#medium': medium };
   let listener;
   const context = vm.createContext({
     console, crypto: webcrypto, Event, CSS: { escape: x => x },
@@ -67,6 +85,49 @@ async function testFormFill() {
   const control = await send({ action: 'selectOption', selector: '#color', value: 'nonexistent' });
   assert.equal(control.error, mixed.results.Color.error, 'matches selectOption error');
   assert.equal(color.value, 'blue');
+
+  for (const [value, expected] of [[true, true], ['false', false], ['ON', true], [' off ', false],
+    ['Yes', true], ['no', false], ['1', true], [0, false], [1, true], [false, false]]) {
+    agree.events = [];
+    const result = await send({ action: 'formFill', fields: { '#agree': value } });
+    assert.deepEqual(result.results['#agree'], { ok: true, tag: 'input', checked: expected }, `checkbox ${JSON.stringify(value)}`);
+    assert.equal(agree.checked, expected);
+    assert.deepEqual(agree.events, ['change']);
+  }
+
+  for (const value of ['maybe', '', 'null', 2, null, {}]) {
+    agree.events = [];
+    const result = await send({ action: 'formFill', fields: { '#agree': value, '#name': 'Grace' } });
+    assert.match(result.results['#agree'].error, /^Invalid checkbox value: .* \(expected true\/false/, `rejects ${JSON.stringify(value)}`);
+    assert.equal(agree.checked, false, 'invalid value leaves the checkbox unchanged');
+    assert.deepEqual(agree.events, [], 'no change signal for an invalid value');
+    assert.deepEqual(result.results['#name'], { ok: true, tag: 'input' }, 'partial failure still fills other fields');
+  }
+
+  const radio = await send({ action: 'formFill', fields: { '#small': 'true' } });
+  assert.deepEqual(radio.results['#small'], { ok: true, tag: 'input', checked: true });
+  assert.deepEqual([small.checked, medium.checked], [true, false]);
+
+  small.events = [];
+  const uncheck = await send({ action: 'formFill', fields: { '#small': false } });
+  assert.deepEqual(uncheck.results['#small'], { error: 'Cannot uncheck a selected radio; set another option in its group to true' });
+  assert.deepEqual([small.checked, medium.checked], [true, false], 'radio group keeps a selection');
+  assert.deepEqual(small.events, []);
+
+  medium.events = [];
+  const unselected = await send({ action: 'formFill', fields: { '#medium': 'off' } });
+  assert.deepEqual(unselected.results['#medium'], { ok: true, tag: 'input', checked: false });
+  assert.deepEqual(medium.events, [], 'false on an unselected radio is a no-op');
+
+  const swap = await send({ action: 'formFill', fields: { '#medium': 'yes', '#small': 'false', '#agree': 'sure' } });
+  assert.deepEqual(swap.results['#medium'], { ok: true, tag: 'input', checked: true });
+  assert.deepEqual(swap.results['#small'], { ok: true, tag: 'input', checked: false }, 'already deselected by its group');
+  assert.match(swap.results['#agree'].error, /^Invalid checkbox value: "sure"/);
+  assert.deepEqual([small.checked, medium.checked], [false, true]);
+
+  const badRadio = await send({ action: 'formFill', fields: { '#small': 'checked' } });
+  assert.match(badRadio.results['#small'].error, /^Invalid radio value: "checked"/);
+  assert.deepEqual([small.checked, medium.checked], [false, true]);
 }
 
 testFormFill().then(() => console.log('Form fill checks passed'))

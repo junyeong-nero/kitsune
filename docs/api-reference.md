@@ -149,6 +149,14 @@ For a `<select>`, the value must equal an option's `value`, the same rule as
 An unmatched value returns `{"error": "No matching option for value: X"}` for
 that key, leaves the previous selection untouched, and dispatches no events.
 
+For a checkbox or radio, the value must be `true`/`false`, `1`/`0`, or one of the
+case-insensitive strings `"true"`/`"false"`, `"on"`/`"off"`, `"yes"`/`"no"`,
+`"1"`/`"0"`. Any other value (for example `"maybe"`, `""` or `null`) returns
+`{"error": "Invalid checkbox value: ..."}` for that key and leaves it unchanged.
+A selected radio cannot be set to false, since that would leave its group with
+no selection; set another radio in the group to true instead. False on an
+unselected radio is a no-op that reports `"checked": false`.
+
 ```json
 { "results": { "Email": { "ok": true, "tag": "input" }, "Color": { "error": "No matching option for value: purple" } } }
 ```
