@@ -14,10 +14,25 @@ def actionability_wait_seconds(action, params):
     return params.get("timeout", 10000) / 1000
 
 
+def expect_wait_seconds(cmd):
+    """Bounded post-dispatch outcome check of a command with `expect` (default 5000 ms)."""
+    expect = cmd.get("expect")
+    if not isinstance(expect, dict):
+        return 0
+    timeout = expect.get("timeout", 5000)
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout < 0:
+        return 0  # the bridge rejects it before dispatch
+    return timeout / 1000 + 5
+
+
 def command_wait_seconds(cmd):
     """Longest time a batch command may spend waiting by design, in seconds."""
     if not isinstance(cmd, dict):
         return 0
+    return _command_wait_seconds(cmd) + expect_wait_seconds(cmd)
+
+
+def _command_wait_seconds(cmd):
     action = cmd.get("action")
     if action in ("waitForElement", "waitForUrl", "waitForTitle"):
         return cmd.get("timeout", 10000) / 1000

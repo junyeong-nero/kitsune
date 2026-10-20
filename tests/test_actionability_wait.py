@@ -132,6 +132,17 @@ class ToolActionWaitTests(unittest.TestCase):
                                   {"action": "hover", "selector": "#go", "wait": True}])
             self.assertEqual(post.call_args.kwargs["timeout"], 55)
 
+    def test_wait_and_expect_combine(self):
+        # #66 waits before dispatch and #67 checks the outcome after it; both bound the request.
+        with patch.object(server, "_post", return_value={"ok": True}) as post:
+            server.browser_click("#go", wait=True, timeout=10000, expect={"text": "Saved", "timeout": 3000})
+            post.assert_called_with("/api/click", {"selector": "#go", "wait": True, "timeout": 10000,
+                                                   "expect": {"text": "Saved", "timeout": 3000}},
+                                    timeout=15 + 10 + 3 + 45)
+            server.browser_batch([{"action": "click", "selector": "#go", "wait": True,
+                                   "expect": {"text": "Saved", "timeout": 3000}}])
+            self.assertEqual(post.call_args.kwargs["timeout"], 15 + 10 + 3 + 5)
+
     def test_batch_timeout_covers_the_sum_of_sequential_waits(self):
         with patch.object(server, "_post", return_value={"results": []}) as post:
             # Three 10s waits run one after another; the max of them (25s) cut the batch off.
