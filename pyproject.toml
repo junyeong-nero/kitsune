@@ -28,6 +28,10 @@ dependencies = [
     "websockets>=14.2",
 ]
 
+[project.optional-dependencies]
+# Native trusted clicks on macOS (browser_trusted_click); cliclick on PATH also works.
+macos = ["pyobjc-framework-Quartz>=10; sys_platform == 'darwin'"]
+
 [project.urls]
 Homepage = "https://github.com/junyeong-nero/kitsune"
 Documentation = "https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md"

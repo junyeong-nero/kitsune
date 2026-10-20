@@ -386,14 +386,15 @@ def browser_trusted_click(
     """Click using the real OS mouse pointer for pages that reject synthetic DOM events.
 
     This is slower and moves the user's cursor, so prefer browser_click unless a page
-    specifically ignores synthetic clicks.
+    specifically ignores synthetic clicks. Works on Windows and macOS; macOS needs
+    pyobjc Quartz or cliclick plus Accessibility permission for the bridge.
 
     Args:
         selector: CSS selector to click. If provided, Kitsune clicks its center.
         x: X coordinate, used if selector is empty.
         y: Y coordinate, used if selector is empty.
         coordinate_space: "viewport" for browser viewport coords or "screen" for desktop coords.
-        focus: Whether to try to foreground the browser first. Defaults to false.
+        focus: Whether to try to foreground the browser (Zen, Firefox, LibreWolf) first. Defaults to false.
         tab_id: Optional tab to resolve the selector against (viewport coords only).
     """
     if selector:

@@ -28,6 +28,8 @@ import signal
 import json
 import base64
 import os
+import shutil
+import subprocess
 import sys
 import time
 import ctypes
@@ -185,6 +187,55 @@ def _focus_window_by_title(title):
     user32.SetForegroundWindow(hwnd)
     time.sleep(0.05)
     return user32.GetForegroundWindow() == hwnd
+
+
+# Supported Firefox-family browsers; env vars take comma lists for other builds.
+_DEFAULT_BROWSER_WINDOW_TITLES = ("Zen Browser", "Mozilla Firefox", "LibreWolf")
+_DEFAULT_BROWSER_PROCESSES = ("zen", "firefox", "librewolf")
+
+# Process names arrive as argv so configured names are never spliced into the script.
+_MAC_FOCUS_SCRIPT = """on run argv
+  tell application "System Events"
+    repeat with procName in argv
+      set procName to procName as text
+      if exists process procName then
+        set frontmost of process procName to true
+        return procName
+      end if
+    end repeat
+  end tell
+  return ""
+end run"""
+
+
+def _env_names(name, default):
+    names = [part.strip() for part in os.environ.get(name, "").split(",") if part.strip()]
+    return names or list(default)
+
+
+def _focus_mac_process(names):
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", _MAC_FOCUS_SCRIPT, *names],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if result.returncode != 0 or not result.stdout.strip():
+        return False
+    time.sleep(0.05)
+    return True
+
+
+def _focus_browser_window(title="", process=""):
+    """Best-effort browser focus: window title on Windows, process name on macOS."""
+    if sys.platform.startswith("win"):
+        titles = [title] if title else _env_names("KITSUNE_BROWSER_WINDOW_TITLE", _DEFAULT_BROWSER_WINDOW_TITLES)
+        return any(_focus_window_by_title(t) for t in titles)
+    if sys.platform == "darwin":
+        processes = [process] if process else _env_names("KITSUNE_BROWSER_PROCESS", _DEFAULT_BROWSER_PROCESSES)
+        return _focus_mac_process(processes)
+    return False
 
 
 _NO_SCHEDULE_ACTIONS = {"ping", "getTabs", "getWindows"}
@@ -435,9 +486,79 @@ def _cleanup_tab_scheduler_state(tab_id):
         _tab_command_locks.pop(tab_id, None)
 
 
+_MAC_ACCESSIBILITY_HELP = (
+    "grant Accessibility permission to the app running the Kitsune bridge "
+    "(System Settings > Privacy & Security > Accessibility), then restart the bridge"
+)
+
+
+def _mac_accessibility_trusted():
+    """AXIsProcessTrusted() via ctypes; None when it cannot be checked."""
+    try:
+        lib = ctypes.cdll.LoadLibrary(
+            "/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices")
+        lib.AXIsProcessTrusted.restype = ctypes.c_bool
+        return bool(lib.AXIsProcessTrusted())
+    except (OSError, AttributeError):
+        return None
+
+
+def _cliclick_coord(value):
+    # cliclick reads a leading "-" as relative; "=" marks an absolute negative value.
+    value = int(round(value))
+    return f"={value}" if value < 0 else str(value)
+
+
+def _mac_click_screen(x, y):
+    # macOS drops posted mouse events from untrusted processes without an error.
+    if _mac_accessibility_trusted() is False:
+        return {"error": f"trustedClick needs macOS Accessibility permission: {_MAC_ACCESSIBILITY_HELP}"}
+
+    try:
+        import Quartz
+    except ImportError:
+        Quartz = None
+    if Quartz is not None:
+        point = (float(x), float(y))
+        for event_type, pause in (
+            (Quartz.kCGEventMouseMoved, 0.05),
+            (Quartz.kCGEventLeftMouseDown, 0.03),
+            (Quartz.kCGEventLeftMouseUp, 0),
+        ):
+            event = Quartz.CGEventCreateMouseEvent(None, event_type, point, Quartz.kCGMouseButtonLeft)
+            Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
+            if pause:
+                time.sleep(pause)
+        return {"ok": True, "backend": "quartz"}
+
+    cliclick = shutil.which("cliclick")
+    if cliclick:
+        try:
+            result = subprocess.run(
+                [cliclick, f"c:{_cliclick_coord(x)},{_cliclick_coord(y)}"],
+                capture_output=True, text=True, timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError) as e:
+            return {"error": f"cliclick failed: {e}"}
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip() or f"exit code {result.returncode}"
+            return {"error": f"cliclick failed: {detail}"}
+        return {"ok": True, "backend": "cliclick"}
+
+    return {
+        "error": (
+            "trustedClick on macOS needs pyobjc Quartz (run Kitsune with "
+            "uvx --from 'kitsune-browser-mcp[macos]' kitsune) or cliclick on PATH "
+            f"(brew install cliclick); also {_MAC_ACCESSIBILITY_HELP}"
+        )
+    }
+
+
 def _native_click_screen(x, y):
+    if sys.platform == "darwin":
+        return _mac_click_screen(x, y)
     if not sys.platform.startswith("win"):
-        return {"error": "trustedClick is only implemented on Windows"}
+        return {"error": "trustedClick is only implemented on Windows and macOS"}
 
     user32 = ctypes.windll.user32
     user32.SetCursorPos(int(round(x)), int(round(y)))
@@ -445,7 +566,7 @@ def _native_click_screen(x, y):
     user32.mouse_event(0x0002, 0, 0, 0, 0)  # LEFTDOWN
     time.sleep(0.03)
     user32.mouse_event(0x0004, 0, 0, 0, 0)  # LEFTUP
-    return {"ok": True}
+    return {"ok": True, "backend": "win32"}
 
 
 async def trusted_click(params):
@@ -460,8 +581,11 @@ async def trusted_click(params):
     if not selector and (x is None or y is None):
         return {"error": "trustedClick requires selector or x/y coordinates"}
 
+    title = params.get("title") or ""
+    process = params.get("process") or ""
+
     if coordinate_space == "screen":
-        focused = _focus_window_by_title(params.get("title") or "Zen Browser") if focus else False
+        focused = _focus_browser_window(title, process) if focus else False
         clicked = _native_click_screen(x, y)
         if "error" in clicked:
             return clicked
@@ -473,6 +597,7 @@ async def trusted_click(params):
             "screenY": y,
             "focused": focused,
             "focusRequested": bool(focus),
+            "clickBackend": clicked.get("backend"),
         }
 
     point_params = {"selector": selector, "x": x, "y": y}
@@ -483,7 +608,7 @@ async def trusted_click(params):
     if "error" in point:
         return point
 
-    focused = _focus_window_by_title(point.get("title", "")) if focus else False
+    focused = _focus_browser_window(title or point.get("title", ""), process) if focus else False
     clicked = _native_click_screen(point["screenX"], point["screenY"])
     if "error" in clicked:
         return clicked
@@ -498,6 +623,7 @@ async def trusted_click(params):
         "title": point.get("title", ""),
         "focused": focused,
         "focusRequested": bool(focus),
+        "clickBackend": clicked.get("backend"),
     }
 
 

@@ -204,6 +204,37 @@ overrides the file destination; `data_url=True` additionally returns `dataUrl`.
 The former element tool's `scale` option remains available through the bridge
 endpoint; the merged MCP tool uses its default scale of 1.
 
+### `browser_trusted_click(selector="", x=0, y=0, coordinate_space="viewport", focus=False, tab_id=None)`
+
+Clicks with the real OS mouse pointer via POST `/api/trusted-click`, for pages
+that ignore synthetic DOM clicks. It moves the user's cursor, so prefer
+`browser_click`. A `selector` is scrolled into view and clicked at its center;
+otherwise `x`/`y` are viewport coordinates, or desktop coordinates with
+`coordinate_space="screen"`.
+
+| Platform | Click backend |
+|---|---|
+| Windows | `user32` `SetCursorPos` + `mouse_event` |
+| macOS | Quartz `CGEventCreateMouseEvent` when pyobjc is importable (`uvx --from 'kitsune-browser-mcp[macos]' kitsune`), else [`cliclick`](https://github.com/BlueM/cliclick) on `PATH` |
+| Linux | Not supported; returns `{error}` |
+
+On macOS, the app running the bridge (your terminal or MCP client) needs
+Accessibility permission (System Settings > Privacy & Security > Accessibility);
+without it, or without either backend, the call returns `{error}` explaining what
+is missing instead of clicking. Results include `clickBackend` (`win32`, `quartz`,
+or `cliclick`).
+
+`focus=True` tries to foreground the browser first and reports `focused`:
+
+- Windows matches the window title: the page title for viewport clicks, otherwise
+  `Zen Browser`, `Mozilla Firefox`, then `LibreWolf`. Set
+  `KITSUNE_BROWSER_WINDOW_TITLE` (comma list) to change the defaults.
+- macOS activates the first running process named `zen`, `firefox`, or
+  `librewolf` through System Events (`osascript`, which may ask for Automation
+  permission). Set `KITSUNE_BROWSER_PROCESS` (comma list) to change the defaults.
+
+The bridge endpoint also accepts `title` and `process` to override these per call.
+
 ### WordPress workflow
 
 `browser_wp_html` is removed. Run
@@ -364,6 +395,12 @@ On timeout the tab stays open and the result is
 
 ### POST /api/click
 `{ "selector": "button.submit" }` — also accepts `ref`, `position`.
+
+### POST /api/trusted-click
+`{ "selector": "button.submit", "focus": true }` or
+`{ "coords": { "x": 640, "y": 400 }, "coordinateSpace": "screen" }` — optional
+`tabId`, `title`, `process`. OS-level click on Windows and macOS; see
+[`browser_trusted_click`](#browser_trusted_clickselector-x0-y0-coordinate_spaceviewport-focusfalse-tab_idnone).
 
 ### POST /api/type
 `{ "text": "hello", "selector": "input" }`

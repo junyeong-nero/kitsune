@@ -67,7 +67,7 @@ See the [API reference](api-reference.md) for parameters and behavior.
 - `browser_reload_extension`
 - `browser_set_policy`
 - `browser_structured_data`
-- `browser_trusted_click`
+- `browser_trusted_click` (Windows and macOS; macOS needs pyobjc Quartz or `cliclick` plus Accessibility permission)
 
 ## network — 3
 
