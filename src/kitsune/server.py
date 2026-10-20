@@ -94,6 +94,12 @@ def _ensure_bridge() -> str | None:
     return f"Kitsune bridge did not start within {BRIDGE_START_TIMEOUT}s. See {LOG_FILE}"
 
 
+def _bridge_unavailable(message: str) -> dict:
+    # Nothing reached the browser, so repeating the request is safe.
+    return {"error": message, "code": "bridge_unavailable", "retryable": True,
+            "hint": f"Check browser_status; the MCP server restarts the bridge on demand. See {LOG_FILE}"}
+
+
 def _request(method: str, endpoint: str, **kwargs) -> dict:
     for attempt in range(2):
         try:
@@ -104,10 +110,16 @@ def _request(method: str, endpoint: str, **kwargs) -> dict:
                 break
             error = _ensure_bridge()
             if error:
-                return {"error": error}
+                return _bridge_unavailable(error)
+        except httpx.TimeoutException as e:
+            # The bridge may still run the command; only GET requests are known to be reads.
+            return {"error": str(e) or "Kitsune bridge request timed out", "code": "timeout",
+                    "retryable": method == "GET",
+                    "hint": "The command's effect is unknown; check the page with browser_snapshot "
+                            "before repeating it."}
         except Exception as e:
             return {"error": str(e)}
-    return {"error": f"Kitsune bridge is not reachable. See {LOG_FILE}"}
+    return _bridge_unavailable(f"Kitsune bridge is not reachable. See {LOG_FILE}")
 
 
 def _get(endpoint: str) -> dict:
@@ -1533,7 +1545,8 @@ def browser_retry(
         max_attempts: Total tries including the first.
         backoff_ms: Initial wait between attempts (doubles each retry).
         on_errors: Only retry if the error string contains one of these substrings.
-            Default: retry on any error.
+            Default: retry on any error. An error with retryable=false (a write whose
+            outcome is unknown) is never repeated.
     """
     body = {"command": command, "maxAttempts": max_attempts, "backoffMs": backoff_ms}
     if on_errors: body["onErrors"] = on_errors
