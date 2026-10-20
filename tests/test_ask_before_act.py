@@ -315,6 +315,28 @@ class LockedPolicyTests(AskBeforeActTestCase):
         self.assertEqual(status, 200)
         self.assertIn("bank", result["policy"]["askUrls"])
 
+    def test_invalid_ask_values_are_rejected_unchanged(self):
+        invalid = [{"askUrls": "checkout"}, {"askUrls": None}, {"askUrls": {"checkout": 1}},
+                   {"askUrls": ["checkout", ""]}, {"askUrls": ["checkout", 3]}, {"askUrls": ["("]},
+                   {"ask": "false"}, {"ask": 1}, {"ask": None},
+                   {"ask": "yes", "readonly": True}, {"askUrls": "bank", "ask": True}]
+        for locked in (False, True):
+            for body in invalid:
+                bridge._policy.update(ask=locked, askLocked=locked, readonly=False,
+                                      askUrls=list(bridge.DEFAULT_ASK_URLS))
+                with self.subTest(locked=locked, body=body):
+                    status, result = self.set_policy(body)
+                    self.assertEqual((status, result["code"]), (400, "invalid_policy"))
+                    self.assertTrue(result["error"].startswith("Invalid policy: "))
+                    self.assertEqual((bridge._policy["ask"], bridge._policy["readonly"],
+                                      bridge._policy["askUrls"]),
+                                     (locked, False, bridge.DEFAULT_ASK_URLS), "nothing applied")
+        bridge._policy.update(ask=False, askLocked=False)
+        status, result = self.set_policy({"ask": True, "askUrls": [r"bank\.example", "/pay\\b"]})
+        self.assertEqual(status, 200)
+        self.assertEqual(result["policy"]["askUrls"], [r"bank\.example", "/pay\\b"])
+        self.assertIs(result["policy"]["ask"], True)
+
     def test_bridge_start_locks_ask_mode(self):
         for args, env in [(["--ask-before-act"], {}), ([], {bridge.ASK_BEFORE_ACT_ENV: "1"}),
                           (["start"], {}), ([], {bridge.ASK_BEFORE_ACT_ENV: "0"})]:

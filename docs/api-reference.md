@@ -127,7 +127,10 @@ In ask mode the bridge holds:
 
 `askUrls` are case-insensitive regular expressions. The default list is
 `checkout`, `payment`, `billing`, `/pay\b`, `purchase`, and `/order`. Replace it with
-`browser_set_policy(ask_urls=[...])`; `[]` disables URL matching.
+`browser_set_policy(ask_urls=[...])`; `[]` disables URL matching. `ask` must be a
+boolean and `askUrls` a list of non-empty strings that compile as regular expressions.
+Any other value (for example a bare string `"checkout"`) returns `invalid_policy`
+(HTTP 400), and none of the request is applied, in locked mode too.
 
 A held call returns `confirmation_required` (HTTP 403 from the bridge) and does not
 run. `retryable` is `true` because nothing reached the page:
@@ -181,6 +184,20 @@ of the request is applied. `allow`, `deny`, and `readonly` stay settable.
 `browser_get_policy` reports `ask`, `askUrls`, and `askLocked`. The bridge is shared:
 if one is already running without the lock, stop it (`kitsune-bridge stop`) so that
 the next start applies it.
+
+The lock lives in the bridge process, not in a file. Any restart starts a new bridge
+from the environment of whatever starts it: `kitsune-bridge stop` followed by the next
+tool call, an idle shutdown, or an MCP server that replaces an outdated bridge. If that
+environment lacks `KITSUNE_ASK_BEFORE_ACT=1`, the new bridge starts unlocked with ask
+mode off. Set the variable in the configuration of **every** MCP server that uses
+Kitsune, not only on a bridge you start by hand, and check `askLocked` with
+`browser_get_policy`.
+
+**Check-then-act window.** The bridge inspects the target (tab, URL, and whether a
+click or Enter submits a form) with `describeTarget` before it dispatches the action.
+The page can change between the two: it can navigate to a payment-like URL, or a
+script can turn the target into a submit control. Such a change is not caught. Passing
+`tab_id` removes the active-tab part of this window, but not changes inside the page.
 
 **Annotations are not policy.** MCP `ToolAnnotations` (`readOnlyHint`,
 `destructiveHint`, `idempotentHint`, `openWorldHint`) are static, per-tool metadata.

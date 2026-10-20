@@ -873,6 +873,24 @@ async def _ask_before_act(action, params, *, direct):
     )
 
 
+def _invalid_ask_policy(body):
+    """Return why set-policy's ask/askUrls are invalid, else None; nothing is coerced."""
+    if "ask" in body and not isinstance(body["ask"], bool):
+        return "ask must be true or false"
+    if "askUrls" in body:
+        urls = body["askUrls"]
+        if not isinstance(urls, list):
+            return "askUrls must be a list of regular expressions"
+        for pat in urls:
+            if not isinstance(pat, str) or not pat:
+                return f"askUrls entries must be non-empty strings: {pat!r}"
+            try:
+                _re.compile(pat)
+            except _re.error as exc:
+                return f"askUrls entry {pat!r} is not a valid regular expression: {exc}"
+    return None
+
+
 def _is_held(result):
     return isinstance(result, dict) and result.get("code") == "confirmation_required"
 
@@ -2404,6 +2422,11 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     def handle_set_policy(self):
         body = self.read_body()
+        invalid = _invalid_ask_policy(body)
+        if invalid:
+            self.send_json(400, {"error": f"Invalid policy: {invalid}", "code": "invalid_policy",
+                                 "policy": dict(_policy)})
+            return
         if _policy["askLocked"]:
             # Started with --ask-before-act: the policy can only be tightened.
             loosened = []
@@ -2416,8 +2439,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
                                               f"{ASK_BEFORE_ACT_ENV}=1 or --ask-before-act): " + "; ".join(loosened),
                                      "code": "policy_locked", "policy": dict(_policy)})
                 return
-        if "ask" in body: _policy["ask"] = bool(body["ask"])
-        if "askUrls" in body: _policy["askUrls"] = list(body["askUrls"] or [])
+        if "ask" in body: _policy["ask"] = body["ask"]
+        if "askUrls" in body: _policy["askUrls"] = list(body["askUrls"])
         if "allow" in body: _policy["allow"] = list(body["allow"])
         if "deny" in body: _policy["deny"] = list(body["deny"])
         if "readonly" in body: _policy["readonly"] = bool(body["readonly"])

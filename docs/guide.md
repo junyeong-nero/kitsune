@@ -367,6 +367,16 @@ There are two ways to turn it on:
   until the bridge stops. A bridge that is already running keeps its policy, so
   run `kitsune-bridge stop` after changing the setting.
 
+The lock lives only in the running bridge process. When the bridge restarts (after
+`kitsune-bridge stop`, an idle shutdown, or an MCP server replacing an outdated
+bridge), the new bridge takes its setting from the environment of whatever started
+it. If that environment lacks `KITSUNE_ASK_BEFORE_ACT=1`, the new bridge starts
+unlocked. Set the variable in the configuration of every MCP server that uses
+Kitsune, not only when you start a bridge by hand.
+
+The bridge checks the target before it acts, and the page can change in between (for
+example, it navigates to a checkout URL). Such a change is not caught.
+
 ```toml
 [mcp_servers.kitsune.env]
 KITSUNE_ASK_BEFORE_ACT = "1"
