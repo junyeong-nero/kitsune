@@ -85,14 +85,22 @@ Prefer `browser_click(ref="s3e1", element="Log in", tab_id=...)` and
 for audit logs only; CSS `selector` remains supported. For drag, use `ref` for
 the source and `to_ref` for the destination (or the existing selector arguments).
 
-Refs are scoped to the document and snapshot generation. A new snapshot or
-`browser_dom` invalidates earlier refs in that tab; `browser_find` and other
-ref-producing queries use the same scheme. Detached or outdated refs return
-`stale ref, call browser_snapshot again`. Always use refs from the latest result.
+Refs are scoped to the document and snapshot generation. A new snapshot,
+`browser_dom`, or the post-action snapshot below replaces earlier refs in that
+tab, and navigation invalidates them; `browser_find`, `browser_forms`, and
+`browser_wait_for(selector=...)` add refs without replacing any. Detached or
+outdated refs return `stale ref, call browser_snapshot again` (`code: "stale_ref"`).
+Always use refs from the latest result.
 
 Click, type, fill, select, check, keypress, submit, and navigate responses include
 a fresh `snapshot` capped at 4,000 characters (`snapshot_truncated` indicates more
-content). If snapshot capture fails, `snapshot_error` preserves the action result.
+content), and `target_ref` is the acted-on element's new ref for a follow-up action.
+If snapshot capture fails, `snapshot_error` preserves the action result; take a
+new snapshot before using refs. To recover from a stale ref, take a new snapshot
+and retry with the new ref; never repeat a write just to refresh refs. See
+[Ref lifetime](api-reference.md#ref-lifetime) for the full contract and
+[MCP error results](api-reference.md#mcp-error-results) for which results are
+returned with `isError: true`.
 Set `KITSUNE_POST_ACTION_SNAPSHOT=0` in the **bridge daemon's environment** and
 restart the daemon to disable these automatic snapshots. Explicit snapshots
 remain available. This is a DOM-based accessibility approximation, not Firefox's
@@ -328,6 +336,13 @@ What it does not protect against:
   This is not a sandbox: `browser_js` can read anything the page can, and the
   detection is heuristic. Do not assume a visually masked field is hidden from
   the agent or its logs.
+- **Typed values outside the bridge.** The bridge audit log (`browser_audit`)
+  keeps the action, target, tab, timing and outcome of each write action but
+  replaces typed text (`browser_type`, `browser_form_fill` values,
+  `browser_keypress` text) and stored secrets (`browser_cookies`,
+  `browser_storage` and `browser_clipboard` values) with `"[redacted]"`; see
+  [Audit log](api-reference.md#audit-log). The page and the MCP client's own
+  transcript still see whatever the agent sent.
 - **Authenticated actions.** Existing sessions let the agent act as you on
   accessible sites. MCP annotations are client hints, not an approval system.
 
