@@ -404,31 +404,69 @@ async function getOpenTabs() {
   }
 }
 
+function urlWithoutFragment(url) {
+  try { return new URL(url).href.split('#')[0]; } catch { return null; }
+}
+
+// Runs startNavigation and resolves true once the tab finishes loading, false on timeout.
+// Subscribes first so a fast 'complete' is not missed. Gecko may never emit a fresh
+// 'complete' (e.g. reloading a page with iframes in headed Zen), so tab.status is also
+// polled: a reload accepts any 'complete', other loads only one seen after 'loading'.
+function waitForTabLoad(tabId, startNavigation, { reload = false, timeout = 15000 } = {}) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let sawLoading = false;
+    let poll = null;
+    const finish = (loaded, error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      clearInterval(poll);
+      browser.tabs.onUpdated.removeListener(listener);
+      if (error) reject(error);
+      else resolve(loaded);
+    };
+    const isLoaded = tab => tab.status === 'complete' && tab.url && !tab.url.startsWith('about:');
+    function listener(updatedTabId, changeInfo, tab) {
+      if (updatedTabId !== tabId || settled) return;
+      if (changeInfo.status === 'loading') sawLoading = true;
+      if (changeInfo.status === 'complete' && isLoaded(tab)) finish(true);
+    }
+    const check = async () => {
+      try {
+        const tab = await browser.tabs.get(tabId);
+        if (settled) return;
+        if (tab.status === 'loading') sawLoading = true;
+        else if ((sawLoading || reload) && isLoaded(tab)) finish(true);
+      } catch (e) {
+        finish(false, e);
+      }
+    };
+    const deadline = setTimeout(() => finish(false), timeout);
+    browser.tabs.onUpdated.addListener(listener);
+    Promise.resolve().then(startNavigation).then(() => {
+      if (!settled) poll = setInterval(check, 200);
+    }, e => finish(false, e));
+  });
+}
+
 async function navigateTab(url, tabId, expectTitle) {
   try {
     const targetTabId = tabId || (await getActiveTabId());
     if (!targetTabId) return { error: 'No active tab' };
-    await browser.tabs.update(targetTabId, { url });
+    const target = urlWithoutFragment(url);
+    const sameUrl = target !== null && target === urlWithoutFragment((await browser.tabs.get(targetTabId)).url);
 
-    // Wait for page to finish loading before returning
-    await new Promise((resolve) => {
-      const timeout = setTimeout(() => {
-        browser.tabs.onUpdated.removeListener(listener);
-        resolve();
-      }, 15000);
-
-      function listener(updatedTabId, changeInfo, tab) {
-        if (updatedTabId === targetTabId && changeInfo.status === 'complete' && tab.url && !tab.url.startsWith('about:')) {
-          clearTimeout(timeout);
-          browser.tabs.onUpdated.removeListener(listener);
-          resolve();
-        }
-      }
-      browser.tabs.onUpdated.addListener(listener);
-    });
+    let loaded = true;
+    if (sameUrl && url.includes('#')) {
+      // Same-document (fragment) navigation: no new load, so no status 'complete'.
+      await browser.tabs.update(targetTabId, { url });
+    } else {
+      loaded = await waitForTabLoad(targetTabId, () => browser.tabs.update(targetTabId, { url }), { reload: sameUrl });
+    }
 
     // Check if page title matches expectation (catches silent redirects)
-    const result = { ok: true, url };
+    const result = loaded ? { ok: true, url } : { ok: false, timedOut: true, url };
     if (expectTitle) {
       const tab = await browser.tabs.get(targetTabId);
       const title = tab.title || '';
@@ -492,21 +530,7 @@ async function wakeTab(tabId) {
     if (!tab.discarded) {
       return { ok: true, woken: false, discarded: false };
     }
-    await browser.tabs.reload(tabId);
-    const ready = await new Promise((resolve) => {
-      const timeout = setTimeout(() => {
-        browser.tabs.onUpdated.removeListener(listener);
-        resolve(false);
-      }, 15000);
-      function listener(updatedTabId, changeInfo) {
-        if (updatedTabId === tabId && changeInfo.status === 'complete') {
-          clearTimeout(timeout);
-          browser.tabs.onUpdated.removeListener(listener);
-          resolve(true);
-        }
-      }
-      browser.tabs.onUpdated.addListener(listener);
-    });
+    const ready = await waitForTabLoad(tabId, () => browser.tabs.reload(tabId), { reload: true });
     return { ok: true, woken: true, ready };
   } catch (e) {
     return { error: e.message };
