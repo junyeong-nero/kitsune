@@ -978,7 +978,7 @@ async def _send_to_extension_raw(action, params=None, timeout=30):
 
 
 # ══════════════════════════════════════════════
-#  2.1.0 — File upload (zen_upload_file)
+#  2.1.0 — File upload (browser_upload_file)
 # ══════════════════════════════════════════════
 # Pages can't read local files, so the bridge reads them and streams base64
 # chunks to the content script, which rebuilds File objects and attaches them.
@@ -1185,7 +1185,7 @@ async def run_command(cmd):
                 os.makedirs(SCREENSHOT_DIR, exist_ok=True)
                 img = base64.b64decode(r['dataUrl'].split(',')[1])
                 ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-                fp = os.path.join(SCREENSHOT_DIR, f'zen_{ts}.png')
+                fp = os.path.join(SCREENSHOT_DIR, f'kitsune_{ts}.png')
                 with open(fp, 'wb') as f2: f2.write(img)
                 return {'saved_to': fp}
             return r
@@ -1506,7 +1506,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         # Save screenshot to file
         if result.get("dataUrl") and self.command == "GET":
             os.makedirs(SCREENSHOT_DIR, exist_ok=True)
-            filename = f"zen_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+            filename = f"kitsune_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
             filepath = os.path.join(SCREENSHOT_DIR, filename)
             
             # Strip data URL prefix

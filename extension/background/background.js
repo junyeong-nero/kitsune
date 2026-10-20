@@ -1,4 +1,4 @@
-// Claude Bridge for Zen - Background Script
+// Kitsune - Background Script
 // Connects to local bridge server via WebSocket, relays commands to content scripts
 
 'use strict';
@@ -32,7 +32,7 @@ function connect() {
     ws = new WebSocket(WS_URL);
     
     ws.onopen = () => {
-      console.log('[Claude Bridge] Connected to bridge server');
+      console.log('[Kitsune] Connected to bridge server');
       reconnectDelay = 1000; // Reset backoff
       stopReconnect();
       ws.send(JSON.stringify({ type: 'hello', version: browser.runtime.getManifest().version, build: KITSUNE_BUILD }));
@@ -45,7 +45,7 @@ function connect() {
       try {
         const command = JSON.parse(event.data);
         cmdId = command.id;
-        console.log('[Claude Bridge] <<', command.action, cmdId);
+        console.log('[Kitsune] <<', command.action, cmdId);
         
         const result = await handleCommand(command);
         
@@ -53,7 +53,7 @@ function connect() {
           ws.send(JSON.stringify({ id: cmdId, result }));
         }
       } catch (e) {
-        console.error('[Claude Bridge] Command error:', e);
+        console.error('[Kitsune] Command error:', e);
         if (cmdId && ws && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ id: cmdId, result: { error: e.message } }));
         }
@@ -61,17 +61,17 @@ function connect() {
     };
     
     ws.onclose = () => {
-      console.log('[Claude Bridge] Disconnected');
+      console.log('[Kitsune] Disconnected');
       cleanup();
       scheduleReconnect();
     };
     
     ws.onerror = () => {
-      console.error('[Claude Bridge] WebSocket error');
+      console.error('[Kitsune] WebSocket error');
       // onclose will fire after this, which handles reconnect
     };
   } catch (e) {
-    console.error('[Claude Bridge] Connection failed:', e);
+    console.error('[Kitsune] Connection failed:', e);
     cleanup();
     scheduleReconnect();
   }
@@ -87,7 +87,7 @@ function cleanup() {
 
 function scheduleReconnect() {
   stopReconnect();
-  console.log(`[Claude Bridge] Reconnecting in ${reconnectDelay}ms...`);
+  console.log(`[Kitsune] Reconnecting in ${reconnectDelay}ms...`);
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
     connect();
@@ -108,7 +108,7 @@ function startHeartbeat() {
   stopHeartbeat();
   heartbeatTimer = setInterval(() => {
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      console.log('[Claude Bridge] Heartbeat: connection dead');
+      console.log('[Kitsune] Heartbeat: connection dead');
       cleanup();
       scheduleReconnect();
       return;
@@ -147,9 +147,9 @@ async function injectAllTabs() {
         skipped++; // CSP or other restriction
       }
     }
-    console.log(`[Claude Bridge] Injected content script: ${injected} tabs, ${skipped} skipped`);
+    console.log(`[Kitsune] Injected content script: ${injected} tabs, ${skipped} skipped`);
   } catch (e) {
-    console.error('[Claude Bridge] Tab injection error:', e);
+    console.error('[Kitsune] Tab injection error:', e);
   }
 }
 
@@ -515,7 +515,7 @@ function reloadExtensionAction() {
   // and the bridge's pending future would otherwise hang. The new background
   // script comes up cold and reconnects via the existing onclose backoff.
   setTimeout(() => {
-    try { browser.runtime.reload(); } catch (e) { console.error('[Claude Bridge] Reload failed:', e); }
+    try { browser.runtime.reload(); } catch (e) { console.error('[Kitsune] Reload failed:', e); }
   }, 100);
   return { ok: true, reloading: true };
 }
@@ -1018,7 +1018,7 @@ function ensureInterceptListener() {
     browser.webRequest.onBeforeRequest.addListener(interceptListener, { urls: ['<all_urls>'] }, ['blocking']);
     __intercept.listening = true;
   } catch (e) {
-    console.error('[Claude Bridge] webRequest unavailable:', e);
+    console.error('[Kitsune] webRequest unavailable:', e);
   }
 }
 
@@ -1059,6 +1059,6 @@ async function clickAndWaitNavigation(tabId, selector, timeout) {
 connect();
 browser.runtime.onStartup.addListener(connect);
 browser.runtime.onInstalled.addListener(() => {
-  console.log('[Claude Bridge] Extension installed');
+  console.log('[Kitsune] Extension installed');
   connect();
 });
