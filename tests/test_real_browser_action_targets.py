@@ -244,7 +244,7 @@ class RealBrowserStrictSelectorTests(harness.RealBrowserTestCase):
         state_code = """JSON.stringify({values: Array.from(document.querySelectorAll('input:not([type=file])'), e => e.value),
             scroll: Array.from(document.querySelectorAll('.pane'), e => e.scrollTop),
             files: Array.from(document.querySelectorAll('input[type=file]'), e => e.files.length),
-            focused: document.activeElement === document.body, clicks: window.clicks})"""
+            focused: document.activeElement === document.body, clicks: window.wrappedJSObject.clicks})"""
         state = self.call("/api/js", {"tabId": tab, "code": state_code})
         self.assertEqual(json.loads(state["result"]), {"values": ["", "", "", ""], "scroll": [0, 0],
                                                       "files": [0, 0], "focused": True, "clicks": 0})

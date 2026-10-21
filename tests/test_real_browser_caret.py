@@ -100,7 +100,8 @@ class RealBrowserCaretTests(harness.RealBrowserTestCase):
                                                       "includeSnapshot": False}))
         state = self.call("/api/js", {"tabId": tab, "code": "JSON.stringify({"
                          "order: [...document.querySelectorAll('#sortable button')].map(el => el.id),"
-                         "lifted: document.querySelector('#sortable').dataset.lifted, events: window.keyEvents})"})
+                         "lifted: document.querySelector('#sortable').dataset.lifted,"
+                         "events: window.wrappedJSObject.keyEvents})"})
         self.assertNotIn("error", state)
         self.assertEqual(json.loads(state["result"]), {
             "order": ["two", "one"], "lifted": "false",

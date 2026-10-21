@@ -244,7 +244,7 @@ class RealBrowserSharedBrowserTests(harness.RealBrowserTestCase):
         page = result["active_page"]
         self.assertEqual((page["tabId"], page["url"], page["title"]), (user_tab, self.page.origin + "/user", "user"))
         self.assertIn('heading "user page"', page["snapshot"])
-        self.assertRegex(page["snapshot"], r'button "Act" \[ref=s\d+e\d+\]')
+        self.assertRegex(page["snapshot"], r'button "Act" \[ref=e\d+\]')
         self.assertEqual(self.user_view(), before, "reading the shown tab moves nothing")
 
 

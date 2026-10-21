@@ -193,8 +193,11 @@ class McpErrorResultTests(unittest.TestCase):
         self.assertMcpResult(self.call("browser_click_and_wait_navigation", {"ref": "s1e0"}, clicked,
                                        mcp=self.registered(server.browser_click_and_wait_navigation)),
                              clicked, False)
-        self.assertMcpResult(self.call("browser_status", {}, {"status": "running", "extension_connected": False}),
-                             {"status": "running", "extension_connected": False}, False)
+        status = self.call("browser_status", {}, {"status": "running", "extension_connected": False})
+        self.assertIs(status.isError, False)
+        # browser_status also reports the published tool surface (#171).
+        self.assertEqual({key: value for key, value in json.loads(status.content[0].text).items()
+                          if key != "mcp_tools"}, {"status": "running", "extension_connected": False})
 
     def test_containers_report_per_command_failures_without_failing_the_call(self):
         mcp = self.registered(server.browser_batch, server.browser_parallel, server.browser_retry)

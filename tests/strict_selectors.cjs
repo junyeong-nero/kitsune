@@ -111,7 +111,8 @@ function load(dom) {
   return msg => new Promise(resolve => listener(msg, {}, result => resolve(JSON.parse(JSON.stringify(result)))));
 }
 
-const events = elements => elements.map(el => el.events.length);
+// Dispatched events per element; an action scrolls its target into view before dispatching.
+const events = elements => elements.map(el => el.events.filter(type => type !== 'scrollIntoView').length);
 
 function assertAmbiguous(result, selector, matches, label) {
   assert.equal(result.code, 'ambiguous_target', `${label}: ${JSON.stringify(result)}`);

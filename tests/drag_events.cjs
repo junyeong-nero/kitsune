@@ -75,7 +75,8 @@ function page(items) {
     } },
   });
   vm.runInContext(fs.readFileSync('extension/content/content.js', 'utf8'), context);
-  return msg => new Promise(resolve => listener(msg, {}, resolve));
+  // Results come from the vm realm, so compare plain copies.
+  return msg => new Promise(resolve => listener(msg, {}, result => resolve(JSON.parse(JSON.stringify(result)))));
 }
 
 async function testPointerCaptureSortableReorders() {
