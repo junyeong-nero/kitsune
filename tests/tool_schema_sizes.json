@@ -1,152 +1,212 @@
 {
   "browser_back": {
-    "description": 88,
-    "inputSchema": 115,
-    "total": 376
+    "description": 110,
+    "firstParagraph": 110,
+    "inputSchema": 152,
+    "total": 435,
+    "firstParagraphTotal": 435
   },
   "browser_check": {
-    "description": 169,
-    "inputSchema": 404,
-    "total": 748
+    "description": 158,
+    "firstParagraph": 158,
+    "inputSchema": 441,
+    "total": 774,
+    "firstParagraphTotal": 774
   },
   "browser_click": {
-    "description": 2239,
-    "inputSchema": 430,
-    "total": 2844
+    "description": 951,
+    "firstParagraph": 187,
+    "inputSchema": 1566,
+    "total": 2692,
+    "firstParagraphTotal": 1928
   },
   "browser_console_logs": {
     "description": 81,
-    "inputSchema": 113,
-    "total": 381
+    "firstParagraph": 81,
+    "inputSchema": 150,
+    "total": 418,
+    "firstParagraphTotal": 418
   },
   "browser_dom": {
-    "description": 178,
-    "inputSchema": 144,
-    "total": 501
+    "description": 175,
+    "firstParagraph": 175,
+    "inputSchema": 181,
+    "total": 535,
+    "firstParagraphTotal": 535
   },
   "browser_find": {
-    "description": 215,
-    "inputSchema": 107,
-    "total": 507
+    "description": 63,
+    "firstParagraph": 63,
+    "inputSchema": 216,
+    "total": 464,
+    "firstParagraphTotal": 464
   },
   "browser_form_fill": {
-    "description": 986,
-    "inputSchema": 269,
-    "total": 1438
+    "description": 896,
+    "firstParagraph": 144,
+    "inputSchema": 401,
+    "total": 1480,
+    "firstParagraphTotal": 728
   },
   "browser_forms": {
-    "description": 234,
-    "inputSchema": 60,
-    "total": 477
+    "description": 162,
+    "firstParagraph": 162,
+    "inputSchema": 97,
+    "total": 442,
+    "firstParagraphTotal": 442
   },
   "browser_forward": {
-    "description": 69,
-    "inputSchema": 115,
-    "total": 363
+    "description": 90,
+    "firstParagraph": 90,
+    "inputSchema": 152,
+    "total": 421,
+    "firstParagraphTotal": 421
   },
   "browser_handle_dialog": {
-    "description": 763,
-    "inputSchema": 197,
-    "total": 1156
+    "description": 466,
+    "firstParagraph": 151,
+    "inputSchema": 554,
+    "total": 1216,
+    "firstParagraphTotal": 901
   },
   "browser_hover": {
-    "description": 219,
-    "inputSchema": 326,
-    "total": 720
+    "description": 103,
+    "firstParagraph": 103,
+    "inputSchema": 363,
+    "total": 641,
+    "firstParagraphTotal": 641
   },
   "browser_js": {
-    "description": 568,
-    "inputSchema": 181,
-    "total": 933
+    "description": 198,
+    "firstParagraph": 198,
+    "inputSchema": 481,
+    "total": 863,
+    "firstParagraphTotal": 863
   },
   "browser_keypress": {
-    "description": 454,
-    "inputSchema": 486,
-    "total": 1121
+    "description": 186,
+    "firstParagraph": 186,
+    "inputSchema": 782,
+    "total": 1149,
+    "firstParagraphTotal": 1149
   },
   "browser_markdown": {
-    "description": 144,
-    "inputSchema": 141,
-    "total": 477
+    "description": 88,
+    "firstParagraph": 88,
+    "inputSchema": 178,
+    "total": 458,
+    "firstParagraphTotal": 458
   },
   "browser_navigate": {
-    "description": 410,
-    "inputSchema": 233,
-    "total": 824
+    "description": 92,
+    "firstParagraph": 92,
+    "inputSchema": 433,
+    "total": 706,
+    "firstParagraphTotal": 706
   },
   "browser_page_info": {
-    "description": 149,
-    "inputSchema": 60,
-    "total": 390
+    "description": 79,
+    "firstParagraph": 79,
+    "inputSchema": 97,
+    "total": 357,
+    "firstParagraphTotal": 357
   },
   "browser_page_text": {
-    "description": 322,
-    "inputSchema": 60,
-    "total": 563
+    "description": 177,
+    "firstParagraph": 50,
+    "inputSchema": 131,
+    "total": 489,
+    "firstParagraphTotal": 362
   },
   "browser_screenshot": {
-    "description": 359,
-    "inputSchema": 262,
-    "total": 811
+    "description": 334,
+    "firstParagraph": 285,
+    "inputSchema": 299,
+    "total": 823,
+    "firstParagraphTotal": 774
   },
   "browser_scroll": {
-    "description": 493,
-    "inputSchema": 328,
-    "total": 998
+    "description": 359,
+    "firstParagraph": 227,
+    "inputSchema": 468,
+    "total": 1004,
+    "firstParagraphTotal": 872
   },
   "browser_select_option": {
-    "description": 186,
-    "inputSchema": 431,
-    "total": 808
+    "description": 175,
+    "firstParagraph": 175,
+    "inputSchema": 468,
+    "total": 834,
+    "firstParagraphTotal": 834
   },
   "browser_snapshot": {
-    "description": 1043,
-    "inputSchema": 186,
-    "total": 1422
+    "description": 739,
+    "firstParagraph": 153,
+    "inputSchema": 578,
+    "total": 1510,
+    "firstParagraphTotal": 924
   },
   "browser_status": {
     "description": 65,
+    "firstParagraph": 65,
     "inputSchema": 33,
-    "total": 287
+    "total": 287,
+    "firstParagraphTotal": 287
   },
   "browser_submit_form": {
-    "description": 400,
-    "inputSchema": 273,
-    "total": 859
+    "description": 351,
+    "firstParagraph": 351,
+    "inputSchema": 310,
+    "total": 847,
+    "firstParagraphTotal": 847
   },
   "browser_tabs": {
-    "description": 856,
-    "inputSchema": 475,
-    "total": 1518
+    "description": 437,
+    "firstParagraph": 111,
+    "inputSchema": 931,
+    "total": 1555,
+    "firstParagraphTotal": 1229
   },
   "browser_type": {
-    "description": 376,
-    "inputSchema": 504,
-    "total": 1066
+    "description": 119,
+    "firstParagraph": 119,
+    "inputSchema": 772,
+    "total": 1077,
+    "firstParagraphTotal": 1077
   },
   "browser_upload_file": {
-    "description": 891,
-    "inputSchema": 308,
-    "total": 1385
+    "description": 403,
+    "firstParagraph": 150,
+    "inputSchema": 747,
+    "total": 1336,
+    "firstParagraphTotal": 1083
   },
   "browser_wait_for": {
-    "description": 817,
-    "inputSchema": 423,
-    "total": 1430
+    "description": 621,
+    "firstParagraph": 437,
+    "inputSchema": 505,
+    "total": 1316,
+    "firstParagraphTotal": 1132
   },
   "browser_watch_console": {
     "description": 186,
-    "inputSchema": 104,
-    "total": 481
+    "firstParagraph": 186,
+    "inputSchema": 141,
+    "total": 518,
+    "firstParagraphTotal": 518
   },
   "browser_workflow": {
-    "description": 182,
-    "inputSchema": 135,
-    "total": 509
+    "description": 70,
+    "firstParagraph": 70,
+    "inputSchema": 236,
+    "total": 498,
+    "firstParagraphTotal": 498
   },
   "browser_workflows": {
     "description": 76,
+    "firstParagraph": 76,
     "inputSchema": 33,
-    "total": 295
+    "total": 295,
+    "firstParagraphTotal": 295
   }
 }

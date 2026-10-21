@@ -607,19 +607,26 @@ versus actual behavior. Use a minimal public or local page and redact secrets.
 
 Tool definitions are resent with every model request, so their size is tracked:
 `uv run python scripts/tool_schema_size.py` reports the compact JSON size of each
-`core` tool, and a test fails until `--update` records a change in
-`tests/tool_schema_sizes.json`. The same test fails when the default (lean), full
-`core` or benchmark allowlist total, or any single tool, grows past `TOTAL_BUDGETS` /
-`TOOL_BUDGET` in the script; raise a budget only deliberately. Published input
+`core` tool in two views: the full definition, and the definition with its description
+cut to the first paragraph, as some clients (Claude Code `--bare`) send it. A test fails
+until `--update` records a change in `tests/tool_schema_sizes.json`. The same test fails
+when the default (lean), full `core` or benchmark allowlist total grows past
+`TOTAL_BUDGETS` or `FIRST_PARAGRAPH_BUDGETS`, or any single tool past `TOOL_BUDGET`;
+raise a budget only deliberately. Published input
 schemas omit the `title` keywords pydantic generates (`KitsuneMCP.list_tools`), and
 `tests/test_tool_schema_titles.py` checks that they still accept and reject the same
 arguments. They also publish an optional parameter whose default is null as its plain
 type instead of `anyOf: [type, null]`, and omit `null` and `""` defaults. Calls are
 still validated against the pydantic models, so an explicit `null` still works and
 behaves as omitted; `tests/test_tool_schema_optionals.py` checks this for every tool.
-Action tools share one contract (ref, wait,
-expect, confirm_token) documented in `browser_click`; point to it rather than
-repeating it.
+Every client sends input schemas in full, so parameters are documented there
+(`Annotated[..., Field(description=...)]`), not in `Args:` blocks. A tool's first
+paragraph says what it does and what a caller must know. The action tools share one
+contract (ref, element, wait, expect, confirm_token, first), documented once in
+`browser_click`'s parameter descriptions; the other action tools say in their first
+paragraph that `ok` means dispatched, name `expect` and point to `browser_click` rather
+than repeating it. `tab_id` is described wherever it is accepted.
+`tests/test_tool_first_paragraph.py` checks these rules for every tool.
 
 The opt-in real-browser suites (`tests/test_real_browser*.py`) run against a real
 Firefox, Zen or LibreWolf. They cover action races, tab unloads and reconnects

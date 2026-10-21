@@ -3,17 +3,22 @@
 Opt-in and built on tests/real_browser_harness.py, which documents how to run it. The
 fixture is the wishlist page from #133: per-item delete forms above an add form. Its
 server records every form submission, which is how the tests prove server-side that
-nothing was deleted.
+nothing was deleted. One test drives the tools through MCP argument validation, whose
+parameters are documented as schema descriptions (#135).
 """
+import asyncio
 from http.server import BaseHTTPRequestHandler
 import html
 import json
+import re
 import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
+from kitsune import server
 import real_browser_harness as harness
 
 ITEMS = ["캠핑 랜턴", "머그컵"]
@@ -158,6 +163,34 @@ class RealBrowserSubmitFormTargetTests(harness.RealBrowserTestCase):
         items, submissions = self.wait_for_submissions("unfilled", 1)
         self.assertEqual([path for path, _ in submissions], ["/wishlist/add"], submissions)
         self.assertEqual(items, [*ITEMS, ""], "existing items are kept")
+
+    def call_tool(self, name, arguments):
+        """Call a tool through FastMCP's argument validation, against this class's bridge."""
+        with patch.object(server, "_get", self.call), \
+                patch.object(server, "_post", lambda endpoint, data, timeout=15: self.call(endpoint, data)):
+            result = asyncio.run(server.mcp.call_tool(name, arguments))
+        return json.loads(result.content[0].text)
+
+    def test_mcp_calls_pass_the_schema_documented_contract_parameters(self):
+        tab = self.open_tab(self.site.url("mcp"))
+        read = self.call_tool("browser_snapshot", {"tab_id": tab, "text": True})
+        self.assertEqual(read.get("title"), "wishlist mcp", read)  # url/title come only with text=True
+        name_ref = re.search(r'textbox "상품명[^"]*" \[ref=([^\]]+)\]', read["snapshot"]).group(1)
+
+        typed = self.call_tool("browser_type", {
+            "tab_id": tab, "ref": name_ref, "element": "상품명", "text": NEW_ITEM, "mode": "fill",
+            "wait": True, "expect": {"selector": "input[name=name]", "value": NEW_ITEM}})
+        self.assertIs(typed.get("ok"), True, typed)
+        self.assertIs(typed["outcome"]["met"], True, typed)
+
+        # An unmet expect fails the call, but the action already ran.
+        unmet = self.call_tool("browser_type", {
+            "tab_id": tab, "selector": "input[name=name]", "text": "KITSUNE_FAKE_UNMET_135", "mode": "fill",
+            "expect": {"selector": "input[name=name]", "value": "never", "timeout": 300}})
+        self.assertEqual(unmet.get("code"), "outcome_not_observed", unmet)
+        self.assertIs(unmet["dispatched"], True)
+        self.assertEqual(unmet["outcome"]["observed"]["value"], "KITSUNE_FAKE_UNMET_135")
+        self.assertEqual(self.site.state("mcp"), (ITEMS, []), "typing submitted nothing")
 
 
 class RealBrowserStrictSelectorTests(harness.RealBrowserTestCase):

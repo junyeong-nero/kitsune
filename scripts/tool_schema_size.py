@@ -8,11 +8,14 @@ Tool definitions are resent with every model request, so their size is per-reque
 context (#88, #31). Sizes are characters of compact JSON (no whitespace, non-ASCII
 kept) for every core tool (KITSUNE_CAPS=core, KITSUNE_TOOL_PRESET=full): `total` is
 the whole definition as listed by tools/list, `description` and `inputSchema` are
-those fields alone. Characters are not tokenizer counts. The default scope is the
-lean preset, reported as a subset of the full core group. tests/test_tool_schema_size.py
-fails when the sizes differ from tests/tool_schema_sizes.json, so every change
-to the definitions shows up in review as a snapshot diff, and when a total or a
-single tool grows past its budget below, which only a deliberate bump raises.
+those fields alone. Characters are not tokenizer counts. Some clients send only the
+first paragraph of each description (#135), so `firstParagraph` is that part of the
+description and `firstParagraphTotal` the definition as such a client sends it. The
+default scope is the lean preset, reported as a subset of the full core group.
+tests/test_tool_schema_size.py fails when the sizes differ from tests/tool_schema_sizes.json,
+so every change to the definitions shows up in review as a snapshot diff, and when a
+total or a single tool grows past its budget below, in either view, which only a
+deliberate bump raises.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -41,12 +45,21 @@ BENCH_UI_TOOLS = (
 # Set about 5% above the sizes once nullable optionals and empty defaults were dropped (#142);
 # default (lean) and bench allowlist raised by 100 for the agent-owned tab rules (#139);
 # all three raised for browser_dom scoping (#160), bench also for its earlier overage.
-TOTAL_BUDGETS = {"default (lean)": 13_400, "full core": 25_600, "bench allowlist": 17_800}
-TOOL_BUDGET = 3_000  # any single core tool
+# Tightened again once the shared action contract was documented once (#135): lean and
+# full core back to their values before #160, bench just above its size. First-paragraph
+# views set about 5% above the sizes once first paragraphs became self-contained (#135).
+TOTAL_BUDGETS = {"default (lean)": 13_300, "full core": 25_500, "bench allowlist": 17_700}
+FIRST_PARAGRAPH_BUDGETS = {"default (lean)": 11_200, "full core": 23_100, "bench allowlist": 15_700}
+TOOL_BUDGET = 3_000  # any single core tool, full view
 
 
 def _compact(value) -> int:
     return len(json.dumps(value, separators=(",", ":"), ensure_ascii=False))
+
+
+def first_paragraph(description: str) -> str:
+    """The description up to its first blank line, as truncating clients send it (#135)."""
+    return re.split(r"\n[ \t]*\n", description, maxsplit=1)[0]
 
 
 def measure() -> dict:
@@ -58,18 +71,22 @@ def measure() -> dict:
     tools = {}
     for tool in asyncio.run(mcp.list_tools()):
         definition = tool.model_dump(mode="json", exclude_none=True)
+        first = first_paragraph(definition.get("description", ""))
         tools[tool.name] = {
             "description": _compact(definition.get("description", "")),
+            "firstParagraph": _compact(first),
             "inputSchema": _compact(definition["inputSchema"]),
             "total": _compact(definition),
+            "firstParagraphTotal": _compact({**definition, "description": first}),
         }
     return dict(sorted(tools.items()))
 
 
 def totals(tools: dict, names=None) -> dict:
     selected = [sizes for name, sizes in tools.items() if names is None or name in names]
-    return {field: sum(sizes[field] for sizes in selected)
-            for field in ("description", "inputSchema", "total")} | {"tools": len(selected)}
+    return {field: sum(sizes.get(field, 0) for sizes in selected)
+            for field in ("description", "firstParagraph", "inputSchema", "total", "firstParagraphTotal")
+            } | {"tools": len(selected)}
 
 
 def selections() -> dict:
@@ -79,11 +96,16 @@ def selections() -> dict:
     return {"default (lean)": TOOL_PRESETS["lean"], "full core": None, "bench allowlist": BENCH_UI_TOOLS}
 
 
+# Budgeted views: the field each one totals and its ceilings.
+VIEWS = {"full": ("total", TOTAL_BUDGETS), "first paragraph": ("firstParagraphTotal", FIRST_PARAGRAPH_BUDGETS)}
+
+
 def over_budget(tools: dict) -> list[str]:
-    """Totals and tools whose size exceeds TOTAL_BUDGETS or TOOL_BUDGET."""
-    problems = [f"{label}: {size} > budget {TOTAL_BUDGETS[label]}"
+    """Totals and tools whose size exceeds TOTAL_BUDGETS, FIRST_PARAGRAPH_BUDGETS or TOOL_BUDGET."""
+    problems = [f"{label} ({view}): {size} > budget {budgets[label]}"
+                for view, (field, budgets) in VIEWS.items()
                 for label, names in selections().items()
-                if (size := totals(tools, names)["total"]) > TOTAL_BUDGETS[label]]
+                if (size := totals(tools, names)[field]) > budgets[label]]
     return problems + [f"{name}: {sizes['total']} > per-tool budget {TOOL_BUDGET}"
                        for name, sizes in tools.items() if sizes["total"] > TOOL_BUDGET]
 
@@ -93,20 +115,24 @@ def report(tools: dict, snapshot: dict) -> str:
         return "new" if before is None else f"{now - before:+d}" if now != before else ""
 
     lean = selections()["default (lean)"]
-    lines = [f"{'tool':<32}{'description':>12}{'inputSchema':>12}{'total':>8}{'Δ total':>9}"]
+    lines = [f"{'tool':<32}{'description':>12}{'first ¶':>9}{'inputSchema':>12}{'total':>8}{'Δ':>7}"
+             f"{'first ¶ total':>14}{'Δ':>7}"]
+
+    def row(heading: str, now: dict, before: dict) -> str:
+        return (f"{heading:<32}{now['description']:>12}{now['firstParagraph']:>9}{now['inputSchema']:>12}"
+                f"{now['total']:>8}{delta(now['total'], before.get('total')):>7}"
+                f"{now['firstParagraphTotal']:>14}"
+                f"{delta(now['firstParagraphTotal'], before.get('firstParagraphTotal')):>7}")
+
     for name, sizes in tools.items():
         mark = "L" if name in lean else "*" if name in BENCH_UI_TOOLS else " "
-        before = snapshot.get(name, {}).get("total")
-        lines.append(f"{mark}{name:<31}{sizes['description']:>12}{sizes['inputSchema']:>12}"
-                     f"{sizes['total']:>8}{delta(sizes['total'], before):>9}")
+        lines.append(row(mark + name, sizes, snapshot.get(name, {})))
     marks = {"default (lean)": "L ", "full core": "", "bench allowlist": "*/L "}
     for label, names in selections().items():
         now, before = totals(tools, names), totals(snapshot, names)
-        heading = f"{marks[label]}{label} ({now['tools']} tools)"
-        lines.append(f"{heading:<32}{now['description']:>12}"
-                     f"{now['inputSchema']:>12}{now['total']:>8}{delta(now['total'], before['total']):>9}"
-                     f"  budget {TOTAL_BUDGETS[label]}")
-    lines.append(f"per-tool budget {TOOL_BUDGET}")
+        lines.append(row(f"{marks[label]}{label} ({now['tools']} tools)", now, before)
+                     + f"  budgets {TOTAL_BUDGETS[label]} / {FIRST_PARAGRAPH_BUDGETS[label]}")
+    lines.append(f"per-tool budget {TOOL_BUDGET} (full view)")
     removed = sorted(set(snapshot) - set(tools))
     if removed:
         lines.append("removed since snapshot: " + ", ".join(removed))

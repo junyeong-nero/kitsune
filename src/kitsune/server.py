@@ -15,11 +15,12 @@ import sys
 import time
 from datetime import datetime
 from time import sleep as _sleep
-from typing import Literal
+from typing import Annotated, Literal
 
 import httpx
 from mcp.server.fastmcp import FastMCP, Image
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
+from pydantic import Field
 
 from . import bridge_control
 from .bridge_control import BRIDGE, HTTP_PORT, LOG_FILE, TOKEN_FILE, WS_PORT, headers as _headers
@@ -508,6 +509,14 @@ def _target(body: dict, ref: str | None, element: str | None) -> dict:
     return body
 
 
+# Some clients cut tool descriptions to their first paragraph but send input schemas in
+# full (#135), so parameters are documented as schema descriptions. The parameters shared
+# by the action tools (ref, element, wait, expect, confirm_token, first) are documented
+# once, on browser_click; the other action tools name expect and point there in their
+# first paragraph, which keeps the repeated text small (#88).
+TabId = Annotated[int | None, Field(description="Default: active tab.")]
+
+
 # ════════════════════════════════════════════════════════════════════
 #  Parallel-work primer (read this if you're driving multiple tabs)
 # ════════════════════════════════════════════════════════════════════
@@ -560,24 +569,26 @@ def _tab_list(result: dict, window_fields: bool) -> dict:
 @tool("core", annotations=ToolAnnotations(title="Manage browser tabs", **DESTRUCTIVE))
 def browser_tabs(
     action: Literal["list", "new", "close", "select"] = "list",
-    tab_id: int | None = None, url: str | None = None,
-    force: bool = False, raw: bool = False, wait: bool = False, timeout: int = 15000,
-    confirm_token: str | None = None, window_fields: bool = False, include_active: bool = False,
+    tab_id: Annotated[int | None, Field(description="close/select (required).")] = None,
+    url: Annotated[str | None, Field(description="new (default about:blank).")] = None,
+    force: Annotated[bool, Field(description="close: disarm beforeunload.")] = False,
+    raw: Annotated[bool, Field(description="new: bypass the image viewer.")] = False,
+    wait: Annotated[bool, Field(
+        description="new: wait up to timeout ms for the load; returns tabId, final url and status, or on "
+                    "timeout ok=false, timedOut=true with the tab open.")] = False,
+    timeout: int = 15000,
+    confirm_token: Annotated[str | None, Field(description="new/close; see browser_click.")] = None,
+    window_fields: bool = False,
+    include_active: Annotated[bool, Field(
+        description="list: add active_page, the active tab's browser_snapshot(text=True).")] = False,
 ) -> dict:
-    """List, open, close, or select tabs.
+    """List, open, close, or select tabs; new opens a background tab (act on it with tab_id)
+    and returns its tabId.
 
-    list: always a fresh read; owned=true marks tabs the agent opened; windowId/index only
-    with several windows or window_fields. include_active adds active_page, the active
-    tab's browser_snapshot(text=True).
-    new: opens in the background (act on it with tab_id); url defaults to about:blank;
-    raw bypasses the image viewer. Returns tabId immediately unless wait=True, which waits
-    up to timeout ms for the load and returns tabId, final url and status.
-    On timeout the tab stays open with ok=false, timedOut=true.
-    close/select need tab_id. force disarms beforeunload on close. close refuses
-    a tab the agent did not open (user_tab) unless the user approves (confirm_token).
-    select switches the user's view: only when the user asks.
-    Options of other actions are ignored.
-    confirm_token: new/close; see browser_click.
+    list is always a fresh read; owned=true marks tabs the agent opened; windowId/index only
+    with several windows or window_fields. close refuses a tab the agent did not open
+    (user_tab) unless the user approves (confirm_token). select switches the user's view:
+    only when the user asks. Options of other actions are ignored.
     """
     if action == "list":
         result = _tab_list(_get("/api/tabs"), window_fields)
@@ -615,27 +626,21 @@ if MODE != "act":
 
 
 @tool("core", annotations=ToolAnnotations(title="Page info", **READ))
-def browser_page_info(tab_id: int | None = None) -> dict:
-    """Get current page URL, title, dimensions, scroll position, and recent dialogs.
-
-    Args:
-        tab_id: Optional tab to target. Defaults to active tab.
-    """
+def browser_page_info(tab_id: TabId = None) -> dict:
+    """Get current page URL, title, dimensions, scroll position, and recent dialogs."""
     if tab_id is None:
         return _get("/api/page-info")
     return _post("/api/page-info", {"tabId": tab_id})
 
 
 @tool("core", annotations=ToolAnnotations(title="Page text", **READ))
-def browser_page_text(tab_id: int | None = None) -> dict:
+def browser_page_text(
+    tab_id: Annotated[int | None, Field(description="Default: active tab; others are read without focusing.")] = None,
+) -> dict:
     """Extract all readable text from the current page.
 
     An HTTP error response the browser shows without a readable document returns
     text="" with empty=true and its httpStatus.
-
-    Args:
-        tab_id: Optional tab to target. Defaults to active tab. For non-active
-            tabs, pass tab_id to read without switching focus.
     """
     if tab_id is None:
         return _get("/api/page-text")
@@ -643,14 +648,9 @@ def browser_page_text(tab_id: int | None = None) -> dict:
 
 
 @tool("core", annotations=ToolAnnotations(title="Read page forms", **READ))
-def browser_forms(tab_id: int | None = None) -> dict:
-    """Get all form fields on the current page with their labels and values.
-
-    Password and other sensitive values are redacted (`redacted`/`hasValue` replace `value`).
-
-    Args:
-        tab_id: Optional tab to target. Defaults to active tab.
-    """
+def browser_forms(tab_id: TabId = None) -> dict:
+    """Get all form fields on the current page with their labels and values; password and
+    other sensitive values are redacted (`redacted`/`hasValue` replace `value`)."""
     if tab_id is None:
         return _get("/api/forms")
     return _post("/api/forms", {"tabId": tab_id})
@@ -658,14 +658,11 @@ def browser_forms(tab_id: int | None = None) -> dict:
 
 @tool("core", annotations=ToolAnnotations(title="Read page DOM", **READ))
 def browser_dom(
-    tab_id: int | None = None, selector: str | None = None,
+    tab_id: TabId = None, selector: str | None = None,
     ref: str | None = None, max_depth: int | None = None,
 ) -> dict:
-    """Get the accessibility tree of interactive elements on the page.
-
-    selector/ref/max_depth (default 6) scope it as in browser_snapshot; capped at
-    20,000 chars (truncated=true).
-    """
+    """Get the accessibility tree of interactive elements on the page; selector/ref/max_depth
+    (default 6) scope it as in browser_snapshot; capped at 20,000 chars (truncated=true)."""
     if max_depth is not None and (type(max_depth) is not int or max_depth < 0):
         return {"error": "max_depth must be a non-negative integer"}
     body = _with_tab({}, tab_id)
@@ -682,10 +679,19 @@ def browser_dom(
 
 @tool("core", annotations=ToolAnnotations(title="Accessibility snapshot", **READ))
 def browser_snapshot(
-    tab_id: int | None = None, selector: str | None = None,
-    ref: str | None = None, max_depth: int | None = None, text: bool = False,
+    tab_id: TabId = None,
+    selector: Annotated[str | None, Field(description="CSS subtree root (included).")] = None,
+    ref: Annotated[str | None, Field(
+        description="Subtree root ref, resolved before refs are replaced; wins over selector.")] = None,
+    max_depth: Annotated[int | None, Field(
+        description="Depth (>= 0) below the subtree root (body by default); 0 is the root only, omitted "
+                    "all.")] = None,
+    text: Annotated[bool, Field(
+        description="Visible text lines (no refs), url, title and tabId, capped at 12,000 chars with a "
+                    "truncation marker.")] = False,
 ) -> dict:
-    """Get a compact accessibility-style text tree with fresh element refs; prefer them for actions.
+    """Get a compact accessibility-style text tree with fresh element refs; prefer them for
+    actions. text=True adds the page's visible text in the same call.
 
     Refs belong to one document in one tab. A snapshot, browser_dom, or a full post-action
     snapshot (submit_form, navigate, a new document) replaces earlier refs; navigation
@@ -694,12 +700,6 @@ def browser_snapshot(
     keypress add refs. After an action, use its snapshot refs and target_ref. On stale_ref,
     take a new snapshot; never repeat a write just to refresh refs. Repeated composite
     siblings show the first five items; post-action snapshots also keep the target.
-
-    selector: CSS subtree root (included). ref: existing ref for a subtree, resolved
-    before refs are replaced; wins over selector. max_depth: non-negative depth below
-    the subtree root (body by default); 0 is the root only, None all depths.
-    text: also return visible text lines (no refs), url, title and tabId, capped at
-    12,000 chars with a truncation marker.
     """
     if max_depth is not None and (type(max_depth) is not int or max_depth < 0):
         return {"error": "max_depth must be a non-negative integer"}
@@ -720,14 +720,15 @@ def browser_snapshot(
 @tool("core", annotations=ToolAnnotations(title="Take screenshot", **ACT))
 def browser_screenshot(
     selector: str | None = None, full_page: bool = False,
-    tab_id: int | None = None, save_to: str | None = None,
+    tab_id: TabId = None, save_to: str | None = None,
     data_url: bool = False, ref: str | None = None, element: str | None = None,
 ):
-    """Capture the viewport, one element (ref/selector, see browser_click) or the full page.
+    """Capture the viewport, one element (ref/selector, see browser_click) or the full page
+    (not with selector/ref) as an inline image, JPEG-encoded or downscaled under ~1 MB.
+    save_to writes the full PNG there and returns metadata instead; data_url also returns
+    it as a (large) data URL.
 
-    selector/ref and full_page are mutually exclusive. No capture shows the tab or focuses a window.
-    Inline images are JPEG-encoded or downscaled under ~1 MB. save_to writes the full PNG
-    there and returns metadata instead; data_url also returns it as a (large) data URL.
+    No capture shows the tab or focuses a window.
     """
     if ref is not None and selector is None:
         selector = ""
@@ -748,16 +749,14 @@ def browser_screenshot(
 
 @tool("core", annotations=ToolAnnotations(title="Navigate", **ACT))
 def browser_navigate(
-    url: str, tab_id: int | None = None, raw: bool = False, expect: dict | None = None, confirm_token: str | None = None,
+    url: Annotated[str, Field(description='e.g. "https://example.com".')],
+    tab_id: TabId = None,
+    raw: Annotated[bool, Field(
+        description="Open a bare image URL (.jpg/.png/...) raw, not in the scriptable local viewer "
+                    "page (image = #zlimg).")] = False,
+    expect: dict | None = None, confirm_token: str | None = None,
 ) -> dict:
-    """Navigate the active tab to a URL. Action contract (expect, confirm_token, refs): see browser_click.
-
-    Args:
-        url: The URL to navigate to (e.g. "https://example.com")
-        tab_id: Optional tab to navigate. Defaults to active tab.
-        raw: Bare image URLs (.jpg/.png/...) open inside a small local viewer page
-             (image = #zlimg) so the extension can still script them. True opens the raw image.
-    """
+    """Navigate a tab to a URL. ok=true means dispatched; verify with expect (see browser_click)."""
     body = {"url": url}
     if raw:
         body["raw"] = True
@@ -768,42 +767,41 @@ def browser_navigate(
 
 @tool("core", annotations=ToolAnnotations(title="Click", **ACT))
 def browser_click(
-    selector: str = "", x: int = 0, y: int = 0, tab_id: int | None = None,
-    ref: str | None = None, element: str | None = None, wait: bool = False, timeout: int = 10000,
-    expect: dict | None = None, confirm_token: str | None = None, first: bool = False,
+    selector: Annotated[str, Field(description='e.g. "#submit", ".btn-primary".')] = "",
+    x: Annotated[int, Field(description="X coordinate, used without selector/ref.")] = 0,
+    y: Annotated[int, Field(description="Y coordinate, used without selector/ref.")] = 0,
+    tab_id: TabId = None,
+    ref: Annotated[str | None, Field(description="Prefer a ref from browser_snapshot over a selector.")] = None,
+    element: Annotated[str | None, Field(description="Audit-only description of the target.")] = None,
+    wait: Annotated[bool, Field(
+        description="Wait up to timeout ms for the selector/ref target to exist first (click, double_click, "
+                    "hover, drag: also rendered); on timeout nothing ran (not_found, not_actionable).")] = False,
+    timeout: int = 10000,
+    expect: Annotated[dict | None, Field(
+        description='Outcome to verify after dispatch, exactly one of {"url": regex}, {"url_changed": true}, '
+                    '{"new_tab": true}, {"selector": css} (visible; add "gone": true, "value": str or '
+                    '"value_changed": true), {"text": str} or {"text_gone": str}, plus "timeout" ms (default '
+                    '5000). Unmet: ok=false, code="outcome_not_observed"; the action already ran, so do not '
+                    'blindly repeat it.')] = None,
+    confirm_token: Annotated[str | None, Field(
+        description="From a confirmation_required error, after the user approved this action.")] = None,
+    first: Annotated[bool, Field(
+        description="A write tool's selector matching several elements fails with ambiguous_target "
+                    "unless true; true acts on the first match.")] = False,
 ) -> dict:
-    """Click an element on the page by CSS selector or coordinates. A write tool's selector
-    matching several elements fails with ambiguous_target unless first=True.
-    Video/audio: toggles play/pause.
+    """Click an element by ref, CSS selector or coordinates; video/audio toggles play/pause.
+    ok=true only means dispatched: verify with expect; tabs the click opens come back in
+    opened_tabs.
 
-    Action contract (other action tools point here for the parameters they accept):
-        ref/element: Prefer ref from browser_snapshot; element is an audit-only description.
-        wait: Wait up to timeout ms for the selector/ref target to exist before acting
-            (default: act immediately). click, double_click, hover and drag also need it
-            rendered. On timeout returns not_found or not_actionable without acting.
-        ok=true only means the action was dispatched, not that the intended effect happened.
-        refs: Success of the actions listed in browser_snapshot returns a snapshot (delta
-            or full, see there); target_ref is the acted-on element's ref.
-        opened_tabs: Tabs the action opened (target=_blank links, window.open) are listed
-            as [{tabId, url}]; act on them with tab_id. via="link_fallback" marks a
-            popup-blocked link Kitsune opened itself.
-        expect: Optional outcome to verify after dispatch, with exactly one of
-            {"url": regex}, {"url_changed": True}, {"new_tab": True} (met once the action
-            opens a tab), {"selector": css} (visible; add "gone": True for hidden/removed,
-            "value": str for a field value, or "value_changed": True for a field value
-            that differs from before dispatch), {"text": str} or {"text_gone": str},
-            plus "timeout" ms (default 5000).
-            The result adds dispatched=true and outcome {expected, observed, met}.
-            If not met in time: ok=false, code="outcome_not_observed" and the
-            current tab state; the action already ran, so do not blindly repeat it.
-        confirm_token: From a confirmation_required error, after the user approved this action.
-        user_active: The user is using the tab (state.reason); nothing ran. Retry in a few seconds.
-
-    Args:
-        selector: CSS selector to click (e.g. "#submit", ".btn-primary")
-        x: X coordinate (used if selector is empty)
-        y: Y coordinate (used if selector is empty)
-        tab_id: Optional tab to target. Defaults to active tab.
+    Action contract: the other action tools' ref, element, wait, expect, confirm_token and
+    first work as here. A successful action listed in browser_snapshot returns a snapshot
+    (delta or full, see there); target_ref is the acted-on element's ref.
+    opened_tabs lists tabs the action opened (target=_blank links, window.open) as
+    [{tabId, url}]; act on them with tab_id. via="link_fallback" marks a popup-blocked link
+    Kitsune opened itself. With expect, the result adds dispatched=true and outcome
+    {expected, observed, met}, plus the current tab state when unmet; new_tab is met once the
+    action opens a tab, and value_changed compares with the value before dispatch.
+    user_active: the user is using the tab (state.reason); nothing ran. Retry in a few seconds.
     """
     body: dict = {"selector": selector} if selector or ref else {"coords": {"x": x, "y": y}}
     return _post_action("/api/click", _first(_confirm(_with_tab(_target(body, ref, element), tab_id), confirm_token), first),
@@ -812,30 +810,25 @@ def browser_click(
 
 @tool("devtools", annotations=ToolAnnotations(title="Trusted click", **ACT))
 def browser_trusted_click(
-    selector: str = "",
-    x: int = 0,
-    y: int = 0,
-    coordinate_space: str = "viewport",
-    focus: bool = False,
-    tab_id: int | None = None,
+    selector: Annotated[str, Field(description="CSS selector; Kitsune clicks its center.")] = "",
+    x: Annotated[int, Field(description="X coordinate, used if selector is empty.")] = 0,
+    y: Annotated[int, Field(description="Y coordinate, used if selector is empty.")] = 0,
+    coordinate_space: Annotated[str, Field(
+        description='"viewport" for browser viewport coords or "screen" for desktop coords.')] = "viewport",
+    focus: Annotated[bool, Field(
+        description="Try to foreground the browser (Zen, Firefox, LibreWolf) first.")] = False,
+    tab_id: Annotated[int | None, Field(
+        description="Tab to resolve the selector against (viewport coords only). A tab that is not "
+                    "shown is shown for the click, then the user's tab is shown again.")] = None,
     confirm_token: str | None = None,
     first: bool = False,
 ) -> dict:
-    """Click using the real OS mouse pointer. Ambiguous selectors fail unless first=True.
+    """Click using the real OS mouse pointer, for pages that ignore synthetic clicks;
+    confirm_token and first work as in browser_click.
 
     This is slower and moves the user's cursor, so prefer browser_click unless a page
     specifically ignores synthetic clicks. Works on Windows and macOS; macOS needs
     pyobjc Quartz or cliclick plus Accessibility permission for the bridge.
-
-    Args:
-        selector: CSS selector to click. If provided, Kitsune clicks its center.
-        x: X coordinate, used if selector is empty.
-        y: Y coordinate, used if selector is empty.
-        coordinate_space: "viewport" for browser viewport coords or "screen" for desktop coords.
-        focus: Whether to try to foreground the browser (Zen, Firefox, LibreWolf) first. Defaults to false.
-        tab_id: Optional tab to resolve the selector against (viewport coords only). A tab
-            that is not shown is shown for the click, then the user's tab is shown again.
-        confirm_token: See browser_click.
     """
     if selector:
         body = {"selector": selector, "focus": focus}
@@ -846,18 +839,17 @@ def browser_trusted_click(
 
 @tool("core", annotations=ToolAnnotations(title="Type into element", **ACT))
 def browser_type(
-    selector: str = "", text: str = "", mode: Literal["type", "fill", "editable"] = "type",
-    clear: bool = False, tab_id: int | None = None,
+    selector: str = "", text: str = "",
+    mode: Annotated[Literal["type", "fill", "editable"], Field(
+        description="type: typing events, clearing first if clear. fill: replace the value via native "
+                    "setters and input/change events. editable: insert plain text into an "
+                    "editor/input/textarea, appending unless clear. HTML: browser_js.")] = "type",
+    clear: bool = False, tab_id: TabId = None,
     ref: str | None = None, element: str | None = None, wait: bool = False, timeout: int = 10000,
     expect: dict | None = None, confirm_token: str | None = None, first: bool = False,
 ) -> dict:
-    """Enter text into a field or contenteditable editor.
-
-    type: typing events, clearing first if clear. fill: replace the value via native
-    setters and input/change events (always replaces). editable: insert plain text into
-    an editor/input/textarea, appending unless clear. For HTML, use browser_js.
-    Action contract (ref, wait, expect, confirm_token, refs): see browser_click.
-    """
+    """Enter text into a field or contenteditable editor. ok=true means dispatched; verify
+    with expect (see browser_click)."""
     if mode == "type":
         endpoint, body = "/api/type", {"selector": selector, "text": text, "clear": clear}
     elif mode == "fill":
@@ -874,17 +866,18 @@ def browser_type(
 
 @tool("core", annotations=ToolAnnotations(title="Scroll", **ACT))
 def browser_scroll(
-    direction: str = "down", amount: int = 500, tab_id: int | None = None,
+    direction: Annotated[str, Field(description="up, down, left, right, top or bottom.")] = "down",
+    amount: Annotated[int, Field(description="Pixels (ignored for top/bottom).")] = 500,
+    tab_id: TabId = None,
     selector: str | None = None, ref: str | None = None, element: str | None = None,
     expect: dict | None = None, first: bool = False,
 ) -> dict:
     """Scroll the selector/ref container instantly, else the window (viewport-center fallback).
-    Ambiguous selectors fail unless first=True. Action contract (ref, expect): see browser_click.
+    ok means handled, not moved: check scrolled_by (signed pixels actually moved; 0 is a
+    no-op) or verify with expect (see browser_click).
 
-    direction: up, down, left, right, top or bottom; amount is pixels (ignored for top/bottom).
-    Returns scrolled_by (signed pixels actually moved; 0 is a no-op), target ("window" or
-    the container's selector) and window scrollY/scrollX. scrolledPx is an alias of
-    scrolled_by; ok means handled, not moved.
+    Also returns target ("window" or the container's selector) and window scrollY/scrollX.
+    scrolledPx is an alias of scrolled_by.
     """
     body = {"direction": direction, "amount": amount}
     if selector: body["selector"] = selector
@@ -893,15 +886,11 @@ def browser_scroll(
 
 @tool("core", annotations=ToolAnnotations(title="Hover", **ACT))
 def browser_hover(
-    selector: str = "", tab_id: int | None = None, ref: str | None = None, element: str | None = None,
+    selector: str = "", tab_id: TabId = None, ref: str | None = None, element: str | None = None,
     wait: bool = False, timeout: int = 10000, expect: dict | None = None, first: bool = False,
 ) -> dict:
-    """Hover over an element on the page. Action contract (ref, wait, expect): see browser_click.
-
-    Args:
-        selector: CSS selector of the element to hover over
-        tab_id: Optional tab to target. Defaults to active tab.
-    """
+    """Hover over an element on the page. ok=true means dispatched; verify with expect
+    (see browser_click)."""
     return _post_action("/api/hover", _first(_with_tab(_target({"selector": selector}, ref, element), tab_id), first),
                         wait, timeout, expect)
 
@@ -909,31 +898,27 @@ def browser_hover(
 # -- Smart Queries ------------------------------------------------
 
 @tool("core", annotations=ToolAnnotations(title="Find page elements", **READ))
-def browser_find(query: str, tab_id: int | None = None) -> dict:
-    """Find elements on the page using natural language description.
-
-    Args:
-        query: What to find (e.g. "login button", "search bar", "email input")
-        tab_id: Optional tab to target. Defaults to active tab.
-    """
+def browser_find(
+    query: Annotated[str, Field(description='e.g. "login button", "search bar", "email input".')],
+    tab_id: TabId = None,
+) -> dict:
+    """Find elements on the page using natural language description."""
     return _post("/api/find", _with_tab({"query": query}, tab_id))
 
 
 @tool("core", annotations=ToolAnnotations(title="Execute JavaScript", **DESTRUCTIVE))
-def browser_js(code: str, tab_id: int | None = None, full: bool = False,
-               confirm_token: str | None = None) -> dict:
-    """Execute JavaScript in the current page context.
-
-    Needs the developer extension build; the signed build returns an error
-    (browser_status reports extension_build).
-
-    Args:
-        code: JavaScript code to run (e.g. "document.title" or "document.querySelectorAll('a').length")
-        tab_id: Optional tab to target. Defaults to active tab.
-        full: Results are capped at 8 MB (50 KB on extensions older than 2.1.0). full=True runs the
-              code once and reads the result back in slices, so any size comes back complete.
-        confirm_token: See browser_click.
-    """
+def browser_js(
+    code: Annotated[str, Field(
+        description='e.g. "document.title" or "document.querySelectorAll(\'a\').length".')],
+    tab_id: TabId = None,
+    full: Annotated[bool, Field(
+        description="Results are capped at 8 MB (50 KB on extensions older than 2.1.0). True runs the "
+                    "code once and reads the result back in slices, so any size comes back complete.")] = False,
+    confirm_token: str | None = None,
+) -> dict:
+    """Execute JavaScript in the current page context. Needs the developer extension build;
+    the signed build returns an error (browser_status reports extension_build).
+    confirm_token: see browser_click."""
     body = _confirm({"code": code}, confirm_token)
     if full:
         body["full"] = True
@@ -942,15 +927,8 @@ def browser_js(code: str, tab_id: int | None = None, full: bool = False,
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Highlight", **ACT))
-def browser_highlight(selector: str = "", tab_id: int | None = None, ref: str | None = None, element: str | None = None) -> dict:
-    """Prefer ref from browser_snapshot; element is an audit-only description.
-
-    Highlight an element on the page with a visual overlay.
-
-    Args:
-        selector: CSS selector of the element to highlight
-        tab_id: Optional tab to target. Defaults to active tab.
-    """
+def browser_highlight(selector: str = "", tab_id: TabId = None, ref: str | None = None, element: str | None = None) -> dict:
+    """Highlight an element (ref/selector, see browser_click) with a visual overlay."""
     return _post("/api/highlight", _with_tab(_target({"selector": selector}, ref, element), tab_id))
 
 
@@ -958,17 +936,19 @@ def browser_highlight(selector: str = "", tab_id: int | None = None, ref: str | 
 
 @tool("core", annotations=ToolAnnotations(title="Handle page dialogs", **IDEMPOTENT_ACT))
 def browser_handle_dialog(
-    accept: bool | None = True, prompt_text: str | None = None, tab_id: int | None = None,
+    accept: Annotated[bool | None, Field(
+        description="Auto-accept (true) or dismiss (false) future dialogs; null clears this tab's "
+                    "policy and restores native dialogs. True also disarms beforeunload like "
+                    "browser_tabs close with force; false leaves native beforeunload intact.")] = True,
+    prompt_text: Annotated[str | None, Field(
+        description="Answer for accepted prompts (default: the prompt's default value).")] = None,
+    tab_id: TabId = None,
     confirm_token: str | None = None,
 ) -> dict:
-    """Set this tab's policy for future dialogs and return recent recorded dialogs.
+    """Set this tab's policy for future dialogs and return recent recorded dialogs; by
+    default dialogs use native UI and record the user's actual response.
 
     Dialogs answer synchronously; this cannot change an already returned answer.
-    By default dialogs use native UI and record the user's actual response.
-    Pass accept=None to clear this tab's policy and restore native dialogs.
-    With a policy set, dialogs auto-answer. Accepting a prompt uses
-    prompt_text or its default value. accept=True also disarms beforeunload like
-    close_tab(force=True); accept=False leaves native beforeunload behavior intact.
     History contains the last 100 dialogs in the current document. Policies survive
     navigation, with native behavior until the policy is restored asynchronously.
     Native dialogs and scripts holding original functions cannot be answered.
@@ -983,22 +963,19 @@ def browser_wait_for(
     text_gone: str | None = None, js: str | None = None,
     url: str | None = None, title: str | None = None,
     network_idle: bool = False, time: float | None = None,
-    timeout: int = 10000, tab_id: int | None = None,
-    ref: str | None = None, element: str | None = None, confirm_token: str | None = None,
+    timeout: int = 10000, tab_id: TabId = None,
+    ref: str | None = None, element: str | None = None,
+    confirm_token: Annotated[str | None, Field(description="js waits; see browser_click.")] = None,
 ) -> dict:
-    """Wait for exactly one condition, or sleep for time seconds.
+    """Wait for exactly one condition, or sleep for time seconds: selector/ref (a visible
+    element, see browser_click; ref wins), text/text_gone (visible page text, literal
+    substring), js (a non-empty result, including false/0; developer extension build only),
+    url/title (JavaScript regex on tab metadata, so it survives navigation) or network_idle
+    (500 ms without new resources). timeout is the maximum wait in ms; it does not limit time.
 
-    selector/ref waits for a visible element (ref takes precedence if both are
-    supplied); text/text_gone match visible page text
-    (literal substring); js waits for a non-empty expression result (including
-    false/0, matching the bridge semantics; developer extension build only). url/title are JavaScript regex
-    patterns checked via tab metadata, so they survive document navigation.
-    Other conditions run in the current document and should be started after
-    navigation. Mixed conditions are rejected; wait for URL/title first, then
-    the desired document condition. network_idle waits for 500 ms without new
-    resources.
-    timeout is the maximum wait in milliseconds; it does not limit time sleep.
-    ref/element and confirm_token (js waits): see browser_click.
+    Other conditions run in the current document and should be started after navigation.
+    Mixed conditions are rejected; wait for URL/title first, then the desired document
+    condition.
     """
     element_condition = selector is not None or ref is not None
     conditions = [text, text_gone, js, url, title, time]
@@ -1041,25 +1018,21 @@ def browser_workflows() -> dict:
 
 
 @tool("core", annotations=ToolAnnotations(title="Run a named workflow", **DESTRUCTIVE))
-def browser_workflow(name: str, variables: dict | None = None) -> dict:
-    """Execute a named Kitsune workflow from the bridge workflow directory.
-
-    Args:
-        name: Workflow file name without .md
-        variables: Optional template variables for the workflow
-    """
+def browser_workflow(
+    name: Annotated[str, Field(description="Workflow file name without .md.")],
+    variables: Annotated[dict | None, Field(description="Template variables for the workflow.")] = None,
+) -> dict:
+    """Execute a named Kitsune workflow from the bridge workflow directory."""
     return _post("/api/workflow", {"name": name, "variables": variables or {}},
                  timeout=container_request_seconds(WORKFLOW_DEADLINE_SECONDS))
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Manage response cache", **DESTRUCTIVE))
-def browser_cache(action: str = "clear", seconds: int | None = None) -> dict:
-    """Control the Kitsune bridge response cache.
-
-    Args:
-        action: "clear", "status", or "ttl"
-        seconds: TTL value when action is "ttl"
-    """
+def browser_cache(
+    action: Annotated[str, Field(description='"clear", "status", or "ttl".')] = "clear",
+    seconds: Annotated[int | None, Field(description='TTL value when action is "ttl".')] = None,
+) -> dict:
+    """Control the Kitsune bridge response cache."""
     body: dict = {"action": action}
     if seconds is not None:
         body["seconds"] = seconds
@@ -1069,7 +1042,9 @@ def browser_cache(action: str = "clear", seconds: int | None = None) -> dict:
 # -- Parallel Multi-Tab Work --------------------------------------
 
 @tool("tabs", annotations=ToolAnnotations(title="Wake tab", **IDEMPOTENT_ACT))
-def browser_wake_tab(tab_id: int) -> dict:
+def browser_wake_tab(
+    tab_id: Annotated[int, Field(description="The tab ID to wake (get IDs from browser_tabs).")],
+) -> dict:
     """Revive a tab that Zen's Tab Unloader may have discarded.
 
     Zen aggressively unloads inactive tabs to save RAM. An unloaded tab still
@@ -1080,15 +1055,17 @@ def browser_wake_tab(tab_id: int) -> dict:
 
     Use before targeting a tab that might have been idle for a while. Prefer
     browser_keep_alive for tabs you'll touch repeatedly.
-
-    Args:
-        tab_id: The tab ID to wake (get IDs from browser_tabs)
     """
     return _post("/api/wake-tab", {"tabId": tab_id}, timeout=25)
 
 
 @tool("parallel", annotations=ToolAnnotations(title="Keep alive", **IDEMPOTENT_ACT))
-def browser_keep_alive(tab_ids: list[int], interval_seconds: int = 60) -> dict:
+def browser_keep_alive(
+    tab_ids: Annotated[list[int], Field(description="Tab IDs to keep loaded.")],
+    interval_seconds: Annotated[int, Field(
+        description="How often to ping each tab. Minimum 10s. Should be well under Zen's unloader "
+                    "timeout (commonly 20+ minutes).")] = 60,
+) -> dict:
     """Keep tabs warm so Zen's Tab Unloader won't discard them mid-workflow.
 
     Starts a background pinger in the bridge that fires a no-op JS evaluation
@@ -1100,11 +1077,6 @@ def browser_keep_alive(tab_ids: list[int], interval_seconds: int = 60) -> dict:
     browser_keep_alive with their IDs, drive them in parallel via browser_parallel or
     by passing tab_id to individual commands, then browser_keep_alive_stop when
     done. The pinger auto-stops if the bridge restarts.
-
-    Args:
-        tab_ids: Tab IDs to keep loaded.
-        interval_seconds: How often to ping each tab. Minimum 10s, default 60s.
-            Should be well under Zen's unloader timeout (commonly 20+ minutes).
     """
     return _post(
         "/api/keep-alive",
@@ -1113,12 +1085,10 @@ def browser_keep_alive(tab_ids: list[int], interval_seconds: int = 60) -> dict:
 
 
 @tool("parallel", annotations=ToolAnnotations(title="Keep alive stop", **IDEMPOTENT_ACT))
-def browser_keep_alive_stop(tab_ids: list[int] | None = None) -> dict:
-    """Stop the keep-alive pinger for some or all tabs.
-
-    Args:
-        tab_ids: Tabs to stop pinging. Omit (or pass null) to stop all.
-    """
+def browser_keep_alive_stop(
+    tab_ids: Annotated[list[int] | None, Field(description="Tabs to stop pinging. Omit to stop all.")] = None,
+) -> dict:
+    """Stop the keep-alive pinger for some or all tabs."""
     body: dict = {}
     if tab_ids is not None:
         body["tabIds"] = tab_ids
@@ -1144,29 +1114,22 @@ def browser_reload_extension() -> dict:
 
 
 @tool("parallel", annotations=ToolAnnotations(title="Run parallel commands", **DESTRUCTIVE))
-def browser_parallel(sequences: list[list[dict]]) -> dict:
-    """Run command sequences in parallel — typically one sequence per tab.
+def browser_parallel(
+    sequences: Annotated[list[list[dict]], Field(
+        description='Command sequences, each a list of browser_batch-shaped commands, e.g. '
+                    '[[{"action": "navigate", "url": "...", "tabId": 12}, {"action": "waitForElement", '
+                    '"selector": "h1", "tabId": 12}, {"action": "pageText", "tabId": 12}], '
+                    '[{"action": "navigate", "url": "...", "tabId": 13}, {"action": "pageText", "tabId": 13}]].')],
+) -> dict:
+    """Run command sequences in parallel — typically one sequence per tab. Every command
+    that acts on a tab MUST include "tabId".
 
     Each inner list is a sequence that runs serially; all sequences run
-    concurrently. Every command that acts on a tab MUST include "tabId", and
-    two sequences may not write the same tab; otherwise nothing runs
-    (tab_required, tab_owned).
+    concurrently. Without tabId, or when two sequences write the same tab,
+    nothing runs (tab_required, tab_owned).
 
     Returns a list of result lists, one per input sequence; progress[0].sequences
     gives each command's status.
-
-    Args:
-        sequences: List of command sequences. Each command is a dict with
-            "action" and parameters — same shape as browser_batch commands.
-            Example for driving two tabs at once:
-                [
-                  [{"action": "navigate", "url": "...", "tabId": 12},
-                   {"action": "waitForElement", "selector": "h1", "tabId": 12},
-                   {"action": "pageText", "tabId": 12}],
-                  [{"action": "navigate", "url": "...", "tabId": 13},
-                   {"action": "waitForElement", "selector": "h1", "tabId": 13},
-                   {"action": "pageText", "tabId": 13}]
-                ]
     """
     command = {"action": "parallel", "sequences": sequences}
     return _post("/api/batch", {"commands": [command]},
@@ -1180,9 +1143,10 @@ def browser_parallel(sequences: list[list[dict]]) -> dict:
 @tool("devtools", annotations=ToolAnnotations(title="Query page elements", **READ))
 def browser_query(
     selector: str,
-    fields: list[str] | None = None,
-    limit: int = 50,
-    tab_id: int | None = None,
+    fields: Annotated[list[str] | None, Field(
+        description="Field names to extract per element. Defaults to a useful set.")] = None,
+    limit: Annotated[int, Field(description="Max elements to return (capped at 500).")] = 50,
+    tab_id: TabId = None,
 ) -> dict:
     """Extract multiple fields from every element matching a CSS selector.
 
@@ -1190,12 +1154,6 @@ def browser_query(
     fields cover the common ones (text, href, value, src, alt, id, name);
     pass `fields=["text","data-foo","bounds","attrs"]` to get arbitrary
     attributes or `bounds`/`attrs`/`html` extras.
-
-    Args:
-        selector: CSS selector.
-        fields: Field names to extract per element. Defaults to a useful set.
-        limit: Max elements to return (capped at 500).
-        tab_id: Optional tab; defaults to active.
     """
     body = {"selector": selector, "limit": limit}
     if fields: body["fields"] = fields
@@ -1204,68 +1162,61 @@ def browser_query(
 
 @tool("devtools", annotations=ToolAnnotations(title="Read element HTML", **READ))
 def browser_html(
-    selector: str = "", tab_id: int | None = None,
+    selector: str = "", tab_id: TabId = None,
     ref: str | None = None, element: str | None = None,
 ) -> dict:
-    """Prefer ref from browser_snapshot; element is an audit-only description.
-
-    Return the outerHTML of a specific element. Cap 100KB.
-    """
+    """Return the outerHTML of an element (ref/selector, see browser_click). Cap 100KB."""
     return _post("/api/html", _with_tab(_target({"selector": selector}, ref, element), tab_id))
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Read page links", **READ))
-def browser_links(internal_only: bool = False, tab_id: int | None = None) -> dict:
+def browser_links(internal_only: bool = False, tab_id: TabId = None) -> dict:
     """Return every anchor with href + text. Useful as a crawler primitive."""
     return _post("/api/links", _with_tab({"internalOnly": internal_only}, tab_id))
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Read page images", **READ))
-def browser_images(tab_id: int | None = None) -> dict:
+def browser_images(tab_id: TabId = None) -> dict:
     """Return every <img> with src, alt, and natural dimensions."""
     return _post("/api/images", _with_tab({}, tab_id))
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Read page metadata", **READ))
-def browser_meta(tab_id: int | None = None) -> dict:
+def browser_meta(tab_id: TabId = None) -> dict:
     """Return all meta tags + link rels (canonical, RSS, icons, etc.)."""
     return _post("/api/meta", _with_tab({}, tab_id))
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Read structured page data", **READ))
-def browser_structured_data(tab_id: int | None = None) -> dict:
+def browser_structured_data(tab_id: TabId = None) -> dict:
     """Extract JSON-LD blocks, OpenGraph (og:*), and Twitter card meta."""
     return _post("/api/structured-data", _with_tab({}, tab_id))
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Read element bounds", **READ))
 def browser_bounds(
-    selector: str = "", tab_id: int | None = None,
+    selector: str = "", tab_id: TabId = None,
     ref: str | None = None, element: str | None = None,
 ) -> dict:
-    """Prefer ref from browser_snapshot; element is an audit-only description.
-
-    Return getBoundingClientRect + viewport/page sizes for an element.
-    """
+    """Return getBoundingClientRect + viewport/page sizes for an element (ref/selector, see
+    browser_click)."""
     return _post("/api/bounds", _with_tab(_target({"selector": selector}, ref, element), tab_id))
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Computed style", **READ))
 def browser_computed_style(
-    selector: str = "", properties: list[str] | None = None, tab_id: int | None = None,
+    selector: str = "", properties: list[str] | None = None, tab_id: TabId = None,
     ref: str | None = None, element: str | None = None,
 ) -> dict:
-    """Prefer ref from browser_snapshot; element is an audit-only description.
-
-    Return computed CSS for an element. Defaults to the layout-relevant set.
-    """
+    """Return computed CSS for an element (ref/selector, see browser_click). Defaults to the
+    layout-relevant set."""
     body = {"selector": selector}
     if properties: body["properties"] = properties
     return _post("/api/computed-style", _with_tab(_target(body, ref, element), tab_id))
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Extract readable article", **READ))
-def browser_readability(tab_id: int | None = None) -> dict:
+def browser_readability(tab_id: TabId = None) -> dict:
     """Extract the main article on the page (title, byline, clean text).
 
     Heuristic: score candidate containers (`article`, `main`, `.post`, etc.)
@@ -1277,26 +1228,23 @@ def browser_readability(tab_id: int | None = None) -> dict:
 
 @tool("core", annotations=ToolAnnotations(title="Read page as Markdown", **READ))
 def browser_markdown(
-    selector: str | None = None, tab_id: int | None = None,
+    selector: str | None = None, tab_id: TabId = None,
     ref: str | None = None, element: str | None = None,
 ) -> dict:
-    """Prefer ref from browser_snapshot; element is an audit-only description.
-
-    Convert the page (or a selector/ref subtree) to Markdown. Cap 80KB.
-    """
+    """Convert the page (or a selector/ref subtree, see browser_click) to Markdown. Cap 80KB."""
     body = {}
     if selector: body["selector"] = selector
     return _post("/api/markdown", _with_tab(_target(body, ref, element), tab_id))
 
 
 @tool("devtools", annotations=ToolAnnotations(title="List page iframes", **READ))
-def browser_iframes(tab_id: int | None = None) -> dict:
+def browser_iframes(tab_id: TabId = None) -> dict:
     """List all iframes with src + same-origin/accessible flags."""
     return _post("/api/iframes", _with_tab({}, tab_id))
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Explain selector", **READ))
-def browser_explain_selector(selector: str, tab_id: int | None = None) -> dict:
+def browser_explain_selector(selector: str, tab_id: TabId = None) -> dict:
     """Diagnose a CSS selector: match count, sample matches, suggestions for
     a more-specific selector if you got too many."""
     return _post("/api/explain-selector", _with_tab({"selector": selector}, tab_id))
@@ -1308,13 +1256,13 @@ def browser_explain_selector(selector: str, tab_id: int | None = None) -> dict:
 
 @tool("core", annotations=ToolAnnotations(title="Select option", **ACT))
 def browser_select_option(
-    selector: str = "", value: str = "", by_text: bool = False, tab_id: int | None = None,
+    selector: str = "", value: str = "", by_text: bool = False, tab_id: TabId = None,
     ref: str | None = None, element: str | None = None, wait: bool = False, timeout: int = 10000,
     expect: dict | None = None, confirm_token: str | None = None, first: bool = False,
 ) -> dict:
     """Choose an <option> in a <select>. Default matches by value; pass
-    `by_text=True` to match by visible text.
-    Action contract (ref, wait, expect, confirm_token, refs): see browser_click.
+    `by_text=True` to match by visible text. ok=true means dispatched; verify with expect
+    (see browser_click).
     """
     return _post_action("/api/select-option", _first(_confirm(_with_tab(_target({"selector": selector, "value": value, "byText": by_text}, ref, element), tab_id), confirm_token), first),
                         wait, timeout, expect)
@@ -1322,12 +1270,12 @@ def browser_select_option(
 
 @tool("core", annotations=ToolAnnotations(title="Check", **ACT))
 def browser_check(
-    selector: str = "", checked: bool = True, tab_id: int | None = None, ref: str | None = None, element: str | None = None,
+    selector: str = "", checked: bool = True, tab_id: TabId = None, ref: str | None = None, element: str | None = None,
     wait: bool = False, timeout: int = 10000, expect: dict | None = None, confirm_token: str | None = None,
     first: bool = False,
 ) -> dict:
     """Set a checkbox or radio's checked state; with wait, hidden native inputs need not render.
-    Action contract (ref, wait, expect, confirm_token, refs): see browser_click.
+    ok=true means dispatched; verify with expect (see browser_click).
     """
     return _post_action("/api/check", _first(_confirm(_with_tab(_target({"selector": selector, "checked": checked}, ref, element), tab_id), confirm_token), first),
                         wait, timeout, expect)
@@ -1335,23 +1283,19 @@ def browser_check(
 
 @tool("devtools", annotations=ToolAnnotations(title="Focus", **ACT))
 def browser_focus(
-    selector: str = "", tab_id: int | None = None, ref: str | None = None, element: str | None = None,
+    selector: str = "", tab_id: TabId = None, ref: str | None = None, element: str | None = None,
     first: bool = False,
 ) -> dict:
-    """Focus an element. Ambiguous selectors fail unless first=True.
-    Action contract (ref, element): see browser_click.
-    """
+    """Focus an element (ref/selector, see browser_click)."""
     return _post("/api/focus", _first(_with_tab(_target({"selector": selector}, ref, element), tab_id), first))
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Blur", **ACT))
 def browser_blur(
-    selector: str | None = None, tab_id: int | None = None,
+    selector: str | None = None, tab_id: TabId = None,
     ref: str | None = None, element: str | None = None, first: bool = False,
 ) -> dict:
-    """Blur an element, else the active element. Ambiguous selectors fail unless first=True.
-    Action contract (ref, element): see browser_click.
-    """
+    """Blur an element (ref/selector, see browser_click), else the active element."""
     body = {}
     if selector: body["selector"] = selector
     return _post("/api/blur", _first(_with_tab(_target(body, ref, element), tab_id), first))
@@ -1359,23 +1303,22 @@ def browser_blur(
 
 @tool("core", annotations=ToolAnnotations(title="Keypress", **ACT))
 def browser_keypress(
-    key: str,
+    key: Annotated[str, Field(
+        description="Characters, Space/Spacebar, Enter/Return, Escape/Esc, ArrowUp/Down/Left/Right "
+                    "(or Up/Down/Left/Right), Tab, Backspace.")],
     selector: str | None = None,
-    modifiers: dict | None = None,
-    text: str | None = None,
-    tab_id: int | None = None,
+    modifiers: Annotated[dict | None, Field(description='{"ctrl"|"shift"|"alt"|"meta": true}.')] = None,
+    text: Annotated[str | None, Field(description="Also insert this text into an editable target.")] = None,
+    tab_id: TabId = None,
     ref: str | None = None,
     element: str | None = None,
     wait: bool = False,
     timeout: int = 10000,
     expect: dict | None = None, confirm_token: str | None = None, first: bool = False,
 ) -> dict:
-    """Dispatch a synthetic keyboard event to the ref/selector target, else the focused
-    element (or body). Action contract (ref, wait, expect, confirm_token, refs): see browser_click.
-
-    key: characters, Space/Spacebar, Enter/Return, Escape/Esc, ArrowUp/Down/Left/Right (or Up/Down/Left/Right), Tab, Backspace.
-    modifiers: {"ctrl"|"shift"|"alt"|"meta": true}. text: also insert this text into an
-    editable target. wait applies only with selector/ref.
+    """Dispatch a synthetic keyboard event to the ref/selector target (wait needs one), else
+    the focused element (or body). ok=true means dispatched; verify with expect (see
+    browser_click).
     """
     body = {"key": key}
     if selector: body["selector"] = selector
@@ -1387,12 +1330,12 @@ def browser_keypress(
 
 @tool("devtools", annotations=ToolAnnotations(title="Double click", **ACT))
 def browser_double_click(
-    selector: str = "", tab_id: int | None = None, ref: str | None = None, element: str | None = None,
+    selector: str = "", tab_id: TabId = None, ref: str | None = None, element: str | None = None,
     wait: bool = False, timeout: int = 10000, expect: dict | None = None, confirm_token: str | None = None,
     first: bool = False,
 ) -> dict:
-    """Dispatch a synthetic double-click on the matched element.
-    Action contract (ref, wait, expect, confirm_token): see browser_click.
+    """Dispatch a synthetic double-click on the matched element. ok=true means dispatched;
+    verify with expect (see browser_click).
     """
     return _post_action("/api/double-click", _first(_confirm(_with_tab(_target({"selector": selector}, ref, element), tab_id), confirm_token), first),
                         wait, timeout, expect)
@@ -1400,16 +1343,15 @@ def browser_double_click(
 
 @tool("core", annotations=ToolAnnotations(title="Submit form", **DESTRUCTIVE))
 def browser_submit_form(
-    selector: str | None = None, tab_id: int | None = None,
+    selector: str | None = None, tab_id: TabId = None,
     ref: str | None = None, element: str | None = None, expect: dict | None = None, confirm_token: str | None = None,
     first: bool = False,
 ) -> dict:
     """Submit the target form (or the target element's enclosing form).
     Without selector/ref: the form of the field last filled or focused, else the only
-    form (several: ambiguous_target). Result form names it. Pass expect to verify
-    the submit's effect. On a failure with retryable=false, inspect the page
-    before submitting again.
-    Action contract (ref, expect, confirm_token, refs): see browser_click.
+    form (several: ambiguous_target). Result form names it. ok=true means dispatched;
+    verify with expect (see browser_click). On a failure with retryable=false, inspect the
+    page before submitting again.
     """
     body = {}
     if selector: body["selector"] = selector
@@ -1419,10 +1361,12 @@ def browser_submit_form(
 
 @tool("core", annotations=ToolAnnotations(title="Form fill", **ACT))
 def browser_form_fill(
-    fields: dict, tab_id: int | None = None, expect: dict | None = None, confirm_token: str | None = None,
+    fields: Annotated[dict, Field(description='e.g. {"email": "foo@bar", "Password": "...", "#submit-target": true}')],
+    tab_id: TabId = None, expect: dict | None = None, confirm_token: str | None = None,
     first: bool = False,
 ) -> dict:
-    """Fill many fields via fuzzy matching; ambiguous keys fail unless first=True.
+    """Fill many fields via fuzzy matching; ambiguous keys fail unless first=True. ok=true
+    means dispatched; verify with expect (see browser_click).
 
     Each key in `fields` is matched as: CSS selector → name attribute →
     label text (case-insensitive contains) → placeholder. Each value is
@@ -1435,10 +1379,6 @@ def browser_form_fill(
     returns an error for that key. A selected radio cannot be set to false
     (that would empty its group): set another radio in the group to true.
     False on an unselected radio is a no-op.
-    Action contract (expect, confirm_token): see browser_click.
-
-    Args:
-        fields: {"email": "foo@bar", "Password": "...", "#submit-target": true}
     """
     return _post_action("/api/form-fill", _first(_confirm(_with_tab({"fields": fields}, tab_id), confirm_token), first),
                         expect=expect)
@@ -1446,7 +1386,7 @@ def browser_form_fill(
 
 @tool("devtools", annotations=ToolAnnotations(title="Drag", **ACT))
 def browser_drag(
-    from_selector: str = "", to_selector: str = "", tab_id: int | None = None,
+    from_selector: str = "", to_selector: str = "", tab_id: TabId = None,
     ref: str | None = None, element: str | None = None, to_ref: str | None = None,
     wait: bool = False, timeout: int = 10000, expect: dict | None = None, confirm_token: str | None = None,
     first: bool = False,
@@ -1454,7 +1394,7 @@ def browser_drag(
     """Synthetic drag-and-drop from one element to another: HTML5 drag events, then a
     pointer/mouse drag unless the drop target accepted them (result via: html5|pointer).
     ref identifies the source; to_ref identifies the destination; wait covers both.
-    Action contract (ref, wait, expect, confirm_token): see browser_click.
+    ok=true means dispatched; verify with expect (see browser_click).
     """
     return _post_action("/api/drag", _first(_confirm(_with_tab(_target({"from": from_selector, "to": to_selector, "toRef": to_ref}, ref, element), tab_id), confirm_token), first),
                         wait, timeout, expect)
@@ -1462,11 +1402,10 @@ def browser_drag(
 
 @tool("devtools", annotations=ToolAnnotations(title="Click and wait navigation", **ACT))
 def browser_click_and_wait_navigation(
-    selector: str = "", timeout: int = 15000, tab_id: int | None = None,
+    selector: str = "", timeout: int = 15000, tab_id: TabId = None,
     ref: str | None = None, element: str | None = None, confirm_token: str | None = None, first: bool = False,
 ) -> dict:
-    """Click then wait for navigation. Ambiguous selectors fail unless first=True.
-    Action contract (ref, confirm_token): see browser_click.
+    """Click an element (ref/selector, see browser_click), then wait for the resulting navigation.
 
     Atomic operation — far more reliable than `browser_click` followed by
     `browser_wait_for_url` for links/submit buttons. Listens for
@@ -1483,23 +1422,24 @@ def browser_click_and_wait_navigation(
 # ════════════════════════════════════════════════════════════════════
 
 @tool("core", annotations=ToolAnnotations(title="Upload file", **DESTRUCTIVE))
-def browser_upload_file(path: str | list[str], selector: str | None = None, mode: str = "auto",
-                    tab_id: int | None = None, confirm_token: str | None = None, first: bool = False) -> dict:
-    """Attach local files without a dialog. Ambiguous targets fail unless first=True.
+def browser_upload_file(
+    path: Annotated[str | list[str], Field(
+        description="Absolute file path, or a list of paths for multi-file inputs.")],
+    selector: Annotated[str | None, Field(
+        description="The file input, an element containing it, or a drop zone. Omit to use the only "
+                    "input[type=file] (first=True opts into the first).")] = None,
+    mode: Annotated[str, Field(description='"auto" (input if found, else drop), "input", or "drop".')] = "auto",
+    tab_id: Annotated[int | None, Field(
+        description="Default: active tab. Pass it for anything big - the upload streams in ~384 KB "
+                    "chunks and must keep hitting the same tab.")] = None,
+    confirm_token: str | None = None, first: bool = False,
+) -> dict:
+    """Attach local files to a page's upload control without a dialog; returns {ok, mode,
+    files: [{name, size, type}], chunks, bytes, transport, seconds}.
 
     The bridge reads the file from disk and streams it into the page, which builds
     real File objects and sets them on the <input type=file> (firing input + change).
     If the selector is a drop zone with no input inside, it fires dragenter/dragover/drop.
-
-    Args:
-        path: absolute file path, or a list of paths for multi-file inputs.
-        selector: the file input, an element containing it, or a drop zone.
-                  Omit to use the only input[type=file] (first=True opts into the first).
-        mode: "auto" (input if found, else drop), "input", or "drop".
-        tab_id: target tab (default: active). Pass it for anything big - the upload
-                streams in ~384 KB chunks and must keep hitting the same tab.
-
-    Returns {ok, mode, files: [{name, size, type}], chunks, bytes, transport, seconds}.
     """
     body = {"paths": path if isinstance(path, list) else [path], "mode": mode}
     if selector:
@@ -1531,7 +1471,7 @@ def _screenshot_result(r: dict, save_to: str | None, data_url: bool):
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Full page metrics", **READ))
-def browser_full_page_metrics(tab_id: int | None = None) -> dict:
+def browser_full_page_metrics(tab_id: TabId = None) -> dict:
     """Return document/viewport sizes + scroll position + devicePixelRatio."""
     return _post("/api/full-page-metrics", _with_tab({}, tab_id))
 
@@ -1541,50 +1481,51 @@ def browser_full_page_metrics(tab_id: int | None = None) -> dict:
 # ════════════════════════════════════════════════════════════════════
 
 @tool("tabs", annotations=ToolAnnotations(title="Pin tab", **IDEMPOTENT_ACT))
-def browser_pin_tab(pinned: bool = True, tab_id: int | None = None) -> dict:
+def browser_pin_tab(pinned: bool = True, tab_id: TabId = None) -> dict:
     """Pin or unpin a tab."""
     return _post("/api/pin-tab", _with_tab({"pinned": pinned}, tab_id))
 
 
 @tool("tabs", annotations=ToolAnnotations(title="Mute tab", **IDEMPOTENT_ACT))
-def browser_mute_tab(muted: bool = True, tab_id: int | None = None) -> dict:
+def browser_mute_tab(muted: bool = True, tab_id: TabId = None) -> dict:
     """Mute or unmute a tab."""
     return _post("/api/mute-tab", _with_tab({"muted": muted}, tab_id))
 
 
 @tool("tabs", annotations=ToolAnnotations(title="Duplicate tab", **ACT))
-def browser_duplicate_tab(tab_id: int | None = None) -> dict:
+def browser_duplicate_tab(tab_id: TabId = None) -> dict:
     """Duplicate a tab. Returns the new tab id."""
     return _post("/api/duplicate-tab", _with_tab({}, tab_id))
 
 
 @tool("tabs", annotations=ToolAnnotations(title="Reload tab", **ACT))
-def browser_reload_tab(bypass_cache: bool = False, tab_id: int | None = None, expect: dict | None = None) -> dict:
+def browser_reload_tab(bypass_cache: bool = False, tab_id: TabId = None, expect: dict | None = None) -> dict:
     """Reload a tab. Pass `bypass_cache=True` for a hard reload.
-    Action contract (expect): see browser_click."""
+    ok=true means dispatched; verify with expect (see browser_click)."""
     return _post_action("/api/reload-tab", _with_tab({"bypassCache": bypass_cache}, tab_id), expect=expect)
 
 
 @tool("core", annotations=ToolAnnotations(title="Back", **ACT))
-def browser_back(tab_id: int | None = None, expect: dict | None = None) -> dict:
-    """Go back in history (browser back button). Action contract (expect): see browser_click."""
+def browser_back(tab_id: TabId = None, expect: dict | None = None) -> dict:
+    """Go back in history (browser back button). ok=true means dispatched; verify with
+    expect (see browser_click)."""
     return _post_action("/api/back", _with_tab({}, tab_id), expect=expect)
 
 
 @tool("core", annotations=ToolAnnotations(title="Forward", **ACT))
-def browser_forward(tab_id: int | None = None, expect: dict | None = None) -> dict:
-    """Go forward in history. Action contract (expect): see browser_click."""
+def browser_forward(tab_id: TabId = None, expect: dict | None = None) -> dict:
+    """Go forward in history. ok=true means dispatched; verify with expect (see browser_click)."""
     return _post_action("/api/forward", _with_tab({}, tab_id), expect=expect)
 
 
 @tool("tabs", annotations=ToolAnnotations(title="Get zoom", **READ))
-def browser_get_zoom(tab_id: int | None = None) -> dict:
+def browser_get_zoom(tab_id: TabId = None) -> dict:
     """Return the current zoom factor (1.0 = 100%)."""
     return _post("/api/get-zoom", _with_tab({}, tab_id))
 
 
 @tool("tabs", annotations=ToolAnnotations(title="Set zoom", **IDEMPOTENT_ACT))
-def browser_set_zoom(factor: float, tab_id: int | None = None) -> dict:
+def browser_set_zoom(factor: float, tab_id: TabId = None) -> dict:
     """Set zoom factor. 0.3 to 5.0 typical; 1.0 = 100%."""
     return _post("/api/set-zoom", _with_tab({"factor": factor}, tab_id))
 
@@ -1606,11 +1547,8 @@ def browser_create_window(url: str | None = None, incognito: bool = False,
 
 @tool("windows", annotations=ToolAnnotations(title="Close window", **DESTRUCTIVE))
 def browser_close_window(window_id: int, confirm_token: str | None = None) -> dict:
-    """Close a browser window by ID (from browser_windows).
-
-    A window with tabs the agent did not open is refused (code user_tab) unless the user
-    approves (confirm_token from that refusal).
-    """
+    """Close a browser window by ID (from browser_windows); one with tabs the agent did not
+    open is refused (code user_tab) unless the user approves (confirm_token)."""
     return _post("/api/close-window", _confirm({"windowId": window_id}, confirm_token))
 
 
@@ -1621,7 +1559,8 @@ def browser_focus_window(window_id: int) -> dict:
 
 
 @tool("windows", annotations=ToolAnnotations(title="Move tab", **ACT))
-def browser_move_tab(tab_id: int, window_id: int | None = None, index: int = -1) -> dict:
+def browser_move_tab(tab_id: Annotated[int, Field(description="The tab to move.")],
+                     window_id: int | None = None, index: int = -1) -> dict:
     """Move a tab to a position (and optionally to a different window). -1 = end."""
     body = {"tabId": tab_id, "index": index}
     if window_id is not None: body["windowId"] = window_id
@@ -1629,7 +1568,7 @@ def browser_move_tab(tab_id: int, window_id: int | None = None, index: int = -1)
 
 
 @tool("windows", annotations=ToolAnnotations(title="Detach tab", **ACT))
-def browser_detach_tab(tab_id: int) -> dict:
+def browser_detach_tab(tab_id: Annotated[int, Field(description="The tab to pop out.")]) -> dict:
     """Pop a tab out into its own new window."""
     return _post("/api/detach-tab", {"tabId": tab_id})
 
@@ -1664,23 +1603,17 @@ def browser_cookies(
 
 @tool("storage", annotations=ToolAnnotations(title="Manage page storage", **DESTRUCTIVE))
 def browser_storage(
-    kind: str,
-    op: str,
-    key: str | None = None,
-    value: str | None = None,
-    tab_id: int | None = None,
+    kind: Annotated[str, Field(description='"local" or "session".')],
+    op: Annotated[str, Field(description='"get" | "set" | "remove" | "clear" | "list" | "snapshot" | "restore".')],
+    key: Annotated[str | None, Field(description="Required for get/set/remove.")] = None,
+    value: Annotated[str | None, Field(
+        description="For set, the string value. For restore, a dict of key→value.")] = None,
+    tab_id: Annotated[int | None, Field(
+        description="Tab to run against. Storage is per-origin, so prefer a tab already at the "
+                    "right origin.")] = None,
     confirm_token: str | None = None,
 ) -> dict:
-    """localStorage / sessionStorage ops.
-
-    Args:
-        kind: "local" or "session".
-        op: "get" | "set" | "remove" | "clear" | "list" | "snapshot" | "restore".
-        key: Required for get/set/remove.
-        value: For set, the string value. For restore, a dict of key→value.
-        tab_id: Tab to run against. Storage is per-origin, so prefer driving
-            it on a tab already at the right origin.
-    """
+    """localStorage / sessionStorage ops."""
     body = {"kind": kind, "op": op}
     if key is not None: body["key"] = key
     if value is not None: body["value"] = value
@@ -1688,13 +1621,12 @@ def browser_storage(
 
 
 @tool("storage", annotations=ToolAnnotations(title="Read or write clipboard", **DESTRUCTIVE))
-def browser_clipboard(op: str, text: str | None = None, confirm_token: str | None = None) -> dict:
-    """Read or write the system clipboard.
-
-    Args:
-        op: "read" or "write".
-        text: Text to write when op="write".
-    """
+def browser_clipboard(
+    op: Annotated[str, Field(description='"read" or "write".')],
+    text: Annotated[str | None, Field(description='Text to write when op="write".')] = None,
+    confirm_token: str | None = None,
+) -> dict:
+    """Read or write the system clipboard."""
     body = {"op": op}
     if text is not None: body["text"] = text
     return _post("/api/clipboard", _confirm(body, confirm_token))
@@ -1702,20 +1634,13 @@ def browser_clipboard(op: str, text: str | None = None, confirm_token: str | Non
 
 @tool("network", annotations=ToolAnnotations(title="Manage downloads", **DESTRUCTIVE))
 def browser_downloads(
-    op: str,
-    url: str | None = None,
-    filename: str | None = None,
-    query: dict | None = None,
+    op: Annotated[str, Field(description='"download" | "list" | "cancel".')],
+    url: Annotated[str | None, Field(description='For "download", the URL to fetch.')] = None,
+    filename: Annotated[str | None, Field(description="Output filename.")] = None,
+    query: Annotated[dict | None, Field(description='For "list", a downloads.search query dict.')] = None,
     confirm_token: str | None = None,
 ) -> dict:
-    """Downloads operations.
-
-    Args:
-        op: "download" | "list" | "cancel".
-        url: For "download", the URL to fetch.
-        filename: Optional output filename.
-        query: For "list", a downloads.search query dict.
-    """
+    """Downloads operations."""
     body = {"op": op}
     if url: body["url"] = url
     if filename: body["filename"] = filename
@@ -1725,15 +1650,12 @@ def browser_downloads(
 
 @tool("storage", annotations=ToolAnnotations(title="Clear browsing data", **DESTRUCTIVE))
 def browser_clear_browsing_data(
-    types: list[str] | None = None, since_ms: int | None = None
+    types: Annotated[list[str] | None, Field(
+        description='Which to clear. Subset of ["cache","cookies","history","localStorage","passwords",'
+                    '"downloads"]. Default = all of those.')] = None,
+    since_ms: Annotated[int | None, Field(description="Only data created since this epoch-ms timestamp.")] = None,
 ) -> dict:
-    """Clear browsing data of the given types.
-
-    Args:
-        types: Which to clear. Subset of ["cache","cookies","history",
-            "localStorage","passwords","downloads"]. Default = all of those.
-        since_ms: Only data created since this epoch-ms timestamp.
-    """
+    """Clear browsing data of the given types."""
     body = {}
     if types: body["types"] = types
     if since_ms: body["since"] = since_ms
@@ -1742,19 +1664,15 @@ def browser_clear_browsing_data(
 
 @tool("network", annotations=ToolAnnotations(title="Manage request interception", **DESTRUCTIVE))
 def browser_intercept(
-    op: str,
-    patterns: list[str] | None = None,
-    effect: str = "block",
+    op: Annotated[str, Field(description='"add" | "clear" | "list" | "log" | "clearLog".')],
+    patterns: Annotated[list[str] | None, Field(
+        description='For "add", regex patterns to match against request URLs.')] = None,
+    effect: Annotated[str, Field(description='For "add", "block" (cancel request) or "redirect".')] = "block",
 ) -> dict:
     """Block, log, or redirect HTTP requests by URL regex.
 
     Useful to suppress analytics/ads during agent runs (3–10× page speed-up)
     or to log what an SPA actually fetches.
-
-    Args:
-        op: "add" | "clear" | "list" | "log" | "clearLog".
-        patterns: For "add", regex patterns to match against request URLs.
-        effect: For "add", "block" (cancel request) or "redirect".
     """
     body = {"op": op, "effect": effect}
     if patterns: body["patterns"] = patterns
@@ -1762,20 +1680,20 @@ def browser_intercept(
 
 
 @tool("network", annotations=ToolAnnotations(title="Manage network capture", **DESTRUCTIVE))
-def browser_capture_network(op: str = "read", since: int = 0, tab_id: int | None = None) -> dict:
-    """Capture network requests via the page's PerformanceObserver.
-
-    Args:
-        op: "start" begins capturing fresh, "stop" pauses, "read" returns
-            the buffer (default), "clear" empties it.
-        since: When reading, only return entries with startTime >= since (ms).
-        tab_id: Optional tab; defaults to active.
-    """
+def browser_capture_network(
+    op: Annotated[str, Field(
+        description='"start" begins capturing fresh, "stop" pauses, "read" returns the buffer, "clear" '
+                    'empties it.')] = "read",
+    since: Annotated[int, Field(
+        description="When reading, only return entries with startTime >= since (ms).")] = 0,
+    tab_id: TabId = None,
+) -> dict:
+    """Capture network requests via the page's PerformanceObserver."""
     return _post("/api/capture-network", _with_tab({"op": op, "since": since}, tab_id))
 
 
 @tool("core", annotations=ToolAnnotations(title="Watch console", **ACT))
-def browser_watch_console(enabled: bool = True, tab_id: int | None = None) -> dict:
+def browser_watch_console(enabled: bool = True, tab_id: TabId = None) -> dict:
     """Toggle console capture on a tab. Once enabled, browser console
     messages (log/info/warn/error/debug + window errors) are buffered up to
     500 entries; retrieve via browser_console_logs."""
@@ -1784,7 +1702,7 @@ def browser_watch_console(enabled: bool = True, tab_id: int | None = None) -> di
 
 @tool("core", annotations=ToolAnnotations(title="Console logs", **READ))
 def browser_console_logs(
-    since: int | None = None, level: str | None = None, tab_id: int | None = None
+    since: int | None = None, level: str | None = None, tab_id: TabId = None
 ) -> dict:
     """Return buffered console logs from a tab (requires browser_watch_console first)."""
     body = {}
@@ -1798,17 +1716,16 @@ def browser_console_logs(
 # ════════════════════════════════════════════════════════════════════
 
 @tool("parallel", annotations=ToolAnnotations(title="Broadcast", **DESTRUCTIVE))
-def browser_broadcast(tab_ids: list[int], command: dict, timeout: int = 30) -> dict:
+def browser_broadcast(
+    tab_ids: Annotated[list[int], Field(description="Tabs to target.")],
+    command: Annotated[dict, Field(
+        description='Command dict, e.g. {"action": "pageInfo"} or {"action": "getReadability"}.')],
+    timeout: Annotated[int, Field(description="Per-tab timeout in seconds.")] = 30,
+) -> dict:
     """Fire the same command at every listed tab in parallel.
 
     Each tab gets the command with its own tabId injected. Returns per-tab
     results keyed by tab id.
-
-    Args:
-        tab_ids: Tabs to target.
-        command: Command dict, e.g. {"action": "pageInfo"} or
-            {"action": "getReadability"}.
-        timeout: Per-tab timeout in seconds.
     """
     return _post(
         "/api/broadcast",
@@ -1819,23 +1736,18 @@ def browser_broadcast(tab_ids: list[int], command: dict, timeout: int = 30) -> d
 
 @tool("parallel", annotations=ToolAnnotations(title="Wait for JavaScript across tabs", **DESTRUCTIVE))
 def browser_sync_barrier(
-    tab_ids: list[int],
-    predicate: str,
-    timeout: int = 30000,
-    poll_interval: int = 300,
+    tab_ids: Annotated[list[int], Field(description="Tabs to monitor.")],
+    predicate: Annotated[str, Field(
+        description="JS expression that returns truthy when the tab is ready, e.g. "
+                    "\"!!document.querySelector('.results')\".")],
+    timeout: Annotated[int, Field(description="Overall timeout in ms.")] = 30000,
+    poll_interval: Annotated[int, Field(description="Per-poll interval in ms.")] = 300,
     confirm_token: str | None = None,
 ) -> dict:
     """Block until a JS predicate returns truthy on every listed tab.
 
     Replaces hand-rolled "wait for everything to be ready" loops.
     Needs the developer extension build.
-
-    Args:
-        tab_ids: Tabs to monitor.
-        predicate: JS expression that returns truthy when the tab is ready,
-            e.g. "!!document.querySelector('.results')".
-        timeout: Overall timeout in ms.
-        poll_interval: Per-poll interval in ms.
     """
     return _post(
         "/api/sync-barrier",
@@ -1846,7 +1758,7 @@ def browser_sync_barrier(
 
 
 @tool("parallel", annotations=ToolAnnotations(title="Tag tab", **IDEMPOTENT_ACT))
-def browser_tag_tab(name: str, tab_id: int) -> dict:
+def browser_tag_tab(name: str, tab_id: Annotated[int, Field(description="The tab to name.")]) -> dict:
     """Give a tab a memorable name. Refer to it later via browser_resolve_tag.
     Names survive bridge restarts only if you re-tag — they live in memory."""
     return _post("/api/tag-tab", {"name": name, "tabId": tab_id})
@@ -1887,7 +1799,7 @@ def browser_pool_acquire() -> dict:
 
 
 @tool("parallel", annotations=ToolAnnotations(title="Release a pooled tab", **IDEMPOTENT_ACT))
-def browser_pool_release(tab_id: int) -> dict:
+def browser_pool_release(tab_id: Annotated[int, Field(description="The pooled tab to return.")]) -> dict:
     """Return a tab to the pool for reuse."""
     return _post("/api/pool-release", {"tabId": tab_id})
 
@@ -1897,17 +1809,18 @@ def browser_pool_release(tab_id: int) -> dict:
 # ════════════════════════════════════════════════════════════════════
 
 @tool("session", annotations=ToolAnnotations(title="Save session", **DESTRUCTIVE))
-def browser_save_session(name: str, urls: list[str] | None = None, confirm_token: str | None = None) -> dict:
+def browser_save_session(
+    name: Annotated[str, Field(
+        description="A label for the session (becomes filename under ~/claude-zen-sessions/).")],
+    urls: Annotated[list[str] | None, Field(
+        description="Origins whose cookies + localStorage to snapshot. Each gets opened briefly in a "
+                    "temp tab so localStorage can be read.")] = None,
+    confirm_token: str | None = None,
+) -> dict:
     """Snapshot cookies (and per-origin localStorage if urls given) to disk.
 
     Use case: log into a service interactively once, save the session,
     then have parallel agents load it for authenticated work.
-
-    Args:
-        name: A label for the session (becomes filename under
-            ~/claude-zen-sessions/).
-        urls: Origins whose cookies + localStorage to snapshot. Each gets
-            opened briefly in a temp tab so localStorage can be read.
     """
     return _post("/api/save-session", _confirm({"name": name, "urls": urls or []}, confirm_token), timeout=120)
 
@@ -2080,21 +1993,15 @@ def browser_bookmarks_search(query: str, limit: int = 20) -> dict:
 
 @tool("parallel", annotations=ToolAnnotations(title="Retry a command", **DESTRUCTIVE))
 def browser_retry(
-    command: dict,
-    max_attempts: int = 3,
-    backoff_ms: int = 500,
-    on_errors: list[str] | None = None,
+    command: Annotated[dict, Field(description="A command dict (same shape as browser_batch entries).")],
+    max_attempts: Annotated[int, Field(description="Total tries including the first.")] = 3,
+    backoff_ms: Annotated[int, Field(description="Initial wait between attempts (doubles each retry).")] = 500,
+    on_errors: Annotated[list[str] | None, Field(
+        description="Only retry if the error string contains one of these substrings. Default: retry "
+                    "on any error.")] = None,
 ) -> dict:
-    """Wrap any command in exponential-backoff retry.
-
-    Args:
-        command: A command dict (same shape as browser_batch entries).
-        max_attempts: Total tries including the first.
-        backoff_ms: Initial wait between attempts (doubles each retry).
-        on_errors: Only retry if the error string contains one of these substrings.
-            Default: retry on any error. An error with retryable=false (a write whose
-            outcome is unknown) is never repeated.
-    """
+    """Wrap any command in exponential-backoff retry; an error with retryable=false (a write
+    whose outcome is unknown) is never repeated."""
     body = {"command": command, "maxAttempts": max_attempts, "backoffMs": backoff_ms}
     if on_errors: body["onErrors"] = on_errors
     retry = {"action": "retry", **body}
@@ -2104,15 +2011,19 @@ def browser_retry(
 # -- Batch --------------------------------------------------------
 
 @tool("parallel", annotations=ToolAnnotations(title="Run command batch", **DESTRUCTIVE))
-def browser_batch(commands: list[dict]) -> dict:
-    """Run multiple commands in a single request for speed.
+def browser_batch(
+    commands: Annotated[list[dict], Field(
+        description='e.g. [{"action": "navigate", "url": "..."}, {"action": "waitForElement", "selector": '
+                    '".results", "timeout": 10000}, {"action": "pageText"}]')],
+) -> dict:
+    """Run multiple commands in a single request for speed. A failed command does not
+    make the call an MCP error: inspect each result, because earlier commands may
+    already have taken effect.
 
     Each command is a dict with "action" and parameters. Add "tabId" to any
     command to target a specific tab instead of the active one. For true
-    concurrency across tabs, prefer browser_parallel. A failed command does not
-    make the call an MCP error: inspect each result and resume from the failed
-    command, because earlier commands may already have taken effect. progress
-    gives each command's status (ok, failed, held, unknown, skipped).
+    concurrency across tabs, prefer browser_parallel. Resume from the failed
+    command; progress gives each command's status (ok, failed, held, unknown, skipped).
 
     Available actions: navigate, newTab, closeTab, switchTab, click, type,
     setEditableContent, fill, scroll, hover, find, js, pageInfo, pageText, screenshot, tabs,
@@ -2122,9 +2033,6 @@ def browser_batch(commands: list[dict]) -> dict:
     click, doubleClick, hover, drag, type, fill, setEditableContent, selectOption,
     checkBox and keypress accept "wait": true and "timeout" (ms, default 10000) to
     wait for their target first, like the matching tools.
-
-    Args:
-        commands: List of command dicts, e.g. [{"action": "navigate", "url": "..."}, {"action": "waitForElement", "selector": ".results", "timeout": 10000}, {"action": "pageText"}]
     """
     # Outlast the bridge's deadline, so a batch it stops still returns its partial progress.
     return _post("/api/batch", {"commands": commands},
@@ -2132,16 +2040,16 @@ def browser_batch(commands: list[dict]) -> dict:
 
 
 @tool("parallel", annotations=ToolAnnotations(title="Resume a container call", **DESTRUCTIVE))
-def browser_resume(call: int, resume_token: str, observed: dict[str, str] | None = None) -> dict:
+def browser_resume(
+    call: Annotated[int, Field(description="The call id from that response.")],
+    resume_token: Annotated[str, Field(description="The resume_token from that response.")],
+    observed: Annotated[dict[str, str] | None, Field(
+        description='For each unknown step (by progress path, e.g. "1" or "0.1.2"), "not_applied" to send '
+                    'it again or "applied" to mark it ok after checking the page.')] = None,
+) -> dict:
     """Resume a browser_batch, browser_parallel or browser_workflow call that did not finish ok.
 
     Steps that ran ok are not sent again. Returns the same shape as the original call.
-
-    Args:
-        call: The call id from that response.
-        resume_token: The resume_token from that response.
-        observed: For each unknown step (by progress path, e.g. "1" or "0.1.2"), "not_applied"
-            to send it again or "applied" to mark it ok after checking the page.
     """
     body: dict = {"call": call, "resume_token": resume_token}
     if observed is not None:
