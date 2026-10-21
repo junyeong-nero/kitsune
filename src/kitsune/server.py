@@ -115,6 +115,12 @@ class KitsuneMCP(FastMCP):
                 })
                 for tool in await super().list_tools()]
 
+    async def call_tool(self, name, arguments):
+        # A known tool this configuration leaves out names its setting instead of "Unknown tool" (#171).
+        if name in UNPUBLISHED_TOOLS:
+            return CallToolResult(content=[_compact_json(_unpublished_tool(name))], isError=True)
+        return await super().call_tool(name, arguments)
+
 
 mcp = KitsuneMCP("Kitsune")
 
@@ -153,6 +159,17 @@ def tool_preset(preset: str | None, caps: frozenset) -> str:
 
 
 TOOL_PRESET = tool_preset(os.environ.get("KITSUNE_TOOL_PRESET"), ENABLED_CAPS)
+
+# Known tools that KITSUNE_CAPS or KITSUNE_TOOL_PRESET leave out: name -> (group, settings that publish it).
+UNPUBLISHED_TOOLS: dict[str, tuple[str, list[str]]] = {}
+
+
+def _unpublished_tool(name: str) -> dict:
+    group, settings = UNPUBLISHED_TOOLS[name]
+    return {"error": f"{name} is not published by this MCP server", "code": "tool_not_published",
+            "retryable": False,
+            "hint": f"Set {' and '.join(settings)} in the MCP server environment, then restart the MCP client.",
+            "state": {"group": group, "preset": TOOL_PRESET, "caps": sorted(ENABLED_CAPS)}}
 
 
 def _failed(result) -> bool:
@@ -193,14 +210,20 @@ def tool(group: str, annotations: ToolAnnotations | None = None):
 
     `all` enables every group except NAMED_ONLY_GROUPS. A tool preset narrows the core group only; other enabled groups register in full.
     Only the MCP registration marks failures as errors; Python callers get the plain result.
+    Tools left out go to UNPUBLISHED_TOOLS with the settings that would publish them.
     """
     if group not in CAPABILITY_GROUPS:
         raise ValueError(f"Unknown tool capability group: {group}")
 
     def decorate(function):
+        settings = []
+        if not (("all" in ENABLED_CAPS and group not in NAMED_ONLY_GROUPS) or group in ENABLED_CAPS):
+            settings.append("KITSUNE_CAPS=" + ",".join(sorted(ENABLED_CAPS | {group})))
         if group == "core" and TOOL_PRESET != "full" and function.__name__ not in TOOL_PRESETS[TOOL_PRESET]:
-            return function
-        if ("all" in ENABLED_CAPS and group not in NAMED_ONLY_GROUPS) or group in ENABLED_CAPS:
+            settings.append("KITSUNE_TOOL_PRESET=full")
+        if settings:
+            UNPUBLISHED_TOOLS[function.__name__] = (group, settings)
+        else:
             mcp.tool(annotations=annotations)(_mcp_errors(function))
         return function
 
@@ -498,6 +521,7 @@ def browser_status() -> dict:
     result = _get("/api/status")
     if result.get("code") and "diagnosis" not in result:  # the bridge was not reached
         result["diagnosis"] = {key: result[key] for key in ("code", "hint", "state") if key in result}
+    result["mcp_tools"] = {"preset": TOOL_PRESET, "caps": sorted(ENABLED_CAPS), "unpublished": len(UNPUBLISHED_TOOLS)}
     return result
 
 

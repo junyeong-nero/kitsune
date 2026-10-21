@@ -24,7 +24,24 @@ preset unset, `KITSUNE_CAPS=all` registers the full `core` group; an explicit `l
 narrows it even then. Definitions are the same in both presets, other `KITSUNE_CAPS`
 groups register in full, and an unknown preset fails at startup. The
 [Lean tool preset](guide.md#lean-tool-preset) section has the rules and which tasks
-need `full`.
+need `full`. `browser_double_click`, `browser_drag`, `browser_focus` and
+`browser_blur` are `devtools` tools, so they also need `devtools` in `KITSUNE_CAPS`.
+
+A call to a known tool that this configuration does not publish returns an MCP
+error (`isError`) instead of FastMCP's `Unknown tool`. Its `hint` names the
+settings that publish it; restart the MCP client after changing them:
+
+```json
+{ "error": "browser_drag is not published by this MCP server", "code": "tool_not_published",
+  "retryable": false,
+  "hint": "Set KITSUNE_CAPS=core,devtools in the MCP server environment, then restart the MCP client.",
+  "state": { "group": "devtools", "preset": "lean", "caps": ["core"] } }
+```
+
+`browser_status` adds `mcp_tools` to the bridge status: this MCP server's `preset`,
+enabled `caps`, and the count of known tools it leaves `unpublished`, for example
+`{"preset": "lean", "caps": ["core"], "unpublished": 85}`. The bridge is shared by
+every MCP server, so `GET /api/status` does not have it.
 The bridge endpoints below remain available unchanged; MCP tool names and
 parameters are separate from HTTP endpoint names and JSON command actions.
 

@@ -263,6 +263,18 @@ KITSUNE_CAPS = "core,network,parallel"
 | `windows` (6) | `browser_windows`, `browser_create_window`, `browser_close_window`, `browser_focus_window`, `browser_move_tab`, `browser_detach_tab` |
 | `history` (3, not in `all`) | `browser_history_search`, `browser_history_visits`, `browser_bookmarks_search`. They also need your grant on Kitsune's options page; see [History and bookmarks](api-reference.md#history-and-bookmarks) |
 
+`browser_double_click`, `browser_drag`, `browser_focus` and `browser_blur` are in
+`devtools`, not `core`: `KITSUNE_TOOL_PRESET=full` alone does not publish them; add
+`devtools` to `KITSUNE_CAPS` (#171). They stay there so the `core` definitions every
+model request carries do not grow (#88).
+
+A tool left out by `KITSUNE_CAPS` or the preset is absent from `tools/list`, and
+clients usually say nothing about it. Calling it anyway returns an MCP error with
+`code: "tool_not_published"` whose `hint` names the setting that publishes it, for
+example `KITSUNE_CAPS=core,devtools` for `browser_drag`. `browser_status` reports
+this server's `mcp_tools`: the active `preset`, the enabled `caps`, and how many
+known tools are `unpublished`.
+
 The consolidated tools use options for related operations:
 
 - `browser_tabs(action="list"|"new"|"close"|"select", ...)`
@@ -330,6 +342,10 @@ attempt per arm) it showed no detected success or safety loss against the 30-too
 surface; that is workload-specific, and the dropped tools are needed for the tasks
 in the last column of the table below. Groups other than `core` always register in
 full. Case and surrounding whitespace are ignored; unknown preset names fail at startup.
+A dropped tool is not in `tools/list`; calling it returns `tool_not_published` with
+the hint `KITSUNE_TOOL_PRESET=full`, and `browser_status` shows `mcp_tools.preset`
+(see [Tools](#tools)). An allowlist that names tools the server does not publish gets
+no other warning.
 
 | `KITSUNE_TOOL_PRESET` | `KITSUNE_CAPS` | `core` tools registered |
 |---|---|---|

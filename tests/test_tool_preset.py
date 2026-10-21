@@ -72,6 +72,33 @@ def list_tools(caps="core", preset=None) -> dict:
     return json.loads(result.stdout)
 
 
+# Calls known and unknown tool names through FastMCP's call_tool, and browser_status with the bridge mocked.
+UNPUBLISHED_SCRIPT = """import asyncio, json, sys
+from unittest.mock import patch
+from kitsune import server
+def call(name):
+    try:
+        result = asyncio.run(server.mcp.call_tool(name, {}))
+    except Exception as error:
+        return {"raised": str(error)}
+    return {"isError": result.isError, **json.loads(result.content[0].text)}
+with patch.object(server, "_get", return_value={"status": "running"}):
+    status = server.browser_status()
+print(json.dumps({"calls": {name: call(name) for name in sys.argv[1:]}, "mcp_tools": status["mcp_tools"],
+                  "unpublished": sorted(server.UNPUBLISHED_TOOLS)}))
+"""
+
+
+def unpublished(caps, preset, *names) -> dict:
+    env = {**os.environ, "KITSUNE_CAPS": caps}
+    env.pop("KITSUNE_TOOL_PRESET", None)
+    if preset is not None:
+        env["KITSUNE_TOOL_PRESET"] = preset
+    result = subprocess.run([sys.executable, "-c", UNPUBLISHED_SCRIPT, *names],
+                            env=env, capture_output=True, text=True, check=True)
+    return json.loads(result.stdout)
+
+
 def documented_drops() -> set:
     guide = (ROOT / "docs" / "guide.md").read_text()
     section = guide.split("### Lean tool preset", 1)[1].split("\n## ", 1)[0]
@@ -152,6 +179,50 @@ class LeanToolPresetTests(unittest.TestCase):
             self.assertEqual(server.tool_preset(preset, frozenset(caps)), expected, (preset, caps))
         with self.assertRaisesRegex(ValueError, "Unknown KITSUNE_TOOL_PRESET: tiny"):
             server.tool_preset("tiny", frozenset({"all"}))
+
+
+class UnpublishedToolTests(unittest.TestCase):
+    """#171: a known tool left out by KITSUNE_CAPS or the preset names the setting that publishes it."""
+
+    def assert_not_published(self, call, group, hint):
+        self.assertEqual(call, {
+            "isError": True, "error": call["error"], "code": "tool_not_published", "retryable": False,
+            "hint": f"Set {hint} in the MCP server environment, then restart the MCP client.",
+            "state": {**call["state"], "group": group}})
+        self.assertIn("is not published", call["error"])
+
+    def test_default_names_the_preset_or_the_group(self):
+        result = unpublished("core", None, "browser_scroll", "browser_drag", "browser_double_click",
+                             "browser_history_search", "browser_nope")
+        calls = result["calls"]
+        self.assert_not_published(calls["browser_scroll"], "core", "KITSUNE_TOOL_PRESET=full")
+        self.assertEqual(calls["browser_scroll"]["state"], {"group": "core", "preset": "lean", "caps": ["core"]})
+        # drag and double-click stay in devtools, so the full preset alone does not publish them.
+        for name in ("browser_drag", "browser_double_click"):
+            self.assert_not_published(calls[name], "devtools", "KITSUNE_CAPS=core,devtools")
+        self.assert_not_published(calls["browser_history_search"], "history", "KITSUNE_CAPS=core,history")
+        self.assertEqual(calls["browser_nope"], {"raised": "Unknown tool: browser_nope"})
+
+        published = set(list_tools())
+        everything = set(list_tools("all,history", preset="full"))
+        self.assertFalse(published & set(result["unpublished"]))
+        self.assertEqual(published | set(result["unpublished"]), everything)
+        self.assertEqual(result["mcp_tools"], {"preset": "lean", "caps": ["core"],
+                                                "unpublished": len(everything) - 14})
+
+    def test_core_tool_outside_caps_and_preset_names_both(self):
+        result = unpublished("devtools", "lean", "browser_scroll", "browser_click")
+        self.assert_not_published(result["calls"]["browser_scroll"], "core",
+                                  "KITSUNE_CAPS=core,devtools and KITSUNE_TOOL_PRESET=full")
+        self.assert_not_published(result["calls"]["browser_click"], "core", "KITSUNE_CAPS=core,devtools")
+
+    def test_all_full_leaves_only_history_unpublished(self):
+        result = unpublished("all", "full", "browser_bookmarks_search")
+        self.assert_not_published(result["calls"]["browser_bookmarks_search"], "history",
+                                  "KITSUNE_CAPS=all,history")
+        self.assertEqual(result["unpublished"],
+                         ["browser_bookmarks_search", "browser_history_search", "browser_history_visits"])
+        self.assertEqual(result["mcp_tools"], {"preset": "full", "caps": ["all"], "unpublished": 3})
 
 
 if __name__ == "__main__":
