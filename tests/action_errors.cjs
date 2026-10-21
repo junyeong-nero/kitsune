@@ -149,7 +149,34 @@ function event() {
     fire: (...args) => listeners.forEach(fn => fn(...args)) };
 }
 
-function background(tabs, content) {
+const flush = () => new Promise(resolve => setImmediate(resolve));
+
+// A fake setTimeout/clearTimeout; tick(ms) runs the timers due within ms.
+function fakeClock() {
+  let now = 0, nextId = 0;
+  const timers = new Map();
+  return {
+    timers,
+    setTimeout: (fn, delay = 0) => { timers.set(++nextId, { fn, at: now + delay }); return nextId; },
+    clearTimeout: id => { timers.delete(id); },
+    async tick(ms) {
+      const end = now + ms;
+      await flush();
+      while (true) {
+        const next = [...timers].filter(([, timer]) => timer.at <= end).sort((a, b) => a[1].at - b[1].at)[0];
+        if (!next) break;
+        timers.delete(next[0]);
+        now = next[1].at;
+        next[1].fn();
+        await flush();
+      }
+      now = end;
+      await flush();
+    },
+  };
+}
+
+function background(tabs, content, clock = { setTimeout, clearTimeout }) {
   const sent = [];
   const injected = [];
   let injectError = null;
@@ -175,12 +202,13 @@ function background(tabs, content) {
     webRequest: { onHeadersReceived: event(), onBeforeRequest: event() },
   };
   const context = vm.createContext({
-    browser, URL, setTimeout, clearTimeout, setInterval, clearInterval,
+    browser, URL, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout, setInterval, clearInterval,
     console: { log() {}, error() {} }, WebSocket: class { close() {} },
   });
   vm.runInContext(fs.readFileSync('extension/background/background.js', 'utf8'), context);
   return {
     sent, injected,
+    statusWaiters: () => vm.runInContext('mainFrameStatusWaiters.size', context),
     failInjection: message => { injectError = message; },
     response: (tabId, url, statusCode) =>
       browser.webRequest.onHeadersReceived.fire({ tabId, url, statusCode, type: 'main_frame' }),
@@ -267,7 +295,14 @@ async function testBackgroundErrors() {
 async function testEmptyErrorPage() {
   const tabs = { 1: page(1, { active: true }), 2: page(2, { url: 'http://127.0.0.1:8000/nf-empty', title: '' }),
     3: page(3, { url: 'https://example.com/blocked', title: 'Blocked' }), 4: page(4, { url: 'file:///tmp/x.html' }) };
-  const h = background(tabs, () => ({ ok: true }));
+  const clock = fakeClock();
+  const h = background(tabs, () => ({ ok: true }), clock);
+  // Without a recorded status, a failed injection waits for one; let that wait time out.
+  const sendUnknown = async command => {
+    const pending = h.send(command);
+    await clock.tick(1000);
+    return pending;
+  };
   h.failInjection('Missing host permission for the tab');
   h.response(2, 'http://127.0.0.1:8000/nf-empty', 404);
   h.response(3, 'https://example.com/elsewhere', 500);
@@ -293,7 +328,7 @@ async function testEmptyErrorPage() {
 
   // Without an observed error status for this URL, the code stays but no status is claimed.
   for (const action of ['getPageText', 'getSnapshot']) {
-    const unknown = await h.send({ action, tabId: 3 });
+    const unknown = await sendUnknown({ action, tabId: 3 });
     assert.deepEqual([unknown.code, unknown.retryable, unknown.state.httpStatus, unknown.state.title],
       ['error_page', false, undefined, 'Blocked'], action);
     assert.match(unknown.error, /^The tab shows a page with no scriptable document\. Cannot inject/);
@@ -308,7 +343,59 @@ async function testEmptyErrorPage() {
   // Statuses are per tab and forgotten when the tab closes.
   await h.send({ action: 'closeTab', tabId: 2 });
   tabs[2] = page(2, { url: 'http://127.0.0.1:8000/nf-empty' });
-  assert.equal((await h.send({ action: 'getSnapshot', tabId: 2 })).state.httpStatus, undefined);
+  assert.equal((await sendUnknown({ action: 'getSnapshot', tabId: 2 })).state.httpStatus, undefined);
+  assert.equal(h.statusWaiters(), 0);
+  assert.equal(clock.timers.size, 0);
+}
+
+// Issue #99: Firefox can report a tab complete before it delivers the response's webRequest
+// events, so a failed injection waits a bounded time for the status of the tab's URL.
+async function testErrorPageWaitsForLateStatus() {
+  const url = 'http://127.0.0.1:8000/nf-empty';
+  const tabs = { 1: page(1, { active: true }), 2: page(2, { url, title: '' }) };
+  const clock = fakeClock();
+  const h = background(tabs, () => ({ ok: true }), clock);
+  h.failInjection('Missing host permission for the tab');
+  const settled = promise => {
+    const state = { done: false };
+    promise.then(value => Object.assign(state, { done: true, value }));
+    return state;
+  };
+
+  // The status arrives during the wait: the read resolves at once with it.
+  const late = settled(h.send({ action: 'getPageText', tabId: 2 }));
+  await clock.tick(10);
+  assert.equal(late.done, false, 'waits for the status');
+  h.response(2, url, 404);
+  await clock.tick(0);
+  assert.deepEqual(late.value, { text: '', empty: true, httpStatus: 404, tabId: 2, url, title: '' });
+  assert.deepEqual([h.statusWaiters(), clock.timers.size], [0, 0], 'the waiter and its timer are gone');
+
+  // A recorded status answers without waiting.
+  const known = settled(h.send({ action: 'getSnapshot', tabId: 2 }));
+  await clock.tick(0);
+  assert.deepEqual([known.value.code, known.value.state.httpStatus], ['error_page', 404]);
+
+  // A response for another URL of the tab does not end the wait; the timeout keeps today's error_page.
+  tabs[2].url = 'http://127.0.0.1:8000/other';
+  const mismatched = settled(h.send({ action: 'getPageText', tabId: 2 }));
+  await clock.tick(10);
+  h.response(2, 'http://127.0.0.1:8000/elsewhere', 500);
+  await clock.tick(989);
+  assert.equal(mismatched.done, false, 'still waiting just before the timeout');
+  await clock.tick(1);
+  assert.deepEqual([mismatched.value.code, mismatched.value.retryable, mismatched.value.state.httpStatus],
+    ['error_page', false, undefined]);
+  assert.match(mismatched.value.error, /^The tab shows a page with no scriptable document\./);
+  assert.deepEqual([h.statusWaiters(), clock.timers.size], [0, 0]);
+
+  // The tab closes during the wait: it reports tab_closed without waiting for the timeout.
+  const closing = settled(h.send({ action: 'getPageText', tabId: 2 }));
+  await clock.tick(10);
+  await h.send({ action: 'closeTab', tabId: 2 });
+  await clock.tick(0);
+  assert.deepEqual([closing.value.code, closing.value.state], ['tab_closed', { tabId: 2 }]);
+  assert.deepEqual([h.statusWaiters(), clock.timers.size], [0, 0]);
 }
 
 async function testFocusChangeKeepsTarget() {
@@ -332,6 +419,7 @@ async function testFocusChangeKeepsTarget() {
   await testNotRenderedWarnings();
   await testBackgroundErrors();
   await testEmptyErrorPage();
+  await testErrorPageWaitsForLateStatus();
   await testFocusChangeKeepsTarget();
   console.log('action_errors: all tests passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });
