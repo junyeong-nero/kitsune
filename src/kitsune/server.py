@@ -660,13 +660,13 @@ def browser_snapshot(
 ) -> dict:
     """Get a compact accessibility-style text tree with fresh element refs; prefer them for actions.
 
-    Refs belong to one document in one tab. A snapshot, browser_dom, or the post-action
-    snapshot of a successful click, type/fill, select_option, check, keypress, submit_form
-    or navigate replaces that tab's earlier refs; navigation invalidates them. browser_find,
-    browser_forms and wait_for(selector) add refs. After an action, use its snapshot refs
-    and target_ref (the acted-on element). On stale_ref, take a new snapshot; never repeat
-    a write just to refresh refs. Repeated composite siblings show the first five items;
-    post-action snapshots also keep the target.
+    Refs belong to one document in one tab. A snapshot, browser_dom, or a full post-action
+    snapshot (submit_form, navigate, a new document) replaces earlier refs; navigation
+    invalidates them. browser_find, browser_forms, wait_for(selector) and the
+    snapshot_delta (target plus changes) of click, type/fill, select_option, check or
+    keypress add refs. After an action, use its snapshot refs and target_ref. On stale_ref,
+    take a new snapshot; never repeat a write just to refresh refs. Repeated composite
+    siblings show the first five items; post-action snapshots also keep the target.
 
     selector: CSS subtree root (included). ref: existing ref for a subtree, resolved
     before refs are replaced; wins over selector. max_depth: non-negative depth below
@@ -755,8 +755,8 @@ def browser_click(
             (default: act immediately). click, double_click, hover and drag also need it
             rendered. On timeout returns not_found or not_actionable without acting.
         ok=true only means the action was dispatched, not that the intended effect happened.
-        refs: Success of the actions listed in browser_snapshot returns a fresh snapshot
-            whose refs replace earlier ones; target_ref is the acted-on element's new ref.
+        refs: Success of the actions listed in browser_snapshot returns a snapshot (delta
+            or full, see there); target_ref is the acted-on element's ref.
         opened_tabs: Tabs the action opened (target=_blank links, window.open) are listed
             as [{tabId, url}]; act on them with tab_id. via="link_fallback" marks a
             popup-blocked link Kitsune opened itself.

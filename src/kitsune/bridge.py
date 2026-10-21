@@ -1803,6 +1803,8 @@ async def _send_to_extension_raw(action, params=None, timeout=30):
     params.setdefault("includeSnapshot", post_action_snapshot not in {"0", "false", "no", "off"})
     if post_action_snapshot == "text":
         params.setdefault("snapshotText", True)
+    elif post_action_snapshot == "full":
+        params.setdefault("snapshot", "full")
     ws = extension_ws
     if not ws:
         return _disconnected_error(

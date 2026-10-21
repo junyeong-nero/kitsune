@@ -94,17 +94,22 @@ offers confirmation.
 Short refs (`e12`) are scoped to the tab, document and snapshot generation, tracked
 by the extension. Indexes are never reused across snapshots or tabs; after an
 extension reload, take a new snapshot. A new snapshot,
-`browser_dom`, or the post-action snapshot below replaces earlier refs in that
-tab, and navigation invalidates them; `browser_find`, `browser_forms`, and
-`browser_wait_for(selector=...)` add refs without replacing any. Detached or
+`browser_dom`, or a full post-action snapshot below replaces earlier refs in that
+tab, and navigation invalidates them; `browser_find`, `browser_forms`,
+`browser_wait_for(selector=...)` and post-action deltas add refs without replacing any. Detached or
 outdated refs return `stale ref, call browser_snapshot again` (`code: "stale_ref"`);
 for a replaced ref, `state.latestObservation` names the call with the current refs
 and, when the element is unambiguously the same, `state.currentRef` is its current
 ref. Always use refs from the latest result.
 
 Click, type, fill, select, check, keypress, submit, and navigate responses include
-a fresh `snapshot` capped at 4,000 characters (`snapshot_truncated` indicates more
-content), and `target_ref` is the acted-on element's new ref for a follow-up action.
+a `snapshot` capped at 4,000 characters (`snapshot_truncated` indicates more
+content), and `target_ref` is the acted-on element's ref for a follow-up action.
+For click, type, fill, select, check and keypress it is a delta (`snapshot_delta: true`):
+only the target and what the action changed or revealed, such as an opened menu's
+options, anchored there instead of at the page top; earlier refs stay valid. Submit,
+navigate and actions that load another document return a full snapshot (see
+[Post-action snapshots](api-reference.md#post-action-snapshots)).
 If snapshot capture fails, `snapshot_error` preserves the action result; take a
 new snapshot before using refs. To recover from a stale ref, take a new snapshot
 and retry with the new ref; never repeat a write just to refresh refs. See
@@ -117,7 +122,8 @@ URL, title and tab ID in one bounded call (see
 To start a task, `browser_tabs(include_active=True)` returns the tab list with that read
 of the active tab as `active_page`.
 Set `KITSUNE_POST_ACTION_SNAPSHOT=0` in the **bridge daemon's environment** and
-restart the daemon to disable these automatic snapshots. Explicit snapshots
+restart the daemon to disable these automatic snapshots, or `full` to always return
+full ones. Explicit snapshots
 remain available. This is a DOM-based accessibility approximation, not Firefox's
 platform accessibility tree; open and closed shadow roots are traversed. Same-origin
 iframes are read and acted on like the page; cross-origin iframes are listed but opaque
@@ -406,7 +412,7 @@ kept tools retain the parameters read and draft flows use.
 | `KITSUNE_HISTORY_ALLOW_DOMAINS` | Unset (every domain) | Bridge: comma-separated domains (with subdomains) the `history` tools may return; see [History and bookmarks](api-reference.md#history-and-bookmarks) |
 | `KITSUNE_HISTORY_DENY_DOMAINS` | Unset (none) | Bridge: comma-separated domains (with subdomains) the `history` tools never return; wins over the allow list |
 | `KITSUNE_HISTORY_MAX_DAYS` | `30` | Bridge: how many days back the `history` tools may look. `browser_set_policy` can only tighten these three |
-| `KITSUNE_POST_ACTION_SNAPSHOT` | Enabled | Set to `0` in the bridge daemon environment and restart it to disable automatic post-action snapshots, or `text` to add readable text lines to them |
+| `KITSUNE_POST_ACTION_SNAPSHOT` | Enabled (deltas) | Set to `0` in the bridge daemon environment and restart it to disable automatic post-action snapshots, `full` to return full snapshots instead of [deltas](api-reference.md#post-action-snapshots), or `text` to add readable text lines to them |
 
 `~/.kitsune/` holds:
 
