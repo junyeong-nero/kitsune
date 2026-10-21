@@ -24,6 +24,7 @@ from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from . import bridge_control
 from .bridge_control import BRIDGE, HTTP_PORT, LOG_FILE, TOKEN_FILE, WS_PORT, headers as _headers
 from .version import BRIDGE_BUILD
+from .task_modes import MODE_HEADER, permits_tool, task_mode
 from .waits import (
     RESUME_DEADLINE_SECONDS, WORKFLOW_DEADLINE_SECONDS, batch_deadline_seconds, command_wait_seconds,
     container_request_seconds,
@@ -109,16 +110,26 @@ class KitsuneMCP(FastMCP):
     """
 
     async def list_tools(self):
-        return [tool.model_copy(update={
-                    "description": inspect.cleandoc(tool.description) if tool.description else tool.description,
-                    "inputSchema": _published_schema(tool.inputSchema),
-                })
-                for tool in await super().list_tools()]
+        tools = []
+        for tool in await super().list_tools():
+            description = inspect.cleandoc(tool.description) if tool.description else tool.description
+            schema = _published_schema(tool.inputSchema)
+            if MODE != "act":
+                description = description.split("\n\n", 1)[0] if description else description
+                schema["properties"].pop("confirm_token", None)
+                if tool.name == "browser_navigate":
+                    description = "Navigate a tab to a URL to read it."
+            tools.append(tool.model_copy(update={"description": description, "inputSchema": schema}))
+        return tools
 
     async def call_tool(self, name, arguments):
         # A known tool this configuration leaves out names its setting instead of "Unknown tool" (#171).
         if name in UNPUBLISHED_TOOLS:
             return CallToolResult(content=[_compact_json(_unpublished_tool(name))], isError=True)
+        if MODE != "act" and (arguments or {}).get("confirm_token") is not None:
+            return CallToolResult(content=[_compact_json({
+                "error": f"{MODE} mode does not permit confirmation", "code": "mode_restricted",
+                "retryable": False})], isError=True)
         return await super().call_tool(name, arguments)
 
 
@@ -159,8 +170,9 @@ def tool_preset(preset: str | None, caps: frozenset) -> str:
 
 
 TOOL_PRESET = tool_preset(os.environ.get("KITSUNE_TOOL_PRESET"), ENABLED_CAPS)
+MODE = task_mode(os.environ.get("KITSUNE_MODE"))
 
-# Known tools that KITSUNE_CAPS or KITSUNE_TOOL_PRESET leave out: name -> (group, settings that publish it).
+# Known tools left out by caps, preset or mode: name -> (group, settings that publish it).
 UNPUBLISHED_TOOLS: dict[str, tuple[str, list[str]]] = {}
 
 
@@ -169,7 +181,8 @@ def _unpublished_tool(name: str) -> dict:
     return {"error": f"{name} is not published by this MCP server", "code": "tool_not_published",
             "retryable": False,
             "hint": f"Set {' and '.join(settings)} in the MCP server environment, then restart the MCP client.",
-            "state": {"group": group, "preset": TOOL_PRESET, "caps": sorted(ENABLED_CAPS)}}
+            "state": {"group": group, "preset": TOOL_PRESET, "caps": sorted(ENABLED_CAPS),
+                      **({"mode": MODE} if MODE != "act" else {})}}
 
 
 def _failed(result) -> bool:
@@ -206,9 +219,9 @@ def _mcp_errors(function):
 
 
 def tool(group: str, annotations: ToolAnnotations | None = None):
-    """Register a tool only when its capability group is enabled at startup.
+    """Register a tool only when its startup capability, preset and mode permit it.
 
-    `all` enables every group except NAMED_ONLY_GROUPS. A tool preset narrows the core group only; other enabled groups register in full.
+    `all` enables every group except NAMED_ONLY_GROUPS. Presets narrow core only; modes narrow every group.
     Only the MCP registration marks failures as errors; Python callers get the plain result.
     Tools left out go to UNPUBLISHED_TOOLS with the settings that would publish them.
     """
@@ -219,8 +232,11 @@ def tool(group: str, annotations: ToolAnnotations | None = None):
         settings = []
         if not (("all" in ENABLED_CAPS and group not in NAMED_ONLY_GROUPS) or group in ENABLED_CAPS):
             settings.append("KITSUNE_CAPS=" + ",".join(sorted(ENABLED_CAPS | {group})))
-        if group == "core" and TOOL_PRESET != "full" and function.__name__ not in TOOL_PRESETS[TOOL_PRESET]:
+        preset_name = "browser_tabs" if function.__name__ == "browser_tab_list" else function.__name__
+        if group == "core" and TOOL_PRESET != "full" and preset_name not in TOOL_PRESETS[TOOL_PRESET]:
             settings.append("KITSUNE_TOOL_PRESET=full")
+        if not permits_tool(MODE, function.__name__):
+            settings.append("KITSUNE_MODE=" + ("draft" if permits_tool("draft", function.__name__) else "act"))
         if settings:
             UNPUBLISHED_TOOLS[function.__name__] = (group, settings)
         else:
@@ -392,7 +408,10 @@ def _port_conflict(port: int, reason: str, message: str) -> dict:
 def _request(method: str, endpoint: str, **kwargs) -> dict:
     for attempt in range(2):
         try:
-            r = httpx.request(method, f"{BRIDGE}{endpoint}", headers=_headers(), **kwargs)
+            headers = _headers()
+            if MODE != "act":
+                headers[MODE_HEADER] = MODE
+            r = httpx.request(method, f"{BRIDGE}{endpoint}", headers=headers, **kwargs)
             if r.status_code == 401:
                 return _token_mismatch()
             try:
@@ -521,7 +540,8 @@ def browser_status() -> dict:
     result = _get("/api/status")
     if result.get("code") and "diagnosis" not in result:  # the bridge was not reached
         result["diagnosis"] = {key: result[key] for key in ("code", "hint", "state") if key in result}
-    result["mcp_tools"] = {"preset": TOOL_PRESET, "caps": sorted(ENABLED_CAPS), "unpublished": len(UNPUBLISHED_TOOLS)}
+    result["mcp_tools"] = {"preset": TOOL_PRESET, "caps": sorted(ENABLED_CAPS), "unpublished": len(UNPUBLISHED_TOOLS),
+                           **({"mode": MODE} if MODE != "act" else {})}
     return result
 
 
@@ -585,6 +605,13 @@ def browser_tabs(
             _confirm(body, confirm_token)
         return _post("/api/close-tab" if action == "close" else "/api/switch-tab", body)
     return {"error": "action must be list, new, close, or select"}
+
+
+if MODE != "act":
+    @tool("core", annotations=ToolAnnotations(title="List browser tabs", **READ))
+    def browser_tab_list() -> dict:
+        """List open tabs with IDs, titles and URLs; does not open, close or select tabs."""
+        return _tab_list(_get("/api/tabs"), False)
 
 
 @tool("core", annotations=ToolAnnotations(title="Page info", **READ))

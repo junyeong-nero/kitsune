@@ -303,7 +303,7 @@ destructive, idempotent, and open-world hints. Clients can use these hints to
 inform permission prompts; enforcement depends on the client. Tools combining
 read and write operations are annotated for their most dangerous operation,
 including when called in a read mode. The hints are not enforced policy. The bridge
-enforces only `browser_set_policy` (`readonly`, `allow`/`deny`, and
+enforces task-mode limits and `browser_set_policy` (`readonly`, `allow`/`deny`, and
 [ask-before-act](api-reference.md#ask-before-act)).
 
 Screenshots return MCP image content by default. Large previews are JPEG-encoded
@@ -332,6 +332,46 @@ for early capture.
 until the condition holds in the top-level document's rendered text.
 Matching is case-sensitive substring matching.
 
+### Task modes
+
+Set `KITSUNE_MODE=read|draft|act` in the MCP server environment and restart the client.
+The default is `act`, preserving the existing tool surface and bridge policy. Mode names
+ignore case and surrounding whitespace; unknown names fail at startup.
+
+```toml
+[mcp_servers.kitsune.env]
+KITSUNE_MODE = "read"
+```
+
+| Mode | Published tools and enforced limits |
+|---|---|
+| `read` | Read tools plus navigation to HTTP(S) pages (or `about:blank`) and scrolling. `browser_tab_list()` replaces the multi-action `browser_tabs`. No clicks, field writes, JavaScript, submits, confirmations or screenshots/file writes. |
+| `draft` | Read surface plus `browser_type`, `browser_select_option`, `browser_form_fill` and, with the full preset, `browser_check`. Fills plain text only; no click/keypress/submit/dialog confirmation or JavaScript. Ask-before-act is forced: sensitive fields, payment-like pages and uninspectable targets are refused before filling, without a confirmation token. |
+| `act` | Existing behavior, including the independently configured ask-before-act policy. |
+
+Modes intersect with `KITSUNE_CAPS` and `KITSUNE_TOOL_PRESET`; they never enable a
+disabled group or a tool the preset drops. With the default core/lean configuration,
+`read` publishes nine tools: status, list-only tabs, navigate, page info/text, forms,
+DOM, snapshot and find. `draft` adds type, select-option and form-fill. Scrolling
+requires `KITSUNE_TOOL_PRESET=full`. Extra enabled groups contribute only their read
+tools. The personal-data `history` group still requires explicit opt-in.
+
+Restricted surfaces use first-paragraph descriptions and omit `confirm_token`.
+Calling an unpublished tool by name returns `tool_not_published` with the mode setting
+needed to publish it; `browser_status.mcp_tools.mode` identifies a restricted server.
+The bridge enforces the mode on every request, including calls made by name or directly
+over HTTP. A restricted request cannot change policy, run containers or resume an act
+call. Draft form-fill inspects every target before writing any field.
+
+Modes are per MCP client: a read client cannot loosen its mode by calling
+`browser_set_policy`, and does not change another client's policy on the shared daemon.
+The bridge's existing URL/readonly/locked-ask policy can tighten the mode further.
+Use an `act` client or the browser itself for a sensitive action. Modes limit agent
+commands, not page scripts: navigation can still trigger site behavior and field events
+can autosave a draft. They are not an incognito session or an application-level sandbox.
+Exact token counts and research/account-lookup task measurements belong to
+browser-mcp-bench; character-size guards in this repo are not token measurements.
+
 ### Lean tool preset
 
 **`lean` is the default `core` surface (#31).** The 16 `core` tools listed below
@@ -347,8 +387,7 @@ KITSUNE_TOOL_PRESET = "full"
 and leaves every tool definition unchanged. In the #31 A/B (24 tasks, one model, one
 attempt per arm) it showed no detected success or safety loss against the 30-tool
 surface; that is workload-specific, and the dropped tools are needed for the tasks
-in the last column of the table below. Groups other than `core` always register in
-full. Case and surrounding whitespace are ignored; unknown preset names fail at startup.
+in the last column of the table below. Groups other than `core` register in full before the task-mode filter. Case and surrounding whitespace are ignored; unknown preset names fail at startup.
 A dropped tool is not in `tools/list`; calling it returns `tool_not_published` with
 the hint `KITSUNE_TOOL_PRESET=full`, and `browser_status` shows `mcp_tools.preset`
 (see [Tools](#tools)). An allowlist that names tools the server does not publish gets
@@ -394,6 +433,7 @@ kept tools retain the parameters read and draft flows use.
 | Variable | Default | Meaning |
 |---|---|---|
 | `KITSUNE_CAPS` | `core` | Comma-separated capability groups above; `all` enables every group except `history`, which reads personal data and must be named, and enables all `core` tools unless `KITSUNE_TOOL_PRESET=lean` |
+| `KITSUNE_MODE` | `act` | Task surface and per-request policy: `read`, `draft`, or `act`. See [Task modes](#task-modes) |
 | `KITSUNE_TOOL_PRESET` | Unset (`lean`, or `full` with `KITSUNE_CAPS=all`) | `lean` registers 14 of the 30 `core` tools; `full` registers all 30. See [Lean tool preset](#lean-tool-preset) |
 | `KITSUNE_HOME` | `~/.kitsune` | Data directory (0700) |
 | `KITSUNE_HTTP_PORT` | `47651` | Bridge HTTP API |

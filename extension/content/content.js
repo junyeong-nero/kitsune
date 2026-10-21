@@ -408,7 +408,7 @@
       'keypress':              () => keypress(msg.selector, msg.key, msg.modifiers, msg.text, msg.first),
       'doubleClick':           () => doubleClick(msg.selector, msg.first),
       'submitForm':            () => submitForm(msg.selector, msg.first),
-      'describeTarget':        () => describeTarget(msg.selector, msg.coords, msg.key, msg.first),
+      'describeTarget':        () => describeTarget(msg.selector, msg.coords, msg.key, msg.first, msg.fieldKeys, msg.draftFill),
       'formFill':              () => formFill(msg.fields, msg.first),
       'media':                 () => controlMedia(msg.selector, msg.op, msg.time, msg.first),
       'drag':                  () => dragElement(msg.from, msg.to, msg.first),
@@ -2976,7 +2976,12 @@
   // a form, is a button labeled like a submit or payment, or is a button or link labeled like
   // a send, transfer, delete or account change. Resolves the target the way click/keypress
   // do and reports no field values.
-  function describeTarget(selector, coords, key, first) {
+  function describeTarget(selector, coords, key, first, fieldKeys, draftFill) {
+    if (fieldKeys) {
+      const fields = fieldKeys.map(key => resolveFormField(key, first));
+      if (fields.some(field => !field)) return notFound();
+      return { ok: true, sensitive: fields.some(field => isSensitiveField(getFillTarget(field))) };
+    }
     let el = selector || coords ? resolveTarget(selector, coords, { first, pointer: !key })
       : (activeElement() || document.body);
     if (!el) return notFound();
@@ -2994,7 +2999,8 @@
     const link = !button && ((tag === 'a' && !!control.hasAttribute?.('href')) || role === 'link');
     const label = button || link ? controlLabel(control, buttonInput)
       : String(control.getAttribute?.('aria-label') || redactedText(control) || '').trim();
-    return { ok: true, tag, type, inForm: !!control.form, submits: submitControl || enterSubmits,
+    return { ok: true, tag, type, ...(draftFill ? { sensitive: isSensitiveField(getFillTarget(el)) } : {}),
+      inForm: !!control.form, submits: submitControl || enterSubmits,
       submitLabel: button && isSubmitLabel(label), consequentialLabel: (button || link) && isConsequentialLabel(label),
       text: label.slice(0, 80) };
   }
@@ -3084,38 +3090,35 @@
     return [...fields];
   }
 
+  function resolveFormField(key, first) {
+    let el = null;
+    for (const selector of [key, `[name="${CSS.escape(key)}"]`]) {
+      try { el = deepQuerySelector(selector); } catch {}
+      if (el && !first) assertOneTarget(selector, false);
+      if (el) return el;
+    }
+    const matches = fieldsByLabelText(key);
+    const actionable = matches.filter(field => isActionable(field, false));
+    if (actionable.length > 1 && !first) {
+      const result = ambiguousTarget(
+        `${actionable.length} fields match the label or placeholder; nothing was written`,
+        'Fill one of them with browser_type and its ref from state.candidates, or key it with a CSS ' +
+          'selector or name that matches one field. first: true fills the first match.',
+        { field: key, matches: actionable.length,
+          candidates: actionable.slice(0, AMBIGUOUS_CANDIDATE_LIMIT).map(targetSummary) });
+      throw new ActionError(result.error, result);
+    }
+    return matches[0] || null;
+  }
+
   function formFill(fieldMap, first) {
     if (!fieldMap || typeof fieldMap !== 'object') return { error: 'fields must be an object' };
     const results = {};
     for (const key of Object.keys(fieldMap)) {
       const value = fieldMap[key];
-      // Try as CSS selector first, then by name attr; both must name one field.
-      let el = null;
-      try {
-        for (const selector of [key, `[name="${CSS.escape(key)}"]`]) {
-          try { el = deepQuerySelector(selector); } catch {}
-          if (el && !first) assertOneTarget(selector, false);
-          if (el) break;
-        }
-      } catch (e) {
-        results[key] = errorResult(e);
-        continue;
-      }
-      // Then by label text, then placeholder, across the page and shadow roots.
-      if (!el) {
-        const matches = fieldsByLabelText(key);
-        const actionable = matches.filter(field => isActionable(field, false));
-        if (actionable.length > 1 && !first) {
-          results[key] = ambiguousTarget(
-            `${actionable.length} fields match the label or placeholder; nothing was written`,
-            'Fill one of them with browser_type and its ref from state.candidates, or key it with a CSS ' +
-              'selector or name that matches one field. first: true fills the first match.',
-            { field: key, matches: actionable.length,
-              candidates: actionable.slice(0, AMBIGUOUS_CANDIDATE_LIMIT).map(targetSummary) });
-          continue;
-        }
-        el = matches[0] || null;
-      }
+      let el;
+      try { el = resolveFormField(key, first); }
+      catch (e) { results[key] = errorResult(e); continue; }
       if (!el) { results[key] = { error: 'Not found' }; continue; }
       // The same lookup as browser_type's fill mode, through nested open and closed shadow roots.
       const field = getFillTarget(el);

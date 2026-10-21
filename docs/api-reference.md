@@ -42,8 +42,48 @@ settings that publish it; restart the MCP client after changing them:
 enabled `caps`, and the count of known tools it leaves `unpublished`, for example
 `{"preset": "lean", "caps": ["core"], "unpublished": 85}`. The bridge is shared by
 every MCP server, so `GET /api/status` does not have it.
-The bridge endpoints below remain available unchanged; MCP tool names and
-parameters are separate from HTTP endpoint names and JSON command actions.
+MCP tool names and parameters are separate from HTTP endpoint names and JSON
+command actions. Task-mode requests restrict the bridge routes too (below).
+
+### Task modes
+
+`KITSUNE_MODE=read|draft|act` selects both the MCP surface and per-request bridge
+limits. Default: `act` (unchanged behavior). Case and surrounding whitespace are
+ignored; invalid modes fail at MCP startup. Modes intersect with the preset and
+capability groups, including the named-only history group.
+
+- `read`: read tools plus `browser_navigate` and `browser_scroll` (scroll still needs
+  the full preset). `browser_tab_list()` replaces `browser_tabs`: no parameters,
+  returns the same compact tab inventory as `browser_tabs(action="list")`, with no
+  mutation action. Screenshots are excluded because they can write files.
+- `draft`: read plus type/select-option/form-fill/check (check still needs full).
+  Plain-text editor writes only. Forces ask-before-act checks; a sensitive field,
+  payment-like page or uninspectable target returns `mode_restricted` before dispatch.
+  Form-fill preflights the entire target set, sending only field keys for inspection.
+- Neither restricted mode permits click, submit, keypress, dialog confirmation,
+  agent JavaScript, policy changes, container calls or resume. No confirmation tokens
+  are issued or accepted. Navigate permits HTTP(S) or `about:blank`, not script,
+  data or local-file URLs. Existing global URL/readonly/ask policy can tighten this.
+
+Restricted `tools/list` descriptions use their first paragraph, and schemas omit
+`confirm_token`. Calling an excluded name returns the existing `tool_not_published`
+MCP error, with `KITSUNE_MODE=draft` or `KITSUNE_MODE=act` in its hint, together with
+any required caps/preset changes. The error's `state` and `browser_status.mcp_tools`
+include `mode` when restricted. `act` definitions and status fields are unchanged.
+
+The MCP server sends `X-Kitsune-Mode: read|draft` on **every** bridge request. No header
+means `act`. The bridge validates the header, canonicalizes route aliases before
+checking access, and carries the mode through async dispatch without changing the
+shared policy. A denied route/action answers HTTP 403 with
+`{"error":"…", "code":"mode_restricted", "retryable":false, "hint":"…"}`; an invalid
+header answers HTTP 400 with `code: "invalid_mode"`. `GET/POST /api/get-policy`
+reports the shared policy plus the effective `mode`, `ask` and `confirmAllowed:false`
+for restricted requests. Another authenticated client can still use act; this is
+not a separate authentication boundary. Keep the bridge token private.
+
+See [Task modes](guide.md#task-modes) for configuration, the nine-tool read/lean
+surface and site-event/autosave limitations. Exact token and task-success measurements
+are external browser-mcp-bench work, not inferred from compact JSON character counts.
 
 ### Element targets
 

@@ -5,12 +5,14 @@ fixture form posts to /raw, and its submit handler rewrites the request to /hand
 a token. form.submit() skips the handler, so the server seeing /handled proves it ran.
 """
 from http.server import BaseHTTPRequestHandler
+import json
 import threading
 import time
 import unittest
 from urllib.parse import parse_qs, urlparse
 
 import real_browser_harness as harness
+from test_bridge_security import _request
 
 HANDLER = ("<script>document.querySelector('form').addEventListener('submit', e => {"
            "e.target.action = '/handled'; e.target.elements.token.value = 'from-handler'; });</script>")
@@ -19,6 +21,7 @@ PAGES = {
     "/typeless": '<button>Save</button>',
     # No submit control: submitted with requestSubmit.
     "/no-button": '<button type="button">Preview</button>',
+    "/modes": '<input type="password" name="password"><button>Save</button>',
 }
 
 
@@ -82,6 +85,34 @@ class RealBrowserSubmitFormHandlerTests(harness.RealBrowserTestCase):
         cls.site = SubmitHandlerSite()
         cls.addClassCleanup(cls.site.stop)
         super().setUpClass()
+
+    def test_task_modes_read_and_draft_without_submitting(self):
+        tab = self.open_tab(self.site.origin + "/modes")
+
+        def request(mode, path, body):
+            headers = {**self.bridge.auth(), "X-Kitsune-Mode": mode, "Content-Type": "application/json"}
+            status, _, text = _request(self.bridge.http_port, "POST", path, headers, self.bridge.host,
+                                       json.dumps({"tabId": tab, **body}), timeout=10)
+            return status, json.loads(text)
+
+        status, result = request("read", "/api/fill", {"selector": "input[name=title]", "value": "blocked"})
+        self.assertEqual((status, result["code"]), (403, "mode_restricted"))
+        status, result = request("draft", "/api/fill", {"selector": "input[name=title]", "value": "draft"})
+        self.assertEqual(status, 200, result)
+        self.assert_ok(result)
+        status, result = request("draft", "/api/form-fill", {"fields": {"title": "blocked", "password": "secret"}})
+        self.assertEqual((status, result["code"]), (403, "mode_restricted"))
+        self.assertEqual(result["state"]["reason"], "sensitive_field")
+        status, result = request("draft", "/api/submit-form", {})
+        self.assertEqual((status, result["code"]), (403, "mode_restricted"))
+        status, forms = request("read", "/api/forms", {})
+        self.assertEqual(status, 200, forms)
+        self.assertIn('"value": "draft"', json.dumps(forms))
+        self.assertNotIn('"value": "blocked"', json.dumps(forms))
+        with self.site.lock:
+            self.assertEqual(self.site.posts, [])
+        # A different act client sharing this daemon remains unrestricted.
+        self.assert_ok(self.call("/api/fill", {"tabId": tab, "selector": "input[name=title]", "value": "act"}))
 
     def test_submit_runs_the_page_submit_handler(self):
         for path, submitted, button in [("/typeless", "button", "Save"), ("/no-button", "requestSubmit", "")]:

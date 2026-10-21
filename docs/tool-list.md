@@ -7,6 +7,20 @@ all 30. `KITSUNE_CAPS=all` exposes all 96. Set a comma-separated list to enable 
 groups, for example `KITSUNE_CAPS=core,tabs,network`. The `history` group is not
 part of `all`: it reads personal data and must be named, as in `KITSUNE_CAPS=all,history`.
 
+These counts describe the default `KITSUNE_MODE=act`. `KITSUNE_MODE=read|draft`
+further intersects the preset/capability surface and enforces the same limits on
+bridge calls; see [Task modes](guide.md#task-modes). With core/lean:
+
+- `read` (9): `browser_status`, `browser_tab_list`, `browser_navigate`,
+  `browser_page_info`, `browser_page_text`, `browser_forms`, `browser_dom`,
+  `browser_snapshot`, `browser_find`.
+- `draft` (12): read plus `browser_type`, `browser_select_option`, `browser_form_fill`.
+- Full preset adds the other read tools (including `browser_scroll`) and, for draft,
+  `browser_check`. Other enabled groups contribute only read tools. Restricted modes
+  replace multi-action `browser_tabs` with read-only `browser_tab_list()` and omit
+  clicks, submit, JavaScript, screenshots/file writes, policy changes and containers.
+  Draft refuses sensitive/payment-like fills without issuing confirmation tokens.
+
 See the [API reference](api-reference.md) for parameters and behavior.
 
 ## core — 30 (14 in the default lean preset)
