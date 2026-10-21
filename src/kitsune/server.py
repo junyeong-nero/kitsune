@@ -1654,14 +1654,15 @@ def browser_set_policy(
     Read-only mode blocks write actions (click/type/navigate/cookies set/etc.)
     while still allowing read ops. Useful for "let the agent observe only."
 
-    Ask mode (ask=True) holds sensitive actions without running them: form submits and
-    submit-control clicks or Enter in a form field, browser_js and other agent JavaScript,
-    cookies and sessions, navigation to ask_urls (payment-like regexes, case-insensitive), and
-    page actions on such pages. A held call returns code "confirmation_required" with
+    Ask mode (ask=True) holds sensitive actions without running them: form submits,
+    submit-control or pay/order-labeled button clicks, Enter in a form field, browser_js and
+    other agent JavaScript, cookies, sessions, page storage, clipboard, downloads, navigation
+    to ask_urls (payment-like regexes, case-insensitive), and page actions on such pages. A held call returns code "confirmation_required" with
     state.confirmToken; ask the user, then repeat the identical call with confirm_token
     within 120s. The token is single-use, bound to that action, its parameters and tab, and
     is never honored inside batch/retry/parallel/broadcast/workflows. A bridge started with
-    KITSUNE_ASK_BEFORE_ACT=1 locks ask mode on; then ask=False or dropping ask_urls fails.
+    KITSUNE_ASK_BEFORE_ACT=1 locks ask mode on, also after restarts; then ask=False or
+    dropping ask_urls fails.
     """
     body = {}
     if allow is not None: body["allow"] = allow
