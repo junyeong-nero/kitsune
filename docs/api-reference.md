@@ -176,10 +176,13 @@ reload, take a new snapshot (old short refs fail as `not_in_snapshot`). Legacy
 | `browser_snapshot` (also scoped), `browser_dom` | Starts a new generation: earlier refs fail as `stale_ref`/`snapshot_replaced`. A `ref` argument to `browser_snapshot` or `browser_dom` is resolved first |
 | Successful `browser_submit_form`, `browser_navigate`, and any action below whose result has a full `snapshot` (no `snapshot_delta`) | Their post-action `snapshot` starts a new generation, like `browser_snapshot`. An `expect` failure (`outcome_not_observed`) is an error, but the action ran and its result still carries that `snapshot` and `target_ref` |
 | Successful `browser_click`, `browser_type` (`type`/`fill`), `browser_select_option`, `browser_check`, `browser_keypress` with `snapshot_delta: true` | Their [delta](#post-action-snapshots) adds refs to the current generation, like `browser_find`; earlier refs stay valid, and an element that already had a ref keeps it |
-| Navigation, reload, or back/forward to another document | Earlier refs fail as `stale_ref`/`other_document` |
+| Navigation, reload, or back/forward to another document | Earlier refs fail as `stale_ref` (`not_in_snapshot` after the background retires their aliases, otherwise `other_document`) |
 | `browser_find`, `browser_forms`, `browser_wait_for(selector/ref)` | Add refs to the current generation; earlier refs stay valid |
 | Other failed actions, other reads, `browser_hover`, `browser_scroll`, `browser_type(mode="editable")` and other actions without a post-action snapshot | No change, unless the page itself removes the element (`element_removed`) |
 | A failed `browser_snapshot` or `browser_dom` (bad `max_depth`, missing `selector`, stale `ref`) | No change: it fails before starting a generation |
+
+Closing a tab or starting a document load prunes its short-ref mappings without
+resetting the index counter. Same-document URL changes alone do not prune refs.
 
 Snapshots in one tab do not affect refs in another tab. Pass `tab_id` when more
 than one tab is in use: a ref sent to the wrong tab fails as `other_document` and
