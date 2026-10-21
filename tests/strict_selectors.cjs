@@ -83,7 +83,7 @@ function load(dom) {
   const context = vm.createContext({
     console, crypto: webcrypto, Event, MouseEvent, KeyboardEvent: Event, DragEvent: Event, InputEvent: Event,
     File, DataTransfer: class { constructor() { this.items = { add() {} }; this.files = []; } },
-    CSS: { escape: x => x }, setTimeout,
+    CSS: { escape: x => x }, setTimeout, MessageChannel,
     HTMLInputElement: class {}, HTMLTextAreaElement: class {},
     window: { getComputedStyle: el => ({ display: 'hidden' in el.attrs ? 'none' : 'block', visibility: 'visible' }) },
     document: {

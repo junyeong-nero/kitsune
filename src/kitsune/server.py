@@ -1381,7 +1381,8 @@ def browser_drag(
     wait: bool = False, timeout: int = 10000, expect: dict | None = None, confirm_token: str | None = None,
     first: bool = False,
 ) -> dict:
-    """Synthetic drag-and-drop from one element to another (HTML5 drag events).
+    """Synthetic drag-and-drop from one element to another: HTML5 drag events, then a
+    pointer/mouse drag unless the drop target accepted them (result via: html5|pointer).
     ref identifies the source; to_ref identifies the destination; wait covers both.
     Action contract (ref, wait, expect, confirm_token): see browser_click.
     """

@@ -65,6 +65,26 @@ PAGES = {
     # A synchronous request blocks the page, so the click's reply only arrives after `ms`.
     "hold": """<button id="act" onclick="const x = new XMLHttpRequest();
   x.open('GET', '/hold?page={name}&amp;ms={ms}', false); x.send()">Hold {name}</button>""",
+    # A pointer sortable (#174): pointerdown captures the pointer and listens on the item;
+    # moves past 5px start the drag and pointerup moves the item to the one under the point.
+    # Firefox can throw from setPointerCapture for a synthetic pointer, so it is guarded.
+    "sortable": """<style>li {{ height: 30px; margin: 4px 0; background: #eee; user-select: none; }}</style>
+<ul id="list"><li id="a">Alpha</li><li id="b">Beta</li><li id="c">Gamma</li></ul>
+<script>for (const item of list.children) item.addEventListener('pointerdown', down => {{
+  try {{ item.setPointerCapture(down.pointerId); }} catch {{}}
+  let dragging = false;
+  const move = event => {{
+    dragging ||= Math.hypot(event.clientX - down.clientX, event.clientY - down.clientY) > 5;
+  }};
+  const up = event => {{
+    item.removeEventListener('pointermove', move);
+    item.removeEventListener('pointerup', up);
+    const over = document.elementFromPoint(event.clientX, event.clientY)?.closest('li');
+    if (dragging && over && over !== item) over.after(item);
+  }};
+  item.addEventListener('pointermove', move);
+  item.addEventListener('pointerup', up);
+}});</script>""",
 }
 
 
@@ -281,6 +301,15 @@ class RealBrowserActionRaceTests(harness.RealBrowserTestCase):
 
         self.assert_ok(self.call("/api/click", {"selector": "#late", "tabId": tab_id, "wait": True, "timeout": 5000}))
         self.assert_hits("late-a", 1)
+
+    # ── Drag ──
+
+    def test_drag_reorders_a_pointer_sortable(self):
+        tab_id = self.open_tab(self.site.url("sort-a", kind="sortable"))
+        result = self.assert_ok(self.call("/api/drag", {"from": "#a", "to": "#c", "tabId": tab_id}))
+        self.assertEqual(result["via"], "pointer", result)
+        order = "[...document.querySelectorAll('#list li')].map(item => item.id).join()"
+        self.assertEqual(self.call("/api/js", {"code": order, "tabId": tab_id})["result"], "b,c,a")
 
     # ── Tab closes and unloads ──
 
