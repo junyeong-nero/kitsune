@@ -1,6 +1,7 @@
 // Run with: node tests/sensitive_field_redaction.cjs (no browser or npm dependencies).
-// Masked non-password fields, password-manager autofill and shadow DOM controls
-// are redacted like type=password. All values are disposable fixtures.
+// Masked non-password fields (inputs, textareas, editable regions), password-manager
+// autofill and shadow DOM controls are redacted like type=password. All values are
+// disposable fixtures.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
@@ -24,6 +25,9 @@ function matchesSelector(el, selector) {
   });
 }
 
+// -webkit-text-security is inherited, like the computed style it emulates.
+const isMaskedElement = el => !!el && (!!el.masked || isMaskedElement(el.parentElement));
+
 class Node {
   get descendants() { return this.children.flatMap(child => [child, ...child.descendants]); }
   querySelectorAll(selector) { return this.descendants.filter(el => matchesSelector(el, selector)); }
@@ -42,7 +46,14 @@ class Element extends Node {
   }
   get childNodes() { return [{ nodeType: 3, textContent: this.text }, ...this.children]; }
   get textContent() { return this.text + this.children.map(child => child.textContent).join(''); }
-  get innerText() { return this.textContent; }
+  // Rendered text as Firefox reports it: a textarea's content is not rendered, and
+  // masked text shows as bullets.
+  get innerText() {
+    if (this.tagName === 'TEXTAREA') return '';
+    const text = isMaskedElement(this) ? '•'.repeat(this.text.length) : this.text;
+    return text + this.children.map(child => child.innerText).join('');
+  }
+  replaceChildren() { this.text = ''; this.children = []; }
   getAttribute(key) { return this.attrs[key.toLowerCase()] ?? null; }
   hasAttribute(key) { return key in this.attrs; }
   setAttribute(key, value) { this.attrs[key] = String(value); }
@@ -57,13 +68,14 @@ class Element extends Node {
   // Like the DOM: shadow roots, autofill state and computed styles are not cloned.
   cloneNode() {
     const { tagName, text, attrs, children, parentElement, shadowRoot, openOrClosedShadowRoot,
-      autofilled, masked, ...props } = this;
+      autofilled, masked, isContentEditable, ...props } = this;
     return Object.assign(new this.constructor(tagName, { text, attrs: { ...attrs },
       children: children.map(child => child.cloneNode(true)) }), props);
   }
   matches(selector) { return matchesSelector(this, selector); }
   closest() { return null; }
   focus() { this.focused = true; }
+  scrollIntoView() {}
   dispatchEvent() { return true; }
   getBoundingClientRect() { return { x: 0, y: 0, width: 100, height: 30 }; }
 }
@@ -78,6 +90,12 @@ class CustomControl extends Element {
 
 const input = (id, props = {}, attrs = {}) => new Element('INPUT', {
   attrs: { 'aria-label': id, ...attrs }, id, name: id, type: 'text', value: '', ...props });
+// A textarea's initial content is its text; typing changes only its value.
+const textarea = (id, text, props = {}) => new Element('TEXTAREA', {
+  attrs: { 'aria-label': id }, id, name: id, type: 'textarea', text, value: text, ...props });
+// Descendants of an editing host are editable too.
+const editable = (tagName, props = {}) => new Element(tagName, {
+  attrs: { contenteditable: 'true' }, contentEditable: 'true', isContentEditable: true, ...props });
 
 (async () => {
   // Non-sensitive controls keep their values.
@@ -101,7 +119,10 @@ const input = (id, props = {}, attrs = {}) => new Element('INPUT', {
     input('field7', { value: fake('MASKED'), masked: true }),
   ];
   const [cardNumber] = sensitive;
-  const form = new Element('FORM', { children: [email, zip, shipping, username, ...sensitive] });
+  // Textareas: one masked (initial content and a typed value), one ordinary.
+  const maskedNotes = textarea('recovery', fake('TEXTAREA_INITIAL'), { masked: true, value: fake('TEXTAREA') });
+  const notes = textarea('notes', 'plain notes');
+  const form = new Element('FORM', { children: [email, zip, shipping, username, ...sensitive, maskedNotes, notes] });
 
   // Shadow DOM controls: open, closed with Firefox's openOrClosedShadowRoot, and
   // a closed one that only advertises type=password on the host.
@@ -121,19 +142,28 @@ const input = (id, props = {}, attrs = {}) => new Element('INPUT', {
   const search = new CustomControl('X-SEARCH', { id: 'search',
     attrs: { role: 'searchbox', 'aria-label': 'Search', value: 'kittens' },
     shadowRoot: new ShadowRoot([input('q', { type: 'search', value: 'kittens' })]) });
-  const widgets = new Element('DIV', { text: 'Widgets', children: [vault, closedOtp, typedHost, xray, search] });
+  // Editing regions: one masked, with a nested paragraph that inherits the mask, and
+  // one ordinary. Neither has an aria-label, so names fall back to their text.
+  const secretNoteLine = new Element('P', { id: 'secret-note-line', text: fake('EDITABLE_LINE'),
+    contentEditable: 'inherit', isContentEditable: true });
+  const secretNote = editable('DIV', { id: 'secret-note', text: fake('EDITABLE'), masked: true,
+    children: [secretNoteLine] });
+  const draft = editable('DIV', { id: 'draft', text: 'draft text' });
+  const widgets = new Element('DIV', { text: 'Widgets',
+    children: [vault, closedOtp, typedHost, xray, search, secretNote, draft] });
   const body = new Element('BODY', { children: [form, widgets] });
   const fields = [...form.children];
 
   let listener;
   const context = vm.createContext({
-    console, crypto: webcrypto, CSS: { escape: x => x }, setTimeout,
+    console, crypto: webcrypto, CSS: { escape: x => x }, setTimeout, location: { href: 'http://example.test/' },
     Event: class { constructor(type, options) { Object.assign(this, { type }, options); } },
     HTMLInputElement: class {}, HTMLTextAreaElement: class {},
     KeyboardEvent: class { constructor(type, options) { Object.assign(this, { type }, options); } },
+    MouseEvent: class { constructor(type, options) { Object.assign(this, { type }, options); } },
     window: { getComputedStyle: el => ({ display: 'block', visibility: 'visible',
-      getPropertyValue: property => property === '-webkit-text-security' && el.masked ? 'disc' : '' }) },
-    document: { body,
+      getPropertyValue: property => property === '-webkit-text-security' && isMaskedElement(el) ? 'disc' : '' }) },
+    document: { body, title: 'Fixture',
       getElementById: id => body.querySelector(`#${id}`),
       querySelector: selector => [body, ...body.querySelectorAll(selector)].find(el => el.matches(selector)) || null,
       querySelectorAll: selector => [body, ...body.descendants].filter(el => el.matches(selector)),
@@ -157,7 +187,15 @@ const input = (id, props = {}, attrs = {}) => new Element('INPUT', {
     { action: 'selectOption', selector: '#field1', value: fake('CARD') },
     { action: 'checkBox', selector: '#field4', checked: true },
     { action: 'formFill', fields: { '#missing': fake('MISSING') } },
-  ]) assertNoLeak(`${msg.action} result`, await send(msg));
+    { action: 'type', selector: '#recovery', text: fake('TEXTAREA'), clear: true },
+    { action: 'click', selector: '#secret-note' },
+    { action: 'describeTarget', selector: '#recovery', key: 'Enter' },
+    { action: 'describeTarget', selector: '#secret-note-line' },
+  ]) {
+    const result = await send(msg);
+    assertNoLeak(`${msg.action} result`, result);
+    if (['click', 'describeTarget'].includes(msg.action)) assert.equal(result.ok, true, JSON.stringify(result));
+  }
   assert.equal(vaultInner.value, fake('VAULT'), 'fill pierced the open shadow root');
 
   const snapshot = await send({ action: 'getSnapshot' });
@@ -167,9 +205,17 @@ const input = (id, props = {}, attrs = {}) => new Element('INPUT', {
   assert.match(snapshot.snapshot, /textbox "username" \[ref=s\d+e\d+\]$/m, 'autofilled values are redacted');
   assert.match(snapshot.snapshot, /textbox "Vault key" \[ref=s\d+e\d+\]$/m);
   assert.match(snapshot.snapshot, /searchbox "Search" \[ref=s\d+e\d+\] \[value="kittens"\]/);
-  for (const el of sensitive) {
+  for (const el of [...sensitive, maskedNotes]) {
     assert.match(snapshot.snapshot, new RegExp(`(?:textbox|spinbutton) "${el.id}" \\[ref=s\\d+e\\d+\\]$`, 'm'), el.id);
   }
+  assert.match(snapshot.snapshot, /textbox "notes" \[ref=s\d+e\d+\] \[value="plain notes"\]/);
+  assert.match(snapshot.snapshot, /textbox "draft text" \[ref=s\d+e\d+\]$/m, 'an ordinary editing region keeps its name');
+  assert.match(snapshot.snapshot, /textbox "" \[ref=s\d+e\d+\]$/m, 'a masked editing region has no text name');
+
+  const textSnapshot = await send({ action: 'getSnapshot', text: true });
+  assertNoLeak('text snapshot', textSnapshot);
+  assert.match(textSnapshot.snapshot, /textbox "draft text"/);
+  assert.match(textSnapshot.snapshot, /- text "Widgets"/);
 
   const forms = await send({ action: 'getFormFields' });
   assertNoLeak('forms', forms);
@@ -177,7 +223,8 @@ const input = (id, props = {}, attrs = {}) => new Element('INPUT', {
   for (const [el, value] of [[email, 'user@example.test'], [zip, '12345'], [shipping, 'ground']]) {
     assert.equal(formField(el.id).value, value, `${el.id} keeps its value`);
   }
-  for (const el of [username, ...sensitive]) {
+  assert.equal(formField('notes').value, 'plain notes', 'an ordinary textarea keeps its value');
+  for (const el of [username, ...sensitive, maskedNotes]) {
     const field = formField(el.id);
     assert.equal('value' in field, false, el.id);
     assert.deepEqual([field.redacted, field.hasValue], [true, true], el.id);
@@ -187,13 +234,18 @@ const input = (id, props = {}, attrs = {}) => new Element('INPUT', {
 
   const dom = await send({ action: 'getAccessibilityTree', depth: 6 });
   assertNoLeak('dom', dom);
-  const domNodes = dom.tree.children.flatMap(node => node.children);
+  const domNodes = [];
+  (function collect(node) { domNodes.push(node); (node.children || []).forEach(collect); })(dom.tree);
   const domNode = id => domNodes.find(node => node.id === id);
   assert.equal(domNode('email').value, 'user@example.test');
   assert.equal(domNode('search').value, 'kittens');
-  for (const el of [username, ...sensitive, vault, closedOtp, typedHost]) {
+  assert.deepEqual([domNode('notes').value, domNode('notes').text], ['plain notes', 'plain notes']);
+  assert.equal(domNode('draft').text, 'draft text');
+  for (const el of [username, ...sensitive, maskedNotes, secretNote, vault, closedOtp, typedHost]) {
     assert.deepEqual([domNode(el.id).redacted, domNode(el.id).hasValue], [true, true], el.id);
+    assert.equal('text' in domNode(el.id), false, el.id);
   }
+  assert.equal('text' in domNode('secret-note-line'), false, 'nested editable text inherits the mask');
   // hasValue follows the host's value property, which this host does not expose.
   assert.deepEqual([domNode('xray').redacted, domNode('xray').hasValue], [true, false]);
 
@@ -213,12 +265,30 @@ const input = (id, props = {}, attrs = {}) => new Element('INPUT', {
   assert.deepEqual(Array.from(hostQuery.items, item => item.redacted), [true, true, true, true, undefined]);
   assert.equal(hostQuery.items[4].value, 'kittens');
   assert.equal(hostQuery.items[4].attrs.value, 'kittens');
+  const textQuery = await send({ action: 'query', selector: 'textarea, [contenteditable], p',
+    fields: ['id', 'text', 'value', 'html'] });
+  assertNoLeak('textQuery', textQuery);
+  const textRow = id => textQuery.items.find(item => item.id === id);
+  for (const id of ['recovery', 'secret-note', 'secret-note-line']) {
+    assert.deepEqual([textRow(id).redacted, textRow(id).hasValue, textRow(id).text, textRow(id).html],
+      [true, true, '', ''], id);
+  }
+  assert.deepEqual([textRow('notes').value, textRow('notes').text, textRow('notes').html],
+    ['plain notes', 'plain notes', 'plain notes']);
+  assert.deepEqual([textRow('draft').redacted, textRow('draft').text, textRow('draft').html],
+    [undefined, 'draft text', 'draft text']);
 
   // Markup drops sensitive value attributes, including reflected ones on shadow hosts.
   const html = await send({ action: 'getHTML', selector: 'body' });
   assertNoLeak('html', html);
   assert.match(html.html, /value="user@example.test"/);
   assert.match(html.html, /value="kittens"/);
+  assert.match(html.html, /<textarea aria-label="recovery"><\/textarea>/, 'masked textarea content is dropped');
+  assert.match(html.html, /<textarea aria-label="notes">plain notes<\/textarea>/);
+  assert.match(html.html, /<div contenteditable="true"><\/div>/, 'masked editing region content is dropped');
+  assert.match(html.html, /<div contenteditable="true">draft text<\/div>/);
+  assert.equal(maskedNotes.textContent, fake('TEXTAREA_INITIAL'), 'redaction does not mutate the page');
+  assert.equal(secretNote.children.length, 1);
   assert.equal(vault.getAttribute('value'), fake('VAULT'), 'redaction does not mutate the page');
   assert.equal(cardNumber.getAttribute('value'), fake('CARD'));
   assert.equal(xray.getAttribute('value'), fake('XRAY'));
@@ -232,16 +302,39 @@ const input = (id, props = {}, attrs = {}) => new Element('INPUT', {
   const misaligned = await send({ action: 'getHTML', selector: 'form' });
   assertNoLeak('misaligned html', misaligned);
   assert.doesNotMatch(misaligned.html, /value=/);
+  assert.doesNotMatch(misaligned.html, /plain notes/, 'every textarea is emptied when sensitivity cannot be mapped');
   delete form.cloneNode;
+  const widgetsCloneNode = widgets.cloneNode;
+  widgets.cloneNode = function() {
+    const clone = widgetsCloneNode.call(this);
+    clone.children.unshift(new Element('SPAN'));
+    return clone;
+  };
+  const misalignedWidgets = await send({ action: 'getHTML', selector: 'div' });
+  assertNoLeak('misaligned widgets html', misalignedWidgets);
+  assert.doesNotMatch(misalignedWidgets.html, /draft text/, 'every editing region is emptied');
+  delete widgets.cloneNode;
 
   for (const msg of [
     { action: 'getPageText' },
     { action: 'getPageText', selector: 'form' },
     { action: 'getMarkdown' },
     { action: 'explainSelector', selector: 'input' },
+    { action: 'explainSelector', selector: 'textarea' },
+    { action: 'explainSelector', selector: '[contenteditable]' },
     { action: 'waitForElement', selector: formField('field1').ref, timeout: 0 },
+    { action: 'waitForElement', selector: '#recovery', timeout: 0 },
+    { action: 'waitForElement', selector: '#secret-note', timeout: 0 },
     { action: 'getBounds', selector: '#vault' },
   ]) assertNoLeak(`${msg.action} ${msg.selector || ''}`, await send(msg));
+  // Ordinary text stays readable; the browser renders masked text as bullets.
+  const pageText = (await send({ action: 'getPageText' })).text;
+  assert.match(pageText, /draft text/);
+  assert.match(pageText, /•+/);
+  const markdown = (await send({ action: 'getMarkdown' })).markdown;
+  assert.match(markdown, /draft text/);
+  assert.equal((await send({ action: 'explainSelector', selector: 'textarea' })).samples[1].text, 'plain notes');
+  assert.equal((await send({ action: 'waitForElement', selector: '#draft', timeout: 0 })).text, 'draft text');
 
   // find cannot match against sensitive values, but still matches others.
   const probe = await send({ action: 'find', query: MARKER });
@@ -249,6 +342,11 @@ const input = (id, props = {}, attrs = {}) => new Element('INPUT', {
   assert.ok(probe.results.every(result => result.score === 1), 'only the interactive bonus scores');
   const byValue = await send({ action: 'find', query: 'user@example.test' });
   assert.equal(byValue.results[0].selector, '#email');
+  const byNotes = await send({ action: 'find', query: 'plain notes' });
+  assert.equal(byNotes.results[0].selector, '#notes');
+  assert.equal(byNotes.results[0].text, 'plain notes');
+  const byDraft = await send({ action: 'find', query: 'draft text' });
+  assert.equal(byDraft.results[0].selector, '#draft');
 
   // Value-attribute selectors are refused while any sensitive field or host has one.
   for (const msg of [
