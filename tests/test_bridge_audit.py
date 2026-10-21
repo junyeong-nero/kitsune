@@ -56,6 +56,20 @@ class AuditRedactionTests(unittest.TestCase):
                 self.assertEqual(entry["params"], {**params, secret_key: REDACTED})
                 self.assertNotIn(TYPED, json.dumps(entry))
 
+    def test_select_values_and_prompt_answers_are_always_redacted(self):
+        for action, params, secret_key in [
+            ("selectOption", {"selector": "#plan", "value": TYPED, "byText": False, "tabId": 6}, "value"),
+            ("selectOption", {"ref": "s1e4", "element": "Saved card", "value": TYPED, "byText": True}, "value"),
+            ("handleDialog", {"accept": True, "prompt_text": TYPED, "tabId": 6}, "prompt_text"),
+        ]:
+            with self.subTest(action=action, params=params):
+                entry = self.audited(action, params)
+                self.assertEqual(entry["params"], {**params, secret_key: REDACTED})
+                self.assertNotIn(TYPED, json.dumps(entry))
+                self.assertEqual(params[secret_key], TYPED)  # caller's body is not mutated
+        params = {"accept": False, "tabId": 6}
+        self.assertEqual(self.audited("handleDialog", params)["params"], params)
+
     def test_nested_commands_get_the_same_rule(self):
         params = {
             "commands": [
@@ -70,6 +84,8 @@ class AuditRedactionTests(unittest.TestCase):
                 {"action": "cookies", "op": "set", "name": "sid", "value": TYPED},
                 {"action": "storageOp", "op": "set", "key": "token", "value": TYPED},
                 {"action": "clipboard", "op": "write", "text": TYPED},
+                {"action": "selectOption", "selector": "#plan", "value": TYPED},
+                {"action": "handleDialog", "accept": True, "prompt_text": TYPED},
             ],
         }
         entry = self.audited("batch", params)
@@ -88,6 +104,8 @@ class AuditRedactionTests(unittest.TestCase):
                 {"action": "cookies", "op": "set", "name": "sid", "value": REDACTED},
                 {"action": "storageOp", "op": "set", "key": "token", "value": REDACTED},
                 {"action": "clipboard", "op": "write", "text": REDACTED},
+                {"action": "selectOption", "selector": "#plan", "value": REDACTED},
+                {"action": "handleDialog", "accept": True, "prompt_text": REDACTED},
             ],
         })
 
@@ -102,6 +120,29 @@ class AuditRedactionTests(unittest.TestCase):
             with self.subTest(action=action):
                 self.assertEqual(self.audited(action, params)["params"], params)
         self.assertEqual(self.audited("executeJS", {"code": "1", "tabId": 4})["params"], {"tabId": 4})
+
+    def test_control_flow_js_expressions_are_dropped(self):
+        params = {
+            "commands": [
+                {"action": "if", "tabId": 1, "condition": "secretFixture()",
+                 "then": [{"action": "click", "selector": "#go"}]},
+                {"action": "while", "tabId": 1, "condition": "secretFixture()", "maxIterations": 3,
+                 "commands": [{"action": "click", "selector": "#more"}]},
+                {"action": "syncBarrier", "tabIds": [1, 2], "predicate": "secretFixture()", "timeout": 500},
+            ],
+        }
+        entry = self.audited("batch", params)
+        self.assertNotIn("secretFixture", json.dumps(entry))
+        self.assertEqual(entry["params"], {
+            "commands": [
+                {"action": "if", "tabId": 1, "then": [{"action": "click", "selector": "#go"}]},
+                {"action": "while", "tabId": 1, "maxIterations": 3,
+                 "commands": [{"action": "click", "selector": "#more"}]},
+                {"action": "syncBarrier", "tabIds": [1, 2], "timeout": 500},
+            ],
+        })
+        held = self.audited("if", {"tabId": 1, "condition": "secretFixture()", "then": []})
+        self.assertEqual(held["params"], {"tabId": 1, "then": []})
 
 
 class AuditEndpointTests(unittest.TestCase):

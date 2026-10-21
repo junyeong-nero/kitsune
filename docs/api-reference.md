@@ -451,11 +451,15 @@ as a separate, unrestricted trust boundary.
 
 `browser_audit` (`/api/audit`) returns recent write-action entries:
 `{ts, action, params, ok, error, ms}`. `params` never contains JavaScript bodies
-(`code`), typed text or stored secrets. These values are replaced with
+(`code`, the `condition` of `if`/`while`, the `predicate` of `syncBarrier`),
+typed text or stored secrets. These values are replaced with
 `"[redacted]"`:
 
 - `text` of `type` and `keypress`;
 - `value` of `fill` and `setEditableContent`;
+- `value` of `selectOption`, whether or not the `<select>` is a sensitive field
+  (the bridge sees only the selector or ref);
+- `prompt_text` of `handleDialog` (`browser_handle_dialog` prompt answer);
 - every value of `formFill` `fields`. The field keys (selectors, names or labels)
   are kept;
 - `value` of `cookies` (`browser_cookies`);

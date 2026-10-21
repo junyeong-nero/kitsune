@@ -649,14 +649,26 @@ def _log(msg):
 AUDIT_REDACTED = "[redacted]"
 # Params holding typed text or stored secrets (cookie, storage and clipboard
 # contents); selectors, refs, tabId, op, name, url and key stay.
+# selectOption values are always redacted: the bridge only sees a selector/ref,
+# and whether the <select> is sensitive (isSensitiveField) is known only in the page.
 _AUDIT_SECRET_PARAMS = {
     "type": ("text",),
     "fill": ("value",),
     "setEditableContent": ("value",),
     "keypress": ("text",),
+    "selectOption": ("value",),
+    "handleDialog": ("prompt_text",),
     "cookies": ("value",),
     "storageOp": ("value",),
     "clipboard": ("text",),
+}
+
+# JS bodies are dropped: "code" everywhere, plus the JS expressions that
+# control-flow steps evaluate in the page.
+_AUDIT_JS_PARAMS = {
+    "if": ("condition",),
+    "while": ("condition",),
+    "syncBarrier": ("predicate",),
 }
 
 
@@ -676,9 +688,10 @@ def _audit_params(action, params):
         return value
 
     secret = _AUDIT_SECRET_PARAMS.get(action, ())
+    js = _AUDIT_JS_PARAMS.get(action, ())
     out = {}
     for k, v in (params or {}).items():
-        if k == "code":  # don't log JS bodies
+        if k == "code" or k in js:  # don't log JS bodies
             continue
         if k in secret:
             out[k] = AUDIT_REDACTED

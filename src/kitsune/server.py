@@ -1649,7 +1649,8 @@ def browser_logs(limit: int = 200, since: str | None = None) -> dict:
 @tool("devtools", annotations=ToolAnnotations(title="Read command audit log", **READ))
 def browser_audit(limit: int = 100, since_ms: int = 0) -> dict:
     """Return recent command audit entries: action, params (JS code stripped,
-    typed text and cookie/storage/clipboard values redacted), success flag,
+    typed text, select values, dialog prompt answers and cookie/storage/
+    clipboard values redacted), success flag,
     error, duration. Useful for "what did the agent do?" reviews."""
     return _post("/api/audit", {"limit": limit, "since": since_ms})
 
