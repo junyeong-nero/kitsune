@@ -67,7 +67,7 @@ class RealBrowserShadowDomTests(harness.RealBrowserTestCase):
         snapshot = self.call("/api/snapshot", {"tabId": tab})["snapshot"]
         refs = {}
         for line in ('heading "주간 소식"', 'checkbox "주간 소식 받기"', 'checkbox "이벤트 알림"', 'button "구독"'):
-            match = re.search(re.escape(line) + r" \[ref=(s\d+e\d+)\]", snapshot)
+            match = re.search(re.escape(line) + r" \[ref=(e\d+)\]", snapshot)
             self.assertIsNotNone(match, f"{line} in:\n{snapshot}")
             refs[line] = match.group(1)
         self.assertEqual(len(re.findall(r'textbox "이메일" \[ref=', snapshot)), 2, snapshot)

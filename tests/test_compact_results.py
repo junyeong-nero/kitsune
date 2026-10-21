@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+import re
 import unittest
 from unittest.mock import Mock, patch
 
@@ -97,6 +98,31 @@ class CompactResultTests(unittest.TestCase):
             sizes[label] = (len(indented(before)), len(self.text(self.call(name, arguments, reply))))
         self.assertEqual(sizes, {"snapshot": (328, 319), "tabs list": (506, 247),
                                  "action result": (258, 218), "error": (464, 398)})
+
+    def test_short_ref_fixture_sizes(self):
+        """Characters with compact JSON held constant; no token-size claim (#143)."""
+        aliases = {}
+
+        def shorten(match):
+            ref = match.group()
+            if ref not in aliases:
+                aliases[ref] = f"e{len(aliases)}"
+            return aliases[ref]
+
+        sizes = {}
+        for label, name, reply in (("snapshot", "browser_snapshot", SNAPSHOT),
+                                   ("action result", "browser_click", CLICK),
+                                   ("error", "browser_click", STALE)):
+            before = json.dumps(reply, separators=(",", ":"), ensure_ascii=False)
+            short = json.loads(re.sub(r"s\d+e\d+", shorten, before))
+            arguments = {} if name == "browser_snapshot" else {"ref": "e2"}
+            result = self.call(name, arguments, short)
+            after = self.text(result)
+            self.assertEqual(json.loads(after), short)
+            self.assertEqual(result.isError, label == "error")
+            sizes[label] = (len(before), len(after))
+        self.assertEqual(sizes, {"snapshot": (319, 223), "action result": (218, 170),
+                                 "error": (398, 350)})
 
     def test_screenshot_metadata_in_list_results_is_compact(self):
         def listing():
