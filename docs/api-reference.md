@@ -558,7 +558,7 @@ Every place that could show a tab or focus a window:
 | `browser_tabs` new, batch/workflow `newTab`, session save/load and tab-pool tabs (`tabs.create`) | opened in the foreground | `active: false`: opens in the background |
 | Link fallback for popup-blocked links ([below](#popup-blocked-links), `tabs.create`) | foreground | `active: false` |
 | `duplicateTab` (`tabs.duplicate`) | showed the duplicate | `active: false` |
-| `createWindow`, `detachTab` (`windows.create`) | focused the new window | `focused: false` |
+| `createWindow`, `detachTab` (`windows.create`) | focused the new window | `focused: false`, and the focus goes back to the user's window right away in case the browser focused the new window anyway (see [Agent windows](#agent-windows)) |
 | Tabs a page opens on an agent action (`target="_blank"`, `window.open`) | Firefox shows them | the extension shows the tab the user saw again at once (`tabs.onActivated`'s `previousTabId`) and gives a popup window's focus back to the window the user had focused; the new tab flickers for a moment. Firefox decides to show them, so this is an undo, not a prevention |
 | `browser_screenshot` viewport with `tab_id` | selected the tab and focused its window, and never restored them | `tabs.captureTab` captures the tab in place |
 | Element and full-page screenshots | showed the tab during capture, then restored it | `tabs.captureTab`; nothing is shown |
@@ -580,9 +580,10 @@ sees, which is not the new tab.
 #### Agent-owned tabs
 
 `browser_tabs` list (`GET /api/tabs`) marks every tab with `owned`: `true` for tabs the
-agent opened (`browser_tabs` new, `duplicateTab`, `createWindow`, session and pool
-tabs, the link fallback, and tabs a page opened on an agent action, which are also
-listed in [`opened_tabs`](#opened-tabs)), `false` for the user's tabs.
+agent opened (`browser_tabs` new, `duplicateTab`, the tabs `createWindow` asked for,
+session and pool tabs, the link fallback, and tabs a page opened on an agent action, which
+are also listed in [`opened_tabs`](#opened-tabs), and the agent window's synced copies
+described in [Agent windows](#agent-windows)), `false` for the user's tabs.
 
 `browser_tabs` close (`POST /api/close-tab`, batch `closeTab`) closes an owned tab. A
 user tab stays open, and the result is the error `user_tab` (`retryable: false`:
@@ -608,12 +609,60 @@ close leaves the user's page as it was.
 Closing a window closes its tabs, so `browser_close_window` (`POST /api/close-window`,
 batch `closeWindow`) refuses a window with any tab the agent did not open the same way
 (`user_tab`, `state.windowId`, `state.tabIds`: its user tabs), with the same approval.
+The browser's copies of other windows' tabs in a `createWindow` window do not count (see
+[Agent windows](#agent-windows)).
 
 Ownership lives in the extension's background page. A bridge restart or reconnect
 keeps it. An extension reload or update, or a browser restart, forgets it; the tabs
 the agent opened before then count as user tabs, so closing them needs approval.
 The extension also cannot tell an agent action's tab from one the user opened from the
 same tab within 2 s of that action; such a tab counts as the agent's.
+
+#### Agent windows
+
+Agent work stays in background tabs of the user's window. Only an explicit
+`browser_create_window` or `browser_detach_tab` (batch `createWindow`, `detachTab`) opens a
+window; these tools are in the `windows` capability, which the default tools leave out.
+Nothing else calls `windows.create`. A popup window that a page opens on an agent action is
+the page's own (see [Never taking focus](#never-taking-focus)).
+
+**Focus.** `windows.create` passes `focused: false`, but some browsers ignore it: Zen (on
+Firefox 158) focuses the new window even with its window sync off. So right after it
+creates a window, the extension gives the focus back to the browser window the user had
+focused, and does so again if the browser focuses the new window within 1.5 s. The new
+window can flicker for a moment. If no browser window had focus (the user was in another
+application), nothing is focused. If the user clicks into the new window within those 1.5 s,
+the focus goes back to their previous window. `browser_focus_window` on the new window
+is never undone.
+
+**Zen's window sync** (`zen.window-sync.enabled`, on by default) mirrors tabs between
+windows. A new window gets a lazy copy of each tab of the other windows, and each other
+window gets a lazy copy of the new window's tab. Zen fills that copy with the agent's page
+when the agent window closes. Closing a copy closes its original. Kitsune handles this as
+follows:
+
+- In a `createWindow` window, only the tabs `windows.create` made are the agent's
+  (`tabIds` in the result). The browser's copies there are discarded when the window opens.
+  Kitsune records them once, at that moment, and never makes them owned.
+  `browser_tabs` close refuses them (`user_tab`), because closing one would close the user's
+  tab. `browser_close_window` closes the window with them anyway: removing a window
+  closes no originals.
+- A tab that opens in another window as a copy of the agent window's tab is adopted:
+  `owned: true`, and `browser_close_window` closes it after the window. Adoption is
+  conservative, and every condition must hold. The tab opens within 1.5 s of
+  `windows.create`, in a window that existed before it, in the background, without an
+  opener, discarded (a lazy tab that loads nothing), and at about:blank (where Zen's copies
+  start) or one of the agent window's URLs. A tab the user opens is shown, has an opener,
+  or loads a page, so it is never adopted.
+- An adopted copy goes back to the user (`owned: false`, left open) when the user shows it,
+  when it starts a load the agent did not start, or when it reports
+  [user activity](#user-activity) as `browser_close_window` would close it.
+
+Limits: this is a heuristic. A lazy background tab that something other than the sync
+opens in those 1.5 s at about:blank counts as the agent's, for example one opened by
+another extension. If the user closes the agent window, its adopted copies stay open,
+agent-owned, and show the agent's page; `browser_tabs` close closes them. In a `browser_detach_tab` window, the browser's copies count as user tabs, so
+`browser_close_window` on it needs the user's approval.
 
 #### User activity
 
