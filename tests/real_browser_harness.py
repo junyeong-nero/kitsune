@@ -10,7 +10,9 @@ API, kept small so suites can rely on it:
   setUpClass gives each class a temporary directory holding the browser profile, the
   browser's HOME and the bridge's HOME/KITSUNE_HOME; a real bridge on spare ports
   (cls.bridge, test_bridge_security.Bridge); and a headless browser running a copy of the
-  extension whose bridge URL points at that bridge (cls.browser). Class cleanups are
+  extension whose bridge URL points at that bridge (cls.browser). The bridge's
+  KITSUNE_EXTENSION_DIR names that copy, so its developer-build check compares the
+  extension with the files the browser loaded. Class cleanups are
   registered before anything starts, so they run even if setUpClass fails: they kill
   the browser's whole process group, stop the bridge and delete the directory.
   Hooks:
@@ -261,6 +263,8 @@ class RealBrowserTestCase(unittest.TestCase):
         home = Path(temp.name, "bridge")
         home.mkdir()
         cls.bridge = Bridge(str(home))
+        # Compare the loaded build with the copy the browser runs, not the repository's extension/.
+        cls.bridge.env["KITSUNE_EXTENSION_DIR"] = str(Path(temp.name, "extension"))
         cls.addClassCleanup(cls.bridge.stop)
         cls.bridge.start()
         cls.browser = RealBrowser(BROWSER, temp.name, cls.bridge.ws_port, cls.PROFILE_PREFS,
