@@ -1388,15 +1388,28 @@ write: read-only mode refuses it.
 When playback does not start, `media` fails with `error`, `reason` and `media`, and
 `browser_click` stays a success whose `media` adds `error` and `reason`:
 
-- `refused`: the browser rejected `play()`. Muted media plays without user activation;
-  unmuted playback may be refused (`NotAllowedError`). Mute first, or use
-  `browser_trusted_click` on the control.
+- `autoplay_blocked`: the browser rejected `play()` with `NotAllowedError`: synthetic
+  clicks do not grant user activation, even in the active tab. Use the batch `media`
+  command with `op: "mute"` then `op: "play"`, use `browser_trusted_click` on the control
+  where available, or ask the user. Kitsune does not mute or retry automatically.
+- `refused`: the browser rejected `play()` for another reason, such as an unsupported source.
 - `background_tab`: Firefox delays playback in a tab until it has been shown once
   (`media.block-autoplay-until-in-foreground`). Agent tabs open in the background
   ([Never take focus](#never-taking-focus)), so the agent's own tabs cannot play media
   until shown. Kitsune never shows a tab for playback: it cancels the pending `play()`.
   Select the tab explicitly with `browser_tabs` select (refused with `user_active` while
   the user is using their tab), then play again.
+
+For example, after an autoplay block, play muted with:
+
+```json
+{"commands": [{"action": "media", "ref": "s1e2", "op": "mute"},
+              {"action": "media", "ref": "s1e2", "op": "play"}]}
+```
+
+The model never receives audio content, even when playback succeeds. Muted playback
+can expose video frames in screenshots, but cannot make an audio puzzle audible to
+the model. Use the page's hand-off path when available, or ask the user to listen.
 
 ### `browser_type(selector="", text="", mode="type", clear=False, tab_id=None, ref=None, element=None, wait=False, timeout=10000)`
 

@@ -11,9 +11,11 @@ shown (media.block-autoplay-until-in-foreground), so the test selects the tab ex
 """
 import base64
 from http.server import BaseHTTPRequestHandler
+import io
 import re
 import time
 import unittest
+import wave
 
 import real_browser_harness as harness
 
@@ -37,6 +39,13 @@ CLIP = base64.b64decode(
 PAGE = """<!doctype html><title>Media</title><h1>Clip</h1>
 <video id="clip" src="/clip.webm" aria-label="Red screen" controls muted preload="auto" width="160" height="160">
 <p>Your browser cannot play this video</p></video>"""
+AUDIO_PAGE = """<!doctype html><title>Audio autoplay</title>
+<audio src="/audio.wav" aria-label="Audio clip" controls loop preload="auto"></audio>"""
+with io.BytesIO() as audio:
+    with wave.open(audio, "wb") as wav:
+        wav.setparams((1, 2, 8000, 0, "NONE", "not compressed"))
+        wav.writeframes(b"\x00\x00" * 8000 * 4)
+    AUDIO = audio.getvalue()
 VIDEO_LINE = re.compile(r'- video "Red screen" \[ref=(\S+)\] \[src="[^"]*/clip\.webm" duration=([\d.]+) '
                         r'currentTime=([\d.]+) paused=(true|false) muted=true controls=true\]')
 
@@ -44,7 +53,9 @@ VIDEO_LINE = re.compile(r'- video "Red screen" \[ref=(\S+)\] \[src="[^"]*/clip\.
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         body, kind = {"/media": (PAGE.encode(), "text/html; charset=utf-8"),
-                      "/clip.webm": (CLIP, "video/webm")}.get(self.path, (None, None))
+                      "/clip.webm": (CLIP, "video/webm"),
+                      "/audio": (AUDIO_PAGE.encode(), "text/html; charset=utf-8"),
+                      "/audio.wav": (AUDIO, "audio/wav")}.get(self.path, (None, None))
         if body is None:
             self.send_error(404)
             return
@@ -76,6 +87,29 @@ class RealBrowserMediaTests(harness.RealBrowserTestCase):
         result = self.call("/api/batch", {"commands": [{"action": "media", "tabId": tab, "ref": ref, "op": op,
                                                          **params}]})["results"][0]
         return self.assert_ok(result)["media"]
+
+    def test_unmuted_audio_click_is_autoplay_blocked_then_mute_and_play(self):
+        tab = self.open_tab(f"{self.site.origin}/audio")
+        self.assert_ok(self.call("/api/switch-tab", {"tabId": tab}))
+        deadline = time.monotonic() + 5
+        while True:
+            snapshot = self.call("/api/snapshot", {"tabId": tab})["snapshot"]
+            match = re.search(r'- audio "Audio clip" \[ref=(\S+)\] .*duration=4 ', snapshot)
+            if match or time.monotonic() >= deadline:
+                break
+            time.sleep(0.1)
+        self.assertIsNotNone(match, snapshot)
+        ref = match[1]
+        clicked = self.assert_ok(self.call("/api/click", {"tabId": tab, "ref": ref}))
+        self.assertEqual(clicked["media"]["reason"], "autoplay_blocked", clicked)
+        self.assertIs(clicked["media"]["paused"], True, clicked)
+        self.assertIs(clicked["media"]["muted"], False, clicked)
+        self.assertIn("media command mute then play", clicked["media"]["error"])
+        self.assertIs(self.media(tab, ref, "mute")["muted"], True)
+        state = self.media(tab, ref, "play")
+        self.assertIs(state["paused"], False, state)
+        self.assertIs(state["muted"], True, state)
+        self.media(tab, ref, "pause")
 
     def test_muted_video_is_listed_and_plays_pauses_and_seeks(self):
         tab = self.open_tab(f"{self.site.origin}/media")

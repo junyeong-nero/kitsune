@@ -1156,8 +1156,11 @@
   async function playMedia(el) {
     let timer;
     const pending = new Promise(resolve => { timer = setTimeout(resolve, MEDIA_SETTLE_MS, 'pending'); });
-    const started = Promise.resolve(el.play()).then(() => null, e => ({ reason: 'refused',
-      error: `play() was refused (${e.name}: ${e.message}); muted media can play, or use browser_trusted_click` }));
+    const started = Promise.resolve(el.play()).then(() => null, e => ({
+      reason: e.name === 'NotAllowedError' ? 'autoplay_blocked' : 'refused',
+      error: `play() was refused (${e.name}: ${e.message})` + (e.name === 'NotAllowedError'
+        ? '; use the media command mute then play, browser_trusted_click where available, or ask the user'
+        : '') }));
     const outcome = await Promise.race([started, pending]).finally(() => clearTimeout(timer));
     if (outcome !== 'pending') return outcome;
     if (!document.hidden) return null;
