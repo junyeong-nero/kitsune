@@ -54,7 +54,7 @@ except ImportError:
 
 from . import bridge_control
 from .version import BRIDGE_BUILD, PACKAGE_VERSION
-from .waits import actionability_wait_seconds, batch_wait_seconds
+from .waits import actionability_wait_seconds, batch_wait_seconds, command_wait_seconds
 
 # ── Config ──
 BRIDGE_VERSION = PACKAGE_VERSION
@@ -2549,7 +2549,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "action": "retry",
             **body,
         }
-        result = self.run_async(run_command(cmd))
+        # Every attempt may wait for its target, and the backoff sleeps add up.
+        result = self.run_async(run_command(cmd), timeout=max(35, command_wait_seconds(cmd) + 15))
         self.send_json(200, result)
 
     # ── Tag tabs ──
