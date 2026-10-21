@@ -60,9 +60,9 @@
     "total": 1122
   },
   "browser_keypress": {
-    "description": 631,
+    "description": 396,
     "inputSchema": 1014,
-    "total": 1826
+    "total": 1591
   },
   "browser_markdown": {
     "description": 146,
@@ -85,14 +85,14 @@
     "total": 662
   },
   "browser_screenshot": {
-    "description": 581,
+    "description": 433,
     "inputSchema": 640,
-    "total": 1411
+    "total": 1263
   },
   "browser_scroll": {
-    "description": 768,
+    "description": 484,
     "inputSchema": 656,
-    "total": 1601
+    "total": 1317
   },
   "browser_select_option": {
     "description": 188,
@@ -100,9 +100,9 @@
     "total": 1225
   },
   "browser_snapshot": {
-    "description": 1278,
+    "description": 1030,
     "inputSchema": 479,
-    "total": 1950
+    "total": 1702
   },
   "browser_status": {
     "description": 65,
@@ -120,9 +120,9 @@
     "total": 1403
   },
   "browser_type": {
-    "description": 472,
+    "description": 378,
     "inputSchema": 922,
-    "total": 1580
+    "total": 1486
   },
   "browser_upload_file": {
     "description": 863,

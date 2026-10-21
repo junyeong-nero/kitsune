@@ -405,27 +405,21 @@ def browser_snapshot(
     tab_id: int | None = None, selector: str | None = None,
     ref: str | None = None, max_depth: int | None = None, text: bool = False,
 ) -> dict:
-    """Get a compact accessibility-style text tree and fresh element refs.
+    """Get a compact accessibility-style text tree with fresh element refs; prefer them for actions.
 
-    Prefer these refs for actions. Refs belong to one document in one tab. Each
-    snapshot, browser_dom, and the post-action snapshot of a successful click,
-    type/fill, select_option, check, keypress, submit_form or navigate replaces
-    earlier refs in that tab; navigation invalidates them too. browser_find,
-    browser_forms and wait_for(selector) add refs without replacing any. After an
-    action, use its snapshot refs and target_ref (the acted-on element). On
-    stale_ref, take a new snapshot; never repeat a write just to refresh refs.
-    Repeated composite siblings show the first five items; post-action snapshots
-    also keep the target.
+    Refs belong to one document in one tab. A snapshot, browser_dom, or the post-action
+    snapshot of a successful click, type/fill, select_option, check, keypress, submit_form
+    or navigate replaces that tab's earlier refs; navigation invalidates them. browser_find,
+    browser_forms and wait_for(selector) add refs. After an action, use its snapshot refs
+    and target_ref (the acted-on element). On stale_ref, take a new snapshot; never repeat
+    a write just to refresh refs. Repeated composite siblings show the first five items;
+    post-action snapshots also keep the target.
 
-    Args:
-        tab_id: Optional tab to target. Defaults to active tab.
-        selector: Optional CSS selector for a subtree, including its root.
-        ref: Existing snapshot ref for a subtree; takes precedence over selector.
-            Resolved before this snapshot invalidates earlier refs.
-        max_depth: Non-negative DOM depth relative to the subtree root (body by
-            default). Zero includes only the root; None traverses all depths.
-        text: Also include visible text lines (no refs), url, title and tabId;
-            capped at 12,000 chars with a truncation marker.
+    selector: CSS subtree root (included). ref: existing ref for a subtree, resolved
+    before refs are replaced; wins over selector. max_depth: non-negative depth below
+    the subtree root (body by default); 0 is the root only, None all depths.
+    text: also return visible text lines (no refs), url, title and tabId, capped at
+    12,000 chars with a truncation marker.
     """
     if max_depth is not None and (type(max_depth) is not int or max_depth < 0):
         return {"error": "max_depth must be a non-negative integer"}
@@ -449,15 +443,12 @@ def browser_screenshot(
     tab_id: int | None = None, save_to: str | None = None,
     data_url: bool = False, ref: str | None = None, element: str | None = None,
 ):
-    """Capture viewport, one element, or the full page as MCP image content.
+    """Capture the viewport, one element (ref/selector, see browser_click) or the full page.
 
-    For an element, prefer ref from browser_snapshot over selector; element is an
-    audit-only description. selector/ref and full_page are mutually exclusive. Element/full-page captures
-    temporarily activate the target tab. Viewport capture with tab_id selects
-    that tab and focuses its window. Large inline images are JPEG-encoded or
-    downscaled under ~1 MB. save_to writes the full PNG to that path and returns
-    metadata instead of image content; data_url also includes the PNG bytes as a
-    data URL (large).
+    selector/ref and full_page are mutually exclusive. Element/full-page captures briefly
+    activate the tab; viewport capture with tab_id selects it and focuses its window.
+    Inline images are JPEG-encoded or downscaled under ~1 MB. save_to writes the full PNG
+    there and returns metadata instead; data_url also returns it as a (large) data URL.
     """
     if ref is not None and selector is None:
         selector = ""
@@ -589,13 +580,11 @@ def browser_type(
     ref: str | None = None, element: str | None = None, wait: bool = False, timeout: int = 10000,
     expect: dict | None = None, confirm_token: str | None = None,
 ) -> dict:
-    """Enter text using typing events, direct field fill, or a contenteditable editor.
+    """Enter text into a field or contenteditable editor.
 
-    type: type text, optionally clearing first.
-    fill: replace the field value using native setters and input/change events;
-        clear is ignored because fill always replaces.
-    editable: insert plain text in an editor/input/textarea, appending unless
-        clear=True. Use browser_js for trusted HTML insertion.
+    type: typing events, clearing first if clear. fill: replace the value via native
+    setters and input/change events (always replaces). editable: insert plain text into
+    an editor/input/textarea, appending unless clear. For HTML, use browser_js.
     Action contract (ref, wait, expect, confirm_token, refs): see browser_click.
     """
     if mode == "type":
@@ -617,21 +606,13 @@ def browser_scroll(
     selector: str | None = None, ref: str | None = None, element: str | None = None,
     expect: dict | None = None,
 ) -> dict:
-    """Scroll the target instantly. Without selector/ref, scroll the window,
-    falling back to a scrollable container at viewport center.
-    Action contract (ref, expect): see browser_click.
+    """Scroll the selector/ref container instantly, else the window (falling back to a
+    scrollable container at viewport center). Action contract (ref, expect): see browser_click.
 
-    Args:
-        direction: "up", "down", "left", "right", "top", or "bottom"
-        amount: Pixels to scroll (ignored for top/bottom)
-        tab_id: Optional tab to target. Defaults to active tab.
-
-    Returns:
-        scrolled_by: Actual signed pixel movement on the requested axis; 0 is a no-op.
-        target: "window" or a short selector describing the container that scrolled.
-        scrollY, scrollX: Window offsets (even when a container scrolled).
-        scrolledPx: Compatibility alias for scrolled_by; ok indicates command handling,
-            not whether any movement occurred.
+    direction: up, down, left, right, top or bottom; amount is pixels (ignored for top/bottom).
+    Returns scrolled_by (signed pixels actually moved; 0 is a no-op), target ("window" or
+    the container's selector) and window scrollY/scrollX. scrolledPx is an alias of
+    scrolled_by; ok means handled, not moved.
     """
     body = {"direction": direction, "amount": amount}
     if selector: body["selector"] = selector
@@ -1113,18 +1094,12 @@ def browser_keypress(
     timeout: int = 10000,
     expect: dict | None = None, confirm_token: str | None = None,
 ) -> dict:
-    """Dispatch a synthetic keyboard event. Use modifiers like
-    `{"ctrl": True, "shift": True}`. Pass `text` to also insert characters
-    into editable targets.
-    Action contract (ref, wait, expect, confirm_token, refs): see browser_click.
+    """Dispatch a synthetic keyboard event to the ref/selector target, else the focused
+    element (or body). Action contract (ref, wait, expect, confirm_token, refs): see browser_click.
 
-    Args:
-        key: Key name, e.g. "Enter", "Tab", "Escape", "ArrowDown", "a".
-        selector: Optional CSS target; ref takes precedence. Without either,
-            defaults to document.activeElement (or document.body).
-        modifiers: {"ctrl"|"shift"|"alt"|"meta": True}.
-        text: If set, also insert this text into editable targets.
-        wait: Only applies with selector/ref.
+    key: e.g. "Enter", "Tab", "Escape", "ArrowDown", "a".
+    modifiers: {"ctrl"|"shift"|"alt"|"meta": true}. text: also insert this text into an
+    editable target. wait applies only with selector/ref.
     """
     body = {"key": key}
     if selector: body["selector"] = selector
