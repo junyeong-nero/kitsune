@@ -744,8 +744,15 @@ results, click results), field labels, `browser_markdown` and
 element empty. Page text (`browser_page_text`) is rendered text, where the
 browser already shows masked text as mask characters. Unmasked textareas and
 editing regions are unchanged. Results and errors of write actions on sensitive fields
-(`browser_type`, `browser_form_fill`, …) do not echo the typed value. There is
-no opt-in to reveal values through these tools.
+(`browser_type`, `browser_form_fill`, …) do not echo the typed value.
+
+There is no opt-in to reveal redacted values through these tools, and none is
+planned (decided in #71). A reveal switch, whether per call or as a bridge
+policy, would give an agent or an injected page instruction one more way to
+read secrets through tools that are otherwise safe to call on any page. The
+only way to read a raw value is `browser_js`, which stays the separate,
+explicit and unrestricted trust boundary. It is not registered with
+`KITSUNE_TOOL_PRESET=lean`, and read-only mode refuses it.
 
 Frameworks such as React mirror a typed value into the `value` attribute, so
 markup and attribute paths drop that attribute from sensitive fields, whether it
