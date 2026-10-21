@@ -38,8 +38,9 @@ BENCH_UI_TOOLS = (
 
 # Ceilings in compact JSON characters (#88). Growth past one fails the size test; raise it
 # deliberately, with the reason in the change, rather than alongside a snapshot update.
-TOTAL_BUDGETS = {"core": 32_500, "bench allowlist": 22_250, "lean preset": 16_000}
-TOOL_BUDGET = 3_100  # any single core tool
+# Set about 5% above the sizes once generated schema titles were dropped (#120).
+TOTAL_BUDGETS = {"core": 30_000, "bench allowlist": 20_500, "lean preset": 15_000}
+TOOL_BUDGET = 3_000  # any single core tool
 
 
 def _compact(value) -> int:

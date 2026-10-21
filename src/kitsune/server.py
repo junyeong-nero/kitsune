@@ -35,7 +35,47 @@ IDEMPOTENT_ACT = {**ACT, "idempotentHint": True}
 DESTRUCTIVE = {**ACT, "destructiveHint": True}
 
 
-mcp = FastMCP("Kitsune")
+# JSON Schema keywords whose values hold subschemas; everything else is a keyword value.
+_SUBSCHEMA_MAPS = frozenset({"properties", "patternProperties", "$defs", "definitions"})
+_SUBSCHEMA_LISTS = frozenset({"anyOf", "oneOf", "allOf", "prefixItems"})
+_SUBSCHEMAS = frozenset({"items", "additionalProperties", "not"})
+
+
+def _untitled_schema(schema):
+    """Copy of a JSON schema without `title` annotations (#120).
+
+    pydantic titles every argument model and parameter ("browser_clickArguments", "Tab Id")
+    from names the schema already carries. `title` is an annotation, so validation is
+    unchanged. Only the `title` keyword goes; a parameter named title stays in `properties`.
+    """
+    if not isinstance(schema, dict):
+        return schema
+    untitled = {}
+    for keyword, value in schema.items():
+        if keyword == "title":
+            continue
+        if keyword in _SUBSCHEMA_MAPS and isinstance(value, dict):
+            value = {name: _untitled_schema(subschema) for name, subschema in value.items()}
+        elif keyword in _SUBSCHEMA_LISTS and isinstance(value, list):
+            value = [_untitled_schema(subschema) for subschema in value]
+        elif keyword in _SUBSCHEMAS:
+            value = _untitled_schema(value)
+        untitled[keyword] = value
+    return untitled
+
+
+class KitsuneMCP(FastMCP):
+    """FastMCP that publishes tool input schemas without generated titles.
+
+    Calls are still validated against the registered pydantic argument models.
+    """
+
+    async def list_tools(self):
+        return [tool.model_copy(update={"inputSchema": _untitled_schema(tool.inputSchema)})
+                for tool in await super().list_tools()]
+
+
+mcp = KitsuneMCP("Kitsune")
 
 CAPABILITY_GROUPS = frozenset({"core", "tabs", "network", "storage", "parallel", "devtools", "windows", "session"})
 ENABLED_CAPS = frozenset(

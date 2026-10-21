@@ -502,7 +502,10 @@ Tool definitions are resent with every model request, so their size is tracked:
 default tool, and a test fails until `--update` records a change in
 `tests/tool_schema_sizes.json`. The same test fails when the `core`, benchmark
 allowlist or lean preset total, or any single tool, grows past `TOTAL_BUDGETS` /
-`TOOL_BUDGET` in the script; raise a budget only deliberately. Action tools share one contract (ref, wait,
+`TOOL_BUDGET` in the script; raise a budget only deliberately. Published input
+schemas omit the `title` keywords pydantic generates (`KitsuneMCP.list_tools`), and
+`tests/test_tool_schema_titles.py` checks that they still accept and reject the same
+arguments. Action tools share one contract (ref, wait,
 expect, confirm_token) documented in `browser_click`; point to it rather than
 repeating it.
 
