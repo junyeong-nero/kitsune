@@ -1114,8 +1114,8 @@ async def _held_reason(action, params):
         reason, description = _ASK_DATA_ACTIONS[action]
     elif action == "submitForm":
         reason, description = "submit", "submits a form"
-    elif _ask_url_match(url):
-        reason, description = "payment_url", f"opens a payment-like URL ({_ask_url_match(url)}): {url}"
+    elif pattern := _ask_url_match(url):
+        reason, description = "payment_url", f"opens a payment-like URL ({pattern}): {url}"
     elif _outcome_key(action, params) in _unknown_outcomes:
         reason, description = "unknown_outcome", "repeats a write whose previous outcome is unknown"
 
@@ -1141,21 +1141,21 @@ async def _held_reason(action, params):
             return "uninspectable_target", "fills a target without sensitive-field inspection", tab_id, url_now
         if draft_fill and target.get("sensitive"):
             reason, description = "sensitive_field", "fills a sensitive field"
-        if reason is None and action in _ASK_PAGE_ACTIONS and _ask_url_match(url_now):
-            reason, description = "payment_page", f"acts on a payment-like page ({_ask_url_match(url_now)})"
-        elif reason is None and screen:
-            reason, description = "uninspectable_target", "clicks screen coordinates that cannot be inspected"
-        elif reason is None and target.get("submits"):
-            what = "presses Enter in a form field" if submit_key else "clicks a submit control"
-            label = target.get("text") or target.get("tag") or ""
-            reason, description = "submit_control", f"{what} ({label})" if label else what
-        elif reason is None and target.get("submitLabel"):
-            what = "presses Enter on" if submit_key else "clicks"
-            reason, description = "submit_label", f"{what} a button labeled like a submit or payment ({target.get('text')})"
-        elif reason is None and target.get("consequentialLabel"):
-            what = "presses Enter on" if submit_key else "clicks"
-            reason, description = ("consequential_label", f"{what} a button or link labeled like a send, transfer, "
-                                   f"delete or account change ({target.get('text')})")
+        if reason is None:
+            verb = "presses Enter on" if submit_key else "clicks"
+            if action in _ASK_PAGE_ACTIONS and (pattern := _ask_url_match(url_now)):
+                reason, description = "payment_page", f"acts on a payment-like page ({pattern})"
+            elif screen:
+                reason, description = "uninspectable_target", "clicks screen coordinates that cannot be inspected"
+            elif target.get("submits"):
+                what = "presses Enter in a form field" if submit_key else "clicks a submit control"
+                label = target.get("text") or target.get("tag") or ""
+                reason, description = "submit_control", f"{what} ({label})" if label else what
+            elif target.get("submitLabel"):
+                reason, description = "submit_label", f"{verb} a button labeled like a submit or payment ({target.get('text')})"
+            elif target.get("consequentialLabel"):
+                reason, description = ("consequential_label", f"{verb} a button or link labeled like a send, "
+                                       f"transfer, delete or account change ({target.get('text')})")
     if reason is None:
         return None
     return reason, description, tab_id, url_now or url
@@ -3565,6 +3565,17 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self.send_json(403, held)
         return bool(held)
 
+    def _admitted(self, action, body):
+        """Apply policy and ask-before-act to a direct write; send the refusal and return False if refused."""
+        policy_err = _check_policy(action, body)
+        if policy_err:
+            self.send_json(403, policy_err)
+            return False
+        if self._held(action, body):
+            return False
+        _invalidate_cache_for_action(action)
+        return True
+
     def _send_extension_action(self, action, body, timeout=35, on_result=None):
         policy_err = _check_policy(action, body)
         if policy_err:
@@ -3602,20 +3613,15 @@ class BridgeHandler(BaseHTTPRequestHandler):
             action,
             body,
             isinstance(result, dict) and not result.get("error"),
-            (result or {}).get("error") if isinstance(result, dict) else None,
+            result.get("error") if isinstance(result, dict) else None,
             (time.time() - t0) * 1000,
         )
         self.send_json(200, result)
     
     def handle_upload_file(self):
         body = self.read_body()
-        policy_err = _check_policy("uploadFile", body)
-        if policy_err:
-            self.send_json(403, policy_err)
+        if not self._admitted("uploadFile", body):
             return
-        if self._held("uploadFile", body):
-            return
-        _invalidate_cache_for_action("uploadFile")
         t0 = time.time()
         try:
             result = self.run_async(_upload_files_async(body), timeout=float(body.get("timeout", 300)))
@@ -3630,16 +3636,12 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     def handle_trusted_click(self):
         body = self.read_body()
-        policy_err = _check_policy("trustedClick", body)
-        if policy_err:
-            self.send_json(403, policy_err)
+        if not self._admitted("trustedClick", body):
             return
-        if self._held("trustedClick", body):
-            return
-        _invalidate_cache_for_action("trustedClick")
         t0 = time.time()
         result = self.run_async(trusted_click(body))
-        _audit("trustedClick", body, isinstance(result, dict) and not result.get("error"), (result or {}).get("error") if isinstance(result, dict) else None, (time.time() - t0) * 1000)
+        error = result.get("error") if isinstance(result, dict) else None
+        _audit("trustedClick", body, isinstance(result, dict) and not error, error, (time.time() - t0) * 1000)
         self.send_json(200, result)
     
     def handle_type(self):
