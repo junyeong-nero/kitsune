@@ -3,7 +3,7 @@
 
 (function() {
   'use strict';
-  const CONTENT_VERSION = 35;
+  const CONTENT_VERSION = 36;
   if (window.__claudeBridgeVersion >= CONTENT_VERSION) return;
   window.__claudeBridgeVersion = CONTENT_VERSION;
 
@@ -989,12 +989,15 @@
     // el.click() below emits the click and performs native activation exactly once.
     for (const type of ['pointerover', 'pointerenter', 'pointerdown', 'mousedown', 'pointerup', 'mouseup']) {
       const EventCtor = type.startsWith('pointer') && window.PointerEvent ? PointerEvent : MouseEvent;
-      el.dispatchEvent(new EventCtor(type, {
+      const proceed = el.dispatchEvent(new EventCtor(type, {
         ...eventInit,
         pointerId: 1,
         pointerType: 'mouse',
         isPrimary: true,
       }));
+      // As a real mousedown does, unless the page cancelled it. The background has already
+      // refused a tab the user is using (user_active), so this never takes focus from them.
+      if (type === 'mousedown' && proceed) focusForClick(el, coords);
     }
 
     const link = blankTargetLink(el);
@@ -1017,6 +1020,78 @@
       ...warning, ...blankLink };
   }
 
+  // Focus what a click on el focuses; in an editor, put the caret at the click point, or at
+  // the end of el for a ref or selector click.
+  function focusForClick(el, coords) {
+    if (isEditableRegion(el)) {
+      placeEditableCaret(el, coords && caretRangeAt(el, coords));
+      return;
+    }
+    el.closest?.(FOCUSABLE_SELECTOR)?.focus?.({ preventScroll: true });
+  }
+
+  const FOCUSABLE_SELECTOR = 'a[href], area[href], button, input, select, textarea, iframe, summary, [tabindex]';
+
+  // The collapsed range at a viewport point, if it falls inside el.
+  function caretRangeAt(el, { x, y }) {
+    let range = null;
+    if (document.caretPositionFromPoint) {
+      const position = document.caretPositionFromPoint(x, y);
+      if (position?.offsetNode) {
+        range = document.createRange();
+        range.setStart(position.offsetNode, position.offset);
+      }
+    } else if (document.caretRangeFromPoint) {
+      range = document.caretRangeFromPoint(x, y);
+    }
+    return range && el.contains(range.startContainer) ? range : null;
+  }
+
+  // The editing host el belongs to: the element that takes focus for it.
+  function editingHost(el) {
+    let host = el;
+    while (host.parentElement?.isContentEditable) host = host.parentElement;
+    return host;
+  }
+
+  function selectionInside(el) {
+    const selection = window.getSelection();
+    if (!selection?.rangeCount) return null;
+    const range = selection.getRangeAt(0);
+    return el.contains(range.startContainer) && el.contains(range.endContainer) ? range.cloneRange() : null;
+  }
+
+  // Focus el's editing host and select range, by default a caret at the end of el. Focusing
+  // the host alone leaves Firefox's caret at the start of the editor.
+  function placeEditableCaret(el, range) {
+    if (!range) {
+      range = document.createRange();
+      range.selectNodeContents(el);
+      range.collapse(false);
+    }
+    editingHost(el).focus({ preventScroll: true });
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+
+  // Replace the selection with text as typing does, firing beforeinput and input.
+  function insertEditableText(el, text) {
+    if (document.execCommand('insertText', false, text)) return;
+    const init = { bubbles: true, composed: true, inputType: 'insertText', data: text };
+    if (!el.dispatchEvent(new InputEvent('beforeinput', { ...init, cancelable: true }))) return;
+    const selection = window.getSelection();
+    const range = selection.getRangeAt(0);
+    range.deleteContents();
+    const node = document.createTextNode(text);
+    range.insertNode(node);
+    range.setStartAfter(node);
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    el.dispatchEvent(new InputEvent('input', init));
+  }
+
   // The http(s) link a click on el follows into a new tab (target=_blank, or <base target>).
   // The popup blocker can drop that tab for a synthetic click, so the background checks it.
   function blankTargetLink(el) {
@@ -1032,10 +1107,19 @@
     if (!host) return notFound();
     // A web-component host types into the field in its (nested) open or closed shadow roots.
     const el = ['INPUT', 'TEXTAREA'].includes(host.tagName) ? host : shadowField(host, 'input, textarea') || host;
-    if (!['INPUT', 'TEXTAREA'].includes(el.tagName) && (clear || el.contentEditable !== 'true')) {
+    if (!['INPUT', 'TEXTAREA'].includes(el.tagName) && !isEditableRegion(el)) {
       return notFillable(el, 'input or textarea');
     }
     lastActedElement = lastFilledField = el;
+
+    // In an editor, type at the caret if it is in el, else at the end; clear replaces el's content.
+    if (isEditableRegion(el)) {
+      const range = clear ? document.createRange() : selectionInside(el);
+      if (clear) range.selectNodeContents(el);
+      placeEditableCaret(el, range);
+      insertEditableText(el, text);
+      return { ok: true };
+    }
 
     el.focus();
     
@@ -1049,10 +1133,6 @@
         el.value = text;
       }
     } else {
-      if (el.contentEditable === 'true') {
-        document.execCommand('insertText', false, text);
-        return { ok: true };
-      }
       const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
       const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
       if (setter) {
@@ -1083,6 +1163,8 @@
     if (!target) return { error: 'Element is not editable' };
     lastFilledField = target;
 
+    // Read before focus(), which can move the caret to the start of the editor.
+    const caret = isEditableRegion(target) ? selectionInside(target) : null;
     target.focus();
     const text = String(value ?? '');
 
@@ -1093,6 +1175,7 @@
         // @kitsune-dev-only:end
         target.innerText = text;
       } else {
+        placeEditableCaret(target, caret);
         document.execCommand(format === 'html' ? 'insertHTML' : 'insertText', false, text);
       }
       target.dispatchEvent(new InputEvent('input', {
