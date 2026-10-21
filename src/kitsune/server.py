@@ -542,24 +542,28 @@ def browser_tabs(
     action: Literal["list", "new", "close", "select"] = "list",
     tab_id: int | None = None, url: str | None = None,
     force: bool = False, raw: bool = False, wait: bool = False, timeout: int = 15000,
-    confirm_token: str | None = None, window_fields: bool = False,
+    confirm_token: str | None = None, window_fields: bool = False, include_active: bool = False,
 ) -> dict:
     """List, open, close, or select tabs.
 
-    list: always a fresh read of the browser's tabs; owned=true marks tabs the agent opened;
-    windowId/index only with several windows or window_fields.
-    new: opens in the background (not shown; act on it with tab_id); url defaults to
-    about:blank; raw bypasses the image viewer. Returns tabId immediately unless wait=True,
-    which waits up to timeout ms for the page to load and returns tabId, actual url (after
-    redirects) and status. On timeout the tab stays open and the result has ok=false, timedOut=true.
-    close/select: tab_id is required. force disarms beforeunload on close. close refuses
-    a tab the agent did not open (code user_tab) unless the user approves (confirm_token).
+    list: always a fresh read; owned=true marks tabs the agent opened; windowId/index only
+    with several windows or window_fields. include_active adds active_page, the active
+    tab's browser_snapshot(text=True).
+    new: opens in the background (act on it with tab_id); url defaults to about:blank;
+    raw bypasses the image viewer. Returns tabId immediately unless wait=True, which waits
+    up to timeout ms for the load and returns tabId, final url and status.
+    On timeout the tab stays open with ok=false, timedOut=true.
+    close/select need tab_id. force disarms beforeunload on close. close refuses
+    a tab the agent did not open (user_tab) unless the user approves (confirm_token).
     select switches the user's view: only when the user asks.
-    Other action-specific options are ignored.
+    Options of other actions are ignored.
     confirm_token: new/close; see browser_click.
     """
     if action == "list":
-        return _tab_list(_get("/api/tabs"), window_fields)
+        result = _tab_list(_get("/api/tabs"), window_fields)
+        if include_active and not _failed(result):
+            result = {**result, "active_page": _post("/api/snapshot", {"text": True})}
+        return result
     if action == "new":
         body = {"url": url if url is not None else "about:blank"}
         if raw:

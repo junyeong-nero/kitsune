@@ -39,7 +39,7 @@ LEAN_DROPPED = {
 # Read flow: find or open the page, then read it. Draft flow: fill fields without submitting.
 READ_FLOW = {
     "browser_status": set(),
-    "browser_tabs": {"action", "tab_id", "url", "wait"},
+    "browser_tabs": {"action", "tab_id", "url", "wait", "include_active"},
     "browser_navigate": {"url", "tab_id", "expect", "confirm_token"},
     "browser_page_text": {"tab_id"},
     "browser_snapshot": {"tab_id", "selector", "ref", "max_depth", "text"},

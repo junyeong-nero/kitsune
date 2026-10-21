@@ -4,7 +4,8 @@ Opt-in and built on tests/real_browser_harness.py, which documents how to run it
 user's actions come from the browser's parent process over the remote debugging protocol
 (harness.RemoteDebugger): it loads the user's pages like the address bar does, and its
 nsIDOMWindowUtils mouse events reach the page as trusted input, as a user's clicks do.
-Kitsune's own events are synthetic, so only these count as the user.
+Kitsune's own events are synthetic, so only these count as the user. It also reads the
+shown tab with browser_tabs(include_active=True) (#138).
 
 The first class allows popups, so the browser itself opens (and shows) a target=_blank
 link's tab; the default-prefs class keeps the popup blocker, so the extension opens it.
@@ -13,7 +14,9 @@ from http.server import BaseHTTPRequestHandler
 import json
 import time
 import unittest
+from unittest.mock import patch
 
+from kitsune import server
 import real_browser_harness as harness
 
 PAGES = {
@@ -228,6 +231,21 @@ class RealBrowserSharedBrowserTests(harness.RealBrowserTestCase):
         time.sleep(3.2)  # the user-input window is 3 s
         self.assert_ok(self.call("/api/click", {"selector": "#act", "tabId": user_tab}))
         self.wait_for(lambda: self.tabs()[user_tab]["title"] == "acted", "the click after the window did not act")
+
+    def test_tab_list_with_include_active_reads_the_shown_tab_in_one_call(self):
+        # #138: the MCP tool composes the inventory and the active page; route it to this bridge.
+        user_tab = self.user_page()
+        before = self.user_view()
+        with patch.object(server, "_get", self.call), \
+                patch.object(server, "_post", lambda endpoint, data, timeout=15: self.call(endpoint, data)):
+            result = server.browser_tabs(include_active=True)
+
+        self.assertIs({t["id"]: t for t in result["tabs"]}[user_tab]["active"], True, result)
+        page = result["active_page"]
+        self.assertEqual((page["tabId"], page["url"], page["title"]), (user_tab, self.page.origin + "/user", "user"))
+        self.assertIn('heading "user page"', page["snapshot"])
+        self.assertRegex(page["snapshot"], r'button "Act" \[ref=s\d+e\d+\]')
+        self.assertEqual(self.user_view(), before, "reading the shown tab moves nothing")
 
 
 class RealBrowserDefaultPrefsSharedBrowserTests(RealBrowserSharedBrowserTests):
