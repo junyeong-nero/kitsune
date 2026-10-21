@@ -490,6 +490,12 @@ def _command_scope(action, params):
     return ("tab", tab_id)
 
 
+def _dequeue_scope(scope_name):
+    _scheduler_queued[scope_name] = max(0, _scheduler_queued.get(scope_name, 1) - 1)
+    if _scheduler_queued[scope_name] == 0:
+        _scheduler_queued.pop(scope_name, None)
+
+
 async def _run_in_command_scope(action, params, coro_factory):
     scope = _command_scope(action, params)
     if scope is None:
@@ -502,9 +508,7 @@ async def _run_in_command_scope(action, params, coro_factory):
     try:
         async with lock:
             async with _scheduler_gate_lease(scope):
-                _scheduler_queued[scope_name] = max(0, _scheduler_queued.get(scope_name, 1) - 1)
-                if _scheduler_queued[scope_name] == 0:
-                    _scheduler_queued.pop(scope_name, None)
+                _dequeue_scope(scope_name)
                 queued = False
                 _scheduler_active[scope_name] = action
                 try:
@@ -513,9 +517,7 @@ async def _run_in_command_scope(action, params, coro_factory):
                     _scheduler_active.pop(scope_name, None)
     finally:
         if queued:
-            _scheduler_queued[scope_name] = max(0, _scheduler_queued.get(scope_name, 1) - 1)
-            if _scheduler_queued[scope_name] == 0:
-                _scheduler_queued.pop(scope_name, None)
+            _dequeue_scope(scope_name)
 
 
 def _cleanup_tab_scheduler_state(tab_id):
@@ -2239,84 +2241,24 @@ def _wrap_image_url(body):
 # ══════════════════════════════════════════════
 
 
-# Action name -> extension action name (for simple forwarding)
+# Action name -> extension action name (for simple forwarding); most keep their name.
 BATCH_ACTION_MAP = {
-    'navigate':       'navigate',
-    'newTab':         'newTab',
-    'closeTab':       'closeTab',
-    'switchTab':      'switchTab',
-    'click':          'click',
-    'type':           'type',
-    'setEditableContent': 'setEditableContent',
-    'fill':           'fill',
-    'scroll':         'scroll',
-    'hover':          'hover',
-    'find':           'find',
-    'js':             'executeJS',
-    'pageInfo':       'getPageInfo',
-    'pageText':       'getPageText',
-    'pageTextByTabId':'getPageTextFromTab',
-    'tabs':           'getTabs',
-    'forms':          'getFormFields',
-    'dom':            'getAccessibilityTree',
-    'snapshot':       'getSnapshot',
-    'highlight':      'highlight',
-    'wakeTab':        'wakeTab',
-    'reloadExtension':'reloadExtension',
-    # 1.4.0 — browser-level
-    'pinTab':              'pinTab',
-    'muteTab':             'muteTab',
-    'duplicateTab':        'duplicateTab',
-    'reloadTabBrowser':    'reloadTabBrowser',
-    'goBack':              'goBack',
-    'goForward':           'goForward',
-    'getZoom':             'getZoom',
-    'setZoom':             'setZoom',
-    'getWindows':          'getWindows',
-    'createWindow':        'createWindow',
-    'closeWindow':         'closeWindow',
-    'focusWindow':         'focusWindow',
-    'moveTab':             'moveTab',
-    'detachTab':           'detachTab',
-    'elementScreenshot':   'elementScreenshot',
-    'fullPageScreenshot':  'fullPageScreenshot',
-    'cookies':             'cookies',
-    'clipboard':           'clipboard',
-    'downloads':           'downloads',
-    'clearBrowsingData':   'clearBrowsingData',
-    'intercept':           'intercept',
-    'clickAndWaitNavigation': 'clickAndWaitNavigation',
-    # 1.4.0 — content-script-forwarded
-    'query':               'query',
-    'getHTML':             'getHTML',
-    'getLinks':            'getLinks',
-    'getImages':           'getImages',
-    'getMeta':             'getMeta',
-    'getStructuredData':   'getStructuredData',
-    'getBounds':           'getBounds',
-    'getComputedStyle':    'getComputedStyle',
-    'getReadability':      'getReadability',
-    'getMarkdown':         'getMarkdown',
-    'selectOption':        'selectOption',
-    'checkBox':            'checkBox',
-    'focusElement':        'focusElement',
-    'blurElement':         'blurElement',
-    'keypress':            'keypress',
-    'doubleClick':         'doubleClick',
-    'submitForm':          'submitForm',
-    'formFill':            'formFill',
-    'media':               'media',
-    'drag':                'drag',
-    'waitForUrl':          'waitForUrl',
-    'waitForTitle':        'waitForTitle',
-    'waitForNetworkIdle':  'waitForNetworkIdle',
-    'captureNetwork':      'captureNetwork',
-    'watchConsole':        'watchConsole',
-    'consoleLogs':         'consoleLogs',
-    'storageOp':           'storageOp',
-    'getIframes':          'getIframes',
-    'explainSelector':     'explainSelector',
-    'fullPageMetrics':     'fullPageMetrics',
+    'js': 'executeJS', 'pageInfo': 'getPageInfo', 'pageText': 'getPageText',
+    'pageTextByTabId': 'getPageTextFromTab', 'tabs': 'getTabs', 'forms': 'getFormFields',
+    'dom': 'getAccessibilityTree', 'snapshot': 'getSnapshot',
+    **{action: action for action in (
+        'navigate', 'newTab', 'closeTab', 'switchTab', 'click', 'type', 'setEditableContent', 'fill',
+        'scroll', 'hover', 'find', 'highlight', 'wakeTab', 'reloadExtension', 'pinTab', 'muteTab',
+        'duplicateTab', 'reloadTabBrowser', 'goBack', 'goForward', 'getZoom', 'setZoom', 'getWindows',
+        'createWindow', 'closeWindow', 'focusWindow', 'moveTab', 'detachTab', 'elementScreenshot',
+        'fullPageScreenshot', 'cookies', 'clipboard', 'downloads', 'clearBrowsingData', 'intercept',
+        'clickAndWaitNavigation', 'query', 'getHTML', 'getLinks', 'getImages', 'getMeta',
+        'getStructuredData', 'getBounds', 'getComputedStyle', 'getReadability', 'getMarkdown',
+        'selectOption', 'checkBox', 'focusElement', 'blurElement', 'keypress', 'doubleClick',
+        'submitForm', 'formFill', 'media', 'drag', 'waitForUrl', 'waitForTitle', 'waitForNetworkIdle',
+        'captureNetwork', 'watchConsole', 'consoleLogs', 'storageOp', 'getIframes', 'explainSelector',
+        'fullPageMetrics',
+    )},
 }
 
 
