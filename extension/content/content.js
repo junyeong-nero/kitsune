@@ -3,7 +3,7 @@
 
 (function() {
   'use strict';
-  const CONTENT_VERSION = 32;
+  const CONTENT_VERSION = 34;
   if (window.__claudeBridgeVersion >= CONTENT_VERSION) return;
   window.__claudeBridgeVersion = CONTENT_VERSION;
 
@@ -118,6 +118,9 @@
   const refMap = {};
   let refCounter = 0;
   let lastActedElement = null;
+  // The field type, fill, form_fill, select_option or check last wrote, or focus last
+  // focused; a submit without a target submits its form.
+  let lastFilledField = null;
   // Persist across reinjection; seed per document so navigation cannot reuse refs.
   let refGeneration = window.__kitsuneRefGeneration ||
     `${Date.now()}${crypto.getRandomValues(new Uint32Array(1))[0]}`;
@@ -174,6 +177,13 @@
 
   function actionError(message, code, hint, state) {
     return { error: message, code, retryable: true, hint, ...(state ? { state } : {}) };
+  }
+
+  // Nothing was dispatched, but the same command cannot succeed: it names several targets.
+  // state.candidates lists the first few, each with a new ref.
+  const AMBIGUOUS_CANDIDATE_LIMIT = 5;
+  function ambiguousTarget(message, hint, state) {
+    return { ...actionError(message, 'ambiguous_target', hint, state), retryable: false };
   }
 
   function errorResult(e) {
@@ -255,7 +265,7 @@
         try {
           pending = targets.findIndex(selector => {
             if (!selector) return false;
-            el = resolveElement(selector);
+            el = resolveTarget(selector, null, { first: msg.first, pointer });
             return !el || !el.isConnected || (pointer && !isRendered(el));
           });
         } catch (e) {
@@ -305,12 +315,13 @@
                                      msg.observation),
       'getAccessibilityTree':  () => getAccessibilityTree(msg.depth || 6),
       'getFormFields':         () => getFormFields(),
-      'click':                 () => clickElement(msg.selector, msg.coords),
-      'type':                  () => typeText(msg.selector, msg.text, msg.clear),
-      'setEditableContent':    () => setEditableContent(msg.selector, msg.value, msg.format || 'text', msg.clear !== false),
+      'click':                 () => clickElement(msg.selector, msg.coords, msg.first),
+      'type':                  () => typeText(msg.selector, msg.text, msg.clear, msg.first),
+      'setEditableContent':    () => setEditableContent(msg.selector, msg.value, msg.format || 'text', msg.clear !== false,
+                                     msg.first),
       'scroll':                () => scrollPage(msg.direction, msg.amount, msg.selector),
-      'hover':                 () => hoverElement(msg.selector, msg.coords),
-      'fill':                  () => fillFieldSafe(msg.selector, msg.value),
+      'hover':                 () => hoverElement(msg.selector, msg.coords, msg.first),
+      'fill':                  () => fillFieldSafe(msg.selector, msg.value, msg.first),
       'find':                  () => findElements(msg.query),
       // @kitsune-dev-only:start
       'executeJS':             () => executeJS(msg.code),
@@ -341,16 +352,16 @@
       'getComputedStyle':      () => getComputedStyleFor(msg.selector, msg.properties),
       'getReadability':        () => getReadability(),
       'getMarkdown':           () => getMarkdown(msg.selector),
-      'selectOption':          () => selectOption(msg.selector, msg.value, msg.byText),
-      'checkBox':              () => checkBox(msg.selector, msg.checked),
+      'selectOption':          () => selectOption(msg.selector, msg.value, msg.byText, msg.first),
+      'checkBox':              () => checkBox(msg.selector, msg.checked, msg.first),
       'focusElement':          () => focusEl(msg.selector),
       'blurElement':           () => blurEl(msg.selector),
-      'keypress':              () => keypress(msg.selector, msg.key, msg.modifiers, msg.text),
-      'doubleClick':           () => doubleClick(msg.selector),
-      'submitForm':            () => submitForm(msg.selector),
+      'keypress':              () => keypress(msg.selector, msg.key, msg.modifiers, msg.text, msg.first),
+      'doubleClick':           () => doubleClick(msg.selector, msg.first),
+      'submitForm':            () => submitForm(msg.selector, msg.first),
       'describeTarget':        () => describeTarget(msg.selector, msg.coords, msg.key),
-      'formFill':              () => formFill(msg.fields),
-      'drag':                  () => dragElement(msg.from, msg.to),
+      'formFill':              () => formFill(msg.fields, msg.first),
+      'drag':                  () => dragElement(msg.from, msg.to, msg.first),
       'waitForUrl':            () => waitForUrl(msg.pattern, msg.timeout),
       'waitForTitle':          () => waitForTitle(msg.pattern, msg.timeout),
       'waitForNetworkIdle':    () => waitForNetworkIdle(msg.idleMs, msg.timeout),
@@ -363,7 +374,7 @@
       'fullPageMetrics':       () => fullPageMetrics(),
       // ── 2.1.0 file upload ──
       'uploadChunk':           () => uploadChunk(msg.uploadId, msg.index, msg.data),
-      'uploadCommit':          () => uploadCommit(msg.uploadId, msg.selector, msg.files, msg.mode),
+      'uploadCommit':          () => uploadCommit(msg.uploadId, msg.selector, msg.files, msg.mode, msg.first),
       'uploadAbort':           () => uploadAbort(msg.uploadId),
     };
 
@@ -414,10 +425,11 @@
     return { ok: true, index };
   }
   function uploadAbort(id) { delete __zlUploads[id]; return { ok: true }; }
-  function uploadCommit(id, selector, files, mode) {
+  function uploadCommit(id, selector, files, mode, first) {
     const parts = __zlUploads[id];
     delete __zlUploads[id];
     if (!parts) return { error: 'upload ' + id + ' not found (chunks never arrived)' };
+    if (selector && !first) assertOneTarget(selector, false);
     return __zlAttachFiles(parts, selector, files, mode);
   }
   const __zlAttachFiles = function(parts, selector, files, mode) {
@@ -900,8 +912,8 @@
   }
 
   // ── Click ──
-  function clickElement(selector, coords) {
-    let el = resolveElement(selector, coords);
+  function clickElement(selector, coords, first) {
+    let el = resolveTarget(selector, coords, { first, pointer: true });
     if (!el) return notFound();
 
     // Coordinates resolve to a rendered element by construction.
@@ -968,15 +980,15 @@
   }
 
   // ── Type ──
-  function typeText(selector, text, clear) {
-    const host = resolveElement(selector);
+  function typeText(selector, text, clear, first) {
+    const host = resolveTarget(selector, null, { first });
     if (!host) return notFound();
     // A web-component host types into the field in its (nested) open or closed shadow roots.
     const el = ['INPUT', 'TEXTAREA'].includes(host.tagName) ? host : shadowField(host, 'input, textarea') || host;
     if (!['INPUT', 'TEXTAREA'].includes(el.tagName) && (clear || el.contentEditable !== 'true')) {
       return notFillable(el, 'input or textarea');
     }
-    lastActedElement = el;
+    lastActedElement = lastFilledField = el;
 
     el.focus();
     
@@ -1013,15 +1025,16 @@
   }
 
   // ── Set Editable Content ──
-  function setEditableContent(selector, value, format, clear) {
+  function setEditableContent(selector, value, format, clear, first) {
     if (format === 'html' && KITSUNE_BUILD !== 'dev') {
       return { error: DEV_BUILD_REQUIRED, devBuildRequired: true };
     }
-    const el = resolveElement(selector);
+    const el = resolveTarget(selector, null, { first });
     if (!el) return notFound();
 
     const target = getEditableTarget(el);
     if (!target) return { error: 'Element is not editable' };
+    lastFilledField = target;
 
     target.focus();
     const text = String(value ?? '');
@@ -1116,8 +1129,8 @@
   }
 
   // ── Hover ──
-  function hoverElement(selector, coords) {
-    const el = resolveElement(selector, coords);
+  function hoverElement(selector, coords, first) {
+    const el = resolveTarget(selector, coords, { first, pointer: true });
     if (!el) return notFound();
 
     const rect = el.getBoundingClientRect();
@@ -1132,8 +1145,8 @@
   }
 
   // ── Fill Form ──
-  function fillFieldSafe(selector, value) {
-    try { return fillField(selector, value); } catch(e) { return errorResult(e); }
+  function fillFieldSafe(selector, value, first) {
+    try { return fillField(selector, value, first); } catch(e) { return errorResult(e); }
   }
 
   const FILL_TAGS = ['INPUT', 'TEXTAREA', 'SELECT'];
@@ -1152,14 +1165,14 @@
       { tag: el.tagName.toLowerCase(), reason: tooDeep ? 'shadow_depth' : 'no_field' });
   }
 
-  function fillField(selector, value) {
-    const el = resolveElement(selector);
+  function fillField(selector, value, first) {
+    const el = resolveTarget(selector, null, { first });
     if (!el) return notFound();
 
     // Auto-pierce shadow DOM: if element isn't a standard input, look inside shadow root
     const target = getFillTarget(el);
     if (!FILL_TAGS.includes(target.tagName)) return notFillable(el, 'input, textarea or select');
-    lastActedElement = target;
+    lastActedElement = lastFilledField = target;
 
     if (target.type === 'checkbox' || target.type === 'radio') {
       target.checked = !!value;
@@ -1523,12 +1536,14 @@
 
   // ── Helpers ──
 
+  const REF_SELECTOR = /^(?:s\d+e\d+|r\d+)$/;
+
   function resolveElement(selector, coords) {
     if (!selector && coords) return document.elementFromPoint(coords.x, coords.y);
     if (!selector) return null;
     
     // Try ref map first
-    if (/^(?:s\d+e\d+|r\d+)$/.test(selector)) {
+    if (REF_SELECTOR.test(selector)) {
       const el = refMap[selector];
       if (!selector.startsWith(`s${refGeneration}e`) || !el || !el.isConnected) throw staleRef(selector, el);
       return el;
@@ -1537,6 +1552,51 @@
     // Try CSS selector
     try { return document.querySelector(selector); } catch {}
     return null;
+  }
+
+  // Write actions: like resolveElement, but a CSS selector matching several actionable
+  // elements is ambiguous unless first is set. Refs and coordinates name one element.
+  function resolveTarget(selector, coords, { first = false, pointer = false } = {}) {
+    if (selector && !first && !REF_SELECTOR.test(selector)) assertOneTarget(selector, pointer);
+    return resolveElement(selector, coords);
+  }
+
+  // What a write action could act on: enabled and not <input type=hidden>; for pointer
+  // actions also rendered, as their actionability wait requires.
+  function isActionable(el, pointer) {
+    if (el.matches?.(':disabled') || (el.tagName === 'INPUT' && el.type === 'hidden')) return false;
+    return !pointer || isRendered(el);
+  }
+
+  function assertOneTarget(selector, pointer) {
+    let matches = [];
+    try { matches = Array.from(document.querySelectorAll(selector)); } catch {}
+    if (matches.length < 2) return;
+    const actionable = matches.filter(el => isActionable(el, pointer));
+    if (actionable.length < 2) return;
+    const { error, ...details } = ambiguousTarget(
+      `${actionable.length} elements match the selector; nothing was dispatched`,
+      'Act on one element: pass its ref from state.candidates or a new browser_snapshot, or a more ' +
+        'specific selector. first: true acts on the first match.',
+      { selector, matches: actionable.length,
+        candidates: actionable.slice(0, AMBIGUOUS_CANDIDATE_LIMIT).map(targetSummary) });
+    throw new ActionError(error, details);
+  }
+
+  // A new ref for el in the current generation.
+  function issueRef(el) {
+    const ref = `s${refGeneration}e${refCounter++}`;
+    refMap[ref] = el;
+    return ref;
+  }
+
+  // An ambiguous_target candidate: its ref, role and name (never a field value).
+  function targetSummary(el) {
+    const buttonInput = el.tagName === 'INPUT' && BUTTON_INPUT_TYPES.has(String(el.type).toLowerCase());
+    const name = controlLabel(el, buttonInput) ||
+      (FILL_TAGS.includes(el.tagName) ? findLabel(el) || el.placeholder || '' : '');
+    return { ref: issueRef(el), role: el.getAttribute('role') || inferRole(el) || el.tagName.toLowerCase(),
+      name: String(name).trim().slice(0, 80) };
   }
 
   function nearestInteractiveAncestor(el) {
@@ -2115,22 +2175,22 @@
     el.dispatchEvent(new Event('input', { bubbles: true }));
   }
 
-  function selectOption(selector, value, byText) {
-    const el = resolveElement(selector);
+  function selectOption(selector, value, byText, first) {
+    const el = resolveTarget(selector, null, { first });
     if (!el) return notFound();
     if (el.tagName !== 'SELECT') return { error: 'Element is not a <select>' };
     const matched = findSelectOption(el, value, byText);
     if (!matched) return { error: `No matching option for ${byText ? 'text' : 'value'}: ${value}` };
-    lastActedElement = el;
+    lastActedElement = lastFilledField = el;
     applySelectOption(el, matched);
     return { ok: true, value: el.value, text: matched.text };
   }
 
-  function checkBox(selector, checked) {
-    const el = resolveElement(selector);
+  function checkBox(selector, checked, first) {
+    const el = resolveTarget(selector, null, { first });
     if (!el) return notFound();
     if (el.type !== 'checkbox' && el.type !== 'radio') return { error: 'Element is not a checkbox/radio' };
-    lastActedElement = el;
+    lastActedElement = lastFilledField = el;
     el.checked = !!checked;
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
@@ -2140,6 +2200,7 @@
   function focusEl(selector) {
     const el = resolveElement(selector);
     if (!el) return notFound();
+    lastFilledField = el;
     el.focus();
     return { ok: true, active: document.activeElement === el };
   }
@@ -2151,8 +2212,8 @@
     return { ok: true };
   }
 
-  function keypress(selector, key, modifiers, text) {
-    const target = selector ? resolveElement(selector) : (document.activeElement || document.body);
+  function keypress(selector, key, modifiers, text, first) {
+    const target = selector ? resolveTarget(selector, null, { first }) : (document.activeElement || document.body);
     if (!target) return notFound('No target');
     lastActedElement = selector || target !== document.body ? target : null;
     const mods = modifiers || {};
@@ -2184,8 +2245,8 @@
     return { ok: true, key, target: target.tagName?.toLowerCase() };
   }
 
-  function doubleClick(selector) {
-    const el = resolveElement(selector);
+  function doubleClick(selector, first) {
+    const el = resolveTarget(selector, null, { first, pointer: true });
     if (!el) return notFound();
     el.scrollIntoView({ behavior: 'instant', block: 'center' });
     const r = el.getBoundingClientRect();
@@ -2347,22 +2408,44 @@
       text: label.slice(0, 80) };
   }
 
-  function submitForm(selector) {
+  // A form as submit results and ambiguous_target candidates name it, with a new ref in the
+  // current generation. Attributes, not properties: a field named "action" shadows form.action.
+  function formSummary(form, button) {
+    button ??= Array.from(form.querySelectorAll('button, input'))
+      .find(el => el.type === 'submit' || el.type === 'image');
+    return { ref: issueRef(form), action: form.getAttribute('action') || '',
+      method: (form.getAttribute('method') || 'get').toLowerCase(),
+      button: button ? controlLabel(button, button.tagName === 'INPUT').slice(0, 80) : '' };
+  }
+
+  // Without a target: the form of the field last filled or focused, else the only form.
+  function submitForm(selector, first) {
     let form;
     if (selector) {
-      const el = resolveElement(selector);
+      const el = resolveTarget(selector, null, { first });
       if (!el) return notFound();
       lastActedElement = el;
       form = el.tagName === 'FORM' ? el : el.closest('form');
     } else {
-      form = document.querySelector('form');
+      form = lastFilledField?.isConnected ? lastFilledField.form || lastFilledField.closest('form') : null;
+      if (!form) {
+        const forms = Array.from(document.querySelectorAll('form'));
+        if (forms.length > 1) {
+          return ambiguousTarget(`${forms.length} forms on the page and no filled field names one; nothing was submitted`,
+            'Pass the ref of the form to submit from state.candidates, or fill one of its fields first.',
+            { forms: forms.length, candidates: forms.slice(0, AMBIGUOUS_CANDIDATE_LIMIT).map(f => formSummary(f)) });
+        }
+        form = forms[0];
+      }
     }
     if (!form) return { error: 'No <form> found' };
     // Prefer the submit-button click path so form-validation listeners fire.
     const btn = form.querySelector('button[type="submit"], input[type="submit"]');
-    if (btn) { btn.click(); return { ok: true, submitted: 'button' }; }
+    // Named before submitting, which can remove the form.
+    const submitted = formSummary(form, btn);
+    if (btn) { btn.click(); return { ok: true, submitted: 'button', form: submitted }; }
     form.submit();
-    return { ok: true, submitted: 'method' };
+    return { ok: true, submitted: 'method', form: submitted };
   }
 
   // Strict boolean parsing for checkbox/radio values: JS truthiness would turn "false" into checked.
@@ -2378,16 +2461,23 @@
     return undefined;
   }
 
-  function formFill(fieldMap) {
+  function formFill(fieldMap, first) {
     if (!fieldMap || typeof fieldMap !== 'object') return { error: 'fields must be an object' };
     const results = {};
     for (const key of Object.keys(fieldMap)) {
       const value = fieldMap[key];
-      // Try as CSS selector first
+      // Try as CSS selector first, then by name attr; both must name one field.
       let el = null;
-      try { el = document.querySelector(key); } catch {}
-      // Try by name attr
-      if (!el) el = document.querySelector(`[name="${CSS.escape(key)}"]`);
+      try {
+        for (const selector of [key, `[name="${CSS.escape(key)}"]`]) {
+          try { el = document.querySelector(selector); } catch {}
+          if (el && !first) assertOneTarget(selector, false);
+          if (el) break;
+        }
+      } catch (e) {
+        results[key] = errorResult(e);
+        continue;
+      }
       // Try by label text
       if (!el) {
         for (const lbl of document.querySelectorAll('label')) {
@@ -2445,6 +2535,7 @@
       } catch (e) {
         results[key] = { error: e.message };
       }
+      if (results[key].ok) lastFilledField = el;
     }
     // Any filled field makes this a partial success; with none, nothing was written.
     const values = Object.values(results);
@@ -2452,9 +2543,9 @@
     return { results };
   }
 
-  function dragElement(fromSel, toSel) {
-    const from = resolveElement(fromSel);
-    const to = resolveElement(toSel);
+  function dragElement(fromSel, toSel, first) {
+    const from = resolveTarget(fromSel, null, { first, pointer: true });
+    const to = resolveTarget(toSel, null, { first, pointer: true });
     if (!from) return notFound('from element not found');
     if (!to) return notFound('to element not found');
     const fr = from.getBoundingClientRect();
