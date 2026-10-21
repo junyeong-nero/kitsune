@@ -20,9 +20,9 @@
     "total": 381
   },
   "browser_dom": {
-    "description": 135,
-    "inputSchema": 60,
-    "total": 374
+    "description": 178,
+    "inputSchema": 144,
+    "total": 501
   },
   "browser_find": {
     "description": 215,

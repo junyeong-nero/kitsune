@@ -4,6 +4,8 @@ Opt-in and built on tests/real_browser_harness.py, which documents how to run it
 tests/find_query_scoring.cjs checks the scoring on a mocked DOM; here one page with a
 header nav above a filter bar checks that descriptive queries find their control first,
 that the header never fills the results, and that a nonsense query returns nothing.
+Issue #160: on a crowded page browser_dom is capped with truncated=true, and a scoped
+read returns only its subtree.
 """
 from http.server import BaseHTTPRequestHandler
 import json
@@ -30,10 +32,16 @@ PAGE = """<!doctype html><title>Reviews</title>
 <script>document.getElementById('pw').value = %s;</script>""" % (
     "".join(f'<a href="#">{text}</a>' for text in NAV), json.dumps(SECRET))
 
+# A sticky-header page like the browser-mcp-bench gallery: hundreds of links before the content.
+CROWDED_PAGE = """<!doctype html><title>Crowded</title>
+<header><nav>%s</nav></header>
+<main><section id="target"><h2>Target section</h2><button>Target action</button></section></main>""" % (
+    "".join(f'<a href="#l{i}">Header link {i} with a longer label</a>' for i in range(800)))
+
 
 class _Page(BaseHTTPRequestHandler):
     def do_GET(self):
-        body = PAGE.encode()
+        body = (CROWDED_PAGE if self.path == "/crowded" else PAGE).encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
@@ -79,6 +87,26 @@ class RealBrowserFindTests(harness.RealBrowserTestCase):
         self.assertNotIn(SECRET, json.dumps(secret))
         summary = lambda found: [(r["selector"], r["text"], r["score"]) for r in found["results"]]
         self.assertEqual(summary(secret), summary(decoy))
+
+    def test_dom_on_a_crowded_page_is_capped_and_scoped_reads_return_the_subtree(self):
+        tab_id = self.open_tab(self.site.origin + "/crowded")
+        full = self.call("/api/dom", {"tabId": tab_id})
+        self.assertTrue(full.get("truncated"), {key: full[key] for key in full if key != "tree"})
+        self.assertIn("selector, ref or max_depth", full["hint"])
+        self.assertLessEqual(len(json.dumps(full["tree"], separators=(",", ":"))), 20000)
+        self.assertIn("Header link 0", json.dumps(full["tree"]))
+        self.assertNotIn("Target action", json.dumps(full["tree"]))
+
+        scoped = self.call("/api/dom", {"tabId": tab_id, "selector": "#target"})
+        self.assertNotIn("truncated", scoped)
+        self.assertEqual(scoped["tree"]["tag"], "section")
+        self.assertEqual([node["text"] for node in scoped["tree"]["children"]],
+                         ["Target section", "Target action"])
+        self.assertNotIn("Header link", json.dumps(scoped))
+
+        by_ref = self.call("/api/dom", {"tabId": tab_id, "ref": scoped["tree"]["ref"], "maxDepth": 0})
+        self.assertEqual(by_ref["tree"]["tag"], "section")
+        self.assertNotIn("children", by_ref["tree"])
 
 
 if __name__ == "__main__":

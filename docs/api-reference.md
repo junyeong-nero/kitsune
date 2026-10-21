@@ -120,12 +120,12 @@ Use refs only from the latest observation of that tab.
 
 | Call | Effect on refs in that tab |
 |---|---|
-| `browser_snapshot` (also scoped), `browser_dom` | Starts a new generation: earlier refs fail as `stale_ref`/`snapshot_replaced`. A `ref` argument to `browser_snapshot` is resolved first |
+| `browser_snapshot` (also scoped), `browser_dom` | Starts a new generation: earlier refs fail as `stale_ref`/`snapshot_replaced`. A `ref` argument to `browser_snapshot` or `browser_dom` is resolved first |
 | Successful `browser_click`, `browser_type` (`type`/`fill`), `browser_select_option`, `browser_check`, `browser_keypress`, `browser_submit_form`, `browser_navigate` | Their post-action `snapshot` starts a new generation, like `browser_snapshot`. An `expect` failure (`outcome_not_observed`) is an error, but the action ran and its result still carries that `snapshot` and `target_ref` |
 | Navigation, reload, or back/forward to another document | Earlier refs fail as `stale_ref`/`other_document` |
 | `browser_find`, `browser_forms`, `browser_wait_for(selector/ref)` | Add refs to the current generation; earlier refs stay valid |
 | Other failed actions, other reads, `browser_hover`, `browser_scroll`, `browser_type(mode="editable")` and other actions without a post-action snapshot | No change, unless the page itself removes the element (`element_removed`) |
-| A failed `browser_snapshot` (bad `max_depth`, missing `selector`, stale `ref`) | No change: it fails before starting a generation |
+| A failed `browser_snapshot` or `browser_dom` (bad `max_depth`, missing `selector`, stale `ref`) | No change: it fails before starting a generation |
 
 Snapshots in one tab do not affect refs in another tab. Pass `tab_id` when more
 than one tab is in use: a ref sent to the wrong tab fails as `other_document` and
@@ -1326,6 +1326,18 @@ when the user asked. Options for other actions are ignored.
 Replaces the duplicate `browser_page_text_by_tab_id`. Uses GET `/api/page-text`
 for the active tab or POST to the same endpoint with `tabId` for a specific tab.
 
+### `browser_dom(tab_id=None, selector=None, ref=None, max_depth=None)`
+
+Returns a JSON tree of page elements with fresh refs, bounds and states. With no
+arguments, reads `body` to depth 6 via GET `/api/dom`; optional arguments use POST
+(`tabId`, `selector`, `ref`, `maxDepth`). `selector`, `ref` and `max_depth` scope the
+tree as in `browser_snapshot` below, except that `max_depth` defaults to 6.
+
+The serialized nodes are capped at 20,000 characters. The tree keeps nodes in
+document order up to the cap and stops there; a cut tree has `truncated: true` and a
+`hint` to scope the read or use `browser_snapshot`. Only returned nodes receive
+usable refs.
+
 ### `browser_snapshot(tab_id=None, selector=None, ref=None, max_depth=None, text=False)`
 
 Returns a compact accessibility-style text tree with fresh refs. With no arguments,
@@ -1664,11 +1676,13 @@ All open browser tabs.
 ```
 
 ### GET /api/dom
-Accessibility tree (depth=6).
+Accessibility tree (depth=6). POST accepts `tabId`, `selector`, `ref` and
+`maxDepth`, scoped as in [`browser_dom`](#browser_domtab_idnone-selectornone-refnone-max_depthnone).
 ```json
-{ "tree": { "ref": "r0", "tag": "body", "children": [...] } }
+{ "tree": { "ref": "s1e0", "tag": "body", "children": [...] }, "refs": 42 }
 ```
-Sensitive fields report `redacted`/`hasValue` instead of `value`.
+Sensitive fields report `redacted`/`hasValue` instead of `value`. A tree past the
+20,000-char cap also has `"truncated": true` and a `hint`.
 
 ### GET /api/forms
 All form fields on the page. Sensitive fields have `redacted`/`hasValue`
