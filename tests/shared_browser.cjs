@@ -201,6 +201,17 @@ async function run(h, command, ms = 2000) {
 
 const owned = async h => Object.fromEntries((await h.send({ action: 'getTabs' })).tabs.map(t => [t.id, t.owned]));
 
+async function testClickAndWaitNavigationForwardsFirst() {
+  const clicks = [];
+  const h = harness({ onClick: (_, msg) => { clicks.push(copy(msg)); } });
+  const result = await run(h, { action: 'clickAndWaitNavigation', tabId: 1,
+    selector: 'button', first: true, timeout: 10 }, 20);
+  assert.equal(result.clicked, true);
+  assert.equal(clicks.length, 1);
+  assert.equal(clicks[0].selector, 'button');
+  assert.equal(clicks[0].first, true);
+}
+
 async function testNeverTakeFocus() {
   const h = harness();
   // browser_tabs new: a background tab the agent owns; the user's tab stays shown.
@@ -519,6 +530,7 @@ async function testNeverAdoptUserTabs() {
 }
 
 (async () => {
+  await testClickAndWaitNavigationForwardsFirst();
   await testNeverTakeFocus();
   await testScreenshotsCaptureInPlace();
   await testOpenedTabsStayInBackground();

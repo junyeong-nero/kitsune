@@ -365,7 +365,7 @@
       'type':                  () => typeText(msg.selector, msg.text, msg.clear, msg.first),
       'setEditableContent':    () => setEditableContent(msg.selector, msg.value, msg.format || 'text', msg.clear !== false,
                                      msg.first),
-      'scroll':                () => scrollPage(msg.direction, msg.amount, msg.selector),
+      'scroll':                () => scrollPage(msg.direction, msg.amount, msg.selector, msg.first),
       'hover':                 () => hoverElement(msg.selector, msg.coords, msg.first),
       'fill':                  () => fillFieldSafe(msg.selector, msg.value, msg.first),
       'find':                  () => findElements(msg.query),
@@ -379,7 +379,7 @@
       // Fixed operations the bridge and background used to send as code strings.
       'keepAlive':             () => ({ ok: true }),
       'neuterUnload':          () => neuterUnload(),
-      'screenPoint':           () => screenPoint(msg.selector, msg.x, msg.y, msg.click),
+      'screenPoint':           () => screenPoint(msg.selector, msg.x, msg.y, msg.click, msg.first),
       'userActivity':          () => userActivity(),
       'captureMeasure':        () => captureMeasure(msg.selector),
       'captureScrollIntoView': () => captureScrollIntoView(msg.selector, msg.block),
@@ -401,12 +401,12 @@
       'getMarkdown':           () => getMarkdown(msg.selector),
       'selectOption':          () => selectOption(msg.selector, msg.value, msg.byText, msg.first),
       'checkBox':              () => checkBox(msg.selector, msg.checked, msg.first),
-      'focusElement':          () => focusEl(msg.selector),
-      'blurElement':           () => blurEl(msg.selector),
+      'focusElement':          () => focusEl(msg.selector, msg.first),
+      'blurElement':           () => blurEl(msg.selector, msg.first),
       'keypress':              () => keypress(msg.selector, msg.key, msg.modifiers, msg.text, msg.first),
       'doubleClick':           () => doubleClick(msg.selector, msg.first),
       'submitForm':            () => submitForm(msg.selector, msg.first),
-      'describeTarget':        () => describeTarget(msg.selector, msg.coords, msg.key),
+      'describeTarget':        () => describeTarget(msg.selector, msg.coords, msg.key, msg.first),
       'formFill':              () => formFill(msg.fields, msg.first),
       'media':                 () => controlMedia(msg.selector, msg.op, msg.time, msg.first),
       'drag':                  () => dragElement(msg.from, msg.to, msg.first),
@@ -477,7 +477,11 @@
     const parts = __zlUploads[id];
     delete __zlUploads[id];
     if (!parts) return { error: 'upload ' + id + ' not found (chunks never arrived)' };
-    if (selector && !first) assertOneTarget(selector, false);
+    if (!first) {
+      if (selector) assertOneTarget(selector, false);
+      else if (mode !== 'drop') assertOneTarget('input[type=file]', false,
+        Array.from(document.querySelectorAll('input[type=file]')));
+    }
     return __zlAttachFiles(parts, selector, files, mode);
   }
   const __zlAttachFiles = function(parts, selector, files, mode) {
@@ -1403,8 +1407,8 @@
   }
 
   // ── Scroll ──
-  function scrollPage(direction, amount, selector) {
-    let target = (selector ? resolveElement(selector) : null) || window;
+  function scrollPage(direction, amount, selector, first) {
+    let target = (selector ? resolveTarget(selector, null, { first }) : null) || window;
     // amount is pixels; keep this aligned with the MCP tool contract.
     const parsed = Number(amount);
     const dist = Number.isFinite(parsed) ? Math.round(parsed) : 500;
@@ -1762,11 +1766,10 @@
     }
   }
 
-  function screenPoint(selector, x, y, click) {
+  function screenPoint(selector, x, y, click, first) {
     // Viewport point (element centre or x/y) plus its desktop position for OS-level clicks.
-    if (click) agentTrustedClickUntil = Date.now() + AGENT_TRUSTED_CLICK_MS;
     if (selector) {
-      const el = resolveElement(selector);
+      const el = click ? resolveTarget(selector, null, { first, pointer: true }) : resolveElement(selector);
       if (!el) return notFound();
       el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
       const rect = viewportRect(el);
@@ -1774,6 +1777,7 @@
       y = rect.top + rect.height / 2;
     }
     if (x == null || y == null) return { error: 'No target point' };
+    if (click) agentTrustedClickUntil = Date.now() + AGENT_TRUSTED_CLICK_MS;
     const viewportLeft = Number.isFinite(window.mozInnerScreenX)
       ? window.mozInnerScreenX
       : window.screenX + Math.max(0, (window.outerWidth - window.innerWidth) / 2);
@@ -2122,9 +2126,10 @@
     return !pointer || isRendered(el);
   }
 
-  function assertOneTarget(selector, pointer) {
-    let matches = [];
-    try { matches = deepQuerySelectorAll(selector); } catch {}
+  function assertOneTarget(selector, pointer, matches) {
+    if (!matches) {
+      try { matches = deepQuerySelectorAll(selector); } catch { matches = []; }
+    }
     if (matches.length < 2) return;
     const actionable = matches.filter(el => isActionable(el, pointer));
     if (actionable.length < 2) return;
@@ -2755,16 +2760,16 @@
     return { ok: true, checked: el.checked };
   }
 
-  function focusEl(selector) {
-    const el = resolveElement(selector);
+  function focusEl(selector, first) {
+    const el = resolveTarget(selector, null, { first });
     if (!el) return notFound();
     lastFilledField = el;
     el.focus();
     return { ok: true, active: activeElement() === el };
   }
 
-  function blurEl(selector) {
-    const el = selector ? resolveElement(selector) : activeElement();
+  function blurEl(selector, first) {
+    const el = selector ? resolveTarget(selector, null, { first }) : activeElement();
     if (!el) return notFound();
     if (typeof el.blur === 'function') el.blur();
     return { ok: true };
@@ -2969,8 +2974,8 @@
   // a form, is a button labeled like a submit or payment, or is a button or link labeled like
   // a send, transfer, delete or account change. Resolves the target the way click/keypress
   // do and reports no field values.
-  function describeTarget(selector, coords, key) {
-    let el = selector || coords ? resolveElement(selector, coords)
+  function describeTarget(selector, coords, key, first) {
+    let el = selector || coords ? resolveTarget(selector, coords, { first, pointer: !key })
       : (activeElement() || document.body);
     if (!el) return notFound();
     if (coords) el = nearestInteractiveAncestor(el) || el;
@@ -3057,23 +3062,24 @@
     return undefined;
   }
 
-  // form_fill's label match, else placeholder match, for key: at most one field per tree
-  // (the document, then each shadow root), as the light-DOM lookup always picked the first.
+  // Collect every label match, else every placeholder match, per searched tree. Multiple
+  // labels for the same control name one target, not several.
   function fieldsByLabelText(key) {
     const text = key.toLowerCase();
-    const fields = [];
+    const fields = new Set();
     for (const root of searchedDocuments().flatMap(doc => [doc, ...shadowRootsIn(doc)])) {
-      let el = null;
+      const labeled = [];
       for (const lbl of root.querySelectorAll('label')) {
         if (!(lbl.innerText || '').trim().toLowerCase().includes(text)) continue;
-        el = lbl.htmlFor ? root.getElementById(lbl.htmlFor) : lbl.querySelector('input, textarea, select');
-        if (el) break;
+        const el = lbl.htmlFor ? root.getElementById(lbl.htmlFor) : lbl.querySelector('input, textarea, select');
+        if (el) labeled.push(el);
       }
-      el ||= Array.from(root.querySelectorAll('input[placeholder], textarea[placeholder]'))
-        .find(inp => inp.placeholder.toLowerCase().includes(text));
-      if (el) fields.push(el);
+      const matches = labeled.length ? labeled
+        : Array.from(root.querySelectorAll('input[placeholder], textarea[placeholder]'))
+          .filter(inp => inp.placeholder.toLowerCase().includes(text));
+      for (const el of matches) fields.add(el);
     }
-    return fields;
+    return [...fields];
   }
 
   function formFill(fieldMap, first) {
@@ -3093,14 +3099,13 @@
         results[key] = errorResult(e);
         continue;
       }
-      // Then by label text, then placeholder. A key matching fields in several trees (the
-      // page and web components' shadow roots) never silently writes into one of them.
+      // Then by label text, then placeholder, across the page and shadow roots.
       if (!el) {
         const matches = fieldsByLabelText(key);
         const actionable = matches.filter(field => isActionable(field, false));
         if (actionable.length > 1 && !first) {
           results[key] = ambiguousTarget(
-            `${actionable.length} fields in separate components match the label or placeholder; nothing was written`,
+            `${actionable.length} fields match the label or placeholder; nothing was written`,
             'Fill one of them with browser_type and its ref from state.candidates, or key it with a CSS ' +
               'selector or name that matches one field. first: true fills the first match.',
             { field: key, matches: actionable.length,

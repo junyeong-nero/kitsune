@@ -691,7 +691,7 @@ async function dispatchCommand(command) {
     case 'downloads':        return await downloadsOp(params.op, params.url, params.filename, params.query);
     case 'clearBrowsingData':return await clearBrowsingData(params.types, params.since);
     case 'intercept':        return await interceptOp(params.op, params.patterns, params.effect);
-    case 'clickAndWaitNavigation': return await clickAndWaitNavigation(params.tabId, params.selector, params.timeout);
+    case 'clickAndWaitNavigation': return await clickAndWaitNavigation(params.tabId, params.selector, params.timeout, params.first);
     case 'describeTarget':   return await describeTarget(params);
     // history.js (#140)
     case 'historySearch':    return await historySearch(params);
@@ -1795,7 +1795,7 @@ async function describeTarget(params) {
 }
 
 // ── Click and wait for navigation ──
-async function clickAndWaitNavigation(tabId, selector, timeout) {
+async function clickAndWaitNavigation(tabId, selector, timeout, first) {
   try {
     const id = tabId || (await getActiveTabId());
     if (!id || !selector) return { error: 'tabId and selector required' };
@@ -1812,7 +1812,7 @@ async function clickAndWaitNavigation(tabId, selector, timeout) {
       }
       browser.tabs.onUpdated.addListener(listener);
     });
-    const click = await forwardToContent('click', { tabId: id, selector });
+    const click = await forwardToContent('click', { tabId: id, selector, first });
     if (click.error) return { ...click, clicked: false };
     const nav = await navPromise;
     return { ok: true, clicked: true, navigation: nav };

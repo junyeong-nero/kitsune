@@ -30,9 +30,9 @@
     "total": 507
   },
   "browser_form_fill": {
-    "description": 955,
+    "description": 986,
     "inputSchema": 269,
-    "total": 1407
+    "total": 1438
   },
   "browser_forms": {
     "description": 234,
@@ -90,9 +90,9 @@
     "total": 811
   },
   "browser_scroll": {
-    "description": 482,
-    "inputSchema": 285,
-    "total": 944
+    "description": 493,
+    "inputSchema": 328,
+    "total": 998
   },
   "browser_select_option": {
     "description": 186,
@@ -125,9 +125,9 @@
     "total": 1066
   },
   "browser_upload_file": {
-    "description": 861,
+    "description": 891,
     "inputSchema": 308,
-    "total": 1355
+    "total": 1385
   },
   "browser_wait_for": {
     "description": 817,
