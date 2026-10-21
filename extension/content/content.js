@@ -1151,6 +1151,13 @@
   }
 
   // ── Click ──
+  function dispatchPointerOrMouse(target, type, init) {
+    const EventCtor = type.startsWith('pointer') && window.PointerEvent ? PointerEvent : MouseEvent;
+    return target.dispatchEvent(new EventCtor(type, {
+      ...init, pointerId: 1, pointerType: 'mouse', isPrimary: true,
+    }));
+  }
+
   function clickElement(selector, coords, first) {
     let el = resolveTarget(selector, coords, { first, pointer: true });
     if (!el) return notFound();
@@ -1182,13 +1189,7 @@
 
     // el.click() below emits the click and performs native activation exactly once.
     for (const type of ['pointerover', 'pointerenter', 'pointerdown', 'mousedown', 'pointerup', 'mouseup']) {
-      const EventCtor = type.startsWith('pointer') && window.PointerEvent ? PointerEvent : MouseEvent;
-      const proceed = el.dispatchEvent(new EventCtor(type, {
-        ...eventInit,
-        pointerId: 1,
-        pointerType: 'mouse',
-        isPrimary: true,
-      }));
+      const proceed = dispatchPointerOrMouse(el, type, eventInit);
       // As a real mousedown does, unless the page cancelled it. The background has already
       // refused a tab the user is using (user_active), so this never takes focus from them.
       if (type === 'mousedown' && proceed) focusForClick(el, coords && { x, y });
@@ -2893,12 +2894,9 @@
     const r = el.getBoundingClientRect();
     const init = { bubbles: true, cancelable: true, composed: true, view: el.ownerDocument?.defaultView || window,
       clientX: r.x + r.width/2, clientY: r.y + r.height/2, button: 0 };
-    el.dispatchEvent(new MouseEvent('mousedown', init));
-    el.dispatchEvent(new MouseEvent('mouseup', init));
-    el.dispatchEvent(new MouseEvent('click', init));
-    el.dispatchEvent(new MouseEvent('mousedown', init));
-    el.dispatchEvent(new MouseEvent('mouseup', init));
-    el.dispatchEvent(new MouseEvent('click', init));
+    for (const type of ['mousedown', 'mouseup', 'click', 'mousedown', 'mouseup', 'click']) {
+      el.dispatchEvent(new MouseEvent(type, init));
+    }
     el.dispatchEvent(new MouseEvent('dblclick', { ...init, detail: 2 }));
     return { ok: true, ...notRenderedWarning(el) };
   }
@@ -3244,12 +3242,10 @@
       return target.dispatchEvent(ev);
     };
     const press = (target, type, x, y) => {
-      const EventCtor = type.startsWith('pointer') && window.PointerEvent ? PointerEvent : MouseEvent;
-      target.dispatchEvent(new EventCtor(type, {
+      dispatchPointerOrMouse(target, type, {
         bubbles: true, cancelable: true, composed: true, view: target.ownerDocument?.defaultView || window,
         clientX: x, clientY: y, button: 0, buttons: type.endsWith('up') ? 0 : 1,
-        pointerId: 1, pointerType: 'mouse', isPrimary: true,
-      }));
+      });
     };
     press(from, 'pointerdown', fx, fy);
     press(from, 'mousedown', fx, fy);
