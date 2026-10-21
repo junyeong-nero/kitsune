@@ -133,7 +133,12 @@ def _request(method: str, endpoint: str, **kwargs) -> dict:
     for attempt in range(2):
         try:
             r = httpx.request(method, f"{BRIDGE}{endpoint}", headers=_headers(), **kwargs)
-            return r.json()
+            try:
+                return r.json()
+            except ValueError:
+                # Keep what the HTTP layer said instead of a JSON decoding message.
+                return {"error": f"Kitsune bridge returned HTTP {r.status_code} without a JSON body",
+                        "state": {"httpStatus": r.status_code, "body": r.text[:200]}}
         except httpx.ConnectError:
             if attempt:
                 break

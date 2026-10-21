@@ -2226,6 +2226,9 @@
         results[key] = { error: e.message };
       }
     }
+    // Any filled field makes this a partial success; with none, nothing was written.
+    const values = Object.values(results);
+    if (values.length && values.every(result => result.error)) return { error: 'No field was filled', results };
     return { results };
   }
 

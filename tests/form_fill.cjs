@@ -81,6 +81,7 @@ async function testFormFill() {
   assert.deepEqual(color.events, [], 'no change/input signal without a match');
   assert.deepEqual(mixed.results['#name'], { ok: true, tag: 'input' });
   assert.equal(name.value, 'Ada', 'other fields in the same call still fill');
+  assert.equal(mixed.error, undefined, 'a partial fill is not a failed call');
 
   const control = await send({ action: 'selectOption', selector: '#color', value: 'nonexistent' });
   assert.equal(control.error, mixed.results.Color.error, 'matches selectOption error');
@@ -113,6 +114,7 @@ async function testFormFill() {
   assert.deepEqual(uncheck.results['#small'], { error: 'Cannot uncheck a selected radio; set another option in its group to true' });
   assert.deepEqual([small.checked, medium.checked], [true, false], 'radio group keeps a selection');
   assert.deepEqual(small.events, []);
+  assert.equal(uncheck.error, 'No field was filled', 'a call that wrote nothing fails as a whole');
 
   medium.events = [];
   const unselected = await send({ action: 'formFill', fields: { '#medium': 'off' } });
@@ -127,6 +129,8 @@ async function testFormFill() {
 
   const badRadio = await send({ action: 'formFill', fields: { '#small': 'checked' } });
   assert.match(badRadio.results['#small'].error, /^Invalid radio value: "checked"/);
+  assert.equal(badRadio.error, 'No field was filled');
+  assert.equal((await send({ action: 'formFill', fields: { '#missing': 'x' } })).error, 'No field was filled');
   assert.deepEqual([small.checked, medium.checked], [false, true]);
 }
 

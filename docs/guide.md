@@ -89,8 +89,10 @@ Refs are scoped to the document and snapshot generation. A new snapshot,
 `browser_dom`, or the post-action snapshot below replaces earlier refs in that
 tab, and navigation invalidates them; `browser_find`, `browser_forms`, and
 `browser_wait_for(selector=...)` add refs without replacing any. Detached or
-outdated refs return `stale ref, call browser_snapshot again` (`code: "stale_ref"`).
-Always use refs from the latest result.
+outdated refs return `stale ref, call browser_snapshot again` (`code: "stale_ref"`);
+for a replaced ref, `state.latestObservation` names the call with the current refs
+and, when the element is unambiguously the same, `state.currentRef` is its current
+ref. Always use refs from the latest result.
 
 Click, type, fill, select, check, keypress, submit, and navigate responses include
 a fresh `snapshot` capped at 4,000 characters (`snapshot_truncated` indicates more

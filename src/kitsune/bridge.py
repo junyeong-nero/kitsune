@@ -1058,27 +1058,46 @@ def _session_path(name):
     return os.path.join(_sessions_dir, safe + ".json")
 
 
+def _session_failure(url, step, result):
+    """One failed extension command of a session save/load, with its error details."""
+    if not isinstance(result, dict):
+        result = {"error": f"unexpected result: {result!r}"}
+    failure = {"url": url, "step": step, "error": result.get("error") or "no result"}
+    failure.update({key: result[key] for key in ("code", "state") if key in result})
+    return failure
+
+
 async def _save_session_async(name, urls):
-    os.makedirs(_sessions_dir, mode=0o700, exist_ok=True)
     bundle = {"name": name, "saved": int(time.time()), "cookies": [], "storage": {}}
+    failures = []
     # cookies for each url
     for u in (urls or []):
         r = await send_to_extension("cookies", {"op": "get", "url": u}, timeout=10)
         if isinstance(r, dict) and "cookies" in r:
             bundle["cookies"].extend(r["cookies"])
+        else:
+            failures.append(_session_failure(u, "cookies", r))
     # localStorage snapshot per active tab if no urls
     if urls:
         for u in urls:
             # Open a temp tab for each origin, snapshot, close
             t = await send_to_extension("newTab", {"url": u})
             tid = t.get("tabId") if isinstance(t, dict) else None
-            if tid:
-                # Wait briefly for page
-                await asyncio.sleep(1)
-                snap = await send_to_extension("storageOp", {"tabId": tid, "kind": "local", "op": "snapshot"}, timeout=10)
-                if isinstance(snap, dict) and snap.get("ok"):
-                    bundle["storage"][u] = snap.get("items", {})
-                await send_to_extension("closeTab", {"tabId": tid})
+            if not tid:
+                failures.append(_session_failure(u, "newTab", t))
+                continue
+            # Wait briefly for page
+            await asyncio.sleep(1)
+            snap = await send_to_extension("storageOp", {"tabId": tid, "kind": "local", "op": "snapshot"}, timeout=10)
+            if isinstance(snap, dict) and snap.get("ok"):
+                bundle["storage"][u] = snap.get("items", {})
+            else:
+                failures.append(_session_failure(u, "storage", snap))
+            await send_to_extension("closeTab", {"tabId": tid})
+    # A partial bundle must not replace a saved session.
+    if failures:
+        return {"error": f"Session {name!r} not saved: {len(failures)} read(s) failed", "failures": failures}
+    os.makedirs(_sessions_dir, mode=0o700, exist_ok=True)
     with open(_session_path(name), "w", encoding="utf-8") as f:
         json.dump(bundle, f, indent=2)
     return {"ok": True, "name": name, "path": _session_path(name), "cookies": len(bundle["cookies"]), "origins": len(bundle["storage"])}
@@ -1091,26 +1110,41 @@ async def _load_session_async(name):
     with open(path, "r", encoding="utf-8") as f:
         bundle = json.load(f)
     set_count = 0
+    failures = []
     for c in bundle.get("cookies", []):
+        url = ("https://" if c.get("secure") else "http://") + str(c.get("domain", "")).lstrip(".") + str(c.get("path", "/"))
         try:
-            url = ("https://" if c.get("secure") else "http://") + str(c.get("domain", "")).lstrip(".") + str(c.get("path", "/"))
-            await send_to_extension("cookies", {
+            r = await send_to_extension("cookies", {
                 "op": "set", "url": url, "name": c.get("name"), "value": c.get("value"),
                 "domain": c.get("domain"), "path": c.get("path"), "secure": c.get("secure"),
             }, timeout=10)
+        except Exception as e:
+            r = {"error": str(e)}
+        if isinstance(r, dict) and not r.get("error"):
             set_count += 1
-        except Exception:
-            pass
+        else:
+            failures.append(_session_failure(url, "cookies", r))
     storage_restored = 0
     for u, items in (bundle.get("storage") or {}).items():
         t = await send_to_extension("newTab", {"url": u})
         tid = t.get("tabId") if isinstance(t, dict) else None
-        if tid:
-            await asyncio.sleep(0.8)
-            await send_to_extension("storageOp", {"tabId": tid, "kind": "local", "op": "restore", "value": items}, timeout=10)
-            await send_to_extension("closeTab", {"tabId": tid})
+        if not tid:
+            failures.append(_session_failure(u, "newTab", t))
+            continue
+        await asyncio.sleep(0.8)
+        r = await send_to_extension("storageOp", {"tabId": tid, "kind": "local", "op": "restore", "value": items}, timeout=10)
+        await send_to_extension("closeTab", {"tabId": tid})
+        if isinstance(r, dict) and not r.get("error") and r.get("ok") is not False:
             storage_restored += 1
-    return {"ok": True, "name": name, "cookies_set": set_count, "origins_restored": storage_restored}
+        else:
+            failures.append(_session_failure(u, "storage", r))
+    result = {"ok": True, "name": name, "cookies_set": set_count, "origins_restored": storage_restored}
+    if failures:
+        # Restoring is idempotent, so repeating the load after fixing the cause is safe.
+        del result["ok"]
+        result = {"error": f"Session {name!r} partly restored: {len(failures)} write(s) failed",
+                  **result, "failures": failures}
+    return result
 
 
 def _list_sessions():

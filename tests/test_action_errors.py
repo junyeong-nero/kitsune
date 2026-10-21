@@ -151,9 +151,10 @@ class McpErrorResultTests(unittest.TestCase):
 
     def test_stale_and_missing_refs_are_errors_with_full_details(self):
         stale = {"error": "stale ref, call browser_snapshot again", "code": "stale_ref", "retryable": True,
-                 "hint": "A newer snapshot replaced this ref; use refs from the latest browser_snapshot.",
-                 "state": {"reason": "snapshot_replaced", "ref": "s1e0", "tabId": 7,
-                           "url": "https://example.com/é", "status": "complete"}}
+                 "hint": "A newer snapshot replaced this ref; state.currentRef is the same element in it.",
+                 "state": {"reason": "snapshot_replaced", "ref": "s1e0", "latestObservation": "browser_click",
+                           "currentRef": "s2e3", "tabId": 7, "url": "https://example.com/é",
+                           "status": "complete"}}
         missing = {"error": "Element not found", "code": "not_found", "retryable": True,
                    "hint": "No element matches; take a new browser_snapshot."}
         for name, arguments, reply in (("browser_click", {"ref": "s1e0", "tab_id": 7}, stale),
@@ -210,10 +211,106 @@ class McpErrorResultTests(unittest.TestCase):
         self.assertMcpResult(self.call("browser_retry", {"command": {"action": "submitForm"}}, exhausted,
                                        mcp=mcp), exhausted, True)
 
+    def test_outcome_not_observed_is_an_error_that_keeps_the_fresh_snapshot(self):
+        missed = {"ok": False, "dispatched": True, "snapshot": "- button \"Pay\" [ref=s2e0]",
+                  "target_ref": "s2e0", "error": "Expected outcome not observed within 5000ms",
+                  "code": "outcome_not_observed", "retryable": False, "hint": "inspect the page"}
+        self.assertMcpResult(self.call("browser_click", {"ref": "s1e0", "expect": {"url_changed": True}}, missed),
+                             missed, True)
+
+    def test_form_fill_fails_only_when_no_field_was_filled(self):
+        none = {"error": "No field was filled", "results": {"Email": {"error": "Not found"}}}
+        self.assertMcpResult(self.call("browser_form_fill", {"fields": {"Email": "a@b"}}, none), none, True)
+        partial = {"results": {"Email": {"ok": True, "tag": "input"}, "Color": {"error": "Not found"}}}
+        self.assertMcpResult(self.call("browser_form_fill", {"fields": {"Email": "a@b", "Color": "x"}}, partial),
+                             partial, False)
+
+    def test_non_json_bridge_response_keeps_http_status(self):
+        response = Mock(status_code=502, text="<html>Bad gateway</html>",
+                        json=Mock(side_effect=json.JSONDecodeError("Expecting value", "", 0)))
+        result = self.call("browser_snapshot", {}, return_value=response)
+        self.assertMcpResult(result, {"error": "Kitsune bridge returned HTTP 502 without a JSON body",
+                                      "state": {"httpStatus": 502, "body": "<html>Bad gateway</html>"}}, True)
+
     def test_python_callers_still_get_plain_results(self):
         error = {"error": "Element not found", "code": "not_found", "retryable": True}
         with patch.object(server.httpx, "request", return_value=Mock(json=Mock(return_value=error))):
             self.assertEqual(server.browser_click(selector="#gone"), error)
+
+
+class SessionFailureTests(unittest.TestCase):
+    """Session save/load report failed extension commands instead of ok: true."""
+
+    def setUp(self):
+        import tempfile
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        patcher = patch.object(bridge, "_sessions_dir", directory.name)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        sleep = patch.object(bridge.asyncio, "sleep", AsyncMock())
+        sleep.start()
+        self.addCleanup(sleep.stop)
+
+    def send(self, replies):
+        """A send_to_extension double answering by action; records every command."""
+        self.sent = []
+
+        async def send(action, params=None, timeout=30):
+            self.sent.append(action)
+            reply = replies[action]
+            return reply() if callable(reply) else reply
+        return patch.object(bridge, "send_to_extension", side_effect=send)
+
+    def test_disconnected_save_fails_and_keeps_the_saved_session(self):
+        good = {"cookies": {"cookies": [{"name": "sid", "value": "1", "domain": "example.com"}]},
+                "newTab": {"tabId": 5}, "storageOp": {"ok": True, "items": {"k": "v"}}, "closeTab": {"ok": True}}
+        with self.send(good):
+            saved = asyncio.run(bridge._save_session_async("work", ["https://example.com/"]))
+        self.assertIs(saved["ok"], True)
+        path = bridge._session_path("work")
+        with open(path, encoding="utf-8") as f:
+            before = f.read()
+        with patch.object(bridge, "extension_ws", None):
+            disconnected = asyncio.run(bridge._send_to_extension_raw("cookies", {}))
+        with self.send({**good, "cookies": disconnected, "newTab": disconnected}):
+            failed = asyncio.run(bridge._save_session_async("work", ["https://example.com/"]))
+        self.assertEqual(failed["error"], "Session 'work' not saved: 2 read(s) failed")
+        self.assertEqual([(f["step"], f["code"]) for f in failed["failures"]],
+                         [("cookies", "extension_disconnected"), ("newTab", "extension_disconnected")])
+        self.assertTrue(server._failed(failed))
+        with open(path, encoding="utf-8") as f:
+            self.assertEqual(f.read(), before, "a failed save never replaces the saved session")
+
+    def test_failed_storage_read_closes_its_tab_and_fails(self):
+        with self.send({"cookies": {"cookies": []}, "newTab": {"tabId": 5},
+                        "storageOp": {"error": "Cannot access browser internal page", "code": "restricted_page"},
+                        "closeTab": {"ok": True}}):
+            failed = asyncio.run(bridge._save_session_async("work", ["about:config"]))
+        self.assertEqual(failed["failures"], [{"url": "about:config", "step": "storage",
+                                               "error": "Cannot access browser internal page",
+                                               "code": "restricted_page"}])
+        self.assertEqual(self.sent[-1], "closeTab")
+        self.assertFalse(bridge.os.path.exists(bridge._session_path("work")))
+
+    def test_load_counts_only_writes_that_succeeded(self):
+        bundle = {"cookies": [{"name": "a", "value": "1", "domain": "example.com"},
+                              {"name": "b", "value": "2", "domain": "example.com"}],
+                  "storage": {"https://example.com/": {"k": "v"}}}
+        with open(bridge._session_path("work"), "w", encoding="utf-8") as f:
+            json.dump(bundle, f)
+        cookie_replies = iter([{"ok": True}, {"error": "Extension disconnected", "code": "extension_disconnected"}])
+        with self.send({"cookies": lambda: next(cookie_replies), "newTab": {"tabId": 5},
+                        "storageOp": {"ok": True, "restored": 1}, "closeTab": {"ok": True}}):
+            partial = asyncio.run(bridge._load_session_async("work"))
+        self.assertEqual(partial["error"], "Session 'work' partly restored: 1 write(s) failed")
+        self.assertEqual((partial["cookies_set"], partial["origins_restored"]), (1, 1))
+        self.assertNotIn("ok", partial)
+        self.assertEqual(partial["failures"][0]["code"], "extension_disconnected")
+        with self.send({"cookies": {"ok": True}, "newTab": {"tabId": 5},
+                        "storageOp": {"ok": True, "restored": 1}, "closeTab": {"ok": True}}):
+            self.assertEqual(asyncio.run(bridge._load_session_async("work")),
+                             {"ok": True, "name": "work", "cookies_set": 2, "origins_restored": 1})
 
 
 if __name__ == "__main__":
