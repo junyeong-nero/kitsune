@@ -238,6 +238,42 @@ class ContainerProgressTests(ContainerTests):
         ])
         self.assertEqual(self.sent, [])
 
+    def test_summary_says_what_ran_what_is_unknown_held_and_skipped(self):
+        self.replies["fill"] = [TIMEOUT]
+        self.replies["getPageText"] = [{"error": "Tab 3 no longer exists", "code": "tab_closed", "retryable": True}]
+        payload = self.batch({"action": "click", "selector": "#a", "tabId": 3},
+                             {"action": "fill", "selector": "#q", "value": "x", "tabId": 3},
+                             {"action": "pageText", "tabId": 3})
+        self.assertEqual(payload["summary"],
+                         "3 commands: 1 ok, 1 unknown, 1 failed. Unknown, may have taken effect (check the page "
+                         "before repeating): step 1 (fill on tab 3). Failed, safe to repeat after its hint: "
+                         "step 2 (pageText on tab 3).")
+        bridge._policy["ask"] = True
+        payload = self.batch({"action": "sleep", "ms": 0},
+                             {"action": "cookies", "op": "set", "name": "sid", "value": "v"},
+                             {"action": "click", "selector": "#after", "tabId": 1})
+        self.assertEqual(payload["summary"],
+                         "3 commands: 1 ok, 1 held, 1 skipped. Held for confirmation, not run (confirm each with "
+                         "a direct call): step 1 (cookies). Skipped, never started: step 2 (click on tab 1).")
+        self.assertEqual(self.batch()["summary"], "0 commands.")
+
+    def test_summary_lists_parallel_commands_per_sequence_and_caps_long_lists(self):
+        self.replies["click"] = [{"error": "Element not found", "code": "not_found", "retryable": True}]
+        payload = self.parallel([{"action": "click", "selector": "#a", "tabId": 1},
+                                 {"action": "pageText", "tabId": 1}],
+                                [{"action": "pageText", "tabId": 2}])
+        self.assertEqual(payload["summary"],
+                         "3 commands: 2 ok, 1 failed. Failed, safe to repeat after its hint: "
+                         "sequence 0 step 0 (click on tab 1).")
+        refused = self.parallel([{"action": "click", "selector": "#a"}])
+        self.assertEqual(refused["summary"],
+                         "1 command: 1 failed. Failed, safe to repeat after its hint: step 0 (parallel).")
+        self.replies["click"] = [{"ok": True, "warning": "hidden_or_covered"}]
+        listed = self.batch(*[{"action": "click", "selector": f"#s{i}"} for i in range(8)], stopOnWarning=True)
+        self.assertEqual(listed["summary"], "8 commands: 1 ok, 7 skipped. Skipped, never started: step 1 (click), "
+                                            "step 2 (click), step 3 (click), step 4 (click), step 5 (click), "
+                                            "and 2 more.")
+
     def test_workflow_progress_keeps_the_step_count(self):
         self.replies["click"] = [{"ok": True}, {"error": "Element not found", "code": "not_found", "retryable": True}]
         steps = [{"action": "click", "selector": f"#s{i}", "tabId": 8} for i in range(3)]
@@ -249,6 +285,9 @@ class ContainerProgressTests(ContainerTests):
         self.assertEqual((payload["workflow"], payload["steps"], len(payload["results"])), ("fixture", 3, 2))
         self.assertEqual(self.statuses(payload["progress"]), ["ok", "failed", "skipped"])
         self.assertEqual(payload["status"], "failed")
+        self.assertEqual(payload["summary"], "3 commands: 1 ok, 1 failed, 1 skipped. Failed, safe to repeat after "
+                                             "its hint: step 1 (click on tab 8). Skipped, never started: "
+                                             "step 2 (click on tab 8).")
 
     def test_deadline_cancels_the_batch_and_reports_the_step_in_flight(self):
         async def hang(params):
@@ -267,6 +306,10 @@ class ContainerProgressTests(ContainerTests):
         self.assertEqual([self.statuses(seq) for seq in payload["progress"][1]["sequences"]], [["unknown"], ["ok"]])
         self.assertEqual(payload["status"], "unknown")
         self.assertNotIn(("click", {"selector": "#b", "tabId": 3}), self.sent, "no step starts after the deadline")
+        self.assertEqual(payload["summary"],
+                         "Stopped at its 300s deadline. 4 commands: 2 ok, 1 unknown, 1 skipped. Unknown, may have "
+                         "taken effect (check the page before repeating): step 1, sequence 0 step 0 (fill on tab 3). "
+                         "Skipped, never started: step 2 (click on tab 3).")
         self.assertIn(("fill", False, "cancelled"), [(e["action"], e["ok"], e["error"]) for e in bridge._audit_log])
 
 
@@ -324,6 +367,7 @@ class ContainerDeadlineTests(ContainerTests):
         port = http.server_address[1]
         token = "container-deadline-test-token"
         with patch.object(bridge, "loop", loop), patch.object(bridge, "AUTH_TOKEN", token), \
+                patch.object(bridge.BridgeHandler, "log_message"), \
                 patch.object(bridge, "ALLOWED_HOSTS", {f"127.0.0.1:{port}"}), \
                 patch.object(server, "BRIDGE", f"http://127.0.0.1:{port}"), \
                 patch.dict(os.environ, {"KITSUNE_TOKEN": token}), \
@@ -340,6 +384,8 @@ class ContainerDeadlineTests(ContainerTests):
         self.assertEqual(payload["results"], [{"ok": True}])
         self.assertEqual(self.statuses(payload["progress"]), ["ok", "unknown", "skipped"])
         self.assertEqual([a for a, _ in self.sent], ["click", "fill"])
+        self.assertTrue(payload["summary"].startswith("Stopped at its 0.5s deadline. 3 commands: 1 ok, 1 unknown"),
+                        payload["summary"])
 
 
 if __name__ == "__main__":

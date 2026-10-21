@@ -36,6 +36,7 @@ import time
 import ctypes
 import contextvars
 import itertools
+from collections import Counter
 from contextlib import asynccontextmanager
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from threading import Lock, Thread
@@ -2140,6 +2141,47 @@ def _container_progress(commands, steps):
     return {"progress": progress, "status": _worst_status(s["status"] for s in progress)}
 
 
+# What each status means for the user, in the order the summary lists them; ok needs no list.
+_SUMMARY_DETAILS = (
+    ("unknown", "Unknown, may have taken effect (check the page before repeating)"),
+    ("held", "Held for confirmation, not run (confirm each with a direct call)"),
+    ("failed", "Failed, safe to repeat after its hint"),
+    ("skipped", "Skipped, never started"),
+)
+_SUMMARY_LIST_MAX = 5
+
+
+def _summary_commands(records, prefix=""):
+    """(label, record) per command; a parallel that started is replaced by its sequences' commands."""
+    for record in records:
+        label = prefix + (f"sequence {record['sequence']} " if "sequence" in record else "") + f"step {record['index']}"
+        nested = [step for seq in record.get("sequences", []) for step in seq]
+        if any(step["status"] != "skipped" for step in nested):
+            # browser_parallel sends one parallel command; its sequences need no "step 0, " prefix.
+            yield from _summary_commands(nested, "" if len(records) == 1 and not prefix else label + ", ")
+        else:
+            yield label, record
+
+
+def _container_summary(progress, deadline=None):
+    """One human-readable paragraph of a container's progress, additive to progress itself."""
+    commands = list(_summary_commands(progress))
+    counts = Counter(record["status"] for _, record in commands)
+    head = ", ".join(f"{counts[status]} {status}" for status in ("ok", *(s for s, _ in _SUMMARY_DETAILS))
+                     if counts[status])
+    parts = [f"Stopped at its {deadline:g}s deadline."] if deadline is not None else []
+    parts.append(f"{len(commands)} command{'' if len(commands) == 1 else 's'}" + (f": {head}." if head else "."))
+    for status, meaning in _SUMMARY_DETAILS:
+        listed = [f"{label} ({record['action'] or 'command'}"
+                  + (f" on tab {record['tabId']})" if "tabId" in record else ")")
+                  for label, record in commands if record["status"] == status]
+        if listed:
+            more = len(listed) - _SUMMARY_LIST_MAX
+            parts.append(f"{meaning}: {', '.join(listed[:_SUMMARY_LIST_MAX])}"
+                         + (f", and {more} more." if more > 0 else "."))
+    return " ".join(parts)
+
+
 async def _within_deadline(coro, seconds):
     """Run a container; True if its deadline cancelled it, so no later step starts."""
     try:
@@ -3186,6 +3228,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         response = {'results': results, **_container_progress(commands, steps)}
         if timed_out:
             response.update(_container_timeout_error('Batch', deadline))
+        response['summary'] = _container_summary(response['progress'], deadline if timed_out else None)
         self.send_json(200, response)
 
     def handle_cache(self):
@@ -3245,6 +3288,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     **_container_progress(commands, steps)}
         if timed_out:
             response.update(_container_timeout_error('Workflow', deadline))
+        response["summary"] = _container_summary(response["progress"], deadline if timed_out else None)
         self.send_json(200, response)
 
     # ── Helpers ──

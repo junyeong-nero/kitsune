@@ -730,8 +730,9 @@ is logged after its steps. Direct calls have no `parent`.
 ### Container progress
 
 `browser_batch`, `browser_parallel` and `browser_workflow` (POST `/api/batch` and
-`/api/workflow`) add `progress` and `status` next to `results`, which is unchanged.
-`progress` has one record per command, in order, including commands that never ran:
+`/api/workflow`) add `progress`, `status` and `summary` next to `results`, which is
+unchanged. `progress` has one record per command, in order, including commands that
+never ran:
 
 ```json
 { "results": [{ "ok": true }, { "error": "Command timed out after 30s", "code": "timeout", "retryable": false }],
@@ -739,7 +740,8 @@ is logged after its steps. Direct calls have no `parent`.
     { "index": 0, "action": "click", "tabId": 3, "status": "ok" },
     { "index": 1, "action": "submitForm", "tabId": 3, "status": "unknown" },
     { "index": 2, "action": "pageText", "tabId": 3, "status": "skipped" }],
-  "status": "unknown" }
+  "status": "unknown",
+  "summary": "3 commands: 1 ok, 1 unknown, 1 skipped. Unknown, may have taken effect (check the page before repeating): step 1 (submitForm on tab 3). Skipped, never started: step 2 (pageText on tab 3)." }
 ```
 
 | `status` | Meaning |
@@ -757,6 +759,13 @@ whose last attempt succeeded is `ok`. A `parallel` record adds `sequences`: one 
 per sequence of `{sequence, index, action, tabId, status}`; commands that never
 started are `skipped`. The top-level `status` combines the records the same way.
 
+`summary` states `progress` in one paragraph a user can read without the records:
+the count of each status, then each command that is `unknown`, `held` (with how to
+confirm it), `failed` or `skipped`, by its `index` and `action` (and `tabId`), at most
+five per status. A `parallel` that started is counted by the commands of its
+sequences (`sequence 1 step 0`). It starts with `Stopped at its 300s deadline.` after
+a `container_timeout`. It is text for people; read `progress` in code.
+
 `progress` is also what to resume from: the commands before the first record that
 is not `ok` have run, `unknown` ones must be observed before they are repeated, and
 `skipped` ones are safe to send. See [Checkpoint and resume](checkpoint-resume.md)
@@ -766,7 +775,9 @@ A batch stops at its deadline (the sum of its waits plus 15 s, at least 300 s; a
 workflow at 300 s): the command in progress is cancelled and later commands do not
 start. The response then adds a `container_timeout` error (`retryable: false`,
 `state.deadlineSeconds`) to the partial `results` and `progress`, and the audit log
-records the cancelled command with `error: "cancelled"`.
+records the cancelled command with `error: "cancelled"`. The MCP tools wait 30 s
+past that deadline (15 s for the cancelled command to settle, 15 s for the reply),
+so the client receives this report instead of its own request timeout.
 
 Tab ownership in `parallel`: sequences run concurrently, so a focus change in one
 sequence must not move another sequence's command to a different tab. Before any
@@ -1220,7 +1231,7 @@ Execute multiple commands sequentially or in parallel.
 ```
 Note: every command that acts on a tab inside parallel sequences **must** have an explicit `tabId`, and two sequences may not write the same tab (see [Container progress](#container-progress)).
 
-Returns `{ "results": [...], "progress": [...], "status": "ok" }`; `progress` and `status` are described in [Container progress](#container-progress).
+Returns `{ "results": [...], "progress": [...], "status": "ok", "summary": "..." }`; `progress`, `status` and `summary` are described in [Container progress](#container-progress).
 
 **Batch actions:** navigate, newTab, closeTab, switchTab, click, type, fill, scroll, hover, find, js, pageInfo, pageText, pageTextByTabId, tabs, forms, dom, highlight, screenshot, waitForElement, waitForResult, sleep, parallel.
 
@@ -1238,7 +1249,7 @@ Execute a named workflow from the workflows directory.
 { "name": "test", "variables": { "url": "https://example.com" } }
 ```
 Workflows are `.md` files with JSON code blocks. Variables use `{{name}}` syntax.
-Returns `{ "workflow": "test", "steps": 4, "results": [...], "progress": [...], "status": "ok" }`. A workflow stops at its first failed step; `progress` marks the rest `skipped` (see [Container progress](#container-progress)).
+Returns `{ "workflow": "test", "steps": 4, "results": [...], "progress": [...], "status": "ok", "summary": "..." }`. A workflow stops at its first failed step; `progress` marks the rest `skipped` (see [Container progress](#container-progress)).
 
 ## Cache Control (NEW)
 
