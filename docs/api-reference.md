@@ -640,7 +640,8 @@ field. A field is sensitive if it is:
   field whose show/hide toggle switched it to `type=text` stays redacted), or an
   `inputmode="numeric"` input named like a code or digit box (zip/postal codes
   excepted);
-- an input masked with `-webkit-text-security`;
+- an input, `<textarea>` or `contenteditable` region masked with
+  `-webkit-text-security`;
 - an input the browser or password manager has autofilled (`:autofill`), until
   the autofill state is cleared;
 - a custom element (e.g. a web-component text field) or other element with a
@@ -652,7 +653,17 @@ field. A field is sensitive if it is:
 `browser_query`'s `value` field replace `value` with `"redacted": true` and
 `"hasValue": <bool>`. Tag, type, name, id, label, selector, and ref are kept, so
 the field remains interactable. `browser_find` does not match queries against
-sensitive values. Results and errors of write actions on sensitive fields
+sensitive values.
+
+A masked textarea or editing region keeps its secret as text content, so that
+content is also left out of snapshot names and text lines, `browser_find`
+matching, scoring and result text, element `text` fields (`browser_dom`,
+`browser_query`, `browser_explain_selector`, `browser_wait_for` element
+results, click results), field labels, `browser_markdown` and
+`browser_readability`; `browser_html` and `browser_query` `html` serialize the
+element empty. Page text (`browser_page_text`) is rendered text, where the
+browser already shows masked text as mask characters. Unmasked textareas and
+editing regions are unchanged. Results and errors of write actions on sensitive fields
 (`browser_type`, `browser_form_fill`, …) do not echo the typed value. There is
 no opt-in to reveal values through these tools.
 
@@ -675,6 +686,10 @@ skips its CSS branch and falls back to text search. A selector counts as testing
 `value` if it contains `[value` (any case, optionally with a namespace prefix
 such as `[*|value`), or if it contains `[` together with a backslash escape or
 a `/*` comment.
+
+If a cloned subtree does not mirror the page, sensitivity cannot be mapped
+onto it, so markup from that clone drops every `value` attribute and the
+content of every textarea and `contenteditable` element.
 
 These rules are heuristics: a field that is masked some other way (canvas,
 custom fonts) or named without a recognizable word is not detected.

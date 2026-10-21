@@ -338,8 +338,9 @@ What it does not protect against:
 - **Sensitive page data.** A connected agent can read page content and execute
   JavaScript in pages. Structural read tools (`browser_snapshot`, `browser_forms`,
   `browser_dom`, `browser_query`, `browser_html`, `browser_find`) redact
-  password, one-time-code, card-number/CSC, secret-named, CSS-masked and
-  autofilled fields, including web-component fields with a shadow root, and
+  password, one-time-code, card-number/CSC, secret-named, CSS-masked
+  (including masked textareas and contenteditable regions) and autofilled
+  fields, including web-component fields with a shadow root, and
   selectors that probe a sensitive field's `value` attribute are refused; see
   [Sensitive-field redaction](api-reference.md#sensitive-field-redaction).
   This is not a sandbox: `browser_js` can read anything the page can, and the
