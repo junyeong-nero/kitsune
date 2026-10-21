@@ -3,7 +3,7 @@
 
 (function() {
   'use strict';
-  const CONTENT_VERSION = 29;
+  const CONTENT_VERSION = 30;
   if (window.__claudeBridgeVersion >= CONTENT_VERSION) return;
   window.__claudeBridgeVersion = CONTENT_VERSION;
 
@@ -968,8 +968,13 @@
 
   // ── Type ──
   function typeText(selector, text, clear) {
-    const el = resolveElement(selector);
-    if (!el) return notFound();
+    const host = resolveElement(selector);
+    if (!host) return notFound();
+    // A web-component host types into the field in its open or closed shadow root.
+    const el = ['INPUT', 'TEXTAREA'].includes(host.tagName) ? host : shadowField(host, 'input, textarea') || host;
+    if (!['INPUT', 'TEXTAREA'].includes(el.tagName) && (clear || el.contentEditable !== 'true')) {
+      return notFillable(el, 'input or textarea');
+    }
     lastActedElement = el;
 
     el.focus();
@@ -1129,15 +1134,26 @@
   async function fillFieldSafe(selector, value) {
     let result;
     try { result = fillField(selector, value); } catch(e) { result = errorResult(e); }
-    if (result.error && (result.error.includes('HTMLInputElement') || result.error.includes('HTMLTextAreaElement'))) {
-      // Shadow DOM not accessible from content script — use page context
+    if (result.code === 'not_fillable') {
+      // Last resort: the page context, which reports why it could not fill either.
       const pageResult = await fillViaPageContext(selector, value);
       if (pageResult.startsWith('ok:')) {
         return { ok: true, pierced: true, method: 'pageContext', tag: pageResult.split(':')[1].toLowerCase() };
       }
-      return { error: pageResult };
+      result.state.pageContext = pageResult;
     }
     return result;
+  }
+
+  const FILL_TAGS = ['INPUT', 'TEXTAREA', 'SELECT'];
+
+  // fields: what the action looks for, e.g. 'input, textarea or select'.
+  function notFillable(el, fields) {
+    return actionError(`Element is not a fillable field: no ${fields} in it or in its shadow root`,
+      'not_fillable', 'Target the field or its web-component host from a new browser_snapshot. ' +
+        'A field inside a shadow root nested in another shadow root is not reached; use browser_js for it. ' +
+        'For a contenteditable editor use mode="editable".',
+      { tag: el.tagName.toLowerCase() });
   }
 
   function fillField(selector, value) {
@@ -1146,6 +1162,7 @@
 
     // Auto-pierce shadow DOM: if element isn't a standard input, look inside shadow root
     const target = getFillTarget(el);
+    if (!FILL_TAGS.includes(target.tagName)) return notFillable(el, 'input, textarea or select');
     lastActedElement = target;
 
     if (target.type === 'checkbox' || target.type === 'radio') {
@@ -1170,57 +1187,57 @@
     return { ok: true, pierced: target !== el, tag: target.tagName.toLowerCase() };
   }
 
-  // Runs in the page world (closed shadow DOM). Only this packaged function is injected;
-  // the selector and value travel as JSON arguments, never as generated code.
+  // Runs in the page world. Only this packaged function is injected; the selector and
+  // value travel as JSON arguments, never as generated code. It always reports a status:
+  // 'ok:<TAG>', 'not_found', 'no_field' or 'error'.
   function pageFill(selector, value, callbackName) {
-    const el = document.querySelector(selector);
-    if (!el) { window[callbackName] = 'not found'; return; }
-    const target = el.shadowRoot
-      ? (el.shadowRoot.querySelector('input,textarea,select') || el)
-      : (el.querySelector('input,textarea,select') || el);
-    target.focus();
-    const proto = target.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-    const setter = Object.getOwnPropertyDescriptor(proto, 'value');
-    if (setter && setter.set) setter.set.call(target, value);
-    else target.value = value;
-    target.dispatchEvent(new Event('input', { bubbles: true }));
-    target.dispatchEvent(new Event('change', { bubbles: true }));
-    window[callbackName] = 'ok:' + target.tagName;
+    try {
+      const el = document.querySelector(selector);
+      if (!el) { window[callbackName] = 'not_found'; return; }
+      const target = el.matches('input,textarea,select') ? el
+        : (el.shadowRoot || el).querySelector('input,textarea,select');
+      if (!target) { window[callbackName] = 'no_field'; return; }
+      target.focus();
+      const proto = target.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(proto, 'value');
+      if (setter && setter.set) setter.set.call(target, value);
+      else target.value = value;
+      target.dispatchEvent(new Event('input', { bubbles: true }));
+      target.dispatchEvent(new Event('change', { bubbles: true }));
+      window[callbackName] = 'ok:' + target.tagName;
+    } catch {
+      window[callbackName] = 'error';
+    }
   }
 
+  // Resolves to pageFill's status, or 'not_run' when the page script did not run.
   function fillViaPageContext(selector, value) {
-    // Last resort: pierce closed shadow DOM from the page context.
     return new Promise((resolve) => {
       const callbackName = '__claudeFill_' + Date.now();
       const args = [selector, String(value), callbackName].map(arg => JSON.stringify(arg)).join(',');
       injectPageScript('(' + pageFill.toString() + ')(' + args + ');');
-      const result = window.wrappedJSObject?.[callbackName] || window[callbackName] || 'unknown';
+      const result = window.wrappedJSObject?.[callbackName] || window[callbackName] || 'not_run';
       resolve(result);
     });
+  }
+
+  // Firefox content scripts can also reach closed roots through openOrClosedShadowRoot.
+  function shadowField(el, selector) {
+    const root = el.openOrClosedShadowRoot || el.shadowRoot;
+    return root?.querySelector(selector) || null;
   }
 
   function getFillTarget(el) {
     const tag = el.tagName.toLowerCase();
     if (['input', 'textarea', 'select'].includes(tag)) return el;
 
-    // Open shadow root
-    if (el.shadowRoot) {
-      const inner = el.shadowRoot.querySelector('input, textarea, select');
-      if (inner) return inner;
-    }
+    // Open or closed shadow root
+    const inner = shadowField(el, 'input, textarea, select');
+    if (inner) return inner;
 
     // Regular children
     const child = el.querySelector('input, textarea, select');
     if (child) return child;
-
-    // Closed shadow root — try page context access via wrappedJSObject (Firefox)
-    try {
-      const unwrapped = el.wrappedJSObject || el;
-      if (unwrapped.shadowRoot) {
-        const inner = unwrapped.shadowRoot.querySelector('input, textarea, select');
-        if (inner) return XPCNativeWrapper(inner);
-      }
-    } catch {}
 
     return el;
   }
@@ -1229,21 +1246,11 @@
     if (el.isContentEditable || el.contentEditable === 'true') return el;
     if (['INPUT', 'TEXTAREA'].includes(el.tagName)) return el;
 
-    if (el.shadowRoot) {
-      const inner = el.shadowRoot.querySelector('[contenteditable="true"], textarea, input');
-      if (inner) return inner;
-    }
+    const inner = shadowField(el, '[contenteditable="true"], textarea, input');
+    if (inner) return inner;
 
     const child = el.querySelector?.('[contenteditable="true"], textarea, input');
     if (child) return child;
-
-    try {
-      const unwrapped = el.wrappedJSObject || el;
-      if (unwrapped.shadowRoot) {
-        const inner = unwrapped.shadowRoot.querySelector('[contenteditable="true"], textarea, input');
-        if (inner) return XPCNativeWrapper(inner);
-      }
-    } catch {}
 
     return null;
   }
