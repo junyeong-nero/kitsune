@@ -1160,7 +1160,7 @@ never ran:
 | `status` | Meaning |
 |---|---|
 | `ok` | The command ran without an error. Like any result, this means dispatched, not that the outcome happened (see [Action outcomes](#action-outcomes)) |
-| `failed` | It returned an error that is safe to repeat (`retryable: true`, unclassified errors, `error_page`, `ambiguous_target`, or `ok: false`) |
+| `failed` | It returned an error that is safe to repeat (`retryable: true`, unclassified errors, `error_page`, `ambiguous_target`, `user_tab`, `permission_required`, or `ok: false`) |
 | `held` | [Ask-before-act](#ask-before-act) held it; nothing ran |
 | `unknown` | It may have taken effect: an error with `retryable: false`, or it was in progress at the container's deadline. Observe the page before acting again |
 | `skipped` | It never started: an earlier step stopped the container (a held step, `stopOnWarning`, a failed workflow step) or the deadline passed |

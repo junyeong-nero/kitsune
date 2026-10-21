@@ -26,8 +26,10 @@ API, kept small so suites can rely on it:
   assert_error(result, code, retryable).
 - FixtureServer(handler_class): a local HTTP server on a spare port with .origin and .stop().
 - RemoteDebugger(cls.browser.rdp_port).evaluate_in_parent(script): runs a privileged
-  script in the browser's parent process and returns its awaited result, e.g. to seed
-  the temporary profile's password manager with a disposable login.
+  script (a JS expression) in the browser's parent process and returns its awaited,
+  JSON-serializable result, e.g. to seed the temporary profile's password manager with a
+  disposable login. A throw or a rejected promise raises AssertionError with its message;
+  so does a remote debugging request that answers with an error.
 - check_extension_copy(extension, ws_port): the launch guard below; RealBrowser.start()
   runs it before launching anything.
 - BROWSER, BASE_PREFS, POPUPS_ALLOWED.
@@ -141,20 +143,35 @@ class RemoteDebugger:
         while True:
             reply = self._read()
             if reply.get("from") == to:
+                if "error" in reply:
+                    raise AssertionError(f"{packet_type} to {to} failed: {reply['error']}: {reply.get('message')}")
                 return reply
 
     def evaluate_in_parent(self, script):
-        """Run script with chrome privileges in the parent process; returns its awaited result."""
+        """Run script, a JS expression, with chrome privileges in the parent process.
+
+        Returns its awaited result, which must be JSON-serializable. Raises AssertionError
+        with the exception message if the script throws or its promise rejects.
+        """
         process = self.request("root", "getProcess", id=0)["processDescriptor"]["actor"]
         console = self.request(process, "getTarget")["process"]["consoleActor"]
-        result_id = self.request(console, "evaluateJSAsync", text=script, mapped={"await": True})["resultID"]
+        # The console reports a rejected top-level promise only as topLevelAwaitRejected, without
+        # its reason, so the wrapper catches the reason and returns it in band.
+        wrapped = ("(async () => { try { return JSON.stringify({value: await (\n" + script + "\n)}); }"
+                   " catch (e) { return JSON.stringify({error: String(e && e.message || e),"
+                   " stack: String(e && e.stack || '')}); } })()")
+        result_id = self.request(console, "evaluateJSAsync", text=wrapped, mapped={"await": True})["resultID"]
         while True:
             reply = self._read()
             if reply.get("type") == "evaluationResult" and reply.get("resultID") == result_id:
                 break
-        if reply.get("hasException"):
-            raise AssertionError(f"parent process script failed: {reply.get('exceptionMessage')}")
-        return reply["result"]
+        if reply.get("hasException") or reply.get("topLevelAwaitRejected") or not isinstance(reply.get("result"), str):
+            message = reply.get("exceptionMessage") or reply.get("exception", {}).get("preview", {}).get("message")
+            raise AssertionError(f"parent process script failed: {message or reply}")
+        outcome = json.loads(reply["result"])
+        if "error" in outcome:
+            raise AssertionError(f"parent process script failed: {outcome['error']}\n{outcome['stack']}")
+        return outcome.get("value")
 
     def install_temporary_addon(self, path):
         addons = self.request("root", "getRoot")["addonsActor"]
