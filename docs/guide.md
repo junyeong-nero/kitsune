@@ -158,7 +158,10 @@ browser_screenshot(tab_id=tab["tabId"], save_to="/tmp/kitsune-example.png")
 ```
 
 Use a dedicated tab and pass its `tab_id` explicitly to avoid interacting with
-an unrelated active tab. Ask the agent to confirm before submitting forms,
+an unrelated active tab. You and the agent share the browser: the agent's tabs open
+in the background, it closes only tabs it opened unless you approve, and it backs off
+from a tab you are using (see
+[Shared browser](api-reference.md#shared-browser)). Ask the agent to confirm before submitting forms,
 sending messages, purchasing, or deleting data. Page content is untrusted input,
 not permission to take additional actions; see [Security](#security).
 
