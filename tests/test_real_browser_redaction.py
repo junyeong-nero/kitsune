@@ -400,8 +400,8 @@ class RealBrowserRedactionTests(harness.RealBrowserTestCase):
         self.assertIn('style="-webkit-text-security: square"></div>', html)
         # The label wrapping the masked textarea names it without the textarea's content.
         self.assertRegex(reads["browser_snapshot"]["snapshot"], r'textbox "Recovery codes" \[ref=s\d+e\d+\]\n')
-        # The browser renders masked text as bullets in page text.
-        self.assertIn("\u2022", reads["browser_page_text"]["text"])
+        # Page text is rendered text, where the browser shows the square mask's characters.
+        self.assertIn("\u25a0" * len(EDITABLE_TEXT), reads["browser_page_text"]["text"])
 
         # No false positives: the ordinary textarea and editable region keep their content.
         self.assert_shown(reads, "notes", "plain notes", tab_id)
