@@ -53,7 +53,7 @@ function harness(onCreate = () => {}) {
       await flush();
     },
     assertClean() {
-      assert.equal(onUpdated.listeners.size, 0, 'onUpdated leaked');
+      assert.equal(onUpdated.listeners.size, 1, 'onUpdated leaked (the main-frame status listener remains)');
       assert.equal(timers.size, 0, 'timer leaked');
     },
   };

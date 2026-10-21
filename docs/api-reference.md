@@ -113,7 +113,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `not_found` | No element matches the selector (also `No target`, `from/to element not found`); after an [actionability wait](#actionability-wait), `state` has `timeoutMs` and `elapsed` | true |
 | `not_actionable` | An [actionability wait](#actionability-wait) timed out on a target that exists but never rendered (`state.reason: "not_rendered"`, `timeoutMs`, `elapsed`); nothing was dispatched | true |
 | `stale_ref` | The ref is no longer valid; `state.reason` is `element_removed`, `not_in_snapshot`, `snapshot_replaced` (a newer snapshot of this document), or `other_document` (the tab navigated, or the ref came from another tab) | true |
-| `navigating` | The tab is loading: a `not_found`/`stale_ref` while loading (`state.cause`), or the page unloaded while handling the command | true before dispatch; false for writes after |
+| `navigating` | The tab is loading: a `not_found`/`stale_ref` while loading (`state.cause`), or the page unloaded while handling the command. Also a page that refused the content script within 5 s of a wake or reload without an error status, or whose 2xx response arrived only while the command waited for it: it may be an old document about to be replaced | true before dispatch; false for writes after |
 | `tab_closed` | The target tab no longer exists | true |
 | `tab_unloaded` | The tab is discarded and its page cannot be reached; use `browser_wake_tab` | true |
 | `restricted_page` | Browser-internal page (`about:`, `moz-extension:`, …) | true |
@@ -902,6 +902,18 @@ On timeout the tab stays open and the result is
 
 ### POST /api/close-tab
 `{ "tabId": 123 }`
+
+### POST /api/wake-tab
+`{ "tabId": 123 }` reloads a discarded tab. A tab that is not discarded returns
+`{ "ok": true, "woken": false, "discarded": false }` at once. Otherwise the call
+waits up to 15 s for the reloaded page to finish loading and answer the content
+script, and then returns `{ "ok": true, "woken": true, "ready": true }`; the next
+command can reach the page. Two results report `ready: false`:
+- `{ "ok": true, "woken": true, "ready": false, "unscriptable": true, "state": { "tabId", "url", "status", "title", "httpStatus" } }`:
+  the reloaded page loaded but refuses the content script, such as a JSON or PDF
+  viewer or an error response with an empty body. Commands fail with `error_page`.
+- `{ "ok": true, "woken": true, "ready": false, "timedOut": true, "state": { "tabId", "url", "status" } }`:
+  the page did not become ready within 15 s; `state` is the last observed state.
 
 ## Interaction (POST)
 

@@ -196,17 +196,6 @@ class RealBrowserActionRaceTests(harness.RealBrowserTestCase):
         time.sleep(settle)
         self.assertEqual(self.site.count(page), expected, f"clicks reported by {page}: {self.site.hits}")
 
-    def wait_until_scriptable(self, tab_id):
-        """Poll a read until the tab's page answers; every miss must be a retryable navigating."""
-        deadline = time.monotonic() + 10
-        while True:
-            info = self.call("/api/page-info", {"tabId": tab_id})
-            if "error" not in info:
-                return
-            self.assert_error(info, "navigating", True)
-            self.assertLess(time.monotonic(), deadline, info)
-            time.sleep(0.1)
-
     def in_background(self, path, body):
         """Send a bridge call from another thread; join() returns its result."""
         result = {}
@@ -313,18 +302,26 @@ class RealBrowserActionRaceTests(harness.RealBrowserTestCase):
         self.assertIs(result["state"]["discarded"], True)
         self.assert_hits("unload-a", 0)
 
-        woken = self.call("/api/wake-tab", {"tabId": tab_id})
-        self.assertEqual((woken.get("ok"), woken.get("woken")), (True, True), woken)
-        # wakeTab reports ready before the reload has replaced the discarded document, so the
-        # first commands can find no page script; they must fail before dispatch as navigating.
-        early = self.call("/api/click", {"selector": "#act", "tabId": tab_id})
-        if not early.get("ok"):
-            self.assert_error(early, "navigating", True)
-            self.assert_hits("unload-a", 0, settle=0)
-            self.wait_until_scriptable(tab_id)
-            self.assert_ok(self.call("/api/click", {"selector": "#act", "tabId": tab_id}))
-        self.assert_hits("unload-a", 1)
+        self.wake_and_click(tab_id, "unload-a")
         self.assert_hits("unload-other", 0, settle=0)
+
+    def wake_and_click(self, tab_id, page):
+        """Wake a discarded tab; it is ready only once its page answers, so the first click lands."""
+        woken = self.call("/api/wake-tab", {"tabId": tab_id})
+        self.assertEqual(woken, {"ok": True, "woken": True, "ready": True})
+        self.assert_ok(self.call("/api/click", {"selector": "#act", "tabId": tab_id}))
+        self.assert_hits(page, 1)
+
+    def test_every_wake_is_ready_for_the_first_click(self):
+        # Issue #95: the restored placeholder reports complete before the reload replaces it.
+        other = self.open_tab(self.site.url("wake-other"))
+        for i in range(5):
+            with self.subTest(wake=i):
+                tab_id = self.open_tab(self.site.url(f"wake-{i}"))
+                self.assert_ok(self.call("/api/switch-tab", {"tabId": other}))  # discard needs an inactive tab
+                self.assertEqual(self.control.call("discard", tabId=tab_id), {"discarded": True})
+                self.wake_and_click(tab_id, f"wake-{i}")
+        self.assert_hits("wake-other", 0, settle=0)
 
     # ── Extension reconnects and unknown outcomes ──
 

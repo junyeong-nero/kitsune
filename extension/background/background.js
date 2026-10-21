@@ -15,24 +15,52 @@ const MAX_RECONNECT_DELAY = 15000;
 
 // Policies survive document navigation, but are cleared when a tab closes.
 const dialogPolicies = new Map();
-// The last main-frame HTTP status per tab, so an unscriptable error page can name it.
+// The last main-frame request per tab, { requestId, url, at, statusCode, loading, finished }, so an
+// unscriptable error page can name its status. A new main-frame request replaces it and a discard
+// or reload clears it, so it never describes a later document. at: when the request started;
+// statusCode: once its headers arrive; finished: the tab went loading, then complete, after it.
 const mainFrameStatus = new Map();
 // Callbacks waiting for a tab's next status record (see waitForHttpStatus); called with true on close.
 const mainFrameStatusWaiters = new Map();
+// When a tab was last woken or reloaded (see markReload), for injectionFailure.
+const tabReloads = new Map();
 const notifyStatusWaiters = (tabId, closed = false) =>
   [...(mainFrameStatusWaiters.get(tabId) || [])].forEach(notify => notify(closed));
 browser.tabs.onRemoved.addListener(tabId => {
   dialogPolicies.delete(tabId);
   mainFrameStatus.delete(tabId);
+  tabReloads.delete(tabId);
   notifyStatusWaiters(tabId, true);
 });
+browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (changeInfo.discarded === true) mainFrameStatus.delete(tabId);
+  // The browser also wakes discarded tabs, e.g. when one is selected.
+  if (changeInfo.discarded === false) tabReloads.set(tabId, Date.now());
+  // Gecko reports a woken tab's restored placeholder complete, maybe after the reload's request
+  // started; only a complete after the tab went loading again is the request's document.
+  const seen = mainFrameStatus.get(tabId);
+  if (seen && changeInfo.status === 'loading') seen.loading = true;
+  if (seen?.loading && changeInfo.status === 'complete') seen.finished = true;
+});
+const MAIN_FRAME = { urls: ['<all_urls>'], types: ['main_frame'] };
+// A redirect keeps its requestId, and so its record.
+const mainFrameRequest = (tabId, requestId) => {
+  const seen = mainFrameStatus.get(tabId);
+  if (seen?.requestId === requestId) return seen;
+  const started = { requestId, at: Date.now() };
+  mainFrameStatus.set(tabId, started);
+  return started;
+};
+browser.webRequest?.onBeforeRequest.addListener(({ tabId, requestId, url }) => {
+  if (tabId >= 0) mainFrameRequest(tabId, requestId).url = url;
+}, MAIN_FRAME);
 browser.webRequest?.onHeadersReceived.addListener(
-  ({ tabId, url, statusCode }) => {
+  ({ tabId, requestId, url, statusCode }) => {
     if (tabId < 0) return;
-    mainFrameStatus.set(tabId, { url, statusCode });
+    Object.assign(mainFrameRequest(tabId, requestId), { url, statusCode });
     notifyStatusWaiters(tabId);
   },
-  { urls: ['<all_urls>'], types: ['main_frame'] });
+  MAIN_FRAME);
 
 // Tabs a page opens (target=_blank links, window.open) name it as their opener.
 // Page actions report the tabs their tab opened since the action started.
@@ -639,8 +667,12 @@ function reloadExtensionAction() {
   return { ok: true, reloading: true };
 }
 
+// How long wakeTab waits for a woken tab's page to answer the content script, polling this often.
+const WAKE_TAB_TIMEOUT_MS = 15000;
+const WAKE_TAB_POLL_MS = 100;
+
 async function wakeTab(tabId) {
-  // Reload a discarded tab and wait for it to be ready. Idempotent — returns
+  // Reload a discarded tab and wait until its page can be scripted. Idempotent — returns
   // immediately if the tab is already alive. Use before sending commands to a
   // tab that may have been idle long enough for Zen's Tab Unloader to discard.
   if (!tabId) return { error: 'wakeTab requires tabId' };
@@ -649,11 +681,44 @@ async function wakeTab(tabId) {
     if (!tab.discarded) {
       return { ok: true, woken: false, discarded: false };
     }
-    const ready = await waitForTabLoad(tabId, () => browser.tabs.reload(tabId), { reload: true });
-    return { ok: true, woken: true, ready };
+    markReload(tabId);
+    const since = Date.now();
+    const deadline = since + WAKE_TAB_TIMEOUT_MS;
+    await browser.tabs.reload(tabId);
+    while (true) {
+      const page = await wokenPageState(tabId, since);
+      if (page.ready) return { ok: true, woken: true, ready: true };
+      if (page.unscriptable) return { ok: true, woken: true, ready: false, unscriptable: true, state: page.state };
+      if (Date.now() >= deadline) {
+        return { ok: true, woken: true, ready: false, timedOut: true, state: await tabState(tabId) };
+      }
+      await new Promise(r => setTimeout(r, WAKE_TAB_POLL_MS));
+    }
   } catch (e) {
     return { error: e.message };
   }
+}
+
+// Gecko first restores a woken tab's discarded document as a placeholder, reporting it complete
+// with the tab's URL and title before the reload replaces it; a command that reached it would be
+// lost with it. So an http(s) page counts only once a main-frame request started since the wake
+// (`since`) has finished loading. It is ready when it answers the content script and is still
+// that complete document afterwards; it is final (unscriptable) when it refuses injection.
+async function wokenPageState(tabId, since) {
+  const tab = await browser.tabs.get(tabId);
+  if (tab.discarded || tab.status !== 'complete') return {};
+  const seen = mainFrameRecord(tabId, tab.url);
+  const loaded = seen && seen.at >= since && seen.finished;
+  if (/^https?:/i.test(tab.url) && !loaded) return {};
+  try {
+    await ensureContentScript(tabId);
+  } catch {
+    if (!loaded) return {};
+    return { unscriptable: true,
+      state: { ...await tabState(tabId), title: tab.title, httpStatus: seen.statusCode } };
+  }
+  const after = await browser.tabs.get(tabId);
+  return { ready: after.status === 'complete' && mainFrameStatus.get(tabId) === seen };
 }
 
 // == Forward to Content Script ==
@@ -691,19 +756,34 @@ async function tabFailure(tabId, message, dispatched) {
   return tabError(message, code, state, !dispatched);
 }
 
-function httpStatusFor(tabId, url) {
+function mainFrameRecord(tabId, url) {
   const seen = mainFrameStatus.get(tabId);
-  return seen && seen.url.split('#')[0] === url.split('#')[0] ? seen.statusCode : undefined;
+  return seen && seen.url.split('#')[0] === url.split('#')[0] ? seen : undefined;
 }
+
+// The status of the tab's url, from a request started at or after `since`.
+function httpStatusFor(tabId, url, since = -Infinity) {
+  const seen = mainFrameRecord(tabId, url);
+  return seen && seen.at >= since ? seen.statusCode : undefined;
+}
+
+// The tab's document is about to be replaced: forget its status, so only the new response counts.
+function markReload(tabId) {
+  mainFrameStatus.delete(tabId);
+  tabReloads.set(tabId, Date.now());
+}
+
+// How long after a wake or reload a refused injection may still be the old document.
+const RELOAD_SETTLE_MS = 5000;
 
 // Firefox can deliver a response's webRequest events after tabs reports its page complete
 // (3-20 ms late, mostly on the first loads after the browser starts).
 const MAIN_FRAME_STATUS_WAIT_MS = 1000;
 
-// Resolves the status recorded for the tab's url, waiting up to MAIN_FRAME_STATUS_WAIT_MS for
-// it to be recorded; undefined on timeout or when the tab closes.
-function waitForHttpStatus(tabId, url) {
-  const known = httpStatusFor(tabId, url);
+// Resolves the status recorded for the tab's url (see httpStatusFor), waiting up to
+// MAIN_FRAME_STATUS_WAIT_MS for it to be recorded; undefined on timeout or when the tab closes.
+function waitForHttpStatus(tabId, url, since = -Infinity) {
+  const known = httpStatusFor(tabId, url, since);
   if (known !== undefined) return Promise.resolve(known);
   return new Promise(resolve => {
     if (!mainFrameStatusWaiters.has(tabId)) mainFrameStatusWaiters.set(tabId, new Set());
@@ -715,7 +795,7 @@ function waitForHttpStatus(tabId, url) {
       resolve(status);
     };
     const notify = closed => {
-      const status = closed ? undefined : httpStatusFor(tabId, url);
+      const status = closed ? undefined : httpStatusFor(tabId, url, since);
       if (closed || status !== undefined) finish(status);
     };
     const deadline = setTimeout(() => finish(undefined), MAIN_FRAME_STATUS_WAIT_MS);
@@ -727,21 +807,32 @@ const isLoadedWebPage = state =>
   state && !state.discarded && state.status === 'complete' && /^https?:/i.test(state.url);
 
 // An http(s) page that loaded but refuses injection is a document the browser rendered
-// itself, such as an error response with an empty body; retrying cannot reach it.
+// itself, such as an error response with an empty body or a PDF/JSON viewer; retrying cannot
+// reach it. It may instead be an old document about to be replaced (navigating): within
+// RELOAD_SETTLE_MS of a wake or reload, unless a response since then is an error, and when a
+// 2xx response only arrives while the status is awaited.
 async function injectionFailure(tabId, e) {
   const message = `Cannot inject content script: ${e.message}`;
   let state = await tabState(tabId);
   if (!isLoadedWebPage(state)) return await tabFailure(tabId, message, false);
-  if (httpStatusFor(tabId, state.url) === undefined) {
-    await waitForHttpStatus(tabId, state.url);
+  const reloadedAt = tabReloads.get(tabId);
+  const settling = Date.now() - reloadedAt < RELOAD_SETTLE_MS;
+  const since = settling ? reloadedAt : -Infinity;
+  const known = httpStatusFor(tabId, state.url, since);
+  if (known === undefined) {
+    await waitForHttpStatus(tabId, state.url, since);
     state = await tabState(tabId);
     if (!isLoadedWebPage(state)) return await tabFailure(tabId, message, false);
   }
+  const httpStatus = httpStatusFor(tabId, state.url, since);
+  const withStatus = httpStatus ? { httpStatus } : {};
+  if (!(httpStatus >= 400) && (settling || (known === undefined && httpStatus !== undefined))) {
+    return tabError(message, 'navigating', { ...state, ...withStatus });
+  }
   const { title } = await browser.tabs.get(tabId).catch(() => ({}));
-  const httpStatus = httpStatusFor(tabId, state.url);
   const page = httpStatus >= 400 ? `an HTTP ${httpStatus} error response` : 'a page';
   return tabError(`The tab shows ${page} with no scriptable document. ${message}`, 'error_page',
-    { ...state, title, ...(httpStatus ? { httpStatus } : {}) }, false);
+    { ...state, title, ...withStatus }, false);
 }
 
 // An error response has no text of its own; report it as an empty page.
@@ -768,6 +859,16 @@ async function withTabState(tabId, response) {
   return { ...response, state };
 }
 
+// Injects the content script unless the page already runs the current one; throws if it cannot.
+async function ensureContentScript(tabId) {
+  try {
+    const ping = await browser.tabs.sendMessage(tabId, { action: 'ping' });
+    if (ping && ping.version >= EXPECTED_CONTENT_VERSION) return;
+  } catch {}
+  await browser.tabs.executeScript(tabId, { file: '/content/content.js' });
+  await new Promise(r => setTimeout(r, 150));
+}
+
 async function forwardToContent(action, params) {
   const tabId = params.tabId || (await getActiveTabId());
   if (!tabId) return { error: 'No active tab found' };
@@ -779,22 +880,10 @@ async function forwardToContent(action, params) {
     return tabError(`Cannot access browser internal page: ${state.url.split('?')[0]}`, 'restricted_page', state);
   }
   
-  // Check if content script is loaded and up-to-date
-  let needsInject = false;
   try {
-    const ping = await browser.tabs.sendMessage(tabId, { action: 'ping' });
-    if (!ping || ping.version < EXPECTED_CONTENT_VERSION) needsInject = true;
-  } catch {
-    needsInject = true;
-  }
-
-  if (needsInject) {
-    try {
-      await browser.tabs.executeScript(tabId, { file: '/content/content.js' });
-      await new Promise(r => setTimeout(r, 150));
-    } catch (e) {
-      return await injectionFailure(tabId, e);
-    }
+    await ensureContentScript(tabId);
+  } catch (e) {
+    return await injectionFailure(tabId, e);
   }
 
   let response;
@@ -840,6 +929,7 @@ async function reloadTabBrowser(tabId, bypassCache) {
   try {
     const id = tabId || (await getActiveTabId());
     if (!id) return { error: 'No tab' };
+    markReload(id);
     await browser.tabs.reload(id, { bypassCache: !!bypassCache });
     return { ok: true, tabId: id, bypassCache: !!bypassCache };
   } catch (e) { return { error: e.message }; }
