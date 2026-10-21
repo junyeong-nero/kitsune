@@ -104,6 +104,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
   an identical retry succeeds; follow `hint` first (for example, take a new snapshot).
   `false` means a write may already have taken effect (a submit, message, payment
   or deletion can be behind any click or keypress); inspect the page before acting again.
+  The exception is `error_page`: nothing reached the page, and repeating cannot succeed.
 - `hint`: a short recovery step. `state`: the current state that explains the
   failure, where available (for page targets: `tabId`, `url`, `status`).
 
@@ -117,6 +118,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `tab_unloaded` | The tab is discarded and its page cannot be reached; use `browser_wake_tab` | true |
 | `restricted_page` | Browser-internal page (`about:`, `moz-extension:`, …) | true |
 | `content_unavailable` | The page's content script could not be injected or did not answer | true before dispatch; false for writes after |
+| `error_page` | A loaded `http(s)` page refused the content script: the browser shows its own document, such as an error response with an empty body. `state` adds `title` and, when the extension saw the response, `httpStatus`. Nothing was dispatched, but reads fail the same way until the tab navigates; for a 4xx/5xx status, `browser_page_text` instead returns an empty result (`text: ""`, `empty: true`, `httpStatus`, `tabId`, `url`, `title`) | false |
 | `extension_disconnected` | The extension is not connected, reconnected before sending, or disconnected while waiting (`state.connected`) | true if not sent; false for writes after |
 | `timeout` | The bridge sent the command but no reply arrived in time (`state.timeoutSeconds`); from the MCP server, the bridge did not answer | false for writes (MCP: POST) |
 | `bridge_unavailable` | The MCP server cannot reach or start the bridge | true |
@@ -124,7 +126,8 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `outcome_not_observed` | The action was dispatched, but the outcome given in `expect` did not happen in time (see [Action outcomes](#action-outcomes)) | false for writes |
 
 Writes are the bridge's read-only-mode write actions plus file-upload commits,
-focus, and blur. For a read, the bridge always reports `retryable: true`.
+focus, and blur. For a read, the bridge reports `retryable: true`, except for
+`error_page`, where repeating cannot succeed.
 
 Identity is checked before mutation. A missing or browser-internal target tab fails
 before any message reaches a page. Refs encode their document: a ref used after
@@ -175,10 +178,28 @@ selector/ref have no target and run immediately. Other actions ignore `wait`.
 The bridge and MCP transport timeouts grow by the wait bound. Batch commands run in
 sequence, so a batch's timeout covers the sum of its waits (actionability waits,
 element/URL/title/result waits, `newTab` waits and sleeps); for `parallel`, the slowest sequence counts.
+Control flow counts its bodies: `retry` counts every attempt plus its backoff sleeps,
+`if` its longer branch, `while` `maxIterations` passes of its body, and `try` its `do`
+and `catch`. `browser_retry` and `/api/retry` grow the same way; without waits they
+keep their 60 s and 35 s bounds.
 
 These are reliability checks borrowed from Playwright. They don't make the
 events trusted input: dispatch is still synthetic DOM events. A rendered target
-can still be covered by an overlay, which isn't detected. If the page unloads
+can still be covered by an overlay, which isn't detected.
+
+`hidden_or_covered` stays a success warning in immediate mode, not a failure.
+Synthetic events reach a hidden element, and pages rely on that: a label-driven
+custom widget keeps its native checkbox or select `display: none`, and refusing
+by CSS heuristics would break actions that work today. Callers that want refusal
+pass `wait=True`, which fails a pointer target that never renders with
+`not_actionable` before dispatching anything. Overlay detection with an
+`elementFromPoint` hit test is deliberately not done, as a failure or as a wait
+condition. Cookie banners and sticky headers often cover a target's center after
+it scrolls into view while the synthetic event still reaches the target, so
+refusing there would fail working actions. Hit tests also stop at closed shadow
+roots and cross-origin frames, and a single sample is unreliable under
+`pointer-events: none`, transforms, and animations. A covered target could later
+be reported as an additive warning, after benchmark validation. If the page unloads
 during the wait, the command fails like any other unload (`navigating` or
 `content_unavailable`, `retryable: false` for writes), because the background
 can't tell whether the action ran.
@@ -233,17 +254,18 @@ action and the check cannot target different tabs after a focus change.
 | `{"selector": "<css>"}` | a matching element is visible |
 | `{"selector": "<css>", "gone": true}` | no matching element is visible (removed or hidden) |
 | `{"selector": "<css>", "value": "<str>"}` | the first matching element's value equals the string |
+| `{"selector": "<css>", "value_changed": true}` | the first matching element's value differs from its value before dispatch (an element absent before dispatch counts as changed once present) |
 | `{"text": "<str>"}` / `{"text_gone": "<str>"}` | the visible page text contains / no longer contains the literal substring |
 
 ```json
 { "selector": ".toast", "timeout": 3000 }
 ```
 
-Supported on `browser_click`, `browser_type`, `browser_keypress`, `browser_submit_form`,
-`browser_select_option`, `browser_check`, and `browser_navigate`. Over HTTP and in batch
-commands (including `retry`), `expect` is also accepted by the other page actions on one
-existing tab: double-click, hover, scroll, drag, focus, blur, form-fill, back/forward/reload,
-and click-and-wait-navigation. Element conditions take a CSS selector, not a ref, because
+Supported on `browser_click`, `browser_double_click`, `browser_hover`, `browser_scroll`,
+`browser_drag`, `browser_type`, `browser_form_fill`, `browser_keypress`, `browser_submit_form`,
+`browser_select_option`, `browser_check`, `browser_navigate`, `browser_back`,
+`browser_forward`, and `browser_reload_tab`. Over HTTP and in batch commands (including
+`retry`), `expect` is also accepted by focus, blur, and click-and-wait-navigation. Element conditions take a CSS selector, not a ref, because
 the post-action snapshot replaces the refs from earlier snapshots. An invalid `expect` is
 rejected before anything is dispatched.
 
@@ -281,6 +303,9 @@ itself could not read the page, `observed` has its `error` and `code`. A tab tha
 navigating is checked again until the deadline. If the tab closed, `state.closed` is
 `true`. Sensitive fields are never read back, so a `value` outcome on one is reported
 as not met with `observed.redacted: true`, and the expected value is not echoed.
+`value_changed` reads the value once before dispatch (`observed.before` reports it). If
+that read fails, or the field is sensitive, the action is not dispatched and the result
+is an `error`.
 The post-action snapshot is taken right after dispatch; after a delayed outcome,
 take a new `browser_snapshot` to see the updated page. Without `expect`, results are unchanged.
 
@@ -479,11 +504,15 @@ as a separate, unrestricted trust boundary.
 
 `browser_audit` (`/api/audit`) returns recent write-action entries:
 `{ts, action, params, ok, error, ms}`. `params` never contains JavaScript bodies
-(`code`), typed text or stored secrets. These values are replaced with
+(`code`, the `condition` of `if`/`while`, the `predicate` of `syncBarrier`),
+typed text or stored secrets. These values are replaced with
 `"[redacted]"`:
 
 - `text` of `type` and `keypress`;
 - `value` of `fill` and `setEditableContent`;
+- `value` of `selectOption`, whether or not the `<select>` is a sensitive field
+  (the bridge sees only the selector or ref);
+- `prompt_text` of `handleDialog` (`browser_handle_dialog` prompt answer);
 - every value of `formFill` `fields`. The field keys (selectors, names or labels)
   are kept;
 - `value` of `cookies` (`browser_cookies`);
@@ -498,6 +527,18 @@ response body, so its entries are logged as sent. Nested commands (`batch`
 `if`/`while`/`try` blocks) follow the same rule. `uploadFile` entries keep their
 file paths; file contents are never logged. The extension still receives the
 unredacted value. Only the audit copy is scrubbed.
+
+Each command run inside `browser_batch`, `browser_parallel`, `browser_broadcast`,
+`browser_retry`, a workflow, or a batch `sequence`/`if`/`while`/`try` gets its own
+entry, including held `confirmation_required` steps. These entries add
+`parent: {call, path}`. `call` is shared by every entry from one container call.
+`path` lists the enclosing steps from the outermost, for example
+`[{"action": "batch", "index": 1}, {"action": "parallel", "sequence": 0, "index": 2}]`.
+The frames are `batch`/`sequence` `index`, workflow `name` and `index`, `parallel`
+`sequence` and `index`, `broadcast` `tabId`, `retry` `attempt` (from 1), `if`
+`branch` and `index`, `while` `iteration` and `index`, and `try` `block` (`do` or
+`catch`) and `index`. A nested container (for example a `parallel` inside a batch)
+is logged after its steps. Direct calls have no `parent`.
 
 ### `browser_tabs(action="list", tab_id=None, url=None, force=False, raw=False, wait=False, timeout=15000)`
 

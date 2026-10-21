@@ -15,7 +15,12 @@ const MAX_RECONNECT_DELAY = 15000;
 
 // Policies survive document navigation, but are cleared when a tab closes.
 const dialogPolicies = new Map();
-browser.tabs.onRemoved.addListener(tabId => dialogPolicies.delete(tabId));
+// The last main-frame HTTP status per tab, so an unscriptable error page can name it.
+const mainFrameStatus = new Map();
+browser.tabs.onRemoved.addListener(tabId => { dialogPolicies.delete(tabId); mainFrameStatus.delete(tabId); });
+browser.webRequest?.onHeadersReceived.addListener(
+  ({ tabId, url, statusCode }) => { if (tabId >= 0) mainFrameStatus.set(tabId, { url, statusCode }); },
+  { urls: ['<all_urls>'], types: ['main_frame'] });
 
 // Tabs a page opens (target=_blank links, window.open) name it as their opener.
 // Page actions report the tabs their tab opened since the action started.
@@ -264,7 +269,7 @@ async function dispatchCommand(command) {
     case 'closeTab':     return await closeTab(params.tabId);
     case 'wakeTab':      return await wakeTab(params.tabId);
     case 'reloadExtension': return reloadExtensionAction();
-    case 'getPageTextFromTab': return await forwardToContent('getPageText', params);
+    case 'getPageTextFromTab': return await getPageText(params);
 
     // 1.4.0 browser-level additions
     case 'pinTab':           return await updateTab(params.tabId, { pinned: !!params.pinned });
@@ -301,9 +306,9 @@ async function dispatchCommand(command) {
       }
       return result;
     }
+    case 'getPageText':  return await getPageText(params);
     case 'waitForText':
     case 'getPageInfo':
-    case 'getPageText':
     case 'getSnapshot':
     case 'getAccessibilityTree':
     case 'getFormFields':
@@ -607,12 +612,14 @@ async function wakeTab(tabId) {
 // Error contract (see docs/api-reference.md#action-errors): `error` keeps its text; code,
 // retryable, hint and state are machine-readable. retryable is false when the message may
 // have reached the page, so its outcome is unknown; the bridge relaxes that for reads.
+// error_page is never retryable: nothing reached the page, but repeating cannot succeed.
 const TAB_FAILURE_HINTS = {
   tab_closed: 'The tab no longer exists; list tabs with browser_tabs and target an open tab.',
   tab_unloaded: 'The tab was unloaded; wake it with browser_wake_tab, then take a new browser_snapshot.',
   navigating: 'The tab is loading a new document; wait for it with browser_wait_for, then take a new browser_snapshot.',
   content_unavailable: 'The page did not answer; inspect it with browser_snapshot before repeating the action.',
   restricted_page: 'Browser-internal pages cannot be scripted; navigate the tab to a web page or target another tab.',
+  error_page: 'The page has no scriptable document (often an error response with an empty body), so reading it again fails the same way; check state.httpStatus and state.title, then navigate the tab elsewhere or target another tab.',
 };
 
 async function tabState(tabId) {
@@ -633,6 +640,34 @@ async function tabFailure(tabId, message, dispatched) {
   if (!state) return tabError(message, 'tab_closed', { tabId });
   const code = state.discarded ? 'tab_unloaded' : state.status === 'loading' ? 'navigating' : 'content_unavailable';
   return tabError(message, code, state, !dispatched);
+}
+
+function httpStatusFor(tabId, url) {
+  const seen = mainFrameStatus.get(tabId);
+  return seen && seen.url.split('#')[0] === url.split('#')[0] ? seen.statusCode : undefined;
+}
+
+// An http(s) page that loaded but refuses injection is a document the browser rendered
+// itself, such as an error response with an empty body; retrying cannot reach it.
+async function injectionFailure(tabId, e) {
+  const message = `Cannot inject content script: ${e.message}`;
+  const state = await tabState(tabId);
+  if (!state || state.discarded || state.status !== 'complete' || !/^https?:/i.test(state.url)) {
+    return await tabFailure(tabId, message, false);
+  }
+  const { title } = await browser.tabs.get(tabId).catch(() => ({}));
+  const httpStatus = httpStatusFor(tabId, state.url);
+  const page = httpStatus >= 400 ? `an HTTP ${httpStatus} error response` : 'a page';
+  return tabError(`The tab shows ${page} with no scriptable document. ${message}`, 'error_page',
+    { ...state, title, ...(httpStatus ? { httpStatus } : {}) }, false);
+}
+
+// An error response has no text of its own; report it as an empty page.
+async function getPageText(params) {
+  const result = await forwardToContent('getPageText', params);
+  if (result.code !== 'error_page' || params.selector || !(result.state.httpStatus >= 400)) return result;
+  const { tabId, url, title, httpStatus } = result.state;
+  return { text: '', empty: true, httpStatus, tabId, url, title };
 }
 
 // Tab APIs fail opaquely; name the common case of a tab that no longer exists.
@@ -676,7 +711,7 @@ async function forwardToContent(action, params) {
       await browser.tabs.executeScript(tabId, { file: '/content/content.js' });
       await new Promise(r => setTimeout(r, 150));
     } catch (e) {
-      return await tabFailure(tabId, `Cannot inject content script: ${e.message}`, false);
+      return await injectionFailure(tabId, e);
     }
   }
 
