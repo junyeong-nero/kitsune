@@ -139,13 +139,26 @@ const field = (tagName, attrs, props) => new Element(tagName, attrs, [], props);
   const plainAction = await bridge.handleCommand({ action: 'checkBox', selector: '#remember', checked: true });
   assert.equal(calls.at(-1).text, undefined);
   assert.doesNotMatch(plainAction.snapshot, /Cancel free/);
-  const textAction = await bridge.handleCommand({ action: 'checkBox', selector: '#remember', checked: false, snapshotText: true });
+  const textAction = await bridge.handleCommand({ action: 'checkBox', selector: '#remember', checked: false, snapshotText: true,
+    snapshot: 'full' });
   assertNoLeak('post-action text snapshot', textAction);
   assert.equal(calls.at(-1).text, true);
   assert.equal(calls.at(-1).maxChars, 4000);
   assert.match(textAction.snapshot, /- text "Cancel free until Oct 30\."/);
   assert.ok(textAction.snapshot.includes(`checkbox "Remember me" [ref=${textAction.target_ref}] [value="on" checked=false]`));
   assert.equal(textAction.url, undefined, 'post-action results keep their own fields');
+  // A text delta (#137) adds the text the action changed and leaves unchanged text out.
+  const notice = main.children[1];
+  remember.dispatchEvent = event => {
+    if (event.type === 'change') notice.childNodes[0].textContent = 'Saved. Cancel free until ';
+    return true;
+  };
+  const textDelta = await bridge.handleCommand({ action: 'checkBox', selector: '#remember', checked: true, snapshotText: true });
+  assertNoLeak('post-action text delta', textDelta);
+  assert.equal(textDelta.snapshot_delta, true);
+  assert.match(textDelta.snapshot, /- text "Saved\. Cancel free until Oct 30\."/);
+  assert.ok(textDelta.snapshot.includes(`checkbox "Remember me" [ref=${textDelta.target_ref}] [value="on" checked=true]`));
+  assert.doesNotMatch(textDelta.snapshot, /See terms|Booking details|textbox "Email"/);
   // Explicit text snapshots report the tab they read.
   assert.equal((await bridge.handleCommand({ action: 'getSnapshot', text: true })).tabId, 42);
   assert.equal((await bridge.handleCommand({ action: 'getSnapshot', text: true, tabId: 7 })).tabId, 7);

@@ -34,7 +34,7 @@ def bridge_build() -> str:
     code it loaded, not newly edited files on disk.
     """
     digest = hashlib.sha256()
-    paths = [PACKAGE_DIR / name for name in ("bridge.py", "bridge_control.py", "version.py")]
+    paths = [PACKAGE_DIR / name for name in ("bridge.py", "bridge_control.py", "task_modes.py", "version.py")]
     extension = SOURCE_ROOT / "extension"
     if extension.is_dir():
         paths += sorted(p for p in extension.rglob("*") if p.suffix in {".js", ".json"})

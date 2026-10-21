@@ -94,17 +94,22 @@ offers confirmation.
 Short refs (`e12`) are scoped to the tab, document and snapshot generation, tracked
 by the extension. Indexes are never reused across snapshots or tabs; after an
 extension reload, take a new snapshot. A new snapshot,
-`browser_dom`, or the post-action snapshot below replaces earlier refs in that
-tab, and navigation invalidates them; `browser_find`, `browser_forms`, and
-`browser_wait_for(selector=...)` add refs without replacing any. Detached or
+`browser_dom`, or a full post-action snapshot below replaces earlier refs in that
+tab, and navigation invalidates them; `browser_find`, `browser_forms`,
+`browser_wait_for(selector=...)` and post-action deltas add refs without replacing any. Detached or
 outdated refs return `stale ref, call browser_snapshot again` (`code: "stale_ref"`);
 for a replaced ref, `state.latestObservation` names the call with the current refs
 and, when the element is unambiguously the same, `state.currentRef` is its current
 ref. Always use refs from the latest result.
 
 Click, type, fill, select, check, keypress, submit, and navigate responses include
-a fresh `snapshot` capped at 4,000 characters (`snapshot_truncated` indicates more
-content), and `target_ref` is the acted-on element's new ref for a follow-up action.
+a `snapshot` capped at 4,000 characters (`snapshot_truncated` indicates more
+content), and `target_ref` is the acted-on element's ref for a follow-up action.
+For click, type, fill, select, check and keypress it is a delta (`snapshot_delta: true`):
+only the target and what the action changed or revealed, such as an opened menu's
+options, anchored there instead of at the page top; earlier refs stay valid. Submit,
+navigate and actions that load another document return a full snapshot (see
+[Post-action snapshots](api-reference.md#post-action-snapshots)).
 If snapshot capture fails, `snapshot_error` preserves the action result; take a
 new snapshot before using refs. To recover from a stale ref, take a new snapshot
 and retry with the new ref; never repeat a write just to refresh refs. See
@@ -117,7 +122,8 @@ URL, title and tab ID in one bounded call (see
 To start a task, `browser_tabs(include_active=True)` returns the tab list with that read
 of the active tab as `active_page`.
 Set `KITSUNE_POST_ACTION_SNAPSHOT=0` in the **bridge daemon's environment** and
-restart the daemon to disable these automatic snapshots. Explicit snapshots
+restart the daemon to disable these automatic snapshots, or `full` to always return
+full ones. Explicit snapshots
 remain available. This is a DOM-based accessibility approximation, not Firefox's
 platform accessibility tree; open and closed shadow roots are traversed. Same-origin
 iframes are read and acted on like the page; cross-origin iframes are listed but opaque
@@ -303,7 +309,7 @@ destructive, idempotent, and open-world hints. Clients can use these hints to
 inform permission prompts; enforcement depends on the client. Tools combining
 read and write operations are annotated for their most dangerous operation,
 including when called in a read mode. The hints are not enforced policy. The bridge
-enforces only `browser_set_policy` (`readonly`, `allow`/`deny`, and
+enforces task-mode limits and `browser_set_policy` (`readonly`, `allow`/`deny`, and
 [ask-before-act](api-reference.md#ask-before-act)).
 
 Screenshots return MCP image content by default. Large previews are JPEG-encoded
@@ -332,6 +338,46 @@ for early capture.
 until the condition holds in the top-level document's rendered text.
 Matching is case-sensitive substring matching.
 
+### Task modes
+
+Set `KITSUNE_MODE=read|draft|act` in the MCP server environment and restart the client.
+The default is `act`, preserving the existing tool surface and bridge policy. Mode names
+ignore case and surrounding whitespace; unknown names fail at startup.
+
+```toml
+[mcp_servers.kitsune.env]
+KITSUNE_MODE = "read"
+```
+
+| Mode | Published tools and enforced limits |
+|---|---|
+| `read` | Read tools plus navigation to HTTP(S) pages (or `about:blank`) and scrolling. `browser_tab_list()` replaces the multi-action `browser_tabs`. No clicks, field writes, JavaScript, submits, confirmations or screenshots/file writes. |
+| `draft` | Read surface plus `browser_type`, `browser_select_option`, `browser_form_fill` and, with the full preset, `browser_check`. Fills plain text only; no click/keypress/submit/dialog confirmation or JavaScript. Ask-before-act is forced: sensitive fields, payment-like pages and uninspectable targets are refused before filling, without a confirmation token. |
+| `act` | Existing behavior, including the independently configured ask-before-act policy. |
+
+Modes intersect with `KITSUNE_CAPS` and `KITSUNE_TOOL_PRESET`; they never enable a
+disabled group or a tool the preset drops. With the default core/lean configuration,
+`read` publishes nine tools: status, list-only tabs, navigate, page info/text, forms,
+DOM, snapshot and find. `draft` adds type, select-option and form-fill. Scrolling
+requires `KITSUNE_TOOL_PRESET=full`. Extra enabled groups contribute only their read
+tools. The personal-data `history` group still requires explicit opt-in.
+
+Restricted surfaces use first-paragraph descriptions and omit `confirm_token`.
+Calling an unpublished tool by name returns `tool_not_published` with the mode setting
+needed to publish it; `browser_status.mcp_tools.mode` identifies a restricted server.
+The bridge enforces the mode on every request, including calls made by name or directly
+over HTTP. A restricted request cannot change policy, run containers or resume an act
+call. Draft form-fill inspects every target before writing any field.
+
+Modes are per MCP client: a read client cannot loosen its mode by calling
+`browser_set_policy`, and does not change another client's policy on the shared daemon.
+The bridge's existing URL/readonly/locked-ask policy can tighten the mode further.
+Use an `act` client or the browser itself for a sensitive action. Modes limit agent
+commands, not page scripts: navigation can still trigger site behavior and field events
+can autosave a draft. They are not an incognito session or an application-level sandbox.
+Exact token counts and research/account-lookup task measurements belong to
+browser-mcp-bench; character-size guards in this repo are not token measurements.
+
 ### Lean tool preset
 
 **`lean` is the default `core` surface (#31).** The 16 `core` tools listed below
@@ -347,8 +393,7 @@ KITSUNE_TOOL_PRESET = "full"
 and leaves every tool definition unchanged. In the #31 A/B (24 tasks, one model, one
 attempt per arm) it showed no detected success or safety loss against the 30-tool
 surface; that is workload-specific, and the dropped tools are needed for the tasks
-in the last column of the table below. Groups other than `core` always register in
-full. Case and surrounding whitespace are ignored; unknown preset names fail at startup.
+in the last column of the table below. Groups other than `core` register in full before the task-mode filter. Case and surrounding whitespace are ignored; unknown preset names fail at startup.
 A dropped tool is not in `tools/list`; calling it returns `tool_not_published` with
 the hint `KITSUNE_TOOL_PRESET=full`, and `browser_status` shows `mcp_tools.preset`
 (see [Tools](#tools)). An allowlist that names tools the server does not publish gets
@@ -394,6 +439,7 @@ kept tools retain the parameters read and draft flows use.
 | Variable | Default | Meaning |
 |---|---|---|
 | `KITSUNE_CAPS` | `core` | Comma-separated capability groups above; `all` enables every group except `history`, which reads personal data and must be named, and enables all `core` tools unless `KITSUNE_TOOL_PRESET=lean` |
+| `KITSUNE_MODE` | `act` | Task surface and per-request policy: `read`, `draft`, or `act`. See [Task modes](#task-modes) |
 | `KITSUNE_TOOL_PRESET` | Unset (`lean`, or `full` with `KITSUNE_CAPS=all`) | `lean` registers 14 of the 30 `core` tools; `full` registers all 30. See [Lean tool preset](#lean-tool-preset) |
 | `KITSUNE_HOME` | `~/.kitsune` | Data directory (0700) |
 | `KITSUNE_HTTP_PORT` | `47651` | Bridge HTTP API |
@@ -406,7 +452,7 @@ kept tools retain the parameters read and draft flows use.
 | `KITSUNE_HISTORY_ALLOW_DOMAINS` | Unset (every domain) | Bridge: comma-separated domains (with subdomains) the `history` tools may return; see [History and bookmarks](api-reference.md#history-and-bookmarks) |
 | `KITSUNE_HISTORY_DENY_DOMAINS` | Unset (none) | Bridge: comma-separated domains (with subdomains) the `history` tools never return; wins over the allow list |
 | `KITSUNE_HISTORY_MAX_DAYS` | `30` | Bridge: how many days back the `history` tools may look. `browser_set_policy` can only tighten these three |
-| `KITSUNE_POST_ACTION_SNAPSHOT` | Enabled | Set to `0` in the bridge daemon environment and restart it to disable automatic post-action snapshots, or `text` to add readable text lines to them |
+| `KITSUNE_POST_ACTION_SNAPSHOT` | Enabled (deltas) | Set to `0` in the bridge daemon environment and restart it to disable automatic post-action snapshots, `full` to return full snapshots instead of [deltas](api-reference.md#post-action-snapshots), or `text` to add readable text lines to them |
 
 `~/.kitsune/` holds:
 

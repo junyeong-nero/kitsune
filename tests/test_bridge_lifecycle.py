@@ -443,7 +443,7 @@ class BridgeVersionTests(unittest.TestCase):
             root = Path(temp)
             package = root / "src" / "kitsune"
             package.mkdir(parents=True)
-            for name in ("bridge.py", "bridge_control.py", "version.py"):
+            for name in ("bridge.py", "bridge_control.py", "task_modes.py", "version.py"):
                 (package / name).write_text("original")
             extension = root / "extension"
             extension.mkdir()
@@ -455,8 +455,11 @@ class BridgeVersionTests(unittest.TestCase):
                 (package / "bridge.py").write_text("updated")
                 second = version.bridge_build()
                 self.assertNotEqual(first, second)
+                (package / "task_modes.py").write_text("updated modes")
+                third = version.bridge_build()
+                self.assertNotEqual(second, third)
                 script.write_text("updated")
-                self.assertNotEqual(second, version.bridge_build())
+                self.assertNotEqual(third, version.bridge_build())
 
 
 if __name__ == "__main__":

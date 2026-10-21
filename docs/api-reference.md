@@ -42,8 +42,48 @@ settings that publish it; restart the MCP client after changing them:
 enabled `caps`, and the count of known tools it leaves `unpublished`, for example
 `{"preset": "lean", "caps": ["core"], "unpublished": 85}`. The bridge is shared by
 every MCP server, so `GET /api/status` does not have it.
-The bridge endpoints below remain available unchanged; MCP tool names and
-parameters are separate from HTTP endpoint names and JSON command actions.
+MCP tool names and parameters are separate from HTTP endpoint names and JSON
+command actions. Task-mode requests restrict the bridge routes too (below).
+
+### Task modes
+
+`KITSUNE_MODE=read|draft|act` selects both the MCP surface and per-request bridge
+limits. Default: `act` (unchanged behavior). Case and surrounding whitespace are
+ignored; invalid modes fail at MCP startup. Modes intersect with the preset and
+capability groups, including the named-only history group.
+
+- `read`: read tools plus `browser_navigate` and `browser_scroll` (scroll still needs
+  the full preset). `browser_tab_list()` replaces `browser_tabs`: no parameters,
+  returns the same compact tab inventory as `browser_tabs(action="list")`, with no
+  mutation action. Screenshots are excluded because they can write files.
+- `draft`: read plus type/select-option/form-fill/check (check still needs full).
+  Plain-text editor writes only. Forces ask-before-act checks; a sensitive field,
+  payment-like page or uninspectable target returns `mode_restricted` before dispatch.
+  Form-fill preflights the entire target set, sending only field keys for inspection.
+- Neither restricted mode permits click, submit, keypress, dialog confirmation,
+  agent JavaScript, policy changes, container calls or resume. No confirmation tokens
+  are issued or accepted. Navigate permits HTTP(S) or `about:blank`, not script,
+  data or local-file URLs. Existing global URL/readonly/ask policy can tighten this.
+
+Restricted `tools/list` descriptions use their first paragraph, and schemas omit
+`confirm_token`. Calling an excluded name returns the existing `tool_not_published`
+MCP error, with `KITSUNE_MODE=draft` or `KITSUNE_MODE=act` in its hint, together with
+any required caps/preset changes. The error's `state` and `browser_status.mcp_tools`
+include `mode` when restricted. `act` definitions and status fields are unchanged.
+
+The MCP server sends `X-Kitsune-Mode: read|draft` on **every** bridge request. No header
+means `act`. The bridge validates the header, canonicalizes route aliases before
+checking access, and carries the mode through async dispatch without changing the
+shared policy. A denied route/action answers HTTP 403 with
+`{"error":"…", "code":"mode_restricted", "retryable":false, "hint":"…"}`; an invalid
+header answers HTTP 400 with `code: "invalid_mode"`. `GET/POST /api/get-policy`
+reports the shared policy plus the effective `mode`, `ask` and `confirmAllowed:false`
+for restricted requests. Another authenticated client can still use act; this is
+not a separate authentication boundary. Keep the bridge token private.
+
+See [Task modes](guide.md#task-modes) for configuration, the nine-tool read/lean
+surface and site-event/autosave limitations. Exact token and task-success measurements
+are external browser-mcp-bench work, not inferred from compact JSON character counts.
 
 ### Element targets
 
@@ -134,7 +174,8 @@ reload, take a new snapshot (old short refs fail as `not_in_snapshot`). Legacy
 | Call | Effect on refs in that tab |
 |---|---|
 | `browser_snapshot` (also scoped), `browser_dom` | Starts a new generation: earlier refs fail as `stale_ref`/`snapshot_replaced`. A `ref` argument to `browser_snapshot` or `browser_dom` is resolved first |
-| Successful `browser_click`, `browser_type` (`type`/`fill`), `browser_select_option`, `browser_check`, `browser_keypress`, `browser_submit_form`, `browser_navigate` | Their post-action `snapshot` starts a new generation, like `browser_snapshot`. An `expect` failure (`outcome_not_observed`) is an error, but the action ran and its result still carries that `snapshot` and `target_ref` |
+| Successful `browser_submit_form`, `browser_navigate`, and any action below whose result has a full `snapshot` (no `snapshot_delta`) | Their post-action `snapshot` starts a new generation, like `browser_snapshot`. An `expect` failure (`outcome_not_observed`) is an error, but the action ran and its result still carries that `snapshot` and `target_ref` |
+| Successful `browser_click`, `browser_type` (`type`/`fill`), `browser_select_option`, `browser_check`, `browser_keypress` with `snapshot_delta: true` | Their [delta](#post-action-snapshots) adds refs to the current generation, like `browser_find`; earlier refs stay valid, and an element that already had a ref keeps it |
 | Navigation, reload, or back/forward to another document | Earlier refs fail as `stale_ref`/`other_document` |
 | `browser_find`, `browser_forms`, `browser_wait_for(selector/ref)` | Add refs to the current generation; earlier refs stay valid |
 | Other failed actions, other reads, `browser_hover`, `browser_scroll`, `browser_type(mode="editable")` and other actions without a post-action snapshot | No change, unless the page itself removes the element (`element_removed`) |
@@ -144,12 +185,12 @@ Snapshots in one tab do not affect refs in another tab. Pass `tab_id` when more
 than one tab is in use: a ref sent to the wrong tab fails as `other_document` and
 never acts on another element.
 
-After an action, use the refs in its `snapshot`. `target_ref` is the new ref of
+After an action, use the refs in its `snapshot`. `target_ref` is the ref of
 the acted-on element (absent for `browser_navigate`, or when that element is gone),
 so a follow-up such as `browser_keypress(key="Enter", ref=target_ref)` needs no
-extra snapshot. Only emitted lines carry usable refs: when `snapshot_truncated`
+extra snapshot. Only emitted lines carry new refs: when `snapshot_truncated`
 is set and the element you need is missing, or when `snapshot_error` replaces the
-snapshot, call `browser_snapshot` before using any ref. With the post-action
+snapshot, call `browser_snapshot` before using a ref the result did not show. With the post-action
 snapshot disabled (`KITSUNE_POST_ACTION_SNAPSHOT=0`, or `includeSnapshot: false`
 in a batch), actions leave refs unchanged.
 
@@ -169,8 +210,9 @@ Recovering without repeating a consequential action:
   the action is still needed. Refs from the three generations before the current
   one are compared; refs from `browser_find`, `browser_forms` or `browser_wait_for`
   carry no role and name, so they get no `currentRef`.
-- To get fresh refs after a successful write, use its `snapshot`/`target_ref` or
-  call `browser_snapshot`. Never repeat the write.
+- To get refs after a successful write, use its `snapshot`/`target_ref` (with
+  `snapshot_delta`, earlier refs also stay valid) or call `browser_snapshot`. Never
+  repeat the write.
 - After a failure with `retryable: false` (a write whose outcome is unknown),
   observe first (`browser_snapshot`, `browser_page_info`, `browser_wait_for`) and
   act again only if the page shows the effect did not happen.
@@ -179,6 +221,36 @@ Recovering without repeating a consequential action:
 
 Refs are not stable across snapshots: an unchanged element gets a new ref in
 each generation.
+
+#### Post-action snapshots
+
+A successful `browser_click`, `browser_type` (`type`/`fill`), `browser_select_option`,
+`browser_check` or `browser_keypress` returns a delta: `snapshot_delta: true` and a
+`snapshot` with only the lines the action changed, in document order under their
+ancestors. Right before acting, the content script records the page's snapshot lines;
+afterwards the delta lists the acted-on target and every line that record lacks: new or
+newly shown elements (an opened menu's options, a toast, autocomplete suggestions) and
+elements whose name, value or state changed. Unchanged parts of the page, such as a
+header above the target, are left out; removed elements are not listed. A delta is
+capped at 4,000 characters like a full snapshot (`snapshot_truncated`), and a
+same-document URL or title change (`history.pushState`) adds `url` or `title`:
+
+```json
+{ "ok": true, "tag": "button", "text": "Review type", "snapshot_delta": true,
+  "url": "https://shop.example/app/reviews?filter=open", "target_ref": "e41",
+  "snapshot": "- main \"\" [ref=e40]\n  - button \"Review type\" [ref=e41] [expanded=true]\n  - listbox \"Review type\" [ref=e90]\n    - option \"Negative\" [ref=e91]" }
+```
+
+An empty delta means nothing visible changed apart from removals. Use `expect` to
+verify an outcome, or `browser_snapshot` for the whole page.
+
+The snapshot is full (no `snapshot_delta`; it starts a new generation) for
+`browser_submit_form` and `browser_navigate`, which usually load another document,
+when the action loaded another document before the snapshot was taken (it has no
+record to compare with), and on request: `"snapshot": "full"` on an HTTP or batch
+command, or `KITSUNE_POST_ACTION_SNAPSHOT=full` in the bridge environment for every
+action. A full post-action snapshot keeps the acted-on target within its cap and fills
+the rest in document order.
 
 ### Action errors
 
@@ -464,7 +536,7 @@ Supported on `browser_click`, `browser_double_click`, `browser_hover`, `browser_
 `browser_select_option`, `browser_check`, `browser_navigate`, `browser_back`,
 `browser_forward`, and `browser_reload_tab`. Over HTTP and in batch commands (including
 `retry`), `expect` is also accepted by focus, blur, and click-and-wait-navigation. Element conditions take a CSS selector, not a ref, because
-the post-action snapshot replaces the refs from earlier snapshots. An invalid `expect` is
+a full post-action snapshot replaces the refs from earlier snapshots. An invalid `expect` is
 rejected before anything is dispatched.
 
 When the condition is met, the result is the usual action result plus two fields:
@@ -1389,7 +1461,7 @@ identical tag/role/input-type structure show the first five items, followed by
 Leaf controls such as toolbar buttons are not collapsed. Hidden items are excluded
 from grouping; collapsed items have no refs. Scope a specific card/list item to
 inspect it fully. Post-action snapshots additionally keep the acted-on target's
-item, even beyond the first five, and return a fresh `target_ref`. Character-limit
+item, even beyond the first five, and return its `target_ref`. Character-limit
 truncation can still omit other context but never the visible acted-on target.
 
 `text=True` (opt-in; the default is unchanged) adds readable text in the same call:
@@ -1403,8 +1475,9 @@ characters, and truncation sets `truncated: true` and ends it with
 still collapse, but siblings with only inline content (prose paragraphs, text list
 items) do not. `selector`, `ref` and `max_depth` scope text the same way.
 With `KITSUNE_POST_ACTION_SNAPSHOT=text` in the bridge environment, post-action
-snapshots use the same text lines within their 4,000-character cap, so an
-`expect={"text": ...}` already present there needs no further read.
+snapshots use the same text lines within their 4,000-character cap (a delta lists
+the text lines the action changed), so an `expect={"text": ...}` already present
+there needs no further read.
 
 #### Frames
 
@@ -1548,7 +1621,7 @@ which skips them (`"method"`).
 
 A successful submit names the form it submitted in `form`, with the same fields
 (`action` and `method` as written in the form's attributes, `button` the submit
-control's label). Its `ref` is issued before the post-action snapshot, which
+control's label). Its `ref` is issued before the full post-action snapshot, which
 replaces it; use `target_ref` and the snapshot's refs afterwards.
 
 ```json

@@ -14,10 +14,10 @@
     "firstParagraphTotal": 774
   },
   "browser_click": {
-    "description": 966,
+    "description": 951,
     "firstParagraph": 187,
     "inputSchema": 1566,
-    "total": 2707,
+    "total": 2692,
     "firstParagraphTotal": 1928
   },
   "browser_console_logs": {
@@ -140,10 +140,10 @@
     "firstParagraphTotal": 834
   },
   "browser_snapshot": {
-    "description": 724,
+    "description": 739,
     "firstParagraph": 153,
     "inputSchema": 578,
-    "total": 1495,
+    "total": 1510,
     "firstParagraphTotal": 924
   },
   "browser_status": {
