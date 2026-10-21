@@ -1344,6 +1344,36 @@ With `KITSUNE_POST_ACTION_SNAPSHOT=text` in the bridge environment, post-action
 snapshots use the same text lines within their 4,000-character cap, so an
 `expect={"text": ...}` already present there needs no further read.
 
+#### Media
+
+Rendered `<video>` and `<audio>` elements appear as `video`/`audio` lines with a ref
+and their state: `src` (the current source, clipped at 160 characters), `duration`
+and `currentTime` in seconds (`null` while unknown), `paused`, `muted` and `controls`.
+Their children (sources, tracks, fallback content) are not listed.
+
+The browser's native media controls answer only trusted input, so a synthetic click
+cannot press their buttons or scrub their timeline. Instead, `browser_click` on a media
+element whose click the page neither cancelled nor handled itself toggles playback with
+`play()`/`pause()` and adds `media` (the state above) to its result. The batch `media`
+command drives one element directly: `{"action": "media", "ref": "…", "op": "play"}`
+with `op` one of `play`, `pause`, `seek` (with `time` in seconds), `mute` or `unmute`;
+it returns `{ok, tag, media}`. `play` waits up to 2 s for playback to start, and `seek`
+up to 2 s for the frame at `time`, so a screenshot taken next shows it. `media` is a
+write: read-only mode refuses it.
+
+When playback does not start, `media` fails with `error`, `reason` and `media`, and
+`browser_click` stays a success whose `media` adds `error` and `reason`:
+
+- `refused`: the browser rejected `play()`. Muted media plays without user activation;
+  unmuted playback may be refused (`NotAllowedError`). Mute first, or use
+  `browser_trusted_click` on the control.
+- `background_tab`: Firefox delays playback in a tab until it has been shown once
+  (`media.block-autoplay-until-in-foreground`). Agent tabs open in the background
+  ([Never take focus](#never-taking-focus)), so the agent's own tabs cannot play media
+  until shown. Kitsune never shows a tab for playback: it cancels the pending `play()`.
+  Select the tab explicitly with `browser_tabs` select (refused with `user_active` while
+  the user is using their tab), then play again.
+
 ### `browser_type(selector="", text="", mode="type", clear=False, tab_id=None, ref=None, element=None, wait=False, timeout=10000)`
 
 Replaces `browser_fill` and `browser_set_editable_content`.
@@ -1779,7 +1809,7 @@ Returns `{ "results": [...], "progress": [...], "status": "ok", "summary": "..."
 A response whose `status` is not `ok` adds `call` and `resume_token` for
 [POST /api/resume](#post-apiresume).
 
-**Batch actions:** navigate, newTab, closeTab, switchTab, click, type, fill, scroll, hover, find, js, pageInfo, pageText, pageTextByTabId, tabs, forms, dom, highlight, screenshot, waitForElement, waitForResult, sleep, parallel.
+**Batch actions:** navigate, newTab, closeTab, switchTab, click, type, fill, scroll, hover, find, js, pageInfo, pageText, pageTextByTabId, tabs, forms, dom, highlight, screenshot, waitForElement, waitForResult, sleep, parallel, media (see [Media](#media)).
 
 ### POST /api/resume
 Continue a batch, parallel or workflow call that did not finish `ok` (`browser_resume`).

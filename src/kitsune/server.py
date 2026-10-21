@@ -707,6 +707,7 @@ def browser_click(
 ) -> dict:
     """Click an element on the page by CSS selector or coordinates. A write tool's selector
     matching several elements fails with ambiguous_target unless first=True.
+    Video/audio: toggles play/pause.
 
     Action contract (other action tools point here for the parameters they accept):
         ref/element: Prefer ref from browser_snapshot; element is an audit-only description.
@@ -2044,7 +2045,8 @@ def browser_batch(commands: list[dict]) -> dict:
 
     Available actions: navigate, newTab, closeTab, switchTab, click, type,
     setEditableContent, fill, scroll, hover, find, js, pageInfo, pageText, screenshot, tabs,
-    forms, dom, sleep, waitForElement, pageTextByTabId, wakeTab, parallel
+    forms, dom, sleep, waitForElement, pageTextByTabId, wakeTab, parallel, media
+    (ref, op: play|pause|seek|mute|unmute, time: seconds for seek)
 
     click, doubleClick, hover, drag, type, fill, setEditableContent, selectOption,
     checkBox and keypress accept "wait": true and "timeout" (ms, default 10000) to
