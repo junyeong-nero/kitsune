@@ -119,15 +119,26 @@ def _failed(result) -> bool:
     return isinstance(result, dict) and (bool(result.get("error")) or result.get("ok") is False)
 
 
+def _compact_json(result) -> TextContent:
+    """Unindented JSON text: every result is resent with each later model request (#136)."""
+    text = json.dumps(result, separators=(",", ":"), ensure_ascii=False, default=str)
+    return TextContent(type="text", text=text)
+
+
 def _mcp_errors(function):
-    """Return failed results as MCP errors (isError) with the same JSON text content."""
+    """Return dict results as compact JSON text; failed results become MCP errors (isError).
+
+    Dicts inside list results (screenshot metadata) are compacted too; other items are left
+    to FastMCP.
+    """
     @functools.wraps(function)
     def call(*args, **kwargs):
         result = function(*args, **kwargs)
-        if not _failed(result):
+        if isinstance(result, list):
+            return [_compact_json(item) if isinstance(item, dict) else item for item in result]
+        if not isinstance(result, dict):
             return result
-        text = json.dumps(result, indent=2, ensure_ascii=False, default=str)
-        return CallToolResult(content=[TextContent(type="text", text=text)], isError=True)
+        return CallToolResult(content=[_compact_json(result)], isError=_failed(result))
 
     return call
 
@@ -438,16 +449,29 @@ def browser_status() -> dict:
     return result
 
 
+def _tab_list(result: dict, window_fields: bool) -> dict:
+    """Drop windowId/index from listed tabs unless requested or the tabs span windows (#136)."""
+    tabs = result.get("tabs")
+    if not isinstance(tabs, list) or window_fields:
+        return result
+    if len({tab.get("windowId") for tab in tabs}) > 1:
+        return result
+    shown = [{key: value for key, value in tab.items() if key not in ("windowId", "index")}
+             for tab in tabs]
+    return {**result, "tabs": shown}
+
+
 @tool("core", annotations=ToolAnnotations(title="Manage browser tabs", **DESTRUCTIVE))
 def browser_tabs(
     action: Literal["list", "new", "close", "select"] = "list",
     tab_id: int | None = None, url: str | None = None,
     force: bool = False, raw: bool = False, wait: bool = False, timeout: int = 15000,
-    confirm_token: str | None = None,
+    confirm_token: str | None = None, window_fields: bool = False,
 ) -> dict:
     """List, open, close, or select tabs.
 
-    list: always a fresh read of the browser's tabs.
+    list: always a fresh read of the browser's tabs; windowId/index only with
+    several windows or window_fields.
     new: url defaults to about:blank; raw bypasses the image viewer. Returns tabId
     immediately unless wait=True, which waits up to timeout ms for the page to load
     and returns tabId, actual url (after redirects) and status. On timeout the tab
@@ -457,7 +481,7 @@ def browser_tabs(
     confirm_token: new only; see browser_click.
     """
     if action == "list":
-        return _get("/api/tabs")
+        return _tab_list(_get("/api/tabs"), window_fields)
     if action == "new":
         body = {"url": url if url is not None else "about:blank"}
         if raw:
