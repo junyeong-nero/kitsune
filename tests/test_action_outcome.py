@@ -144,6 +144,12 @@ class OutcomeObservedTests(unittest.TestCase):
         })
         self.assertNotIn("code", result)
 
+    def test_text_line_in_post_action_text_snapshot_needs_no_further_read(self):
+        extension = FakeExtension(click={"ok": True, "snapshot": '- text "Saved 3 items."'})
+        result = run_expect(extension, "click", {"tabId": 7, "selector": "#save"}, {"text": "Saved 3"})
+        self.assertEqual(extension.actions(), ["click"])
+        self.assertEqual(result["outcome"]["observed"], {"source": "snapshot", "textVisible": True})
+
     def test_delayed_update_is_waited_for(self):
         extension = FakeExtension(click={"ok": True, "snapshot": '- button "Save"'},
                                   waitForText={"ok": True, "text": "Saved", "elapsed": 900})

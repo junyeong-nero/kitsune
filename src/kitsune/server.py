@@ -338,7 +338,7 @@ def browser_dom(tab_id: int | None = None) -> dict:
 @tool("core", annotations=ToolAnnotations(title="Accessibility snapshot", **READ))
 def browser_snapshot(
     tab_id: int | None = None, selector: str | None = None,
-    ref: str | None = None, max_depth: int | None = None,
+    ref: str | None = None, max_depth: int | None = None, text: bool = False,
 ) -> dict:
     """Get a compact accessibility-style text tree and fresh element refs.
 
@@ -359,10 +359,14 @@ def browser_snapshot(
             Resolved before this snapshot invalidates earlier refs.
         max_depth: Non-negative DOM depth relative to the subtree root (body by
             default). Zero includes only the root; None traverses all depths.
+        text: Also include visible text lines (no refs), url, title and tabId;
+            capped at 12,000 chars with a truncation marker.
     """
     if max_depth is not None and (type(max_depth) is not int or max_depth < 0):
         return {"error": "max_depth must be a non-negative integer"}
     body = _with_tab({}, tab_id)
+    if text:
+        body["text"] = True
     if selector is not None:
         body["selector"] = selector
     if ref is not None:

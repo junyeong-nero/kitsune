@@ -3,7 +3,7 @@
 
 'use strict';
 
-const EXPECTED_CONTENT_VERSION = 25;
+const EXPECTED_CONTENT_VERSION = 26;
 const WS_URL = 'ws://127.0.0.1:47652';
 // scripts/build_extension.py sets 'signed' for the AMO build (see content.js).
 const KITSUNE_BUILD = 'dev';
@@ -179,12 +179,16 @@ async function handleCommand(command) {
     if (params.toRef) params.to = params.toRef;
   }
   const withSnapshot = POST_SNAPSHOT_ACTIONS.has(params.action) && params.includeSnapshot !== false;
-  if (withSnapshot && params.tabId == null) params.tabId = await getActiveTabId();
+  // Text snapshots report which tab they read.
+  const textSnapshot = params.action === 'getSnapshot' && !!params.text;
+  if ((withSnapshot || textSnapshot) && params.tabId == null) params.tabId = await getActiveTabId();
   const result = await dispatchCommand(params);
+  if (textSnapshot && result && !result.error) result.tabId = params.tabId;
   if (withSnapshot && result && !result.error && result.ok !== false) {
     try {
       const snapshot = await forwardToContent('getSnapshot', {
         tabId: params.tabId, maxChars: 4000, focusLastAction: params.action !== 'navigate',
+        ...(params.snapshotText ? { text: true } : {}),
       });
       if (snapshot.error) result.snapshot_error = snapshot.error;
       else {

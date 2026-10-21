@@ -1336,8 +1336,10 @@ async def _send_to_extension_raw(action, params=None, timeout=30):
     global command_counter
 
     params = dict(params or {})
-    params.setdefault("includeSnapshot", os.environ.get("KITSUNE_POST_ACTION_SNAPSHOT", "1").lower()
-                      not in {"0", "false", "no", "off"})
+    post_action_snapshot = os.environ.get("KITSUNE_POST_ACTION_SNAPSHOT", "1").lower()
+    params.setdefault("includeSnapshot", post_action_snapshot not in {"0", "false", "no", "off"})
+    if post_action_snapshot == "text":
+        params.setdefault("snapshotText", True)
     ws = extension_ws
     if not ws:
         return _disconnected_error(
@@ -2239,7 +2241,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     def handle_snapshot(self):
         body = self.read_body() if self.command == 'POST' else {}
-        params = {key: body[key] for key in ('tabId', 'selector', 'ref', 'maxDepth')
+        params = {key: body[key] for key in ('tabId', 'selector', 'ref', 'maxDepth', 'text')
                   if body.get(key) is not None}
         max_depth = params.get('maxDepth')
         if max_depth is not None and (type(max_depth) is not int or max_depth < 0):
