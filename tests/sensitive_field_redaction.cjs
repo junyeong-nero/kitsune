@@ -181,6 +181,7 @@ const editable = (tagName, props = {}) => new Element(tagName, {
   // their results and errors never echo the value.
   for (const msg of [
     { action: 'fill', selector: '#vault', value: fake('VAULT') },
+    { action: 'fill', selector: '#closed-otp', value: fake('CLOSED_FILLED') },
     { action: 'formFill', fields: { '#field5': fake('NEW') } },
     { action: 'type', selector: '#field3', text: fake('OTP'), clear: true },
     { action: 'fill', selector: '#missing', value: fake('MISSING') },
@@ -197,6 +198,7 @@ const editable = (tagName, props = {}) => new Element(tagName, {
     if (['click', 'describeTarget'].includes(msg.action)) assert.equal(result.ok, true, JSON.stringify(result));
   }
   assert.equal(vaultInner.value, fake('VAULT'), 'fill pierced the open shadow root');
+  assert.equal(closedOtp.value, fake('CLOSED_FILLED'), 'fill pierced the closed shadow root');
 
   const snapshot = await send({ action: 'getSnapshot' });
   assertNoLeak('snapshot', snapshot);

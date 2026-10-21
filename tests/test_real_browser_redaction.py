@@ -73,6 +73,7 @@ PAGES = {
 <x-secret-input id="vault" role="textbox" aria-label="Vault key"></x-secret-input>
 <x-code-input id="closed-otp" role="textbox" aria-label="Login code"></x-code-input>
 <x-search-input id="site-search" role="searchbox" aria-label="Search"></x-search-input>
+<x-nested-input id="nested" aria-label="Nickname"></x-nested-input>
 <script src="/page.js"></script>""",
     "/notes": """<!doctype html><title>Notes</title>
 <style>.masked { -webkit-text-security: disc; }</style>
@@ -112,6 +113,17 @@ function defineControl(name, mode, inner) {
 defineControl('x-secret-input', 'open', '<input type="password">');
 defineControl('x-code-input', 'closed', '<input autocomplete="one-time-code" inputmode="numeric">');
 defineControl('x-search-input', 'open', '<input type="search">');
+// An input two closed roots deep, which browser_fill does not reach.
+defineControl('x-inner-field', 'closed', '<input>');
+customElements.define('x-nested-input', class extends HTMLElement {
+  constructor() {
+    super();
+    const root = this.attachShadow({ mode: 'closed' });
+    root.innerHTML = '<x-inner-field></x-inner-field>';
+    this.inner = root.firstChild;
+  }
+  get value() { return this.inner.value; }
+});
 """
 
 
@@ -340,17 +352,23 @@ class RealBrowserRedactionTests(harness.RealBrowserTestCase):
     def test_open_and_closed_shadow_dom_fields_are_redacted_on_their_hosts(self):
         tab_id = self.open_tab(self.site.origin + "/widgets")
         vault, code = fake("SHADOW_VAULT"), fake("CLOSED_SHADOW_CODE")
-        for selector, value in [("#vault", vault), ("#site-search", "kittens")]:
+        # browser_type (mode="type") also reaches the input inside the closed root.
+        self.type_into(tab_id, "#closed-otp", fake("CLOSED_SHADOW_TYPED"))
+        self.assertEqual(self.js(tab_id, "document.getElementById('closed-otp').wrappedJSObject.value"),
+                         fake("CLOSED_SHADOW_TYPED"))
+        # browser_fill reaches inputs inside open and closed roots (#107).
+        for selector, value in [("#vault", vault), ("#closed-otp", code), ("#site-search", "kittens")]:
             result = self.assert_ok(self.call("/api/fill", {"selector": selector, "value": value, "tabId": tab_id}))
+            self.assertEqual((result["pierced"], result["tag"]), (True, "input"), selector)
             self.assertIn("snapshot", result)
             self.assertNotIn(MARKER, json.dumps(result), "a write result echoes a filled value")
-        # browser_fill cannot reach an input inside a closed root yet (#107), so page code sets this one.
-        self.js(tab_id, f"document.getElementById('closed-otp').wrappedJSObject.value = {json.dumps(code)}")
         # The values reached the inner inputs, and the hosts reflect them as page code would.
         self.assertEqual(self.js(tab_id, "['vault', 'closed-otp', 'site-search'].map(id => "
                                          "document.getElementById(id).wrappedJSObject.value).join(',')"),
                          f"{vault},{code},kittens")
-        self.assertEqual(self.js(tab_id, "document.getElementById('vault').getAttribute('value')"), vault)
+        self.assertEqual(self.js(tab_id, "['vault', 'closed-otp'].map(id => "
+                                         "document.getElementById(id).getAttribute('value')).join(',')"),
+                         f"{vault},{code}")
 
         reads = self.read_all(tab_id)
         self.assert_hidden(tab_id, reads, [vault, code])
@@ -367,6 +385,21 @@ class RealBrowserRedactionTests(harness.RealBrowserTestCase):
         search = self.row(reads, "site-search")["query"]
         self.assertEqual((search.get("redacted"), search["attrs"]["value"]), (None, "kittens"))
         self.assertIn('value="kittens"', reads["browser_html"]["html"])
+
+    def test_a_field_browser_fill_cannot_reach_fails_as_not_fillable(self):
+        tab_id = self.open_tab(self.site.origin + "/widgets")
+        for path, body in [("/api/fill", {"value": "fixture-nick"}),
+                           ("/api/type", {"text": "fixture-nick", "clear": True})]:
+            with self.subTest(path=path):
+                result = self.call(path, {"selector": "#nested", **body, "tabId": tab_id})
+                self.assert_error(result, "not_fillable", True)
+                self.assertRegex(result["error"], r"^Element is not a fillable field")
+                self.assertEqual(result["state"]["tag"], "x-nested-input")
+                self.assertNotIn("fixture-nick", json.dumps(result))
+                if path == "/api/fill":
+                    # The page-context fallback ran and could not see the closed roots either.
+                    self.assertEqual(result["state"]["pageContext"], "no_field")
+        self.assertEqual(self.js(tab_id, "document.getElementById('nested').wrappedJSObject.value"), "")
 
     # ── Textareas and editable regions ──
 

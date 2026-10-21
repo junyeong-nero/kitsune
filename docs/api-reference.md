@@ -122,6 +122,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `code` | Meaning | `retryable` |
 |---|---|---|
 | `not_found` | No element matches the selector (also `No target`, `from/to element not found`); after an [actionability wait](#actionability-wait), `state` has `timeoutMs` and `elapsed` | true |
+| `not_fillable` | `browser_type` (`type`/`fill` modes) found no field to write. The target is not a field (`fill`: input, textarea or select; `type`: input or textarea, or a `contenteditable` element without `clear`) and has none in its own open or closed shadow root (`fill` also looks in its light DOM). A field in a shadow root nested inside another shadow root is not reached. Nothing was written. `state.tag` is the target's tag; for `fill`, `state.pageContext` is the page-context fallback's result (`not_found`, `no_field`, `error`, or `not_run` when its page script did not run) | true |
 | `not_actionable` | An [actionability wait](#actionability-wait) timed out on a target that exists but never rendered (`state.reason: "not_rendered"`, `timeoutMs`, `elapsed`); nothing was dispatched | true |
 | `stale_ref` | The ref is no longer valid; `state.reason` is `element_removed`, `not_in_snapshot`, `snapshot_replaced` (a newer snapshot of this document; `state.latestObservation` and, for the same element, `state.currentRef`, see [Ref lifetime](#ref-lifetime)), or `other_document` (the tab navigated, or the ref came from another tab) | true |
 | `navigating` | The tab is loading: a `not_found`/`stale_ref` while loading (`state.cause`), or the page unloaded while handling the command. Also a page that refused the content script within 5 s of a wake or reload without an error status, or whose 2xx response arrived only while the command waited for it: it may be an old document about to be replaced | true before dispatch; false for writes after |
@@ -1165,7 +1166,12 @@ Add `"wait": true, "timeout": 10000` to wait for the target first (see
 
 ### POST /api/fill
 `{ "selector": "input#email", "value": "user@example.com" }`
-Handles shadow DOM, React/Vue state, with automatic fallbacks.
+Handles shadow DOM, React/Vue state, with automatic fallbacks. A web-component host
+is filled through the first input, textarea or select in its open or closed shadow
+root (closed roots through Firefox's `openOrClosedShadowRoot`). `/api/type` and
+`/api/set-editable-content` also look in open and closed shadow roots. When `/api/fill`
+or `/api/type` cannot reach a field, the result is a `not_fillable`
+[action error](#action-errors).
 
 ### POST /api/scroll
 `{ "direction": "down", "amount": 500 }` — optional container `selector` or `ref`;
