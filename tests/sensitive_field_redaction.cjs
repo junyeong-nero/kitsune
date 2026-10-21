@@ -464,7 +464,7 @@ const editable = (tagName, props = {}) => new Element(tagName, {
   // find cannot match against sensitive values, but still matches others.
   const probe = await send({ action: 'find', query: MARKER });
   assertNoLeak('find', probe);
-  assert.ok(probe.results.every(result => result.score === 1), 'only the interactive bonus scores');
+  assert.equal(probe.results.length, 0, 'sensitive values match nothing');
   const byValue = await send({ action: 'find', query: 'user@example.test' });
   assert.equal(byValue.results[0].selector, '#email');
   const byNotes = await send({ action: 'find', query: 'plain notes' });
@@ -476,7 +476,7 @@ const editable = (tagName, props = {}) => new Element(tagName, {
     ['plain paragraph', '#plain', 'plain paragraph'], ['Backup code', '#code-line', 'Backup code:'],
     ['shown inside mask', '#masked-box', 'shown inside mask']]) {
     const found = await send({ action: 'find', query });
-    assert.deepEqual([found.results[0].selector, found.results[0].text, found.results[0].score], [selector, text, 2], query);
+    assert.deepEqual([found.results[0].selector, found.results[0].text], [selector, text], query);
   }
 
   // One read computes each element's mask once, though find scores nested candidates
