@@ -17,9 +17,21 @@ const MAX_RECONNECT_DELAY = 15000;
 const dialogPolicies = new Map();
 // The last main-frame HTTP status per tab, so an unscriptable error page can name it.
 const mainFrameStatus = new Map();
-browser.tabs.onRemoved.addListener(tabId => { dialogPolicies.delete(tabId); mainFrameStatus.delete(tabId); });
+// Callbacks waiting for a tab's next status record (see waitForHttpStatus); called with true on close.
+const mainFrameStatusWaiters = new Map();
+const notifyStatusWaiters = (tabId, closed = false) =>
+  [...(mainFrameStatusWaiters.get(tabId) || [])].forEach(notify => notify(closed));
+browser.tabs.onRemoved.addListener(tabId => {
+  dialogPolicies.delete(tabId);
+  mainFrameStatus.delete(tabId);
+  notifyStatusWaiters(tabId, true);
+});
 browser.webRequest?.onHeadersReceived.addListener(
-  ({ tabId, url, statusCode }) => { if (tabId >= 0) mainFrameStatus.set(tabId, { url, statusCode }); },
+  ({ tabId, url, statusCode }) => {
+    if (tabId < 0) return;
+    mainFrameStatus.set(tabId, { url, statusCode });
+    notifyStatusWaiters(tabId);
+  },
   { urls: ['<all_urls>'], types: ['main_frame'] });
 
 // Tabs a page opens (target=_blank links, window.open) name it as their opener.
@@ -684,13 +696,46 @@ function httpStatusFor(tabId, url) {
   return seen && seen.url.split('#')[0] === url.split('#')[0] ? seen.statusCode : undefined;
 }
 
+// Firefox can deliver a response's webRequest events after tabs reports its page complete
+// (3-20 ms late, mostly on the first loads after the browser starts).
+const MAIN_FRAME_STATUS_WAIT_MS = 1000;
+
+// Resolves the status recorded for the tab's url, waiting up to MAIN_FRAME_STATUS_WAIT_MS for
+// it to be recorded; undefined on timeout or when the tab closes.
+function waitForHttpStatus(tabId, url) {
+  const known = httpStatusFor(tabId, url);
+  if (known !== undefined) return Promise.resolve(known);
+  return new Promise(resolve => {
+    if (!mainFrameStatusWaiters.has(tabId)) mainFrameStatusWaiters.set(tabId, new Set());
+    const waiters = mainFrameStatusWaiters.get(tabId);
+    const finish = status => {
+      clearTimeout(deadline);
+      waiters.delete(notify);
+      if (!waiters.size) mainFrameStatusWaiters.delete(tabId);
+      resolve(status);
+    };
+    const notify = closed => {
+      const status = closed ? undefined : httpStatusFor(tabId, url);
+      if (closed || status !== undefined) finish(status);
+    };
+    const deadline = setTimeout(() => finish(undefined), MAIN_FRAME_STATUS_WAIT_MS);
+    waiters.add(notify);
+  });
+}
+
+const isLoadedWebPage = state =>
+  state && !state.discarded && state.status === 'complete' && /^https?:/i.test(state.url);
+
 // An http(s) page that loaded but refuses injection is a document the browser rendered
 // itself, such as an error response with an empty body; retrying cannot reach it.
 async function injectionFailure(tabId, e) {
   const message = `Cannot inject content script: ${e.message}`;
-  const state = await tabState(tabId);
-  if (!state || state.discarded || state.status !== 'complete' || !/^https?:/i.test(state.url)) {
-    return await tabFailure(tabId, message, false);
+  let state = await tabState(tabId);
+  if (!isLoadedWebPage(state)) return await tabFailure(tabId, message, false);
+  if (httpStatusFor(tabId, state.url) === undefined) {
+    await waitForHttpStatus(tabId, state.url);
+    state = await tabState(tabId);
+    if (!isLoadedWebPage(state)) return await tabFailure(tabId, message, false);
   }
   const { title } = await browser.tabs.get(tabId).catch(() => ({}));
   const httpStatus = httpStatusFor(tabId, state.url);
