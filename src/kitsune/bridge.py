@@ -63,6 +63,7 @@ BRIDGE_VERSION = PACKAGE_VERSION
 API_VERSION = "1"
 HTTP_PORT = int(os.environ.get("KITSUNE_HTTP_PORT", "47651"))
 WS_PORT = int(os.environ.get("KITSUNE_WS_PORT", "47652"))
+EXTENSION_WS_PORT = 47652  # WS_URL in extension/background/background.js
 # Opt-in idle shutdown in seconds (0 = never). The MCP server passes its
 # environment to the bridge it spawns, so clients can set this in their config.
 IDLE_TIMEOUT_ENV = "KITSUNE_BRIDGE_IDLE_TIMEOUT"
@@ -106,7 +107,7 @@ AUTH_TOKEN = _load_or_create_token()
 # ── State ──
 extension_ws = None  # WebSocket connection to extension
 extension_ws_generation = 0
-extension_info = {}  # {"version", "build"} from the extension's hello message
+extension_info = {}  # {"version", "build"} from the extension's hello message, "browser" from state
 pending_commands = {}  # id -> {"future": asyncio.Future, "ws": websocket, ...}
 command_counter = 0
 _ws_send_lock = None
@@ -1279,6 +1280,10 @@ async def ws_handler(websocket):
                     extension_info = {"version": data.get("version"), "build": data.get("build")}
                     _log(f"Extension {extension_info['version']} ({extension_info['build']} build)")
                 continue
+            if data.get("type") == "state":
+                if extension_ws is websocket:
+                    extension_info["browser"] = {"windows": data.get("windows"), "allSites": data.get("allSites")}
+                continue
 
             if cmd_id and cmd_id in pending_commands:
                 entry = pending_commands[cmd_id]
@@ -1335,7 +1340,49 @@ def _safe_to_repeat(action):
     return action is not None and action not in _REPEAT_UNSAFE_ACTIONS
 
 
+def _connection_diagnosis():
+    """browser_status diagnosis from bridge state (docs/api-reference.md#connection-diagnosis)."""
+    if extension_ws is None:
+        # An extension that connected once knows the port; one that never did may use another.
+        if WS_PORT != EXTENSION_WS_PORT and not extension_ws_generation:
+            return {"code": "port_conflict",
+                    "hint": f"The bridge waits for the extension on port {WS_PORT} (KITSUNE_WS_PORT), but the "
+                            f"extension connects to {EXTENSION_WS_PORT} unless WS_URL in "
+                            "extension/background/background.js was changed to match. Unset KITSUNE_WS_PORT, "
+                            "or change WS_URL and reload the developer build.",
+                    "state": {"port": WS_PORT, "reason": "extension_ws_port"}}
+        return {"code": "extension_disconnected",
+                "hint": "Open the browser profile where Kitsune is installed and check that Kitsune is enabled in "
+                        "about:addons (load a developer build again in about:debugging after a browser restart). "
+                        "The extension reconnects within 15 s of a bridge start; check browser_status again."}
+    version = extension_info.get("version")
+    if version != BRIDGE_VERSION:
+        return {"code": "extension_version_mismatch",
+                "hint": f"Install the Kitsune extension for bridge {BRIDGE_VERSION} (about:addons; reload a "
+                        "developer build in about:debugging), or update the server if the extension is newer. "
+                        "Then reload open tabs.",
+                "state": {"extensionVersion": version, "bridgeVersion": BRIDGE_VERSION}}
+    browser = extension_info.get("browser") or {}
+    if browser.get("windows") == 0:
+        return {"code": "browser_window_unavailable", "hint": _BROWSER_WINDOW_HINT, "state": {"windows": 0}}
+    if browser.get("allSites") is False:
+        return {"code": "host_permission_denied",
+                "hint": "Kitsune may not read or change websites: allow its site access in about:addons → "
+                        "Kitsune → Permissions.",
+                "state": {"reason": "not_granted"}}
+    return {"code": "connected"}
+
+
+# Matches the extension's browser_window_unavailable hint.
+_BROWSER_WINDOW_HINT = ("Open a normal browser window in the profile where Kitsune is installed (private windows "
+                        "need Run in Private Windows in about:addons), or pass tab_id.")
+
+
 def _disconnected_error(message, action, sent=True):
+    if not sent and extension_ws is None:
+        diagnosis = _connection_diagnosis()
+        return _action_error(message, diagnosis["code"], retryable=True, hint=diagnosis["hint"],
+                             connected=False, **diagnosis.get("state", {}))
     return _action_error(
         message, "extension_disconnected",
         retryable=not sent or _safe_to_repeat(action),
@@ -1403,6 +1450,12 @@ async def _send_to_extension_raw(action, params=None, timeout=30):
         result = await asyncio.wait_for(future, timeout=timeout)
         if action == "closeTab" and not (isinstance(result, dict) and result.get("error")):
             _cleanup_tab_scheduler_state(params.get("tabId"))
+        # An extension of another version may not know the action; nothing ran.
+        if isinstance(result, dict) and str(result.get("error", "")).startswith("Unknown action:"):
+            diagnosis = _connection_diagnosis()
+            if diagnosis["code"] == "extension_version_mismatch":
+                return _action_error(result["error"], diagnosis["code"], retryable=True,
+                                     hint=diagnosis["hint"], **diagnosis["state"])
         # The extension cannot tell reads from writes; repeating a read is always safe.
         if (isinstance(result, dict) and result.get("code") and _safe_to_repeat(action)
                 and result["code"] not in _PERSISTENT_FAILURE_CODES):
@@ -2298,6 +2351,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "extension_generation": extension_ws_generation,
             "scheduler": _scheduler_snapshot(),
             "keep_alive_tabs": [tid for tid, t in _keep_alive_tasks.items() if not t.done()],
+            "diagnosis": _connection_diagnosis(),
         })
     
     def handle_shutdown(self):

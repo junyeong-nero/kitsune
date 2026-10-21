@@ -98,7 +98,8 @@ class ServerTransportErrorTests(unittest.TestCase):
         self.assertEqual((result["code"], result["retryable"]), ("bridge_unavailable", True))
 
         with patch.object(server.httpx, "request", side_effect=httpx.ConnectError("refused")), \
-             patch.object(server, "_ensure_bridge", return_value="Cannot start Kitsune bridge: denied"):
+             patch.object(server, "_ensure_bridge",
+                          return_value=server._bridge_unavailable("Cannot start Kitsune bridge: denied")):
             result = server._request("POST", "/api/click", json={}, timeout=1)
         self.assertEqual(result["error"], "Cannot start Kitsune bridge: denied")
         self.assertEqual(result["code"], "bridge_unavailable")
@@ -170,7 +171,8 @@ class McpErrorResultTests(unittest.TestCase):
         self.assertMcpResult(self.call("browser_click", {"ref": "s1e0"}, disconnected), disconnected, True)
 
     def test_bridge_unavailable_is_an_error(self):
-        with patch.object(server, "_ensure_bridge", return_value="Cannot start Kitsune bridge: denied"):
+        with patch.object(server, "_ensure_bridge",
+                          return_value=server._bridge_unavailable("Cannot start Kitsune bridge: denied")):
             result = self.call("browser_snapshot", {}, side_effect=httpx.ConnectError("refused"))
         self.assertMcpResult(result, server._bridge_unavailable("Cannot start Kitsune bridge: denied"), True)
 

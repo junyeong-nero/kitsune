@@ -104,6 +104,7 @@ function connect() {
       reconnectDelay = 1000; // Reset backoff
       stopReconnect();
       ws.send(JSON.stringify({ type: 'hello', version: browser.runtime.getManifest().version, build: KITSUNE_BUILD }));
+      sendBrowserState();
       startHeartbeat();
       injectAllTabs(); // Inject content scripts into all existing tabs
     };
@@ -143,6 +144,20 @@ function connect() {
     cleanup();
     scheduleReconnect();
   }
+}
+
+// For the bridge's browser_status diagnosis (docs/api-reference.md#connection-diagnosis): the normal
+// windows Kitsune can use (private ones only when allowed) and whether it may script all sites.
+async function sendBrowserState() {
+  const [windows, allSites] = await Promise.all([
+    browser.windows.getAll({ windowTypes: ['normal'] }).then(all => all.length, () => null),
+    browser.permissions.contains({ origins: ['<all_urls>'] }).catch(() => null),
+  ]);
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'state', windows, allSites }));
+}
+for (const event of [browser.windows?.onCreated, browser.windows?.onRemoved,
+  browser.permissions?.onAdded, browser.permissions?.onRemoved]) {
+  event?.addListener(() => sendBrowserState());
 }
 
 function cleanup() {
@@ -457,7 +472,7 @@ async function waitForTabProperty(property, { tabId, pattern, timeout = 10000 })
       return { error: 'timeout must be non-negative milliseconds' };
     }
     const targetTabId = tabId ?? await getActiveTabId();
-    if (targetTabId == null) return { error: 'No active tab found' };
+    if (targetTabId == null) return noActiveTab('No active tab found');
     const start = Date.now();
     return await new Promise(resolve => {
       let settled = false;
@@ -592,7 +607,7 @@ async function navigateTab(url, tabId, expectTitle) {
   let targetTabId = null;
   try {
     targetTabId = tabId || (await getActiveTabId());
-    if (!targetTabId) return { error: 'No active tab' };
+    if (!targetTabId) return noActiveTab('No active tab');
     const target = urlWithoutFragment(url);
     const sameUrl = target !== null && target === urlWithoutFragment((await browser.tabs.get(targetTabId)).url);
 
@@ -735,7 +750,31 @@ const TAB_FAILURE_HINTS = {
   content_unavailable: 'The page did not answer; inspect it with browser_snapshot before repeating the action.',
   restricted_page: 'Browser-internal pages cannot be scripted; navigate the tab to a web page or target another tab.',
   error_page: 'The page has no scriptable document (often an error response with an empty body), so reading it again fails the same way; check state.httpStatus and state.title, then navigate the tab elsewhere or target another tab.',
+  host_permission_denied: 'Firefox does not let Kitsune script this site. For state.reason not_granted, allow its site access in about:addons → Kitsune → Permissions; restricted_domain sites (addons.mozilla.org, …) are closed to all extensions, so use another tab.',
+  // Matches the bridge's browser_window_unavailable diagnosis hint.
+  browser_window_unavailable: 'Open a normal browser window in the profile where Kitsune is installed (private windows need Run in Private Windows in about:addons), or pass tab_id.',
 };
+
+// Without an active tab Kitsune sees no usable window: all are closed, or only private windows
+// it may not use are open.
+const noActiveTab = message => tabError(message, 'browser_window_unavailable');
+
+// Mozilla's default extensions.webextensions.restrictedDomains: no extension may script them.
+const RESTRICTED_DOMAINS = new Set([
+  'accounts-static.cdn.mozilla.net', 'accounts.firefox.com', 'addons.cdn.mozilla.net', 'addons.mozilla.org',
+  'api.accounts.firefox.com', 'content.cdn.mozilla.net', 'discovery.addons.mozilla.org', 'install.mozilla.org',
+  'oauth.accounts.firefox.com', 'profile.accounts.firefox.com', 'support.mozilla.org', 'sync.services.mozilla.com',
+]);
+
+// Gecko refuses injection into a page's own error documents with the same message as into a
+// site Kitsune may not script, so tell the latter apart by its host.
+async function hostPermissionDenial(url) {
+  const { protocol, hostname } = new URL(url);
+  if (RESTRICTED_DOMAINS.has(hostname)) return 'restricted_domain';
+  const granted = await browser.permissions?.contains({ origins: [`${protocol}//${hostname}/*`] })
+    .catch(() => true);
+  return granted === false ? 'not_granted' : null;
+}
 
 async function tabState(tabId) {
   try {
@@ -811,6 +850,8 @@ async function injectionFailure(tabId, e) {
   const message = `Cannot inject content script: ${e.message}`;
   let state = await tabState(tabId);
   if (!isLoadedWebPage(state)) return await tabFailure(tabId, message, false);
+  const denied = await hostPermissionDenial(state.url);
+  if (denied) return tabError(message, 'host_permission_denied', { ...state, reason: denied });
   const reloadedAt = tabReloads.get(tabId);
   const settling = Date.now() - reloadedAt < RELOAD_SETTLE_MS;
   const since = settling ? reloadedAt : -Infinity;
@@ -867,7 +908,7 @@ async function ensureContentScript(tabId) {
 
 async function forwardToContent(action, params) {
   const tabId = params.tabId || (await getActiveTabId());
-  if (!tabId) return { error: 'No active tab found' };
+  if (!tabId) return noActiveTab('No active tab found');
 
   // Verify the target tab before anything can reach a page.
   const state = await tabState(tabId);
@@ -1353,7 +1394,7 @@ function removeInterceptListener() {
 // target element can submit a form. The bridge holds the command when it cannot tell.
 async function describeTarget(params) {
   const tabId = params.tabId ?? await getActiveTabId();
-  if (tabId == null) return { error: 'No active tab found' };
+  if (tabId == null) return noActiveTab('No active tab found');
   const state = await tabState(tabId);
   if (!state) return tabError(`Tab ${tabId} no longer exists`, 'tab_closed', { tabId });
   if (!params.inspect) return { tabId, url: state.url };

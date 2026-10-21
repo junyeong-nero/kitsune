@@ -105,9 +105,9 @@
     "total": 1950
   },
   "browser_status": {
-    "description": 62,
+    "description": 65,
     "inputSchema": 67,
-    "total": 318
+    "total": 321
   },
   "browser_submit_form": {
     "description": 316,

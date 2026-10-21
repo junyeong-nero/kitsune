@@ -62,7 +62,7 @@ class EnsureBridgeTests(unittest.TestCase):
                 patch.object(control, "lifecycle_lock", return_value=nullcontext()), \
                 patch.object(control, "stop", return_value="cannot safely stop"), \
                 patch.object(server.subprocess, "Popen") as spawn:
-            self.assertEqual(server._ensure_bridge(), "cannot safely stop")
+            self.assertEqual(server._ensure_bridge(), server._bridge_unavailable("cannot safely stop"))
             spawn.assert_not_called()
 
     def test_no_bridge_starts_even_with_opt_out(self):
@@ -77,8 +77,12 @@ class EnsureBridgeTests(unittest.TestCase):
         with patch.object(control, "status", side_effect=[None, None, {"build": "wrong"}]), \
                 patch.object(control, "lifecycle_lock", return_value=nullcontext()), \
                 patch("builtins.open", mock_open()), patch.object(server.subprocess, "Popen"), \
-                patch.object(server.time, "monotonic", side_effect=[0, 0, 16]), patch.object(server.time, "sleep"):
-            self.assertIn("did not start", server._ensure_bridge() or "")
+                patch.object(server.time, "monotonic", side_effect=[0, 0, 16]), patch.object(server.time, "sleep"), \
+                patch.object(control, "port_in_use") as port_in_use:
+            error = server._ensure_bridge() or {}
+            self.assertIn("did not start", error.get("error", ""))
+            self.assertEqual(error.get("code"), "bridge_unavailable")
+            port_in_use.assert_not_called()  # a bridge of another build answers on the port
 
 
 class BridgeControlTests(unittest.TestCase):
