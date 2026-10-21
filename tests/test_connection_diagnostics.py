@@ -11,6 +11,7 @@ import logging
 import os
 from pathlib import Path
 import socket
+import sys
 import tempfile
 from threading import Thread
 import time
@@ -22,7 +23,7 @@ from websockets.asyncio.client import connect
 
 from kitsune import bridge, server
 import kitsune.bridge_control as control
-from kitsune.version import extension_source_hash
+from kitsune.version import extension_manifest_hash, extension_source_hash
 from test_bridge_lifecycle import RUNNING
 from test_bridge_security import SYNTHETIC_TOKEN, Bridge, _bridge_env, _free_port
 from test_bridge_websocket import EXTENSION_ORIGIN
@@ -36,6 +37,7 @@ HASH_FILES = {
     "bg/a.js": "A\n", "content/b.js": "B\n",
 }
 HASH = "9825576d37c4d475"
+MANIFEST_HASH = "2655402d232f0401"
 
 
 def _unpacked_extension(test, files=HASH_FILES):
@@ -46,6 +48,33 @@ def _unpacked_extension(test, files=HASH_FILES):
         (directory / name).parent.mkdir(parents=True, exist_ok=True)
         (directory / name).write_text(text, encoding="utf-8")
     return directory
+
+
+class _Clock:
+    """server.time's monotonic and sleep; status probes that time out also take their timeout."""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+    def timed_out(self, timeout=2):
+        self.now += timeout
+        raise httpx.ReadTimeout("timed out")
+
+
+# Accepts connections on the port in argv[1] (the listen backlog) but never answers, like a hung bridge.
+HUNG_BRIDGE = """import socket, sys, time
+listener = socket.socket()
+listener.bind(("127.0.0.1", int(sys.argv[1])))
+listener.listen()
+print("listening", flush=True)
+time.sleep(120)
+"""
 
 
 def _ensure_bridge_with(status, port_in_use=False):
@@ -62,7 +91,8 @@ def _ensure_bridge_with(status, port_in_use=False):
 class BridgeDiagnosisTests(unittest.TestCase):
     def setUp(self):
         for name, value in (("extension_ws", None), ("extension_ws_generation", 0),
-                            ("extension_info", {}), ("WS_PORT", bridge.EXTENSION_WS_PORT)):
+                            ("extension_info", {}), ("WS_PORT", bridge.EXTENSION_WS_PORT),
+                            ("EXTENSION_SOURCE_DIR", Path(tempfile.gettempdir()) / "no-such-kitsune-extension")):
             patcher = patch.object(bridge, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -82,14 +112,43 @@ class BridgeDiagnosisTests(unittest.TestCase):
         bridge.WS_PORT = bridge.EXTENSION_WS_PORT + 1
         diagnosis = bridge._connection_diagnosis()
         self.assertEqual(diagnosis["code"], "port_conflict")
-        self.assertEqual(diagnosis["state"], {"port": bridge.WS_PORT, "reason": "extension_ws_port"})
+        self.assertEqual(diagnosis["state"], {"port": bridge.WS_PORT, "reason": "extension_ws_port",
+                                              "extensionPort": bridge.EXTENSION_WS_PORT})
         self.assertIn("KITSUNE_WS_PORT", diagnosis["hint"])
         result = asyncio.run(bridge._send_to_extension_raw("click", {}))
         self.assertEqual((result["code"], result["retryable"]), ("port_conflict", True))
-        self.assertEqual(result["state"], {"connected": False, "port": bridge.WS_PORT, "reason": "extension_ws_port"})
+        self.assertEqual(result["state"], {"connected": False, "port": bridge.WS_PORT, "reason": "extension_ws_port",
+                                           "extensionPort": bridge.EXTENSION_WS_PORT})
         # An extension that connected once uses this port; it is only disconnected now.
         bridge.extension_ws_generation = 1
         self.assertEqual(bridge._connection_diagnosis()["code"], "extension_disconnected")
+
+    def test_extension_ws_port_is_read_from_the_extension_source(self):
+        source = _unpacked_extension(self, {"background/background.js":
+                                            "'use strict';\nconst WS_URL = 'ws://127.0.0.1:47700';\n"})
+        bridge.EXTENSION_SOURCE_DIR = source
+        bridge.WS_PORT = 47700
+        self.assertEqual(bridge._connection_diagnosis()["code"], "extension_disconnected",
+                         "the bridge listens where this developer build connects")
+        bridge.WS_PORT = bridge.EXTENSION_WS_PORT
+        diagnosis = bridge._connection_diagnosis()
+        self.assertEqual(diagnosis["code"], "port_conflict")
+        self.assertEqual(diagnosis["state"], {"port": bridge.EXTENSION_WS_PORT, "reason": "extension_ws_port",
+                                              "extensionPort": 47700})
+        self.assertIn(f"{source} connects to 47700", diagnosis["hint"])
+
+        # Without a readable WS_URL, the extension's default is assumed.
+        for text in (None, "const WS_URL = BRIDGE_URL;\n", "const WS_URL = 'ws://127.0.0.1:99999';\n"):
+            with self.subTest(text=text):
+                files = {} if text is None else {"background/background.js": text}
+                bridge.EXTENSION_SOURCE_DIR = _unpacked_extension(self, files)
+                self.assertIsNone(bridge._extension_source_ws_port())
+                self.assertEqual(bridge._connection_diagnosis()["code"], "extension_disconnected")
+        with open(bridge.SOURCE_ROOT / "extension" / "background" / "background.js", encoding="utf-8") as background:
+            self.assertIn("const WS_URL = 'ws://127.0.0.1:47652';", background.read(),
+                          "_WS_URL_PORT must match the shipped declaration")
+        bridge.EXTENSION_SOURCE_DIR = bridge.SOURCE_ROOT / "extension"
+        self.assertEqual(bridge._extension_source_ws_port(), bridge.EXTENSION_WS_PORT)
 
     def test_extension_of_another_version_is_a_mismatch(self):
         for version in ("0.0.1", None):
@@ -131,6 +190,39 @@ class BridgeDiagnosisTests(unittest.TestCase):
         self.connected(sourceHash=HASH)
         with patch.object(bridge, "EXTENSION_SOURCE_DIR", source / "missing"):
             self.assertEqual(bridge._connection_diagnosis(), {"code": "connected"})
+
+    def test_manifest_only_edit_is_a_stale_developer_build(self):
+        source = _unpacked_extension(self)
+        bridge.EXTENSION_SOURCE_DIR = source
+        self.connected(sourceHash=HASH, manifestHash=MANIFEST_HASH)
+        self.assertEqual(bridge._connection_diagnosis(), {"code": "connected"})
+
+        manifest = json.loads(HASH_FILES["manifest.json"])
+        manifest["permissions"] = ["tabs"]
+        (source / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        self.assertEqual(extension_source_hash(source), HASH, "the scripts are unchanged")
+        diagnosis = bridge._connection_diagnosis()
+        self.assertEqual(diagnosis["code"], "extension_version_mismatch")
+        self.assertEqual(diagnosis["state"], {
+            "extensionVersion": bridge.BRIDGE_VERSION, "bridgeVersion": bridge.BRIDGE_VERSION,
+            "reason": "stale_developer_build", "extensionManifestHash": MANIFEST_HASH,
+            "expectedManifestHash": extension_manifest_hash(source)})
+
+        # Unknown is never a mismatch: an extension from before manifestHash compares its scripts only.
+        for info in ({"sourceHash": HASH}, {"sourceHash": HASH, "manifestHash": None},
+                     {"build": "signed", "manifestHash": MANIFEST_HASH}):
+            with self.subTest(info=info):
+                self.connected(**info)
+                self.assertEqual(bridge._connection_diagnosis(), {"code": "connected"})
+        self.connected(sourceHash=HASH, manifestHash=MANIFEST_HASH)
+        bridge.EXTENSION_SOURCE_DIR = source / "missing"
+        self.assertEqual(bridge._connection_diagnosis(), {"code": "connected"})
+
+        # Both edited: both pairs are reported.
+        bridge.EXTENSION_SOURCE_DIR = source
+        (source / "content/b.js").write_text("B edited\n", encoding="utf-8")
+        self.assertEqual(set(bridge._connection_diagnosis()["state"]) - {"extensionVersion", "bridgeVersion", "reason"},
+                         {"extensionSourceHash", "expectedSourceHash", "extensionManifestHash", "expectedManifestHash"})
 
     def test_browser_state_from_the_extension(self):
         for browser, code in (({"windows": 0, "allSites": True}, "browser_window_unavailable"),
@@ -217,10 +309,12 @@ class ExtensionStateTests(unittest.IsolatedAsyncioTestCase):
         source = patch.object(bridge, "EXTENSION_SOURCE_DIR", _unpacked_extension(self))
         source.start()
         self.addCleanup(source.stop)
-        result = await self.unknown_action(bridge.BRIDGE_VERSION, sourceHash="0123456789abcdef")
+        result = await self.unknown_action(bridge.BRIDGE_VERSION, sourceHash="0123456789abcdef",
+                                           manifestHash=MANIFEST_HASH)
         self.assertEqual((result["error"], result["code"]), ("Unknown action: getSnapshot", "extension_version_mismatch"))
         self.assertEqual((result["state"]["reason"], result["state"]["extensionSourceHash"]),
                          ("stale_developer_build", "0123456789abcdef"))
+        self.assertNotIn("extensionManifestHash", result["state"], "the manifest is unchanged")
 
 
 class SourceHashTests(unittest.TestCase):
@@ -230,6 +324,10 @@ class SourceHashTests(unittest.TestCase):
         self.assertIsNone(extension_source_hash(_unpacked_extension(self, {"manifest.json": "{}"})))
         missing_script = {name: text for name, text in HASH_FILES.items() if name != "content/b.js"}
         self.assertIsNone(extension_source_hash(_unpacked_extension(self, missing_script)))
+
+    def test_fingerprint_of_the_manifest_bytes(self):
+        self.assertEqual(extension_manifest_hash(_unpacked_extension(self)), MANIFEST_HASH)
+        self.assertIsNone(extension_manifest_hash(Path(tempfile.gettempdir()) / "no-such-kitsune-extension"))
 
 
 class ServerDiagnosisTests(unittest.TestCase):
@@ -275,6 +373,75 @@ class ServerDiagnosisTests(unittest.TestCase):
         error, _ = _ensure_bridge_with([None, None, None], port_in_use=[False, False])
         self.assertEqual(error["code"], "bridge_unavailable")
         self.assertIn("kitsune-bridge start", error["hint"])
+        self.assertEqual((error["state"]["port"], error["state"]["reason"]), (server.HTTP_PORT, "not_listening"))
+        self.assertIn("did not listen", error["error"])
+
+    def test_started_bridge_that_does_not_answer_is_diagnosed_before_the_start_timeout(self):
+        clock = _Clock()
+        probes = []
+
+        def status(timeout=2):
+            probes.append(timeout)
+            if len(probes) <= 2:
+                return None  # nothing runs before the start
+            clock.timed_out(timeout)
+
+        with patch.dict(os.environ, {"KITSUNE_TOKEN": SECRET}), patch.object(control, "status", side_effect=status), \
+                patch.object(control, "lifecycle_lock", return_value=nullcontext()), \
+                patch("builtins.open", mock_open()), \
+                patch.object(server.subprocess, "Popen", **RUNNING, **{"return_value.pid": 4242}), \
+                patch.object(server.time, "monotonic", side_effect=clock.monotonic), \
+                patch.object(server.time, "sleep", side_effect=clock.sleep), \
+                patch.object(control, "port_in_use") as port_in_use:
+            error = server._ensure_bridge()
+        port_in_use.assert_not_called()
+        self.assertLess(clock.now, server.BRIDGE_START_TIMEOUT / 2)
+        self.assertEqual(set(probes[2:]), {server.READY_PROBE_TIMEOUT})
+        self.assertEqual((error["code"], error["retryable"]), ("bridge_unavailable", True))
+        self.assertEqual(error["state"], {"port": server.HTTP_PORT, "reason": "not_responding", "pid": 4242})
+        self.assertIn("PID 4242", error["error"])
+        self.assertIn("kitsune-bridge stop", error["hint"])
+        self.assertIn(f"see {server.LOG_FILE}", error["hint"])
+        self.assertNotIn(SECRET, json.dumps(error))
+
+    def test_unanswered_port_after_a_start_that_exits_is_another_program(self):
+        """A program that accepts but never answers on the HTTP port: the new bridge cannot listen and exits."""
+        clock = _Clock()
+        calls = []
+
+        def status(timeout=2):
+            calls.append(timeout)
+            if len(calls) <= 2:
+                return None
+            clock.timed_out(timeout)
+
+        process = Mock(**{"poll.side_effect": lambda: None if clock.now < 2 else 1, "returncode": 1, "pid": 4242})
+        with tempfile.TemporaryDirectory() as home, patch.object(server, "LOG_FILE", os.path.join(home, "bridge.log")), \
+                patch.object(control, "status", side_effect=status), \
+                patch.object(control, "lifecycle_lock", return_value=nullcontext()), \
+                patch.object(server.subprocess, "Popen", return_value=process), \
+                patch.object(server.time, "monotonic", side_effect=clock.monotonic), \
+                patch.object(server.time, "sleep", side_effect=clock.sleep), \
+                patch.object(control, "port_in_use", return_value=True):
+            error = server._ensure_bridge()
+        self.assertEqual(error["code"], "port_conflict")
+        self.assertEqual(error["state"], {"port": server.HTTP_PORT, "reason": "in_use", "exitCode": 1})
+
+    def test_running_bridge_that_does_not_answer_is_not_replaced(self):
+        for pid, code, state in ((4242, "bridge_unavailable", {"port": server.HTTP_PORT, "reason": "not_responding",
+                                                               "pid": 4242}),
+                                 (None, "port_conflict", {"port": server.HTTP_PORT, "reason": "in_use"})):
+            with self.subTest(pid=pid), patch.dict(os.environ, {"KITSUNE_TOKEN": SECRET}), \
+                    patch.object(control, "status", side_effect=httpx.ReadTimeout("timed out")), \
+                    patch.object(control, "daemon_pid", return_value=pid), \
+                    patch.object(control, "lifecycle_lock") as lock, patch.object(control, "stop") as stop, \
+                    patch.object(server.subprocess, "Popen") as spawn:
+                error = server._ensure_bridge()
+            for not_called in (lock, stop, spawn):
+                not_called.assert_not_called()
+            self.assertEqual((error["code"], error["state"]), (code, state))
+            self.assertIn("does not answer", error["error"])
+            self.assertNotIn(SECRET, json.dumps(error))
 
     def test_bridge_that_exits_at_startup_is_diagnosed_at_once(self):
         with tempfile.TemporaryDirectory() as home:
@@ -382,7 +549,8 @@ class IsolatedBridgeDiagnosisTests(unittest.TestCase):
             self.addCleanup(daemon.stop)
             # Its ephemeral WebSocket port is not the extension's, and no extension ever connected.
             self.assertEqual(daemon.status()["diagnosis"]["state"],
-                             {"port": daemon.ws_port, "reason": "extension_ws_port"})
+                             {"port": daemon.ws_port, "reason": "extension_ws_port",
+                              "extensionPort": bridge.EXTENSION_WS_PORT})
             bridge_url, http_port = self.against(daemon.http_port)
             with bridge_url, http_port, patch.dict(os.environ, {"KITSUNE_TOKEN": SECRET}), \
                     patch.object(server, "_ensure_bridge") as ensure:
@@ -421,6 +589,47 @@ class IsolatedBridgeDiagnosisTests(unittest.TestCase):
         self.assertIn("in use", error["state"]["logExcerpt"].lower())
         self.assertLessEqual(len(error["state"]["logExcerpt"]), server.STARTUP_EXCERPT_CHARS)
         self.assertNotIn(SECRET, json.dumps(error))
+
+    def test_hung_bridge_is_diagnosed_without_waiting_for_the_start_timeout(self):
+        """_ensure_bridge spawns a real process that listens on a spare HTTP port but never answers."""
+        popen = server.subprocess.Popen
+        spawned = []
+
+        def spawn_hung_bridge(args, **kwargs):
+            process = popen([sys.executable, "-c", HUNG_BRIDGE, str(http_port)], **kwargs)
+            spawned.append(process)
+            self.addCleanup(process.wait, 10)
+            self.addCleanup(process.kill)
+            return process
+
+        with tempfile.TemporaryDirectory() as home:
+            http_port, ws_port = _free_port(), _free_port()
+            self.assertFalse({bridge.EXTENSION_WS_PORT, 47651} & {http_port, ws_port})
+            env = _bridge_env(home, http_port, ws_port, SECRET)
+            bridge_url = f"http://127.0.0.1:{http_port}"
+            log_file = os.path.join(home, "bridge.log")
+            with patch.dict(os.environ, env, clear=True), \
+                    patch.object(control, "BRIDGE", bridge_url), patch.object(server, "BRIDGE", bridge_url), \
+                    patch.object(control, "DATA_DIR", home), \
+                    patch.object(control, "LOCK_FILE", os.path.join(home, "bridge.lock")), \
+                    patch.object(control, "PID_FILE", os.path.join(home, "bridge.pid")), \
+                    patch.object(server, "LOG_FILE", log_file), \
+                    patch.object(server, "HTTP_PORT", http_port), patch.object(server, "WS_PORT", ws_port), \
+                    patch.object(server.subprocess, "Popen", side_effect=spawn_hung_bridge):
+                started = time.monotonic()
+                error = server._ensure_bridge()
+                elapsed = time.monotonic() - started
+                self.assertEqual(len(spawned), 1)
+                self.assertIsNone(spawned[0].poll(), "the hung process still runs")
+                # The next call finds it before starting anything; it holds no Kitsune pid lock.
+                again = server._ensure_bridge()
+                self.assertEqual(len(spawned), 1, "nothing else was started")
+        self.assertLess(elapsed, server.BRIDGE_START_TIMEOUT - 5, error)
+        self.assertEqual(error["code"], "bridge_unavailable", error)
+        self.assertEqual(error["state"], {"port": http_port, "reason": "not_responding", "pid": spawned[0].pid})
+        self.assertEqual((again["code"], again["state"]), ("port_conflict", {"port": http_port, "reason": "in_use"}))
+        for result in (error, again):
+            self.assertNotIn(SECRET, json.dumps(result))
 
     def test_another_program_on_the_http_port_is_a_port_conflict(self):
         other = HTTPServer(("127.0.0.1", 0), _NotKitsune)

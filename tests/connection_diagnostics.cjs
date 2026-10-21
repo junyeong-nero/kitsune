@@ -13,7 +13,8 @@ function event() {
 
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
-// The extension's files as fetch serves them: { manifest, 'path': text }. Without them fetch fails.
+// The extension's files as fetch serves them: { manifest, 'path': text }, manifest being what
+// getManifest() returns. Without them fetch fails.
 function background({ tabs = {}, windows = 1, granted = () => true, files = null } = {}) {
   const sockets = [];
   const sent = [];
@@ -104,24 +105,32 @@ async function testBrowserStateReachesTheBridge() {
 }
 
 // The same files as SourceHashTests in tests/test_connection_diagnostics.py: background scripts, then
-// content scripts, each once. The bridge compares this fingerprint with the unpacked extension on disk.
+// content scripts, each once, and the manifest.json bytes. The bridge compares both fingerprints with
+// the unpacked extension on disk.
+const MANIFEST_TEXT = '{"background": {"scripts": ["bg/a.js"]}, "content_scripts": [{"js": ["content/b.js", "bg/a.js"]}]}';
 const HASH_FILES = {
-  manifest: { background: { scripts: ['bg/a.js'] }, content_scripts: [{ js: ['content/b.js', 'bg/a.js'] }] },
-  'bg/a.js': 'A\n', 'content/b.js': 'B\n',
+  manifest: JSON.parse(MANIFEST_TEXT), 'manifest.json': MANIFEST_TEXT, 'bg/a.js': 'A\n', 'content/b.js': 'B\n',
 };
+const SOURCE_HASH = '9825576d37c4d475';
+const MANIFEST_HASH = '2655402d232f0401';
 
-async function testHelloCarriesTheSourceHash() {
+async function testHelloCarriesTheSourceAndManifestHashes() {
   const h = background({ files: HASH_FILES });
   const ws = h.socket();
   await ws.onopen();
-  assert.deepEqual(ws.messages[0], { type: 'hello', version: '0.2.1', build: 'dev', sourceHash: '9825576d37c4d475' });
+  assert.deepEqual(ws.messages[0],
+    { type: 'hello', version: '0.2.1', build: 'dev', sourceHash: SOURCE_HASH, manifestHash: MANIFEST_HASH });
 
-  // Unknown, never an error: the bridge then skips the build check.
-  for (const files of [null, { ...HASH_FILES, 'content/b.js': undefined }]) {
+  // Unknown, never an error: the bridge then skips that part of the build check.
+  for (const [files, sourceHash, manifestHash] of [
+    [null, null, null],
+    [{ ...HASH_FILES, 'content/b.js': undefined }, null, MANIFEST_HASH],
+    [{ ...HASH_FILES, 'manifest.json': undefined }, SOURCE_HASH, null],
+  ]) {
     const unknown = background({ files });
     await unknown.socket().onopen();
     assert.deepEqual(unknown.socket().messages[0],
-      { type: 'hello', version: '0.2.1', build: 'dev', sourceHash: null });
+      { type: 'hello', version: '0.2.1', build: 'dev', sourceHash, manifestHash });
   }
 }
 
@@ -167,10 +176,25 @@ async function testHostPermissionIsToldApartFromErrorPages() {
   assert.deepEqual(h.sent, [], 'nothing reached a page');
 }
 
+// Known limitation (#118, docs/api-reference.md#connection-diagnosis): Firefox tells extensions
+// neither which sites Mozilla quarantines nor that a refusal was one; permissions.contains still
+// grants them. So a quarantined site that refuses the content script stays error_page.
+async function testQuarantinedDomainIsAnErrorPage() {
+  const tabs = { 1: page(1, 'https://quarantined.example/', { active: true }) };
+  const h = background({ tabs });
+  const result = await h.send({ action: 'getSnapshot', tabId: 1 });
+  assert.deepEqual([result.code, result.retryable, result.state.reason], ['error_page', false, undefined]);
+  assert.equal(result.error,
+    'The tab shows a page with no scriptable document. Cannot inject content script: Missing host permission for the tab');
+  assert.deepEqual(h.contains, ['https://quarantined.example/*'], 'site access was checked');
+  assert.deepEqual(h.sent, [], 'nothing reached the page');
+}
+
 (async () => {
   await testBrowserStateReachesTheBridge();
-  await testHelloCarriesTheSourceHash();
+  await testHelloCarriesTheSourceAndManifestHashes();
   await testNoActiveTabIsAnUnavailableWindow();
   await testHostPermissionIsToldApartFromErrorPages();
+  await testQuarantinedDomainIsAnErrorPage();
   console.log('connection diagnostics ok');
 })().catch(error => { console.error(error); process.exit(1); });
