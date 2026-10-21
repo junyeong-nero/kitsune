@@ -338,6 +338,42 @@ and its `hint` names the tab, so that case is distinguishable from a no-op:
   "hint": "The command was dispatched and opened tab 4, where the outcome may have happened; inspect it with browser_snapshot tab_id=4 instead of repeating the action." }
 ```
 
+#### Popup-blocked links
+
+Clicks are synthetic DOM events without user activation. With the default popup blocker
+(`dom.disable_open_during_load=true`), the browser therefore drops the tab of a clicked
+`target="_blank"` link, although a user's click on the same link opens it. So when a
+`browser_click` follows a link into a new tab and no tab opens within 500 ms, the extension
+opens the link's own URL with `tabs.create` in the clicked tab's window and container, with
+the clicked tab as opener, and marks it in `opened_tabs`:
+
+```json
+{ "ok": true, "opened_tabs": [{ "tabId": 5, "url": "https://shop.example/addresses", "via": "link_fallback" }] }
+```
+
+This applies only when all of these hold:
+
+- the click target is an `<a>` or `<area>` with an `http(s)` `href`, or is inside one;
+- its `target` is `_blank` (case-insensitive), or it has no `target` and the page's
+  `<base target>` is `_blank`;
+- it has no `download` attribute and the page did not cancel the click (`preventDefault`);
+- no tab opened by the clicked tab appeared within 500 ms.
+
+A tab opened this way gets no `Referer` and no `window.opener`, and does not copy
+`sessionStorage`. A link with `rel="opener"` needs `window.opener`, so it is not opened.
+If such a link, or a failed `tabs.create`, leaves no tab, the click result has a
+`popup_blocked` warning instead of a silent success:
+
+```json
+{ "ok": true, "warning": { "code": "popup_blocked", "state": { "url": "https://shop.example/addresses" },
+  "hint": "The link opens in a new tab, but no tab opened; the popup blocker likely dropped this synthetic click. ..." } }
+```
+
+With `expect`, an unmet outcome then uses that hint. Popups that page scripts open with
+`window.open` are never reopened. A `browser_trusted_click` is a real OS click with user
+activation, so the popup blocker lets its tab open. It needs a visible, focused browser
+window and OS permission (macOS: Accessibility), and its result does not list `opened_tabs`.
+
 ### Ask-before-act
 
 Ask-before-act is an opt-in bridge policy. It holds sensitive actions without running

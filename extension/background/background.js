@@ -3,7 +3,7 @@
 
 'use strict';
 
-const EXPECTED_CONTENT_VERSION = 26;
+const EXPECTED_CONTENT_VERSION = 27;
 const WS_URL = 'ws://127.0.0.1:47652';
 // scripts/build_extension.py sets 'signed' for the AMO build (see content.js).
 const KITSUNE_BUILD = 'dev';
@@ -27,6 +27,7 @@ browser.webRequest?.onHeadersReceived.addListener(
 let tabsCreated = 0;
 const openedTabs = [];          // { tabId, openerTabId, seq } for open tabs with an opener
 const actionStarts = new Map(); // tabId -> tabsCreated when its last page action started
+const linkFallbackTabs = new Set(); // tabs opened by openBlockedLink
 browser.tabs.onCreated.addListener(tab => {
   tabsCreated++;
   if (tab.openerTabId != null) {
@@ -35,6 +36,7 @@ browser.tabs.onCreated.addListener(tab => {
 });
 browser.tabs.onRemoved.addListener(tabId => {
   actionStarts.delete(tabId);
+  linkFallbackTabs.delete(tabId);
   for (let i = openedTabs.length - 1; i >= 0; i--) {
     if (openedTabs[i].tabId === tabId || openedTabs[i].openerTabId === tabId) openedTabs.splice(i, 1);
   }
@@ -200,6 +202,8 @@ const OPENER_ACTIONS = new Set([
 ]);
 // A tab opened by a link starts on about:blank; wait this long for its real URL.
 const OPENED_TAB_URL_WAIT_MS = 1000;
+// How long a click on a target=_blank link waits for its tab before openBlockedLink opens it.
+const BLOCKED_LINK_WAIT_MS = 500;
 
 async function handleCommand(command) {
   const params = { ...command };
@@ -216,6 +220,8 @@ async function handleCommand(command) {
   if ((withSnapshot || textSnapshot || tracksOpenedTabs) && params.tabId == null) params.tabId = await getActiveTabId();
   if (tracksOpenedTabs && params.tabId != null) actionStarts.set(params.tabId, tabsCreated);
   const result = await dispatchCommand(params);
+  const blankLink = result?.targetBlankLink;
+  if (blankLink) delete result.targetBlankLink;
   if (textSnapshot && result && !result.error) result.tabId = params.tabId;
   if (withSnapshot && result && !result.error && result.ok !== false) {
     try {
@@ -231,6 +237,7 @@ async function handleCommand(command) {
       }
     } catch (e) { result.snapshot_error = e.message; }
   }
+  if (blankLink && params.tabId != null) await openBlockedLink(params.tabId, blankLink, result);
   // Checked after the snapshot, which gives a link's new tab time to be created.
   if (tracksOpenedTabs && params.tabId != null && result && typeof result === 'object') {
     const opened = await getOpenedTabs(params.tabId, OPENED_TAB_URL_WAIT_MS);
@@ -252,9 +259,35 @@ async function getOpenedTabs(tabId, urlWait = 0) {
       if (r.ok) url = r.url;
       else if (r.ok !== false) return null; // closed while waiting
     }
-    return { tabId: id, url };
+    return { tabId: id, url, ...(linkFallbackTabs.has(id) ? { via: 'link_fallback' } : {}) };
   }));
   return { opened_tabs: tabs.filter(Boolean) };
+}
+
+// A user's click on a target=_blank link opens its tab even under the popup blocker, which
+// drops the tab of a synthetic click. When no tab comes, open the link's own URL from the
+// clicked tab, as the click would have; a rel=opener link needs the page's window.opener,
+// so it only gets a popup_blocked warning.
+async function openBlockedLink(tabId, link, result) {
+  const since = actionStarts.get(tabId);
+  const opened = () => openedTabs.some(t => t.openerTabId === tabId && t.seq > since);
+  for (let waited = 0; !opened() && waited < BLOCKED_LINK_WAIT_MS; waited += 50) {
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  if (opened()) return;
+  if (!link.opener) {
+    try {
+      const clicked = await browser.tabs.get(tabId);
+      const tab = await browser.tabs.create({
+        url: link.url, openerTabId: tabId, windowId: clicked.windowId, cookieStoreId: clicked.cookieStoreId,
+      });
+      linkFallbackTabs.add(tab.id);
+      return;
+    } catch {}
+  }
+  result.warning ??= { code: 'popup_blocked', state: { url: link.url },
+    hint: 'The link opens in a new tab, but no tab opened; the popup blocker likely dropped this ' +
+      'synthetic click. Open state.url with browser_tabs action=new, or click with browser_trusted_click.' };
 }
 
 async function dispatchCommand(command) {

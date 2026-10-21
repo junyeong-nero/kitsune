@@ -448,9 +448,9 @@ repeating it.
 
 The opt-in real-browser suites (`tests/test_real_browser*.py`) run against a real
 Firefox, Zen or LibreWolf. They cover action races, tab unloads and reconnects
-(`test_real_browser.py`), tabs opened by `target=_blank` clicks
-(`test_real_browser_opened_tabs.py`), and every read tool on empty 404 and 500 pages
-(`test_real_browser_error_pages.py`). They are skipped unless `KITSUNE_E2E_BROWSER`
+(`test_real_browser.py`), tabs opened by `target=_blank` clicks with popups allowed
+and with the default popup blocker (`test_real_browser_opened_tabs.py`), and every
+read tool on empty 404 and 500 pages (`test_real_browser_error_pages.py`). They are skipped unless `KITSUNE_E2E_BROWSER`
 names the browser binary. A full run takes a little over a minute:
 
 ```bash

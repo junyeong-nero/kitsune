@@ -1650,6 +1650,8 @@ async def _dispatch_with_expectation(action, params, spec, timeout):
         hint = (f"The command was dispatched and opened {tabs} {ids}, where the outcome may have happened; "
                 f"inspect it with browser_snapshot tab_id={opened[0].get('tabId')} instead of "
                 "repeating the action.")
+    elif (result.get("warning") or {}).get("code") == "popup_blocked":
+        hint = result["warning"]["hint"]
     result.update(_action_error(
         f"Expected outcome not observed within {spec['timeout']}ms", "outcome_not_observed",
         retryable=_safe_to_repeat(action), hint=hint, **state,

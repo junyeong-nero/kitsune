@@ -478,6 +478,22 @@ class OpenedTabTests(unittest.TestCase):
                          {"source": "tabs", "error": "Unknown action: getOpenedTabs"})
         self.assertEqual(extension.actions(), ["click", "getOpenedTabs", "getTabs"])
 
+    def test_unobserved_outcome_after_a_blocked_popup_uses_its_hint(self):
+        # #94: the extension could not open the link's tab and said why.
+        warning = {"code": "popup_blocked", "state": {"url": "http://127.0.0.1:8000/ok2"},
+                   "hint": "The link opens in a new tab, but no tab opened; the popup blocker ..."}
+        for expect in [{"new_tab": True, "timeout": 30}, {"url_changed": True, "timeout": 30}]:
+            with self.subTest(expect=expect):
+                extension = FakeExtension(
+                    getTabs={"tabs": [TAB]}, click={"ok": True, "warning": warning},
+                    waitForUrl={"ok": False, "url": TAB["url"], "error": "Timed out"},
+                    getOpenedTabs={"opened_tabs": []},
+                )
+                result = run_expect(extension, "click", {"tabId": 7, "selector": "#opener"}, expect)
+                self.assertEqual(result["code"], "outcome_not_observed")
+                self.assertEqual(result["warning"], warning)
+                self.assertEqual(result["hint"], warning["hint"])
+
     def test_invalid_new_tab_expect(self):
         for expect, message in [
             ({"new_tab": "yes"}, "expect.new_tab must be true"),

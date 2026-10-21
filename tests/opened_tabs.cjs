@@ -25,10 +25,12 @@ function harness(onClick = () => {}) {
     return id;
   };
   const onCreated = event(), onUpdated = event(), onRemoved = event();
-  const tabs = { 1: { id: 1, url: 'https://example.com/ok', status: 'complete', active: true } };
+  const tabs = { 1: { id: 1, url: 'https://example.com/ok', status: 'complete', active: true,
+    windowId: 3, cookieStoreId: 'firefox-container-1' } };
   const listenersAtStart = { updated: onUpdated.listeners.size, removed: onRemoved.listeners.size };
   const h = {
     tabs,
+    created: [],
     send: command => context.handleCommand({ includeSnapshot: false, ...command })
       .then(result => JSON.parse(JSON.stringify(result))),
     // Gecko creates a link's tab on about:blank and commits its URL afterwards.
@@ -70,9 +72,17 @@ function harness(onClick = () => {}) {
       onCreated, onUpdated, onRemoved,
       query: async () => Object.values(tabs).filter(tab => tab.active).map(tab => ({ ...tab })),
       get: async id => { if (!tabs[id]) throw missing(id); return { ...tabs[id] }; },
+      // tabs.create with a missing opener fails like Firefox.
+      create: async props => {
+        if (!tabs[props.openerTabId]) throw missing(props.openerTabId);
+        const id = 20 + h.created.length;
+        h.created.push({ ...props });
+        h.open(id, props.openerTabId);
+        return { ...tabs[id] };
+      },
       sendMessage: async (id, msg) => {
         if (msg.action === 'ping') return { ok: true, version: Infinity };
-        if (msg.action === 'click') await onClick(h, msg);
+        if (msg.action === 'click') return (await onClick(h, msg)) || { ok: true };
         return { ok: true };
       },
       executeScript: async () => {},
@@ -158,6 +168,66 @@ async function main() {
   await closing.tick(0);
   assert.deepEqual(await closingClick.result, { ok: true });
   closing.assertClean();
+
+  // #94: the popup blocker dropped a target=_blank link's tab, so the link's URL opens from
+  // the clicked tab after the bounded wait, in its window and container.
+  const link = { url: 'https://example.com/ok2', opener: false };
+  const blocked = harness(() => ({ ok: true, targetBlankLink: link }));
+  const blockedClick = start(blocked, { action: 'click', tabId: 1, selector: '#new' });
+  await blocked.tick(450);
+  assert.deepEqual(blocked.created, [], 'waits for the browser to open the tab first');
+  await blocked.tick(50);
+  assert.deepEqual(blocked.created, [{
+    url: 'https://example.com/ok2', openerTabId: 1, windowId: 3, cookieStoreId: 'firefox-container-1',
+  }]);
+  blocked.commit(20, 'https://example.com/ok2');
+  assert.deepEqual(await blockedClick.result, {
+    ok: true, opened_tabs: [{ tabId: 20, url: 'https://example.com/ok2', via: 'link_fallback' }],
+  });
+  blocked.assertClean();
+  assert.deepEqual(await blocked.send({ action: 'getOpenedTabs', tabId: 1 }), {
+    opened_tabs: [{ tabId: 20, url: 'https://example.com/ok2', via: 'link_fallback' }],
+  });
+
+  // A link whose tab the browser opened is not opened again.
+  const allowed = harness(h => { h.open(4, 1, 'https://example.com/ok2'); return { ok: true, targetBlankLink: link }; });
+  assert.deepEqual(await allowed.send({ action: 'click', tabId: 1, selector: '#new' }), {
+    ok: true, opened_tabs: [{ tabId: 4, url: 'https://example.com/ok2' }],
+  });
+  assert.deepEqual(allowed.created, []);
+  allowed.assertClean();
+
+  // A tab the browser opens within the wait is not duplicated either.
+  const late = harness(() => ({ ok: true, targetBlankLink: link }));
+  const lateClick = start(late, { action: 'click', tabId: 1, selector: '#new' });
+  await late.tick(200);
+  late.open(4, 1, 'https://example.com/ok2');
+  await late.tick(500);
+  assert.deepEqual(await lateClick.result, { ok: true, opened_tabs: [{ tabId: 4, url: 'https://example.com/ok2' }] });
+  assert.deepEqual(late.created, []);
+  late.assertClean();
+
+  // A rel=opener link needs window.opener, so it only gets a popup_blocked warning.
+  const opener = harness(() => ({ ok: true, targetBlankLink: { ...link, opener: true } }));
+  const openerClick = start(opener, { action: 'click', tabId: 1, selector: '#opener' });
+  await opener.tick(500);
+  const warned = await openerClick.result;
+  assert.deepEqual(opener.created, []);
+  assert.equal(warned.warning.code, 'popup_blocked');
+  assert.deepEqual(warned.warning.state, { url: 'https://example.com/ok2' });
+  assert.match(warned.warning.hint, /popup blocker/);
+  assert.equal('targetBlankLink' in warned, false, 'the content-script field stays internal');
+  opener.assertClean();
+
+  // A failed tabs.create (the clicked tab closed meanwhile) also warns; an earlier warning stays.
+  const closed = harness(h => { delete h.tabs[1]; return { ok: true, targetBlankLink: link }; });
+  const closedClick = start(closed, { action: 'click', tabId: 1, selector: '#new' });
+  await closed.tick(500);
+  assert.equal((await closedClick.result).warning.code, 'popup_blocked');
+  const hidden = harness(() => ({ ok: true, warning: { code: 'hidden_or_covered' }, targetBlankLink: { ...link, opener: true } }));
+  const hiddenClick = start(hidden, { action: 'click', tabId: 1, selector: '#hidden' });
+  await hidden.tick(500);
+  assert.deepEqual(await hiddenClick.result, { ok: true, warning: { code: 'hidden_or_covered' } });
 
   console.log('Opened tab checks passed');
   finished = true;

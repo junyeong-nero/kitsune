@@ -22,6 +22,7 @@ class Element extends EventTarget {
   }
   getAttribute() { return null; }
   hasAttribute() { return false; }
+  closest() { return null; }
   scrollIntoView() {}
   getBoundingClientRect() { return { x: 0, y: 0, width: 100, height: 30 }; }
   click() {
@@ -30,6 +31,17 @@ class Element extends EventTarget {
     if (this.type === 'checkbox') this.checked = !this.checked;
     this.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
   }
+}
+
+class Anchor extends Element {
+  constructor(id, attributes, href = 'https://example.com/ok2') {
+    super('A', id);
+    Object.assign(this, { attributes, href, protocol: new URL(href).protocol,
+      relList: { contains: token => (attributes.rel || '').split(' ').includes(token) } });
+  }
+  getAttribute(name) { return this.attributes[name] ?? null; }
+  hasAttribute(name) { return name in this.attributes; }
+  closest() { return this; }
 }
 
 async function testClickEvents(pointerEvents) {
@@ -98,6 +110,35 @@ async function testClickEvents(pointerEvents) {
   assert.equal((await send({ action: 'submitForm', selector: '#form' })).ok, true);
   assert.deepEqual(button.events, ['click'], 'submit button activates once');
   assert.equal(button.nativeClicks, nativeClicks + 1);
+
+  // #94: a click on an http(s) link that opens a new tab names it for the background.
+  const blankLink = async (link, base = null) => {
+    elements['#link'] = link;
+    elements['base[target]'] = base;
+    const result = await send({ action: 'click', selector: '#link' });
+    assert.equal(result.ok, true);
+    assert.equal(link.nativeClicks, 1, 'retain native activation');
+    return result.targetBlankLink && { ...result.targetBlankLink };  // copy out of the vm realm
+  };
+  const url = 'https://example.com/ok2';
+  assert.deepEqual(await blankLink(new Anchor('blank', { target: '_blank' })), { url, opener: false });
+  assert.deepEqual(await blankLink(new Anchor('opener', { target: '_BLANK', rel: 'noreferrer opener' })),
+    { url, opener: true });
+  const base = { getAttribute: () => '_blank' };
+  assert.deepEqual(await blankLink(new Anchor('base', {}), base), { url, opener: false });
+  assert.equal(await blankLink(new Anchor('own-target', { target: '' }), base), undefined, 'own target wins');
+  assert.equal(await blankLink(new Anchor('self', {})), undefined);
+  assert.equal(await blankLink(new Anchor('download', { target: '_blank', download: '' })), undefined);
+  assert.equal(await blankLink(new Anchor('mail', { target: '_blank' }, 'mailto:a@example.com')), undefined);
+  const cancelled = new Anchor('cancelled', { target: '_blank' });
+  cancelled.addEventListener('click', event => event.preventDefault());
+  assert.equal(await blankLink(cancelled), undefined, 'a cancelled click is left to the page');
+  // A click on a link's descendant follows the link.
+  const label = new Element('SPAN', 'label');
+  const parent = new Anchor('parent', { target: '_blank' });
+  label.closest = () => parent;
+  elements['#label'] = label;
+  assert.deepEqual({ ...(await send({ action: 'click', selector: '#label' })).targetBlankLink }, { url, opener: false });
 }
 
 (async () => {

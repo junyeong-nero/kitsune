@@ -20,6 +20,7 @@ class Element extends EventTarget {
   }
   getAttribute() { return null; }
   hasAttribute() { return false; }
+  closest() { return null; }
   focus() {}
   scrollIntoView() {}
   getBoundingClientRect() { return { x: 0, y: 0, width: 100, height: 30 }; }
