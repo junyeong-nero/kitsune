@@ -599,6 +599,10 @@ async function dispatchCommand(command) {
     case 'intercept':        return await interceptOp(params.op, params.patterns, params.effect);
     case 'clickAndWaitNavigation': return await clickAndWaitNavigation(params.tabId, params.selector, params.timeout);
     case 'describeTarget':   return await describeTarget(params);
+    // history.js (#140)
+    case 'historySearch':    return await historySearch(params);
+    case 'historyVisits':    return await historyVisits(params);
+    case 'bookmarksSearch':  return await bookmarksSearch(params);
 
     // Content script commands (forwarded to active tab)
     case 'handleDialog': {

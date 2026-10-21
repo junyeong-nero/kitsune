@@ -41,7 +41,7 @@ from contextlib import asynccontextmanager
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from threading import Lock, Thread
-from datetime import datetime
+from datetime import datetime, timezone
 
 import hashlib
 import hmac
@@ -738,7 +738,8 @@ def _audit_params(action, params):
     return out
 
 
-def _audit(action, params, ok, error, ms):
+def _audit(action, params, ok, error, ms, **fields):
+    """Record one command; fields adds entry keys, such as a history lookup's count and filters."""
     entry = {
         "ts": int(time.time() * 1000),
         "action": action,
@@ -746,6 +747,7 @@ def _audit(action, params, ok, error, ms):
         "ok": bool(ok),
         "error": error,
         "ms": int(ms),
+        **fields,
     }
     parent = _audit_parent.get()
     if parent is not None:
@@ -772,9 +774,10 @@ WRITE_ACTIONS = {
 # message, payment or deletion), so their timeouts and disconnects are not retryable.
 _REPEAT_UNSAFE_ACTIONS = WRITE_ACTIONS | {"uploadCommit", "focusElement", "blurElement"}
 # Nothing reached the page, but repeating cannot succeed: until the tab navigates (error_page),
-# because the command names several targets (ambiguous_target), or until the user approves
-# closing their tab (user_tab).
-_PERSISTENT_FAILURE_CODES = {"error_page", "ambiguous_target", "user_tab"}
+# because the command names several targets (ambiguous_target), until the user approves
+# closing their tab (user_tab), or until the user grants a browser permission
+# (permission_required).
+_PERSISTENT_FAILURE_CODES = {"error_page", "ambiguous_target", "user_tab", "permission_required"}
 
 
 def _check_policy(action, params):
@@ -807,6 +810,178 @@ def _check_policy(action, params):
             if not ok:
                 return {"error": f"URL not in allowlist: {url}"}
     return None
+
+
+# ── History and bookmark lookup (#140, docs/api-reference.md#history-and-bookmarks) ──
+# The extension reads history and bookmarks only after the user granted its optional permission
+# on the options page; it applies the domain lists and time window sent here and redacts URLs.
+# The bridge owns that scope: it starts from the environment, and browser_set_policy can only
+# tighten it, so an agent never widens what it may read. These actions are not in
+# BATCH_ACTION_MAP, so batch, parallel, broadcast, retry and workflows cannot send them unscoped.
+HISTORY_ACTIONS = ("historySearch", "historyVisits", "bookmarksSearch")
+HISTORY_ALLOW_ENV = "KITSUNE_HISTORY_ALLOW_DOMAINS"
+HISTORY_DENY_ENV = "KITSUNE_HISTORY_DENY_DOMAINS"
+HISTORY_MAX_DAYS_ENV = "KITSUNE_HISTORY_MAX_DAYS"
+HISTORY_DEFAULT_MAX_DAYS = 30
+HISTORY_DEFAULT_LIMIT = 20
+HISTORY_LIMIT_MAX = 100  # also HISTORY_LIMIT_MAX in extension/background/history.js
+_HISTORY_DOMAIN = _re.compile(r"^[a-z0-9-]+(?:\.[a-z0-9-]+)*$")
+_DAY_MS = 86_400_000
+
+
+def _history_domains(values, source):
+    """Normalized domains from a list or a comma-separated string; ValueError names source."""
+    if isinstance(values, str):
+        values = values.split(",")
+    if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+        raise ValueError(f"{source} must be a list of domains")
+    domains = []
+    for value in values:
+        domain = value.strip().lower().removeprefix("*.").strip(".")
+        if not domain:
+            continue
+        if not _HISTORY_DOMAIN.match(domain):
+            raise ValueError(f"{source}: {value!r} is not a domain (write example.com; subdomains match too)")
+        if domain not in domains:
+            domains.append(domain)
+    return domains
+
+
+def _history_max_days(value, source):
+    if isinstance(value, str) and value.strip().isdigit():
+        value = int(value)
+    if type(value) is not int or value < 1:
+        raise ValueError(f"{source} must be a whole number of days, at least 1")
+    return value
+
+
+def _history_policy_from_env(environ):
+    days = environ.get(HISTORY_MAX_DAYS_ENV, "").strip()
+    return {
+        "historyAllowDomains": _history_domains(environ.get(HISTORY_ALLOW_ENV, ""), HISTORY_ALLOW_ENV),
+        "historyDenyDomains": _history_domains(environ.get(HISTORY_DENY_ENV, ""), HISTORY_DENY_ENV),
+        "historyMaxDays": _history_max_days(days, HISTORY_MAX_DAYS_ENV) if days else HISTORY_DEFAULT_MAX_DAYS,
+    }
+
+
+_policy.update(_history_policy_from_env(os.environ))
+# Every URL deny pattern and non-empty allow list browser_set_policy ever set. History results
+# stay filtered by all of them, so loosening the URL policy for page actions never widens history.
+_history_url_floor = {"deny": [], "allow": []}
+
+
+def _covered_by(domain, domains):
+    return any(domain == d or domain.endswith("." + d) for d in domains)
+
+
+def _history_policy_update(body):
+    """(updates, problems) for a set-policy body's history keys; ValueError for invalid values.
+
+    The keys may only tighten the current scope: add deny domains, narrow the allow list
+    (each entry within a current one), or lower the time window.
+    """
+    updates, problems = {}, []
+    if "historyDenyDomains" in body:
+        deny = _history_domains(body["historyDenyDomains"], "historyDenyDomains")
+        dropped = [d for d in _policy["historyDenyDomains"] if d not in deny]
+        if dropped:
+            problems.append(f"historyDenyDomains cannot drop {', '.join(dropped)}")
+        updates["historyDenyDomains"] = deny
+    if "historyAllowDomains" in body:
+        allow = _history_domains(body["historyAllowDomains"], "historyAllowDomains")
+        current = _policy["historyAllowDomains"]
+        if current and not allow:
+            problems.append("historyAllowDomains cannot be emptied, which allows every domain")
+        wider = [d for d in allow if current and not _covered_by(d, current)]
+        if wider:
+            problems.append(f"historyAllowDomains cannot add {', '.join(wider)}")
+        updates["historyAllowDomains"] = allow
+    if "historyMaxDays" in body:
+        days = _history_max_days(body["historyMaxDays"], "historyMaxDays")
+        if days > _policy["historyMaxDays"]:
+            problems.append(f"historyMaxDays cannot rise above {_policy['historyMaxDays']}")
+        updates["historyMaxDays"] = days
+    return updates, problems
+
+
+def _raise_history_url_floor(body):
+    for pattern in body.get("deny") or []:
+        if pattern not in _history_url_floor["deny"]:
+            _history_url_floor["deny"].append(pattern)
+    allow = list(body.get("allow") or [])
+    if allow and allow not in _history_url_floor["allow"]:
+        _history_url_floor["allow"].append(allow)
+
+
+def _history_url_blocked(url):
+    """Whether the URL policy floor hides url from history results (patterns as in _check_policy)."""
+    def matches(pattern):
+        try:
+            return bool(_re.search(pattern, url))
+        except _re.error:
+            return False
+
+    return (any(matches(pattern) for pattern in _history_url_floor["deny"])
+            or any(not any(matches(pattern) for pattern in allow) for allow in _history_url_floor["allow"]))
+
+
+def _history_request(action, body, now_ms):
+    """(extension params, audited params, filters) for a lookup, or an error dict first."""
+    filters = {"allowDomains": list(_policy["historyAllowDomains"]),
+               "denyDomains": list(_policy["historyDenyDomains"])}
+    if action == "historyVisits":
+        url = body.get("url")
+        if not isinstance(url, str) or not _re.match(r"(?i)https?://", url):
+            return {"error": "url must be an http(s) URL"}, None, None
+        if _history_url_blocked(url):
+            return {"error": f"URL denied by policy: {url}"}, None, None
+        params, audited = {"url": url}, {"url": url}
+    else:
+        query = body.get("query", "")
+        limit = body.get("limit", HISTORY_DEFAULT_LIMIT)
+        if not isinstance(query, str):
+            return {"error": "query must be a string"}, None, None
+        if type(limit) is not int or not 1 <= limit <= HISTORY_LIMIT_MAX:
+            return {"error": f"limit must be a whole number from 1 to {HISTORY_LIMIT_MAX}"}, None, None
+        # Ask for the most results when the URL policy floor may drop some of them.
+        params = {"query": query, "limit": HISTORY_LIMIT_MAX if any(_history_url_floor.values()) else limit}
+        audited = {"query": query, "limit": limit}
+    if action != "bookmarksSearch":
+        window_start = now_ms - _policy["historyMaxDays"] * _DAY_MS
+        since = body.get("since")
+        if since is not None and (isinstance(since, bool) or not isinstance(since, (int, float))
+                                  or not math.isfinite(since)):
+            return {"error": "since must be epoch milliseconds"}, None, None
+        if action == "historySearch":
+            audited["since"] = since
+        filters.update(maxDays=_policy["historyMaxDays"], startTime=int(max(window_start, since or 0)))
+    return {**params, **filters}, audited, filters
+
+
+async def _history_lookup(action, body):
+    """Run one scoped history/bookmark lookup and audit it with its count, never result URLs."""
+    t0 = time.time()
+    params, audited, filters = _history_request(action, body, int(t0 * 1000))
+    if audited is None:
+        given = {key: body[key] for key in ("query", "url", "limit", "since") if key in body}
+        _audit(action, given, False, params["error"], (time.time() - t0) * 1000, count=0)
+        return params
+    # A read of browser data, not of a tab: it needs no scheduler scope.
+    result = await _send_to_extension_raw(action, params)
+    if isinstance(result, dict) and isinstance(result.get("results"), list):
+        limit = audited["limit"]
+        kept = [item for item in result["results"] if not _history_url_blocked(str(item.get("url", "")))]
+        if len(kept) > limit:
+            result["truncated"] = True
+        result["results"] = kept[:limit]
+        result["count"] = len(result["results"])
+    if isinstance(result, dict) and "startTime" in filters and not result.get("error"):
+        result["since"] = datetime.fromtimestamp(filters["startTime"] / 1000, timezone.utc).isoformat()
+    error = result.get("error") if isinstance(result, dict) else "invalid extension reply"
+    count = result.get("count", 0) if isinstance(result, dict) and not error else 0
+    _audit(action, audited, not error, error, (time.time() - t0) * 1000, count=count,
+           filters={**filters, "urlPolicy": any(_history_url_floor.values())})
+    return result
 
 
 # ── Ask-before-act (docs/api-reference.md#ask-before-act) ──
@@ -3195,6 +3370,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "/api/scheduler": self.handle_scheduler,
             "/api/set-policy": self.handle_set_policy,
             "/api/get-policy": self.handle_get_policy,
+            # History and bookmark lookup (#140)
+            "/api/history-search": lambda: self.handle_history_lookup("historySearch"),
+            "/api/history-visits": lambda: self.handle_history_lookup("historyVisits"),
+            "/api/bookmarks-search": lambda: self.handle_history_lookup("bookmarksSearch"),
         }
 
         handler = routes.get(self.canonical_path())
@@ -3746,6 +3925,20 @@ class BridgeHandler(BaseHTTPRequestHandler):
                                               + "; ".join(loosened),
                                      "code": "policy_locked", "policy": dict(_policy)})
                 return
+        try:
+            history, loosened = _history_policy_update(body)
+        except ValueError as exc:
+            self.send_json(400, {"error": f"Invalid policy: {exc}", "code": "invalid_policy",
+                                 "policy": dict(_policy)})
+            return
+        if loosened:
+            self.send_json(403, {"error": "The history scope can only be tightened through the policy API; "
+                                          f"loosen it with {HISTORY_ALLOW_ENV}, {HISTORY_DENY_ENV} or "
+                                          f"{HISTORY_MAX_DAYS_ENV} and restart the bridge: " + "; ".join(loosened),
+                                 "code": "policy_locked", "policy": dict(_policy)})
+            return
+        _policy.update(history)
+        _raise_history_url_floor(body)
         if "ask" in body: _policy["ask"] = body["ask"]
         if "askUrls" in body: _policy["askUrls"] = list(body["askUrls"])
         if "allow" in body: _policy["allow"] = list(body["allow"])
@@ -3755,6 +3948,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     def handle_get_policy(self):
         self.send_json(200, dict(_policy))
+
+    def handle_history_lookup(self, action):
+        self.send_json(200, self.run_async(_history_lookup(action, self.read_body()), timeout=40))
 
     def handle_batch(self):
         body = self.read_body()

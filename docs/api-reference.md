@@ -6,7 +6,9 @@ Base URL: `http://127.0.0.1:47651`
 
 `KITSUNE_CAPS=core` is the default; `KITSUNE_CAPS=all` registers
 96 tools. The groups are `core`, `tabs`, `network`, `storage`, `parallel`,
-`devtools`, `windows`, and `session`. A comma list selects those groups only.
+`devtools`, `windows`, `session`, and `history`. A comma list selects those groups only.
+`all` enables every group except `history`, which reads personal data and must be
+named (`KITSUNE_CAPS=all,history`); see [History and bookmarks](#history-and-bookmarks).
 See [Tools and capabilities](guide.md#tools) for the complete tool list per group.
 
 **`KITSUNE_TOOL_PRESET` defaults to `lean` (#31)**, which registers 14 of the 30
@@ -163,8 +165,9 @@ only `error`. MCP tools return these failures with `isError: true` (see
   an identical retry succeeds; follow `hint` first (for example, take a new snapshot).
   `false` means a write may already have taken effect (a submit, message, payment
   or deletion can be behind any click or keypress); inspect the page before acting again.
-  The exceptions are `error_page`, `ambiguous_target` and `user_tab`: nothing reached the
-  page, and repeating cannot succeed.
+  The exceptions are `error_page`, `ambiguous_target`, `user_tab` and `permission_required`:
+  nothing reached the page, and repeating cannot succeed until the tab navigates, the target
+  is named uniquely, or the user approves the close or grants the permission.
 - `hint`: a short recovery step. `state`: the current state that explains the
   failure, where available (for page targets: `tabId`, `url`, `status`).
 
@@ -189,6 +192,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `extension_version_mismatch` | The extension does not know the command, and its version differs from the bridge's (`state.extensionVersion`, `state.bridgeVersion`) or it is a developer build edited but not reloaded (`state.reason: "stale_developer_build"`) | true |
 | `browser_window_unavailable` | No active tab: the extension sees no normal window it can use | true |
 | `host_permission_denied` | Firefox does not let Kitsune script the tab's site (`state.reason`: `not_granted`, `restricted_domain`) | true |
+| `permission_required` | A [history or bookmark lookup](#history-and-bookmarks) needs an optional browser permission the user has not granted (`state.permission`: `history` or `bookmarks`). Only the user can grant it, on Kitsune's options page; the agent cannot. Also returned, with a reload hint, when the permission is granted but the running extension has not picked it up | false |
 | `confirmation_required` | [Ask-before-act](#ask-before-act) held a sensitive action; nothing ran (`state.confirmToken`, `state.reason`) | true |
 | `user_tab` | `browser_tabs` close on a tab the agent did not open, or `browser_close_window` on a window with one; it stays open. A direct call's `state.confirmToken` closes it once the user approves (see [Agent-owned tabs](#agent-owned-tabs)) | false |
 | `user_active` | The user is using the tab (`state.reason`: `input`, `typing`, `navigating`); the write or navigation did not run (see [User activity](#user-activity)) | true |
@@ -207,7 +211,7 @@ The connection codes (`bridge_unavailable`, `token_mismatch`, `port_conflict`,
 
 Writes are the bridge's read-only-mode write actions plus file-upload commits,
 focus, and blur. For a read, the bridge reports `retryable: true`, except for
-`error_page`, where repeating cannot succeed.
+`error_page` and `permission_required`, where repeating cannot succeed.
 
 Identity is checked before mutation. A missing or browser-internal target tab fails
 before any message reaches a page. Refs encode their document: a ref used after
@@ -1027,6 +1031,115 @@ is logged after its steps. Direct calls have no `parent`. Steps run by
 `browser_resume` carry the original `call` and add `resumed: true` to `parent`; the
 resume token is never logged ([Checkpoint and resume](checkpoint-resume.md#audit-log)).
 
+Every history and bookmark lookup is recorded, refused ones included, with its
+`params` (`query`, `limit`, `since`; `url` for visits), the number of results as
+`count`, and the scope it ran in as `filters` (`allowDomains`, `denyDomains`,
+`maxDays`, `startTime`, `urlPolicy`). Result URLs are never logged; see
+[History and bookmarks](#history-and-bookmarks).
+
+### History and bookmarks
+
+Opt-in, read-only lookup of the user's browsing history and bookmarks (#140), so an
+agent can find "the page I looked at yesterday" and follow the user's trail. Two
+switches must both be on, and the browser's is the user's alone:
+
+1. **The user's browser permission.** `history` and `bookmarks` are
+   `optional_permissions` in the extension manifest, not granted at install. The
+   user grants them on Kitsune's options page (about:addons → Kitsune → Options,
+   or Preferences): the **Allow history and bookmarks** button calls
+   `permissions.request` from its click, which shows the browser's own permission
+   prompt. **Revoke** on the same page, or the add-on's Permissions tab in
+   about:addons, takes them back. No bridge command requests a permission, so the
+   agent can never grant it. Without the grant, every lookup returns
+   `permission_required` (`retryable: false`) with a hint naming the options page.
+2. **The `history` capability group.** Off by default, and `KITSUNE_CAPS=all` leaves
+   it out: name it, as in `KITSUNE_CAPS=core,history`.
+
+| Tool | Returns |
+|---|---|
+| `browser_history_search(query, since=None, limit=20)` | `results: [{url, title, last_visit, visit_count}]`, newest first. `query` matches titles and URLs (`""` for all); `since` is an ISO 8601 date or datetime (local time without an offset); `limit` is 1–100 |
+| `browser_history_visits(url)` | `visits: [{visit_time, transition, visit_id, referring_visit_id?}]` for one URL, newest first, at most 100. `transition` is Firefox's `history.getVisits` transition (`link`, `typed`, `auto_bookmark`, `reload`, …); `referring_visit_id` appears only where Firefox reports a referrer, which current Firefox releases usually do not |
+| `browser_bookmarks_search(query, limit=20)` | `results: [{url, title, folder}]`; `folder` is the path of folder titles, such as `Bookmarks Toolbar/Work`. `""` lists the most recently added bookmarks |
+
+Results also carry `count` and, when more matched than `limit`, `truncated: true`.
+History results carry `since`, the start of the window the lookup used (UTC).
+`last_visit` and `visit_time` are ISO 8601 UTC. `visit_count` is Firefox's count
+for the URL, not only visits inside the window. Only URLs, titles, visit times,
+transitions and bookmark folders are returned, never page contents, form data,
+cookies or passwords. Only `http(s)` URLs are returned: `file:`, `data:`,
+`about:` and other schemes can hold local paths or page contents.
+
+**Scope.** The bridge sends each lookup's scope to the extension, which filters
+before anything leaves the browser:
+
+| Setting | Environment (bridge) | `browser_set_policy` | Default |
+|---|---|---|---|
+| Allowed domains | `KITSUNE_HISTORY_ALLOW_DOMAINS` (comma list) | `history_allow_domains` | Empty: every domain |
+| Denied domains | `KITSUNE_HISTORY_DENY_DOMAINS` (comma list) | `history_deny_domains` | None |
+| Time window (whole days back from now) | `KITSUNE_HISTORY_MAX_DAYS` | `history_max_days` | 30 |
+
+A domain also covers its subdomains (`example.com` covers `docs.example.com`; a
+leading `*.` is accepted and dropped), and a denied domain wins over an allowed one.
+`since` earlier than the window is moved to the window's start. The window applies
+to history; bookmarks have none. `browser_get_policy` and `browser_health` show the
+current settings as `historyAllowDomains`, `historyDenyDomains` and `historyMaxDays`.
+An invalid environment value stops the bridge at startup with the variable's name.
+
+`browser_set_policy` can only tighten the scope, so an agent never widens what it
+may read: it can add denied domains, narrow the allowed list (each entry within a
+current one, never empty once set) or lower the days. A call that would loosen any
+of them fails with `policy_locked` (HTTP 403) and changes nothing; the user loosens
+the scope through the environment and a bridge restart. The URL `allow`/`deny`
+regex policy also applies: history results, and `browser_history_visits` URLs, stay
+filtered by every URL deny pattern and allow list set since the bridge started,
+even after `browser_set_policy` removes them for page actions. When such a pattern
+is set, the bridge reads up to 100 results from the extension and applies `limit`
+after filtering.
+
+The lookups are not batch actions: `browser_batch`, `browser_parallel`,
+`browser_broadcast`, `browser_retry` and workflows reject them as an unknown
+action, so none can run them outside this scope. Read-only mode allows them;
+ask-before-act does not hold them.
+
+#### History URL redaction
+
+Every URL the extension returns is rewritten first:
+
+- `user:password@` is removed.
+- A query or fragment parameter's value becomes `[redacted]` when its name is
+  sensitive: a word of it (split at punctuation and camelCase) is one of `token`,
+  `secret`, `password`, `passwd`, `pwd`, `pass`, `auth`, `authorization`,
+  `apikey`, `key`, `sig`, `signature`, `hmac`, `session`, `sid`, `jwt`, `otp`,
+  `code`, `ticket`, `nonce`, `credential(s)`, `saml`, `samlrequest`,
+  `samlresponse` or `assertion`, or the name contains `token`, `secret`, `passw`,
+  `sessid`, `sessionid`, `apikey` or `credential` (`access_token`, `apiKey`,
+  `X-Amz-Signature`, `PHPSESSID`).
+- Any parameter's value becomes `[redacted]` when it looks like a credential: a
+  `Bearer ` value, a JWT, a known token prefix (`ghp_`, `github_pat_`, `glpat-`,
+  `xoxb-`, `sk-`, `sk_live_`, `AKIA`, `ya29.`, `AIza`, …), 32 or more hex digits,
+  or 32 or more token characters that mix upper case, lower case and digits.
+- Fragments are handled as parameters (`#access_token=…&state=…`), as a route
+  with a query (`#/inbox?token=…`), or, when the whole fragment looks like a
+  credential, replaced as a whole.
+
+Ordinary values, such as `q=firefox+history` or a lowercase slug, are kept.
+The rules are heuristics like [Sensitive-field redaction](#sensitive-field-redaction):
+a secret under an innocuous name and in a short or lowercase value is not
+recognized, and path segments and titles are not rewritten. History entries
+whose URLs differ only in redacted values are listed once, with the newest title
+and visit and the summed `visit_count`. A redacted URL is still a valid
+`browser_history_visits` argument: the extension resolves it to the visited URLs
+it stands for.
+
+#### Following the trail
+
+A history or bookmark result is enough to continue from it: open `url` in a tab
+(`browser_tabs(action="new", url=url, wait=True)`, or the agent-owned background
+tab that #139 adds) and read it with the usual tools. `browser_history_visits`
+shows when and how the user reached the page. A redacted URL opens without its
+secret, so a page that needed the token in its URL may show a login or an error
+instead; Kitsune never reveals the original value.
+
 ### Container progress
 
 `browser_batch`, `browser_parallel` and `browser_workflow` (POST `/api/batch` and
@@ -1641,6 +1754,13 @@ Execute a named workflow from the workflows directory.
 ```
 Workflows are `.md` files with JSON code blocks. Variables use `{{name}}` syntax.
 Returns `{ "workflow": "test", "steps": 4, "results": [...], "progress": [...], "status": "ok", "summary": "..." }`. A workflow stops at its first failed step; `progress` marks the rest `skipped` (see [Container progress](#container-progress)). A workflow that did not finish `ok` adds `call` and `resume_token` for [POST /api/resume](#post-apiresume); resuming is refused if the workflow file changed.
+
+## History and bookmarks (POST)
+
+`POST /api/history-search` `{query, limit?, since?}` (`since` in epoch
+milliseconds), `POST /api/history-visits` `{url}`, and `POST /api/bookmarks-search`
+`{query, limit?}` back the `history` tools; see
+[History and bookmarks](#history-and-bookmarks). The bridge adds the policy scope.
 
 ## Cache Control (NEW)
 

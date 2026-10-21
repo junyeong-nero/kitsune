@@ -239,7 +239,9 @@ By default, Kitsune registers the 14 `browser_*` tools of the
 target background tabs.
 Set `KITSUNE_CAPS` in the MCP server environment before starting it; restart the
 MCP client after changing it. The comma-separated list selects exactly those
-groups (include `core` to retain the default tools). `all` enables all 96 tools.
+groups (include `core` to retain the default tools). `all` enables all 96 tools
+in every group except `history`, which reads personal data and must be named
+(`KITSUNE_CAPS=all,history`).
 Whitespace and case are ignored; unknown group names fail at startup.
 
 ```toml
@@ -257,6 +259,7 @@ KITSUNE_CAPS = "core,network,parallel"
 | `storage` (4) | `browser_cookies`, `browser_storage`, `browser_clipboard`, `browser_clear_browsing_data` |
 | `tabs` (7) | `browser_wake_tab`, `browser_pin_tab`, `browser_mute_tab`, `browser_duplicate_tab`, `browser_reload_tab`, `browser_get_zoom`, `browser_set_zoom` |
 | `windows` (6) | `browser_windows`, `browser_create_window`, `browser_close_window`, `browser_focus_window`, `browser_move_tab`, `browser_detach_tab` |
+| `history` (3, not in `all`) | `browser_history_search`, `browser_history_visits`, `browser_bookmarks_search`. They also need your grant on Kitsune's options page; see [History and bookmarks](api-reference.md#history-and-bookmarks) |
 
 The consolidated tools use options for related operations:
 
@@ -365,7 +368,7 @@ kept tools retain the parameters read and draft flows use.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `KITSUNE_CAPS` | `core` | Comma-separated capability groups above; `all` enables everything unless `KITSUNE_TOOL_PRESET=lean` |
+| `KITSUNE_CAPS` | `core` | Comma-separated capability groups above; `all` enables every group except `history`, which reads personal data and must be named, and enables all `core` tools unless `KITSUNE_TOOL_PRESET=lean` |
 | `KITSUNE_TOOL_PRESET` | Unset (`lean`, or `full` with `KITSUNE_CAPS=all`) | `lean` registers 14 of the 30 `core` tools; `full` registers all 30. See [Lean tool preset](#lean-tool-preset) |
 | `KITSUNE_HOME` | `~/.kitsune` | Data directory (0700) |
 | `KITSUNE_HTTP_PORT` | `47651` | Bridge HTTP API |
@@ -375,6 +378,9 @@ kept tools retain the parameters read and draft flows use.
 | `KITSUNE_NO_BRIDGE_RESTART` | Unset | Set to `1` in the MCP server environment to skip automatic replacement of an outdated bridge |
 | `KITSUNE_BRIDGE_IDLE_TIMEOUT` | `0` (never) | Seconds without client activity before the bridge exits; see [Idle shutdown](#idle-shutdown-opt-in) |
 | `KITSUNE_ASK_BEFORE_ACT` | Unset | Set to `1` in the MCP server environment to start the bridge with [ask-before-act](#ask-before-act) locked on; the lock then persists in `ask-before-act-locked` under `KITSUNE_HOME` |
+| `KITSUNE_HISTORY_ALLOW_DOMAINS` | Unset (every domain) | Bridge: comma-separated domains (with subdomains) the `history` tools may return; see [History and bookmarks](api-reference.md#history-and-bookmarks) |
+| `KITSUNE_HISTORY_DENY_DOMAINS` | Unset (none) | Bridge: comma-separated domains (with subdomains) the `history` tools never return; wins over the allow list |
+| `KITSUNE_HISTORY_MAX_DAYS` | `30` | Bridge: how many days back the `history` tools may look. `browser_set_policy` can only tighten these three |
 | `KITSUNE_POST_ACTION_SNAPSHOT` | Enabled | Set to `0` in the bridge daemon environment and restart it to disable automatic post-action snapshots, or `text` to add readable text lines to them |
 
 `~/.kitsune/` holds:
@@ -424,6 +430,14 @@ What it does not protect against:
   `browser_storage` and `browser_clipboard` values) with `"[redacted]"`; see
   [Audit log](api-reference.md#audit-log). The page and the MCP client's own
   transcript still see whatever the agent sent.
+- **History and bookmarks.** Off unless you enable the `history` capability group
+  *and* allow it on Kitsune's options page (about:addons → Kitsune → Options);
+  revoke it there or in the add-on's Permissions tab. Lookups return only URLs,
+  titles, visit times and bookmark folders inside the bridge's history scope
+  (by default the last 30 days), with token-like URL values replaced by
+  `[redacted]`, and every lookup is audited without its result URLs; see
+  [History and bookmarks](api-reference.md#history-and-bookmarks). Titles and
+  URLs can still be personal: enable it only for agents you trust with them.
 - **Authenticated actions.** Existing sessions let the agent act as you on
   accessible sites. MCP annotations are client hints, not an approval system.
   Ask-before-act (below) requires an explicit second step, but it is not human
