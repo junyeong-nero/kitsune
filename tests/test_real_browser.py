@@ -1,13 +1,14 @@
 """Action races, tab unloads and reconnects in a real browser (issue #68).
 
-Opt-in: KITSUNE_REAL_BROWSER=1 uv run python -m unittest discover -s tests -p test_real_browser.py -v
-Set KITSUNE_REAL_BROWSER_BINARY to choose the browser executable; otherwise the first
-Firefox, Zen or LibreWolf found is used. The run takes about a minute.
+Opt-in: set KITSUNE_E2E_BROWSER to a Firefox, Zen or LibreWolf binary (the same variable as
+test_real_browser_opened_tabs.py). The run takes about a minute:
+KITSUNE_E2E_BROWSER=/Applications/Zen.app/Contents/MacOS/zen \
+    uv run python -m unittest discover -s tests -p test_real_browser.py -v
 
 Everything is owned by the test: a headless browser on a new temporary profile and HOME,
 a real bridge on spare ports (test_bridge_security.Bridge), and a local fixture site. The
 extension is copied to a temporary directory with its bridge URL pointed at the owned
-bridge, so the normal bridge on 47652 is never contacted. A test-only background script
+bridge, so the normal bridge on 47652 is never contacted; the copy is checked before launch. A test-only background script
 added to the copy connects to a harness socket to discard tabs and drop the bridge
 WebSocket, and the copy is installed as a temporary add-on over the browser's remote
 debugging protocol. Fixture buttons report every click to the fixture site, which is
@@ -36,12 +37,8 @@ from test_bridge_security import Bridge, _free_port, _request
 REPO = Path(__file__).resolve().parent.parent
 EXTENSION_ID = "kitsune@junyeong-nero.github.io"
 DEFAULT_WS_URL = "ws://127.0.0.1:47652"
-BROWSER_CANDIDATES = (
-    "/Applications/Firefox.app/Contents/MacOS/firefox",
-    "/Applications/Zen.app/Contents/MacOS/zen",
-    "/Applications/LibreWolf.app/Contents/MacOS/librewolf",
-    "firefox", "zen", "librewolf",
-)
+DEFAULT_WS_PORT = "47652"
+BROWSER = os.environ.get("KITSUNE_E2E_BROWSER")
 START_TIMEOUT = 60
 # The batch (`retry`) bridge timeout for a click; a page held longer makes the bridge give up.
 BATCH_COMMAND_TIMEOUT = 30
@@ -103,15 +100,6 @@ PAGES = {
     "hold": """<button id="act" onclick="const x = new XMLHttpRequest();
   x.open('GET', '/hold?page={name}&amp;ms={ms}', false); x.send()">Hold {name}</button>""",
 }
-
-
-def find_browser():
-    configured = os.environ.get("KITSUNE_REAL_BROWSER_BINARY")
-    for candidate in ([configured] if configured else BROWSER_CANDIDATES):
-        path = shutil.which(candidate)
-        if path:
-            return path
-    return None
 
 
 class FixtureSite:
@@ -267,6 +255,8 @@ class RealBrowser:
     """A headless browser on a temporary profile, running the extension against one bridge."""
 
     def __init__(self, binary, root, ws_port, control_port):
+        if str(ws_port) == DEFAULT_WS_PORT:
+            raise AssertionError("the test bridge must not use the default bridge port")
         self.binary = binary
         self.root = Path(root)
         self.extension = self.root / "extension"
@@ -286,6 +276,9 @@ class RealBrowser:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         manifest["background"]["scripts"].append("background/test-control.js")
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        for path in self.extension.rglob("*.js"):
+            if DEFAULT_WS_PORT in path.read_text(encoding="utf-8"):
+                raise AssertionError(f"{path} still names the default bridge port")
         self.profile.mkdir()
         self.home.mkdir()
         (self.profile / "user.js").write_text(
@@ -331,14 +324,10 @@ def refs_named(snapshot, text):
     return re.findall(r'"[^"\n]*' + re.escape(text) + r'[^"\n]*" \[ref=(s\d+e\d+)\]', snapshot)
 
 
-@unittest.skipUnless(os.environ.get("KITSUNE_REAL_BROWSER") == "1",
-                     "real-browser tests are opt-in: set KITSUNE_REAL_BROWSER=1")
+@unittest.skipUnless(BROWSER, "set KITSUNE_E2E_BROWSER to a Firefox, Zen or LibreWolf binary")
 class RealBrowserActionRaceTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        binary = find_browser()
-        if binary is None:
-            raise unittest.SkipTest("no Firefox, Zen or LibreWolf found; set KITSUNE_REAL_BROWSER_BINARY")
         temp = tempfile.TemporaryDirectory(prefix="kitsune-real-browser-")
         cls.addClassCleanup(temp.cleanup)
         home = Path(temp.name, "bridge")
@@ -349,7 +338,7 @@ class RealBrowserActionRaceTests(unittest.TestCase):
         cls.addClassCleanup(cls.site.stop)
         cls.control = ExtensionControl()
         cls.addClassCleanup(cls.control.stop)
-        cls.browser = RealBrowser(binary, temp.name, cls.bridge.ws_port, cls.control.port)
+        cls.browser = RealBrowser(BROWSER, temp.name, cls.bridge.ws_port, cls.control.port)
         cls.addClassCleanup(cls.browser.stop)
         cls.browser.start()
         cls.wait_for_extension()
