@@ -1786,6 +1786,22 @@ roots of hosts nested inside it, up to 8 roots deep (closed roots through Firefo
 `{ "selector": "a.link" }`
 Returns `{ "ok": true, "tag": "a" }`
 
+### POST /api/drag
+`{ "from": "#card", "to": "#done" }` — or `ref` and `toRef`.
+Returns `{ "ok": true, "from": "#card", "to": "#done", "via": "html5" }`.
+It presses the source (`pointerdown`, `mousedown`) and dispatches the HTML5 drag events
+(`dragstart` … `drop`, `dragend`). They count (`via: "html5"`) when the source is
+draggable, the page let `dragstart` through and the destination accepted the drop by
+cancelling `dragenter`, `dragover` or `drop`, as a browser requires. Otherwise the drag
+is replayed as a pointer drag (`via: "pointer"`) for libraries that build drag on
+pointer events: ten `pointermove`/`mousemove` steps from the source's center to the
+destination's, so a drag threshold is crossed, each in a new task so the page can
+render in between; then `pointerup` and `mouseup`. Pointer events (`pointerId: 1`,
+`buttons: 1`, `isPrimary`) go to the source, where `setPointerCapture` routes them;
+the page's capture itself is not visible to Kitsune, and Firefox can throw
+`NotFoundError` from `setPointerCapture` for a pointer it has not seen, such as this
+synthetic one. `mouseup` lands on the destination.
+
 ### POST /api/find
 `{ "query": "search text" }` or `{ "selector": "a.link" }`
 Both `query` and `selector` are accepted (normalized to `query` internally).

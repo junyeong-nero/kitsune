@@ -39,6 +39,13 @@ function page() {
   const context = vm.createContext({
     console, crypto: webcrypto, Event, MouseEvent, PointerEvent: MouseEvent, KeyboardEvent,
     DragEvent: MouseEvent, DataTransfer: class {},
+    // Delivers on the microtask queue, so a pointer drag settles within one flush.
+    MessageChannel: class {
+      constructor() {
+        this.port1 = { close() {} };
+        this.port2 = { postMessage: () => queueMicrotask(() => this.port1.onmessage()) };
+      }
+    },
     HTMLInputElement: class {}, HTMLTextAreaElement: class {}, CSS: { escape: x => x },
     Date: class extends Date { static now() { return now; } },
     setTimeout: (fn, delay) => { timers.set(++nextId, { fn, at: now + delay }); return nextId; },
@@ -162,7 +169,7 @@ async function testImmediateModeOnDelayedContentAndDynamicForms() {
   assert.deepEqual(results.checkBox, { ok: true, checked: true });
   assert.equal(agree.checked, true);
   assert.deepEqual(results.keypress, { ok: true, key: 'Enter', target: 'input' });
-  assert.deepEqual(results.drag, { ok: true, from: '#from', to: '#to' });
+  assert.deepEqual(results.drag, { ok: true, from: '#from', to: '#to', via: 'pointer' });
   assert.ok(from.events.includes('dragstart') && to.events.includes('drop'));
   assert.equal(p.timers.size, 0, 'immediate mode schedules nothing');
 }
@@ -238,7 +245,7 @@ async function testDynamicForms() {
   assert.deepEqual(from.events, []);
   const to = p.add('#to', new Element('DIV', 'to'));
   await p.tick(100);
-  assert.deepEqual(await dragging.result, { ok: true, from: '#from', to: '#to' });
+  assert.deepEqual(await dragging.result, { ok: true, from: '#from', to: '#to', via: 'pointer' });
   assert.ok(from.events.includes('dragstart') && to.events.includes('drop'));
   assert.equal(p.timers.size, 0, 'no timer leaked');
 }

@@ -3113,7 +3113,19 @@
     return { results };
   }
 
-  function dragElement(fromSel, toSel, first) {
+  // Pointer drags move in steps so libraries with a drag threshold (a few px) start.
+  const DRAG_POINTER_STEPS = 10;
+
+  // A task boundary background tabs do not throttle, so page frameworks render between moves.
+  function nextTask() {
+    return new Promise(resolve => {
+      const channel = new MessageChannel();
+      channel.port1.onmessage = () => { channel.port1.close(); resolve(); };
+      channel.port2.postMessage(null);
+    });
+  }
+
+  async function dragElement(fromSel, toSel, first) {
     const from = resolveTarget(fromSel, null, { first, pointer: true });
     const to = resolveTarget(toSel, null, { first, pointer: true });
     if (!from) return notFound('from element not found');
@@ -3125,17 +3137,44 @@
     const dt = new DataTransfer();
     const dispatch = (target, type, x, y, related) => {
       const ev = new DragEvent(type, { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, dataTransfer: dt, relatedTarget: related || null });
-      target.dispatchEvent(ev);
+      return target.dispatchEvent(ev);
     };
-    from.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: fx, clientY: fy, button: 0 }));
-    dispatch(from, 'dragstart', fx, fy);
+    const press = (target, type, x, y) => {
+      const EventCtor = type.startsWith('pointer') && window.PointerEvent ? PointerEvent : MouseEvent;
+      target.dispatchEvent(new EventCtor(type, {
+        bubbles: true, cancelable: true, composed: true, view: target.ownerDocument?.defaultView || window,
+        clientX: x, clientY: y, button: 0, buttons: type.endsWith('up') ? 0 : 1,
+        pointerId: 1, pointerType: 'mouse', isPrimary: true,
+      }));
+    };
+    press(from, 'pointerdown', fx, fy);
+    press(from, 'mousedown', fx, fy);
+    // As natively, an HTML5 drag needs a draggable source whose dragstart the page let
+    // through and a drop target that accepted it by cancelling dragenter, dragover or drop.
+    const draggable = from.draggable || !!from.closest('[draggable="true"]');
+    const started = dispatch(from, 'dragstart', fx, fy);
     dispatch(from, 'drag', fx, fy);
-    dispatch(to, 'dragenter', tx, ty);
-    dispatch(to, 'dragover', tx, ty);
-    dispatch(to, 'drop', tx, ty);
+    const accepted = [dispatch(to, 'dragenter', tx, ty), dispatch(to, 'dragover', tx, ty), dispatch(to, 'drop', tx, ty)]
+      .includes(false);
     dispatch(from, 'dragend', tx, ty);
-    to.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: tx, clientY: ty, button: 0 }));
-    return { ok: true, from: fromSel, to: toSel };
+    if (draggable && started && accepted) {
+      press(to, 'pointerup', tx, ty);
+      press(to, 'mouseup', tx, ty);
+      return { ok: true, from: fromSel, to: toSel, via: 'html5' };
+    }
+    // Pointer events stay on the source, where a pointerdown handler's setPointerCapture
+    // routes them (the page's capture is invisible here); they bubble to document listeners.
+    // The compat mouseup still lands on the destination.
+    for (let step = 1; step <= DRAG_POINTER_STEPS; step++) {
+      await nextTask();
+      const x = fx + (tx - fx) * step / DRAG_POINTER_STEPS, y = fy + (ty - fy) * step / DRAG_POINTER_STEPS;
+      press(from, 'pointermove', x, y);
+      press(from, 'mousemove', x, y);
+    }
+    await nextTask();
+    press(from, 'pointerup', tx, ty);
+    press(to, 'mouseup', tx, ty);
+    return { ok: true, from: fromSel, to: toSel, via: 'pointer' };
   }
 
   // ── waitForUrl / waitForTitle ──
