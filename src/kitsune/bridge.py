@@ -1986,6 +1986,8 @@ _TABLESS_ACTIONS = {
     "cookies", "clipboard", "downloads", "clearBrowsingData", "intercept", "reloadExtension",
     "screenshot", "broadcast", "syncBarrier", "parallel", "sequence", "retry", "try",
 }
+# Their condition is JavaScript run on their tab (executeJS, a write), so like js they claim it.
+_CONDITION_ACTIONS = {"if", "while"}
 _UNFINISHED = object()
 
 
@@ -2009,7 +2011,8 @@ def _tab_owned_error(action, sequence, tab_id, owner, **state):
         f'Sequence {sequence}: "{action}" on tab {tab_id} inside parallel conflicts with sequence {owner}, '
         "which also writes that tab",
         "tab_owned", retryable=True,
-        hint="Nothing was dispatched. Let one sequence write each tab; put every write to a tab in its sequence.",
+        hint=("Nothing was dispatched. Let one sequence write each tab; put every write to a tab in its sequence. "
+              "An if/while condition runs JavaScript on its tab, so it counts as a write."),
         sequence=sequence, tabId=tab_id, owner=owner, **state)
 
 
@@ -2049,9 +2052,14 @@ def _parallel_tab_problem(sequences):
                 tab_id = _explicit_tab_id(raw)
                 if tab_id is None:
                     return _tab_required_error(action, i, index=j, tabId=raw)
-                if action in _REPEAT_UNSAFE_ACTIONS and writers.setdefault(tab_id, i) != i:
+                if _claims_tab(action) and writers.setdefault(tab_id, i) != i:
                     return _tab_owned_error(action, i, tab_id, writers[tab_id], index=j)
     return None
+
+
+def _claims_tab(action):
+    """Whether a parallel step owns its tab: a write, or an if/while whose condition runs on it."""
+    return action in _REPEAT_UNSAFE_ACTIONS or action in _CONDITION_ACTIONS
 
 
 def _check_step_tab(action, params):
@@ -2059,8 +2067,8 @@ def _check_step_tab(action, params):
 
     The extension sends a step with a falsy tabId to the active tab, so a named tabId that is not
     a tab id (0, "", "null", an unresolved ${$N.tabId}) is refused; "12" becomes 12. Inside a
-    parallel sequence, a step that acts on a tab must name it, and a write claims the tab for its
-    sequence.
+    parallel sequence, a step that acts on a tab must name it, and a write or an if/while condition
+    claims the tab for its sequence.
     """
     raw = params.get("tabId")
     tab_id = _explicit_tab_id(raw)
@@ -2079,7 +2087,7 @@ def _check_step_tab(action, params):
     sequence = chain[-1][1]
     if tab_id is None:
         return _tab_required_error(action, sequence)
-    if action in _REPEAT_UNSAFE_ACTIONS:
+    if _claims_tab(action):
         for owners, claimant in chain:
             if owners.setdefault(tab_id, claimant) != claimant:
                 return _tab_owned_error(action, sequence, tab_id, owners[tab_id])

@@ -76,7 +76,8 @@ class ParallelTabOwnershipTests(ContainerTests):
                          {"action": "click", "selector": "#b", "tabId": None},
                          {"action": "js", "code": "1", "tabId": "null"},
                          {"action": "sequence", "do": [{"action": "pageText"}]},
-                         {"action": "retry", "command": {"action": "type", "selector": "#q", "text": "x"}}):
+                         {"action": "retry", "command": {"action": "type", "selector": "#q", "text": "x"}},
+                         {"action": "while", "condition": "0", "do": []}):
             with self.subTest(step=implicit):
                 payload = self.parallel([{"action": "click", "selector": "#a", "tabId": 1}],
                                         [{"action": "sleep", "ms": 0}, implicit])
@@ -105,6 +106,43 @@ class ParallelTabOwnershipTests(ContainerTests):
         self.assertEqual({k: rejected["state"][k] for k in ("sequence", "index", "tabId", "owner")},
                          {"sequence": 1, "index": 1, "tabId": 4, "owner": 0})
         self.assertEqual(self.sent, [])
+
+    def test_if_and_while_conditions_claim_their_tab(self):
+        """A condition is JavaScript run on its tab, so it owns the tab like a js step."""
+        for condition in ({"action": "if", "condition": "1", "tabId": 4, "then": []},
+                          {"action": "while", "condition": "0", "tabId": 4, "do": []}):
+            with self.subTest(action=condition["action"]):
+                for sequences in ([[{"action": "click", "selector": "#a", "tabId": 4}], [condition]],
+                                  [[condition], [dict(condition)]]):
+                    payload = self.parallel(*sequences)
+                    [rejected] = payload["results"]
+                    self.assertEqual((rejected["code"], rejected["state"]["tabId"], rejected["state"]["owner"]),
+                                     ("tab_owned", 4, 0))
+                    self.assertEqual(self.sent, [])
+
+    def test_conditions_run_on_their_own_tab_beside_another_sequences_writes(self):
+        self.replies["executeJS"] = [{"result": True}, {"result": True}, {"result": False}]
+        payload = self.parallel(
+            [{"action": "click", "selector": "#a", "tabId": 4}],
+            [{"action": "if", "condition": "document.title", "tabId": 5, "then": [
+                {"action": "click", "selector": "#b", "tabId": 5}]},
+             {"action": "while", "condition": "!done", "tabId": 5, "do": [{"action": "pageText", "tabId": 4}]}])
+        self.assertEqual(payload["status"], "ok")
+        conditions = [p for a, p in self.sent if a == "executeJS"]
+        self.assertEqual([p["tabId"] for p in conditions], [5, 5, 5])
+        self.assertEqual([self.statuses(seq) for seq in payload["progress"][0]["sequences"]], [["ok"], ["ok", "ok"]])
+
+    def test_substituted_condition_tab_is_claimed_before_the_condition_runs(self):
+        self.replies["getPageInfo"] = [{"tabId": 4, "url": "https://example.com/"}]
+        payload = self.parallel(
+            [{"action": "click", "selector": "#a", "tabId": 4}],
+            [{"action": "sequence", "do": [
+                {"action": "pageInfo", "tabId": 2},
+                {"action": "while", "condition": "1", "tabId": "${$0.tabId}", "do": [
+                    {"action": "click", "selector": "#b", "tabId": 2}]}]}])
+        [[_, [sequence]]] = payload["results"]
+        self.assertEqual((sequence["results"][1]["code"], sequence["results"][1]["state"]["owner"]), ("tab_owned", 0))
+        self.assertNotIn("executeJS", [a for a, _ in self.sent])
 
     def test_substituted_tab_ids_are_claimed_when_their_step_runs(self):
         self.replies["getPageInfo"] = [{"tabId": 4, "url": "https://example.com/"}]

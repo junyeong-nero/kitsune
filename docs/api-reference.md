@@ -779,8 +779,10 @@ sequence starts, the bridge refuses the whole `parallel` (`results` is one error
   `reloadExtension`, `screenshot`, `broadcast`, `syncBarrier`) need none;
   `screenshot` captures the visible tab.
 - with `tab_owned` when two sequences write the same tab (the writes that make an
-  unknown outcome unsafe to repeat, including `switchTab` and `closeTab`). Several
-  sequences may read one tab.
+  unknown outcome unsafe to repeat, including `switchTab` and `closeTab`). The
+  condition of an `if` or `while` counts as a write of its `tabId`: it is JavaScript
+  run on that tab, like `js`, and the bridge cannot tell whether it changes the page.
+  Several sequences may read one tab, for example with `waitForElement`.
 
 A `tabId` substituted at run time (`${$N.tabId}` in a nested `sequence`) is checked
 when its command runs: the first sequence that writes a tab owns it, and a later
