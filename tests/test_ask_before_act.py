@@ -1,11 +1,16 @@
 """Ask-before-act policy: held sensitive actions, action-bound one-time tokens, no auto-confirm."""
 import asyncio
 import io
+import json
 import os
+from pathlib import Path
+import stat
+import tempfile
 import unittest
-from unittest.mock import Mock, mock_open, patch
+from unittest.mock import Mock, patch
 
-from kitsune import bridge, server
+from kitsune import bridge, bridge_control, server
+from test_bridge_security import Bridge, _request
 
 PAGE = "https://shop.example/products/1"
 
@@ -88,6 +93,7 @@ class PolicyOffTests(AskBeforeActTestCase):
         for route, body, action in [
             (lambda h: h._forward("submitForm"), {"selector": "#pay"}, "submitForm"),
             (lambda h: h._forward("cookies"), {"op": "get"}, "cookies"),
+            (lambda h: h._forward("clipboard"), {"op": "read"}, "clipboard"),
             (lambda h: h.handle_js(), {"code": "1"}, "executeJS"),
             (lambda h: h.handle_navigate(), {"url": "https://shop.example/checkout"}, "navigate"),
         ]:
@@ -197,6 +203,25 @@ class SensitiveActionTests(AskBeforeActTestCase):
         self.held(lambda h: h.handle_load_session(), {"name": "s"})
         self.assertEqual(self.extension.sent, [])
 
+    def test_storage_clipboard_and_downloads_are_held_on_any_page(self):
+        for action, body, reason in [
+            ("storageOp", {"kind": "local", "op": "get", "key": "auth"}, "storage"),
+            ("storageOp", {"kind": "session", "op": "set", "key": "k", "value": "v"}, "storage"),
+            ("clipboard", {"op": "read"}, "clipboard"),
+            ("clipboard", {"op": "write", "text": "x"}, "clipboard"),
+            ("downloads", {"op": "download", "url": "https://example.com/a.zip"}, "downloads"),
+            ("downloads", {"op": "list"}, "downloads"),
+            ("downloads", {"op": "cancel", "query": {"id": 1}}, "downloads"),
+        ]:
+            with self.subTest(action=action, op=body["op"]):
+                state = self.held(lambda h: h._forward(action), body)["state"]
+                self.assertEqual((state["reason"], state["url"]), (reason, PAGE if action == "storageOp" else None))
+                self.assertEqual(self.batch({"action": action, **body})[0]["code"], "confirmation_required")
+        self.assertEqual(self.extension.actions(), [])
+        token = self.held(lambda h: h._forward("clipboard"), {"op": "read"})["state"]["confirmToken"]
+        self.assertEqual(self.forward("clipboard", {"op": "read", "confirmToken": token}), (200, {"ok": True}))
+        self.assertEqual(self.extension.actions(), ["clipboard"])
+
     def test_payment_urls_and_pages_are_held(self):
         held = self.held(lambda h: h.handle_navigate(), {"url": "https://shop.example/Checkout/step1"})
         self.assertEqual(held["state"]["reason"], "payment_url")
@@ -221,6 +246,19 @@ class SensitiveActionTests(AskBeforeActTestCase):
         self.assertEqual(inspected, {"ref": "s1e5", "inspect": True})
         self.extension.target = {"ok": True, "tag": "a", "submits": False}
         self.assertEqual(self.forward("click", {"ref": "s1e6"}), (200, {"ok": True}))
+        self.assertEqual(self.extension.actions(), ["click"])
+
+    def test_submit_labeled_buttons_are_held(self):
+        # JS-driven buttons (type=button, role=button) the page labels like a submit or payment.
+        self.extension.target = {"ok": True, "tag": "div", "submits": False, "submitLabel": True, "text": "결제하기"}
+        held = self.held(lambda h: h.handle_click(), {"ref": "s1e7"})
+        self.assertEqual(held["state"]["reason"], "submit_label")
+        self.assertIn("clicks a button labeled like a submit or payment (결제하기)", held["error"])
+        held = self.held(lambda h: h._forward("keypress"), {"key": "Enter", "ref": "s1e7"})
+        self.assertIn("presses Enter on a button", held["error"])
+        self.extension.target = {"ok": True, "tag": "button", "submits": False, "submitLabel": False,
+                                 "text": "Submit search"}
+        self.assertEqual(self.forward("click", {"ref": "s1e8"}), (200, {"ok": True}))
         self.assertEqual(self.extension.actions(), ["click"])
 
     def test_enter_in_form_field_is_held(self):
@@ -367,24 +405,86 @@ class LockedPolicyTests(AskBeforeActTestCase):
         self.assertEqual(result["policy"]["askUrls"], [r"bank\.example", "/pay\\b"])
         self.assertIs(result["policy"]["ask"], True)
 
+    def start_bridge(self, home, args=(), env=None, lock_file=None):
+        """Run bridge.run(args) up to its event loop with home as KITSUNE_HOME; return the policy."""
+        environ = {k: v for k, v in os.environ.items() if k != bridge.ASK_BEFORE_ACT_ENV}
+        with patch.dict(os.environ, {**environ, **(env or {})}, clear=True), \
+                patch.dict(bridge._policy, {"ask": False, "askLocked": False}), \
+                patch.object(bridge, "ASK_LOCK_FILE", lock_file or os.path.join(home, "ask-before-act-locked")), \
+                patch.object(bridge_control, "PID_FILE", os.path.join(home, "bridge.pid")), \
+                patch.object(bridge.fcntl, "flock"), \
+                patch.object(bridge, "main", new=Mock(return_value="coroutine")), \
+                patch.object(bridge.asyncio, "run"):
+            bridge.run(list(args))
+            return bridge._policy["ask"], bridge._policy["askLocked"]
+
     def test_bridge_start_locks_ask_mode(self):
         for args, env in [(["--ask-before-act"], {}), ([], {bridge.ASK_BEFORE_ACT_ENV: "1"}),
                           (["start"], {}), ([], {bridge.ASK_BEFORE_ACT_ENV: "0"})]:
             locked = args == ["--ask-before-act"] or env.get(bridge.ASK_BEFORE_ACT_ENV) == "1"
-            environ = {k: v for k, v in os.environ.items() if k != bridge.ASK_BEFORE_ACT_ENV}
-            with self.subTest(args=args, env=env), patch.dict(os.environ, {**environ, **env}, clear=True), \
-                    patch.dict(bridge._policy, {"ask": False, "askLocked": False}), \
-                    patch.object(bridge.os, "open", return_value=42), \
-                    patch.object(bridge.os, "fdopen", mock_open()), patch.object(bridge.fcntl, "flock"), \
-                    patch.object(bridge, "main", new=Mock(return_value="coroutine")), \
-                    patch.object(bridge.asyncio, "run"):
-                bridge.run(args)
-                self.assertEqual((bridge._policy["ask"], bridge._policy["askLocked"]), (locked, locked))
+            with self.subTest(args=args, env=env), tempfile.TemporaryDirectory() as home:
+                self.assertEqual(self.start_bridge(home, args, env), (locked, locked))
+                lock_file = Path(home, "ask-before-act-locked")
+                self.assertEqual(lock_file.exists(), locked)
+                if locked:
+                    self.assertEqual(stat.S_IMODE(lock_file.stat().st_mode), 0o600)
+                    self.assertIn("delete this file", lock_file.read_text(encoding="utf-8"))
+
+    def test_lock_survives_restart_until_file_is_deleted(self):
+        with tempfile.TemporaryDirectory() as home:
+            self.start_bridge(home, env={bridge.ASK_BEFORE_ACT_ENV: "1"})
+            # A restart from an environment without the variable, or with it turned off.
+            for env in ({}, {bridge.ASK_BEFORE_ACT_ENV: "0"}):
+                with self.subTest(env=env):
+                    self.assertEqual(self.start_bridge(home, env=env), (True, True))
+            os.remove(os.path.join(home, "ask-before-act-locked"))
+            self.assertEqual(self.start_bridge(home), (False, False))
+
+    def test_unreadable_or_symlinked_lock_file_still_locks(self):
+        with tempfile.TemporaryDirectory() as home:
+            os.symlink(os.path.join(home, "missing"), os.path.join(home, "ask-before-act-locked"))
+            self.assertEqual(self.start_bridge(home), (True, True))
+            self.assertFalse(os.path.exists(os.path.join(home, "missing")), "the link is not followed")
+
+    def test_lock_that_cannot_be_persisted_still_locks_this_bridge(self):
+        with tempfile.TemporaryDirectory() as home:
+            read_only = os.path.join(home, "read-only")
+            os.mkdir(read_only, 0o500)
+            try:
+                with patch("sys.stdout", new_callable=io.StringIO) as out:
+                    self.assertEqual(self.start_bridge(home, ["--ask-before-act"],
+                                                       lock_file=os.path.join(read_only, "lock")), (True, True))
+            finally:
+                os.chmod(read_only, 0o700)
+            self.assertIn("locked for this bridge only", out.getvalue())
 
     def test_flag_only_applies_to_start(self):
         with patch("sys.stderr", new_callable=io.StringIO), self.assertRaises(SystemExit) as raised:
             bridge.run(["status", "--ask-before-act"])
         self.assertEqual(raised.exception.code, 2)
+
+
+class PersistedLockProcessTests(unittest.TestCase):
+    """A real bridge (temporary KITSUNE_HOME, ephemeral ports) restarted without the variable."""
+
+    def policy(self, home, env=None):
+        process = Bridge(home)
+        process.env.update(env or {})
+        process.start()
+        try:
+            status, _, body = _request(process.http_port, "GET", "/api/get-policy", process.auth(), process.host)
+            self.assertEqual(status, 200, body)
+            return json.loads(body)
+        finally:
+            process.stop()
+
+    def test_restarted_bridge_stays_locked(self):
+        with tempfile.TemporaryDirectory() as home:
+            self.assertTrue(self.policy(home, {bridge.ASK_BEFORE_ACT_ENV: "1"})["askLocked"])
+            policy = self.policy(home)
+            self.assertEqual((policy["ask"], policy["askLocked"]), (True, True))
+            os.remove(os.path.join(home, "ask-before-act-locked"))
+            self.assertFalse(self.policy(home)["askLocked"])
 
 
 class ServerToolTests(unittest.TestCase):
@@ -398,6 +498,12 @@ class ServerToolTests(unittest.TestCase):
             post.assert_called_with("/api/js", {"code": "1", "confirmToken": "t"})
             server.browser_cookies("get", confirm_token="t")
             post.assert_called_with("/api/cookies", {"op": "get", "secure": False, "confirmToken": "t"})
+            server.browser_clipboard("read", confirm_token="t")
+            post.assert_called_with("/api/clipboard", {"op": "read", "confirmToken": "t"})
+            server.browser_downloads("list")
+            post.assert_called_with("/api/downloads", {"op": "list"})
+            server.browser_downloads("list", confirm_token="t")
+            post.assert_called_with("/api/downloads", {"op": "list", "confirmToken": "t"})
             server.browser_set_policy(ask=True, ask_urls=["checkout"])
             post.assert_called_with("/api/set-policy", {"ask": True, "askUrls": ["checkout"]})
 

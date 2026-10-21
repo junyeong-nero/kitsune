@@ -388,12 +388,23 @@ In ask mode the bridge holds:
 |---|---|
 | `submit` | `browser_submit_form` (`submitForm`) |
 | `submit_control` | Click, double-click, trusted click, or click-and-wait-navigation on a submit control (`button` whose type is submit, `input type=submit/image`, or an element inside one, with a form). Also Enter (`browser_keypress`) on a text-like `input` in a form or on a submit control |
+| `submit_label` | The same clicks, or Enter, on any other button whose label reads like a submit, order, or payment ("Place order", "Pay $12", "결제하기"), for example a JS-driven `type=button` or `role=button`. See [Submit labels](#submit-labels) |
 | `javascript` | Agent-supplied JavaScript: `browser_js` (including `full=True`), `browser_wait_for(js=...)`, `browser_sync_barrier`, batch `js`, and batch `if`/`while` conditions |
 | `cookies` | `browser_cookies` (every op, including `get`), `browser_save_session`, `browser_load_session` |
+| `storage` | `browser_storage` (every op, including `get`, `list` and `snapshot`), on any page |
+| `clipboard` | `browser_clipboard` (`read` and `write`) |
+| `downloads` | `browser_downloads` (every op: `download`, `list`, `cancel`) |
 | `payment_url` | Navigation, new tabs, or new windows whose URL matches an `askUrls` pattern |
-| `payment_page` | Page actions (click, type/fill, form fill, select, check, keypress, drag, submit, upload, dialog policy, page storage, JavaScript) on a tab whose current URL matches `askUrls` |
+| `payment_page` | Page actions (click, type/fill, form fill, select, check, keypress, drag, submit, upload, dialog policy, JavaScript) on a tab whose current URL matches `askUrls` |
 | `unknown_outcome` | Repeating a write whose identical previous attempt ended `retryable: false` (a timeout or disconnect after sending, see [Action errors](#action-errors)) |
 | `uninspectable_target` | A click or Enter whose target the bridge could not inspect (for example, an extension older than this bridge, or a screen-coordinate trusted click). Inspection fails closed |
+
+Storage, clipboard, and downloads are held for every op, reads included, and on every
+page, not only payment-like ones. Page storage often holds session tokens, as cookies
+do. The clipboard reaches outside the browser: a read can return a password copied
+from a password manager, and a write replaces what the user will paste. A download
+writes a file from any URL to disk, and `list` returns local file paths and source
+URLs.
 
 `askUrls` are case-insensitive regular expressions. The default list is
 `checkout`, `payment`, `billing`, `/pay\b`, `purchase`, and `/order`. Replace it with
@@ -447,27 +458,90 @@ guards against accidents only.
 
 **Locked mode.** Start the bridge with `KITSUNE_ASK_BEFORE_ACT=1` in its environment
 (the MCP server passes its environment to a bridge it starts) or with
-`kitsune-bridge start --ask-before-act`. Ask mode then starts on and is locked for
-that bridge's lifetime. `browser_set_policy` can still add `askUrls` patterns.
+`kitsune-bridge start --ask-before-act`. Ask mode then starts on and is locked. `browser_set_policy` can still add `askUrls` patterns.
 Setting `ask=False` or dropping a pattern returns `policy_locked` (HTTP 403), and none
 of the request is applied. `allow`, `deny`, and `readonly` stay settable.
 `browser_get_policy` reports `ask`, `askUrls`, and `askLocked`. The bridge is shared:
 if one is already running without the lock, stop it (`kitsune-bridge stop`) so that
 the next start applies it.
 
-The lock lives in the bridge process, not in a file. Any restart starts a new bridge
-from the environment of whatever starts it: `kitsune-bridge stop` followed by the next
-tool call, an idle shutdown, or an MCP server that replaces an outdated bridge. If that
-environment lacks `KITSUNE_ASK_BEFORE_ACT=1`, the new bridge starts unlocked with ask
-mode off. Set the variable in the configuration of **every** MCP server that uses
-Kitsune, not only on a bridge you start by hand, and check `askLocked` with
-`browser_get_policy`.
+A locked start also writes `ask-before-act-locked` to the Kitsune home
+(`$KITSUNE_HOME`, default `~/.kitsune`), user-only (`0600`) like the token file.
+While that file exists, every bridge using that home starts locked, whatever its
+environment. So a restart cannot come up unlocked: `kitsune-bridge stop` followed by
+the next tool call, an idle shutdown, or an MCP server that replaces an outdated
+bridge. `KITSUNE_ASK_BEFORE_ACT=0` does not unlock either. Any entry at that path
+locks, including an unreadable file or a symlink, and the bridge never follows a
+symlink there. If the file cannot be written, the bridge still starts locked, prints a
+warning to its log, and the lock does not survive a restart.
+
+To unlock deliberately:
+
+1. Remove `KITSUNE_ASK_BEFORE_ACT=1` (or `--ask-before-act`) from every MCP server
+   configuration and script that starts the bridge. Otherwise the next start writes
+   the file again.
+2. Delete the file: `rm ~/.kitsune/ask-before-act-locked`.
+3. Run `kitsune-bridge stop`. The running bridge stays locked until it stops.
+
+Agent-settable ask mode (`browser_set_policy(ask=True)`) is not persisted.
+
+#### Submit labels
+
+`submit_label` covers buttons that submit or pay through JavaScript rather than
+through a form. The content script reads the label of the clicked control: its
+`aria-label`, else its text, else the `value` of an `input type=button/submit/image`.
+The control is a `button`, one of those inputs, or an element with `role="button"`,
+including an element inside one. The label is normalized: case, Unicode width, and
+whitespace are folded; a trailing parenthetical, an amount ("$12.00", "12,000원"),
+and leading or trailing punctuation are dropped; labels over 60 characters never
+match. The **whole** remaining label must then be one of a fixed set of phrases:
+
+- English: place/submit/confirm/complete/finish (your/my/the) order/purchase/payment/
+  booking/reservation; pay, pay now, pay securely, pay with …; buy, buy (it) now,
+  purchase, order now; (proceed/continue/go to) checkout; continue to payment;
+  submit; confirm, confirm and pay;
+- Korean: 결제, 주문, 구매, 제출 with an optional 지금/바로 prefix and 진행/완료/확정
+  and 하기 suffixes (결제하기, 바로구매, 주문 완료);
+- Japanese: 注文する, 注文を確定する, 購入する, 今すぐ購入, 支払う, お支払いへ進む, レジに進む;
+- Chinese: 支付, 付款, 立即购买, 确认支付, 下单, 提交, 提交订单, 确认订单, 去结算, 結帳;
+- German, French, Spanish: (jetzt) kaufen/bezahlen/bestellen, zahlungspflichtig
+  bestellen, zur Kasse; payer, acheter, commander, passer la commande; pagar,
+  comprar, realizar pedido, finalizar compra.
+
+The match is deliberately conservative: "Submit search", "Search", "Add to cart",
+"Order history", "Payment methods", "Continue", "Send", and a bare "OK", "확인",
+"確認" or "确认" are not held. A JS-driven commit button with another label ("Send",
+"Transfer", "Delete account"), a link (`<a>` without `role="button"`), or a label
+drawn on a canvas is not caught. On a payment-like page every click is held anyway
+(`payment_page`). An extension older than this bridge does not report labels, so only
+structural submit controls are held there.
 
 **Check-then-act window.** The bridge inspects the target (tab, URL, and whether a
-click or Enter submits a form) with `describeTarget` before it dispatches the action.
+click or Enter submits a form or hits a submit-labeled button) with `describeTarget` before it dispatches the action.
 The page can change between the two: it can navigate to a payment-like URL, or a
 script can turn the target into a submit control. Such a change is not caught. Passing
 `tab_id` removes the active-tab part of this window, but not changes inside the page.
+
+**Client-side approval (MCP elicitation), evaluated.** MCP elicitation
+(`ctx.elicit`) would let the server ask the user through the client and retry with
+the token itself, so approval would not pass through the agent. It is not used, for
+these reasons:
+
+- The dependency floor is `mcp>=1.2.0`; `Context.elicit` arrived in later releases
+  (the 2025-06-18 protocol revision). Using it means raising the floor or a runtime
+  feature check.
+- Every Kitsune tool is a synchronous function. FastMCP runs synchronous tools on its
+  event loop, so a tool cannot await `ctx.elicit`. The held tools would have to become
+  `async` and move their bridge calls off the loop.
+- Client support varies: many clients do not declare the `elicitation` capability.
+  Clients that do may let the agent answer the form instead of the user. So
+  `confirmation_required` stays as the fallback, and an accepted elicitation is
+  still not proof that a human approved.
+
+A later change could add it as an option: for clients that declare `elicitation`,
+an `async` wrapper around held tools would elicit on `confirmation_required` and
+retry once with the token. For now, real approval has to come from the client's own
+permission prompt for the tool call that carries `confirm_token`.
 
 **Annotations are not policy.** MCP `ToolAnnotations` (`readOnlyHint`,
 `destructiveHint`, `idempotentHint`, `openWorldHint`) are static, per-tool metadata.
