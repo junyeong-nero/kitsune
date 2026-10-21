@@ -188,14 +188,13 @@
   const STALE_REF_HINTS = {
     element_removed: 'The element was removed from the page; take a new browser_snapshot and use its refs.',
     not_in_snapshot: 'The latest snapshot did not issue this ref; take a new browser_snapshot and use its refs.',
-    snapshot_replaced: 'A newer snapshot replaced this ref (state.latestObservation names its call); ' +
-      'use refs from that snapshot or a new browser_snapshot.',
+    snapshot_replaced: 'A newer snapshot replaced this ref; use refs from the latest snapshot or a new browser_snapshot.',
     other_document: 'The ref belongs to another document: the tab navigated or a different tab is targeted. ' +
       'Pass tab_id and take a new browser_snapshot.',
   };
 
   const CURRENT_REF_HINT = 'A newer snapshot replaced this ref; state.currentRef is the same element (same node, ' +
-    'role, name and ancestors) in it. Use it only if that snapshot shows the action is still needed.';
+    'role, name and ancestors) in the latest snapshot. Use it only if that snapshot shows the action is still needed.';
 
   function staleRef(ref, el) {
     const generation = /^s(\d+)e\d+$/.exec(ref)?.[1];
@@ -206,7 +205,10 @@
     const state = { reason, ref };
     let hint = STALE_REF_HINTS[reason];
     if (reason === 'snapshot_replaced') {
-      if (refObservation) state.latestObservation = refObservation;
+      if (refObservation) {
+        state.latestObservation = refObservation;
+        hint = `A newer snapshot from ${refObservation} replaced this ref; use its refs or a new browser_snapshot.`;
+      }
       const currentRef = generation && currentRefFor(ref, generation);
       if (currentRef) {
         state.currentRef = currentRef;

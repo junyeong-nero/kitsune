@@ -388,7 +388,7 @@ async function testStaleRefSuggestions() {
   const old = await stale(second);
   assert.equal(old.state.latestObservation, 'browser_snapshot');
   assert.equal(old.state.currentRef, undefined);
-  assert.match(old.hint, /new browser_snapshot/);
+  assert.equal(old.hint, 'A newer snapshot from browser_snapshot replaced this ref; use its refs or a new browser_snapshot.');
 
   // A changed name, a changed ancestor, a replaced node or a removed node is not the same element.
   let ref = await snapshot();

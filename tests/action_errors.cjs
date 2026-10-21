@@ -85,7 +85,7 @@ async function testContentErrors() {
   assert.equal(replaced.state.reason, 'snapshot_replaced');
   assert.equal(replaced.state.latestObservation, 'browser_dom');
   assert.equal(replaced.state.currentRef, undefined, 'a browser_find ref has no role/name to match');
-  assert.match(replaced.hint, /new browser_snapshot/);
+  assert.match(replaced.hint, /^A newer snapshot from browser_dom replaced this ref/);
 
   // Dynamic forms: the element left the DOM after the snapshot.
   const current = await refFor();
@@ -108,6 +108,9 @@ async function testContentErrors() {
   assert.match(wrongTarget.hint, /tab_id/);
   assert.deepEqual(go.events, [], 'a foreign ref never acts on this document');
   assert.equal((await stale('r0')).state.reason, 'snapshot_replaced');
+  const unobserved = await otherDocument({ action: 'click', selector: 'r0' });
+  assert.equal(unobserved.state.latestObservation, undefined, 'no snapshot in this document yet');
+  assert.equal(unobserved.hint, 'A newer snapshot replaced this ref; use refs from the latest snapshot or a new browser_snapshot.');
 }
 
 async function testNotRenderedWarnings() {
