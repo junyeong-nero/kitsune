@@ -326,7 +326,7 @@ class RealBrowserRedactionTests(harness.RealBrowserTestCase):
             result = self.assert_ok(self.call("/api/fill", {"selector": selector, "value": value, "tabId": tab_id}))
             self.assertIn("snapshot", result)
             self.assertNotIn(MARKER, json.dumps(result), "a write result echoes a filled value")
-        # browser_fill cannot reach an input inside a closed root, so page code sets this one.
+        # browser_fill cannot reach an input inside a closed root yet (#107), so page code sets this one.
         self.js(tab_id, f"document.getElementById('closed-otp').wrappedJSObject.value = {json.dumps(code)}")
         # The values reached the inner inputs, and the hosts reflect them as page code would.
         self.assertEqual(self.js(tab_id, "['vault', 'closed-otp', 'site-search'].map(id => "
