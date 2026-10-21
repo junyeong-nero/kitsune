@@ -1279,33 +1279,43 @@ async function ensureContentScript(tabId) {
   await new Promise(r => setTimeout(r, 150));
 }
 
+const MISSING_CONTENT_RECEIVER = 'Could not establish connection. Receiving end does not exist.';
+
 async function forwardToContent(action, params) {
   const tabId = params.tabId || (await getActiveTabId());
   if (!tabId) return noActiveTab('No active tab found');
 
-  // Verify the target tab before anything can reach a page.
-  const state = await tabState(tabId);
-  if (!state) return tabError(`Tab ${tabId} no longer exists`, 'tab_closed', { tabId });
-  if (isRestrictedUrl(state.url)) {
-    return tabError(`Cannot access browser internal page: ${state.url.split('?')[0]}`, 'restricted_page', state);
-  }
-  
-  try {
-    await ensureContentScript(tabId);
-  } catch (e) {
-    return await injectionFailure(tabId, e);
-  }
+  let retried = false;
+  while (true) {
+    // Verify the target tab before anything can reach a page, including a retry.
+    const state = await tabState(tabId);
+    if (!state) return tabError(`Tab ${tabId} no longer exists`, 'tab_closed', { tabId });
+    if (isRestrictedUrl(state.url)) {
+      return tabError(`Cannot access browser internal page: ${state.url.split('?')[0]}`, 'restricted_page', state);
+    }
 
-  let response;
-  try {
-    response = await browser.tabs.sendMessage(tabId, { action, ...params });
-  } catch (e) {
-    // Without a receiver the message never reached the page.
-    return await tabFailure(tabId, `Content script error: ${e.message}`,
-      !/Receiving end does not exist/.test(e.message));
+    try {
+      await ensureContentScript(tabId);
+    } catch (e) {
+      return await injectionFailure(tabId, e);
+    }
+
+    let response;
+    try {
+      response = await browser.tabs.sendMessage(tabId, { action, ...params });
+    } catch (e) {
+      const missingReceiver = e.message === MISSING_CONTENT_RECEIVER;
+      // A wake's receiver can disappear after the ping. Only this error proves nothing
+      // reached the page: recheck/inject once, never replay a possibly dispatched action.
+      if (missingReceiver && !retried) {
+        retried = true;
+        continue;
+      }
+      return await tabFailure(tabId, `Content script error: ${e.message}`, !missingReceiver);
+    }
+    if (!response) return await tabFailure(tabId, 'No response from content script', true);
+    return response.code ? await withTabState(tabId, response) : response;
   }
-  if (!response) return await tabFailure(tabId, 'No response from content script', true);
-  return response.code ? await withTabState(tabId, response) : response;
 }
 
 async function getActiveTabId() {
