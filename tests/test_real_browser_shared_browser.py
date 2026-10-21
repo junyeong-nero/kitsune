@@ -90,9 +90,10 @@ class RealBrowserSharedBrowserTests(harness.RealBrowserTestCase):
             self.assertLess(time.monotonic(), deadline, message)
             time.sleep(0.1)
 
-    def user_view(self):
-        """What the user sees: their shown tab, the URLs of their tabs, and which window has focus."""
-        tabs = self.tabs()
+    def user_view(self, agent_windows=()):
+        """What the user sees: their shown tab and the URLs of their tabs, outside the agent's
+        windows, and which window has focus."""
+        tabs = {i: t for i, t in self.tabs().items() if t["windowId"] not in agent_windows}
         windows = self.call("/api/windows", {})["windows"]
         return {"shown": [t["id"] for t in tabs.values() if t["active"] and not t["owned"]],
                 "user_tabs": {i: t["url"] for i, t in tabs.items() if not t["owned"]},
@@ -113,9 +114,10 @@ class RealBrowserSharedBrowserTests(harness.RealBrowserTestCase):
     def test_agent_opens_reads_and_closes_its_own_tabs_without_moving_the_user(self):
         user_tab = self.user_page()
         before = self.user_view()
+        agent_windows = set()
 
         def assert_user_view_unchanged(step):
-            self.assertEqual(self.user_view(), before, step)
+            self.assertEqual(self.user_view(agent_windows), before, step)
 
         agent = self.assert_ok(self.call("/api/new-tab", {"url": self.page.origin + "/agent", "wait": True}))["tabId"]
         blank = self.assert_ok(self.call("/api/new-tab", {"url": "about:blank"}))["tabId"]
@@ -143,11 +145,32 @@ class RealBrowserSharedBrowserTests(harness.RealBrowserTestCase):
         self.assertIs(self.tabs()[duplicate]["owned"], True)
         assert_user_view_unchanged("duplicate")
 
+        before_window = {i: t["url"] for i, t in self.tabs().items()}
         window = self.assert_ok(self.call("/api/create-window", {"url": self.page.origin + "/agent"}))
-        self.assertTrue(all(self.tabs()[t]["owned"] for t in window["tabIds"]), window)
+        agent_windows.add(window["windowId"])
+        time.sleep(1)  # let the browser add any synced copies and move the focus
+        tabs = self.tabs()
+        self.assertTrue(window["tabIds"] and all(tabs[t]["owned"] for t in window["tabIds"]), window)
         assert_user_view_unchanged("a new window does not take focus")
+        # Zen's window sync fills the agent window with lazy copies of the other windows' tabs.
+        # Closing a copy closes its original, so they are not the agent's.
+        copies = {i: t for i, t in tabs.items() if t["windowId"] == window["windowId"] and i not in window["tabIds"]}
+        originals = {(t["title"], t["url"]) for t in tabs.values() if t["windowId"] != window["windowId"]}
+        for t in copies.values():
+            self.assertIs(t["owned"], False, t)
+            self.assertTrue(any(title == t["title"] and t["url"] in ("about:blank", url) for title, url in originals), t)
+        user_copy = next((i for i, t in copies.items() if t["title"] == "user"), None)
+        if user_copy is not None:
+            self.assert_error(self.call("/api/close-tab", {"tabId": user_copy}), "user_tab", False)
+            self.assertIn(user_copy, self.tabs())
+            assert_user_view_unchanged("a copy of the user's tab is not closed")
+        # Its own copy in the user's window is the agent's.
+        self.assertTrue(all(t["owned"] for i, t in tabs.items() if t["windowId"] != window["windowId"]
+                            and i not in before_window), tabs)
         self.assert_ok(self.call("/api/close-window", {"windowId": window["windowId"]}))
         assert_user_view_unchanged("close-window")
+        # Every tab from before is open on its URL, and no copy is left showing the agent's page.
+        self.assertEqual({i: t["url"] for i, t in self.tabs().items()}, before_window, "close-window")
 
         for tab_id in (opened, duplicate, blank, agent):
             self.assert_ok(self.call("/api/close-tab", {"tabId": tab_id}))

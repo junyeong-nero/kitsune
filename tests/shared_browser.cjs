@@ -20,7 +20,9 @@ const copy = value => JSON.parse(JSON.stringify(value));
 
 // Window 1 shows the user's tab 1; tab 2 is another user tab. The browser activates a tab a page
 // opens when foreground is set, like Firefox does for target=_blank links.
-function harness({ onClick = () => {}, activity = {} } = {}) {
+// focusOnCreate: windows.create focuses the new window despite focused: false, 'before' it resolves
+// or 'after'. sync: Zen's window sync, see windows.create and tabs.remove below.
+function harness({ onClick = () => {}, activity = {}, focusOnCreate = null, sync = false } = {}) {
   let now = 1000, nextId = 0, nextTab = 20;
   const timers = new Map();
   const schedule = (fn, delay) => { const id = ++nextId; timers.set(id, { fn, at: now + delay }); return id; };
@@ -51,6 +53,13 @@ function harness({ onClick = () => {}, activity = {} } = {}) {
       return id;
     },
     focusWindow(windowId) { h.focusedWindow = windowId; windowEvents.onFocusChanged.emit(windowId); },
+    // A tab the browser (or the user) adds to window 1 in the background.
+    add(props) {
+      const id = nextTab++;
+      tabs[id] = { id, windowId: 1, url: 'about:blank', status: 'complete', active: false, ...props };
+      tabsEvents.onCreated.emit({ ...tabs[id] });
+      return id;
+    },
     load(id, url) {
       tabs[id] = { ...tabs[id], url, status: 'loading' };
       tabsEvents.onUpdated.emit(id, { status: 'loading', url }, { ...tabs[id] });
@@ -74,6 +83,10 @@ function harness({ onClick = () => {}, activity = {} } = {}) {
     },
   };
   const missing = id => new Error(`Invalid tab ID: ${id}`);
+  const syncCopy = (original, windowId) => {
+    original.syncId ??= original.id;
+    return h.add({ windowId, title: original.title, discarded: true, syncId: original.syncId });
+  };
   const created = props => {
     const id = nextTab++;
     tabs[id] = { id, windowId: props.windowId ?? 1, url: props.url || 'about:blank', status: 'complete',
@@ -103,8 +116,13 @@ function harness({ onClick = () => {}, activity = {} } = {}) {
       remove: async id => {
         h.calls.push(['tabs.remove', id]);
         if (!tabs[id]) throw missing(id);
+        const { syncId } = tabs[id];
         delete tabs[id];
         tabsEvents.onRemoved.emit(id);
+        // Zen closes a tab's copies in the other windows with it, the original included.
+        if (sync && syncId != null) {
+          Object.values(tabs).filter(t => t.syncId === syncId).forEach(t => { delete tabs[t.id]; tabsEvents.onRemoved.emit(t.id); });
+        }
       },
       captureTab: async (id, options) => { h.calls.push(['tabs.captureTab', id, copy(options)]); return 'data:image/png;base64,AA=='; },
       captureVisibleTab: async () => { throw new Error('captureVisibleTab only sees the shown tab'); },
@@ -122,23 +140,48 @@ function harness({ onClick = () => {}, activity = {} } = {}) {
       ...windowEvents, WINDOW_ID_NONE: -1,
       create: async props => {
         h.calls.push(['windows.create', copy(props)]);
-        const tab = created({ url: props.url?.[0], windowId: 9 });
-        return { id: 9, tabs: [tab] };
+        const windowTabs = Object.values(tabs).filter(t => t.windowId === 1);
+        let tab;
+        if (props.tabId != null) {
+          tabs[props.tabId].windowId = 9;
+          tab = { ...tabs[props.tabId] };
+        } else {
+          tab = created({ url: props.url?.[0], windowId: 9 });
+        }
+        if (focusOnCreate === 'before') h.focusWindow(9);
+        if (focusOnCreate === 'after') schedule(() => h.focusWindow(9), 20);
+        // Zen's window sync: the new window gets a lazy copy of each tab of window 1, and window 1
+        // gets one of the new window's tab once the window is shown (h.agentCopy).
+        const copies = sync ? windowTabs.filter(t => t.id !== props.tabId).map(t => ({ ...tabs[syncCopy(t, 9)] })) : [];
+        if (sync) schedule(() => { h.agentCopy = syncCopy(tabs[tab.id], 1); }, 50);
+        return { id: 9, tabs: [tab, ...copies] };
       },
       update: async (id, props) => { h.calls.push(['windows.update', id, copy(props)]); if (props.focused) h.focusWindow(id); return { id }; },
-      getLastFocused: async () => ({ id: h.focusedWindow }),
+      // focusedWindow -1: the user is in another application.
+      getLastFocused: async () => ({ id: h.focusedWindow === -1 ? 1 : h.focusedWindow, focused: h.focusedWindow !== -1 }),
       get: async id => ({ id, tabs: Object.values(tabs).filter(t => t.windowId === id).map(t => ({ ...t })) }),
       remove: async id => {
         h.calls.push(['windows.remove', id]);
-        Object.values(tabs).filter(t => t.windowId === id).forEach(t => { delete tabs[t.id]; tabsEvents.onRemoved.emit(t.id); });
+        const closing = Object.values(tabs).filter(t => t.windowId === id);
+        // Zen moves the closing window's page into its copies elsewhere; closing a window closes no copies.
+        for (const t of closing) {
+          for (const other of Object.values(tabs).filter(o => o.windowId !== id && o.syncId === t.syncId && o.discarded)) {
+            Object.assign(other, { url: t.url, discarded: false });
+            tabsEvents.onUpdated.emit(other.id, { discarded: false }, { ...other });
+            tabsEvents.onUpdated.emit(other.id, { url: t.url }, { ...other });
+          }
+        }
+        closing.forEach(t => { delete tabs[t.id]; tabsEvents.onRemoved.emit(t.id); });
+        windowEvents.onRemoved.emit(id);
       },
       getAll: async () => [{ id: 1 }],
     },
     runtime: { onMessage: event(), onStartup: event(), onInstalled: event() },
+    permissions: { contains: async () => true },
   };
   const context = vm.createContext({
     browser, URL, console: { log() {}, error() {} },
-    WebSocket: class { close() {} },
+    WebSocket: class { close() {} send() {} },
     Date: class extends Date { static now() { return now; } },
     setTimeout: (fn, delay) => schedule(fn, delay),
     clearTimeout: id => timers.delete(id),
@@ -166,13 +209,16 @@ async function testNeverTakeFocus() {
   assert.deepEqual(h.shown(), [1]);
   assert.deepEqual(await owned(h), { 1: false, 2: false, [opened.tabId]: true });
 
-  // Duplicates and new windows open in the background and are owned too.
+  // Duplicates and new windows open in the background and are owned too. A new window gives the
+  // focus back to the user's window in case the browser focused it anyway.
   const dup = await h.send({ action: 'duplicateTab', tabId: 2 });
   assert.deepEqual(h.calls.at(-1), ['tabs.duplicate', 2, { active: false }]);
   const win = await h.send({ action: 'createWindow', url: 'https://agent.example/w' });
-  assert.equal(h.calls.at(-1)[1].focused, false);
+  assert.deepEqual(h.calls.at(-2), ['windows.create', { url: ['https://agent.example/w'], incognito: false, focused: false }]);
+  assert.deepEqual(h.calls.at(-1), ['windows.update', 1, { focused: true }]);
   await h.send({ action: 'detachTab', tabId: dup.tabId });
-  assert.deepEqual(h.calls.at(-1), ['windows.create', { tabId: dup.tabId, focused: false }]);
+  assert.deepEqual(h.calls.at(-2), ['windows.create', { tabId: dup.tabId, focused: false }]);
+  assert.deepEqual(h.calls.at(-1), ['windows.update', 1, { focused: true }]);
   const tabs = await owned(h);
   assert.equal(tabs[dup.tabId], true);
   assert.equal(tabs[win.tabIds[0]], true);
@@ -182,7 +228,8 @@ async function testNeverTakeFocus() {
   await run(h, { action: 'navigate', tabId: opened.tabId, url: 'https://agent.example/b' }, 16000);
   assert.deepEqual(h.shown(), [1]);
   assert.deepEqual(h.activations(), [], 'nothing activated a tab');
-  assert.ok(!h.calls.some(([name]) => name === 'windows.update'), 'nothing focused a window');
+  assert.ok(h.calls.filter(([name]) => name === 'windows.update').every(([, id]) => id === 1),
+    'nothing focused a window but the user\'s');
 }
 
 async function testScreenshotsCaptureInPlace() {
@@ -352,6 +399,125 @@ async function testTrustedClickShowsTheTabOnlyForTheClick() {
   assert.deepEqual(h.shown(), [1]);
 }
 
+// Zen focuses a new window despite focused: false; the user's window gets the focus back.
+async function testAgentWindowsGiveFocusBack() {
+  const focusCalls = h => h.calls.filter(([name]) => name === 'windows.update');
+  for (const focusOnCreate of ['before', 'after']) {
+    for (const command of [{ action: 'createWindow', url: 'https://agent.example/w' }, { action: 'detachTab', tabId: 2 }]) {
+      const h = harness({ focusOnCreate });
+      assert.equal((await h.send(command)).windowId, 9);
+      await h.tick(100);
+      assert.equal(h.focusedWindow, 1, `${command.action}, focused ${focusOnCreate} windows.create resolved`);
+      assert.ok(focusCalls(h).length && focusCalls(h).every(([, id, props]) => id === 1 && props.focused));
+    }
+  }
+
+  // The user was in another application: no browser window is focused, so none is.
+  const away = harness();
+  away.focusWindow(-1);
+  await away.send({ action: 'createWindow', url: 'https://agent.example/w' });
+  assert.deepEqual(focusCalls(away), []);
+
+  // After the first moments, focusing the new window is the user's (or an explicit focusWindow).
+  const late = harness();
+  await late.send({ action: 'createWindow', url: 'https://agent.example/w' });
+  await late.tick(2000);
+  late.focusWindow(9);
+  await late.tick(10);
+  assert.equal(late.focusedWindow, 9);
+  const asked = harness();
+  await asked.send({ action: 'createWindow', url: 'https://agent.example/w' });
+  assert.deepEqual(await asked.send({ action: 'focusWindow', windowId: 9 }), { ok: true, windowId: 9 });
+  await asked.tick(10);
+  assert.equal(asked.focusedWindow, 9);
+}
+
+// Zen's window sync copies the user's tabs into an agent window and the agent window's tab into
+// the user's window; closing a copy closes its original.
+async function testZenSyncCopies() {
+  const h = harness({ sync: true });
+  const win = await h.send({ action: 'createWindow', url: 'https://agent.example/w' });
+  await h.tick(100);
+  const agentTab = win.tabIds[0];
+  const copies = Object.values(h.tabs).filter(t => t.windowId === 9 && t.id !== agentTab).map(t => t.id);
+  assert.equal(copies.length, 2, 'copies of the user tabs 1 and 2');
+  assert.deepEqual(win.tabIds, [agentTab], 'only the tab the agent asked for is listed');
+  assert.ok(h.agentCopy, 'a copy of the agent window\'s tab in the user\'s window');
+  const tabs = await owned(h);
+  assert.deepEqual([tabs[agentTab], tabs[h.agentCopy], tabs[1], tabs[2]], [true, true, false, false]);
+  assert.deepEqual(copies.map(id => tabs[id]), [false, false], 'copies of user tabs are never owned');
+
+  // Closing a copy of a user tab would close the user's tab, so it is refused, even after the
+  // copy stops being discarded (ownership was decided when the window opened).
+  const copyOfOne = copies.find(id => h.tabs[id].syncId === 1);
+  assert.equal((await h.send({ action: 'closeTab', tabId: copyOfOne })).code, 'user_tab');
+  Object.assign(h.tabs[copyOfOne], { discarded: false });
+  h.load(copyOfOne, 'https://user.example/one');
+  assert.equal((await owned(h))[copyOfOne], false);
+  assert.equal((await h.send({ action: 'closeTab', tabId: copyOfOne })).code, 'user_tab');
+  assert.ok(h.tabs[1] && h.tabs[copyOfOne], 'the user tab and its copy stay open');
+
+  // closeWindow closes the agent window with its copies, then the agent's copy in the user's window
+  // (which by then shows the agent's page); the user's tabs stay as they were.
+  assert.deepEqual(await h.send({ action: 'closeWindow', windowId: 9 }), { ok: true, windowId: 9 });
+  assert.deepEqual(Object.keys(h.tabs).map(Number), [1, 2]);
+  assert.deepEqual([h.tabs[1].url, h.tabs[2].url], ['https://user.example/one', 'https://user.example/two']);
+  assert.ok(h.calls.some(([name, id]) => name === 'tabs.remove' && id === h.agentCopy));
+  assert.ok(!h.calls.some(([name, id]) => name === 'tabs.remove' && copies.includes(id)));
+
+  // A detached window's copies are not recorded, so closing it still needs the user's approval.
+  const d = harness({ sync: true });
+  const detached = (await d.send({ action: 'newTab', url: 'https://agent.example/d' })).tabId;
+  await d.send({ action: 'detachTab', tabId: detached });
+  await d.tick(100);
+  assert.equal((await owned(d))[d.agentCopy], true);
+  assert.equal((await d.send({ action: 'closeWindow', windowId: 9 })).code, 'user_tab');
+}
+
+// Only a lazy background copy, without an opener, at about:blank or the agent window's URL, opening
+// within 1.5 s of the agent window, is adopted; the user taking it over gives it back.
+async function testNeverAdoptUserTabs() {
+  const h = harness();
+  await h.send({ action: 'createWindow', url: 'https://agent.example/w' });
+  // Each differs from a copy in one condition only.
+  const user = {
+    shown: h.add({ discarded: true, active: true }),
+    opener: h.add({ discarded: true, openerTabId: 1 }),
+    loads: h.add({}),                                                 // e.g. a bookmark opened in the background
+    elsewhere: h.add({ discarded: true, url: 'https://user.example/x' }),
+  };
+  await h.tick(1600);
+  user.late = h.add({ discarded: true });
+  const copy = h.add({ discarded: true });
+  let tabs = await owned(h);
+  for (const [name, id] of Object.entries(user)) assert.equal(tabs[id], false, name);
+  assert.equal(tabs[copy], false, 'after 1.5 s even a copy-like tab stays the user\'s');
+
+  const adopt = async () => {
+    const t = harness();
+    await t.send({ action: 'createWindow', url: 'https://agent.example/w' });
+    const id = t.add({ discarded: true });
+    assert.equal((await owned(t))[id], true);
+    return [t, id];
+  };
+  const [shown, shownCopy] = await adopt();
+  shown.activate(shownCopy);
+  assert.equal((await owned(shown))[shownCopy], false, 'the user showed it');
+  const [loaded, loadedCopy] = await adopt();
+  loaded.load(loadedCopy, 'https://user.example/typed');
+  assert.equal((await owned(loaded))[loadedCopy], false, 'it loaded a page the agent did not');
+  for (const t of [shown, loaded]) {
+    await t.send({ action: 'closeWindow', windowId: 9 });
+    assert.ok(t.tabs[shownCopy] || t.tabs[loadedCopy], 'a returned copy stays open');
+  }
+  const [active, activeCopy] = await adopt();
+  active.activity[activeCopy] = { reason: 'input', input: 'keydown' };
+  Object.assign(active.tabs[activeCopy], { url: 'https://agent.example/w', discarded: false });
+  await active.send({ action: 'closeWindow', windowId: 9 });
+  assert.ok(active.tabs[activeCopy], 'the user is using it, so it stays open');
+  assert.equal((await owned(active))[activeCopy], false);
+}
+
 (async () => {
   await testNeverTakeFocus();
   await testScreenshotsCaptureInPlace();
@@ -360,5 +526,8 @@ async function testTrustedClickShowsTheTabOnlyForTheClick() {
   await testUserActivityBlocksAgentWrites();
   await testUserNavigationBlocksAgentWrites();
   await testTrustedClickShowsTheTabOnlyForTheClick();
+  await testAgentWindowsGiveFocusBack();
+  await testZenSyncCopies();
+  await testNeverAdoptUserTabs();
   console.log('Shared browser checks passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

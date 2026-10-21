@@ -45,6 +45,8 @@ browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (changeInfo.status === 'loading') tabLoads.set(tabId, { at: Date.now(), complete: false, agent: agentTouched(tabId) });
   const load = tabLoads.get(tabId);
   if (load && changeInfo.status === 'complete') load.complete = true;
+  // A synced copy that loads was not the agent's (see Agent windows).
+  if (changeInfo.status === 'loading' || changeInfo.url) returnSyncedCopy(tabId);
 });
 const MAIN_FRAME = { urls: ['<all_urls>'], types: ['main_frame'] };
 // A redirect keeps its requestId, and so its record.
@@ -85,6 +87,10 @@ browser.tabs.onRemoved.addListener(tabId => {
   agentTabs.delete(tabId);
   agentTouches.delete(tabId);
   revertActivation.delete(tabId);
+  for (const record of agentWindows) {
+    record.windowCopies?.delete(tabId);
+    record.syncedCopies.delete(tabId);
+  }
   for (let i = openedTabs.length - 1; i >= 0; i--) {
     if (openedTabs[i].tabId === tabId || openedTabs[i].openerTabId === tabId) openedTabs.splice(i, 1);
   }
@@ -169,11 +175,99 @@ browser.tabs.onActivated?.addListener(({ tabId, previousTabId, windowId }) => {
 browser.windows?.onFocusChanged?.addListener(windowId => {
   [previousFocusedWindowId, focusedWindowId] = [focusedWindowId, windowId];
   if (revertFocus.has(windowId)) undoFocus(windowId, previousFocusedWindowId);
+  const agentWindow = agentWindowRecord(windowId);
+  if (agentWindow?.focusWindowId != null && Date.now() < agentWindow.until) {
+    browser.windows.update(agentWindow.focusWindowId, { focused: true }).catch(() => {});
+  }
 });
 browser.windows?.onRemoved?.addListener(windowId => {
   revertFocus.delete(windowId);
   lastActivation.delete(windowId);
+  const agentWindow = agentWindowRecord(windowId);
+  if (agentWindow) agentWindows.delete(agentWindow);
 });
+
+// Agent windows (docs/api-reference.md#agent-windows): only an explicit createWindow or detachTab
+// creates a window; all other agent work stays in background tabs of the user's window.
+// Firefox may focus a new window despite focused: false (Zen does), so the window the user had
+// focused gets the focus back right away, and again if the browser focuses the new window within
+// AGENT_WINDOW_SYNC_MS; the new window can flicker for a moment.
+// Zen's window sync mirrors tabs between windows: the new window gets a lazy copy of each user
+// tab, and the user's windows get a lazy copy of the agent window's tab, which shows the agent's
+// page once the agent window closes. Closing a copy closes its original, so:
+// - windowCopies: the browser's copies in a createWindow window (discarded when it opens), decided
+//   once at creation. Never owned, so closeTab refuses them; closeWindow may close the window with
+//   them, since removing a window closes no originals.
+// - syncedCopies: tabs adopted as copies of the agent window's tab (owned, closed by closeWindow).
+//   See isSyncedCopy; one goes back to the user when the user shows it, it starts a load the agent
+//   did not start, or it reports user activity when closeWindow would close it.
+const AGENT_WINDOW_SYNC_MS = 1500;
+// { windowId (null until windows.create resolves), userWindowIds, urls, until, focusWindowId,
+//   windowCopies (null for detachTab), syncedCopies, closing }
+const agentWindows = new Set();
+const agentWindowRecord = windowId => [...agentWindows].find(w => w.windowId === windowId);
+const syncedCopyRecord = tabId => [...agentWindows].find(w => w.syncedCopies.has(tabId));
+// Within AGENT_WINDOW_SYNC_MS of windows.create, in a window that existed before it, in the
+// background, without an opener, discarded (a lazy tab that loads nothing), at about:blank (where
+// Zen's copies start) or one of the agent window's URLs. A tab the user opens is shown, has an
+// opener, or loads a page.
+const isSyncedCopy = (tab, record) => Date.now() <= record.until && record.userWindowIds.has(tab.windowId)
+  && !tab.active && tab.openerTabId == null && tab.discarded === true && record.urls.has(tab.url);
+browser.tabs.onCreated.addListener(tab => {
+  for (const record of agentWindows) {
+    if (tab.windowId === record.windowId) {
+      if (record.windowCopies && tab.discarded === true && Date.now() <= record.until) record.windowCopies.add(tab.id);
+      return;
+    }
+    if (isSyncedCopy(tab, record)) {
+      record.syncedCopies.add(tab.id);
+      agentTabs.add(tab.id);
+      return;
+    }
+  }
+});
+function returnSyncedCopy(tabId) {
+  const record = syncedCopyRecord(tabId);
+  if (!record || record.closing || agentTouched(tabId)) return;
+  record.syncedCopies.delete(tabId);
+  agentTabs.delete(tabId);
+}
+browser.tabs.onActivated?.addListener(({ tabId }) => returnSyncedCopy(tabId));
+
+// windows.create for an explicit request; windowCopies: whether to record the browser's copies in it.
+async function createAgentWindow(createData, urls, { windowCopies }) {
+  const [focused, windows] = await Promise.all([
+    browser.windows.getLastFocused().catch(() => null), browser.windows.getAll().catch(() => [])]);
+  const record = {
+    windowId: null, userWindowIds: new Set(windows.map(w => w.id)), urls: new Set(['about:blank', ...urls]),
+    until: Date.now() + AGENT_WINDOW_SYNC_MS, focusWindowId: focused?.focused ? focused.id : null,
+    windowCopies: windowCopies ? new Set() : null, syncedCopies: new Set(), closing: false,
+  };
+  agentWindows.add(record);
+  let created;
+  try {
+    created = await browser.windows.create({ ...createData, focused: false });
+  } catch (e) {
+    agentWindows.delete(record);
+    throw e;
+  }
+  record.windowId = created.id;
+  // Without a focused browser window the user was in another app; nothing to give back.
+  if (record.focusWindowId != null) await browser.windows.update(record.focusWindowId, { focused: true }).catch(() => {});
+  return { window: created, record };
+}
+
+// After closeWindow removed the agent window: its synced copies now show the agent's page.
+async function closeSyncedCopies(record) {
+  for (const tabId of [...record.syncedCopies]) {
+    if (await userActivity(tabId)) {
+      record.syncedCopies.delete(tabId);
+      agentTabs.delete(tabId);
+      continue;
+    }
+    await browser.tabs.remove(tabId).catch(() => {});
+  }
+}
 
 // Recent user activity on a tab (docs/api-reference.md#user-activity): agent writes and
 // navigations on it, and view switches away from it, return user_active instead of acting.
@@ -1306,13 +1400,18 @@ async function createWindow(url, incognito) {
   try {
     let urls;
     if (url) urls = Array.isArray(url) ? url : [url];
-    const w = await browser.windows.create({
-      url: urls,
-      incognito: !!incognito,
-      focused: false,
-    });
-    const tabIds = (w.tabs || []).map(t => t.id);
-    tabIds.forEach(markAgentTab);
+    const { window: w, record } = await createAgentWindow({ url: urls, incognito: !!incognito }, urls || [],
+      { windowCopies: true });
+    // The tabs windows.create made are the agent's; the browser's copies are discarded (see Agent windows).
+    const tabIds = [];
+    for (const tab of w.tabs || []) {
+      if (tab.discarded) {
+        record.windowCopies.add(tab.id);
+      } else {
+        markAgentTab(tab.id);
+        tabIds.push(tab.id);
+      }
+    }
     return { ok: true, windowId: w.id, tabIds };
   } catch (e) { return { error: e.message }; }
 }
@@ -1320,13 +1419,22 @@ async function createWindow(url, incognito) {
 // Closing a window closes its tabs, so one with user tabs needs approval like closeTab.
 async function closeWindow(windowId, userTabApproved = false) {
   try {
+    const record = agentWindowRecord(windowId);
     const userTabs = (await browser.windows.get(windowId, { populate: true })).tabs
-      .filter(tab => !agentTabs.has(tab.id)).map(tab => tab.id);
+      .filter(tab => !agentTabs.has(tab.id) && !record?.windowCopies?.has(tab.id)).map(tab => tab.id);
     if (userTabs.length && !userTabApproved) {
       return tabError(`Window ${windowId} has tabs the agent did not open, so it was not closed`, 'user_tab',
         { windowId, tabIds: userTabs }, false);
     }
-    await browser.windows.remove(windowId);
+    if (!record) {
+      await browser.windows.remove(windowId);
+      return { ok: true, windowId };
+    }
+    // Closing: the copies Zen fills with the agent's page as the window closes stay the agent's.
+    record.closing = true;
+    await browser.windows.remove(windowId).catch(e => { record.closing = false; throw e; });
+    agentWindows.delete(record);
+    await closeSyncedCopies(record);
     return { ok: true, windowId };
   } catch (e) { return { error: e.message }; }
 }
@@ -1334,6 +1442,8 @@ async function closeWindow(windowId, userTabApproved = false) {
 // Moves the user's focus: only for an explicit request (browser_focus_window).
 async function focusWindow(windowId) {
   try {
+    const agentWindow = agentWindowRecord(windowId);
+    if (agentWindow) agentWindow.focusWindowId = null;
     await browser.windows.update(windowId, { focused: true });
     return { ok: true, windowId };
   } catch (e) { return { error: e.message }; }
@@ -1348,7 +1458,8 @@ async function moveTabAction(tabId, windowId, index) {
 
 async function detachTab(tabId) {
   try {
-    const w = await browser.windows.create({ tabId, focused: false });
+    const tab = await browser.tabs.get(tabId);
+    const { window: w } = await createAgentWindow({ tabId }, [tab.url], { windowCopies: false });
     return { ok: true, windowId: w.id, tabId };
   } catch (e) { return { error: e.message }; }
 }
