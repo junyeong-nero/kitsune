@@ -51,7 +51,9 @@ intended behavior change: these actions used to act on the first match silently.
 - Write actions: `click`, `doubleClick`, `hover`, `drag` (both ends), `type`, `fill`,
   `setEditableContent`, `checkBox`, `selectOption`, `submitForm` and `keypress` with a
   selector, the `uploadFile` target, and each `formFill` key matched as a selector or
-  by `name` (a per-key error; label and placeholder matches are unchanged). Batch,
+  by `name` (a per-key error). A `formFill` key matched by label or placeholder is
+  ambiguous only when it matches fields in more than one tree, the page and each
+  shadow root (#156); within one tree the first match is filled as before. Batch,
   parallel and workflow steps follow the same rule; `clickAndWaitNavigation` is strict
   without the opt-in. MCP: `first=True` on `browser_click`, `browser_double_click`,
   `browser_hover`, `browser_drag`, `browser_type`, `browser_check`,
@@ -175,7 +177,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
 |---|---|---|
 | `not_found` | No element matches the selector (also `No target`, `from/to element not found`); after an [actionability wait](#actionability-wait), `state` has `timeoutMs` and `elapsed` | true |
 | `not_fillable` | `browser_type` (`type`/`fill` modes) or a `browser_form_fill` key found no field to write. The target is not a field (`fill` and `browser_form_fill`: input, textarea or select; `type`: input or textarea, or a `contenteditable` element without `clear`) and has none in its open or closed shadow roots, searched through nested hosts up to 8 roots deep (`fill` and `browser_form_fill` also look in its light DOM). Nothing was written. `state.tag` is the target's tag; `state.reason` is `no_field`, or `shadow_depth` when its shadow roots nest deeper than 8 | true |
-| `ambiguous_target` | The command names no single target, so nothing was dispatched: a write action's selector matches several actionable elements (`state.selector`, `state.matches`; see [Strict selectors](#strict-selectors)), or `browser_submit_form` without a target found several forms and no filled field naming one (`state.forms`). `state.candidates` lists up to 5 of them with a `ref` to target one | false |
+| `ambiguous_target` | The command names no single target, so nothing was dispatched: a write action's selector matches several actionable elements (`state.selector`, `state.matches`; see [Strict selectors](#strict-selectors)), a `browser_form_fill` label or placeholder key matches fields in more than one tree, such as the page and a web component's shadow root (`state.field`, `state.matches`), or `browser_submit_form` without a target found several forms and no filled field naming one (`state.forms`). `state.candidates` lists up to 5 of them with a `ref` to target one | false |
 | `not_actionable` | An [actionability wait](#actionability-wait) timed out on a target that exists but never rendered (`state.reason: "not_rendered"`, `timeoutMs`, `elapsed`); nothing was dispatched | true |
 | `stale_ref` | The ref is no longer valid; `state.reason` is `element_removed`, `not_in_snapshot`, `snapshot_replaced` (a newer snapshot of this document; `state.latestObservation` and, for the same element, `state.currentRef`, see [Ref lifetime](#ref-lifetime)), or `other_document` (the tab navigated, or the ref came from another tab) | true |
 | `navigating` | The tab is loading: a `not_found`/`stale_ref` while loading (`state.cause`), or the page unloaded while handling the command. Also a page that refused the content script within 5 s of a wake or reload without an error status, or whose 2xx response arrived only while the command waited for it: it may be an old document about to be replaced | true before dispatch; false for writes after |
@@ -1306,6 +1308,12 @@ reads the full page via GET `/api/snapshot`. Optional arguments use POST to the 
 endpoint (`tabId`, `selector`, `ref`, `maxDepth` in the JSON body).
 
 - `selector` scopes the snapshot to a CSS-selected subtree, including its root.
+- Open and closed shadow roots are read as rendered: a web component's shadow tree
+  appears under its host, with refs, and slotted children appear where their slot is.
+  `browser_dom`, `browser_find`, `browser_forms` and CSS selectors in action tools
+  see shadow roots too; a selector matches within one tree (the page or a shadow
+  root), so a descendant combinator does not cross a host. Coordinate clicks and a
+  `browser_keypress` without a target resolve into shadow roots as well.
 - `ref` scopes to an existing snapshot element and takes precedence over `selector`.
   It is resolved before generating fresh refs. Missing selectors and stale refs
   return errors rather than silently falling back to the full page.
@@ -1366,7 +1374,9 @@ as a CSS selector, then `name` attribute, label text, and placeholder; results
 are returned per key, and one failing key does not stop the others. A matched
 web-component host is filled through the same shadow-root lookup as
 [`/api/fill`](#post-apifill); a key with no reachable field gets a `not_fillable`
-[action error](#action-errors). When every
+[action error](#action-errors). Selectors, names, labels and placeholders also match
+inside shadow roots; a key that matches fields in more than one tree (the page and a
+web component) writes nothing and gets `ambiguous_target` with `state.candidates`. When every
 key fails, nothing was filled and the result adds `"error": "No field was filled"`
 (an MCP error); a partial fill is not an error, so check each key.
 
