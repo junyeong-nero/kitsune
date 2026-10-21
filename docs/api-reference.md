@@ -223,6 +223,12 @@ navigation, or on a different tab after a focus change, fails as
 when the command started. CSS selectors carry no identity, so pass `tab_id`
 when focus can change.
 
+If a content receiver disappears between the readiness ping and command delivery
+(for example, just after a wake), the extension rechecks the same tab and its content
+script, reinjecting if needed, and retries delivery once. This applies only to Gecko's
+exact missing-receiver error, which proves the command was not dispatched. Closed
+ports, missing responses and page errors are never automatically replayed this way.
+
 The batch/`browser_retry` `retry` action stops after the first attempt that
 returns `retryable: false`, with `reason: "not retryable"`, even if `onErrors`
 matches. It also stops on `confirmation_required`, with

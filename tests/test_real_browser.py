@@ -27,6 +27,7 @@ BATCH_COMMAND_TIMEOUT = 30
 # Test-only background script: harness commands use the public tabs API, and `ws` is the
 # bridge socket declared by background.js in the same background page.
 CONTROL_SCRIPT = """'use strict';
+let restoreReceiver = null;
 (function connectControl() {
   const control = new WebSocket('ws://127.0.0.1:%d');
   control.onmessage = async event => {
@@ -39,6 +40,28 @@ CONTROL_SCRIPT = """'use strict';
       } else if (op === 'dropBridge') {
         ws.close();
         result = { dropped: true };
+      } else if (op === 'missingReceiverOnce') {
+        if (restoreReceiver) throw new Error('receiver fault already armed');
+        const sendMessage = browser.tabs.sendMessage;
+        const stats = { pings: 0, attempts: 0, failures: 0 };
+        browser.tabs.sendMessage = async (target, message, ...options) => {
+          if (target === tabId) {
+            if (message.action === 'ping') stats.pings++;
+            if (message.action === 'click') {
+              stats.attempts++;
+              if (!stats.failures) {
+                stats.failures++;
+                throw new Error('Could not establish connection. Receiving end does not exist.');
+              }
+            }
+          }
+          return sendMessage.call(browser.tabs, target, message, ...options);
+        };
+        restoreReceiver = () => { browser.tabs.sendMessage = sendMessage; return stats; };
+        result = { armed: true };
+      } else if (op === 'restoreReceiver') {
+        result = restoreReceiver ? restoreReceiver() : {};
+        restoreReceiver = null;
       } else {
         result = { error: 'unknown op ' + op };
       }
@@ -322,6 +345,25 @@ class RealBrowserActionRaceTests(harness.RealBrowserTestCase):
                 self.assertEqual(self.control.call("discard", tabId=tab_id), {"discarded": True})
                 self.wake_and_click(tab_id, f"wake-{i}")
         self.assert_hits("wake-other", 0, settle=0)
+
+    def test_first_click_after_wake_recovers_from_missing_receiver(self):
+        # Issue #169: deterministically lose delivery after a real readiness ping. The
+        # fault never delivers the first attempt; the real content script handles the retry.
+        tab_id = self.open_tab(self.site.url("wake-receiver"))
+        other = self.open_tab(self.site.url("wake-receiver-other"))
+        self.assert_ok(self.call("/api/switch-tab", {"tabId": other}))
+        self.assertEqual(self.control.call("discard", tabId=tab_id), {"discarded": True})
+        self.assertEqual(self.call("/api/wake-tab", {"tabId": tab_id}),
+                         {"ok": True, "woken": True, "ready": True})
+        self.assertEqual(self.control.call("missingReceiverOnce", tabId=tab_id), {"armed": True})
+        try:
+            result = self.call("/api/click", {"selector": "#act", "tabId": tab_id, "includeSnapshot": False})
+        finally:
+            stats = self.control.call("restoreReceiver")
+        self.assert_ok(result)
+        self.assertEqual(stats, {"pings": 2, "attempts": 2, "failures": 1})
+        self.assert_hits("wake-receiver", 1)
+        self.assert_hits("wake-receiver-other", 0, settle=0)
 
     # ── Extension reconnects and unknown outcomes ──
 

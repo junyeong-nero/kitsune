@@ -185,6 +185,8 @@ function fakeClock() {
 function background(tabs, content, clock = { setTimeout, clearTimeout, Date }) {
   const sent = [];
   const injected = [];
+  const pinged = [];
+  let receiverMissing = false;
   let injectError = null;
   let requests = 0;
   const missing = id => new Error(`Invalid tab ID: ${id}`);
@@ -198,7 +200,8 @@ function background(tabs, content, clock = { setTimeout, clearTimeout, Date }) {
       reload: async id => { if (!tabs[id]) throw missing(id); },
       sendMessage: async (id, msg) => {
         if (msg.action === 'ping') {
-          if (injectError) throw new Error('Could not establish connection. Receiving end does not exist.');
+          pinged.push(id);
+          if (injectError || receiverMissing) throw new Error('Could not establish connection. Receiving end does not exist.');
           return { ok: true, version: Infinity };
         }
         // The user-activity probe only reads; sent records commands.
@@ -206,7 +209,11 @@ function background(tabs, content, clock = { setTimeout, clearTimeout, Date }) {
         sent.push({ tabId: id, ...msg });
         return content(id, msg);
       },
-      executeScript: async id => { injected.push(id); if (injectError) throw new Error(injectError); },
+      executeScript: async id => {
+        injected.push(id);
+        if (injectError) throw new Error(injectError);
+        receiverMissing = false;
+      },
     },
     runtime: { onMessage: event(), onStartup: event(), onInstalled: event() },
     webRequest: { onHeadersReceived: event(), onBeforeRequest: event() },
@@ -218,7 +225,8 @@ function background(tabs, content, clock = { setTimeout, clearTimeout, Date }) {
   });
   vm.runInContext(fs.readFileSync('extension/background/background.js', 'utf8'), context);
   return {
-    sent, injected,
+    sent, injected, pinged,
+    removeReceiver: () => { receiverMissing = true; },
     statusWaiters: () => vm.runInContext('mainFrameStatusWaiters.size', context),
     failInjection: message => { injectError = message; },
     // A main-frame request starts; response() records its status.
@@ -306,6 +314,76 @@ async function testBackgroundErrors() {
   assert.equal(discarded.error, 'Cannot inject content script: Missing host permission for the tab');
   assert.deepEqual([discarded.code, discarded.retryable, discarded.state.discarded], ['tab_unloaded', true, true]);
   assert.match(discarded.hint, /browser_wake_tab/);
+}
+
+// Issue #169: a successful readiness ping cannot guarantee the next message has a receiver.
+async function testMissingReceiverRecovery() {
+  const missing = 'Could not establish connection. Receiving end does not exist.';
+  const tabs = { 1: page(1, { active: true }), 2: page(2) };
+  const clock = fakeClock();
+  let calls = 0, effects = 0;
+  const h = background(tabs, () => {
+    if (++calls === 1) {
+      h.removeReceiver();
+      tabs[1].active = false;
+      tabs[2].active = true;
+      throw new Error(missing);
+    }
+    effects++;
+    return { ok: true };
+  }, clock);
+  const command = { action: 'click', selector: '#go', includeSnapshot: false };
+  const recovered = h.send(command);
+  await clock.tick(150);
+  assert.deepEqual(await recovered, { ok: true });
+  assert.deepEqual(h.pinged, [1, 1], 'readiness is checked again on the original tab');
+  assert.deepEqual(h.injected, [1], 'the vanished receiver is reinjected');
+  assert.deepEqual(h.sent, [command, command].map(msg => ({ tabId: 1, ...msg })),
+    'the action and target are unchanged despite a focus change');
+  assert.equal(effects, 1, 'only the delivered action has a side effect');
+  assert.equal(clock.timers.size, 0);
+
+  const bounded = background({ 1: page(1) }, () => { throw new Error(missing); });
+  const unavailable = await bounded.send({ action: 'click', tabId: 1, selector: '#go' });
+  assert.deepEqual([unavailable.code, unavailable.retryable], ['content_unavailable', true]);
+  assert.equal(bounded.sent.length, 2, 'a second missing receiver ends recovery');
+  assert.deepEqual(bounded.pinged, [1, 1]);
+
+  // A closed port, an empty response or a page error may follow dispatch: never repeat them,
+  // whether on the first attempt or after recovering from a missing receiver.
+  for (const recoverFirst of [false, true]) {
+    for (const reply of [
+      () => { throw new Error('The message port closed before a response was received.'); },
+      () => { throw new Error('Message manager disconnected'); },
+      () => { throw new Error('Other failure: ' + missing); },
+      () => undefined,
+      () => ({ error: 'Element not found', code: 'not_found', retryable: true }),
+    ]) {
+      const h = background({ 1: page(1) }, () => {
+        if (recoverFirst && h.sent.length === 1) throw new Error(missing);
+        return reply();
+      });
+      const result = await h.send({ action: 'click', tabId: 1, selector: '#go' });
+      assert.equal(h.sent.length, recoverFirst ? 2 : 1, 'no replay after possible dispatch');
+      assert.equal(result.retryable, result.code === 'not_found');
+    }
+  }
+
+  for (const change of ['closed', 'restricted', 'unloaded']) {
+    const tabs = { 1: page(1) };
+    const h = background(tabs, () => {
+      if (change === 'closed') delete tabs[1];
+      if (change === 'restricted') tabs[1].url = 'about:config';
+      if (change === 'unloaded') {
+        tabs[1].discarded = true;
+        h.failInjection('Missing host permission for the tab');
+      }
+      throw new Error(missing);
+    });
+    const result = await h.send({ action: 'click', tabId: 1, selector: '#go' });
+    assert.equal(result.code, { closed: 'tab_closed', restricted: 'restricted_page', unloaded: 'tab_unloaded' }[change]);
+    assert.equal(h.sent.length, 1, 'recovery validates the tab and injection before resending');
+  }
 }
 
 async function testEmptyErrorPage() {
@@ -505,6 +583,7 @@ async function testFocusChangeKeepsTarget() {
   await testContentErrors();
   await testNotRenderedWarnings();
   await testBackgroundErrors();
+  await testMissingReceiverRecovery();
   await testEmptyErrorPage();
   await testErrorPageWaitsForLateStatus();
   await testErrorPageClassification();
