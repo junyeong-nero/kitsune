@@ -175,10 +175,28 @@ selector/ref have no target and run immediately. Other actions ignore `wait`.
 The bridge and MCP transport timeouts grow by the wait bound. Batch commands run in
 sequence, so a batch's timeout covers the sum of its waits (actionability waits,
 element/URL/title/result waits, `newTab` waits and sleeps); for `parallel`, the slowest sequence counts.
+Control flow counts its bodies: `retry` counts every attempt plus its backoff sleeps,
+`if` its longer branch, `while` `maxIterations` passes of its body, and `try` its `do`
+and `catch`. `browser_retry` and `/api/retry` grow the same way; without waits they
+keep their 60 s and 35 s bounds.
 
 These are reliability checks borrowed from Playwright. They don't make the
 events trusted input: dispatch is still synthetic DOM events. A rendered target
-can still be covered by an overlay, which isn't detected. If the page unloads
+can still be covered by an overlay, which isn't detected.
+
+`hidden_or_covered` stays a success warning in immediate mode, not a failure.
+Synthetic events reach a hidden element, and pages rely on that: a label-driven
+custom widget keeps its native checkbox or select `display: none`, and refusing
+by CSS heuristics would break actions that work today. Callers that want refusal
+pass `wait=True`, which fails a pointer target that never renders with
+`not_actionable` before dispatching anything. Overlay detection with an
+`elementFromPoint` hit test is deliberately not done, as a failure or as a wait
+condition. Cookie banners and sticky headers often cover a target's center after
+it scrolls into view while the synthetic event still reaches the target, so
+refusing there would fail working actions. Hit tests also stop at closed shadow
+roots and cross-origin frames, and a single sample is unreliable under
+`pointer-events: none`, transforms, and animations. A covered target could later
+be reported as an additive warning, after benchmark validation. If the page unloads
 during the wait, the command fails like any other unload (`navigating` or
 `content_unavailable`, `retryable: false` for writes), because the background
 can't tell whether the action ran.

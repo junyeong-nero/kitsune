@@ -1720,7 +1720,8 @@ def browser_retry(
     """
     body = {"command": command, "maxAttempts": max_attempts, "backoffMs": backoff_ms}
     if on_errors: body["onErrors"] = on_errors
-    return _post("/api/retry", body, timeout=60)
+    retry = {"action": "retry", **body}
+    return _post("/api/retry", body, timeout=max(60, command_wait_seconds(retry) + 15))
 
 
 # -- Batch --------------------------------------------------------
