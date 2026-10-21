@@ -108,8 +108,11 @@ async function missingHistoryPermission(permission) {
   const granted = await browser.permissions.contains({ permissions: [permission] }).catch(() => false);
   if (granted && browser[permission]) return null;
   return {
-    error: `The user has not allowed Kitsune to read browser ${permission}`,
-    code: 'permission_required', retryable: false, hint: HISTORY_PERMISSION_HINT, state: { permission },
+    error: granted ? `Kitsune was allowed to read browser ${permission} but this copy has not picked it up`
+      : `The user has not allowed Kitsune to read browser ${permission}`,
+    code: 'permission_required', retryable: false, state: { permission },
+    hint: granted ? 'Reload Kitsune (browser_reload_extension, or about:addons → disable and enable it).'
+      : HISTORY_PERMISSION_HINT,
   };
 }
 
