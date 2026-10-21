@@ -685,8 +685,8 @@ async function dispatchCommand(command) {
     case 'muteTab':          return await updateTab(params.tabId, { muted: !!params.muted });
     case 'duplicateTab':     return await duplicateTab(params.tabId);
     case 'reloadTabBrowser': return await reloadTabBrowser(params.tabId, params.bypassCache);
-    case 'goBack':           return await goBack(params.tabId);
-    case 'goForward':        return await goForward(params.tabId);
+    case 'goBack':
+    case 'goForward':        return await goInHistory(params.tabId, action);
     case 'getZoom':          return await getZoom(params.tabId);
     case 'setZoom':          return await setZoom(params.tabId, params.factor);
     case 'getWindows':       return await getWindowsList();
@@ -1443,70 +1443,44 @@ async function getActiveTabId() {
 // 1.4.0 — browser-level handler implementations
 // ══════════════════════════════════════════════════════════════
 
-async function updateTab(tabId, props) {
+// Runs act on tabId or the active tab; any failure is a bare error.
+async function onTab(tabId, act) {
   try {
     const id = tabId || (await getActiveTabId());
     if (!id) return { error: 'No tab' };
-    const tab = await browser.tabs.update(id, props);
-    return { ok: true, tabId: id, pinned: tab.pinned, muted: tab.mutedInfo?.muted };
+    return await act(id);
   } catch (e) { return { error: e.message }; }
 }
 
-async function duplicateTab(tabId) {
-  try {
-    const id = tabId || (await getActiveTabId());
-    if (!id) return { error: 'No tab' };
-    const dup = await browser.tabs.duplicate(id, { active: false });
-    markAgentTab(dup.id);
-    return { ok: true, tabId: dup.id, sourceTabId: id };
-  } catch (e) { return { error: e.message }; }
-}
+const updateTab = (tabId, props) => onTab(tabId, async id => {
+  const tab = await browser.tabs.update(id, props);
+  return { ok: true, tabId: id, pinned: tab.pinned, muted: tab.mutedInfo?.muted };
+});
 
-async function reloadTabBrowser(tabId, bypassCache) {
-  try {
-    const id = tabId || (await getActiveTabId());
-    if (!id) return { error: 'No tab' };
-    markReload(id);
-    await browser.tabs.reload(id, { bypassCache: !!bypassCache });
-    return { ok: true, tabId: id, bypassCache: !!bypassCache };
-  } catch (e) { return { error: e.message }; }
-}
+const duplicateTab = tabId => onTab(tabId, async id => {
+  const dup = await browser.tabs.duplicate(id, { active: false });
+  markAgentTab(dup.id);
+  return { ok: true, tabId: dup.id, sourceTabId: id };
+});
 
-async function goBack(tabId) {
-  try {
-    const id = tabId || (await getActiveTabId());
-    if (!id) return { error: 'No tab' };
-    await browser.tabs.goBack(id);
-    return { ok: true, tabId: id };
-  } catch (e) { return { error: e.message }; }
-}
+const reloadTabBrowser = (tabId, bypassCache) => onTab(tabId, async id => {
+  markReload(id);
+  await browser.tabs.reload(id, { bypassCache: !!bypassCache });
+  return { ok: true, tabId: id, bypassCache: !!bypassCache };
+});
 
-async function goForward(tabId) {
-  try {
-    const id = tabId || (await getActiveTabId());
-    if (!id) return { error: 'No tab' };
-    await browser.tabs.goForward(id);
-    return { ok: true, tabId: id };
-  } catch (e) { return { error: e.message }; }
-}
+// direction: 'goBack' or 'goForward'.
+const goInHistory = (tabId, direction) => onTab(tabId, async id => {
+  await browser.tabs[direction](id);
+  return { ok: true, tabId: id };
+});
 
-async function getZoom(tabId) {
-  try {
-    const id = tabId || (await getActiveTabId());
-    if (!id) return { error: 'No tab' };
-    const factor = await browser.tabs.getZoom(id);
-    return { ok: true, tabId: id, factor };
-  } catch (e) { return { error: e.message }; }
-}
+const getZoom = tabId => onTab(tabId, async id => ({ ok: true, tabId: id, factor: await browser.tabs.getZoom(id) }));
 
-async function setZoom(tabId, factor) {
-  try {
-    const id = tabId || (await getActiveTabId());
-    if (!id) return { error: 'No tab' };
-    await browser.tabs.setZoom(id, Number(factor) || 1);
-    return { ok: true, tabId: id, factor: Number(factor) || 1 };
-  } catch (e) { return { error: e.message }; }
-}
+const setZoom = (tabId, factor) => onTab(tabId, async id => {
+  await browser.tabs.setZoom(id, Number(factor) || 1);
+  return { ok: true, tabId: id, factor: Number(factor) || 1 };
+});
 
 async function getWindowsList() {
   try {
