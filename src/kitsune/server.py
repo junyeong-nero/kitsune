@@ -465,7 +465,8 @@ def browser_click(
         refs: Success of the actions listed in browser_snapshot returns a fresh snapshot
             whose refs replace earlier ones; target_ref is the acted-on element's new ref.
         opened_tabs: Tabs the action opened (target=_blank links, window.open) are listed
-            as [{tabId, url}]; act on them with tab_id.
+            as [{tabId, url}]; act on them with tab_id. via="link_fallback" marks a
+            popup-blocked link Kitsune opened itself.
         expect: Optional outcome to verify after dispatch, with exactly one of
             {"url": regex}, {"url_changed": True}, {"new_tab": True} (met once the action
             opens a tab), {"selector": css} (visible; add "gone": True for hidden/removed,

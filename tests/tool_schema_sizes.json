@@ -10,9 +10,9 @@
     "total": 1128
   },
   "browser_click": {
-    "description": 1946,
+    "description": 2027,
     "inputSchema": 814,
-    "total": 2935
+    "total": 3016
   },
   "browser_console_logs": {
     "description": 81,

@@ -1,9 +1,13 @@
-"""Issue #87 in a real browser: a target=_blank click reports the tab it opened.
+"""Issues #87 and #94 in a real browser: a target=_blank click reports the tab it opened.
 
 Opt-in: set KITSUNE_E2E_BROWSER to a Firefox or Zen binary. The test runs it headless
 with a temporary profile and HOME, installs a temporary copy of the extension over
 WebDriver BiDi, and talks to its own bridge on spare ports; it never touches a user
 profile or a running Kitsune bridge.
+
+The WebDriver BiDi agent applies Firefox's recommended automation prefs, which turn the
+popup blocker off unless the profile sets dom.disable_open_during_load itself. The
+default-prefs class pins it to the browser default (true).
 """
 import asyncio
 import json
@@ -26,15 +30,15 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TOKEN = "kitsune-e2e-token"
 PAGES = {
     "/ok": '<title>ok</title><a id="new" href="/ok2" target="_blank">new tab link</a>'
-           '<button id="noop">noop</button>',
+           '<button id="noop">noop</button>'
+           '<a id="opener" href="/ok2" target="_blank" rel="opener">opener link</a>'
+           '<a id="handled" href="/ok2" target="_blank" onclick="event.preventDefault()">handled link</a>',
     "/ok2": "<title>ok2</title><h1>second</h1>",
 }
 PREFS = {
     "browser.shell.checkDefaultBrowser": False,
     "datareporting.policy.dataSubmissionEnabled": False,
     "app.update.enabled": False,
-    # The popup blocker drops a synthetic click's new tab, so allow popups here.
-    "dom.disable_open_during_load": False,
 }
 
 
@@ -62,6 +66,10 @@ class _Page(BaseHTTPRequestHandler):
 
 @unittest.skipUnless(BROWSER, "set KITSUNE_E2E_BROWSER to a Firefox or Zen binary")
 class RealBrowserOpenedTabTests(unittest.TestCase):
+    # The popup blocker drops a synthetic click's new tab, so allow popups here.
+    prefs = {**PREFS, "dom.disable_open_during_load": False}
+    opened_via = None  # the browser opens the link's tab itself
+
     @classmethod
     def setUpClass(cls):
         cls.root = tempfile.mkdtemp(prefix="kitsune-e2e-")
@@ -74,7 +82,7 @@ class RealBrowserOpenedTabTests(unittest.TestCase):
         os.makedirs(os.path.join(home, ".kitsune"))
         os.makedirs(profile)
         with open(os.path.join(profile, "user.js"), "w") as f:
-            f.writelines(f"user_pref({json.dumps(k)}, {json.dumps(v)});\n" for k, v in PREFS.items())
+            f.writelines(f"user_pref({json.dumps(k)}, {json.dumps(v)});\n" for k, v in cls.prefs.items())
         # The extension's bridge URL is fixed, so point a temporary copy at this bridge.
         shutil.copytree(os.path.join(REPO, "extension"), extension)
         background = os.path.join(extension, "background", "background.js")
@@ -172,6 +180,7 @@ class RealBrowserOpenedTabTests(unittest.TestCase):
         self.assertEqual(len(result["opened_tabs"]), 1, result)
         opened = result["opened_tabs"][0]
         self.assertEqual(opened["url"], self.page_url + "/ok2")
+        self.assertEqual(opened.get("via"), self.opened_via, result)
         tabs = {t["id"]: t["url"] for t in self.api("/api/tabs")["tabs"]}
         self.assertEqual(tabs.get(opened["tabId"]), self.page_url + "/ok2")
         return opened
@@ -199,6 +208,42 @@ class RealBrowserOpenedTabTests(unittest.TestCase):
         self.assertEqual(result["code"], "outcome_not_observed", result)
         self.assertNotIn("opened_tabs", result)
         self.assertNotIn("opened tab", result["hint"])
+
+
+class RealBrowserDefaultPrefsOpenedTabTests(RealBrowserOpenedTabTests):
+    """#94: under the default popup blocker the extension opens the link's tab itself."""
+    prefs = {**PREFS, "dom.disable_open_during_load": True}
+    opened_via = "link_fallback"
+
+    def ok2_tabs(self):
+        return sum(t["url"] == self.page_url + "/ok2" for t in self.api("/api/tabs")["tabs"])
+
+    def assert_no_tab_opened(self, result):
+        self.assertNotIn("opened_tabs", result)
+        self.assertEqual(self.ok2_tabs(), self.ok2_before, result)
+
+    def click_on_new_page(self, selector, expect=None):
+        self.ok2_before = self.ok2_tabs()
+        return super().click_on_new_page(selector, expect)
+
+    def test_rel_opener_link_reports_popup_blocked(self):
+        result = self.click_on_new_page("#opener")
+        self.assertIs(result["ok"], True, result)
+        self.assertEqual(result["warning"]["code"], "popup_blocked", result)
+        self.assertEqual(result["warning"]["state"]["url"], self.page_url + "/ok2")
+        self.assert_no_tab_opened(result)
+
+    def test_new_tab_expect_names_the_popup_blocker(self):
+        result = self.click_on_new_page("#opener", {"new_tab": True, "timeout": 1000})
+        self.assertEqual(result["code"], "outcome_not_observed", result)
+        self.assertIn("popup blocker", result["hint"])
+        self.assert_no_tab_opened(result)
+
+    def test_link_whose_click_the_page_cancelled_opens_no_tab(self):
+        result = self.click_on_new_page("#handled")
+        self.assertIs(result["ok"], True, result)
+        self.assertNotIn("warning", result)
+        self.assert_no_tab_opened(result)
 
 
 if __name__ == "__main__":

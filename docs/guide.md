@@ -432,6 +432,7 @@ for test in tests/*.cjs; do node "$test"; done
 
 `tests/test_real_browser_opened_tabs.py` is skipped unless `KITSUNE_E2E_BROWSER` names a
 Firefox or Zen binary, which it runs headless with a temporary profile, HOME, and bridge.
+It runs once with popups allowed and once with the default popup blocker.
 
 The Python regression suite covers the MCP tool surface, snapshots, navigation
 waits, and bridge lifecycle; the Node harnesses cover content-script behavior

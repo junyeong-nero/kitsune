@@ -3,7 +3,7 @@
 
 (function() {
   'use strict';
-  const CONTENT_VERSION = 26;
+  const CONTENT_VERSION = 27;
   if (window.__claudeBridgeVersion >= CONTENT_VERSION) return;
   window.__claudeBridgeVersion = CONTENT_VERSION;
 
@@ -883,11 +883,33 @@
       }));
     }
 
+    const link = blankTargetLink(el);
+    let clickEvent = null;
+    const onClick = event => { clickEvent = event; };
+    if (link) el.addEventListener('click', onClick);
     if (typeof el.click === 'function') {
       el.click();
     }
+    // A page handler that cancelled the click took the link over, including any tab it opens.
+    let blankLink = {};
+    if (link) {
+      el.removeEventListener('click', onClick);
+      if (clickEvent && !clickEvent.defaultPrevented) {
+        blankLink = { targetBlankLink: { url: link.href, opener: link.relList.contains('opener') } };
+      }
+    }
 
-    return { ok: true, tag: el.tagName.toLowerCase(), text: (el.textContent || '').trim().slice(0, 60), ...warning };
+    return { ok: true, tag: el.tagName.toLowerCase(), text: (el.textContent || '').trim().slice(0, 60),
+      ...warning, ...blankLink };
+  }
+
+  // The http(s) link a click on el follows into a new tab (target=_blank, or <base target>).
+  // The popup blocker can drop that tab for a synthetic click, so the background checks it.
+  function blankTargetLink(el) {
+    const link = el.closest('a[href], area[href]');
+    if (!link || link.hasAttribute('download') || !/^https?:$/.test(link.protocol)) return null;
+    const target = link.getAttribute('target') ?? document.querySelector('base[target]')?.getAttribute('target');
+    return target?.toLowerCase() === '_blank' ? link : null;
   }
 
   // ── Type ──

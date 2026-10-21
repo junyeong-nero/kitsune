@@ -17,6 +17,7 @@ class Element extends EventTarget {
   }
   getAttribute() { return null; }
   hasAttribute() { return false; }
+  closest() { return null; }
   scrollIntoView() {}
   getBoundingClientRect() { return { x: 0, y: 0, width: 100, height: 30 }; }
   getClientRects() { return Array.from({ length: this.rects }, () => this.getBoundingClientRect()); }
