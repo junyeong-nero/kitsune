@@ -3006,6 +3006,15 @@ async def run_command(cmd):
     return result
 
 
+def _dispatch_timeout(action, params, base=30):
+    """WS timeout for an action: a wait's own timeout plus 5 s, else base plus any actionability wait."""
+    if action in ('waitForUrl', 'waitForTitle', 'waitForElement'):
+        return params.get('timeout', 10000) / 1000 + 5
+    if action == 'waitForResult' or (action == 'newTab' and params.get('wait')):
+        return params.get('timeout', 15000) / 1000 + 5
+    return base + actionability_wait_seconds(action, params)
+
+
 async def _execute_command(action, effective_action, params):
     """Dispatch a batch command that passed policy and ask-before-act checks."""
     try:
@@ -3019,12 +3028,10 @@ async def _execute_command(action, effective_action, params):
                 return await _send_with_expectation(
                     effective_action, params, spec,
                     timeout=30 + actionability_wait_seconds(effective_action, params), remember=remember)
-            if effective_action in ('waitForUrl', 'waitForTitle'):
-                timeout_s = params.get('timeout', 10000) / 1000 + 5
-                return await send_to_extension(effective_action, params, timeout=timeout_s)
-            if effective_action == 'newTab' and params.get('wait'):
-                timeout_s = params.get('timeout', 15000) / 1000 + 5
-                return await send_to_extension(effective_action, params, timeout=timeout_s)
+            if effective_action in ('waitForUrl', 'waitForTitle') or (
+                    effective_action == 'newTab' and params.get('wait')):
+                return await send_to_extension(effective_action, params,
+                                               timeout=_dispatch_timeout(effective_action, params))
             wait_s = actionability_wait_seconds(effective_action, params)
             if wait_s:
                 return await send_to_extension(effective_action, params, timeout=30 + wait_s)
@@ -3041,14 +3048,8 @@ async def _execute_command(action, effective_action, params):
                 with open(fp, 'wb') as f2: f2.write(img)
                 return {'saved_to': fp}
             return r
-        elif action == 'waitForElement':
-            timeout_ms = params.get('timeout', 10000)
-            timeout_s = (timeout_ms / 1000) + 5
-            return await send_to_extension('waitForElement', params, timeout=timeout_s)
-        elif action == 'waitForResult':
-            timeout_ms = params.get('timeout', 15000)
-            timeout_s = (timeout_ms / 1000) + 5
-            return await send_to_extension('waitForResult', params, timeout=timeout_s)
+        elif action in ('waitForElement', 'waitForResult'):
+            return await send_to_extension(action, params, timeout=_dispatch_timeout(action, params))
         elif action == 'trustedClick':
             return await trusted_click(params)
         elif action == 'sleep':
@@ -3592,12 +3593,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         _invalidate_cache_for_action(action)
         t0 = time.time()
         try:
-            if action in ('waitForUrl', 'waitForTitle'):
-                timeout = body.get('timeout', 10000) / 1000 + 5
-            elif action == 'newTab' and body.get('wait'):
-                timeout = body.get('timeout', 15000) / 1000 + 5
-            else:
-                timeout += actionability_wait_seconds(action, body)
+            timeout = _dispatch_timeout(action, body, timeout)
             if spec is None:
                 result = self.run_async(send_to_extension(action, body, timeout=timeout), timeout=timeout + 5)
             else:
@@ -3724,9 +3720,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
     def handle_wait_for_element(self):
         body = self.read_body()
         # waitForElement can take up to timeout + buffer; extend the WS timeout accordingly
-        timeout_ms = body.get("timeout", 10000)
-        timeout_s = (timeout_ms / 1000) + 5
-        result = self.run_async(send_to_extension("waitForElement", body, timeout=timeout_s))
+        result = self.run_async(send_to_extension("waitForElement", body,
+                                                  timeout=_dispatch_timeout("waitForElement", body)))
         self.send_json(200, result)
 
     def handle_wait_for_text(self):
@@ -3744,9 +3739,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
         body = self.read_body()
         if self._held("waitForResult", body):
             return
-        timeout_ms = body.get("timeout", 15000)
-        timeout_s = (timeout_ms / 1000) + 5
-        result = self.run_async(send_to_extension("waitForResult", body, timeout=timeout_s))
+        result = self.run_async(send_to_extension("waitForResult", body,
+                                                  timeout=_dispatch_timeout("waitForResult", body)))
         self.send_json(200, result)
 
     def handle_page_text_by_tab_id(self):
