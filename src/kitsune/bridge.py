@@ -57,7 +57,7 @@ except ImportError:
     sys.exit("websockets is not installed. Reinstall kitsune with its dependencies.")
 
 from . import bridge_control
-from .version import BRIDGE_BUILD, PACKAGE_VERSION, SOURCE_ROOT, extension_source_hash
+from .version import BRIDGE_BUILD, PACKAGE_VERSION, SOURCE_ROOT, extension_manifest_hash, extension_source_hash
 from .waits import (
     WORKFLOW_DEADLINE_SECONDS, actionability_wait_seconds, batch_deadline_seconds, command_wait_seconds,
     container_settle_seconds,
@@ -68,7 +68,7 @@ BRIDGE_VERSION = PACKAGE_VERSION
 API_VERSION = "1"
 HTTP_PORT = int(os.environ.get("KITSUNE_HTTP_PORT", "47651"))
 WS_PORT = int(os.environ.get("KITSUNE_WS_PORT", "47652"))
-EXTENSION_WS_PORT = 47652  # WS_URL in extension/background/background.js
+EXTENSION_WS_PORT = 47652  # the default WS_URL in extension/background/background.js
 # The unpacked extension a developer build is loaded from; a checkout's extension/ by default.
 EXTENSION_SOURCE_DIR = Path(os.environ.get("KITSUNE_EXTENSION_DIR") or SOURCE_ROOT / "extension")
 # Opt-in idle shutdown in seconds (0 = never). The MCP server passes its
@@ -114,7 +114,7 @@ AUTH_TOKEN = _load_or_create_token()
 # ── State ──
 extension_ws = None  # WebSocket connection to extension
 extension_ws_generation = 0
-extension_info = {}  # {"version", "build", "sourceHash"} from the extension's hello message, "browser" from state
+extension_info = {}  # {"version", "build", "sourceHash", "manifestHash"} from hello, "browser" from state
 pending_commands = {}  # id -> {"future": asyncio.Future, "ws": websocket, ...}
 command_counter = 0
 _ws_send_lock = None
@@ -1360,8 +1360,10 @@ async def ws_handler(websocket):
             if data.get("type") == "hello":
                 if extension_ws is websocket:
                     extension_info = {"version": data.get("version"), "build": data.get("build")}
-                    if "sourceHash" in data:  # extensions before #34's build check omit it
-                        extension_info["sourceHash"] = data["sourceHash"]
+                    # Extensions before #34's build check omit sourceHash; before #118, manifestHash.
+                    for key in ("sourceHash", "manifestHash"):
+                        if key in data:
+                            extension_info[key] = data[key]
                     _log(f"Extension {extension_info['version']} ({extension_info['build']} build)")
                 continue
             if data.get("type") == "state":
@@ -1428,13 +1430,18 @@ def _connection_diagnosis():
     """browser_status diagnosis from bridge state (docs/api-reference.md#connection-diagnosis)."""
     if extension_ws is None:
         # An extension that connected once knows the port; one that never did may use another.
-        if WS_PORT != EXTENSION_WS_PORT and not extension_ws_generation:
+        extension_port = _extension_source_ws_port()
+        if WS_PORT != (extension_port or EXTENSION_WS_PORT) and not extension_ws_generation:
+            uses = (f"the extension in {EXTENSION_SOURCE_DIR} connects to {extension_port} (WS_URL in "
+                    "background/background.js)" if extension_port else
+                    f"the extension connects to {EXTENSION_WS_PORT} unless WS_URL in "
+                    "extension/background/background.js was changed to match")
             return {"code": "port_conflict",
-                    "hint": f"The bridge waits for the extension on port {WS_PORT} (KITSUNE_WS_PORT), but the "
-                            f"extension connects to {EXTENSION_WS_PORT} unless WS_URL in "
-                            "extension/background/background.js was changed to match. Unset KITSUNE_WS_PORT, "
-                            "or change WS_URL and reload the developer build.",
-                    "state": {"port": WS_PORT, "reason": "extension_ws_port"}}
+                    "hint": f"The bridge waits for the extension on port {WS_PORT} (KITSUNE_WS_PORT), but {uses}. "
+                            "Set KITSUNE_WS_PORT to the extension's port, or change WS_URL and reload the "
+                            "developer build.",
+                    "state": {"port": WS_PORT, "reason": "extension_ws_port",
+                              "extensionPort": extension_port or EXTENSION_WS_PORT}}
         return {"code": "extension_disconnected",
                 "hint": "Open the browser profile where Kitsune is installed and check that Kitsune is enabled in "
                         "about:addons (load a developer build again in about:debugging after a browser restart). "
@@ -1466,19 +1473,43 @@ def _connection_diagnosis():
 
 
 def _stale_developer_build():
-    """Both fingerprints when a connected developer build differs from EXTENSION_SOURCE_DIR.
+    """The fingerprints that differ when a connected developer build differs from EXTENSION_SOURCE_DIR.
 
-    Read from disk at every diagnosis: the question is whether the files were edited since the
-    browser loaded them. Unknown on either side (an older extension, the signed build, no
-    unpacked extension next to the bridge) is never a mismatch.
+    Scripts (sourceHash) and manifest.json (manifestHash) are compared separately. Read from disk
+    at every diagnosis: the question is whether the files were edited since the browser loaded
+    them. Unknown on either side (an older extension, the signed build, no unpacked extension next
+    to the bridge) is never a mismatch.
     """
-    loaded = extension_info.get("sourceHash")
-    if extension_info.get("build") != "dev" or not isinstance(loaded, str):
+    if extension_info.get("build") != "dev":
         return None
-    on_disk = extension_source_hash(EXTENSION_SOURCE_DIR)
-    if on_disk is None or on_disk == loaded:
+    stale = {}
+    for key, name, fingerprint in (("sourceHash", "SourceHash", extension_source_hash),
+                                   ("manifestHash", "ManifestHash", extension_manifest_hash)):
+        loaded = extension_info.get(key)
+        if not isinstance(loaded, str):
+            continue
+        on_disk = fingerprint(EXTENSION_SOURCE_DIR)
+        if on_disk is not None and on_disk != loaded:
+            stale.update({f"extension{name}": loaded[:16], f"expected{name}": on_disk})
+    return stale or None
+
+
+# `const WS_URL = 'ws://host:port'` in background.js
+_WS_URL_PORT = _re.compile(r"""\bconst\s+WS_URL\s*=\s*['"`]wss?://[^'"`/]*:(\d+)""")
+
+
+def _extension_source_ws_port():
+    """The port WS_URL names in EXTENSION_SOURCE_DIR's background.js; None if unreadable.
+
+    Read at each diagnosis like _stale_developer_build. Only a developer build loaded from that
+    directory is known to use it; the signed build always uses EXTENSION_WS_PORT.
+    """
+    try:
+        source = (EXTENSION_SOURCE_DIR / "background" / "background.js").read_text(encoding="utf-8")
+    except (OSError, ValueError):
         return None
-    return {"extensionSourceHash": loaded[:16], "expectedSourceHash": on_disk}
+    match = _WS_URL_PORT.search(source)
+    return int(match[1]) if match and 0 < int(match[1]) < 65536 else None
 
 
 # Matches the extension's browser_window_unavailable hint.

@@ -34,9 +34,9 @@ def headers() -> dict:
     return {"Authorization": f"Bearer {token}"} if token else {}
 
 
-def status() -> dict | None:
+def status(timeout: float = 2) -> dict | None:
     try:
-        response = httpx.get(f"{BRIDGE}/api/status", headers=headers(), timeout=2)
+        response = httpx.get(f"{BRIDGE}/api/status", headers=headers(), timeout=timeout)
     except httpx.ConnectError:
         return None
     response.raise_for_status()
@@ -77,6 +77,11 @@ def try_lifecycle_lock():
         lock.close()
         return None
     return lock
+
+
+def daemon_pid() -> int | None:
+    """PID of the bridge daemon holding this KITSUNE_HOME's pid lock, if one runs."""
+    return _locked_pid()
 
 
 def _locked_pid() -> int | None:

@@ -103,6 +103,11 @@ def tool(group: str, annotations: ToolAnnotations | None = None):
 
 
 BRIDGE_START_TIMEOUT = 15
+# A listening bridge answers /api/status at once. Probes during a start wait no longer than
+# READY_PROBE_TIMEOUT; a started bridge whose port accepts connections but has not answered
+# for NOT_RESPONDING_SECONDS hangs (a bridge that cannot listen exits within that time).
+READY_PROBE_TIMEOUT = 1
+NOT_RESPONDING_SECONDS = 3
 
 
 def _bridge_matches(status: dict) -> bool:
@@ -133,8 +138,19 @@ def _ensure_bridge() -> dict | None:
                     env={**os.environ, "PYTHONUNBUFFERED": "1"},
                 )
             deadline = time.monotonic() + BRIDGE_START_TIMEOUT
+            unanswered_since = None
             while time.monotonic() < deadline:
-                status = bridge_control.status()
+                try:
+                    status = bridge_control.status(timeout=READY_PROBE_TIMEOUT)
+                    unanswered_since = None
+                except httpx.TimeoutException:
+                    # The port accepts connections but nothing answers. If it is another program,
+                    # the new bridge cannot listen and exits; if it stays alive, it hangs.
+                    status = None
+                    if unanswered_since is None:
+                        unanswered_since = time.monotonic()
+                    if process.poll() is None and time.monotonic() - unanswered_since >= NOT_RESPONDING_SECONDS:
+                        return _not_responding(process.pid)
                 if status is not None and status.get("build") == BRIDGE_BUILD:
                     return None
                 if process.poll() is not None:
@@ -146,6 +162,13 @@ def _ensure_bridge() -> dict | None:
         return _port_conflict(HTTP_PORT, "not_kitsune", f"Cannot start Kitsune bridge: {exc}")
     except ValueError as exc:  # a reply that is not a Kitsune status
         return _port_conflict(HTTP_PORT, "not_kitsune", f"Cannot start Kitsune bridge: {exc}")
+    except httpx.TimeoutException:
+        # Before a start: a running bridge that hangs, or another program on the port.
+        pid = bridge_control.daemon_pid()
+        if pid is not None:
+            return _not_responding(pid)
+        return _port_conflict(HTTP_PORT, "in_use", f"Port {HTTP_PORT} accepts connections but does not answer, "
+                                                   "and no Kitsune bridge runs")
     except (httpx.HTTPError, OSError) as exc:
         return _bridge_unavailable(f"Cannot start Kitsune bridge: {exc}. See {LOG_FILE}")
     exited = {}
@@ -154,6 +177,8 @@ def _ensure_bridge() -> dict | None:
         excerpt = _startup_log_excerpt(log_start)
         if excerpt:
             exited["logExcerpt"] = excerpt
+    elif unanswered_since is not None:
+        return _not_responding(process.pid)
     # Nothing answers: the new bridge may have exited because it could not listen.
     for port in (HTTP_PORT, WS_PORT) if status is None else ():
         if bridge_control.port_in_use(port):
@@ -164,6 +189,11 @@ def _ensure_bridge() -> dict | None:
         reason = f": {exited['logExcerpt']}" if "logExcerpt" in exited else ""
         return _bridge_unavailable(
             f"Kitsune bridge exited at startup with code {exited['exitCode']}{reason}. See {LOG_FILE}", **exited)
+    if status is None:
+        # Still running, but it never listened: a slow start cannot be told apart before the deadline.
+        return _bridge_unavailable(
+            f"Kitsune bridge (PID {process.pid}) runs but did not listen on port {HTTP_PORT} within "
+            f"{BRIDGE_START_TIMEOUT}s. See {LOG_FILE}", port=HTTP_PORT, reason="not_listening", pid=process.pid)
     return _bridge_unavailable(f"Kitsune bridge did not start within {BRIDGE_START_TIMEOUT}s. See {LOG_FILE}")
 
 
@@ -201,6 +231,16 @@ def _bridge_unavailable(message: str, **state) -> dict:
                      f"to see why the bridge does not start; the MCP server starts it on demand. See {LOG_FILE}"}
     if state:
         error["state"] = state
+    return error
+
+
+def _not_responding(pid: int) -> dict:
+    error = _bridge_unavailable(f"Kitsune bridge (PID {pid}) accepts connections on port {HTTP_PORT} but does not "
+                                f"answer. See {LOG_FILE}", port=HTTP_PORT, reason="not_responding", pid=pid)
+    error["hint"] = ("The bridge hangs: run `kitsune-bridge stop` (it stops an unresponsive bridge by its PID), then "
+                     f"retry. If it hangs again, run `kitsune-bridge start` in a terminal and see {LOG_FILE}. If "
+                     f"another program holds port {HTTP_PORT}, find it with `lsof -nP -iTCP:{HTTP_PORT} "
+                     "-sTCP:LISTEN`.")
     return error
 
 

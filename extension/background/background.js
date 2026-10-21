@@ -92,6 +92,10 @@ browser.runtime.onMessage.addListener((msg, sender) => {
 
 // == WebSocket Connection ==
 
+// The first 16 hex digits of the SHA-256 of data, as src/kitsune/version.py writes them.
+const sha256Prefix = async data => [...new Uint8Array(await crypto.subtle.digest('SHA-256', data))]
+  .map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 16);
+
 // Fingerprint of the scripts this copy loaded, sent in hello: the bridge compares it with the
 // unpacked extension on disk to report a developer build edited but not reloaded. Mirrors
 // extension_source_hash in src/kitsune/version.py; null when it cannot be computed.
@@ -108,8 +112,18 @@ const SOURCE_HASH = (async () => {
       const bytes = await (await fetch(browser.runtime.getURL(name))).arrayBuffer();
       parts.push(encoder.encode(name), separator, new Uint8Array(bytes), separator);
     }
-    const digest = await crypto.subtle.digest('SHA-256', await new Blob(parts).arrayBuffer());
-    return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 16);
+    return await sha256Prefix(await new Blob(parts).arrayBuffer());
+  } catch {
+    return null;
+  }
+})();
+
+// Fingerprint of the manifest.json this copy loaded, for manifest-only edits. A field of its own,
+// so a bridge still compares the scripts of an extension that predates it. Mirrors
+// extension_manifest_hash in src/kitsune/version.py; null when it cannot be computed.
+const MANIFEST_HASH = (async () => {
+  try {
+    return await sha256Prefix(await (await fetch(browser.runtime.getURL('manifest.json'))).arrayBuffer());
   } catch {
     return null;
   }
@@ -126,10 +140,10 @@ function connect() {
       console.log('[Kitsune] Connected to bridge server');
       reconnectDelay = 1000; // Reset backoff
       stopReconnect();
-      const sourceHash = await SOURCE_HASH;
-      if (ws !== socket) return; // replaced while the fingerprint was computed
+      const [sourceHash, manifestHash] = await Promise.all([SOURCE_HASH, MANIFEST_HASH]);
+      if (ws !== socket) return; // replaced while the fingerprints were computed
       ws.send(JSON.stringify({ type: 'hello', version: browser.runtime.getManifest().version, build: KITSUNE_BUILD,
-        sourceHash }));
+        sourceHash, manifestHash }));
       sendBrowserState();
       startHeartbeat();
       injectAllTabs(); // Inject content scripts into all existing tabs

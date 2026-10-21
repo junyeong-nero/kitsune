@@ -67,5 +67,17 @@ def extension_source_hash(directory: Path) -> str | None:
     return digest.hexdigest()[:16] if scripts else None
 
 
+def extension_manifest_hash(directory: Path) -> str | None:
+    """Fingerprint an unpacked extension's manifest.json bytes; None if unreadable.
+
+    Separate from extension_source_hash, so extensions that only send that one still compare
+    their scripts; background.js computes the same manifestHash.
+    """
+    try:
+        return hashlib.sha256((directory / "manifest.json").read_bytes()).hexdigest()[:16]
+    except OSError:
+        return None
+
+
 PACKAGE_VERSION = package_version()
 BRIDGE_BUILD = bridge_build()
