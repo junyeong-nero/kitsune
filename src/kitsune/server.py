@@ -655,17 +655,16 @@ def browser_snapshot(
     tab_id: TabId = None,
     selector: Annotated[str | None, Field(description="CSS subtree root (included).")] = None,
     ref: Annotated[str | None, Field(
-        description="Existing ref for a subtree root, resolved before refs are replaced; wins over "
-                    "selector.")] = None,
+        description="Subtree root ref, resolved before refs are replaced; wins over selector.")] = None,
     max_depth: Annotated[int | None, Field(
-        description="Non-negative depth below the subtree root (body by default); 0 is the root only, "
-                    "omitted all depths.")] = None,
+        description="Depth (>= 0) below the subtree root (body by default); 0 is the root only, omitted "
+                    "all.")] = None,
     text: Annotated[bool, Field(
-        description="Also return visible text lines (no refs), url, title and tabId, capped at 12,000 "
-                    "chars with a truncation marker.")] = False,
+        description="Visible text lines (no refs), url, title and tabId, capped at 12,000 chars with a "
+                    "truncation marker.")] = False,
 ) -> dict:
     """Get a compact accessibility-style text tree with fresh element refs; prefer them for
-    actions. text=True also returns the page's visible text in the same call.
+    actions. text=True adds the page's visible text in the same call.
 
     Refs belong to one document in one tab. A snapshot, browser_dom, or the post-action
     snapshot of a successful click, type/fill, select_option, check, keypress, submit_form
@@ -816,8 +815,8 @@ def browser_type(
     selector: str = "", text: str = "",
     mode: Annotated[Literal["type", "fill", "editable"], Field(
         description="type: typing events, clearing first if clear. fill: replace the value via native "
-                    "setters and input/change events (always replaces). editable: insert plain text into "
-                    "an editor/input/textarea, appending unless clear. For HTML, use browser_js.")] = "type",
+                    "setters and input/change events. editable: insert plain text into an "
+                    "editor/input/textarea, appending unless clear. HTML: browser_js.")] = "type",
     clear: bool = False, tab_id: TabId = None,
     ref: str | None = None, element: str | None = None, wait: bool = False, timeout: int = 10000,
     expect: dict | None = None, confirm_token: str | None = None, first: bool = False,
@@ -1286,12 +1285,13 @@ def browser_keypress(
     tab_id: TabId = None,
     ref: str | None = None,
     element: str | None = None,
-    wait: Annotated[bool, Field(description="Only with selector/ref; see browser_click.")] = False,
+    wait: bool = False,
     timeout: int = 10000,
     expect: dict | None = None, confirm_token: str | None = None, first: bool = False,
 ) -> dict:
-    """Dispatch a synthetic keyboard event to the ref/selector target, else the focused
-    element (or body). ok=true means dispatched; verify with expect (see browser_click).
+    """Dispatch a synthetic keyboard event to the ref/selector target (wait needs one), else
+    the focused element (or body). ok=true means dispatched; verify with expect (see
+    browser_click).
     """
     body = {"key": key}
     if selector: body["selector"] = selector

@@ -45,10 +45,11 @@ BENCH_UI_TOOLS = (
 # Set about 5% above the sizes once nullable optionals and empty defaults were dropped (#142);
 # default (lean) and bench allowlist raised by 100 for the agent-owned tab rules (#139);
 # all three raised for browser_dom scoping (#160), bench also for its earlier overage.
-# First-paragraph views set about 5% above the sizes once first paragraphs became
-# self-contained (#135).
-TOTAL_BUDGETS = {"default (lean)": 13_400, "full core": 25_600, "bench allowlist": 17_800}
-FIRST_PARAGRAPH_BUDGETS = {"default (lean)": 11_300, "full core": 23_200, "bench allowlist": 15_900}
+# Tightened again once the shared action contract was documented once (#135): lean and
+# full core back to their values before #160, bench just above its size. First-paragraph
+# views set about 5% above the sizes once first paragraphs became self-contained (#135).
+TOTAL_BUDGETS = {"default (lean)": 13_300, "full core": 25_500, "bench allowlist": 17_700}
+FIRST_PARAGRAPH_BUDGETS = {"default (lean)": 11_200, "full core": 23_100, "bench allowlist": 15_700}
 TOOL_BUDGET = 3_000  # any single core tool, full view
 
 

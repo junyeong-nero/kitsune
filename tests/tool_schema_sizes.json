@@ -84,11 +84,11 @@
     "firstParagraphTotal": 863
   },
   "browser_keypress": {
-    "description": 168,
-    "firstParagraph": 168,
-    "inputSchema": 841,
-    "total": 1190,
-    "firstParagraphTotal": 1190
+    "description": 186,
+    "firstParagraph": 186,
+    "inputSchema": 782,
+    "total": 1149,
+    "firstParagraphTotal": 1149
   },
   "browser_markdown": {
     "description": 88,
@@ -140,11 +140,11 @@
     "firstParagraphTotal": 834
   },
   "browser_snapshot": {
-    "description": 732,
-    "firstParagraph": 161,
-    "inputSchema": 618,
-    "total": 1543,
-    "firstParagraphTotal": 972
+    "description": 724,
+    "firstParagraph": 153,
+    "inputSchema": 578,
+    "total": 1495,
+    "firstParagraphTotal": 924
   },
   "browser_status": {
     "description": 65,
@@ -170,9 +170,9 @@
   "browser_type": {
     "description": 119,
     "firstParagraph": 119,
-    "inputSchema": 798,
-    "total": 1103,
-    "firstParagraphTotal": 1103
+    "inputSchema": 772,
+    "total": 1077,
+    "firstParagraphTotal": 1077
   },
   "browser_upload_file": {
     "description": 403,
