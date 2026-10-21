@@ -924,7 +924,7 @@ async function screenPointForClick(params) {
     await restoreActiveTab(previousTabId, params.tabId);
     return point;
   }
-  return { ...point, previousTabId };
+  return { ...point, tabId: params.tabId, previousTabId };
 }
 
 // Shows the user's tab again after a trusted click, unless the user already moved elsewhere.
@@ -1015,6 +1015,10 @@ const TAB_FAILURE_HINTS = {
   restricted_page: 'Browser-internal pages cannot be scripted; navigate the tab to a web page or target another tab.',
   error_page: 'The page has no scriptable document (often an error response with an empty body), so reading it again fails the same way; check state.httpStatus and state.title, then navigate the tab elsewhere or target another tab.',
   host_permission_denied: 'Firefox does not let Kitsune script this site. For state.reason not_granted, allow its site access in about:addons → Kitsune → Permissions; restricted_domain sites (addons.mozilla.org, …) are closed to all extensions, so use another tab.',
+  user_tab: 'The agent did not open this tab (owned: false in browser_tabs list), so it stays open. Leave it, ' +
+    'or ask the user and repeat a direct browser_tabs close with the confirm_token that call returns.',
+  user_active: 'The user is using this tab (state.reason); nothing was done. Retry in a few seconds, ' +
+    'work in a tab you opened, or ask the user.',
   // Matches the bridge's browser_window_unavailable diagnosis hint.
   browser_window_unavailable: 'Open a normal browser window in the profile where Kitsune is installed (private windows need Run in Private Windows in about:addons), or pass tab_id.',
 };

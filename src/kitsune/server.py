@@ -447,14 +447,16 @@ def browser_tabs(
 ) -> dict:
     """List, open, close, or select tabs.
 
-    list: always a fresh read of the browser's tabs.
-    new: url defaults to about:blank; raw bypasses the image viewer. Returns tabId
-    immediately unless wait=True, which waits up to timeout ms for the page to load
-    and returns tabId, actual url (after redirects) and status. On timeout the tab
-    stays open and the result has ok=false, timedOut=true.
-    close/select: tab_id is required. force disarms beforeunload on close.
+    list: always a fresh read of the browser's tabs; owned=true marks tabs the agent opened.
+    new: opens in the background (never shown); url defaults to about:blank; raw bypasses
+    the image viewer. Returns tabId immediately unless wait=True, which waits up to timeout
+    ms for the page to load and returns tabId, actual url (after redirects) and status. On
+    timeout the tab stays open and the result has ok=false, timedOut=true.
+    close/select: tab_id is required. force disarms beforeunload on close. close refuses
+    a tab the agent did not open (code user_tab) unless the user approves (confirm_token).
+    select switches the user's view: only when the user asks.
     Other action-specific options are ignored.
-    confirm_token: new only; see browser_click.
+    confirm_token: new/close; see browser_click.
     """
     if action == "list":
         return _get("/api/tabs")
@@ -473,8 +475,10 @@ def browser_tabs(
         if tab_id is None:
             return {"error": f"tab_id is required for action={action}"}
         body = {"tabId": tab_id}
-        if action == "close" and force:
-            body["force"] = True
+        if action == "close":
+            if force:
+                body["force"] = True
+            _confirm(body, confirm_token)
         return _post("/api/close-tab" if action == "close" else "/api/switch-tab", body)
     return {"error": "action must be list, new, close, or select"}
 
@@ -578,8 +582,7 @@ def browser_screenshot(
 ):
     """Capture the viewport, one element (ref/selector, see browser_click) or the full page.
 
-    selector/ref and full_page are mutually exclusive. Element/full-page captures briefly
-    activate the tab; viewport capture with tab_id selects it and focuses its window.
+    selector/ref and full_page are mutually exclusive. No capture shows the tab or focuses a window.
     Inline images are JPEG-encoded or downscaled under ~1 MB. save_to writes the full PNG
     there and returns metadata instead; data_url also returns it as a (large) data URL.
     """
@@ -594,21 +597,7 @@ def browser_screenshot(
         body["imagePreview"] = preview
         result = _post(endpoint, _with_tab(body, tab_id), timeout=120 if full_page else 45)
         return _screenshot_result(result, save_to, data_url)
-    if tab_id is not None:
-        tabs = _get("/api/tabs")
-        if "error" in tabs:
-            return tabs
-        tab = next((t for t in tabs.get("tabs", []) if t["id"] == tab_id), None)
-        if tab is None:
-            return {"error": f"Tab {tab_id} not found"}
-        for endpoint, body in [
-            ("/api/switch-tab", {"tabId": tab_id}),
-            ("/api/focus-window", {"windowId": tab["windowId"]}),
-        ]:
-            result = _post(endpoint, body)
-            if "error" in result:
-                return result
-    result = _post("/api/screenshot", {"imagePreview": preview})
+    result = _post("/api/screenshot", _with_tab({"imagePreview": preview}, tab_id))
     return _screenshot_result(result, save_to, data_url)
 
 
@@ -663,6 +652,7 @@ def browser_click(
             If not met in time: ok=false, code="outcome_not_observed" and the
             current tab state; the action already ran, so do not blindly repeat it.
         confirm_token: From a confirmation_required error, after the user approved this action.
+        user_active: The user is using the tab (state.reason); nothing ran. Retry in a few seconds.
 
     Args:
         selector: CSS selector to click (e.g. "#submit", ".btn-primary")
@@ -696,7 +686,8 @@ def browser_trusted_click(
         y: Y coordinate, used if selector is empty.
         coordinate_space: "viewport" for browser viewport coords or "screen" for desktop coords.
         focus: Whether to try to foreground the browser (Zen, Firefox, LibreWolf) first. Defaults to false.
-        tab_id: Optional tab to resolve the selector against (viewport coords only).
+        tab_id: Optional tab to resolve the selector against (viewport coords only). A tab
+            that is not shown is shown for the click, then the user's tab is shown again.
         confirm_token: See browser_click.
     """
     if selector:
@@ -1461,7 +1452,7 @@ def browser_close_window(window_id: int) -> dict:
 
 @tool("windows", annotations=ToolAnnotations(title="Focus window", **IDEMPOTENT_ACT))
 def browser_focus_window(window_id: int) -> dict:
-    """Bring a browser window to the foreground."""
+    """Bring a browser window to the foreground; this moves the user's focus, so only when asked."""
     return _post("/api/focus-window", {"windowId": window_id})
 
 

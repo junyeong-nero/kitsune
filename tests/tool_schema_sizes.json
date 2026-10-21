@@ -10,9 +10,9 @@
     "total": 933
   },
   "browser_click": {
-    "description": 2025,
+    "description": 2122,
     "inputSchema": 615,
-    "total": 2815
+    "total": 2912
   },
   "browser_console_logs": {
     "description": 81,
@@ -85,9 +85,9 @@
     "total": 606
   },
   "browser_screenshot": {
-    "description": 431,
+    "description": 359,
     "inputSchema": 477,
-    "total": 1098
+    "total": 1026
   },
   "browser_scroll": {
     "description": 482,
@@ -115,9 +115,9 @@
     "total": 988
   },
   "browser_tabs": {
-    "description": 546,
+    "description": 787,
     "inputSchema": 501,
-    "total": 1234
+    "total": 1475
   },
   "browser_type": {
     "description": 376,
