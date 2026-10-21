@@ -127,6 +127,11 @@ function harness({ onClick = () => {}, activity = {} } = {}) {
       },
       update: async (id, props) => { h.calls.push(['windows.update', id, copy(props)]); if (props.focused) h.focusWindow(id); return { id }; },
       getLastFocused: async () => ({ id: h.focusedWindow }),
+      get: async id => ({ id, tabs: Object.values(tabs).filter(t => t.windowId === id).map(t => ({ ...t })) }),
+      remove: async id => {
+        h.calls.push(['windows.remove', id]);
+        Object.values(tabs).filter(t => t.windowId === id).forEach(t => { delete tabs[t.id]; tabsEvents.onRemoved.emit(t.id); });
+      },
       getAll: async () => [{ id: 1 }],
     },
     runtime: { onMessage: event(), onStartup: event(), onInstalled: event() },
@@ -264,6 +269,13 @@ async function testOnlyOwnedTabsClose() {
   assert.equal(h.tabs[tabId], undefined);
   assert.equal((await h.send({ action: 'closeTab', tabId })).code, 'tab_closed');
 
+  // Closing a window closes its tabs: one with user tabs is refused the same way.
+  const win = await h.send({ action: 'createWindow', url: 'https://agent.example/w' });
+  assert.deepEqual(await h.send({ action: 'closeWindow', windowId: win.windowId }), { ok: true, windowId: 9 });
+  const userWindow = await h.send({ action: 'closeWindow', windowId: 1 });
+  assert.deepEqual([userWindow.code, userWindow.retryable, userWindow.state], ['user_tab', false, { windowId: 1, tabIds: [1, 2] }]);
+  assert.ok(!h.calls.some(([name, id]) => name === 'windows.remove' && id === 1));
+
   // The bridge sends userTabApproved only after the user approved this close.
   assert.deepEqual(await h.send({ action: 'closeTab', tabId: 2, userTabApproved: true }), { ok: true });
   assert.equal(h.tabs[2], undefined);
@@ -288,6 +300,9 @@ async function testUserActivityBlocksAgentWrites() {
   // Reads go on, and so do writes on other tabs.
   assert.equal((await h.send({ action: 'getSnapshot', tabId: 1 })).code, undefined);
   assert.equal((await h.send({ action: 'click', tabId: 2, selector: '#go' })).ok, true);
+  // A viewport capture is a read; element and full-page captures scroll the user's page.
+  assert.ok((await h.send({ action: 'screenshot', tabId: 1 })).dataUrl);
+  assert.equal((await h.send({ action: 'fullPageScreenshot', tabId: 1 })).code, 'user_active');
   // Switching the view away from the tab the user is using waits too; showing it again does not.
   assert.equal((await h.send({ action: 'switchTab', tabId: 2 })).code, 'user_active');
   assert.deepEqual(h.shown(), [1]);

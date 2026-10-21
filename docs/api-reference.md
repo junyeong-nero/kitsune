@@ -150,7 +150,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `browser_window_unavailable` | No active tab: the extension sees no normal window it can use | true |
 | `host_permission_denied` | Firefox does not let Kitsune script the tab's site (`state.reason`: `not_granted`, `restricted_domain`) | true |
 | `confirmation_required` | [Ask-before-act](#ask-before-act) held a sensitive action; nothing ran (`state.confirmToken`, `state.reason`) | true |
-| `user_tab` | `browser_tabs` close on a tab the agent did not open; it stays open. A direct call's `state.confirmToken` closes it once the user approves (see [Agent-owned tabs](#agent-owned-tabs)) | false |
+| `user_tab` | `browser_tabs` close on a tab the agent did not open, or `browser_close_window` on a window with one; it stays open. A direct call's `state.confirmToken` closes it once the user approves (see [Agent-owned tabs](#agent-owned-tabs)) | false |
 | `user_active` | The user is using the tab (`state.reason`: `input`, `typing`, `navigating`); the write or navigation did not run (see [User activity](#user-activity)) | true |
 | `outcome_not_observed` | The action was dispatched, but the outcome given in `expect` did not happen in time (see [Action outcomes](#action-outcomes)) | false for writes |
 | `tab_required` | A `parallel` step that acts on a tab has no `tabId` (`state.sequence`, `state.index`); nothing was dispatched (see [Container progress](#container-progress)) | true |
@@ -561,6 +561,10 @@ adds `state.tokenRejected` (`used`, `expired`) and a new token. With `force`, th
 extension disarms `beforeunload` only once it agreed to close the tab, so a refused
 close leaves the user's page as it was.
 
+Closing a window closes its tabs, so `browser_close_window` (`POST /api/close-window`,
+batch `closeWindow`) refuses a window with any tab the agent did not open the same way
+(`user_tab`, `state.windowId`, `state.tabIds`: its user tabs), with the same approval.
+
 Ownership lives in the extension's background page. A bridge restart or reconnect
 keeps it. An extension reload or update, or a browser restart, forgets it; the tabs
 the agent opened before then count as user tabs, so closing them needs approval.
@@ -582,8 +586,8 @@ and `state.reason`:
 Nothing reached the page; repeat after a few seconds, work in a tab you opened, or ask
 the user. Checked actions: click, double-click, type/fill/editable, select, check,
 keypress, submit, form fill, hover, scroll, drag, focus, blur, JavaScript, upload,
-navigate, back, forward, reload, click-and-wait-navigation, close, and trusted click
-(viewport) on their own tab; select (`switchTab`) and `browser_focus_window` on the tab
+navigate, back, forward, reload, click-and-wait-navigation, close, element and
+full-page screenshots (they scroll the page), and trusted click (viewport) on their own tab; select (`switchTab`) and `browser_focus_window` on the tab
 the user would leave. Reads never are.
 
 How it tells the user from the agent: Kitsune's own DOM events are synthetic, so their

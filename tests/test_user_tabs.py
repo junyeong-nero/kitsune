@@ -18,6 +18,9 @@ class FakeExtension:
         self.sent.append((action, params))
         if action == "describeTarget":
             return {"tabId": params.get("tabId"), "url": "https://user.example/"}
+        if action == "closeWindow" and not params.get("userTabApproved"):
+            return {"error": "Window 2 has tabs the agent did not open, so it was not closed", "code": "user_tab",
+                    "retryable": False, "state": {"windowId": params["windowId"], "tabIds": [4]}}
         if action == "closeTab" and params["tabId"] not in self.owned and not params.get("userTabApproved"):
             return {"error": f"Tab {params['tabId']} was not opened by the agent, so it was not closed",
                     "code": "user_tab", "retryable": False, "hint": "extension hint",
@@ -48,18 +51,21 @@ class UserTabCloseTests(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-    def close(self, body):
+    def close(self, body, action="closeTab"):
         handler = bridge.BridgeHandler.__new__(bridge.BridgeHandler)
         handler.read_body = Mock(return_value=dict(body))
         handler.send_json = Mock()
         handler.run_async = Mock(side_effect=lambda coro, **kwargs: asyncio.run(coro))
-        handler.handle_close_tab()
+        if action == "closeTab":
+            handler.handle_close_tab()
+        else:
+            handler._close_with_approval(action)
         status, result = handler.send_json.call_args.args
         self.assertEqual(status, 200)
         return result
 
-    def refuse(self, body):
-        result = self.close(body)
+    def refuse(self, body, action="closeTab"):
+        result = self.close(body, action)
         self.assertEqual((result["code"], result["retryable"]), ("user_tab", False), result)
         self.assertEqual(result["state"]["expiresInSeconds"], bridge.CONFIRM_TOKEN_TTL)
         self.assertIn("ask the user", result["hint"])
@@ -83,6 +89,13 @@ class UserTabCloseTests(unittest.TestCase):
         self.assertNotIn("userTabApproved", self.extension.closes()[-1])
         audit = [entry for entry in bridge._audit_log if entry["params"].get("confirmation")]
         self.assertEqual([(e["action"], e["params"]["reason"]) for e in audit], [("closeTab", "user_tab")])
+
+    def test_window_with_user_tabs_closes_only_with_its_confirm_token(self):
+        token = self.refuse({"windowId": 2}, "closeWindow")["state"]["confirmToken"]
+        # A window token does not close a tab, nor a tab token a window.
+        self.refuse({"tabId": 4, "confirmToken": token})
+        self.assertEqual(self.close({"windowId": 2, "confirmToken": token}, "closeWindow"), {"ok": True})
+        self.assertEqual(self.extension.sent[-1], ("closeWindow", {"windowId": 2, "userTabApproved": True}))
 
     def test_expired_token_is_rejected(self):
         token = self.refuse({"tabId": 4})["state"]["confirmToken"]

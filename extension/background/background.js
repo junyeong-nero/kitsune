@@ -132,6 +132,9 @@ const revertActivation = new Map(); // agent-opened tabId -> deadline for undoin
 const lastActivation = new Map();   // windowId -> { tabId, previousTabId }
 const revertFocus = new Map();      // agent popup windowId -> deadline for undoing its focus
 let focusedWindowId = null, previousFocusedWindowId = null;
+browser.windows?.getLastFocused?.().then(w => {
+  focusedWindowId ??= w.focused ? w.id : browser.windows.WINDOW_ID_NONE;
+}, () => {});
 function keepOpenedTabInBackground(tab) {
   markAgentTab(tab.id);
   const deadline = Date.now() + OPENED_TAB_REVERT_MS;
@@ -435,11 +438,12 @@ const OPENER_ACTIONS = new Set([
   'navigate', 'goBack', 'goForward', 'reloadTabBrowser', 'clickAndWaitNavigation',
 ]);
 // Writes and navigations that back off from a tab the user is using (see userActivity).
+// Element and full-page captures scroll the page.
 const USER_GUARDED_ACTIONS = new Set([
   'click', 'doubleClick', 'type', 'fill', 'setEditableContent', 'selectOption', 'checkBox',
   'keypress', 'submitForm', 'formFill', 'hover', 'scroll', 'drag', 'focusElement', 'blurElement',
   'executeJS', 'uploadCommit', 'navigate', 'goBack', 'goForward', 'reloadTabBrowser',
-  'clickAndWaitNavigation', 'closeTab', 'switchTab', 'focusWindow',
+  'clickAndWaitNavigation', 'closeTab', 'switchTab', 'focusWindow', 'elementScreenshot', 'fullPageScreenshot',
 ]);
 // A tab opened by a link starts on about:blank; wait this long for its real URL.
 const OPENED_TAB_URL_WAIT_MS = 1000;
@@ -582,7 +586,7 @@ async function dispatchCommand(command) {
     case 'setZoom':          return await setZoom(params.tabId, params.factor);
     case 'getWindows':       return await getWindowsList();
     case 'createWindow':     return await createWindow(params.url, params.incognito);
-    case 'closeWindow':      return await closeWindow(params.windowId);
+    case 'closeWindow':      return await closeWindow(params.windowId, params.userTabApproved);
     case 'focusWindow':      return await focusWindow(params.windowId);
     case 'moveTab':          return await moveTabAction(params.tabId, params.windowId, params.index);
     case 'detachTab':        return await detachTab(params.tabId);
@@ -1309,8 +1313,15 @@ async function createWindow(url, incognito) {
   } catch (e) { return { error: e.message }; }
 }
 
-async function closeWindow(windowId) {
+// Closing a window closes its tabs, so one with user tabs needs approval like closeTab.
+async function closeWindow(windowId, userTabApproved = false) {
   try {
+    const userTabs = (await browser.windows.get(windowId, { populate: true })).tabs
+      .filter(tab => !agentTabs.has(tab.id)).map(tab => tab.id);
+    if (userTabs.length && !userTabApproved) {
+      return tabError(`Window ${windowId} has tabs the agent did not open, so it was not closed`, 'user_tab',
+        { windowId, tabIds: userTabs }, false);
+    }
     await browser.windows.remove(windowId);
     return { ok: true, windowId };
   } catch (e) { return { error: e.message }; }

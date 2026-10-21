@@ -89,10 +89,10 @@ class RealBrowserSharedBrowserTests(harness.RealBrowserTestCase):
             time.sleep(0.1)
 
     def user_view(self):
-        """What the user sees: the shown tab, the URLs of their tabs, and which window has focus."""
+        """What the user sees: their shown tab, the URLs of their tabs, and which window has focus."""
         tabs = self.tabs()
         windows = self.call("/api/windows")["windows"]
-        return {"shown": [t["id"] for t in tabs.values() if t["active"]],
+        return {"shown": [t["id"] for t in tabs.values() if t["active"] and not t["owned"]],
                 "user_tabs": {i: t["url"] for i, t in tabs.items() if not t["owned"]},
                 "focused": [w["id"] for w in windows if w["focused"]]}
 
@@ -100,7 +100,7 @@ class RealBrowserSharedBrowserTests(harness.RealBrowserTestCase):
         """The user's shown tab, on /user, loaded by the user (not owned by the agent)."""
         url = self.page.origin + "/user"
         shown = next(t for t in self.tabs().values() if t["active"])
-        if shown["url"] != url:
+        if (shown["url"], shown["title"]) != (url, "user"):
             self.parent(USER_NAVIGATES, url)
             self.wait_for(lambda: self.tabs()[shown["id"]]["url"] == url
                           and self.tabs()[shown["id"]]["title"] == "user", "the user page did not load")
@@ -141,6 +141,12 @@ class RealBrowserSharedBrowserTests(harness.RealBrowserTestCase):
         self.assertIs(self.tabs()[duplicate]["owned"], True)
         assert_user_view_unchanged("duplicate")
 
+        window = self.assert_ok(self.call("/api/create-window", {"url": self.page.origin + "/agent"}))
+        self.assertTrue(all(self.tabs()[t]["owned"] for t in window["tabIds"]), window)
+        assert_user_view_unchanged("a new window does not take focus")
+        self.assert_ok(self.call("/api/close-window", {"windowId": window["windowId"]}))
+        assert_user_view_unchanged("close-window")
+
         for tab_id in (opened, duplicate, blank, agent):
             self.assert_ok(self.call("/api/close-tab", {"tabId": tab_id}))
         self.assertFalse({opened, duplicate, blank, agent} & set(self.tabs()))
@@ -159,6 +165,9 @@ class RealBrowserSharedBrowserTests(harness.RealBrowserTestCase):
             refused = self.call("/api/close-tab", body)
             self.assert_error(refused, "user_tab", False)
             self.assertIn(second, self.tabs(), "the user tab stays open")
+        window_id = self.tabs()[second]["windowId"]
+        self.assert_error(self.call("/api/close-window", {"windowId": window_id}), "user_tab", False)
+        self.assertIn(second, self.tabs(), "the user's window stays open")
         # Batch steps never get approval.
         batch = self.call("/api/batch", {"commands": [{"action": "closeTab", "tabId": second}]})
         self.assertEqual(batch["results"][0]["code"], "user_tab", batch)
@@ -192,7 +201,7 @@ class RealBrowserSharedBrowserTests(harness.RealBrowserTestCase):
 
         time.sleep(3.2)  # the user-input window is 3 s
         self.assert_ok(self.call("/api/click", {"selector": "#act", "tabId": user_tab}))
-        self.assertEqual(self.tabs()[user_tab]["title"], "acted")
+        self.wait_for(lambda: self.tabs()[user_tab]["title"] == "acted", "the click after the window did not act")
 
 
 class RealBrowserDefaultPrefsSharedBrowserTests(RealBrowserSharedBrowserTests):

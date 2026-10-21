@@ -1445,9 +1445,13 @@ def browser_create_window(url: str | None = None, incognito: bool = False,
 
 
 @tool("windows", annotations=ToolAnnotations(title="Close window", **DESTRUCTIVE))
-def browser_close_window(window_id: int) -> dict:
-    """Close a browser window by ID (from browser_windows)."""
-    return _post("/api/close-window", {"windowId": window_id})
+def browser_close_window(window_id: int, confirm_token: str | None = None) -> dict:
+    """Close a browser window by ID (from browser_windows).
+
+    A window with tabs the agent did not open is refused (code user_tab) unless the user
+    approves (confirm_token from that refusal).
+    """
+    return _post("/api/close-window", _confirm({"windowId": window_id}, confirm_token))
 
 
 @tool("windows", annotations=ToolAnnotations(title="Focus window", **IDEMPOTENT_ACT))

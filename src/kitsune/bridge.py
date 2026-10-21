@@ -998,38 +998,40 @@ async def _ask_before_act(action, params, *, direct):
 
 
 # ── User tabs (docs/api-reference.md#agent-owned-tabs) ──
-# The extension closes only tabs the agent opened. Its user_tab refusal of a direct close carries
-# a confirm token, issued and spent like ask-before-act's; the identical direct call with it sends
-# userTabApproved, which callers can never set themselves.
-def _user_tab_binding(params):
+# The extension closes only tabs (closeTab) and windows (closeWindow) the agent opened. Its
+# user_tab refusal of a direct close carries a confirm token, issued and spent like
+# ask-before-act's; the identical direct call with it sends userTabApproved, which callers can
+# never set themselves.
+def _user_tab_binding(action, params):
     return _confirmation_binding(
-        "closeTab", {k: v for k, v in params.items() if k not in ("confirmToken", "userTabApproved")}, "user_tab")
+        action, {k: v for k, v in params.items() if k not in ("confirmToken", "userTabApproved")}, "user_tab")
 
 
-def _take_user_tab_approval(params):
+def _take_user_tab_approval(action, params):
     """Spend a user_tab confirm token for this exact close; return why it was rejected, if it was.
 
     A token issued for anything else stays in params for ask-before-act.
     """
     token = params.get("confirmToken")
     entry = _confirm_tokens.get(token) if isinstance(token, str) else None
-    binding = _user_tab_binding(params)
+    binding = _user_tab_binding(action, params)
     if entry is None or entry["binding"] != binding:
         return None
     del params["confirmToken"]
     rejected = _spend_confirm_token(token, binding)
     if rejected is None:
         params["userTabApproved"] = True
-        _audit("closeTab", {**params, "confirmation": "accepted", "reason": "user_tab"}, True, None, 0)
+        _audit(action, {**params, "confirmation": "accepted", "reason": "user_tab"}, True, None, 0)
     return rejected
 
 
-def _offer_user_tab_approval(params, result, rejected=None):
+def _offer_user_tab_approval(action, params, result, rejected=None):
     """Add a confirm token to a user_tab refusal of a direct close."""
     if not isinstance(result, dict) or result.get("code") != "user_tab":
         return result
     state = result.setdefault("state", {})
-    state.update(confirmToken=_issue_confirm_token(_user_tab_binding(params)), expiresInSeconds=CONFIRM_TOKEN_TTL)
+    state.update(confirmToken=_issue_confirm_token(_user_tab_binding(action, params)),
+                 expiresInSeconds=CONFIRM_TOKEN_TTL)
     if rejected:
         state["tokenRejected"] = rejected
     result["hint"] = ("Nothing was closed: the agent did not open this tab. Leave it open, or ask the user to "
@@ -3158,7 +3160,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "/api/set-zoom": lambda: self._forward("setZoom"),
             "/api/windows": lambda: self._forward("getWindows"),
             "/api/create-window": lambda: self._forward("createWindow"),
-            "/api/close-window": lambda: self._forward("closeWindow"),
+            "/api/close-window": lambda: self._close_with_approval("closeWindow", timeout=15),
             "/api/focus-window": lambda: self._forward("focusWindow"),
             "/api/move-tab": lambda: self._forward("moveTab"),
             "/api/detach-tab": lambda: self._forward("detachTab"),
@@ -3466,11 +3468,14 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     def handle_close_tab(self):
         # With force, the extension disarms beforeunload once it has agreed to close the tab.
+        self._close_with_approval("closeTab")
+
+    def _close_with_approval(self, action, timeout=35):
         body = self.read_body()
         body.pop("userTabApproved", None)
-        rejected = _take_user_tab_approval(body)
-        self._send_extension_action("closeTab", body,
-                                    on_result=lambda result: _offer_user_tab_approval(body, result, rejected))
+        rejected = _take_user_tab_approval(action, body)
+        self._send_extension_action(action, body, timeout=timeout,
+                                    on_result=lambda result: _offer_user_tab_approval(action, body, result, rejected))
 
     def handle_switch_tab(self):
         self._send_extension_action("switchTab", self.read_body())
