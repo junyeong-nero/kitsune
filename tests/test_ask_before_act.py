@@ -318,6 +318,14 @@ class SensitiveActionTests(AskBeforeActTestCase):
         self.assertEqual(self.extension.actions(), ["click", "click"])
         self.assertEqual(bridge._unknown_outcomes, {})
 
+    def test_ambiguous_target_write_is_not_held(self):
+        # #133: an ambiguous target dispatched nothing, so its outcome is not unknown.
+        self.extension.reply = {"error": "2 forms", "code": "ambiguous_target", "retryable": False}
+        for _ in range(2):
+            self.assertEqual(self.forward("click", {"selector": "#send", "tabId": 7})[1]["code"], "ambiguous_target")
+        self.assertEqual(self.extension.actions(), ["click", "click"])
+        self.assertEqual(bridge._unknown_outcomes, {})
+
 
     def test_expect_outcome_not_observed_is_held_before_repeating(self):
         # #67: a dispatched write whose expected outcome did not happen is retryable: false,
@@ -529,7 +537,7 @@ class ServerToolTests(unittest.TestCase):
 
     def test_annotations_are_unchanged_hints(self):
         tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
-        self.assertTrue(tools["browser_submit_form"].annotations.destructiveHint)
+        self.assertTrue(tools["browser_tabs"].annotations.destructiveHint)
         self.assertFalse(tools["browser_click"].annotations.readOnlyHint)
 
 

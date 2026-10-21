@@ -771,9 +771,10 @@ WRITE_ACTIONS = {
 # Repeating these after an unknown outcome could duplicate a side effect (a submit,
 # message, payment or deletion), so their timeouts and disconnects are not retryable.
 _REPEAT_UNSAFE_ACTIONS = WRITE_ACTIONS | {"uploadCommit", "focusElement", "blurElement"}
-# Nothing reached the page, but repeating cannot succeed until the tab navigates (error_page)
-# or the user approves closing their tab (user_tab).
-_PERSISTENT_FAILURE_CODES = {"error_page", "user_tab"}
+# Nothing reached the page, but repeating cannot succeed: until the tab navigates (error_page),
+# because the command names several targets (ambiguous_target), or until the user approves
+# closing their tab (user_tab).
+_PERSISTENT_FAILURE_CODES = {"error_page", "ambiguous_target", "user_tab"}
 
 
 def _check_policy(action, params):
@@ -1972,7 +1973,8 @@ async def _upload_files_async(body):
                       "start": start, "end": idx})
     sel, mode = body.get("selector"), body.get("mode") or "auto"
     r = await send_to_extension("uploadCommit", {"tabId": tab_id, "uploadId": uid, "selector": sel,
-                                                 "files": files, "mode": mode}, timeout=60)
+                                                 "files": files, "mode": mode, "first": bool(body.get("first"))},
+                                timeout=60)
     if isinstance(r, dict) and not r.get("error"):
         r.update({"tabId": tab_id, "chunks": idx, "bytes": total,
                   "seconds": round(time.time() - t0, 1)})

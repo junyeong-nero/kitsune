@@ -68,8 +68,39 @@ def _untitled_schema(schema):
     return untitled
 
 
+_NULL = {"type": "null"}
+
+
+def _published_parameter(schema: dict) -> dict:
+    """A non-required parameter's schema without a nullable anyOf or an empty default (#142).
+
+    `anyOf: [X, {type: null}]` with default null becomes X: the registered model still
+    accepts an explicit null, which validates to the same None as omitting the parameter.
+    A default of null or "" is what omission already gives, so it is not published.
+    """
+    variants = schema.get("anyOf")
+    if ("default" in schema and schema["default"] is None and isinstance(variants, list)
+            and len(variants) == 2 and _NULL in variants):
+        (variant,) = [subschema for subschema in variants if subschema != _NULL]
+        schema = {**variant, **{keyword: value for keyword, value in schema.items() if keyword != "anyOf"}}
+    if "default" in schema and (schema["default"] is None or schema["default"] == ""):
+        schema = {keyword: value for keyword, value in schema.items() if keyword != "default"}
+    return schema
+
+
+def _published_schema(schema: dict) -> dict:
+    """Input schema as tools/list publishes it: untitled, with plain optional parameters."""
+    schema = _untitled_schema(schema)
+    if not isinstance(schema.get("properties"), dict):
+        return schema
+    required = set(schema.get("required", ()))
+    return {**schema, "properties": {
+        name: parameter if name in required else _published_parameter(parameter)
+        for name, parameter in schema["properties"].items()}}
+
+
 class KitsuneMCP(FastMCP):
-    """FastMCP that publishes tool input schemas without generated titles.
+    """FastMCP that publishes tool input schemas without generated titles or nullable optionals.
 
     Descriptions are normalized with inspect.cleandoc, so they are the same on every
     supported Python (only 3.13+ strips docstring indentation at compile time, #130).
@@ -79,7 +110,7 @@ class KitsuneMCP(FastMCP):
     async def list_tools(self):
         return [tool.model_copy(update={
                     "description": inspect.cleandoc(tool.description) if tool.description else tool.description,
-                    "inputSchema": _untitled_schema(tool.inputSchema),
+                    "inputSchema": _published_schema(tool.inputSchema),
                 })
                 for tool in await super().list_tools()]
 
@@ -94,9 +125,9 @@ _unknown_caps = ENABLED_CAPS - CAPABILITY_GROUPS - {"all"}
 if _unknown_caps:
     raise ValueError(f"Unknown KITSUNE_CAPS: {', '.join(sorted(_unknown_caps))}")
 
-# Opt-in core subsets (KITSUNE_TOOL_PRESET); unset keeps the whole core group.
-# lean: the 14 tools browser-mcp-bench's read + draft tasks used (#31). It is an A/B
-# candidate, not a default; docs/guide.md#lean-tool-preset lists what it drops.
+# Core subsets (KITSUNE_TOOL_PRESET); full keeps the whole core group.
+# lean: the 14 tools browser-mcp-bench's read + draft tasks used, the default since the
+# #31 A/B; docs/guide.md#lean-tool-preset lists what it drops.
 TOOL_PRESETS = {
     "lean": frozenset({
         "browser_status", "browser_tabs", "browser_navigate", "browser_page_info",
@@ -105,9 +136,19 @@ TOOL_PRESETS = {
         "browser_select_option", "browser_form_fill",
     }),
 }
-TOOL_PRESET = os.environ.get("KITSUNE_TOOL_PRESET", "").strip().lower() or None
-if TOOL_PRESET is not None and TOOL_PRESET not in TOOL_PRESETS:
-    raise ValueError(f"Unknown KITSUNE_TOOL_PRESET: {TOOL_PRESET}")
+
+
+def tool_preset(preset: str | None, caps: frozenset) -> str:
+    """The core preset in effect: an explicit KITSUNE_TOOL_PRESET, else lean, or full with KITSUNE_CAPS=all."""
+    preset = (preset or "").strip().lower()
+    if not preset:
+        return "full" if "all" in caps else "lean"
+    if preset != "full" and preset not in TOOL_PRESETS:
+        raise ValueError(f"Unknown KITSUNE_TOOL_PRESET: {preset}")
+    return preset
+
+
+TOOL_PRESET = tool_preset(os.environ.get("KITSUNE_TOOL_PRESET"), ENABLED_CAPS)
 
 
 def _failed(result) -> bool:
@@ -119,15 +160,26 @@ def _failed(result) -> bool:
     return isinstance(result, dict) and (bool(result.get("error")) or result.get("ok") is False)
 
 
+def _compact_json(result) -> TextContent:
+    """Unindented JSON text: every result is resent with each later model request (#136)."""
+    text = json.dumps(result, separators=(",", ":"), ensure_ascii=False, default=str)
+    return TextContent(type="text", text=text)
+
+
 def _mcp_errors(function):
-    """Return failed results as MCP errors (isError) with the same JSON text content."""
+    """Return dict results as compact JSON text; failed results become MCP errors (isError).
+
+    Dicts inside list results (screenshot metadata) are compacted too; other items are left
+    to FastMCP.
+    """
     @functools.wraps(function)
     def call(*args, **kwargs):
         result = function(*args, **kwargs)
-        if not _failed(result):
+        if isinstance(result, list):
+            return [_compact_json(item) if isinstance(item, dict) else item for item in result]
+        if not isinstance(result, dict):
             return result
-        text = json.dumps(result, indent=2, ensure_ascii=False, default=str)
-        return CallToolResult(content=[TextContent(type="text", text=text)], isError=True)
+        return CallToolResult(content=[_compact_json(result)], isError=_failed(result))
 
     return call
 
@@ -142,7 +194,7 @@ def tool(group: str, annotations: ToolAnnotations | None = None):
         raise ValueError(f"Unknown tool capability group: {group}")
 
     def decorate(function):
-        if group == "core" and TOOL_PRESET is not None and function.__name__ not in TOOL_PRESETS[TOOL_PRESET]:
+        if group == "core" and TOOL_PRESET != "full" and function.__name__ not in TOOL_PRESETS[TOOL_PRESET]:
             return function
         if "all" in ENABLED_CAPS or group in ENABLED_CAPS:
             mcp.tool(annotations=annotations)(_mcp_errors(function))
@@ -394,6 +446,13 @@ def _post_action(endpoint: str, body: dict, wait: bool = False, timeout: int = 1
     return _post(endpoint, body, timeout=request_timeout)
 
 
+def _first(body: dict, first: bool) -> dict:
+    """Opt in to acting on the first match of a selector that matches several elements."""
+    if first:
+        body["first"] = True
+    return body
+
+
 def _target(body: dict, ref: str | None, element: str | None) -> dict:
     """Attach a machine ref and an audit-only human description."""
     if ref is not None:
@@ -438,16 +497,29 @@ def browser_status() -> dict:
     return result
 
 
+def _tab_list(result: dict, window_fields: bool) -> dict:
+    """Drop windowId/index from listed tabs unless requested or the tabs span windows (#136)."""
+    tabs = result.get("tabs")
+    if not isinstance(tabs, list) or window_fields:
+        return result
+    if len({tab.get("windowId") for tab in tabs}) > 1:
+        return result
+    shown = [{key: value for key, value in tab.items() if key not in ("windowId", "index")}
+             for tab in tabs]
+    return {**result, "tabs": shown}
+
+
 @tool("core", annotations=ToolAnnotations(title="Manage browser tabs", **DESTRUCTIVE))
 def browser_tabs(
     action: Literal["list", "new", "close", "select"] = "list",
     tab_id: int | None = None, url: str | None = None,
     force: bool = False, raw: bool = False, wait: bool = False, timeout: int = 15000,
-    confirm_token: str | None = None,
+    confirm_token: str | None = None, window_fields: bool = False,
 ) -> dict:
     """List, open, close, or select tabs.
 
-    list: always a fresh read of the browser's tabs; owned=true marks tabs the agent opened.
+    list: always a fresh read of the browser's tabs; owned=true marks tabs the agent opened;
+    windowId/index only with several windows or window_fields.
     new: opens in the background (not shown; act on it with tab_id); url defaults to
     about:blank; raw bypasses the image viewer. Returns tabId immediately unless wait=True,
     which waits up to timeout ms for the page to load and returns tabId, actual url (after
@@ -459,7 +531,7 @@ def browser_tabs(
     confirm_token: new/close; see browser_click.
     """
     if action == "list":
-        return _get("/api/tabs")
+        return _tab_list(_get("/api/tabs"), window_fields)
     if action == "new":
         body = {"url": url if url is not None else "about:blank"}
         if raw:
@@ -627,9 +699,10 @@ def browser_navigate(
 def browser_click(
     selector: str = "", x: int = 0, y: int = 0, tab_id: int | None = None,
     ref: str | None = None, element: str | None = None, wait: bool = False, timeout: int = 10000,
-    expect: dict | None = None, confirm_token: str | None = None,
+    expect: dict | None = None, confirm_token: str | None = None, first: bool = False,
 ) -> dict:
-    """Click an element on the page by CSS selector or coordinates.
+    """Click an element on the page by CSS selector or coordinates. A write tool's selector
+    matching several elements fails with ambiguous_target unless first=True.
 
     Action contract (other action tools point here for the parameters they accept):
         ref/element: Prefer ref from browser_snapshot; element is an audit-only description.
@@ -661,7 +734,8 @@ def browser_click(
         tab_id: Optional tab to target. Defaults to active tab.
     """
     body: dict = {"selector": selector} if selector or ref else {"coords": {"x": x, "y": y}}
-    return _post_action("/api/click", _confirm(_with_tab(_target(body, ref, element), tab_id), confirm_token), wait, timeout, expect)
+    return _post_action("/api/click", _first(_confirm(_with_tab(_target(body, ref, element), tab_id), confirm_token), first),
+                        wait, timeout, expect)
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Trusted click", **ACT))
@@ -702,7 +776,7 @@ def browser_type(
     selector: str = "", text: str = "", mode: Literal["type", "fill", "editable"] = "type",
     clear: bool = False, tab_id: int | None = None,
     ref: str | None = None, element: str | None = None, wait: bool = False, timeout: int = 10000,
-    expect: dict | None = None, confirm_token: str | None = None,
+    expect: dict | None = None, confirm_token: str | None = None, first: bool = False,
 ) -> dict:
     """Enter text into a field or contenteditable editor.
 
@@ -721,7 +795,8 @@ def browser_type(
         }
     else:
         return {"error": "mode must be type, fill, or editable"}
-    return _post_action(endpoint, _confirm(_with_tab(_target(body, ref, element), tab_id), confirm_token), wait, timeout, expect)
+    return _post_action(endpoint, _first(_confirm(_with_tab(_target(body, ref, element), tab_id), confirm_token), first),
+                        wait, timeout, expect)
 
 
 @tool("core", annotations=ToolAnnotations(title="Scroll", **ACT))
@@ -746,7 +821,7 @@ def browser_scroll(
 @tool("core", annotations=ToolAnnotations(title="Hover", **ACT))
 def browser_hover(
     selector: str = "", tab_id: int | None = None, ref: str | None = None, element: str | None = None,
-    wait: bool = False, timeout: int = 10000, expect: dict | None = None,
+    wait: bool = False, timeout: int = 10000, expect: dict | None = None, first: bool = False,
 ) -> dict:
     """Hover over an element on the page. Action contract (ref, wait, expect): see browser_click.
 
@@ -754,7 +829,7 @@ def browser_hover(
         selector: CSS selector of the element to hover over
         tab_id: Optional tab to target. Defaults to active tab.
     """
-    return _post_action("/api/hover", _with_tab(_target({"selector": selector}, ref, element), tab_id),
+    return _post_action("/api/hover", _first(_with_tab(_target({"selector": selector}, ref, element), tab_id), first),
                         wait, timeout, expect)
 
 
@@ -1162,13 +1237,13 @@ def browser_explain_selector(selector: str, tab_id: int | None = None) -> dict:
 def browser_select_option(
     selector: str = "", value: str = "", by_text: bool = False, tab_id: int | None = None,
     ref: str | None = None, element: str | None = None, wait: bool = False, timeout: int = 10000,
-    expect: dict | None = None, confirm_token: str | None = None,
+    expect: dict | None = None, confirm_token: str | None = None, first: bool = False,
 ) -> dict:
     """Choose an <option> in a <select>. Default matches by value; pass
     `by_text=True` to match by visible text.
     Action contract (ref, wait, expect, confirm_token, refs): see browser_click.
     """
-    return _post_action("/api/select-option", _confirm(_with_tab(_target({"selector": selector, "value": value, "byText": by_text}, ref, element), tab_id), confirm_token),
+    return _post_action("/api/select-option", _first(_confirm(_with_tab(_target({"selector": selector, "value": value, "byText": by_text}, ref, element), tab_id), confirm_token), first),
                         wait, timeout, expect)
 
 
@@ -1176,11 +1251,12 @@ def browser_select_option(
 def browser_check(
     selector: str = "", checked: bool = True, tab_id: int | None = None, ref: str | None = None, element: str | None = None,
     wait: bool = False, timeout: int = 10000, expect: dict | None = None, confirm_token: str | None = None,
+    first: bool = False,
 ) -> dict:
     """Set a checkbox or radio's checked state; with wait, hidden native inputs need not render.
     Action contract (ref, wait, expect, confirm_token, refs): see browser_click.
     """
-    return _post_action("/api/check", _confirm(_with_tab(_target({"selector": selector, "checked": checked}, ref, element), tab_id), confirm_token),
+    return _post_action("/api/check", _first(_confirm(_with_tab(_target({"selector": selector, "checked": checked}, ref, element), tab_id), confirm_token), first),
                         wait, timeout, expect)
 
 
@@ -1217,7 +1293,7 @@ def browser_keypress(
     element: str | None = None,
     wait: bool = False,
     timeout: int = 10000,
-    expect: dict | None = None, confirm_token: str | None = None,
+    expect: dict | None = None, confirm_token: str | None = None, first: bool = False,
 ) -> dict:
     """Dispatch a synthetic keyboard event to the ref/selector target, else the focused
     element (or body). Action contract (ref, wait, expect, confirm_token, refs): see browser_click.
@@ -1230,18 +1306,20 @@ def browser_keypress(
     if selector: body["selector"] = selector
     if modifiers: body["modifiers"] = modifiers
     if text is not None: body["text"] = text
-    return _post_action("/api/keypress", _confirm(_with_tab(_target(body, ref, element), tab_id), confirm_token), wait, timeout, expect)
+    return _post_action("/api/keypress", _first(_confirm(_with_tab(_target(body, ref, element), tab_id), confirm_token), first),
+                        wait, timeout, expect)
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Double click", **ACT))
 def browser_double_click(
     selector: str = "", tab_id: int | None = None, ref: str | None = None, element: str | None = None,
     wait: bool = False, timeout: int = 10000, expect: dict | None = None, confirm_token: str | None = None,
+    first: bool = False,
 ) -> dict:
     """Dispatch a synthetic double-click on the matched element.
     Action contract (ref, wait, expect, confirm_token): see browser_click.
     """
-    return _post_action("/api/double-click", _confirm(_with_tab(_target({"selector": selector}, ref, element), tab_id), confirm_token),
+    return _post_action("/api/double-click", _first(_confirm(_with_tab(_target({"selector": selector}, ref, element), tab_id), confirm_token), first),
                         wait, timeout, expect)
 
 
@@ -1249,21 +1327,25 @@ def browser_double_click(
 def browser_submit_form(
     selector: str | None = None, tab_id: int | None = None,
     ref: str | None = None, element: str | None = None, expect: dict | None = None, confirm_token: str | None = None,
+    first: bool = False,
 ) -> dict:
     """Submit the target form (or the target element's enclosing form).
-    Without selector/ref, submit the first <form> found. Pass expect to verify
+    Without selector/ref: the form of the field last filled or focused, else the only
+    form (several: ambiguous_target). Result form names it. Pass expect to verify
     the submit's effect. On a failure with retryable=false, inspect the page
     before submitting again.
     Action contract (ref, expect, confirm_token, refs): see browser_click.
     """
     body = {}
     if selector: body["selector"] = selector
-    return _post_action("/api/submit-form", _confirm(_with_tab(_target(body, ref, element), tab_id), confirm_token), expect=expect)
+    return _post_action("/api/submit-form", _first(_confirm(_with_tab(_target(body, ref, element), tab_id), confirm_token), first),
+                        expect=expect)
 
 
 @tool("core", annotations=ToolAnnotations(title="Form fill", **ACT))
 def browser_form_fill(
     fields: dict, tab_id: int | None = None, expect: dict | None = None, confirm_token: str | None = None,
+    first: bool = False,
 ) -> dict:
     """Fill many fields at once via fuzzy matching.
 
@@ -1283,7 +1365,8 @@ def browser_form_fill(
     Args:
         fields: {"email": "foo@bar", "Password": "...", "#submit-target": true}
     """
-    return _post_action("/api/form-fill", _confirm(_with_tab({"fields": fields}, tab_id), confirm_token), expect=expect)
+    return _post_action("/api/form-fill", _first(_confirm(_with_tab({"fields": fields}, tab_id), confirm_token), first),
+                        expect=expect)
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Drag", **ACT))
@@ -1291,12 +1374,13 @@ def browser_drag(
     from_selector: str = "", to_selector: str = "", tab_id: int | None = None,
     ref: str | None = None, element: str | None = None, to_ref: str | None = None,
     wait: bool = False, timeout: int = 10000, expect: dict | None = None, confirm_token: str | None = None,
+    first: bool = False,
 ) -> dict:
     """Synthetic drag-and-drop from one element to another (HTML5 drag events).
     ref identifies the source; to_ref identifies the destination; wait covers both.
     Action contract (ref, wait, expect, confirm_token): see browser_click.
     """
-    return _post_action("/api/drag", _confirm(_with_tab(_target({"from": from_selector, "to": to_selector, "toRef": to_ref}, ref, element), tab_id), confirm_token),
+    return _post_action("/api/drag", _first(_confirm(_with_tab(_target({"from": from_selector, "to": to_selector, "toRef": to_ref}, ref, element), tab_id), confirm_token), first),
                         wait, timeout, expect)
 
 
@@ -1324,7 +1408,7 @@ def browser_click_and_wait_navigation(
 
 @tool("core", annotations=ToolAnnotations(title="Upload file", **DESTRUCTIVE))
 def browser_upload_file(path: str | list[str], selector: str | None = None, mode: str = "auto",
-                    tab_id: int | None = None, confirm_token: str | None = None) -> dict:
+                    tab_id: int | None = None, confirm_token: str | None = None, first: bool = False) -> dict:
     """Attach local file(s) to a page's upload control - no OS file dialog.
 
     The bridge reads the file from disk and streams it into the page, which builds
@@ -1344,7 +1428,7 @@ def browser_upload_file(path: str | list[str], selector: str | None = None, mode
     body = {"paths": path if isinstance(path, list) else [path], "mode": mode}
     if selector:
         body["selector"] = selector
-    return _post("/api/upload-file", _confirm(_with_tab(body, tab_id), confirm_token), timeout=320)
+    return _post("/api/upload-file", _first(_confirm(_with_tab(body, tab_id), confirm_token), first), timeout=320)
 
 
 def _screenshot_result(r: dict, save_to: str | None, data_url: bool):

@@ -14,8 +14,8 @@ from kitsune.bridge import _parse_workflow
 
 
 class ToolSurfaceTests(unittest.TestCase):
-    def registered(self, caps):
-        env = {**os.environ, "KITSUNE_CAPS": caps}
+    def registered(self, caps, preset="full"):
+        env = {**os.environ, "KITSUNE_CAPS": caps, "KITSUNE_TOOL_PRESET": preset}
         result = subprocess.run(
             [sys.executable, "-c", "import asyncio,json; from kitsune.server import mcp; "
              "print(json.dumps([t.name for t in asyncio.run(mcp.list_tools())]))"],
@@ -48,7 +48,9 @@ class ToolSurfaceTests(unittest.TestCase):
     def test_default_registration(self):
         with patch.dict(os.environ):
             os.environ.pop("KITSUNE_CAPS", None)
-            self.assertEqual(self.registered_default(), self.registered("core"))
+            os.environ.pop("KITSUNE_TOOL_PRESET", None)
+            self.assertEqual(self.registered_default(), self.registered("core", preset="lean"))
+            self.assertEqual(len(self.registered_default()), 14)
 
     def registered_default(self):
         result = subprocess.check_output(

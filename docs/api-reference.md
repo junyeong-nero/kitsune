@@ -4,20 +4,25 @@ Base URL: `http://127.0.0.1:47651`
 
 ## MCP tool surface
 
-`KITSUNE_CAPS=core` is the default (30 tools); `KITSUNE_CAPS=all` registers
+`KITSUNE_CAPS=core` is the default; `KITSUNE_CAPS=all` registers
 96 tools. The groups are `core`, `tabs`, `network`, `storage`, `parallel`,
 `devtools`, `windows`, and `session`. A comma list selects those groups only.
 See [Tools and capabilities](guide.md#tools) for the complete tool list per group.
 
-`KITSUNE_TOOL_PRESET=lean` (opt-in; unset by default) narrows `core` to 14 tools:
-`browser_status`, `browser_tabs`, `browser_navigate`, `browser_page_info`,
+**`KITSUNE_TOOL_PRESET` defaults to `lean` (#31)**, which registers 14 of the 30
+`core` tools: `browser_status`, `browser_tabs`, `browser_navigate`, `browser_page_info`,
 `browser_page_text`, `browser_snapshot`, `browser_forms`, `browser_dom`, `browser_find`,
 `browser_screenshot`, `browser_click`, `browser_type`, `browser_select_option`,
-`browser_form_fill`. Their definitions are unchanged, other `KITSUNE_CAPS` groups
-register in full, and an unknown preset fails at startup. It exists for the
-browser-mcp-bench A/B (#31); no token, cost or success effect is claimed. The
-[Lean tool preset](guide.md#lean-tool-preset) section lists the 16 dropped `core`
-tools and which tasks need the default surface.
+`browser_form_fill`. The other 16 `core` tools (`browser_check`, `browser_submit_form`,
+`browser_back`, `browser_forward`, `browser_markdown`, `browser_wait_for`,
+`browser_hover`, `browser_keypress`, `browser_scroll`, `browser_handle_dialog`,
+`browser_upload_file`, `browser_js`, `browser_watch_console`, `browser_console_logs`,
+`browser_workflows`, `browser_workflow`) need `KITSUNE_TOOL_PRESET=full`. With the
+preset unset, `KITSUNE_CAPS=all` registers the full `core` group; an explicit `lean`
+narrows it even then. Definitions are the same in both presets, other `KITSUNE_CAPS`
+groups register in full, and an unknown preset fails at startup. The
+[Lean tool preset](guide.md#lean-tool-preset) section has the rules and which tasks
+need `full`.
 The bridge endpoints below remain available unchanged; MCP tool names and
 parameters are separate from HTTP endpoint names and JSON command actions.
 
@@ -30,6 +35,38 @@ A stale/disconnected ref returns a `stale_ref` error (see [Action errors](#actio
 take another snapshot to refresh it. See [Ref lifetime](#ref-lifetime) for which
 calls replace refs.
 Existing positional selector arguments remain supported.
+
+#### Strict selectors
+
+A write action's CSS selector must name one element (#134). When it matches more
+than one actionable element, the action fails with `ambiguous_target`
+(`retryable: false`) and nothing is dispatched; `state.candidates` lists up to 5
+of them (`ref`, `role`, `name`) and `state.matches` counts them. Pass a candidate's
+`ref`, a more specific selector, or `first: true` (`"first": true` on the bridge
+endpoint or batch command) to act on the first match as before. This is an
+intended behavior change: these actions used to act on the first match silently.
+
+- Write actions: `click`, `doubleClick`, `hover`, `drag` (both ends), `type`, `fill`,
+  `setEditableContent`, `checkBox`, `selectOption`, `submitForm` and `keypress` with a
+  selector, the `uploadFile` target, and each `formFill` key matched as a selector or
+  by `name` (a per-key error; label and placeholder matches are unchanged). Batch,
+  parallel and workflow steps follow the same rule; `clickAndWaitNavigation` is strict
+  without the opt-in. MCP: `first=True` on `browser_click`, `browser_double_click`,
+  `browser_hover`, `browser_drag`, `browser_type`, `browser_check`,
+  `browser_select_option`, `browser_submit_form`, `browser_keypress`,
+  `browser_upload_file` and `browser_form_fill`.
+- Actionable: enabled, and not `<input type=hidden>`; for pointer actions (`click`,
+  `doubleClick`, `hover`, `drag`) also rendered, as in the
+  [actionability wait](#actionability-wait). Value actions count hidden native
+  inputs, which they can act on. A selector with one actionable match still acts on
+  its first match, as before.
+- Refs and coordinates name one element and are unaffected. Read tools
+  (`browser_html`, `browser_bounds`, `browser_wait_for`, screenshots, …) and
+  `browser_focus`, `browser_blur`, `browser_scroll` and `browser_trusted_click` keep
+  first-match semantics.
+- With `wait`, an ambiguous selector fails at once instead of waiting.
+- Under [ask-before-act](#ask-before-act) the target is inspected first, as before; an
+  ambiguous action that is held still fails with `ambiguous_target` after confirmation.
 
 These tools also accept refs (all new parameters are optional):
 
@@ -45,7 +82,8 @@ These tools also accept refs (all new parameters are optional):
 | `browser_markdown` | `selector=None, tab_id=None, ref=None, element=None` |
 
 Without selector/ref, keypress targets the active element (or body), blur targets
-the active element, submit-form submits the first form, and Markdown reads the
+the active element, submit-form submits the form of the field last filled or
+focused, else the only form (see [`browser_submit_form`](#browser_submit_formselectornone-tab_idnone-refnone-elementnone)), and Markdown reads the
 whole page. Submit-form can target a form or an element inside it. Scroll accepts
 an explicit container selector/ref; otherwise it scrolls the window and falls
 back to a scrollable container at viewport center. HTML, bounds, computed-style,
@@ -125,7 +163,8 @@ only `error`. MCP tools return these failures with `isError: true` (see
   an identical retry succeeds; follow `hint` first (for example, take a new snapshot).
   `false` means a write may already have taken effect (a submit, message, payment
   or deletion can be behind any click or keypress); inspect the page before acting again.
-  The exceptions are `error_page` and `user_tab`: nothing reached the page, and repeating cannot succeed.
+  The exceptions are `error_page`, `ambiguous_target` and `user_tab`: nothing reached the
+  page, and repeating cannot succeed.
 - `hint`: a short recovery step. `state`: the current state that explains the
   failure, where available (for page targets: `tabId`, `url`, `status`).
 
@@ -133,6 +172,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
 |---|---|---|
 | `not_found` | No element matches the selector (also `No target`, `from/to element not found`); after an [actionability wait](#actionability-wait), `state` has `timeoutMs` and `elapsed` | true |
 | `not_fillable` | `browser_type` (`type`/`fill` modes) or a `browser_form_fill` key found no field to write. The target is not a field (`fill` and `browser_form_fill`: input, textarea or select; `type`: input or textarea, or a `contenteditable` element without `clear`) and has none in its open or closed shadow roots, searched through nested hosts up to 8 roots deep (`fill` and `browser_form_fill` also look in its light DOM). Nothing was written. `state.tag` is the target's tag; `state.reason` is `no_field`, or `shadow_depth` when its shadow roots nest deeper than 8 | true |
+| `ambiguous_target` | The command names no single target, so nothing was dispatched: a write action's selector matches several actionable elements (`state.selector`, `state.matches`; see [Strict selectors](#strict-selectors)), or `browser_submit_form` without a target found several forms and no filled field naming one (`state.forms`). `state.candidates` lists up to 5 of them with a `ref` to target one | false |
 | `not_actionable` | An [actionability wait](#actionability-wait) timed out on a target that exists but never rendered (`state.reason: "not_rendered"`, `timeoutMs`, `elapsed`); nothing was dispatched | true |
 | `stale_ref` | The ref is no longer valid; `state.reason` is `element_removed`, `not_in_snapshot`, `snapshot_replaced` (a newer snapshot of this document; `state.latestObservation` and, for the same element, `state.currentRef`, see [Ref lifetime](#ref-lifetime)), or `other_document` (the tab navigated, or the ref came from another tab) | true |
 | `navigating` | The tab is loading: a `not_found`/`stale_ref` while loading (`state.cause`), or the page unloaded while handling the command. Also a page that refused the content script within 5 s of a wake or reload without an error status, or whose 2xx response arrived only while the command waited for it: it may be an old document about to be replaced | true before dispatch; false for writes after |
@@ -907,7 +947,7 @@ policy, would give an agent or an injected page instruction one more way to
 read secrets through tools that are otherwise safe to call on any page. The
 only way to read a raw value is `browser_js`, which stays the separate,
 explicit and unrestricted trust boundary. It is not registered with
-`KITSUNE_TOOL_PRESET=lean`, and read-only mode refuses it.
+the default `lean` tool preset (`KITSUNE_TOOL_PRESET=full` adds it), and read-only mode refuses it.
 
 Frameworks such as React mirror a typed value into the `value` attribute, so
 markup and attribute paths drop that attribute from sensitive fields, whether it
@@ -1007,7 +1047,7 @@ never ran:
 | `status` | Meaning |
 |---|---|
 | `ok` | The command ran without an error. Like any result, this means dispatched, not that the outcome happened (see [Action outcomes](#action-outcomes)) |
-| `failed` | It returned an error that is safe to repeat (`retryable: true`, unclassified errors, `error_page`, or `ok: false`) |
+| `failed` | It returned an error that is safe to repeat (`retryable: true`, unclassified errors, `error_page`, `ambiguous_target`, or `ok: false`) |
 | `held` | [Ask-before-act](#ask-before-act) held it; nothing ran |
 | `unknown` | It may have taken effect: an error with `retryable: false`, or it was in progress at the container's deadline. Observe the page before acting again |
 | `skipped` | It never started: an earlier step stopped the container (a held step, `stopOnWarning`, a failed workflow step) or the deadline passed |
@@ -1075,15 +1115,17 @@ from a failed `newTab`, an unresolved template) fails with `invalid_tab_id` inst
 falling back to the active tab, and a numeric string such as `"12"` is sent as `12`.
 A closed tab is never replaced: commands on it fail with `tab_closed`.
 
-### `browser_tabs(action="list", tab_id=None, url=None, force=False, raw=False, wait=False, timeout=15000)`
+### `browser_tabs(action="list", tab_id=None, url=None, force=False, raw=False, wait=False, timeout=15000, window_fields=False)`
 
 Replaces `browser_new_tab`, `browser_close_tab`, and `browser_switch_tab`.
 `action` is `list`, `new`, `close`, or `select`. List uses GET `/api/tabs`;
 new uses POST `/api/new-tab` (default URL `about:blank`), close uses
 `/api/close-tab`, and select uses `/api/switch-tab`. Close and select require
 `tab_id`. `force` disarms beforeunload for close; `raw` bypasses the image URL
-viewer for new tabs. List is never cached and marks agent-owned tabs `owned: true`.
-New opens the tab in the background and returns immediately unless
+viewer for new tabs. List is never cached and marks agent-owned tabs `owned: true`;
+it drops each tab's `windowId` and `index` unless the tabs span more than one window
+or `window_fields=True`, and keeps every other field. New opens the tab in the
+background and returns immediately unless
 `wait=True`, which waits up to `timeout` ms for the page to load and returns
 the actual URL and load status. Close refuses a tab the agent did not open with
 `user_tab` until the user approves it (`confirm_token`, see
@@ -1181,6 +1223,36 @@ unselected radio is a no-op that reports `"checked": false`.
 
 ```json
 { "results": { "Email": { "ok": true, "tag": "input" }, "Color": { "error": "No matching option for value: purple" } } }
+```
+
+### `browser_submit_form(selector=None, tab_id=None, ref=None, element=None)`
+
+Submits the target form, or the form enclosing the target element, via POST
+`/api/submit-form`. Without `selector`/`ref` it submits the form that owns the
+field Kitsune last filled or focused in that document (`browser_type`, `browser_form_fill`,
+`browser_select_option`, `browser_check`, `browser_focus`), else the page's only
+form. When that field is gone or outside every form and the page has several
+forms, nothing is submitted: the result is an `ambiguous_target`
+[action error](#action-errors) listing up to 5 forms.
+
+```json
+{ "error": "3 forms on the page and no filled field names one; nothing was submitted",
+  "code": "ambiguous_target", "retryable": false,
+  "hint": "Pass the ref of the form to submit from state.candidates, or fill one of its fields first.",
+  "state": { "forms": 3, "candidates": [
+    { "ref": "s5e0", "action": "/wishlist/delete", "method": "post", "button": "Delete lantern" },
+    { "ref": "s5e1", "action": "/wishlist/delete", "method": "post", "button": "Delete mug" },
+    { "ref": "s5e2", "action": "/wishlist/add", "method": "post", "button": "Add" }] } }
+```
+
+A successful submit names the form it submitted in `form`, with the same fields
+(`action` and `method` as written in the form's attributes, `button` the submit
+control's label). Its `ref` is issued before the post-action snapshot, which
+replaces it; use `target_ref` and the snapshot's refs afterwards.
+
+```json
+{ "ok": true, "submitted": "button",
+  "form": { "ref": "s5e3", "action": "/wishlist/add", "method": "post", "button": "Add" } }
 ```
 
 ### `browser_wait_for(selector=None, text=None, text_gone=None, js=None, url=None, title=None, network_idle=False, time=None, timeout=10000, tab_id=None, ref=None, element=None)`
