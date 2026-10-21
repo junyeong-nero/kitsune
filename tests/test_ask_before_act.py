@@ -283,10 +283,12 @@ class SensitiveActionTests(AskBeforeActTestCase):
 
     def test_enter_in_form_field_is_held(self):
         self.extension.target = {"ok": True, "tag": "input", "type": "text", "submits": True}
-        held = self.held(lambda h: h._forward("keypress"), {"key": "Enter", "selector": "#q"})
-        self.assertIn("presses Enter", held["error"])
-        self.assertEqual([p for a, p in self.extension.sent if a == "describeTarget"][-1],
-                         {"selector": "#q", "key": "Enter", "inspect": True})
+        for key in ("Enter", "Return"):
+            with self.subTest(key=key):
+                held = self.held(lambda h: h._forward("keypress"), {"key": key, "selector": "#q"})
+                self.assertIn("presses Enter", held["error"])
+                self.assertEqual([p for a, p in self.extension.sent if a == "describeTarget"][-1],
+                                 {"selector": "#q", "key": key, "inspect": True})
         self.assertEqual(self.forward("keypress", {"key": "Tab", "selector": "#q"}), (200, {"ok": True}))
 
     def test_uninspectable_targets_fail_closed(self):

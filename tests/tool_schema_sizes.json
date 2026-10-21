@@ -60,9 +60,9 @@
     "total": 933
   },
   "browser_keypress": {
-    "description": 394,
+    "description": 454,
     "inputSchema": 486,
-    "total": 1061
+    "total": 1121
   },
   "browser_markdown": {
     "description": 144,

@@ -3,7 +3,7 @@
 
 (function() {
   'use strict';
-  const CONTENT_VERSION = 37;
+  const CONTENT_VERSION = 38;
   if (window.__claudeBridgeVersion >= CONTENT_VERSION) return;
   window.__claudeBridgeVersion = CONTENT_VERSION;
 
@@ -2751,13 +2751,38 @@
     return { ok: true };
   }
 
+  const KEY_ALIASES = { Space: ' ', Spacebar: ' ', Esc: 'Escape', Return: 'Enter',
+    Up: 'ArrowUp', Down: 'ArrowDown', Left: 'ArrowLeft', Right: 'ArrowRight' };
+  const KEY_CODES = { ' ': ['Space', 32], Backspace: ['Backspace', 8], Tab: ['Tab', 9],
+    Enter: ['Enter', 13], Shift: ['ShiftLeft', 16], Control: ['ControlLeft', 17],
+    Alt: ['AltLeft', 18], Escape: ['Escape', 27], PageUp: ['PageUp', 33],
+    PageDown: ['PageDown', 34], End: ['End', 35], Home: ['Home', 36],
+    ArrowLeft: ['ArrowLeft', 37], ArrowUp: ['ArrowUp', 38], ArrowRight: ['ArrowRight', 39],
+    ArrowDown: ['ArrowDown', 40], Insert: ['Insert', 45], Delete: ['Delete', 46],
+    Meta: ['MetaLeft', 91] };
+
+  function keyboardKeyOptions(key) {
+    if (Object.prototype.hasOwnProperty.call(KEY_ALIASES, key)) key = KEY_ALIASES[key];
+    let code = '', keyCode = 0;
+    if (Object.prototype.hasOwnProperty.call(KEY_CODES, key)) {
+      [code, keyCode] = KEY_CODES[key];
+    } else if (/^[a-zA-Z]$/.test(key)) {
+      code = 'Key' + key.toUpperCase();
+      keyCode = key.toUpperCase().charCodeAt(0);
+    } else if (/^[0-9]$/.test(key)) {
+      code = 'Digit' + key;
+      keyCode = key.charCodeAt(0);
+    }
+    return { key, code, keyCode, which: keyCode };
+  }
+
   function keypress(selector, key, modifiers, text, first) {
     const target = selector ? resolveTarget(selector, null, { first }) : (activeElement() || document.body);
     if (!target) return notFound('No target');
     lastActedElement = selector || target !== docOf(target).body ? target : null;
     const mods = modifiers || {};
     const opts = {
-      key,
+      ...keyboardKeyOptions(key),
       bubbles: true,
       cancelable: true,
       composed: true,
@@ -2937,7 +2962,7 @@
     const role = String(control.getAttribute?.('role') || '').toLowerCase();
     const submitControl = !!control.form &&
       ((tag === 'button' && type === 'submit') || (tag === 'input' && (type === 'submit' || type === 'image')));
-    const enterSubmits = key === 'Enter' && !!control.form && tag === 'input' && !NON_TEXT_INPUT_TYPES.has(type);
+    const enterSubmits = keyboardKeyOptions(key).key === 'Enter' && !!control.form && tag === 'input' && !NON_TEXT_INPUT_TYPES.has(type);
     const buttonInput = tag === 'input' && BUTTON_INPUT_TYPES.has(type);
     const button = tag === 'button' || buttonInput || role === 'button';
     const link = !button && ((tag === 'a' && !!control.hasAttribute?.('href')) || role === 'link');
