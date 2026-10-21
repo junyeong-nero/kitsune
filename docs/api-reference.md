@@ -124,6 +124,10 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `bridge_unavailable` | The MCP server cannot reach or start the bridge | true |
 | `confirmation_required` | [Ask-before-act](#ask-before-act) held a sensitive action; nothing ran (`state.confirmToken`, `state.reason`) | true |
 | `outcome_not_observed` | The action was dispatched, but the outcome given in `expect` did not happen in time (see [Action outcomes](#action-outcomes)) | false for writes |
+| `tab_required` | A `parallel` step that acts on a tab has no `tabId` (`state.sequence`, `state.index`); nothing was dispatched (see [Container progress](#container-progress)) | true |
+| `tab_owned` | Two `parallel` sequences write the same tab (`state.tabId`, `state.owner`); nothing was dispatched | true |
+| `invalid_tab_id` | A batch, workflow or parallel step names a `tabId` that is not a tab id (`0`, `""`, an unresolved `${$N.tabId}`); it was not sent to the active tab instead | true |
+| `container_timeout` | A batch or workflow reached its deadline; steps in progress may have taken effect and later steps did not start | false |
 
 Writes are the bridge's read-only-mode write actions plus file-upload commits,
 focus, and blur. For a read, the bridge reports `retryable: true`, except for
@@ -226,9 +230,10 @@ These results are not errors:
 - Container results: `browser_batch`, `browser_parallel`, `browser_broadcast`, and
   `browser_workflow` report each command's outcome in `results`. A failed command
   there does not make the call an error, because commands before it may already
-  have taken effect and must not be re-sent blindly. Inspect each entry. The
-  container call itself is an error only when it fails as a whole (for example
-  `bridge_unavailable`).
+  have taken effect and must not be re-sent blindly. Inspect each entry, or its
+  [`progress`](#container-progress) status. The container call itself is an error
+  only when it fails as a whole (for example `bridge_unavailable`, or
+  `container_timeout`).
 - Reads that describe state, such as `browser_status` with
   `extension_connected: false`.
 
@@ -575,6 +580,69 @@ The frames are `batch`/`sequence` `index`, workflow `name` and `index`, `paralle
 `branch` and `index`, `while` `iteration` and `index`, and `try` `block` (`do` or
 `catch`) and `index`. A nested container (for example a `parallel` inside a batch)
 is logged after its steps. Direct calls have no `parent`.
+
+### Container progress
+
+`browser_batch`, `browser_parallel` and `browser_workflow` (POST `/api/batch` and
+`/api/workflow`) add `progress` and `status` next to `results`, which is unchanged.
+`progress` has one record per command, in order, including commands that never ran:
+
+```json
+{ "results": [{ "ok": true }, { "error": "Command timed out after 30s", "code": "timeout", "retryable": false }],
+  "progress": [
+    { "index": 0, "action": "click", "tabId": 3, "status": "ok" },
+    { "index": 1, "action": "submitForm", "tabId": 3, "status": "unknown" },
+    { "index": 2, "action": "pageText", "tabId": 3, "status": "skipped" }],
+  "status": "unknown" }
+```
+
+| `status` | Meaning |
+|---|---|
+| `ok` | The command ran without an error. Like any result, this means dispatched, not that the outcome happened (see [Action outcomes](#action-outcomes)) |
+| `failed` | It returned an error that is safe to repeat (`retryable: true`, unclassified errors, `error_page`, or `ok: false`) |
+| `held` | [Ask-before-act](#ask-before-act) held it; nothing ran |
+| `unknown` | It may have taken effect: an error with `retryable: false`, or it was in progress at the container's deadline. Observe the page before acting again |
+| `skipped` | It never started: an earlier step stopped the container (a held step, `stopOnWarning`, a failed workflow step) or the deadline passed |
+
+`tabId` is the command's `tabId` when it has one. A container command (`sequence`,
+`retry`, `if`, `while`, `try`, `parallel`, `broadcast`) takes the first of `unknown`,
+`held`, `failed`, `skipped` that it or a nested command has, else `ok`; a `retry`
+whose last attempt succeeded is `ok`. A `parallel` record adds `sequences`: one list
+per sequence of `{sequence, index, action, tabId, status}`; commands that never
+started are `skipped`. The top-level `status` combines the records the same way.
+
+`progress` is also what to resume from: the commands before the first record that
+is not `ok` have run, `unknown` ones must be observed before they are repeated, and
+`skipped` ones are safe to send. See [Checkpoint and resume](checkpoint-resume.md)
+for the design of resuming a container.
+
+A batch stops at its deadline (the sum of its waits plus 15 s, at least 300 s; a
+workflow at 300 s): the command in progress is cancelled and later commands do not
+start. The response then adds a `container_timeout` error (`retryable: false`,
+`state.deadlineSeconds`) to the partial `results` and `progress`, and the audit log
+records the cancelled command with `error: "cancelled"`.
+
+Tab ownership in `parallel`: sequences run concurrently, so a focus change in one
+sequence must not move another sequence's command to a different tab. Before any
+sequence starts, the bridge refuses the whole `parallel` (`results` is one error):
+
+- with `tab_required` when a command that acts on a tab has no `tabId`, also inside
+  a nested `sequence`, `retry`, `if`, `while` or `try`. Commands that act on no page
+  tab (`sleep`, `newTab`, `tabs`, `getWindows`, `createWindow`, `closeWindow`,
+  `focusWindow`, `cookies`, `clipboard`, `downloads`, `clearBrowsingData`, `intercept`,
+  `reloadExtension`, `screenshot`, `broadcast`, `syncBarrier`) need none;
+  `screenshot` captures the visible tab.
+- with `tab_owned` when two sequences write the same tab (the writes that make an
+  unknown outcome unsafe to repeat, including `switchTab` and `closeTab`). Several
+  sequences may read one tab.
+
+A `tabId` substituted at run time (`${$N.tabId}` in a nested `sequence`) is checked
+when its command runs: the first sequence that writes a tab owns it, and a later
+write from another sequence fails with `tab_owned` without being dispatched. In any
+batch, workflow or parallel step, a `tabId` that is not a tab id (`0`, `""`, `null`
+from a failed `newTab`, an unresolved template) fails with `invalid_tab_id` instead of
+falling back to the active tab, and a numeric string such as `"12"` is sent as `12`.
+A closed tab is never replaced: commands on it fail with `tab_closed`.
 
 ### `browser_tabs(action="list", tab_id=None, url=None, force=False, raw=False, wait=False, timeout=15000)`
 
@@ -999,7 +1067,9 @@ Execute multiple commands sequentially or in parallel.
   }]
 }
 ```
-Note: `navigate` and `switchTab` inside parallel sequences **must** have explicit `tabId`.
+Note: every command that acts on a tab inside parallel sequences **must** have an explicit `tabId`, and two sequences may not write the same tab (see [Container progress](#container-progress)).
+
+Returns `{ "results": [...], "progress": [...], "status": "ok" }`; `progress` and `status` are described in [Container progress](#container-progress).
 
 **Batch actions:** navigate, newTab, closeTab, switchTab, click, type, fill, scroll, hover, find, js, pageInfo, pageText, pageTextByTabId, tabs, forms, dom, highlight, screenshot, waitForElement, waitForResult, sleep, parallel.
 
@@ -1017,7 +1087,7 @@ Execute a named workflow from the workflows directory.
 { "name": "test", "variables": { "url": "https://example.com" } }
 ```
 Workflows are `.md` files with JSON code blocks. Variables use `{{name}}` syntax.
-Returns `{ "workflow": "test", "steps": 4, "results": [...] }`
+Returns `{ "workflow": "test", "steps": 4, "results": [...], "progress": [...], "status": "ok" }`. A workflow stops at its first failed step; `progress` marks the rest `skipped` (see [Container progress](#container-progress)).
 
 ## Cache Control (NEW)
 
