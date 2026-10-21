@@ -3,7 +3,8 @@
 Current tools registered in [server.py](../src/kitsune/server.py), grouped by
 capability. The default `KITSUNE_CAPS=core` exposes 30 tools;
 `KITSUNE_CAPS=all` exposes all 96. Set a comma-separated list to enable selected
-groups, for example `KITSUNE_CAPS=core,tabs,network`.
+groups, for example `KITSUNE_CAPS=core,tabs,network`. The `history` group is not
+part of `all`: it reads personal data and must be named, as in `KITSUNE_CAPS=all,history`.
 
 See the [API reference](api-reference.md) for parameters and behavior.
 
@@ -68,6 +69,15 @@ See the [API reference](api-reference.md) for parameters and behavior.
 - `browser_set_policy`
 - `browser_structured_data`
 - `browser_trusted_click` (Windows and macOS; macOS needs pyobjc Quartz or `cliclick` plus Accessibility permission)
+
+## history (named only) — 3
+
+Also needs the user's grant on Kitsune's options page; see
+[History and bookmarks](api-reference.md#history-and-bookmarks).
+
+- `browser_bookmarks_search`
+- `browser_history_search`
+- `browser_history_visits`
 
 ## network — 3
 
