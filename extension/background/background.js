@@ -534,13 +534,11 @@ const OPENER_ACTIONS = new Set([
   'keypress', 'submitForm', 'formFill', 'hover', 'scroll', 'drag', 'focusElement', 'blurElement',
   'navigate', 'goBack', 'goForward', 'reloadTabBrowser', 'clickAndWaitNavigation',
 ]);
-// Writes and navigations that back off from a tab the user is using (see userActivity).
-// Element and full-page captures scroll the page.
+// Writes and navigations that back off from a tab the user is using (see userActivity): the page
+// actions above and these. Element and full-page captures scroll the page.
 const USER_GUARDED_ACTIONS = new Set([
-  'click', 'doubleClick', 'type', 'fill', 'setEditableContent', 'selectOption', 'checkBox',
-  'keypress', 'submitForm', 'formFill', 'hover', 'scroll', 'drag', 'focusElement', 'blurElement', 'media',
-  'executeJS', 'uploadCommit', 'navigate', 'goBack', 'goForward', 'reloadTabBrowser',
-  'clickAndWaitNavigation', 'closeTab', 'switchTab', 'focusWindow', 'elementScreenshot', 'fullPageScreenshot',
+  ...OPENER_ACTIONS, 'media', 'executeJS', 'uploadCommit',
+  'closeTab', 'switchTab', 'focusWindow', 'elementScreenshot', 'fullPageScreenshot',
 ]);
 // A tab opened by a link starts on about:blank; wait this long for its real URL.
 const OPENED_TAB_URL_WAIT_MS = 1000;
@@ -564,7 +562,7 @@ async function handleCommand(command) {
   const tracksOpenedTabs = OPENER_ACTIONS.has(params.action);
   // A trusted click's screenPoint (see screenPointForClick) acts on the page like a click.
   const guarded = USER_GUARDED_ACTIONS.has(params.action) || (params.action === 'screenPoint' && !!params.click);
-  const touches = (tracksOpenedTabs || guarded) && params.action !== 'focusWindow';
+  const touches = guarded && params.action !== 'focusWindow';
   if ((withSnapshot || textSnapshot || touches) && params.tabId == null) params.tabId = await getActiveTabId();
   if (guarded) {
     const busy = await userActiveError(await guardedTabId(params.action, params));
@@ -687,8 +685,8 @@ async function dispatchCommand(command) {
     case 'muteTab':          return await updateTab(params.tabId, { muted: !!params.muted });
     case 'duplicateTab':     return await duplicateTab(params.tabId);
     case 'reloadTabBrowser': return await reloadTabBrowser(params.tabId, params.bypassCache);
-    case 'goBack':           return await goBack(params.tabId);
-    case 'goForward':        return await goForward(params.tabId);
+    case 'goBack':
+    case 'goForward':        return await goInHistory(params.tabId, action);
     case 'getZoom':          return await getZoom(params.tabId);
     case 'setZoom':          return await setZoom(params.tabId, params.factor);
     case 'getWindows':       return await getWindowsList();
@@ -855,10 +853,10 @@ async function captureScreenshot(params = {}) {
     const dataUrl = await browser.tabs.captureTab(tab.id, { format: 'png', quality: 90 });
     return {
       dataUrl: params.imagePreview ? await imagePreview(dataUrl) : dataUrl,
-      url: tab?.url || '',
-      title: tab?.title || '',
-      width: tab?.width || 0,
-      height: tab?.height || 0
+      url: tab.url || '',
+      title: tab.title || '',
+      width: tab.width || 0,
+      height: tab.height || 0
     };
   } catch (e) {
     return { error: `Screenshot failed: ${e.message}` };
@@ -1298,6 +1296,9 @@ const MISSING_CONTENT_RECEIVER = 'Could not establish connection. Receiving end 
 // content script can still distinguish replaced snapshots and other documents.
 const shortRefs = new Map();
 const publicRefs = new Map();
+// The params that may carry a ref, and a public ref's spelling.
+const REF_PARAMS = ['ref', 'selector', 'from', 'to', 'toRef'];
+const isShortRef = value => typeof value === 'string' && /^e\d+$/.test(value);
 const REF_RESULT_ACTIONS = new Set([
   'getSnapshot', 'getAccessibilityTree', 'getFormFields', 'find', 'waitForElement',
   'getIframes', 'submitForm',
@@ -1332,9 +1333,9 @@ function shortRefError(ref, reason) {
 
 function expandShortRefs(params, tabId) {
   const expanded = { ...params };
-  for (const key of ['ref', 'selector', 'from', 'to', 'toRef']) {
+  for (const key of REF_PARAMS) {
     const ref = params[key];
-    if (typeof ref !== 'string' || !/^e\d+$/.test(ref)) continue;
+    if (!isShortRef(ref)) continue;
     const entry = shortRefs.get(ref);
     if (!entry) return { error: shortRefError(ref, 'not_in_snapshot') };
     if (entry.tabId !== tabId) return { error: shortRefError(ref, 'other_document') };
@@ -1355,7 +1356,7 @@ function compactContentRefs(action, response, tabId, params) {
       if (['ref', 'target_ref', 'currentRef'].includes(key) && typeof item === 'string' && /^s\d+e\d+$/.test(item)) {
         // An error echoes the caller's ref, including legacy refs, verbatim.
         if (response.code && value === response.state && key === 'ref') {
-          const original = ['ref', 'selector', 'from', 'to', 'toRef'].map(k => params[k])
+          const original = REF_PARAMS.map(k => params[k])
             .find(ref => shortRefs.get(ref)?.ref === item);
           return [key, original || item];
         }
@@ -1424,8 +1425,8 @@ async function forwardToContent(action, params) {
     if (response.code) response = await withTabState(tabId, response);
     const result = await compactContentRefs(action, response, tabId, params);
     // Waits and drags echo their targets; keep their public spelling too.
-    for (const key of ['ref', 'selector', 'from', 'to', 'toRef']) {
-      if (!/^e\d+$/.test(params[key])) continue;
+    for (const key of REF_PARAMS) {
+      if (!isShortRef(params[key])) continue;
       if (result[key] === expanded.params[key]) result[key] = params[key];
       if (typeof result.error === 'string') result.error = result.error.replaceAll(expanded.params[key], params[key]);
     }
@@ -1442,70 +1443,44 @@ async function getActiveTabId() {
 // 1.4.0 — browser-level handler implementations
 // ══════════════════════════════════════════════════════════════
 
-async function updateTab(tabId, props) {
+// Runs act on tabId or the active tab; any failure is a bare error.
+async function onTab(tabId, act) {
   try {
     const id = tabId || (await getActiveTabId());
     if (!id) return { error: 'No tab' };
-    const tab = await browser.tabs.update(id, props);
-    return { ok: true, tabId: id, pinned: tab.pinned, muted: tab.mutedInfo?.muted };
+    return await act(id);
   } catch (e) { return { error: e.message }; }
 }
 
-async function duplicateTab(tabId) {
-  try {
-    const id = tabId || (await getActiveTabId());
-    if (!id) return { error: 'No tab' };
-    const dup = await browser.tabs.duplicate(id, { active: false });
-    markAgentTab(dup.id);
-    return { ok: true, tabId: dup.id, sourceTabId: id };
-  } catch (e) { return { error: e.message }; }
-}
+const updateTab = (tabId, props) => onTab(tabId, async id => {
+  const tab = await browser.tabs.update(id, props);
+  return { ok: true, tabId: id, pinned: tab.pinned, muted: tab.mutedInfo?.muted };
+});
 
-async function reloadTabBrowser(tabId, bypassCache) {
-  try {
-    const id = tabId || (await getActiveTabId());
-    if (!id) return { error: 'No tab' };
-    markReload(id);
-    await browser.tabs.reload(id, { bypassCache: !!bypassCache });
-    return { ok: true, tabId: id, bypassCache: !!bypassCache };
-  } catch (e) { return { error: e.message }; }
-}
+const duplicateTab = tabId => onTab(tabId, async id => {
+  const dup = await browser.tabs.duplicate(id, { active: false });
+  markAgentTab(dup.id);
+  return { ok: true, tabId: dup.id, sourceTabId: id };
+});
 
-async function goBack(tabId) {
-  try {
-    const id = tabId || (await getActiveTabId());
-    if (!id) return { error: 'No tab' };
-    await browser.tabs.goBack(id);
-    return { ok: true, tabId: id };
-  } catch (e) { return { error: e.message }; }
-}
+const reloadTabBrowser = (tabId, bypassCache) => onTab(tabId, async id => {
+  markReload(id);
+  await browser.tabs.reload(id, { bypassCache: !!bypassCache });
+  return { ok: true, tabId: id, bypassCache: !!bypassCache };
+});
 
-async function goForward(tabId) {
-  try {
-    const id = tabId || (await getActiveTabId());
-    if (!id) return { error: 'No tab' };
-    await browser.tabs.goForward(id);
-    return { ok: true, tabId: id };
-  } catch (e) { return { error: e.message }; }
-}
+// direction: 'goBack' or 'goForward'.
+const goInHistory = (tabId, direction) => onTab(tabId, async id => {
+  await browser.tabs[direction](id);
+  return { ok: true, tabId: id };
+});
 
-async function getZoom(tabId) {
-  try {
-    const id = tabId || (await getActiveTabId());
-    if (!id) return { error: 'No tab' };
-    const factor = await browser.tabs.getZoom(id);
-    return { ok: true, tabId: id, factor };
-  } catch (e) { return { error: e.message }; }
-}
+const getZoom = tabId => onTab(tabId, async id => ({ ok: true, tabId: id, factor: await browser.tabs.getZoom(id) }));
 
-async function setZoom(tabId, factor) {
-  try {
-    const id = tabId || (await getActiveTabId());
-    if (!id) return { error: 'No tab' };
-    await browser.tabs.setZoom(id, Number(factor) || 1);
-    return { ok: true, tabId: id, factor: Number(factor) || 1 };
-  } catch (e) { return { error: e.message }; }
-}
+const setZoom = (tabId, factor) => onTab(tabId, async id => {
+  await browser.tabs.setZoom(id, Number(factor) || 1);
+  return { ok: true, tabId: id, factor: Number(factor) || 1 };
+});
 
 async function getWindowsList() {
   try {
@@ -1622,14 +1597,6 @@ async function zlContent(tabId, action, params = {}) {
   return r && !r.error ? r : null;
 }
 
-async function zlHideFixed(tabId, selector) {
-  await zlContent(tabId, 'hideFixed', { selector });
-}
-
-async function zlRestoreFixed(tabId) {
-  await zlContent(tabId, 'restoreFixed');
-}
-
 async function zlScroll(tabId, scroll) {
   const r = await zlContent(tabId, 'captureScroll', scroll);
   return r ? r.sy : null;
@@ -1683,7 +1650,7 @@ async function elementScreenshot(tabId, selector, scale, preview) {
         segments++;
       }
       if (covered >= cssH) break;
-      if (!hidFixed) { await zlHideFixed(id, selector); hidFixed = true; }
+      if (!hidFixed) { await zlContent(id, 'hideFixed', { selector }); hidFixed = true; }
       const before = m.sy;
       await zlScroll(id, { by: Math.max(50, Math.floor(m.vh * 0.85)) });
       await zlSleep(160);
@@ -1696,10 +1663,10 @@ async function elementScreenshot(tabId, selector, scale, preview) {
              complete: covered >= cssH - 1, dataUrl: preview ? await imagePreview(cropped) : cropped };
   } catch (e) { return { error: 'elementScreenshot failed: ' + e.message }; }
   finally {
-    if (captureAttribute && id) {
+    if (captureAttribute) {
       try { await forwardToContent('unmarkScreenshotTarget', { tabId: id, attribute: captureAttribute }); } catch (e) {}
     }
-    if (hidFixed && id) { try { await zlRestoreFixed(id); } catch (e) {} }
+    if (hidFixed) { try { await zlContent(id, 'restoreFixed'); } catch (e) {} }
   }
 }
 
@@ -1721,7 +1688,7 @@ async function fullPageScreenshot(tabId, preview) {
       await zlSleep(150);   // let lazy content settle
       const sy = Number(await zlScroll(id, {})) || 0;   // the page may clamp the last scroll
       segments.push({ y: sy, data: await browser.tabs.captureTab(id, { format: 'png' }) });
-      if (!hidFixed) { await zlHideFixed(id, null); hidFixed = true; }
+      if (!hidFixed) { await zlContent(id, 'hideFixed', { selector: null }); hidFixed = true; }
       if (sy + vh >= docH) break;
       y = sy + vh;
     }
@@ -1740,7 +1707,7 @@ async function fullPageScreenshot(tabId, preview) {
              truncated: m.docHeight > CANVAS_MAX, dataUrl: preview ? await imagePreview(dataUrl) : dataUrl };
   } catch (e) { return { error: 'fullPageScreenshot failed: ' + e.message }; }
   finally {
-    if (hidFixed && id) { try { await zlRestoreFixed(id); } catch (e) {} }
+    if (hidFixed) { try { await zlContent(id, 'restoreFixed'); } catch (e) {} }
   }
 }
 
