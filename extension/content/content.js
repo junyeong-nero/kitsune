@@ -577,9 +577,10 @@
       // Skip noise
       if (['script', 'style', 'noscript', 'svg', 'path', 'br', 'hr'].includes(tag)) return null;
 
-      const rect = el.getBoundingClientRect();
+      const rect = viewportRect(el);
       const isInteractive = isInteractiveElement(el);
       const text = directText(el);
+      const frame = FRAME_TAGS.has(el.tagName);
 
       // Skip non-interactive elements with no text and small size
       if (!isInteractive && !text && rect.width < 5 && rect.height < 5) return null;
@@ -606,15 +607,20 @@
       if (el.ariaLabel) node.label = el.ariaLabel;
       if (el.disabled) node.disabled = true;
       if (el.checked !== undefined) node.checked = el.checked;
+      if (frame) {
+        if (el.title) node.title = el.title;
+        const { reason } = frameAccess(el);
+        if (reason) Object.assign(node, { content: reason, src: frameSource(el) });
+      }
 
       // Bounds only for interactive or visible elements
-      if (isInteractive || text) {
+      if (isInteractive || text || frame) {
         node.bounds = [Math.round(rect.x), Math.round(rect.y), Math.round(rect.width), Math.round(rect.height)];
       }
 
-      // Recurse children
+      // Recurse children, and the body of a same-origin frame
       const children = [];
-      for (const child of flatChildren(el)) {
+      for (const child of childrenAcrossFrames(el)) {
         const childNode = buildNode(child, depth + 1);
         if (childNode) children.push(childNode);
       }
@@ -667,7 +673,7 @@
     const metadata = new WeakMap();
     const signatures = new Map();
     const targetAncestors = new Set();
-    for (let el = target; el; el = flatParent(el)) targetAncestors.add(el);
+    for (let el = target; el; el = parentAcrossFrames(el)) targetAncestors.add(el);
     function ignored(el) {
       return !el || el.nodeType !== 1 || isHidden(el) ||
         el.getAttribute('aria-hidden') === 'true' ||
@@ -701,7 +707,7 @@
       // A media element's children are sources, tracks and fallback content, not page structure.
       const media = MEDIA_TAGS.has(el.tagName);
       const children = media ? [] :
-        flatChildren(el).map(child => measure(child, domDepth + 1)).filter(Boolean);
+        childrenAcrossFrames(el).map(child => measure(child, domDepth + 1)).filter(Boolean);
       const shape = JSON.stringify([el.tagName, el.getAttribute('role'), el.type || '',
         children.map(child => child.signature)]);
       if (!signatures.has(shape)) signatures.set(shape, signatures.size);
@@ -719,9 +725,11 @@
       const interactive = isInteractiveElement(el);
       const role = el.getAttribute('role') || landmarks[el.tagName] ||
         (/^H[1-6]$/.test(el.tagName) ? 'heading' : inferRole(el));
+      // Rendered frames are listed even when their content is unavailable (cross-origin).
       data.useful = (maxDepth == null || domDepth <= maxDepth) &&
         (children.some(child => child.useful) || (interactive && !data.wrapper) || media ||
-          semanticRoles.has(role) || el === target || (withText && hasOwnText(el)));
+          semanticRoles.has(role) || el === target || (withText && hasOwnText(el)) ||
+          (FRAME_TAGS.has(el.tagName) && hasArea(el)));
       data.interactive += interactive ? 1 : 0;
       data.native += nativeTags.has(el.tagName) ? 1 : 0;
       metadata.set(el, data);
@@ -767,11 +775,12 @@
     // named: an ancestor control or heading already shows this text as its name.
     function visit(el, depth, parent = -1, domDepth = 0, named = false) {
       if (!metadata.has(el) || (maxDepth != null && domDepth > maxDepth)) return;
+      const frame = FRAME_TAGS.has(el.tagName);
       let role = el.getAttribute('role') || landmarks[el.tagName] ||
-        (/^H[1-6]$/.test(el.tagName) ? 'heading' : inferRole(el));
+        (/^H[1-6]$/.test(el.tagName) ? 'heading' : inferRole(el)) || (frame ? 'iframe' : '');
       const media = MEDIA_TAGS.has(el.tagName);
       const interactive = (isInteractiveElement(el) && !metadata.get(el).wrapper) || media;
-      const include = interactive || semanticRoles.has(role) || el === target;
+      const include = interactive || semanticRoles.has(role) || el === target || frame;
       if (include) {
         if (!role) {
           if (el.isContentEditable) role = 'textbox';
@@ -788,6 +797,11 @@
         if (el.disabled || el.getAttribute('aria-disabled') === 'true') states.push('disabled');
         for (const state of ['expanded', 'selected', 'pressed']) {
           if (el.hasAttribute(`aria-${state}`)) states.push(`${state}=${el.getAttribute(`aria-${state}`)}`);
+        }
+        const frameReason = frame && frameAccess(el).reason;
+        if (frameReason) {
+          const src = clean(frameSource(el));
+          states.push(`content=${frameReason}`, ...(src ? [`src=${JSON.stringify(src)}`] : []));
         }
         if (media) {
           const { src, duration, currentTime, paused, muted, controls } = mediaState(el);
@@ -813,7 +827,7 @@
         }
       }
       if (maxDepth != null && domDepth >= maxDepth) return;
-      const children = flatChildren(el).filter(child => metadata.get(child)?.useful);
+      const children = childrenAcrossFrames(el).filter(child => metadata.get(child)?.useful);
       // Only composite children / list items collapse: a toolbar of leaf controls
       // should remain fully discoverable. Text, IDs and classes are not structure.
       // In text mode, siblings with only inline content are prose, not cards.
@@ -990,7 +1004,7 @@
   function makeResult(el) {
     const ref = `s${refGeneration}e${refCounter++}`;
     refMap[ref] = el;
-    const rect = el.getBoundingClientRect();
+    const rect = viewportRect(el);
     return {
       ref,
       tag: el.tagName.toLowerCase(),
@@ -1064,13 +1078,15 @@
 
     lastActedElement = el;
     const rect = el.getBoundingClientRect();
-    const x = coords ? coords.x : rect.x + rect.width / 2;
-    const y = coords ? coords.y : rect.y + rect.height / 2;
+    // Events carry the point in the viewport of the target's own (frame) document.
+    const point = coords ? elementAtPoint(coords.x, coords.y) : null;
+    const x = coords ? point.x : rect.x + rect.width / 2;
+    const y = coords ? point.y : rect.y + rect.height / 2;
     const eventInit = {
       bubbles: true,
       cancelable: true,
       composed: true,
-      view: window,
+      view: el.ownerDocument?.defaultView || window,
       clientX: x,
       clientY: y,
       button: 0,
@@ -1088,7 +1104,7 @@
       }));
       // As a real mousedown does, unless the page cancelled it. The background has already
       // refused a tab the user is using (user_active), so this never takes focus from them.
-      if (type === 'mousedown' && proceed) focusForClick(el, coords);
+      if (type === 'mousedown' && proceed) focusForClick(el, coords && { x, y });
     }
 
     const link = blankTargetLink(el);
@@ -1196,14 +1212,14 @@
   // The collapsed range at a viewport point, if it falls inside el.
   function caretRangeAt(el, { x, y }) {
     let range = null;
-    if (document.caretPositionFromPoint) {
-      const position = document.caretPositionFromPoint(x, y);
+    if (docOf(el).caretPositionFromPoint) {
+      const position = docOf(el).caretPositionFromPoint(x, y);
       if (position?.offsetNode) {
-        range = document.createRange();
+        range = docOf(el).createRange();
         range.setStart(position.offsetNode, position.offset);
       }
-    } else if (document.caretRangeFromPoint) {
-      range = document.caretRangeFromPoint(x, y);
+    } else if (docOf(el).caretRangeFromPoint) {
+      range = docOf(el).caretRangeFromPoint(x, y);
     }
     return range && el.contains(range.startContainer) ? range : null;
   }
@@ -1216,7 +1232,7 @@
   }
 
   function selectionInside(el) {
-    const selection = window.getSelection();
+    const selection = (docOf(el).defaultView || window).getSelection();
     if (!selection?.rangeCount) return null;
     const range = selection.getRangeAt(0);
     return el.contains(range.startContainer) && el.contains(range.endContainer) ? range.cloneRange() : null;
@@ -1226,25 +1242,25 @@
   // the host alone leaves Firefox's caret at the start of the editor.
   function placeEditableCaret(el, range) {
     if (!range) {
-      range = document.createRange();
+      range = docOf(el).createRange();
       range.selectNodeContents(el);
       range.collapse(false);
     }
     editingHost(el).focus({ preventScroll: true });
-    const selection = window.getSelection();
+    const selection = (docOf(el).defaultView || window).getSelection();
     selection.removeAllRanges();
     selection.addRange(range);
   }
 
   // Replace the selection with text as typing does, firing beforeinput and input.
   function insertEditableText(el, text) {
-    if (document.execCommand('insertText', false, text)) return;
+    if (docOf(el).execCommand('insertText', false, text)) return;
     const init = { bubbles: true, composed: true, inputType: 'insertText', data: text };
     if (!el.dispatchEvent(new InputEvent('beforeinput', { ...init, cancelable: true }))) return;
-    const selection = window.getSelection();
+    const selection = (docOf(el).defaultView || window).getSelection();
     const range = selection.getRangeAt(0);
     range.deleteContents();
-    const node = document.createTextNode(text);
+    const node = docOf(el).createTextNode(text);
     range.insertNode(node);
     range.setStartAfter(node);
     range.collapse(true);
@@ -1258,7 +1274,7 @@
   function blankTargetLink(el) {
     const link = el.closest('a[href], area[href]');
     if (!link || link.hasAttribute('download') || !/^https?:$/.test(link.protocol)) return null;
-    const target = link.getAttribute('target') ?? document.querySelector('base[target]')?.getAttribute('target');
+    const target = link.getAttribute('target') ?? docOf(link).querySelector('base[target]')?.getAttribute('target');
     return target?.toLowerCase() === '_blank' ? link : null;
   }
 
@@ -1275,7 +1291,7 @@
 
     // In an editor, type at the caret if it is in el, else at the end; clear replaces el's content.
     if (isEditableRegion(el)) {
-      const range = clear ? document.createRange() : selectionInside(el);
+      const range = clear ? docOf(el).createRange() : selectionInside(el);
       if (clear) range.selectNodeContents(el);
       placeEditableCaret(el, range);
       insertEditableText(el, text);
@@ -1337,7 +1353,7 @@
         target.innerText = text;
       } else {
         placeEditableCaret(target, caret);
-        document.execCommand(format === 'html' ? 'insertHTML' : 'insertText', false, text);
+        docOf(target).execCommand(format === 'html' ? 'insertHTML' : 'insertText', false, text);
       }
       target.dispatchEvent(new InputEvent('input', {
         bubbles: true,
@@ -1541,15 +1557,17 @@
   }
 
   // ── Get Form Fields ──
+  // Fields in same-origin frames name their frame; unreadable frames are listed.
   function getFormFields() {
     const fields = [];
     deepQuerySelectorAll('input, select, textarea').forEach(el => {
       if (isHidden(el)) return;
-      const rect = el.getBoundingClientRect();
+      const rect = viewportRect(el);
       if (rect.width < 2 || rect.height < 2) return;
 
       const ref = `s${refGeneration}e${refCounter++}`;
       refMap[ref] = el;
+      const frame = hostFrame(el.ownerDocument);
 
       fields.push({
         ref,
@@ -1562,10 +1580,12 @@
         label: findLabel(el),
         required: el.required,
         selector: buildSelector(el),
+        ...(frame ? { frame: frame.title || frame.getAttribute('name') || frameSource(frame) } : {}),
         bounds: [Math.round(rect.x), Math.round(rect.y), Math.round(rect.width), Math.round(rect.height)]
       });
     });
-    return { fields };
+    const frames = unavailableFrames();
+    return { fields, ...(frames.length ? { unavailableFrames: frames } : {}) };
   }
 
   // ── Execute JS ──
@@ -1730,7 +1750,7 @@
       const el = resolveElement(selector);
       if (!el) return notFound();
       el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
-      const rect = el.getBoundingClientRect();
+      const rect = viewportRect(el);
       x = rect.left + rect.width / 2;
       y = rect.top + rect.height / 2;
     }
@@ -1826,6 +1846,138 @@
     return { ok: true };
   }
 
+  // ── Same-origin frames ──
+  // The content script runs in the top document only. Reads and actions reach into
+  // same-origin frames through contentDocument, at most FRAME_DEPTH frames deep;
+  // cross-origin frames give content scripts no contentDocument and stay opaque.
+  const FRAME_DEPTH = 3;
+  const FRAME_TAGS = new Set(['IFRAME', 'FRAME']);
+
+  // { doc } for a frame Kitsune reads into, else { reason: 'cross_origin' | 'too_deep' }.
+  function frameAccess(frame) {
+    let doc = null;
+    try {
+      doc = frame.contentDocument;
+      if (doc && doc.defaultView?.origin !== window.origin) doc = null;
+    } catch { doc = null; }
+    if (!doc) return { reason: 'cross_origin' };
+    let depth = 0;
+    for (let owner = frame.ownerDocument; owner && owner !== document; owner = hostFrame(owner)?.ownerDocument) depth++;
+    return depth < FRAME_DEPTH ? { doc } : { reason: 'too_deep' };
+  }
+
+  // The document inside el when el is a frame Kitsune reads into, else null.
+  function frameDocument(el) {
+    return FRAME_TAGS.has(el?.tagName) ? frameAccess(el).doc || null : null;
+  }
+
+  // The frame element holding doc; null for the top document.
+  function hostFrame(doc) {
+    if (!doc || doc === document) return null;
+    try { return doc.defaultView?.frameElement || null; } catch { return null; }
+  }
+
+  const docOf = el => el?.ownerDocument || document;
+  const styleOf = el => (el.ownerDocument?.defaultView || window).getComputedStyle(el);
+
+  // el's parent, continuing from a frame's root element to the frame element.
+  function parentAcrossFrames(el) {
+    return flatParent(el) || hostFrame(el.ownerDocument);
+  }
+
+  // Element children, or a same-origin frame's body.
+  function childrenAcrossFrames(el) {
+    const doc = frameDocument(el);
+    if (doc) return doc.body ? [doc.body] : [];
+    return flatChildren(el);
+  }
+
+  // The top document, then each same-origin frame document after the document holding it.
+  function searchedDocuments(doc = document, docs = []) {
+    docs.push(doc);
+    let frames = [];
+    try { frames = queryTreeSelectorAll('iframe, frame', doc); } catch {}
+    for (const frame of frames) {
+      const inner = frameDocument(frame);
+      if (inner) searchedDocuments(inner, docs);
+    }
+    return docs;
+  }
+
+  // Where a frame's viewport starts in its parent's viewport: inside its border and padding.
+  function frameContentOffset(frame) {
+    const rect = frame.getBoundingClientRect();
+    const style = styleOf(frame);
+    return { x: rect.left + (frame.clientLeft || 0) + (parseFloat(style.paddingLeft) || 0),
+      y: rect.top + (frame.clientTop || 0) + (parseFloat(style.paddingTop) || 0) };
+  }
+
+  // el.getBoundingClientRect() in the top document's viewport, also for elements in frames.
+  function viewportRect(el) {
+    const rect = el.getBoundingClientRect();
+    let frame = hostFrame(el.ownerDocument);
+    if (!frame) return rect;
+    let x = rect.left, y = rect.top;
+    for (; frame; frame = hostFrame(frame.ownerDocument)) {
+      const offset = frameContentOffset(frame);
+      x += offset.x;
+      y += offset.y;
+    }
+    return { x, y, width: rect.width, height: rect.height,
+      left: x, top: y, right: x + rect.width, bottom: y + rect.height };
+  }
+
+  // The element at a point of the top viewport, inside same-origin frames too, and the
+  // point in that element's own viewport.
+  function elementAtPoint(x, y) {
+    let el = deepElementFromPoint(x, y);
+    for (let doc = frameDocument(el); doc; doc = frameDocument(el)) {
+      const offset = frameContentOffset(el);
+      const inner = deepElementFromPoint(x - offset.x, y - offset.y, doc);
+      if (!inner) break;
+      el = inner;
+      x -= offset.x;
+      y -= offset.y;
+    }
+    return { el, x, y };
+  }
+
+  // The focused element, inside a focused same-origin frame too.
+  function activeElement() {
+    let el = deepActiveElement();
+    for (let doc = frameDocument(el); doc?.activeElement; doc = frameDocument(el)) el = deepActiveElement(doc);
+    return el;
+  }
+
+  // A frame's src without query or fragment, which can carry tokens.
+  function frameSource(frame) {
+    const src = frame.getAttribute('src') || '';
+    try {
+      const url = new URL(src, frame.baseURI || location.href);
+      if (/^https?:$/.test(url.protocol)) return url.origin + url.pathname;
+    } catch {}
+    return src.split(/[?#]/)[0].slice(0, 100);
+  }
+
+  const hasArea = el => { const r = el.getBoundingClientRect(); return r.width >= 2 && r.height >= 2; };
+
+  // Rendered frames whose content Kitsune cannot read, as browser_forms lists them.
+  function unavailableFrames() {
+    const out = [];
+    for (const doc of searchedDocuments()) {
+      let frames = [];
+      try { frames = queryTreeSelectorAll('iframe, frame', doc); } catch {}
+      for (const frame of frames) {
+        if (!FRAME_TAGS.has(frame.tagName)) continue;
+        const { reason } = frameAccess(frame);
+        if (!reason || isHidden(frame) || !hasArea(frame)) continue;
+        out.push({ ref: issueRef(frame), title: frame.title || frame.getAttribute('name') || '',
+          src: frameSource(frame), content: reason });
+      }
+    }
+    return out;
+  }
+
   // ── Helpers ──
 
   const REF_SELECTOR = /^(?:s\d+e\d+|r\d+)$/;
@@ -1846,20 +1998,17 @@
     return roots;
   }
 
-  // A selector matches within one tree, so the document and each shadow root are queried
-  // on their own: the document's matches first.
+  // CSS matches within one tree; query each document and its shadow roots separately.
+  function queryTreeSelectorAll(selector, scope) {
+    return [scope, ...shadowRootsIn(scope)].flatMap(root => Array.from(root.querySelectorAll(selector)));
+  }
+
   function deepQuerySelectorAll(selector) {
-    return [document, ...shadowRootsIn(document)].flatMap(root => Array.from(root.querySelectorAll(selector)));
+    return searchedDocuments().flatMap(doc => queryTreeSelectorAll(selector, doc));
   }
 
   function deepQuerySelector(selector) {
-    const match = document.querySelector(selector);
-    if (match) return match;
-    for (const root of shadowRootsIn(document)) {
-      const inner = root.querySelector(selector);
-      if (inner) return inner;
-    }
-    return null;
+    return deepQuerySelectorAll(selector)[0] || null;
   }
 
   // Children as rendered (the flat tree): a host's shadow tree instead of its light children,
@@ -1885,12 +2034,12 @@
   // IDs are scoped to their tree: a field in a shadow root names labels in that root.
   function elementByIdNear(el, id) {
     const root = el.getRootNode?.();
-    return (root?.getElementById ? root : document).getElementById?.(id);
+    return (root?.getElementById ? root : docOf(el)).getElementById?.(id);
   }
 
   // document.elementFromPoint stops at a shadow host; each shadow root hit-tests its own tree.
-  function deepElementFromPoint(x, y) {
-    let el = document.elementFromPoint(x, y);
+  function deepElementFromPoint(x, y, doc = document) {
+    let el = doc.elementFromPoint(x, y);
     const seen = new Set([el]);
     for (let root = shadowRootOf(el); root?.elementFromPoint; root = shadowRootOf(el)) {
       const inner = root.elementFromPoint(x, y);
@@ -1902,8 +2051,8 @@
   }
 
   // document.activeElement is the host of a focused shadow-root element.
-  function deepActiveElement() {
-    let el = document.activeElement;
+  function deepActiveElement(doc = document) {
+    let el = doc.activeElement;
     for (let inner = shadowRootOf(el)?.activeElement; inner && inner !== el; inner = shadowRootOf(el)?.activeElement) {
       el = inner;
     }
@@ -1911,7 +2060,7 @@
   }
 
   function resolveElement(selector, coords) {
-    if (!selector && coords) return deepElementFromPoint(coords.x, coords.y);
+    if (!selector && coords) return elementAtPoint(coords.x, coords.y).el;
     if (!selector) return null;
     
     // Try ref map first
@@ -1973,7 +2122,7 @@
 
   function nearestInteractiveAncestor(el) {
     let cur = el;
-    while (cur && cur !== document.body) {
+    while (cur && cur !== docOf(cur).body) {
       if (isInteractiveElement(cur)) return cur;
       cur = flatParent(cur);
     }
@@ -1982,7 +2131,7 @@
 
   function isHidden(el) {
     if (!el || el.hidden) return true;
-    const s = window.getComputedStyle(el);
+    const s = styleOf(el);
     return s.display === 'none' || s.visibility === 'hidden';
   }
 
@@ -2069,7 +2218,7 @@
 
   function isMasked(el) {
     return cachedFor('masked', el, () => {
-      const style = window.getComputedStyle(el);
+      const style = styleOf(el);
       const security = style.webkitTextSecurity || style.getPropertyValue?.('-webkit-text-security');
       return TEXT_SECURITY_MASKS.has(security);
     });
@@ -2211,7 +2360,7 @@
     if (el.id) return `#${CSS.escape(el.id)}`;
     const parts = [];
     let cur = el;
-    for (let i = 0; i < 4 && cur && cur !== document.body; i++) {
+    for (let i = 0; i < 4 && cur && cur !== docOf(cur).body; i++) {
       let s = cur.tagName.toLowerCase();
       if (cur.id) { parts.unshift(`#${CSS.escape(cur.id)}`); break; }
       if (cur.className && typeof cur.className === 'string') {
@@ -2227,7 +2376,7 @@
   function findLabel(el) {
     if (el.id) {
       const root = el.getRootNode?.();
-      const lbl = (root?.querySelector ? root : document).querySelector(`label[for="${CSS.escape(el.id)}"]`);
+      const lbl = (root?.querySelector ? root : docOf(el)).querySelector(`label[for="${CSS.escape(el.id)}"]`);
       if (lbl) return redactedText(lbl).trim().slice(0, 80);
     }
     const parent = el.closest('label');
@@ -2318,7 +2467,7 @@
   function getBounds(selector) {
     const el = resolveElement(selector);
     if (!el) return notFound();
-    const r = el.getBoundingClientRect();
+    const r = viewportRect(el);
     return {
       x: r.x, y: r.y, width: r.width, height: r.height,
       top: r.top, right: r.right, bottom: r.bottom, left: r.left,
@@ -2578,20 +2727,20 @@
     if (!el) return notFound();
     lastFilledField = el;
     el.focus();
-    return { ok: true, active: deepActiveElement() === el };
+    return { ok: true, active: activeElement() === el };
   }
 
   function blurEl(selector) {
-    const el = selector ? resolveElement(selector) : document.activeElement;
+    const el = selector ? resolveElement(selector) : activeElement();
     if (!el) return notFound();
     if (typeof el.blur === 'function') el.blur();
     return { ok: true };
   }
 
   function keypress(selector, key, modifiers, text, first) {
-    const target = selector ? resolveTarget(selector, null, { first }) : (deepActiveElement() || document.body);
+    const target = selector ? resolveTarget(selector, null, { first }) : (activeElement() || document.body);
     if (!target) return notFound('No target');
-    lastActedElement = selector || target !== document.body ? target : null;
+    lastActedElement = selector || target !== docOf(target).body ? target : null;
     const mods = modifiers || {};
     const opts = {
       key,
@@ -2608,7 +2757,7 @@
       target.dispatchEvent(new KeyboardEvent('keypress', opts));
       // Insert text into editable targets
       if (target.isContentEditable) {
-        document.execCommand('insertText', false, text);
+        docOf(target).execCommand('insertText', false, text);
       } else if (['INPUT','TEXTAREA'].includes(target.tagName)) {
         const proto = target.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
         const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
@@ -2626,7 +2775,8 @@
     if (!el) return notFound();
     el.scrollIntoView({ behavior: 'instant', block: 'center' });
     const r = el.getBoundingClientRect();
-    const init = { bubbles: true, cancelable: true, composed: true, view: window, clientX: r.x + r.width/2, clientY: r.y + r.height/2, button: 0 };
+    const init = { bubbles: true, cancelable: true, composed: true, view: el.ownerDocument?.defaultView || window,
+      clientX: r.x + r.width/2, clientY: r.y + r.height/2, button: 0 };
     el.dispatchEvent(new MouseEvent('mousedown', init));
     el.dispatchEvent(new MouseEvent('mouseup', init));
     el.dispatchEvent(new MouseEvent('click', init));
@@ -2763,7 +2913,7 @@
   // do and reports no field values.
   function describeTarget(selector, coords, key) {
     let el = selector || coords ? resolveElement(selector, coords)
-      : (deepActiveElement() || document.body);
+      : (activeElement() || document.body);
     if (!el) return notFound();
     if (coords) el = nearestInteractiveAncestor(el) || el;
     const control = el.closest ? el.closest('button, input, [role="button"]') ||
@@ -2812,7 +2962,7 @@
     } else {
       form = lastFilledField?.isConnected ? lastFilledField.form || lastFilledField.closest('form') : null;
       if (!form) {
-        const forms = Array.from(document.querySelectorAll('form'));
+        const forms = deepQuerySelectorAll('form');
         if (forms.length > 1) {
           return ambiguousTarget(`${forms.length} forms on the page and no filled field names one; nothing was submitted`,
             'Pass the ref of the form to submit from state.candidates, or fill one of its fields first.',
@@ -2854,7 +3004,7 @@
   function fieldsByLabelText(key) {
     const text = key.toLowerCase();
     const fields = [];
-    for (const root of [document, ...shadowRootsIn(document)]) {
+    for (const root of searchedDocuments().flatMap(doc => [doc, ...shadowRootsIn(doc)])) {
       let el = null;
       for (const lbl of root.querySelectorAll('label')) {
         if (!(lbl.innerText || '').trim().toLowerCase().includes(text)) continue;
