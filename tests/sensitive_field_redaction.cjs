@@ -193,19 +193,29 @@ const editable = (tagName, props = {}) => new Element(tagName, {
   let listener;
   // How often each element's -webkit-text-security is read.
   const maskReads = new Map();
+  // The caret path now focuses masked editors as well as ordinary editors. Keep a
+  // selection without changing their contents, so subsequent reads still test redaction.
+  const selection = {
+    removeAllRanges() { this.range = null; },
+    addRange(range) { this.range = range; },
+  };
   const context = vm.createContext({
     console, crypto: webcrypto, CSS: { escape: x => x }, setTimeout, location: { href: 'http://example.test/' },
     Event: class { constructor(type, options) { Object.assign(this, { type }, options); } },
     HTMLInputElement: class {}, HTMLTextAreaElement: class {},
     KeyboardEvent: class { constructor(type, options) { Object.assign(this, { type }, options); } },
     MouseEvent: class { constructor(type, options) { Object.assign(this, { type }, options); } },
-    window: { getComputedStyle: el => ({ display: 'block', visibility: 'visible',
+    window: { getSelection: () => selection, getComputedStyle: el => ({ display: 'block', visibility: 'visible',
       getPropertyValue: property => {
         if (property !== '-webkit-text-security') return '';
         maskReads.set(el, (maskReads.get(el) || 0) + 1);
         return isMaskedElement(el) ? 'disc' : '';
       } }) },
     document: { body, title: 'Fixture',
+      createRange: () => ({
+        selectNodeContents(el) { this.startContainer = this.endContainer = el; },
+        collapse() {},
+      }),
       getElementById: id => body.querySelector(`#${id}`),
       querySelector: selector => [body, ...body.querySelectorAll(selector)].find(el => el.matches(selector)) || null,
       querySelectorAll: selector => [body, ...body.descendants].filter(el => el.matches(selector)),

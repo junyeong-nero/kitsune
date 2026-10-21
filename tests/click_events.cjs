@@ -45,12 +45,13 @@ class Anchor extends Element {
 }
 
 async function testClickEvents(pointerEvents) {
-  const button = new Element('BUTTON', 'go');
+  const button = new Element('BUTTON', 'go', 'submit');
   const checkbox = new Element('INPUT', 'toggle', 'checkbox');
   const child = new Element('SPAN', 'child');
   child.parentElement = button;
   const form = new Element('FORM', 'form');
   form.querySelector = () => button;
+  form.querySelectorAll = () => [button];
   const elements = { '#go': button, '#toggle': checkbox, '#form': form };
   let listener;
   const context = vm.createContext({
