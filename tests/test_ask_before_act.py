@@ -261,6 +261,26 @@ class SensitiveActionTests(AskBeforeActTestCase):
         self.assertEqual(self.forward("click", {"ref": "s1e8"}), (200, {"ok": True}))
         self.assertEqual(self.extension.actions(), ["click"])
 
+    def test_consequential_labeled_controls_are_held(self):
+        # Buttons and links the page labels like a send, transfer, delete or account change.
+        self.extension.target = {"ok": True, "tag": "a", "submits": False, "submitLabel": False,
+                                 "consequentialLabel": True, "text": "Delete account"}
+        held = self.held(lambda h: h.handle_click(), {"ref": "s1e9"})
+        self.assertEqual(held["state"]["reason"], "consequential_label")
+        self.assertIn("clicks a button or link labeled like a send, transfer, delete or account change "
+                      "(Delete account)", held["error"])
+        held = self.held(lambda h: h._forward("keypress"), {"key": "Enter", "ref": "s1e9"})
+        self.assertIn("presses Enter on a button or link", held["error"])
+        self.extension.target = {"ok": True, "tag": "button", "submits": False, "submitLabel": True,
+                                 "consequentialLabel": True, "text": "Pay"}
+        held = self.held(lambda h: h.handle_click(), {"ref": "s1e10"})
+        self.assertEqual(held["state"]["reason"], "submit_label", "a submit label takes precedence")
+        # An extension older than this bridge reports no consequentialLabel: such a click runs.
+        self.extension.target = {"ok": True, "tag": "button", "submits": False, "submitLabel": False,
+                                 "text": "Delete account"}
+        self.assertEqual(self.forward("click", {"ref": "s1e11"}), (200, {"ok": True}))
+        self.assertEqual(self.extension.actions(), ["click"])
+
     def test_enter_in_form_field_is_held(self):
         self.extension.target = {"ok": True, "tag": "input", "type": "text", "submits": True}
         held = self.held(lambda h: h._forward("keypress"), {"key": "Enter", "selector": "#q"})

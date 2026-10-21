@@ -3,7 +3,7 @@
 
 (function() {
   'use strict';
-  const CONTENT_VERSION = 30;
+  const CONTENT_VERSION = 31;
   if (window.__claudeBridgeVersion >= CONTENT_VERSION) return;
   window.__claudeBridgeVersion = CONTENT_VERSION;
 
@@ -2192,37 +2192,116 @@
     /^finalizar (?:la )?compra$/,
   ];
 
-  function isSubmitLabel(label) {
+  // Ask-before-act: button and link labels that send, transfer, delete, or change an
+  // account. Same whole-label rule as SUBMIT_LABEL_PATTERNS, so "Send feedback",
+  // "Transfer history", "Remove filter", "Subscribe" or a bare "Cancel"/"취소" do not match.
+  const CONSEQUENTIAL_LABEL_PATTERNS = [
+    /^(?:send|transfer|wire)(?: (?:it|money|funds|payment))?(?: now)?$/,
+    /^(?:confirm|complete|make)(?: the| a)? (?:transfer|wire transfer)$/,
+    /^confirm and send$/,
+    /^(?:delete|remove|erase)(?: (?:permanently|forever|all|everything))?$/,
+    /^(?:permanently )?(?:delete|remove|erase)(?: (?:my|your|the|this|all))? (?:account|profile|data|repository|project|workspace)$/,
+    /^(?:close|deactivate|terminate|cancel)(?: (?:my|your|the|this))? account$/,
+    /^(?:cancel|end)(?: (?:my|your|the|this))? (?:order|booking|reservation|subscription|membership|plan)$/,
+    /^unsubscribe(?: (?:from all|from everything|me|all))?$/,
+    // Korean, Japanese, Chinese (simplified and traditional)
+    /^(?:(?:지금|바로) ?)?(?:송금|이체|전송)(?: ?하기)?$/,
+    /^보내기$/,
+    /^(?:(?:계정|회원|영구) ?)?(?:삭제|제거)(?: ?하기)?$/,
+    /^(?:회원 ?)?탈퇴(?: ?하기)?$/,
+    /^(?:구독|멤버십|정기 ?결제|주문) ?(?:해지|취소)(?: ?하기)?$/,
+    /^해지(?: ?하기)?$/,
+    /^수신 ?거부(?: ?하기)?$/,
+    /^(?:送金|振込|振り込み|送信)(?:する)?$/,
+    /^振り込む$/,
+    /^(?:アカウント(?:を)?)?削除(?:する)?$/,
+    /^(?:退会|解約|配信停止|購読解除)(?:する)?$/,
+    /^(?:サブスクリプション|定期購入|プラン|注文)を?(?:解約|キャンセル)(?:する)?$/,
+    /^(?:立即|确认|確認)?(?:发送|發送|转账|轉帳|轉賬|汇款|匯款)$/,
+    /^(?:永久)?(?:删除|刪除|移除)(?:账号|账户|帐号|帳號|帳戶)?$/,
+    /^(?:注销|註銷)(?:账号|账户|帐号|帳號|帳戶)?$/,
+    /^(?:退订|退訂|取消(?:订阅|訂閱|订单|訂單))$/,
+    // German, French, Spanish
+    /^(?:jetzt )?(?:senden|absenden|überweisen|löschen|entfernen|kündigen|abbestellen)$/,
+    /^(?:konto|account|profil) (?:löschen|schließen|kündigen)$/,
+    /^(?:abo|abonnement|vertrag|mitgliedschaft|newsletter) (?:kündigen|abbestellen)$/,
+    /^überweisung (?:absenden|ausführen|bestätigen)$/,
+    /^(?:envoyer|transférer|supprimer|résilier)(?: maintenant)?$/,
+    /^(?:supprimer|fermer|clôturer|désactiver) (?:mon |le |votre )?compte$/,
+    /^(?:effectuer|confirmer|valider) (?:le )?(?:virement|transfert)$/,
+    /^(?:se )?(?:désabonner|désinscrire)$/,
+    /^(?:résilier|annuler) (?:mon |votre |l['’] ?)?abonnement$/,
+    /^(?:enviar|transferir|eliminar|borrar)(?: ahora)?$/,
+    /^enviar dinero$/,
+    /^(?:realizar|confirmar|hacer) (?:la )?transferencia$/,
+    /^(?:eliminar|borrar|cerrar|desactivar) (?:mi |la |tu |su )?cuenta$/,
+    /^dar(?:se|me)? de baja$/,
+    /^(?:cancelar|anular) (?:mi |la |tu |su )?(?:suscripción|membresía)$/,
+  ];
+
+  // A label folded for whole-phrase matching: case, width and whitespace folded, a trailing
+  // parenthetical, an amount and edge punctuation dropped. Over 60 characters never matches.
+  function normalizedLabel(label) {
     let text = String(label).normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
-    if (!text || text.length > 60) return false;
+    if (!text || text.length > 60) return '';
     const edges = /^[\p{P}\p{S}\s]+|[\p{P}\p{S}\s]+$/gu;
-    text = text.replace(/\s*\([^)]*\)$/, '').replace(edges, '')
+    return text.replace(/\s*\([^)]*\)$/, '').replace(edges, '')
       .replace(/(?:^|\s)\p{Sc}?\s?\d[\d.,]*\s?(?:\p{Sc}|원|円|元|krw|usd|eur)?$/u, '')
       .replace(/^\p{Sc}?\s?\d[\d.,]*\s?(?:\p{Sc}|원|円|元)?\s/u, '')
       .replace(edges, '');
-    return SUBMIT_LABEL_PATTERNS.some(pattern => pattern.test(text));
+  }
+
+  function isSubmitLabel(label) {
+    const text = normalizedLabel(label);
+    return !!text && SUBMIT_LABEL_PATTERNS.some(pattern => pattern.test(text));
+  }
+
+  function isConsequentialLabel(label) {
+    const text = normalizedLabel(label);
+    return !!text && CONSEQUENTIAL_LABEL_PATTERNS.some(pattern => pattern.test(text));
+  }
+
+  // The accessible name of a button or link, for icon-only controls too: aria-labelledby,
+  // aria-label, text, a button input's value or alt, an icon's aria-label, alt or SVG title,
+  // then title.
+  function controlLabel(control, buttonInput) {
+    const attr = name => String(control.getAttribute?.(name) || '').trim();
+    const labelledBy = attr('aria-labelledby').split(/\s+/).filter(Boolean)
+      .map(id => { const el = document.getElementById?.(id); return el ? redactedText(el) : ''; })
+      .join(' ').trim();
+    const text = redactedText(control).trim();
+    const icon = !text && control.querySelector?.('[aria-label], img[alt], svg title');
+    const iconLabel = icon ? String(icon.getAttribute('aria-label') || icon.getAttribute('alt') ||
+      icon.textContent || '').trim() : '';
+    return labelledBy || attr('aria-label') || text ||
+      (buttonInput ? String(control.value || '').trim() || attr('alt') : '') || iconLabel || attr('title');
   }
 
   // Ask-before-act: whether clicking the target (or pressing Enter on it, with key) can submit
-  // a form, or is a button labeled like a submit or payment. Resolves the target the way
-  // click/keypress do and reports no field values.
+  // a form, is a button labeled like a submit or payment, or is a button or link labeled like
+  // a send, transfer, delete or account change. Resolves the target the way click/keypress
+  // do and reports no field values.
   function describeTarget(selector, coords, key) {
     let el = selector || coords ? resolveElement(selector, coords)
       : (document.activeElement || document.body);
     if (!el) return notFound();
     if (coords) el = nearestInteractiveAncestor(el) || el;
-    const control = el.closest ? el.closest('button, input, [role="button"]') || el : el;
+    const control = el.closest ? el.closest('button, input, [role="button"]') ||
+      el.closest('a[href], [role="link"]') || el : el;
     const tag = control.tagName?.toLowerCase();
     const type = String(control.type || '').toLowerCase();
+    const role = String(control.getAttribute?.('role') || '').toLowerCase();
     const submitControl = !!control.form &&
       ((tag === 'button' && type === 'submit') || (tag === 'input' && (type === 'submit' || type === 'image')));
     const enterSubmits = key === 'Enter' && !!control.form && tag === 'input' && !NON_TEXT_INPUT_TYPES.has(type);
-    const button = tag === 'button' || (tag === 'input' && BUTTON_INPUT_TYPES.has(type)) ||
-      String(control.getAttribute?.('role') || '').toLowerCase() === 'button';
-    const label = control.getAttribute?.('aria-label') || redactedText(control) ||
-      (button && tag === 'input' ? control.value : '') || '';
+    const buttonInput = tag === 'input' && BUTTON_INPUT_TYPES.has(type);
+    const button = tag === 'button' || buttonInput || role === 'button';
+    const link = !button && ((tag === 'a' && !!control.hasAttribute?.('href')) || role === 'link');
+    const label = button || link ? controlLabel(control, buttonInput)
+      : String(control.getAttribute?.('aria-label') || redactedText(control) || '').trim();
     return { ok: true, tag, type, inForm: !!control.form, submits: submitControl || enterSubmits,
-      submitLabel: button && isSubmitLabel(label), text: String(label).trim().slice(0, 80) };
+      submitLabel: button && isSubmitLabel(label), consequentialLabel: (button || link) && isConsequentialLabel(label),
+      text: label.slice(0, 80) };
   }
 
   function submitForm(selector) {
