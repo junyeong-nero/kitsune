@@ -40,9 +40,11 @@ USER_OPENS_BACKGROUND_TAB = """(async () => {
   return true;
 })()"""
 
-# The user presses and releases the mouse over the page they see.
+# The user presses and releases the mouse over the page they see. Returns false when the
+# browser has no windowUtils.sendMouseEvent (Firefox 158 and Zen built on it removed it).
 USER_CLICKS = """(async () => {
   const win = Services.wm.getMostRecentWindow('navigator:browser');
+  if (typeof win.windowUtils.sendMouseEvent !== 'function') return false;
   const rect = win.gBrowser.selectedBrowser.getBoundingClientRect();
   for (const type of ['mousedown', 'mouseup']) {
     win.windowUtils.sendMouseEvent(type, rect.left + 200, rect.top + 200, 0, 1, 0);
@@ -91,7 +93,7 @@ class RealBrowserSharedBrowserTests(harness.RealBrowserTestCase):
     def user_view(self):
         """What the user sees: their shown tab, the URLs of their tabs, and which window has focus."""
         tabs = self.tabs()
-        windows = self.call("/api/windows")["windows"]
+        windows = self.call("/api/windows", {})["windows"]
         return {"shown": [t["id"] for t in tabs.values() if t["active"] and not t["owned"]],
                 "user_tabs": {i: t["url"] for i, t in tabs.items() if not t["owned"]},
                 "focused": [w["id"] for w in windows if w["focused"]]}
@@ -180,7 +182,8 @@ class RealBrowserSharedBrowserTests(harness.RealBrowserTestCase):
 
     def test_recent_trusted_user_input_blocks_agent_writes(self):
         user_tab = self.user_page()
-        self.parent(USER_CLICKS)
+        if not self.parent(USER_CLICKS):
+            self.skipTest("the parent process has no windowUtils.sendMouseEvent to send trusted mouse input")
         try:
             self.wait_for(lambda: self.tabs()[user_tab]["title"].startswith("down:"), "no mousedown", timeout=3)
         except AssertionError:

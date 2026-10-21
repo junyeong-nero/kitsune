@@ -48,9 +48,16 @@ PERMISSION_SCRIPT = """(async () => {
 })()"""
 
 
+# Opening /article records a visit with the page's title, so it keeps the seeded title that
+# the search tests look it up by, whichever test opens it first.
+ARTICLE_TITLE = "Kitsune fixture article"
+
+
 class _Page(BaseHTTPRequestHandler):
     def do_GET(self):
-        body = f"<title>fixture {self.path.split('?')[0]}</title><h1>fixture</h1>".encode()
+        path = self.path.split('?')[0]
+        title = ARTICLE_TITLE if path == "/article" else f"fixture {path}"
+        body = f"<title>{title}</title><h1>fixture</h1>".encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html")
         self.end_headers()
@@ -152,9 +159,9 @@ class RealBrowserHistoryTests(_HistoryCase):
     def test_a_history_result_opens_in_a_tab(self):
         # Trace following: a result's url is enough to reopen the page (#139 adds agent-owned
         # background tabs; this uses the tab opening that exists today).
-        url = next(item["url"] for item in self.search()["results"] if item["title"] == "Kitsune fixture article")
+        url = next(item["url"] for item in self.search()["results"] if item["title"] == ARTICLE_TITLE)
         tab_id = self.open_tab(url)
-        self.assertEqual(self.call("/api/page-info", {"tabId": tab_id})["title"], "fixture /article")
+        self.assertEqual(self.call("/api/page-info", {"tabId": tab_id})["title"], ARTICLE_TITLE)
 
 
 if __name__ == "__main__":
