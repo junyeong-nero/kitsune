@@ -56,7 +56,10 @@ except ImportError:
 
 from . import bridge_control
 from .version import BRIDGE_BUILD, PACKAGE_VERSION
-from .waits import actionability_wait_seconds, batch_wait_seconds, command_wait_seconds
+from .waits import (
+    WORKFLOW_DEADLINE_SECONDS, actionability_wait_seconds, batch_deadline_seconds, command_wait_seconds,
+    container_settle_seconds,
+)
 
 # ── Config ──
 BRIDGE_VERSION = PACKAGE_VERSION
@@ -3170,8 +3173,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     break
 
         # Commands run in sequence, so the deadline must cover every wait in the batch.
-        deadline = max(300, batch_wait_seconds(commands) + 15)
-        timed_out = self.run_async(_within_deadline(run_all(), deadline), timeout=deadline + 15)
+        deadline = batch_deadline_seconds(commands)
+        timed_out = self.run_async(_within_deadline(run_all(), deadline), timeout=container_settle_seconds(deadline))
         response = {'results': results, **_container_progress(commands, steps)}
         if timed_out:
             response.update(_container_timeout_error('Batch', deadline))
@@ -3228,8 +3231,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 if isinstance(r, dict) and r.get('error'):
                     break
 
-        deadline = 300
-        timed_out = self.run_async(_within_deadline(run_workflow(), deadline), timeout=deadline + 15)
+        deadline = WORKFLOW_DEADLINE_SECONDS
+        timed_out = self.run_async(_within_deadline(run_workflow(), deadline), timeout=container_settle_seconds(deadline))
         response = {"workflow": name, "steps": len(commands), "results": results,
                     **_container_progress(commands, steps)}
         if timed_out:

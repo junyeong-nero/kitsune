@@ -3,7 +3,7 @@ import asyncio
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
-from kitsune import bridge, server
+from kitsune import bridge, server, waits
 
 
 class WaitForNavigationTests(unittest.TestCase):
@@ -42,10 +42,12 @@ class WaitForNavigationTests(unittest.TestCase):
 
     def test_batch_http_deadline(self):
         for action in ("waitForUrl", "waitForTitle"):
-            with self.subTest(action=action), patch.object(server, "_post", return_value={"ok": True}) as post:
+            with self.subTest(action=action), patch.object(server, "_post", return_value={"ok": True}) as post, \
+                    patch.object(waits, "CONTAINER_MIN_DEADLINE_SECONDS", 0):
                 commands = [{"action": action, "pattern": "Ready", "timeout": 60000, "tabId": 7}]
                 server.browser_batch(commands)
-                post.assert_called_once_with("/api/batch", {"commands": commands}, timeout=75)
+                # The 60s wait plus 15s is the batch deadline; the request outlasts it by 30s.
+                post.assert_called_once_with("/api/batch", {"commands": commands}, timeout=75 + 30)
 
     def test_mixed_navigation_and_document_conditions_still_rejected(self):
         with patch.object(server, "_post") as post:

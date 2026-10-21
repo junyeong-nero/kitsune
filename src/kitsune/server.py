@@ -21,7 +21,7 @@ from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from . import bridge_control
 from .bridge_control import BRIDGE, HTTP_PORT, LOG_FILE, TOKEN_FILE, WS_PORT, headers as _headers
 from .version import BRIDGE_BUILD
-from .waits import batch_wait_seconds, command_wait_seconds
+from .waits import WORKFLOW_DEADLINE_SECONDS, batch_deadline_seconds, command_wait_seconds, container_request_seconds
 
 # Annotation hints describe the whole tool, including its most dangerous operation.
 # They are advisory metadata for the client's permission prompts; the bridge never reads
@@ -777,7 +777,8 @@ def browser_workflow(name: str, variables: dict | None = None) -> dict:
         name: Workflow file name without .md
         variables: Optional template variables for the workflow
     """
-    return _post("/api/workflow", {"name": name, "variables": variables or {}}, timeout=300)
+    return _post("/api/workflow", {"name": name, "variables": variables or {}},
+                 timeout=container_request_seconds(WORKFLOW_DEADLINE_SECONDS))
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Manage response cache", **DESTRUCTIVE))
@@ -898,7 +899,7 @@ def browser_parallel(sequences: list[list[dict]]) -> dict:
     """
     command = {"action": "parallel", "sequences": sequences}
     return _post("/api/batch", {"commands": [command]},
-                 timeout=max(300, command_wait_seconds(command) + 15))
+                 timeout=container_request_seconds(batch_deadline_seconds([command])))
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -1771,8 +1772,9 @@ def browser_batch(commands: list[dict]) -> dict:
     Args:
         commands: List of command dicts, e.g. [{"action": "navigate", "url": "..."}, {"action": "waitForElement", "selector": ".results", "timeout": 10000}, {"action": "pageText"}]
     """
-    # Commands run in sequence, so every wait in the batch must fit in the deadline.
-    return _post("/api/batch", {"commands": commands}, timeout=batch_wait_seconds(commands) + 15)
+    # Outlast the bridge's deadline, so a batch it stops still returns its partial progress.
+    return _post("/api/batch", {"commands": commands},
+                 timeout=container_request_seconds(batch_deadline_seconds(commands)))
 
 
 def main():

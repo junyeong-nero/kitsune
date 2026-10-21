@@ -3,7 +3,15 @@ import asyncio
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
-from kitsune import bridge, server
+from kitsune import bridge, server, waits
+
+# The MCP request outlasts a container's deadline by the bridge's settle time and a reply margin.
+REPLY = 2 * waits.CONTAINER_MARGIN_SECONDS
+
+
+def without_min_deadline():
+    """Let the batch deadline follow its waits alone, so tests see the sum of waits."""
+    return patch.object(waits, "CONTAINER_MIN_DEADLINE_SECONDS", 0)
 
 
 class BridgeActionWaitTests(unittest.TestCase):
@@ -139,32 +147,32 @@ class ToolActionWaitTests(unittest.TestCase):
             post.assert_not_called()
 
     def test_batch_action_wait_extends_timeout(self):
-        with patch.object(server, "_post", return_value={"results": []}) as post:
+        with patch.object(server, "_post", return_value={"results": []}) as post, without_min_deadline():
             server.browser_batch([{"action": "click", "selector": "#go"}])
-            self.assertEqual(post.call_args.kwargs["timeout"], 15)
+            self.assertEqual(post.call_args.kwargs["timeout"], 15 + REPLY)
             server.browser_batch([{"action": "click", "selector": "#go", "timeout": 60000}])
-            self.assertEqual(post.call_args.kwargs["timeout"], 15)
+            self.assertEqual(post.call_args.kwargs["timeout"], 15 + REPLY)
             server.browser_batch([{"action": "checkBox", "selector": "#a", "wait": True, "timeout": 30000},
                                   {"action": "hover", "selector": "#go", "wait": True}])
-            self.assertEqual(post.call_args.kwargs["timeout"], 55)
+            self.assertEqual(post.call_args.kwargs["timeout"], 55 + REPLY)
 
     def test_wait_and_expect_combine(self):
         # #66 waits before dispatch and #67 checks the outcome after it; both bound the request.
-        with patch.object(server, "_post", return_value={"ok": True}) as post:
+        with patch.object(server, "_post", return_value={"ok": True}) as post, without_min_deadline():
             server.browser_click("#go", wait=True, timeout=10000, expect={"text": "Saved", "timeout": 3000})
             post.assert_called_with("/api/click", {"selector": "#go", "wait": True, "timeout": 10000,
                                                    "expect": {"text": "Saved", "timeout": 3000}},
                                     timeout=15 + 10 + 3 + 45)
             server.browser_batch([{"action": "click", "selector": "#go", "wait": True,
                                    "expect": {"text": "Saved", "timeout": 3000}}])
-            self.assertEqual(post.call_args.kwargs["timeout"], 15 + 10 + 3 + 5)
+            self.assertEqual(post.call_args.kwargs["timeout"], 15 + 10 + 3 + 5 + REPLY)
 
     def test_batch_timeout_covers_the_sum_of_sequential_waits(self):
-        with patch.object(server, "_post", return_value={"results": []}) as post:
+        with patch.object(server, "_post", return_value={"results": []}) as post, without_min_deadline():
             # Three 10s waits run one after another; the max of them (25s) cut the batch off.
             clicks = [{"action": "click", "selector": f"#b{i}", "wait": True} for i in range(3)]
             server.browser_batch(clicks)
-            self.assertEqual(post.call_args.kwargs["timeout"], 45)
+            self.assertEqual(post.call_args.kwargs["timeout"], 45 + REPLY)
             # The same applies to the older waitForElement/URL/title and newTab waits.
             server.browser_batch([
                 {"action": "waitForElement", "selector": "#a", "timeout": 20000},
@@ -173,22 +181,26 @@ class ToolActionWaitTests(unittest.TestCase):
                 {"action": "sleep", "ms": 5000},
                 {"action": "pageText"},
             ])
-            self.assertEqual(post.call_args.kwargs["timeout"], 75)
+            self.assertEqual(post.call_args.kwargs["timeout"], 75 + REPLY)
             # Parallel sequences run concurrently: the slowest sequence counts, plus the
             # waits around the parallel command.
             server.browser_batch([
                 {"action": "parallel", "sequences": [clicks, clicks[:1]]},
                 {"action": "waitForTitle", "pattern": "x", "timeout": 10000},
             ])
-            self.assertEqual(post.call_args.kwargs["timeout"], 55)
+            self.assertEqual(post.call_args.kwargs["timeout"], 55 + REPLY)
             server.browser_parallel([clicks * 20, clicks[:1]])
-            self.assertEqual(post.call_args.kwargs["timeout"], 615)
+            self.assertEqual(post.call_args.kwargs["timeout"], 615 + REPLY)
+        with patch.object(server, "_post", return_value={"results": []}) as post:
+            # Without long waits, the request outlasts the bridge's 300s minimum deadline.
             server.browser_parallel([clicks])
-            self.assertEqual(post.call_args.kwargs["timeout"], 300)
+            self.assertEqual(post.call_args.kwargs["timeout"], 300 + REPLY)
+            server.browser_batch(clicks)
+            self.assertEqual(post.call_args.kwargs["timeout"], 300 + REPLY)
 
     def test_batch_timeout_counts_control_flow_bodies(self):
         click = {"action": "click", "selector": "#go", "wait": True}
-        with patch.object(server, "_post", return_value={"results": []}) as post:
+        with patch.object(server, "_post", return_value={"results": []}) as post, without_min_deadline():
             for cmd, wait_s in [
                 # Three attempts of a 10s wait, plus 0.5+1+2s of backoff.
                 ({"action": "retry", "command": click}, 33.5),
@@ -204,7 +216,7 @@ class ToolActionWaitTests(unittest.TestCase):
             ]:
                 with self.subTest(action=cmd["action"], wait_s=wait_s):
                     server.browser_batch([cmd])
-                    self.assertEqual(post.call_args.kwargs["timeout"], wait_s + 15)
+                    self.assertEqual(post.call_args.kwargs["timeout"], wait_s + 15 + REPLY)
 
     def test_retry_timeout_covers_every_attempt(self):
         with patch.object(server, "_post", return_value={"ok": True}) as post:

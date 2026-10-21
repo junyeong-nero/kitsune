@@ -79,3 +79,26 @@ def _int(value, default):
 def batch_wait_seconds(commands):
     """Batch commands run one after another, so their waits add up."""
     return sum(command_wait_seconds(cmd) for cmd in commands)
+
+
+# A batch or parallel stops at its waits plus CONTAINER_MARGIN_SECONDS, never before
+# CONTAINER_MIN_DEADLINE_SECONDS; a workflow at WORKFLOW_DEADLINE_SECONDS (the MCP server
+# cannot see a workflow's commands).
+CONTAINER_MIN_DEADLINE_SECONDS = 300
+WORKFLOW_DEADLINE_SECONDS = 300
+CONTAINER_MARGIN_SECONDS = 15
+
+
+def batch_deadline_seconds(commands):
+    """When the bridge cancels a batch and reports its partial progress."""
+    return max(CONTAINER_MIN_DEADLINE_SECONDS, batch_wait_seconds(commands) + CONTAINER_MARGIN_SECONDS)
+
+
+def container_settle_seconds(deadline):
+    """How long the bridge waits for a container: its deadline, then the cancelled step settling."""
+    return deadline + CONTAINER_MARGIN_SECONDS
+
+
+def container_request_seconds(deadline):
+    """MCP request timeout of a container call: past the bridge's settle time, so the partial report arrives."""
+    return container_settle_seconds(deadline) + CONTAINER_MARGIN_SECONDS

@@ -1,11 +1,13 @@
 import asyncio
 import json
+import logging
 import os
 import tempfile
+from threading import Thread
 import unittest
 from unittest.mock import Mock, patch
 
-from kitsune import bridge
+from kitsune import bridge, server, waits
 
 
 TIMEOUT = {"error": "Command timed out after 30s", "code": "timeout", "retryable": False}
@@ -228,6 +230,78 @@ class ContainerProgressTests(ContainerTests):
         self.assertEqual(payload["status"], "unknown")
         self.assertNotIn(("click", {"selector": "#b", "tabId": 3}), self.sent, "no step starts after the deadline")
         self.assertIn(("fill", False, "cancelled"), [(e["action"], e["ok"], e["error"]) for e in bridge._audit_log])
+
+
+class ContainerDeadlineTests(ContainerTests):
+    """The MCP request outlasts the bridge's container deadline, so the partial report arrives."""
+
+    def bridge_wait_seconds(self, route, body):
+        handler = bridge.BridgeHandler.__new__(bridge.BridgeHandler)
+        handler.read_body = Mock(return_value=dict(body))
+        handler.send_json = Mock()
+        handler.run_async = Mock(side_effect=lambda coro, **kwargs: asyncio.run(coro))
+        route(handler)
+        return handler.run_async.call_args.kwargs["timeout"]
+
+    def test_mcp_request_timeout_exceeds_the_bridge_deadline(self):
+        click = {"action": "click", "selector": "#go", "tabId": 3}
+        slow = {"action": "waitForElement", "selector": "#a", "timeout": 60000, "tabId": 3}
+        with tempfile.TemporaryDirectory() as tmp, patch.object(bridge, "WORKFLOW_DIR", tmp), \
+                patch.object(server, "_post", return_value={"results": []}) as post:
+            with open(os.path.join(tmp, "fixture.md"), "w", encoding="utf-8") as f:
+                f.write("```json\n" + json.dumps(click) + "\n```\n")
+            calls = [
+                (lambda: server.browser_batch([click]), lambda h: h.handle_batch(), {"commands": [click]}),
+                (lambda: server.browser_batch([slow] * 10), lambda h: h.handle_batch(), {"commands": [slow] * 10}),
+                (lambda: server.browser_parallel([[slow] * 10, [click]]), lambda h: h.handle_batch(),
+                 {"commands": [{"action": "parallel", "sequences": [[slow] * 10, [click]]}]}),
+                (lambda: server.browser_workflow("fixture"), lambda h: h.handle_workflow(), {"name": "fixture"}),
+            ]
+            for tool, route, body in calls:
+                with self.subTest(body=body):
+                    tool()
+                    request_s = post.call_args.kwargs["timeout"]
+                    bridge_s = self.bridge_wait_seconds(route, body)
+                    self.assertGreater(request_s, bridge_s)
+                    self.assertGreaterEqual(bridge_s, 300 + 15)
+
+    def test_mcp_client_receives_the_partial_report_at_the_deadline(self):
+        """A real HTTP bridge with a mocked extension; deadlines are scaled down to fractions of a second."""
+        async def hang(params):
+            await asyncio.sleep(30)
+        self.replies["fill"] = hang
+        logger = logging.getLogger("httpx")  # logs every request at INFO
+        self.addCleanup(logger.setLevel, logger.level)
+        logger.setLevel(logging.WARNING)
+        loop = asyncio.new_event_loop()
+        loop_thread = Thread(target=loop.run_forever, daemon=True)
+        loop_thread.start()
+        self.addCleanup(loop.close)
+        self.addCleanup(loop_thread.join)
+        self.addCleanup(loop.call_soon_threadsafe, loop.stop)
+        http = bridge.BridgeHTTPServer(("127.0.0.1", 0), bridge.BridgeHandler)
+        Thread(target=http.serve_forever, daemon=True).start()
+        self.addCleanup(http.server_close)
+        self.addCleanup(http.shutdown)
+        port = http.server_address[1]
+        token = "container-deadline-test-token"
+        with patch.object(bridge, "loop", loop), patch.object(bridge, "AUTH_TOKEN", token), \
+                patch.object(bridge, "ALLOWED_HOSTS", {f"127.0.0.1:{port}"}), \
+                patch.object(server, "BRIDGE", f"http://127.0.0.1:{port}"), \
+                patch.dict(os.environ, {"KITSUNE_TOKEN": token}), \
+                patch.object(server, "_ensure_bridge") as ensure, \
+                patch.object(waits, "CONTAINER_MIN_DEADLINE_SECONDS", 0.5), \
+                patch.object(waits, "CONTAINER_MARGIN_SECONDS", 0.5):
+            payload = server.browser_batch([
+                {"action": "click", "selector": "#a", "tabId": 3},
+                {"action": "fill", "selector": "#q", "value": "x", "tabId": 3},
+                {"action": "click", "selector": "#b", "tabId": 3}])
+            ensure.assert_not_called()
+        self.assertEqual((payload["code"], payload["retryable"]), ("container_timeout", False))
+        self.assertEqual(payload["state"], {"deadlineSeconds": 0.5})
+        self.assertEqual(payload["results"], [{"ok": True}])
+        self.assertEqual(self.statuses(payload["progress"]), ["ok", "unknown", "skipped"])
+        self.assertEqual([a for a, _ in self.sent], ["click", "fill"])
 
 
 if __name__ == "__main__":
