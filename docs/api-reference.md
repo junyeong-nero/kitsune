@@ -497,6 +497,18 @@ response body, so its entries are logged as sent. Nested commands (`batch`
 file paths; file contents are never logged. The extension still receives the
 unredacted value. Only the audit copy is scrubbed.
 
+Each command run inside `browser_batch`, `browser_parallel`, `browser_broadcast`,
+`browser_retry`, a workflow, or a batch `sequence`/`if`/`while`/`try` gets its own
+entry, including held `confirmation_required` steps. These entries add
+`parent: {call, path}`. `call` is shared by every entry from one container call.
+`path` lists the enclosing steps from the outermost, for example
+`[{"action": "batch", "index": 1}, {"action": "parallel", "sequence": 0, "index": 2}]`.
+The frames are `batch`/`sequence` `index`, workflow `name` and `index`, `parallel`
+`sequence` and `index`, `broadcast` `tabId`, `retry` `attempt` (from 1), `if`
+`branch` and `index`, `while` `iteration` and `index`, and `try` `block` (`do` or
+`catch`) and `index`. A nested container (for example a `parallel` inside a batch)
+is logged after its steps. Direct calls have no `parent`.
+
 ### `browser_tabs(action="list", tab_id=None, url=None, force=False, raw=False, wait=False, timeout=15000)`
 
 Replaces `browser_new_tab`, `browser_close_tab`, and `browser_switch_tab`.
