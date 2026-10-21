@@ -794,6 +794,17 @@ whose last attempt succeeded is `ok`. A `parallel` record adds `sequences`: one 
 per sequence of `{sequence, index, action, tabId, status}`; commands that never
 started are `skipped`. The top-level `status` combines the records the same way.
 
+The condition of an `if` or `while` is JavaScript run on its `tabId`. A condition
+that cannot run (for example `tab_closed`, `navigating`, a stale document, a script
+error, or the signed build) is not false. The step stops with the condition's error
+(`error`, `code`, `retryable`, `hint`, `state`), so its record is `failed`, or
+`unknown` for `retryable: false`. An `if` then runs neither branch. A `while` keeps
+the passes that already ran: it adds `iterations`, `results` and
+`stoppedBy: "conditionError"` to the error. Conditions that ran return the same
+results as before. Read-only mode (`browser_set_policy(readonly=True)`) refuses
+`if` and `while` like `js`, with `Read-only mode is active; refusing action: if`,
+before the condition or any branch runs.
+
 `summary` states `progress` in one paragraph a user can read without the records:
 the count of each status, then each command that is `unknown`, `held` (with how to
 confirm it), `failed` or `skipped`, by its `index` and `action` (and `tabId`), at most

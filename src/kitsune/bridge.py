@@ -759,7 +759,8 @@ _PERSISTENT_FAILURE_CODES = {"error_page"}
 
 def _check_policy(action, params):
     """Return error dict if action/url violates current policy, else None."""
-    if _policy["readonly"] and action in WRITE_ACTIONS:
+    # An if/while condition is JavaScript run on the page, so it is refused like js.
+    if _policy["readonly"] and (action in WRITE_ACTIONS or action in _CONDITION_ACTIONS):
         # Read-only ops on cookies/storage/etc. are still allowed; tighten if needed.
         sub_op = (params or {}).get("op") if isinstance(params, dict) else None
         if action in ("cookies", "clipboard", "storageOp", "downloads") and sub_op in ("get", "read", "list", "snapshot"):
@@ -2391,6 +2392,8 @@ async def _execute_command(action, effective_action, params):
             then_cmds = params.get('then', [])
             else_cmds = params.get('else', [])
             check = await send_to_extension('executeJS', {'tabId': tab_id, 'code': cond or '1'}, timeout=10)
+            if check.get('error'):
+                return check  # a condition that could not run is not false: run neither branch
             truthy = bool(check.get('result')) and check.get('result') not in ('false', '0', 'null', 'undefined', '')
             branch = then_cmds if truthy else else_cmds
             call = _audit_call()
@@ -2407,6 +2410,8 @@ async def _execute_command(action, effective_action, params):
             results = []
             for i in range(max_iters):
                 check = await send_to_extension('executeJS', {'tabId': tab_id, 'code': cond or '0'}, timeout=10)
+                if check.get('error'):
+                    return {**check, 'iterations': i, 'results': results, 'stoppedBy': 'conditionError'}
                 truthy = bool(check.get('result')) and check.get('result') not in ('false', '0', 'null', 'undefined', '')
                 if not truthy:
                     return {'iterations': i, 'results': results, 'stoppedBy': 'condition'}
