@@ -853,10 +853,10 @@ async function captureScreenshot(params = {}) {
     const dataUrl = await browser.tabs.captureTab(tab.id, { format: 'png', quality: 90 });
     return {
       dataUrl: params.imagePreview ? await imagePreview(dataUrl) : dataUrl,
-      url: tab?.url || '',
-      title: tab?.title || '',
-      width: tab?.width || 0,
-      height: tab?.height || 0
+      url: tab.url || '',
+      title: tab.title || '',
+      width: tab.width || 0,
+      height: tab.height || 0
     };
   } catch (e) {
     return { error: `Screenshot failed: ${e.message}` };
@@ -1597,14 +1597,6 @@ async function zlContent(tabId, action, params = {}) {
   return r && !r.error ? r : null;
 }
 
-async function zlHideFixed(tabId, selector) {
-  await zlContent(tabId, 'hideFixed', { selector });
-}
-
-async function zlRestoreFixed(tabId) {
-  await zlContent(tabId, 'restoreFixed');
-}
-
 async function zlScroll(tabId, scroll) {
   const r = await zlContent(tabId, 'captureScroll', scroll);
   return r ? r.sy : null;
@@ -1658,7 +1650,7 @@ async function elementScreenshot(tabId, selector, scale, preview) {
         segments++;
       }
       if (covered >= cssH) break;
-      if (!hidFixed) { await zlHideFixed(id, selector); hidFixed = true; }
+      if (!hidFixed) { await zlContent(id, 'hideFixed', { selector }); hidFixed = true; }
       const before = m.sy;
       await zlScroll(id, { by: Math.max(50, Math.floor(m.vh * 0.85)) });
       await zlSleep(160);
@@ -1671,10 +1663,10 @@ async function elementScreenshot(tabId, selector, scale, preview) {
              complete: covered >= cssH - 1, dataUrl: preview ? await imagePreview(cropped) : cropped };
   } catch (e) { return { error: 'elementScreenshot failed: ' + e.message }; }
   finally {
-    if (captureAttribute && id) {
+    if (captureAttribute) {
       try { await forwardToContent('unmarkScreenshotTarget', { tabId: id, attribute: captureAttribute }); } catch (e) {}
     }
-    if (hidFixed && id) { try { await zlRestoreFixed(id); } catch (e) {} }
+    if (hidFixed) { try { await zlContent(id, 'restoreFixed'); } catch (e) {} }
   }
 }
 
@@ -1696,7 +1688,7 @@ async function fullPageScreenshot(tabId, preview) {
       await zlSleep(150);   // let lazy content settle
       const sy = Number(await zlScroll(id, {})) || 0;   // the page may clamp the last scroll
       segments.push({ y: sy, data: await browser.tabs.captureTab(id, { format: 'png' }) });
-      if (!hidFixed) { await zlHideFixed(id, null); hidFixed = true; }
+      if (!hidFixed) { await zlContent(id, 'hideFixed', { selector: null }); hidFixed = true; }
       if (sy + vh >= docH) break;
       y = sy + vh;
     }
@@ -1715,7 +1707,7 @@ async function fullPageScreenshot(tabId, preview) {
              truncated: m.docHeight > CANVAS_MAX, dataUrl: preview ? await imagePreview(dataUrl) : dataUrl };
   } catch (e) { return { error: 'fullPageScreenshot failed: ' + e.message }; }
   finally {
-    if (hidFixed && id) { try { await zlRestoreFixed(id); } catch (e) {} }
+    if (hidFixed) { try { await zlContent(id, 'restoreFixed'); } catch (e) {} }
   }
 }
 
