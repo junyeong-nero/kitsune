@@ -435,6 +435,13 @@ your live browser connection. File reproducible bugs in
 browser version, bridge `build` from `browser_status`, tool calls, and expected
 versus actual behavior. Use a minimal public or local page and redact secrets.
 
+Tool definitions are resent with every model request, so their size is tracked:
+`uv run python scripts/tool_schema_size.py` reports the compact JSON size of each
+default tool, and a test fails until `--update` records a change in
+`tests/tool_schema_sizes.json`. Action tools share one contract (ref, wait,
+expect, confirm_token) documented in `browser_click`; point to it rather than
+repeating it.
+
 To publish a new version to PyPI, see [Releasing](releasing.md).
 
 ## Layout

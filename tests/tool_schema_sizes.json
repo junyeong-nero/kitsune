@@ -5,14 +5,14 @@
     "total": 368
   },
   "browser_check": {
-    "description": 458,
+    "description": 171,
     "inputSchema": 782,
-    "total": 1415
+    "total": 1128
   },
   "browser_click": {
-    "description": 1478,
+    "description": 1656,
     "inputSchema": 814,
-    "total": 2467
+    "total": 2645
   },
   "browser_console_logs": {
     "description": 81,
@@ -50,19 +50,19 @@
     "total": 1408
   },
   "browser_hover": {
-    "description": 442,
+    "description": 213,
     "inputSchema": 504,
-    "total": 1121
+    "total": 892
   },
   "browser_js": {
-    "description": 624,
+    "description": 570,
     "inputSchema": 368,
-    "total": 1176
+    "total": 1122
   },
   "browser_keypress": {
-    "description": 998,
+    "description": 631,
     "inputSchema": 1014,
-    "total": 2193
+    "total": 1826
   },
   "browser_markdown": {
     "description": 146,
@@ -70,9 +70,9 @@
     "total": 755
   },
   "browser_navigate": {
-    "description": 590,
+    "description": 412,
     "inputSchema": 484,
-    "total": 1255
+    "total": 1077
   },
   "browser_page_info": {
     "description": 151,
@@ -90,14 +90,14 @@
     "total": 1411
   },
   "browser_scroll": {
-    "description": 792,
+    "description": 749,
     "inputSchema": 541,
-    "total": 1510
+    "total": 1467
   },
   "browser_select_option": {
-    "description": 492,
+    "description": 188,
     "inputSchema": 846,
-    "total": 1529
+    "total": 1225
   },
   "browser_snapshot": {
     "description": 1144,
@@ -110,19 +110,19 @@
     "total": 318
   },
   "browser_submit_form": {
-    "description": 524,
+    "description": 316,
     "inputSchema": 636,
-    "total": 1346
+    "total": 1138
   },
   "browser_tabs": {
-    "description": 591,
+    "description": 548,
     "inputSchema": 668,
-    "total": 1446
+    "total": 1403
   },
   "browser_type": {
-    "description": 897,
+    "description": 472,
     "inputSchema": 922,
-    "total": 2005
+    "total": 1580
   },
   "browser_upload_file": {
     "description": 863,
@@ -130,9 +130,9 @@
     "total": 1572
   },
   "browser_wait_for": {
-    "description": 918,
+    "description": 819,
     "inputSchema": 1158,
-    "total": 2266
+    "total": 2167
   },
   "browser_watch_console": {
     "description": 186,
