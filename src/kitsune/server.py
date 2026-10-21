@@ -459,7 +459,8 @@ def browser_click(
     Click an element on the page by CSS selector or coordinates. ok=true only
     means the click was dispatched, not that the intended effect happened.
     Success returns a fresh snapshot whose refs replace earlier ones; target_ref is the
-    clicked element's new ref (see browser_snapshot).
+    clicked element's new ref (see browser_snapshot). Tabs the click opened (target=_blank
+    links, window.open) are listed in opened_tabs [{tabId, url}]; act on them with tab_id.
 
     Args:
         selector: CSS selector to click (e.g. "#submit", ".btn-primary")
@@ -477,6 +478,7 @@ def browser_click(
             The result adds dispatched=true and outcome {expected, observed, met}.
             If not met in time: ok=false, code="outcome_not_observed" and the
             current tab state; the action already ran, so do not blindly repeat it.
+            {"new_tab": True} is met once the click opens a tab (see opened_tabs).
         confirm_token: From a confirmation_required error, after the user approved this action.
     """
     body: dict = {"selector": selector} if selector or ref else {"coords": {"x": x, "y": y}}

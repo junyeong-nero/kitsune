@@ -1427,7 +1427,7 @@ async def _send_to_extension_raw(action, params=None, timeout=30):
 # within a bounded time, that the caller's expected outcome actually happened.
 OUTCOME_TIMEOUT_MS = 5000
 OUTCOME_POLL_SECONDS = 0.2
-_OUTCOME_CONDITIONS = ("url", "url_changed", "selector", "text", "text_gone")
+_OUTCOME_CONDITIONS = ("url", "url_changed", "new_tab", "selector", "text", "text_gone")
 # A check that hit one of these may succeed on the next document, so keep polling.
 _OUTCOME_TRANSIENT_CODES = {"navigating", "content_unavailable"}
 # Page actions on one existing tab; the outcome is observed in that tab.
@@ -1454,9 +1454,9 @@ def _parse_expect(action, expect):
     if len(kinds) != 1:
         return None, "expect needs exactly one of " + ", ".join(_OUTCOME_CONDITIONS)
     kind = kinds[0]
-    if kind == "url_changed":
+    if kind in ("url_changed", "new_tab"):
         if expect[kind] is not True:
-            return None, "expect.url_changed must be true"
+            return None, f"expect.{kind} must be true"
     elif not isinstance(expect[kind], str) or not expect[kind]:
         return None, f"expect.{kind} must be a non-empty string"
     gone, value = expect.get("gone", False), expect.get("value")
@@ -1488,6 +1488,12 @@ def _parse_expect(action, expect):
 def _outcome_budget_seconds(spec):
     """Time to allow beyond dispatch: the bounded wait plus the tab reads around it."""
     return spec["timeout"] / 1000 + 45
+
+
+async def _opened_tabs(tab_id):
+    """Tabs that tab_id opened since its last page action started ([] if unknown)."""
+    r = await send_to_extension("getOpenedTabs", {"tabId": tab_id}, timeout=10)
+    return (r.get("opened_tabs") or []) if isinstance(r, dict) else []
 
 
 async def _tab_state(tab_id):
@@ -1523,6 +1529,12 @@ async def _check_outcome(spec, tab_id, before, remaining_ms):
                                                   "timeout": remaining_ms}, timeout=wait_s)
         observed = {"source": "tab", "url": r.get("url")}
         met = r.get("ok") is True
+    elif "new_tab" in spec:
+        # One read per poll: the extension records the tabs this tab opened.
+        waited = False
+        r = await send_to_extension("getOpenedTabs", {"tabId": tab_id}, timeout=10)
+        opened = r.get("opened_tabs") or []
+        observed, met = {"source": "tabs", "opened_tabs": opened}, bool(opened)
     elif "text" in spec or "text_gone" in spec:
         r = await send_to_extension("waitForText", {"tabId": tab_id, "text": spec.get("text"),
                                                    "text_gone": spec.get("text_gone"),
@@ -1625,12 +1637,20 @@ async def _dispatch_with_expectation(action, params, spec, timeout):
         return result
     state = await _tab_state(tab_id)
     result["outcome"]["state"] = state
+    hint = ("The command was dispatched but the expected outcome did not happen; inspect the page "
+            "with browser_snapshot before acting again.")
+    # An outcome that happened in a tab the action opened is not a no-op.
+    opened = [] if "new_tab" in spec else await _opened_tabs(tab_id)
+    if opened:
+        result["opened_tabs"] = opened
+        ids = ", ".join(str(t.get("tabId")) for t in opened)
+        tabs = "tab" if len(opened) == 1 else "tabs"
+        hint = (f"The command was dispatched and opened {tabs} {ids}, where the outcome may have happened; "
+                f"inspect it with browser_snapshot tab_id={opened[0].get('tabId')} instead of "
+                "repeating the action.")
     result.update(_action_error(
         f"Expected outcome not observed within {spec['timeout']}ms", "outcome_not_observed",
-        retryable=_safe_to_repeat(action),
-        hint="The command was dispatched but the expected outcome did not happen; inspect the page "
-             "with browser_snapshot before acting again.",
-        **state,
+        retryable=_safe_to_repeat(action), hint=hint, **state,
     ))
     result["ok"] = False
     return result

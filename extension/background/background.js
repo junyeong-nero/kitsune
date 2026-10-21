@@ -21,6 +21,24 @@ browser.tabs.onRemoved.addListener(tabId => { dialogPolicies.delete(tabId); main
 browser.webRequest?.onHeadersReceived.addListener(
   ({ tabId, url, statusCode }) => { if (tabId >= 0) mainFrameStatus.set(tabId, { url, statusCode }); },
   { urls: ['<all_urls>'], types: ['main_frame'] });
+
+// Tabs a page opens (target=_blank links, window.open) name it as their opener.
+// Page actions report the tabs their tab opened since the action started.
+let tabsCreated = 0;
+const openedTabs = [];          // { tabId, openerTabId, seq } for open tabs with an opener
+const actionStarts = new Map(); // tabId -> tabsCreated when its last page action started
+browser.tabs.onCreated.addListener(tab => {
+  tabsCreated++;
+  if (tab.openerTabId != null) {
+    openedTabs.push({ tabId: tab.id, openerTabId: tab.openerTabId, seq: tabsCreated });
+  }
+});
+browser.tabs.onRemoved.addListener(tabId => {
+  actionStarts.delete(tabId);
+  for (let i = openedTabs.length - 1; i >= 0; i--) {
+    if (openedTabs[i].tabId === tabId || openedTabs[i].openerTabId === tabId) openedTabs.splice(i, 1);
+  }
+});
 browser.runtime.onMessage.addListener((msg, sender) => {
   if (msg.action === 'getDialogPolicy') {
     return Promise.resolve(dialogPolicies.get(sender.tab?.id) || null);
@@ -174,6 +192,14 @@ function isRestrictedUrl(url) {
 const POST_SNAPSHOT_ACTIONS = new Set([
   'click', 'type', 'fill', 'selectOption', 'checkBox', 'keypress', 'submitForm', 'navigate'
 ]);
+// Page actions on one existing tab (the bridge's outcome actions) report opened_tabs.
+const OPENER_ACTIONS = new Set([
+  'click', 'doubleClick', 'type', 'fill', 'setEditableContent', 'selectOption', 'checkBox',
+  'keypress', 'submitForm', 'formFill', 'hover', 'scroll', 'drag', 'focusElement', 'blurElement',
+  'navigate', 'goBack', 'goForward', 'reloadTabBrowser', 'clickAndWaitNavigation',
+]);
+// A tab opened by a link starts on about:blank; wait this long for its real URL.
+const OPENED_TAB_URL_WAIT_MS = 1000;
 
 async function handleCommand(command) {
   const params = { ...command };
@@ -184,7 +210,9 @@ async function handleCommand(command) {
     if (params.toRef) params.to = params.toRef;
   }
   const withSnapshot = POST_SNAPSHOT_ACTIONS.has(params.action) && params.includeSnapshot !== false;
-  if (withSnapshot && params.tabId == null) params.tabId = await getActiveTabId();
+  const tracksOpenedTabs = OPENER_ACTIONS.has(params.action);
+  if ((withSnapshot || tracksOpenedTabs) && params.tabId == null) params.tabId = await getActiveTabId();
+  if (tracksOpenedTabs && params.tabId != null) actionStarts.set(params.tabId, tabsCreated);
   const result = await dispatchCommand(params);
   if (withSnapshot && result && !result.error && result.ok !== false) {
     try {
@@ -199,7 +227,30 @@ async function handleCommand(command) {
       }
     } catch (e) { result.snapshot_error = e.message; }
   }
+  // Checked after the snapshot, which gives a link's new tab time to be created.
+  if (tracksOpenedTabs && params.tabId != null && result && typeof result === 'object') {
+    const opened = await getOpenedTabs(params.tabId, OPENED_TAB_URL_WAIT_MS);
+    if (opened.opened_tabs.length) result.opened_tabs = opened.opened_tabs;
+  }
   return result;
+}
+
+// Tabs opened by tabId since its last page action started, with their current URLs.
+async function getOpenedTabs(tabId, urlWait = 0) {
+  const since = actionStarts.get(tabId);
+  if (since == null) return { opened_tabs: [] };
+  const entries = openedTabs.filter(t => t.openerTabId === tabId && t.seq > since);
+  const tabs = await Promise.all(entries.map(async ({ tabId: id }) => {
+    let url;
+    try { url = (await browser.tabs.get(id)).url; } catch { return null; }
+    if (url === 'about:blank' && urlWait > 0) {
+      const r = await waitForTabProperty('url', { tabId: id, pattern: '^(?!about:blank$)', timeout: urlWait });
+      if (r.ok) url = r.url;
+      else if (r.ok !== false) return null; // closed while waiting
+    }
+    return { tabId: id, url };
+  }));
+  return { opened_tabs: tabs.filter(Boolean) };
 }
 
 async function dispatchCommand(command) {
@@ -211,6 +262,7 @@ async function dispatchCommand(command) {
     case 'getTabs':      return await getOpenTabs();
     case 'waitForUrl':   return await waitForTabProperty('url', params);
     case 'waitForTitle': return await waitForTabProperty('title', params);
+    case 'getOpenedTabs': return await getOpenedTabs(params.tabId);
     case 'navigate':     return await navigateTab(params.url, params.tabId, params.expectTitle);
     case 'switchTab':    return await switchTab(params.tabId);
     case 'newTab':       return await createTab(params.url, params);

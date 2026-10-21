@@ -427,6 +427,9 @@ uv run python -m unittest discover -s tests -q
 for test in tests/*.cjs; do node "$test"; done
 ```
 
+`tests/test_real_browser_opened_tabs.py` is skipped unless `KITSUNE_E2E_BROWSER` names a
+Firefox or Zen binary, which it runs headless with a temporary profile, HOME, and bridge.
+
 The Python regression suite covers the MCP tool surface, snapshots, navigation
 waits, and bridge lifecycle; the Node harnesses cover content-script behavior
 such as refs, form filling, and password redaction. For an end-to-end check, load the extension in a

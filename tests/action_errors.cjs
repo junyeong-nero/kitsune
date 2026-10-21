@@ -155,7 +155,7 @@ function background(tabs, content) {
   const missing = id => new Error(`Invalid tab ID: ${id}`);
   const browser = {
     tabs: {
-      onUpdated: event(), onRemoved: event(),
+      onCreated: event(), onUpdated: event(), onRemoved: event(),
       query: async () => Object.values(tabs).filter(tab => tab.active).map(tab => ({ ...tab })),
       get: async id => { if (!tabs[id]) throw missing(id); return { ...tabs[id] }; },
       update: async id => { if (!tabs[id]) throw missing(id); return { ...tabs[id] }; },

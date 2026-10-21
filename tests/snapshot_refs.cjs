@@ -126,6 +126,7 @@ async function testContent() {
   const background = fs.readFileSync('extension/background/background.js', 'utf8');
   const bridge = vm.createContext({
     getActiveTabId: async () => 42,
+    tabsCreated: 0, openedTabs: [], actionStarts: new Map(),
     dispatchCommand: send,
     forwardToContent: (action, params) => send({ action, ...params }),
   });
@@ -345,6 +346,7 @@ async function testBackground() {
   let calls = [], snapshotError = false, actionError = false;
   const context = vm.createContext({
     getActiveTabId: async () => 42,
+    tabsCreated: 0, openedTabs: [], actionStarts: new Map(),
     dispatchCommand: async params => { calls.push(params); return actionError ? { error: 'stale ref' } : { ok: true }; },
     forwardToContent: async (action, params) => {
       calls.push({ action, ...params });
