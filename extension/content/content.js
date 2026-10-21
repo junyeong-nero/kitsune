@@ -3,7 +3,7 @@
 
 (function() {
   'use strict';
-  const CONTENT_VERSION = 35;
+  const CONTENT_VERSION = 36;
   if (window.__claudeBridgeVersion >= CONTENT_VERSION) return;
   window.__claudeBridgeVersion = CONTENT_VERSION;
 
@@ -576,9 +576,10 @@
       // Skip noise
       if (['script', 'style', 'noscript', 'svg', 'path', 'br', 'hr'].includes(tag)) return null;
 
-      const rect = el.getBoundingClientRect();
+      const rect = viewportRect(el);
       const isInteractive = isInteractiveElement(el);
       const text = directText(el);
+      const frame = FRAME_TAGS.has(el.tagName);
 
       // Skip non-interactive elements with no text and small size
       if (!isInteractive && !text && rect.width < 5 && rect.height < 5) return null;
@@ -605,15 +606,20 @@
       if (el.ariaLabel) node.label = el.ariaLabel;
       if (el.disabled) node.disabled = true;
       if (el.checked !== undefined) node.checked = el.checked;
+      if (frame) {
+        if (el.title) node.title = el.title;
+        const { reason } = frameAccess(el);
+        if (reason) Object.assign(node, { content: reason, src: frameSource(el) });
+      }
 
       // Bounds only for interactive or visible elements
-      if (isInteractive || text) {
+      if (isInteractive || text || frame) {
         node.bounds = [Math.round(rect.x), Math.round(rect.y), Math.round(rect.width), Math.round(rect.height)];
       }
 
-      // Recurse children
+      // Recurse children, and the body of a same-origin frame
       const children = [];
-      for (const child of el.children) {
+      for (const child of childrenAcrossFrames(el)) {
         const childNode = buildNode(child, depth + 1);
         if (childNode) children.push(childNode);
       }
@@ -666,7 +672,7 @@
     const metadata = new WeakMap();
     const signatures = new Map();
     const targetAncestors = new Set();
-    for (let el = target; el; el = el.parentElement) targetAncestors.add(el);
+    for (let el = target; el; el = parentAcrossFrames(el)) targetAncestors.add(el);
     function ignored(el) {
       return !el || el.nodeType !== 1 || isHidden(el) ||
         el.getAttribute('aria-hidden') === 'true' ||
@@ -697,7 +703,7 @@
     // Bottom-up metadata avoids repeatedly scanning large clickable ancestor trees.
     function measure(el, domDepth = 0) {
       if (ignored(el)) return null;
-      const children = Array.from(el.children, child => measure(child, domDepth + 1)).filter(Boolean);
+      const children = childrenAcrossFrames(el).map(child => measure(child, domDepth + 1)).filter(Boolean);
       const shape = JSON.stringify([el.tagName, el.getAttribute('role'), el.type || '',
         children.map(child => child.signature)]);
       if (!signatures.has(shape)) signatures.set(shape, signatures.size);
@@ -715,9 +721,11 @@
       const interactive = isInteractiveElement(el);
       const role = el.getAttribute('role') || landmarks[el.tagName] ||
         (/^H[1-6]$/.test(el.tagName) ? 'heading' : inferRole(el));
+      // Rendered frames are listed even when their content is unavailable (cross-origin).
       data.useful = (maxDepth == null || domDepth <= maxDepth) &&
         (children.some(child => child.useful) || (interactive && !data.wrapper) ||
-          semanticRoles.has(role) || el === target || (withText && hasOwnText(el)));
+          semanticRoles.has(role) || el === target || (withText && hasOwnText(el)) ||
+          (FRAME_TAGS.has(el.tagName) && hasArea(el)));
       data.interactive += interactive ? 1 : 0;
       data.native += nativeTags.has(el.tagName) ? 1 : 0;
       metadata.set(el, data);
@@ -728,7 +736,7 @@
       const labelledBy = el.getAttribute('aria-labelledby');
       if (labelledBy) {
         const label = labelledBy.split(/\s+/).map(id => {
-          const labelEl = document.getElementById(id);
+          const labelEl = docOf(el).getElementById(id);
           return labelEl ? redactedText(labelEl) : '';
         }).join(' ');
         if (clean(label)) return clean(label);
@@ -762,10 +770,11 @@
     // named: an ancestor control or heading already shows this text as its name.
     function visit(el, depth, parent = -1, domDepth = 0, named = false) {
       if (!metadata.has(el) || (maxDepth != null && domDepth > maxDepth)) return;
+      const frame = FRAME_TAGS.has(el.tagName);
       let role = el.getAttribute('role') || landmarks[el.tagName] ||
-        (/^H[1-6]$/.test(el.tagName) ? 'heading' : inferRole(el));
+        (/^H[1-6]$/.test(el.tagName) ? 'heading' : inferRole(el)) || (frame ? 'iframe' : '');
       const interactive = isInteractiveElement(el) && !metadata.get(el).wrapper;
-      const include = interactive || semanticRoles.has(role) || el === target;
+      const include = interactive || semanticRoles.has(role) || el === target || frame;
       if (include) {
         if (!role) {
           if (el.isContentEditable) role = 'textbox';
@@ -782,6 +791,11 @@
         if (el.disabled || el.getAttribute('aria-disabled') === 'true') states.push('disabled');
         for (const state of ['expanded', 'selected', 'pressed']) {
           if (el.hasAttribute(`aria-${state}`)) states.push(`${state}=${el.getAttribute(`aria-${state}`)}`);
+        }
+        const frameReason = frame && frameAccess(el).reason;
+        if (frameReason) {
+          const src = clean(frameSource(el));
+          states.push(`content=${frameReason}`, ...(src ? [`src=${JSON.stringify(src)}`] : []));
         }
         const label = `${role} ${JSON.stringify(nameOf(el, interactive || el === target))}`;
         const line = `${'  '.repeat(Math.min(depth, 12))}- ${label} [ref=${ref}]${states.length ? ' [' + states.join(' ') + ']' : ''}`;
@@ -802,7 +816,7 @@
         }
       }
       if (maxDepth != null && domDepth >= maxDepth) return;
-      const children = Array.from(el.children).filter(child => metadata.get(child)?.useful);
+      const children = childrenAcrossFrames(el).filter(child => metadata.get(child)?.useful);
       // Only composite children / list items collapse: a toolbar of leaf controls
       // should remain fully discoverable. Text, IDs and classes are not structure.
       // In text mode, siblings with only inline content are prose, not cards.
@@ -903,7 +917,7 @@
     // Try as CSS selector
     try {
       if (valueSelectorBlocked(query)) throw new Error(VALUE_SELECTOR_ERROR);
-      const matches = document.querySelectorAll(query);
+      const matches = queryAllFrames(query);
       if (matches.length > 0 && matches.length < 50) {
         matches.forEach(el => {
           if (!isHidden(el)) results.push(makeResult(el));
@@ -913,7 +927,7 @@
     } catch {}
 
     // Text/attribute search
-    const candidates = document.querySelectorAll('a, button, input, select, textarea, [role], [onclick], label, h1, h2, h3, h4, h5, h6, p, span, div, li, td, th, img');
+    const candidates = queryAllFrames('a, button, input, select, textarea, [role], [onclick], label, h1, h2, h3, h4, h5, h6, p, span, div, li, td, th, img');
     for (const el of candidates) {
       if (isHidden(el)) continue;
       const score = scoreMatch(el, q);
@@ -927,7 +941,7 @@
   function makeResult(el) {
     const ref = `s${refGeneration}e${refCounter++}`;
     refMap[ref] = el;
-    const rect = el.getBoundingClientRect();
+    const rect = viewportRect(el);
     return {
       ref,
       tag: el.tagName.toLowerCase(),
@@ -973,13 +987,15 @@
 
     lastActedElement = el;
     const rect = el.getBoundingClientRect();
-    const x = coords ? coords.x : rect.x + rect.width / 2;
-    const y = coords ? coords.y : rect.y + rect.height / 2;
+    // Events carry the point in the viewport of the target's own (frame) document.
+    const point = coords ? elementAtPoint(coords.x, coords.y) : null;
+    const x = coords ? point.x : rect.x + rect.width / 2;
+    const y = coords ? point.y : rect.y + rect.height / 2;
     const eventInit = {
       bubbles: true,
       cancelable: true,
       composed: true,
-      view: window,
+      view: el.ownerDocument?.defaultView || window,
       clientX: x,
       clientY: y,
       button: 0,
@@ -1022,7 +1038,7 @@
   function blankTargetLink(el) {
     const link = el.closest('a[href], area[href]');
     if (!link || link.hasAttribute('download') || !/^https?:$/.test(link.protocol)) return null;
-    const target = link.getAttribute('target') ?? document.querySelector('base[target]')?.getAttribute('target');
+    const target = link.getAttribute('target') ?? docOf(link).querySelector('base[target]')?.getAttribute('target');
     return target?.toLowerCase() === '_blank' ? link : null;
   }
 
@@ -1050,7 +1066,7 @@
       }
     } else {
       if (el.contentEditable === 'true') {
-        document.execCommand('insertText', false, text);
+        docOf(el).execCommand('insertText', false, text);
         return { ok: true };
       }
       const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
@@ -1093,7 +1109,7 @@
         // @kitsune-dev-only:end
         target.innerText = text;
       } else {
-        document.execCommand(format === 'html' ? 'insertHTML' : 'insertText', false, text);
+        docOf(target).execCommand(format === 'html' ? 'insertHTML' : 'insertText', false, text);
       }
       target.dispatchEvent(new InputEvent('input', {
         bubbles: true,
@@ -1297,15 +1313,17 @@
   }
 
   // ── Get Form Fields ──
+  // Fields in same-origin frames name their frame; unreadable frames are listed.
   function getFormFields() {
     const fields = [];
-    document.querySelectorAll('input, select, textarea').forEach(el => {
+    queryAllFrames('input, select, textarea').forEach(el => {
       if (isHidden(el)) return;
-      const rect = el.getBoundingClientRect();
+      const rect = viewportRect(el);
       if (rect.width < 2 || rect.height < 2) return;
 
       const ref = `s${refGeneration}e${refCounter++}`;
       refMap[ref] = el;
+      const frame = hostFrame(el.ownerDocument);
 
       fields.push({
         ref,
@@ -1318,10 +1336,12 @@
         label: findLabel(el),
         required: el.required,
         selector: buildSelector(el),
+        ...(frame ? { frame: frame.title || frame.getAttribute('name') || frameSource(frame) } : {}),
         bounds: [Math.round(rect.x), Math.round(rect.y), Math.round(rect.width), Math.round(rect.height)]
       });
     });
-    return { fields };
+    const frames = unavailableFrames();
+    return { fields, ...(frames.length ? { unavailableFrames: frames } : {}) };
   }
 
   // ── Execute JS ──
@@ -1381,7 +1401,7 @@
         try {
           // Preserve native CSS selector errors while resolving snapshot refs.
           el = /^(?:s\d+e\d+|r\d+)$/.test(selector)
-            ? resolveElement(selector) : document.querySelector(selector);
+            ? resolveElement(selector) : queryFrames(selector);
         } catch (e) {
           resolve(errorResult(e));
           return;
@@ -1486,7 +1506,7 @@
       const el = resolveElement(selector);
       if (!el) return notFound();
       el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
-      const rect = el.getBoundingClientRect();
+      const rect = viewportRect(el);
       x = rect.left + rect.width / 2;
       y = rect.top + rect.height / 2;
     }
@@ -1582,12 +1602,160 @@
     return { ok: true };
   }
 
+  // ── Same-origin frames ──
+  // The content script runs in the top document only. Reads and actions reach into
+  // same-origin frames through contentDocument, at most FRAME_DEPTH frames deep;
+  // cross-origin frames give content scripts no contentDocument and stay opaque.
+  const FRAME_DEPTH = 3;
+  const FRAME_TAGS = new Set(['IFRAME', 'FRAME']);
+
+  // { doc } for a frame Kitsune reads into, else { reason: 'cross_origin' | 'too_deep' }.
+  function frameAccess(frame) {
+    let doc = null;
+    try {
+      doc = frame.contentDocument;
+      if (doc && doc.defaultView?.origin !== window.origin) doc = null;
+    } catch { doc = null; }
+    if (!doc) return { reason: 'cross_origin' };
+    let depth = 0;
+    for (let owner = frame.ownerDocument; owner && owner !== document; owner = hostFrame(owner)?.ownerDocument) depth++;
+    return depth < FRAME_DEPTH ? { doc } : { reason: 'too_deep' };
+  }
+
+  // The document inside el when el is a frame Kitsune reads into, else null.
+  function frameDocument(el) {
+    return FRAME_TAGS.has(el?.tagName) ? frameAccess(el).doc || null : null;
+  }
+
+  // The frame element holding doc; null for the top document.
+  function hostFrame(doc) {
+    if (!doc || doc === document) return null;
+    try { return doc.defaultView?.frameElement || null; } catch { return null; }
+  }
+
+  const docOf = el => el?.ownerDocument || document;
+  const styleOf = el => (el.ownerDocument?.defaultView || window).getComputedStyle(el);
+
+  // el's parent, continuing from a frame's root element to the frame element.
+  function parentAcrossFrames(el) {
+    return el.parentElement || hostFrame(el.ownerDocument);
+  }
+
+  // Element children, or a same-origin frame's body.
+  function childrenAcrossFrames(el) {
+    const doc = frameDocument(el);
+    if (doc) return doc.body ? [doc.body] : [];
+    return Array.from(el.children);
+  }
+
+  // The top document, then each same-origin frame document after the document holding it.
+  function searchedDocuments(doc = document, docs = []) {
+    docs.push(doc);
+    let frames = [];
+    try { frames = Array.from(doc.querySelectorAll('iframe, frame')); } catch {}
+    for (const frame of frames) {
+      const inner = frameDocument(frame);
+      if (inner) searchedDocuments(inner, docs);
+    }
+    return docs;
+  }
+
+  // querySelector over the top document, then its same-origin frames. An invalid
+  // selector throws, as document.querySelector does.
+  function queryFrames(selector) {
+    const el = document.querySelector(selector);
+    if (el) return el;
+    for (const doc of searchedDocuments().slice(1)) {
+      const found = doc.querySelector(selector);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  function queryAllFrames(selector) {
+    return searchedDocuments().flatMap(doc => Array.from(doc.querySelectorAll(selector)));
+  }
+
+  // Where a frame's viewport starts in its parent's viewport: inside its border and padding.
+  function frameContentOffset(frame) {
+    const rect = frame.getBoundingClientRect();
+    const style = styleOf(frame);
+    return { x: rect.left + (frame.clientLeft || 0) + (parseFloat(style.paddingLeft) || 0),
+      y: rect.top + (frame.clientTop || 0) + (parseFloat(style.paddingTop) || 0) };
+  }
+
+  // el.getBoundingClientRect() in the top document's viewport, also for elements in frames.
+  function viewportRect(el) {
+    const rect = el.getBoundingClientRect();
+    let frame = hostFrame(el.ownerDocument);
+    if (!frame) return rect;
+    let x = rect.left, y = rect.top;
+    for (; frame; frame = hostFrame(frame.ownerDocument)) {
+      const offset = frameContentOffset(frame);
+      x += offset.x;
+      y += offset.y;
+    }
+    return { x, y, width: rect.width, height: rect.height,
+      left: x, top: y, right: x + rect.width, bottom: y + rect.height };
+  }
+
+  // The element at a point of the top viewport, inside same-origin frames too, and the
+  // point in that element's own viewport.
+  function elementAtPoint(x, y) {
+    let el = document.elementFromPoint(x, y);
+    for (let doc = frameDocument(el); doc; doc = frameDocument(el)) {
+      const offset = frameContentOffset(el);
+      const inner = doc.elementFromPoint(x - offset.x, y - offset.y);
+      if (!inner) break;
+      el = inner;
+      x -= offset.x;
+      y -= offset.y;
+    }
+    return { el, x, y };
+  }
+
+  // The focused element, inside a focused same-origin frame too.
+  function activeElement() {
+    let el = document.activeElement;
+    for (let doc = frameDocument(el); doc?.activeElement; doc = frameDocument(el)) el = doc.activeElement;
+    return el;
+  }
+
+  // A frame's src without query or fragment, which can carry tokens.
+  function frameSource(frame) {
+    const src = frame.getAttribute('src') || '';
+    try {
+      const url = new URL(src, frame.baseURI || location.href);
+      if (/^https?:$/.test(url.protocol)) return url.origin + url.pathname;
+    } catch {}
+    return src.split(/[?#]/)[0].slice(0, 100);
+  }
+
+  const hasArea = el => { const r = el.getBoundingClientRect(); return r.width >= 2 && r.height >= 2; };
+
+  // Rendered frames whose content Kitsune cannot read, as browser_forms lists them.
+  function unavailableFrames() {
+    const out = [];
+    for (const doc of searchedDocuments()) {
+      let frames = [];
+      try { frames = Array.from(doc.querySelectorAll('iframe, frame')); } catch {}
+      for (const frame of frames) {
+        if (!FRAME_TAGS.has(frame.tagName)) continue;
+        const { reason } = frameAccess(frame);
+        if (!reason || isHidden(frame) || !hasArea(frame)) continue;
+        out.push({ ref: issueRef(frame), title: frame.title || frame.getAttribute('name') || '',
+          src: frameSource(frame), content: reason });
+      }
+    }
+    return out;
+  }
+
   // ── Helpers ──
 
   const REF_SELECTOR = /^(?:s\d+e\d+|r\d+)$/;
 
   function resolveElement(selector, coords) {
-    if (!selector && coords) return document.elementFromPoint(coords.x, coords.y);
+    if (!selector && coords) return elementAtPoint(coords.x, coords.y).el;
     if (!selector) return null;
     
     // Try ref map first
@@ -1597,8 +1765,8 @@
       return el;
     }
     
-    // Try CSS selector
-    try { return document.querySelector(selector); } catch {}
+    // Try CSS selector, in same-origin frames too
+    try { return queryFrames(selector); } catch {}
     return null;
   }
 
@@ -1618,7 +1786,7 @@
 
   function assertOneTarget(selector, pointer) {
     let matches = [];
-    try { matches = Array.from(document.querySelectorAll(selector)); } catch {}
+    try { matches = queryAllFrames(selector); } catch {}
     if (matches.length < 2) return;
     const actionable = matches.filter(el => isActionable(el, pointer));
     if (actionable.length < 2) return;
@@ -1649,7 +1817,7 @@
 
   function nearestInteractiveAncestor(el) {
     let cur = el;
-    while (cur && cur !== document.body) {
+    while (cur && cur !== docOf(cur).body) {
       if (isInteractiveElement(cur)) return cur;
       cur = cur.parentElement;
     }
@@ -1658,7 +1826,7 @@
 
   function isHidden(el) {
     if (!el || el.hidden) return true;
-    const s = window.getComputedStyle(el);
+    const s = styleOf(el);
     return s.display === 'none' || s.visibility === 'hidden';
   }
 
@@ -1742,7 +1910,7 @@
 
   function isMasked(el) {
     return cachedFor('masked', el, () => {
-      const style = window.getComputedStyle(el);
+      const style = styleOf(el);
       const security = style.webkitTextSecurity || style.getPropertyValue?.('-webkit-text-security');
       return TEXT_SECURITY_MASKS.has(security);
     });
@@ -1863,7 +2031,7 @@
 
   function valueSelectorBlocked(selector) {
     if (!isValueAttributeSelector(selector)) return false;
-    for (const el of document.querySelectorAll('[value]')) {
+    for (const el of queryAllFrames('[value]')) {
       if (isSensitiveField(el)) return true;
     }
     return false;
@@ -1884,7 +2052,7 @@
     if (el.id) return `#${CSS.escape(el.id)}`;
     const parts = [];
     let cur = el;
-    for (let i = 0; i < 4 && cur && cur !== document.body; i++) {
+    for (let i = 0; i < 4 && cur && cur !== docOf(cur).body; i++) {
       let s = cur.tagName.toLowerCase();
       if (cur.id) { parts.unshift(`#${CSS.escape(cur.id)}`); break; }
       if (cur.className && typeof cur.className === 'string') {
@@ -1899,7 +2067,7 @@
 
   function findLabel(el) {
     if (el.id) {
-      const lbl = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+      const lbl = docOf(el).querySelector(`label[for="${CSS.escape(el.id)}"]`);
       if (lbl) return redactedText(lbl).trim().slice(0, 80);
     }
     const parent = el.closest('label');
@@ -1990,7 +2158,7 @@
   function getBounds(selector) {
     const el = resolveElement(selector);
     if (!el) return notFound();
-    const r = el.getBoundingClientRect();
+    const r = viewportRect(el);
     return {
       x: r.x, y: r.y, width: r.width, height: r.height,
       top: r.top, right: r.right, bottom: r.bottom, left: r.left,
@@ -2250,20 +2418,20 @@
     if (!el) return notFound();
     lastFilledField = el;
     el.focus();
-    return { ok: true, active: document.activeElement === el };
+    return { ok: true, active: activeElement() === el };
   }
 
   function blurEl(selector) {
-    const el = selector ? resolveElement(selector) : document.activeElement;
+    const el = selector ? resolveElement(selector) : activeElement();
     if (!el) return notFound();
     if (typeof el.blur === 'function') el.blur();
     return { ok: true };
   }
 
   function keypress(selector, key, modifiers, text, first) {
-    const target = selector ? resolveTarget(selector, null, { first }) : (document.activeElement || document.body);
+    const target = selector ? resolveTarget(selector, null, { first }) : (activeElement() || document.body);
     if (!target) return notFound('No target');
-    lastActedElement = selector || target !== document.body ? target : null;
+    lastActedElement = selector || target !== docOf(target).body ? target : null;
     const mods = modifiers || {};
     const opts = {
       key,
@@ -2280,7 +2448,7 @@
       target.dispatchEvent(new KeyboardEvent('keypress', opts));
       // Insert text into editable targets
       if (target.isContentEditable) {
-        document.execCommand('insertText', false, text);
+        docOf(target).execCommand('insertText', false, text);
       } else if (['INPUT','TEXTAREA'].includes(target.tagName)) {
         const proto = target.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
         const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
@@ -2298,7 +2466,8 @@
     if (!el) return notFound();
     el.scrollIntoView({ behavior: 'instant', block: 'center' });
     const r = el.getBoundingClientRect();
-    const init = { bubbles: true, cancelable: true, composed: true, view: window, clientX: r.x + r.width/2, clientY: r.y + r.height/2, button: 0 };
+    const init = { bubbles: true, cancelable: true, composed: true, view: el.ownerDocument?.defaultView || window,
+      clientX: r.x + r.width/2, clientY: r.y + r.height/2, button: 0 };
     el.dispatchEvent(new MouseEvent('mousedown', init));
     el.dispatchEvent(new MouseEvent('mouseup', init));
     el.dispatchEvent(new MouseEvent('click', init));
@@ -2418,7 +2587,7 @@
   function controlLabel(control, buttonInput) {
     const attr = name => String(control.getAttribute?.(name) || '').trim();
     const labelledBy = attr('aria-labelledby').split(/\s+/).filter(Boolean)
-      .map(id => { const el = document.getElementById?.(id); return el ? redactedText(el) : ''; })
+      .map(id => { const el = docOf(control).getElementById?.(id); return el ? redactedText(el) : ''; })
       .join(' ').trim();
     const text = redactedText(control).trim();
     const icon = !text && control.querySelector?.('[aria-label], img[alt], svg title');
@@ -2435,7 +2604,7 @@
   // do and reports no field values.
   function describeTarget(selector, coords, key) {
     let el = selector || coords ? resolveElement(selector, coords)
-      : (document.activeElement || document.body);
+      : (activeElement() || document.body);
     if (!el) return notFound();
     if (coords) el = nearestInteractiveAncestor(el) || el;
     const control = el.closest ? el.closest('button, input, [role="button"]') ||
@@ -2477,7 +2646,7 @@
     } else {
       form = lastFilledField?.isConnected ? lastFilledField.form || lastFilledField.closest('form') : null;
       if (!form) {
-        const forms = Array.from(document.querySelectorAll('form'));
+        const forms = queryAllFrames('form');
         if (forms.length > 1) {
           return ambiguousTarget(`${forms.length} forms on the page and no filled field names one; nothing was submitted`,
             'Pass the ref of the form to submit from state.candidates, or fill one of its fields first.',
@@ -2518,7 +2687,7 @@
       let el = null;
       try {
         for (const selector of [key, `[name="${CSS.escape(key)}"]`]) {
-          try { el = document.querySelector(selector); } catch {}
+          try { el = queryFrames(selector); } catch {}
           if (el && !first) assertOneTarget(selector, false);
           if (el) break;
         }
@@ -2528,10 +2697,10 @@
       }
       // Try by label text
       if (!el) {
-        for (const lbl of document.querySelectorAll('label')) {
+        for (const lbl of queryAllFrames('label')) {
           const t = (lbl.innerText || '').trim();
           if (t.toLowerCase().includes(key.toLowerCase())) {
-            if (lbl.htmlFor) el = document.getElementById(lbl.htmlFor);
+            if (lbl.htmlFor) el = docOf(lbl).getElementById(lbl.htmlFor);
             else el = lbl.querySelector('input, textarea, select');
             if (el) break;
           }
@@ -2539,7 +2708,7 @@
       }
       // Try by placeholder
       if (!el) {
-        for (const inp of document.querySelectorAll('input[placeholder], textarea[placeholder]')) {
+        for (const inp of queryAllFrames('input[placeholder], textarea[placeholder]')) {
           if (inp.placeholder.toLowerCase().includes(key.toLowerCase())) { el = inp; break; }
         }
       }

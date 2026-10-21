@@ -1344,6 +1344,22 @@ With `KITSUNE_POST_ACTION_SNAPSHOT=text` in the bridge environment, post-action
 snapshots use the same text lines within their 4,000-character cap, so an
 `expect={"text": ...}` already present there needs no further read.
 
+#### Frames
+
+The content script runs in the top document and reads into same-origin frames
+(`iframe`/`frame` whose `contentDocument` it can access), at most three frames deep.
+`browser_snapshot`, `browser_dom`, `browser_find` and `browser_forms` include their
+elements with refs in the same generation as the page, and refs, CSS selectors
+(the top document first, then each frame), `form_fill` labels and coordinate clicks
+reach into them; sensitive fields inside frames are redacted the same way. A frame is
+a snapshot line such as `- iframe "배송지 편집" [ref=…]` with its content below it.
+A frame whose content is unavailable is still listed, with
+`[content=cross_origin src="https://pay.example/widget"]` (or `content=too_deep`), its
+`src` without query or fragment; `browser_dom` adds the same `content` and `src`, and
+`browser_forms` lists such frames in `unavailableFrames`. Fields inside a frame carry
+`frame` (its title, name or src) in `browser_forms`, and bounds are in the top
+viewport.
+
 ### `browser_type(selector="", text="", mode="type", clear=False, tab_id=None, ref=None, element=None, wait=False, timeout=10000)`
 
 Replaces `browser_fill` and `browser_set_editable_content`.
