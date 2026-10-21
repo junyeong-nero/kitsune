@@ -345,7 +345,8 @@ What it does not protect against:
 - **Typed values outside the bridge.** The bridge audit log (`browser_audit`)
   keeps the action, target, tab, timing and outcome of each write action but
   replaces typed text (`browser_type`, `browser_form_fill` values,
-  `browser_keypress` text) and stored secrets (`browser_cookies`,
+  `browser_keypress` text, `browser_select_option` values and
+  `browser_handle_dialog` prompt answers) and stored secrets (`browser_cookies`,
   `browser_storage` and `browser_clipboard` values) with `"[redacted]"`; see
   [Audit log](api-reference.md#audit-log). The page and the MCP client's own
   transcript still see whatever the agent sent.
@@ -429,6 +430,9 @@ uv run python -m unittest discover -s tests -q
 for test in tests/*.cjs; do node "$test"; done
 ```
 
+`tests/test_real_browser_opened_tabs.py` is skipped unless `KITSUNE_E2E_BROWSER` names a
+Firefox or Zen binary, which it runs headless with a temporary profile, HOME, and bridge.
+
 The Python regression suite covers the MCP tool surface, snapshots, navigation
 waits, and bridge lifecycle; the Node harnesses cover content-script behavior
 such as refs, form filling, and password redaction. For an end-to-end check, load the extension in a
@@ -437,6 +441,20 @@ your live browser connection. File reproducible bugs in
 [GitHub Issues](https://github.com/junyeong-nero/kitsune/issues), including the
 browser version, bridge `build` from `browser_status`, tool calls, and expected
 versus actual behavior. Use a minimal public or local page and redact secrets.
+
+The opt-in real-browser suite (`tests/test_real_browser.py`) covers action races,
+tab unloads and reconnects against a real Firefox, Zen or LibreWolf. It is skipped
+unless `KITSUNE_E2E_BROWSER` names the browser binary, and it takes about a minute:
+
+```bash
+KITSUNE_E2E_BROWSER=/Applications/Zen.app/Contents/MacOS/zen \
+  uv run python -m unittest discover -s tests -p test_real_browser.py -v
+```
+
+It starts a headless browser on a new temporary profile and HOME, plus its own bridge
+and fixture site on spare ports, and kills them afterwards. Your browser profiles
+and running bridge are not touched: the suite runs a copy of the extension whose
+bridge port is rewritten to the test bridge, and checks the copy before launch.
 
 To publish a new version to PyPI, see [Releasing](releasing.md).
 

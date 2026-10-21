@@ -129,6 +129,7 @@ const field = (tagName, attrs, props) => new Element(tagName, attrs, [], props);
   const calls = [];
   const bridge = vm.createContext({
     getActiveTabId: async () => 42,
+    tabsCreated: 0, openedTabs: [], actionStarts: new Map(),
     dispatchCommand: send,
     forwardToContent: (action, params) => { calls.push({ action, ...params }); return send({ action, ...params }); },
   });

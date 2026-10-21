@@ -67,7 +67,7 @@ function harness(startUrl, onNavigate = () => {}) {
   };
   const browser = {
     tabs: {
-      onUpdated, onRemoved,
+      onCreated: event(), onUpdated, onRemoved,
       query: async () => [{ ...tab }],
       get: async id => { assert.equal(id, 7); return { ...tab }; },
       update: async (id, props) => navigate({ method: 'update', id, ...props }),

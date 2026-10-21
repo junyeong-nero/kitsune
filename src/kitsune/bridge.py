@@ -34,6 +34,8 @@ import subprocess
 import sys
 import time
 import ctypes
+import contextvars
+import itertools
 from contextlib import asynccontextmanager
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from threading import Lock, Thread
@@ -54,7 +56,7 @@ except ImportError:
 
 from . import bridge_control
 from .version import BRIDGE_BUILD, PACKAGE_VERSION
-from .waits import actionability_wait_seconds, batch_wait_seconds
+from .waits import actionability_wait_seconds, batch_wait_seconds, command_wait_seconds
 
 # ── Config ──
 BRIDGE_VERSION = PACKAGE_VERSION
@@ -132,8 +134,11 @@ _tab_pool = {  # tab id pool for fast-acquire workflows
     "in_use": set(),   # tab ids currently checked out
     "url": "about:blank",
 }
-_audit_log = []  # list of {ts, action, params, ok, error, ms}
+_audit_log = []  # list of {ts, action, params, ok, error, ms[, parent]}
 _AUDIT_MAX = 2000
+# {"call", "path"} of the container step running in this task; None for direct calls.
+_audit_parent = contextvars.ContextVar("kitsune_audit_parent", default=None)
+_audit_call_ids = itertools.count(1)
 _log_buffer = []  # mirrors bridge stdout lines
 _LOG_MAX = 5000
 # Ask-before-act is opt-in. askUrls are payment-like URL patterns it guards (case-insensitive).
@@ -649,14 +654,26 @@ def _log(msg):
 AUDIT_REDACTED = "[redacted]"
 # Params holding typed text or stored secrets (cookie, storage and clipboard
 # contents); selectors, refs, tabId, op, name, url and key stay.
+# selectOption values are always redacted: the bridge only sees a selector/ref,
+# and whether the <select> is sensitive (isSensitiveField) is known only in the page.
 _AUDIT_SECRET_PARAMS = {
     "type": ("text",),
     "fill": ("value",),
     "setEditableContent": ("value",),
     "keypress": ("text",),
+    "selectOption": ("value",),
+    "handleDialog": ("prompt_text",),
     "cookies": ("value",),
     "storageOp": ("value",),
     "clipboard": ("text",),
+}
+
+# JS bodies are dropped: "code" everywhere, plus the JS expressions that
+# control-flow steps evaluate in the page.
+_AUDIT_JS_PARAMS = {
+    "if": ("condition",),
+    "while": ("condition",),
+    "syncBarrier": ("predicate",),
 }
 
 
@@ -676,9 +693,10 @@ def _audit_params(action, params):
         return value
 
     secret = _AUDIT_SECRET_PARAMS.get(action, ())
+    js = _AUDIT_JS_PARAMS.get(action, ())
     out = {}
     for k, v in (params or {}).items():
-        if k == "code":  # don't log JS bodies
+        if k == "code" or k in js:  # don't log JS bodies
             continue
         if k in secret:
             out[k] = AUDIT_REDACTED
@@ -691,14 +709,18 @@ def _audit_params(action, params):
 
 
 def _audit(action, params, ok, error, ms):
-    _audit_log.append({
+    entry = {
         "ts": int(time.time() * 1000),
         "action": action,
         "params": _audit_params(action, params),
         "ok": bool(ok),
         "error": error,
         "ms": int(ms),
-    })
+    }
+    parent = _audit_parent.get()
+    if parent is not None:
+        entry["parent"] = parent
+    _audit_log.append(entry)
     if len(_audit_log) > _AUDIT_MAX:
         del _audit_log[: len(_audit_log) - _AUDIT_MAX]
 
@@ -719,6 +741,8 @@ WRITE_ACTIONS = {
 # Repeating these after an unknown outcome could duplicate a side effect (a submit,
 # message, payment or deletion), so their timeouts and disconnects are not retryable.
 _REPEAT_UNSAFE_ACTIONS = WRITE_ACTIONS | {"uploadCommit", "focusElement", "blurElement"}
+# Nothing reached the page, but repeating cannot succeed until the tab navigates.
+_PERSISTENT_FAILURE_CODES = {"error_page"}
 
 
 def _check_policy(action, params):
@@ -794,7 +818,8 @@ def _confirmation_binding(action, params, tab_id):
 
 def _remember_outcome(action, params, result):
     """Under ask mode, remember writes whose outcome is unknown so repeating them is held."""
-    if not _policy["ask"] or not isinstance(result, dict) or result.get("retryable") is not False:
+    if (not _policy["ask"] or not isinstance(result, dict) or result.get("retryable") is not False
+            or result.get("code") in _PERSISTENT_FAILURE_CODES):
         return
     now_s = time.monotonic()
     for key in [k for k, exp in _unknown_outcomes.items() if exp < now_s]:
@@ -956,12 +981,13 @@ async def _broadcast_async(tab_ids, command, timeout=30):
     if not action:
         return {"error": "broadcast command needs an action"}
     base_params = {k: v for k, v in command.items() if k != "action"}
+    call = _audit_call()
 
     async def one(tid):
         # Route through the same logic batch uses so behavior is identical.
         cmd = {**base_params, "action": action, "tabId": tid}
         try:
-            res = await asyncio.wait_for(run_command(cmd), timeout=timeout)
+            res = await asyncio.wait_for(_run_step(cmd, call, action="broadcast", tabId=tid), timeout=timeout)
             return tid, res
         except asyncio.TimeoutError:
             return tid, {"error": f"timed out after {timeout}s"}
@@ -1378,7 +1404,8 @@ async def _send_to_extension_raw(action, params=None, timeout=30):
         if action == "closeTab" and not (isinstance(result, dict) and result.get("error")):
             _cleanup_tab_scheduler_state(params.get("tabId"))
         # The extension cannot tell reads from writes; repeating a read is always safe.
-        if isinstance(result, dict) and result.get("code") and _safe_to_repeat(action):
+        if (isinstance(result, dict) and result.get("code") and _safe_to_repeat(action)
+                and result["code"] not in _PERSISTENT_FAILURE_CODES):
             result["retryable"] = True
         return result
     except asyncio.TimeoutError:
@@ -1402,7 +1429,7 @@ async def _send_to_extension_raw(action, params=None, timeout=30):
 # within a bounded time, that the caller's expected outcome actually happened.
 OUTCOME_TIMEOUT_MS = 5000
 OUTCOME_POLL_SECONDS = 0.2
-_OUTCOME_CONDITIONS = ("url", "url_changed", "selector", "text", "text_gone")
+_OUTCOME_CONDITIONS = ("url", "url_changed", "new_tab", "selector", "text", "text_gone")
 # A check that hit one of these may succeed on the next document, so keep polling.
 _OUTCOME_TRANSIENT_CODES = {"navigating", "content_unavailable"}
 # Page actions on one existing tab; the outcome is observed in that tab.
@@ -1422,25 +1449,28 @@ def _parse_expect(action, expect):
     if "ref" in expect:
         return None, ("expect.ref is not supported because the post-action snapshot replaces refs; "
                       "use expect.selector")
-    unknown = set(expect) - {*_OUTCOME_CONDITIONS, "gone", "value", "timeout"}
+    unknown = set(expect) - {*_OUTCOME_CONDITIONS, "gone", "value", "value_changed", "timeout"}
     if unknown:
         return None, "Unknown expect keys: " + ", ".join(sorted(unknown))
     kinds = [key for key in _OUTCOME_CONDITIONS if expect.get(key) is not None]
     if len(kinds) != 1:
         return None, "expect needs exactly one of " + ", ".join(_OUTCOME_CONDITIONS)
     kind = kinds[0]
-    if kind == "url_changed":
+    if kind in ("url_changed", "new_tab"):
         if expect[kind] is not True:
-            return None, "expect.url_changed must be true"
+            return None, f"expect.{kind} must be true"
     elif not isinstance(expect[kind], str) or not expect[kind]:
         return None, f"expect.{kind} must be a non-empty string"
     gone, value = expect.get("gone", False), expect.get("value")
+    value_changed = expect.get("value_changed", False)
     if not isinstance(gone, bool):
         return None, "expect.gone must be a boolean"
-    if (gone or value is not None) and kind != "selector":
-        return None, "expect.gone and expect.value require expect.selector"
-    if gone and value is not None:
-        return None, "expect.gone and expect.value are mutually exclusive"
+    if not isinstance(value_changed, bool):
+        return None, "expect.value_changed must be a boolean"
+    if (gone or value is not None or value_changed) and kind != "selector":
+        return None, "expect.gone, expect.value and expect.value_changed require expect.selector"
+    if [gone, value is not None, value_changed].count(True) > 1:
+        return None, "expect.gone, expect.value and expect.value_changed are mutually exclusive"
     if value is not None and not isinstance(value, str):
         return None, "expect.value must be a string"
     timeout = expect.get("timeout", OUTCOME_TIMEOUT_MS)
@@ -1452,12 +1482,20 @@ def _parse_expect(action, expect):
         spec["gone"] = True
     if value is not None:
         spec["value"] = value
+    if value_changed:
+        spec["value_changed"] = True
     return spec, None
 
 
 def _outcome_budget_seconds(spec):
     """Time to allow beyond dispatch: the bounded wait plus the tab reads around it."""
     return spec["timeout"] / 1000 + 45
+
+
+async def _opened_tabs(tab_id):
+    """Tabs that tab_id opened since its last page action started ([] if unknown)."""
+    r = await send_to_extension("getOpenedTabs", {"tabId": tab_id}, timeout=10)
+    return (r.get("opened_tabs") or []) if isinstance(r, dict) else []
 
 
 async def _tab_state(tab_id):
@@ -1471,34 +1509,55 @@ async def _tab_state(tab_id):
     return {"tabId": tab_id, "url": tab.get("url"), "title": tab.get("title")}
 
 
-async def _check_outcome(spec, tab_id, before_url, remaining_ms):
-    """One observation bounded by remaining_ms; returns (met, observed, final)."""
+async def _query_value(tab_id, selector):
+    """Read the first match's value; returns the query reply and its first item (or None)."""
+    r = await send_to_extension("query", {"tabId": tab_id, "selector": selector,
+                                         "fields": ["value"], "limit": 1}, timeout=10)
+    return r, (r.get("items") or [None])[0]
+
+
+async def _check_outcome(spec, tab_id, before, remaining_ms):
+    """One observation bounded by remaining_ms; returns (met, observed, final).
+
+    before is the pre-dispatch observation: the tab URL for url_changed, or the
+    first match's query item (None if absent) for value_changed.
+    """
     wait_s = remaining_ms / 1000 + 5
     waited = True  # a wait that ends unmet has used up the remaining time
     if "url" in spec or "url_changed" in spec:
         # Tab metadata survives document replacement, unlike content-script reads.
-        pattern = spec.get("url") or "^(?!%s$)" % _re.escape(before_url or "")
+        pattern = spec.get("url") or "^(?!%s$)" % _re.escape(before or "")
         r = await send_to_extension("waitForUrl", {"tabId": tab_id, "pattern": pattern,
                                                   "timeout": remaining_ms}, timeout=wait_s)
         observed = {"source": "tab", "url": r.get("url")}
         met = r.get("ok") is True
+    elif "new_tab" in spec:
+        # One read per poll: the extension records the tabs this tab opened.
+        waited = False
+        r = await send_to_extension("getOpenedTabs", {"tabId": tab_id}, timeout=10)
+        opened = r.get("opened_tabs") or []
+        observed, met = {"source": "tabs", "opened_tabs": opened}, bool(opened)
     elif "text" in spec or "text_gone" in spec:
         r = await send_to_extension("waitForText", {"tabId": tab_id, "text": spec.get("text"),
                                                    "text_gone": spec.get("text_gone"),
                                                    "timeout": remaining_ms}, timeout=wait_s)
         met = r.get("ok") is True
         observed = {"source": "page", "textVisible": met if "text" in spec else not met}
-    elif "value" in spec:
+    elif "value" in spec or "value_changed" in spec:
         waited = False
-        r = await send_to_extension("query", {"tabId": tab_id, "selector": spec["selector"],
-                                             "fields": ["value"], "limit": 1}, timeout=10)
-        item = (r.get("items") or [None])[0]
+        r, item = await _query_value(tab_id, spec["selector"])
         if item is None:
             observed, met = {"source": "page", "found": False}, False
         elif item.get("redacted"):
             # Sensitive values are never read back, so this outcome cannot be verified.
             return False, {"source": "page", "found": True, "redacted": True,
                            "hasValue": item.get("hasValue")}, True
+        elif "value_changed" in spec:
+            # A field absent before dispatch has changed once it is present.
+            previous = before.get("value") if before else None
+            observed = {"source": "page", "found": True, "value": item.get("value"),
+                        "before": previous}
+            met = before is None or item.get("value") != previous
         else:
             observed = {"source": "page", "found": True, "value": item.get("value")}
             met = item.get("value") == spec["value"]
@@ -1520,7 +1579,7 @@ async def _check_outcome(spec, tab_id, before_url, remaining_ms):
     return met, observed, waited
 
 
-async def _observe_outcome(spec, tab_id, before_url, snapshot):
+async def _observe_outcome(spec, tab_id, before, snapshot):
     """Poll until the expected outcome is observed or spec['timeout'] ms pass."""
     start = time.monotonic()
     # Reuse the post-action snapshot: text already in it needs no further read.
@@ -1529,7 +1588,7 @@ async def _observe_outcome(spec, tab_id, before_url, snapshot):
     deadline = start + spec["timeout"] / 1000
     while True:
         remaining_ms = max(0, math.ceil((deadline - time.monotonic()) * 1000))
-        met, observed, final = await _check_outcome(spec, tab_id, before_url, remaining_ms)
+        met, observed, final = await _check_outcome(spec, tab_id, before, remaining_ms)
         if met or final or time.monotonic() >= deadline:
             break
         await asyncio.sleep(min(OUTCOME_POLL_SECONDS, max(0, deadline - time.monotonic())))
@@ -1555,30 +1614,45 @@ async def _dispatch_with_expectation(action, params, spec, timeout):
         if not isinstance(active, dict) or active.get("error"):
             return active
         tab_id = params["tabId"] = active["tabId"]
-    before_url = None
+    before = None
     if "url_changed" in spec:
-        before_url = (await _tab_state(tab_id)).get("url")
-        if before_url is None:
+        before = (await _tab_state(tab_id)).get("url")
+        if before is None:
             return {"error": f"Cannot read the URL of tab {tab_id} before dispatch"}
+    elif "value_changed" in spec:
+        r, before = await _query_value(tab_id, spec["selector"])
+        if r.get("error"):
+            return {"error": f"Cannot read the value of {spec['selector']} before dispatch: {r['error']}"}
+        if before and before.get("redacted"):
+            return {"error": f"{spec['selector']} is a sensitive field whose value is never read back, "
+                              "so expect.value_changed cannot be verified"}
     result = await send_to_extension(action, params, timeout=timeout)
     if not isinstance(result, dict) or result.get("error") or result.get("ok") is False:
         return result
-    outcome = await _observe_outcome(spec, tab_id, before_url, result.get("snapshot"))
+    outcome = await _observe_outcome(spec, tab_id, before, result.get("snapshot"))
     expected = dict(spec)
     if outcome["observed"].get("redacted"):
-        expected.pop("value")  # never echo a value meant for a sensitive field
+        expected.pop("value", None)  # never echo a value meant for a sensitive field
     result["dispatched"] = True
     result["outcome"] = {"expected": expected, **outcome}
     if outcome["met"]:
         return result
     state = await _tab_state(tab_id)
     result["outcome"]["state"] = state
+    hint = ("The command was dispatched but the expected outcome did not happen; inspect the page "
+            "with browser_snapshot before acting again.")
+    # An outcome that happened in a tab the action opened is not a no-op.
+    opened = [] if "new_tab" in spec else await _opened_tabs(tab_id)
+    if opened:
+        result["opened_tabs"] = opened
+        ids = ", ".join(str(t.get("tabId")) for t in opened)
+        tabs = "tab" if len(opened) == 1 else "tabs"
+        hint = (f"The command was dispatched and opened {tabs} {ids}, where the outcome may have happened; "
+                f"inspect it with browser_snapshot tab_id={opened[0].get('tabId')} instead of "
+                "repeating the action.")
     result.update(_action_error(
         f"Expected outcome not observed within {spec['timeout']}ms", "outcome_not_observed",
-        retryable=_safe_to_repeat(action),
-        hint="The command was dispatched but the expected outcome did not happen; inspect the page "
-             "with browser_snapshot before acting again.",
-        **state,
+        retryable=_safe_to_repeat(action), hint=hint, **state,
     ))
     result["ok"] = False
     return result
@@ -1763,8 +1837,25 @@ BATCH_ACTION_MAP = {
 }
 
 
+def _audit_call():
+    """Return the container call nested steps are grouped under; a top-level container starts one."""
+    return _audit_parent.get() or {"call": next(_audit_call_ids), "path": []}
+
+
+async def _run_step(cmd, call, **frame):
+    """Run a container's nested command; its audit entries carry the call id and the step's path."""
+    token = _audit_parent.set({"call": call["call"], "path": [*call["path"], frame]})
+    try:
+        return await run_command(cmd)
+    finally:
+        _audit_parent.reset(token)
+
+
 async def run_command(cmd):
-    """Execute a single batch command asynchronously."""
+    """Execute a single batch command asynchronously.
+
+    Inside a container step (_run_step) the command is audited like a direct call.
+    """
     action = cmd.get('action', '')
     params = {k: v for k, v in cmd.items() if k != 'action'}
     try:
@@ -1780,7 +1871,26 @@ async def run_command(cmd):
         if held:
             return held
         _invalidate_cache_for_action(effective_action)
+    except Exception as e:
+        return {'error': str(e)}
+    if _audit_parent.get() is None:
+        return await _execute_command(action, effective_action, params)
+    audited = dict(params)
+    t0 = time.time()
+    try:
+        result = await _execute_command(action, effective_action, params)
+    except asyncio.CancelledError:
+        _audit(effective_action, audited, False, 'cancelled', (time.time() - t0) * 1000)
+        raise
+    error = result.get('error') if isinstance(result, dict) else None
+    ok = error is None and not (isinstance(result, dict) and result.get('ok') is False)
+    _audit(effective_action, audited, ok, error, (time.time() - t0) * 1000)
+    return result
 
+
+async def _execute_command(action, effective_action, params):
+    """Dispatch a batch command that passed policy and ask-before-act checks."""
+    try:
         # Simple forwarding actions (the majority)
         if action in BATCH_ACTION_MAP:
             if 'expect' in params:
@@ -1834,14 +1944,16 @@ async def run_command(cmd):
                     a = cmd.get('action', '')
                     if a in ('navigate', 'switchTab') and 'tabId' not in cmd:
                         return {'error': f'Sequence {i}: "{a}" inside parallel requires explicit tabId to avoid race conditions'}
-            async def run_sequence(seq):
+            call = _audit_call()
+
+            async def run_sequence(i, seq):
                 results = []
-                for c in seq:
-                    results.append(await run_command(c))
+                for j, c in enumerate(seq):
+                    results.append(await _run_step(c, call, action='parallel', sequence=i, index=j))
                     if _is_held(results[-1]):
                         break  # later steps may depend on the held one
                 return results
-            return list(await asyncio.gather(*[run_sequence(s) for s in sequences]))
+            return list(await asyncio.gather(*[run_sequence(i, s) for i, s in enumerate(sequences)]))
         elif action == 'broadcast':
             return await _broadcast_async(params.get('tabIds', []), params.get('command', {}))
         elif action == 'syncBarrier':
@@ -1856,9 +1968,10 @@ async def run_command(cmd):
             attempts = max(1, int(params.get('maxAttempts', 3)))
             backoff_ms = int(params.get('backoffMs', 500))
             on_errors = params.get('onErrors')
+            call = _audit_call()
             last = None
             for i in range(attempts):
-                last = await run_command(inner)
+                last = await _run_step(inner, call, action='retry', attempt=i + 1)
                 if not (isinstance(last, dict) and last.get('error')):
                     return {'ok': True, 'attempts': i + 1, 'result': last}
                 # Retrying cannot confirm a held action; only the caller can.
@@ -1879,15 +1992,17 @@ async def run_command(cmd):
             check = await send_to_extension('executeJS', {'tabId': tab_id, 'code': cond or '1'}, timeout=10)
             truthy = bool(check.get('result')) and check.get('result') not in ('false', '0', 'null', 'undefined', '')
             branch = then_cmds if truthy else else_cmds
+            call = _audit_call()
             out = []
-            for c in branch:
-                out.append(await run_command(c))
+            for j, c in enumerate(branch):
+                out.append(await _run_step(c, call, action='if', branch='then' if truthy else 'else', index=j))
             return {'branch': 'then' if truthy else 'else', 'condition': check.get('result'), 'results': out}
         elif action == 'while':
             cond = params.get('condition')
             tab_id = params.get('tabId')
             body = params.get('do', [])
             max_iters = int(params.get('maxIterations', 20))
+            call = _audit_call()
             results = []
             for i in range(max_iters):
                 check = await send_to_extension('executeJS', {'tabId': tab_id, 'code': cond or '0'}, timeout=10)
@@ -1895,33 +2010,35 @@ async def run_command(cmd):
                 if not truthy:
                     return {'iterations': i, 'results': results, 'stoppedBy': 'condition'}
                 step = []
-                for c in body:
-                    step.append(await run_command(c))
+                for j, c in enumerate(body):
+                    step.append(await _run_step(c, call, action='while', iteration=i, index=j))
                 results.append(step)
             return {'iterations': max_iters, 'results': results, 'stoppedBy': 'maxIterations'}
         elif action == 'try':
             body = params.get('do', [])
             catch = params.get('catch', [])
+            call = _audit_call()
             try:
                 results = []
-                for c in body:
-                    r = await run_command(c)
+                for j, c in enumerate(body):
+                    r = await _run_step(c, call, action='try', block='do', index=j)
                     results.append(r)
                     if isinstance(r, dict) and r.get('error'):
                         raise RuntimeError(r['error'])
                 return {'ok': True, 'results': results}
             except Exception as e:
                 caught = []
-                for c in catch:
-                    caught.append(await run_command(c))
+                for j, c in enumerate(catch):
+                    caught.append(await _run_step(c, call, action='try', block='catch', index=j))
                 return {'ok': False, 'error': str(e), 'catch_results': caught}
         elif action == 'sequence':
             # Run a list of commands with variable substitution between them
             inner = params.get('do', [])
+            call = _audit_call()
             results = []
-            for command in inner:
+            for j, command in enumerate(inner):
                 resolved = _substitute_vars(command, results)
-                results.append(await run_command(resolved))
+                results.append(await _run_step(resolved, call, action='sequence', index=j))
                 if _is_held(results[-1]):
                     break
             return {'results': results}
@@ -2538,7 +2655,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "action": "retry",
             **body,
         }
-        result = self.run_async(run_command(cmd))
+        # Every attempt may wait for its target, and the backoff sleeps add up.
+        result = self.run_async(run_command(cmd), timeout=max(35, command_wait_seconds(cmd) + 15))
         self.send_json(200, result)
 
     # ── Tag tabs ──
@@ -2715,9 +2833,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
         stop_on_warning = body.get('stopOnWarning', False)
 
         async def run_all():
+            call = _audit_call()
             results = []
-            for cmd in commands:
-                r = await run_command(cmd)
+            for i, cmd in enumerate(commands):
+                r = await _run_step(cmd, call, action='batch', index=i)
                 results.append(r)
                 # Later commands may depend on a held one, so never run past it.
                 if _is_held(r):
@@ -2774,9 +2893,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return
 
         async def run_workflow():
+            call = _audit_call()
             results = []
-            for cmd in commands:
-                r = await run_command(cmd)
+            for i, cmd in enumerate(commands):
+                r = await _run_step(cmd, call, action='workflow', name=name, index=i)
                 results.append(r)
                 if isinstance(r, dict) and r.get('error'):
                     break

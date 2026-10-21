@@ -96,7 +96,7 @@ async function testBackgroundDescribeTarget() {
   const event = () => ({ addListener() {}, removeListener() {} });
   const browser = {
     tabs: {
-      onUpdated: event(), onRemoved: event(),
+      onCreated: event(), onUpdated: event(), onRemoved: event(),
       query: async () => Object.values(tabs).filter(tab => tab.active),
       get: async id => { if (!tabs[id]) throw new Error(`Invalid tab ID: ${id}`); return { ...tabs[id] }; },
       sendMessage: async (id, msg) => {
