@@ -906,9 +906,51 @@
   }
 
   // ── Find Elements ──
+  const FIND_LIMIT = 20;
+  const FIND_NO_MATCH_HINT = 'No element matches this query; try a shorter phrase from the element\'s ' +
+    'visible label, or browser_snapshot(text=True).';
+  // Filler words in descriptive queries ("the button in the filters") that match almost anything.
+  const FIND_STOP_WORDS = new Set(['a', 'an', 'the', 'in', 'on', 'of', 'to', 'for', 'or', 'and',
+    'with', 'at', 'by', 'from', 'is', 'that', 'this', 'its']);
+  // Words a query uses for a control's kind, matched against its role.
+  const FIND_ROLE_WORDS = {
+    button: 'button', link: 'link', checkbox: 'checkbox', radio: 'radio', tab: 'tab',
+    combobox: 'combobox dropdown select', listbox: 'listbox dropdown select list',
+    textbox: 'textbox input field box', searchbox: 'searchbox search input field box bar',
+    menuitem: 'menuitem menu item', option: 'option', slider: 'slider', switch: 'switch toggle',
+    heading: 'heading title', img: 'image img picture',
+  };
+  // Longer text belongs to a container; it can match the whole query but not single terms.
+  const FIND_TEXT_TERM_LIMIT = 200;
+
+  // Lowercase words, with camelCase and kebab/snake-case ids split apart.
+  function findWords(value) {
+    return String(value || '').replace(/(\p{Ll})(\p{Lu})/gu, '$1 $2').toLowerCase()
+      .match(/[\p{L}\p{N}]+/gu) || [];
+  }
+
+  // Terms are the query's words without filler; phrases are quoted parts and the whole query.
+  function parseFindQuery(query) {
+    const words = findWords(query);
+    const content = words.filter(word => !FIND_STOP_WORDS.has(word));
+    const terms = [...new Set(content.length ? content : words)];
+    const phrases = new Set(words.length > 1 ? [words.join(' ')] : []);
+    for (const [, double, single] of query.matchAll(/["\u201c\u201d]([^"\u201c\u201d]+)["\u201c\u201d]|(?:^|\s)['\u2018]([^'\u2018\u2019]+)['\u2019](?=\s|$|[.,;:!?])/g)) {
+      const phrase = findWords(double || single).join(' ');
+      if (phrase.includes(' ')) phrases.add(phrase);
+    }
+    return { terms, phrases: [...phrases] };
+  }
+
+  // A field word matches a term it starts with, or a slightly shorter form of it
+  // ("reviews" finds "review", "버튼을" finds "버튼").
+  function wordMatchesTerm(word, term) {
+    return word.startsWith(term) ||
+      (word.length >= 2 && term.startsWith(word) && term.length - word.length <= 3);
+  }
+
   function findElements(query) {
     pruneRefMap();
-    const q = query.toLowerCase();
     const results = [];
 
     // Try as CSS selector
@@ -919,20 +961,30 @@
         matches.forEach(el => {
           if (!isHidden(el)) results.push(makeResult(el));
         });
-        if (results.length) return { results: results.slice(0, 20) };
+        if (results.length) return { results: results.slice(0, FIND_LIMIT) };
       }
     } catch {}
 
     // Text/attribute search
+    const parsed = parseFindQuery(query);
+    if (!parsed.terms.length) return { results: [], hint: FIND_NO_MATCH_HINT };
+    const scored = [];
     const candidates = document.querySelectorAll('a, button, input, select, textarea, [role], [onclick], label, h1, h2, h3, h4, h5, h6, p, span, div, li, td, th, img');
     for (const el of candidates) {
       if (isHidden(el)) continue;
-      const score = scoreMatch(el, q);
-      if (score > 0) results.push({ ...makeResult(el), score });
+      const match = scoreMatch(el, parsed);
+      if (match) scored.push({ el, ...match });
     }
+    if (!scored.length) return { results: [], hint: FIND_NO_MATCH_HINT };
 
-    results.sort((a, b) => b.score - a.score);
-    return { results: results.slice(0, 20) };
+    // Drop weak partial matches: keep elements matching at least half as many terms as the best.
+    const bestMatched = Math.max(...scored.map(entry => entry.matched));
+    const kept = scored.filter(entry => entry.matched * 2 >= bestMatched);
+    // Between equal scores, the element with less text is the more specific one.
+    kept.sort((a, b) => b.score - a.score || a.textLength - b.textLength);
+    return {
+      results: kept.slice(0, FIND_LIMIT).map(entry => ({ ...makeResult(entry.el), score: entry.score })),
+    };
   }
 
   function makeResult(el) {
@@ -949,11 +1001,15 @@
     };
   }
 
-  function scoreMatch(el, query) {
-    let score = 0;
+  // Scores el against a parsed query, or returns null when el does not match it.
+  // Each term counts once, at the weight of the best field it matches.
+  function scoreMatch(el, { terms, phrases }) {
+    const text = redactedText(el).replace(/\s+/g, ' ').trim();
+    const role = el.getAttribute('role') || inferRole(el) ||
+      (/^H[1-6]$/.test(el.tagName) ? 'heading' : el.tagName === 'IMG' ? 'img' : '');
     const fields = [
-      [redactedText(el), 2],
-      [el.ariaLabel, 5],
+      [text, 2],
+      [el.getAttribute('aria-label'), 5],
       [el.placeholder, 4],
       [el.title, 3],
       [el.alt, 3],
@@ -961,12 +1017,36 @@
       [el.name, 2],
       // Matching on a sensitive value would let queries probe it.
       [isSensitiveField(el) ? '' : el.value, 2],
-    ];
-    for (const [val, weight] of fields) {
-      if (val && String(val).toLowerCase().includes(query)) score += weight;
+    ].filter(([value]) => value && typeof value === 'string').map(([value, weight]) => {
+      const words = findWords(value);
+      const joined = ` ${words.join(' ')} `;
+      const phrase = phrases.some(p => joined.includes(` ${p} `)) ? weight : 0;
+      return { words, weight, phrase, long: value === text && text.length > FIND_TEXT_TERM_LIMIT && !phrase };
+    });
+
+    let termScore = 0;
+    let matched = 0;
+    let matchedContent = 0;
+    const roleWords = findWords(FIND_ROLE_WORDS[role] || role);
+    for (const term of terms) {
+      let best = 0;
+      for (const field of fields) {
+        if (field.weight > best && !field.long && field.words.some(word => wordMatchesTerm(word, term))) {
+          best = field.weight;
+        }
+      }
+      if (best) matchedContent++;
+      else if (roleWords.includes(term)) best = 1;
+      if (best) { matched++; termScore += best; }
     }
+    // A role alone ("xyzzy button") is no match unless the query names nothing but roles ("button").
+    if (!matched || (!matchedContent && matched < terms.length)) return null;
+
+    let score = termScore * (matched / terms.length);
+    if (matched === terms.length) score += 4;
+    score += Math.max(0, ...fields.map(field => field.phrase)) * 3;
     if (isInteractiveElement(el)) score += 1;
-    return score;
+    return { score: Math.round(score * 100) / 100, matched, textLength: text.length };
   }
 
   // ── Click ──
@@ -1000,12 +1080,15 @@
     // el.click() below emits the click and performs native activation exactly once.
     for (const type of ['pointerover', 'pointerenter', 'pointerdown', 'mousedown', 'pointerup', 'mouseup']) {
       const EventCtor = type.startsWith('pointer') && window.PointerEvent ? PointerEvent : MouseEvent;
-      el.dispatchEvent(new EventCtor(type, {
+      const proceed = el.dispatchEvent(new EventCtor(type, {
         ...eventInit,
         pointerId: 1,
         pointerType: 'mouse',
         isPrimary: true,
       }));
+      // As a real mousedown does, unless the page cancelled it. The background has already
+      // refused a tab the user is using (user_active), so this never takes focus from them.
+      if (type === 'mousedown' && proceed) focusForClick(el, coords);
     }
 
     const link = blankTargetLink(el);
@@ -1098,6 +1181,78 @@
     return failure ? { ...failure, media } : { ok: true, tag: el.tagName.toLowerCase(), media };
   }
 
+  // Focus what a click on el focuses; in an editor, put the caret at the click point, or at
+  // the end of el for a ref or selector click.
+  function focusForClick(el, coords) {
+    if (isEditableRegion(el)) {
+      placeEditableCaret(el, coords && caretRangeAt(el, coords));
+      return;
+    }
+    el.closest?.(FOCUSABLE_SELECTOR)?.focus?.({ preventScroll: true });
+  }
+
+  const FOCUSABLE_SELECTOR = 'a[href], area[href], button, input, select, textarea, iframe, summary, [tabindex]';
+
+  // The collapsed range at a viewport point, if it falls inside el.
+  function caretRangeAt(el, { x, y }) {
+    let range = null;
+    if (document.caretPositionFromPoint) {
+      const position = document.caretPositionFromPoint(x, y);
+      if (position?.offsetNode) {
+        range = document.createRange();
+        range.setStart(position.offsetNode, position.offset);
+      }
+    } else if (document.caretRangeFromPoint) {
+      range = document.caretRangeFromPoint(x, y);
+    }
+    return range && el.contains(range.startContainer) ? range : null;
+  }
+
+  // The editing host el belongs to: the element that takes focus for it.
+  function editingHost(el) {
+    let host = el;
+    while (host.parentElement?.isContentEditable) host = host.parentElement;
+    return host;
+  }
+
+  function selectionInside(el) {
+    const selection = window.getSelection();
+    if (!selection?.rangeCount) return null;
+    const range = selection.getRangeAt(0);
+    return el.contains(range.startContainer) && el.contains(range.endContainer) ? range.cloneRange() : null;
+  }
+
+  // Focus el's editing host and select range, by default a caret at the end of el. Focusing
+  // the host alone leaves Firefox's caret at the start of the editor.
+  function placeEditableCaret(el, range) {
+    if (!range) {
+      range = document.createRange();
+      range.selectNodeContents(el);
+      range.collapse(false);
+    }
+    editingHost(el).focus({ preventScroll: true });
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+
+  // Replace the selection with text as typing does, firing beforeinput and input.
+  function insertEditableText(el, text) {
+    if (document.execCommand('insertText', false, text)) return;
+    const init = { bubbles: true, composed: true, inputType: 'insertText', data: text };
+    if (!el.dispatchEvent(new InputEvent('beforeinput', { ...init, cancelable: true }))) return;
+    const selection = window.getSelection();
+    const range = selection.getRangeAt(0);
+    range.deleteContents();
+    const node = document.createTextNode(text);
+    range.insertNode(node);
+    range.setStartAfter(node);
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    el.dispatchEvent(new InputEvent('input', init));
+  }
+
   // The http(s) link a click on el follows into a new tab (target=_blank, or <base target>).
   // The popup blocker can drop that tab for a synthetic click, so the background checks it.
   function blankTargetLink(el) {
@@ -1113,10 +1268,19 @@
     if (!host) return notFound();
     // A web-component host types into the field in its (nested) open or closed shadow roots.
     const el = ['INPUT', 'TEXTAREA'].includes(host.tagName) ? host : shadowField(host, 'input, textarea') || host;
-    if (!['INPUT', 'TEXTAREA'].includes(el.tagName) && (clear || el.contentEditable !== 'true')) {
+    if (!['INPUT', 'TEXTAREA'].includes(el.tagName) && !isEditableRegion(el)) {
       return notFillable(el, 'input or textarea');
     }
     lastActedElement = lastFilledField = el;
+
+    // In an editor, type at the caret if it is in el, else at the end; clear replaces el's content.
+    if (isEditableRegion(el)) {
+      const range = clear ? document.createRange() : selectionInside(el);
+      if (clear) range.selectNodeContents(el);
+      placeEditableCaret(el, range);
+      insertEditableText(el, text);
+      return { ok: true };
+    }
 
     el.focus();
     
@@ -1130,10 +1294,6 @@
         el.value = text;
       }
     } else {
-      if (el.contentEditable === 'true') {
-        document.execCommand('insertText', false, text);
-        return { ok: true };
-      }
       const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
       const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
       if (setter) {
@@ -1164,6 +1324,8 @@
     if (!target) return { error: 'Element is not editable' };
     lastFilledField = target;
 
+    // Read before focus(), which can move the caret to the start of the editor.
+    const caret = isEditableRegion(target) ? selectionInside(target) : null;
     target.focus();
     const text = String(value ?? '');
 
@@ -1174,6 +1336,7 @@
         // @kitsune-dev-only:end
         target.innerText = text;
       } else {
+        placeEditableCaret(target, caret);
         document.execCommand(format === 'html' ? 'insertHTML' : 'insertText', false, text);
       }
       target.dispatchEvent(new InputEvent('input', {
@@ -2540,11 +2703,18 @@
       text: label.slice(0, 80) };
   }
 
+  // The form's first submit control. A <button> without a type (or with an unknown one) is a
+  // submit button, and its type property reads "submit".
+  function formSubmitControl(form) {
+    return Array.from(form.querySelectorAll('button, input')).find(el =>
+      (el.tagName === 'BUTTON' && el.type === 'submit') ||
+      (el.tagName === 'INPUT' && (el.type === 'submit' || el.type === 'image'))) || null;
+  }
+
   // A form as submit results and ambiguous_target candidates name it, with a new ref in the
   // current generation. Attributes, not properties: a field named "action" shadows form.action.
   function formSummary(form, button) {
-    button ??= Array.from(form.querySelectorAll('button, input'))
-      .find(el => el.type === 'submit' || el.type === 'image');
+    button ??= formSubmitControl(form);
     return { ref: issueRef(form), action: form.getAttribute('action') || '',
       method: (form.getAttribute('method') || 'get').toLowerCase(),
       button: button ? controlLabel(button, button.tagName === 'INPUT').slice(0, 80) : '' };
@@ -2571,11 +2741,16 @@
       }
     }
     if (!form) return { error: 'No <form> found' };
-    // Prefer the submit-button click path so form-validation listeners fire.
-    const btn = form.querySelector('button[type="submit"], input[type="submit"]');
+    // Click the submit control, else requestSubmit, so submit handlers and validation run as
+    // for a user's submit. form.submit() skips both and is the last resort.
+    const btn = formSubmitControl(form);
     // Named before submitting, which can remove the form.
     const submitted = formSummary(form, btn);
     if (btn) { btn.click(); return { ok: true, submitted: 'button', form: submitted }; }
+    if (typeof form.requestSubmit === 'function') {
+      form.requestSubmit();
+      return { ok: true, submitted: 'requestSubmit', form: submitted };
+    }
     form.submit();
     return { ok: true, submitted: 'method', form: submitted };
   }

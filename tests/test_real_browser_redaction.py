@@ -255,8 +255,11 @@ class RealBrowserRedactionTests(harness.RealBrowserTestCase):
             reads[tool] = result
         return reads
 
-    def assert_hidden(self, tab_id, reads, secrets):
-        """No read returns a secret, and find never scores a match on one."""
+    def assert_hidden(self, tab_id, reads, secrets, shown=()):
+        """No read returns a secret, and find never scores a match on one.
+
+        shown: ids of ordinary fields whose values share words with a secret, so find matches them.
+        """
         for tool, result in reads.items():
             text = json.dumps(result)
             for secret in secrets:
@@ -264,8 +267,11 @@ class RealBrowserRedactionTests(harness.RealBrowserTestCase):
         for secret in secrets:
             found = self.call("/api/find", {"query": secret, "tabId": tab_id})
             self.assertNotIn(secret, json.dumps(found))
-            self.assertTrue(all(r["score"] == 1 for r in found["results"]),
-                            f"find scores only the interactive bonus on a sensitive value: {found}")
+            # A secret's label words may name its field; a decoy with the same label finds the same.
+            decoy = self.call("/api/find", {"query": secret.replace(MARKER, "KITSUNE_DECOY"), "tabId": tab_id})
+            summary = lambda result: [(r["selector"], r["text"], r["score"]) for r in result["results"]
+                                      if r["selector"] not in {f"#{field_id}" for field_id in shown}]
+            self.assertEqual(summary(found), summary(decoy), f"find scores a match on a sensitive value: {found}")
 
     def row(self, reads, field_id):
         return {
@@ -336,7 +342,7 @@ class RealBrowserRedactionTests(harness.RealBrowserTestCase):
         self.type_into(tab_id, "#username", edited, sensitive=False)
         self.assertEqual(self.autofill_state(tab_id), "false,true")
         reads = self.read_all(tab_id)
-        self.assert_hidden(tab_id, reads, [AUTOFILL_PASSWORD])
+        self.assert_hidden(tab_id, reads, [AUTOFILL_PASSWORD], shown=["username"])
         self.assert_shown(reads, "username", edited, tab_id)
         self.assert_redacted(reads, "password")
 
