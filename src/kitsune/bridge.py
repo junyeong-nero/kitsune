@@ -760,8 +760,9 @@ WRITE_ACTIONS = {
 # Repeating these after an unknown outcome could duplicate a side effect (a submit,
 # message, payment or deletion), so their timeouts and disconnects are not retryable.
 _REPEAT_UNSAFE_ACTIONS = WRITE_ACTIONS | {"uploadCommit", "focusElement", "blurElement"}
-# Nothing reached the page, but repeating cannot succeed until the tab navigates.
-_PERSISTENT_FAILURE_CODES = {"error_page"}
+# Nothing reached the page, but repeating cannot succeed: until the tab navigates (error_page),
+# or because the command names several targets (ambiguous_target).
+_PERSISTENT_FAILURE_CODES = {"error_page", "ambiguous_target"}
 
 
 def _check_policy(action, params):
