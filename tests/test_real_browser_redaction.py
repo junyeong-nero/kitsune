@@ -3,9 +3,9 @@
 Opt-in and built on tests/real_browser_harness.py, which documents how to run it.
 tests/sensitive_field_redaction.cjs checks the same rules on a mocked DOM; here the
 browser decides what the rules see: Firefox's own password-manager autofill and its
-`:autofill` state, computed `-webkit-text-security` (on inputs, textareas and editable
-regions), and open and closed shadow roots behind Xray wrappers. Every read tool must hide the sensitive values while ordinary
-login and checkout fields stay readable.
+`:autofill` state, computed `-webkit-text-security` (on inputs, textareas, editable
+regions and static text), and open and closed shadow roots behind Xray wrappers. Every read tool must hide the sensitive values while ordinary
+login and checkout fields and ordinary text stay readable.
 
 The password manager is real: setUpClass saves one disposable login, for the login
 origin only, in the temporary profile, and Firefox fills the fixture login form on load.
@@ -31,6 +31,10 @@ CARD_NUMBER = fake("CARD_NUMBER")
 TEXTAREA_INITIAL = fake("TEXTAREA_INITIAL")
 EDITABLE_TEXT = fake("EDITABLE")
 EDITABLE_LINE = fake("EDITABLE_LINE")
+# Masked static text, and the contenteditable="false" parts of a masked editing region.
+STATIC_TEXT = {label: fake(label) for label in (
+    "STATIC", "STATIC_CODE", "STATIC_BOX", "STATIC_INHERITED", "STATIC_BUTTON", "STATIC_CELL", "STATIC_PRE")}
+REGION_TEXT = {label: fake(label) for label in ("REGION", "REGION_CHIP", "REGION_CHIP_CLEAR")}
 
 PAGES = {
     "/login": """<!doctype html><title>Sign in</title>
@@ -89,6 +93,25 @@ PAGES = {
 </section>
 <section><h2>Draft</h2><div id="draft" contenteditable="true">draft text</div></section>"""
     % (TEXTAREA_INITIAL, EDITABLE_TEXT, EDITABLE_LINE),
+    "/masked-text": """<!doctype html><title>Masked text</title>
+<style>.masked { -webkit-text-security: disc; } .unmasked { -webkit-text-security: none; }</style>
+<h1>Recovery</h1>
+<p id="masked-static" class="masked">%(STATIC)s</p>
+<p id="code-line">Backup code: <span id="code-span" class="masked">%(STATIC_CODE)s</span></p>
+<div id="masked-box" class="masked">%(STATIC_BOX)s <span id="masked-inherited">%(STATIC_INHERITED)s</span>
+<b id="mask-none" class="unmasked">shown inside mask</b></div>
+<p id="mask-none-p" class="unmasked">ordinary text</p>
+<p id="plain">plain paragraph</p>
+<button id="masked-button" class="masked">%(STATIC_BUTTON)s</button>
+<label id="labelled-by">Recovery code</label>
+<input id="labelled" aria-labelledby="labelled-by masked-static">
+<table><tr><th>Name</th><th>Token</th></tr><tr><td>primary</td><td id="masked-cell" class="masked">%(STATIC_CELL)s</td></tr></table>
+<pre id="token-pre">token: <span class="masked">%(STATIC_PRE)s</span></pre>
+<section><h2>Secret note</h2>
+<div id="secret-region" contenteditable="true" class="masked">%(REGION)s
+<span id="region-chip" contenteditable="false">%(REGION_CHIP)s</span>
+<span id="region-chip-clear" contenteditable="false" class="unmasked">%(REGION_CHIP_CLEAR)s</span></div>
+</section>""" % {**STATIC_TEXT, **REGION_TEXT},
 }
 
 # Fixture scripts stay out of the pages' markup; they hold no sensitive values.
@@ -522,6 +545,72 @@ class RealBrowserRedactionTests(harness.RealBrowserTestCase):
         found = self.call("/api/find", {"query": "draft text", "tabId": tab_id})["results"]
         self.assertTrue(any(r["selector"] == "#draft" and r["score"] > 1 for r in found), found)
 
+    # ── Masked static text ──
+
+    def test_masked_static_text_and_masked_region_parts_are_left_out_but_ordinary_text_is_not(self):
+        tab_id = self.open_tab(self.site.origin + "/masked-text")
+        # The masks come from computed style: inherited, and overridden with `none`.
+        self.assertEqual(self.js(tab_id, "['masked-static', 'code-span', 'masked-inherited', 'mask-none', "
+                                         "'mask-none-p', 'plain', 'region-chip', 'region-chip-clear'].map(id => "
+                                         "getComputedStyle(document.getElementById(id)).webkitTextSecurity).join(',')"),
+                         "disc,disc,disc,none,none,none,disc,none")
+
+        reads = self.read_all(tab_id)
+        reads["browser_query static"] = self.call("/api/query", {
+            "selector": "p, span, b, div, button, td, pre", "fields": ["id", "text", "html"], "tabId": tab_id})
+        reads["browser_explain_selector"] = self.call("/api/explain-selector", {"selector": "p", "tabId": tab_id})
+        for selector in ("#masked-static", "#masked-box", "#region-chip-clear"):
+            reads[f"browser_wait_for {selector}"] = self.call(
+                "/api/wait-for-element", {"selector": selector, "timeout": 1000, "tabId": tab_id})
+        reads["browser_click"] = self.assert_ok(self.call("/api/click", {
+            "selector": "#masked-button", "tabId": tab_id, "includeSnapshot": True}))
+        page_text = reads.pop("browser_page_text")["text"]
+        self.assert_hidden(tab_id, reads, [*STATIC_TEXT.values(), *REGION_TEXT.values()])
+
+        query = {row.get("id"): row for row in reads["browser_query static"]["items"] if row.get("id")}
+        for field_id in ("masked-static", "code-span", "masked-inherited", "masked-button", "masked-cell",
+                         "region-chip", "region-chip-clear"):
+            with self.subTest(field=field_id):
+                self.assertEqual((query[field_id]["text"], query[field_id]["html"]), ("", ""))
+        dom = {node.get("id"): node for node in dom_nodes(reads["browser_dom"]["tree"]) if node.get("id")}
+        for field_id in ("masked-static", "code-span", "masked-button", "region-chip", "region-chip-clear"):
+            with self.subTest(field=field_id):
+                self.assertNotIn("text", dom[field_id])
+        self.assertEqual(reads["browser_wait_for #masked-static"]["text"], "")
+        self.assertEqual(reads["browser_click"]["text"], "")
+        self.assertRegex(reads["browser_snapshot"]["snapshot"], r'textbox "Recovery code" \[ref=s\d+e\d+\]')
+        self.assertIn('<p id="masked-static" class="masked"></p>', reads["browser_html"]["html"])
+
+        # No false positives: ordinary text, unmasked elements and elements whose mask is
+        # `none` keep their content, and masked text is left out rather than shown as bullets.
+        self.assertEqual((query["code-line"]["text"], query["code-line"]["html"]),
+                         ("Backup code:", 'Backup code: <span id="code-span" class="masked"></span>'))
+        self.assertEqual(query["masked-box"]["text"], "shown inside mask")
+        for field_id, text in (("mask-none", "shown inside mask"), ("mask-none-p", "ordinary text"),
+                               ("plain", "plain paragraph")):
+            with self.subTest(field=field_id):
+                self.assertEqual((query[field_id]["text"], query[field_id]["html"]), (text, text))
+                self.assertEqual(dom[field_id]["text"], text)
+        self.assertEqual(reads["browser_wait_for #masked-box"]["text"], "shown inside mask")
+        text_snapshot = reads["browser_snapshot text"]["snapshot"]
+        for line in ("Backup code:", "shown inside mask", "ordinary text", "plain paragraph"):
+            self.assertRegex(text_snapshot, rf'- text "{line}"\n')
+        markdown = reads["browser_markdown"]["markdown"]
+        for text in ("Backup code:", "**shown inside mask**", "ordinary text", "plain paragraph", "| primary |  |",
+                     "token: "):
+            self.assertIn(text, markdown)
+        for text in ("Backup code:", "shown inside mask", "ordinary text", "plain paragraph"):
+            self.assertIn(text, reads["browser_readability"]["textContent"])
+            self.assertIn(text, page_text)
+        for query_text, selector in (("ordinary text", "#mask-none-p"), ("plain paragraph", "#plain"),
+                                     ("Backup code", "#code-line")):
+            found = self.call("/api/find", {"query": query_text, "tabId": tab_id})["results"]
+            self.assertTrue(any(r["selector"] == selector and r["score"] > 1 for r in found), found)
+
+        # Page text is rendered text: masked text shows as mask characters, and the masked
+        # region's part that opts out with `none` is drawn in clear, so it is the one value there.
+        self.assertIn("\u2022" * len(STATIC_TEXT["STATIC"]), page_text)
+        self.assertEqual(re.findall(r"KITSUNE_FAKE_[A-Z_]+?_000", page_text), [REGION_TEXT["REGION_CHIP_CLEAR"]])
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,7 +3,7 @@
 
 (function() {
   'use strict';
-  const CONTENT_VERSION = 31;
+  const CONTENT_VERSION = 32;
   if (window.__claudeBridgeVersion >= CONTENT_VERSION) return;
   window.__claudeBridgeVersion = CONTENT_VERSION;
 
@@ -391,7 +391,7 @@
           .then(r => sendResponse(r)).catch(e => sendResponse(errorResult(e)));
         return true;
       }
-      const result = handler();
+      const result = REDACTION_CACHED_READS.has(msg.action) ? withRedactionCache(handler) : handler();
       if (result && typeof result.then === 'function') {
         // Async handler — keep message channel open
         result.then(r => sendResponse(r)).catch(e => sendResponse(errorResult(e)));
@@ -618,10 +618,11 @@
     // already appear as control names. Form fields and sensitive elements never contribute.
     function inlineText(el) {
       let all = '', plain = '';
+      const sensitive = holdsSensitiveText(el);
       for (const node of el.childNodes) {
         if (node.nodeType === 3) {
-          all += node.textContent;
-          plain += node.textContent;
+          all += sensitive ? ' ' : node.textContent;
+          plain += sensitive ? ' ' : node.textContent;
         } else if (ignored(node) || !INLINE_TAGS.has(node.tagName) || FIELD_TAGS.has(node.tagName) ||
             isSensitiveField(node)) {
           all += ' ';
@@ -690,7 +691,7 @@
       else fallback = redactedText(el) || el.title;
       return clean(el.getAttribute('aria-label') || findLabel(el) ||
         (el.type === 'image' ? el.alt : '') ||
-        (['button', 'submit', 'reset'].includes(el.type) ? el.value : '') || fallback);
+        (['button', 'submit', 'reset'].includes(el.type) && !isSensitiveField(el) ? el.value : '') || fallback);
     }
     function append(entry) {
       const cost = entry.line.length + (entries.length ? 1 : 0);
@@ -1609,10 +1610,34 @@
     });
   }
 
+  // Text reads look at the same elements many times (names, labels, find scoring), so
+  // within one synchronous read each element's mask and redacted text are computed once.
+  // The cache never outlives the read, so page changes between reads are always seen.
+  let redactionCache = null;
+  // Synchronous reads that share one cache; action handlers are left out, because
+  // page handlers they trigger can change the text they report afterwards.
+  const REDACTION_CACHED_READS = new Set(['getSnapshot', 'getAccessibilityTree', 'getFormFields', 'find',
+    'query', 'getHTML', 'getReadability', 'getMarkdown', 'explainSelector']);
+
+  function withRedactionCache(read) {
+    if (redactionCache) return read();
+    redactionCache = { masked: new WeakMap(), region: new WeakMap(), text: new WeakMap() };
+    try { return read(); } finally { redactionCache = null; }
+  }
+
+  function cachedFor(kind, el, compute) {
+    const cache = redactionCache?.[kind];
+    if (!cache) return compute();
+    if (!cache.has(el)) cache.set(el, compute());
+    return cache.get(el);
+  }
+
   function isMasked(el) {
-    const style = window.getComputedStyle(el);
-    const security = style.webkitTextSecurity || style.getPropertyValue?.('-webkit-text-security');
-    return TEXT_SECURITY_MASKS.has(security);
+    return cachedFor('masked', el, () => {
+      const style = window.getComputedStyle(el);
+      const security = style.webkitTextSecurity || style.getPropertyValue?.('-webkit-text-security');
+      return TEXT_SECURITY_MASKS.has(security);
+    });
   }
 
   // Editing hosts and their descendants (isContentEditable is inherited).
@@ -1644,40 +1669,73 @@
   }
 
   // Textareas and editing regions are the only fields whose content is text.
-  function holdsSensitiveText(el) {
+  function isSensitiveTextField(el) {
     return (el.tagName === 'TEXTAREA' || isEditableRegion(el)) && isSensitiveField(el);
   }
 
-  // el.textContent without the content of sensitive textareas and editing regions.
+  // A masked editing region or anything inside one, including its contenteditable="false"
+  // parts, which are not editable themselves and may opt out of the mask.
+  function inMaskedEditingRegion(el) {
+    return !!el && cachedFor('region', el, () =>
+      (isEditableRegion(el) && isMasked(el)) || inMaskedEditingRegion(el.parentElement));
+  }
+
+  // Whether el's own text is sensitive: masked text (editable or static), a sensitive
+  // textarea or editing region, or text inside a masked editing region.
+  function holdsSensitiveText(el) {
+    return isMasked(el) || isSensitiveTextField(el) || inMaskedEditingRegion(el.parentElement);
+  }
+
+  // el.textContent without sensitive text. A masked element's children that set
+  // `-webkit-text-security: none` keep their text; sensitive fields lose all of it.
   function redactedText(el) {
-    if (holdsSensitiveText(el)) return '';
-    if (!isEditableRegion(el) && !el.querySelector?.('textarea, [contenteditable]')) return el.textContent || '';
-    let text = '';
-    for (const node of el.childNodes) {
-      if (node.nodeType === 3) text += node.textContent;
-      else if (node.nodeType === 1) text += redactedText(node);
-    }
-    return text;
+    return withRedactionCache(() => cachedFor('text', el, () => {
+      if (isSensitiveTextField(el)) return '';
+      const sensitive = holdsSensitiveText(el);
+      if (!el.firstElementChild) return sensitive ? '' : el.textContent || '';
+      let text = '';
+      for (const node of el.childNodes) {
+        if (node.nodeType === 3) text += sensitive ? '' : node.textContent;
+        else if (node.nodeType === 1) text += redactedText(node);
+      }
+      return text;
+    }));
+  }
+
+  // Rendered text, but redacted text content when any of el's text is sensitive, so
+  // masked text is left out rather than shown as mask characters.
+  function renderedText(el) {
+    return withRedactionCache(() => {
+      const text = redactedText(el);
+      return text === el.textContent ? el.innerText || text : text;
+    });
   }
 
   // Frameworks such as React mirror the live value into the `value` attribute,
   // so markup is serialized from a clone with sensitive value attributes removed,
-  // and with sensitive textareas and editing regions emptied.
+  // with sensitive textareas and editing regions emptied, and without other sensitive text.
   // Sensitivity is decided on the live elements (autofill, styles, shadow roots);
-  // a clone that does not mirror the original tree loses every value attribute
-  // and the content of every textarea and contenteditable element.
+  // a clone that does not mirror the original tree loses every value attribute,
+  // the content of every textarea and contenteditable element, and all of its text
+  // if any of the original's text is sensitive.
   function redactedClone(el) {
-    const clone = el.cloneNode(true);
-    const originals = [el, ...el.querySelectorAll('*')];
-    const copies = [clone, ...clone.querySelectorAll('*')];
-    const aligned = copies.length === originals.length &&
-      copies.every((copy, i) => copy.tagName === originals[i].tagName);
-    copies.forEach((copy, i) => {
-      if (!aligned || isSensitiveField(originals[i])) copy.removeAttribute('value');
-      if (aligned ? holdsSensitiveText(originals[i])
-        : copy.tagName === 'TEXTAREA' || copy.hasAttribute('contenteditable')) copy.replaceChildren();
+    return withRedactionCache(() => {
+      const clone = el.cloneNode(true);
+      const originals = [el, ...el.querySelectorAll('*')];
+      const copies = [clone, ...clone.querySelectorAll('*')];
+      const aligned = copies.length === originals.length &&
+        copies.every((copy, i) => copy.tagName === originals[i].tagName);
+      const dropAllText = !aligned && originals.some(holdsSensitiveText);
+      copies.forEach((copy, i) => {
+        if (!aligned || isSensitiveField(originals[i])) copy.removeAttribute('value');
+        if (aligned ? isSensitiveTextField(originals[i])
+          : copy.tagName === 'TEXTAREA' || copy.hasAttribute('contenteditable')) copy.replaceChildren();
+        else if (aligned ? holdsSensitiveText(originals[i]) : dropAllText) {
+          for (const node of Array.from(copy.childNodes)) if (node.nodeType === 3) node.remove();
+        }
+      });
+      return clone;
     });
-    return clone;
   }
 
   function redactMarkup(el, outer) {
@@ -1763,8 +1821,7 @@
       for (const f of want) {
         const name = String(f).toLowerCase();
         try {
-          // A textarea's innerText is empty, so text falls back to its content.
-          if (f === 'text') row.text = holdsSensitiveText(el) ? '' : (el.innerText || redactedText(el)).trim().slice(0, 400);
+          if (f === 'text') row.text = renderedText(el).trim().slice(0, 400);
           else if (f === 'html') row.html = redactMarkup(el, false).slice(0, 4000);
           else if (f === 'href') row.href = el.href || el.getAttribute('href') || undefined;
           else if (name === 'value' && sensitive) Object.assign(row, redactedValue(el));
@@ -1972,12 +2029,17 @@
   function getMarkdown(selector) {
     const root = selector ? resolveElement(selector) : document.body;
     if (!root) return notFound();
+    // An element's own text nodes are left out when its text is sensitive.
+    function walkChildren(el) {
+      const sensitive = holdsSensitiveText(el);
+      return Array.from(el.childNodes).map(child => sensitive && child.nodeType === 3 ? '' : walk(child)).join('');
+    }
     function walk(node) {
       if (node.nodeType === 3) return node.textContent.replace(/\s+/g, ' ');
-      if (node.nodeType !== 1 || holdsSensitiveText(node)) return '';
+      if (node.nodeType !== 1 || isSensitiveTextField(node)) return '';
       const tag = node.tagName.toLowerCase();
       if (['script','style','noscript','svg','iframe','nav','aside','footer','header','form'].includes(tag)) return '';
-      const children = () => Array.from(node.childNodes).map(walk).join('');
+      const children = () => walkChildren(node);
       switch (tag) {
         case 'h1': return '\n\n# ' + children().trim() + '\n\n';
         case 'h2': return '\n\n## ' + children().trim() + '\n\n';
@@ -1994,7 +2056,7 @@
           if (node.parentElement && node.parentElement.tagName === 'PRE') return children();
           return '`' + children() + '`';
         }
-        case 'pre': return '\n\n```\n' + (node.innerText || '') + '\n```\n\n';
+        case 'pre': return '\n\n```\n' + renderedText(node) + '\n```\n\n';
         case 'a': {
           const href = node.getAttribute('href') || '';
           const t = children().trim();
@@ -2008,14 +2070,14 @@
         case 'ul': {
           let out = '\n';
           for (const li of node.querySelectorAll(':scope > li')) {
-            out += '- ' + Array.from(li.childNodes).map(walk).join('').trim() + '\n';
+            out += '- ' + walkChildren(li).trim() + '\n';
           }
           return out + '\n';
         }
         case 'ol': {
           let out = '\n', i = 1;
           for (const li of node.querySelectorAll(':scope > li')) {
-            out += (i++) + '. ' + Array.from(li.childNodes).map(walk).join('').trim() + '\n';
+            out += (i++) + '. ' + walkChildren(li).trim() + '\n';
           }
           return out + '\n';
         }
@@ -2025,7 +2087,7 @@
           const rows = node.querySelectorAll('tr');
           if (rows.length === 0) return '';
           rows.forEach((row, idx) => {
-            const cells = Array.from(row.querySelectorAll('th, td')).map(c => (c.innerText||'').replace(/\|/g,'\\|').trim());
+            const cells = Array.from(row.querySelectorAll('th, td')).map(c => renderedText(c).replace(/\|/g,'\\|').trim());
             out += '| ' + cells.join(' | ') + ' |\n';
             if (idx === 0) out += '| ' + cells.map(() => '---').join(' | ') + ' |\n';
           });
@@ -2254,7 +2316,8 @@
     const iconLabel = icon ? String(icon.getAttribute('aria-label') || icon.getAttribute('alt') ||
       icon.textContent || '').trim() : '';
     return labelledBy || attr('aria-label') || text ||
-      (buttonInput ? String(control.value || '').trim() || attr('alt') : '') || iconLabel || attr('title');
+      (buttonInput ? (isSensitiveField(control) ? '' : String(control.value || '').trim()) || attr('alt') : '') ||
+      iconLabel || attr('title');
   }
 
   // Ask-before-act: whether clicking the target (or pressing Enter on it, with key) can submit
@@ -2620,7 +2683,7 @@
       const r = el.getBoundingClientRect();
       samples.push({
         tag: el.tagName.toLowerCase(),
-        text: holdsSensitiveText(el) ? '' : (el.innerText || redactedText(el)).trim().slice(0, 120),
+        text: renderedText(el).trim().slice(0, 120),
         id: el.id || undefined,
         cls: typeof el.className === 'string' ? el.className.slice(0, 100) : undefined,
         visible: !isHidden(el),
