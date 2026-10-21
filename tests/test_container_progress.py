@@ -218,6 +218,15 @@ class ContainerProgressTests(ContainerTests):
                                                            {"action": "pageText", "tabId": 2}]})
         self.assertEqual(self.statuses(payload["progress"]), ["ok", "unknown"])
 
+    def test_ambiguous_target_failed_without_running(self):
+        # #133: nothing was submitted, so the step is failed, not an unknown outcome.
+        self.replies["submitForm"] = [{"error": "3 forms on the page and no filled field names one; nothing was "
+                                                 "submitted", "code": "ambiguous_target", "retryable": False}]
+        payload = self.batch({"action": "submitForm", "tabId": 3})
+        self.assertEqual(payload["results"][0]["code"], "ambiguous_target")
+        self.assertEqual(self.statuses(payload["progress"]), ["failed"])
+        self.assertEqual(payload["status"], "failed")
+
     def test_stopped_batch_marks_later_steps_skipped(self):
         self.replies["click"] = [{"ok": True, "warning": "hidden_or_covered"}]
         payload = self.batch({"action": "click", "selector": "#a"}, {"action": "click", "selector": "#b"},
