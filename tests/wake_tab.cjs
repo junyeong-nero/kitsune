@@ -105,11 +105,11 @@ const restorePlaceholder = h => {
   h.update({ status: 'complete', url: URL_ });
 };
 
-// The reload's response replaces the placeholder: the tab goes loading, then completes.
+// The reload's response replaces the placeholder: the tab reports loading, then complete.
 const loadResponse = (h, statusCode, complete = {}) => {
+  h.update({ status: 'loading' });
   h.request();
   h.response(statusCode);
-  h.update({ status: 'loading' });
   h.update({ status: 'complete', ...complete });
 };
 
@@ -126,11 +126,10 @@ async function main() {
   const woken = start(waking, { action: 'wakeTab', tabId: 7 });
   await waking.tick(300);
   assert.equal(woken.settled, false, 'the placeholder is not ready');
-  // The reload's response arrives and the placeholder reports complete once more: that complete
-  // is not the response's document, so the refused injection does not end the wait.
+  // The reload's response arrives while the tab still reports the placeholder complete: the tab
+  // has not reported loading since the wake, so the refused injection does not end the wait.
   waking.request();
   waking.response(200);
-  waking.update({ status: 'complete' });
   await waking.tick(1000);
   assert.equal(woken.settled, false, 'the placeholder in the gap does not end the wait');
   // The new document's content script answers at document_start, before the load completes.
@@ -165,14 +164,18 @@ async function main() {
   assert.deepEqual(await blankWake.result, { ok: true, woken: true, ready: true });
   blank.assertClean();
 
-  // A page that answers while a new load starts is not ready until that load completes.
+  // A page that answers while a new load starts is not ready until that load completes, even if
+  // the tab reports complete again before the check ends.
   const reloading = harness(h => { restorePlaceholder(h); loadResponse(h, 200); h.scriptable = true; });
-  reloading.onPing = () => { reloading.onPing = () => {}; reloading.request(); };
+  reloading.onPing = () => {
+    reloading.onPing = () => {};
+    reloading.update({ status: 'loading' });
+    reloading.update({ status: 'complete' });
+    reloading.update({ status: 'loading' });
+  };
   const second = start(reloading, { action: 'wakeTab', tabId: 7 });
   await reloading.tick(300);
-  assert.equal(second.settled, false, 'a new request started during the check');
-  reloading.response(200);
-  reloading.update({ status: 'loading' });
+  assert.equal(second.settled, false, 'a new load started during the check');
   reloading.update({ status: 'complete' });
   await reloading.tick(100);
   assert.deepEqual(await second.result, { ok: true, woken: true, ready: true });
@@ -194,6 +197,26 @@ async function main() {
   await viewer.tick(5000);
   assert.deepEqual(await read(), ['error_page', false, 200]);
   viewer.assertClean();
+
+  // webRequest events can arrive after the tabs events of the same load: the early exit waits
+  // for the status of a request since the wake (a pre-discard 404 does not count).
+  const late = harness(h => {
+    restorePlaceholder(h);
+    h.update({ status: 'loading' });
+    h.update({ status: 'complete' });
+  });
+  late.request();
+  late.response(404);
+  await late.tick(10);
+  const lateWake = start(late, { action: 'wakeTab', tabId: 7 });
+  await late.tick(50);
+  assert.equal(lateWake.settled, false, 'waiting for the fresh status');
+  late.request();
+  late.response(200);
+  await late.tick(0);
+  assert.deepEqual(await lateWake.result, { ok: true, woken: true, ready: false, unscriptable: true,
+    state: { tabId: 7, url: URL_, status: 'complete', title: 'Doc', httpStatus: 200 } });
+  late.assertClean();
 
   // An empty 404 also ends the wait, and reads as empty text at once.
   const notFound = harness(h => { restorePlaceholder(h); loadResponse(h, 404); });

@@ -15,32 +15,35 @@ const MAX_RECONNECT_DELAY = 15000;
 
 // Policies survive document navigation, but are cleared when a tab closes.
 const dialogPolicies = new Map();
-// The last main-frame request per tab, { requestId, url, at, statusCode, loading, finished }, so an
-// unscriptable error page can name its status. A new main-frame request replaces it and a discard
-// or reload clears it, so it never describes a later document. at: when the request started;
-// statusCode: once its headers arrive; finished: the tab went loading, then complete, after it.
+// The last main-frame request per tab, { requestId, url, at, statusCode }, so an unscriptable
+// error page can name its status. A new main-frame request replaces it and a discard or reload
+// clears it, so it never describes a later document. at: when the request started; statusCode:
+// once its headers arrive. These events can reach the background page tens of ms before or after
+// the tabs events of the same load, so they cannot tell which document a tab shows.
 const mainFrameStatus = new Map();
 // Callbacks waiting for a tab's next status record (see waitForHttpStatus); called with true on close.
 const mainFrameStatusWaiters = new Map();
 // When a tab was last woken or reloaded (see markReload), for injectionFailure.
 const tabReloads = new Map();
+// The tab's last load as tabs events report it, { at, complete }: replaced when the tab reports
+// loading, complete once it reports complete after that (see wokenPageState).
+const tabLoads = new Map();
 const notifyStatusWaiters = (tabId, closed = false) =>
   [...(mainFrameStatusWaiters.get(tabId) || [])].forEach(notify => notify(closed));
 browser.tabs.onRemoved.addListener(tabId => {
   dialogPolicies.delete(tabId);
   mainFrameStatus.delete(tabId);
   tabReloads.delete(tabId);
+  tabLoads.delete(tabId);
   notifyStatusWaiters(tabId, true);
 });
 browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (changeInfo.discarded === true) mainFrameStatus.delete(tabId);
   // The browser also wakes discarded tabs, e.g. when one is selected.
   if (changeInfo.discarded === false) tabReloads.set(tabId, Date.now());
-  // Gecko reports a woken tab's restored placeholder complete, maybe after the reload's request
-  // started; only a complete after the tab went loading again is the request's document.
-  const seen = mainFrameStatus.get(tabId);
-  if (seen && changeInfo.status === 'loading') seen.loading = true;
-  if (seen?.loading && changeInfo.status === 'complete') seen.finished = true;
+  if (changeInfo.status === 'loading') tabLoads.set(tabId, { at: Date.now(), complete: false });
+  const load = tabLoads.get(tabId);
+  if (load && changeInfo.status === 'complete') load.complete = true;
 });
 const MAIN_FRAME = { urls: ['<all_urls>'], types: ['main_frame'] };
 // A redirect keeps its requestId, and so its record.
@@ -701,25 +704,22 @@ async function wakeTab(tabId) {
 
 // Gecko first restores a woken tab's discarded document as a placeholder, reporting it complete
 // at about:blank or with the tab's URL and title before the reload replaces it; a command that
-// reached it would be lost with it. So a page counts only once a main-frame request started
-// since the wake (`since`) has finished loading, except file: and data: pages, which make no
-// web requests. It is ready when it answers the content script and is still that complete
-// document afterwards; it is final (unscriptable) when it refuses injection.
+// reached it would be lost with it. So the woken page counts only once the tab reported loading
+// after the wake (`since`), then complete. It is ready when it answers the content script and
+// is still that complete load afterwards; it is final (unscriptable) when it refuses injection.
 async function wokenPageState(tabId, since) {
   const tab = await browser.tabs.get(tabId);
-  if (tab.discarded || tab.status !== 'complete') return {};
-  const seen = mainFrameRecord(tabId, tab.url);
-  const loaded = seen && seen.at >= since && seen.finished;
-  if (!loaded && !/^(file|data):/i.test(tab.url)) return {};
+  const load = tabLoads.get(tabId);
+  if (tab.discarded || tab.status !== 'complete' || !(load?.at >= since && load.complete)) return {};
   try {
     await ensureContentScript(tabId);
   } catch {
-    if (!loaded) return {};
+    const httpStatus = await waitForHttpStatus(tabId, tab.url, since);
     return { unscriptable: true,
-      state: { ...await tabState(tabId), title: tab.title, httpStatus: seen.statusCode } };
+      state: { ...await tabState(tabId), title: tab.title, ...(httpStatus ? { httpStatus } : {}) } };
   }
   const after = await browser.tabs.get(tabId);
-  return { ready: after.status === 'complete' && mainFrameStatus.get(tabId) === seen };
+  return { ready: after.status === 'complete' && tabLoads.get(tabId) === load };
 }
 
 // == Forward to Content Script ==
@@ -757,15 +757,10 @@ async function tabFailure(tabId, message, dispatched) {
   return tabError(message, code, state, !dispatched);
 }
 
-function mainFrameRecord(tabId, url) {
-  const seen = mainFrameStatus.get(tabId);
-  return seen && seen.url.split('#')[0] === url.split('#')[0] ? seen : undefined;
-}
-
 // The status of the tab's url, from a request started at or after `since`.
 function httpStatusFor(tabId, url, since = -Infinity) {
-  const seen = mainFrameRecord(tabId, url);
-  return seen && seen.at >= since ? seen.statusCode : undefined;
+  const seen = mainFrameStatus.get(tabId);
+  return seen && seen.at >= since && seen.url.split('#')[0] === url.split('#')[0] ? seen.statusCode : undefined;
 }
 
 // The tab's document is about to be replaced: forget its status, so only the new response counts.
