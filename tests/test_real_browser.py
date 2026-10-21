@@ -1,29 +1,16 @@
 """Action races, tab unloads and reconnects in a real browser (issue #68).
 
-Opt-in: set KITSUNE_E2E_BROWSER to a Firefox, Zen or LibreWolf binary (the same variable as
-test_real_browser_opened_tabs.py). The run takes about a minute:
-KITSUNE_E2E_BROWSER=/Applications/Zen.app/Contents/MacOS/zen \
-    uv run python -m unittest discover -s tests -p test_real_browser.py -v
-
-Everything is owned by the test: a headless browser on a new temporary profile and HOME,
-a real bridge on spare ports (test_bridge_security.Bridge), and a local fixture site. The
-extension is copied to a temporary directory with its bridge URL pointed at the owned
-bridge, so the normal bridge on 47652 is never contacted; the copy is checked before launch. A test-only background script
-added to the copy connects to a harness socket to discard tabs and drop the bridge
-WebSocket, and the copy is installed as a temporary add-on over the browser's remote
-debugging protocol. Fixture buttons report every click to the fixture site, which is
-how the tests prove that no action reached the wrong page or ran twice.
+Opt-in and built on tests/real_browser_harness.py, which documents how to run it and
+what it owns: a headless browser on a temporary profile and HOME, a bridge on spare
+ports, and a port-rewritten copy of the extension. This suite adds a local fixture site
+and a test-only background script in the copy, which connects to a harness socket to
+discard tabs and drop the bridge WebSocket. Fixture buttons report every click to the
+fixture site, which is how the tests prove that no action reached the wrong page or
+ran twice.
 """
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 import json
-import os
-from pathlib import Path
 import re
-import shutil
-import signal
-import socket
-import subprocess
-import tempfile
 import threading
 import time
 import unittest
@@ -32,31 +19,10 @@ from urllib.parse import parse_qs, urlparse
 from websockets.exceptions import ConnectionClosed
 from websockets.sync.server import serve
 
-from test_bridge_security import Bridge, _free_port, _request
+import real_browser_harness as harness
 
-REPO = Path(__file__).resolve().parent.parent
-EXTENSION_ID = "kitsune@junyeong-nero.github.io"
-DEFAULT_WS_URL = "ws://127.0.0.1:47652"
-DEFAULT_WS_PORT = "47652"
-BROWSER = os.environ.get("KITSUNE_E2E_BROWSER")
-START_TIMEOUT = 60
 # The batch (`retry`) bridge timeout for a click; a page held longer makes the bridge give up.
 BATCH_COMMAND_TIMEOUT = 30
-PROFILE_PREFS = {
-    "devtools.debugger.remote-enabled": True,
-    "devtools.chrome.enabled": True,
-    "devtools.debugger.prompt-connection": False,
-    "browser.shell.checkDefaultBrowser": False,
-    "browser.startup.homepage_override.mstone": "ignore",
-    "browser.startup.page": 0,
-    "browser.sessionstore.resume_from_crash": False,
-    "browser.tabs.unloadOnLowMemory": False,
-    "datareporting.policy.dataSubmissionEnabled": False,
-    "toolkit.telemetry.reportingpolicy.firstRun": False,
-    "app.update.auto": False,
-    "app.update.enabled": False,
-    "extensions.update.enabled": False,
-}
 
 # Test-only background script: harness commands use the public tabs API, and `ws` is the
 # bridge socket declared by background.js in the same background page.
@@ -141,10 +107,8 @@ class FixtureSite:
             def log_message(self, *args):
                 pass
 
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.server.daemon_threads = True
-        self.origin = f"http://127.0.0.1:{self.server.server_address[1]}"
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.server = harness.FixtureServer(Handler)
+        self.origin = self.server.origin
 
     def url(self, name, kind="buttons", ms=None):
         return f"{self.origin}/page?name={name}&kind={kind}" + (f"&ms={ms}" if ms is not None else "")
@@ -154,8 +118,7 @@ class FixtureSite:
             return self.hits.count(page)
 
     def stop(self):
-        self.server.shutdown()
-        self.server.server_close()
+        self.server.stop()
 
 
 class ExtensionControl:
@@ -201,190 +164,29 @@ class ExtensionControl:
         self.server.shutdown()
 
 
-class RemoteDebugger:
-    """Minimal Firefox remote debugging protocol client: length-prefixed JSON packets."""
-
-    def __init__(self, port):
-        deadline = time.monotonic() + START_TIMEOUT
-        while True:
-            try:
-                self.sock = socket.create_connection(("127.0.0.1", port), timeout=10)
-                break
-            except OSError:
-                if time.monotonic() > deadline:
-                    raise
-                time.sleep(0.2)
-        self.buffer = b""
-        self._read()  # root greeting
-
-    def _read(self):
-        while b":" not in self.buffer:
-            self._recv()
-        length, rest = self.buffer.split(b":", 1)
-        self.buffer = rest
-        while len(self.buffer) < int(length):
-            self._recv()
-        packet, self.buffer = self.buffer[:int(length)], self.buffer[int(length):]
-        return json.loads(packet)
-
-    def _recv(self):
-        chunk = self.sock.recv(65536)
-        if not chunk:
-            raise ConnectionError("remote debugger closed the connection")
-        self.buffer += chunk
-
-    def request(self, to, packet_type, **params):
-        data = json.dumps({"to": to, "type": packet_type, **params}).encode()
-        self.sock.sendall(str(len(data)).encode() + b":" + data)
-        while True:
-            reply = self._read()
-            if reply.get("from") == to:
-                return reply
-
-    def install_temporary_addon(self, path):
-        addons = self.request("root", "getRoot")["addonsActor"]
-        reply = self.request(addons, "installTemporaryAddon", addonPath=str(path))
-        if reply.get("addon", {}).get("id") != EXTENSION_ID:
-            raise AssertionError(f"temporary add-on install failed: {reply}")
-
-    def close(self):
-        self.sock.close()
-
-
-class RealBrowser:
-    """A headless browser on a temporary profile, running the extension against one bridge."""
-
-    def __init__(self, binary, root, ws_port, control_port):
-        if str(ws_port) == DEFAULT_WS_PORT:
-            raise AssertionError("the test bridge must not use the default bridge port")
-        self.binary = binary
-        self.root = Path(root)
-        self.extension = self.root / "extension"
-        self.profile = self.root / "profile"
-        self.home = self.root / "home"
-        self.log_path = self.root / "browser.log"
-        self.process = None
-        shutil.copytree(REPO / "extension", self.extension)
-        background = self.extension / "background" / "background.js"
-        source = background.read_text(encoding="utf-8")
-        if source.count(DEFAULT_WS_URL) != 1:
-            raise AssertionError("background.js no longer declares the bridge URL once")
-        background.write_text(source.replace(DEFAULT_WS_URL, f"ws://127.0.0.1:{ws_port}"), encoding="utf-8")
-        (self.extension / "background" / "test-control.js").write_text(CONTROL_SCRIPT % control_port,
-                                                                       encoding="utf-8")
-        manifest_path = self.extension / "manifest.json"
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        manifest["background"]["scripts"].append("background/test-control.js")
-        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-        for path in self.extension.rglob("*.js"):
-            if DEFAULT_WS_PORT in path.read_text(encoding="utf-8"):
-                raise AssertionError(f"{path} still names the default bridge port")
-        self.profile.mkdir()
-        self.home.mkdir()
-        (self.profile / "user.js").write_text(
-            "".join(f'user_pref("{k}", {json.dumps(v)});\n' for k, v in PROFILE_PREFS.items()), encoding="utf-8")
-
-    def start(self):
-        rdp_port = _free_port()
-        env = {k: v for k, v in os.environ.items() if not k.startswith(("KITSUNE_", "MOZ_"))}
-        env.update(HOME=str(self.home), MOZ_NO_REMOTE="1", MOZ_HEADLESS="1")
-        with open(self.log_path, "ab") as log:
-            # Its own session, so stop() can kill the browser with all of its child processes.
-            self.process = subprocess.Popen(
-                [self.binary, "--headless", "-no-remote", "-new-instance", "-profile", str(self.profile),
-                 "-start-debugger-server", str(rdp_port), "about:blank"],
-                env=env, cwd=self.root, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
-                start_new_session=True,
-            )
-        debugger = RemoteDebugger(rdp_port)
-        try:
-            debugger.install_temporary_addon(self.extension)
-        finally:
-            debugger.close()
-        return self
-
-    def log(self):
-        try:
-            return self.log_path.read_text(encoding="utf-8", errors="replace")[-4000:]
-        except OSError:
-            return ""
-
-    def stop(self):
-        if self.process is None or self.process.poll() is not None:
-            return
-        try:
-            os.killpg(self.process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        self.process.wait(timeout=10)
-
-
 def refs_named(snapshot, text):
     """Refs of snapshot lines whose accessible name contains text."""
     return re.findall(r'"[^"\n]*' + re.escape(text) + r'[^"\n]*" \[ref=(s\d+e\d+)\]', snapshot)
 
 
-@unittest.skipUnless(BROWSER, "set KITSUNE_E2E_BROWSER to a Firefox, Zen or LibreWolf binary")
-class RealBrowserActionRaceTests(unittest.TestCase):
+class RealBrowserActionRaceTests(harness.RealBrowserTestCase):
     @classmethod
     def setUpClass(cls):
-        temp = tempfile.TemporaryDirectory(prefix="kitsune-real-browser-")
-        cls.addClassCleanup(temp.cleanup)
-        home = Path(temp.name, "bridge")
-        home.mkdir()
-        cls.bridge = Bridge(str(home)).start()
-        cls.addClassCleanup(cls.bridge.stop)
         cls.site = FixtureSite()
         cls.addClassCleanup(cls.site.stop)
         cls.control = ExtensionControl()
         cls.addClassCleanup(cls.control.stop)
-        cls.browser = RealBrowser(BROWSER, temp.name, cls.bridge.ws_port, cls.control.port)
-        cls.addClassCleanup(cls.browser.stop)
-        cls.browser.start()
-        cls.wait_for_extension()
+        super().setUpClass()
 
     @classmethod
-    def wait_for_extension(cls, after_generation=0):
-        # The first connection after a temporary install can drop at once; wait for one that answers.
-        deadline = time.monotonic() + START_TIMEOUT
-        while time.monotonic() < deadline:
-            status = cls.bridge.status()
-            if status["extension_connected"] and status["extension_generation"] > after_generation:
-                tabs = _request(cls.bridge.http_port, "GET", "/api/tabs", cls.bridge.auth(), cls.bridge.host)
-                if tabs[0] == 200 and "tabs" in json.loads(tabs[2]):
-                    return status
-            time.sleep(0.1)
-        raise AssertionError("extension did not connect to the owned bridge:\n"
-                             + cls.bridge.log() + cls.browser.log())
-
-    def call(self, path, body):
-        headers = self.bridge.auth()
-        headers["Content-Type"] = "application/json"
-        # The bridge answers every action within its own timeout; allow for that here.
-        status, _, text = _request(self.bridge.http_port, "POST", path, headers, self.bridge.host, json.dumps(body),
-                                   timeout=90)
-        self.assertEqual(status, 200, text)
-        return json.loads(text)
-
-    def open_tab(self, url):
-        tab = self.assert_ok(self.call("/api/new-tab", {"url": url, "wait": True, "timeout": 15000}))
-        self.addCleanup(self.call, "/api/close-tab", {"tabId": tab["tabId"]})
-        return tab["tabId"]
+    def extension_scripts(cls):
+        return {"test-control.js": CONTROL_SCRIPT % cls.control.port}
 
     def snapshot_ref(self, tab_id, text):
         snapshot = self.call("/api/snapshot", {"tabId": tab_id})
         refs = refs_named(snapshot.get("snapshot", ""), text)
         self.assertEqual(len(refs), 1, snapshot)
         return refs[0]
-
-    def assert_ok(self, result):
-        self.assertTrue(result.get("ok"), result)
-        return result
-
-    def assert_error(self, result, code, retryable):
-        self.assertEqual(result.get("code"), code, result)
-        self.assertIs(result.get("retryable"), retryable, result)
-        self.assertIn("error", result)
 
     def assert_hits(self, page, expected, settle=0.5):
         """Hits are async page requests: wait until the expected count, then confirm it holds."""
