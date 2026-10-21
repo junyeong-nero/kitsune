@@ -23,6 +23,7 @@ class Element extends EventTarget {
   hasAttribute(key) { return key in this.attrs; }
   // Selectors used here: tag, .class, #id, [attr], [name="x"], ':disabled', and comma lists.
   matches(selector) {
+    if (selector === '*') return true;
     if (selector === ':disabled') return 'disabled' in this.attrs;
     return selector.split(',').map(s => s.trim()).some(s => {
       const m = /^([a-z]*)(?:\.([\w-]+))?(?:#([\w-]+))?(?:\[(\w+)(?:="?([^"\]]*)"?)?\])?$/.exec(s);

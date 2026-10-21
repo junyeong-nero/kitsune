@@ -3,7 +3,7 @@
 
 (function() {
   'use strict';
-  const CONTENT_VERSION = 36;
+  const CONTENT_VERSION = 37;
   if (window.__claudeBridgeVersion >= CONTENT_VERSION) return;
   window.__claudeBridgeVersion = CONTENT_VERSION;
 
@@ -2008,7 +2008,21 @@
   }
 
   function deepQuerySelector(selector) {
-    return deepQuerySelectorAll(selector)[0] || null;
+    // Preserve native querySelector syntax errors and avoid walking other trees when
+    // the top document already has the first match.
+    const match = document.querySelector(selector);
+    if (match) return match;
+    for (const doc of searchedDocuments()) {
+      if (doc !== document) {
+        const inner = doc.querySelector(selector);
+        if (inner) return inner;
+      }
+      for (const root of shadowRootsIn(doc)) {
+        const inner = root.querySelector(selector);
+        if (inner) return inner;
+      }
+    }
+    return null;
   }
 
   // Children as rendered (the flat tree): a host's shadow tree instead of its light children,

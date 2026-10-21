@@ -71,8 +71,8 @@ async function testContent() {
   assert.equal((await send({ action: 'blurElement', selector: ref })).ok, true);
   assert.equal(button.blurred, true);
   let submitted = false;
-  const submitButton = Object.assign(new Element('BUTTON', 'Go'), { click: () => { submitted = true; } });
-  const loginForm = Object.assign(new Element('FORM', '', { action: '/login' }), { querySelector: () => submitButton });
+  const submitButton = Object.assign(new Element('BUTTON', 'Go'), { type: 'submit', click: () => { submitted = true; } });
+  const loginForm = Object.assign(new Element('FORM', '', { action: '/login' }), { querySelector: () => submitButton, querySelectorAll: () => [submitButton] });
   button.closest = selector => selector === 'form' ? loginForm : null;
   assert.equal((await send({ action: 'submitForm', selector: ref })).ok, true);
   assert.equal(submitted, true);
@@ -216,6 +216,8 @@ async function testContent() {
 
   search.closest = selector => selector === 'form' ? form : null;
   form.querySelector = () => after;
+  after.type = 'submit';
+  form.querySelectorAll = () => [after];
   const formResult = await bridge.handleCommand({ action: 'submitForm', selector: '#search' });
   assert.ok(formResult.snapshot.includes(`searchbox "Deep search" [ref=${formResult.target_ref}]`));
 
