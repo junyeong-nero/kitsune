@@ -45,7 +45,7 @@ READ_FLOW = {
     "browser_snapshot": {"tab_id", "selector", "ref", "max_depth", "text"},
     "browser_page_info": {"tab_id"},
     "browser_forms": {"tab_id"},
-    "browser_dom": {"tab_id"},
+    "browser_dom": {"tab_id", "selector", "ref", "max_depth"},
     "browser_find": {"query", "tab_id"},
     "browser_screenshot": {"selector", "ref", "full_page", "save_to", "tab_id"},
 }

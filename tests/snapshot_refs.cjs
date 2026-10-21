@@ -121,6 +121,17 @@ async function testContent() {
   assert.ok(capped.snapshot.length <= 4000);
   assert.equal(capped.truncated, true);
   assert.doesNotMatch(capped.snapshot, /more similar items/, 'leaf controls are not collapsed');
+  const cappedDom = await send({ action: 'getAccessibilityTree', depth: 6 });
+  assert.equal(cappedDom.truncated, true);
+  assert.match(cappedDom.hint, /scope it with selector, ref or max_depth/);
+  assert.ok(JSON.stringify(cappedDom.tree).length <= 20000);
+  const keptButtons = cappedDom.tree.children;
+  assert.ok(keptButtons.length > 10 && keptButtons.length < 300, 'browser_dom keeps a document-order prefix');
+  assert.equal(cappedDom.refs, keptButtons.length + 1, 'only returned nodes get refs');
+  assert.equal((await send({ action: 'focusElement', selector: keptButtons.at(-1).ref })).ok, true);
+  const firstCutRef = keptButtons.at(-1).ref.replace(/\d+$/, index => Number(index) + 1);
+  assert.equal((await send({ action: 'focusElement', selector: firstCutRef })).error,
+    'stale ref, call browser_snapshot again');
 
   // Exercise the complete action -> capped snapshot path with a target past 4,000 chars.
   const background = fs.readFileSync('extension/background/background.js', 'utf8');
@@ -344,6 +355,24 @@ async function testContent() {
   for (const maxDepth of [-1, 1.5, true]) {
     assert.equal((await send({ action: 'getSnapshot', maxDepth })).error, 'max_depth must be a non-negative integer');
   }
+
+  // browser_dom takes the same subtree scope; the bridge sends max_depth as depth.
+  const domCard = await send({ action: 'getAccessibilityTree', depth: 6, selector: '#card-8' });
+  assert.equal(domCard.tree.tag, 'article');
+  assert.deepEqual(domCard.tree.children.map(node => node.text), ['Product 8', 'Buy 8']);
+  assert.doesNotMatch(JSON.stringify(domCard), /Catalog|Outside/);
+  assert.equal(domCard.truncated, undefined);
+  const domCatalog = await send({ action: 'getAccessibilityTree', depth: 0, selector: '#catalog' });
+  assert.equal(domCatalog.tree.tag, 'main');
+  assert.equal(domCatalog.tree.children, undefined, 'depth 0 is the root only');
+  const domByRef = await send({ action: 'getAccessibilityTree', depth: 1, ref: domCatalog.tree.ref, selector: '#card-8' });
+  assert.equal(domByRef.tree.tag, 'main', 'ref wins over selector');
+  assert.deepEqual(domByRef.tree.children.map(node => node.tag), ['h1', 'section']);
+  assert.equal(domByRef.tree.children[1].children, undefined);
+  assert.equal((await send({ action: 'getAccessibilityTree', depth: 6, ref: domCatalog.tree.ref })).error,
+    'stale ref, call browser_snapshot again');
+  assert.equal((await send({ action: 'getAccessibilityTree', depth: 6, selector: '#missing' })).error,
+    'Selector not found: #missing');
   body.children = Array.from({ length: 12 }, () => new Element('DIV', '', {}, [new Element('SPAN', 'Decoration')]));
   assert.equal((await send({ action: 'getSnapshot' })).snapshot, '', 'non-semantic decorations do not generate collapse noise');
 }

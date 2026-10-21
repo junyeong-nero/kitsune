@@ -77,6 +77,65 @@ class SnapshotToolsTests(unittest.TestCase):
                     'error': 'max_depth must be a non-negative integer',
                 })
 
+    def test_dom_scope_and_depth(self):
+        with patch.object(server, '_get', return_value={'tree': {}}) as get:
+            self.assertEqual(server.browser_dom(), {'tree': {}})
+            get.assert_called_once_with('/api/dom')
+        cases = [
+            ({'tab_id': 7}, {'tabId': 7}),
+            ({'selector': '#catalog'}, {'selector': '#catalog'}),
+            ({'ref': 's2e0'}, {'ref': 's2e0'}),
+            ({'max_depth': 0}, {'maxDepth': 0}),
+            ({'tab_id': 7, 'selector': '#fallback', 'ref': 's2e0', 'max_depth': 2},
+             {'tabId': 7, 'selector': '#fallback', 'ref': 's2e0', 'maxDepth': 2}),
+        ]
+        for kwargs, expected in cases:
+            with self.subTest(kwargs=kwargs), patch.object(server, '_post', return_value={'tree': {}}) as post:
+                self.assertEqual(server.browser_dom(**kwargs), {'tree': {}})
+                post.assert_called_once_with('/api/dom', expected)
+        with patch.object(server, '_post') as post, patch.object(server, '_get') as get:
+            invalid_cases: list[dict] = [{'max_depth': value} for value in (-1, 1.5, True, '2')]
+            for kwargs in invalid_cases:
+                with self.subTest(kwargs=kwargs):
+                    self.assertEqual(server.browser_dom(**kwargs), {
+                        'error': 'max_depth must be a non-negative integer',
+                    })
+            post.assert_not_called()
+            get.assert_not_called()
+
+    def test_bridge_dom_scope_routes(self):
+        for command, body, expected in [
+            ('GET', {}, {'depth': 6}),
+            ('POST', {'tabId': 7}, {'tabId': 7, 'depth': 6}),
+            ('POST', {'selector': '#catalog', 'ref': 's2e0', 'maxDepth': 0, 'tabId': 7,
+                      'ignored': 'not forwarded'},
+             {'selector': '#catalog', 'ref': 's2e0', 'depth': 0, 'tabId': 7}),
+        ]:
+            with self.subTest(command=command, body=body):
+                handler = bridge.BridgeHandler.__new__(bridge.BridgeHandler)
+                handler.command = command
+                handler.read_body = Mock(return_value=body)
+                handler.send_json = Mock()
+                handler.run_async = Mock(side_effect=asyncio.run)
+                with patch.object(bridge, 'send_to_extension', return_value={'tree': {}}) as send:
+                    handler.handle_dom()
+                    send.assert_called_once_with('getAccessibilityTree', expected)
+                handler.send_json.assert_called_once_with(200, {'tree': {}})
+
+    def test_bridge_dom_rejects_invalid_depth(self):
+        for max_depth in (-1, 1.5, True, '2'):
+            with self.subTest(max_depth=max_depth):
+                handler = bridge.BridgeHandler.__new__(bridge.BridgeHandler)
+                handler.command = 'POST'
+                handler.read_body = Mock(return_value={'maxDepth': max_depth})
+                handler.run_async = Mock()
+                handler.send_json = Mock()
+                handler.handle_dom()
+                handler.run_async.assert_not_called()
+                handler.send_json.assert_called_once_with(200, {
+                    'error': 'max_depth must be a non-negative integer',
+                })
+
     def test_actions_accept_ref_without_selector_and_keep_audit_description(self):
         cases = [
             ('click', {}), ('type', {'text': 'hello'}), ('type', {'text': 'hello', 'mode': 'fill'}),

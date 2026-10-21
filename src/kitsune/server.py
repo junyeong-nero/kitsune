@@ -626,15 +626,27 @@ def browser_forms(tab_id: int | None = None) -> dict:
 
 
 @tool("core", annotations=ToolAnnotations(title="Read page DOM", **READ))
-def browser_dom(tab_id: int | None = None) -> dict:
+def browser_dom(
+    tab_id: int | None = None, selector: str | None = None,
+    ref: str | None = None, max_depth: int | None = None,
+) -> dict:
     """Get the accessibility tree of interactive elements on the page.
 
-    Args:
-        tab_id: Optional tab to target. Defaults to active tab.
+    selector/ref/max_depth (default 6) scope it as in browser_snapshot; capped at
+    20,000 chars (truncated=true).
     """
-    if tab_id is None:
+    if max_depth is not None and (type(max_depth) is not int or max_depth < 0):
+        return {"error": "max_depth must be a non-negative integer"}
+    body = _with_tab({}, tab_id)
+    if selector is not None:
+        body["selector"] = selector
+    if ref is not None:
+        body["ref"] = ref
+    if max_depth is not None:
+        body["maxDepth"] = max_depth
+    if not body:
         return _get("/api/dom")
-    return _post("/api/dom", {"tabId": tab_id})
+    return _post("/api/dom", body)
 
 
 @tool("core", annotations=ToolAnnotations(title="Accessibility snapshot", **READ))

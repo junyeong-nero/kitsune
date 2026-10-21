@@ -39,8 +39,9 @@ BENCH_UI_TOOLS = (
 # Ceilings in compact JSON characters (#88). Growth past one fails the size test; raise it
 # deliberately, with the reason in the change, rather than alongside a snapshot update.
 # Set about 5% above the sizes once nullable optionals and empty defaults were dropped (#142);
-# default (lean) and bench allowlist raised by 100 for the agent-owned tab rules (#139).
-TOTAL_BUDGETS = {"default (lean)": 13_300, "full core": 25_500, "bench allowlist": 17_600}
+# default (lean) and bench allowlist raised by 100 for the agent-owned tab rules (#139);
+# all three raised for browser_dom scoping (#160), bench also for its earlier overage.
+TOTAL_BUDGETS = {"default (lean)": 13_400, "full core": 25_600, "bench allowlist": 17_800}
 TOOL_BUDGET = 3_000  # any single core tool
 
 

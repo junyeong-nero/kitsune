@@ -359,7 +359,7 @@
       'getPageText':           () => getPageText(msg.selector),
       'getSnapshot':           () => getSnapshot(msg.maxChars, msg.focusLastAction, msg.ref || msg.selector, msg.maxDepth, !!msg.text,
                                      msg.observation),
-      'getAccessibilityTree':  () => getAccessibilityTree(msg.depth || 6),
+      'getAccessibilityTree':  () => getAccessibilityTree(msg.depth ?? 6, msg.ref || msg.selector),
       'getFormFields':         () => getFormFields(),
       'click':                 () => clickElement(msg.selector, msg.coords, msg.first),
       'type':                  () => typeText(msg.selector, msg.text, msg.clear, msg.first),
@@ -566,11 +566,20 @@
   }
 
   // ── Accessibility Tree ──
-  function getAccessibilityTree(maxDepth) {
+  const DOM_TREE_LIMIT = 20000;
+  const DOM_TRUNCATED_HINT = 'Tree cut at 20,000 chars; scope it with selector, ref or max_depth, ' +
+    'or use browser_snapshot.';
+
+  function getAccessibilityTree(maxDepth, selector) {
+    // Resolve a subtree ref before invalidating the previous generation.
+    const root = selector ? resolveElement(selector) : document.body;
+    if (!root) return { error: 'Selector not found: ' + selector };
     newRefGeneration('browser_dom');
-    
+    let size = 0;
+    let truncated = false;
+
     function buildNode(el, depth) {
-      if (depth > maxDepth || !el || el.nodeType !== 1) return null;
+      if (truncated || depth > maxDepth || !el || el.nodeType !== 1) return null;
       if (isHidden(el)) return null;
 
       const tag = el.tagName.toLowerCase();
@@ -585,9 +594,7 @@
       // Skip non-interactive elements with no text and small size
       if (!isInteractive && !text && rect.width < 5 && rect.height < 5) return null;
 
-      const ref = `s${refGeneration}e${refCounter++}`;
-      refMap[ref] = el;
-
+      const ref = `s${refGeneration}e${refCounter}`;
       const node = { ref, tag };
       
       // Only include useful properties
@@ -618,19 +625,28 @@
         node.bounds = [Math.round(rect.x), Math.round(rect.y), Math.round(rect.width), Math.round(rect.height)];
       }
 
+      // Upper bound of the node's share of the JSON: itself, a comma and its children array.
+      // The first node past the cap ends the read, so the tree is a document-order prefix.
+      const cost = JSON.stringify(node).length + ',"children":[],'.length;
+      if (size + cost > DOM_TREE_LIMIT) { truncated = true; return null; }
+      size += cost;
+      refCounter++;
+      refMap[ref] = el;
+
       // Recurse children, and the body of a same-origin frame
       const children = [];
       for (const child of childrenAcrossFrames(el)) {
         const childNode = buildNode(child, depth + 1);
         if (childNode) children.push(childNode);
+        if (truncated) break;
       }
       if (children.length) node.children = children;
 
       return node;
     }
 
-    const tree = buildNode(document.body, 0);
-    return { tree, refs: refCounter };
+    const tree = buildNode(root, 0);
+    return { tree, refs: refCounter, ...(truncated && { truncated: true, hint: DOM_TRUNCATED_HINT }) };
   }
 
   // Text mode adds readable text lines (without refs) and is always capped.

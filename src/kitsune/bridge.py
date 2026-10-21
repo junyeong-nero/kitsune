@@ -3456,7 +3456,14 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.send_json(200, result)
 
     def handle_dom(self):
-        params = {"depth": 6, **self._tab_params()}
+        body = self.read_body() if self.command == 'POST' else {}
+        params = {key: body[key] for key in ('tabId', 'selector', 'ref')
+                  if body.get(key) is not None}
+        max_depth = body.get('maxDepth')
+        if max_depth is not None and (type(max_depth) is not int or max_depth < 0):
+            self.send_json(200, {"error": "max_depth must be a non-negative integer"})
+            return
+        params["depth"] = 6 if max_depth is None else max_depth
         result = self.run_async(send_to_extension("getAccessibilityTree", params))
         self.send_json(200, result)
 
