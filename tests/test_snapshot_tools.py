@@ -237,10 +237,19 @@ class SnapshotToolsTests(unittest.TestCase):
                     await bridge._send_to_extension_raw('click')
                     self.assertTrue(commands[-1]['includeSnapshot'])
                     self.assertNotIn('snapshotText', commands[-1])
+                    self.assertNotIn('snapshot', commands[-1], 'post-action snapshots default to a delta')
                 with patch.dict(os.environ, {'KITSUNE_POST_ACTION_SNAPSHOT': 'text'}):
                     await bridge._send_to_extension_raw('click')
                     self.assertTrue(commands[-1]['includeSnapshot'])
                     self.assertTrue(commands[-1]['snapshotText'])
+                    self.assertNotIn('snapshot', commands[-1])
+                with patch.dict(os.environ, {'KITSUNE_POST_ACTION_SNAPSHOT': 'full'}):
+                    await bridge._send_to_extension_raw('click')
+                    self.assertTrue(commands[-1]['includeSnapshot'])
+                    self.assertEqual(commands[-1]['snapshot'], 'full')
+                    self.assertNotIn('snapshotText', commands[-1])
+                    await bridge._send_to_extension_raw('click', {'snapshot': 'delta'})
+                    self.assertEqual(commands[-1]['snapshot'], 'delta', 'a command overrides the environment')
 
         asyncio.run(check())
 

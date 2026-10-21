@@ -156,7 +156,8 @@ async function testContent() {
   const full = await send({ action: 'getSnapshot' });
   const oldRef = full.snapshot.match(/searchbox "Deep search" \[ref=(s\d+e\d+)\]/)[1];
   assert.ok(full.snapshot.indexOf(`ref=${oldRef}`) > 4000);
-  const typed = await bridge.handleCommand({ action: 'type', ref: oldRef, text: 'kitsune', clear: true });
+  // snapshot: 'full' keeps the pre-delta post-action snapshot: capped, focused on the target.
+  const typed = await bridge.handleCommand({ action: 'type', ref: oldRef, text: 'kitsune', clear: true, snapshot: 'full' });
   assert.equal(typed.ok, true);
   assert.equal(typed.snapshot_truncated, true);
   assert.ok(typed.snapshot.length <= 4000);
@@ -261,6 +262,68 @@ async function testContent() {
   const small = await bridge.handleCommand({ action: 'type', selector: '#search', text: 'small', clear: true });
   assert.equal(small.snapshot_truncated, undefined);
   assert.ok(small.snapshot.includes(`[ref=${small.target_ref}] [value="small"]`));
+
+  // #137: a delta lists the target and what the action changed (here a review filter far
+  // below an 80-link header opens its options), not the page top, and keeps earlier refs.
+  const headerLinks = Array.from({ length: 80 }, (_, i) => new Element('A', `Header link ${i}`));
+  const options = ['All', 'Positive', 'Negative'].map(name => new Element('DIV', name, { role: 'option' }));
+  const listbox = Object.assign(new Element('DIV', '', { role: 'listbox', 'aria-label': 'Review type' }, options),
+    { hidden: true });
+  const toggle = new Element('BUTTON', 'Review type', { 'aria-expanded': 'false' });
+  const filters = new Element('DIV', '', { role: 'region', 'aria-label': 'Review filters' }, [toggle, listbox]);
+  body.children = [new Element('HEADER', '', {}, headerLinks),
+    new Element('MAIN', '', {}, [new Element('H2', 'Reviews'), filters])];
+  for (const child of body.children) child.parentElement = body;
+  context.window.location = { href: 'https://shop.test/app/reviews' };
+  context.document.title = 'Reviews';
+  toggle.click = () => {
+    toggle.attrs['aria-expanded'] = 'true';
+    listbox.hidden = false;
+    context.window.location.href = 'https://shop.test/app/reviews?filter=open';
+  };
+  context.document.elementFromPoint = () => toggle;
+  const page = await send({ action: 'getSnapshot' });
+  const toggleRef = page.snapshot.match(/button "Review type" \[ref=(s\d+e\d+)\]/)[1];
+  const linkRef = page.snapshot.match(/link "Header link 0" \[ref=(s\d+e\d+)\]/)[1];
+  assert.ok(page.snapshot.length > 4000, 'a capped full snapshot would end inside the header');
+  const opened = await bridge.handleCommand({ action: 'click', coords: { x: 5, y: 5 } });
+  assert.equal(opened.ok, true);
+  assert.equal(opened.snapshot_delta, true);
+  assert.equal(opened.snapshot_truncated, undefined);
+  assert.equal(opened.target_ref, toggleRef, 'an element that already had a ref keeps it');
+  assert.equal(opened.url, 'https://shop.test/app/reviews?filter=open');
+  assert.equal(opened.title, undefined, 'an unchanged title is not repeated');
+  assert.doesNotMatch(opened.snapshot, /Header link|Reviews"/);
+  const deltaLines = opened.snapshot.split('\n').map(line => line.replace(/s\d+e\d+/, 'REF'));
+  assert.deepEqual(deltaLines, [
+    '- main "" [ref=REF]',
+    '  - region "Review filters" [ref=REF]',
+    '    - button "Review type" [ref=REF] [expanded=true]',
+    '    - listbox "Review type" [ref=REF]',
+    '      - option "All" [ref=REF]',
+    '      - option "Positive" [ref=REF]',
+    '      - option "Negative" [ref=REF]',
+  ]);
+  const negativeRef = opened.snapshot.match(/option "Negative" \[ref=(s\d+e\d+)\]/)[1];
+  assert.equal((await send({ action: 'focusElement', selector: negativeRef })).ok, true, 'delta refs work');
+  assert.equal((await send({ action: 'focusElement', selector: linkRef })).ok, true, 'earlier refs stay valid');
+  // Nothing changed: the delta is only the target under its ancestors.
+  const again = await bridge.handleCommand({ action: 'click', coords: { x: 5, y: 5 } });
+  assert.equal(again.snapshot_delta, true);
+  assert.equal(again.url, undefined);
+  assert.equal(again.snapshot.split('\n').length, 3);
+  assert.match(again.snapshot, /button "Review type" \[ref=s\d+e\d+\] \[expanded=true\]$/);
+  // A full snapshot on request replaces the generation, like browser_snapshot.
+  const fullClick = await bridge.handleCommand({ action: 'click', coords: { x: 5, y: 5 }, snapshot: 'full' });
+  assert.equal(fullClick.snapshot_delta, undefined);
+  assert.notEqual(fullClick.target_ref, toggleRef);
+  assert.match(fullClick.snapshot, /Header link 0/);
+  assert.equal((await send({ action: 'focusElement', selector: linkRef })).error, 'stale ref, call browser_snapshot again');
+  // Without a baseline from this document's action, a delta request is full.
+  const noBaseline = await send({ action: 'getSnapshot', maxChars: 4000, focusLastAction: true, delta: true });
+  assert.equal(noBaseline.delta, undefined);
+  assert.match(noBaseline.snapshot, /Header link 0/);
+  delete context.window.location;
 
   // Identical names came from nested delegated-click wrappers reading the same
   // subtree, not duplicate traversal. Preserve their real controls exactly once.
@@ -467,7 +530,9 @@ async function testBackground() {
     dispatchCommand: async params => { calls.push(params); return actionError ? { error: 'stale ref' } : { ok: true }; },
     forwardToContent: async (action, params) => {
       calls.push({ action, ...params });
-      return snapshotError ? { error: 'restricted page' } : { snapshot: 'tree', truncated: true, ...(params.focusLastAction ? { target_ref: 's2e100' } : {}) };
+      return snapshotError ? { error: 'restricted page' } : { snapshot: 'tree', truncated: true,
+        ...(params.focusLastAction ? { target_ref: 's2e100' } : {}),
+        ...(params.delta ? { delta: true, url: 'https://example.test/#moved' } : {}) };
     },
   });
   vm.runInContext(source.slice(source.indexOf('const POST_SNAPSHOT_ACTIONS'), source.indexOf('async function dispatchCommand')), context);
@@ -485,7 +550,18 @@ async function testBackground() {
     assert.equal(calls[1].observation, { type: 'browser_type', fill: 'browser_type', selectOption: 'browser_select_option',
       checkBox: 'browser_check', submitForm: 'browser_submit_form' }[action] || `browser_${action}`);
     assert.equal(result.target_ref, action !== 'navigate' ? 's2e100' : undefined);
+    // submitForm and navigate usually load another document, so their snapshot is full.
+    const delta = !['submitForm', 'navigate'].includes(action);
+    assert.equal(calls[0].deltaBaseline, delta || undefined);
+    assert.equal(calls[1].delta, delta || undefined);
+    assert.equal(result.snapshot_delta, delta || undefined);
+    assert.equal(result.url, delta ? 'https://example.test/#moved' : undefined);
   }
+  calls = [];
+  const fullClick = await context.handleCommand({ action: 'click', ref: 's1e0', snapshot: 'full' });
+  assert.equal(calls[0].deltaBaseline, undefined);
+  assert.equal(calls[1].delta, undefined);
+  assert.equal(fullClick.snapshot_delta, undefined);
   for (const action of ['scroll', 'waitForElement', 'blurElement', 'getHTML', 'getBounds',
                          'getComputedStyle', 'clickAndWaitNavigation', 'getMarkdown']) {
     calls = [];

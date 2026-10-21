@@ -3,7 +3,7 @@
 
 'use strict';
 
-const EXPECTED_CONTENT_VERSION = 39;
+const EXPECTED_CONTENT_VERSION = 40;
 const WS_URL = 'ws://127.0.0.1:47652';
 // scripts/build_extension.py sets 'signed' for the AMO build (see content.js).
 const KITSUNE_BUILD = 'dev';
@@ -525,6 +525,9 @@ const POST_SNAPSHOT_ACTIONS = new Map([
   ['selectOption', 'browser_select_option'], ['checkBox', 'browser_check'], ['keypress', 'browser_keypress'],
   ['submitForm', 'browser_submit_form'], ['navigate', 'browser_navigate'],
 ]);
+// These usually load another document, so their snapshot is full. The others return a delta
+// (see getSnapshot) unless the command passes snapshot: 'full'.
+const FULL_SNAPSHOT_ACTIONS = new Set(['submitForm', 'navigate']);
 // Page actions on one existing tab (the bridge's outcome actions) report opened_tabs.
 const OPENER_ACTIONS = new Set([
   'click', 'doubleClick', 'type', 'fill', 'setEditableContent', 'selectOption', 'checkBox',
@@ -553,6 +556,9 @@ async function handleCommand(command) {
     if (params.toRef) params.to = params.toRef;
   }
   const withSnapshot = POST_SNAPSHOT_ACTIONS.has(params.action) && params.includeSnapshot !== false;
+  const deltaSnapshot = withSnapshot && params.snapshot !== 'full' && !FULL_SNAPSHOT_ACTIONS.has(params.action);
+  // The content script records the delta's baseline right before it acts.
+  if (deltaSnapshot) params.deltaBaseline = true;
   // Text snapshots report which tab they read.
   const textSnapshot = params.action === 'getSnapshot' && !!params.text;
   const tracksOpenedTabs = OPENER_ACTIONS.has(params.action);
@@ -568,13 +574,13 @@ async function handleCommand(command) {
   const touched = touches ? params.tabId : null;
   if (touched != null) touchStart(touched);
   try {
-    return await runCommand(params, { withSnapshot, textSnapshot, tracksOpenedTabs });
+    return await runCommand(params, { withSnapshot, deltaSnapshot, textSnapshot, tracksOpenedTabs });
   } finally {
     if (touched != null) touchEnd(touched);
   }
 }
 
-async function runCommand(params, { withSnapshot, textSnapshot, tracksOpenedTabs }) {
+async function runCommand(params, { withSnapshot, deltaSnapshot, textSnapshot, tracksOpenedTabs }) {
   const result = await dispatchCommand(params);
   const blankLink = result?.targetBlankLink;
   if (blankLink) delete result.targetBlankLink;
@@ -585,10 +591,17 @@ async function runCommand(params, { withSnapshot, textSnapshot, tracksOpenedTabs
         tabId: params.tabId, maxChars: 4000, focusLastAction: params.action !== 'navigate',
         observation: POST_SNAPSHOT_ACTIONS.get(params.action),
         ...(params.snapshotText ? { text: true } : {}),
+        ...(deltaSnapshot ? { delta: true } : {}),
       });
       if (snapshot.error) result.snapshot_error = snapshot.error;
       else {
         result.snapshot = snapshot.snapshot;
+        if (snapshot.delta) {
+          result.snapshot_delta = true;
+          // A same-document url or title change (history.pushState) is part of the delta.
+          if (snapshot.url !== undefined) result.url = snapshot.url;
+          if (snapshot.title !== undefined) result.title = snapshot.title;
+        }
         if (snapshot.truncated) result.snapshot_truncated = true;
         if (snapshot.target_ref) result.target_ref = snapshot.target_ref;
       }

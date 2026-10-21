@@ -3,7 +3,7 @@
 
 (function() {
   'use strict';
-  const CONTENT_VERSION = 39;
+  const CONTENT_VERSION = 40;
   if (window.__claudeBridgeVersion >= CONTENT_VERSION) return;
   window.__claudeBridgeVersion = CONTENT_VERSION;
 
@@ -360,7 +360,7 @@
       'waitForText':           () => waitForText(msg.text, msg.text_gone, msg.timeout),
       'getPageText':           () => getPageText(msg.selector),
       'getSnapshot':           () => getSnapshot(msg.maxChars, msg.focusLastAction, msg.ref || msg.selector, msg.maxDepth, !!msg.text,
-                                     msg.observation),
+                                     msg.observation, msg.delta ? 'delta' : 'full'),
       'getAccessibilityTree':  () => getAccessibilityTree(msg.depth ?? 6, msg.ref || msg.selector),
       'getFormFields':         () => getFormFields(),
       'click':                 () => clickElement(msg.selector, msg.coords, msg.first),
@@ -447,12 +447,14 @@
         sendResponse({ error: VALUE_SELECTOR_ERROR });
         return false;
       }
+      // A delta post-action snapshot is diffed against the page right before the action runs.
+      const run = msg.deltaBaseline ? () => { takeActionBaseline(!!msg.snapshotText); return handler(); } : handler;
       if (msg.wait && (POINTER_WAIT_ACTIONS.has(msg.action) || VALUE_WAIT_ACTIONS.has(msg.action))) {
-        waitForActionable(msg).then(failure => failure || handler())
+        waitForActionable(msg).then(failure => failure || run())
           .then(r => sendResponse(r)).catch(e => sendResponse(errorResult(e)));
         return true;
       }
-      const result = REDACTION_CACHED_READS.has(msg.action) ? withRedactionCache(handler) : handler();
+      const result = REDACTION_CACHED_READS.has(msg.action) ? withRedactionCache(handler) : run();
       if (result && typeof result.then === 'function') {
         // Async handler — keep message channel open
         result.then(r => sendResponse(r)).catch(e => sendResponse(errorResult(e)));
@@ -665,20 +667,42 @@
     'TIME', 'U', 'VAR']);
   const FIELD_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT', 'OPTION']);
 
+  // What a delta snapshot is diffed against: the page's snapshot lines (without refs) per
+  // element, url and title, recorded right before an action (takeActionBaseline).
+  let actionBaseline = null;
+
+  function takeActionBaseline(withText) {
+    actionBaseline = null;
+    try {
+      getSnapshot(undefined, false, null, null, withText, undefined, 'baseline');
+    } catch {}
+  }
+
   // Compact accessibility-style view (DOM semantics, not a platform AX tree).
   // observation: the tool whose call took this snapshot (an action's post-action snapshot).
+  // mode: 'full'; 'baseline' records actionBaseline and returns no snapshot; 'delta' lists only
+  // the target and the lines that changed since the baseline, adding refs to the current
+  // generation instead of starting one. A delta without a baseline (another document) is full.
   function getSnapshot(maxChars, focusLastAction, selector, maxDepth, withText = false,
-      observation = 'browser_snapshot') {
+      observation = 'browser_snapshot', mode = 'full') {
     if (maxDepth != null && (!Number.isInteger(maxDepth) || maxDepth < 0)) {
       return { error: 'max_depth must be a non-negative integer' };
     }
     // Resolve subtree refs before invalidating the previous snapshot's generation.
     const root = selector ? resolveElement(selector) : document.body;
     if (!root) return { error: 'Selector not found: ' + selector };
-    // Keep the DOM element, not its old ref: starting a snapshot invalidates refs.
-    const target = focusLastAction && lastActedElement?.isConnected ? lastActedElement : null;
-    lastActedElement = null;
-    newRefGeneration(observation);
+    const baseline = mode === 'delta' ? actionBaseline : null;
+    const full = mode === 'full' || (mode === 'delta' && !baseline);
+    let target = null;
+    if (mode !== 'baseline') {
+      actionBaseline = null;
+      // Keep the DOM element, not its old ref: starting a snapshot invalidates refs.
+      target = focusLastAction && lastActedElement?.isConnected ? lastActedElement : null;
+      lastActedElement = null;
+    }
+    if (full) newRefGeneration(observation);
+    // Lines whose ref is assigned once a delta is selected are measured with this stand-in.
+    const pendingRef = `s${refGeneration}e${refCounter}`;
     const entries = [];
     let limit = Number.isFinite(maxChars) ? Math.max(0, maxChars) : Infinity;
     // Reserve room for the truncation marker so text snapshots stay within the cap.
@@ -789,7 +813,7 @@
     }
     function append(entry) {
       const cost = entry.line.length + (entries.length ? 1 : 0);
-      if (!target && size + cost > limit) { truncated = true; return false; }
+      if (!target && full && size + cost > limit) { truncated = true; return false; }
       entries.push(entry);
       size += cost;
       return true;
@@ -809,7 +833,7 @@
           else if (el === target) role = el.tagName.toLowerCase();
           else role = 'button';
         }
-        const ref = `s${refGeneration}e${refCounter++}`;
+        const ref = full ? `s${refGeneration}e${refCounter++}` : null;
         const states = [];
         if (role === 'heading') states.push(`level=${el.getAttribute('aria-level') || el.tagName.slice(1)}`);
         if ('value' in el && !isSensitiveField(el)) states.push(`value=${JSON.stringify(clean(el.value))}`);
@@ -831,9 +855,11 @@
             `paused=${paused}`, `muted=${muted}`, `controls=${controls}`);
         }
         const label = `${role} ${JSON.stringify(nameOf(el, interactive || el === target))}`;
-        const line = `${'  '.repeat(Math.min(depth, 12))}- ${label} [ref=${ref}]${states.length ? ' [' + states.join(' ') + ']' : ''}`;
-        if (!append({ el, ref, line, parent, interactive })) return;
-        refLabels[ref] = { label, parent: entries[parent]?.ref ?? null };
+        const head = `${'  '.repeat(Math.min(depth, 12))}- ${label} [ref=`;
+        const tail = `]${states.length ? ' [' + states.join(' ') + ']' : ''}`;
+        if (!append({ el, ref, line: head + (ref ?? pendingRef) + tail, parent, interactive,
+          head, tail, label, signature: label + tail })) return;
+        if (full) refLabels[ref] = { label, parent: entries[parent]?.ref ?? null };
         parent = entries.length - 1;
       }
       const childDepth = depth + (include ? 1 : 0);
@@ -844,8 +870,9 @@
         const text = normalize(all);
         if (normalize(plain)) {
           const clipped = text.length > TEXT_LINE_LIMIT ? text.slice(0, TEXT_LINE_LIMIT) + '…' : text;
-          if (!append({ line: `${'  '.repeat(Math.min(childDepth, 12))}- text ${JSON.stringify(clipped)}`,
-            parent, interactive: false })) return;
+          const signature = `text ${JSON.stringify(clipped)}`;
+          if (!append({ line: `${'  '.repeat(Math.min(childDepth, 12))}- ${signature}`,
+            parent, interactive: false, source: el, signature })) return;
         }
       }
       if (maxDepth != null && domDepth >= maxDepth) return;
@@ -881,29 +908,63 @@
     }
     visit(root, 0);
 
+    if (mode === 'baseline') {
+      const signatures = new Map();
+      for (const entry of entries) {
+        const el = entry.el || entry.source;
+        if (!el) continue;
+        if (!signatures.has(el)) signatures.set(el, new Set());
+        signatures.get(el).add(entry.signature);
+      }
+      actionBaseline = { signatures, url: window.location?.href, title: document.title };
+      return { ok: true };
+    }
+
     const targetIndex = entries.findIndex(entry => entry.el === target);
     let selected = entries;
-    if (size > limit) {
-      const kept = new Set();
-      let used = 0;
-      function add(index, withAncestors = true) {
-        const pending = [];
-        for (let i = index; i >= 0 && !kept.has(i); i = withAncestors ? entries[i].parent : -1) {
-          pending.push(i);
-        }
-        const cost = pending.reduce((sum, i) => sum + entries[i].line.length + 1, 0);
-        if (used + cost > limit + 1) return;
-        for (const i of pending) kept.add(i);
-        used += cost;
+    const kept = new Set();
+    let used = 0;
+    function add(index, withAncestors = true) {
+      const pending = [];
+      for (let i = index; i >= 0 && !kept.has(i); i = withAncestors ? entries[i].parent : -1) {
+        pending.push(i);
       }
+      const cost = pending.reduce((sum, i) => sum + entries[i].line.length + 1, 0);
+      if (used + cost > limit + 1) return;
+      for (const i of pending) kept.add(i);
+      used += cost;
+    }
+    function keepTarget() {
+      // The target's complete line wins even if an unusually small cap cannot fit it.
+      kept.add(targetIndex);
+      used = entries[targetIndex].line.length + 1;
+      const ancestors = [];
+      for (let i = entries[targetIndex].parent; i >= 0; i = entries[i].parent) ancestors.push(i);
+      for (const i of ancestors.reverse()) add(i, false);
+    }
+    if (baseline) {
+      // The target, then lines the baseline lacks (new or newly shown elements, changed names,
+      // states or text) in document order, each under its ancestors. Removals are not listed.
+      if (targetIndex >= 0) keepTarget();
+      const changed = [];
+      entries.forEach((entry, i) => {
+        const el = entry.el || entry.source;
+        if (el && !baseline.signatures.get(el)?.has(entry.signature)) changed.push(i);
+      });
+      for (const i of changed) add(i);
+      selected = entries.filter((_, i) => kept.has(i));
+      truncated = changed.some(i => !kept.has(i));
+      // Refs add to the current generation; an element that already has one keeps it.
+      const known = new Map(Object.entries(refMap).map(([ref, el]) => [el, ref]));
+      for (const entry of selected) {
+        if (!entry.head) continue;
+        entry.ref = known.get(entry.el) || `s${refGeneration}e${refCounter++}`;
+        entry.line = entry.head + entry.ref + entry.tail;
+        refLabels[entry.ref] = { label: entry.label, parent: entries[entry.parent]?.ref ?? null };
+      }
+    } else if (size > limit) {
       if (targetIndex >= 0) {
-        // The target's complete line wins even if an unusually small cap cannot fit it.
-        kept.add(targetIndex);
-        used = entries[targetIndex].line.length + 1;
-        const ancestors = [];
-        for (let i = entries[targetIndex].parent; i >= 0; i = entries[i].parent) ancestors.push(i);
-        for (const i of ancestors.reverse()) add(i, false);
-
+        keepTarget();
         // Prefer immediate siblings and nearby controls on either side of the target.
         for (const predicate of [
           entry => entry.parent === entries[targetIndex].parent,
@@ -937,7 +998,12 @@
       snapshot,
       ...(truncated ? { truncated: true } : {}),
       ...(targetIndex >= 0 ? { target_ref: entries[targetIndex].ref } : {}),
-      ...(withText ? { url: location.href, title: document.title } : {}),
+      ...(withText && !baseline ? { url: location.href, title: document.title } : {}),
+      ...(baseline ? {
+        delta: true,
+        ...(window.location?.href !== baseline.url ? { url: window.location?.href } : {}),
+        ...(document.title !== baseline.title ? { title: document.title } : {}),
+      } : {}),
     };
   }
 

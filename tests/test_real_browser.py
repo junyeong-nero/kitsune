@@ -108,6 +108,17 @@ PAGES = {
   item.addEventListener('pointermove', move);
   item.addEventListener('pointerup', up);
 }});</script>""",
+    # #137: review filters below a 150-link header. The toggle shows the options and pushes a
+    # URL; an option click selects it. Home reports clicks.
+    "reviews": """<header><button id="home" onclick="fetch('/hit?page={name}')">Home</button>
+<script>for (let i = 0; i < 150; i++) document.currentScript.before(Object.assign(document.createElement('a'),
+  {{ href: '#store-' + i, textContent: 'Store link ' + i }}));</script></header>
+<main><h2>Reviews</h2><div role="region" aria-label="Review filters">
+<button id="toggle" aria-expanded="false" onclick="this.setAttribute('aria-expanded', 'true');
+  document.getElementById('options').hidden = false; history.pushState(null, '', '?filter=open')">Review type</button>
+<div id="options" role="listbox" aria-label="Review options" hidden
+  onclick="event.target.setAttribute('aria-selected', 'true')"><div role="option" tabindex="-1">All</div>
+<div role="option" tabindex="-1">Positive</div><div role="option" tabindex="-1">Negative</div></div></div></main>""",
 }
 
 
@@ -267,7 +278,9 @@ class RealBrowserActionRaceTests(harness.RealBrowserTestCase):
         self.assertEqual(stale["state"]["latestObservation"], "browser_snapshot", stale)
         self.assert_hits("short-refs", 0, settle=0)
 
-        clicked = self.assert_ok(self.call("/api/click", {"tabId": tab_id, "ref": fresh}))
+        # A full post-action snapshot replaces refs like browser_snapshot; a delta (the default) adds them.
+        clicked = self.assert_ok(self.call("/api/click", {"tabId": tab_id, "ref": fresh, "snapshot": "full"}))
+        self.assertNotIn("snapshot_delta", clicked)
         self.assertRegex(clicked["target_ref"], r"^e\d+$")
         self.assertNotEqual(clicked["target_ref"], fresh)
         self.assertIn(f'[ref={clicked["target_ref"]}]', clicked["snapshot"])
@@ -277,6 +290,31 @@ class RealBrowserActionRaceTests(harness.RealBrowserTestCase):
         self.assertEqual(replaced["state"]["currentRef"], clicked["target_ref"], replaced)
         self.assertEqual(replaced["state"]["latestObservation"], "browser_click", replaced)
         self.assert_hits("short-refs", 1)
+
+    def test_click_returns_a_delta_of_what_changed_below_the_fold_and_keeps_earlier_refs(self):
+        tab_id = self.open_tab(self.site.url("reviews", kind="reviews"))
+        page = self.call("/api/snapshot", {"tabId": tab_id})["snapshot"]
+        [home], [toggle] = refs_named(page, "Home"), refs_named(page, "Review type")
+        self.assertGreater(len(page), 4000, "a capped full snapshot would end inside the header")
+
+        opened = self.assert_ok(self.call("/api/click", {"tabId": tab_id, "ref": toggle}))
+        self.assertIs(opened.get("snapshot_delta"), True, opened)
+        self.assertEqual(opened["target_ref"], toggle, "an element that already had a ref keeps it")
+        self.assertTrue(opened.get("url", "").endswith("?filter=open"), opened)
+        delta = opened["snapshot"]
+        self.assertNotIn("Store link", delta)
+        self.assertNotIn('heading "Reviews"', delta)
+        self.assertRegex(delta, rf'button "Review type" \[ref={toggle}\] \[[^\]\n]*expanded=true\]')
+        [negative] = refs_named(delta, "Negative")
+        self.assertEqual(len(refs_named(delta, "Positive")), 1, delta)
+
+        picked = self.assert_ok(self.call("/api/click", {"tabId": tab_id, "ref": negative}))
+        self.assertEqual(picked["target_ref"], negative)
+        self.assertIn(f'option "Negative" [ref={negative}] [selected=true]', picked["snapshot"])
+        self.assertNotIn("Positive", picked["snapshot"])
+        # The header ref from before both actions still names its button.
+        self.assert_ok(self.call("/api/click", {"tabId": tab_id, "ref": home}))
+        self.assert_hits("reviews", 1)
 
     def test_ref_after_navigation_fails_as_other_document_without_clicking_the_new_page(self):
         tab_id = self.open_tab(self.site.url("nav-a"))
