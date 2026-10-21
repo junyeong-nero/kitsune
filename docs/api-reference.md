@@ -85,6 +85,8 @@ These tools also accept refs (all new parameters are optional):
 | `browser_click_and_wait_navigation` | `selector="", timeout=15000, tab_id=None, ref=None, element=None` |
 | `browser_markdown` | `selector=None, tab_id=None, ref=None, element=None` |
 
+`browser_keypress` accepts characters, Space/Spacebar, Enter/Return, Escape/Esc, ArrowUp/Down/Left/Right (or Up/Down/Left/Right), Tab and Backspace; `text` explicitly inserts text.
+
 Without selector/ref, keypress targets the active element (or body), blur targets
 the active element, submit-form submits the form of the field last filled or
 focused, else the only form (see [`browser_submit_form`](#browser_submit_formselectornone-tab_idnone-refnone-elementnone)), and Markdown reads the

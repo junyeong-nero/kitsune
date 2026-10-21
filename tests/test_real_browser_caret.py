@@ -1,8 +1,8 @@
-"""Clicks place the caret and typing appends in a contenteditable note, in a real browser (#159).
+"""Caret placement, text insertion and keyboard names in a real browser (#159, #173).
 
 Opt-in and built on tests/real_browser_harness.py, which documents how to run it. The
-fixture is the note task from #159: a two-paragraph contenteditable note whose save
-button posts its text and the number of input events the page saw.
+fixtures are the two-paragraph note task from #159 and a keyboard-sortable list
+that lifts/drops with Space and moves with ArrowUp (#173).
 """
 from http.server import BaseHTTPRequestHandler
 import json
@@ -25,6 +25,25 @@ PAGE = f"""<!doctype html><title>note</title>
     body: JSON.stringify({{ paragraphs: [...note.querySelectorAll('p')].map(p => p.textContent), inputs }}) }}));
 </script>"""
 
+SORTABLE_PAGE = """<!doctype html><title>keyboard sortable</title>
+<ul id="sortable"><li><button id="one">First</button></li><li><button id="two">Second</button></li></ul>
+<script>
+  let lifted = null;
+  window.keyEvents = [];
+  sortable.addEventListener('keydown', event => {
+    window.keyEvents.push([event.key, event.code, event.keyCode, event.which]);
+    const item = event.target.closest('li');
+    if (event.key === ' ' || event.key === 'Enter') {
+      event.preventDefault();
+      lifted = lifted ? null : item;
+      sortable.dataset.lifted = lifted ? 'true' : 'false';
+    } else if (event.key === 'ArrowUp' && lifted && lifted.previousElementSibling) {
+      event.preventDefault();
+      sortable.insertBefore(lifted, lifted.previousElementSibling);
+    }
+  });
+</script>"""
+
 
 class NoteSite:
     def __init__(self):
@@ -34,7 +53,7 @@ class NoteSite:
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
-                data = PAGE.encode()
+                data = (SORTABLE_PAGE if self.path == "/sortable" else PAGE).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(data)))
@@ -73,6 +92,20 @@ class RealBrowserCaretTests(harness.RealBrowserTestCase):
         cls.site = NoteSite()
         cls.addClassCleanup(cls.site.stop)
         super().setUpClass()
+
+    def test_space_arrow_up_space_reorders_a_keyboard_sortable(self):
+        tab = self.open_tab(f"{self.site.origin}/sortable")
+        for key in ("Space", "ArrowUp", "Space"):
+            self.assert_ok(self.call("/api/keypress", {"tabId": tab, "selector": "#two", "key": key,
+                                                      "includeSnapshot": False}))
+        state = self.call("/api/js", {"tabId": tab, "code": "JSON.stringify({"
+                         "order: [...document.querySelectorAll('#sortable button')].map(el => el.id),"
+                         "lifted: document.querySelector('#sortable').dataset.lifted, events: window.keyEvents})"})
+        self.assertNotIn("error", state)
+        self.assertEqual(json.loads(state["result"]), {
+            "order": ["two", "one"], "lifted": "false",
+            "events": [[" ", "Space", 32, 32], ["ArrowUp", "ArrowUp", 38, 38], [" ", "Space", 32, 32]],
+        })
 
     def test_click_last_paragraph_then_type_appends_to_the_note(self):
         tab = self.open_tab(f"{self.site.origin}/note")

@@ -99,6 +99,9 @@ async function testContentDescribeTarget() {
   // Enter in a text-like field of a form submits it; Enter elsewhere does not.
   assert.equal((await describe('#search')).submits, false, 'a click on a field does not submit');
   assert.equal((await describe('#search', { key: 'Enter' })).submits, true);
+  assert.equal((await describe('#search', { key: 'Return' })).submits, true);
+  assert.equal((await describe('#password', { key: 'Return' })).submits, true);
+  assert.equal((await describe('#textarea', { key: 'Return' })).submits, false);
   assert.equal((await describe('#password', { key: 'Enter' })).submits, true);
   assert.equal((await describe('#checkbox', { key: 'Enter' })).submits, false);
   assert.equal((await describe('#textarea', { key: 'Enter' })).submits, false);

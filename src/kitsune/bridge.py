@@ -1102,7 +1102,7 @@ async def _held_reason(action, params):
 
     tab_id = url_now = None
     if action in _ASK_TAB_ACTIONS:
-        submit_key = action == "keypress" and params.get("key") == "Enter"
+        submit_key = action == "keypress" and params.get("key") in {"Enter", "Return"}
         screen = action == "trustedClick" and (params.get("coordinateSpace") or params.get("space")) == "screen"
         inspect = reason is None and (action in _ASK_CLICK_ACTIONS or submit_key) and not screen
         described = await _describe_target(params, inspect)

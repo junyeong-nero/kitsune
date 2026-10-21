@@ -1303,7 +1303,7 @@ def browser_keypress(
     """Dispatch a synthetic keyboard event to the ref/selector target, else the focused
     element (or body). Action contract (ref, wait, expect, confirm_token, refs): see browser_click.
 
-    key: e.g. "Enter", "Tab", "Escape", "ArrowDown", "a".
+    key: characters, Space/Spacebar, Enter/Return, Escape/Esc, ArrowUp/Down/Left/Right (or Up/Down/Left/Right), Tab, Backspace.
     modifiers: {"ctrl"|"shift"|"alt"|"meta": true}. text: also insert this text into an
     editable target. wait applies only with selector/ref.
     """
