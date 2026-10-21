@@ -84,6 +84,9 @@ Prefer `browser_click(ref="s3e1", element="Log in", tab_id=...)` and
 `browser_type(ref="...", text="...", mode="fill", tab_id=...)`. `element` is a description
 for audit logs only; CSS `selector` remains supported. For drag, use `ref` for
 the source and `to_ref` for the destination (or the existing selector arguments).
+A write action's selector must match one element: several matches fail with
+`ambiguous_target` and act on nothing, unless `first=True` (see
+[Strict selectors](api-reference.md#strict-selectors)).
 
 Refs are scoped to the document and snapshot generation. A new snapshot,
 `browser_dom`, or the post-action snapshot below replaces earlier refs in that
@@ -513,8 +516,10 @@ repeating it.
 The opt-in real-browser suites (`tests/test_real_browser*.py`) run against a real
 Firefox, Zen or LibreWolf. They cover action races, tab unloads and reconnects
 (`test_real_browser.py`), tabs opened by `target=_blank` clicks with popups allowed
-and with the default popup blocker (`test_real_browser_opened_tabs.py`), and every
-read tool on empty 404 and 500 pages (`test_real_browser_error_pages.py`). They are skipped unless `KITSUNE_E2E_BROWSER`
+and with the default popup blocker (`test_real_browser_opened_tabs.py`), every
+read tool on empty 404 and 500 pages (`test_real_browser_error_pages.py`), and
+which form or button an action picks on a page with repeated controls
+(`test_real_browser_action_targets.py`). They are skipped unless `KITSUNE_E2E_BROWSER`
 names the browser binary. A full run takes a little over a minute:
 
 ```bash

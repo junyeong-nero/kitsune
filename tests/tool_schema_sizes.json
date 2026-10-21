@@ -6,13 +6,13 @@
   },
   "browser_check": {
     "description": 169,
-    "inputSchema": 589,
-    "total": 933
+    "inputSchema": 632,
+    "total": 976
   },
   "browser_click": {
-    "description": 2025,
-    "inputSchema": 615,
-    "total": 2815
+    "description": 2123,
+    "inputSchema": 658,
+    "total": 2956
   },
   "browser_console_logs": {
     "description": 81,
@@ -31,8 +31,8 @@
   },
   "browser_form_fill": {
     "description": 955,
-    "inputSchema": 355,
-    "total": 1493
+    "inputSchema": 398,
+    "total": 1536
   },
   "browser_forms": {
     "description": 234,
@@ -51,8 +51,8 @@
   },
   "browser_hover": {
     "description": 219,
-    "inputSchema": 468,
-    "total": 862
+    "inputSchema": 511,
+    "total": 905
   },
   "browser_js": {
     "description": 568,
@@ -61,8 +61,8 @@
   },
   "browser_keypress": {
     "description": 394,
-    "inputSchema": 787,
-    "total": 1362
+    "inputSchema": 830,
+    "total": 1405
   },
   "browser_markdown": {
     "description": 144,
@@ -96,8 +96,8 @@
   },
   "browser_select_option": {
     "description": 186,
-    "inputSchema": 629,
-    "total": 1006
+    "inputSchema": 672,
+    "total": 1049
   },
   "browser_snapshot": {
     "description": 1028,
@@ -110,9 +110,9 @@
     "total": 287
   },
   "browser_submit_form": {
-    "description": 314,
-    "inputSchema": 488,
-    "total": 988
+    "description": 400,
+    "inputSchema": 531,
+    "total": 1117
   },
   "browser_tabs": {
     "description": 606,
@@ -121,13 +121,13 @@
   },
   "browser_type": {
     "description": 376,
-    "inputSchema": 702,
-    "total": 1264
+    "inputSchema": 745,
+    "total": 1307
   },
   "browser_upload_file": {
     "description": 861,
-    "inputSchema": 394,
-    "total": 1441
+    "inputSchema": 437,
+    "total": 1484
   },
   "browser_wait_for": {
     "description": 817,
