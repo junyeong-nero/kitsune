@@ -8,6 +8,16 @@ Base URL: `http://127.0.0.1:47651`
 95 tools. The groups are `core`, `tabs`, `network`, `storage`, `parallel`,
 `devtools`, `windows`, and `session`. A comma list selects those groups only.
 See [Tools and capabilities](guide.md#tools) for the complete tool list per group.
+
+`KITSUNE_TOOL_PRESET=lean` (opt-in; unset by default) narrows `core` to 14 tools:
+`browser_status`, `browser_tabs`, `browser_navigate`, `browser_page_info`,
+`browser_page_text`, `browser_snapshot`, `browser_forms`, `browser_dom`, `browser_find`,
+`browser_screenshot`, `browser_click`, `browser_type`, `browser_select_option`,
+`browser_form_fill`. Their definitions are unchanged, other `KITSUNE_CAPS` groups
+register in full, and an unknown preset fails at startup. It exists for the
+browser-mcp-bench A/B (#31); no token, cost or success effect is claimed. The
+[Lean tool preset](guide.md#lean-tool-preset) section lists the 16 dropped `core`
+tools and which tasks need the default surface.
 The bridge endpoints below remain available unchanged; MCP tool names and
 parameters are separate from HTTP endpoint names and JSON command actions.
 
@@ -122,6 +132,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `code` | Meaning | `retryable` |
 |---|---|---|
 | `not_found` | No element matches the selector (also `No target`, `from/to element not found`); after an [actionability wait](#actionability-wait), `state` has `timeoutMs` and `elapsed` | true |
+| `not_fillable` | `browser_type` (`type`/`fill` modes) found no field to write. The target is not a field (`fill`: input, textarea or select; `type`: input or textarea, or a `contenteditable` element without `clear`) and has none in its own open or closed shadow root (`fill` also looks in its light DOM). A field in a shadow root nested inside another shadow root is not reached. Nothing was written. `state.tag` is the target's tag; for `fill`, `state.pageContext` is the page-context fallback's result (`not_found`, `no_field`, `error`, or `not_run` when its page script did not run) | true |
 | `not_actionable` | An [actionability wait](#actionability-wait) timed out on a target that exists but never rendered (`state.reason: "not_rendered"`, `timeoutMs`, `elapsed`); nothing was dispatched | true |
 | `stale_ref` | The ref is no longer valid; `state.reason` is `element_removed`, `not_in_snapshot`, `snapshot_replaced` (a newer snapshot of this document; `state.latestObservation` and, for the same element, `state.currentRef`, see [Ref lifetime](#ref-lifetime)), or `other_document` (the tab navigated, or the ref came from another tab) | true |
 | `navigating` | The tab is loading: a `not_found`/`stale_ref` while loading (`state.cause`), or the page unloaded while handling the command. Also a page that refused the content script within 5 s of a wake or reload without an error status, or whose 2xx response arrived only while the command waited for it: it may be an old document about to be replaced | true before dispatch; false for writes after |
@@ -649,7 +660,8 @@ field. A field is sensitive if it is:
   field whose show/hide toggle switched it to `type=text` stays redacted), or an
   `inputmode="numeric"` input named like a code or digit box (zip/postal codes
   excepted);
-- an input masked with `-webkit-text-security`;
+- an input, `<textarea>` or `contenteditable` region masked with
+  `-webkit-text-security`;
 - an input the browser or password manager has autofilled (`:autofill`), until
   the autofill state is cleared;
 - a custom element (e.g. a web-component text field) or other element with a
@@ -661,7 +673,17 @@ field. A field is sensitive if it is:
 `browser_query`'s `value` field replace `value` with `"redacted": true` and
 `"hasValue": <bool>`. Tag, type, name, id, label, selector, and ref are kept, so
 the field remains interactable. `browser_find` does not match queries against
-sensitive values. Results and errors of write actions on sensitive fields
+sensitive values.
+
+A masked textarea or editing region keeps its secret as text content, so that
+content is also left out of snapshot names and text lines, `browser_find`
+matching, scoring and result text, element `text` fields (`browser_dom`,
+`browser_query`, `browser_explain_selector`, `browser_wait_for` element
+results, click results), field labels, `browser_markdown` and
+`browser_readability`; `browser_html` and `browser_query` `html` serialize the
+element empty. Page text (`browser_page_text`) is rendered text, where the
+browser already shows masked text as mask characters. Unmasked textareas and
+editing regions are unchanged. Results and errors of write actions on sensitive fields
 (`browser_type`, `browser_form_fill`, …) do not echo the typed value. There is
 no opt-in to reveal values through these tools.
 
@@ -684,6 +706,10 @@ skips its CSS branch and falls back to text search. A selector counts as testing
 `value` if it contains `[value` (any case, optionally with a namespace prefix
 such as `[*|value`), or if it contains `[` together with a backslash escape or
 a `/*` comment.
+
+If a cloned subtree does not mirror the page, sensitivity cannot be mapped
+onto it, so markup from that clone drops every `value` attribute and the
+content of every textarea and `contenteditable` element.
 
 These rules are heuristics: a field that is masked some other way (canvas,
 custom fonts) or named without a recognizable word is not detected.
@@ -739,8 +765,9 @@ is logged after its steps. Direct calls have no `parent`.
 ### Container progress
 
 `browser_batch`, `browser_parallel` and `browser_workflow` (POST `/api/batch` and
-`/api/workflow`) add `progress` and `status` next to `results`, which is unchanged.
-`progress` has one record per command, in order, including commands that never ran:
+`/api/workflow`) add `progress`, `status` and `summary` next to `results`, which is
+unchanged. `progress` has one record per command, in order, including commands that
+never ran:
 
 ```json
 { "results": [{ "ok": true }, { "error": "Command timed out after 30s", "code": "timeout", "retryable": false }],
@@ -748,7 +775,8 @@ is logged after its steps. Direct calls have no `parent`.
     { "index": 0, "action": "click", "tabId": 3, "status": "ok" },
     { "index": 1, "action": "submitForm", "tabId": 3, "status": "unknown" },
     { "index": 2, "action": "pageText", "tabId": 3, "status": "skipped" }],
-  "status": "unknown" }
+  "status": "unknown",
+  "summary": "3 commands: 1 ok, 1 unknown, 1 skipped. Unknown, may have taken effect (check the page before repeating): step 1 (submitForm on tab 3). Skipped, never started: step 2 (pageText on tab 3)." }
 ```
 
 | `status` | Meaning |
@@ -766,6 +794,13 @@ whose last attempt succeeded is `ok`. A `parallel` record adds `sequences`: one 
 per sequence of `{sequence, index, action, tabId, status}`; commands that never
 started are `skipped`. The top-level `status` combines the records the same way.
 
+`summary` states `progress` in one paragraph a user can read without the records:
+the count of each status, then each command that is `unknown`, `held` (with how to
+confirm it), `failed` or `skipped`, by its `index` and `action` (and `tabId`), at most
+five per status. A `parallel` that started is counted by the commands of its
+sequences (`sequence 1 step 0`). It starts with `Stopped at its 300s deadline.` after
+a `container_timeout`. It is text for people; read `progress` in code.
+
 `progress` is also what to resume from: the commands before the first record that
 is not `ok` have run, `unknown` ones must be observed before they are repeated, and
 `skipped` ones are safe to send. See [Checkpoint and resume](checkpoint-resume.md)
@@ -775,7 +810,9 @@ A batch stops at its deadline (the sum of its waits plus 15 s, at least 300 s; a
 workflow at 300 s): the command in progress is cancelled and later commands do not
 start. The response then adds a `container_timeout` error (`retryable: false`,
 `state.deadlineSeconds`) to the partial `results` and `progress`, and the audit log
-records the cancelled command with `error: "cancelled"`.
+records the cancelled command with `error: "cancelled"`. The MCP tools wait 30 s
+past that deadline (15 s for the cancelled command to settle, 15 s for the reply),
+so the client receives this report instead of its own request timeout.
 
 Tab ownership in `parallel`: sequences run concurrently, so a focus change in one
 sequence must not move another sequence's command to a different tab. Before any
@@ -788,8 +825,10 @@ sequence starts, the bridge refuses the whole `parallel` (`results` is one error
   `reloadExtension`, `screenshot`, `broadcast`, `syncBarrier`) need none;
   `screenshot` captures the visible tab.
 - with `tab_owned` when two sequences write the same tab (the writes that make an
-  unknown outcome unsafe to repeat, including `switchTab` and `closeTab`). Several
-  sequences may read one tab.
+  unknown outcome unsafe to repeat, including `switchTab` and `closeTab`). The
+  condition of an `if` or `while` counts as a write of its `tabId`: it is JavaScript
+  run on that tab, like `js`, and the bridge cannot tell whether it changes the page.
+  Several sequences may read one tab, for example with `waitForElement`.
 
 A `tabId` substituted at run time (`${$N.tabId}` in a nested `sequence`) is checked
 when its command runs: the first sequence that writes a tab owns it, and a later
@@ -1159,7 +1198,12 @@ Add `"wait": true, "timeout": 10000` to wait for the target first (see
 
 ### POST /api/fill
 `{ "selector": "input#email", "value": "user@example.com" }`
-Handles shadow DOM, React/Vue state, with automatic fallbacks.
+Handles shadow DOM, React/Vue state, with automatic fallbacks. A web-component host
+is filled through the first input, textarea or select in its open or closed shadow
+root (closed roots through Firefox's `openOrClosedShadowRoot`). `/api/type` and
+`/api/set-editable-content` also look in open and closed shadow roots. When `/api/fill`
+or `/api/type` cannot reach a field, the result is a `not_fillable`
+[action error](#action-errors).
 
 ### POST /api/scroll
 `{ "direction": "down", "amount": 500 }` — optional container `selector` or `ref`;
@@ -1227,7 +1271,7 @@ Execute multiple commands sequentially or in parallel.
 ```
 Note: every command that acts on a tab inside parallel sequences **must** have an explicit `tabId`, and two sequences may not write the same tab (see [Container progress](#container-progress)).
 
-Returns `{ "results": [...], "progress": [...], "status": "ok" }`; `progress` and `status` are described in [Container progress](#container-progress).
+Returns `{ "results": [...], "progress": [...], "status": "ok", "summary": "..." }`; `progress`, `status` and `summary` are described in [Container progress](#container-progress).
 
 **Batch actions:** navigate, newTab, closeTab, switchTab, click, type, fill, scroll, hover, find, js, pageInfo, pageText, pageTextByTabId, tabs, forms, dom, highlight, screenshot, waitForElement, waitForResult, sleep, parallel.
 
@@ -1245,7 +1289,7 @@ Execute a named workflow from the workflows directory.
 { "name": "test", "variables": { "url": "https://example.com" } }
 ```
 Workflows are `.md` files with JSON code blocks. Variables use `{{name}}` syntax.
-Returns `{ "workflow": "test", "steps": 4, "results": [...], "progress": [...], "status": "ok" }`. A workflow stops at its first failed step; `progress` marks the rest `skipped` (see [Container progress](#container-progress)).
+Returns `{ "workflow": "test", "steps": 4, "results": [...], "progress": [...], "status": "ok", "summary": "..." }`. A workflow stops at its first failed step; `progress` marks the rest `skipped` (see [Container progress](#container-progress)).
 
 ## Cache Control (NEW)
 

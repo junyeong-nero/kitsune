@@ -22,7 +22,7 @@ from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from . import bridge_control
 from .bridge_control import BRIDGE, HTTP_PORT, LOG_FILE, TOKEN_FILE, WS_PORT, headers as _headers
 from .version import BRIDGE_BUILD
-from .waits import batch_wait_seconds, command_wait_seconds
+from .waits import WORKFLOW_DEADLINE_SECONDS, batch_deadline_seconds, command_wait_seconds, container_request_seconds
 
 # Annotation hints describe the whole tool, including its most dangerous operation.
 # They are advisory metadata for the client's permission prompts; the bridge never reads
@@ -44,6 +44,21 @@ ENABLED_CAPS = frozenset(
 _unknown_caps = ENABLED_CAPS - CAPABILITY_GROUPS - {"all"}
 if _unknown_caps:
     raise ValueError(f"Unknown KITSUNE_CAPS: {', '.join(sorted(_unknown_caps))}")
+
+# Opt-in core subsets (KITSUNE_TOOL_PRESET); unset keeps the whole core group.
+# lean: the 14 tools browser-mcp-bench's read + draft tasks used (#31). It is an A/B
+# candidate, not a default; docs/guide.md#lean-tool-preset lists what it drops.
+TOOL_PRESETS = {
+    "lean": frozenset({
+        "browser_status", "browser_tabs", "browser_navigate", "browser_page_info",
+        "browser_page_text", "browser_snapshot", "browser_forms", "browser_dom",
+        "browser_find", "browser_screenshot", "browser_click", "browser_type",
+        "browser_select_option", "browser_form_fill",
+    }),
+}
+TOOL_PRESET = os.environ.get("KITSUNE_TOOL_PRESET", "").strip().lower() or None
+if TOOL_PRESET is not None and TOOL_PRESET not in TOOL_PRESETS:
+    raise ValueError(f"Unknown KITSUNE_TOOL_PRESET: {TOOL_PRESET}")
 
 
 def _failed(result) -> bool:
@@ -71,12 +86,15 @@ def _mcp_errors(function):
 def tool(group: str, annotations: ToolAnnotations | None = None):
     """Register a tool only when its capability group is enabled at startup.
 
+    A tool preset narrows the core group only; other enabled groups register in full.
     Only the MCP registration marks failures as errors; Python callers get the plain result.
     """
     if group not in CAPABILITY_GROUPS:
         raise ValueError(f"Unknown tool capability group: {group}")
 
     def decorate(function):
+        if group == "core" and TOOL_PRESET is not None and function.__name__ not in TOOL_PRESETS[TOOL_PRESET]:
+            return function
         if "all" in ENABLED_CAPS or group in ENABLED_CAPS:
             mcp.tool(annotations=annotations)(_mcp_errors(function))
         return function
@@ -432,27 +450,21 @@ def browser_snapshot(
     tab_id: int | None = None, selector: str | None = None,
     ref: str | None = None, max_depth: int | None = None, text: bool = False,
 ) -> dict:
-    """Get a compact accessibility-style text tree and fresh element refs.
+    """Get a compact accessibility-style text tree with fresh element refs; prefer them for actions.
 
-    Prefer these refs for actions. Refs belong to one document in one tab. Each
-    snapshot, browser_dom, and the post-action snapshot of a successful click,
-    type/fill, select_option, check, keypress, submit_form or navigate replaces
-    earlier refs in that tab; navigation invalidates them too. browser_find,
-    browser_forms and wait_for(selector) add refs without replacing any. After an
-    action, use its snapshot refs and target_ref (the acted-on element). On
-    stale_ref, take a new snapshot; never repeat a write just to refresh refs.
-    Repeated composite siblings show the first five items; post-action snapshots
-    also keep the target.
+    Refs belong to one document in one tab. A snapshot, browser_dom, or the post-action
+    snapshot of a successful click, type/fill, select_option, check, keypress, submit_form
+    or navigate replaces that tab's earlier refs; navigation invalidates them. browser_find,
+    browser_forms and wait_for(selector) add refs. After an action, use its snapshot refs
+    and target_ref (the acted-on element). On stale_ref, take a new snapshot; never repeat
+    a write just to refresh refs. Repeated composite siblings show the first five items;
+    post-action snapshots also keep the target.
 
-    Args:
-        tab_id: Optional tab to target. Defaults to active tab.
-        selector: Optional CSS selector for a subtree, including its root.
-        ref: Existing snapshot ref for a subtree; takes precedence over selector.
-            Resolved before this snapshot invalidates earlier refs.
-        max_depth: Non-negative DOM depth relative to the subtree root (body by
-            default). Zero includes only the root; None traverses all depths.
-        text: Also include visible text lines (no refs), url, title and tabId;
-            capped at 12,000 chars with a truncation marker.
+    selector: CSS subtree root (included). ref: existing ref for a subtree, resolved
+    before refs are replaced; wins over selector. max_depth: non-negative depth below
+    the subtree root (body by default); 0 is the root only, None all depths.
+    text: also return visible text lines (no refs), url, title and tabId, capped at
+    12,000 chars with a truncation marker.
     """
     if max_depth is not None and (type(max_depth) is not int or max_depth < 0):
         return {"error": "max_depth must be a non-negative integer"}
@@ -476,15 +488,12 @@ def browser_screenshot(
     tab_id: int | None = None, save_to: str | None = None,
     data_url: bool = False, ref: str | None = None, element: str | None = None,
 ):
-    """Capture viewport, one element, or the full page as MCP image content.
+    """Capture the viewport, one element (ref/selector, see browser_click) or the full page.
 
-    For an element, prefer ref from browser_snapshot over selector; element is an
-    audit-only description. selector/ref and full_page are mutually exclusive. Element/full-page captures
-    temporarily activate the target tab. Viewport capture with tab_id selects
-    that tab and focuses its window. Large inline images are JPEG-encoded or
-    downscaled under ~1 MB. save_to writes the full PNG to that path and returns
-    metadata instead of image content; data_url also includes the PNG bytes as a
-    data URL (large).
+    selector/ref and full_page are mutually exclusive. Element/full-page captures briefly
+    activate the tab; viewport capture with tab_id selects it and focuses its window.
+    Inline images are JPEG-encoded or downscaled under ~1 MB. save_to writes the full PNG
+    there and returns metadata instead; data_url also returns it as a (large) data URL.
     """
     if ref is not None and selector is None:
         selector = ""
@@ -616,13 +625,11 @@ def browser_type(
     ref: str | None = None, element: str | None = None, wait: bool = False, timeout: int = 10000,
     expect: dict | None = None, confirm_token: str | None = None,
 ) -> dict:
-    """Enter text using typing events, direct field fill, or a contenteditable editor.
+    """Enter text into a field or contenteditable editor.
 
-    type: type text, optionally clearing first.
-    fill: replace the field value using native setters and input/change events;
-        clear is ignored because fill always replaces.
-    editable: insert plain text in an editor/input/textarea, appending unless
-        clear=True. Use browser_js for trusted HTML insertion.
+    type: typing events, clearing first if clear. fill: replace the value via native
+    setters and input/change events (always replaces). editable: insert plain text into
+    an editor/input/textarea, appending unless clear. For HTML, use browser_js.
     Action contract (ref, wait, expect, confirm_token, refs): see browser_click.
     """
     if mode == "type":
@@ -644,21 +651,13 @@ def browser_scroll(
     selector: str | None = None, ref: str | None = None, element: str | None = None,
     expect: dict | None = None,
 ) -> dict:
-    """Scroll the target instantly. Without selector/ref, scroll the window,
-    falling back to a scrollable container at viewport center.
-    Action contract (ref, expect): see browser_click.
+    """Scroll the selector/ref container instantly, else the window (falling back to a
+    scrollable container at viewport center). Action contract (ref, expect): see browser_click.
 
-    Args:
-        direction: "up", "down", "left", "right", "top", or "bottom"
-        amount: Pixels to scroll (ignored for top/bottom)
-        tab_id: Optional tab to target. Defaults to active tab.
-
-    Returns:
-        scrolled_by: Actual signed pixel movement on the requested axis; 0 is a no-op.
-        target: "window" or a short selector describing the container that scrolled.
-        scrollY, scrollX: Window offsets (even when a container scrolled).
-        scrolledPx: Compatibility alias for scrolled_by; ok indicates command handling,
-            not whether any movement occurred.
+    direction: up, down, left, right, top or bottom; amount is pixels (ignored for top/bottom).
+    Returns scrolled_by (signed pixels actually moved; 0 is a no-op), target ("window" or
+    the container's selector) and window scrollY/scrollX. scrolledPx is an alias of
+    scrolled_by; ok means handled, not moved.
     """
     body = {"direction": direction, "amount": amount}
     if selector: body["selector"] = selector
@@ -822,7 +821,8 @@ def browser_workflow(name: str, variables: dict | None = None) -> dict:
         name: Workflow file name without .md
         variables: Optional template variables for the workflow
     """
-    return _post("/api/workflow", {"name": name, "variables": variables or {}}, timeout=300)
+    return _post("/api/workflow", {"name": name, "variables": variables or {}},
+                 timeout=container_request_seconds(WORKFLOW_DEADLINE_SECONDS))
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Manage response cache", **DESTRUCTIVE))
@@ -943,7 +943,7 @@ def browser_parallel(sequences: list[list[dict]]) -> dict:
     """
     command = {"action": "parallel", "sequences": sequences}
     return _post("/api/batch", {"commands": [command]},
-                 timeout=max(300, command_wait_seconds(command) + 15))
+                 timeout=container_request_seconds(batch_deadline_seconds([command])))
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -1140,18 +1140,12 @@ def browser_keypress(
     timeout: int = 10000,
     expect: dict | None = None, confirm_token: str | None = None,
 ) -> dict:
-    """Dispatch a synthetic keyboard event. Use modifiers like
-    `{"ctrl": True, "shift": True}`. Pass `text` to also insert characters
-    into editable targets.
-    Action contract (ref, wait, expect, confirm_token, refs): see browser_click.
+    """Dispatch a synthetic keyboard event to the ref/selector target, else the focused
+    element (or body). Action contract (ref, wait, expect, confirm_token, refs): see browser_click.
 
-    Args:
-        key: Key name, e.g. "Enter", "Tab", "Escape", "ArrowDown", "a".
-        selector: Optional CSS target; ref takes precedence. Without either,
-            defaults to document.activeElement (or document.body).
-        modifiers: {"ctrl"|"shift"|"alt"|"meta": True}.
-        text: If set, also insert this text into editable targets.
-        wait: Only applies with selector/ref.
+    key: e.g. "Enter", "Tab", "Escape", "ArrowDown", "a".
+    modifiers: {"ctrl"|"shift"|"alt"|"meta": true}. text: also insert this text into an
+    editable target. wait applies only with selector/ref.
     """
     body = {"key": key}
     if selector: body["selector"] = selector
@@ -1816,8 +1810,9 @@ def browser_batch(commands: list[dict]) -> dict:
     Args:
         commands: List of command dicts, e.g. [{"action": "navigate", "url": "..."}, {"action": "waitForElement", "selector": ".results", "timeout": 10000}, {"action": "pageText"}]
     """
-    # Commands run in sequence, so every wait in the batch must fit in the deadline.
-    return _post("/api/batch", {"commands": commands}, timeout=batch_wait_seconds(commands) + 15)
+    # Outlast the bridge's deadline, so a batch it stops still returns its partial progress.
+    return _post("/api/batch", {"commands": commands},
+                 timeout=container_request_seconds(batch_deadline_seconds(commands)))
 
 
 def main():

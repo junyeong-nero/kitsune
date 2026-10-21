@@ -36,6 +36,7 @@ import time
 import ctypes
 import contextvars
 import itertools
+from collections import Counter
 from contextlib import asynccontextmanager
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
@@ -57,7 +58,10 @@ except ImportError:
 
 from . import bridge_control
 from .version import BRIDGE_BUILD, PACKAGE_VERSION, SOURCE_ROOT, extension_source_hash
-from .waits import actionability_wait_seconds, batch_wait_seconds, command_wait_seconds
+from .waits import (
+    WORKFLOW_DEADLINE_SECONDS, actionability_wait_seconds, batch_deadline_seconds, command_wait_seconds,
+    container_settle_seconds,
+)
 
 # ── Config ──
 BRIDGE_VERSION = PACKAGE_VERSION
@@ -2012,6 +2016,8 @@ _TABLESS_ACTIONS = {
     "cookies", "clipboard", "downloads", "clearBrowsingData", "intercept", "reloadExtension",
     "screenshot", "broadcast", "syncBarrier", "parallel", "sequence", "retry", "try",
 }
+# Their condition is JavaScript run on their tab (executeJS, a write), so like js they claim it.
+_CONDITION_ACTIONS = {"if", "while"}
 _UNFINISHED = object()
 
 
@@ -2035,7 +2041,8 @@ def _tab_owned_error(action, sequence, tab_id, owner, **state):
         f'Sequence {sequence}: "{action}" on tab {tab_id} inside parallel conflicts with sequence {owner}, '
         "which also writes that tab",
         "tab_owned", retryable=True,
-        hint="Nothing was dispatched. Let one sequence write each tab; put every write to a tab in its sequence.",
+        hint=("Nothing was dispatched. Let one sequence write each tab; put every write to a tab in its sequence. "
+              "An if/while condition runs JavaScript on its tab, so it counts as a write."),
         sequence=sequence, tabId=tab_id, owner=owner, **state)
 
 
@@ -2075,9 +2082,14 @@ def _parallel_tab_problem(sequences):
                 tab_id = _explicit_tab_id(raw)
                 if tab_id is None:
                     return _tab_required_error(action, i, index=j, tabId=raw)
-                if action in _REPEAT_UNSAFE_ACTIONS and writers.setdefault(tab_id, i) != i:
+                if _claims_tab(action) and writers.setdefault(tab_id, i) != i:
                     return _tab_owned_error(action, i, tab_id, writers[tab_id], index=j)
     return None
+
+
+def _claims_tab(action):
+    """Whether a parallel step owns its tab: a write, or an if/while whose condition runs on it."""
+    return action in _REPEAT_UNSAFE_ACTIONS or action in _CONDITION_ACTIONS
 
 
 def _check_step_tab(action, params):
@@ -2085,8 +2097,8 @@ def _check_step_tab(action, params):
 
     The extension sends a step with a falsy tabId to the active tab, so a named tabId that is not
     a tab id (0, "", "null", an unresolved ${$N.tabId}) is refused; "12" becomes 12. Inside a
-    parallel sequence, a step that acts on a tab must name it, and a write claims the tab for its
-    sequence.
+    parallel sequence, a step that acts on a tab must name it, and a write or an if/while condition
+    claims the tab for its sequence.
     """
     raw = params.get("tabId")
     tab_id = _explicit_tab_id(raw)
@@ -2105,7 +2117,7 @@ def _check_step_tab(action, params):
     sequence = chain[-1][1]
     if tab_id is None:
         return _tab_required_error(action, sequence)
-    if action in _REPEAT_UNSAFE_ACTIONS:
+    if _claims_tab(action):
         for owners, claimant in chain:
             if owners.setdefault(tab_id, claimant) != claimant:
                 return _tab_owned_error(action, sequence, tab_id, owners[tab_id])
@@ -2156,6 +2168,47 @@ def _container_progress(commands, steps):
     ran = {s["index"]: s for s in steps}
     progress = [ran.get(i) or _step_record(c, "skipped", index=i) for i, c in enumerate(commands)]
     return {"progress": progress, "status": _worst_status(s["status"] for s in progress)}
+
+
+# What each status means for the user, in the order the summary lists them; ok needs no list.
+_SUMMARY_DETAILS = (
+    ("unknown", "Unknown, may have taken effect (check the page before repeating)"),
+    ("held", "Held for confirmation, not run (confirm each with a direct call)"),
+    ("failed", "Failed, safe to repeat after its hint"),
+    ("skipped", "Skipped, never started"),
+)
+_SUMMARY_LIST_MAX = 5
+
+
+def _summary_commands(records, prefix=""):
+    """(label, record) per command; a parallel that started is replaced by its sequences' commands."""
+    for record in records:
+        label = prefix + (f"sequence {record['sequence']} " if "sequence" in record else "") + f"step {record['index']}"
+        nested = [step for seq in record.get("sequences", []) for step in seq]
+        if any(step["status"] != "skipped" for step in nested):
+            # browser_parallel sends one parallel command; its sequences need no "step 0, " prefix.
+            yield from _summary_commands(nested, "" if len(records) == 1 and not prefix else label + ", ")
+        else:
+            yield label, record
+
+
+def _container_summary(progress, deadline=None):
+    """One human-readable paragraph of a container's progress, additive to progress itself."""
+    commands = list(_summary_commands(progress))
+    counts = Counter(record["status"] for _, record in commands)
+    head = ", ".join(f"{counts[status]} {status}" for status in ("ok", *(s for s, _ in _SUMMARY_DETAILS))
+                     if counts[status])
+    parts = [f"Stopped at its {deadline:g}s deadline."] if deadline is not None else []
+    parts.append(f"{len(commands)} command{'' if len(commands) == 1 else 's'}" + (f": {head}." if head else "."))
+    for status, meaning in _SUMMARY_DETAILS:
+        listed = [f"{label} ({record['action'] or 'command'}"
+                  + (f" on tab {record['tabId']})" if "tabId" in record else ")")
+                  for label, record in commands if record["status"] == status]
+        if listed:
+            more = len(listed) - _SUMMARY_LIST_MAX
+            parts.append(f"{meaning}: {', '.join(listed[:_SUMMARY_LIST_MAX])}"
+                         + (f", and {more} more." if more > 0 else "."))
+    return " ".join(parts)
 
 
 async def _within_deadline(coro, seconds):
@@ -3199,11 +3252,12 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     break
 
         # Commands run in sequence, so the deadline must cover every wait in the batch.
-        deadline = max(300, batch_wait_seconds(commands) + 15)
-        timed_out = self.run_async(_within_deadline(run_all(), deadline), timeout=deadline + 15)
+        deadline = batch_deadline_seconds(commands)
+        timed_out = self.run_async(_within_deadline(run_all(), deadline), timeout=container_settle_seconds(deadline))
         response = {'results': results, **_container_progress(commands, steps)}
         if timed_out:
             response.update(_container_timeout_error('Batch', deadline))
+        response['summary'] = _container_summary(response['progress'], deadline if timed_out else None)
         self.send_json(200, response)
 
     def handle_cache(self):
@@ -3257,12 +3311,13 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 if isinstance(r, dict) and r.get('error'):
                     break
 
-        deadline = 300
-        timed_out = self.run_async(_within_deadline(run_workflow(), deadline), timeout=deadline + 15)
+        deadline = WORKFLOW_DEADLINE_SECONDS
+        timed_out = self.run_async(_within_deadline(run_workflow(), deadline), timeout=container_settle_seconds(deadline))
         response = {"workflow": name, "steps": len(commands), "results": results,
                     **_container_progress(commands, steps)}
         if timed_out:
             response.update(_container_timeout_error('Workflow', deadline))
+        response["summary"] = _container_summary(response["progress"], deadline if timed_out else None)
         self.send_json(200, response)
 
     # ── Helpers ──

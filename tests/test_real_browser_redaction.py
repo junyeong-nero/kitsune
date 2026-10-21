@@ -3,8 +3,8 @@
 Opt-in and built on tests/real_browser_harness.py, which documents how to run it.
 tests/sensitive_field_redaction.cjs checks the same rules on a mocked DOM; here the
 browser decides what the rules see: Firefox's own password-manager autofill and its
-`:autofill` state, computed `-webkit-text-security`, and open and closed shadow roots
-behind Xray wrappers. Every read tool must hide the sensitive values while ordinary
+`:autofill` state, computed `-webkit-text-security` (on inputs, textareas and editable
+regions), and open and closed shadow roots behind Xray wrappers. Every read tool must hide the sensitive values while ordinary
 login and checkout fields stay readable.
 
 The password manager is real: setUpClass saves one disposable login, for the login
@@ -28,6 +28,9 @@ def fake(label):
 AUTOFILL_USER = fake("AUTOFILL_USER")
 AUTOFILL_PASSWORD = fake("AUTOFILL_PASSWORD")
 CARD_NUMBER = fake("CARD_NUMBER")
+TEXTAREA_INITIAL = fake("TEXTAREA_INITIAL")
+EDITABLE_TEXT = fake("EDITABLE")
+EDITABLE_LINE = fake("EDITABLE_LINE")
 
 PAGES = {
     "/login": """<!doctype html><title>Sign in</title>
@@ -70,7 +73,20 @@ PAGES = {
 <x-secret-input id="vault" role="textbox" aria-label="Vault key"></x-secret-input>
 <x-code-input id="closed-otp" role="textbox" aria-label="Login code"></x-code-input>
 <x-search-input id="site-search" role="searchbox" aria-label="Search"></x-search-input>
+<x-nested-input id="nested" aria-label="Nickname"></x-nested-input>
 <script src="/page.js"></script>""",
+    "/notes": """<!doctype html><title>Notes</title>
+<style>.masked { -webkit-text-security: disc; }</style>
+<h1>Account notes</h1>
+<form id="notes-form">
+<label>Recovery codes <textarea id="recovery" name="recovery" class="masked">%s</textarea></label>
+<label for="notes">Notes</label><textarea id="notes" name="notes">plain notes</textarea>
+</form>
+<section><h2>Secret note</h2>
+<div id="secret-note" contenteditable="true" style="-webkit-text-security: square">%s<p id="secret-note-line">%s</p></div>
+</section>
+<section><h2>Draft</h2><div id="draft" contenteditable="true">draft text</div></section>"""
+    % (TEXTAREA_INITIAL, EDITABLE_TEXT, EDITABLE_LINE),
 }
 
 # Fixture scripts stay out of the pages' markup; they hold no sensitive values.
@@ -97,6 +113,17 @@ function defineControl(name, mode, inner) {
 defineControl('x-secret-input', 'open', '<input type="password">');
 defineControl('x-code-input', 'closed', '<input autocomplete="one-time-code" inputmode="numeric">');
 defineControl('x-search-input', 'open', '<input type="search">');
+// An input two closed roots deep, which browser_fill does not reach.
+defineControl('x-inner-field', 'closed', '<input>');
+customElements.define('x-nested-input', class extends HTMLElement {
+  constructor() {
+    super();
+    const root = this.attachShadow({ mode: 'closed' });
+    root.innerHTML = '<x-inner-field></x-inner-field>';
+    this.inner = root.firstChild;
+  }
+  get value() { return this.inner.value; }
+});
 """
 
 
@@ -136,10 +163,13 @@ READS = [
     ("browser_snapshot text", "/api/snapshot", {"text": True}),
     ("browser_forms", "/api/forms", {}),
     ("browser_dom", "/api/dom", {}),
-    ("browser_query", "/api/query", {"selector": "input, [role]", "fields": ["id", "text", "value", "attrs", "html"]}),
+    ("browser_query", "/api/query", {"selector": "input, textarea, [contenteditable], [contenteditable] *, [role]",
+                                     "fields": ["id", "text", "value", "attrs", "html"]}),
     ("browser_find", "/api/find", {"query": MARKER}),
     ("browser_html", "/api/html", {"selector": "body"}),
     ("browser_page_text", "/api/page-text", {}),
+    ("browser_markdown", "/api/markdown", {}),
+    ("browser_readability", "/api/readability", {}),
 ]
 
 
@@ -322,17 +352,23 @@ class RealBrowserRedactionTests(harness.RealBrowserTestCase):
     def test_open_and_closed_shadow_dom_fields_are_redacted_on_their_hosts(self):
         tab_id = self.open_tab(self.site.origin + "/widgets")
         vault, code = fake("SHADOW_VAULT"), fake("CLOSED_SHADOW_CODE")
-        for selector, value in [("#vault", vault), ("#site-search", "kittens")]:
+        # browser_type (mode="type") also reaches the input inside the closed root.
+        self.type_into(tab_id, "#closed-otp", fake("CLOSED_SHADOW_TYPED"))
+        self.assertEqual(self.js(tab_id, "document.getElementById('closed-otp').wrappedJSObject.value"),
+                         fake("CLOSED_SHADOW_TYPED"))
+        # browser_fill reaches inputs inside open and closed roots (#107).
+        for selector, value in [("#vault", vault), ("#closed-otp", code), ("#site-search", "kittens")]:
             result = self.assert_ok(self.call("/api/fill", {"selector": selector, "value": value, "tabId": tab_id}))
+            self.assertEqual((result["pierced"], result["tag"]), (True, "input"), selector)
             self.assertIn("snapshot", result)
             self.assertNotIn(MARKER, json.dumps(result), "a write result echoes a filled value")
-        # browser_fill cannot reach an input inside a closed root yet (#107), so page code sets this one.
-        self.js(tab_id, f"document.getElementById('closed-otp').wrappedJSObject.value = {json.dumps(code)}")
         # The values reached the inner inputs, and the hosts reflect them as page code would.
         self.assertEqual(self.js(tab_id, "['vault', 'closed-otp', 'site-search'].map(id => "
                                          "document.getElementById(id).wrappedJSObject.value).join(',')"),
                          f"{vault},{code},kittens")
-        self.assertEqual(self.js(tab_id, "document.getElementById('vault').getAttribute('value')"), vault)
+        self.assertEqual(self.js(tab_id, "['vault', 'closed-otp'].map(id => "
+                                         "document.getElementById(id).getAttribute('value')).join(',')"),
+                         f"{vault},{code}")
 
         reads = self.read_all(tab_id)
         self.assert_hidden(tab_id, reads, [vault, code])
@@ -349,6 +385,74 @@ class RealBrowserRedactionTests(harness.RealBrowserTestCase):
         search = self.row(reads, "site-search")["query"]
         self.assertEqual((search.get("redacted"), search["attrs"]["value"]), (None, "kittens"))
         self.assertIn('value="kittens"', reads["browser_html"]["html"])
+
+    def test_a_field_browser_fill_cannot_reach_fails_as_not_fillable(self):
+        tab_id = self.open_tab(self.site.origin + "/widgets")
+        for path, body in [("/api/fill", {"value": "fixture-nick"}),
+                           ("/api/type", {"text": "fixture-nick", "clear": True})]:
+            with self.subTest(path=path):
+                result = self.call(path, {"selector": "#nested", **body, "tabId": tab_id})
+                self.assert_error(result, "not_fillable", True)
+                self.assertRegex(result["error"], r"^Element is not a fillable field")
+                self.assertEqual(result["state"]["tag"], "x-nested-input")
+                self.assertNotIn("fixture-nick", json.dumps(result))
+                if path == "/api/fill":
+                    # The page-context fallback ran and could not see the closed roots either.
+                    self.assertEqual(result["state"]["pageContext"], "no_field")
+        self.assertEqual(self.js(tab_id, "document.getElementById('nested').wrappedJSObject.value"), "")
+
+    # ── Textareas and editable regions ──
+
+    def test_masked_textarea_and_editable_region_are_redacted_but_ordinary_ones_are_not(self):
+        tab_id = self.open_tab(self.site.origin + "/notes")
+        typed = fake("TEXTAREA_TYPED")
+        self.type_into(tab_id, "#recovery", typed)
+        # The masks come from computed style, and the nested paragraph inherits its region's mask.
+        self.assertEqual(self.js(tab_id, "['recovery', 'secret-note', 'secret-note-line'].map(id => getComputedStyle("
+                                         "document.getElementById(id)).webkitTextSecurity).join(',')"),
+                         "disc,square,square")
+        # A textarea's initial content stays in its text and markup after typing changes the value.
+        self.assertEqual(self.js(tab_id, "document.getElementById('recovery').textContent"), TEXTAREA_INITIAL)
+
+        reads = self.read_all(tab_id)
+        self.assert_hidden(tab_id, reads, [typed, TEXTAREA_INITIAL, EDITABLE_TEXT, EDITABLE_LINE])
+        self.assert_redacted(reads, "recovery")
+        for field_id in ("secret-note", "secret-note-line"):
+            with self.subTest(field=field_id):
+                self.assert_redacted(reads, field_id, listed_in_forms=False)
+                rows = self.row(reads, field_id)
+                self.assertIs(rows["dom"]["hasValue"], True)
+                self.assertIs(rows["query"]["hasValue"], True)
+        for field_id in ("recovery", "secret-note", "secret-note-line"):
+            with self.subTest(field=field_id):
+                rows = self.row(reads, field_id)
+                self.assertNotIn("text", rows["dom"])
+                self.assertEqual((rows["query"]["text"], rows["query"]["html"]), ("", ""))
+        html = reads["browser_html"]["html"]
+        self.assertIn('<textarea id="recovery" name="recovery" class="masked"></textarea>', html)
+        self.assertIn('style="-webkit-text-security: square"></div>', html)
+        # The label wrapping the masked textarea names it without the textarea's content.
+        self.assertRegex(reads["browser_snapshot"]["snapshot"], r'textbox "Recovery codes" \[ref=s\d+e\d+\]\n')
+        # Page text is rendered text, where the browser shows the square mask's characters.
+        self.assertIn("\u25a0" * len(EDITABLE_TEXT), reads["browser_page_text"]["text"])
+
+        # No false positives: the ordinary textarea and editable region keep their content.
+        self.assert_shown(reads, "notes", "plain notes", tab_id)
+        draft = self.row(reads, "draft")
+        self.assertEqual((draft["dom"]["text"], draft["dom"].get("redacted")), ("draft text", None))
+        self.assertEqual((draft["query"]["text"], draft["query"]["html"], draft["query"].get("redacted")),
+                         ("draft text", "draft text", None))
+        notes_query = self.row(reads, "notes")["query"]
+        self.assertEqual((notes_query["text"], notes_query["html"]), ("plain notes", "plain notes"))
+        self.assertIn('<textarea id="notes" name="notes">plain notes</textarea>', html)
+        self.assertIn('<div id="draft" contenteditable="true">draft text</div>', html)
+        for tool in ("browser_snapshot", "browser_snapshot text"):
+            self.assertIn('textbox "draft text"', reads[tool]["snapshot"], tool)
+        self.assertIn("draft text", reads["browser_page_text"]["text"])
+        self.assertIn("draft text", reads["browser_markdown"]["markdown"])
+        self.assertIn("draft text", reads["browser_readability"]["textContent"])
+        found = self.call("/api/find", {"query": "draft text", "tabId": tab_id})["results"]
+        self.assertTrue(any(r["selector"] == "#draft" and r["score"] > 1 for r in found), found)
 
 
 if __name__ == "__main__":

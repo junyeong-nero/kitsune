@@ -3,7 +3,7 @@
 
 (function() {
   'use strict';
-  const CONTENT_VERSION = 28;
+  const CONTENT_VERSION = 30;
   if (window.__claudeBridgeVersion >= CONTENT_VERSION) return;
   window.__claudeBridgeVersion = CONTENT_VERSION;
 
@@ -667,7 +667,10 @@
     function nameOf(el, interactive) {
       const labelledBy = el.getAttribute('aria-labelledby');
       if (labelledBy) {
-        const label = labelledBy.split(/\s+/).map(id => document.getElementById(id)?.textContent || '').join(' ');
+        const label = labelledBy.split(/\s+/).map(id => {
+          const labelEl = document.getElementById(id);
+          return labelEl ? redactedText(labelEl) : '';
+        }).join(' ');
         if (clean(label)) return clean(label);
       }
       const explicitRole = el.getAttribute('role');
@@ -678,13 +681,13 @@
         const name = clean(el.getAttribute('aria-label') || el.getAttribute('title') ||
           el.getAttribute('alt') || directText(el));
         if (name) return name;
-        const text = metadata.get(el).nodes <= 5 ? normalize(el.textContent) : '';
+        const text = metadata.get(el).nodes <= 5 ? normalize(redactedText(el)) : '';
         return text.length <= 80 ? text : '';
       }
       let fallback;
       if (isField) fallback = el.placeholder || el.title;
       else if (isLandmark) fallback = el.title;
-      else fallback = el.textContent || el.title;
+      else fallback = redactedText(el) || el.title;
       return clean(el.getAttribute('aria-label') || findLabel(el) ||
         (el.type === 'image' ? el.alt : '') ||
         (['button', 'submit', 'reset'].includes(el.type) ? el.value : '') || fallback);
@@ -868,7 +871,7 @@
     return {
       ref,
       tag: el.tagName.toLowerCase(),
-      text: (el.textContent || '').trim().slice(0, 120),
+      text: redactedText(el).trim().slice(0, 120),
       selector: buildSelector(el),
       bounds: [Math.round(rect.x), Math.round(rect.y), Math.round(rect.width), Math.round(rect.height)],
       interactive: isInteractiveElement(el)
@@ -878,7 +881,7 @@
   function scoreMatch(el, query) {
     let score = 0;
     const fields = [
-      [el.textContent, 2],
+      [redactedText(el), 2],
       [el.ariaLabel, 5],
       [el.placeholder, 4],
       [el.title, 3],
@@ -950,7 +953,7 @@
       }
     }
 
-    return { ok: true, tag: el.tagName.toLowerCase(), text: (el.textContent || '').trim().slice(0, 60),
+    return { ok: true, tag: el.tagName.toLowerCase(), text: redactedText(el).trim().slice(0, 60),
       ...warning, ...blankLink };
   }
 
@@ -965,8 +968,13 @@
 
   // ── Type ──
   function typeText(selector, text, clear) {
-    const el = resolveElement(selector);
-    if (!el) return notFound();
+    const host = resolveElement(selector);
+    if (!host) return notFound();
+    // A web-component host types into the field in its open or closed shadow root.
+    const el = ['INPUT', 'TEXTAREA'].includes(host.tagName) ? host : shadowField(host, 'input, textarea') || host;
+    if (!['INPUT', 'TEXTAREA'].includes(el.tagName) && (clear || el.contentEditable !== 'true')) {
+      return notFillable(el, 'input or textarea');
+    }
     lastActedElement = el;
 
     el.focus();
@@ -1126,15 +1134,26 @@
   async function fillFieldSafe(selector, value) {
     let result;
     try { result = fillField(selector, value); } catch(e) { result = errorResult(e); }
-    if (result.error && (result.error.includes('HTMLInputElement') || result.error.includes('HTMLTextAreaElement'))) {
-      // Shadow DOM not accessible from content script — use page context
+    if (result.code === 'not_fillable') {
+      // Last resort: the page context, which reports why it could not fill either.
       const pageResult = await fillViaPageContext(selector, value);
       if (pageResult.startsWith('ok:')) {
         return { ok: true, pierced: true, method: 'pageContext', tag: pageResult.split(':')[1].toLowerCase() };
       }
-      return { error: pageResult };
+      result.state.pageContext = pageResult;
     }
     return result;
+  }
+
+  const FILL_TAGS = ['INPUT', 'TEXTAREA', 'SELECT'];
+
+  // fields: what the action looks for, e.g. 'input, textarea or select'.
+  function notFillable(el, fields) {
+    return actionError(`Element is not a fillable field: no ${fields} in it or in its shadow root`,
+      'not_fillable', 'Target the field or its web-component host from a new browser_snapshot. ' +
+        'A field inside a shadow root nested in another shadow root is not reached; use browser_js for it. ' +
+        'For a contenteditable editor use mode="editable".',
+      { tag: el.tagName.toLowerCase() });
   }
 
   function fillField(selector, value) {
@@ -1143,6 +1162,7 @@
 
     // Auto-pierce shadow DOM: if element isn't a standard input, look inside shadow root
     const target = getFillTarget(el);
+    if (!FILL_TAGS.includes(target.tagName)) return notFillable(el, 'input, textarea or select');
     lastActedElement = target;
 
     if (target.type === 'checkbox' || target.type === 'radio') {
@@ -1167,57 +1187,57 @@
     return { ok: true, pierced: target !== el, tag: target.tagName.toLowerCase() };
   }
 
-  // Runs in the page world (closed shadow DOM). Only this packaged function is injected;
-  // the selector and value travel as JSON arguments, never as generated code.
+  // Runs in the page world. Only this packaged function is injected; the selector and
+  // value travel as JSON arguments, never as generated code. It always reports a status:
+  // 'ok:<TAG>', 'not_found', 'no_field' or 'error'.
   function pageFill(selector, value, callbackName) {
-    const el = document.querySelector(selector);
-    if (!el) { window[callbackName] = 'not found'; return; }
-    const target = el.shadowRoot
-      ? (el.shadowRoot.querySelector('input,textarea,select') || el)
-      : (el.querySelector('input,textarea,select') || el);
-    target.focus();
-    const proto = target.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-    const setter = Object.getOwnPropertyDescriptor(proto, 'value');
-    if (setter && setter.set) setter.set.call(target, value);
-    else target.value = value;
-    target.dispatchEvent(new Event('input', { bubbles: true }));
-    target.dispatchEvent(new Event('change', { bubbles: true }));
-    window[callbackName] = 'ok:' + target.tagName;
+    try {
+      const el = document.querySelector(selector);
+      if (!el) { window[callbackName] = 'not_found'; return; }
+      const target = el.matches('input,textarea,select') ? el
+        : (el.shadowRoot || el).querySelector('input,textarea,select');
+      if (!target) { window[callbackName] = 'no_field'; return; }
+      target.focus();
+      const proto = target.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(proto, 'value');
+      if (setter && setter.set) setter.set.call(target, value);
+      else target.value = value;
+      target.dispatchEvent(new Event('input', { bubbles: true }));
+      target.dispatchEvent(new Event('change', { bubbles: true }));
+      window[callbackName] = 'ok:' + target.tagName;
+    } catch {
+      window[callbackName] = 'error';
+    }
   }
 
+  // Resolves to pageFill's status, or 'not_run' when the page script did not run.
   function fillViaPageContext(selector, value) {
-    // Last resort: pierce closed shadow DOM from the page context.
     return new Promise((resolve) => {
       const callbackName = '__claudeFill_' + Date.now();
       const args = [selector, String(value), callbackName].map(arg => JSON.stringify(arg)).join(',');
       injectPageScript('(' + pageFill.toString() + ')(' + args + ');');
-      const result = window.wrappedJSObject?.[callbackName] || window[callbackName] || 'unknown';
+      const result = window.wrappedJSObject?.[callbackName] || window[callbackName] || 'not_run';
       resolve(result);
     });
+  }
+
+  // Firefox content scripts can also reach closed roots through openOrClosedShadowRoot.
+  function shadowField(el, selector) {
+    const root = el.openOrClosedShadowRoot || el.shadowRoot;
+    return root?.querySelector(selector) || null;
   }
 
   function getFillTarget(el) {
     const tag = el.tagName.toLowerCase();
     if (['input', 'textarea', 'select'].includes(tag)) return el;
 
-    // Open shadow root
-    if (el.shadowRoot) {
-      const inner = el.shadowRoot.querySelector('input, textarea, select');
-      if (inner) return inner;
-    }
+    // Open or closed shadow root
+    const inner = shadowField(el, 'input, textarea, select');
+    if (inner) return inner;
 
     // Regular children
     const child = el.querySelector('input, textarea, select');
     if (child) return child;
-
-    // Closed shadow root — try page context access via wrappedJSObject (Firefox)
-    try {
-      const unwrapped = el.wrappedJSObject || el;
-      if (unwrapped.shadowRoot) {
-        const inner = unwrapped.shadowRoot.querySelector('input, textarea, select');
-        if (inner) return XPCNativeWrapper(inner);
-      }
-    } catch {}
 
     return el;
   }
@@ -1226,21 +1246,11 @@
     if (el.isContentEditable || el.contentEditable === 'true') return el;
     if (['INPUT', 'TEXTAREA'].includes(el.tagName)) return el;
 
-    if (el.shadowRoot) {
-      const inner = el.shadowRoot.querySelector('[contenteditable="true"], textarea, input');
-      if (inner) return inner;
-    }
+    const inner = shadowField(el, '[contenteditable="true"], textarea, input');
+    if (inner) return inner;
 
     const child = el.querySelector?.('[contenteditable="true"], textarea, input');
     if (child) return child;
-
-    try {
-      const unwrapped = el.wrappedJSObject || el;
-      if (unwrapped.shadowRoot) {
-        const inner = unwrapped.shadowRoot.querySelector('[contenteditable="true"], textarea, input');
-        if (inner) return XPCNativeWrapper(inner);
-      }
-    } catch {}
 
     return null;
   }
@@ -1346,7 +1356,7 @@
             elapsed,
             ref,
             tag: el.tagName.toLowerCase(),
-            text: (el.textContent || '').trim().slice(0, 120),
+            text: redactedText(el).trim().slice(0, 120),
           });
         } else if (Date.now() - start >= maxWait) {
           resolve({
@@ -1625,11 +1635,18 @@
     return TEXT_SECURITY_MASKS.has(security);
   }
 
+  // Editing hosts and their descendants (isContentEditable is inherited).
+  function isEditableRegion(el) {
+    return el.isContentEditable || el.contentEditable === 'true';
+  }
+
   function isSensitiveField(el) {
     if (el.tagName === 'INPUT') {
       return el.type === 'password' || hasSensitiveAutocomplete(el) ||
         (TEXT_ENTRY_TYPES.has(el.type) && hasSecretName(el)) || isAutofilled(el) || isMasked(el);
     }
+    // A masked textarea or editing region holds its secret as text content.
+    if ((el.tagName === 'TEXTAREA' || isEditableRegion(el)) && isMasked(el)) return true;
     // Custom controls such as <x-input type="password"> expose their inner input's
     // value as a property (and sometimes a reflected attribute) on the host.
     // Xray wrappers hide page-defined properties, so custom element names count too.
@@ -1641,14 +1658,35 @@
   }
 
   function redactedValue(el) {
-    return { redacted: true, hasValue: !!el.value };
+    // An editing region has no value property; its content is its value.
+    const value = el.tagName !== 'TEXTAREA' && isEditableRegion(el) ? el.textContent : el.value;
+    return { redacted: true, hasValue: !!value };
+  }
+
+  // Textareas and editing regions are the only fields whose content is text.
+  function holdsSensitiveText(el) {
+    return (el.tagName === 'TEXTAREA' || isEditableRegion(el)) && isSensitiveField(el);
+  }
+
+  // el.textContent without the content of sensitive textareas and editing regions.
+  function redactedText(el) {
+    if (holdsSensitiveText(el)) return '';
+    if (!isEditableRegion(el) && !el.querySelector?.('textarea, [contenteditable]')) return el.textContent || '';
+    let text = '';
+    for (const node of el.childNodes) {
+      if (node.nodeType === 3) text += node.textContent;
+      else if (node.nodeType === 1) text += redactedText(node);
+    }
+    return text;
   }
 
   // Frameworks such as React mirror the live value into the `value` attribute,
-  // so markup is serialized from a clone with sensitive value attributes removed.
+  // so markup is serialized from a clone with sensitive value attributes removed,
+  // and with sensitive textareas and editing regions emptied.
   // Sensitivity is decided on the live elements (autofill, styles, shadow roots);
-  // a clone that does not mirror the original tree loses every value attribute.
-  function redactMarkup(el, outer) {
+  // a clone that does not mirror the original tree loses every value attribute
+  // and the content of every textarea and contenteditable element.
+  function redactedClone(el) {
     const clone = el.cloneNode(true);
     const originals = [el, ...el.querySelectorAll('*')];
     const copies = [clone, ...clone.querySelectorAll('*')];
@@ -1656,7 +1694,14 @@
       copies.every((copy, i) => copy.tagName === originals[i].tagName);
     copies.forEach((copy, i) => {
       if (!aligned || isSensitiveField(originals[i])) copy.removeAttribute('value');
+      if (aligned ? holdsSensitiveText(originals[i])
+        : copy.tagName === 'TEXTAREA' || copy.hasAttribute('contenteditable')) copy.replaceChildren();
     });
+    return clone;
+  }
+
+  function redactMarkup(el, outer) {
+    const clone = redactedClone(el);
     return (outer ? clone.outerHTML : clone.innerHTML) || '';
   }
 
@@ -1681,6 +1726,7 @@
   const VALUE_SELECTOR_ERROR = 'value-attribute selectors are disabled while a sensitive field has a value attribute';
 
   function directText(el) {
+    if (holdsSensitiveText(el)) return '';
     let t = '';
     for (const n of el.childNodes) {
       if (n.nodeType === 3) t += n.textContent;
@@ -1708,10 +1754,10 @@
   function findLabel(el) {
     if (el.id) {
       const lbl = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
-      if (lbl) return lbl.textContent.trim().slice(0, 80);
+      if (lbl) return redactedText(lbl).trim().slice(0, 80);
     }
     const parent = el.closest('label');
-    return parent ? parent.textContent.trim().slice(0, 80) : (el.ariaLabel || '');
+    return parent ? redactedText(parent).trim().slice(0, 80) : (el.ariaLabel || '');
   }
 
   // ══════════════════════════════════════════════════════════════
@@ -1737,7 +1783,8 @@
       for (const f of want) {
         const name = String(f).toLowerCase();
         try {
-          if (f === 'text') row.text = (el.innerText || el.textContent || '').trim().slice(0, 400);
+          // A textarea's innerText is empty, so text falls back to its content.
+          if (f === 'text') row.text = holdsSensitiveText(el) ? '' : (el.innerText || redactedText(el)).trim().slice(0, 400);
           else if (f === 'html') row.html = redactMarkup(el, false).slice(0, 4000);
           else if (f === 'href') row.href = el.href || el.getAttribute('href') || undefined;
           else if (name === 'value' && sensitive) Object.assign(row, redactedValue(el));
@@ -1919,7 +1966,7 @@
       }
     }
     if (!best) best = document.body;
-    const clone = best.cloneNode(true);
+    const clone = redactedClone(best);
     // Strip nav/aside/footer noise
     clone.querySelectorAll('nav, aside, footer, header, script, style, noscript, .ad, .ads, .advert, [aria-hidden="true"]').forEach(n => n.remove());
     const text = (clone.innerText || '').trim();
@@ -1947,7 +1994,7 @@
     if (!root) return notFound();
     function walk(node) {
       if (node.nodeType === 3) return node.textContent.replace(/\s+/g, ' ');
-      if (node.nodeType !== 1) return '';
+      if (node.nodeType !== 1 || holdsSensitiveText(node)) return '';
       const tag = node.tagName.toLowerCase();
       if (['script','style','noscript','svg','iframe','nav','aside','footer','header','form'].includes(tag)) return '';
       const children = () => Array.from(node.childNodes).map(walk).join('');
@@ -2172,7 +2219,7 @@
     const enterSubmits = key === 'Enter' && !!control.form && tag === 'input' && !NON_TEXT_INPUT_TYPES.has(type);
     const button = tag === 'button' || (tag === 'input' && BUTTON_INPUT_TYPES.has(type)) ||
       String(control.getAttribute?.('role') || '').toLowerCase() === 'button';
-    const label = control.getAttribute?.('aria-label') || control.textContent ||
+    const label = control.getAttribute?.('aria-label') || redactedText(control) ||
       (button && tag === 'input' ? control.value : '') || '';
     return { ok: true, tag, type, inForm: !!control.form, submits: submitControl || enterSubmits,
       submitLabel: button && isSubmitLabel(label), text: String(label).trim().slice(0, 80) };
@@ -2510,7 +2557,7 @@
       const r = el.getBoundingClientRect();
       samples.push({
         tag: el.tagName.toLowerCase(),
-        text: (el.innerText || el.textContent || '').trim().slice(0, 120),
+        text: holdsSensitiveText(el) ? '' : (el.innerText || redactedText(el)).trim().slice(0, 120),
         id: el.id || undefined,
         cls: typeof el.className === 'string' ? el.className.slice(0, 100) : undefined,
         visible: !isHidden(el),
