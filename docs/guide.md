@@ -414,10 +414,15 @@ calls, or at least before calls that carry `confirm_token`.
 
 | Symptom | Check |
 |---|---|
-| `extension_connected: false` | Extension installed and enabled? Developer build: browser restarted (temporary add-on gone)? |
+| Any connection problem | Call `browser_status` and follow `diagnosis.hint`; each `diagnosis.code` is listed in [Connection diagnosis](api-reference.md#connection-diagnosis). It never shows the token |
+| `extension_disconnected` (`extension_connected: false`) | Extension installed and enabled in the browser profile you opened? Developer build: browser restarted (temporary add-on gone)? It reconnects within 15 s of a bridge start |
+| `extension_version_mismatch` | The extension and server versions differ; install the matching extension or update the server, then reload open tabs |
+| `browser_window_unavailable` | The browser runs without a normal window Kitsune can use; open one, or allow Kitsune in private windows (about:addons → Kitsune → Run in Private Windows) |
+| `host_permission_denied` | `not_granted`: allow site access in about:addons → Kitsune → Permissions. `restricted_domain`: Firefox keeps extensions off Mozilla sites such as addons.mozilla.org; use another tab |
 | "needs the Kitsune developer extension build" | The signed build cannot run agent-supplied JavaScript; load the developer build |
-| `Kitsune bridge did not start` | `~/.kitsune/bridge.log`; another process on port 47651/47652 (`lsof -nP -iTCP:47651`) |
-| `401 Missing or invalid token` | `KITSUNE_TOKEN` set in the client but not in the daemon (or the other way round) |
+| `bridge_unavailable` (`Kitsune bridge did not start`) | `~/.kitsune/bridge.log`; run `kitsune-bridge start` in a terminal to see the error |
+| `port_conflict` | `state.port` is held by another program (`lsof -nP -iTCP:47651 -sTCP:LISTEN`), or `KITSUNE_WS_PORT` differs from the extension's `WS_URL` |
+| `token_mismatch` (`401 Missing or invalid token`) | `KITSUNE_TOKEN` or `KITSUNE_HOME` set in one client but not in the daemon (or the other way round) |
 | `Cannot access browser internal page` | `about:` pages are off-limits to extensions; switch to a normal tab |
 | `stale ref, call browser_snapshot again` | Take a fresh snapshot of the same `tab_id` and use its new refs |
 | Bridge updated but browser behavior is unchanged | Reload the extension, then reload affected pages so their content scripts update too |

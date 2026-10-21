@@ -19,7 +19,7 @@ from mcp.server.fastmcp import FastMCP, Image
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
 
 from . import bridge_control
-from .bridge_control import BRIDGE, LOG_FILE, headers as _headers
+from .bridge_control import BRIDGE, HTTP_PORT, LOG_FILE, TOKEN_FILE, WS_PORT, headers as _headers
 from .version import BRIDGE_BUILD
 from .waits import batch_wait_seconds, command_wait_seconds
 
@@ -90,8 +90,8 @@ def _bridge_matches(status: dict) -> bool:
     return status.get("build") == BRIDGE_BUILD or os.environ.get("KITSUNE_NO_BRIDGE_RESTART") == "1"
 
 
-def _ensure_bridge() -> str | None:
-    """Start or replace the shared bridge, serializing lifecycle changes."""
+def _ensure_bridge() -> dict | None:
+    """Start or replace the shared bridge, serializing lifecycle changes; return an error result."""
     try:
         status = bridge_control.status()
         if status is not None and _bridge_matches(status):
@@ -104,7 +104,7 @@ def _ensure_bridge() -> str | None:
                     return None
                 error = bridge_control.stop()
                 if error:
-                    return error
+                    return _bridge_unavailable(error)
             with open(LOG_FILE, "ab") as log:
                 subprocess.Popen(
                     [sys.executable, "-m", "kitsune.bridge"],
@@ -118,24 +118,60 @@ def _ensure_bridge() -> str | None:
                 if status is not None and status.get("build") == BRIDGE_BUILD:
                     return None
                 time.sleep(0.3)
-    except (httpx.HTTPError, OSError, ValueError) as exc:
-        return f"Cannot start Kitsune bridge: {exc}. See {LOG_FILE}"
-    return f"Kitsune bridge did not start within {BRIDGE_START_TIMEOUT}s. See {LOG_FILE}"
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 401:
+            return _token_mismatch()
+        return _port_conflict(HTTP_PORT, "not_kitsune", f"Cannot start Kitsune bridge: {exc}")
+    except ValueError as exc:  # a reply that is not a Kitsune status
+        return _port_conflict(HTTP_PORT, "not_kitsune", f"Cannot start Kitsune bridge: {exc}")
+    except (httpx.HTTPError, OSError) as exc:
+        return _bridge_unavailable(f"Cannot start Kitsune bridge: {exc}. See {LOG_FILE}")
+    # Nothing answers: the new bridge may have exited because it could not listen.
+    for port in (HTTP_PORT, WS_PORT) if status is None else ():
+        if bridge_control.port_in_use(port):
+            return _port_conflict(port, "in_use", f"Kitsune bridge did not start: port {port} is in use")
+    return _bridge_unavailable(f"Kitsune bridge did not start within {BRIDGE_START_TIMEOUT}s. See {LOG_FILE}")
 
 
+# Connection failures share the action error contract (docs/api-reference.md#connection-diagnosis).
+# Nothing reached the browser, so repeating the request is safe. Never include the token.
 def _bridge_unavailable(message: str) -> dict:
-    # Nothing reached the browser, so repeating the request is safe.
     return {"error": message, "code": "bridge_unavailable", "retryable": True,
-            "hint": f"Check browser_status; the MCP server restarts the bridge on demand. See {LOG_FILE}"}
+            "hint": "Run `kitsune-bridge start` (`uv run kitsune-bridge start` in a checkout) in a terminal "
+                    f"to see why the bridge does not start; the MCP server starts it on demand. See {LOG_FILE}"}
+
+
+def _token_mismatch() -> dict:
+    source = "KITSUNE_TOKEN" if os.environ.get("KITSUNE_TOKEN") else TOKEN_FILE
+    return {"error": f"The Kitsune bridge on port {HTTP_PORT} rejected this MCP server's token",
+            "code": "token_mismatch", "retryable": True,
+            "hint": "Set the same KITSUNE_TOKEN and KITSUNE_HOME (or neither) for every MCP client, or run "
+                    "`kitsune-bridge stop` so the next tool call starts a bridge with this server's token.",
+            "state": {"port": HTTP_PORT, "tokenSource": source}}
+
+
+def _port_conflict(port: int, reason: str, message: str) -> dict:
+    setting = "KITSUNE_HTTP_PORT" if port == HTTP_PORT else "KITSUNE_WS_PORT (and the extension's WS_URL)"
+    owner = "answers but is not a Kitsune bridge" if reason == "not_kitsune" else "is used by another program"
+    return {"error": message, "code": "port_conflict", "retryable": True,
+            "hint": f"Port {port} {owner}. Find it with `lsof -nP -iTCP:{port} -sTCP:LISTEN` and stop it, "
+                    f"or set {setting} to a free port for every client.",
+            "state": {"port": port, "reason": reason}}
 
 
 def _request(method: str, endpoint: str, **kwargs) -> dict:
     for attempt in range(2):
         try:
             r = httpx.request(method, f"{BRIDGE}{endpoint}", headers=_headers(), **kwargs)
+            if r.status_code == 401:
+                return _token_mismatch()
             try:
                 return r.json()
             except ValueError:
+                # Every bridge route the server calls answers JSON on 2xx, so a 2xx page is another program.
+                if 200 <= r.status_code < 300:
+                    return _port_conflict(HTTP_PORT, "not_kitsune",
+                                          f"Port {HTTP_PORT} did not answer as a Kitsune bridge")
                 # Keep what the HTTP layer said instead of a JSON decoding message.
                 return {"error": f"Kitsune bridge returned HTTP {r.status_code} without a JSON body",
                         "state": {"httpStatus": r.status_code, "body": r.text[:200]}}
@@ -144,7 +180,7 @@ def _request(method: str, endpoint: str, **kwargs) -> dict:
                 break
             error = _ensure_bridge()
             if error:
-                return _bridge_unavailable(error)
+                return error
         except httpx.TimeoutException as e:
             # The bridge may still run the command; only GET requests are known to be reads.
             return {"error": str(e) or "Kitsune bridge request timed out", "code": "timeout",
@@ -244,8 +280,11 @@ def _target(body: dict, ref: str | None, element: str | None) -> dict:
 
 @tool("core", annotations=ToolAnnotations(title="Check browser status", **READ))
 def browser_status() -> dict:
-    """Check if Kitsune bridge and browser extension are connected."""
-    return _get("/api/status")
+    """Check bridge/extension connection; diagnosis explains failures."""
+    result = _get("/api/status")
+    if result.get("code") and "diagnosis" not in result:  # the bridge was not reached
+        result["diagnosis"] = {key: result[key] for key in ("code", "hint", "state") if key in result}
+    return result
 
 
 @tool("core", annotations=ToolAnnotations(title="Manage browser tabs", **DESTRUCTIVE))

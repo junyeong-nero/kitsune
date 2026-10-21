@@ -6,12 +6,14 @@ import os
 from pathlib import Path
 import shlex
 import signal
+import socket
 import subprocess
 import time
 
 import httpx
 
 HTTP_PORT = int(os.environ.get("KITSUNE_HTTP_PORT", "47651"))
+WS_PORT = int(os.environ.get("KITSUNE_WS_PORT", "47652"))
 BRIDGE = f"http://127.0.0.1:{HTTP_PORT}"
 DATA_DIR = os.environ.get("KITSUNE_HOME", os.path.join(os.path.expanduser("~"), ".kitsune"))
 TOKEN_FILE = os.path.join(DATA_DIR, "token")
@@ -42,6 +44,17 @@ def status() -> dict | None:
     if not isinstance(data, dict):
         raise ValueError("Bridge returned invalid status")
     return data
+
+
+def port_in_use(port: int) -> bool:
+    """Whether the bridge could not listen on this port; binding never contacts its owner."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # as asyncio's listener does
+        try:
+            sock.bind(("127.0.0.1", port))
+        except OSError:
+            return True
+    return False
 
 
 @contextmanager
