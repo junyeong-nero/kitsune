@@ -68,8 +68,39 @@ def _untitled_schema(schema):
     return untitled
 
 
+_NULL = {"type": "null"}
+
+
+def _published_parameter(schema: dict) -> dict:
+    """A non-required parameter's schema without a nullable anyOf or an empty default (#142).
+
+    `anyOf: [X, {type: null}]` with default null becomes X: the registered model still
+    accepts an explicit null, which validates to the same None as omitting the parameter.
+    A default of null or "" is what omission already gives, so it is not published.
+    """
+    variants = schema.get("anyOf")
+    if ("default" in schema and schema["default"] is None and isinstance(variants, list)
+            and len(variants) == 2 and _NULL in variants):
+        (variant,) = [subschema for subschema in variants if subschema != _NULL]
+        schema = {**variant, **{keyword: value for keyword, value in schema.items() if keyword != "anyOf"}}
+    if "default" in schema and (schema["default"] is None or schema["default"] == ""):
+        schema = {keyword: value for keyword, value in schema.items() if keyword != "default"}
+    return schema
+
+
+def _published_schema(schema: dict) -> dict:
+    """Input schema as tools/list publishes it: untitled, with plain optional parameters."""
+    schema = _untitled_schema(schema)
+    if not isinstance(schema.get("properties"), dict):
+        return schema
+    required = set(schema.get("required", ()))
+    return {**schema, "properties": {
+        name: parameter if name in required else _published_parameter(parameter)
+        for name, parameter in schema["properties"].items()}}
+
+
 class KitsuneMCP(FastMCP):
-    """FastMCP that publishes tool input schemas without generated titles.
+    """FastMCP that publishes tool input schemas without generated titles or nullable optionals.
 
     Descriptions are normalized with inspect.cleandoc, so they are the same on every
     supported Python (only 3.13+ strips docstring indentation at compile time, #130).
@@ -79,7 +110,7 @@ class KitsuneMCP(FastMCP):
     async def list_tools(self):
         return [tool.model_copy(update={
                     "description": inspect.cleandoc(tool.description) if tool.description else tool.description,
-                    "inputSchema": _untitled_schema(tool.inputSchema),
+                    "inputSchema": _published_schema(tool.inputSchema),
                 })
                 for tool in await super().list_tools()]
 

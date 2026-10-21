@@ -525,7 +525,11 @@ Tool definitions are resent with every model request, so their size is tracked:
 `TOOL_BUDGET` in the script; raise a budget only deliberately. Published input
 schemas omit the `title` keywords pydantic generates (`KitsuneMCP.list_tools`), and
 `tests/test_tool_schema_titles.py` checks that they still accept and reject the same
-arguments. Action tools share one contract (ref, wait,
+arguments. They also publish an optional parameter whose default is null as its plain
+type instead of `anyOf: [type, null]`, and omit `null` and `""` defaults. Calls are
+still validated against the pydantic models, so an explicit `null` still works and
+behaves as omitted; `tests/test_tool_schema_optionals.py` checks this for every tool.
+Action tools share one contract (ref, wait,
 expect, confirm_token) documented in `browser_click`; point to it rather than
 repeating it.
 
