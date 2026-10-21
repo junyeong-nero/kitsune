@@ -408,6 +408,7 @@
       'submitForm':            () => submitForm(msg.selector, msg.first),
       'describeTarget':        () => describeTarget(msg.selector, msg.coords, msg.key),
       'formFill':              () => formFill(msg.fields, msg.first),
+      'media':                 () => controlMedia(msg.selector, msg.op, msg.time, msg.first),
       'drag':                  () => dragElement(msg.from, msg.to, msg.first),
       'waitForUrl':            () => waitForUrl(msg.pattern, msg.timeout),
       'waitForTitle':          () => waitForTitle(msg.pattern, msg.timeout),
@@ -697,7 +698,10 @@
     // Bottom-up metadata avoids repeatedly scanning large clickable ancestor trees.
     function measure(el, domDepth = 0) {
       if (ignored(el)) return null;
-      const children = Array.from(el.children, child => measure(child, domDepth + 1)).filter(Boolean);
+      // A media element's children are sources, tracks and fallback content, not page structure.
+      const media = MEDIA_TAGS.has(el.tagName);
+      const children = media ? [] :
+        Array.from(el.children, child => measure(child, domDepth + 1)).filter(Boolean);
       const shape = JSON.stringify([el.tagName, el.getAttribute('role'), el.type || '',
         children.map(child => child.signature)]);
       if (!signatures.has(shape)) signatures.set(shape, signatures.size);
@@ -716,7 +720,7 @@
       const role = el.getAttribute('role') || landmarks[el.tagName] ||
         (/^H[1-6]$/.test(el.tagName) ? 'heading' : inferRole(el));
       data.useful = (maxDepth == null || domDepth <= maxDepth) &&
-        (children.some(child => child.useful) || (interactive && !data.wrapper) ||
+        (children.some(child => child.useful) || (interactive && !data.wrapper) || media ||
           semanticRoles.has(role) || el === target || (withText && hasOwnText(el)));
       data.interactive += interactive ? 1 : 0;
       data.native += nativeTags.has(el.tagName) ? 1 : 0;
@@ -733,6 +737,7 @@
         }).join(' ');
         if (clean(label)) return clean(label);
       }
+      if (MEDIA_TAGS.has(el.tagName)) return clean(el.getAttribute('aria-label') || el.title);
       const explicitRole = el.getAttribute('role');
       const isLandmark = landmarks[el.tagName] ||
         (semanticRoles.has(explicitRole) && explicitRole !== 'heading');
@@ -764,7 +769,8 @@
       if (!metadata.has(el) || (maxDepth != null && domDepth > maxDepth)) return;
       let role = el.getAttribute('role') || landmarks[el.tagName] ||
         (/^H[1-6]$/.test(el.tagName) ? 'heading' : inferRole(el));
-      const interactive = isInteractiveElement(el) && !metadata.get(el).wrapper;
+      const media = MEDIA_TAGS.has(el.tagName);
+      const interactive = (isInteractiveElement(el) && !metadata.get(el).wrapper) || media;
       const include = interactive || semanticRoles.has(role) || el === target;
       if (include) {
         if (!role) {
@@ -782,6 +788,11 @@
         if (el.disabled || el.getAttribute('aria-disabled') === 'true') states.push('disabled');
         for (const state of ['expanded', 'selected', 'pressed']) {
           if (el.hasAttribute(`aria-${state}`)) states.push(`${state}=${el.getAttribute(`aria-${state}`)}`);
+        }
+        if (media) {
+          const { src, duration, currentTime, paused, muted, controls } = mediaState(el);
+          states.push(`src=${JSON.stringify(src)}`, `duration=${duration}`, `currentTime=${currentTime}`,
+            `paused=${paused}`, `muted=${muted}`, `controls=${controls}`);
         }
         const label = `${role} ${JSON.stringify(nameOf(el, interactive || el === target))}`;
         const line = `${'  '.repeat(Math.min(depth, 12))}- ${label} [ref=${ref}]${states.length ? ' [' + states.join(' ') + ']' : ''}`;
@@ -1081,23 +1092,93 @@
     }
 
     const link = blankTargetLink(el);
+    const media = MEDIA_TAGS.has(el.tagName) ? el : null;
+    const wasPaused = media?.paused;
     let clickEvent = null;
     const onClick = event => { clickEvent = event; };
-    if (link) el.addEventListener('click', onClick);
+    if (link || media) el.addEventListener('click', onClick);
     if (typeof el.click === 'function') {
       el.click();
     }
+    if (link || media) el.removeEventListener('click', onClick);
     // A page handler that cancelled the click took the link over, including any tab it opens.
     let blankLink = {};
-    if (link) {
-      el.removeEventListener('click', onClick);
-      if (clickEvent && !clickEvent.defaultPrevented) {
-        blankLink = { targetBlankLink: { url: link.href, opener: link.relList.contains('opener') } };
-      }
+    if (link && clickEvent && !clickEvent.defaultPrevented) {
+      blankLink = { targetBlankLink: { url: link.href, opener: link.relList.contains('opener') } };
     }
 
-    return { ok: true, tag: el.tagName.toLowerCase(), text: redactedText(el).trim().slice(0, 60),
-      ...warning, ...blankLink };
+    // A media element's text is its fallback content, which the browser does not show.
+    const result = { ok: true, tag: el.tagName.toLowerCase(),
+      text: media ? '' : redactedText(el).trim().slice(0, 60), ...warning, ...blankLink };
+    // Synthetic clicks cannot press the browser's native media controls (they only answer
+    // trusted input), so a click the page neither cancelled nor handled toggles playback.
+    if (media && clickEvent && !clickEvent.defaultPrevented && media.paused === wasPaused) {
+      if (!wasPaused) media.pause();
+      return (wasPaused ? playMedia(media) : Promise.resolve(null))
+        .then(failure => ({ ...result, media: { ...mediaState(media), ...failure } }));
+    }
+    return result;
+  }
+
+  // ── Media ──
+  // <video> and <audio> are driven through HTMLMediaElement: play() needs no user
+  // activation for muted media, while unmuted playback may be refused (NotAllowedError).
+  const MEDIA_OPS = new Set(['play', 'pause', 'seek', 'mute', 'unmute']);
+  // How long play() or a seek may take to settle; a slow source keeps loading afterwards.
+  const MEDIA_SETTLE_MS = 2000;
+
+  function mediaState(el) {
+    const seconds = value => Number.isFinite(value) ? Math.round(value * 100) / 100 : null;
+    return { src: String(el.currentSrc || el.src || '').slice(0, 160), duration: seconds(el.duration),
+      currentTime: seconds(el.currentTime), paused: !!el.paused, muted: !!el.muted, controls: !!el.controls };
+  }
+
+  // Resolves to null once playback starts (or is still loading), else to { error, reason }.
+  // Firefox holds play() pending in a tab that has never been shown
+  // (media.block-autoplay-until-in-foreground), and agent tabs open in the background.
+  // Showing the tab is the caller's explicit choice, so the pending play is cancelled.
+  async function playMedia(el) {
+    let timer;
+    const pending = new Promise(resolve => { timer = setTimeout(resolve, MEDIA_SETTLE_MS, 'pending'); });
+    const started = Promise.resolve(el.play()).then(() => null, e => ({ reason: 'refused',
+      error: `play() was refused (${e.name}: ${e.message}); muted media can play, or use browser_trusted_click` }));
+    const outcome = await Promise.race([started, pending]).finally(() => clearTimeout(timer));
+    if (outcome !== 'pending') return outcome;
+    if (!document.hidden) return null;
+    el.pause();
+    return { reason: 'background_tab', error: 'Playback did not start: Firefox delays media in a tab ' +
+      'that has not been shown yet. Show it with browser_tabs select, then play again' };
+  }
+
+  // Resolves once the frame at time is shown, so a screenshot taken next shows it.
+  function seekMedia(el, time) {
+    return new Promise(resolve => {
+      const done = () => {
+        clearTimeout(timer);
+        el.removeEventListener('seeked', done);
+        resolve();
+      };
+      const timer = setTimeout(done, MEDIA_SETTLE_MS);
+      el.addEventListener('seeked', done);
+      el.currentTime = time;
+    });
+  }
+
+  async function controlMedia(selector, op, time, first) {
+    if (!MEDIA_OPS.has(op)) return { error: 'op must be play, pause, seek, mute or unmute' };
+    if (op === 'seek' && !(Number.isFinite(time) && time >= 0)) {
+      return { error: 'seek needs time: a non-negative number of seconds' };
+    }
+    const el = resolveTarget(selector, null, { first });
+    if (!el) return notFound();
+    if (!MEDIA_TAGS.has(el.tagName)) return { error: `Not a video or audio element: ${el.tagName.toLowerCase()}` };
+    let failure = null;
+    if (op === 'play') failure = await playMedia(el);
+    else if (op === 'pause') el.pause();
+    else if (op === 'seek') await seekMedia(el, time);
+    else el.muted = op === 'mute';
+    const media = mediaState(el);
+    return failure ? { ...failure, media } : { ok: true, tag: el.tagName.toLowerCase(), media };
   }
 
   // Focus what a click on el focuses; in an editor, put the caret at the click point, or at
@@ -1825,6 +1906,8 @@
     return s.display === 'none' || s.visibility === 'hidden';
   }
 
+  const MEDIA_TAGS = new Set(['VIDEO', 'AUDIO']);
+
   function isInteractiveElement(el) {
     const interactiveTags = new Set(['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'DETAILS', 'SUMMARY']);
     if (interactiveTags.has(el.tagName)) return true;
@@ -1839,7 +1922,8 @@
       checkbox: 'checkbox', radio: 'radio', range: 'slider', number: 'spinbutton',
       search: 'searchbox' };
     const map = { A: 'link', BUTTON: 'button', INPUT: inputRole[el.type] || 'textbox',
-      SELECT: 'combobox', TEXTAREA: 'textbox', SUMMARY: 'button', DETAILS: 'group' };
+      SELECT: 'combobox', TEXTAREA: 'textbox', SUMMARY: 'button', DETAILS: 'group',
+      VIDEO: 'video', AUDIO: 'audio' };
     return map[el.tagName] || '';
   }
 

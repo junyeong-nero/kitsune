@@ -535,7 +535,7 @@ const OPENER_ACTIONS = new Set([
 // Element and full-page captures scroll the page.
 const USER_GUARDED_ACTIONS = new Set([
   'click', 'doubleClick', 'type', 'fill', 'setEditableContent', 'selectOption', 'checkBox',
-  'keypress', 'submitForm', 'formFill', 'hover', 'scroll', 'drag', 'focusElement', 'blurElement',
+  'keypress', 'submitForm', 'formFill', 'hover', 'scroll', 'drag', 'focusElement', 'blurElement', 'media',
   'executeJS', 'uploadCommit', 'navigate', 'goBack', 'goForward', 'reloadTabBrowser',
   'clickAndWaitNavigation', 'closeTab', 'switchTab', 'focusWindow', 'elementScreenshot', 'fullPageScreenshot',
 ]);
@@ -747,6 +747,7 @@ async function dispatchCommand(command) {
     case 'doubleClick':
     case 'submitForm':
     case 'formFill':
+    case 'media':
     case 'drag':
     case 'waitForNetworkIdle':
     case 'captureNetwork':
