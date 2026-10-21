@@ -191,6 +191,8 @@ const editable = (tagName, props = {}) => new Element(tagName, {
   const fields = [...form.children];
 
   let listener;
+  // How often each element's -webkit-text-security is read.
+  const maskReads = new Map();
   const context = vm.createContext({
     console, crypto: webcrypto, CSS: { escape: x => x }, setTimeout, location: { href: 'http://example.test/' },
     Event: class { constructor(type, options) { Object.assign(this, { type }, options); } },
@@ -198,7 +200,11 @@ const editable = (tagName, props = {}) => new Element(tagName, {
     KeyboardEvent: class { constructor(type, options) { Object.assign(this, { type }, options); } },
     MouseEvent: class { constructor(type, options) { Object.assign(this, { type }, options); } },
     window: { getComputedStyle: el => ({ display: 'block', visibility: 'visible',
-      getPropertyValue: property => property === '-webkit-text-security' && isMaskedElement(el) ? 'disc' : '' }) },
+      getPropertyValue: property => {
+        if (property !== '-webkit-text-security') return '';
+        maskReads.set(el, (maskReads.get(el) || 0) + 1);
+        return isMaskedElement(el) ? 'disc' : '';
+      } }) },
     document: { body, title: 'Fixture',
       getElementById: id => body.querySelector(`#${id}`),
       querySelector: selector => [body, ...body.querySelectorAll(selector)].find(el => el.matches(selector)) || null,
@@ -471,6 +477,15 @@ const editable = (tagName, props = {}) => new Element(tagName, {
     ['shown inside mask', '#masked-box', 'shown inside mask']]) {
     const found = await send({ action: 'find', query });
     assert.deepEqual([found.results[0].selector, found.results[0].text, found.results[0].score], [selector, text, 2], query);
+  }
+
+  // One read computes each element's mask once, though find scores nested candidates
+  // and the snapshot names nested controls from the same text.
+  for (const msg of [{ action: 'find', query: 'ordinary text' }, { action: 'getSnapshot', text: true },
+    { action: 'getHTML', selector: 'body' }]) {
+    maskReads.clear();
+    await send(msg);
+    assert.equal(Math.max(...maskReads.values()), 1, `${msg.action} reads a mask more than once`);
   }
 
   // Value-attribute selectors are refused while any sensitive field or host has one.
