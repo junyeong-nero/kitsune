@@ -105,7 +105,7 @@ class ToolSchemaTitleTests(unittest.TestCase):
         cls.generated, cls.published = listing["generated"], listing["published"]
 
     def test_every_tool_is_compared(self):
-        self.assertEqual(len(self.published), 95)
+        self.assertEqual(len(self.published), 96)
         self.assertEqual(set(self.published), set(self.generated))
 
     def test_only_title_keywords_are_removed(self):

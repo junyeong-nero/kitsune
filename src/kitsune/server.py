@@ -22,7 +22,10 @@ from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from . import bridge_control
 from .bridge_control import BRIDGE, HTTP_PORT, LOG_FILE, TOKEN_FILE, WS_PORT, headers as _headers
 from .version import BRIDGE_BUILD
-from .waits import WORKFLOW_DEADLINE_SECONDS, batch_deadline_seconds, command_wait_seconds, container_request_seconds
+from .waits import (
+    RESUME_DEADLINE_SECONDS, WORKFLOW_DEADLINE_SECONDS, batch_deadline_seconds, command_wait_seconds,
+    container_request_seconds,
+)
 
 # Annotation hints describe the whole tool, including its most dangerous operation.
 # They are advisory metadata for the client's permission prompts; the bridge never reads
@@ -1893,6 +1896,24 @@ def browser_batch(commands: list[dict]) -> dict:
     # Outlast the bridge's deadline, so a batch it stops still returns its partial progress.
     return _post("/api/batch", {"commands": commands},
                  timeout=container_request_seconds(batch_deadline_seconds(commands)))
+
+
+@tool("parallel", annotations=ToolAnnotations(title="Resume a container call", **DESTRUCTIVE))
+def browser_resume(call: int, resume_token: str, observed: dict[str, str] | None = None) -> dict:
+    """Resume a browser_batch, browser_parallel or browser_workflow call that did not finish ok.
+
+    Steps that ran ok are not sent again. Returns the same shape as the original call.
+
+    Args:
+        call: The call id from that response.
+        resume_token: The resume_token from that response.
+        observed: For each unknown step (by progress path, e.g. "1" or "0.1.2"), "not_applied"
+            to send it again or "applied" to mark it ok after checking the page.
+    """
+    body: dict = {"call": call, "resume_token": resume_token}
+    if observed is not None:
+        body["observed"] = observed
+    return _post("/api/resume", body, timeout=container_request_seconds(RESUME_DEADLINE_SECONDS))
 
 
 def main():
