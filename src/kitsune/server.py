@@ -1361,7 +1361,7 @@ def browser_storage(
 
 
 @tool("storage", annotations=ToolAnnotations(title="Read or write clipboard", **DESTRUCTIVE))
-def browser_clipboard(op: str, text: str | None = None) -> dict:
+def browser_clipboard(op: str, text: str | None = None, confirm_token: str | None = None) -> dict:
     """Read or write the system clipboard.
 
     Args:
@@ -1370,7 +1370,7 @@ def browser_clipboard(op: str, text: str | None = None) -> dict:
     """
     body = {"op": op}
     if text is not None: body["text"] = text
-    return _post("/api/clipboard", body)
+    return _post("/api/clipboard", _confirm(body, confirm_token))
 
 
 @tool("network", annotations=ToolAnnotations(title="Manage downloads", **DESTRUCTIVE))
@@ -1379,6 +1379,7 @@ def browser_downloads(
     url: str | None = None,
     filename: str | None = None,
     query: dict | None = None,
+    confirm_token: str | None = None,
 ) -> dict:
     """Downloads operations.
 
@@ -1392,7 +1393,7 @@ def browser_downloads(
     if url: body["url"] = url
     if filename: body["filename"] = filename
     if query: body["query"] = query
-    return _post("/api/downloads", body)
+    return _post("/api/downloads", _confirm(body, confirm_token))
 
 
 @tool("storage", annotations=ToolAnnotations(title="Clear browsing data", **DESTRUCTIVE))

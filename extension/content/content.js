@@ -2063,23 +2063,68 @@
   const NON_TEXT_INPUT_TYPES = new Set(['button', 'checkbox', 'radio', 'file', 'reset', 'hidden',
     'color', 'range', 'submit', 'image']);
 
+  const BUTTON_INPUT_TYPES = new Set(['button', 'submit', 'image']);
+
+  // Ask-before-act: button labels that commit an order, payment, or form submission, for
+  // JS-driven buttons that are not structural submit controls. The whole label (after
+  // dropping an amount, a parenthetical, and edge punctuation) must be one of these
+  // phrases, so "Submit search", "Order history", "Add to cart" or a bare "OK"/"확인"
+  // do not match. Links and other non-button elements are never matched.
+  const SUBMIT_LABEL_PATTERNS = [
+    /^(?:place|submit|confirm|complete|finish)(?: (?:your|my|the))? (?:order|purchase|payment|booking|reservation)$/,
+    /^(?:pay|buy|purchase|order|checkout)(?: it)? now$/,
+    /^(?:pay|pay securely|pay with [\p{L} ]{1,20}|buy|purchase|submit|confirm(?: and pay| payment| purchase)?)$/u,
+    /^(?:(?:proceed|continue|go) to )?(?:checkout|check out)$/,
+    /^(?:proceed|continue|go) to payment$/,
+    // Korean, Japanese, Chinese (simplified and traditional)
+    /^(?:(?:지금|바로) ?)?(?:결제|주문|구매|제출)(?: ?(?:진행|완료|확정))?(?:하기)?$/,
+    /^(?:今すぐ)?(?:注文|購入|決済|支払[いう]?|お支払い)(?:する|を確定する|手続きへ|に進む|へ進む)?$/,
+    /^レジに進む$/,
+    /^(?:立即|确认|確認)?(?:支付|付款|购买|購買|下单|下單)$/,
+    /^(?:提交(?:订单|訂單)?|(?:确认|確認)(?:订单|訂單))$/,
+    /^(?:去)?(?:结算|結帳|結算)$/,
+    // German, French, Spanish
+    /^(?:jetzt )?(?:kaufen|bezahlen|bestellen)$/,
+    /^(?:zahlungspflichtig|kostenpflichtig) bestellen$/,
+    /^zur kasse(?: gehen)?$/,
+    /^(?:payer|acheter|commander)(?: maintenant)?$/,
+    /^(?:passer|valider|confirmer) (?:la|ma) commande$/,
+    /^(?:pagar|comprar)(?: ahora)?$/,
+    /^(?:realizar|confirmar|tramitar) (?:el )?pedido$/,
+    /^finalizar (?:la )?compra$/,
+  ];
+
+  function isSubmitLabel(label) {
+    let text = String(label).normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
+    if (!text || text.length > 60) return false;
+    const edges = /^[\p{P}\p{S}\s]+|[\p{P}\p{S}\s]+$/gu;
+    text = text.replace(/\s*\([^)]*\)$/, '').replace(edges, '')
+      .replace(/(?:^|\s)\p{Sc}?\s?\d[\d.,]*\s?(?:\p{Sc}|원|円|元|krw|usd|eur)?$/u, '')
+      .replace(/^\p{Sc}?\s?\d[\d.,]*\s?(?:\p{Sc}|원|円|元)?\s/u, '')
+      .replace(edges, '');
+    return SUBMIT_LABEL_PATTERNS.some(pattern => pattern.test(text));
+  }
+
   // Ask-before-act: whether clicking the target (or pressing Enter on it, with key) can submit
-  // a form. Resolves the target the way click/keypress do and reports no field values.
+  // a form, or is a button labeled like a submit or payment. Resolves the target the way
+  // click/keypress do and reports no field values.
   function describeTarget(selector, coords, key) {
     let el = selector || coords ? resolveElement(selector, coords)
       : (document.activeElement || document.body);
     if (!el) return notFound();
     if (coords) el = nearestInteractiveAncestor(el) || el;
-    const control = el.closest ? el.closest('button, input') || el : el;
+    const control = el.closest ? el.closest('button, input, [role="button"]') || el : el;
     const tag = control.tagName?.toLowerCase();
     const type = String(control.type || '').toLowerCase();
     const submitControl = !!control.form &&
       ((tag === 'button' && type === 'submit') || (tag === 'input' && (type === 'submit' || type === 'image')));
     const enterSubmits = key === 'Enter' && !!control.form && tag === 'input' && !NON_TEXT_INPUT_TYPES.has(type);
+    const button = tag === 'button' || (tag === 'input' && BUTTON_INPUT_TYPES.has(type)) ||
+      String(control.getAttribute?.('role') || '').toLowerCase() === 'button';
     const label = control.getAttribute?.('aria-label') || control.textContent ||
-      (submitControl && tag === 'input' ? control.value : '') || '';
+      (button && tag === 'input' ? control.value : '') || '';
     return { ok: true, tag, type, inForm: !!control.form, submits: submitControl || enterSubmits,
-      text: String(label).trim().slice(0, 80) };
+      submitLabel: button && isSubmitLabel(label), text: String(label).trim().slice(0, 80) };
   }
 
   function submitForm(selector) {

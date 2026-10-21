@@ -781,10 +781,22 @@ def _check_policy(action, params):
 # action, parameters and tab. The token goes back to the agent, so it enforces an explicit second
 # step, not proof that a human approved.
 ASK_BEFORE_ACT_ENV = "KITSUNE_ASK_BEFORE_ACT"
+# A locked start leaves this file behind, so a later bridge started from an environment
+# without KITSUNE_ASK_BEFORE_ACT=1 (stop, idle shutdown, outdated-bridge replacement) is
+# locked too. Only deleting the file unlocks.
+ASK_LOCK_FILE = os.path.join(DATA_DIR, "ask-before-act-locked")
 CONFIRM_TOKEN_TTL = 120
 _UNKNOWN_OUTCOME_TTL = 600
 _ASK_JS_ACTIONS = {"executeJS", "waitForResult", "syncBarrier", "if", "while"}
 _ASK_COOKIE_ACTIONS = {"cookies", "saveSession", "loadSession"}
+# Held on every page and for every op, reads included: page storage often holds session
+# tokens, the clipboard reaches outside the browser, and downloads write to disk or list
+# local paths.
+_ASK_DATA_ACTIONS = {
+    "storageOp": ("storage", "reads or writes page storage (localStorage/sessionStorage)"),
+    "clipboard": ("clipboard", "reads or writes the system clipboard"),
+    "downloads": ("downloads", "starts, lists or cancels browser downloads"),
+}
 _ASK_NAVIGATION_ACTIONS = {"navigate", "newTab", "createWindow"}
 _ASK_CLICK_ACTIONS = {"click", "doubleClick", "trustedClick", "clickAndWaitNavigation"}
 # Page actions held on payment-like pages; they target one tab, which the token is bound to.
@@ -871,6 +883,8 @@ async def _held_reason(action, params):
         reason, description = "javascript", "runs agent-supplied JavaScript in the page"
     elif action in _ASK_COOKIE_ACTIONS:
         reason, description = "cookies", "reads or writes browser cookies"
+    elif action in _ASK_DATA_ACTIONS:
+        reason, description = _ASK_DATA_ACTIONS[action]
     elif action == "submitForm":
         reason, description = "submit", "submits a form"
     elif _ask_url_match(url):
@@ -900,6 +914,9 @@ async def _held_reason(action, params):
             what = "presses Enter in a form field" if submit_key else "clicks a submit control"
             label = target.get("text") or target.get("tag") or ""
             reason, description = "submit_control", f"{what} ({label})" if label else what
+        elif reason is None and target.get("submitLabel"):
+            what = "presses Enter on" if submit_key else "clicks"
+            reason, description = "submit_label", f"{what} a button labeled like a submit or payment ({target.get('text')})"
     if reason is None:
         return None
     return reason, description, tab_id, url_now or url
@@ -942,6 +959,26 @@ async def _ask_before_act(action, params, *, direct):
               "batch, retry, parallel, broadcast or workflows)."),
         **state,
     )
+
+
+def _ask_locked_on_start(flag):
+    """Return whether this bridge starts with ask mode locked on; persist a newly requested lock."""
+    requested = flag or os.environ.get(ASK_BEFORE_ACT_ENV, "").lower() in {"1", "true", "yes", "on"}
+    # lexists: a dangling symlink in place of the file still locks.
+    if os.path.lexists(ASK_LOCK_FILE):
+        return True
+    if requested:
+        try:
+            fd = os.open(ASK_LOCK_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, stat.S_IRUSR | stat.S_IWUSR)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(f"Kitsune ask-before-act is locked on for every bridge using this directory "
+                        f"(since {datetime.now().isoformat(timespec='seconds')}).\n"
+                        f"To unlock: remove {ASK_BEFORE_ACT_ENV}=1 from every MCP server config, "
+                        "delete this file, then run `kitsune-bridge stop`.\n")
+        except OSError as exc:
+            print(f"[{now()}] Warning: ask-before-act is locked for this bridge only; "
+                  f"could not write {ASK_LOCK_FILE}: {exc}")
+    return requested
 
 
 def _invalid_ask_policy(body):
@@ -2816,7 +2853,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 loosened.append("askUrls cannot drop patterns")
             if loosened:
                 self.send_json(403, {"error": "Ask-before-act is locked for this bridge (started with "
-                                              f"{ASK_BEFORE_ACT_ENV}=1 or --ask-before-act): " + "; ".join(loosened),
+                                              f"{ASK_BEFORE_ACT_ENV}=1, --ask-before-act, or {ASK_LOCK_FILE}): "
+                                              + "; ".join(loosened),
                                      "code": "policy_locked", "policy": dict(_policy)})
                 return
         if "ask" in body: _policy["ask"] = body["ask"]
@@ -3082,7 +3120,8 @@ def run(argv=None):
     )
     parser.add_argument(
         "--ask-before-act", action="store_true",
-        help=f"start: hold sensitive actions for confirmation, locked on (also ${ASK_BEFORE_ACT_ENV}=1)",
+        help=f"start: hold sensitive actions for confirmation, locked on until {ASK_LOCK_FILE} is deleted "
+             f"(also ${ASK_BEFORE_ACT_ENV}=1)",
     )
     args = parser.parse_args(argv)
     if args.command != "start" and args.idle_timeout is not None:
@@ -3109,7 +3148,7 @@ def run(argv=None):
             idle_timeout = _idle_timeout_seconds(os.environ.get(IDLE_TIMEOUT_ENV) or "0")
         except argparse.ArgumentTypeError as exc:
             parser.error(f"{IDLE_TIMEOUT_ENV}: {exc}")
-    if args.ask_before_act or os.environ.get(ASK_BEFORE_ACT_ENV, "").lower() in {"1", "true", "yes", "on"}:
+    if _ask_locked_on_start(args.ask_before_act):
         _policy.update(ask=True, askLocked=True)
 
     # Separate from the short-lived lifecycle lock held by the spawning MCP
