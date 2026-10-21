@@ -38,8 +38,8 @@ BENCH_UI_TOOLS = (
 
 # Ceilings in compact JSON characters (#88). Growth past one fails the size test; raise it
 # deliberately, with the reason in the change, rather than alongside a snapshot update.
-# Set about 5% above the sizes once generated schema titles were dropped (#120).
-TOTAL_BUDGETS = {"default (lean)": 15_000, "full core": 30_000, "bench allowlist": 20_500}
+# Set about 5% above the sizes once nullable optionals and empty defaults were dropped (#142).
+TOTAL_BUDGETS = {"default (lean)": 13_200, "full core": 25_500, "bench allowlist": 17_500}
 TOOL_BUDGET = 3_000  # any single core tool
 
 

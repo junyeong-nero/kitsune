@@ -1,7 +1,9 @@
-"""Published input schemas drop only generated `title` annotations (#120).
+"""Published input schemas drop generated `title` annotations (#120).
 
-Every tool in every capability group is compared with FastMCP's own listing: only `title`
-keywords may differ, and both schemas must accept and reject the same sample arguments.
+Every tool in every capability group is compared with FastMCP's own listing: the untitled
+stage removes only `title` keywords, and both schemas must accept and reject the same
+sample arguments. tests/test_tool_schema_optionals.py covers the optional-parameter
+rewrite applied after it (#142).
 """
 import inspect
 import json
@@ -11,6 +13,8 @@ import sys
 import unittest
 
 import jsonschema
+
+from kitsune import server
 
 # FastMCP.list_tools is the unstripped listing; mcp.list_tools is what tools/list publishes.
 DUMP = """
@@ -115,7 +119,8 @@ class ToolSchemaTitleTests(unittest.TestCase):
             with self.subTest(tool=name):
                 # Descriptions are cleandoc-normalized on purpose; see the test below.
                 generated = {**generated, "description": inspect.cleandoc(generated["description"])}
-                removed = removed_paths(generated, self.published[name])
+                untitled = {**self.published[name], "inputSchema": server._untitled_schema(generated["inputSchema"])}
+                removed = removed_paths(generated, untitled)
                 self.assertTrue(removed, "generated schema had no title to remove")
                 for path in removed:
                     self.assertEqual(path[:1], ("inputSchema",), path)
@@ -123,6 +128,8 @@ class ToolSchemaTitleTests(unittest.TestCase):
                     self.assertFalse(names_parameter(path), f"parameter removed: {path}")
                 removed_total += len(removed)
                 self.assertEqual(list(title_keywords(self.published[name]["inputSchema"])), [])
+                self.assertEqual(self.published[name]["inputSchema"],
+                                 server._published_schema(generated["inputSchema"]))
         self.assertGreater(removed_total, len(self.generated))
 
     def test_descriptions_are_cleandoc_normalized(self):
@@ -138,14 +145,17 @@ class ToolSchemaTitleTests(unittest.TestCase):
 
     def test_parameters_named_like_keywords_are_kept(self):
         for name, parameter in (("browser_wait_for", "title"), ("browser_computed_style", "properties")):
-            generated = self.generated[name]["inputSchema"]["properties"][parameter]
-            published = self.published[name]["inputSchema"]["properties"][parameter]
-            self.assertEqual(published, {key: value for key, value in generated.items() if key != "title"})
+            generated = self.generated[name]["inputSchema"]
+            untitled = server._untitled_schema(generated)["properties"][parameter]
+            self.assertEqual(untitled, {key: value for key, value in generated["properties"][parameter].items()
+                                        if key != "title"})
+            self.assertIn(parameter, self.published[name]["inputSchema"]["properties"])
 
     def test_schemas_accept_and_reject_the_same_arguments(self):
         for name, generated in self.generated.items():
             with self.subTest(tool=name):
-                before, after = generated["inputSchema"], self.published[name]["inputSchema"]
+                before = generated["inputSchema"]
+                after = server._untitled_schema(before)
                 jsonschema.Draft202012Validator.check_schema(after)
                 old = jsonschema.Draft202012Validator(before)
                 new = jsonschema.Draft202012Validator(after)
