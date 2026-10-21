@@ -230,8 +230,10 @@ seconds) in the **MCP server's environment**, or run the daemon yourself with
 
 ## Tools
 
-By default, Kitsune registers 30 `browser_*` tools in the `core` capability
-group. Tab-aware tools accept `tab_id` to target background tabs.
+By default, Kitsune registers the 14 `browser_*` tools of the
+[lean preset](#lean-tool-preset) from the 30-tool `core` capability group;
+`KITSUNE_TOOL_PRESET=full` registers all 30. Tab-aware tools accept `tab_id` to
+target background tabs.
 Set `KITSUNE_CAPS` in the MCP server environment before starting it; restart the
 MCP client after changing it. The comma-separated list selects exactly those
 groups (include `core` to retain the default tools). `all` enables all 96 tools.
@@ -244,7 +246,7 @@ KITSUNE_CAPS = "core,network,parallel"
 
 | Group | Tools |
 |---|---|
-| `core` (30) | `browser_status`, `browser_tabs`, `browser_page_info`, `browser_page_text`, `browser_forms`, `browser_dom`, `browser_screenshot`, `browser_navigate`, `browser_click`, `browser_type`, `browser_scroll`, `browser_hover`, `browser_find`, `browser_js`, `browser_wait_for`, `browser_workflows`, `browser_workflow`, `browser_markdown`, `browser_select_option`, `browser_check`, `browser_keypress`, `browser_submit_form`, `browser_form_fill`, `browser_upload_file`, `browser_back`, `browser_forward`, `browser_watch_console`, `browser_console_logs`, `browser_handle_dialog`, `browser_snapshot` |
+| `core` (30; 14 by default, see [Lean tool preset](#lean-tool-preset)) | `browser_status`, `browser_tabs`, `browser_page_info`, `browser_page_text`, `browser_forms`, `browser_dom`, `browser_screenshot`, `browser_navigate`, `browser_click`, `browser_type`, `browser_scroll`, `browser_hover`, `browser_find`, `browser_js`, `browser_wait_for`, `browser_workflows`, `browser_workflow`, `browser_markdown`, `browser_select_option`, `browser_check`, `browser_keypress`, `browser_submit_form`, `browser_form_fill`, `browser_upload_file`, `browser_back`, `browser_forward`, `browser_watch_console`, `browser_console_logs`, `browser_handle_dialog`, `browser_snapshot` |
 | `devtools` (26) | `browser_trusted_click`, `browser_highlight`, `browser_cache`, `browser_reload_extension`, `browser_query`, `browser_html`, `browser_links`, `browser_images`, `browser_meta`, `browser_structured_data`, `browser_bounds`, `browser_computed_style`, `browser_readability`, `browser_iframes`, `browser_explain_selector`, `browser_focus`, `browser_blur`, `browser_double_click`, `browser_drag`, `browser_click_and_wait_navigation`, `browser_full_page_metrics`, `browser_health`, `browser_logs`, `browser_audit`, `browser_set_policy`, `browser_get_policy` |
 | `network` (3) | `browser_downloads`, `browser_intercept`, `browser_capture_network` |
 | `parallel` (16) | `browser_keep_alive`, `browser_keep_alive_stop`, `browser_parallel`, `browser_broadcast`, `browser_sync_barrier`, `browser_tag_tab`, `browser_resolve_tag`, `browser_list_tags`, `browser_untag_tab`, `browser_tab_pool`, `browser_pool_acquire`, `browser_pool_release`, `browser_scheduler`, `browser_retry`, `browser_batch`, `browser_resume` |
@@ -259,6 +261,10 @@ The consolidated tools use options for related operations:
 - `browser_type(selector, text, mode="type"|"fill"|"editable", ...)`
 - `browser_wait_for(selector=...|text=...|text_gone=...|js=...|url=...|title=...|network_idle=True|time=...)` (exactly one)
 - `browser_screenshot(selector=None, full_page=False, ...)` returns an inline image by default; use `save_to="/path/capture.png"` for a saved PNG.
+
+`browser_wait_for`, `browser_js`, `browser_workflow` and `browser_handle_dialog`
+below are `core` tools outside the default lean preset; they need
+`KITSUNE_TOOL_PRESET=full`.
 
 `browser_js` runs JavaScript in the page. WordPress Elementor extraction is
 available as `browser_workflow("wp-html", {"site_url": "https://example.com", "page_id": 5719})`.
@@ -301,28 +307,38 @@ Matching is case-sensitive substring matching.
 
 ### Lean tool preset
 
-`KITSUNE_TOOL_PRESET=lean` is an opt-in, experimental preset for comparing tool
-surfaces (#31). It is not the default and is not shown to be better: it narrows
-`core` to the 14 tools browser-mcp-bench's read and draft tasks used in 72 runs, and
-leaves every tool definition unchanged. Whether it changes task success, safety,
-calls or input per model turn is for the benchmark A/B to measure. Groups added with
-`KITSUNE_CAPS` still register in full, and leaving the variable unset (or empty)
-keeps the whole `core` group. Unknown preset names fail at startup.
+**`lean` is the default `core` surface (#31).** The 16 `core` tools listed below
+are not registered unless `KITSUNE_TOOL_PRESET=full` is set (or `KITSUNE_CAPS`
+includes `all`). Set `full` if you relied on them:
 
 ```toml
 [mcp_servers.kitsune.env]
-KITSUNE_TOOL_PRESET = "lean"
+KITSUNE_TOOL_PRESET = "full"
 ```
+
+`lean` narrows `core` to the 14 tools browser-mcp-bench's read and draft tasks used,
+and leaves every tool definition unchanged. In the #31 A/B (24 tasks, one model, one
+attempt per arm) it showed no detected success or safety loss against the 30-tool
+surface; that is workload-specific, and the dropped tools are needed for the tasks
+in the last column of the table below. Groups other than `core` always register in
+full. Case and surrounding whitespace are ignored; unknown preset names fail at startup.
+
+| `KITSUNE_TOOL_PRESET` | `KITSUNE_CAPS` | `core` tools registered |
+|---|---|---|
+| Unset or empty | Unset, or a list without `all` | `lean` (14) |
+| Unset or empty | Includes `all` | All 30 (96 tools in total) |
+| `lean` | Any, including `all` | `lean` (14) |
+| `full` | Any | All 30 |
 
 It keeps `browser_status`, `browser_tabs`, `browser_navigate`, `browser_page_info`,
 `browser_page_text`, `browser_snapshot`, `browser_forms`, `browser_dom`,
 `browser_find`, `browser_screenshot`, `browser_click`, `browser_type`,
 `browser_select_option`, and `browser_form_fill`: finding, opening, reading and
 capturing pages, and filling forms with confirmation (ask-before-act) and `expect`
-checks on every write. It drops these 16 `core` tools; use the default surface for
-the tasks in the last column:
+checks on every write. It drops these 16 `core` tools; set
+`KITSUNE_TOOL_PRESET=full` for the tasks in the last column:
 
-| Dropped | Closest lean substitute | Needs the default surface |
+| Dropped | Closest lean substitute | Needs `full` |
 |---|---|---|
 | `browser_check` | `browser_form_fill` sets a checkbox/radio state; `browser_click` toggles it | Setting a checkbox by ref, or one form-fill cannot match by selector, name, label or placeholder |
 | `browser_submit_form` | `browser_click` the submit button, with `expect` | Forms without a clickable submit control |
@@ -346,8 +362,8 @@ kept tools retain the parameters read and draft flows use.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `KITSUNE_CAPS` | `core` | Comma-separated capability groups above; `all` enables everything |
-| `KITSUNE_TOOL_PRESET` | Unset | `lean` narrows `core` to 14 tools for benchmark comparisons; see [Lean tool preset](#lean-tool-preset) |
+| `KITSUNE_CAPS` | `core` | Comma-separated capability groups above; `all` enables everything unless `KITSUNE_TOOL_PRESET=lean` |
+| `KITSUNE_TOOL_PRESET` | Unset (`lean`, or `full` with `KITSUNE_CAPS=all`) | `lean` registers 14 of the 30 `core` tools; `full` registers all 30. See [Lean tool preset](#lean-tool-preset) |
 | `KITSUNE_HOME` | `~/.kitsune` | Data directory (0700) |
 | `KITSUNE_HTTP_PORT` | `47651` | Bridge HTTP API |
 | `KITSUNE_WS_PORT` | `47652` | Extension WebSocket. Change `WS_URL` in `extension/background/background.js` too |
@@ -503,9 +519,9 @@ versus actual behavior. Use a minimal public or local page and redact secrets.
 
 Tool definitions are resent with every model request, so their size is tracked:
 `uv run python scripts/tool_schema_size.py` reports the compact JSON size of each
-default tool, and a test fails until `--update` records a change in
-`tests/tool_schema_sizes.json`. The same test fails when the `core`, benchmark
-allowlist or lean preset total, or any single tool, grows past `TOTAL_BUDGETS` /
+`core` tool, and a test fails until `--update` records a change in
+`tests/tool_schema_sizes.json`. The same test fails when the default (lean), full
+`core` or benchmark allowlist total, or any single tool, grows past `TOTAL_BUDGETS` /
 `TOOL_BUDGET` in the script; raise a budget only deliberately. Published input
 schemas omit the `title` keywords pydantic generates (`KitsuneMCP.list_tools`), and
 `tests/test_tool_schema_titles.py` checks that they still accept and reject the same

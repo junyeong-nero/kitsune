@@ -4,20 +4,25 @@ Base URL: `http://127.0.0.1:47651`
 
 ## MCP tool surface
 
-`KITSUNE_CAPS=core` is the default (30 tools); `KITSUNE_CAPS=all` registers
+`KITSUNE_CAPS=core` is the default; `KITSUNE_CAPS=all` registers
 96 tools. The groups are `core`, `tabs`, `network`, `storage`, `parallel`,
 `devtools`, `windows`, and `session`. A comma list selects those groups only.
 See [Tools and capabilities](guide.md#tools) for the complete tool list per group.
 
-`KITSUNE_TOOL_PRESET=lean` (opt-in; unset by default) narrows `core` to 14 tools:
-`browser_status`, `browser_tabs`, `browser_navigate`, `browser_page_info`,
+**`KITSUNE_TOOL_PRESET` defaults to `lean` (#31)**, which registers 14 of the 30
+`core` tools: `browser_status`, `browser_tabs`, `browser_navigate`, `browser_page_info`,
 `browser_page_text`, `browser_snapshot`, `browser_forms`, `browser_dom`, `browser_find`,
 `browser_screenshot`, `browser_click`, `browser_type`, `browser_select_option`,
-`browser_form_fill`. Their definitions are unchanged, other `KITSUNE_CAPS` groups
-register in full, and an unknown preset fails at startup. It exists for the
-browser-mcp-bench A/B (#31); no token, cost or success effect is claimed. The
-[Lean tool preset](guide.md#lean-tool-preset) section lists the 16 dropped `core`
-tools and which tasks need the default surface.
+`browser_form_fill`. The other 16 `core` tools (`browser_check`, `browser_submit_form`,
+`browser_back`, `browser_forward`, `browser_markdown`, `browser_wait_for`,
+`browser_hover`, `browser_keypress`, `browser_scroll`, `browser_handle_dialog`,
+`browser_upload_file`, `browser_js`, `browser_watch_console`, `browser_console_logs`,
+`browser_workflows`, `browser_workflow`) need `KITSUNE_TOOL_PRESET=full`. With the
+preset unset, `KITSUNE_CAPS=all` registers the full `core` group; an explicit `lean`
+narrows it even then. Definitions are the same in both presets, other `KITSUNE_CAPS`
+groups register in full, and an unknown preset fails at startup. The
+[Lean tool preset](guide.md#lean-tool-preset) section has the rules and which tasks
+need `full`.
 The bridge endpoints below remain available unchanged; MCP tool names and
 parameters are separate from HTTP endpoint names and JSON command actions.
 
@@ -822,7 +827,7 @@ policy, would give an agent or an injected page instruction one more way to
 read secrets through tools that are otherwise safe to call on any page. The
 only way to read a raw value is `browser_js`, which stays the separate,
 explicit and unrestricted trust boundary. It is not registered with
-`KITSUNE_TOOL_PRESET=lean`, and read-only mode refuses it.
+the default `lean` tool preset (`KITSUNE_TOOL_PRESET=full` adds it), and read-only mode refuses it.
 
 Frameworks such as React mirror a typed value into the `value` attribute, so
 markup and attribute paths drop that attribute from sensitive fields, whether it

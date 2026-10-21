@@ -94,9 +94,9 @@ _unknown_caps = ENABLED_CAPS - CAPABILITY_GROUPS - {"all"}
 if _unknown_caps:
     raise ValueError(f"Unknown KITSUNE_CAPS: {', '.join(sorted(_unknown_caps))}")
 
-# Opt-in core subsets (KITSUNE_TOOL_PRESET); unset keeps the whole core group.
-# lean: the 14 tools browser-mcp-bench's read + draft tasks used (#31). It is an A/B
-# candidate, not a default; docs/guide.md#lean-tool-preset lists what it drops.
+# Core subsets (KITSUNE_TOOL_PRESET); full keeps the whole core group.
+# lean: the 14 tools browser-mcp-bench's read + draft tasks used, the default since the
+# #31 A/B; docs/guide.md#lean-tool-preset lists what it drops.
 TOOL_PRESETS = {
     "lean": frozenset({
         "browser_status", "browser_tabs", "browser_navigate", "browser_page_info",
@@ -105,9 +105,19 @@ TOOL_PRESETS = {
         "browser_select_option", "browser_form_fill",
     }),
 }
-TOOL_PRESET = os.environ.get("KITSUNE_TOOL_PRESET", "").strip().lower() or None
-if TOOL_PRESET is not None and TOOL_PRESET not in TOOL_PRESETS:
-    raise ValueError(f"Unknown KITSUNE_TOOL_PRESET: {TOOL_PRESET}")
+
+
+def tool_preset(preset: str | None, caps: frozenset) -> str:
+    """The core preset in effect: an explicit KITSUNE_TOOL_PRESET, else lean, or full with KITSUNE_CAPS=all."""
+    preset = (preset or "").strip().lower()
+    if not preset:
+        return "full" if "all" in caps else "lean"
+    if preset != "full" and preset not in TOOL_PRESETS:
+        raise ValueError(f"Unknown KITSUNE_TOOL_PRESET: {preset}")
+    return preset
+
+
+TOOL_PRESET = tool_preset(os.environ.get("KITSUNE_TOOL_PRESET"), ENABLED_CAPS)
 
 
 def _failed(result) -> bool:
@@ -153,7 +163,7 @@ def tool(group: str, annotations: ToolAnnotations | None = None):
         raise ValueError(f"Unknown tool capability group: {group}")
 
     def decorate(function):
-        if group == "core" and TOOL_PRESET is not None and function.__name__ not in TOOL_PRESETS[TOOL_PRESET]:
+        if group == "core" and TOOL_PRESET != "full" and function.__name__ not in TOOL_PRESETS[TOOL_PRESET]:
             return function
         if "all" in ENABLED_CAPS or group in ENABLED_CAPS:
             mcp.tool(annotations=annotations)(_mcp_errors(function))

@@ -1,13 +1,14 @@
 # Tool list
 
 Current tools registered in [server.py](../src/kitsune/server.py), grouped by
-capability. The default `KITSUNE_CAPS=core` exposes 30 tools;
-`KITSUNE_CAPS=all` exposes all 96. Set a comma-separated list to enable selected
+capability. The default `KITSUNE_CAPS=core` exposes 14 of the 30 `core` tools
+(the [lean preset](guide.md#lean-tool-preset)); `KITSUNE_TOOL_PRESET=full` exposes
+all 30. `KITSUNE_CAPS=all` exposes all 96. Set a comma-separated list to enable selected
 groups, for example `KITSUNE_CAPS=core,tabs,network`.
 
 See the [API reference](api-reference.md) for parameters and behavior.
 
-## core (default) — 30
+## core — 30 (14 in the default lean preset)
 
 - `browser_back`
 - `browser_check`
