@@ -3,7 +3,7 @@
 
 (function() {
   'use strict';
-  const CONTENT_VERSION = 25;
+  const CONTENT_VERSION = 26;
   if (window.__claudeBridgeVersion >= CONTENT_VERSION) return;
   window.__claudeBridgeVersion = CONTENT_VERSION;
 
@@ -255,7 +255,7 @@
       'handleDialog':          () => handleDialog(msg.accept, msg.prompt_text),
       'waitForText':           () => waitForText(msg.text, msg.text_gone, msg.timeout),
       'getPageText':           () => getPageText(msg.selector),
-      'getSnapshot':           () => getSnapshot(msg.maxChars, msg.focusLastAction, msg.ref || msg.selector, msg.maxDepth),
+      'getSnapshot':           () => getSnapshot(msg.maxChars, msg.focusLastAction, msg.ref || msg.selector, msg.maxDepth, !!msg.text),
       'getAccessibilityTree':  () => getAccessibilityTree(msg.depth || 6),
       'getFormFields':         () => getFormFields(),
       'click':                 () => clickElement(msg.selector, msg.coords),
@@ -520,8 +520,18 @@
     return { tree, refs: refCounter };
   }
 
+  // Text mode adds readable text lines (without refs) and is always capped.
+  const TEXT_SNAPSHOT_LIMIT = 12000;
+  const TEXT_LINE_LIMIT = 1000;
+  const TEXT_TRUNCATED_LINE = '- … truncated; scope with selector, ref or max_depth';
+  // Inline content joins its block's text line; other elements start their own.
+  const INLINE_TAGS = new Set(['A', 'ABBR', 'B', 'BDI', 'BDO', 'CITE', 'CODE', 'DATA', 'DFN', 'EM',
+    'I', 'KBD', 'LABEL', 'MARK', 'Q', 'S', 'SAMP', 'SMALL', 'SPAN', 'STRONG', 'SUB', 'SUP',
+    'TIME', 'U', 'VAR']);
+  const FIELD_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT', 'OPTION']);
+
   // Compact accessibility-style view (DOM semantics, not a platform AX tree).
-  function getSnapshot(maxChars, focusLastAction, selector, maxDepth) {
+  function getSnapshot(maxChars, focusLastAction, selector, maxDepth, withText = false) {
     if (maxDepth != null && (!Number.isInteger(maxDepth) || maxDepth < 0)) {
       return { error: 'max_depth must be a non-negative integer' };
     }
@@ -533,7 +543,9 @@
     lastActedElement = null;
     newRefGeneration();
     const entries = [];
-    const limit = Number.isFinite(maxChars) ? Math.max(0, maxChars) : Infinity;
+    let limit = Number.isFinite(maxChars) ? Math.max(0, maxChars) : Infinity;
+    // Reserve room for the truncation marker so text snapshots stay within the cap.
+    if (withText) limit = Math.max(0, Math.min(limit, TEXT_SNAPSHOT_LIMIT) - TEXT_TRUNCATED_LINE.length - 1);
     let size = 0;
     let truncated = false;
     const landmarks = { MAIN: 'main', NAV: 'navigation', HEADER: 'banner',
@@ -551,6 +563,27 @@
       return !el || el.nodeType !== 1 || isHidden(el) ||
         el.getAttribute('aria-hidden') === 'true' ||
         ['SCRIPT', 'STYLE', 'NOSCRIPT', 'SVG'].includes(el.tagName);
+    }
+    const hasOwnText = el => Array.from(el.childNodes).some(node => node.nodeType === 3 && node.textContent.trim());
+    // [all, plain] text of el's inline content; plain omits controls and labels, which
+    // already appear as control names. Form fields and sensitive elements never contribute.
+    function inlineText(el) {
+      let all = '', plain = '';
+      for (const node of el.childNodes) {
+        if (node.nodeType === 3) {
+          all += node.textContent;
+          plain += node.textContent;
+        } else if (ignored(node) || !INLINE_TAGS.has(node.tagName) || FIELD_TAGS.has(node.tagName) ||
+            isSensitiveField(node)) {
+          all += ' ';
+          plain += ' ';
+        } else {
+          const [childAll, childPlain] = inlineText(node);
+          all += childAll;
+          plain += isInteractiveElement(node) || node.tagName === 'LABEL' ? ' ' : childPlain;
+        }
+      }
+      return [all, plain];
     }
     // Bottom-up metadata avoids repeatedly scanning large clickable ancestor trees.
     function measure(el, domDepth = 0) {
@@ -575,7 +608,7 @@
         (/^H[1-6]$/.test(el.tagName) ? 'heading' : inferRole(el));
       data.useful = (maxDepth == null || domDepth <= maxDepth) &&
         (children.some(child => child.useful) || (interactive && !data.wrapper) ||
-          semanticRoles.has(role) || el === target);
+          semanticRoles.has(role) || el === target || (withText && hasOwnText(el)));
       data.interactive += interactive ? 1 : 0;
       data.native += nativeTags.has(el.tagName) ? 1 : 0;
       metadata.set(el, data);
@@ -614,7 +647,8 @@
       size += cost;
       return true;
     }
-    function visit(el, depth, parent = -1, domDepth = 0) {
+    // named: an ancestor control or heading already shows this text as its name.
+    function visit(el, depth, parent = -1, domDepth = 0, named = false) {
       if (!metadata.has(el) || (maxDepth != null && domDepth > maxDepth)) return;
       let role = el.getAttribute('role') || landmarks[el.tagName] ||
         (/^H[1-6]$/.test(el.tagName) ? 'heading' : inferRole(el));
@@ -641,13 +675,26 @@
         if (!append({ el, ref, line, parent, interactive })) return;
         parent = entries.length - 1;
       }
-      if (maxDepth != null && domDepth >= maxDepth) return;
       const childDepth = depth + (include ? 1 : 0);
+      named ||= interactive || role === 'heading';
+      if (withText && !named && (el === root || !INLINE_TAGS.has(el.tagName)) &&
+          !FIELD_TAGS.has(el.tagName) && !isSensitiveField(el)) {
+        const [all, plain] = inlineText(el);
+        const text = normalize(all);
+        if (normalize(plain)) {
+          const clipped = text.length > TEXT_LINE_LIMIT ? text.slice(0, TEXT_LINE_LIMIT) + '…' : text;
+          if (!append({ line: `${'  '.repeat(Math.min(childDepth, 12))}- text ${JSON.stringify(clipped)}`,
+            parent, interactive: false })) return;
+        }
+      }
+      if (maxDepth != null && domDepth >= maxDepth) return;
       const children = Array.from(el.children).filter(child => metadata.get(child)?.useful);
       // Only composite children / list items collapse: a toolbar of leaf controls
       // should remain fully discoverable. Text, IDs and classes are not structure.
-      const repeatable = child => child.children.length > 0 || child.tagName === 'LI' ||
-        child.getAttribute('role') === 'listitem';
+      // In text mode, siblings with only inline content are prose, not cards.
+      const repeatable = child => (child.children.length > 0 || child.tagName === 'LI' ||
+        child.getAttribute('role') === 'listitem') &&
+        !(withText && Array.from(child.children).every(c => INLINE_TAGS.has(c.tagName)));
       for (let start = 0; start < children.length && !truncated;) {
         let end = start + 1;
         if (repeatable(children[start])) {
@@ -664,7 +711,7 @@
         for (let i = start; i < end && !truncated; i++) {
           if (i - start < 5 || targetAncestors.has(children[i])) {
             flushOmitted();
-            if (!truncated) visit(children[i], childDepth, parent, domDepth + 1);
+            if (!truncated) visit(children[i], childDepth, parent, domDepth + 1, named);
           } else omitted++;
         }
         flushOmitted();
@@ -723,10 +770,13 @@
     for (const entry of selected) {
       if (entry.ref) refMap[entry.ref] = entry.el;
     }
+    let snapshot = selected.map(entry => entry.line).join('\n');
+    if (withText && truncated) snapshot += (snapshot ? '\n' : '') + TEXT_TRUNCATED_LINE;
     return {
-      snapshot: selected.map(entry => entry.line).join('\n'),
+      snapshot,
       ...(truncated ? { truncated: true } : {}),
       ...(targetIndex >= 0 ? { target_ref: entries[targetIndex].ref } : {}),
+      ...(withText ? { url: location.href, title: document.title } : {}),
     };
   }
 

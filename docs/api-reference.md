@@ -556,7 +556,7 @@ the actual URL and load status. Options for other actions are ignored.
 Replaces the duplicate `browser_page_text_by_tab_id`. Uses GET `/api/page-text`
 for the active tab or POST to the same endpoint with `tabId` for a specific tab.
 
-### `browser_snapshot(tab_id=None, selector=None, ref=None, max_depth=None)`
+### `browser_snapshot(tab_id=None, selector=None, ref=None, max_depth=None, text=False)`
 
 Returns a compact accessibility-style text tree with fresh refs. With no arguments,
 reads the full page via GET `/api/snapshot`. Optional arguments use POST to the same
@@ -586,6 +586,20 @@ from grouping; collapsed items have no refs. Scope a specific card/list item to
 inspect it fully. Post-action snapshots additionally keep the acted-on target's
 item, even beyond the first five, and return a fresh `target_ref`. Character-limit
 truncation can still omit other context but never the visible acted-on target.
+
+`text=True` (opt-in; the default is unchanged) adds readable text in the same call:
+each block's visible inline text becomes a `- text "…"` line in document order,
+and the result adds `url`, `title` and `tabId`. Text lines have no refs; refs keep
+the lifetime above. Text that only repeats a control, label or heading name is
+omitted, as are hidden, `aria-hidden`, form-field and sensitive-field content.
+Lines are clipped at 1,000 characters with `…`; the snapshot is capped at 12,000
+characters, and truncation sets `truncated: true` and ends it with
+`- … truncated; scope with selector, ref or max_depth`. Repeated composite items
+still collapse, but siblings with only inline content (prose paragraphs, text list
+items) do not. `selector`, `ref` and `max_depth` scope text the same way.
+With `KITSUNE_POST_ACTION_SNAPSHOT=text` in the bridge environment, post-action
+snapshots use the same text lines within their 4,000-character cap, so an
+`expect={"text": ...}` already present there needs no further read.
 
 ### `browser_type(selector="", text="", mode="type", clear=False, tab_id=None, ref=None, element=None, wait=False, timeout=10000)`
 
