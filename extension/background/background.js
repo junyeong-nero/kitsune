@@ -92,18 +92,44 @@ browser.runtime.onMessage.addListener((msg, sender) => {
 
 // == WebSocket Connection ==
 
+// Fingerprint of the scripts this copy loaded, sent in hello: the bridge compares it with the
+// unpacked extension on disk to report a developer build edited but not reloaded. Mirrors
+// extension_source_hash in src/kitsune/version.py; null when it cannot be computed.
+const SOURCE_HASH = (async () => {
+  try {
+    const manifest = browser.runtime.getManifest();
+    const scripts = [...new Set([...(manifest.background?.scripts || []),
+      ...(manifest.content_scripts || []).flatMap(entry => entry.js || [])])];
+    if (!scripts.length) return null;
+    const encoder = new TextEncoder();
+    const separator = new Uint8Array([0]);
+    const parts = [];
+    for (const name of scripts) {
+      const bytes = await (await fetch(browser.runtime.getURL(name))).arrayBuffer();
+      parts.push(encoder.encode(name), separator, new Uint8Array(bytes), separator);
+    }
+    const digest = await crypto.subtle.digest('SHA-256', await new Blob(parts).arrayBuffer());
+    return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 16);
+  } catch {
+    return null;
+  }
+})();
+
 function connect() {
   // Kill any existing connection first
   cleanup();
   
   try {
-    ws = new WebSocket(WS_URL);
+    const socket = ws = new WebSocket(WS_URL);
     
-    ws.onopen = () => {
+    ws.onopen = async () => {
       console.log('[Kitsune] Connected to bridge server');
       reconnectDelay = 1000; // Reset backoff
       stopReconnect();
-      ws.send(JSON.stringify({ type: 'hello', version: browser.runtime.getManifest().version, build: KITSUNE_BUILD }));
+      const sourceHash = await SOURCE_HASH;
+      if (ws !== socket) return; // replaced while the fingerprint was computed
+      ws.send(JSON.stringify({ type: 'hello', version: browser.runtime.getManifest().version, build: KITSUNE_BUILD,
+        sourceHash }));
       sendBrowserState();
       startHeartbeat();
       injectAllTabs(); // Inject content scripts into all existing tabs

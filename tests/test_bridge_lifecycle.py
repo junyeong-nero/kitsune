@@ -16,6 +16,9 @@ from kitsune import bridge, server
 import kitsune.bridge_control as control
 import kitsune.version as version
 
+# Popen of a spawned bridge that has not exited.
+RUNNING = {"return_value.poll.return_value": None}
+
 
 class EnsureBridgeTests(unittest.TestCase):
     def setUp(self):
@@ -37,7 +40,7 @@ class EnsureBridgeTests(unittest.TestCase):
                     patch.object(control, "lifecycle_lock", return_value=nullcontext()), \
                     patch.object(control, "stop", return_value=None) as stop, \
                     patch("builtins.open", mock_open()), \
-                    patch.object(server.subprocess, "Popen") as spawn, patch.object(server.time, "sleep"):
+                    patch.object(server.subprocess, "Popen", **RUNNING) as spawn, patch.object(server.time, "sleep"):
                 self.assertIsNone(server._ensure_bridge())
                 stop.assert_called_once_with()
                 self.assertEqual(spawn.call_count, 1)
@@ -61,7 +64,7 @@ class EnsureBridgeTests(unittest.TestCase):
         with patch.object(control, "status", return_value={}), \
                 patch.object(control, "lifecycle_lock", return_value=nullcontext()), \
                 patch.object(control, "stop", return_value="cannot safely stop"), \
-                patch.object(server.subprocess, "Popen") as spawn:
+                patch.object(server.subprocess, "Popen", **RUNNING) as spawn:
             self.assertEqual(server._ensure_bridge(), server._bridge_unavailable("cannot safely stop"))
             spawn.assert_not_called()
 
@@ -69,14 +72,14 @@ class EnsureBridgeTests(unittest.TestCase):
         with patch.dict(os.environ, {"KITSUNE_NO_BRIDGE_RESTART": "1"}), \
                 patch.object(control, "status", side_effect=[None, None, {"build": server.BRIDGE_BUILD}]), \
                 patch.object(control, "lifecycle_lock", return_value=nullcontext()), \
-                patch("builtins.open", mock_open()), patch.object(server.subprocess, "Popen") as spawn:
+                patch("builtins.open", mock_open()), patch.object(server.subprocess, "Popen", **RUNNING) as spawn:
             self.assertIsNone(server._ensure_bridge())
             spawn.assert_called_once()
 
     def test_start_wait_rejects_wrong_build(self):
         with patch.object(control, "status", side_effect=[None, None, {"build": "wrong"}]), \
                 patch.object(control, "lifecycle_lock", return_value=nullcontext()), \
-                patch("builtins.open", mock_open()), patch.object(server.subprocess, "Popen"), \
+                patch("builtins.open", mock_open()), patch.object(server.subprocess, "Popen", **RUNNING), \
                 patch.object(server.time, "monotonic", side_effect=[0, 0, 16]), patch.object(server.time, "sleep"), \
                 patch.object(control, "port_in_use") as port_in_use:
             error = server._ensure_bridge() or {}

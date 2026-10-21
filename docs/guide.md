@@ -192,7 +192,9 @@ not permission to take additional actions; see [Security](#security).
    **Reload** on Kitsune, or load the updated `manifest.json` again). A bridge
    restart reconnects the extension but does **not** reload its browser-side code;
    reload it explicitly after extension updates, and reload existing tabs if
-   their content scripts are still outdated.
+   their content scripts are still outdated. `browser_status` reports a developer
+   build whose files changed after it was loaded as `extension_version_mismatch`
+   (`state.reason: "stale_developer_build"`).
 4. Reconnect the MCP client again if needed (in Claude Code, use `/mcp` to
    reconnect Kitsune), then call `browser_status`. Check `extension_connected`,
    `bridge_version`, and `build`.
@@ -347,6 +349,7 @@ kept tools retain the parameters read and draft flows use.
 | `KITSUNE_HTTP_PORT` | `47651` | Bridge HTTP API |
 | `KITSUNE_WS_PORT` | `47652` | Extension WebSocket. Change `WS_URL` in `extension/background/background.js` too |
 | `KITSUNE_TOKEN` | — | Override the token in `~/.kitsune/token` |
+| `KITSUNE_EXTENSION_DIR` | `extension/` in a checkout | Unpacked extension the bridge compares a developer build with, to report one that was edited but not reloaded ([Connection diagnosis](api-reference.md#connection-diagnosis)) |
 | `KITSUNE_NO_BRIDGE_RESTART` | Unset | Set to `1` in the MCP server environment to skip automatic replacement of an outdated bridge |
 | `KITSUNE_BRIDGE_IDLE_TIMEOUT` | `0` (never) | Seconds without client activity before the bridge exits; see [Idle shutdown](#idle-shutdown-opt-in) |
 | `KITSUNE_ASK_BEFORE_ACT` | Unset | Set to `1` in the MCP server environment to start the bridge with [ask-before-act](#ask-before-act) locked on; the lock then persists in `ask-before-act-locked` under `KITSUNE_HOME` |
@@ -461,11 +464,11 @@ calls, or at least before calls that carry `confirm_token`.
 |---|---|
 | Any connection problem | Call `browser_status` and follow `diagnosis.hint`; each `diagnosis.code` is listed in [Connection diagnosis](api-reference.md#connection-diagnosis). It never shows the token |
 | `extension_disconnected` (`extension_connected: false`) | Extension installed and enabled in the browser profile you opened? Developer build: browser restarted (temporary add-on gone)? It reconnects within 15 s of a bridge start |
-| `extension_version_mismatch` | The extension and server versions differ; install the matching extension or update the server, then reload open tabs |
+| `extension_version_mismatch` | The extension and server versions differ; install the matching extension or update the server, then reload open tabs. `state.reason: "stale_developer_build"`: the developer build's files changed since the browser loaded them; reload it in about:debugging |
 | `browser_window_unavailable` | The browser runs without a normal window Kitsune can use; open one, or allow Kitsune in private windows (about:addons → Kitsune → Run in Private Windows) |
 | `host_permission_denied` | `not_granted`: allow site access in about:addons → Kitsune → Permissions. `restricted_domain`: Firefox keeps extensions off Mozilla sites such as addons.mozilla.org; use another tab |
 | "needs the Kitsune developer extension build" | The signed build cannot run agent-supplied JavaScript; load the developer build |
-| `bridge_unavailable` (`Kitsune bridge did not start`) | `~/.kitsune/bridge.log`; run `kitsune-bridge start` in a terminal to see the error |
+| `bridge_unavailable` (`Kitsune bridge did not start`, `exited at startup`) | `state.logExcerpt` shows the bridge's last log line; see `~/.kitsune/bridge.log`, or run `kitsune-bridge start` in a terminal to see the error |
 | `port_conflict` | `state.port` is held by another program (`lsof -nP -iTCP:47651 -sTCP:LISTEN`), or `KITSUNE_WS_PORT` differs from the extension's `WS_URL` |
 | `token_mismatch` (`401 Missing or invalid token`) | `KITSUNE_TOKEN` or `KITSUNE_HOME` set in one client but not in the daemon (or the other way round) |
 | `Cannot access browser internal page` | `about:` pages are off-limits to extensions; switch to a normal tab |

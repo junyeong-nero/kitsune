@@ -2,6 +2,7 @@
 
 import hashlib
 from importlib.metadata import PackageNotFoundError, version
+import json
 from pathlib import Path
 import re
 
@@ -43,6 +44,27 @@ def bridge_build() -> str:
         digest.update(path.read_bytes())
         digest.update(b"\0")
     return f"{PACKAGE_VERSION}+{digest.hexdigest()[:16]}"
+
+
+def extension_source_hash(directory: Path) -> str | None:
+    """Fingerprint the scripts an unpacked extension's manifest loads; None if unreadable.
+
+    background.js computes the same sourceHash over the copy the browser loaded, so a
+    difference means the developer build was edited but not reloaded.
+    """
+    try:
+        manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+        scripts = manifest.get("background", {}).get("scripts", [])
+        scripts += [name for entry in manifest.get("content_scripts", []) for name in entry.get("js", [])]
+        digest = hashlib.sha256()
+        for name in dict.fromkeys(scripts):
+            digest.update(name.encode())
+            digest.update(b"\0")
+            digest.update((directory / name).read_bytes())
+            digest.update(b"\0")
+    except (OSError, ValueError, AttributeError, TypeError):
+        return None
+    return digest.hexdigest()[:16] if scripts else None
 
 
 PACKAGE_VERSION = package_version()

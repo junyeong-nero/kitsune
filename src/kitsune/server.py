@@ -8,6 +8,7 @@ import functools
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 import time
@@ -124,7 +125,8 @@ def _ensure_bridge() -> dict | None:
                 if error:
                     return _bridge_unavailable(error)
             with open(LOG_FILE, "ab") as log:
-                subprocess.Popen(
+                log_start = log.tell()
+                process = subprocess.Popen(
                     [sys.executable, "-m", "kitsune.bridge"],
                     stdin=subprocess.DEVNULL, stdout=log, stderr=log,
                     start_new_session=True,  # outlive this MCP server
@@ -135,6 +137,8 @@ def _ensure_bridge() -> dict | None:
                 status = bridge_control.status()
                 if status is not None and status.get("build") == BRIDGE_BUILD:
                     return None
+                if process.poll() is not None:
+                    break  # it exited at startup; diagnose now instead of at the deadline
                 time.sleep(0.3)
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 401:
@@ -144,19 +148,60 @@ def _ensure_bridge() -> dict | None:
         return _port_conflict(HTTP_PORT, "not_kitsune", f"Cannot start Kitsune bridge: {exc}")
     except (httpx.HTTPError, OSError) as exc:
         return _bridge_unavailable(f"Cannot start Kitsune bridge: {exc}. See {LOG_FILE}")
+    exited = {}
+    if process.poll() is not None:
+        exited = {"exitCode": process.returncode}
+        excerpt = _startup_log_excerpt(log_start)
+        if excerpt:
+            exited["logExcerpt"] = excerpt
     # Nothing answers: the new bridge may have exited because it could not listen.
     for port in (HTTP_PORT, WS_PORT) if status is None else ():
         if bridge_control.port_in_use(port):
-            return _port_conflict(port, "in_use", f"Kitsune bridge did not start: port {port} is in use")
+            error = _port_conflict(port, "in_use", f"Kitsune bridge did not start: port {port} is in use")
+            error["state"].update(exited)
+            return error
+    if exited:
+        reason = f": {exited['logExcerpt']}" if "logExcerpt" in exited else ""
+        return _bridge_unavailable(
+            f"Kitsune bridge exited at startup with code {exited['exitCode']}{reason}. See {LOG_FILE}", **exited)
     return _bridge_unavailable(f"Kitsune bridge did not start within {BRIDGE_START_TIMEOUT}s. See {LOG_FILE}")
+
+
+STARTUP_EXCERPT_CHARS = 300
+_SECRET_PATTERN = re.compile(r"(?i)(bearer\s+|token[\"']?\s*[:=]\s*[\"']?)[^\s\"',;]+")
+
+
+def _startup_log_excerpt(offset: int) -> str:
+    """The last line a bridge that exited at startup wrote to LOG_FILE after offset, without secrets.
+
+    For a Python traceback that is the exception, such as a port that is already in use.
+    """
+    try:
+        with open(LOG_FILE, "rb") as log:
+            log.seek(max(offset, log.seek(0, os.SEEK_END) - 8192))
+            text = log.read().decode("utf-8", "replace")
+    except OSError:
+        return ""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    excerpt = lines[-1]
+    token = _headers().get("Authorization", "").removeprefix("Bearer ")
+    for secret in {token, os.environ.get("KITSUNE_TOKEN")}:
+        if secret:
+            excerpt = excerpt.replace(secret, "[redacted]")
+    return _SECRET_PATTERN.sub(r"\1[redacted]", excerpt)[:STARTUP_EXCERPT_CHARS]
 
 
 # Connection failures share the action error contract (docs/api-reference.md#connection-diagnosis).
 # Nothing reached the browser, so repeating the request is safe. Never include the token.
-def _bridge_unavailable(message: str) -> dict:
-    return {"error": message, "code": "bridge_unavailable", "retryable": True,
-            "hint": "Run `kitsune-bridge start` (`uv run kitsune-bridge start` in a checkout) in a terminal "
-                    f"to see why the bridge does not start; the MCP server starts it on demand. See {LOG_FILE}"}
+def _bridge_unavailable(message: str, **state) -> dict:
+    error = {"error": message, "code": "bridge_unavailable", "retryable": True,
+             "hint": "Run `kitsune-bridge start` (`uv run kitsune-bridge start` in a checkout) in a terminal "
+                     f"to see why the bridge does not start; the MCP server starts it on demand. See {LOG_FILE}"}
+    if state:
+        error["state"] = state
+    return error
 
 
 def _token_mismatch() -> dict:

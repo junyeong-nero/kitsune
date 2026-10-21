@@ -143,10 +143,10 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `error_page` | A loaded `http(s)` page refused the content script: the browser shows its own document, such as an error response with an empty body. `state` adds `title` and, when the extension saw the response, `httpStatus`. Nothing was dispatched, but reads fail the same way until the tab navigates; for a 4xx/5xx status, `browser_page_text` instead returns an empty result (`text: ""`, `empty: true`, `httpStatus`, `tabId`, `url`, `title`) | false |
 | `extension_disconnected` | The extension is not connected, reconnected before sending, or disconnected while waiting (`state.connected`) | true if not sent; false for writes after |
 | `timeout` | The bridge sent the command but no reply arrived in time (`state.timeoutSeconds`); from the MCP server, the bridge did not answer | false for writes (MCP: POST) |
-| `bridge_unavailable` | The MCP server cannot reach or start the bridge | true |
+| `bridge_unavailable` | The MCP server cannot reach or start the bridge (`state.exitCode`, `state.logExcerpt` when it exited at startup) | true |
 | `token_mismatch` | The bridge rejected the MCP server's token (`state.port`, `state.tokenSource`) | true |
 | `port_conflict` | A port is held by another program, answers but not as a Kitsune bridge, or differs from the extension's (`state.port`, `state.reason`) | true |
-| `extension_version_mismatch` | The extension does not know the command, and its version differs from the bridge's (`state.extensionVersion`, `state.bridgeVersion`) | true |
+| `extension_version_mismatch` | The extension does not know the command, and its version differs from the bridge's (`state.extensionVersion`, `state.bridgeVersion`) or it is a developer build edited but not reloaded (`state.reason: "stale_developer_build"`) | true |
 | `browser_window_unavailable` | No active tab: the extension sees no normal window it can use | true |
 | `host_permission_denied` | Firefox does not let Kitsune script the tab's site (`state.reason`: `not_granted`, `restricted_domain`) | true |
 | `confirmation_required` | [Ask-before-act](#ask-before-act) held a sensitive action; nothing ran (`state.confirmToken`, `state.reason`) | true |
@@ -300,11 +300,11 @@ be reached, `browser_status` fails (`isError`) and `diagnosis` repeats the error
 | `code` | Condition | Reported by | Hint |
 |---|---|---|---|
 | `connected` | No problem found | `browser_status` | — |
-| `bridge_unavailable` | The bridge is not running and could not be started, or is not reachable | MCP server | Run `kitsune-bridge start` in a terminal to see why; see `bridge.log` |
-| `port_conflict` | `state.reason`: `in_use`, nothing answers after a start and another program holds `state.port`; `not_kitsune`, the HTTP port answers but not as a Kitsune bridge (a 2xx reply without a JSON body); `extension_ws_port`, no extension has connected and the bridge listens on a `KITSUNE_WS_PORT` other than the extension's 47652 | MCP server, bridge | Find the program with `lsof -nP -iTCP:<port> -sTCP:LISTEN`, or use another port in every client |
+| `bridge_unavailable` | The bridge is not running and could not be started, or is not reachable. A bridge that exits at startup is reported at once, not after the 15 s start timeout, with `state.exitCode` and `state.logExcerpt` (its last `bridge.log` line, at most 300 characters, bearer tokens and token values replaced by `[redacted]`) | MCP server | Run `kitsune-bridge start` in a terminal to see why; see `bridge.log` |
+| `port_conflict` | `state.reason`: `in_use`, nothing answers after a start and another program holds `state.port` (with `exitCode` and `logExcerpt` as above when the bridge exited); `not_kitsune`, the HTTP port answers but not as a Kitsune bridge (a 2xx reply without a JSON body); `extension_ws_port`, no extension has connected and the bridge listens on a `KITSUNE_WS_PORT` other than the extension's 47652 | MCP server, bridge | Find the program with `lsof -nP -iTCP:<port> -sTCP:LISTEN`, or use another port in every client |
 | `token_mismatch` | The bridge answered HTTP 401 to this MCP server's token. `state.tokenSource` is `KITSUNE_TOKEN` or the token file path | MCP server | Use the same `KITSUNE_TOKEN` and `KITSUNE_HOME` for every client, or `kitsune-bridge stop` |
 | `extension_disconnected` | The bridge runs, but no extension is connected | bridge | Open the profile where Kitsune is installed and enable it; load a developer build again after a browser restart; it reconnects within 15 s of a bridge start |
-| `extension_version_mismatch` | The connected extension's version (`state.extensionVersion`, `null` when it is too old to report one) is not the bridge's (`state.bridgeVersion`). Tools fail with it only for a command the extension does not know (`Unknown action: …`); others still run | bridge | Install the matching extension, or update the server; reload open tabs |
+| `extension_version_mismatch` | The connected extension's version (`state.extensionVersion`, `null` when it is too old to report one) is not the bridge's (`state.bridgeVersion`). Or the versions match, but a developer build was edited and not reloaded (`state.reason: "stale_developer_build"`, see below). Tools fail with it only for a command the extension does not know (`Unknown action: …`); others still run | bridge | Install the matching extension, or update the server; reload a developer build in about:debugging; reload open tabs |
 | `browser_window_unavailable` | The extension has no normal window it can use: all are closed, or only private windows where Kitsune is not allowed are open (`state.windows: 0`). A tool fails with it when it targets the active tab (`No active tab found`) | bridge, extension | Open a normal window in that profile, allow Kitsune in private windows, or pass `tab_id` |
 | `host_permission_denied` | Kitsune may not script a site. In `browser_status`: access to all sites is withheld (`state.reason: "not_granted"`). From a tool: the tab's site is withheld (`not_granted`), or it is one of Mozilla's restricted domains such as addons.mozilla.org (`restricted_domain`); `state` adds the tab state | bridge, extension | Allow site access in about:addons → Kitsune → Permissions; use another tab for a restricted domain |
 
@@ -316,11 +316,20 @@ helps only after the hint is followed. Diagnoses hold ports, versions, the token
 source, a window count and, for tab errors, the usual tab state; never the token
 or page content.
 
+Stale developer builds: on connect the extension sends `sourceHash`, a fingerprint
+of the scripts its manifest loads (background, then content scripts). For a
+developer build the bridge compares it, at each diagnosis, with the same
+fingerprint of the unpacked extension on disk: `KITSUNE_EXTENSION_DIR`, by default
+`extension/` of the checkout the bridge runs from. A difference is
+`extension_version_mismatch` with `state.reason: "stale_developer_build"`,
+`state.extensionSourceHash` and `state.expectedSourceHash` (see
+[Updating Kitsune](guide.md#updating-kitsune)). Without both fingerprints (an
+extension from before this check, the signed build, or a bridge installed from a
+package) nothing is reported.
+
 Not diagnosed: sites Mozilla quarantines refuse Kitsune like a page's own error
-document and stay `error_page`; only the extension's version is compared, so a
-developer build edited but not reloaded is not detected (see
-[Updating Kitsune](guide.md#updating-kitsune)). A bridge of another build is
-replaced automatically rather than reported.
+document and stay `error_page`. A bridge of another build is replaced
+automatically rather than reported.
 
 ### Action outcomes
 
