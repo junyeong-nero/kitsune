@@ -1734,6 +1734,12 @@ Returns `{ "ok": true, "tag": "a" }`
 `{ "query": "search text" }` or `{ "selector": "a.link" }`
 Both `query` and `selector` are accepted (normalized to `query` internally).
 Returns `{ "results": [{ "ref": "r0", "tag": "a", "text": "...", "selector": "...", "bounds": [...] }] }`
+A query that is not a matching CSS selector is split into words (filler words such as
+"the" or "in" are dropped). Elements are scored per word they match in their text,
+`aria-label`, placeholder, title, alt, id, name or value, or a role word ("button",
+"dropdown", "search bar"), with more for matching every word and for the whole query or
+a quoted part as a phrase. Only matching elements are returned, best first; when nothing
+matches, the reply is `{ "results": [], "hint": "..." }`.
 
 ### POST /api/js
 `{ "code": "document.title" }`

@@ -895,9 +895,51 @@
   }
 
   // ── Find Elements ──
+  const FIND_LIMIT = 20;
+  const FIND_NO_MATCH_HINT = 'No element matches this query; try a shorter phrase from the element\'s ' +
+    'visible label, or browser_snapshot(text=True).';
+  // Filler words in descriptive queries ("the button in the filters") that match almost anything.
+  const FIND_STOP_WORDS = new Set(['a', 'an', 'the', 'in', 'on', 'of', 'to', 'for', 'or', 'and',
+    'with', 'at', 'by', 'from', 'is', 'that', 'this', 'its']);
+  // Words a query uses for a control's kind, matched against its role.
+  const FIND_ROLE_WORDS = {
+    button: 'button', link: 'link', checkbox: 'checkbox', radio: 'radio', tab: 'tab',
+    combobox: 'combobox dropdown select', listbox: 'listbox dropdown select list',
+    textbox: 'textbox input field box', searchbox: 'searchbox search input field box bar',
+    menuitem: 'menuitem menu item', option: 'option', slider: 'slider', switch: 'switch toggle',
+    heading: 'heading title', img: 'image img picture',
+  };
+  // Longer text belongs to a container; it can match the whole query but not single terms.
+  const FIND_TEXT_TERM_LIMIT = 200;
+
+  // Lowercase words, with camelCase and kebab/snake-case ids split apart.
+  function findWords(value) {
+    return String(value || '').replace(/(\p{Ll})(\p{Lu})/gu, '$1 $2').toLowerCase()
+      .match(/[\p{L}\p{N}]+/gu) || [];
+  }
+
+  // Terms are the query's words without filler; phrases are quoted parts and the whole query.
+  function parseFindQuery(query) {
+    const words = findWords(query);
+    const content = words.filter(word => !FIND_STOP_WORDS.has(word));
+    const terms = [...new Set(content.length ? content : words)];
+    const phrases = new Set(words.length > 1 ? [words.join(' ')] : []);
+    for (const [, double, single] of query.matchAll(/["\u201c\u201d]([^"\u201c\u201d]+)["\u201c\u201d]|(?:^|\s)['\u2018]([^'\u2018\u2019]+)['\u2019](?=\s|$|[.,;:!?])/g)) {
+      const phrase = findWords(double || single).join(' ');
+      if (phrase.includes(' ')) phrases.add(phrase);
+    }
+    return { terms, phrases: [...phrases] };
+  }
+
+  // A field word matches a term it starts with, or a slightly shorter form of it
+  // ("reviews" finds "review", "버튼을" finds "버튼").
+  function wordMatchesTerm(word, term) {
+    return word.startsWith(term) ||
+      (word.length >= 2 && term.startsWith(word) && term.length - word.length <= 3);
+  }
+
   function findElements(query) {
     pruneRefMap();
-    const q = query.toLowerCase();
     const results = [];
 
     // Try as CSS selector
@@ -908,20 +950,30 @@
         matches.forEach(el => {
           if (!isHidden(el)) results.push(makeResult(el));
         });
-        if (results.length) return { results: results.slice(0, 20) };
+        if (results.length) return { results: results.slice(0, FIND_LIMIT) };
       }
     } catch {}
 
     // Text/attribute search
+    const parsed = parseFindQuery(query);
+    if (!parsed.terms.length) return { results: [], hint: FIND_NO_MATCH_HINT };
+    const scored = [];
     const candidates = document.querySelectorAll('a, button, input, select, textarea, [role], [onclick], label, h1, h2, h3, h4, h5, h6, p, span, div, li, td, th, img');
     for (const el of candidates) {
       if (isHidden(el)) continue;
-      const score = scoreMatch(el, q);
-      if (score > 0) results.push({ ...makeResult(el), score });
+      const match = scoreMatch(el, parsed);
+      if (match) scored.push({ el, ...match });
     }
+    if (!scored.length) return { results: [], hint: FIND_NO_MATCH_HINT };
 
-    results.sort((a, b) => b.score - a.score);
-    return { results: results.slice(0, 20) };
+    // Drop weak partial matches: keep elements matching at least half as many terms as the best.
+    const bestMatched = Math.max(...scored.map(entry => entry.matched));
+    const kept = scored.filter(entry => entry.matched * 2 >= bestMatched);
+    // Between equal scores, the element with less text is the more specific one.
+    kept.sort((a, b) => b.score - a.score || a.textLength - b.textLength);
+    return {
+      results: kept.slice(0, FIND_LIMIT).map(entry => ({ ...makeResult(entry.el), score: entry.score })),
+    };
   }
 
   function makeResult(el) {
@@ -938,11 +990,15 @@
     };
   }
 
-  function scoreMatch(el, query) {
-    let score = 0;
+  // Scores el against a parsed query, or returns null when el does not match it.
+  // Each term counts once, at the weight of the best field it matches.
+  function scoreMatch(el, { terms, phrases }) {
+    const text = redactedText(el).replace(/\s+/g, ' ').trim();
+    const role = el.getAttribute('role') || inferRole(el) ||
+      (/^H[1-6]$/.test(el.tagName) ? 'heading' : el.tagName === 'IMG' ? 'img' : '');
     const fields = [
-      [redactedText(el), 2],
-      [el.ariaLabel, 5],
+      [text, 2],
+      [el.getAttribute('aria-label'), 5],
       [el.placeholder, 4],
       [el.title, 3],
       [el.alt, 3],
@@ -950,12 +1006,36 @@
       [el.name, 2],
       // Matching on a sensitive value would let queries probe it.
       [isSensitiveField(el) ? '' : el.value, 2],
-    ];
-    for (const [val, weight] of fields) {
-      if (val && String(val).toLowerCase().includes(query)) score += weight;
+    ].filter(([value]) => value && typeof value === 'string').map(([value, weight]) => {
+      const words = findWords(value);
+      const joined = ` ${words.join(' ')} `;
+      const phrase = phrases.some(p => joined.includes(` ${p} `)) ? weight : 0;
+      return { words, weight, phrase, long: value === text && text.length > FIND_TEXT_TERM_LIMIT && !phrase };
+    });
+
+    let termScore = 0;
+    let matched = 0;
+    let matchedContent = 0;
+    const roleWords = findWords(FIND_ROLE_WORDS[role] || role);
+    for (const term of terms) {
+      let best = 0;
+      for (const field of fields) {
+        if (field.weight > best && !field.long && field.words.some(word => wordMatchesTerm(word, term))) {
+          best = field.weight;
+        }
+      }
+      if (best) matchedContent++;
+      else if (roleWords.includes(term)) best = 1;
+      if (best) { matched++; termScore += best; }
     }
+    // A role alone ("xyzzy button") is no match unless the query names nothing but roles ("button").
+    if (!matched || (!matchedContent && matched < terms.length)) return null;
+
+    let score = termScore * (matched / terms.length);
+    if (matched === terms.length) score += 4;
+    score += Math.max(0, ...fields.map(field => field.phrase)) * 3;
     if (isInteractiveElement(el)) score += 1;
-    return score;
+    return { score: Math.round(score * 100) / 100, matched, textLength: text.length };
   }
 
   // ── Click ──
