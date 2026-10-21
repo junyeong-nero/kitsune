@@ -250,17 +250,18 @@ action and the check cannot target different tabs after a focus change.
 | `{"selector": "<css>"}` | a matching element is visible |
 | `{"selector": "<css>", "gone": true}` | no matching element is visible (removed or hidden) |
 | `{"selector": "<css>", "value": "<str>"}` | the first matching element's value equals the string |
+| `{"selector": "<css>", "value_changed": true}` | the first matching element's value differs from its value before dispatch (an element absent before dispatch counts as changed once present) |
 | `{"text": "<str>"}` / `{"text_gone": "<str>"}` | the visible page text contains / no longer contains the literal substring |
 
 ```json
 { "selector": ".toast", "timeout": 3000 }
 ```
 
-Supported on `browser_click`, `browser_type`, `browser_keypress`, `browser_submit_form`,
-`browser_select_option`, `browser_check`, and `browser_navigate`. Over HTTP and in batch
-commands (including `retry`), `expect` is also accepted by the other page actions on one
-existing tab: double-click, hover, scroll, drag, focus, blur, form-fill, back/forward/reload,
-and click-and-wait-navigation. Element conditions take a CSS selector, not a ref, because
+Supported on `browser_click`, `browser_double_click`, `browser_hover`, `browser_scroll`,
+`browser_drag`, `browser_type`, `browser_form_fill`, `browser_keypress`, `browser_submit_form`,
+`browser_select_option`, `browser_check`, `browser_navigate`, `browser_back`,
+`browser_forward`, and `browser_reload_tab`. Over HTTP and in batch commands (including
+`retry`), `expect` is also accepted by focus, blur, and click-and-wait-navigation. Element conditions take a CSS selector, not a ref, because
 the post-action snapshot replaces the refs from earlier snapshots. An invalid `expect` is
 rejected before anything is dispatched.
 
@@ -298,6 +299,9 @@ itself could not read the page, `observed` has its `error` and `code`. A tab tha
 navigating is checked again until the deadline. If the tab closed, `state.closed` is
 `true`. Sensitive fields are never read back, so a `value` outcome on one is reported
 as not met with `observed.redacted: true`, and the expected value is not echoed.
+`value_changed` reads the value once before dispatch (`observed.before` reports it). If
+that read fails, or the field is sensitive, the action is not dispatched and the result
+is an `error`.
 The post-action snapshot is taken right after dispatch; after a delayed outcome,
 take a new `browser_snapshot` to see the updated page. Without `expect`, results are unchanged.
 

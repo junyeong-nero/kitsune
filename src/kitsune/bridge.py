@@ -1433,7 +1433,7 @@ def _parse_expect(action, expect):
     if "ref" in expect:
         return None, ("expect.ref is not supported because the post-action snapshot replaces refs; "
                       "use expect.selector")
-    unknown = set(expect) - {*_OUTCOME_CONDITIONS, "gone", "value", "timeout"}
+    unknown = set(expect) - {*_OUTCOME_CONDITIONS, "gone", "value", "value_changed", "timeout"}
     if unknown:
         return None, "Unknown expect keys: " + ", ".join(sorted(unknown))
     kinds = [key for key in _OUTCOME_CONDITIONS if expect.get(key) is not None]
@@ -1446,12 +1446,15 @@ def _parse_expect(action, expect):
     elif not isinstance(expect[kind], str) or not expect[kind]:
         return None, f"expect.{kind} must be a non-empty string"
     gone, value = expect.get("gone", False), expect.get("value")
+    value_changed = expect.get("value_changed", False)
     if not isinstance(gone, bool):
         return None, "expect.gone must be a boolean"
-    if (gone or value is not None) and kind != "selector":
-        return None, "expect.gone and expect.value require expect.selector"
-    if gone and value is not None:
-        return None, "expect.gone and expect.value are mutually exclusive"
+    if not isinstance(value_changed, bool):
+        return None, "expect.value_changed must be a boolean"
+    if (gone or value is not None or value_changed) and kind != "selector":
+        return None, "expect.gone, expect.value and expect.value_changed require expect.selector"
+    if [gone, value is not None, value_changed].count(True) > 1:
+        return None, "expect.gone, expect.value and expect.value_changed are mutually exclusive"
     if value is not None and not isinstance(value, str):
         return None, "expect.value must be a string"
     timeout = expect.get("timeout", OUTCOME_TIMEOUT_MS)
@@ -1463,6 +1466,8 @@ def _parse_expect(action, expect):
         spec["gone"] = True
     if value is not None:
         spec["value"] = value
+    if value_changed:
+        spec["value_changed"] = True
     return spec, None
 
 
@@ -1482,13 +1487,24 @@ async def _tab_state(tab_id):
     return {"tabId": tab_id, "url": tab.get("url"), "title": tab.get("title")}
 
 
-async def _check_outcome(spec, tab_id, before_url, remaining_ms):
-    """One observation bounded by remaining_ms; returns (met, observed, final)."""
+async def _query_value(tab_id, selector):
+    """Read the first match's value; returns the query reply and its first item (or None)."""
+    r = await send_to_extension("query", {"tabId": tab_id, "selector": selector,
+                                         "fields": ["value"], "limit": 1}, timeout=10)
+    return r, (r.get("items") or [None])[0]
+
+
+async def _check_outcome(spec, tab_id, before, remaining_ms):
+    """One observation bounded by remaining_ms; returns (met, observed, final).
+
+    before is the pre-dispatch observation: the tab URL for url_changed, or the
+    first match's query item (None if absent) for value_changed.
+    """
     wait_s = remaining_ms / 1000 + 5
     waited = True  # a wait that ends unmet has used up the remaining time
     if "url" in spec or "url_changed" in spec:
         # Tab metadata survives document replacement, unlike content-script reads.
-        pattern = spec.get("url") or "^(?!%s$)" % _re.escape(before_url or "")
+        pattern = spec.get("url") or "^(?!%s$)" % _re.escape(before or "")
         r = await send_to_extension("waitForUrl", {"tabId": tab_id, "pattern": pattern,
                                                   "timeout": remaining_ms}, timeout=wait_s)
         observed = {"source": "tab", "url": r.get("url")}
@@ -1499,17 +1515,21 @@ async def _check_outcome(spec, tab_id, before_url, remaining_ms):
                                                    "timeout": remaining_ms}, timeout=wait_s)
         met = r.get("ok") is True
         observed = {"source": "page", "textVisible": met if "text" in spec else not met}
-    elif "value" in spec:
+    elif "value" in spec or "value_changed" in spec:
         waited = False
-        r = await send_to_extension("query", {"tabId": tab_id, "selector": spec["selector"],
-                                             "fields": ["value"], "limit": 1}, timeout=10)
-        item = (r.get("items") or [None])[0]
+        r, item = await _query_value(tab_id, spec["selector"])
         if item is None:
             observed, met = {"source": "page", "found": False}, False
         elif item.get("redacted"):
             # Sensitive values are never read back, so this outcome cannot be verified.
             return False, {"source": "page", "found": True, "redacted": True,
                            "hasValue": item.get("hasValue")}, True
+        elif "value_changed" in spec:
+            # A field absent before dispatch has changed once it is present.
+            previous = before.get("value") if before else None
+            observed = {"source": "page", "found": True, "value": item.get("value"),
+                        "before": previous}
+            met = before is None or item.get("value") != previous
         else:
             observed = {"source": "page", "found": True, "value": item.get("value")}
             met = item.get("value") == spec["value"]
@@ -1531,7 +1551,7 @@ async def _check_outcome(spec, tab_id, before_url, remaining_ms):
     return met, observed, waited
 
 
-async def _observe_outcome(spec, tab_id, before_url, snapshot):
+async def _observe_outcome(spec, tab_id, before, snapshot):
     """Poll until the expected outcome is observed or spec['timeout'] ms pass."""
     start = time.monotonic()
     # Reuse the post-action snapshot: text already in it needs no further read.
@@ -1540,7 +1560,7 @@ async def _observe_outcome(spec, tab_id, before_url, snapshot):
     deadline = start + spec["timeout"] / 1000
     while True:
         remaining_ms = max(0, math.ceil((deadline - time.monotonic()) * 1000))
-        met, observed, final = await _check_outcome(spec, tab_id, before_url, remaining_ms)
+        met, observed, final = await _check_outcome(spec, tab_id, before, remaining_ms)
         if met or final or time.monotonic() >= deadline:
             break
         await asyncio.sleep(min(OUTCOME_POLL_SECONDS, max(0, deadline - time.monotonic())))
@@ -1566,18 +1586,25 @@ async def _dispatch_with_expectation(action, params, spec, timeout):
         if not isinstance(active, dict) or active.get("error"):
             return active
         tab_id = params["tabId"] = active["tabId"]
-    before_url = None
+    before = None
     if "url_changed" in spec:
-        before_url = (await _tab_state(tab_id)).get("url")
-        if before_url is None:
+        before = (await _tab_state(tab_id)).get("url")
+        if before is None:
             return {"error": f"Cannot read the URL of tab {tab_id} before dispatch"}
+    elif "value_changed" in spec:
+        r, before = await _query_value(tab_id, spec["selector"])
+        if r.get("error"):
+            return {"error": f"Cannot read the value of {spec['selector']} before dispatch: {r['error']}"}
+        if before and before.get("redacted"):
+            return {"error": f"{spec['selector']} is a sensitive field whose value is never read back, "
+                              "so expect.value_changed cannot be verified"}
     result = await send_to_extension(action, params, timeout=timeout)
     if not isinstance(result, dict) or result.get("error") or result.get("ok") is False:
         return result
-    outcome = await _observe_outcome(spec, tab_id, before_url, result.get("snapshot"))
+    outcome = await _observe_outcome(spec, tab_id, before, result.get("snapshot"))
     expected = dict(spec)
     if outcome["observed"].get("redacted"):
-        expected.pop("value")  # never echo a value meant for a sensitive field
+        expected.pop("value", None)  # never echo a value meant for a sensitive field
     result["dispatched"] = True
     result["outcome"] = {"expected": expected, **outcome}
     if outcome["met"]:
