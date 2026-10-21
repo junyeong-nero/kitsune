@@ -341,6 +341,86 @@ async function testContent() {
   assert.equal((await send({ action: 'getSnapshot' })).snapshot, '', 'non-semantic decorations do not generate collapse noise');
 }
 
+// stale_ref names the snapshot that replaced a ref and, only for the same node with the same
+// role, name and snapshot ancestors, its current ref. Nothing is dispatched either way.
+async function testStaleRefSuggestions() {
+  const archive = new Element('BUTTON', 'Archive');
+  const main = new Element('MAIN', '', {}, [new Element('H1', 'Inbox'), archive]);
+  const nav = new Element('NAV', '', {}, [new Element('BUTTON', 'Archive')]);
+  const body = new Element('BODY', '', {}, [main, nav]);
+  let listener;
+  const context = vm.createContext({
+    console, crypto: webcrypto, CSS: { escape: x => x }, setTimeout,
+    window: { getComputedStyle: () => ({ display: 'block', visibility: 'visible' }) },
+    document: { body, getElementById: () => null, querySelector: () => null, querySelectorAll: () => [] },
+    browser: { runtime: { onMessage: { addListener: fn => { listener = fn; } },
+      sendMessage: () => Promise.resolve(null) } },
+  });
+  vm.runInContext(fs.readFileSync('extension/content/content.js', 'utf8'), context);
+  const send = msg => new Promise(resolve => listener(msg, {}, resolve));
+  const snapshot = async (msg = {}) => {
+    const lines = (await send({ action: 'getSnapshot', ...msg })).snapshot.split('\n');
+    // The first "Archive" button is the one in main; nav's has a different ancestor.
+    return lines.find(line => line.includes('button "Archive"')).match(/ref=(s\d+e\d+)/)[1];
+  };
+  const stale = async ref => {
+    const result = await send({ action: 'focusElement', selector: ref });
+    assert.equal(result.code, 'stale_ref');
+    assert.equal(result.state.reason, 'snapshot_replaced');
+    assert.equal(archive.focused, undefined, 'a replaced ref never acts');
+    return result;
+  };
+
+  const first = await snapshot();
+  const second = await snapshot({ observation: 'browser_click' });
+  const replaced = await stale(first);
+  assert.equal(replaced.state.latestObservation, 'browser_click');
+  assert.equal(replaced.state.currentRef, second);
+  assert.match(replaced.hint, /state\.currentRef is the same element/);
+  assert.equal((await send({ action: 'focusElement', selector: second })).ok, true);
+  archive.focused = undefined;
+
+  // Only the three generations before the current one are kept; an older ref only names
+  // the latest observation.
+  for (let i = 0; i < 3; i++) await snapshot();
+  assert.ok((await stale(second)).state.currentRef, 'three snapshots later');
+  await snapshot();
+  const old = await stale(second);
+  assert.equal(old.state.latestObservation, 'browser_snapshot');
+  assert.equal(old.state.currentRef, undefined);
+  assert.equal(old.hint, 'A newer snapshot from browser_snapshot replaced this ref; use its refs or a new browser_snapshot.');
+
+  // A changed name, a changed ancestor, a replaced node or a removed node is not the same element.
+  let ref = await snapshot();
+  Object.assign(archive, { textContent: 'Unarchive', childNodes: [{ nodeType: 3, textContent: 'Unarchive' }] });
+  await send({ action: 'getSnapshot' });
+  assert.equal((await stale(ref)).state.currentRef, undefined, 'renamed');
+  Object.assign(archive, { textContent: 'Archive', childNodes: [{ nodeType: 3, textContent: 'Archive' }] });
+  ref = await snapshot();
+  main.attrs['aria-label'] = 'Archived mail';
+  await send({ action: 'getSnapshot' });
+  assert.equal((await stale(ref)).state.currentRef, undefined, 'moved under another landmark');
+  delete main.attrs['aria-label'];
+  ref = await snapshot();
+  const twin = new Element('BUTTON', 'Archive');
+  twin.parentElement = main;
+  main.children[1] = twin;
+  await send({ action: 'getSnapshot' });
+  assert.equal((await stale(ref)).state.currentRef, undefined, 'a re-rendered node is not the same element');
+  main.children[1] = archive;
+  ref = await snapshot();
+  await snapshot();
+  archive.isConnected = false;
+  assert.equal((await stale(ref)).state.currentRef, undefined, 'removed');
+  archive.isConnected = true;
+
+  // A ref from browser_find has no role and name to compare.
+  context.document.querySelectorAll = () => [archive];
+  const found = (await send({ action: 'find', query: 'button' })).results[0].ref;
+  await send({ action: 'getSnapshot' });
+  assert.equal((await stale(found)).state.currentRef, undefined, 'browser_find ref');
+}
+
 async function testBackground() {
   const source = fs.readFileSync('extension/background/background.js', 'utf8');
   let calls = [], snapshotError = false, actionError = false;
@@ -365,6 +445,8 @@ async function testBackground() {
     assert.equal(calls[1].maxChars, 4000);
     assert.equal(calls[1].tabId, 42);
     assert.equal(calls[1].focusLastAction, action !== 'navigate');
+    assert.equal(calls[1].observation, { type: 'browser_type', fill: 'browser_type', selectOption: 'browser_select_option',
+      checkBox: 'browser_check', submitForm: 'browser_submit_form' }[action] || `browser_${action}`);
     assert.equal(result.target_ref, action !== 'navigate' ? 's2e100' : undefined);
   }
   for (const action of ['scroll', 'waitForElement', 'blurElement', 'getHTML', 'getBounds',
@@ -398,6 +480,7 @@ async function testBackground() {
 
 (async () => {
   await testContent();
+  await testStaleRefSuggestions();
   await testBackground();
   console.log('Snapshot/ref and post-action snapshot checks passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

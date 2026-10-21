@@ -50,10 +50,11 @@ Use refs only from the latest observation of that tab.
 | Call | Effect on refs in that tab |
 |---|---|
 | `browser_snapshot` (also scoped), `browser_dom` | Starts a new generation: earlier refs fail as `stale_ref`/`snapshot_replaced`. A `ref` argument to `browser_snapshot` is resolved first |
-| Successful `browser_click`, `browser_type` (`type`/`fill`), `browser_select_option`, `browser_check`, `browser_keypress`, `browser_submit_form`, `browser_navigate` | Their post-action `snapshot` starts a new generation, like `browser_snapshot` |
+| Successful `browser_click`, `browser_type` (`type`/`fill`), `browser_select_option`, `browser_check`, `browser_keypress`, `browser_submit_form`, `browser_navigate` | Their post-action `snapshot` starts a new generation, like `browser_snapshot`. An `expect` failure (`outcome_not_observed`) is an error, but the action ran and its result still carries that `snapshot` and `target_ref` |
 | Navigation, reload, or back/forward to another document | Earlier refs fail as `stale_ref`/`other_document` |
 | `browser_find`, `browser_forms`, `browser_wait_for(selector/ref)` | Add refs to the current generation; earlier refs stay valid |
-| Failed actions, other reads, `browser_hover`, `browser_scroll`, `browser_type(mode="editable")` and other actions without a post-action snapshot | No change, unless the page itself removes the element (`element_removed`) |
+| Other failed actions, other reads, `browser_hover`, `browser_scroll`, `browser_type(mode="editable")` and other actions without a post-action snapshot | No change, unless the page itself removes the element (`element_removed`) |
+| A failed `browser_snapshot` (bad `max_depth`, missing `selector`, stale `ref`) | No change: it fails before starting a generation |
 
 Snapshots in one tab do not affect refs in another tab. Pass `tab_id` when more
 than one tab is in use: a ref sent to the wrong tab fails as `other_document` and
@@ -74,6 +75,16 @@ Recovering without repeating a consequential action:
   Take a new `browser_snapshot` of the same `tab_id`, find the element again,
   and retry with its new ref. Do not fall back to another element by its
   `element` description.
+- A `stale_ref` with `state.reason: "snapshot_replaced"` names the call whose
+  snapshot holds the current refs in `state.latestObservation` (`browser_snapshot`,
+  `browser_dom`, or the action tool whose post-action snapshot replaced them).
+  When the ref's element is still the same DOM node with the same role, name and
+  snapshot ancestors in that snapshot, `state.currentRef` is its current ref.
+  Kitsune never retargets the command itself: check that snapshot (an earlier
+  action may already have done what you meant) and use `state.currentRef` only if
+  the action is still needed. Refs from the three generations before the current
+  one are compared; refs from `browser_find`, `browser_forms` or `browser_wait_for`
+  carry no role and name, so they get no `currentRef`.
 - To get fresh refs after a successful write, use its `snapshot`/`target_ref` or
   call `browser_snapshot`. Never repeat the write.
 - After a failure with `retryable: false` (a write whose outcome is unknown),
@@ -112,7 +123,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
 |---|---|---|
 | `not_found` | No element matches the selector (also `No target`, `from/to element not found`); after an [actionability wait](#actionability-wait), `state` has `timeoutMs` and `elapsed` | true |
 | `not_actionable` | An [actionability wait](#actionability-wait) timed out on a target that exists but never rendered (`state.reason: "not_rendered"`, `timeoutMs`, `elapsed`); nothing was dispatched | true |
-| `stale_ref` | The ref is no longer valid; `state.reason` is `element_removed`, `not_in_snapshot`, `snapshot_replaced` (a newer snapshot of this document), or `other_document` (the tab navigated, or the ref came from another tab) | true |
+| `stale_ref` | The ref is no longer valid; `state.reason` is `element_removed`, `not_in_snapshot`, `snapshot_replaced` (a newer snapshot of this document; `state.latestObservation` and, for the same element, `state.currentRef`, see [Ref lifetime](#ref-lifetime)), or `other_document` (the tab navigated, or the ref came from another tab) | true |
 | `navigating` | The tab is loading: a `not_found`/`stale_ref` while loading (`state.cause`), or the page unloaded while handling the command. Also a page that refused the content script within 5 s of a wake or reload without an error status, or whose 2xx response arrived only while the command waited for it: it may be an old document about to be replaced | true before dispatch; false for writes after |
 | `tab_closed` | The target tab no longer exists | true |
 | `tab_unloaded` | The tab is discarded and its page cannot be reached; use `browser_wake_tab` | true |
@@ -236,8 +247,17 @@ These results are not errors:
   `container_timeout`).
 - Reads that describe state, such as `browser_status` with
   `extension_connected: false`.
+- A `browser_form_fill` that filled at least one key; keys that failed carry their
+  own `error` in `results`.
 
-HTTP bridge endpoints are unchanged; this applies only to MCP tool results.
+An `outcome_not_observed` error from an `expect` check still carries the action's
+post-action `snapshot` and `target_ref`: the action ran (see [Ref lifetime](#ref-lifetime)).
+`browser_save_session` fails without writing the session file when any cookie or
+storage read fails, and `browser_load_session` reports an error, with
+`cookies_set`, `origins_restored` and per-item `failures`, when any write failed.
+A bridge response without a JSON body becomes an error with `state.httpStatus`.
+
+`isError` applies only to MCP tool results; HTTP bridge endpoints return the same JSON.
 
 ### Action outcomes
 
@@ -798,7 +818,9 @@ HTML insertion use `browser_js`; the underlying endpoint still accepts `format="
 
 Fills several fields in one call via POST `/api/form-fill`. Each key is matched
 as a CSS selector, then `name` attribute, label text, and placeholder; results
-are returned per key, and one failing key does not stop the others.
+are returned per key, and one failing key does not stop the others. When every
+key fails, nothing was filled and the result adds `"error": "No field was filled"`
+(an MCP error); a partial fill is not an error, so check each key.
 
 For a `<select>`, the value must equal an option's `value`, the same rule as
 `browser_select_option`. A match sets it and dispatches `change` and `input`.

@@ -3,7 +3,7 @@
 
 (function() {
   'use strict';
-  const CONTENT_VERSION = 27;
+  const CONTENT_VERSION = 28;
   if (window.__claudeBridgeVersion >= CONTENT_VERSION) return;
   window.__claudeBridgeVersion = CONTENT_VERSION;
 
@@ -123,12 +123,43 @@
     `${Date.now()}${crypto.getRandomValues(new Uint32Array(1))[0]}`;
   // Generations in [refSeed, refGeneration] belong to this document; others name another one.
   const refSeed = window.__kitsuneRefSeed || (window.__kitsuneRefSeed = refGeneration);
+  // Snapshot refs of the current generation: { label: 'role "name"', parent: ancestor's ref }.
+  const refLabels = {};
+  // The call whose observation started the current generation (state.latestObservation).
+  let refObservation = null;
+  // The last few generations, so a stale_ref can name the same element's current ref.
+  const RETIRED_GENERATION_LIMIT = 3;
+  const retiredGenerations = new Map();
 
-  function newRefGeneration() {
+  function newRefGeneration(observation) {
+    retiredGenerations.set(refGeneration, { refs: { ...refMap }, labels: { ...refLabels } });
+    if (retiredGenerations.size > RETIRED_GENERATION_LIMIT) {
+      retiredGenerations.delete(retiredGenerations.keys().next().value);
+    }
     refGeneration = (BigInt(refGeneration) + 1n).toString();
     window.__kitsuneRefGeneration = refGeneration;
+    refObservation = observation;
     refCounter = 0;
     for (const key of Object.keys(refMap)) delete refMap[key];
+    for (const key of Object.keys(refLabels)) delete refLabels[key];
+  }
+
+  function labelPath(labels, ref) {
+    const path = [];
+    for (let entry = labels[ref]; entry; entry = labels[entry.parent]) path.push(entry.label);
+    return path.join('\n');
+  }
+
+  // A ref from a replaced generation names an element of the current one only when it is
+  // the same connected node with the same role, name and snapshot ancestors.
+  function currentRefFor(ref, generation) {
+    const retired = retiredGenerations.get(generation);
+    const el = retired?.refs[ref];
+    if (!el?.isConnected || !retired.labels[ref]) return null;
+    const path = labelPath(retired.labels, ref);
+    const matches = Object.keys(refMap).filter(current => refMap[current] === el &&
+      refLabels[current] && labelPath(refLabels, current) === path);
+    return matches.length === 1 ? matches[0] : null;
   }
 
   // ── Action errors ──
@@ -157,10 +188,13 @@
   const STALE_REF_HINTS = {
     element_removed: 'The element was removed from the page; take a new browser_snapshot and use its refs.',
     not_in_snapshot: 'The latest snapshot did not issue this ref; take a new browser_snapshot and use its refs.',
-    snapshot_replaced: 'A newer snapshot replaced this ref; use refs from the latest browser_snapshot.',
+    snapshot_replaced: 'A newer snapshot replaced this ref; use refs from the latest snapshot or a new browser_snapshot.',
     other_document: 'The ref belongs to another document: the tab navigated or a different tab is targeted. ' +
       'Pass tab_id and take a new browser_snapshot.',
   };
+
+  const CURRENT_REF_HINT = 'A newer snapshot replaced this ref; state.currentRef is the same element (same node, ' +
+    'role, name and ancestors) in the latest snapshot. Use it only if that snapshot shows the action is still needed.';
 
   function staleRef(ref, el) {
     const generation = /^s(\d+)e\d+$/.exec(ref)?.[1];
@@ -168,8 +202,20 @@
     if (generation === refGeneration) reason = el ? 'element_removed' : 'not_in_snapshot';
     else if (generation && (BigInt(generation) < BigInt(refSeed) ||
         BigInt(generation) > BigInt(refGeneration))) reason = 'other_document';
-    const { error, ...details } = actionError('stale ref, call browser_snapshot again', 'stale_ref',
-      STALE_REF_HINTS[reason], { reason, ref });
+    const state = { reason, ref };
+    let hint = STALE_REF_HINTS[reason];
+    if (reason === 'snapshot_replaced') {
+      if (refObservation) {
+        state.latestObservation = refObservation;
+        hint = `A newer snapshot from ${refObservation} replaced this ref; use its refs or a new browser_snapshot.`;
+      }
+      const currentRef = generation && currentRefFor(ref, generation);
+      if (currentRef) {
+        state.currentRef = currentRef;
+        hint = CURRENT_REF_HINT;
+      }
+    }
+    const { error, ...details } = actionError('stale ref, call browser_snapshot again', 'stale_ref', hint, state);
     return new ActionError(error, details);
   }
 
@@ -255,7 +301,8 @@
       'handleDialog':          () => handleDialog(msg.accept, msg.prompt_text),
       'waitForText':           () => waitForText(msg.text, msg.text_gone, msg.timeout),
       'getPageText':           () => getPageText(msg.selector),
-      'getSnapshot':           () => getSnapshot(msg.maxChars, msg.focusLastAction, msg.ref || msg.selector, msg.maxDepth, !!msg.text),
+      'getSnapshot':           () => getSnapshot(msg.maxChars, msg.focusLastAction, msg.ref || msg.selector, msg.maxDepth, !!msg.text,
+                                     msg.observation),
       'getAccessibilityTree':  () => getAccessibilityTree(msg.depth || 6),
       'getFormFields':         () => getFormFields(),
       'click':                 () => clickElement(msg.selector, msg.coords),
@@ -460,7 +507,7 @@
 
   // ── Accessibility Tree ──
   function getAccessibilityTree(maxDepth) {
-    newRefGeneration();
+    newRefGeneration('browser_dom');
     
     function buildNode(el, depth) {
       if (depth > maxDepth || !el || el.nodeType !== 1) return null;
@@ -531,7 +578,9 @@
   const FIELD_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT', 'OPTION']);
 
   // Compact accessibility-style view (DOM semantics, not a platform AX tree).
-  function getSnapshot(maxChars, focusLastAction, selector, maxDepth, withText = false) {
+  // observation: the tool whose call took this snapshot (an action's post-action snapshot).
+  function getSnapshot(maxChars, focusLastAction, selector, maxDepth, withText = false,
+      observation = 'browser_snapshot') {
     if (maxDepth != null && (!Number.isInteger(maxDepth) || maxDepth < 0)) {
       return { error: 'max_depth must be a non-negative integer' };
     }
@@ -541,7 +590,7 @@
     // Keep the DOM element, not its old ref: starting a snapshot invalidates refs.
     const target = focusLastAction && lastActedElement?.isConnected ? lastActedElement : null;
     lastActedElement = null;
-    newRefGeneration();
+    newRefGeneration(observation);
     const entries = [];
     let limit = Number.isFinite(maxChars) ? Math.max(0, maxChars) : Infinity;
     // Reserve room for the truncation marker so text snapshots stay within the cap.
@@ -671,8 +720,10 @@
         for (const state of ['expanded', 'selected', 'pressed']) {
           if (el.hasAttribute(`aria-${state}`)) states.push(`${state}=${el.getAttribute(`aria-${state}`)}`);
         }
-        const line = `${'  '.repeat(Math.min(depth, 12))}- ${role} ${JSON.stringify(nameOf(el, interactive || el === target))} [ref=${ref}]${states.length ? ' [' + states.join(' ') + ']' : ''}`;
+        const label = `${role} ${JSON.stringify(nameOf(el, interactive || el === target))}`;
+        const line = `${'  '.repeat(Math.min(depth, 12))}- ${label} [ref=${ref}]${states.length ? ' [' + states.join(' ') + ']' : ''}`;
         if (!append({ el, ref, line, parent, interactive })) return;
+        refLabels[ref] = { label, parent: entries[parent]?.ref ?? null };
         parent = entries.length - 1;
       }
       const childDepth = depth + (include ? 1 : 0);
@@ -2222,6 +2273,9 @@
         results[key] = { error: e.message };
       }
     }
+    // Any filled field makes this a partial success; with none, nothing was written.
+    const values = Object.values(results);
+    if (values.length && values.every(result => result.error)) return { error: 'No field was filled', results };
     return { results };
   }
 

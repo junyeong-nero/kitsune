@@ -3,7 +3,7 @@
 
 'use strict';
 
-const EXPECTED_CONTENT_VERSION = 27;
+const EXPECTED_CONTENT_VERSION = 28;
 const WS_URL = 'ws://127.0.0.1:47652';
 // scripts/build_extension.py sets 'signed' for the AMO build (see content.js).
 const KITSUNE_BUILD = 'dev';
@@ -234,8 +234,11 @@ function isRestrictedUrl(url) {
 
 // == Command Handler ==
 
-const POST_SNAPSHOT_ACTIONS = new Set([
-  'click', 'type', 'fill', 'selectOption', 'checkBox', 'keypress', 'submitForm', 'navigate'
+// Actions whose success returns a snapshot, and the tool named in a later stale_ref.
+const POST_SNAPSHOT_ACTIONS = new Map([
+  ['click', 'browser_click'], ['type', 'browser_type'], ['fill', 'browser_type'],
+  ['selectOption', 'browser_select_option'], ['checkBox', 'browser_check'], ['keypress', 'browser_keypress'],
+  ['submitForm', 'browser_submit_form'], ['navigate', 'browser_navigate'],
 ]);
 // Page actions on one existing tab (the bridge's outcome actions) report opened_tabs.
 const OPENER_ACTIONS = new Set([
@@ -270,6 +273,7 @@ async function handleCommand(command) {
     try {
       const snapshot = await forwardToContent('getSnapshot', {
         tabId: params.tabId, maxChars: 4000, focusLastAction: params.action !== 'navigate',
+        observation: POST_SNAPSHOT_ACTIONS.get(params.action),
         ...(params.snapshotText ? { text: true } : {}),
       });
       if (snapshot.error) result.snapshot_error = snapshot.error;
@@ -849,8 +853,10 @@ async function tabApiError(tabId, e) {
 async function withTabState(tabId, response) {
   const state = { ...response.state, ...(await tabState(tabId) || { tabId }) };
   if (state.status === 'loading' && (response.code === 'not_found' || response.code === 'stale_ref')) {
+    // The loading document replaces any current ref the stale_ref suggested.
+    const { currentRef, ...rest } = state;
     return { ...response, code: 'navigating', hint: TAB_FAILURE_HINTS.navigating,
-      state: { ...state, cause: response.code } };
+      state: { ...rest, cause: response.code } };
   }
   return { ...response, state };
 }
