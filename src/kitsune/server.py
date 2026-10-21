@@ -1735,8 +1735,9 @@ def browser_set_policy(
 ) -> dict:
     """Set URL allow/deny regex lists, read-only mode, and/or ask-before-act mode.
 
-    Read-only mode blocks write actions (click/type/navigate/cookies set/etc.),
-    js and batch if/while conditions while still allowing read ops. Useful for "let the agent observe only."
+    Read-only mode blocks write actions (click/type/navigate/cookies set/etc.), js and
+    batch if/while conditions, while still allowing read ops. Useful for "let the agent
+    observe only."
 
     Ask mode (ask=True) holds sensitive actions without running them: form submits,
     submit-control or pay/order-labeled button clicks, Enter in a form field, browser_js and
