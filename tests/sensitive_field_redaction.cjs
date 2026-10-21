@@ -134,6 +134,12 @@ const editable = (tagName, props = {}) => new Element(tagName, {
     attrs: { role: 'textbox', 'aria-label': 'Closed code' }, shadowRoot: null,
     openOrClosedShadowRoot: new ShadowRoot([input('closed-inner',
       { value: fake('CLOSED') }, { autocomplete: 'one-time-code' })]) });
+  // A one-time-code input two closed roots deep.
+  const nestedOtpInner = input('nested-inner', {}, { autocomplete: 'one-time-code' });
+  const nestedOtp = new CustomControl('X-NESTED-OTP', { id: 'nested-otp',
+    attrs: { role: 'textbox', 'aria-label': 'Nested code' }, shadowRoot: null,
+    openOrClosedShadowRoot: new ShadowRoot([new CustomControl('X-OTP-FIELD', { shadowRoot: null,
+      openOrClosedShadowRoot: new ShadowRoot([nestedOtpInner]) })]) });
   const typedHost = new CustomControl('X-SECRET-FIELD', { id: 'typed-host',
     attrs: { role: 'textbox', 'aria-label': 'Typed host', type: 'password' }, innerValue: fake('TYPED') });
   // Firefox Xray wrappers hide the page-defined value property; the attribute remains.
@@ -150,7 +156,7 @@ const editable = (tagName, props = {}) => new Element(tagName, {
     children: [secretNoteLine] });
   const draft = editable('DIV', { id: 'draft', text: 'draft text' });
   const widgets = new Element('DIV', { text: 'Widgets',
-    children: [vault, closedOtp, typedHost, xray, search, secretNote, draft] });
+    children: [vault, closedOtp, nestedOtp, typedHost, xray, search, secretNote, draft] });
   const body = new Element('BODY', { children: [form, widgets] });
   const fields = [...form.children];
 
@@ -182,6 +188,9 @@ const editable = (tagName, props = {}) => new Element(tagName, {
   for (const msg of [
     { action: 'fill', selector: '#vault', value: fake('VAULT') },
     { action: 'fill', selector: '#closed-otp', value: fake('CLOSED_FILLED') },
+    { action: 'fill', selector: '#nested-otp', value: fake('NESTED_FILLED') },
+    { action: 'type', selector: '#nested-otp', text: fake('NESTED_TYPED'), clear: true },
+    { action: 'formFill', fields: { '#nested-otp': fake('NESTED_FORM') } },
     { action: 'formFill', fields: { '#field5': fake('NEW') } },
     { action: 'type', selector: '#field3', text: fake('OTP'), clear: true },
     { action: 'fill', selector: '#missing', value: fake('MISSING') },
@@ -195,10 +204,13 @@ const editable = (tagName, props = {}) => new Element(tagName, {
   ]) {
     const result = await send(msg);
     assertNoLeak(`${msg.action} result`, result);
-    if (['click', 'describeTarget'].includes(msg.action)) assert.equal(result.ok, true, JSON.stringify(result));
+    if (['click', 'describeTarget'].includes(msg.action) || msg.selector === '#nested-otp') {
+      assert.equal(result.ok, true, JSON.stringify(result));
+    }
   }
   assert.equal(vaultInner.value, fake('VAULT'), 'fill pierced the open shadow root');
   assert.equal(closedOtp.value, fake('CLOSED_FILLED'), 'fill pierced the closed shadow root');
+  assert.equal(nestedOtpInner.value, fake('NESTED_FORM'), 'form_fill pierced two closed shadow roots');
 
   const snapshot = await send({ action: 'getSnapshot' });
   assertNoLeak('snapshot', snapshot);
@@ -206,6 +218,7 @@ const editable = (tagName, props = {}) => new Element(tagName, {
   assert.match(snapshot.snapshot, /textbox "postalCode" \[ref=s\d+e\d+\] \[value="12345"\]/);
   assert.match(snapshot.snapshot, /textbox "username" \[ref=s\d+e\d+\]$/m, 'autofilled values are redacted');
   assert.match(snapshot.snapshot, /textbox "Vault key" \[ref=s\d+e\d+\]$/m);
+  assert.match(snapshot.snapshot, /textbox "Nested code" \[ref=s\d+e\d+\]$/m);
   assert.match(snapshot.snapshot, /searchbox "Search" \[ref=s\d+e\d+\] \[value="kittens"\]/);
   for (const el of [...sensitive, maskedNotes]) {
     assert.match(snapshot.snapshot, new RegExp(`(?:textbox|spinbutton) "${el.id}" \\[ref=s\\d+e\\d+\\]$`, 'm'), el.id);
@@ -243,7 +256,7 @@ const editable = (tagName, props = {}) => new Element(tagName, {
   assert.equal(domNode('search').value, 'kittens');
   assert.deepEqual([domNode('notes').value, domNode('notes').text], ['plain notes', 'plain notes']);
   assert.equal(domNode('draft').text, 'draft text');
-  for (const el of [username, ...sensitive, maskedNotes, secretNote, vault, closedOtp, typedHost]) {
+  for (const el of [username, ...sensitive, maskedNotes, secretNote, vault, closedOtp, nestedOtp, typedHost]) {
     assert.deepEqual([domNode(el.id).redacted, domNode(el.id).hasValue], [true, true], el.id);
     assert.equal('text' in domNode(el.id), false, el.id);
   }
