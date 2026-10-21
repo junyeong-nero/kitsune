@@ -776,8 +776,9 @@ def browser_trusted_click(
     focus: bool = False,
     tab_id: int | None = None,
     confirm_token: str | None = None,
+    first: bool = False,
 ) -> dict:
-    """Click using the real OS mouse pointer for pages that reject synthetic DOM events.
+    """Click using the real OS mouse pointer. Ambiguous selectors fail unless first=True.
 
     This is slower and moves the user's cursor, so prefer browser_click unless a page
     specifically ignores synthetic clicks. Works on Windows and macOS; macOS needs
@@ -797,7 +798,7 @@ def browser_trusted_click(
         body = {"selector": selector, "focus": focus}
     else:
         body = {"coords": {"x": x, "y": y}, "coordinateSpace": coordinate_space, "focus": focus}
-    return _post("/api/trusted-click", _confirm(_with_tab(body, tab_id), confirm_token))
+    return _post("/api/trusted-click", _first(_confirm(_with_tab(body, tab_id), confirm_token), first))
 
 
 @tool("core", annotations=ToolAnnotations(title="Type into element", **ACT))
@@ -832,10 +833,10 @@ def browser_type(
 def browser_scroll(
     direction: str = "down", amount: int = 500, tab_id: int | None = None,
     selector: str | None = None, ref: str | None = None, element: str | None = None,
-    expect: dict | None = None,
+    expect: dict | None = None, first: bool = False,
 ) -> dict:
-    """Scroll the selector/ref container instantly, else the window (falling back to a
-    scrollable container at viewport center). Action contract (ref, expect): see browser_click.
+    """Scroll the selector/ref container instantly, else the window (viewport-center fallback).
+    Ambiguous selectors fail unless first=True. Action contract (ref, expect): see browser_click.
 
     direction: up, down, left, right, top or bottom; amount is pixels (ignored for top/bottom).
     Returns scrolled_by (signed pixels actually moved; 0 is a no-op), target ("window" or
@@ -844,7 +845,7 @@ def browser_scroll(
     """
     body = {"direction": direction, "amount": amount}
     if selector: body["selector"] = selector
-    return _post_action("/api/scroll", _with_tab(_target(body, ref, element), tab_id), expect=expect)
+    return _post_action("/api/scroll", _first(_with_tab(_target(body, ref, element), tab_id), first), expect=expect)
 
 
 @tool("core", annotations=ToolAnnotations(title="Hover", **ACT))
@@ -1290,25 +1291,27 @@ def browser_check(
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Focus", **ACT))
-def browser_focus(selector: str = "", tab_id: int | None = None, ref: str | None = None, element: str | None = None) -> dict:
-    """Prefer ref from browser_snapshot; element is an audit-only description.
-
-    Move focus to the matched element."""
-    return _post("/api/focus", _with_tab(_target({"selector": selector}, ref, element), tab_id))
+def browser_focus(
+    selector: str = "", tab_id: int | None = None, ref: str | None = None, element: str | None = None,
+    first: bool = False,
+) -> dict:
+    """Focus an element. Ambiguous selectors fail unless first=True.
+    Action contract (ref, element): see browser_click.
+    """
+    return _post("/api/focus", _first(_with_tab(_target({"selector": selector}, ref, element), tab_id), first))
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Blur", **ACT))
 def browser_blur(
     selector: str | None = None, tab_id: int | None = None,
-    ref: str | None = None, element: str | None = None,
+    ref: str | None = None, element: str | None = None, first: bool = False,
 ) -> dict:
-    """Prefer ref from browser_snapshot; element is an audit-only description.
-
-    Blur an element (or document.activeElement if no selector/ref).
+    """Blur an element, else the active element. Ambiguous selectors fail unless first=True.
+    Action contract (ref, element): see browser_click.
     """
     body = {}
     if selector: body["selector"] = selector
-    return _post("/api/blur", _with_tab(_target(body, ref, element), tab_id))
+    return _post("/api/blur", _first(_with_tab(_target(body, ref, element), tab_id), first))
 
 
 @tool("core", annotations=ToolAnnotations(title="Keypress", **ACT))
@@ -1376,7 +1379,7 @@ def browser_form_fill(
     fields: dict, tab_id: int | None = None, expect: dict | None = None, confirm_token: str | None = None,
     first: bool = False,
 ) -> dict:
-    """Fill many fields at once via fuzzy matching.
+    """Fill many fields via fuzzy matching; ambiguous keys fail unless first=True.
 
     Each key in `fields` is matched as: CSS selector → name attribute →
     label text (case-insensitive contains) → placeholder. Each value is
@@ -1417,9 +1420,9 @@ def browser_drag(
 @tool("devtools", annotations=ToolAnnotations(title="Click and wait navigation", **ACT))
 def browser_click_and_wait_navigation(
     selector: str = "", timeout: int = 15000, tab_id: int | None = None,
-    ref: str | None = None, element: str | None = None, confirm_token: str | None = None,
+    ref: str | None = None, element: str | None = None, confirm_token: str | None = None, first: bool = False,
 ) -> dict:
-    """Click an element, then wait for the resulting navigation to complete.
+    """Click then wait for navigation. Ambiguous selectors fail unless first=True.
     Action contract (ref, confirm_token): see browser_click.
 
     Atomic operation — far more reliable than `browser_click` followed by
@@ -1427,7 +1430,7 @@ def browser_click_and_wait_navigation(
     tabs.onUpdated(status='complete')."""
     return _post(
         "/api/click-and-wait-navigation",
-        _confirm(_with_tab(_target({"selector": selector, "timeout": timeout}, ref, element), tab_id), confirm_token),
+        _first(_confirm(_with_tab(_target({"selector": selector, "timeout": timeout}, ref, element), tab_id), confirm_token), first),
         timeout=(timeout / 1000) + 10,
     )
 
@@ -1439,7 +1442,7 @@ def browser_click_and_wait_navigation(
 @tool("core", annotations=ToolAnnotations(title="Upload file", **DESTRUCTIVE))
 def browser_upload_file(path: str | list[str], selector: str | None = None, mode: str = "auto",
                     tab_id: int | None = None, confirm_token: str | None = None, first: bool = False) -> dict:
-    """Attach local file(s) to a page's upload control - no OS file dialog.
+    """Attach local files without a dialog. Ambiguous targets fail unless first=True.
 
     The bridge reads the file from disk and streams it into the page, which builds
     real File objects and sets them on the <input type=file> (firing input + change).
@@ -1448,7 +1451,7 @@ def browser_upload_file(path: str | list[str], selector: str | None = None, mode
     Args:
         path: absolute file path, or a list of paths for multi-file inputs.
         selector: the file input, an element containing it, or a drop zone.
-                  Omit to use the first input[type=file] on the page.
+                  Omit to use the only input[type=file] (first=True opts into the first).
         mode: "auto" (input if found, else drop), "input", or "drop".
         tab_id: target tab (default: active). Pass it for anything big - the upload
                 streams in ~384 KB chunks and must keep hitting the same tab.

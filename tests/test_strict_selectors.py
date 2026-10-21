@@ -20,6 +20,11 @@ class ServerFirstTests(unittest.TestCase):
     def test_write_tools_forward_first_only_when_set(self):
         cases = [
             ("click", {"selector": "#a"}, "/api/click"),
+            ("trusted_click", {"selector": "#a"}, "/api/trusted-click"),
+            ("focus", {"selector": "#a"}, "/api/focus"),
+            ("blur", {"selector": "#a"}, "/api/blur"),
+            ("scroll", {"selector": "#a"}, "/api/scroll"),
+            ("click_and_wait_navigation", {"selector": "#a"}, "/api/click-and-wait-navigation"),
             ("double_click", {"selector": "#a"}, "/api/double-click"),
             ("type", {"selector": "#a", "text": "x"}, "/api/type"),
             ("type", {"selector": "#a", "text": "x", "mode": "fill"}, "/api/fill"),
@@ -41,6 +46,24 @@ class ServerFirstTests(unittest.TestCase):
                 self.assertIs(post.call_args.args[1]["first"], True)
                 getattr(server, "browser_" + name)(tab_id=7, **kwargs)
                 self.assertNotIn("first", post.call_args.args[1])
+
+
+class TrustedClickFirstTests(unittest.TestCase):
+    def test_ambiguous_screen_point_never_reaches_the_os(self):
+        for first in (False, True):
+            send = AsyncMock(return_value=AMBIGUOUS)
+            with self.subTest(first=first), patch.object(bridge, "send_to_extension", send), \
+                    patch.object(bridge, "_native_click_screen") as click, \
+                    patch.object(bridge, "_focus_browser_window") as focus:
+                result = asyncio.run(bridge.trusted_click({"selector": "button", "tabId": 7,
+                                                          "focus": True, "first": first}))
+                self.assertEqual(result, AMBIGUOUS)
+                expected = {"selector": "button", "x": None, "y": None, "click": True, "tabId": 7}
+                if first:
+                    expected["first"] = True
+                send.assert_awaited_once_with("screenPoint", expected)
+                click.assert_not_called()
+                focus.assert_not_called()
 
 
 class UploadFirstTests(unittest.TestCase):

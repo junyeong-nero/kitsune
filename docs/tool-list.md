@@ -42,6 +42,10 @@ See the [API reference](api-reference.md) for parameters and behavior.
 - `browser_workflow`
 - `browser_workflows`
 
+Targeted writes use [strict selectors](api-reference.md#strict-selectors), including
+focus/blur, scroll, trusted clicks, fuzzy form-fill keys and implicit upload inputs.
+Pass `first=True` to explicitly opt into the first match.
+
 ## devtools — 26
 
 `browser_double_click`, `browser_drag`, `browser_focus` and `browser_blur` are here,

@@ -118,6 +118,27 @@ class PolicyOffTests(AskBeforeActTestCase):
 
 
 class ConfirmationTests(AskBeforeActTestCase):
+    def test_ambiguous_click_fails_before_confirmation_including_containers(self):
+        ambiguous = {"error": "3 elements match", "code": "ambiguous_target", "retryable": False,
+                     "state": {"selector": "button", "matches": 3, "candidates": []}}
+        self.extension.target = ambiguous
+        for action in ("click", "doubleClick", "trustedClick", "clickAndWaitNavigation", "keypress"):
+            body = {"selector": "button", "tabId": 7}
+            if action == "keypress":
+                body["key"] = "Enter"
+            with self.subTest(action=action):
+                result = (self.call(lambda h: h.handle_trusted_click(), body)[1] if action == "trustedClick"
+                          else self.forward(action, body)[1])
+                self.assertEqual(result, ambiguous)
+                self.assertEqual(self.batch({"action": action, **body})[0], ambiguous)
+        self.assertEqual(self.extension.actions(), [])
+        self.assertEqual(bridge._confirm_tokens, {}, "no unusable confirmation is offered")
+
+    def test_first_opt_in_is_forwarded_to_confirmation_inspection(self):
+        self.extension.target = {"ok": True, "submits": True, "text": "Delete"}
+        self.held(lambda h: h._forward("click"), {"selector": "button", "first": True})
+        self.assertIs(self.extension.sent[0][1]["first"], True)
+
     def test_submit_is_held_with_action_bound_token(self):
         result = self.held(lambda h: h._forward("submitForm"), {"selector": "#pay", "tabId": 7})
         self.assertEqual(self.extension.actions(), [], "nothing ran")

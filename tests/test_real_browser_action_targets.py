@@ -7,6 +7,8 @@ nothing was deleted.
 """
 from http.server import BaseHTTPRequestHandler
 import html
+import json
+import tempfile
 import threading
 import time
 import unittest
@@ -31,6 +33,17 @@ class WishlistSite:
             def do_GET(self):
                 url = urlparse(self.path)
                 name = parse_qs(url.query).get("list", [""])[0]
+                if url.path == "/strict-targets":
+                    self.reply("""<!doctype html><title>Strict targets</title>
+<label>Delivery address <input class="delivery"></label>
+<label>Delivery address <input class="delivery"></label>
+<input placeholder="Parcel code"><input placeholder="Parcel code">
+<div class="pane" style="height:40px;overflow:auto"><div style="height:400px">One</div></div>
+<div class="pane" style="height:40px;overflow:auto"><div style="height:400px">Two</div></div>
+<input type="file" hidden><input type="file" hidden>
+<button type="button">Delete one</button><button type="button">Delete two</button>
+<script>window.clicks = 0; document.addEventListener('click', () => window.clicks++);</script>""")
+                    return
                 if url.path != "/wishlist" or not name:
                     self.send_error(404)
                     return
@@ -171,6 +184,44 @@ class RealBrowserStrictSelectorTests(harness.RealBrowserTestCase):
                          [("button", "캠핑 랜턴 삭제"), ("button", "머그컵 삭제"), ("button", "추가")])
         time.sleep(1)
         self.assertEqual(self.site.state("ambiguous"), (ITEMS, []), "zero clicks: nothing submitted")
+
+    def test_remaining_targets_are_strict_without_side_effects(self):
+        # No sleeps or OS clicks: all ambiguous requests must fail before dispatch.
+        tab = self.open_tab(f"{self.site.origin}/strict-targets")
+        for endpoint, params in [
+            ("trusted-click", {"selector": "button"}),
+            ("focus", {"selector": ".delivery"}),
+            ("blur", {"selector": ".delivery"}),
+            ("scroll", {"selector": ".pane", "direction": "down", "amount": 20}),
+            ("click-and-wait-navigation", {"selector": "button", "timeout": 100}),
+        ]:
+            with self.subTest(endpoint=endpoint):
+                self.assert_error(self.call(f"/api/{endpoint}", {"tabId": tab, **params}),
+                                  "ambiguous_target", False)
+        filled = self.call("/api/form-fill", {"tabId": tab, "fields": {"Delivery": "address", "Parcel": "code"}})
+        for result in filled["results"].values():
+            self.assert_error(result, "ambiguous_target", False)
+            self.assertEqual(result["state"]["matches"], 2)
+        with tempfile.NamedTemporaryFile(suffix=".txt") as upload:
+            upload.write(b"KITSUNE_FAKE_UPLOAD_153")
+            upload.flush()
+            self.assert_error(self.call("/api/upload-file", {"tabId": tab, "path": upload.name}),
+                              "ambiguous_target", False)
+
+        state_code = """JSON.stringify({values: Array.from(document.querySelectorAll('input:not([type=file])'), e => e.value),
+            scroll: Array.from(document.querySelectorAll('.pane'), e => e.scrollTop),
+            files: Array.from(document.querySelectorAll('input[type=file]'), e => e.files.length),
+            focused: document.activeElement === document.body, clicks: window.clicks})"""
+        state = self.call("/api/js", {"tabId": tab, "code": state_code})
+        self.assertEqual(json.loads(state["result"]), {"values": ["", "", "", ""], "scroll": [0, 0],
+                                                      "files": [0, 0], "focused": True, "clicks": 0})
+        self.assert_ok(self.call("/api/focus", {"tabId": tab, "selector": ".delivery", "first": True}))
+        self.assert_ok(self.call("/api/blur", {"tabId": tab, "selector": ".delivery", "first": True}))
+        self.assert_ok(self.call("/api/scroll", {"tabId": tab, "selector": ".pane", "amount": 20, "first": True}))
+        self.call("/api/form-fill", {"tabId": tab, "fields": {"Delivery": "address", "Parcel": "code"}, "first": True})
+        state = self.call("/api/js", {"tabId": tab, "code": state_code})
+        self.assertEqual(json.loads(state["result"])["values"], ["address", "", "code", ""])
+        self.assertEqual(json.loads(state["result"])["scroll"], [20, 0])
 
     def test_first_true_clicks_the_first_match_exactly_once(self):
         tab = self.fill_add_form("first")

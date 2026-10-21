@@ -11,7 +11,8 @@ class Element extends EventTarget {
   constructor(tagName, attrs = {}, children = [], text = '') {
     super();
     Object.assign(this, { tagName, attrs, children, parentElement: null, isConnected: true,
-      textContent: text, value: attrs.value || '', checked: false, events: [] });
+      textContent: text, innerText: text, value: attrs.value || '', checked: false, events: [],
+      scrollTop: 0, scrollLeft: 0 });
     for (const child of children) child.parentElement = this;
     for (const type of ['click', 'dblclick', 'mouseover', 'input', 'change', 'keydown', 'dragstart', 'drop']) {
       this.addEventListener(type, event => this.events.push(event.type));
@@ -19,6 +20,8 @@ class Element extends EventTarget {
   }
   get type() { return this.attrs.type || (this.tagName === 'BUTTON' ? 'submit' : 'text'); }
   get form() { return this.closest('form'); }
+  get placeholder() { return this.attrs.placeholder || ''; }
+  get htmlFor() { return this.attrs.for || ''; }
   getAttribute(key) { return this.attrs[key] ?? null; }
   hasAttribute(key) { return key in this.attrs; }
   // Selectors used here: tag, .class, #id, [attr], [name="x"], ':disabled', and comma lists.
@@ -43,8 +46,10 @@ class Element extends EventTarget {
   }
   getClientRects() { return 'hidden' in this.attrs ? [] : [{}]; }
   getBoundingClientRect() { return { x: 0, y: 0, width: 100, height: 20, top: 0, left: 0, right: 100, bottom: 20 }; }
-  focus() {}
-  scrollIntoView() {}
+  focus() { if (this.tagName === 'INPUT') this.events.push('focus'); }
+  blur() { this.events.push('blur'); }
+  scrollIntoView() { this.events.push('scrollIntoView'); }
+  scrollBy({ top = 0, left = 0 }) { this.scrollTop += top; this.scrollLeft += left; }
   click() { this.dispatchEvent(new Event('click', { bubbles: true })); }
 }
 
@@ -82,15 +87,16 @@ function load(dom) {
   let listener;
   const context = vm.createContext({
     console, crypto: webcrypto, Event, MouseEvent, KeyboardEvent: Event, DragEvent: Event, InputEvent: Event,
-    File, DataTransfer: class { constructor() { this.items = { add() {} }; this.files = []; } },
+    File, atob, DataTransfer: class { constructor() { this.items = { add() {} }; this.files = []; } },
     CSS: { escape: x => x }, setTimeout, MessageChannel,
     HTMLInputElement: class {}, HTMLTextAreaElement: class {},
-    window: { getComputedStyle: el => ({ display: 'hidden' in el.attrs ? 'none' : 'block', visibility: 'visible' }) },
+    window: { mozInnerScreenX: 0, mozInnerScreenY: 0,
+      getComputedStyle: el => ({ display: 'hidden' in el.attrs ? 'none' : 'block', visibility: 'visible' }) },
     document: {
       body: dom.body, activeElement: dom.body, 
       documentElement: { scrollWidth: 100, scrollHeight: 100, appendChild() {} },
       createElement: () => ({ remove() {} }),
-      getElementById: () => null,
+      getElementById: id => dom.body.querySelector('#' + id),
       querySelector: selector => dom.body.querySelector(selector),
       querySelectorAll: selector => dom.body.querySelectorAll(selector),
       execCommand() {},
@@ -146,6 +152,11 @@ async function testSelectorMatchingThreeButtons() {
 async function testEveryWriteActionIsStrict() {
   const cases = [
     ['doubleClick', { selector: '.item' }, d => d.deletes, 3],
+    ['screenPoint', { selector: '.item', click: true }, d => [d.hiddenButton, ...d.deletes], 3],
+    ['describeTarget', { selector: '.item' }, d => d.deletes, 3],
+    ['focusElement', { selector: '.field' }, d => d.fields, 2],
+    ['blurElement', { selector: '.field' }, d => d.fields, 2],
+    ['scroll', { selector: '.field', direction: 'down', amount: 30 }, d => d.fields, 2],
     ['hover', { selector: '.item' }, d => d.deletes, 3],
     ['drag', { from: '.item', to: '.one' }, d => d.deletes, 3],
     ['drag', { from: '.one', to: '.item' }, d => d.deletes, 3],
@@ -187,6 +198,50 @@ async function testEveryWriteActionIsStrict() {
   assert.deepEqual(events(dom.files), [0, 0]);
 }
 
+async function testImplicitUploadAndFuzzyFieldsAreStrict() {
+  const dom = page();
+  const send = load(dom);
+  const upload = async extra => {
+    await send({ action: 'uploadChunk', uploadId: 'implicit', index: 0, data: btoa('hi') });
+    return send({ action: 'uploadCommit', uploadId: 'implicit',
+      files: [{ name: 'a.txt', type: 'text/plain', start: 0, end: 1 }], mode: 'input', ...extra });
+  };
+  assertAmbiguous(await upload({}), 'input[type=file]', 2, 'implicit upload');
+  assert.deepEqual(events(dom.files), [0, 0]);
+  assert.equal((await upload({ first: true })).ok, true);
+  assert.deepEqual(events(dom.files), [2, 0]);
+  assert.equal((await upload({ mode: 'drop' })).mode, 'drop', 'an explicit body drop ignores file inputs');
+
+  for (const byLabel of [true, false]) {
+    const fields = [0, 1].map(() => new Element('INPUT', byLabel ? {} : { placeholder: 'Delivery address' }));
+    const labels = fields.map(field => new Element('LABEL', {}, [field], 'Delivery address'));
+    const dom = { body: new Element('BODY', {}, byLabel ? labels : fields) };
+    const send = load(dom);
+    const result = await send({ action: 'formFill', fields: { Delivery: 'new' } });
+    const failure = result.results.Delivery;
+    assert.equal(failure.code, 'ambiguous_target', JSON.stringify(result));
+    assert.equal(failure.retryable, false);
+    assert.equal(failure.state.field, 'Delivery');
+    assert.equal(failure.state.matches, 2);
+    assert.equal(failure.state.candidates.length, 2);
+    assert.deepEqual(fields.map(el => el.value), ['', '']);
+    assert.deepEqual(events(fields), [0, 0]);
+    assert.ok(!(await send({ action: 'formFill', fields: { Delivery: 'new' }, first: true })).error);
+    assert.deepEqual(fields.map(el => el.value), ['new', '']);
+    assert.ok(!(await send({ action: 'fill', selector: failure.state.candidates[1].ref, value: 'second' })).error);
+    assert.deepEqual(fields.map(el => el.value), ['new', 'second']);
+  }
+
+  // Two labels associated with one control are not two targets. Labels still precede placeholders.
+  const field = new Element('INPUT', { id: 'delivery' });
+  const duplicateLabels = [0, 1].map(() => new Element('LABEL', { for: 'delivery' }, [], 'Delivery'));
+  const placeholder = new Element('INPUT', { placeholder: 'Delivery' });
+  const unique = load({ body: new Element('BODY', {}, [...duplicateLabels, field, placeholder]) });
+  assert.ok(!(await unique({ action: 'formFill', fields: { Delivery: 'unique' } })).error);
+  assert.equal(field.value, 'unique');
+  assert.equal(placeholder.value, '');
+}
+
 async function testOneActionableMatchAndReadsKeepFirstMatch() {
   const dom = page();
   const send = load(dom);
@@ -195,14 +250,14 @@ async function testOneActionableMatchAndReadsKeepFirstMatch() {
   assert.deepEqual(events([dom.single, dom.disabled]), [1, 0]);
   // Reads keep first-match semantics.
   assert.equal((await send({ action: 'getBounds', selector: '.item' })).width, 100);
-  assert.equal((await send({ action: 'focusElement', selector: '.field' })).ok, true);
-  // Ask-before-act inspects the first match, the element a non-ambiguous action acts on.
-  assert.equal((await send({ action: 'describeTarget', selector: '.item' })).text, 'Hidden');
+  assert.equal((await send({ action: 'screenPoint', selector: '.item' })).viewportX, 50);
+  assert.equal((await send({ action: 'describeTarget', selector: '.item', first: true })).text, 'Hidden');
 }
 
 (async () => {
   await testSelectorMatchingThreeButtons();
   await testEveryWriteActionIsStrict();
+  await testImplicitUploadAndFuzzyFieldsAreStrict();
   await testOneActionableMatchAndReadsKeepFirstMatch();
 })().then(() => console.log('Strict selector checks passed'))
   .catch(error => { console.error(error); process.exitCode = 1; });

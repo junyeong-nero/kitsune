@@ -638,6 +638,8 @@ async def trusted_click(params):
         }
 
     point_params = {"selector": selector, "x": x, "y": y, "click": True}
+    if params.get("first"):
+        point_params["first"] = True
     if params.get("tabId") is not None:
         point_params["tabId"] = params.get("tabId")
     # The extension shows a target tab that is not shown for the click (previousTabId) and
@@ -1076,7 +1078,7 @@ def _spend_confirm_token(token, binding):
 
 
 async def _describe_target(params, inspect):
-    target = {key: params[key] for key in ("tabId", "selector", "ref", "key") if params.get(key) is not None}
+    target = {key: params[key] for key in ("tabId", "selector", "ref", "key", "first") if params.get(key) is not None}
     coords = params.get("coords") or ({"x": params["x"], "y": params["y"]} if "x" in params and "y" in params else None)
     if coords and not target.get("selector") and not target.get("ref"):
         target["coords"] = coords
@@ -1084,7 +1086,7 @@ async def _describe_target(params, inspect):
 
 
 async def _held_reason(action, params):
-    """Return (reason, description, tab_id, url) when ask mode holds this action, else None."""
+    """Return a hold tuple, an ambiguity error, or None when ask mode permits the action."""
     reason = description = None
     url = params.get("url") if action in _ASK_NAVIGATION_ACTIONS else None
     if action in _ASK_JS_ACTIONS:
@@ -1104,8 +1106,10 @@ async def _held_reason(action, params):
     if action in _ASK_TAB_ACTIONS:
         submit_key = action == "keypress" and params.get("key") in {"Enter", "Return"}
         screen = action == "trustedClick" and (params.get("coordinateSpace") or params.get("space")) == "screen"
-        inspect = reason is None and (action in _ASK_CLICK_ACTIONS or submit_key) and not screen
+        inspect = (action in _ASK_CLICK_ACTIONS or submit_key) and not screen
         described = await _describe_target(params, inspect)
+        if isinstance(described, dict) and described.get("code") == "ambiguous_target":
+            return described
         if not isinstance(described, dict) or described.get("error"):
             # Fail closed: an action that cannot be inspected is held.
             error = described.get("error") if isinstance(described, dict) else described
@@ -1135,7 +1139,7 @@ async def _held_reason(action, params):
 
 
 async def _ask_before_act(action, params, *, direct):
-    """Return a confirmation_required error when ask mode holds this action, else None.
+    """Return an ambiguity or confirmation_required error before dispatch, else None.
 
     Removes confirmToken from params. Tokens are only honored on direct calls, so batch,
     retry, parallel, broadcast and workflows never confirm an action.
@@ -1146,6 +1150,8 @@ async def _ask_before_act(action, params, *, direct):
     held = await _held_reason(action, params)
     if held is None:
         return None
+    if isinstance(held, dict):
+        return held
     reason, description, tab_id, url = held
     binding = _confirmation_binding(action, params, tab_id)
     rejected = None

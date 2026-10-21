@@ -66,28 +66,35 @@ endpoint or batch command) to act on the first match as before. This is an
 intended behavior change: these actions used to act on the first match silently.
 
 - Write actions: `click`, `doubleClick`, `hover`, `drag` (both ends), `type`, `fill`,
-  `setEditableContent`, `checkBox`, `selectOption`, `submitForm` and `keypress` with a
-  selector, the `uploadFile` target, and each `formFill` key matched as a selector or
-  by `name` (a per-key error). A `formFill` key matched by label or placeholder is
-  ambiguous only when it matches fields in more than one tree, the page and each
-  shadow root (#156); within one tree the first match is filled as before. Batch,
-  parallel and workflow steps follow the same rule; `clickAndWaitNavigation` is strict
-  without the opt-in. MCP: `first=True` on `browser_click`, `browser_double_click`,
+  `setEditableContent`, `checkBox`, `selectOption`, `submitForm`, `keypress`,
+  `focusElement`, `blurElement` and `scroll` with a selector, the `uploadFile` target,
+  and each `formFill` key (a per-key error). Labels and placeholders count every
+  matching field, including duplicates in the same tree and across shadow roots.
+  Batch, parallel and workflow steps follow the same rule; `clickAndWaitNavigation`
+  also accepts the opt-in. MCP: `first=True` on `browser_click`, `browser_double_click`,
   `browser_hover`, `browser_drag`, `browser_type`, `browser_check`,
   `browser_select_option`, `browser_submit_form`, `browser_keypress`,
-  `browser_upload_file` and `browser_form_fill`.
+  `browser_focus`, `browser_blur`, `browser_scroll`, `browser_trusted_click`,
+  `browser_click_and_wait_navigation`, `browser_upload_file` and `browser_form_fill`.
+  For an individual match, use a candidate ref or a CSS `:nth-of-type(...)` selector;
+  there is no separate `nth` parameter.
 - Actionable: enabled, and not `<input type=hidden>`; for pointer actions (`click`,
-  `doubleClick`, `hover`, `drag`) also rendered, as in the
+  `doubleClick`, `hover`, `drag`, trusted click) also rendered, as in the
   [actionability wait](#actionability-wait). Value actions count hidden native
   inputs, which they can act on. A selector with one actionable match still acts on
   its first match, as before.
+- Upload without a selector checks all `input[type=file]` controls in the document
+  (including hidden ones); several actionable inputs fail unless `first=True`.
+  This preserves upload's document-only lookup. Explicit `mode="drop"` without a
+  selector still drops on the body; it does not select a file input.
 - Refs and coordinates name one element and are unaffected. Read tools
-  (`browser_html`, `browser_bounds`, `browser_wait_for`, screenshots, …) and
-  `browser_focus`, `browser_blur`, `browser_scroll` and `browser_trusted_click` keep
-  first-match semantics.
+  (`browser_html`, `browser_bounds`, `browser_wait_for`, screenshots, …) keep
+  first-match semantics. Blur without a target still blurs the active element;
+  scroll without a target still scrolls the window with a viewport-center fallback.
 - With `wait`, an ambiguous selector fails at once instead of waiting.
-- Under [ask-before-act](#ask-before-act) the target is inspected first, as before; an
-  ambiguous action that is held still fails with `ambiguous_target` after confirmation.
+- Under [ask-before-act](#ask-before-act), clicks (including trusted and navigation
+  clicks) and Enter keypresses check ambiguity before offering confirmation.
+  `first=True` is honored both during inspection and dispatch.
 
 These tools also accept refs (all new parameters are optional):
 
@@ -95,11 +102,11 @@ These tools also accept refs (all new parameters are optional):
 |---|---|
 | `browser_keypress` | `key, selector=None, modifiers=None, text=None, tab_id=None, ref=None, element=None, wait=False, timeout=10000` |
 | `browser_submit_form` | `selector=None, tab_id=None, ref=None, element=None` |
-| `browser_scroll` | `direction="down", amount=500, tab_id=None, selector=None, ref=None, element=None` |
-| `browser_blur` | `selector=None, tab_id=None, ref=None, element=None` |
+| `browser_scroll` | `direction="down", amount=500, tab_id=None, selector=None, ref=None, element=None, first=False` |
+| `browser_blur` | `selector=None, tab_id=None, ref=None, element=None, first=False` |
 | `browser_html`, `browser_bounds` | `selector="", tab_id=None, ref=None, element=None` |
 | `browser_computed_style` | `selector="", properties=None, tab_id=None, ref=None, element=None` |
-| `browser_click_and_wait_navigation` | `selector="", timeout=15000, tab_id=None, ref=None, element=None` |
+| `browser_click_and_wait_navigation` | `selector="", timeout=15000, tab_id=None, ref=None, element=None, first=False` |
 | `browser_markdown` | `selector=None, tab_id=None, ref=None, element=None` |
 
 `browser_keypress` accepts characters, Space/Spacebar, Enter/Return, Escape/Esc, ArrowUp/Down/Left/Right (or Up/Down/Left/Right), Tab and Backspace; `text` explicitly inserts text.
@@ -196,7 +203,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
 |---|---|---|
 | `not_found` | No element matches the selector (also `No target`, `from/to element not found`); after an [actionability wait](#actionability-wait), `state` has `timeoutMs` and `elapsed` | true |
 | `not_fillable` | `browser_type` (`type`/`fill` modes) or a `browser_form_fill` key found no field to write. The target is not a field (`fill` and `browser_form_fill`: input, textarea or select; `type`: input, textarea or `contenteditable` region) and has none in its open or closed shadow roots, searched through nested hosts up to 8 roots deep (`fill` and `browser_form_fill` also look in its light DOM). Nothing was written. `state.tag` is the target's tag; `state.reason` is `no_field`, or `shadow_depth` when its shadow roots nest deeper than 8 | true |
-| `ambiguous_target` | The command names no single target, so nothing was dispatched: a write action's selector matches several actionable elements (`state.selector`, `state.matches`; see [Strict selectors](#strict-selectors)), a `browser_form_fill` label or placeholder key matches fields in more than one tree, such as the page and a web component's shadow root (`state.field`, `state.matches`), or `browser_submit_form` without a target found several forms and no filled field naming one (`state.forms`). `state.candidates` lists up to 5 of them with a `ref` to target one | false |
+| `ambiguous_target` | The command names no single target, so nothing was dispatched: a write action's selector matches several actionable elements (`state.selector`, `state.matches`; see [Strict selectors](#strict-selectors)), a `browser_form_fill` label or placeholder key matches several actionable fields (`state.field`, `state.matches`), or `browser_submit_form` without a target found several forms and no filled field naming one (`state.forms`). `state.candidates` lists up to 5 of them with a `ref` to target one | false |
 | `not_actionable` | An [actionability wait](#actionability-wait) timed out on a target that exists but never rendered (`state.reason: "not_rendered"`, `timeoutMs`, `elapsed`); nothing was dispatched | true |
 | `stale_ref` | The ref is no longer valid; `state.reason` is `element_removed`, `not_in_snapshot`, `snapshot_replaced` (a newer snapshot of this document; `state.latestObservation` and, for the same element, `state.currentRef`, see [Ref lifetime](#ref-lifetime)), or `other_document` (the tab navigated, or the ref came from another tab) | true |
 | `navigating` | The tab is loading: a `not_found`/`stale_ref` while loading (`state.cause`), or the page unloaded while handling the command. Also a page that refused the content script within 5 s of a wake or reload without an error status, or whose 2xx response arrived only while the command waited for it: it may be an old document about to be replaced | true before dispatch; false for writes after |
@@ -1467,8 +1474,10 @@ are returned per key, and one failing key does not stop the others. A matched
 web-component host is filled through the same shadow-root lookup as
 [`/api/fill`](#post-apifill); a key with no reachable field gets a `not_fillable`
 [action error](#action-errors). Selectors, names, labels and placeholders also match
-inside shadow roots; a key that matches fields in more than one tree (the page and a
-web component) writes nothing and gets `ambiguous_target` with `state.candidates`. When every
+inside shadow roots; a key matching several actionable fields, in one tree or across
+components, writes nothing and gets `ambiguous_target` with `state.candidates`.
+`first=True` explicitly fills the first match. Labels take precedence over placeholders
+within each searched tree; multiple labels for the same control count once. When every
 key fails, nothing was filled and the result adds `"error": "No field was filled"`
 (an MCP error); a partial fill is not an error, so check each key.
 
@@ -1566,7 +1575,7 @@ overrides the file destination; `data_url=True` additionally returns `dataUrl`.
 The former element tool's `scale` option remains available through the bridge
 endpoint; the merged MCP tool uses its default scale of 1.
 
-### `browser_trusted_click(selector="", x=0, y=0, coordinate_space="viewport", focus=False, tab_id=None)`
+### `browser_trusted_click(selector="", x=0, y=0, coordinate_space="viewport", focus=False, tab_id=None, first=False)`
 
 Clicks with the real OS mouse pointer via POST `/api/trusted-click`, for pages
 that ignore synthetic DOM clicks. It moves the user's cursor, so prefer
@@ -1576,7 +1585,8 @@ otherwise `x`/`y` are viewport coordinates, or desktop coordinates with
 `tab_id` that is not the shown tab of its window is shown for the click, and the
 user's tab is shown again 300 ms after it (see [Shared browser](#shared-browser)). A
 viewport click returns `user_active` without clicking while the user is using the
-target tab or the tab it would hide.
+target tab or the tab it would hide. Ambiguous selectors return `ambiguous_target`
+before scrolling the element or invoking the OS; `first=True` opts into the first match.
 
 | Platform | Click backend |
 |---|---|
@@ -1801,7 +1811,7 @@ Add `"wait": true, "timeout": 10000` to wait for the target first (see
 `{ "selector": "button.submit", "focus": true }` or
 `{ "coords": { "x": 640, "y": 400 }, "coordinateSpace": "screen" }` — optional
 `tabId`, `title`, `process`. OS-level click on Windows and macOS; see
-[`browser_trusted_click`](#browser_trusted_clickselector-x0-y0-coordinate_spaceviewport-focusfalse-tab_idnone).
+[`browser_trusted_click`](#browser_trusted_clickselector-x0-y0-coordinate_spaceviewport-focusfalse-tab_idnone-firstfalse).
 
 ### POST /api/type
 `{ "text": "hello", "selector": "input" }`
