@@ -51,11 +51,13 @@ class HistoryToolTests(unittest.TestCase):
 
     def test_descriptions_lead_with_the_key_facts(self):
         # #135: the first paragraph says what comes back and that the user must grant access.
-        for function in (server.browser_history_search, server.browser_bookmarks_search):
-            first = function.__doc__.split("\n\n")[0] + function.__doc__.split("\n\n")[1]
-            self.assertIn("results [{url, title", first)
+        for function, returns in [(server.browser_history_search, "results [{url, title, last_visit, visit_count}]"),
+                                  (server.browser_history_visits, "visits [{visit_time, transition"),
+                                  (server.browser_bookmarks_search, "results [{url, title, folder}]")]:
+            first = " ".join(function.__doc__.split("\n\n")[0].split())
+            self.assertIn(returns, first)
             self.assertIn("permission_required", first)
-        self.assertIn("visits [{visit_time, transition", server.browser_history_visits.__doc__)
+        self.assertIn("ISO 8601", " ".join(server.browser_history_search.__doc__.split("\n\n")[0].split()))
 
 
 class HistoryPolicyTests(unittest.TestCase):

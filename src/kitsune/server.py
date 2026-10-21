@@ -1887,12 +1887,12 @@ def _epoch_ms(since: str) -> int | None:
 
 @tool("history", annotations=ToolAnnotations(title="Search browsing history", **READ))
 def browser_history_search(query: str, since: str | None = None, limit: int = 20) -> dict:
-    """Search the user's browsing history by title/URL text ("" for all), newest first.
+    """Search the user's browsing history by title/URL text ("" for all; since: optional ISO
+    8601 date/datetime); returns results [{url, title, last_visit, visit_count}], newest first.
+    permission_required means the user has not allowed it: ask them, you cannot grant it.
 
-    Returns results [{url, title, last_visit, visit_count}] inside the bridge's history
-    scope (domain lists; last 30 days by default); credential-like URL values read
-    [redacted]. Without the user's browser grant: permission_required, ask the user.
-    since: ISO 8601 date or datetime. Reopen a result with browser_tabs(action="new", url=...).
+    Results stay inside the bridge's history scope (domain lists; last 30 days by default);
+    credential-like URL values read [redacted]. Reopen one with browser_tabs(action="new", url=...).
     """
     body: dict = {"query": query, "limit": limit}
     if since is not None:
@@ -1905,22 +1905,24 @@ def browser_history_search(query: str, since: str | None = None, limit: int = 20
 
 @tool("history", annotations=ToolAnnotations(title="List history visits", **READ))
 def browser_history_visits(url: str) -> dict:
-    """List the visits to a URL (as browser_history_search returned it), newest first.
+    """List the visits to a URL as browser_history_search returned it, to follow the user's
+    trail; returns visits [{visit_time, transition, visit_id, referring_visit_id?}], newest
+    first. permission_required means the user has not allowed it: ask them.
 
-    Returns visits [{visit_time, transition, visit_id, referring_visit_id?}] inside the
-    history time window, to follow the user's trail; transition is how the visit started
-    (link, typed, reload, ...). referring_visit_id appears only where Firefox reports it.
+    Only visits inside the history time window. transition is how the visit started (link,
+    typed, reload, ...); referring_visit_id appears only where Firefox reports it.
     """
     return _post("/api/history-visits", {"url": url})
 
 
 @tool("history", annotations=ToolAnnotations(title="Search bookmarks", **READ))
 def browser_bookmarks_search(query: str, limit: int = 20) -> dict:
-    """Search the user's bookmarks by title/URL text ("" for the most recent).
+    """Search the user's bookmarks by title/URL text ("" for the most recent); returns
+    results [{url, title, folder}]. permission_required means the user has not allowed
+    it: ask them, you cannot grant it.
 
-    Returns results [{url, title, folder}] inside the bridge's history domain scope;
-    credential-like URL values read [redacted]. Without the user's browser grant:
-    permission_required, ask the user.
+    Results stay inside the bridge's history domain scope; credential-like URL values
+    read [redacted].
     """
     return _post("/api/bookmarks-search", {"query": query, "limit": limit})
 
