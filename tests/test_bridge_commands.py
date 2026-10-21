@@ -85,8 +85,9 @@ class BatchSequenceTests(unittest.TestCase):
         self.assertEqual(result, {"results": results})
         self.assertEqual([call.args for call in send.await_args_list], [
             ("newTab", {"url": "about:blank"}),
-            ("getPageInfo", {"tabId": "7"}),
-            ("click", {"tabId": "7", "selector": "#submit"}),
+            # A substituted tabId is sent as the integer the extension's tab APIs take.
+            ("getPageInfo", {"tabId": 7}),
+            ("click", {"tabId": 7, "selector": "#submit"}),
         ])
 
     def test_empty_sequence(self):

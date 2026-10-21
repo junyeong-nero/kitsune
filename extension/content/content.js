@@ -3,7 +3,7 @@
 
 (function() {
   'use strict';
-  const CONTENT_VERSION = 27;
+  const CONTENT_VERSION = 28;
   if (window.__claudeBridgeVersion >= CONTENT_VERSION) return;
   window.__claudeBridgeVersion = CONTENT_VERSION;
 
@@ -123,12 +123,43 @@
     `${Date.now()}${crypto.getRandomValues(new Uint32Array(1))[0]}`;
   // Generations in [refSeed, refGeneration] belong to this document; others name another one.
   const refSeed = window.__kitsuneRefSeed || (window.__kitsuneRefSeed = refGeneration);
+  // Snapshot refs of the current generation: { label: 'role "name"', parent: ancestor's ref }.
+  const refLabels = {};
+  // The call whose observation started the current generation (state.latestObservation).
+  let refObservation = null;
+  // The last few generations, so a stale_ref can name the same element's current ref.
+  const RETIRED_GENERATION_LIMIT = 3;
+  const retiredGenerations = new Map();
 
-  function newRefGeneration() {
+  function newRefGeneration(observation) {
+    retiredGenerations.set(refGeneration, { refs: { ...refMap }, labels: { ...refLabels } });
+    if (retiredGenerations.size > RETIRED_GENERATION_LIMIT) {
+      retiredGenerations.delete(retiredGenerations.keys().next().value);
+    }
     refGeneration = (BigInt(refGeneration) + 1n).toString();
     window.__kitsuneRefGeneration = refGeneration;
+    refObservation = observation;
     refCounter = 0;
     for (const key of Object.keys(refMap)) delete refMap[key];
+    for (const key of Object.keys(refLabels)) delete refLabels[key];
+  }
+
+  function labelPath(labels, ref) {
+    const path = [];
+    for (let entry = labels[ref]; entry; entry = labels[entry.parent]) path.push(entry.label);
+    return path.join('\n');
+  }
+
+  // A ref from a replaced generation names an element of the current one only when it is
+  // the same connected node with the same role, name and snapshot ancestors.
+  function currentRefFor(ref, generation) {
+    const retired = retiredGenerations.get(generation);
+    const el = retired?.refs[ref];
+    if (!el?.isConnected || !retired.labels[ref]) return null;
+    const path = labelPath(retired.labels, ref);
+    const matches = Object.keys(refMap).filter(current => refMap[current] === el &&
+      refLabels[current] && labelPath(refLabels, current) === path);
+    return matches.length === 1 ? matches[0] : null;
   }
 
   // ── Action errors ──
@@ -157,10 +188,13 @@
   const STALE_REF_HINTS = {
     element_removed: 'The element was removed from the page; take a new browser_snapshot and use its refs.',
     not_in_snapshot: 'The latest snapshot did not issue this ref; take a new browser_snapshot and use its refs.',
-    snapshot_replaced: 'A newer snapshot replaced this ref; use refs from the latest browser_snapshot.',
+    snapshot_replaced: 'A newer snapshot replaced this ref; use refs from the latest snapshot or a new browser_snapshot.',
     other_document: 'The ref belongs to another document: the tab navigated or a different tab is targeted. ' +
       'Pass tab_id and take a new browser_snapshot.',
   };
+
+  const CURRENT_REF_HINT = 'A newer snapshot replaced this ref; state.currentRef is the same element (same node, ' +
+    'role, name and ancestors) in the latest snapshot. Use it only if that snapshot shows the action is still needed.';
 
   function staleRef(ref, el) {
     const generation = /^s(\d+)e\d+$/.exec(ref)?.[1];
@@ -168,8 +202,20 @@
     if (generation === refGeneration) reason = el ? 'element_removed' : 'not_in_snapshot';
     else if (generation && (BigInt(generation) < BigInt(refSeed) ||
         BigInt(generation) > BigInt(refGeneration))) reason = 'other_document';
-    const { error, ...details } = actionError('stale ref, call browser_snapshot again', 'stale_ref',
-      STALE_REF_HINTS[reason], { reason, ref });
+    const state = { reason, ref };
+    let hint = STALE_REF_HINTS[reason];
+    if (reason === 'snapshot_replaced') {
+      if (refObservation) {
+        state.latestObservation = refObservation;
+        hint = `A newer snapshot from ${refObservation} replaced this ref; use its refs or a new browser_snapshot.`;
+      }
+      const currentRef = generation && currentRefFor(ref, generation);
+      if (currentRef) {
+        state.currentRef = currentRef;
+        hint = CURRENT_REF_HINT;
+      }
+    }
+    const { error, ...details } = actionError('stale ref, call browser_snapshot again', 'stale_ref', hint, state);
     return new ActionError(error, details);
   }
 
@@ -255,7 +301,8 @@
       'handleDialog':          () => handleDialog(msg.accept, msg.prompt_text),
       'waitForText':           () => waitForText(msg.text, msg.text_gone, msg.timeout),
       'getPageText':           () => getPageText(msg.selector),
-      'getSnapshot':           () => getSnapshot(msg.maxChars, msg.focusLastAction, msg.ref || msg.selector, msg.maxDepth, !!msg.text),
+      'getSnapshot':           () => getSnapshot(msg.maxChars, msg.focusLastAction, msg.ref || msg.selector, msg.maxDepth, !!msg.text,
+                                     msg.observation),
       'getAccessibilityTree':  () => getAccessibilityTree(msg.depth || 6),
       'getFormFields':         () => getFormFields(),
       'click':                 () => clickElement(msg.selector, msg.coords),
@@ -460,7 +507,7 @@
 
   // ── Accessibility Tree ──
   function getAccessibilityTree(maxDepth) {
-    newRefGeneration();
+    newRefGeneration('browser_dom');
     
     function buildNode(el, depth) {
       if (depth > maxDepth || !el || el.nodeType !== 1) return null;
@@ -531,7 +578,9 @@
   const FIELD_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT', 'OPTION']);
 
   // Compact accessibility-style view (DOM semantics, not a platform AX tree).
-  function getSnapshot(maxChars, focusLastAction, selector, maxDepth, withText = false) {
+  // observation: the tool whose call took this snapshot (an action's post-action snapshot).
+  function getSnapshot(maxChars, focusLastAction, selector, maxDepth, withText = false,
+      observation = 'browser_snapshot') {
     if (maxDepth != null && (!Number.isInteger(maxDepth) || maxDepth < 0)) {
       return { error: 'max_depth must be a non-negative integer' };
     }
@@ -541,7 +590,7 @@
     // Keep the DOM element, not its old ref: starting a snapshot invalidates refs.
     const target = focusLastAction && lastActedElement?.isConnected ? lastActedElement : null;
     lastActedElement = null;
-    newRefGeneration();
+    newRefGeneration(observation);
     const entries = [];
     let limit = Number.isFinite(maxChars) ? Math.max(0, maxChars) : Infinity;
     // Reserve room for the truncation marker so text snapshots stay within the cap.
@@ -671,8 +720,10 @@
         for (const state of ['expanded', 'selected', 'pressed']) {
           if (el.hasAttribute(`aria-${state}`)) states.push(`${state}=${el.getAttribute(`aria-${state}`)}`);
         }
-        const line = `${'  '.repeat(Math.min(depth, 12))}- ${role} ${JSON.stringify(nameOf(el, interactive || el === target))} [ref=${ref}]${states.length ? ' [' + states.join(' ') + ']' : ''}`;
+        const label = `${role} ${JSON.stringify(nameOf(el, interactive || el === target))}`;
+        const line = `${'  '.repeat(Math.min(depth, 12))}- ${label} [ref=${ref}]${states.length ? ' [' + states.join(' ') + ']' : ''}`;
         if (!append({ el, ref, line, parent, interactive })) return;
+        refLabels[ref] = { label, parent: entries[parent]?.ref ?? null };
         parent = entries.length - 1;
       }
       const childDepth = depth + (include ? 1 : 0);
@@ -2063,23 +2114,68 @@
   const NON_TEXT_INPUT_TYPES = new Set(['button', 'checkbox', 'radio', 'file', 'reset', 'hidden',
     'color', 'range', 'submit', 'image']);
 
+  const BUTTON_INPUT_TYPES = new Set(['button', 'submit', 'image']);
+
+  // Ask-before-act: button labels that commit an order, payment, or form submission, for
+  // JS-driven buttons that are not structural submit controls. The whole label (after
+  // dropping an amount, a parenthetical, and edge punctuation) must be one of these
+  // phrases, so "Submit search", "Order history", "Add to cart" or a bare "OK"/"확인"
+  // do not match. Links and other non-button elements are never matched.
+  const SUBMIT_LABEL_PATTERNS = [
+    /^(?:place|submit|confirm|complete|finish)(?: (?:your|my|the))? (?:order|purchase|payment|booking|reservation)$/,
+    /^(?:pay|buy|purchase|order|checkout)(?: it)? now$/,
+    /^(?:pay|pay securely|pay with [\p{L} ]{1,20}|buy|purchase|submit|confirm(?: and pay| payment| purchase)?)$/u,
+    /^(?:(?:proceed|continue|go) to )?(?:checkout|check out)$/,
+    /^(?:proceed|continue|go) to payment$/,
+    // Korean, Japanese, Chinese (simplified and traditional)
+    /^(?:(?:지금|바로) ?)?(?:결제|주문|구매|제출)(?: ?(?:진행|완료|확정))?(?:하기)?$/,
+    /^(?:今すぐ)?(?:注文|購入|決済|支払[いう]?|お支払い)(?:する|を確定する|手続きへ|に進む|へ進む)?$/,
+    /^レジに進む$/,
+    /^(?:立即|确认|確認)?(?:支付|付款|购买|購買|下单|下單)$/,
+    /^(?:提交(?:订单|訂單)?|(?:确认|確認)(?:订单|訂單))$/,
+    /^(?:去)?(?:结算|結帳|結算)$/,
+    // German, French, Spanish
+    /^(?:jetzt )?(?:kaufen|bezahlen|bestellen)$/,
+    /^(?:zahlungspflichtig|kostenpflichtig) bestellen$/,
+    /^zur kasse(?: gehen)?$/,
+    /^(?:payer|acheter|commander)(?: maintenant)?$/,
+    /^(?:passer|valider|confirmer) (?:la|ma) commande$/,
+    /^(?:pagar|comprar)(?: ahora)?$/,
+    /^(?:realizar|confirmar|tramitar) (?:el )?pedido$/,
+    /^finalizar (?:la )?compra$/,
+  ];
+
+  function isSubmitLabel(label) {
+    let text = String(label).normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
+    if (!text || text.length > 60) return false;
+    const edges = /^[\p{P}\p{S}\s]+|[\p{P}\p{S}\s]+$/gu;
+    text = text.replace(/\s*\([^)]*\)$/, '').replace(edges, '')
+      .replace(/(?:^|\s)\p{Sc}?\s?\d[\d.,]*\s?(?:\p{Sc}|원|円|元|krw|usd|eur)?$/u, '')
+      .replace(/^\p{Sc}?\s?\d[\d.,]*\s?(?:\p{Sc}|원|円|元)?\s/u, '')
+      .replace(edges, '');
+    return SUBMIT_LABEL_PATTERNS.some(pattern => pattern.test(text));
+  }
+
   // Ask-before-act: whether clicking the target (or pressing Enter on it, with key) can submit
-  // a form. Resolves the target the way click/keypress do and reports no field values.
+  // a form, or is a button labeled like a submit or payment. Resolves the target the way
+  // click/keypress do and reports no field values.
   function describeTarget(selector, coords, key) {
     let el = selector || coords ? resolveElement(selector, coords)
       : (document.activeElement || document.body);
     if (!el) return notFound();
     if (coords) el = nearestInteractiveAncestor(el) || el;
-    const control = el.closest ? el.closest('button, input') || el : el;
+    const control = el.closest ? el.closest('button, input, [role="button"]') || el : el;
     const tag = control.tagName?.toLowerCase();
     const type = String(control.type || '').toLowerCase();
     const submitControl = !!control.form &&
       ((tag === 'button' && type === 'submit') || (tag === 'input' && (type === 'submit' || type === 'image')));
     const enterSubmits = key === 'Enter' && !!control.form && tag === 'input' && !NON_TEXT_INPUT_TYPES.has(type);
+    const button = tag === 'button' || (tag === 'input' && BUTTON_INPUT_TYPES.has(type)) ||
+      String(control.getAttribute?.('role') || '').toLowerCase() === 'button';
     const label = control.getAttribute?.('aria-label') || control.textContent ||
-      (submitControl && tag === 'input' ? control.value : '') || '';
+      (button && tag === 'input' ? control.value : '') || '';
     return { ok: true, tag, type, inForm: !!control.form, submits: submitControl || enterSubmits,
-      text: String(label).trim().slice(0, 80) };
+      submitLabel: button && isSubmitLabel(label), text: String(label).trim().slice(0, 80) };
   }
 
   function submitForm(selector) {
@@ -2177,6 +2273,9 @@
         results[key] = { error: e.message };
       }
     }
+    // Any filled field makes this a partial success; with none, nothing was written.
+    const values = Object.values(results);
+    if (values.length && values.every(result => result.error)) return { error: 'No field was filled', results };
     return { results };
   }
 

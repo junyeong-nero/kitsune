@@ -140,6 +140,10 @@ _AUDIT_MAX = 2000
 # {"call", "path"} of the container step running in this task; None for direct calls.
 _audit_parent = contextvars.ContextVar("kitsune_audit_parent", default=None)
 _audit_call_ids = itertools.count(1)
+# Step records ({index, action, tabId?, status}) the running container's steps append to.
+_container_steps = contextvars.ContextVar("kitsune_container_steps", default=None)
+# ((owners, sequence), ...) of the enclosing parallel sequences; owners maps tab id -> sequence.
+_tab_owners = contextvars.ContextVar("kitsune_tab_owners", default=())
 _log_buffer = []  # mirrors bridge stdout lines
 _LOG_MAX = 5000
 # Ask-before-act is opt-in. askUrls are payment-like URL patterns it guards (case-insensitive).
@@ -782,10 +786,22 @@ def _check_policy(action, params):
 # action, parameters and tab. The token goes back to the agent, so it enforces an explicit second
 # step, not proof that a human approved.
 ASK_BEFORE_ACT_ENV = "KITSUNE_ASK_BEFORE_ACT"
+# A locked start leaves this file behind, so a later bridge started from an environment
+# without KITSUNE_ASK_BEFORE_ACT=1 (stop, idle shutdown, outdated-bridge replacement) is
+# locked too. Only deleting the file unlocks.
+ASK_LOCK_FILE = os.path.join(DATA_DIR, "ask-before-act-locked")
 CONFIRM_TOKEN_TTL = 120
 _UNKNOWN_OUTCOME_TTL = 600
 _ASK_JS_ACTIONS = {"executeJS", "waitForResult", "syncBarrier", "if", "while"}
 _ASK_COOKIE_ACTIONS = {"cookies", "saveSession", "loadSession"}
+# Held on every page and for every op, reads included: page storage often holds session
+# tokens, the clipboard reaches outside the browser, and downloads write to disk or list
+# local paths.
+_ASK_DATA_ACTIONS = {
+    "storageOp": ("storage", "reads or writes page storage (localStorage/sessionStorage)"),
+    "clipboard": ("clipboard", "reads or writes the system clipboard"),
+    "downloads": ("downloads", "starts, lists or cancels browser downloads"),
+}
 _ASK_NAVIGATION_ACTIONS = {"navigate", "newTab", "createWindow"}
 _ASK_CLICK_ACTIONS = {"click", "doubleClick", "trustedClick", "clickAndWaitNavigation"}
 # Page actions held on payment-like pages; they target one tab, which the token is bound to.
@@ -872,6 +888,8 @@ async def _held_reason(action, params):
         reason, description = "javascript", "runs agent-supplied JavaScript in the page"
     elif action in _ASK_COOKIE_ACTIONS:
         reason, description = "cookies", "reads or writes browser cookies"
+    elif action in _ASK_DATA_ACTIONS:
+        reason, description = _ASK_DATA_ACTIONS[action]
     elif action == "submitForm":
         reason, description = "submit", "submits a form"
     elif _ask_url_match(url):
@@ -901,6 +919,9 @@ async def _held_reason(action, params):
             what = "presses Enter in a form field" if submit_key else "clicks a submit control"
             label = target.get("text") or target.get("tag") or ""
             reason, description = "submit_control", f"{what} ({label})" if label else what
+        elif reason is None and target.get("submitLabel"):
+            what = "presses Enter on" if submit_key else "clicks"
+            reason, description = "submit_label", f"{what} a button labeled like a submit or payment ({target.get('text')})"
     if reason is None:
         return None
     return reason, description, tab_id, url_now or url
@@ -943,6 +964,26 @@ async def _ask_before_act(action, params, *, direct):
               "batch, retry, parallel, broadcast or workflows)."),
         **state,
     )
+
+
+def _ask_locked_on_start(flag):
+    """Return whether this bridge starts with ask mode locked on; persist a newly requested lock."""
+    requested = flag or os.environ.get(ASK_BEFORE_ACT_ENV, "").lower() in {"1", "true", "yes", "on"}
+    # lexists: a dangling symlink in place of the file still locks.
+    if os.path.lexists(ASK_LOCK_FILE):
+        return True
+    if requested:
+        try:
+            fd = os.open(ASK_LOCK_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, stat.S_IRUSR | stat.S_IWUSR)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(f"Kitsune ask-before-act is locked on for every bridge using this directory "
+                        f"(since {datetime.now().isoformat(timespec='seconds')}).\n"
+                        f"To unlock: remove {ASK_BEFORE_ACT_ENV}=1 from every MCP server config, "
+                        "delete this file, then run `kitsune-bridge stop`.\n")
+        except OSError as exc:
+            print(f"[{now()}] Warning: ask-before-act is locked for this bridge only; "
+                  f"could not write {ASK_LOCK_FILE}: {exc}")
+    return requested
 
 
 def _invalid_ask_policy(body):
@@ -1059,27 +1100,46 @@ def _session_path(name):
     return os.path.join(_sessions_dir, safe + ".json")
 
 
+def _session_failure(url, step, result):
+    """One failed extension command of a session save/load, with its error details."""
+    if not isinstance(result, dict):
+        result = {"error": f"unexpected result: {result!r}"}
+    failure = {"url": url, "step": step, "error": result.get("error") or "no result"}
+    failure.update({key: result[key] for key in ("code", "state") if key in result})
+    return failure
+
+
 async def _save_session_async(name, urls):
-    os.makedirs(_sessions_dir, mode=0o700, exist_ok=True)
     bundle = {"name": name, "saved": int(time.time()), "cookies": [], "storage": {}}
+    failures = []
     # cookies for each url
     for u in (urls or []):
         r = await send_to_extension("cookies", {"op": "get", "url": u}, timeout=10)
         if isinstance(r, dict) and "cookies" in r:
             bundle["cookies"].extend(r["cookies"])
+        else:
+            failures.append(_session_failure(u, "cookies", r))
     # localStorage snapshot per active tab if no urls
     if urls:
         for u in urls:
             # Open a temp tab for each origin, snapshot, close
             t = await send_to_extension("newTab", {"url": u})
             tid = t.get("tabId") if isinstance(t, dict) else None
-            if tid:
-                # Wait briefly for page
-                await asyncio.sleep(1)
-                snap = await send_to_extension("storageOp", {"tabId": tid, "kind": "local", "op": "snapshot"}, timeout=10)
-                if isinstance(snap, dict) and snap.get("ok"):
-                    bundle["storage"][u] = snap.get("items", {})
-                await send_to_extension("closeTab", {"tabId": tid})
+            if not tid:
+                failures.append(_session_failure(u, "newTab", t))
+                continue
+            # Wait briefly for page
+            await asyncio.sleep(1)
+            snap = await send_to_extension("storageOp", {"tabId": tid, "kind": "local", "op": "snapshot"}, timeout=10)
+            if isinstance(snap, dict) and snap.get("ok"):
+                bundle["storage"][u] = snap.get("items", {})
+            else:
+                failures.append(_session_failure(u, "storage", snap))
+            await send_to_extension("closeTab", {"tabId": tid})
+    # A partial bundle must not replace a saved session.
+    if failures:
+        return {"error": f"Session {name!r} not saved: {len(failures)} read(s) failed", "failures": failures}
+    os.makedirs(_sessions_dir, mode=0o700, exist_ok=True)
     with open(_session_path(name), "w", encoding="utf-8") as f:
         json.dump(bundle, f, indent=2)
     return {"ok": True, "name": name, "path": _session_path(name), "cookies": len(bundle["cookies"]), "origins": len(bundle["storage"])}
@@ -1092,26 +1152,41 @@ async def _load_session_async(name):
     with open(path, "r", encoding="utf-8") as f:
         bundle = json.load(f)
     set_count = 0
+    failures = []
     for c in bundle.get("cookies", []):
+        url = ("https://" if c.get("secure") else "http://") + str(c.get("domain", "")).lstrip(".") + str(c.get("path", "/"))
         try:
-            url = ("https://" if c.get("secure") else "http://") + str(c.get("domain", "")).lstrip(".") + str(c.get("path", "/"))
-            await send_to_extension("cookies", {
+            r = await send_to_extension("cookies", {
                 "op": "set", "url": url, "name": c.get("name"), "value": c.get("value"),
                 "domain": c.get("domain"), "path": c.get("path"), "secure": c.get("secure"),
             }, timeout=10)
+        except Exception as e:
+            r = {"error": str(e)}
+        if isinstance(r, dict) and not r.get("error"):
             set_count += 1
-        except Exception:
-            pass
+        else:
+            failures.append(_session_failure(url, "cookies", r))
     storage_restored = 0
     for u, items in (bundle.get("storage") or {}).items():
         t = await send_to_extension("newTab", {"url": u})
         tid = t.get("tabId") if isinstance(t, dict) else None
-        if tid:
-            await asyncio.sleep(0.8)
-            await send_to_extension("storageOp", {"tabId": tid, "kind": "local", "op": "restore", "value": items}, timeout=10)
-            await send_to_extension("closeTab", {"tabId": tid})
+        if not tid:
+            failures.append(_session_failure(u, "newTab", t))
+            continue
+        await asyncio.sleep(0.8)
+        r = await send_to_extension("storageOp", {"tabId": tid, "kind": "local", "op": "restore", "value": items}, timeout=10)
+        await send_to_extension("closeTab", {"tabId": tid})
+        if isinstance(r, dict) and not r.get("error") and r.get("ok") is not False:
             storage_restored += 1
-    return {"ok": True, "name": name, "cookies_set": set_count, "origins_restored": storage_restored}
+        else:
+            failures.append(_session_failure(u, "storage", r))
+    result = {"ok": True, "name": name, "cookies_set": set_count, "origins_restored": storage_restored}
+    if failures:
+        # Restoring is idempotent, so repeating the load after fixing the cause is safe.
+        del result["ok"]
+        result = {"error": f"Session {name!r} partly restored: {len(failures)} write(s) failed",
+                  **result, "failures": failures}
+    return result
 
 
 def _list_sessions():
@@ -1897,13 +1972,200 @@ def _audit_call():
     return _audit_parent.get() or {"call": next(_audit_call_ids), "path": []}
 
 
-async def _run_step(cmd, call, **frame):
-    """Run a container's nested command; its audit entries carry the call id and the step's path."""
-    token = _audit_parent.set({"call": call["call"], "path": [*call["path"], frame]})
+# ── Container progress and tab ownership (docs/api-reference.md#container-progress) ──
+
+# Worst first: a container step takes the first of these that it or a nested step has.
+_STEP_STATUSES = ("unknown", "held", "failed", "skipped", "ok")
+# Actions that act on no page tab, so a parallel step may omit tabId; containers are checked by
+# their nested steps. screenshot captures the visible tab and ignores tabId.
+_TABLESS_ACTIONS = {
+    "sleep", "newTab", "getTabs", "getWindows", "createWindow", "closeWindow", "focusWindow",
+    "cookies", "clipboard", "downloads", "clearBrowsingData", "intercept", "reloadExtension",
+    "screenshot", "broadcast", "syncBarrier", "parallel", "sequence", "retry", "try",
+}
+_UNFINISHED = object()
+
+
+def _explicit_tab_id(value):
+    """The tab id value names (a positive integer or its digits), else None."""
+    if isinstance(value, str) and value.isdigit():
+        value = int(value)
+    return value if type(value) is int and value > 0 else None
+
+
+def _tab_required_error(action, sequence, **state):
+    return _action_error(
+        f'Sequence {sequence}: "{action}" inside parallel requires explicit tabId to avoid race conditions',
+        "tab_required", retryable=True,
+        hint="Nothing was dispatched. Give every step that acts on a tab its tabId; browser_tabs lists them.",
+        sequence=sequence, **state)
+
+
+def _tab_owned_error(action, sequence, tab_id, owner, **state):
+    return _action_error(
+        f'Sequence {sequence}: "{action}" on tab {tab_id} inside parallel conflicts with sequence {owner}, '
+        "which also writes that tab",
+        "tab_owned", retryable=True,
+        hint="Nothing was dispatched. Let one sequence write each tab; put every write to a tab in its sequence.",
+        sequence=sequence, tabId=tab_id, owner=owner, **state)
+
+
+def _nested_commands(cmd):
+    """cmd and every command nested in it (sequence/if/while/try blocks, retry, parallel)."""
+    if not isinstance(cmd, dict):
+        return []
+    action = cmd.get("action")
+    if action == "parallel":
+        nested = [c for seq in cmd.get("sequences") or [] for c in seq]
+    elif action == "retry":
+        nested = [cmd.get("command")]
+    else:
+        blocks = {"sequence": ("do",), "while": ("do",), "try": ("do", "catch"), "if": ("then", "else")}
+        nested = [c for block in blocks.get(action, ()) for c in cmd.get(block) or []]
+    return [cmd, *(c for n in nested for c in _nested_commands(n))]
+
+
+def _parallel_tab_problem(sequences):
+    """Return why parallel sequences could act on a tab they do not own, before any step runs.
+
+    Every step that acts on a tab must name it, so a focus change cannot redirect it to another
+    sequence's tab, and no tab may be written by two sequences. Tab ids substituted at run time
+    (${$N.tabId}) are checked by _check_step_tab when their step runs.
+    """
+    writers = {}
+    for i, seq in enumerate(sequences):
+        for j, cmd in enumerate(seq):
+            for step in _nested_commands(cmd):
+                action = step.get("action")
+                if not isinstance(action, str):
+                    continue
+                action = BATCH_ACTION_MAP.get(action, action)
+                raw = step.get("tabId")
+                if action in _TABLESS_ACTIONS or (isinstance(raw, str) and "${" in raw):
+                    continue
+                tab_id = _explicit_tab_id(raw)
+                if tab_id is None:
+                    return _tab_required_error(action, i, index=j, tabId=raw)
+                if action in _REPEAT_UNSAFE_ACTIONS and writers.setdefault(tab_id, i) != i:
+                    return _tab_owned_error(action, i, tab_id, writers[tab_id], index=j)
+    return None
+
+
+def _check_step_tab(action, params):
+    """Return an error when a container step names no usable tab, else None.
+
+    The extension sends a step with a falsy tabId to the active tab, so a named tabId that is not
+    a tab id (0, "", "null", an unresolved ${$N.tabId}) is refused; "12" becomes 12. Inside a
+    parallel sequence, a step that acts on a tab must name it, and a write claims the tab for its
+    sequence.
+    """
+    raw = params.get("tabId")
+    tab_id = _explicit_tab_id(raw)
+    if raw is not None:
+        if tab_id is None:
+            return _action_error(
+                f'tabId {raw!r} is not a tab id; "{action}" was not sent to the active tab instead',
+                "invalid_tab_id", retryable=True,
+                hint=("Nothing was dispatched. Use a tab id from browser_tabs, or check the earlier "
+                      "result a ${$N.tabId} substitution reads."),
+                tabId=raw)
+        params["tabId"] = tab_id
+    chain = _tab_owners.get()
+    if not chain or action in _TABLESS_ACTIONS:
+        return None
+    sequence = chain[-1][1]
+    if tab_id is None:
+        return _tab_required_error(action, sequence)
+    if action in _REPEAT_UNSAFE_ACTIONS:
+        for owners, claimant in chain:
+            if owners.setdefault(tab_id, claimant) != claimant:
+                return _tab_owned_error(action, sequence, tab_id, owners[tab_id])
+    return None
+
+
+def _result_status(result):
+    """ok, failed, held or unknown (a write whose effect is unknown) for one command's result."""
+    if _is_held(result):
+        return "held"
+    if not isinstance(result, dict):
+        return "ok"
+    if result.get("error"):
+        if result.get("retryable") is False and result.get("code") not in _PERSISTENT_FAILURE_CODES:
+            return "unknown"
+        return "failed"
+    return "failed" if result.get("ok") is False else "ok"
+
+
+def _worst_status(statuses):
+    statuses = set(statuses)
+    return next((s for s in _STEP_STATUSES if s in statuses), "ok")
+
+
+def _step_record(cmd, status="running", **position):
+    step = {**position, "action": cmd.get("action") if isinstance(cmd, dict) else None}
+    if isinstance(cmd, dict) and cmd.get("tabId") is not None:
+        step["tabId"] = cmd["tabId"]
+    step["status"] = status
+    return step
+
+
+def _finish_step(step, cmd, result, nested):
+    """Set a step's status from its result and its nested steps; a cancelled step is unknown."""
+    own = "unknown" if result is _UNFINISHED else _result_status(result)
+    if own == "ok" and step["action"] == "retry":
+        nested = []  # attempts that failed before one succeeded were safe to repeat
+    step["status"] = _worst_status([own, *(s["status"] for s in nested)])
+    if step["action"] == "parallel" and isinstance(cmd.get("sequences"), list):
+        ran = {(s.get("sequence"), s.get("index")): s for s in nested}
+        step["sequences"] = [
+            [ran.get((i, j)) or _step_record(c, "skipped", sequence=i, index=j) for j, c in enumerate(seq)]
+            for i, seq in enumerate(cmd["sequences"]) if isinstance(seq, list)]
+
+
+def _container_progress(commands, steps):
+    """progress (one record per command; skipped when it never started) and overall status."""
+    ran = {s["index"]: s for s in steps}
+    progress = [ran.get(i) or _step_record(c, "skipped", index=i) for i, c in enumerate(commands)]
+    return {"progress": progress, "status": _worst_status(s["status"] for s in progress)}
+
+
+async def _within_deadline(coro, seconds):
+    """Run a container; True if its deadline cancelled it, so no later step starts."""
     try:
-        return await run_command(cmd)
+        await asyncio.wait_for(coro, seconds)
+        return False
+    except asyncio.TimeoutError:
+        return True
+
+
+def _container_timeout_error(name, seconds):
+    return _action_error(
+        f"{name} stopped at its {seconds:g}s deadline", "container_timeout", retryable=False,
+        hint=("Steps in progress have status unknown and may have taken effect; later steps were "
+              "skipped. Check the page before resuming from the first step that is not ok."),
+        deadlineSeconds=seconds)
+
+
+async def _run_step(cmd, call, **frame):
+    """Run a container's nested command; its audit entries carry the call id and the step's path.
+
+    The step also adds a record to the enclosing container's progress (_container_steps).
+    """
+    token = _audit_parent.set({"call": call["call"], "path": [*call["path"], frame]})
+    step = _step_record(cmd, **{k: v for k, v in frame.items() if k not in ("action", "name")})
+    steps = _container_steps.get()
+    if steps is not None:
+        steps.append(step)
+    nested = []
+    steps_token = _container_steps.set(nested)
+    result = _UNFINISHED
+    try:
+        result = await run_command(cmd)
+        return result
     finally:
+        _container_steps.reset(steps_token)
         _audit_parent.reset(token)
+        _finish_step(step, cmd, result, nested)
 
 
 async def run_command(cmd):
@@ -1919,6 +2181,9 @@ async def run_command(cmd):
             params['query'] = params.pop('selector')
 
         effective_action = BATCH_ACTION_MAP.get(action, action)
+        tab_err = _check_step_tab(effective_action, params)
+        if tab_err:
+            return tab_err
         policy_err = _check_policy(effective_action, params)
         if policy_err:
             return policy_err
@@ -1993,15 +2258,14 @@ async def _execute_command(action, effective_action, params):
             return {'ok': True}
         elif action == 'parallel':
             sequences = params.get('sequences', [])
-            # Validate: navigate/switchTab in parallel sequences must specify tabId
-            for i, seq in enumerate(sequences):
-                for cmd in seq:
-                    a = cmd.get('action', '')
-                    if a in ('navigate', 'switchTab') and 'tabId' not in cmd:
-                        return {'error': f'Sequence {i}: "{a}" inside parallel requires explicit tabId to avoid race conditions'}
+            problem = _parallel_tab_problem(sequences)
+            if problem:
+                return problem
             call = _audit_call()
+            owners = {}
 
             async def run_sequence(i, seq):
+                _tab_owners.set((*_tab_owners.get(), (owners, i)))
                 results = []
                 for j, c in enumerate(seq):
                     results.append(await _run_step(c, call, action='parallel', sequence=i, index=j))
@@ -2870,7 +3134,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 loosened.append("askUrls cannot drop patterns")
             if loosened:
                 self.send_json(403, {"error": "Ask-before-act is locked for this bridge (started with "
-                                              f"{ASK_BEFORE_ACT_ENV}=1 or --ask-before-act): " + "; ".join(loosened),
+                                              f"{ASK_BEFORE_ACT_ENV}=1, --ask-before-act, or {ASK_LOCK_FILE}): "
+                                              + "; ".join(loosened),
                                      "code": "policy_locked", "policy": dict(_policy)})
                 return
         if "ask" in body: _policy["ask"] = body["ask"]
@@ -2887,10 +3152,11 @@ class BridgeHandler(BaseHTTPRequestHandler):
         body = self.read_body()
         commands = body.get('commands', [])
         stop_on_warning = body.get('stopOnWarning', False)
+        results, steps = [], []
 
         async def run_all():
+            _container_steps.set(steps)
             call = _audit_call()
-            results = []
             for i, cmd in enumerate(commands):
                 r = await _run_step(cmd, call, action='batch', index=i)
                 results.append(r)
@@ -2902,11 +3168,14 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 if stop_on_warning and isinstance(r, dict) and (r.get('warning') or r.get('error')):
                     r['_stopped'] = True
                     break
-            return results
 
         # Commands run in sequence, so the deadline must cover every wait in the batch.
-        results = self.run_async(run_all(), timeout=max(300, batch_wait_seconds(commands) + 15))
-        self.send_json(200, {'results': results})
+        deadline = max(300, batch_wait_seconds(commands) + 15)
+        timed_out = self.run_async(_within_deadline(run_all(), deadline), timeout=deadline + 15)
+        response = {'results': results, **_container_progress(commands, steps)}
+        if timed_out:
+            response.update(_container_timeout_error('Batch', deadline))
+        self.send_json(200, response)
 
     def handle_cache(self):
         global CACHE_TTL
@@ -2948,18 +3217,24 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self.send_json(400, {"error": err})
             return
 
+        results, steps = [], []
+
         async def run_workflow():
+            _container_steps.set(steps)
             call = _audit_call()
-            results = []
             for i, cmd in enumerate(commands):
                 r = await _run_step(cmd, call, action='workflow', name=name, index=i)
                 results.append(r)
                 if isinstance(r, dict) and r.get('error'):
                     break
-            return results
 
-        results = self.run_async(run_workflow(), timeout=300)
-        self.send_json(200, {"workflow": name, "steps": len(commands), "results": results})
+        deadline = 300
+        timed_out = self.run_async(_within_deadline(run_workflow(), deadline), timeout=deadline + 15)
+        response = {"workflow": name, "steps": len(commands), "results": results,
+                    **_container_progress(commands, steps)}
+        if timed_out:
+            response.update(_container_timeout_error('Workflow', deadline))
+        self.send_json(200, response)
 
     # ── Helpers ──
     
@@ -3136,7 +3411,8 @@ def run(argv=None):
     )
     parser.add_argument(
         "--ask-before-act", action="store_true",
-        help=f"start: hold sensitive actions for confirmation, locked on (also ${ASK_BEFORE_ACT_ENV}=1)",
+        help=f"start: hold sensitive actions for confirmation, locked on until {ASK_LOCK_FILE} is deleted "
+             f"(also ${ASK_BEFORE_ACT_ENV}=1)",
     )
     args = parser.parse_args(argv)
     if args.command != "start" and args.idle_timeout is not None:
@@ -3163,7 +3439,7 @@ def run(argv=None):
             idle_timeout = _idle_timeout_seconds(os.environ.get(IDLE_TIMEOUT_ENV) or "0")
         except argparse.ArgumentTypeError as exc:
             parser.error(f"{IDLE_TIMEOUT_ENV}: {exc}")
-    if args.ask_before_act or os.environ.get(ASK_BEFORE_ACT_ENV, "").lower() in {"1", "true", "yes", "on"}:
+    if _ask_locked_on_start(args.ask_before_act):
         _policy.update(ask=True, askLocked=True)
 
     # Separate from the short-lived lifecycle lock held by the spawning MCP

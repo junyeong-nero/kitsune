@@ -168,7 +168,13 @@ def _request(method: str, endpoint: str, **kwargs) -> dict:
             try:
                 return r.json()
             except ValueError:
-                return _port_conflict(HTTP_PORT, "not_kitsune", f"Port {HTTP_PORT} did not answer as a Kitsune bridge")
+                # Every bridge route the server calls answers JSON on 2xx, so a 2xx page is another program.
+                if 200 <= r.status_code < 300:
+                    return _port_conflict(HTTP_PORT, "not_kitsune",
+                                          f"Port {HTTP_PORT} did not answer as a Kitsune bridge")
+                # Keep what the HTTP layer said instead of a JSON decoding message.
+                return {"error": f"Kitsune bridge returned HTTP {r.status_code} without a JSON body",
+                        "state": {"httpStatus": r.status_code, "body": r.text[:200]}}
         except httpx.ConnectError:
             if attempt:
                 break
@@ -870,11 +876,12 @@ def browser_parallel(sequences: list[list[dict]]) -> dict:
     """Run command sequences in parallel — typically one sequence per tab.
 
     Each inner list is a sequence that runs serially; all sequences run
-    concurrently. Commands that target a specific tab (navigate, switchTab,
-    or any tab-aware action) MUST include "tabId" inside the parallel batch
-    to avoid race conditions over the active tab.
+    concurrently. Every command that acts on a tab MUST include "tabId", and
+    two sequences may not write the same tab; otherwise nothing runs
+    (tab_required, tab_owned).
 
-    Returns a list of result lists, one per input sequence.
+    Returns a list of result lists, one per input sequence; progress[0].sequences
+    gives each command's status.
 
     Args:
         sequences: List of command sequences. Each command is a dict with
@@ -1399,7 +1406,7 @@ def browser_storage(
 
 
 @tool("storage", annotations=ToolAnnotations(title="Read or write clipboard", **DESTRUCTIVE))
-def browser_clipboard(op: str, text: str | None = None) -> dict:
+def browser_clipboard(op: str, text: str | None = None, confirm_token: str | None = None) -> dict:
     """Read or write the system clipboard.
 
     Args:
@@ -1408,7 +1415,7 @@ def browser_clipboard(op: str, text: str | None = None) -> dict:
     """
     body = {"op": op}
     if text is not None: body["text"] = text
-    return _post("/api/clipboard", body)
+    return _post("/api/clipboard", _confirm(body, confirm_token))
 
 
 @tool("network", annotations=ToolAnnotations(title="Manage downloads", **DESTRUCTIVE))
@@ -1417,6 +1424,7 @@ def browser_downloads(
     url: str | None = None,
     filename: str | None = None,
     query: dict | None = None,
+    confirm_token: str | None = None,
 ) -> dict:
     """Downloads operations.
 
@@ -1430,7 +1438,7 @@ def browser_downloads(
     if url: body["url"] = url
     if filename: body["filename"] = filename
     if query: body["query"] = query
-    return _post("/api/downloads", body)
+    return _post("/api/downloads", _confirm(body, confirm_token))
 
 
 @tool("storage", annotations=ToolAnnotations(title="Clear browsing data", **DESTRUCTIVE))
@@ -1691,14 +1699,15 @@ def browser_set_policy(
     Read-only mode blocks write actions (click/type/navigate/cookies set/etc.)
     while still allowing read ops. Useful for "let the agent observe only."
 
-    Ask mode (ask=True) holds sensitive actions without running them: form submits and
-    submit-control clicks or Enter in a form field, browser_js and other agent JavaScript,
-    cookies and sessions, navigation to ask_urls (payment-like regexes, case-insensitive), and
-    page actions on such pages. A held call returns code "confirmation_required" with
+    Ask mode (ask=True) holds sensitive actions without running them: form submits,
+    submit-control or pay/order-labeled button clicks, Enter in a form field, browser_js and
+    other agent JavaScript, cookies, sessions, page storage, clipboard, downloads, navigation
+    to ask_urls (payment-like regexes, case-insensitive), and page actions on such pages. A held call returns code "confirmation_required" with
     state.confirmToken; ask the user, then repeat the identical call with confirm_token
     within 120s. The token is single-use, bound to that action, its parameters and tab, and
     is never honored inside batch/retry/parallel/broadcast/workflows. A bridge started with
-    KITSUNE_ASK_BEFORE_ACT=1 locks ask mode on; then ask=False or dropping ask_urls fails.
+    KITSUNE_ASK_BEFORE_ACT=1 locks ask mode on, also after restarts; then ask=False or
+    dropping ask_urls fails.
     """
     body = {}
     if allow is not None: body["allow"] = allow
@@ -1748,7 +1757,8 @@ def browser_batch(commands: list[dict]) -> dict:
     command to target a specific tab instead of the active one. For true
     concurrency across tabs, prefer browser_parallel. A failed command does not
     make the call an MCP error: inspect each result and resume from the failed
-    command, because earlier commands may already have taken effect.
+    command, because earlier commands may already have taken effect. progress
+    gives each command's status (ok, failed, held, unknown, skipped).
 
     Available actions: navigate, newTab, closeTab, switchTab, click, type,
     setEditableContent, fill, scroll, hover, find, js, pageInfo, pageText, screenshot, tabs,

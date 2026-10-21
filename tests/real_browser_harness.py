@@ -23,6 +23,9 @@ API, kept small so suites can rely on it:
   wait_for_extension(after_generation=0), open_tab(url), assert_ok(result) and
   assert_error(result, code, retryable).
 - FixtureServer(handler_class): a local HTTP server on a spare port with .origin and .stop().
+- RemoteDebugger(cls.browser.rdp_port).evaluate_in_parent(script): runs a privileged
+  script in the browser's parent process and returns its awaited result, e.g. to seed
+  the temporary profile's password manager with a disposable login.
 - check_extension_copy(extension, ws_port): the launch guard below; RealBrowser.start()
   runs it before launching anything.
 - BROWSER, BASE_PREFS, POPUPS_ALLOWED.
@@ -138,6 +141,19 @@ class RemoteDebugger:
             if reply.get("from") == to:
                 return reply
 
+    def evaluate_in_parent(self, script):
+        """Run script with chrome privileges in the parent process; returns its awaited result."""
+        process = self.request("root", "getProcess", id=0)["processDescriptor"]["actor"]
+        console = self.request(process, "getTarget")["process"]["consoleActor"]
+        result_id = self.request(console, "evaluateJSAsync", text=script, mapped={"await": True})["resultID"]
+        while True:
+            reply = self._read()
+            if reply.get("type") == "evaluationResult" and reply.get("resultID") == result_id:
+                break
+        if reply.get("hasException"):
+            raise AssertionError(f"parent process script failed: {reply.get('exceptionMessage')}")
+        return reply["result"]
+
     def install_temporary_addon(self, path):
         addons = self.request("root", "getRoot")["addonsActor"]
         reply = self.request(addons, "installTemporaryAddon", addonPath=str(path))
@@ -171,6 +187,7 @@ class RealBrowser:
         self.home = self.root / "home"
         self.log_path = self.root / "browser.log"
         self.process = None
+        self.rdp_port = None
         shutil.copytree(REPO / "extension", self.extension)
         background = self.extension / "background" / "background.js"
         source = background.read_text(encoding="utf-8")
@@ -191,7 +208,7 @@ class RealBrowser:
 
     def start(self):
         check_extension_copy(self.extension, self.ws_port)
-        rdp_port = _free_port()
+        self.rdp_port = _free_port()
         env = {k: v for k, v in os.environ.items() if not k.startswith(("KITSUNE_", "MOZ_"))}
         env.update(HOME=str(self.home), MOZ_NO_REMOTE="1", MOZ_HEADLESS="1")
         # Also covers runs that are interrupted before the class cleanups.
@@ -200,11 +217,11 @@ class RealBrowser:
             # Its own session, so stop() can kill the browser with all of its child processes.
             self.process = subprocess.Popen(
                 [self.binary, "--headless", "-no-remote", "-new-instance", "-profile", str(self.profile),
-                 "-start-debugger-server", str(rdp_port), "about:blank"],
+                 "-start-debugger-server", str(self.rdp_port), "about:blank"],
                 env=env, cwd=self.root, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
-        debugger = RemoteDebugger(rdp_port)
+        debugger = RemoteDebugger(self.rdp_port)
         try:
             debugger.install_temporary_addon(self.extension)
         finally:

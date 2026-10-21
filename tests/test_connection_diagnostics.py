@@ -238,6 +238,15 @@ class _NotKitsune(BaseHTTPRequestHandler):
         pass
 
 
+class _FailingBridge(BaseHTTPRequestHandler):
+    """Fails like the bridge's own BaseHTTPRequestHandler: an HTML error page, not JSON."""
+    def do_POST(self):
+        self.send_error(500)
+
+    def log_message(self, *args):
+        pass
+
+
 class IsolatedBridgeDiagnosisTests(unittest.TestCase):
     """The MCP server against real HTTP listeners on ports these tests own."""
 
@@ -280,6 +289,19 @@ class IsolatedBridgeDiagnosisTests(unittest.TestCase):
             ensure.assert_not_called()
         self.assertEqual(result["diagnosis"]["code"], "port_conflict")
         self.assertEqual(result["state"], {"port": port, "reason": "not_kitsune"})
+
+    def test_bridge_error_without_json_keeps_its_http_status(self):
+        failing = HTTPServer(("127.0.0.1", 0), _FailingBridge)
+        Thread(target=failing.serve_forever, daemon=True).start()
+        self.addCleanup(failing.server_close)
+        self.addCleanup(failing.shutdown)
+        bridge_url, http_port = self.against(failing.server_address[1])
+        with bridge_url, http_port, patch.object(server, "_ensure_bridge") as ensure:
+            result = server._request("POST", "/api/click", json={})
+            ensure.assert_not_called()
+        self.assertEqual(result["error"], "Kitsune bridge returned HTTP 500 without a JSON body")
+        self.assertEqual(result["state"]["httpStatus"], 500)
+        self.assertNotIn("code", result)
 
 
 if __name__ == "__main__":

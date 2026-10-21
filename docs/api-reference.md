@@ -50,10 +50,11 @@ Use refs only from the latest observation of that tab.
 | Call | Effect on refs in that tab |
 |---|---|
 | `browser_snapshot` (also scoped), `browser_dom` | Starts a new generation: earlier refs fail as `stale_ref`/`snapshot_replaced`. A `ref` argument to `browser_snapshot` is resolved first |
-| Successful `browser_click`, `browser_type` (`type`/`fill`), `browser_select_option`, `browser_check`, `browser_keypress`, `browser_submit_form`, `browser_navigate` | Their post-action `snapshot` starts a new generation, like `browser_snapshot` |
+| Successful `browser_click`, `browser_type` (`type`/`fill`), `browser_select_option`, `browser_check`, `browser_keypress`, `browser_submit_form`, `browser_navigate` | Their post-action `snapshot` starts a new generation, like `browser_snapshot`. An `expect` failure (`outcome_not_observed`) is an error, but the action ran and its result still carries that `snapshot` and `target_ref` |
 | Navigation, reload, or back/forward to another document | Earlier refs fail as `stale_ref`/`other_document` |
 | `browser_find`, `browser_forms`, `browser_wait_for(selector/ref)` | Add refs to the current generation; earlier refs stay valid |
-| Failed actions, other reads, `browser_hover`, `browser_scroll`, `browser_type(mode="editable")` and other actions without a post-action snapshot | No change, unless the page itself removes the element (`element_removed`) |
+| Other failed actions, other reads, `browser_hover`, `browser_scroll`, `browser_type(mode="editable")` and other actions without a post-action snapshot | No change, unless the page itself removes the element (`element_removed`) |
+| A failed `browser_snapshot` (bad `max_depth`, missing `selector`, stale `ref`) | No change: it fails before starting a generation |
 
 Snapshots in one tab do not affect refs in another tab. Pass `tab_id` when more
 than one tab is in use: a ref sent to the wrong tab fails as `other_document` and
@@ -74,6 +75,16 @@ Recovering without repeating a consequential action:
   Take a new `browser_snapshot` of the same `tab_id`, find the element again,
   and retry with its new ref. Do not fall back to another element by its
   `element` description.
+- A `stale_ref` with `state.reason: "snapshot_replaced"` names the call whose
+  snapshot holds the current refs in `state.latestObservation` (`browser_snapshot`,
+  `browser_dom`, or the action tool whose post-action snapshot replaced them).
+  When the ref's element is still the same DOM node with the same role, name and
+  snapshot ancestors in that snapshot, `state.currentRef` is its current ref.
+  Kitsune never retargets the command itself: check that snapshot (an earlier
+  action may already have done what you meant) and use `state.currentRef` only if
+  the action is still needed. Refs from the three generations before the current
+  one are compared; refs from `browser_find`, `browser_forms` or `browser_wait_for`
+  carry no role and name, so they get no `currentRef`.
 - To get fresh refs after a successful write, use its `snapshot`/`target_ref` or
   call `browser_snapshot`. Never repeat the write.
 - After a failure with `retryable: false` (a write whose outcome is unknown),
@@ -112,7 +123,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
 |---|---|---|
 | `not_found` | No element matches the selector (also `No target`, `from/to element not found`); after an [actionability wait](#actionability-wait), `state` has `timeoutMs` and `elapsed` | true |
 | `not_actionable` | An [actionability wait](#actionability-wait) timed out on a target that exists but never rendered (`state.reason: "not_rendered"`, `timeoutMs`, `elapsed`); nothing was dispatched | true |
-| `stale_ref` | The ref is no longer valid; `state.reason` is `element_removed`, `not_in_snapshot`, `snapshot_replaced` (a newer snapshot of this document), or `other_document` (the tab navigated, or the ref came from another tab) | true |
+| `stale_ref` | The ref is no longer valid; `state.reason` is `element_removed`, `not_in_snapshot`, `snapshot_replaced` (a newer snapshot of this document; `state.latestObservation` and, for the same element, `state.currentRef`, see [Ref lifetime](#ref-lifetime)), or `other_document` (the tab navigated, or the ref came from another tab) | true |
 | `navigating` | The tab is loading: a `not_found`/`stale_ref` while loading (`state.cause`), or the page unloaded while handling the command. Also a page that refused the content script within 5 s of a wake or reload without an error status, or whose 2xx response arrived only while the command waited for it: it may be an old document about to be replaced | true before dispatch; false for writes after |
 | `tab_closed` | The target tab no longer exists | true |
 | `tab_unloaded` | The tab is discarded and its page cannot be reached; use `browser_wake_tab` | true |
@@ -129,6 +140,10 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `host_permission_denied` | Firefox does not let Kitsune script the tab's site (`state.reason`: `not_granted`, `restricted_domain`) | true |
 | `confirmation_required` | [Ask-before-act](#ask-before-act) held a sensitive action; nothing ran (`state.confirmToken`, `state.reason`) | true |
 | `outcome_not_observed` | The action was dispatched, but the outcome given in `expect` did not happen in time (see [Action outcomes](#action-outcomes)) | false for writes |
+| `tab_required` | A `parallel` step that acts on a tab has no `tabId` (`state.sequence`, `state.index`); nothing was dispatched (see [Container progress](#container-progress)) | true |
+| `tab_owned` | Two `parallel` sequences write the same tab (`state.tabId`, `state.owner`); nothing was dispatched | true |
+| `invalid_tab_id` | A batch, workflow or parallel step names a `tabId` that is not a tab id (`0`, `""`, an unresolved `${$N.tabId}`); it was not sent to the active tab instead | true |
+| `container_timeout` | A batch or workflow reached its deadline; steps in progress may have taken effect and later steps did not start | false |
 
 The connection codes (`bridge_unavailable`, `token_mismatch`, `port_conflict`,
 `extension_disconnected` before sending, `extension_version_mismatch`,
@@ -236,13 +251,25 @@ These results are not errors:
 - Container results: `browser_batch`, `browser_parallel`, `browser_broadcast`, and
   `browser_workflow` report each command's outcome in `results`. A failed command
   there does not make the call an error, because commands before it may already
-  have taken effect and must not be re-sent blindly. Inspect each entry. The
-  container call itself is an error only when it fails as a whole (for example
-  `bridge_unavailable`).
+  have taken effect and must not be re-sent blindly. Inspect each entry, or its
+  [`progress`](#container-progress) status. The container call itself is an error
+  only when it fails as a whole (for example `bridge_unavailable`, or
+  `container_timeout`).
 - Reads that describe state, such as `browser_status` with
   `extension_connected: false`.
+- A `browser_form_fill` that filled at least one key; keys that failed carry their
+  own `error` in `results`.
 
-HTTP bridge endpoints are unchanged; this applies only to MCP tool results.
+An `outcome_not_observed` error from an `expect` check still carries the action's
+post-action `snapshot` and `target_ref`: the action ran (see [Ref lifetime](#ref-lifetime)).
+`browser_save_session` fails without writing the session file when any cookie or
+storage read fails, and `browser_load_session` reports an error, with
+`cookies_set`, `origins_restored` and per-item `failures`, when any write failed.
+A non-2xx bridge response without a JSON body becomes an error with `state.httpStatus`;
+a 2xx one cannot come from a Kitsune bridge and is a
+[`port_conflict`](#connection-diagnosis) (`not_kitsune`).
+
+`isError` applies only to MCP tool results; HTTP bridge endpoints return the same JSON.
 
 ### Connection diagnosis
 
@@ -263,7 +290,7 @@ be reached, `browser_status` fails (`isError`) and `diagnosis` repeats the error
 |---|---|---|---|
 | `connected` | No problem found | `browser_status` | — |
 | `bridge_unavailable` | The bridge is not running and could not be started, or is not reachable | MCP server | Run `kitsune-bridge start` in a terminal to see why; see `bridge.log` |
-| `port_conflict` | `state.reason`: `in_use`, nothing answers after a start and another program holds `state.port`; `not_kitsune`, the HTTP port answers but not as a Kitsune bridge; `extension_ws_port`, no extension has connected and the bridge listens on a `KITSUNE_WS_PORT` other than the extension's 47652 | MCP server, bridge | Find the program with `lsof -nP -iTCP:<port> -sTCP:LISTEN`, or use another port in every client |
+| `port_conflict` | `state.reason`: `in_use`, nothing answers after a start and another program holds `state.port`; `not_kitsune`, the HTTP port answers but not as a Kitsune bridge (a 2xx reply without a JSON body); `extension_ws_port`, no extension has connected and the bridge listens on a `KITSUNE_WS_PORT` other than the extension's 47652 | MCP server, bridge | Find the program with `lsof -nP -iTCP:<port> -sTCP:LISTEN`, or use another port in every client |
 | `token_mismatch` | The bridge answered HTTP 401 to this MCP server's token. `state.tokenSource` is `KITSUNE_TOKEN` or the token file path | MCP server | Use the same `KITSUNE_TOKEN` and `KITSUNE_HOME` for every client, or `kitsune-bridge stop` |
 | `extension_disconnected` | The bridge runs, but no extension is connected | bridge | Open the profile where Kitsune is installed and enable it; load a developer build again after a browser restart; it reconnects within 15 s of a bridge start |
 | `extension_version_mismatch` | The connected extension's version (`state.extensionVersion`, `null` when it is too old to report one) is not the bridge's (`state.bridgeVersion`). Tools fail with it only for a command the extension does not know (`Unknown action: …`); others still run | bridge | Install the matching extension, or update the server; reload open tabs |
@@ -438,12 +465,23 @@ In ask mode the bridge holds:
 |---|---|
 | `submit` | `browser_submit_form` (`submitForm`) |
 | `submit_control` | Click, double-click, trusted click, or click-and-wait-navigation on a submit control (`button` whose type is submit, `input type=submit/image`, or an element inside one, with a form). Also Enter (`browser_keypress`) on a text-like `input` in a form or on a submit control |
+| `submit_label` | The same clicks, or Enter, on any other button whose label reads like a submit, order, or payment ("Place order", "Pay $12", "결제하기"), for example a JS-driven `type=button` or `role=button`. See [Submit labels](#submit-labels) |
 | `javascript` | Agent-supplied JavaScript: `browser_js` (including `full=True`), `browser_wait_for(js=...)`, `browser_sync_barrier`, batch `js`, and batch `if`/`while` conditions |
 | `cookies` | `browser_cookies` (every op, including `get`), `browser_save_session`, `browser_load_session` |
+| `storage` | `browser_storage` (every op, including `get`, `list` and `snapshot`), on any page |
+| `clipboard` | `browser_clipboard` (`read` and `write`) |
+| `downloads` | `browser_downloads` (every op: `download`, `list`, `cancel`) |
 | `payment_url` | Navigation, new tabs, or new windows whose URL matches an `askUrls` pattern |
-| `payment_page` | Page actions (click, type/fill, form fill, select, check, keypress, drag, submit, upload, dialog policy, page storage, JavaScript) on a tab whose current URL matches `askUrls` |
+| `payment_page` | Page actions (click, type/fill, form fill, select, check, keypress, drag, submit, upload, dialog policy, JavaScript) on a tab whose current URL matches `askUrls` |
 | `unknown_outcome` | Repeating a write whose identical previous attempt ended `retryable: false` (a timeout or disconnect after sending, see [Action errors](#action-errors)) |
 | `uninspectable_target` | A click or Enter whose target the bridge could not inspect (for example, an extension older than this bridge, or a screen-coordinate trusted click). Inspection fails closed |
+
+Storage, clipboard, and downloads are held for every op, reads included, and on every
+page, not only payment-like ones. Page storage often holds session tokens, as cookies
+do. The clipboard reaches outside the browser: a read can return a password copied
+from a password manager, and a write replaces what the user will paste. A download
+writes a file from any URL to disk, and `list` returns local file paths and source
+URLs.
 
 `askUrls` are case-insensitive regular expressions. The default list is
 `checkout`, `payment`, `billing`, `/pay\b`, `purchase`, and `/order`. Replace it with
@@ -497,27 +535,90 @@ guards against accidents only.
 
 **Locked mode.** Start the bridge with `KITSUNE_ASK_BEFORE_ACT=1` in its environment
 (the MCP server passes its environment to a bridge it starts) or with
-`kitsune-bridge start --ask-before-act`. Ask mode then starts on and is locked for
-that bridge's lifetime. `browser_set_policy` can still add `askUrls` patterns.
+`kitsune-bridge start --ask-before-act`. Ask mode then starts on and is locked. `browser_set_policy` can still add `askUrls` patterns.
 Setting `ask=False` or dropping a pattern returns `policy_locked` (HTTP 403), and none
 of the request is applied. `allow`, `deny`, and `readonly` stay settable.
 `browser_get_policy` reports `ask`, `askUrls`, and `askLocked`. The bridge is shared:
 if one is already running without the lock, stop it (`kitsune-bridge stop`) so that
 the next start applies it.
 
-The lock lives in the bridge process, not in a file. Any restart starts a new bridge
-from the environment of whatever starts it: `kitsune-bridge stop` followed by the next
-tool call, an idle shutdown, or an MCP server that replaces an outdated bridge. If that
-environment lacks `KITSUNE_ASK_BEFORE_ACT=1`, the new bridge starts unlocked with ask
-mode off. Set the variable in the configuration of **every** MCP server that uses
-Kitsune, not only on a bridge you start by hand, and check `askLocked` with
-`browser_get_policy`.
+A locked start also writes `ask-before-act-locked` to the Kitsune home
+(`$KITSUNE_HOME`, default `~/.kitsune`), user-only (`0600`) like the token file.
+While that file exists, every bridge using that home starts locked, whatever its
+environment. So a restart cannot come up unlocked: `kitsune-bridge stop` followed by
+the next tool call, an idle shutdown, or an MCP server that replaces an outdated
+bridge. `KITSUNE_ASK_BEFORE_ACT=0` does not unlock either. Any entry at that path
+locks, including an unreadable file or a symlink, and the bridge never follows a
+symlink there. If the file cannot be written, the bridge still starts locked, prints a
+warning to its log, and the lock does not survive a restart.
+
+To unlock deliberately:
+
+1. Remove `KITSUNE_ASK_BEFORE_ACT=1` (or `--ask-before-act`) from every MCP server
+   configuration and script that starts the bridge. Otherwise the next start writes
+   the file again.
+2. Delete the file: `rm ~/.kitsune/ask-before-act-locked`.
+3. Run `kitsune-bridge stop`. The running bridge stays locked until it stops.
+
+Agent-settable ask mode (`browser_set_policy(ask=True)`) is not persisted.
+
+#### Submit labels
+
+`submit_label` covers buttons that submit or pay through JavaScript rather than
+through a form. The content script reads the label of the clicked control: its
+`aria-label`, else its text, else the `value` of an `input type=button/submit/image`.
+The control is a `button`, one of those inputs, or an element with `role="button"`,
+including an element inside one. The label is normalized: case, Unicode width, and
+whitespace are folded; a trailing parenthetical, an amount ("$12.00", "12,000원"),
+and leading or trailing punctuation are dropped; labels over 60 characters never
+match. The **whole** remaining label must then be one of a fixed set of phrases:
+
+- English: place/submit/confirm/complete/finish (your/my/the) order/purchase/payment/
+  booking/reservation; pay, pay now, pay securely, pay with …; buy, buy (it) now,
+  purchase, order now; (proceed/continue/go to) checkout; continue to payment;
+  submit; confirm, confirm and pay;
+- Korean: 결제, 주문, 구매, 제출 with an optional 지금/바로 prefix and 진행/완료/확정
+  and 하기 suffixes (결제하기, 바로구매, 주문 완료);
+- Japanese: 注文する, 注文を確定する, 購入する, 今すぐ購入, 支払う, お支払いへ進む, レジに進む;
+- Chinese: 支付, 付款, 立即购买, 确认支付, 下单, 提交, 提交订单, 确认订单, 去结算, 結帳;
+- German, French, Spanish: (jetzt) kaufen/bezahlen/bestellen, zahlungspflichtig
+  bestellen, zur Kasse; payer, acheter, commander, passer la commande; pagar,
+  comprar, realizar pedido, finalizar compra.
+
+The match is deliberately conservative: "Submit search", "Search", "Add to cart",
+"Order history", "Payment methods", "Continue", "Send", and a bare "OK", "확인",
+"確認" or "确认" are not held. A JS-driven commit button with another label ("Send",
+"Transfer", "Delete account"), a link (`<a>` without `role="button"`), or a label
+drawn on a canvas is not caught. On a payment-like page every click is held anyway
+(`payment_page`). An extension older than this bridge does not report labels, so only
+structural submit controls are held there.
 
 **Check-then-act window.** The bridge inspects the target (tab, URL, and whether a
-click or Enter submits a form) with `describeTarget` before it dispatches the action.
+click or Enter submits a form or hits a submit-labeled button) with `describeTarget` before it dispatches the action.
 The page can change between the two: it can navigate to a payment-like URL, or a
 script can turn the target into a submit control. Such a change is not caught. Passing
 `tab_id` removes the active-tab part of this window, but not changes inside the page.
+
+**Client-side approval (MCP elicitation), evaluated.** MCP elicitation
+(`ctx.elicit`) would let the server ask the user through the client and retry with
+the token itself, so approval would not pass through the agent. It is not used, for
+these reasons:
+
+- The dependency floor is `mcp>=1.2.0`; `Context.elicit` arrived in later releases
+  (the 2025-06-18 protocol revision). Using it means raising the floor or a runtime
+  feature check.
+- Every Kitsune tool is a synchronous function. FastMCP runs synchronous tools on its
+  event loop, so a tool cannot await `ctx.elicit`. The held tools would have to become
+  `async` and move their bridge calls off the loop.
+- Client support varies: many clients do not declare the `elicitation` capability.
+  Clients that do may let the agent answer the form instead of the user. So
+  `confirmation_required` stays as the fallback, and an accepted elicitation is
+  still not proof that a human approved.
+
+A later change could add it as an option: for clients that declare `elicitation`,
+an `async` wrapper around held tools would elicit on `confirmation_required` and
+retry once with the token. For now, real approval has to come from the client's own
+permission prompt for the tool call that carries `confirm_token`.
 
 **Annotations are not policy.** MCP `ToolAnnotations` (`readOnlyHint`,
 `destructiveHint`, `idempotentHint`, `openWorldHint`) are static, per-tool metadata.
@@ -626,6 +727,69 @@ The frames are `batch`/`sequence` `index`, workflow `name` and `index`, `paralle
 `catch`) and `index`. A nested container (for example a `parallel` inside a batch)
 is logged after its steps. Direct calls have no `parent`.
 
+### Container progress
+
+`browser_batch`, `browser_parallel` and `browser_workflow` (POST `/api/batch` and
+`/api/workflow`) add `progress` and `status` next to `results`, which is unchanged.
+`progress` has one record per command, in order, including commands that never ran:
+
+```json
+{ "results": [{ "ok": true }, { "error": "Command timed out after 30s", "code": "timeout", "retryable": false }],
+  "progress": [
+    { "index": 0, "action": "click", "tabId": 3, "status": "ok" },
+    { "index": 1, "action": "submitForm", "tabId": 3, "status": "unknown" },
+    { "index": 2, "action": "pageText", "tabId": 3, "status": "skipped" }],
+  "status": "unknown" }
+```
+
+| `status` | Meaning |
+|---|---|
+| `ok` | The command ran without an error. Like any result, this means dispatched, not that the outcome happened (see [Action outcomes](#action-outcomes)) |
+| `failed` | It returned an error that is safe to repeat (`retryable: true`, unclassified errors, `error_page`, or `ok: false`) |
+| `held` | [Ask-before-act](#ask-before-act) held it; nothing ran |
+| `unknown` | It may have taken effect: an error with `retryable: false`, or it was in progress at the container's deadline. Observe the page before acting again |
+| `skipped` | It never started: an earlier step stopped the container (a held step, `stopOnWarning`, a failed workflow step) or the deadline passed |
+
+`tabId` is the command's `tabId` when it has one. A container command (`sequence`,
+`retry`, `if`, `while`, `try`, `parallel`, `broadcast`) takes the first of `unknown`,
+`held`, `failed`, `skipped` that it or a nested command has, else `ok`; a `retry`
+whose last attempt succeeded is `ok`. A `parallel` record adds `sequences`: one list
+per sequence of `{sequence, index, action, tabId, status}`; commands that never
+started are `skipped`. The top-level `status` combines the records the same way.
+
+`progress` is also what to resume from: the commands before the first record that
+is not `ok` have run, `unknown` ones must be observed before they are repeated, and
+`skipped` ones are safe to send. See [Checkpoint and resume](checkpoint-resume.md)
+for the design of resuming a container.
+
+A batch stops at its deadline (the sum of its waits plus 15 s, at least 300 s; a
+workflow at 300 s): the command in progress is cancelled and later commands do not
+start. The response then adds a `container_timeout` error (`retryable: false`,
+`state.deadlineSeconds`) to the partial `results` and `progress`, and the audit log
+records the cancelled command with `error: "cancelled"`.
+
+Tab ownership in `parallel`: sequences run concurrently, so a focus change in one
+sequence must not move another sequence's command to a different tab. Before any
+sequence starts, the bridge refuses the whole `parallel` (`results` is one error):
+
+- with `tab_required` when a command that acts on a tab has no `tabId`, also inside
+  a nested `sequence`, `retry`, `if`, `while` or `try`. Commands that act on no page
+  tab (`sleep`, `newTab`, `tabs`, `getWindows`, `createWindow`, `closeWindow`,
+  `focusWindow`, `cookies`, `clipboard`, `downloads`, `clearBrowsingData`, `intercept`,
+  `reloadExtension`, `screenshot`, `broadcast`, `syncBarrier`) need none;
+  `screenshot` captures the visible tab.
+- with `tab_owned` when two sequences write the same tab (the writes that make an
+  unknown outcome unsafe to repeat, including `switchTab` and `closeTab`). Several
+  sequences may read one tab.
+
+A `tabId` substituted at run time (`${$N.tabId}` in a nested `sequence`) is checked
+when its command runs: the first sequence that writes a tab owns it, and a later
+write from another sequence fails with `tab_owned` without being dispatched. In any
+batch, workflow or parallel step, a `tabId` that is not a tab id (`0`, `""`, `null`
+from a failed `newTab`, an unresolved template) fails with `invalid_tab_id` instead of
+falling back to the active tab, and a numeric string such as `"12"` is sent as `12`.
+A closed tab is never replaced: commands on it fail with `tab_closed`.
+
 ### `browser_tabs(action="list", tab_id=None, url=None, force=False, raw=False, wait=False, timeout=15000)`
 
 Replaces `browser_new_tab`, `browser_close_tab`, and `browser_switch_tab`.
@@ -706,7 +870,9 @@ HTML insertion use `browser_js`; the underlying endpoint still accepts `format="
 
 Fills several fields in one call via POST `/api/form-fill`. Each key is matched
 as a CSS selector, then `name` attribute, label text, and placeholder; results
-are returned per key, and one failing key does not stop the others.
+are returned per key, and one failing key does not stop the others. When every
+key fails, nothing was filled and the result adds `"error": "No field was filled"`
+(an MCP error); a partial fill is not an error, so check each key.
 
 For a `<select>`, the value must equal an option's `value`, the same rule as
 `browser_select_option`. A match sets it and dispatches `change` and `input`.
@@ -1050,7 +1216,9 @@ Execute multiple commands sequentially or in parallel.
   }]
 }
 ```
-Note: `navigate` and `switchTab` inside parallel sequences **must** have explicit `tabId`.
+Note: every command that acts on a tab inside parallel sequences **must** have an explicit `tabId`, and two sequences may not write the same tab (see [Container progress](#container-progress)).
+
+Returns `{ "results": [...], "progress": [...], "status": "ok" }`; `progress` and `status` are described in [Container progress](#container-progress).
 
 **Batch actions:** navigate, newTab, closeTab, switchTab, click, type, fill, scroll, hover, find, js, pageInfo, pageText, pageTextByTabId, tabs, forms, dom, highlight, screenshot, waitForElement, waitForResult, sleep, parallel.
 
@@ -1068,7 +1236,7 @@ Execute a named workflow from the workflows directory.
 { "name": "test", "variables": { "url": "https://example.com" } }
 ```
 Workflows are `.md` files with JSON code blocks. Variables use `{{name}}` syntax.
-Returns `{ "workflow": "test", "steps": 4, "results": [...] }`
+Returns `{ "workflow": "test", "steps": 4, "results": [...], "progress": [...], "status": "ok" }`. A workflow stops at its first failed step; `progress` marks the rest `skipped` (see [Container progress](#container-progress)).
 
 ## Cache Control (NEW)
 

@@ -83,7 +83,9 @@ async function testContentErrors() {
   await send({ action: 'getAccessibilityTree', depth: 6 });
   const replaced = await stale(older);
   assert.equal(replaced.state.reason, 'snapshot_replaced');
-  assert.match(replaced.hint, /latest browser_snapshot/);
+  assert.equal(replaced.state.latestObservation, 'browser_dom');
+  assert.equal(replaced.state.currentRef, undefined, 'a browser_find ref has no role/name to match');
+  assert.match(replaced.hint, /^A newer snapshot from browser_dom replaced this ref/);
 
   // Dynamic forms: the element left the DOM after the snapshot.
   const current = await refFor();
@@ -106,6 +108,9 @@ async function testContentErrors() {
   assert.match(wrongTarget.hint, /tab_id/);
   assert.deepEqual(go.events, [], 'a foreign ref never acts on this document');
   assert.equal((await stale('r0')).state.reason, 'snapshot_replaced');
+  const unobserved = await otherDocument({ action: 'click', selector: 'r0' });
+  assert.equal(unobserved.state.latestObservation, undefined, 'no snapshot in this document yet');
+  assert.equal(unobserved.hint, 'A newer snapshot replaced this ref; use refs from the latest snapshot or a new browser_snapshot.');
 }
 
 async function testNotRenderedWarnings() {
@@ -263,7 +268,8 @@ async function testBackgroundErrors() {
 
   // Delayed content: a target missing while the tab loads is a navigation race.
   tabs[2].status = 'loading';
-  for (const [error, cause] of [[missingElement, 'not_found'], [staleRef, 'stale_ref']]) {
+  const replacedRef = { ...staleRef, state: { reason: 'snapshot_replaced', ref: 's1e0', currentRef: 's2e0' } };
+  for (const [error, cause] of [[missingElement, 'not_found'], [staleRef, 'stale_ref'], [replacedRef, 'stale_ref']]) {
     reply = () => error;
     const racing = await h.send({ action: 'click', tabId: 2, selector: '#go' });
     assert.equal(racing.error, error.error, 'error text is unchanged');
@@ -272,6 +278,7 @@ async function testBackgroundErrors() {
     assert.match(racing.hint, /browser_wait_for/);
     assert.equal(racing.state.cause, cause);
     assert.equal(racing.state.status, 'loading');
+    assert.equal(racing.state.currentRef, undefined, 'the loading document replaces a suggested ref');
   }
 
   // The page unloaded while handling the command: its outcome is unknown.

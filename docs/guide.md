@@ -89,8 +89,10 @@ Refs are scoped to the document and snapshot generation. A new snapshot,
 `browser_dom`, or the post-action snapshot below replaces earlier refs in that
 tab, and navigation invalidates them; `browser_find`, `browser_forms`, and
 `browser_wait_for(selector=...)` add refs without replacing any. Detached or
-outdated refs return `stale ref, call browser_snapshot again` (`code: "stale_ref"`).
-Always use refs from the latest result.
+outdated refs return `stale ref, call browser_snapshot again` (`code: "stale_ref"`);
+for a replaced ref, `state.latestObservation` names the call with the current refs
+and, when the element is unambiguously the same, `state.currentRef` is its current
+ref. Always use refs from the latest result.
 
 Click, type, fill, select, check, keypress, submit, and navigate responses include
 a fresh `snapshot` capped at 4,000 characters (`snapshot_truncated` indicates more
@@ -303,7 +305,7 @@ Matching is case-sensitive substring matching.
 | `KITSUNE_TOKEN` | — | Override the token in `~/.kitsune/token` |
 | `KITSUNE_NO_BRIDGE_RESTART` | Unset | Set to `1` in the MCP server environment to skip automatic replacement of an outdated bridge |
 | `KITSUNE_BRIDGE_IDLE_TIMEOUT` | `0` (never) | Seconds without client activity before the bridge exits; see [Idle shutdown](#idle-shutdown-opt-in) |
-| `KITSUNE_ASK_BEFORE_ACT` | Unset | Set to `1` in the MCP server environment to start the bridge with [ask-before-act](#ask-before-act) locked on |
+| `KITSUNE_ASK_BEFORE_ACT` | Unset | Set to `1` in the MCP server environment to start the bridge with [ask-before-act](#ask-before-act) locked on; the lock then persists in `ask-before-act-locked` under `KITSUNE_HOME` |
 | `KITSUNE_POST_ACTION_SNAPSHOT` | Enabled | Set to `0` in the bridge daemon environment and restart it to disable automatic post-action snapshots, or `text` to add readable text lines to them |
 
 `~/.kitsune/` holds:
@@ -314,6 +316,7 @@ Matching is case-sensitive substring matching.
 | `bridge.log` | Daemon output |
 | `sessions/` | Saved sessions, **including cookies** |
 | `screenshots/` | Screenshots |
+| `ask-before-act-locked` | Present while [ask-before-act](#ask-before-act) is locked on (0600); delete it to unlock |
 
 ## Security
 
@@ -368,11 +371,13 @@ screenshots, and tool logs as potentially sensitive.
 ### Ask-before-act
 
 Ask-before-act is an opt-in policy. In this mode the bridge does not run form
-submits, submit-button clicks, Enter in form fields, `browser_js` and other agent
-JavaScript, cookie and session access, navigation to payment-like URLs, or page
-actions on such pages. Each such call returns a `confirmation_required` error. The
-error describes the pending action and carries a single-use token that expires in
-120 seconds and is bound to that exact action, its parameters, and its tab. After
+submits, submit-button clicks, clicks on buttons labeled like a submit or payment
+("Place order", "Pay now", "결제하기"), Enter in form fields, `browser_js` and other
+agent JavaScript, cookie, session, and page-storage access, clipboard reads and
+writes, downloads, navigation to payment-like URLs, or page actions on such pages.
+Each such call returns a `confirmation_required` error. The error describes the
+pending action and carries a single-use token that expires in 120 seconds and is
+bound to that exact action, its parameters, and its tab. After
 asking you, the agent repeats the identical call with `confirm_token`. Batch, retry,
 parallel, broadcast, and workflow commands never accept a token. Details are in the
 [API reference](api-reference.md#ask-before-act).
@@ -382,16 +387,16 @@ There are two ways to turn it on:
 - `browser_set_policy(ask=True)`: the agent can also turn this off again, so it
   only guards against accidents.
 - Locked: set `KITSUNE_ASK_BEFORE_ACT=1` in the MCP server environment, or run
-  `kitsune-bridge start --ask-before-act`. The policy can then only be tightened
-  until the bridge stops. A bridge that is already running keeps its policy, so
-  run `kitsune-bridge stop` after changing the setting.
+  `kitsune-bridge start --ask-before-act`. The policy can then only be tightened.
+  A bridge that is already running keeps its policy, so run `kitsune-bridge stop`
+  after changing the setting.
 
-The lock lives only in the running bridge process. When the bridge restarts (after
-`kitsune-bridge stop`, an idle shutdown, or an MCP server replacing an outdated
-bridge), the new bridge takes its setting from the environment of whatever started
-it. If that environment lacks `KITSUNE_ASK_BEFORE_ACT=1`, the new bridge starts
-unlocked. Set the variable in the configuration of every MCP server that uses
-Kitsune, not only when you start a bridge by hand.
+A locked bridge writes `~/.kitsune/ask-before-act-locked` (under `KITSUNE_HOME`, readable
+only by you). While that file exists, every bridge starts locked, also after
+`kitsune-bridge stop`, an idle shutdown, or an MCP server replacing an outdated bridge,
+and also when the environment lacks `KITSUNE_ASK_BEFORE_ACT=1`. To unlock, remove the
+variable from every MCP server configuration, delete the file, and run
+`kitsune-bridge stop`.
 
 The bridge checks the target before it acts, and the page can change in between (for
 example, it navigates to a checkout URL). Such a change is not caught.
