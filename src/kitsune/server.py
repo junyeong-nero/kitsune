@@ -452,17 +452,14 @@ def _post(endpoint: str, data: dict, timeout: float = 15) -> dict:
     return _request("POST", endpoint, json=data, timeout=timeout)
 
 
-def _with_tab(body: dict, tab_id: int | None) -> dict:
-    """Add tabId to a body dict when targeting a specific tab."""
-    if tab_id is not None:
-        body["tabId"] = tab_id
-    return body
-
-
-def _confirm(body: dict, confirm_token: str | None) -> dict:
-    """Attach a token from a confirmation_required error (ask-before-act policy)."""
-    if confirm_token is not None:
-        body["confirmToken"] = confirm_token
+def _request_body(body: dict, tab_id: int | None = None, ref: str | None = None,
+               element: str | None = None, confirm_token: str | None = None, first: bool = False) -> dict:
+    """Attach ref/audit-only element, tab, approved confirmation token and first-match opt-in."""
+    for key, value in (("ref", ref), ("element", element), ("tabId", tab_id), ("confirmToken", confirm_token)):
+        if value is not None:
+            body[key] = value
+    if first:
+        body["first"] = True
     return body
 
 
@@ -491,22 +488,6 @@ def _post_action(endpoint: str, body: dict, wait: bool = False, timeout: int = 1
     if request_timeout == 15:
         return _post(endpoint, body)
     return _post(endpoint, body, timeout=request_timeout)
-
-
-def _first(body: dict, first: bool) -> dict:
-    """Opt in to acting on the first match of a selector that matches several elements."""
-    if first:
-        body["first"] = True
-    return body
-
-
-def _target(body: dict, ref: str | None, element: str | None) -> dict:
-    """Attach a machine ref and an audit-only human description."""
-    if ref is not None:
-        body["ref"] = ref
-    if element is not None:
-        body["element"] = element
-    return body
 
 
 # Some clients cut tool descriptions to their first paragraph but send input schemas in
@@ -599,7 +580,7 @@ def browser_tabs(
         body = {"url": url if url is not None else "about:blank"}
         if raw:
             body["raw"] = True
-        _confirm(body, confirm_token)
+        _request_body(body, confirm_token=confirm_token)
         if not wait:
             return _post("/api/new-tab", body)
         if timeout <= 0:
@@ -613,7 +594,7 @@ def browser_tabs(
         if action == "close":
             if force:
                 body["force"] = True
-            _confirm(body, confirm_token)
+            _request_body(body, confirm_token=confirm_token)
         return _post("/api/close-tab" if action == "close" else "/api/switch-tab", body)
     return {"error": "action must be list, new, close, or select"}
 
@@ -665,7 +646,7 @@ def browser_dom(
     (default 6) scope it as in browser_snapshot; capped at 20,000 chars (truncated=true)."""
     if max_depth is not None and (type(max_depth) is not int or max_depth < 0):
         return {"error": "max_depth must be a non-negative integer"}
-    body = _with_tab({}, tab_id)
+    body = _request_body({}, tab_id)
     if selector is not None:
         body["selector"] = selector
     if ref is not None:
@@ -703,7 +684,7 @@ def browser_snapshot(
     """
     if max_depth is not None and (type(max_depth) is not int or max_depth < 0):
         return {"error": "max_depth must be a non-negative integer"}
-    body = _with_tab({}, tab_id)
+    body = _request_body({}, tab_id)
     if text:
         body["text"] = True
     if selector is not None:
@@ -737,11 +718,11 @@ def browser_screenshot(
     preview = not (save_to or data_url)
     if selector is not None or full_page:
         endpoint = "/api/element-screenshot" if selector is not None else "/api/full-page-screenshot"
-        body = _target({"selector": selector}, ref, element) if selector is not None else {}
+        body = _request_body({"selector": selector}, ref=ref, element=element) if selector is not None else {}
         body["imagePreview"] = preview
-        result = _post(endpoint, _with_tab(body, tab_id), timeout=120 if full_page else 45)
+        result = _post(endpoint, _request_body(body, tab_id), timeout=120 if full_page else 45)
         return _screenshot_result(result, save_to, data_url)
-    result = _post("/api/screenshot", _with_tab({"imagePreview": preview}, tab_id))
+    result = _post("/api/screenshot", _request_body({"imagePreview": preview}, tab_id))
     return _screenshot_result(result, save_to, data_url)
 
 
@@ -760,7 +741,7 @@ def browser_navigate(
     body = {"url": url}
     if raw:
         body["raw"] = True
-    return _post_action("/api/navigate", _confirm(_with_tab(body, tab_id), confirm_token), expect=expect)
+    return _post_action("/api/navigate", _request_body(body, tab_id, confirm_token=confirm_token), expect=expect)
 
 
 # -- Interaction --------------------------------------------------
@@ -804,7 +785,7 @@ def browser_click(
     user_active: the user is using the tab (state.reason); nothing ran. Retry in a few seconds.
     """
     body: dict = {"selector": selector} if selector or ref else {"coords": {"x": x, "y": y}}
-    return _post_action("/api/click", _first(_confirm(_with_tab(_target(body, ref, element), tab_id), confirm_token), first),
+    return _post_action("/api/click", _request_body(body, tab_id, ref, element, confirm_token, first),
                         wait, timeout, expect)
 
 
@@ -834,7 +815,7 @@ def browser_trusted_click(
         body = {"selector": selector, "focus": focus}
     else:
         body = {"coords": {"x": x, "y": y}, "coordinateSpace": coordinate_space, "focus": focus}
-    return _post("/api/trusted-click", _first(_confirm(_with_tab(body, tab_id), confirm_token), first))
+    return _post("/api/trusted-click", _request_body(body, tab_id, confirm_token=confirm_token, first=first))
 
 
 @tool("core", annotations=ToolAnnotations(title="Type into element", **ACT))
@@ -860,7 +841,7 @@ def browser_type(
         }
     else:
         return {"error": "mode must be type, fill, or editable"}
-    return _post_action(endpoint, _first(_confirm(_with_tab(_target(body, ref, element), tab_id), confirm_token), first),
+    return _post_action(endpoint, _request_body(body, tab_id, ref, element, confirm_token, first),
                         wait, timeout, expect)
 
 
@@ -881,7 +862,7 @@ def browser_scroll(
     """
     body = {"direction": direction, "amount": amount}
     if selector: body["selector"] = selector
-    return _post_action("/api/scroll", _first(_with_tab(_target(body, ref, element), tab_id), first), expect=expect)
+    return _post_action("/api/scroll", _request_body(body, tab_id, ref, element, first=first), expect=expect)
 
 
 @tool("core", annotations=ToolAnnotations(title="Hover", **ACT))
@@ -891,7 +872,7 @@ def browser_hover(
 ) -> dict:
     """Hover over an element on the page. ok=true means dispatched; verify with expect
     (see browser_click)."""
-    return _post_action("/api/hover", _first(_with_tab(_target({"selector": selector}, ref, element), tab_id), first),
+    return _post_action("/api/hover", _request_body({"selector": selector}, tab_id, ref, element, first=first),
                         wait, timeout, expect)
 
 
@@ -903,7 +884,7 @@ def browser_find(
     tab_id: TabId = None,
 ) -> dict:
     """Find elements on the page using natural language description."""
-    return _post("/api/find", _with_tab({"query": query}, tab_id))
+    return _post("/api/find", _request_body({"query": query}, tab_id))
 
 
 @tool("core", annotations=ToolAnnotations(title="Execute JavaScript", **DESTRUCTIVE))
@@ -919,17 +900,17 @@ def browser_js(
     """Execute JavaScript in the current page context. Needs the developer extension build;
     the signed build returns an error (browser_status reports extension_build).
     confirm_token: see browser_click."""
-    body = _confirm({"code": code}, confirm_token)
+    body = _request_body({"code": code}, confirm_token=confirm_token)
     if full:
         body["full"] = True
-        return _post("/api/js", _with_tab(body, tab_id), timeout=180)
-    return _post("/api/js", _with_tab(body, tab_id))
+        return _post("/api/js", _request_body(body, tab_id), timeout=180)
+    return _post("/api/js", _request_body(body, tab_id))
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Highlight", **ACT))
 def browser_highlight(selector: str = "", tab_id: TabId = None, ref: str | None = None, element: str | None = None) -> dict:
     """Highlight an element (ref/selector, see browser_click) with a visual overlay."""
-    return _post("/api/highlight", _with_tab(_target({"selector": selector}, ref, element), tab_id))
+    return _post("/api/highlight", _request_body({"selector": selector}, tab_id, ref, element))
 
 
 # -- Wait ---------------------------------------------------------
@@ -953,8 +934,8 @@ def browser_handle_dialog(
     navigation, with native behavior until the policy is restored asynchronously.
     Native dialogs and scripts holding original functions cannot be answered.
     """
-    return _post("/api/handle-dialog", _confirm(_with_tab(
-        {"accept": accept, "prompt_text": prompt_text}, tab_id), confirm_token))
+    return _post("/api/handle-dialog", _request_body(
+        {"accept": accept, "prompt_text": prompt_text}, tab_id, confirm_token=confirm_token))
 
 
 @tool("core", annotations=ToolAnnotations(title="Wait for condition", **DESTRUCTIVE))
@@ -992,7 +973,7 @@ def browser_wait_for(
     if element_condition:
         endpoint = "/api/wait-for-element"
         body.update(selector=selector, pollInterval=200)
-        _target(body, ref, element)
+        _request_body(body, ref=ref, element=element)
     elif text is not None or text_gone is not None:
         if (text if text is not None else text_gone) == "":
             return {"error": "text/text_gone must be non-empty"}
@@ -1001,14 +982,14 @@ def browser_wait_for(
     elif js is not None:
         endpoint = "/api/wait-for-result"
         body.update(code=js, pollInterval=500)
-        _confirm(body, confirm_token)
+        _request_body(body, confirm_token=confirm_token)
     elif url is not None or title is not None:
         endpoint = "/api/wait-for-url" if url is not None else "/api/wait-for-title"
         body["pattern"] = url if url is not None else title
     else:
         endpoint = "/api/wait-for-network-idle"
         body["idleMs"] = 500
-    return _post(endpoint, _with_tab(body, tab_id), timeout=timeout / 1000 + 10)
+    return _post(endpoint, _request_body(body, tab_id), timeout=timeout / 1000 + 10)
 
 
 @tool("core", annotations=ToolAnnotations(title="List workflows", **READ))
@@ -1157,7 +1138,7 @@ def browser_query(
     """
     body = {"selector": selector, "limit": limit}
     if fields: body["fields"] = fields
-    return _post("/api/query", _with_tab(body, tab_id))
+    return _post("/api/query", _request_body(body, tab_id))
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Read element HTML", **READ))
@@ -1166,31 +1147,31 @@ def browser_html(
     ref: str | None = None, element: str | None = None,
 ) -> dict:
     """Return the outerHTML of an element (ref/selector, see browser_click). Cap 100KB."""
-    return _post("/api/html", _with_tab(_target({"selector": selector}, ref, element), tab_id))
+    return _post("/api/html", _request_body({"selector": selector}, tab_id, ref, element))
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Read page links", **READ))
 def browser_links(internal_only: bool = False, tab_id: TabId = None) -> dict:
     """Return every anchor with href + text. Useful as a crawler primitive."""
-    return _post("/api/links", _with_tab({"internalOnly": internal_only}, tab_id))
+    return _post("/api/links", _request_body({"internalOnly": internal_only}, tab_id))
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Read page images", **READ))
 def browser_images(tab_id: TabId = None) -> dict:
     """Return every <img> with src, alt, and natural dimensions."""
-    return _post("/api/images", _with_tab({}, tab_id))
+    return _post("/api/images", _request_body({}, tab_id))
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Read page metadata", **READ))
 def browser_meta(tab_id: TabId = None) -> dict:
     """Return all meta tags + link rels (canonical, RSS, icons, etc.)."""
-    return _post("/api/meta", _with_tab({}, tab_id))
+    return _post("/api/meta", _request_body({}, tab_id))
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Read structured page data", **READ))
 def browser_structured_data(tab_id: TabId = None) -> dict:
     """Extract JSON-LD blocks, OpenGraph (og:*), and Twitter card meta."""
-    return _post("/api/structured-data", _with_tab({}, tab_id))
+    return _post("/api/structured-data", _request_body({}, tab_id))
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Read element bounds", **READ))
@@ -1200,7 +1181,7 @@ def browser_bounds(
 ) -> dict:
     """Return getBoundingClientRect + viewport/page sizes for an element (ref/selector, see
     browser_click)."""
-    return _post("/api/bounds", _with_tab(_target({"selector": selector}, ref, element), tab_id))
+    return _post("/api/bounds", _request_body({"selector": selector}, tab_id, ref, element))
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Computed style", **READ))
@@ -1212,7 +1193,7 @@ def browser_computed_style(
     layout-relevant set."""
     body = {"selector": selector}
     if properties: body["properties"] = properties
-    return _post("/api/computed-style", _with_tab(_target(body, ref, element), tab_id))
+    return _post("/api/computed-style", _request_body(body, tab_id, ref, element))
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Extract readable article", **READ))
@@ -1223,7 +1204,7 @@ def browser_readability(tab_id: TabId = None) -> dict:
     by text density × paragraph count × inverse link density, strip nav/aside,
     return the winner. Falls back to densest section/div, then body.
     """
-    return _post("/api/readability", _with_tab({}, tab_id))
+    return _post("/api/readability", _request_body({}, tab_id))
 
 
 @tool("core", annotations=ToolAnnotations(title="Read page as Markdown", **READ))
@@ -1234,20 +1215,20 @@ def browser_markdown(
     """Convert the page (or a selector/ref subtree, see browser_click) to Markdown. Cap 80KB."""
     body = {}
     if selector: body["selector"] = selector
-    return _post("/api/markdown", _with_tab(_target(body, ref, element), tab_id))
+    return _post("/api/markdown", _request_body(body, tab_id, ref, element))
 
 
 @tool("devtools", annotations=ToolAnnotations(title="List page iframes", **READ))
 def browser_iframes(tab_id: TabId = None) -> dict:
     """List all iframes with src + same-origin/accessible flags."""
-    return _post("/api/iframes", _with_tab({}, tab_id))
+    return _post("/api/iframes", _request_body({}, tab_id))
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Explain selector", **READ))
 def browser_explain_selector(selector: str, tab_id: TabId = None) -> dict:
     """Diagnose a CSS selector: match count, sample matches, suggestions for
     a more-specific selector if you got too many."""
-    return _post("/api/explain-selector", _with_tab({"selector": selector}, tab_id))
+    return _post("/api/explain-selector", _request_body({"selector": selector}, tab_id))
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -1264,7 +1245,7 @@ def browser_select_option(
     `by_text=True` to match by visible text. ok=true means dispatched; verify with expect
     (see browser_click).
     """
-    return _post_action("/api/select-option", _first(_confirm(_with_tab(_target({"selector": selector, "value": value, "byText": by_text}, ref, element), tab_id), confirm_token), first),
+    return _post_action("/api/select-option", _request_body({"selector": selector, "value": value, "byText": by_text}, tab_id, ref, element, confirm_token, first),
                         wait, timeout, expect)
 
 
@@ -1277,7 +1258,7 @@ def browser_check(
     """Set a checkbox or radio's checked state; with wait, hidden native inputs need not render.
     ok=true means dispatched; verify with expect (see browser_click).
     """
-    return _post_action("/api/check", _first(_confirm(_with_tab(_target({"selector": selector, "checked": checked}, ref, element), tab_id), confirm_token), first),
+    return _post_action("/api/check", _request_body({"selector": selector, "checked": checked}, tab_id, ref, element, confirm_token, first),
                         wait, timeout, expect)
 
 
@@ -1287,7 +1268,7 @@ def browser_focus(
     first: bool = False,
 ) -> dict:
     """Focus an element (ref/selector, see browser_click)."""
-    return _post("/api/focus", _first(_with_tab(_target({"selector": selector}, ref, element), tab_id), first))
+    return _post("/api/focus", _request_body({"selector": selector}, tab_id, ref, element, first=first))
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Blur", **ACT))
@@ -1298,7 +1279,7 @@ def browser_blur(
     """Blur an element (ref/selector, see browser_click), else the active element."""
     body = {}
     if selector: body["selector"] = selector
-    return _post("/api/blur", _first(_with_tab(_target(body, ref, element), tab_id), first))
+    return _post("/api/blur", _request_body(body, tab_id, ref, element, first=first))
 
 
 @tool("core", annotations=ToolAnnotations(title="Keypress", **ACT))
@@ -1324,7 +1305,7 @@ def browser_keypress(
     if selector: body["selector"] = selector
     if modifiers: body["modifiers"] = modifiers
     if text is not None: body["text"] = text
-    return _post_action("/api/keypress", _first(_confirm(_with_tab(_target(body, ref, element), tab_id), confirm_token), first),
+    return _post_action("/api/keypress", _request_body(body, tab_id, ref, element, confirm_token, first),
                         wait, timeout, expect)
 
 
@@ -1337,7 +1318,7 @@ def browser_double_click(
     """Dispatch a synthetic double-click on the matched element. ok=true means dispatched;
     verify with expect (see browser_click).
     """
-    return _post_action("/api/double-click", _first(_confirm(_with_tab(_target({"selector": selector}, ref, element), tab_id), confirm_token), first),
+    return _post_action("/api/double-click", _request_body({"selector": selector}, tab_id, ref, element, confirm_token, first),
                         wait, timeout, expect)
 
 
@@ -1355,7 +1336,7 @@ def browser_submit_form(
     """
     body = {}
     if selector: body["selector"] = selector
-    return _post_action("/api/submit-form", _first(_confirm(_with_tab(_target(body, ref, element), tab_id), confirm_token), first),
+    return _post_action("/api/submit-form", _request_body(body, tab_id, ref, element, confirm_token, first),
                         expect=expect)
 
 
@@ -1380,7 +1361,7 @@ def browser_form_fill(
     (that would empty its group): set another radio in the group to true.
     False on an unselected radio is a no-op.
     """
-    return _post_action("/api/form-fill", _first(_confirm(_with_tab({"fields": fields}, tab_id), confirm_token), first),
+    return _post_action("/api/form-fill", _request_body({"fields": fields}, tab_id, confirm_token=confirm_token, first=first),
                         expect=expect)
 
 
@@ -1396,7 +1377,7 @@ def browser_drag(
     ref identifies the source; to_ref identifies the destination; wait covers both.
     ok=true means dispatched; verify with expect (see browser_click).
     """
-    return _post_action("/api/drag", _first(_confirm(_with_tab(_target({"from": from_selector, "to": to_selector, "toRef": to_ref}, ref, element), tab_id), confirm_token), first),
+    return _post_action("/api/drag", _request_body({"from": from_selector, "to": to_selector, "toRef": to_ref}, tab_id, ref, element, confirm_token, first),
                         wait, timeout, expect)
 
 
@@ -1412,7 +1393,7 @@ def browser_click_and_wait_navigation(
     tabs.onUpdated(status='complete')."""
     return _post(
         "/api/click-and-wait-navigation",
-        _first(_confirm(_with_tab(_target({"selector": selector, "timeout": timeout}, ref, element), tab_id), confirm_token), first),
+        _request_body({"selector": selector, "timeout": timeout}, tab_id, ref, element, confirm_token, first),
         timeout=(timeout / 1000) + 10,
     )
 
@@ -1444,7 +1425,7 @@ def browser_upload_file(
     body = {"paths": path if isinstance(path, list) else [path], "mode": mode}
     if selector:
         body["selector"] = selector
-    return _post("/api/upload-file", _first(_confirm(_with_tab(body, tab_id), confirm_token), first), timeout=320)
+    return _post("/api/upload-file", _request_body(body, tab_id, confirm_token=confirm_token, first=first), timeout=320)
 
 
 def _screenshot_result(r: dict, save_to: str | None, data_url: bool):
@@ -1473,7 +1454,7 @@ def _screenshot_result(r: dict, save_to: str | None, data_url: bool):
 @tool("devtools", annotations=ToolAnnotations(title="Full page metrics", **READ))
 def browser_full_page_metrics(tab_id: TabId = None) -> dict:
     """Return document/viewport sizes + scroll position + devicePixelRatio."""
-    return _post("/api/full-page-metrics", _with_tab({}, tab_id))
+    return _post("/api/full-page-metrics", _request_body({}, tab_id))
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -1483,51 +1464,51 @@ def browser_full_page_metrics(tab_id: TabId = None) -> dict:
 @tool("tabs", annotations=ToolAnnotations(title="Pin tab", **IDEMPOTENT_ACT))
 def browser_pin_tab(pinned: bool = True, tab_id: TabId = None) -> dict:
     """Pin or unpin a tab."""
-    return _post("/api/pin-tab", _with_tab({"pinned": pinned}, tab_id))
+    return _post("/api/pin-tab", _request_body({"pinned": pinned}, tab_id))
 
 
 @tool("tabs", annotations=ToolAnnotations(title="Mute tab", **IDEMPOTENT_ACT))
 def browser_mute_tab(muted: bool = True, tab_id: TabId = None) -> dict:
     """Mute or unmute a tab."""
-    return _post("/api/mute-tab", _with_tab({"muted": muted}, tab_id))
+    return _post("/api/mute-tab", _request_body({"muted": muted}, tab_id))
 
 
 @tool("tabs", annotations=ToolAnnotations(title="Duplicate tab", **ACT))
 def browser_duplicate_tab(tab_id: TabId = None) -> dict:
     """Duplicate a tab. Returns the new tab id."""
-    return _post("/api/duplicate-tab", _with_tab({}, tab_id))
+    return _post("/api/duplicate-tab", _request_body({}, tab_id))
 
 
 @tool("tabs", annotations=ToolAnnotations(title="Reload tab", **ACT))
 def browser_reload_tab(bypass_cache: bool = False, tab_id: TabId = None, expect: dict | None = None) -> dict:
     """Reload a tab. Pass `bypass_cache=True` for a hard reload.
     ok=true means dispatched; verify with expect (see browser_click)."""
-    return _post_action("/api/reload-tab", _with_tab({"bypassCache": bypass_cache}, tab_id), expect=expect)
+    return _post_action("/api/reload-tab", _request_body({"bypassCache": bypass_cache}, tab_id), expect=expect)
 
 
 @tool("core", annotations=ToolAnnotations(title="Back", **ACT))
 def browser_back(tab_id: TabId = None, expect: dict | None = None) -> dict:
     """Go back in history (browser back button). ok=true means dispatched; verify with
     expect (see browser_click)."""
-    return _post_action("/api/back", _with_tab({}, tab_id), expect=expect)
+    return _post_action("/api/back", _request_body({}, tab_id), expect=expect)
 
 
 @tool("core", annotations=ToolAnnotations(title="Forward", **ACT))
 def browser_forward(tab_id: TabId = None, expect: dict | None = None) -> dict:
     """Go forward in history. ok=true means dispatched; verify with expect (see browser_click)."""
-    return _post_action("/api/forward", _with_tab({}, tab_id), expect=expect)
+    return _post_action("/api/forward", _request_body({}, tab_id), expect=expect)
 
 
 @tool("tabs", annotations=ToolAnnotations(title="Get zoom", **READ))
 def browser_get_zoom(tab_id: TabId = None) -> dict:
     """Return the current zoom factor (1.0 = 100%)."""
-    return _post("/api/get-zoom", _with_tab({}, tab_id))
+    return _post("/api/get-zoom", _request_body({}, tab_id))
 
 
 @tool("tabs", annotations=ToolAnnotations(title="Set zoom", **IDEMPOTENT_ACT))
 def browser_set_zoom(factor: float, tab_id: TabId = None) -> dict:
     """Set zoom factor. 0.3 to 5.0 typical; 1.0 = 100%."""
-    return _post("/api/set-zoom", _with_tab({"factor": factor}, tab_id))
+    return _post("/api/set-zoom", _request_body({"factor": factor}, tab_id))
 
 
 @tool("windows", annotations=ToolAnnotations(title="List browser windows", **READ))
@@ -1542,14 +1523,14 @@ def browser_create_window(url: str | None = None, incognito: bool = False,
     """Open a new browser window. Pass a URL to load it at start."""
     body = {"incognito": incognito}
     if url: body["url"] = url
-    return _post("/api/create-window", _confirm(body, confirm_token))
+    return _post("/api/create-window", _request_body(body, confirm_token=confirm_token))
 
 
 @tool("windows", annotations=ToolAnnotations(title="Close window", **DESTRUCTIVE))
 def browser_close_window(window_id: int, confirm_token: str | None = None) -> dict:
     """Close a browser window by ID (from browser_windows); one with tabs the agent did not
     open is refused (code user_tab) unless the user approves (confirm_token)."""
-    return _post("/api/close-window", _confirm({"windowId": window_id}, confirm_token))
+    return _post("/api/close-window", _request_body({"windowId": window_id}, confirm_token=confirm_token))
 
 
 @tool("windows", annotations=ToolAnnotations(title="Focus window", **IDEMPOTENT_ACT))
@@ -1598,7 +1579,7 @@ def browser_cookies(
     body = {"op": op}
     for k, v in [("url", url), ("name", name), ("value", value), ("domain", domain), ("path", path), ("secure", secure)]:
         if v is not None: body[k] = v
-    return _post("/api/cookies", _confirm(body, confirm_token))
+    return _post("/api/cookies", _request_body(body, confirm_token=confirm_token))
 
 
 @tool("storage", annotations=ToolAnnotations(title="Manage page storage", **DESTRUCTIVE))
@@ -1617,7 +1598,7 @@ def browser_storage(
     body = {"kind": kind, "op": op}
     if key is not None: body["key"] = key
     if value is not None: body["value"] = value
-    return _post("/api/storage", _confirm(_with_tab(body, tab_id), confirm_token))
+    return _post("/api/storage", _request_body(body, tab_id, confirm_token=confirm_token))
 
 
 @tool("storage", annotations=ToolAnnotations(title="Read or write clipboard", **DESTRUCTIVE))
@@ -1629,7 +1610,7 @@ def browser_clipboard(
     """Read or write the system clipboard."""
     body = {"op": op}
     if text is not None: body["text"] = text
-    return _post("/api/clipboard", _confirm(body, confirm_token))
+    return _post("/api/clipboard", _request_body(body, confirm_token=confirm_token))
 
 
 @tool("network", annotations=ToolAnnotations(title="Manage downloads", **DESTRUCTIVE))
@@ -1645,7 +1626,7 @@ def browser_downloads(
     if url: body["url"] = url
     if filename: body["filename"] = filename
     if query: body["query"] = query
-    return _post("/api/downloads", _confirm(body, confirm_token))
+    return _post("/api/downloads", _request_body(body, confirm_token=confirm_token))
 
 
 @tool("storage", annotations=ToolAnnotations(title="Clear browsing data", **DESTRUCTIVE))
@@ -1689,7 +1670,7 @@ def browser_capture_network(
     tab_id: TabId = None,
 ) -> dict:
     """Capture network requests via the page's PerformanceObserver."""
-    return _post("/api/capture-network", _with_tab({"op": op, "since": since}, tab_id))
+    return _post("/api/capture-network", _request_body({"op": op, "since": since}, tab_id))
 
 
 @tool("core", annotations=ToolAnnotations(title="Watch console", **ACT))
@@ -1697,7 +1678,7 @@ def browser_watch_console(enabled: bool = True, tab_id: TabId = None) -> dict:
     """Toggle console capture on a tab. Once enabled, browser console
     messages (log/info/warn/error/debug + window errors) are buffered up to
     500 entries; retrieve via browser_console_logs."""
-    return _post("/api/watch-console", _with_tab({"enabled": enabled}, tab_id))
+    return _post("/api/watch-console", _request_body({"enabled": enabled}, tab_id))
 
 
 @tool("core", annotations=ToolAnnotations(title="Console logs", **READ))
@@ -1708,7 +1689,7 @@ def browser_console_logs(
     body = {}
     if since is not None: body["since"] = since
     if level: body["level"] = level
-    return _post("/api/console-logs", _with_tab(body, tab_id))
+    return _post("/api/console-logs", _request_body(body, tab_id))
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -1751,8 +1732,8 @@ def browser_sync_barrier(
     """
     return _post(
         "/api/sync-barrier",
-        _confirm({"tabIds": tab_ids, "predicate": predicate, "timeout": timeout, "pollInterval": poll_interval},
-                 confirm_token),
+        _request_body({"tabIds": tab_ids, "predicate": predicate, "timeout": timeout, "pollInterval": poll_interval},
+                      confirm_token=confirm_token),
         timeout=(timeout / 1000) + 10,
     )
 
@@ -1822,13 +1803,13 @@ def browser_save_session(
     Use case: log into a service interactively once, save the session,
     then have parallel agents load it for authenticated work.
     """
-    return _post("/api/save-session", _confirm({"name": name, "urls": urls or []}, confirm_token), timeout=120)
+    return _post("/api/save-session", _request_body({"name": name, "urls": urls or []}, confirm_token=confirm_token), timeout=120)
 
 
 @tool("session", annotations=ToolAnnotations(title="Load session", **DESTRUCTIVE))
 def browser_load_session(name: str, confirm_token: str | None = None) -> dict:
     """Restore cookies + localStorage from a previously saved session."""
-    return _post("/api/load-session", _confirm({"name": name}, confirm_token), timeout=120)
+    return _post("/api/load-session", _request_body({"name": name}, confirm_token=confirm_token), timeout=120)
 
 
 @tool("session", annotations=ToolAnnotations(title="List sessions", **READ))
