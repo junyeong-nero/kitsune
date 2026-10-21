@@ -342,7 +342,8 @@ What it does not protect against:
 - **Typed values outside the bridge.** The bridge audit log (`browser_audit`)
   keeps the action, target, tab, timing and outcome of each write action but
   replaces typed text (`browser_type`, `browser_form_fill` values,
-  `browser_keypress` text) and stored secrets (`browser_cookies`,
+  `browser_keypress` text, `browser_select_option` values and
+  `browser_handle_dialog` prompt answers) and stored secrets (`browser_cookies`,
   `browser_storage` and `browser_clipboard` values) with `"[redacted]"`; see
   [Audit log](api-reference.md#audit-log). The page and the MCP client's own
   transcript still see whatever the agent sent.
@@ -425,6 +426,9 @@ uv sync
 uv run python -m unittest discover -s tests -q
 for test in tests/*.cjs; do node "$test"; done
 ```
+
+`tests/test_real_browser_opened_tabs.py` is skipped unless `KITSUNE_E2E_BROWSER` names a
+Firefox or Zen binary, which it runs headless with a temporary profile, HOME, and bridge.
 
 The Python regression suite covers the MCP tool surface, snapshots, navigation
 waits, and bridge lifecycle; the Node harnesses cover content-script behavior

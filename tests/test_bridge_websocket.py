@@ -140,6 +140,20 @@ class ExtensionWebSocketTests(unittest.IsolatedAsyncioTestCase):
                     await client.send(json.dumps({"id": sent["id"], "result": unknown}))
                     self.assertEqual(await command, {**unknown, "retryable": retryable})
 
+    async def test_error_page_stays_not_retryable_for_reads(self):
+        # #86: reading an unscriptable error page again fails the same way.
+        error_page = {"error": "The tab shows an HTTP 404 error response with no scriptable document.",
+                      "code": "error_page", "retryable": False, "hint": "navigate",
+                      "state": {"tabId": 7, "httpStatus": 404}}
+        async with self.connect() as client:
+            await self.wait_until(lambda: bridge.extension_ws is not None)
+            for action in ("getSnapshot", "getPageInfo", "click"):
+                with self.subTest(action=action):
+                    command = asyncio.create_task(bridge._send_to_extension_raw(action, {"tabId": 7}, timeout=5))
+                    sent = json.loads(await client.recv())
+                    await client.send(json.dumps({"id": sent["id"], "result": error_page}))
+                    self.assertEqual(await command, error_page)
+
     async def test_shutdown_closes_extension_and_fails_pending_commands(self):
         async with self.connect() as client:
             await self.wait_until(lambda: bridge.extension_ws is not None)

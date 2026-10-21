@@ -47,7 +47,33 @@ def _command_wait_seconds(cmd):
         return max((batch_wait_seconds(seq) for seq in cmd.get("sequences", [])), default=0)
     if action == "sequence":
         return batch_wait_seconds(cmd.get("do", []))
+    if action == "retry":
+        return _retry_wait_seconds(cmd)
+    if action == "if":
+        # Only one branch runs.
+        return max(batch_wait_seconds(cmd.get("then", [])), batch_wait_seconds(cmd.get("else", [])))
+    if action == "while":
+        return max(0, _int(cmd.get("maxIterations"), 20)) * batch_wait_seconds(cmd.get("do", []))
+    if action == "try":
+        return batch_wait_seconds(cmd.get("do", [])) + batch_wait_seconds(cmd.get("catch", []))
     return actionability_wait_seconds(action, cmd)
+
+
+def _retry_wait_seconds(cmd):
+    # Every attempt may wait in full, and a failed attempt sleeps backoffMs * 2**i after it.
+    attempts = max(1, _int(cmd.get("maxAttempts"), 3))
+    backoff_ms = max(0, _int(cmd.get("backoffMs"), 500))
+    return attempts * command_wait_seconds(cmd.get("command") or {}) + backoff_ms * (2 ** attempts - 1) / 1000
+
+
+def _int(value, default):
+    """A count as the bridge parses it; the default when missing or unparseable."""
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def batch_wait_seconds(commands):

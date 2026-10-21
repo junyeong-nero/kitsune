@@ -83,6 +83,21 @@ class BridgeActionWaitTests(unittest.TestCase):
         self.assertEqual(batch([{"action": "click", "selector": f"#b{i}", "wait": True,
                                  "timeout": 30000} for i in range(20)]), 615)
 
+    def test_retry_http_deadline_covers_every_attempt(self):
+        def retry(body):
+            handler = bridge.BridgeHandler.__new__(bridge.BridgeHandler)
+            handler.read_body = Mock(return_value=body)
+            handler.send_json = Mock()
+            handler.run_async = Mock(return_value={"ok": True})
+            handler.handle_retry()
+            handler.run_async.call_args.args[0].close()
+            return handler.run_async.call_args.kwargs["timeout"]
+
+        self.assertEqual(retry({"command": {"action": "click", "selector": "#go"}}), 35)
+        # Five 10s waits plus 0.5+1+2+4+8s of backoff outlast the old fixed 35s.
+        self.assertEqual(retry({"command": {"action": "click", "selector": "#go", "wait": True},
+                                "maxAttempts": 5, "backoffMs": 500}), 80.5)
+
 
 class ToolActionWaitTests(unittest.TestCase):
     def test_tools_are_immediate_by_default(self):
@@ -169,6 +184,36 @@ class ToolActionWaitTests(unittest.TestCase):
             self.assertEqual(post.call_args.kwargs["timeout"], 615)
             server.browser_parallel([clicks])
             self.assertEqual(post.call_args.kwargs["timeout"], 300)
+
+    def test_batch_timeout_counts_control_flow_bodies(self):
+        click = {"action": "click", "selector": "#go", "wait": True}
+        with patch.object(server, "_post", return_value={"results": []}) as post:
+            for cmd, wait_s in [
+                # Three attempts of a 10s wait, plus 0.5+1+2s of backoff.
+                ({"action": "retry", "command": click}, 33.5),
+                ({"action": "retry", "command": click, "maxAttempts": 1, "backoffMs": 0}, 10),
+                ({"action": "retry", "command": click, "maxAttempts": "x", "backoffMs": -1}, 30),
+                ({"action": "if", "condition": "1", "then": [click],
+                  "else": [{"action": "waitForElement", "selector": "#a", "timeout": 20000}]}, 20),
+                ({"action": "while", "condition": "1", "maxIterations": 4,
+                  "do": [{**click, "timeout": 5000}]}, 20),
+                ({"action": "while", "condition": "1", "do": [{"action": "sleep", "ms": 500}]}, 10),
+                ({"action": "try", "do": [click], "catch": [{"action": "sleep", "ms": 2000}]}, 12),
+                ({"action": "retry", "command": {"action": "click", "selector": "#go"}}, 3.5),
+            ]:
+                with self.subTest(action=cmd["action"], wait_s=wait_s):
+                    server.browser_batch([cmd])
+                    self.assertEqual(post.call_args.kwargs["timeout"], wait_s + 15)
+
+    def test_retry_timeout_covers_every_attempt(self):
+        with patch.object(server, "_post", return_value={"ok": True}) as post:
+            server.browser_retry({"action": "click", "selector": "#go"})
+            self.assertEqual(post.call_args.kwargs["timeout"], 60)
+            server.browser_retry({"action": "click", "selector": "#go", "wait": True}, max_attempts=5)
+            post.assert_called_with("/api/retry", {
+                "command": {"action": "click", "selector": "#go", "wait": True},
+                "maxAttempts": 5, "backoffMs": 500,
+            }, timeout=80.5)
 
 
 if __name__ == "__main__":

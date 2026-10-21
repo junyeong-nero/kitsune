@@ -144,7 +144,8 @@ async function testNotRenderedWarnings() {
 
 function event() {
   const listeners = new Set();
-  return { addListener: fn => listeners.add(fn), removeListener: fn => listeners.delete(fn) };
+  return { addListener: fn => listeners.add(fn), removeListener: fn => listeners.delete(fn),
+    fire: (...args) => listeners.forEach(fn => fn(...args)) };
 }
 
 function background(tabs, content) {
@@ -154,11 +155,11 @@ function background(tabs, content) {
   const missing = id => new Error(`Invalid tab ID: ${id}`);
   const browser = {
     tabs: {
-      onUpdated: event(), onRemoved: event(),
+      onCreated: event(), onUpdated: event(), onRemoved: event(),
       query: async () => Object.values(tabs).filter(tab => tab.active).map(tab => ({ ...tab })),
       get: async id => { if (!tabs[id]) throw missing(id); return { ...tabs[id] }; },
       update: async id => { if (!tabs[id]) throw missing(id); return { ...tabs[id] }; },
-      remove: async id => { if (!tabs[id]) throw missing(id); delete tabs[id]; },
+      remove: async id => { if (!tabs[id]) throw missing(id); delete tabs[id]; browser.tabs.onRemoved.fire(id); },
       sendMessage: async (id, msg) => {
         if (msg.action === 'ping') {
           if (injectError) throw new Error('Could not establish connection. Receiving end does not exist.');
@@ -170,6 +171,7 @@ function background(tabs, content) {
       executeScript: async id => { injected.push(id); if (injectError) throw new Error(injectError); },
     },
     runtime: { onMessage: event(), onStartup: event(), onInstalled: event() },
+    webRequest: { onHeadersReceived: event(), onBeforeRequest: event() },
   };
   const context = vm.createContext({
     browser, URL, setTimeout, clearTimeout, setInterval, clearInterval,
@@ -179,6 +181,8 @@ function background(tabs, content) {
   return {
     sent, injected,
     failInjection: message => { injectError = message; },
+    response: (tabId, url, statusCode) =>
+      browser.webRequest.onHeadersReceived.fire({ tabId, url, statusCode, type: 'main_frame' }),
     send: command => context.handleCommand({ includeSnapshot: false, ...command })
       .then(result => JSON.parse(JSON.stringify(result))),
   };
@@ -259,6 +263,53 @@ async function testBackgroundErrors() {
   assert.match(discarded.hint, /browser_wake_tab/);
 }
 
+async function testEmptyErrorPage() {
+  const tabs = { 1: page(1, { active: true }), 2: page(2, { url: 'http://127.0.0.1:8000/nf-empty', title: '' }),
+    3: page(3, { url: 'https://example.com/blocked', title: 'Blocked' }), 4: page(4, { url: 'file:///tmp/x.html' }) };
+  const h = background(tabs, () => ({ ok: true }));
+  h.failInjection('Missing host permission for the tab');
+  h.response(2, 'http://127.0.0.1:8000/nf-empty', 404);
+  h.response(3, 'https://example.com/elsewhere', 500);
+
+  // An empty 404: the browser shows its own document, so reads fail the same way until navigation.
+  for (const action of ['getSnapshot', 'getPageInfo', 'getAccessibilityTree', 'click']) {
+    const result = await h.send({ action, tabId: 2, selector: '#go' });
+    assert.equal(result.code, 'error_page', action);
+    assert.equal(result.retryable, false, 'retrying cannot succeed');
+    assert.equal(result.error, 'The tab shows an HTTP 404 error response with no scriptable document. '
+      + 'Cannot inject content script: Missing host permission for the tab');
+    assert.deepEqual(result.state, { tabId: 2, url: 'http://127.0.0.1:8000/nf-empty', status: 'complete',
+      title: '', httpStatus: 404 });
+    assert.doesNotMatch(result.hint, /browser_snapshot/, 'a snapshot would fail the same way');
+  }
+  assert.deepEqual(h.sent, [], 'nothing reached the page');
+
+  // Page text of an error response is empty, not an error; a selector cannot match.
+  const empty = { text: '', empty: true, httpStatus: 404, tabId: 2, url: 'http://127.0.0.1:8000/nf-empty', title: '' };
+  assert.deepEqual(await h.send({ action: 'getPageText', tabId: 2 }), empty);
+  assert.deepEqual(await h.send({ action: 'getPageTextFromTab', tabId: 2 }), empty);
+  assert.equal((await h.send({ action: 'getPageText', tabId: 2, selector: 'main' })).code, 'error_page');
+
+  // Without an observed error status for this URL, the code stays but no status is claimed.
+  for (const action of ['getPageText', 'getSnapshot']) {
+    const unknown = await h.send({ action, tabId: 3 });
+    assert.deepEqual([unknown.code, unknown.retryable, unknown.state.httpStatus, unknown.state.title],
+      ['error_page', false, undefined, 'Blocked'], action);
+    assert.match(unknown.error, /^The tab shows a page with no scriptable document\. Cannot inject/);
+  }
+
+  // Only a loaded http(s) page is an error page.
+  assert.equal((await h.send({ action: 'getSnapshot', tabId: 4 })).code, 'content_unavailable');
+  tabs[2].status = 'loading';
+  assert.equal((await h.send({ action: 'getSnapshot', tabId: 2 })).code, 'navigating');
+  tabs[2].status = 'complete';
+
+  // Statuses are per tab and forgotten when the tab closes.
+  await h.send({ action: 'closeTab', tabId: 2 });
+  tabs[2] = page(2, { url: 'http://127.0.0.1:8000/nf-empty' });
+  assert.equal((await h.send({ action: 'getSnapshot', tabId: 2 })).state.httpStatus, undefined);
+}
+
 async function testFocusChangeKeepsTarget() {
   const tabs = { 1: page(1, { active: true }), 2: page(2) };
   const h = background(tabs, (id, msg) => {
@@ -279,6 +330,7 @@ async function testFocusChangeKeepsTarget() {
   await testContentErrors();
   await testNotRenderedWarnings();
   await testBackgroundErrors();
+  await testEmptyErrorPage();
   await testFocusChangeKeepsTarget();
   console.log('action_errors: all tests passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

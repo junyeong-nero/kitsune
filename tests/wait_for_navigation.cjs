@@ -29,7 +29,7 @@ function harness() {
   let gets = 0;
   const browser = {
     tabs: {
-      onUpdated, onRemoved,
+      onCreated: event(), onUpdated, onRemoved,
       query: async () => tab ? [{ ...tab }] : [],
       get: async id => { assert.equal(id, 7); gets++; return get(); },
       sendMessage: async () => { throw new Error('Could not establish connection. Receiving end does not exist.'); },
@@ -78,7 +78,7 @@ function harness() {
     },
     assertClean() {
       assert.equal(onUpdated.listeners.size, 0, 'onUpdated leaked');
-      assert.equal(onRemoved.listeners.size, 1, 'wait onRemoved leaked (dialog policy listener remains)');
+      assert.equal(onRemoved.listeners.size, 2, 'wait onRemoved leaked (dialog policy and opened-tab listeners remain)');
       assert.equal(timers.size, 0, 'timer leaked');
     },
   };

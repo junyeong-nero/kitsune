@@ -59,7 +59,7 @@ function harness(onCreate = () => {}) {
   };
   const browser = {
     tabs: {
-      onUpdated, onRemoved,
+      onCreated: event(), onUpdated, onRemoved,
       query: async () => tab ? [{ ...tab }] : [],
       create: async ({ url }) => {
         // Gecko creates the tab on about:blank and navigates it afterwards.
