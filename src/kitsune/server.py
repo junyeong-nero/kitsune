@@ -44,6 +44,21 @@ _unknown_caps = ENABLED_CAPS - CAPABILITY_GROUPS - {"all"}
 if _unknown_caps:
     raise ValueError(f"Unknown KITSUNE_CAPS: {', '.join(sorted(_unknown_caps))}")
 
+# Opt-in core subsets (KITSUNE_TOOL_PRESET); unset keeps the whole core group.
+# lean: the 14 tools browser-mcp-bench's read + draft tasks used (#31). It is an A/B
+# candidate, not a default; docs/guide.md#lean-tool-preset lists what it drops.
+TOOL_PRESETS = {
+    "lean": frozenset({
+        "browser_status", "browser_tabs", "browser_navigate", "browser_page_info",
+        "browser_page_text", "browser_snapshot", "browser_forms", "browser_dom",
+        "browser_find", "browser_screenshot", "browser_click", "browser_type",
+        "browser_select_option", "browser_form_fill",
+    }),
+}
+TOOL_PRESET = os.environ.get("KITSUNE_TOOL_PRESET", "").strip().lower() or None
+if TOOL_PRESET is not None and TOOL_PRESET not in TOOL_PRESETS:
+    raise ValueError(f"Unknown KITSUNE_TOOL_PRESET: {TOOL_PRESET}")
+
 
 def _failed(result) -> bool:
     """Whether a tool's own result reports failure: a non-empty top-level error or ok=false.
@@ -70,12 +85,15 @@ def _mcp_errors(function):
 def tool(group: str, annotations: ToolAnnotations | None = None):
     """Register a tool only when its capability group is enabled at startup.
 
+    A tool preset narrows the core group only; other enabled groups register in full.
     Only the MCP registration marks failures as errors; Python callers get the plain result.
     """
     if group not in CAPABILITY_GROUPS:
         raise ValueError(f"Unknown tool capability group: {group}")
 
     def decorate(function):
+        if group == "core" and TOOL_PRESET is not None and function.__name__ not in TOOL_PRESETS[TOOL_PRESET]:
+            return function
         if "all" in ENABLED_CAPS or group in ENABLED_CAPS:
             mcp.tool(annotations=annotations)(_mcp_errors(function))
         return function
