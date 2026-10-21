@@ -274,7 +274,7 @@ def _focus_browser_window(title="", process=""):
 
 _NO_SCHEDULE_ACTIONS = {"ping", "getTabs", "getWindows"}
 _GLOBAL_SCOPE_ACTIONS = {
-    "screenshot", "switchTab", "newTab", "closeTab", "trustedClick",
+    "screenshot", "switchTab", "restoreActiveTab", "newTab", "closeTab", "trustedClick",
     "reloadExtension", "createWindow", "closeWindow", "focusWindow",
     "moveTab", "detachTab", "elementScreenshot", "fullPageScreenshot",
     "cookies", "clipboard", "downloads", "clearBrowsingData", "intercept",

@@ -448,10 +448,10 @@ def browser_tabs(
     """List, open, close, or select tabs.
 
     list: always a fresh read of the browser's tabs; owned=true marks tabs the agent opened.
-    new: opens in the background (never shown); url defaults to about:blank; raw bypasses
-    the image viewer. Returns tabId immediately unless wait=True, which waits up to timeout
-    ms for the page to load and returns tabId, actual url (after redirects) and status. On
-    timeout the tab stays open and the result has ok=false, timedOut=true.
+    new: opens in the background (not shown; act on it with tab_id); url defaults to
+    about:blank; raw bypasses the image viewer. Returns tabId immediately unless wait=True,
+    which waits up to timeout ms for the page to load and returns tabId, actual url (after
+    redirects) and status. On timeout the tab stays open and the result has ok=false, timedOut=true.
     close/select: tab_id is required. force disarms beforeunload on close. close refuses
     a tab the agent did not open (code user_tab) unless the user approves (confirm_token).
     select switches the user's view: only when the user asks.
