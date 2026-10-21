@@ -166,6 +166,10 @@ async function testContent() {
 
   // Fill must remember the actual child input, rather than its non-semantic wrapper.
   context.document.querySelector = selector => selector === '#wrapper' ? form : null;
+  // Write actions count an #id selector's matches; keep them in step with querySelector below.
+  const queryAll = context.document.querySelectorAll;
+  context.document.querySelectorAll = selector =>
+    selector.startsWith('#') ? [context.document.querySelector(selector)].filter(Boolean) : queryAll(selector);
   form.querySelector = () => search;
   const filled = await bridge.handleCommand({ action: 'fill', selector: '#wrapper', value: 'updated' });
   assert.ok(filled.snapshot.includes(`[ref=${filled.target_ref}] [value="updated"]`));

@@ -1918,7 +1918,8 @@ async def _upload_files_async(body):
                       "start": start, "end": idx})
     sel, mode = body.get("selector"), body.get("mode") or "auto"
     r = await send_to_extension("uploadCommit", {"tabId": tab_id, "uploadId": uid, "selector": sel,
-                                                 "files": files, "mode": mode}, timeout=60)
+                                                 "files": files, "mode": mode, "first": bool(body.get("first"))},
+                                timeout=60)
     if isinstance(r, dict) and not r.get("error"):
         r.update({"tabId": tab_id, "chunks": idx, "bytes": total,
                   "seconds": round(time.time() - t0, 1)})

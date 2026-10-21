@@ -1,4 +1,4 @@
-"""Action targeting on a page with repeated controls, in a real browser (issue #133).
+"""Action targeting on a page with repeated controls, in a real browser (issues #133, #134).
 
 Opt-in and built on tests/real_browser_harness.py, which documents how to run it. The
 fixture is the wishlist page from #133: per-item delete forms above an add form. Its
@@ -145,6 +145,44 @@ class RealBrowserSubmitFormTargetTests(harness.RealBrowserTestCase):
         items, submissions = self.wait_for_submissions("unfilled", 1)
         self.assertEqual([path for path, _ in submissions], ["/wishlist/add"], submissions)
         self.assertEqual(items, [*ITEMS, ""], "existing items are kept")
+
+
+class RealBrowserStrictSelectorTests(harness.RealBrowserTestCase):
+    # The selector from #134, which matches both delete buttons and the add button.
+    SELECTOR = "form button, form input[type=submit]"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.site = WishlistSite()
+        cls.addClassCleanup(cls.site.stop)
+        super().setUpClass()
+
+    def fill_add_form(self, name):
+        tab = self.open_tab(self.site.url(name))
+        self.call("/api/form-fill", {"tabId": tab, "fields": {"상품명": NEW_ITEM}})
+        return tab
+
+    def test_selector_matching_three_buttons_is_ambiguous_and_clicks_nothing(self):
+        tab = self.fill_add_form("ambiguous")
+        result = self.call("/api/click", {"tabId": tab, "selector": self.SELECTOR})
+        self.assert_error(result, "ambiguous_target", False)
+        self.assertEqual(result["state"]["matches"], 3, result)
+        self.assertEqual([(c["role"], c["name"]) for c in result["state"]["candidates"]],
+                         [("button", "캠핑 랜턴 삭제"), ("button", "머그컵 삭제"), ("button", "추가")])
+        time.sleep(1)
+        self.assertEqual(self.site.state("ambiguous"), (ITEMS, []), "zero clicks: nothing submitted")
+
+    def test_first_true_clicks_the_first_match_exactly_once(self):
+        tab = self.fill_add_form("first")
+        result = self.assert_ok(self.call("/api/click", {"tabId": tab, "selector": self.SELECTOR, "first": True}))
+        self.assertEqual(result["text"], "캠핑 랜턴 삭제", result)
+        deadline = time.monotonic() + 10
+        while not self.site.state("first")[1] and time.monotonic() < deadline:
+            time.sleep(0.1)
+        time.sleep(1)  # a second click would have arrived by now
+        items, submissions = self.site.state("first")
+        self.assertEqual(submissions, [("/wishlist/delete", {"item": "캠핑 랜턴"})], "exactly one click")
+        self.assertEqual(items, ITEMS[1:])
 
 
 if __name__ == "__main__":
