@@ -1,4 +1,4 @@
-"""Compact MCP tool results (#136): unindented JSON and the trimmed browser_tabs list."""
+"""Compact MCP tool results (#136): unindented JSON, the trimmed browser_tabs list and its active page (#138)."""
 import asyncio
 import json
 import logging
@@ -140,6 +140,47 @@ class TabListTests(unittest.TestCase):
                       {"tabs": []}):
             with self.subTest(reply=reply):
                 self.assertEqual(self.list_tabs(reply), reply)
+
+
+class ActivePageTests(unittest.TestCase):
+    """browser_tabs list with include_active returns the active page in the same call (#138)."""
+    ACTIVE_PAGE = {**SNAPSHOT, "url": "https://ko.wikipedia.org/wiki/여우", "title": "여우 - 위키백과",
+                   "tabId": 5}
+
+    def list_tabs(self, tabs, page, **kwargs):
+        with patch.object(server, "_get", return_value=tabs) as get, \
+                patch.object(server, "_post", return_value=page) as post:
+            result = server.browser_tabs(**kwargs)
+        get.assert_called_once_with("/api/tabs")
+        return result, post
+
+    def test_include_active_adds_the_active_tab_text_snapshot(self):
+        result, post = self.list_tabs(TABS, self.ACTIVE_PAGE, include_active=True)
+        post.assert_called_once_with("/api/snapshot", {"text": True})
+        self.assertEqual(result, {**without_window_fields(TABS), "active_page": self.ACTIVE_PAGE})
+
+    def test_list_reads_no_page_by_default(self):
+        result, post = self.list_tabs(TABS, self.ACTIVE_PAGE)
+        post.assert_not_called()
+        self.assertNotIn("active_page", result)
+
+    def test_page_read_error_keeps_the_inventory(self):
+        error = {"error": "Cannot access this page", "code": "restricted_page"}
+        result, _ = self.list_tabs(TABS, error, include_active=True)
+        self.assertEqual(result, {**without_window_fields(TABS), "active_page": error})
+        self.assertFalse(server._failed(result))
+
+    def test_inventory_error_skips_the_page_read(self):
+        error = {"error": "Kitsune extension not connected", "code": "extension_disconnected"}
+        result, post = self.list_tabs(error, self.ACTIVE_PAGE, include_active=True)
+        post.assert_not_called()
+        self.assertEqual(result, error)
+
+    def test_include_active_is_ignored_by_other_actions(self):
+        with patch.object(server, "_post", return_value={"ok": True, "tabId": 9}) as post:
+            result = server.browser_tabs("new", include_active=True)
+        post.assert_called_once_with("/api/new-tab", {"url": "about:blank"})
+        self.assertEqual(result, {"ok": True, "tabId": 9})
 
 
 if __name__ == "__main__":

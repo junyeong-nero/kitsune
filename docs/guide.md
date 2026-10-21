@@ -112,6 +112,8 @@ returned with `isError: true`.
 For reading tasks, `browser_snapshot(text=True)` also returns visible text lines,
 URL, title and tab ID in one bounded call (see
 [`browser_snapshot`](api-reference.md#browser_snapshottab_idnone-selectornone-refnone-max_depthnone-textfalse)).
+To start a task, `browser_tabs(include_active=True)` returns the tab list with that read
+of the active tab as `active_page`.
 Set `KITSUNE_POST_ACTION_SNAPSHOT=0` in the **bridge daemon's environment** and
 restart the daemon to disable these automatic snapshots. Explicit snapshots
 remain available. This is a DOM-based accessibility approximation, not Firefox's
