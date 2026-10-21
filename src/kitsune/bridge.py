@@ -198,12 +198,6 @@ def _cache_set(key, data):
             del _cache[k]
 
 
-def _cache_clear(reason=None):
-    """Clear short-lived read cache after browser/page mutations."""
-    if _cache:
-        _cache.clear()
-
-
 def _focus_window_by_title(title):
     """Best-effort foreground focus for callers that explicitly ask for it."""
     if not sys.platform.startswith("win") or not title:
@@ -490,6 +484,12 @@ def _command_scope(action, params):
     return ("tab", tab_id)
 
 
+def _dequeue_scope(scope_name):
+    _scheduler_queued[scope_name] = max(0, _scheduler_queued.get(scope_name, 1) - 1)
+    if _scheduler_queued[scope_name] == 0:
+        _scheduler_queued.pop(scope_name, None)
+
+
 async def _run_in_command_scope(action, params, coro_factory):
     scope = _command_scope(action, params)
     if scope is None:
@@ -502,9 +502,7 @@ async def _run_in_command_scope(action, params, coro_factory):
     try:
         async with lock:
             async with _scheduler_gate_lease(scope):
-                _scheduler_queued[scope_name] = max(0, _scheduler_queued.get(scope_name, 1) - 1)
-                if _scheduler_queued[scope_name] == 0:
-                    _scheduler_queued.pop(scope_name, None)
+                _dequeue_scope(scope_name)
                 queued = False
                 _scheduler_active[scope_name] = action
                 try:
@@ -513,9 +511,7 @@ async def _run_in_command_scope(action, params, coro_factory):
                     _scheduler_active.pop(scope_name, None)
     finally:
         if queued:
-            _scheduler_queued[scope_name] = max(0, _scheduler_queued.get(scope_name, 1) - 1)
-            if _scheduler_queued[scope_name] == 0:
-                _scheduler_queued.pop(scope_name, None)
+            _dequeue_scope(scope_name)
 
 
 def _cleanup_tab_scheduler_state(tab_id):
@@ -795,6 +791,14 @@ _REPEAT_UNSAFE_ACTIONS = WRITE_ACTIONS | {"uploadCommit", "focusElement", "blurE
 _PERSISTENT_FAILURE_CODES = {"error_page", "ambiguous_target", "user_tab", "permission_required"}
 
 
+def _url_matches(pattern, url, flags=0):
+    """re.search for a policy pattern; an invalid pattern matches nothing."""
+    try:
+        return bool(_re.search(pattern, url, flags))
+    except _re.error:
+        return False
+
+
 def _check_policy(action, params):
     """Return error dict if action/url violates current policy, else None."""
     if not permits_action(_task_mode.get(), action):
@@ -812,30 +816,18 @@ def _check_policy(action, params):
     # An if/while condition is JavaScript run on the page, so it is refused like js.
     if _policy["readonly"] and (action in WRITE_ACTIONS or action in _CONDITION_ACTIONS):
         # Read-only ops on cookies/storage/etc. are still allowed; tighten if needed.
-        sub_op = (params or {}).get("op") if isinstance(params, dict) else None
+        sub_op = params.get("op") if isinstance(params, dict) else None
         if action in ("cookies", "clipboard", "storageOp", "downloads") and sub_op in ("get", "read", "list", "snapshot"):
             return None
         return {"error": f"Read-only mode is active; refusing action: {action}"}
-    url = (params or {}).get("url") if isinstance(params, dict) else None
+    url = params.get("url") if isinstance(params, dict) else None
     if url:
         for pat in _policy.get("deny", []):
-            try:
-                if _re.search(pat, url):
-                    return {"error": f"URL denied by policy ({pat}): {url}"}
-            except _re.error:
-                pass
+            if _url_matches(pat, url):
+                return {"error": f"URL denied by policy ({pat}): {url}"}
         allow = _policy.get("allow", [])
-        if allow:
-            ok = False
-            for pat in allow:
-                try:
-                    if _re.search(pat, url):
-                        ok = True
-                        break
-                except _re.error:
-                    pass
-            if not ok:
-                return {"error": f"URL not in allowlist: {url}"}
+        if allow and not any(_url_matches(pat, url) for pat in allow):
+            return {"error": f"URL not in allowlist: {url}"}
     return None
 
 
@@ -942,14 +934,8 @@ def _raise_history_url_floor(body):
 
 def _history_url_blocked(url):
     """Whether the URL policy floor hides url from history results (patterns as in _check_policy)."""
-    def matches(pattern):
-        try:
-            return bool(_re.search(pattern, url))
-        except _re.error:
-            return False
-
-    return (any(matches(pattern) for pattern in _history_url_floor["deny"])
-            or any(not any(matches(pattern) for pattern in allow) for allow in _history_url_floor["allow"]))
+    return (any(_url_matches(pattern, url) for pattern in _history_url_floor["deny"])
+            or any(not any(_url_matches(pattern, url) for pattern in allow) for allow in _history_url_floor["allow"]))
 
 
 def _history_request(action, body, now_ms):
@@ -1045,12 +1031,10 @@ _unknown_outcomes = {}   # outcome key -> expiry, for writes that ended retryabl
 
 
 def _ask_url_match(url):
-    for pat in _policy.get("askUrls", []):
-        try:
-            if url and _re.search(pat, url, _re.I):
+    if url:
+        for pat in _policy.get("askUrls", []):
+            if _url_matches(pat, url, _re.I):
                 return pat
-        except _re.error:
-            pass
     return None
 
 
@@ -1126,8 +1110,8 @@ async def _held_reason(action, params):
         reason, description = _ASK_DATA_ACTIONS[action]
     elif action == "submitForm":
         reason, description = "submit", "submits a form"
-    elif _ask_url_match(url):
-        reason, description = "payment_url", f"opens a payment-like URL ({_ask_url_match(url)}): {url}"
+    elif pattern := _ask_url_match(url):
+        reason, description = "payment_url", f"opens a payment-like URL ({pattern}): {url}"
     elif _outcome_key(action, params) in _unknown_outcomes:
         reason, description = "unknown_outcome", "repeats a write whose previous outcome is unknown"
 
@@ -1153,21 +1137,21 @@ async def _held_reason(action, params):
             return "uninspectable_target", "fills a target without sensitive-field inspection", tab_id, url_now
         if draft_fill and target.get("sensitive"):
             reason, description = "sensitive_field", "fills a sensitive field"
-        if reason is None and action in _ASK_PAGE_ACTIONS and _ask_url_match(url_now):
-            reason, description = "payment_page", f"acts on a payment-like page ({_ask_url_match(url_now)})"
-        elif reason is None and screen:
-            reason, description = "uninspectable_target", "clicks screen coordinates that cannot be inspected"
-        elif reason is None and target.get("submits"):
-            what = "presses Enter in a form field" if submit_key else "clicks a submit control"
-            label = target.get("text") or target.get("tag") or ""
-            reason, description = "submit_control", f"{what} ({label})" if label else what
-        elif reason is None and target.get("submitLabel"):
-            what = "presses Enter on" if submit_key else "clicks"
-            reason, description = "submit_label", f"{what} a button labeled like a submit or payment ({target.get('text')})"
-        elif reason is None and target.get("consequentialLabel"):
-            what = "presses Enter on" if submit_key else "clicks"
-            reason, description = ("consequential_label", f"{what} a button or link labeled like a send, transfer, "
-                                   f"delete or account change ({target.get('text')})")
+        if reason is None:
+            verb = "presses Enter on" if submit_key else "clicks"
+            if action in _ASK_PAGE_ACTIONS and (pattern := _ask_url_match(url_now)):
+                reason, description = "payment_page", f"acts on a payment-like page ({pattern})"
+            elif screen:
+                reason, description = "uninspectable_target", "clicks screen coordinates that cannot be inspected"
+            elif target.get("submits"):
+                what = "presses Enter in a form field" if submit_key else "clicks a submit control"
+                label = target.get("text") or target.get("tag") or ""
+                reason, description = "submit_control", f"{what} ({label})" if label else what
+            elif target.get("submitLabel"):
+                reason, description = "submit_label", f"{verb} a button labeled like a submit or payment ({target.get('text')})"
+            elif target.get("consequentialLabel"):
+                reason, description = ("consequential_label", f"{verb} a button or link labeled like a send, "
+                                       f"transfer, delete or account change ({target.get('text')})")
     if reason is None:
         return None
     return reason, description, tab_id, url_now or url
@@ -1304,8 +1288,9 @@ def _is_held(result):
 
 
 def _invalidate_cache_for_action(action):
+    """Clear the short-lived read cache after browser/page mutations."""
     if action in WRITE_ACTIONS or action in ("elementScreenshot", "fullPageScreenshot"):
-        _cache_clear(action)
+        _cache.clear()
 
 
 # ── Orchestration: broadcast and syncBarrier ──
@@ -1581,6 +1566,16 @@ async def _stop_keep_alive_async(tab_ids):
     return stopped
 
 
+def _active_keep_alive_tabs():
+    return [tid for tid, t in _keep_alive_tasks.items() if not t.done()]
+
+
+def _workflow_names():
+    if not os.path.isdir(WORKFLOW_DIR):
+        return []
+    return [f[:-3] for f in os.listdir(WORKFLOW_DIR) if f.endswith('.md')]
+
+
 def _parse_workflow(filepath, variables=None):
     """Parse a workflow .md file into a list of batch commands."""
     with open(filepath, 'r', encoding='utf-8') as f:
@@ -1662,8 +1657,7 @@ async def ws_handler(websocket):
                 continue
 
             if cmd_id and cmd_id in pending_commands:
-                entry = pending_commands[cmd_id]
-                future = entry["future"] if isinstance(entry, dict) else entry
+                future = pending_commands[cmd_id]["future"]
                 if not future.done():
                     future.set_result(data.get("result", {}))
             else:
@@ -1681,12 +1675,10 @@ async def ws_handler(websocket):
         # connection must not wipe commands or connection state for the newer
         # websocket.
         for cmd_id, entry in list(pending_commands.items()):
-            future = entry["future"] if isinstance(entry, dict) else entry
-            ws = entry.get("ws") if isinstance(entry, dict) else websocket
-            if ws is websocket:
+            future = entry["future"]
+            if entry.get("ws") is websocket:
                 if not future.done():
-                    action = entry.get("action") if isinstance(entry, dict) else None
-                    future.set_result(_disconnected_error("Extension disconnected", action))
+                    future.set_result(_disconnected_error("Extension disconnected", entry.get("action")))
                 pending_commands.pop(cmd_id, None)
 
 
@@ -2244,84 +2236,24 @@ def _wrap_image_url(body):
 # ══════════════════════════════════════════════
 
 
-# Action name -> extension action name (for simple forwarding)
+# Action name -> extension action name (for simple forwarding); most keep their name.
 BATCH_ACTION_MAP = {
-    'navigate':       'navigate',
-    'newTab':         'newTab',
-    'closeTab':       'closeTab',
-    'switchTab':      'switchTab',
-    'click':          'click',
-    'type':           'type',
-    'setEditableContent': 'setEditableContent',
-    'fill':           'fill',
-    'scroll':         'scroll',
-    'hover':          'hover',
-    'find':           'find',
-    'js':             'executeJS',
-    'pageInfo':       'getPageInfo',
-    'pageText':       'getPageText',
-    'pageTextByTabId':'getPageTextFromTab',
-    'tabs':           'getTabs',
-    'forms':          'getFormFields',
-    'dom':            'getAccessibilityTree',
-    'snapshot':       'getSnapshot',
-    'highlight':      'highlight',
-    'wakeTab':        'wakeTab',
-    'reloadExtension':'reloadExtension',
-    # 1.4.0 — browser-level
-    'pinTab':              'pinTab',
-    'muteTab':             'muteTab',
-    'duplicateTab':        'duplicateTab',
-    'reloadTabBrowser':    'reloadTabBrowser',
-    'goBack':              'goBack',
-    'goForward':           'goForward',
-    'getZoom':             'getZoom',
-    'setZoom':             'setZoom',
-    'getWindows':          'getWindows',
-    'createWindow':        'createWindow',
-    'closeWindow':         'closeWindow',
-    'focusWindow':         'focusWindow',
-    'moveTab':             'moveTab',
-    'detachTab':           'detachTab',
-    'elementScreenshot':   'elementScreenshot',
-    'fullPageScreenshot':  'fullPageScreenshot',
-    'cookies':             'cookies',
-    'clipboard':           'clipboard',
-    'downloads':           'downloads',
-    'clearBrowsingData':   'clearBrowsingData',
-    'intercept':           'intercept',
-    'clickAndWaitNavigation': 'clickAndWaitNavigation',
-    # 1.4.0 — content-script-forwarded
-    'query':               'query',
-    'getHTML':             'getHTML',
-    'getLinks':            'getLinks',
-    'getImages':           'getImages',
-    'getMeta':             'getMeta',
-    'getStructuredData':   'getStructuredData',
-    'getBounds':           'getBounds',
-    'getComputedStyle':    'getComputedStyle',
-    'getReadability':      'getReadability',
-    'getMarkdown':         'getMarkdown',
-    'selectOption':        'selectOption',
-    'checkBox':            'checkBox',
-    'focusElement':        'focusElement',
-    'blurElement':         'blurElement',
-    'keypress':            'keypress',
-    'doubleClick':         'doubleClick',
-    'submitForm':          'submitForm',
-    'formFill':            'formFill',
-    'media':               'media',
-    'drag':                'drag',
-    'waitForUrl':          'waitForUrl',
-    'waitForTitle':        'waitForTitle',
-    'waitForNetworkIdle':  'waitForNetworkIdle',
-    'captureNetwork':      'captureNetwork',
-    'watchConsole':        'watchConsole',
-    'consoleLogs':         'consoleLogs',
-    'storageOp':           'storageOp',
-    'getIframes':          'getIframes',
-    'explainSelector':     'explainSelector',
-    'fullPageMetrics':     'fullPageMetrics',
+    'js': 'executeJS', 'pageInfo': 'getPageInfo', 'pageText': 'getPageText',
+    'pageTextByTabId': 'getPageTextFromTab', 'tabs': 'getTabs', 'forms': 'getFormFields',
+    'dom': 'getAccessibilityTree', 'snapshot': 'getSnapshot',
+    **{action: action for action in (
+        'navigate', 'newTab', 'closeTab', 'switchTab', 'click', 'type', 'setEditableContent', 'fill',
+        'scroll', 'hover', 'find', 'highlight', 'wakeTab', 'reloadExtension', 'pinTab', 'muteTab',
+        'duplicateTab', 'reloadTabBrowser', 'goBack', 'goForward', 'getZoom', 'setZoom', 'getWindows',
+        'createWindow', 'closeWindow', 'focusWindow', 'moveTab', 'detachTab', 'elementScreenshot',
+        'fullPageScreenshot', 'cookies', 'clipboard', 'downloads', 'clearBrowsingData', 'intercept',
+        'clickAndWaitNavigation', 'query', 'getHTML', 'getLinks', 'getImages', 'getMeta',
+        'getStructuredData', 'getBounds', 'getComputedStyle', 'getReadability', 'getMarkdown',
+        'selectOption', 'checkBox', 'focusElement', 'blurElement', 'keypress', 'doubleClick',
+        'submitForm', 'formFill', 'media', 'drag', 'waitForUrl', 'waitForTitle', 'waitForNetworkIdle',
+        'captureNetwork', 'watchConsole', 'consoleLogs', 'storageOp', 'getIframes', 'explainSelector',
+        'fullPageMetrics',
+    )},
 }
 
 
@@ -2397,10 +2329,9 @@ def _parallel_tab_problem(sequences, writers):
     for i, seq in enumerate(sequences):
         for j, cmd in enumerate(seq):
             for step in _nested_commands(cmd):
-                action = step.get("action")
+                action = _effective_action(step)
                 if not isinstance(action, str):
                     continue
-                action = BATCH_ACTION_MAP.get(action, action)
                 raw = step.get("tabId")
                 if action in _TABLESS_ACTIONS or (isinstance(raw, str) and "${" in raw):
                     continue
@@ -2660,7 +2591,7 @@ def _resume_writes(cmd):
 
 def _resume_committed(record):
     """Whether a write in this step, or nested in it, ran ok, so sending the step again repeats it."""
-    action = BATCH_ACTION_MAP.get(record.get("action"), record.get("action"))
+    action = _effective_action(record)
     if record["status"] == "ok" and action in _RESUME_WRITE_ACTIONS:
         return True
     result = record.result
@@ -2674,7 +2605,7 @@ def _resume_uncertain(record):
     """Whether this unknown step may have changed the page: an unknown write, nested or its own."""
     if record["status"] != "unknown":
         return False
-    action = BATCH_ACTION_MAP.get(record.get("action"), record.get("action"))
+    action = _effective_action(record)
     return action in _RESUME_WRITE_ACTIONS or any(_resume_uncertain(n) for n in record.nested)
 
 
@@ -3018,6 +2949,20 @@ async def run_command(cmd):
     return result
 
 
+def _condition_true(check):
+    """Whether an if/while condition's executeJS reply is truthy."""
+    return bool(check.get('result')) and check.get('result') not in ('false', '0', 'null', 'undefined', '')
+
+
+def _dispatch_timeout(action, params, base=30):
+    """WS timeout for an action: a wait's own timeout plus 5 s, else base plus any actionability wait."""
+    if action in ('waitForUrl', 'waitForTitle', 'waitForElement'):
+        return params.get('timeout', 10000) / 1000 + 5
+    if action == 'waitForResult' or (action == 'newTab' and params.get('wait')):
+        return params.get('timeout', 15000) / 1000 + 5
+    return base + actionability_wait_seconds(action, params)
+
+
 async def _execute_command(action, effective_action, params):
     """Dispatch a batch command that passed policy and ask-before-act checks."""
     try:
@@ -3031,12 +2976,10 @@ async def _execute_command(action, effective_action, params):
                 return await _send_with_expectation(
                     effective_action, params, spec,
                     timeout=30 + actionability_wait_seconds(effective_action, params), remember=remember)
-            if effective_action in ('waitForUrl', 'waitForTitle'):
-                timeout_s = params.get('timeout', 10000) / 1000 + 5
-                return await send_to_extension(effective_action, params, timeout=timeout_s)
-            if effective_action == 'newTab' and params.get('wait'):
-                timeout_s = params.get('timeout', 15000) / 1000 + 5
-                return await send_to_extension(effective_action, params, timeout=timeout_s)
+            if effective_action in ('waitForUrl', 'waitForTitle') or (
+                    effective_action == 'newTab' and params.get('wait')):
+                return await send_to_extension(effective_action, params,
+                                               timeout=_dispatch_timeout(effective_action, params))
             wait_s = actionability_wait_seconds(effective_action, params)
             if wait_s:
                 return await send_to_extension(effective_action, params, timeout=30 + wait_s)
@@ -3053,14 +2996,8 @@ async def _execute_command(action, effective_action, params):
                 with open(fp, 'wb') as f2: f2.write(img)
                 return {'saved_to': fp}
             return r
-        elif action == 'waitForElement':
-            timeout_ms = params.get('timeout', 10000)
-            timeout_s = (timeout_ms / 1000) + 5
-            return await send_to_extension('waitForElement', params, timeout=timeout_s)
-        elif action == 'waitForResult':
-            timeout_ms = params.get('timeout', 15000)
-            timeout_s = (timeout_ms / 1000) + 5
-            return await send_to_extension('waitForResult', params, timeout=timeout_s)
+        elif action in ('waitForElement', 'waitForResult'):
+            return await send_to_extension(action, params, timeout=_dispatch_timeout(action, params))
         elif action == 'trustedClick':
             return await trusted_click(params)
         elif action == 'sleep':
@@ -3133,7 +3070,7 @@ async def _execute_command(action, effective_action, params):
             check = await send_to_extension('executeJS', {'tabId': tab_id, 'code': cond or '1'}, timeout=10)
             if check.get('error'):
                 return check  # a condition that could not run is not false: run neither branch
-            truthy = bool(check.get('result')) and check.get('result') not in ('false', '0', 'null', 'undefined', '')
+            truthy = _condition_true(check)
             branch = then_cmds if truthy else else_cmds
             call = _audit_call()
             out = []
@@ -3151,8 +3088,7 @@ async def _execute_command(action, effective_action, params):
                 check = await send_to_extension('executeJS', {'tabId': tab_id, 'code': cond or '0'}, timeout=10)
                 if check.get('error'):
                     return {**check, 'iterations': i, 'results': results, 'stoppedBy': 'conditionError'}
-                truthy = bool(check.get('result')) and check.get('result') not in ('false', '0', 'null', 'undefined', '')
-                if not truthy:
+                if not _condition_true(check):
                     return {'iterations': i, 'results': results, 'stoppedBy': 'condition'}
                 step = []
                 for j, c in enumerate(body):
@@ -3457,7 +3393,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "build": BRIDGE_BUILD,
             "extension_generation": extension_ws_generation,
             "scheduler": _scheduler_snapshot(),
-            "keep_alive_tabs": [tid for tid, t in _keep_alive_tasks.items() if not t.done()],
+            "keep_alive_tabs": _active_keep_alive_tabs(),
             "diagnosis": _connection_diagnosis(),
         })
     
@@ -3514,25 +3450,26 @@ class BridgeHandler(BaseHTTPRequestHandler):
         result = self.run_async(send_to_extension("getTabs"))
         self.send_json(200, result)
 
-    def handle_dom(self):
+    def _dom_scope(self, keys):
+        """The POST body's non-null keys among keys; None after refusing an invalid maxDepth."""
         body = self.read_body() if self.command == 'POST' else {}
-        params = {key: body[key] for key in ('tabId', 'selector', 'ref')
-                  if body.get(key) is not None}
         max_depth = body.get('maxDepth')
         if max_depth is not None and (type(max_depth) is not int or max_depth < 0):
             self.send_json(200, {"error": "max_depth must be a non-negative integer"})
+            return None
+        return {key: body[key] for key in keys if body.get(key) is not None}
+
+    def handle_dom(self):
+        params = self._dom_scope(('tabId', 'selector', 'ref', 'maxDepth'))
+        if params is None:
             return
-        params["depth"] = 6 if max_depth is None else max_depth
+        params["depth"] = params.pop("maxDepth", 6)
         result = self.run_async(send_to_extension("getAccessibilityTree", params))
         self.send_json(200, result)
 
     def handle_snapshot(self):
-        body = self.read_body() if self.command == 'POST' else {}
-        params = {key: body[key] for key in ('tabId', 'selector', 'ref', 'maxDepth', 'text')
-                  if body.get(key) is not None}
-        max_depth = params.get('maxDepth')
-        if max_depth is not None and (type(max_depth) is not int or max_depth < 0):
-            self.send_json(200, {"error": "max_depth must be a non-negative integer"})
+        params = self._dom_scope(('tabId', 'selector', 'ref', 'maxDepth', 'text'))
+        if params is None:
             return
         result = self.run_async(send_to_extension("getSnapshot", params))
         self.send_json(200, result)
@@ -3560,10 +3497,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.send_json(200, info)
 
     def handle_list_workflows(self):
-        available = []
-        if os.path.isdir(WORKFLOW_DIR):
-            available = [f[:-3] for f in os.listdir(WORKFLOW_DIR) if f.endswith('.md')]
-        self.send_json(200, {"workflows": available, "directory": WORKFLOW_DIR})
+        self.send_json(200, {"workflows": _workflow_names(), "directory": WORKFLOW_DIR})
 
     # ── POST Handlers ──
 
@@ -3576,6 +3510,17 @@ class BridgeHandler(BaseHTTPRequestHandler):
         if held:
             self.send_json(403, held)
         return bool(held)
+
+    def _admitted(self, action, body):
+        """Apply policy and ask-before-act to a direct write; send the refusal and return False if refused."""
+        policy_err = _check_policy(action, body)
+        if policy_err:
+            self.send_json(403, policy_err)
+            return False
+        if self._held(action, body):
+            return False
+        _invalidate_cache_for_action(action)
+        return True
 
     def _send_extension_action(self, action, body, timeout=35, on_result=None):
         policy_err = _check_policy(action, body)
@@ -3593,12 +3538,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         _invalidate_cache_for_action(action)
         t0 = time.time()
         try:
-            if action in ('waitForUrl', 'waitForTitle'):
-                timeout = body.get('timeout', 10000) / 1000 + 5
-            elif action == 'newTab' and body.get('wait'):
-                timeout = body.get('timeout', 15000) / 1000 + 5
-            else:
-                timeout += actionability_wait_seconds(action, body)
+            timeout = _dispatch_timeout(action, body, timeout)
             if spec is None:
                 result = self.run_async(send_to_extension(action, body, timeout=timeout), timeout=timeout + 5)
             else:
@@ -3614,20 +3554,15 @@ class BridgeHandler(BaseHTTPRequestHandler):
             action,
             body,
             isinstance(result, dict) and not result.get("error"),
-            (result or {}).get("error") if isinstance(result, dict) else None,
+            result.get("error") if isinstance(result, dict) else None,
             (time.time() - t0) * 1000,
         )
         self.send_json(200, result)
     
     def handle_upload_file(self):
         body = self.read_body()
-        policy_err = _check_policy("uploadFile", body)
-        if policy_err:
-            self.send_json(403, policy_err)
+        if not self._admitted("uploadFile", body):
             return
-        if self._held("uploadFile", body):
-            return
-        _invalidate_cache_for_action("uploadFile")
         t0 = time.time()
         try:
             result = self.run_async(_upload_files_async(body), timeout=float(body.get("timeout", 300)))
@@ -3642,16 +3577,12 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     def handle_trusted_click(self):
         body = self.read_body()
-        policy_err = _check_policy("trustedClick", body)
-        if policy_err:
-            self.send_json(403, policy_err)
+        if not self._admitted("trustedClick", body):
             return
-        if self._held("trustedClick", body):
-            return
-        _invalidate_cache_for_action("trustedClick")
         t0 = time.time()
         result = self.run_async(trusted_click(body))
-        _audit("trustedClick", body, isinstance(result, dict) and not result.get("error"), (result or {}).get("error") if isinstance(result, dict) else None, (time.time() - t0) * 1000)
+        error = result.get("error") if isinstance(result, dict) else None
+        _audit("trustedClick", body, isinstance(result, dict) and not error, error, (time.time() - t0) * 1000)
         self.send_json(200, result)
     
     def handle_type(self):
@@ -3734,9 +3665,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
     def handle_wait_for_element(self):
         body = self.read_body()
         # waitForElement can take up to timeout + buffer; extend the WS timeout accordingly
-        timeout_ms = body.get("timeout", 10000)
-        timeout_s = (timeout_ms / 1000) + 5
-        result = self.run_async(send_to_extension("waitForElement", body, timeout=timeout_s))
+        result = self.run_async(send_to_extension("waitForElement", body,
+                                                  timeout=_dispatch_timeout("waitForElement", body)))
         self.send_json(200, result)
 
     def handle_wait_for_text(self):
@@ -3754,9 +3684,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
         body = self.read_body()
         if self._held("waitForResult", body):
             return
-        timeout_ms = body.get("timeout", 15000)
-        timeout_s = (timeout_ms / 1000) + 5
-        result = self.run_async(send_to_extension("waitForResult", body, timeout=timeout_s))
+        result = self.run_async(send_to_extension("waitForResult", body,
+                                                  timeout=_dispatch_timeout("waitForResult", body)))
         self.send_json(200, result)
 
     def handle_page_text_by_tab_id(self):
@@ -3779,7 +3708,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "ok": True,
             "keeping_alive": started,
             "interval_seconds": interval,
-            "active_total": len([t for t in _keep_alive_tasks.values() if not t.done()]),
+            "active_total": len(_active_keep_alive_tabs()),
         })
 
     def handle_keep_alive_stop(self):
@@ -3789,7 +3718,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.send_json(200, {
             "ok": True,
             "stopped": stopped,
-            "active_total": len([t for t in _keep_alive_tasks.values() if not t.done()]),
+            "active_total": len(_active_keep_alive_tabs()),
         })
 
     def handle_reload_extension(self):
@@ -3933,7 +3862,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
     # ── Observability ──
 
     def handle_health(self):
-        active_keep_alive = [tid for tid, t in _keep_alive_tasks.items() if not t.done()]
         self.send_json(200, {
             "bridge_version": BRIDGE_VERSION,
             "api_version": API_VERSION,
@@ -3942,7 +3870,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "extension_build": extension_info.get("build"),
             "extension_generation": extension_ws_generation,
             "ports": {"http": HTTP_PORT, "ws": WS_PORT},
-            "keep_alive_tabs": active_keep_alive,
+            "keep_alive_tabs": _active_keep_alive_tabs(),
             "scheduler": _scheduler_snapshot(),
             "tab_pool": _pool_status(),
             "tags": dict(_tags),
@@ -4074,10 +4002,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         filepath = os.path.join(WORKFLOW_DIR, f"{safe_name}.md")
 
         if not os.path.isfile(filepath):
-            available = []
-            if os.path.isdir(WORKFLOW_DIR):
-                available = [f[:-3] for f in os.listdir(WORKFLOW_DIR) if f.endswith('.md')]
-            self.send_json(404, {"error": f"Workflow '{name}' not found", "available": available})
+            self.send_json(404, {"error": f"Workflow '{name}' not found", "available": _workflow_names()})
             return
 
         # The checkpoint keeps the hash of the file the commands came from.
