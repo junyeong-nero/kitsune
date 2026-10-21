@@ -436,6 +436,9 @@ post-action `snapshot` and `target_ref`: the action ran (see [Ref lifetime](#ref
 `browser_save_session` fails without writing the session file when any cookie or
 storage read fails, and `browser_load_session` reports an error, with
 `cookies_set`, `origins_restored` and per-item `failures`, when any write failed.
+Read-only mode refuses `browser_load_session`, a cookie and storage write, and allows
+`browser_save_session` like cookie reads. The URL `allow`/`deny` policy applies to
+every URL a session saves or restores; a refused URL fails the call before anything runs.
 A non-2xx bridge response without a JSON body becomes an error with `state.httpStatus`;
 a 2xx one cannot come from a Kitsune bridge and is a
 [`port_conflict`](#connection-diagnosis) (`not_kitsune`).
@@ -1342,7 +1345,9 @@ the passes that already ran: it adds `iterations`, `results` and
 `stoppedBy: "conditionError"` to the error. Conditions that ran return the same
 results as before. Read-only mode (`browser_set_policy(readonly=True)`) refuses
 `if` and `while` like `js`, with `Read-only mode is active; refusing action: if`,
-before the condition or any branch runs.
+before the condition or any branch runs. It refuses the other agent JavaScript the
+same way: `browser_js` (including `full=True`), `browser_wait_for(js=...)` and
+`browser_sync_barrier`.
 
 `summary` states `progress` in one paragraph a user can read without the records:
 the count of each status, then each command that is `unknown`, `held` (with how to
@@ -1909,6 +1914,8 @@ Add `"wait": true, "timeout": 10000` to wait for the target first (see
 `{ "coords": { "x": 640, "y": 400 }, "coordinateSpace": "screen" }` — optional
 `tabId`, `title`, `process`. OS-level click on Windows and macOS; see
 [`browser_trusted_click`](#browser_trusted_clickselector-x0-y0-coordinate_spaceviewport-focusfalse-tab_idnone-firstfalse).
+A click that does not finish within 35 s returns a `timeout` [action error](#action-errors)
+with `retryable: false`.
 
 ### POST /api/type
 `{ "text": "hello", "selector": "input" }`
@@ -2055,7 +2062,8 @@ Control the response cache (pageText is cached for 5s by default; tab inventorie
 
 Clear cache: `{ "action": "clear" }`
 Check status: `{ "action": "status" }` → `{ "entries": 3, "ttl": 5 }`
-Set TTL: `{ "action": "ttl", "seconds": 10 }`
+Set TTL: `{ "action": "ttl", "seconds": 10 }` — `seconds` must be a non-negative
+number; anything else answers HTTP 400 and keeps the current TTL.
 
 ## Error Handling
 

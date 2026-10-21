@@ -10,6 +10,7 @@ ran twice.
 """
 from http.server import BaseHTTPRequestHandler
 import json
+from pathlib import Path
 import re
 import threading
 import time
@@ -521,6 +522,36 @@ class RealBrowserActionRaceTests(harness.RealBrowserTestCase):
         self.assert_ok(self.call("/api/click", {"ref": self.snapshot_ref(tab_id, "Act reload-a"),
                                                  "tabId": tab_id}))
         self.assert_hits("reload-a", 1)
+
+    # ── Read-only policy (#193) ──
+
+    def test_read_only_refuses_full_js_and_session_load_and_leaves_the_page_unchanged(self):
+        url = self.site.url("read-only")
+        tab_id = self.open_tab(url)
+        sessions = Path(self.bridge.home, "sessions")
+        sessions.mkdir(exist_ok=True)
+        (sessions / "read-only.json").write_text(json.dumps({
+            "name": "read-only",
+            "cookies": [{"name": "kitsune_read_only", "value": "loaded", "domain": "127.0.0.1", "path": "/"}],
+            "storage": {url: {"kitsune-read-only": "loaded"}},
+        }), encoding="utf-8")
+        self.assert_ok(self.call("/api/set-policy", {"readonly": True}))
+        self.addCleanup(self.call, "/api/set-policy", {"readonly": False})  # runs before the tab closes
+
+        headers = {**self.bridge.auth(), "Content-Type": "application/json"}
+        for path, body, action in [
+            ("/api/js", {"code": "window.kitsuneReadOnly = 'ran'", "full": True, "tabId": tab_id}, "executeJS"),
+            ("/api/load-session", {"name": "read-only"}, "loadSession"),
+        ]:
+            status, _, text = harness._request(self.bridge.http_port, "POST", path, headers, self.bridge.host,
+                                               json.dumps(body), timeout=30)
+            self.assertEqual((status, json.loads(text)),
+                             (403, {"error": f"Read-only mode is active; refusing action: {action}"}))
+
+        self.assert_ok(self.call("/api/set-policy", {"readonly": False}))
+        state = ("[String(window.kitsuneReadOnly), String(localStorage.getItem('kitsune-read-only')),"
+                 " document.cookie].join('|')")
+        self.assertEqual(self.call("/api/js", {"code": state, "tabId": tab_id})["result"], "undefined|null|")
 
 
 if __name__ == "__main__":

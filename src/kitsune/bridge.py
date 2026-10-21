@@ -34,6 +34,7 @@ import subprocess
 import sys
 import time
 import ctypes
+import concurrent.futures
 import contextvars
 import itertools
 from collections import Counter
@@ -777,7 +778,7 @@ WRITE_ACTIONS = {
     "pinTab", "muteTab", "duplicateTab", "reloadTabBrowser", "goBack", "goForward",
     "setZoom", "createWindow", "closeWindow", "moveTab", "detachTab",
     "storageOp", "reloadExtension", "wakeTab", "highlight", "clearHighlight",
-    "uploadFile", "handleDialog", "media",
+    "uploadFile", "handleDialog", "media", "loadSession",
 }
 
 
@@ -813,8 +814,8 @@ def _check_policy(action, params):
                 return _mode_error("navigation outside http(s) or about:blank")
         if action == "setEditableContent" and (params or {}).get("format", "text") != "text":
             return _mode_error("HTML insertion")
-    # An if/while condition is JavaScript run on the page, so it is refused like js.
-    if _policy["readonly"] and (action in WRITE_ACTIONS or action in _CONDITION_ACTIONS):
+    # Agent JavaScript (an if/while condition, waitForResult, syncBarrier) is refused like js.
+    if _policy["readonly"] and (action in WRITE_ACTIONS or action in _ASK_JS_ACTIONS):
         # Read-only ops on cookies/storage/etc. are still allowed; tighten if needed.
         sub_op = params.get("op") if isinstance(params, dict) else None
         if action in ("cookies", "clipboard", "storageOp", "downloads") and sub_op in ("get", "read", "list", "snapshot"):
@@ -1389,7 +1390,23 @@ def _session_failure(url, step, result):
     return failure
 
 
+def _session_cookie_url(cookie):
+    return ("https://" if cookie.get("secure") else "http://") + str(cookie.get("domain", "")).lstrip(".") + str(cookie.get("path", "/"))
+
+
+def _session_policy_error(action, urls):
+    """Apply the URL allow/deny policy to every URL a session save or load reads or writes."""
+    for url in urls:
+        policy_err = _check_policy(action, {"url": url})
+        if policy_err:
+            return policy_err
+    return None
+
+
 async def _save_session_async(name, urls):
+    policy_err = _session_policy_error("saveSession", urls or [])
+    if policy_err:
+        return policy_err
     bundle = {"name": name, "saved": int(time.time()), "cookies": [], "storage": {}}
     failures = []
     # cookies for each url
@@ -1399,7 +1416,7 @@ async def _save_session_async(name, urls):
             bundle["cookies"].extend(r["cookies"])
         else:
             failures.append(_session_failure(u, "cookies", r))
-    # localStorage snapshot per active tab if no urls
+    # localStorage snapshot of each url, in a temporary tab
     if urls:
         for u in urls:
             # Open a temp tab for each origin, snapshot, close
@@ -1431,10 +1448,14 @@ async def _load_session_async(name):
         return {"error": f"Session not found: {name}"}
     with open(path, "r", encoding="utf-8") as f:
         bundle = json.load(f)
+    cookies, storage = bundle.get("cookies", []), bundle.get("storage") or {}
+    policy_err = _session_policy_error("loadSession", [_session_cookie_url(c) for c in cookies] + list(storage))
+    if policy_err:
+        return policy_err
     set_count = 0
     failures = []
-    for c in bundle.get("cookies", []):
-        url = ("https://" if c.get("secure") else "http://") + str(c.get("domain", "")).lstrip(".") + str(c.get("path", "/"))
+    for c in cookies:
+        url = _session_cookie_url(c)
         try:
             r = await send_to_extension("cookies", {
                 "op": "set", "url": url, "name": c.get("name"), "value": c.get("value"),
@@ -1447,7 +1468,7 @@ async def _load_session_async(name):
         else:
             failures.append(_session_failure(url, "cookies", r))
     storage_restored = 0
-    for u, items in (bundle.get("storage") or {}).items():
+    for u, items in storage.items():
         t = await send_to_extension("newTab", {"url": u})
         tid = t.get("tabId") if isinstance(t, dict) else None
         if not tid:
@@ -1708,6 +1729,16 @@ def _safe_to_repeat(action):
     return action is not None and action not in _REPEAT_UNSAFE_ACTIONS
 
 
+def _timeout_error(action, timeout):
+    return _action_error(
+        f"Command timed out after {timeout}s", "timeout",
+        retryable=_safe_to_repeat(action),
+        hint="No reply arrived in time, so the command's effect is unknown; check the page "
+             "with browser_snapshot before repeating it.",
+        timeoutSeconds=timeout,
+    )
+
+
 def _connection_diagnosis():
     """browser_status diagnosis from bridge state (docs/api-reference.md#connection-diagnosis)."""
     if extension_ws is None:
@@ -1885,13 +1916,7 @@ async def _send_to_extension_raw(action, params=None, timeout=30):
             result["retryable"] = True
         return result
     except asyncio.TimeoutError:
-        return _action_error(
-            f"Command timed out after {timeout}s", "timeout",
-            retryable=_safe_to_repeat(action),
-            hint="No reply arrived in time, so the command's effect is unknown; check the page "
-                 "with browser_snapshot before repeating it.",
-            timeoutSeconds=timeout,
-        )
+        return _timeout_error(action, timeout)
     except websockets.exceptions.ConnectionClosed:
         return _disconnected_error("Extension disconnected while waiting for response", action)
     except Exception as e:
@@ -3522,6 +3547,19 @@ class BridgeHandler(BaseHTTPRequestHandler):
         _invalidate_cache_for_action(action)
         return True
 
+    def _run_admitted(self, action, body, coro, timeout=35):
+        """Run an admitted direct call's coroutine, audit it, and send its result."""
+        t0 = time.time()
+        try:
+            result = self.run_async(coro, timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            result = _timeout_error(action, timeout)
+        except Exception as e:
+            result = {"error": str(e)}
+        error = result.get("error") if isinstance(result, dict) else None
+        _audit(action, body, isinstance(result, dict) and not error, error, (time.time() - t0) * 1000)
+        self.send_json(200, result)
+
     def _send_extension_action(self, action, body, timeout=35, on_result=None):
         policy_err = _check_policy(action, body)
         if policy_err:
@@ -3577,13 +3615,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     def handle_trusted_click(self):
         body = self.read_body()
-        if not self._admitted("trustedClick", body):
-            return
-        t0 = time.time()
-        result = self.run_async(trusted_click(body))
-        error = result.get("error") if isinstance(result, dict) else None
-        _audit("trustedClick", body, isinstance(result, dict) and not error, error, (time.time() - t0) * 1000)
-        self.send_json(200, result)
+        if self._admitted("trustedClick", body):
+            self._run_admitted("trustedClick", body, trusted_click(body))
     
     def handle_type(self):
         self._send_extension_action("type", self.read_body())
@@ -3629,13 +3662,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
     def handle_js(self):
         body = self.read_body()
         if body.get("full"):
-            if self._held("executeJS", body):
-                return
-            try:
-                result = self.run_async(_js_full_async(body), timeout=float(body.get("timeout", 180)))
-            except Exception as e:
-                result = {"error": str(e)}
-            self.send_json(200, result)
+            if self._admitted("executeJS", body):
+                self._run_admitted("executeJS", body, _js_full_async(body), timeout=float(body.get("timeout", 180)))
             return
         self._send_extension_action("executeJS", body)
     
@@ -3681,12 +3709,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.send_json(200, result)
 
     def handle_wait_for_result(self):
-        body = self.read_body()
-        if self._held("waitForResult", body):
-            return
-        result = self.run_async(send_to_extension("waitForResult", body,
-                                                  timeout=_dispatch_timeout("waitForResult", body)))
-        self.send_json(200, result)
+        self._send_extension_action("waitForResult", self.read_body())
 
     def handle_page_text_by_tab_id(self):
         body = self.read_body()
@@ -3742,15 +3765,13 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     def handle_sync_barrier(self):
         body = self.read_body()
-        if self._held("syncBarrier", body):
-            return
-        result = self.run_async(_sync_barrier_async(
-            body.get("tabIds", []),
-            body.get("predicate", "1"),
-            timeout=body.get("timeout", 30000),
-            poll_interval=body.get("pollInterval", 300),
-        ))
-        self.send_json(200, result)
+        if self._admitted("syncBarrier", body):
+            self._run_admitted("syncBarrier", body, _sync_barrier_async(
+                body.get("tabIds", []),
+                body.get("predicate", "1"),
+                timeout=body.get("timeout", 30000),
+                poll_interval=body.get("pollInterval", 300),
+            ))
 
     def handle_retry(self):
         body = self.read_body()
@@ -3831,20 +3852,14 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     def handle_save_session(self):
         body = self.read_body()
-        if self._held("saveSession", body):
-            return
-        name = body.get("name") or "default"
-        urls = body.get("urls") or []
-        result = self.run_async(_save_session_async(name, urls))
-        self.send_json(200, result)
+        if self._admitted("saveSession", body):
+            self._run_admitted("saveSession", body,
+                               _save_session_async(body.get("name") or "default", body.get("urls") or []))
 
     def handle_load_session(self):
         body = self.read_body()
-        if self._held("loadSession", body):
-            return
-        name = body.get("name") or "default"
-        result = self.run_async(_load_session_async(name))
-        self.send_json(200, result)
+        if self._admitted("loadSession", body):
+            self._run_admitted("loadSession", body, _load_session_async(body.get("name") or "default"))
 
     def handle_list_sessions(self):
         self.send_json(200, {"sessions": _list_sessions(), "dir": _sessions_dir})
@@ -3983,7 +3998,12 @@ class BridgeHandler(BaseHTTPRequestHandler):
         elif action == "status":
             self.send_json(200, {"entries": len(_cache), "ttl": CACHE_TTL})
         elif action == "ttl":
-            CACHE_TTL = body.get("seconds", 5)
+            seconds = body.get("seconds", 5)
+            # A non-number would make every later _cache_get raise TypeError.
+            if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or not seconds >= 0:
+                self.send_json(400, {"error": "seconds must be a non-negative number"})
+                return
+            CACHE_TTL = seconds
             self.send_json(200, {"ok": True, "ttl": CACHE_TTL})
         else:
             self.send_json(400, {"error": f"Unknown cache action: {action}"})
