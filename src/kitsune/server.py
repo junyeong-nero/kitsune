@@ -490,6 +490,25 @@ def _post_action(endpoint: str, body: dict, wait: bool = False, timeout: int = 1
     return _post(endpoint, body, timeout=request_timeout)
 
 
+def _read_page(endpoint: str, tab_id: int | None, selector: str | None = None, ref: str | None = None,
+               max_depth: int | None = None, text: bool = False) -> dict:
+    """Read the active page with GET, or POST a tab target and optional tree scope."""
+    if max_depth is not None and (type(max_depth) is not int or max_depth < 0):
+        return {"error": "max_depth must be a non-negative integer"}
+    body = _request_body({}, tab_id)
+    if text:
+        body["text"] = True
+    if selector is not None:
+        body["selector"] = selector
+    if ref is not None:
+        body["ref"] = ref
+    if max_depth is not None:
+        body["maxDepth"] = max_depth
+    if not body:
+        return _get(endpoint)
+    return _post(endpoint, body)
+
+
 # Some clients cut tool descriptions to their first paragraph but send input schemas in
 # full (#135), so parameters are documented as schema descriptions. The parameters shared
 # by the action tools (ref, element, wait, expect, confirm_token, first) are documented
@@ -609,9 +628,7 @@ if MODE != "act":
 @tool("core", annotations=ToolAnnotations(title="Page info", **READ))
 def browser_page_info(tab_id: TabId = None) -> dict:
     """Get current page URL, title, dimensions, scroll position, and recent dialogs."""
-    if tab_id is None:
-        return _get("/api/page-info")
-    return _post("/api/page-info", {"tabId": tab_id})
+    return _read_page("/api/page-info", tab_id)
 
 
 @tool("core", annotations=ToolAnnotations(title="Page text", **READ))
@@ -623,18 +640,14 @@ def browser_page_text(
     An HTTP error response the browser shows without a readable document returns
     text="" with empty=true and its httpStatus.
     """
-    if tab_id is None:
-        return _get("/api/page-text")
-    return _post("/api/page-text", {"tabId": tab_id})
+    return _read_page("/api/page-text", tab_id)
 
 
 @tool("core", annotations=ToolAnnotations(title="Read page forms", **READ))
 def browser_forms(tab_id: TabId = None) -> dict:
     """Get all form fields on the current page with their labels and values; password and
     other sensitive values are redacted (`redacted`/`hasValue` replace `value`)."""
-    if tab_id is None:
-        return _get("/api/forms")
-    return _post("/api/forms", {"tabId": tab_id})
+    return _read_page("/api/forms", tab_id)
 
 
 @tool("core", annotations=ToolAnnotations(title="Read page DOM", **READ))
@@ -644,18 +657,7 @@ def browser_dom(
 ) -> dict:
     """Get the accessibility tree of interactive elements on the page; selector/ref/max_depth
     (default 6) scope it as in browser_snapshot; capped at 20,000 chars (truncated=true)."""
-    if max_depth is not None and (type(max_depth) is not int or max_depth < 0):
-        return {"error": "max_depth must be a non-negative integer"}
-    body = _request_body({}, tab_id)
-    if selector is not None:
-        body["selector"] = selector
-    if ref is not None:
-        body["ref"] = ref
-    if max_depth is not None:
-        body["maxDepth"] = max_depth
-    if not body:
-        return _get("/api/dom")
-    return _post("/api/dom", body)
+    return _read_page("/api/dom", tab_id, selector, ref, max_depth)
 
 
 @tool("core", annotations=ToolAnnotations(title="Accessibility snapshot", **READ))
@@ -682,20 +684,7 @@ def browser_snapshot(
     take a new snapshot; never repeat a write just to refresh refs. Repeated composite
     siblings show the first five items; post-action snapshots also keep the target.
     """
-    if max_depth is not None and (type(max_depth) is not int or max_depth < 0):
-        return {"error": "max_depth must be a non-negative integer"}
-    body = _request_body({}, tab_id)
-    if text:
-        body["text"] = True
-    if selector is not None:
-        body["selector"] = selector
-    if ref is not None:
-        body["ref"] = ref
-    if max_depth is not None:
-        body["maxDepth"] = max_depth
-    if not body:
-        return _get("/api/snapshot")
-    return _post("/api/snapshot", body)
+    return _read_page("/api/snapshot", tab_id, selector, ref, max_depth, text)
 
 
 @tool("core", annotations=ToolAnnotations(title="Take screenshot", **ACT))
