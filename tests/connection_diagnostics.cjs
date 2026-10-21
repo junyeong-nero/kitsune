@@ -13,7 +13,8 @@ function event() {
 
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
-function background({ tabs = {}, windows = 1, granted = () => true } = {}) {
+// The extension's files as fetch serves them: { manifest, 'path': text }. Without them fetch fails.
+function background({ tabs = {}, windows = 1, granted = () => true, files = null } = {}) {
   const sockets = [];
   const sent = [];
   const contains = [];
@@ -47,11 +48,20 @@ function background({ tabs = {}, windows = 1, granted = () => true } = {}) {
       onAdded: event(), onRemoved: event(),
       contains: async ({ origins }) => { contains.push(...origins); return state.granted(origins[0]); },
     },
-    runtime: { onMessage: event(), onStartup: event(), onInstalled: event(), getManifest: () => ({ version: '0.2.1' }) },
+    runtime: {
+      onMessage: event(), onStartup: event(), onInstalled: event(),
+      getManifest: () => ({ version: '0.2.1', ...files?.manifest }),
+      getURL: path => `moz-extension://kitsune/${path}`,
+    },
     webRequest: { onBeforeRequest: event(), onHeadersReceived: event() },
   };
+  const fetch = async url => {
+    const text = files?.[url.replace('moz-extension://kitsune/', '')];
+    if (typeof text !== 'string') throw new TypeError('NetworkError when attempting to fetch resource.');
+    return new Response(text);
+  };
   const context = vm.createContext({
-    browser, URL, WebSocket, setTimeout, clearTimeout, Date,
+    browser, URL, WebSocket, setTimeout, clearTimeout, Date, fetch, crypto, TextEncoder, Blob,
     setInterval: () => 0, clearInterval: () => {},
     console: { log() {}, error() {} },
   });
@@ -91,6 +101,28 @@ async function testBrowserStateReachesTheBridge() {
   h.browser.windows.onCreated.fire({ id: 2 });
   await flush();
   assert.equal(ws.messages.length, count);
+}
+
+// The same files as SourceHashTests in tests/test_connection_diagnostics.py: background scripts, then
+// content scripts, each once. The bridge compares this fingerprint with the unpacked extension on disk.
+const HASH_FILES = {
+  manifest: { background: { scripts: ['bg/a.js'] }, content_scripts: [{ js: ['content/b.js', 'bg/a.js'] }] },
+  'bg/a.js': 'A\n', 'content/b.js': 'B\n',
+};
+
+async function testHelloCarriesTheSourceHash() {
+  const h = background({ files: HASH_FILES });
+  const ws = h.socket();
+  await ws.onopen();
+  assert.deepEqual(ws.messages[0], { type: 'hello', version: '0.2.1', build: 'dev', sourceHash: '9825576d37c4d475' });
+
+  // Unknown, never an error: the bridge then skips the build check.
+  for (const files of [null, { ...HASH_FILES, 'content/b.js': undefined }]) {
+    const unknown = background({ files });
+    await unknown.socket().onopen();
+    assert.deepEqual(unknown.socket().messages[0],
+      { type: 'hello', version: '0.2.1', build: 'dev', sourceHash: null });
+  }
 }
 
 async function testNoActiveTabIsAnUnavailableWindow() {
@@ -137,6 +169,7 @@ async function testHostPermissionIsToldApartFromErrorPages() {
 
 (async () => {
   await testBrowserStateReachesTheBridge();
+  await testHelloCarriesTheSourceHash();
   await testNoActiveTabIsAnUnavailableWindow();
   await testHostPermissionIsToldApartFromErrorPages();
   console.log('connection diagnostics ok');

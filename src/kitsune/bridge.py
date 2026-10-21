@@ -38,6 +38,7 @@ import contextvars
 import itertools
 from contextlib import asynccontextmanager
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+from pathlib import Path
 from threading import Lock, Thread
 from datetime import datetime
 
@@ -55,7 +56,7 @@ except ImportError:
     sys.exit("websockets is not installed. Reinstall kitsune with its dependencies.")
 
 from . import bridge_control
-from .version import BRIDGE_BUILD, PACKAGE_VERSION
+from .version import BRIDGE_BUILD, PACKAGE_VERSION, SOURCE_ROOT, extension_source_hash
 from .waits import actionability_wait_seconds, batch_wait_seconds, command_wait_seconds
 
 # ── Config ──
@@ -64,6 +65,8 @@ API_VERSION = "1"
 HTTP_PORT = int(os.environ.get("KITSUNE_HTTP_PORT", "47651"))
 WS_PORT = int(os.environ.get("KITSUNE_WS_PORT", "47652"))
 EXTENSION_WS_PORT = 47652  # WS_URL in extension/background/background.js
+# The unpacked extension a developer build is loaded from; a checkout's extension/ by default.
+EXTENSION_SOURCE_DIR = Path(os.environ.get("KITSUNE_EXTENSION_DIR") or SOURCE_ROOT / "extension")
 # Opt-in idle shutdown in seconds (0 = never). The MCP server passes its
 # environment to the bridge it spawns, so clients can set this in their config.
 IDLE_TIMEOUT_ENV = "KITSUNE_BRIDGE_IDLE_TIMEOUT"
@@ -107,7 +110,7 @@ AUTH_TOKEN = _load_or_create_token()
 # ── State ──
 extension_ws = None  # WebSocket connection to extension
 extension_ws_generation = 0
-extension_info = {}  # {"version", "build"} from the extension's hello message, "browser" from state
+extension_info = {}  # {"version", "build", "sourceHash"} from the extension's hello message, "browser" from state
 pending_commands = {}  # id -> {"future": asyncio.Future, "ws": websocket, ...}
 command_counter = 0
 _ws_send_lock = None
@@ -1353,6 +1356,8 @@ async def ws_handler(websocket):
             if data.get("type") == "hello":
                 if extension_ws is websocket:
                     extension_info = {"version": data.get("version"), "build": data.get("build")}
+                    if "sourceHash" in data:  # extensions before #34's build check omit it
+                        extension_info["sourceHash"] = data["sourceHash"]
                     _log(f"Extension {extension_info['version']} ({extension_info['build']} build)")
                 continue
             if data.get("type") == "state":
@@ -1437,6 +1442,14 @@ def _connection_diagnosis():
                         "developer build in about:debugging), or update the server if the extension is newer. "
                         "Then reload open tabs.",
                 "state": {"extensionVersion": version, "bridgeVersion": BRIDGE_VERSION}}
+    stale = _stale_developer_build()
+    if stale:
+        return {"code": "extension_version_mismatch",
+                "hint": f"The developer build in the browser differs from {EXTENSION_SOURCE_DIR} (edited but not "
+                        "reloaded): reload it in about:debugging → This Firefox → Kitsune, then reload open tabs. "
+                        "Set KITSUNE_EXTENSION_DIR if the browser loads it from another directory.",
+                "state": {"extensionVersion": version, "bridgeVersion": BRIDGE_VERSION,
+                          "reason": "stale_developer_build", **stale}}
     browser = extension_info.get("browser") or {}
     if browser.get("windows") == 0:
         return {"code": "browser_window_unavailable", "hint": _BROWSER_WINDOW_HINT, "state": {"windows": 0}}
@@ -1446,6 +1459,22 @@ def _connection_diagnosis():
                         "Kitsune → Permissions.",
                 "state": {"reason": "not_granted"}}
     return {"code": "connected"}
+
+
+def _stale_developer_build():
+    """Both fingerprints when a connected developer build differs from EXTENSION_SOURCE_DIR.
+
+    Read from disk at every diagnosis: the question is whether the files were edited since the
+    browser loaded them. Unknown on either side (an older extension, the signed build, no
+    unpacked extension next to the bridge) is never a mismatch.
+    """
+    loaded = extension_info.get("sourceHash")
+    if extension_info.get("build") != "dev" or not isinstance(loaded, str):
+        return None
+    on_disk = extension_source_hash(EXTENSION_SOURCE_DIR)
+    if on_disk is None or on_disk == loaded:
+        return None
+    return {"extensionSourceHash": loaded[:16], "expectedSourceHash": on_disk}
 
 
 # Matches the extension's browser_window_unavailable hint.
