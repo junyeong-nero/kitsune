@@ -3503,25 +3503,26 @@ class BridgeHandler(BaseHTTPRequestHandler):
         result = self.run_async(send_to_extension("getTabs"))
         self.send_json(200, result)
 
-    def handle_dom(self):
+    def _dom_scope(self, keys):
+        """The POST body's non-null keys among keys; None after refusing an invalid maxDepth."""
         body = self.read_body() if self.command == 'POST' else {}
-        params = {key: body[key] for key in ('tabId', 'selector', 'ref')
-                  if body.get(key) is not None}
         max_depth = body.get('maxDepth')
         if max_depth is not None and (type(max_depth) is not int or max_depth < 0):
             self.send_json(200, {"error": "max_depth must be a non-negative integer"})
+            return None
+        return {key: body[key] for key in keys if body.get(key) is not None}
+
+    def handle_dom(self):
+        params = self._dom_scope(('tabId', 'selector', 'ref', 'maxDepth'))
+        if params is None:
             return
-        params["depth"] = 6 if max_depth is None else max_depth
+        params["depth"] = params.pop("maxDepth", 6)
         result = self.run_async(send_to_extension("getAccessibilityTree", params))
         self.send_json(200, result)
 
     def handle_snapshot(self):
-        body = self.read_body() if self.command == 'POST' else {}
-        params = {key: body[key] for key in ('tabId', 'selector', 'ref', 'maxDepth', 'text')
-                  if body.get(key) is not None}
-        max_depth = params.get('maxDepth')
-        if max_depth is not None and (type(max_depth) is not int or max_depth < 0):
-            self.send_json(200, {"error": "max_depth must be a non-negative integer"})
+        params = self._dom_scope(('tabId', 'selector', 'ref', 'maxDepth', 'text'))
+        if params is None:
             return
         result = self.run_async(send_to_extension("getSnapshot", params))
         self.send_json(200, result)
