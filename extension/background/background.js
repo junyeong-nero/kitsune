@@ -102,8 +102,12 @@ const sha256Prefix = async data => [...new Uint8Array(await crypto.subtle.digest
 const SOURCE_HASH = (async () => {
   try {
     const manifest = browser.runtime.getManifest();
+    // Firefox lists manifest script paths as absolute moz-extension://<uuid>/ URLs; hash the
+    // path relative to the extension root, as written in manifest.json and read from disk.
+    const root = browser.runtime.getURL('');
+    const relative = name => (name.startsWith(root) ? name.slice(root.length) : name).replace(/^\/+/, '');
     const scripts = [...new Set([...(manifest.background?.scripts || []),
-      ...(manifest.content_scripts || []).flatMap(entry => entry.js || [])])];
+      ...(manifest.content_scripts || []).flatMap(entry => entry.js || [])].map(relative))];
     if (!scripts.length) return null;
     const encoder = new TextEncoder();
     const separator = new Uint8Array([0]);
