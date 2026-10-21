@@ -59,8 +59,8 @@ except ImportError:
 from . import bridge_control
 from .version import BRIDGE_BUILD, PACKAGE_VERSION, SOURCE_ROOT, extension_manifest_hash, extension_source_hash
 from .waits import (
-    WORKFLOW_DEADLINE_SECONDS, actionability_wait_seconds, batch_deadline_seconds, command_wait_seconds,
-    container_settle_seconds,
+    RESUME_DEADLINE_SECONDS, WORKFLOW_DEADLINE_SECONDS, actionability_wait_seconds, batch_deadline_seconds,
+    command_wait_seconds, container_settle_seconds,
 )
 
 # ── Config ──
@@ -151,6 +151,13 @@ _audit_call_ids = itertools.count(1)
 _container_steps = contextvars.ContextVar("kitsune_container_steps", default=None)
 # ((owners, sequence), ...) of the enclosing parallel sequences; owners maps tab id -> sequence.
 _tab_owners = contextvars.ContextVar("kitsune_tab_owners", default=())
+# The step record of the container step running in this task (a parallel keeps its tab claims on it).
+_running_step = contextvars.ContextVar("kitsune_running_step", default=None)
+# The _ResumePlan of the container running in this task while browser_resume runs it; None otherwise.
+_resume_plan = contextvars.ContextVar("kitsune_resume_plan", default=None)
+# id(owners) -> (call, writers, owners) of each parallel in progress, so a resumed sequence can tell
+# whether another call writes its tab.
+_running_parallels = {}
 _log_buffer = []  # mirrors bridge stdout lines
 _LOG_MAX = 5000
 # Ask-before-act is opt-in. askUrls are payment-like URL patterns it guards (case-insensitive).
@@ -1300,10 +1307,12 @@ async def _stop_keep_alive_async(tab_ids):
 
 def _parse_workflow(filepath, variables=None):
     """Parse a workflow .md file into a list of batch commands."""
-    variables = variables or {}
     with open(filepath, 'r', encoding='utf-8') as f:
-        content = f.read()
+        return _parse_workflow_text(f.read(), variables)
 
+
+def _parse_workflow_text(content, variables=None):
+    variables = variables or {}
     blocks = _re.findall(r'```json\s*\n(.*?)\n```', content, _re.DOTALL)
 
     commands = []
@@ -2097,14 +2106,14 @@ def _nested_commands(cmd):
     return [cmd, *(c for n in nested for c in _nested_commands(n))]
 
 
-def _parallel_tab_problem(sequences):
+def _parallel_tab_problem(sequences, writers):
     """Return why parallel sequences could act on a tab they do not own, before any step runs.
 
     Every step that acts on a tab must name it, so a focus change cannot redirect it to another
     sequence's tab, and no tab may be written by two sequences. Tab ids substituted at run time
-    (${$N.tabId}) are checked by _check_step_tab when their step runs.
+    (${$N.tabId}) are checked by _check_step_tab when their step runs. Fills writers (tab id ->
+    sequence) with the tabs the steps name.
     """
-    writers = {}
     for i, seq in enumerate(sequences):
         for j, cmd in enumerate(seq):
             for step in _nested_commands(cmd):
@@ -2178,8 +2187,21 @@ def _worst_status(statuses):
     return next((s for s in _STEP_STATUSES if s in statuses), "ok")
 
 
+class _StepRecord(dict):
+    """A progress record. Its result, nested records and (for a parallel) tab owners are attributes,
+    so they stay out of the response but a checkpoint can resume from them."""
+    result = None
+    nested = ()
+    owners = None
+
+    def copy_with(self, **fields):
+        record = _StepRecord({**self, **fields})
+        record.result, record.nested, record.owners = self.result, self.nested, self.owners
+        return record
+
+
 def _step_record(cmd, status="running", **position):
-    step = {**position, "action": cmd.get("action") if isinstance(cmd, dict) else None}
+    step = _StepRecord(position, action=cmd.get("action") if isinstance(cmd, dict) else None)
     if isinstance(cmd, dict) and cmd.get("tabId") is not None:
         step["tabId"] = cmd["tabId"]
     step["status"] = status
@@ -2188,6 +2210,7 @@ def _step_record(cmd, status="running", **position):
 
 def _finish_step(step, cmd, result, nested):
     """Set a step's status from its result and its nested steps; a cancelled step is unknown."""
+    step.result, step.nested = result, nested
     own = "unknown" if result is _UNFINISHED else _result_status(result)
     if own == "ok" and step["action"] == "retry":
         nested = []  # attempts that failed before one succeeded were safe to repeat
@@ -2264,26 +2287,414 @@ def _container_timeout_error(name, seconds):
         deadlineSeconds=seconds)
 
 
+# ── Checkpoint and resume (docs/checkpoint-resume.md) ──
+# A batch, parallel or workflow call that did not finish ok keeps a checkpoint in bridge memory only:
+# its commands (typed values included), results and step records. browser_resume needs the call's
+# resume_token, which is stored as a hash and never logged or audited.
+RESUME_MAX_CHECKPOINTS = 20
+RESUME_TTL_SECONDS = 30 * 60
+_checkpoints = {}  # call id -> checkpoint, oldest first
+_checkpoint_lock = Lock()  # HTTP handler threads save and claim checkpoints
+_checkpoint_clock = time.monotonic
+_RESUME_KEPT = ("kept", "applied")
+# A resumed step that ran ok is never sent again if it or a nested step may change the page or
+# its data, and after an unknown outcome only when the caller observed it did not take effect.
+_RESUME_WRITE_ACTIONS = (_REPEAT_UNSAFE_ACTIONS | _ASK_JS_ACTIONS | _ASK_COOKIE_ACTIONS | set(_ASK_DATA_ACTIONS)
+                         | {"broadcast"})
+_TEMPLATE_INDEX = _re.compile(r"\$\{\$(\d+)[.}]")
+
+
+def _resume_token_digest(token):
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _drop_checkpoint(call):
+    """Forget a checkpoint and the command parameters and results it holds."""
+    _checkpoints.pop(call).clear()
+
+
+def _drop_expired_checkpoints():
+    now_s = _checkpoint_clock()
+    for call in [c for c, checkpoint in _checkpoints.items() if checkpoint["expires"] <= now_s]:
+        _drop_checkpoint(call)
+
+
+def _drop_all_checkpoints():
+    with _checkpoint_lock:
+        for call in list(_checkpoints):
+            _drop_checkpoint(call)
+
+
+def _save_checkpoint(call, **checkpoint):
+    """Keep a container call that did not finish ok for browser_resume; return what its response adds."""
+    token = secrets.token_urlsafe(24)
+    with _checkpoint_lock:
+        _drop_expired_checkpoints()
+        if call in _checkpoints:
+            _drop_checkpoint(call)
+        _checkpoints[call] = {**checkpoint, "call": call, "token": _resume_token_digest(token),
+                              "expires": _checkpoint_clock() + RESUME_TTL_SECONDS}
+        while len(_checkpoints) > RESUME_MAX_CHECKPOINTS:
+            _drop_checkpoint(next(iter(_checkpoints)))
+    return {"call": call, "resume_token": token}
+
+
+def _workflow_digest(path):
+    try:
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+    except OSError:
+        return None
+
+
+class _ResumeStep:
+    """What a resume does with one step of a checkpoint (its decision):
+
+    kept      it ran ok; not sent again, its result is reused
+    applied   the caller observed that it took effect; not sent, reported ok
+    run       it is sent (again)
+    resume    a sequence or parallel that partly ran; its own steps are planned (children)
+    refused   a step of a resumed parallel sequence whose tab was closed or claimed (error)
+    """
+
+    def __init__(self, key, cmd, record, frame):
+        self.key, self.cmd, self.record, self.frame = key, cmd, record, frame
+        self.decision, self.result, self.children, self.error = "run", None, None, None
+
+
+class _ResumePlan(dict):
+    """(sequence, index) -> _ResumeStep for the steps of one resumed container (sequence is None
+    outside a parallel). A parallel's plan carries the tab claims its sequences made (owners)."""
+    owners = None
+
+
+def _effective_action(cmd):
+    action = cmd.get("action") if isinstance(cmd, dict) else None
+    return BATCH_ACTION_MAP.get(action, action) if isinstance(action, str) else action
+
+
+def _resume_writes(cmd):
+    """Whether cmd or a command nested in it may change the page or its data."""
+    return any(_effective_action(step) in _RESUME_WRITE_ACTIONS for step in _nested_commands(cmd))
+
+
+def _resume_committed(record):
+    """Whether a write in this step, or nested in it, ran ok, so sending the step again repeats it."""
+    action = BATCH_ACTION_MAP.get(record.get("action"), record.get("action"))
+    if record["status"] == "ok" and action in _RESUME_WRITE_ACTIONS:
+        return True
+    result = record.result
+    if action in _CONDITION_ACTIONS and isinstance(result, dict) and (
+            "branch" in result or (isinstance(result.get("iterations"), int) and result["iterations"] > 0)):
+        return True  # its condition ran
+    return any(_resume_committed(n) for n in record.nested)
+
+
+def _resume_uncertain(record):
+    """Whether this unknown step may have changed the page: an unknown write, nested or its own."""
+    if record["status"] != "unknown":
+        return False
+    action = BATCH_ACTION_MAP.get(record.get("action"), record.get("action"))
+    return action in _RESUME_WRITE_ACTIONS or any(_resume_uncertain(n) for n in record.nested)
+
+
+def _resumable_into(cmd, record):
+    """Whether a sequence or parallel that started is resumed step by step rather than as a whole."""
+    if not record.nested or not isinstance(cmd, dict):
+        return False
+    if cmd.get("action") == "sequence":
+        return isinstance(cmd.get("do"), list)
+    sequences = cmd.get("sequences")
+    return (cmd.get("action") == "parallel" and isinstance(sequences, list)
+            and all(isinstance(seq, list) for seq in sequences)
+            and [len(seq) for seq in record.get("sequences", [])] == [len(seq) for seq in sequences])
+
+
+def _kept_result(result):
+    return {k: v for k, v in result.items() if k != "_stopped"} if isinstance(result, dict) else result
+
+
+def _plan_steps(items, observed, problems, steps):
+    """Plan one resumed command list from its last records; items are (position, key, cmd, record, frame).
+
+    Pops the observed entries it uses; problems collects missing and invalid ones, steps every key.
+    """
+    plan = _ResumePlan()
+    for position, key, cmd, record, frame in items:
+        step = plan[position] = steps[key] = _ResumeStep(key, cmd, record, frame)
+        status = record["status"]
+        if status == "ok":
+            step.decision, step.result = "kept", _kept_result(record.result)
+        elif status == "skipped":
+            pass
+        elif _resumable_into(cmd, record):
+            step.decision = "resume"
+            step.children = _plan_children(cmd, record, key, observed, problems, steps)
+        else:
+            # Re-sending would repeat a write that ran ok, so only "applied" can move past it.
+            accepts = ["applied"] if _resume_committed(record) else ["applied", "not_applied"]
+            seen = observed.pop(key, None)
+            if seen is None:
+                if len(accepts) == 1 or _resume_uncertain(record):
+                    problems["required"].append(
+                        {"step": key, "action": record.get("action"),
+                         **({"tabId": record["tabId"]} if "tabId" in record else {}),
+                         "status": status, "accepts": accepts})
+            elif seen not in accepts:
+                problems["invalid"].append({"step": key, "reason": "value not accepted", "accepts": accepts})
+            elif seen == "applied":
+                step.decision, step.result = "applied", {"ok": True, "observed": "applied"}
+    return plan
+
+
+def _plan_children(cmd, record, key, observed, problems, steps):
+    if cmd["action"] == "parallel":
+        plan = _plan_steps(
+            (((i, j), f"{key}.{i}.{j}", c, record["sequences"][i][j],
+              {"action": "parallel", "sequence": i, "index": j})
+             for i, seq in enumerate(cmd["sequences"]) for j, c in enumerate(seq)),
+            observed, problems, steps)
+        plan.owners = dict(record.owners or {})
+        return plan
+    ran = {n.get("index"): n for n in record.nested}
+    plan = _plan_steps(
+        (((None, j), f"{key}.{j}", c, ran.get(j) or _step_record(c, "skipped", index=j),
+          {"action": "sequence", "index": j})
+         for j, c in enumerate(cmd["do"])),
+        observed, problems, steps)
+    # ${$N...} templates resolve inside a sequence only: an ok read runs again when a step that
+    # runs uses its result, so that step reads fresh state. A write's old result is reused.
+    for j in reversed(range(len(cmd["do"]))):
+        step = plan[(None, j)]
+        if step.decision == "kept" and not _resume_writes(step.cmd) and any(
+                later.decision in ("run", "resume") and str(j) in _TEMPLATE_INDEX.findall(json.dumps(later.cmd))
+                for (_, k), later in plan.items() if k > j):
+            step.decision, step.result = "run", None
+    return plan
+
+
+def _plan_resume(checkpoint, observed):
+    """Return (plan, None), or (None, error) when observed is missing or invalid; nothing is sent."""
+    observed = dict(observed)
+    problems, steps = {"required": [], "invalid": []}, {}
+    frame = {"action": checkpoint["kind"]}
+    if checkpoint["kind"] == "workflow":
+        frame["name"] = checkpoint["workflow"]
+    plan = _plan_steps(
+        (((None, i), str(i), c, checkpoint["progress"][i], {**frame, "index": i})
+         for i, c in enumerate(checkpoint["commands"])),
+        observed, problems, steps)
+    for key in observed:
+        step = steps.get(key) if isinstance(key, str) else None
+        reason = ("no such step" if step is None
+                  else "ok, never sent again" if step.record["status"] == "ok"
+                  else "skipped, never started" if step.record["status"] == "skipped"
+                  else f"a {step.cmd['action']} block: name the step inside it")
+        problems["invalid"].append({"step": key, "reason": reason})
+    if problems["invalid"]:
+        return None, _action_error(
+            "observed names steps that cannot take an observation", "observed_invalid", retryable=True,
+            hint=('Nothing was sent. observed takes "applied" or "not_applied" for an unknown, held or failed '
+                  'step, by its progress path ("2", "0.1.3" for a parallel sequence step).'),
+            call=checkpoint["call"], steps=problems["invalid"])
+    if problems["required"]:
+        return None, _action_error(
+            "Resume needs an observation for each step that may have taken effect", "observed_required",
+            retryable=True,
+            hint=('Nothing was sent. Check the page for each listed step, then resume with observed: '
+                  '"not_applied" sends it again, "applied" marks it ok without sending it.'),
+            call=checkpoint["call"], steps=problems["required"])
+    return plan, None
+
+
+def _claim_checkpoint(body):
+    """Check a resume request and take its checkpoint out of the store while it runs.
+
+    Returns (checkpoint, plan, None), or (None, None, (http status, error)); nothing is sent.
+    """
+    call = body.get("call")
+    call = int(call) if isinstance(call, str) and call.isdigit() else call
+    with _checkpoint_lock:
+        _drop_expired_checkpoints()
+        checkpoint = _checkpoints.get(call) if type(call) is int else None
+        if checkpoint is None:
+            return None, None, (404, _action_error(
+                f"No checkpoint for call {call!r}", "checkpoint_not_found", retryable=False,
+                hint=(f"It finished ok, expired ({RESUME_TTL_SECONDS // 60} minutes after the call), was one of "
+                      f"more than {RESUME_MAX_CHECKPOINTS} newer checkpoints, is being resumed, stopped on an "
+                      "internal error, or the bridge restarted. Check the page and continue by hand."),
+                call=call))
+        token = body.get("resume_token")
+        if not isinstance(token, str) or not hmac.compare_digest(_resume_token_digest(token), checkpoint["token"]):
+            return None, None, (403, _action_error(
+                "resume_token does not match this call's checkpoint", "resume_token_invalid", retryable=False,
+                hint="Nothing was sent. Pass the resume_token from the response that returned this call.",
+                call=call))
+        if checkpoint["kind"] == "workflow" and _workflow_digest(checkpoint["path"]) != checkpoint["digest"]:
+            return None, None, (409, _action_error(
+                f"Workflow '{checkpoint['workflow']}' changed since call {call}", "workflow_changed",
+                retryable=False,
+                hint="Nothing was sent. Its steps may differ now; check the page and run the workflow again.",
+                call=call, workflow=checkpoint["workflow"]))
+        observed = body.get("observed") or {}
+        if not isinstance(observed, dict):
+            return None, None, (400, _action_error(
+                "observed must map step paths to applied or not_applied", "observed_invalid", retryable=True,
+                hint="Nothing was sent.", call=call))
+        plan, problem = _plan_resume(checkpoint, observed)
+        if problem:
+            return None, None, (400, problem)
+        del _checkpoints[call]
+    return checkpoint, plan, None
+
+
+def _resumed_records(plan, parent):
+    """Records of the steps a resumed container keeps or the caller reported applied.
+
+    They are added when the container starts, so steps it does not reach still report ok. Each
+    applied step is audited as not sent.
+    """
+    records = []
+    for step in plan.values():
+        if step.decision == "kept":
+            record = step.record.copy_with(resumed="kept")
+            record.result = step.result
+            records.append(record)
+        elif step.decision == "applied":
+            params = {k: v for k, v in step.cmd.items() if k != "action"}
+            token = _audit_parent.set({**parent, "path": [*parent["path"], step.frame]})
+            try:
+                _audit(_effective_action(step.cmd), {**params, "observed": "applied", "sent": False}, True, None, 0)
+            finally:
+                _audit_parent.reset(token)
+            record = _StepRecord({k: v for k, v in step.record.items() if k != "sequences"},
+                                 status="ok", resumed="applied")
+            record.result = step.result
+            records.append(record)
+    return records
+
+
+def _resume_pending_commands(step):
+    """The commands a resumed step will send, nested ones included."""
+    if step.decision == "run":
+        return _nested_commands(step.cmd)
+    if step.decision == "resume":
+        return [c for child in step.children.values() for c in _resume_pending_commands(child)]
+    return []
+
+
+async def _refuse_unsafe_sequences(plan, owners, call):
+    """Refuse each resumed parallel sequence whose tab was closed or is written by another sequence or call.
+
+    The steps it would send fail with tab_closed, tab_owned or tab_claimed instead; none is sent.
+    """
+    pending = {}  # sequence -> (tabs its steps act on, tabs they write)
+    for (sequence, _), step in sorted(plan.items()):
+        acts, writes = pending.setdefault(sequence, (set(), set()))
+        for cmd in _resume_pending_commands(step):
+            action, tab_id = _effective_action(cmd), _explicit_tab_id(cmd.get("tabId"))
+            if tab_id is not None and action not in _TABLESS_ACTIONS:
+                acts.add(tab_id)
+                if _claims_tab(action):
+                    writes.add(tab_id)
+    listed = None
+    for sequence, (acts, writes) in sorted(pending.items()):
+        hint = "Nothing in this sequence was sent; the other sequences resumed."
+        error = None
+        owned = sorted(t for t in writes if owners.get(t, sequence) != sequence)
+        claimed = sorted((t, other) for other, other_writers, other_owners in _running_parallels.values()
+                         if other != call for t in writes if t in other_writers or t in other_owners)
+        if owned:
+            error = _action_error(
+                f"Sequence {sequence} was not resumed: tab {owned[0]} is written by sequence {owners[owned[0]]}",
+                "tab_owned", retryable=True, hint=hint, sequence=sequence, tabId=owned[0], owner=owners[owned[0]])
+        elif claimed:
+            error = _action_error(
+                f"Sequence {sequence} was not resumed: tab {claimed[0][0]} is written by call {claimed[0][1]}, "
+                "which is in progress", "tab_claimed", retryable=True,
+                hint=hint + " Resume again when that call has finished.",
+                sequence=sequence, tabId=claimed[0][0], call=claimed[0][1])
+        elif acts:
+            if listed is None:
+                listed = await send_to_extension("getTabs", {}, timeout=10)
+                listed = listed if isinstance(listed, dict) else {"error": str(listed)}
+            closed = sorted(acts - {t.get("id") for t in listed.get("tabs") or [] if isinstance(t, dict)})
+            if listed.get("error"):
+                error = {**listed, "error": f"Sequence {sequence} was not resumed: could not list tabs to check "
+                                            f"them ({listed['error']})"}
+            elif closed:
+                error = _action_error(
+                    f"Sequence {sequence} was not resumed: tab {closed[0]} was closed", "tab_closed",
+                    retryable=True, hint=hint + " A closed tab is never replaced; redo its steps by hand.",
+                    sequence=sequence, tabId=closed[0])
+        if error is not None:
+            for (s, _), step in plan.items():
+                if s == sequence and step.decision in ("run", "resume"):
+                    step.decision, step.error = "refused", error
+
+
 async def _run_step(cmd, call, **frame):
     """Run a container's nested command; its audit entries carry the call id and the step's path.
 
-    The step also adds a record to the enclosing container's progress (_container_steps).
+    The step also adds a record to the enclosing container's progress (_container_steps). In a
+    resumed container, a kept or applied step is not sent: its result comes from the plan.
     """
-    token = _audit_parent.set({"call": call["call"], "path": [*call["path"], frame]})
+    plan = _resume_plan.get()
+    resume = plan.get((frame.get("sequence"), frame.get("index"))) if plan is not None else None
+    if resume is not None and resume.decision in _RESUME_KEPT:
+        return resume.result  # _resumed_records added its record
+    token = _audit_parent.set({**call, "path": [*call["path"], frame]})
     step = _step_record(cmd, **{k: v for k, v in frame.items() if k not in ("action", "name")})
     steps = _container_steps.get()
     if steps is not None:
         steps.append(step)
     nested = []
     steps_token = _container_steps.set(nested)
+    plan_token = _resume_plan.set(resume.children if resume is not None else None)
+    step_token = _running_step.set(step)
     result = _UNFINISHED
     try:
-        result = await run_command(cmd)
+        if resume is not None and resume.decision == "refused":
+            nested.extend(resume.record.nested)  # keep what it ran before for a later resume
+            result = resume.error
+        else:
+            if resume is not None and resume.decision == "resume":
+                nested.extend(_resumed_records(resume.children, _audit_parent.get()))
+            result = await run_command(cmd)
         return result
     finally:
+        _running_step.reset(step_token)
+        _resume_plan.reset(plan_token)
         _container_steps.reset(steps_token)
         _audit_parent.reset(token)
         _finish_step(step, cmd, result, nested)
+
+
+async def _run_batch(commands, stop_on_warning, call, results):
+    """Run a batch's commands in order, appending their results as they finish."""
+    plan = _resume_plan.get()
+    for i, cmd in enumerate(commands):
+        r = await _run_step(cmd, call, action='batch', index=i)
+        results.append(r)
+        # Later commands may depend on a held one, so never run past it.
+        if _is_held(r):
+            r['_stopped'] = True
+            break
+        # Stop early if a command returned a warning/redirect and stopOnWarning is set; a resumed
+        # batch does not stop again at a command it kept.
+        kept = plan is not None and plan[(None, i)].decision in _RESUME_KEPT
+        if stop_on_warning and not kept and isinstance(r, dict) and (r.get('warning') or r.get('error')):
+            r['_stopped'] = True
+            break
+
+
+async def _run_workflow(name, commands, call, results):
+    """Run a workflow's commands until one fails, appending their results as they finish."""
+    for i, cmd in enumerate(commands):
+        r = await _run_step(cmd, call, action='workflow', name=name, index=i)
+        results.append(r)
+        if isinstance(r, dict) and r.get('error'):
+            break
 
 
 async def run_command(cmd):
@@ -2376,11 +2787,19 @@ async def _execute_command(action, effective_action, params):
             return {'ok': True}
         elif action == 'parallel':
             sequences = params.get('sequences', [])
-            problem = _parallel_tab_problem(sequences)
+            writers = {}
+            problem = _parallel_tab_problem(sequences, writers)
             if problem:
                 return problem
             call = _audit_call()
-            owners = {}
+            # A resumed parallel keeps the tab claims its sequences made before.
+            plan = _resume_plan.get()
+            owners = dict(plan.owners or {}) if plan is not None else {}
+            if plan is not None:
+                await _refuse_unsafe_sequences(plan, owners, call['call'])
+            record = _running_step.get()
+            if record is not None:
+                record.owners = owners
 
             async def run_sequence(i, seq):
                 _tab_owners.set((*_tab_owners.get(), (owners, i)))
@@ -2390,7 +2809,11 @@ async def _execute_command(action, effective_action, params):
                     if _is_held(results[-1]):
                         break  # later steps may depend on the held one
                 return results
-            return list(await asyncio.gather(*[run_sequence(i, s) for i, s in enumerate(sequences)]))
+            _running_parallels[id(owners)] = (call['call'], writers, owners)
+            try:
+                return list(await asyncio.gather(*[run_sequence(i, s) for i, s in enumerate(sequences)]))
+            finally:
+                del _running_parallels[id(owners)]
         elif action == 'broadcast':
             return await _broadcast_async(params.get('tabIds', []), params.get('command', {}))
         elif action == 'syncBarrier':
@@ -2627,6 +3050,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "/api/batch": self.handle_batch,
             "/api/cache": self.handle_cache,
             "/api/workflow": self.handle_workflow,
+            "/api/resume": self.handle_resume,
             # GET endpoints also accepted as POST so callers can supply
             # a tabId in the body to target a non-active tab.
             "/api/page-info": self.handle_page_info,
@@ -3275,21 +3699,11 @@ class BridgeHandler(BaseHTTPRequestHandler):
         commands = body.get('commands', [])
         stop_on_warning = body.get('stopOnWarning', False)
         results, steps = [], []
+        call = _audit_call()
 
         async def run_all():
             _container_steps.set(steps)
-            call = _audit_call()
-            for i, cmd in enumerate(commands):
-                r = await _run_step(cmd, call, action='batch', index=i)
-                results.append(r)
-                # Later commands may depend on a held one, so never run past it.
-                if _is_held(r):
-                    r['_stopped'] = True
-                    break
-                # Stop early if a command returned a warning/redirect and stopOnWarning is set
-                if stop_on_warning and isinstance(r, dict) and (r.get('warning') or r.get('error')):
-                    r['_stopped'] = True
-                    break
+            await _run_batch(commands, stop_on_warning, call, results)
 
         # Commands run in sequence, so the deadline must cover every wait in the batch.
         deadline = batch_deadline_seconds(commands)
@@ -3298,6 +3712,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
         if timed_out:
             response.update(_container_timeout_error('Batch', deadline))
         response['summary'] = _container_summary(response['progress'], deadline if timed_out else None)
+        if response['status'] != 'ok':
+            response.update(_save_checkpoint(call['call'], kind='batch', commands=commands,
+                                             progress=response['progress'], stopOnWarning=stop_on_warning))
         self.send_json(200, response)
 
     def handle_cache(self):
@@ -3335,21 +3752,22 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self.send_json(404, {"error": f"Workflow '{name}' not found", "available": available})
             return
 
-        commands, err = _parse_workflow(filepath, variables)
+        # The checkpoint keeps the hash of the file the commands came from.
+        with open(filepath, "rb") as f:
+            content = f.read()
+        # Universal newlines, as _parse_workflow reads a file.
+        text = content.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+        commands, err = _parse_workflow_text(text, variables)
         if err:
             self.send_json(400, {"error": err})
             return
 
         results, steps = [], []
+        call = _audit_call()
 
         async def run_workflow():
             _container_steps.set(steps)
-            call = _audit_call()
-            for i, cmd in enumerate(commands):
-                r = await _run_step(cmd, call, action='workflow', name=name, index=i)
-                results.append(r)
-                if isinstance(r, dict) and r.get('error'):
-                    break
+            await _run_workflow(name, commands, call, results)
 
         deadline = WORKFLOW_DEADLINE_SECONDS
         timed_out = self.run_async(_within_deadline(run_workflow(), deadline), timeout=container_settle_seconds(deadline))
@@ -3358,6 +3776,58 @@ class BridgeHandler(BaseHTTPRequestHandler):
         if timed_out:
             response.update(_container_timeout_error('Workflow', deadline))
         response["summary"] = _container_summary(response["progress"], deadline if timed_out else None)
+        if response["status"] != "ok":
+            response.update(_save_checkpoint(call["call"], kind="workflow", commands=commands,
+                                             progress=response["progress"], workflow=name, path=filepath,
+                                             digest=hashlib.sha256(content).hexdigest()))
+        self.send_json(200, response)
+
+    def handle_resume(self):
+        body = self.read_body()
+        checkpoint, plan, refused = _claim_checkpoint(body)
+        if refused:
+            self.send_json(*refused)
+            return
+        call = {"call": checkpoint["call"], "path": [], "resumed": True}
+        commands, workflow = checkpoint["commands"], checkpoint.get("workflow")
+        results, steps = [], []
+
+        async def resume():
+            _container_steps.set(steps)
+            _resume_plan.set(plan)
+            steps.extend(_resumed_records(plan, call))
+            if checkpoint["kind"] == "workflow":
+                await _run_workflow(workflow, commands, call, results)
+            else:
+                await _run_batch(commands, checkpoint["stopOnWarning"], call, results)
+
+        # The MCP server cannot see the stored commands, so a resume has a fixed deadline.
+        deadline = RESUME_DEADLINE_SECONDS
+        failure = None
+        try:
+            timed_out = self.run_async(_within_deadline(resume(), deadline),
+                                       timeout=container_settle_seconds(deadline))
+        except Exception as exc:
+            timed_out, failure = False, type(exc).__name__
+        response = {"workflow": workflow, "steps": len(commands)} if checkpoint["kind"] == "workflow" else {}
+        response.update(results=results, **_container_progress(commands, steps))
+        if timed_out:
+            response.update(_container_timeout_error(f"Resumed {checkpoint['kind']}", deadline))
+        if failure:
+            # Fail closed: steps may have been sent, so the checkpoint is not restored.
+            _log(f"Resume of call {call['call']} stopped by an internal error ({failure}); checkpoint dropped")
+            response.update(_action_error(
+                f"Resume stopped by an internal error ({failure}); its checkpoint was dropped", "resume_failed",
+                retryable=False,
+                hint=("Steps in progress may have taken effect, and this call cannot be resumed again. "
+                      "Check the page, then continue by hand from progress."),
+                call=call["call"]))
+        response["summary"] = _container_summary(response["progress"], deadline if timed_out else None)
+        if failure is None and response["status"] != "ok":
+            response.update(_save_checkpoint(call["call"], **{k: v for k, v in checkpoint.items()
+                                                              if k not in ("call", "token", "expires", "progress")},
+                                             progress=response["progress"]))
+        checkpoint.clear()
         self.send_json(200, response)
 
     # ── Helpers ──
@@ -3511,6 +3981,7 @@ async def main(idle_timeout=0):
         await shutdown_event.wait()
 
     finally:
+        _drop_all_checkpoints()
         if idle_watch is not None:
             idle_watch.cancel()
         if http_server is not None:

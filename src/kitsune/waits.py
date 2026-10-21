@@ -82,10 +82,11 @@ def batch_wait_seconds(commands):
 
 
 # A batch or parallel stops at its waits plus CONTAINER_MARGIN_SECONDS, never before
-# CONTAINER_MIN_DEADLINE_SECONDS; a workflow at WORKFLOW_DEADLINE_SECONDS (the MCP server
-# cannot see a workflow's commands).
+# CONTAINER_MIN_DEADLINE_SECONDS; a workflow at WORKFLOW_DEADLINE_SECONDS and a resumed call at
+# RESUME_DEADLINE_SECONDS (the MCP server cannot see a workflow's or a checkpoint's commands).
 CONTAINER_MIN_DEADLINE_SECONDS = 300
 WORKFLOW_DEADLINE_SECONDS = 300
+RESUME_DEADLINE_SECONDS = 300
 CONTAINER_MARGIN_SECONDS = 15
 
 

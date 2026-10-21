@@ -27,7 +27,7 @@ class ToolSurfaceTests(unittest.TestCase):
         core = self.registered("core")
         all_tools = self.registered("all")
         self.assertEqual(len(core), 30)
-        self.assertEqual(len(all_tools), 95)
+        self.assertEqual(len(all_tools), 96)
         self.assertTrue({"browser_handle_dialog", "browser_snapshot"} <= core)
         removed = {
             "browser_page_text_by_tab_id", "browser_fill", "browser_set_editable_content",
@@ -43,7 +43,7 @@ class ToolSurfaceTests(unittest.TestCase):
         self.assertEqual(self.registered(" CORE, parallel "), core | self.registered("parallel"))
         self.assertTrue({"browser_scheduler", "browser_batch", "browser_retry", "browser_keep_alive",
                          "browser_tab_pool", "browser_tag_tab", "browser_parallel",
-                         "browser_broadcast", "browser_sync_barrier"} <= self.registered("parallel"))
+                         "browser_broadcast", "browser_sync_barrier", "browser_resume"} <= self.registered("parallel"))
 
     def test_default_registration(self):
         with patch.dict(os.environ):

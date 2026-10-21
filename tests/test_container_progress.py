@@ -26,6 +26,8 @@ class ContainerTests(unittest.TestCase):
             patch.dict(bridge._confirm_tokens, clear=True),
             patch.dict(bridge._unknown_outcomes, clear=True),
             patch.object(bridge, "_audit_log", []),
+            patch.object(bridge, "_checkpoints", {}),
+            patch.object(bridge, "_running_parallels", {}),
             patch.object(bridge, "_global_command_lock", None),
             patch.object(bridge, "_tab_command_locks", {}),
             patch.object(bridge, "_scheduler_gate", None),

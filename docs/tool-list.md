@@ -2,7 +2,7 @@
 
 Current tools registered in [server.py](../src/kitsune/server.py), grouped by
 capability. The default `KITSUNE_CAPS=core` exposes 30 tools;
-`KITSUNE_CAPS=all` exposes all 95. Set a comma-separated list to enable selected
+`KITSUNE_CAPS=all` exposes all 96. Set a comma-separated list to enable selected
 groups, for example `KITSUNE_CAPS=core,tabs,network`.
 
 See the [API reference](api-reference.md) for parameters and behavior.
@@ -75,7 +75,7 @@ See the [API reference](api-reference.md) for parameters and behavior.
 - `browser_downloads`
 - `browser_intercept`
 
-## parallel — 15
+## parallel — 16
 
 - `browser_batch`
 - `browser_broadcast`
@@ -86,6 +86,7 @@ See the [API reference](api-reference.md) for parameters and behavior.
 - `browser_pool_acquire`
 - `browser_pool_release`
 - `browser_resolve_tag`
+- `browser_resume`
 - `browser_retry`
 - `browser_scheduler`
 - `browser_sync_barrier`
