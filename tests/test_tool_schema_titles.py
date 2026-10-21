@@ -3,6 +3,7 @@
 Every tool in every capability group is compared with FastMCP's own listing: only `title`
 keywords may differ, and both schemas must accept and reject the same sample arguments.
 """
+import inspect
 import json
 import os
 import subprocess
@@ -112,6 +113,8 @@ class ToolSchemaTitleTests(unittest.TestCase):
         removed_total = 0
         for name, generated in self.generated.items():
             with self.subTest(tool=name):
+                # Descriptions are cleandoc-normalized on purpose; see the test below.
+                generated = {**generated, "description": inspect.cleandoc(generated["description"])}
                 removed = removed_paths(generated, self.published[name])
                 self.assertTrue(removed, "generated schema had no title to remove")
                 for path in removed:
@@ -121,6 +124,17 @@ class ToolSchemaTitleTests(unittest.TestCase):
                 removed_total += len(removed)
                 self.assertEqual(list(title_keywords(self.published[name]["inputSchema"])), [])
         self.assertGreater(removed_total, len(self.generated))
+
+    def test_descriptions_are_cleandoc_normalized(self):
+        # Only Python 3.13+ strips docstring indentation itself; published text must not
+        # depend on the interpreter (#130).
+        for name, generated in self.generated.items():
+            with self.subTest(tool=name):
+                published = self.published[name]["description"]
+                self.assertEqual(published, inspect.cleandoc(generated["description"]))
+                lines = published.splitlines()[1:]
+                self.assertFalse(lines and all(not l or l[:1].isspace() for l in lines),
+                                 "description keeps a common indent")
 
     def test_parameters_named_like_keywords_are_kept(self):
         for name, parameter in (("browser_wait_for", "title"), ("browser_computed_style", "properties")):
