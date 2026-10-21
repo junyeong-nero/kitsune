@@ -719,6 +719,8 @@ WRITE_ACTIONS = {
 # Repeating these after an unknown outcome could duplicate a side effect (a submit,
 # message, payment or deletion), so their timeouts and disconnects are not retryable.
 _REPEAT_UNSAFE_ACTIONS = WRITE_ACTIONS | {"uploadCommit", "focusElement", "blurElement"}
+# Nothing reached the page, but repeating cannot succeed until the tab navigates.
+_PERSISTENT_FAILURE_CODES = {"error_page"}
 
 
 def _check_policy(action, params):
@@ -794,7 +796,8 @@ def _confirmation_binding(action, params, tab_id):
 
 def _remember_outcome(action, params, result):
     """Under ask mode, remember writes whose outcome is unknown so repeating them is held."""
-    if not _policy["ask"] or not isinstance(result, dict) or result.get("retryable") is not False:
+    if (not _policy["ask"] or not isinstance(result, dict) or result.get("retryable") is not False
+            or result.get("code") in _PERSISTENT_FAILURE_CODES):
         return
     now_s = time.monotonic()
     for key in [k for k, exp in _unknown_outcomes.items() if exp < now_s]:
@@ -1376,7 +1379,8 @@ async def _send_to_extension_raw(action, params=None, timeout=30):
         if action == "closeTab" and not (isinstance(result, dict) and result.get("error")):
             _cleanup_tab_scheduler_state(params.get("tabId"))
         # The extension cannot tell reads from writes; repeating a read is always safe.
-        if isinstance(result, dict) and result.get("code") and _safe_to_repeat(action):
+        if (isinstance(result, dict) and result.get("code") and _safe_to_repeat(action)
+                and result["code"] not in _PERSISTENT_FAILURE_CODES):
             result["retryable"] = True
         return result
     except asyncio.TimeoutError:

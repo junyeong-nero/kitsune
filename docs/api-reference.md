@@ -104,6 +104,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
   an identical retry succeeds; follow `hint` first (for example, take a new snapshot).
   `false` means a write may already have taken effect (a submit, message, payment
   or deletion can be behind any click or keypress); inspect the page before acting again.
+  The exception is `error_page`: nothing reached the page, and repeating cannot succeed.
 - `hint`: a short recovery step. `state`: the current state that explains the
   failure, where available (for page targets: `tabId`, `url`, `status`).
 
@@ -117,6 +118,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `tab_unloaded` | The tab is discarded and its page cannot be reached; use `browser_wake_tab` | true |
 | `restricted_page` | Browser-internal page (`about:`, `moz-extension:`, …) | true |
 | `content_unavailable` | The page's content script could not be injected or did not answer | true before dispatch; false for writes after |
+| `error_page` | A loaded `http(s)` page refused the content script: the browser shows its own document, such as an error response with an empty body. `state` adds `title` and, when the extension saw the response, `httpStatus`. Nothing was dispatched, but reads fail the same way until the tab navigates; for a 4xx/5xx status, `browser_page_text` instead returns an empty result (`text: ""`, `empty: true`, `httpStatus`, `tabId`, `url`, `title`) | false |
 | `extension_disconnected` | The extension is not connected, reconnected before sending, or disconnected while waiting (`state.connected`) | true if not sent; false for writes after |
 | `timeout` | The bridge sent the command but no reply arrived in time (`state.timeoutSeconds`); from the MCP server, the bridge did not answer | false for writes (MCP: POST) |
 | `bridge_unavailable` | The MCP server cannot reach or start the bridge | true |
@@ -124,7 +126,8 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `outcome_not_observed` | The action was dispatched, but the outcome given in `expect` did not happen in time (see [Action outcomes](#action-outcomes)) | false for writes |
 
 Writes are the bridge's read-only-mode write actions plus file-upload commits,
-focus, and blur. For a read, the bridge always reports `retryable: true`.
+focus, and blur. For a read, the bridge reports `retryable: true`, except for
+`error_page`, where repeating cannot succeed.
 
 Identity is checked before mutation. A missing or browser-internal target tab fails
 before any message reaches a page. Refs encode their document: a ref used after

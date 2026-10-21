@@ -300,6 +300,9 @@ def browser_page_info(tab_id: int | None = None) -> dict:
 def browser_page_text(tab_id: int | None = None) -> dict:
     """Extract all readable text from the current page.
 
+    An HTTP error response the browser shows without a readable document returns
+    text="" with empty=true and its httpStatus.
+
     Args:
         tab_id: Optional tab to target. Defaults to active tab. For non-active
             tabs, pass tab_id to read without switching focus.
