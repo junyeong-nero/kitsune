@@ -121,6 +121,15 @@ async function testHelloCarriesTheSourceAndManifestHashes() {
   assert.deepEqual(ws.messages[0],
     { type: 'hello', version: '0.2.1', build: 'dev', sourceHash: SOURCE_HASH, manifestHash: MANIFEST_HASH });
 
+  // Firefox's getManifest() lists script paths as absolute moz-extension:// URLs (seen in a real
+  // browser, #121); the hash still covers the manifest's relative paths.
+  const absolute = background({ files: { ...HASH_FILES, manifest: {
+    background: { scripts: ['moz-extension://kitsune/bg/a.js'] },
+    content_scripts: [{ js: ['moz-extension://kitsune/content/b.js', '/bg/a.js'] }],
+  } } });
+  await absolute.socket().onopen();
+  assert.equal(absolute.socket().messages[0].sourceHash, SOURCE_HASH, 'absolute script URLs');
+
   // Unknown, never an error: the bridge then skips that part of the build check.
   for (const [files, sourceHash, manifestHash] of [
     [null, null, null],

@@ -487,7 +487,9 @@ class RealBrowserRedactionTests(harness.RealBrowserTestCase):
             with self.subTest(tool=tool):
                 self.assert_error(result, "not_fillable", True)
                 self.assertRegex(result["error"], r"^Element is not a fillable field: .* within 8 nested shadow roots")
-                self.assertEqual(result["state"], {"tag": "x-deep-input", "reason": "shadow_depth"})
+                # Direct fill/type errors also carry the tab state (#65); form_fill keys do not.
+                self.assertEqual({k: result["state"][k] for k in ("tag", "reason")},
+                                 {"tag": "x-deep-input", "reason": "shadow_depth"}, result)
                 self.assertNotIn(value, json.dumps(result))
         self.assertNotIn(value, json.dumps(form))
         self.assertEqual(self.host_value(tab_id, "too-deep"), "")
