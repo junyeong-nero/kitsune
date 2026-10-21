@@ -1650,8 +1650,7 @@ async def ws_handler(websocket):
                 continue
 
             if cmd_id and cmd_id in pending_commands:
-                entry = pending_commands[cmd_id]
-                future = entry["future"] if isinstance(entry, dict) else entry
+                future = pending_commands[cmd_id]["future"]
                 if not future.done():
                     future.set_result(data.get("result", {}))
             else:
@@ -1669,12 +1668,10 @@ async def ws_handler(websocket):
         # connection must not wipe commands or connection state for the newer
         # websocket.
         for cmd_id, entry in list(pending_commands.items()):
-            future = entry["future"] if isinstance(entry, dict) else entry
-            ws = entry.get("ws") if isinstance(entry, dict) else websocket
-            if ws is websocket:
+            future = entry["future"]
+            if entry.get("ws") is websocket:
                 if not future.done():
-                    action = entry.get("action") if isinstance(entry, dict) else None
-                    future.set_result(_disconnected_error("Extension disconnected", action))
+                    future.set_result(_disconnected_error("Extension disconnected", entry.get("action")))
                 pending_commands.pop(cmd_id, None)
 
 
@@ -2385,10 +2382,9 @@ def _parallel_tab_problem(sequences, writers):
     for i, seq in enumerate(sequences):
         for j, cmd in enumerate(seq):
             for step in _nested_commands(cmd):
-                action = step.get("action")
+                action = _effective_action(step)
                 if not isinstance(action, str):
                     continue
-                action = BATCH_ACTION_MAP.get(action, action)
                 raw = step.get("tabId")
                 if action in _TABLESS_ACTIONS or (isinstance(raw, str) and "${" in raw):
                     continue
@@ -2648,7 +2644,7 @@ def _resume_writes(cmd):
 
 def _resume_committed(record):
     """Whether a write in this step, or nested in it, ran ok, so sending the step again repeats it."""
-    action = BATCH_ACTION_MAP.get(record.get("action"), record.get("action"))
+    action = _effective_action(record)
     if record["status"] == "ok" and action in _RESUME_WRITE_ACTIONS:
         return True
     result = record.result
@@ -2662,7 +2658,7 @@ def _resume_uncertain(record):
     """Whether this unknown step may have changed the page: an unknown write, nested or its own."""
     if record["status"] != "unknown":
         return False
-    action = BATCH_ACTION_MAP.get(record.get("action"), record.get("action"))
+    action = _effective_action(record)
     return action in _RESUME_WRITE_ACTIONS or any(_resume_uncertain(n) for n in record.nested)
 
 
