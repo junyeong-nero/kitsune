@@ -649,11 +649,15 @@ def _log(msg):
 AUDIT_REDACTED = "[redacted]"
 # Params holding typed text or stored secrets (cookie, storage and clipboard
 # contents); selectors, refs, tabId, op, name, url and key stay.
+# selectOption values are always redacted: the bridge only sees a selector/ref,
+# and whether the <select> is sensitive (isSensitiveField) is known only in the page.
 _AUDIT_SECRET_PARAMS = {
     "type": ("text",),
     "fill": ("value",),
     "setEditableContent": ("value",),
     "keypress": ("text",),
+    "selectOption": ("value",),
+    "handleDialog": ("prompt_text",),
     "cookies": ("value",),
     "storageOp": ("value",),
     "clipboard": ("text",),

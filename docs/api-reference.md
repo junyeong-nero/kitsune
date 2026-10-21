@@ -456,6 +456,9 @@ as a separate, unrestricted trust boundary.
 
 - `text` of `type` and `keypress`;
 - `value` of `fill` and `setEditableContent`;
+- `value` of `selectOption`, whether or not the `<select>` is a sensitive field
+  (the bridge sees only the selector or ref);
+- `prompt_text` of `handleDialog` (`browser_handle_dialog` prompt answer);
 - every value of `formFill` `fields`. The field keys (selectors, names or labels)
   are kept;
 - `value` of `cookies` (`browser_cookies`);

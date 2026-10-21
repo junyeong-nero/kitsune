@@ -342,7 +342,8 @@ What it does not protect against:
 - **Typed values outside the bridge.** The bridge audit log (`browser_audit`)
   keeps the action, target, tab, timing and outcome of each write action but
   replaces typed text (`browser_type`, `browser_form_fill` values,
-  `browser_keypress` text) and stored secrets (`browser_cookies`,
+  `browser_keypress` text, `browser_select_option` values and
+  `browser_handle_dialog` prompt answers) and stored secrets (`browser_cookies`,
   `browser_storage` and `browser_clipboard` values) with `"[redacted]"`; see
   [Audit log](api-reference.md#audit-log). The page and the MCP client's own
   transcript still see whatever the agent sent.
