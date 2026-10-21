@@ -313,6 +313,109 @@ class ContainerProgressTests(ContainerTests):
         self.assertIn(("fill", False, "cancelled"), [(e["action"], e["ok"], e["error"]) for e in bridge._audit_log])
 
 
+class ConditionErrorTests(ContainerTests):
+    """An if/while condition that cannot run stops its step with the condition's error, not as false."""
+
+    def test_if_condition_error_runs_neither_branch(self):
+        self.closed.add(4)
+        self.replies["executeJS"] = [{"error": "done is not defined"}, TIMEOUT]
+        branches = {"then": [{"action": "click", "selector": "#then", "tabId": 4}],
+                    "else": [{"action": "click", "selector": "#else", "tabId": 4}]}
+        payload = self.batch({"action": "if", "condition": "document.title", "tabId": 4, **branches},
+                             {"action": "if", "condition": "done", "tabId": 5, **branches},
+                             {"action": "if", "condition": "slow()", "tabId": 5, **branches})
+        closed, script_error, timeout = payload["results"]
+        self.assertEqual((closed["code"], closed["retryable"], closed["state"]), ("tab_closed", True, {"tabId": 4}))
+        self.assertEqual(script_error, {"error": "done is not defined"})
+        self.assertEqual((timeout["code"], timeout["retryable"]), ("timeout", False))
+        self.assertNotIn("click", [a for a, _ in self.sent], "no branch ran")
+        self.assertEqual(self.statuses(payload["progress"]), ["failed", "failed", "unknown"])
+        self.assertEqual(payload["status"], "unknown")
+        self.assertEqual(payload["summary"],
+                         "3 commands: 1 unknown, 2 failed. Unknown, may have taken effect (check the page before "
+                         "repeating): step 2 (if on tab 5). Failed, safe to repeat after its hint: "
+                         "step 0 (if on tab 4), step 1 (if on tab 5).")
+
+    def test_while_condition_error_stops_the_loop_with_its_error(self):
+        error = {"error": "Tab 4 is navigating", "code": "navigating", "retryable": True, "state": {"tabId": 4}}
+        self.replies["executeJS"] = [{"result": "true"}, error]
+        payload = self.batch({"action": "while", "condition": "!done", "tabId": 4, "maxIterations": 5,
+                              "do": [{"action": "click", "selector": "#more", "tabId": 4}]})
+        [stopped] = payload["results"]
+        self.assertEqual({k: stopped[k] for k in ("error", "code", "retryable", "state")}, error)
+        self.assertEqual((stopped["iterations"], stopped["stoppedBy"], stopped["results"]),
+                         (1, "conditionError", [[{"ok": True}]]))
+        self.assertEqual([a for a, _ in self.sent], ["executeJS", "click", "executeJS"])
+        self.assertEqual(self.statuses(payload["progress"]), ["failed"])
+        self.assertEqual(payload["summary"],
+                         "1 command: 1 failed. Failed, safe to repeat after its hint: step 0 (while on tab 4).")
+
+    def test_condition_errors_inside_parallel_fail_their_step(self):
+        self.closed.add(4)
+
+        async def condition(params):
+            return {"error": "Document changed", "code": "stale", "retryable": True}
+        self.replies["executeJS"] = condition
+        payload = self.parallel(
+            [{"action": "if", "condition": "ready", "tabId": 4,
+              "else": [{"action": "click", "selector": "#else", "tabId": 4}]},
+             {"action": "pageText", "tabId": 4}],
+            [{"action": "while", "condition": "more", "tabId": 5,
+              "do": [{"action": "click", "selector": "#more", "tabId": 5}]}])
+        [[(closed, _), (stale,)]] = payload["results"]
+        self.assertEqual(closed["code"], "tab_closed")
+        self.assertEqual((stale["code"], stale["iterations"], stale["stoppedBy"]), ("stale", 0, "conditionError"))
+        self.assertNotIn("click", [a for a, _ in self.sent], "no branch or loop body ran")
+        self.assertEqual([self.statuses(seq) for seq in payload["progress"][0]["sequences"]],
+                         [["failed", "failed"], ["failed"]])
+        self.assertEqual(payload["status"], "failed")
+        self.assertEqual(payload["summary"],
+                         "3 commands: 3 failed. Failed, safe to repeat after its hint: sequence 0 step 0 "
+                         "(if on tab 4), sequence 0 step 1 (pageText on tab 4), sequence 1 step 0 (while on tab 5).")
+
+    def test_true_and_false_conditions_keep_their_results(self):
+        self.replies["executeJS"] = [{"result": "false"}, {"result": "1"}, {"result": ""}]
+        payload = self.batch({"action": "if", "condition": "a", "tabId": 4,
+                              "else": [{"action": "pageText", "tabId": 4}]},
+                             {"action": "while", "condition": "b", "tabId": 4,
+                              "do": [{"action": "pageText", "tabId": 4}]})
+        self.assertEqual(payload["results"], [
+            {"branch": "else", "condition": "false", "results": [{"ok": True}]},
+            {"iterations": 1, "results": [[{"ok": True}]], "stoppedBy": "condition"}])
+        self.assertEqual(payload["status"], "ok")
+
+
+class ReadOnlyConditionTests(ContainerTests):
+    """Read-only mode refuses if/while: their condition is JavaScript run on the page, like js."""
+
+    def test_read_only_refuses_conditions_like_js(self):
+        bridge._policy["readonly"] = True
+        payload = self.batch({"action": "js", "code": "1", "tabId": 4},
+                             {"action": "if", "condition": "1", "tabId": 4,
+                              "then": [{"action": "pageText", "tabId": 4}]},
+                             {"action": "while", "condition": "1", "tabId": 4,
+                              "do": [{"action": "pageText", "tabId": 4}]},
+                             {"action": "pageText", "tabId": 4})
+        self.assertEqual(payload["results"], [
+            {"error": "Read-only mode is active; refusing action: executeJS"},
+            {"error": "Read-only mode is active; refusing action: if"},
+            {"error": "Read-only mode is active; refusing action: while"},
+            {"ok": True}])
+        self.assertEqual(self.sent, [("getPageText", {"tabId": 4})], "only the read ran")
+        self.assertEqual(self.statuses(payload["progress"]), ["failed", "failed", "failed", "ok"])
+
+    def test_read_only_refuses_conditions_inside_parallel(self):
+        bridge._policy["readonly"] = True
+        payload = self.parallel([{"action": "if", "condition": "1", "tabId": 4, "then": []}],
+                                [{"action": "sequence", "do": [
+                                    {"action": "while", "condition": "1", "tabId": 5, "do": []}]}])
+        [[[refused_if], [sequence]]] = payload["results"]
+        self.assertEqual(refused_if, {"error": "Read-only mode is active; refusing action: if"})
+        self.assertEqual(sequence["results"], [{"error": "Read-only mode is active; refusing action: while"}])
+        self.assertEqual(self.sent, [])
+        self.assertEqual(payload["status"], "failed")
+
+
 class ContainerDeadlineTests(ContainerTests):
     """The MCP request outlasts the bridge's container deadline, so the partial report arrives."""
 
