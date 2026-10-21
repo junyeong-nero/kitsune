@@ -1,4 +1,4 @@
-"""Track the size of the default MCP tool definitions (#88, #31)."""
+"""Track the size of the core MCP tool definitions, full and first-paragraph views (#88, #31, #135)."""
 import importlib.util
 import json
 import os
@@ -39,20 +39,23 @@ class ToolSchemaSizeTests(unittest.TestCase):
     def test_sizes_within_budget(self):
         problems = tool_schema_size.over_budget(measured_sizes())
         self.assertEqual(problems, [], "Tool definitions grew past their budget (#88). Trim them, or "
-                         "raise TOTAL_BUDGETS/TOOL_BUDGET in scripts/tool_schema_size.py deliberately.")
+                         "raise TOTAL_BUDGETS/FIRST_PARAGRAPH_BUDGETS/TOOL_BUDGET in scripts/tool_schema_size.py "
+                         "deliberately.")
 
     def test_budget_catches_growth(self):
         sizes = json.loads(SNAPSHOT.read_text())
 
-        def grow_click(total):  # browser_click counts towards every budgeted total
+        def grow_click(field, size):  # browser_click counts towards every budgeted total
             return tool_schema_size.over_budget({**sizes, "browser_click": {**sizes["browser_click"],
-                                                                            "total": total}})
+                                                                            field: size}})
 
         budget = tool_schema_size.TOOL_BUDGET
-        self.assertIn(f"browser_click: {budget + 1} > per-tool budget {budget}", grow_click(budget + 1))
-        for label, total_budget in tool_schema_size.TOTAL_BUDGETS.items():
-            self.assertTrue(any(problem.startswith(f"{label}: ") for problem in grow_click(total_budget)),
-                            label)
+        self.assertIn(f"browser_click: {budget + 1} > per-tool budget {budget}", grow_click("total", budget + 1))
+        for view, (field, budgets) in tool_schema_size.VIEWS.items():
+            for label, total_budget in budgets.items():
+                self.assertTrue(any(problem.startswith(f"{label} ({view}): ")
+                                    for problem in grow_click(field, total_budget)), (view, label))
+        self.assertEqual(set(tool_schema_size.FIRST_PARAGRAPH_BUDGETS), set(tool_schema_size.TOTAL_BUDGETS))
 
 
 if __name__ == "__main__":
