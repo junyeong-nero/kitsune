@@ -1569,6 +1569,16 @@ async def _stop_keep_alive_async(tab_ids):
     return stopped
 
 
+def _active_keep_alive_tabs():
+    return [tid for tid, t in _keep_alive_tasks.items() if not t.done()]
+
+
+def _workflow_names():
+    if not os.path.isdir(WORKFLOW_DIR):
+        return []
+    return [f[:-3] for f in os.listdir(WORKFLOW_DIR) if f.endswith('.md')]
+
+
 def _parse_workflow(filepath, variables=None):
     """Parse a workflow .md file into a list of batch commands."""
     with open(filepath, 'r', encoding='utf-8') as f:
@@ -3002,6 +3012,11 @@ async def run_command(cmd):
     return result
 
 
+def _condition_true(check):
+    """Whether an if/while condition's executeJS reply is truthy."""
+    return bool(check.get('result')) and check.get('result') not in ('false', '0', 'null', 'undefined', '')
+
+
 def _dispatch_timeout(action, params, base=30):
     """WS timeout for an action: a wait's own timeout plus 5 s, else base plus any actionability wait."""
     if action in ('waitForUrl', 'waitForTitle', 'waitForElement'):
@@ -3118,7 +3133,7 @@ async def _execute_command(action, effective_action, params):
             check = await send_to_extension('executeJS', {'tabId': tab_id, 'code': cond or '1'}, timeout=10)
             if check.get('error'):
                 return check  # a condition that could not run is not false: run neither branch
-            truthy = bool(check.get('result')) and check.get('result') not in ('false', '0', 'null', 'undefined', '')
+            truthy = _condition_true(check)
             branch = then_cmds if truthy else else_cmds
             call = _audit_call()
             out = []
@@ -3136,8 +3151,7 @@ async def _execute_command(action, effective_action, params):
                 check = await send_to_extension('executeJS', {'tabId': tab_id, 'code': cond or '0'}, timeout=10)
                 if check.get('error'):
                     return {**check, 'iterations': i, 'results': results, 'stoppedBy': 'conditionError'}
-                truthy = bool(check.get('result')) and check.get('result') not in ('false', '0', 'null', 'undefined', '')
-                if not truthy:
+                if not _condition_true(check):
                     return {'iterations': i, 'results': results, 'stoppedBy': 'condition'}
                 step = []
                 for j, c in enumerate(body):
@@ -3442,7 +3456,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "build": BRIDGE_BUILD,
             "extension_generation": extension_ws_generation,
             "scheduler": _scheduler_snapshot(),
-            "keep_alive_tabs": [tid for tid, t in _keep_alive_tasks.items() if not t.done()],
+            "keep_alive_tabs": _active_keep_alive_tabs(),
             "diagnosis": _connection_diagnosis(),
         })
     
@@ -3546,10 +3560,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.send_json(200, info)
 
     def handle_list_workflows(self):
-        available = []
-        if os.path.isdir(WORKFLOW_DIR):
-            available = [f[:-3] for f in os.listdir(WORKFLOW_DIR) if f.endswith('.md')]
-        self.send_json(200, {"workflows": available, "directory": WORKFLOW_DIR})
+        self.send_json(200, {"workflows": _workflow_names(), "directory": WORKFLOW_DIR})
 
     # ── POST Handlers ──
 
@@ -3760,7 +3771,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "ok": True,
             "keeping_alive": started,
             "interval_seconds": interval,
-            "active_total": len([t for t in _keep_alive_tasks.values() if not t.done()]),
+            "active_total": len(_active_keep_alive_tabs()),
         })
 
     def handle_keep_alive_stop(self):
@@ -3770,7 +3781,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.send_json(200, {
             "ok": True,
             "stopped": stopped,
-            "active_total": len([t for t in _keep_alive_tasks.values() if not t.done()]),
+            "active_total": len(_active_keep_alive_tabs()),
         })
 
     def handle_reload_extension(self):
@@ -3914,7 +3925,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
     # ── Observability ──
 
     def handle_health(self):
-        active_keep_alive = [tid for tid, t in _keep_alive_tasks.items() if not t.done()]
         self.send_json(200, {
             "bridge_version": BRIDGE_VERSION,
             "api_version": API_VERSION,
@@ -3923,7 +3933,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "extension_build": extension_info.get("build"),
             "extension_generation": extension_ws_generation,
             "ports": {"http": HTTP_PORT, "ws": WS_PORT},
-            "keep_alive_tabs": active_keep_alive,
+            "keep_alive_tabs": _active_keep_alive_tabs(),
             "scheduler": _scheduler_snapshot(),
             "tab_pool": _pool_status(),
             "tags": dict(_tags),
@@ -4055,10 +4065,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         filepath = os.path.join(WORKFLOW_DIR, f"{safe_name}.md")
 
         if not os.path.isfile(filepath):
-            available = []
-            if os.path.isdir(WORKFLOW_DIR):
-                available = [f[:-3] for f in os.listdir(WORKFLOW_DIR) if f.endswith('.md')]
-            self.send_json(404, {"error": f"Workflow '{name}' not found", "available": available})
+            self.send_json(404, {"error": f"Workflow '{name}' not found", "available": _workflow_names()})
             return
 
         # The checkpoint keeps the hash of the file the commands came from.
