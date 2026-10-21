@@ -99,9 +99,9 @@ function start(h, command) {
   return pending;
 }
 
-// Gecko restores the discarded document first: complete, with the tab's URL and title.
+// Gecko restores the discarded document first: complete at about:blank, then with the tab's URL and title.
 const restorePlaceholder = h => {
-  h.update({ discarded: false });
+  h.update({ discarded: false, url: 'about:blank' });
   h.update({ status: 'complete', url: URL_ });
 };
 
@@ -155,6 +155,15 @@ async function main() {
   await answering.tick(100);
   assert.deepEqual(await early.result, { ok: true, woken: true, ready: true });
   answering.assertClean();
+  const blank = harness(h => { h.update({ discarded: false, url: 'about:blank' }); h.scriptable = true; });
+  const blankWake = start(blank, { action: 'wakeTab', tabId: 7 });
+  await blank.tick(1000);
+  assert.equal(blankWake.settled, false, 'an answering about:blank placeholder is not ready');
+  blank.update({ url: URL_ });
+  loadResponse(blank, 200);
+  await blank.tick(100);
+  assert.deepEqual(await blankWake.result, { ok: true, woken: true, ready: true });
+  blank.assertClean();
 
   // A page that answers while a new load starts is not ready until that load completes.
   const reloading = harness(h => { restorePlaceholder(h); loadResponse(h, 200); h.scriptable = true; });

@@ -700,16 +700,17 @@ async function wakeTab(tabId) {
 }
 
 // Gecko first restores a woken tab's discarded document as a placeholder, reporting it complete
-// with the tab's URL and title before the reload replaces it; a command that reached it would be
-// lost with it. So an http(s) page counts only once a main-frame request started since the wake
-// (`since`) has finished loading. It is ready when it answers the content script and is still
-// that complete document afterwards; it is final (unscriptable) when it refuses injection.
+// at about:blank or with the tab's URL and title before the reload replaces it; a command that
+// reached it would be lost with it. So a page counts only once a main-frame request started
+// since the wake (`since`) has finished loading, except file: and data: pages, which make no
+// web requests. It is ready when it answers the content script and is still that complete
+// document afterwards; it is final (unscriptable) when it refuses injection.
 async function wokenPageState(tabId, since) {
   const tab = await browser.tabs.get(tabId);
   if (tab.discarded || tab.status !== 'complete') return {};
   const seen = mainFrameRecord(tabId, tab.url);
   const loaded = seen && seen.at >= since && seen.finished;
-  if (/^https?:/i.test(tab.url) && !loaded) return {};
+  if (!loaded && !/^(file|data):/i.test(tab.url)) return {};
   try {
     await ensureContentScript(tabId);
   } catch {
