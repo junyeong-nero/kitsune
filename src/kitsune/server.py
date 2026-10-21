@@ -5,6 +5,7 @@ as MCP tools. Starts the shared bridge daemon on demand.
 """
 
 import functools
+import inspect
 import json
 import math
 import os
@@ -70,11 +71,16 @@ def _untitled_schema(schema):
 class KitsuneMCP(FastMCP):
     """FastMCP that publishes tool input schemas without generated titles.
 
+    Descriptions are normalized with inspect.cleandoc, so they are the same on every
+    supported Python (only 3.13+ strips docstring indentation at compile time, #130).
     Calls are still validated against the registered pydantic argument models.
     """
 
     async def list_tools(self):
-        return [tool.model_copy(update={"inputSchema": _untitled_schema(tool.inputSchema)})
+        return [tool.model_copy(update={
+                    "description": inspect.cleandoc(tool.description) if tool.description else tool.description,
+                    "inputSchema": _untitled_schema(tool.inputSchema),
+                })
                 for tool in await super().list_tools()]
 
 
