@@ -1298,6 +1298,9 @@ const MISSING_CONTENT_RECEIVER = 'Could not establish connection. Receiving end 
 // content script can still distinguish replaced snapshots and other documents.
 const shortRefs = new Map();
 const publicRefs = new Map();
+// The params that may carry a ref, and a public ref's spelling.
+const REF_PARAMS = ['ref', 'selector', 'from', 'to', 'toRef'];
+const isShortRef = value => typeof value === 'string' && /^e\d+$/.test(value);
 const REF_RESULT_ACTIONS = new Set([
   'getSnapshot', 'getAccessibilityTree', 'getFormFields', 'find', 'waitForElement',
   'getIframes', 'submitForm',
@@ -1332,9 +1335,9 @@ function shortRefError(ref, reason) {
 
 function expandShortRefs(params, tabId) {
   const expanded = { ...params };
-  for (const key of ['ref', 'selector', 'from', 'to', 'toRef']) {
+  for (const key of REF_PARAMS) {
     const ref = params[key];
-    if (typeof ref !== 'string' || !/^e\d+$/.test(ref)) continue;
+    if (!isShortRef(ref)) continue;
     const entry = shortRefs.get(ref);
     if (!entry) return { error: shortRefError(ref, 'not_in_snapshot') };
     if (entry.tabId !== tabId) return { error: shortRefError(ref, 'other_document') };
@@ -1355,7 +1358,7 @@ function compactContentRefs(action, response, tabId, params) {
       if (['ref', 'target_ref', 'currentRef'].includes(key) && typeof item === 'string' && /^s\d+e\d+$/.test(item)) {
         // An error echoes the caller's ref, including legacy refs, verbatim.
         if (response.code && value === response.state && key === 'ref') {
-          const original = ['ref', 'selector', 'from', 'to', 'toRef'].map(k => params[k])
+          const original = REF_PARAMS.map(k => params[k])
             .find(ref => shortRefs.get(ref)?.ref === item);
           return [key, original || item];
         }
@@ -1424,8 +1427,8 @@ async function forwardToContent(action, params) {
     if (response.code) response = await withTabState(tabId, response);
     const result = await compactContentRefs(action, response, tabId, params);
     // Waits and drags echo their targets; keep their public spelling too.
-    for (const key of ['ref', 'selector', 'from', 'to', 'toRef']) {
-      if (!/^e\d+$/.test(params[key])) continue;
+    for (const key of REF_PARAMS) {
+      if (!isShortRef(params[key])) continue;
       if (result[key] === expanded.params[key]) result[key] = params[key];
       if (typeof result.error === 'string') result.error = result.error.replaceAll(expanded.params[key], params[key]);
     }
