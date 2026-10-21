@@ -121,6 +121,29 @@ class AuditRedactionTests(unittest.TestCase):
                 self.assertEqual(self.audited(action, params)["params"], params)
         self.assertEqual(self.audited("executeJS", {"code": "1", "tabId": 4})["params"], {"tabId": 4})
 
+    def test_control_flow_js_expressions_are_dropped(self):
+        params = {
+            "commands": [
+                {"action": "if", "tabId": 1, "condition": "secretFixture()",
+                 "then": [{"action": "click", "selector": "#go"}]},
+                {"action": "while", "tabId": 1, "condition": "secretFixture()", "maxIterations": 3,
+                 "commands": [{"action": "click", "selector": "#more"}]},
+                {"action": "syncBarrier", "tabIds": [1, 2], "predicate": "secretFixture()", "timeout": 500},
+            ],
+        }
+        entry = self.audited("batch", params)
+        self.assertNotIn("secretFixture", json.dumps(entry))
+        self.assertEqual(entry["params"], {
+            "commands": [
+                {"action": "if", "tabId": 1, "then": [{"action": "click", "selector": "#go"}]},
+                {"action": "while", "tabId": 1, "maxIterations": 3,
+                 "commands": [{"action": "click", "selector": "#more"}]},
+                {"action": "syncBarrier", "tabIds": [1, 2], "timeout": 500},
+            ],
+        })
+        held = self.audited("if", {"tabId": 1, "condition": "secretFixture()", "then": []})
+        self.assertEqual(held["params"], {"tabId": 1, "then": []})
+
 
 class AuditEndpointTests(unittest.TestCase):
     def handler(self, body, command="POST"):

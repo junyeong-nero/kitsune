@@ -451,7 +451,8 @@ as a separate, unrestricted trust boundary.
 
 `browser_audit` (`/api/audit`) returns recent write-action entries:
 `{ts, action, params, ok, error, ms}`. `params` never contains JavaScript bodies
-(`code`), typed text or stored secrets. These values are replaced with
+(`code`, the `condition` of `if`/`while`, the `predicate` of `syncBarrier`),
+typed text or stored secrets. These values are replaced with
 `"[redacted]"`:
 
 - `text` of `type` and `keypress`;
