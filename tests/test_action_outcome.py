@@ -12,7 +12,10 @@ TAB = {"id": 7, "url": "https://shop.test/checkout", "title": "Checkout", "activ
 
 
 class FakeExtension:
-    """Scripted send_to_extension: replies per action (the last reply repeats), records calls."""
+    """Scripted send_to_extension: replies per action (the last reply repeats), records calls.
+
+    An unscripted action gets the extension's unknown-action reply.
+    """
 
     def __init__(self, **replies):
         self.replies = {action: list(reply) if isinstance(reply, list) else [reply]
@@ -21,7 +24,7 @@ class FakeExtension:
 
     async def __call__(self, action, params=None, timeout=30):
         self.calls.append((action, dict(params or {})))
-        queue = self.replies[action]
+        queue = self.replies.get(action, [{"error": f"Unknown action: {action}"}])
         return dict(queue.pop(0) if len(queue) > 1 else queue[0])
 
     def actions(self):
@@ -61,7 +64,7 @@ class OutcomeNotObservedTests(unittest.TestCase):
         self.assertEqual(result["state"], {"tabId": 7, "url": TAB["url"], "title": "Checkout"})
         # The dispatch result and its post-action snapshot stay intact.
         self.assertEqual(result["snapshot"], "- form\n  - textbox \"Card\" [ref=s3e1]")
-        self.assertEqual(extension.actions(), ["getTabs", "submitForm", "waitForUrl", "getTabs"])
+        self.assertEqual(extension.actions(), ["getTabs", "submitForm", "waitForUrl", "getTabs", "getOpenedTabs"])
         pattern = extension.calls[2][1]["pattern"]
         self.assertIsNone(re.search(pattern, TAB["url"]))
         self.assertIsNotNone(re.search(pattern, TAB["url"] + "/done"))
@@ -89,7 +92,7 @@ class OutcomeNotObservedTests(unittest.TestCase):
         self.assert_not_observed(result)
         self.assertEqual(result["tag"], "button")
         self.assertEqual(result["outcome"]["observed"], {"source": "page", "visible": False})
-        self.assertEqual(extension.actions(), ["click", "waitForElement", "getTabs"])
+        self.assertEqual(extension.actions(), ["click", "waitForElement", "getTabs", "getOpenedTabs"])
         params = extension.calls[1][1]
         self.assertEqual((params["selector"], params["pollInterval"]), ("#menu", 100))
         self.assertAlmostEqual(params["timeout"], 50, delta=10)
@@ -311,6 +314,88 @@ class ServerExpectTests(unittest.TestCase):
             self.assertEqual(post.call_args.kwargs, {"timeout": 15 + 5 + 45})
             server.browser_click("#a", expect={"text": "Saved", "timeout": "soon"})
             self.assertEqual(post.call_args.kwargs, {"timeout": 15 + 45})
+
+
+class OpenedTabTests(unittest.TestCase):
+    """Issue #87: a target=_blank click opens a tab instead of changing this one."""
+
+    OPENED = [{"tabId": 4, "url": "http://127.0.0.1:8000/ok2"}]
+
+    def test_unobserved_outcome_names_the_tab_the_click_opened(self):
+        extension = FakeExtension(
+            getTabs={"tabs": [TAB]},
+            click={"ok": True, "opened_tabs": [{"tabId": 4, "url": "about:blank"}]},
+            waitForUrl={"ok": False, "url": TAB["url"], "error": "Timed out"},
+            getOpenedTabs={"opened_tabs": self.OPENED},
+        )
+        result = run_expect(extension, "click", {"tabId": 7, "ref": "s1e2"},
+                            {"url_changed": True, "timeout": 30})
+        self.assertEqual((result["ok"], result["code"]), (False, "outcome_not_observed"))
+        # Read after the wait, so the opened tab's URL is current.
+        self.assertEqual(result["opened_tabs"], self.OPENED)
+        self.assertIn("opened tab 4", result["hint"])
+        self.assertIn("browser_snapshot tab_id=4", result["hint"])
+        self.assertEqual(extension.calls[-1], ("getOpenedTabs", {"tabId": 7}))
+
+    def test_unobserved_outcome_without_an_opened_tab_keeps_the_generic_hint(self):
+        for reply in [{"opened_tabs": []}, {"error": "Unknown action: getOpenedTabs"}]:
+            with self.subTest(reply=reply):
+                extension = FakeExtension(
+                    getTabs={"tabs": [TAB]}, click={"ok": True},
+                    waitForUrl={"ok": False, "url": TAB["url"], "error": "Timed out"},
+                    getOpenedTabs=reply,
+                )
+                result = run_expect(extension, "click", {"tabId": 7, "selector": "#noop"},
+                                    {"url_changed": True, "timeout": 30})
+                self.assertEqual(result["code"], "outcome_not_observed")
+                self.assertNotIn("opened_tabs", result)
+                self.assertTrue(result["hint"].startswith("The command was dispatched but the expected"))
+
+    def test_met_outcome_keeps_the_dispatch_opened_tabs(self):
+        extension = FakeExtension(click={"ok": True, "opened_tabs": self.OPENED},
+                                  waitForElement={"ok": True, "found": True})
+        result = run_expect(extension, "click", {"tabId": 7, "selector": "#a"}, {"selector": "#b"})
+        self.assertIs(result["ok"], True)
+        self.assertEqual(result["opened_tabs"], self.OPENED)
+        self.assertEqual(extension.actions(), ["click", "waitForElement"])
+
+    def test_new_tab_outcome_is_polled_until_a_tab_opens(self):
+        extension = FakeExtension(click={"ok": True},
+                                  getOpenedTabs=[{"opened_tabs": []}, {"opened_tabs": self.OPENED}])
+        result = run_expect(extension, "click", {"tabId": 7, "selector": "#new"},
+                            {"new_tab": True, "timeout": 2000})
+        self.assertIs(result["ok"], True)
+        self.assertEqual(result["outcome"]["expected"], {"new_tab": True, "timeout": 2000})
+        self.assertEqual(result["outcome"]["observed"], {"source": "tabs", "opened_tabs": self.OPENED})
+        self.assertEqual(extension.actions(), ["click", "getOpenedTabs", "getOpenedTabs"])
+
+    def test_new_tab_outcome_not_observed(self):
+        extension = FakeExtension(getTabs={"tabs": [TAB]}, click={"ok": True},
+                                  getOpenedTabs={"opened_tabs": []})
+        result = run_expect(extension, "click", {"tabId": 7, "selector": "#noop"},
+                            {"new_tab": True, "timeout": 30})
+        self.assertEqual((result["ok"], result["code"]), (False, "outcome_not_observed"))
+        self.assertEqual(result["outcome"]["observed"], {"source": "tabs", "opened_tabs": []})
+        self.assertNotIn("opened_tabs", result)
+        self.assertGreater(extension.actions().count("getOpenedTabs"), 1)
+
+    def test_new_tab_outcome_on_an_extension_without_opened_tab_tracking(self):
+        extension = FakeExtension(getTabs={"tabs": [TAB]}, click={"ok": True})
+        result = run_expect(extension, "click", {"tabId": 7, "selector": "#new"},
+                            {"new_tab": True, "timeout": 1000})
+        self.assertEqual(result["code"], "outcome_not_observed")
+        self.assertEqual(result["outcome"]["observed"],
+                         {"source": "tabs", "error": "Unknown action: getOpenedTabs"})
+        self.assertEqual(extension.actions(), ["click", "getOpenedTabs", "getTabs"])
+
+    def test_invalid_new_tab_expect(self):
+        for expect, message in [
+            ({"new_tab": "yes"}, "expect.new_tab must be true"),
+            ({"new_tab": True, "url_changed": True}, "expect needs exactly one of"),
+            ({"new_tab": True, "gone": True}, "require expect.selector"),
+        ]:
+            with self.subTest(expect=expect):
+                self.assertIn(message, bridge._parse_expect("click", expect)[1])
 
 
 if __name__ == "__main__":

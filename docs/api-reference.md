@@ -229,6 +229,7 @@ action and the check cannot target different tabs after a focus change.
 |---|---|
 | `{"url": "<regex>"}` | the tab URL matches the JavaScript regex (tab metadata, survives navigation) |
 | `{"url_changed": true}` | the tab URL differs from its URL before dispatch (navigation, including a hash change) |
+| `{"new_tab": true}` | the action opened a tab (`target="_blank"` link, `window.open`); see [Opened tabs](#opened-tabs) |
 | `{"selector": "<css>"}` | a matching element is visible |
 | `{"selector": "<css>", "gone": true}` | no matching element is visible (removed or hidden) |
 | `{"selector": "<css>", "value": "<str>"}` | the first matching element's value equals the string |
@@ -284,6 +285,33 @@ The post-action snapshot is taken right after dispatch; after a delayed outcome,
 take a new `browser_snapshot` to see the updated page. Without `expect`, results are unchanged.
 
 `wait` and `expect` can be combined: `wait` runs before dispatch and `expect` after it. A batch's timeout also covers each command's `expect.timeout`.
+
+### Opened tabs
+
+A page action can open a tab instead of changing its own, for example a click on a
+`target="_blank"` link. The result then lists the tabs whose opener is the action's
+tab and that were created after the action started, with or without `expect`:
+
+```json
+{ "ok": true, "snapshot": "...", "opened_tabs": [{ "tabId": 4, "url": "https://shop.example/addresses" }] }
+```
+
+The list is read after the post-action snapshot. A new tab starts on `about:blank`, so
+the extension waits up to 1 s for its URL; a tab still loading after that is reported
+as `about:blank`. Results without an opened tab have no `opened_tabs` field. Act on an
+opened tab by passing its `tabId` as `tab_id`.
+
+`expect: {"new_tab": true}` waits until such a tab exists and reports it in
+`observed.opened_tabs` (`observed.source` is `tabs`). The outcome of any other `expect`
+is still checked only in the action's tab. When it is not met but the action opened a
+tab, the `outcome_not_observed` result adds `opened_tabs` (read again after the wait)
+and its `hint` names the tab, so that case is distinguishable from a no-op:
+
+```json
+{ "ok": false, "dispatched": true, "code": "outcome_not_observed",
+  "opened_tabs": [{ "tabId": 4, "url": "https://shop.example/addresses" }],
+  "hint": "The command was dispatched and opened tab 4, where the outcome may have happened; inspect it with browser_snapshot tab_id=4 instead of repeating the action." }
+```
 
 ### Ask-before-act
 
