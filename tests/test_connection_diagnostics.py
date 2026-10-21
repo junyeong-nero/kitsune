@@ -497,7 +497,8 @@ class ServerDiagnosisTests(unittest.TestCase):
         self.assertEqual(result["diagnosis"], {"code": "bridge_unavailable", "hint": unavailable["hint"]})
         running = {"status": "running", "diagnosis": {"code": "connected"}}
         with patch.object(server, "_get", return_value=dict(running)):
-            self.assertEqual(server.browser_status(), running)
+            result = server.browser_status()
+        self.assertEqual({key: value for key, value in result.items() if key != "mcp_tools"}, running)
 
 
 class PortProbeTests(unittest.TestCase):

@@ -44,6 +44,11 @@ See the [API reference](api-reference.md) for parameters and behavior.
 
 ## devtools — 26
 
+`browser_double_click`, `browser_drag`, `browser_focus` and `browser_blur` are here,
+not in `core`; publish them with `devtools` in `KITSUNE_CAPS`. Calling a tool that is
+not published returns `tool_not_published` naming the setting
+([API reference](api-reference.md#mcp-tool-surface)).
+
 - `browser_audit`
 - `browser_blur`
 - `browser_bounds`

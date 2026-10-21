@@ -4,11 +4,18 @@ Opt-in and built on tests/real_browser_harness.py, which documents how to run it
 what a browser can show: no extension connected, then connected; an extension that drops
 its bridge connection; a developer build edited on disk but not reloaded (a script, or only
 its manifest.json); a restricted
-domain (host_permission_denied) beside an empty error page (error_page); and, in its own
+domain (host_permission_denied) beside an empty error page (error_page); the MCP server's
+browser_status and unpublished-tool error over stdio (#171); and, in its own
 browser, a profile without a normal window (browser_window_unavailable).
 """
+import asyncio
 from http.server import BaseHTTPRequestHandler
+import json
+import sys
 import time
+
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
 
 import real_browser_harness as harness
 from test_real_browser import ExtensionControl
@@ -78,6 +85,18 @@ RESTRICTED_PREFS = {
 FIXTURE_TITLE = "Kitsune diagnosis fixture"
 # Window and permission changes reach the bridge as a state message; allow for that.
 DIAGNOSIS_TIMEOUT = 15
+MCP_SESSION_TIMEOUT = 30
+
+
+async def _mcp_status_and_drag(env):
+    """Over stdio, the published tool names, browser_status, and a browser_drag call."""
+    server = StdioServerParameters(command=sys.executable, args=["-m", "kitsune.server"], env=env)
+    async with stdio_client(server) as (read, write), ClientSession(read, write) as session:
+        await session.initialize()
+        names = {tool.name for tool in (await session.list_tools()).tools}
+        status = await session.call_tool("browser_status", {})
+        drag = await session.call_tool("browser_drag", {"source": "#a", "target": "#b"})
+    return names, status, drag
 
 
 class _Pages(BaseHTTPRequestHandler):
@@ -213,6 +232,27 @@ class RealBrowserConnectionDiagnosisTests(_DiagnosisTestCase):
                 self.assertEqual(result["state"]["httpStatus"], 404, result)
         # A refused page is not a missing site permission for the whole extension.
         self.assertEqual(self.bridge.status()["diagnosis"], {"code": "connected"})
+
+    def test_mcp_status_reports_tool_surface_and_unpublished_tool_names_its_setting(self):
+        self.wait_for_diagnosis("connected")
+        # The MCP server uses this class's bridge; its build matches, so it is not replaced.
+        env = {**self.bridge.env, "KITSUNE_CAPS": "core"}
+        names, status, drag = asyncio.run(asyncio.wait_for(_mcp_status_and_drag(env), MCP_SESSION_TIMEOUT))
+
+        self.assertIn("browser_status", names)
+        self.assertNotIn("browser_drag", names)
+        self.assertFalse(status.isError, status)
+        status = json.loads(status.content[0].text)
+        self.assertTrue(status["extension_connected"], status)
+        self.assertEqual(status["diagnosis"], {"code": "connected"}, status)
+        # 99 known tools (96 in `all` plus history); the lean default publishes 14.
+        self.assertEqual(status["mcp_tools"], {"preset": "lean", "caps": ["core"], "unpublished": 99 - len(names)})
+
+        self.assertTrue(drag.isError, drag)
+        drag = json.loads(drag.content[0].text)
+        self.assert_error(drag, "tool_not_published", False)
+        self.assertIn("KITSUNE_CAPS=core,devtools", drag["hint"])
+        self.assertEqual(drag["state"], {"group": "devtools", "preset": "lean", "caps": ["core"]})
 
 
 class RealBrowserNoWindowTests(_DiagnosisTestCase):
