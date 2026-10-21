@@ -614,7 +614,7 @@
 
       // Recurse children
       const children = [];
-      for (const child of el.children) {
+      for (const child of flatChildren(el)) {
         const childNode = buildNode(child, depth + 1);
         if (childNode) children.push(childNode);
       }
@@ -667,19 +667,19 @@
     const metadata = new WeakMap();
     const signatures = new Map();
     const targetAncestors = new Set();
-    for (let el = target; el; el = el.parentElement) targetAncestors.add(el);
+    for (let el = target; el; el = flatParent(el)) targetAncestors.add(el);
     function ignored(el) {
       return !el || el.nodeType !== 1 || isHidden(el) ||
         el.getAttribute('aria-hidden') === 'true' ||
         ['SCRIPT', 'STYLE', 'NOSCRIPT', 'SVG'].includes(el.tagName);
     }
-    const hasOwnText = el => Array.from(el.childNodes).some(node => node.nodeType === 3 && node.textContent.trim());
+    const hasOwnText = el => flatChildNodes(el).some(node => node.nodeType === 3 && node.textContent.trim());
     // [all, plain] text of el's inline content; plain omits controls and labels, which
     // already appear as control names. Form fields and sensitive elements never contribute.
     function inlineText(el) {
       let all = '', plain = '';
       const sensitive = holdsSensitiveText(el);
-      for (const node of el.childNodes) {
+      for (const node of flatChildNodes(el)) {
         if (node.nodeType === 3) {
           all += sensitive ? ' ' : node.textContent;
           plain += sensitive ? ' ' : node.textContent;
@@ -701,7 +701,7 @@
       // A media element's children are sources, tracks and fallback content, not page structure.
       const media = MEDIA_TAGS.has(el.tagName);
       const children = media ? [] :
-        Array.from(el.children, child => measure(child, domDepth + 1)).filter(Boolean);
+        flatChildren(el).map(child => measure(child, domDepth + 1)).filter(Boolean);
       const shape = JSON.stringify([el.tagName, el.getAttribute('role'), el.type || '',
         children.map(child => child.signature)]);
       if (!signatures.has(shape)) signatures.set(shape, signatures.size);
@@ -732,7 +732,7 @@
       const labelledBy = el.getAttribute('aria-labelledby');
       if (labelledBy) {
         const label = labelledBy.split(/\s+/).map(id => {
-          const labelEl = document.getElementById(id);
+          const labelEl = elementByIdNear(el, id);
           return labelEl ? redactedText(labelEl) : '';
         }).join(' ');
         if (clean(label)) return clean(label);
@@ -813,13 +813,13 @@
         }
       }
       if (maxDepth != null && domDepth >= maxDepth) return;
-      const children = Array.from(el.children).filter(child => metadata.get(child)?.useful);
+      const children = flatChildren(el).filter(child => metadata.get(child)?.useful);
       // Only composite children / list items collapse: a toolbar of leaf controls
       // should remain fully discoverable. Text, IDs and classes are not structure.
       // In text mode, siblings with only inline content are prose, not cards.
-      const repeatable = child => (child.children.length > 0 || child.tagName === 'LI' ||
+      const repeatable = child => (flatChildren(child).length > 0 || child.tagName === 'LI' ||
         child.getAttribute('role') === 'listitem') &&
-        !(withText && Array.from(child.children).every(c => INLINE_TAGS.has(c.tagName)));
+        !(withText && flatChildren(child).every(c => INLINE_TAGS.has(c.tagName)));
       for (let start = 0; start < children.length && !truncated;) {
         let end = start + 1;
         if (repeatable(children[start])) {
@@ -956,7 +956,7 @@
     // Try as CSS selector
     try {
       if (valueSelectorBlocked(query)) throw new Error(VALUE_SELECTOR_ERROR);
-      const matches = document.querySelectorAll(query);
+      const matches = deepQuerySelectorAll(query);
       if (matches.length > 0 && matches.length < 50) {
         matches.forEach(el => {
           if (!isHidden(el)) results.push(makeResult(el));
@@ -969,7 +969,7 @@
     const parsed = parseFindQuery(query);
     if (!parsed.terms.length) return { results: [], hint: FIND_NO_MATCH_HINT };
     const scored = [];
-    const candidates = document.querySelectorAll('a, button, input, select, textarea, [role], [onclick], label, h1, h2, h3, h4, h5, h6, p, span, div, li, td, th, img');
+    const candidates = deepQuerySelectorAll('a, button, input, select, textarea, [role], [onclick], label, h1, h2, h3, h4, h5, h6, p, span, div, li, td, th, img');
     for (const el of candidates) {
       if (isHidden(el)) continue;
       const match = scoreMatch(el, parsed);
@@ -1543,7 +1543,7 @@
   // ── Get Form Fields ──
   function getFormFields() {
     const fields = [];
-    document.querySelectorAll('input, select, textarea').forEach(el => {
+    deepQuerySelectorAll('input, select, textarea').forEach(el => {
       if (isHidden(el)) return;
       const rect = el.getBoundingClientRect();
       if (rect.width < 2 || rect.height < 2) return;
@@ -1625,7 +1625,7 @@
         try {
           // Preserve native CSS selector errors while resolving snapshot refs.
           el = /^(?:s\d+e\d+|r\d+)$/.test(selector)
-            ? resolveElement(selector) : document.querySelector(selector);
+            ? resolveElement(selector) : deepQuerySelector(selector);
         } catch (e) {
           resolve(errorResult(e));
           return;
@@ -1830,8 +1830,88 @@
 
   const REF_SELECTOR = /^(?:s\d+e\d+|r\d+)$/;
 
+  // ── Shadow DOM ──
+  // Reads and selector resolution see open and closed shadow roots, as the fill path does.
+  function shadowRootOf(el) {
+    return el?.openOrClosedShadowRoot || el?.shadowRoot || null;
+  }
+
+  // Every shadow root in scope, each followed by the roots nested in it.
+  function shadowRootsIn(scope) {
+    const roots = [];
+    for (const el of scope.querySelectorAll('*')) {
+      const root = shadowRootOf(el);
+      if (root) roots.push(root, ...shadowRootsIn(root));
+    }
+    return roots;
+  }
+
+  // A selector matches within one tree, so the document and each shadow root are queried
+  // on their own: the document's matches first.
+  function deepQuerySelectorAll(selector) {
+    return [document, ...shadowRootsIn(document)].flatMap(root => Array.from(root.querySelectorAll(selector)));
+  }
+
+  function deepQuerySelector(selector) {
+    const match = document.querySelector(selector);
+    if (match) return match;
+    for (const root of shadowRootsIn(document)) {
+      const inner = root.querySelector(selector);
+      if (inner) return inner;
+    }
+    return null;
+  }
+
+  // Children as rendered (the flat tree): a host's shadow tree instead of its light children,
+  // which appear where a slot takes them; a slot's assigned nodes, else its fallback content.
+  function flatChildren(el) {
+    const root = shadowRootOf(el);
+    if (root) return Array.from(root.children);
+    if (el.tagName === 'SLOT' && el.assignedElements) return Array.from(el.assignedElements({ flatten: true }));
+    return Array.from(el.children);
+  }
+
+  function flatChildNodes(el) {
+    const root = shadowRootOf(el);
+    if (root) return Array.from(root.childNodes || []);
+    if (el.tagName === 'SLOT' && el.assignedNodes) return Array.from(el.assignedNodes({ flatten: true }));
+    return Array.from(el.childNodes);
+  }
+
+  function flatParent(el) {
+    return el.openOrClosedAssignedSlot || el.assignedSlot || el.parentElement || el.parentNode?.host || null;
+  }
+
+  // IDs are scoped to their tree: a field in a shadow root names labels in that root.
+  function elementByIdNear(el, id) {
+    const root = el.getRootNode?.();
+    return (root?.getElementById ? root : document).getElementById?.(id);
+  }
+
+  // document.elementFromPoint stops at a shadow host; each shadow root hit-tests its own tree.
+  function deepElementFromPoint(x, y) {
+    let el = document.elementFromPoint(x, y);
+    const seen = new Set([el]);
+    for (let root = shadowRootOf(el); root?.elementFromPoint; root = shadowRootOf(el)) {
+      const inner = root.elementFromPoint(x, y);
+      if (!inner || seen.has(inner)) break;
+      seen.add(inner);
+      el = inner;
+    }
+    return el;
+  }
+
+  // document.activeElement is the host of a focused shadow-root element.
+  function deepActiveElement() {
+    let el = document.activeElement;
+    for (let inner = shadowRootOf(el)?.activeElement; inner && inner !== el; inner = shadowRootOf(el)?.activeElement) {
+      el = inner;
+    }
+    return el;
+  }
+
   function resolveElement(selector, coords) {
-    if (!selector && coords) return document.elementFromPoint(coords.x, coords.y);
+    if (!selector && coords) return deepElementFromPoint(coords.x, coords.y);
     if (!selector) return null;
     
     // Try ref map first
@@ -1842,7 +1922,7 @@
     }
     
     // Try CSS selector
-    try { return document.querySelector(selector); } catch {}
+    try { return deepQuerySelector(selector); } catch {}
     return null;
   }
 
@@ -1862,7 +1942,7 @@
 
   function assertOneTarget(selector, pointer) {
     let matches = [];
-    try { matches = Array.from(document.querySelectorAll(selector)); } catch {}
+    try { matches = deepQuerySelectorAll(selector); } catch {}
     if (matches.length < 2) return;
     const actionable = matches.filter(el => isActionable(el, pointer));
     if (actionable.length < 2) return;
@@ -1895,7 +1975,7 @@
     let cur = el;
     while (cur && cur !== document.body) {
       if (isInteractiveElement(cur)) return cur;
-      cur = cur.parentElement;
+      cur = flatParent(cur);
     }
     return null;
   }
@@ -2110,7 +2190,7 @@
 
   function valueSelectorBlocked(selector) {
     if (!isValueAttributeSelector(selector)) return false;
-    for (const el of document.querySelectorAll('[value]')) {
+    for (const el of deepQuerySelectorAll('[value]')) {
       if (isSensitiveField(el)) return true;
     }
     return false;
@@ -2146,7 +2226,8 @@
 
   function findLabel(el) {
     if (el.id) {
-      const lbl = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+      const root = el.getRootNode?.();
+      const lbl = (root?.querySelector ? root : document).querySelector(`label[for="${CSS.escape(el.id)}"]`);
       if (lbl) return redactedText(lbl).trim().slice(0, 80);
     }
     const parent = el.closest('label');
@@ -2497,7 +2578,7 @@
     if (!el) return notFound();
     lastFilledField = el;
     el.focus();
-    return { ok: true, active: document.activeElement === el };
+    return { ok: true, active: deepActiveElement() === el };
   }
 
   function blurEl(selector) {
@@ -2508,7 +2589,7 @@
   }
 
   function keypress(selector, key, modifiers, text, first) {
-    const target = selector ? resolveTarget(selector, null, { first }) : (document.activeElement || document.body);
+    const target = selector ? resolveTarget(selector, null, { first }) : (deepActiveElement() || document.body);
     if (!target) return notFound('No target');
     lastActedElement = selector || target !== document.body ? target : null;
     const mods = modifiers || {};
@@ -2665,7 +2746,7 @@
   function controlLabel(control, buttonInput) {
     const attr = name => String(control.getAttribute?.(name) || '').trim();
     const labelledBy = attr('aria-labelledby').split(/\s+/).filter(Boolean)
-      .map(id => { const el = document.getElementById?.(id); return el ? redactedText(el) : ''; })
+      .map(id => { const el = elementByIdNear(control, id); return el ? redactedText(el) : ''; })
       .join(' ').trim();
     const text = redactedText(control).trim();
     const icon = !text && control.querySelector?.('[aria-label], img[alt], svg title');
@@ -2682,7 +2763,7 @@
   // do and reports no field values.
   function describeTarget(selector, coords, key) {
     let el = selector || coords ? resolveElement(selector, coords)
-      : (document.activeElement || document.body);
+      : (deepActiveElement() || document.body);
     if (!el) return notFound();
     if (coords) el = nearestInteractiveAncestor(el) || el;
     const control = el.closest ? el.closest('button, input, [role="button"]') ||
@@ -2768,6 +2849,25 @@
     return undefined;
   }
 
+  // form_fill's label match, else placeholder match, for key: at most one field per tree
+  // (the document, then each shadow root), as the light-DOM lookup always picked the first.
+  function fieldsByLabelText(key) {
+    const text = key.toLowerCase();
+    const fields = [];
+    for (const root of [document, ...shadowRootsIn(document)]) {
+      let el = null;
+      for (const lbl of root.querySelectorAll('label')) {
+        if (!(lbl.innerText || '').trim().toLowerCase().includes(text)) continue;
+        el = lbl.htmlFor ? root.getElementById(lbl.htmlFor) : lbl.querySelector('input, textarea, select');
+        if (el) break;
+      }
+      el ||= Array.from(root.querySelectorAll('input[placeholder], textarea[placeholder]'))
+        .find(inp => inp.placeholder.toLowerCase().includes(text));
+      if (el) fields.push(el);
+    }
+    return fields;
+  }
+
   function formFill(fieldMap, first) {
     if (!fieldMap || typeof fieldMap !== 'object') return { error: 'fields must be an object' };
     const results = {};
@@ -2777,7 +2877,7 @@
       let el = null;
       try {
         for (const selector of [key, `[name="${CSS.escape(key)}"]`]) {
-          try { el = document.querySelector(selector); } catch {}
+          try { el = deepQuerySelector(selector); } catch {}
           if (el && !first) assertOneTarget(selector, false);
           if (el) break;
         }
@@ -2785,22 +2885,21 @@
         results[key] = errorResult(e);
         continue;
       }
-      // Try by label text
+      // Then by label text, then placeholder. A key matching fields in several trees (the
+      // page and web components' shadow roots) never silently writes into one of them.
       if (!el) {
-        for (const lbl of document.querySelectorAll('label')) {
-          const t = (lbl.innerText || '').trim();
-          if (t.toLowerCase().includes(key.toLowerCase())) {
-            if (lbl.htmlFor) el = document.getElementById(lbl.htmlFor);
-            else el = lbl.querySelector('input, textarea, select');
-            if (el) break;
-          }
+        const matches = fieldsByLabelText(key);
+        const actionable = matches.filter(field => isActionable(field, false));
+        if (actionable.length > 1 && !first) {
+          results[key] = ambiguousTarget(
+            `${actionable.length} fields in separate components match the label or placeholder; nothing was written`,
+            'Fill one of them with browser_type and its ref from state.candidates, or key it with a CSS ' +
+              'selector or name that matches one field. first: true fills the first match.',
+            { field: key, matches: actionable.length,
+              candidates: actionable.slice(0, AMBIGUOUS_CANDIDATE_LIMIT).map(targetSummary) });
+          continue;
         }
-      }
-      // Try by placeholder
-      if (!el) {
-        for (const inp of document.querySelectorAll('input[placeholder], textarea[placeholder]')) {
-          if (inp.placeholder.toLowerCase().includes(key.toLowerCase())) { el = inp; break; }
-        }
+        el = matches[0] || null;
       }
       if (!el) { results[key] = { error: 'Not found' }; continue; }
       // The same lookup as browser_type's fill mode, through nested open and closed shadow roots.
