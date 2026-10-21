@@ -32,6 +32,7 @@ const notifyStatusWaiters = (tabId, closed = false) =>
   [...(mainFrameStatusWaiters.get(tabId) || [])].forEach(notify => notify(closed));
 browser.tabs.onRemoved.addListener(tabId => {
   dialogPolicies.delete(tabId);
+  pruneShortRefs(tabId);
   mainFrameStatus.delete(tabId);
   tabReloads.delete(tabId);
   tabLoads.delete(tabId);
@@ -42,7 +43,10 @@ browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
   // The browser also wakes discarded tabs, e.g. when one is selected.
   if (changeInfo.discarded === false) tabReloads.set(tabId, Date.now());
   // agent: the agent was acting on the tab when it started loading (see userActivity).
-  if (changeInfo.status === 'loading') tabLoads.set(tabId, { at: Date.now(), complete: false, agent: agentTouched(tabId) });
+  if (changeInfo.status === 'loading') {
+    pruneShortRefs(tabId);
+    tabLoads.set(tabId, { at: Date.now(), complete: false, agent: agentTouched(tabId) });
+  }
   const load = tabLoads.get(tabId);
   if (load && changeInfo.status === 'complete') load.complete = true;
   // A synced copy that loads was not the agent's (see Agent windows).
@@ -1032,13 +1036,16 @@ async function screenPointForClick(params) {
   } catch (e) {
     return await tabApiError(params.tabId, e);
   }
-  const point = await forwardToContent('screenPoint', params);
-  if (previousTabId == null) return point;
-  if (point.error) {
-    await restoreActiveTab(previousTabId, params.tabId);
-    return point;
+  let point;
+  try {
+    point = await forwardToContent('screenPoint', params);
+    if (previousTabId == null || point.error) return point;
+    return { ...point, tabId: params.tabId, previousTabId };
+  } finally {
+    if (previousTabId != null && (!point || point.error)) {
+      await restoreActiveTab(previousTabId, params.tabId);
+    }
   }
-  return { ...point, tabId: params.tabId, previousTabId };
 }
 
 // Shows the user's tab again after a trusted click, unless the user already moved elsewhere.
@@ -1296,6 +1303,14 @@ const MISSING_CONTENT_RECEIVER = 'Could not establish connection. Receiving end 
 // content script can still distinguish replaced snapshots and other documents.
 const shortRefs = new Map();
 const publicRefs = new Map();
+// Retire aliases with their document/tab, without resetting the persisted monotonic counter.
+function pruneShortRefs(tabId) {
+  for (const [short, entry] of shortRefs) {
+    if (entry.tabId !== tabId) continue;
+    shortRefs.delete(short);
+    publicRefs.delete(`${tabId}:${entry.ref}`);
+  }
+}
 // The params that may carry a ref, and a public ref's spelling.
 const REF_PARAMS = ['ref', 'selector', 'from', 'to', 'toRef'];
 const isShortRef = value => typeof value === 'string' && /^e\d+$/.test(value);
@@ -1629,6 +1644,7 @@ async function elementScreenshot(tabId, selector, scale, preview) {
     await zlContent(id, 'captureScrollIntoView', { selector, block: tall ? 'start' : 'center' });
     await zlSleep(150);
     m = await measure();
+    if (!m) return { error: 'No element matches: ' + selector };
     const cssW = Math.min(m.w, CANVAS_MAX / want), cssH = Math.min(m.h, CANVAS_MAX / want);
     const W = Math.max(1, Math.round(cssW * want)), H = Math.max(1, Math.round(cssH * want));
     const canvas = new OffscreenCanvas(W, H);
@@ -1655,7 +1671,8 @@ async function elementScreenshot(tabId, selector, scale, preview) {
       await zlScroll(id, { by: Math.max(50, Math.floor(m.vh * 0.85)) });
       await zlSleep(160);
       m = await measure();
-      if (!m || m.sy === before) break;   // can't scroll any further
+      if (!m) return { error: 'No element matches: ' + selector };
+      if (m.sy === before) break;   // can't scroll any further
     }
     const blob = await canvas.convertToBlob({ type: 'image/png' });
     const cropped = arrayBufferToDataUrl(await blob.arrayBuffer(), 'image/png');
@@ -1878,20 +1895,24 @@ async function describeTarget(params) {
 
 // ── Click and wait for navigation ──
 async function clickAndWaitNavigation(tabId, selector, timeout, first) {
+  let cleanup;
   try {
     const id = tabId || (await getActiveTabId());
     if (!id || !selector) return { error: 'tabId and selector required' };
     const t0 = Date.now();
     const navPromise = new Promise((resolve) => {
       const max = timeout || 15000;
-      const to = setTimeout(() => { browser.tabs.onUpdated.removeListener(listener); resolve({ ok: false, timedOut: true }); }, max);
+      const to = setTimeout(() => { cleanup(); resolve({ ok: false, timedOut: true }); }, max);
       function listener(updatedTabId, changeInfo, tab) {
         if (updatedTabId === id && changeInfo.status === 'complete') {
-          clearTimeout(to);
-          browser.tabs.onUpdated.removeListener(listener);
+          cleanup();
           resolve({ ok: true, url: tab.url, title: tab.title, elapsed: Date.now() - t0 });
         }
       }
+      cleanup = () => {
+        clearTimeout(to);
+        browser.tabs.onUpdated.removeListener(listener);
+      };
       browser.tabs.onUpdated.addListener(listener);
     });
     const click = await forwardToContent('click', { tabId: id, selector, first });
@@ -1899,6 +1920,7 @@ async function clickAndWaitNavigation(tabId, selector, timeout, first) {
     const nav = await navPromise;
     return { ok: true, clicked: true, navigation: nav };
   } catch (e) { return { error: e.message }; }
+  finally { cleanup?.(); }
 }
 
 // == Init ==
