@@ -315,6 +315,8 @@ class RealBrowserRedactionTests(harness.RealBrowserTestCase):
 
     def test_password_manager_autofill_is_redacted_until_the_browser_clears_it(self):
         tab_id = self.open_tab(self.login_site.origin + "/login")
+        # New tabs open in the background (#139); Firefox autofills a login form only once it is shown.
+        self.assert_ok(self.call("/api/switch-tab", {"tabId": tab_id}))
         deadline = time.monotonic() + 10
         while self.autofill_state(tab_id) != "true,true":
             self.assertLess(time.monotonic(), deadline, "Firefox did not autofill the disposable login")
