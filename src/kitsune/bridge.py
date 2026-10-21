@@ -2194,7 +2194,7 @@ class _StepRecord(dict):
     nested = ()
     owners = None
 
-    def copy(self, **fields):
+    def copy_with(self, **fields):
         record = _StepRecord({**self, **fields})
         record.result, record.nested, record.owners = self.result, self.nested, self.owners
         return record
@@ -2557,7 +2557,7 @@ def _resumed_records(plan, parent):
     records = []
     for step in plan.values():
         if step.decision == "kept":
-            record = step.record.copy(resumed="kept")
+            record = step.record.copy_with(resumed="kept")
             record.result = step.result
             records.append(record)
         elif step.decision == "applied":

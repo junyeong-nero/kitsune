@@ -5,7 +5,7 @@ Base URL: `http://127.0.0.1:47651`
 ## MCP tool surface
 
 `KITSUNE_CAPS=core` is the default (30 tools); `KITSUNE_CAPS=all` registers
-95 tools. The groups are `core`, `tabs`, `network`, `storage`, `parallel`,
+96 tools. The groups are `core`, `tabs`, `network`, `storage`, `parallel`,
 `devtools`, `windows`, and `session`. A comma list selects those groups only.
 See [Tools and capabilities](guide.md#tools) for the complete tool list per group.
 
@@ -155,6 +155,8 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `tab_owned` | Two `parallel` sequences write the same tab (`state.tabId`, `state.owner`); nothing was dispatched | true |
 | `invalid_tab_id` | A batch, workflow or parallel step names a `tabId` that is not a tab id (`0`, `""`, an unresolved `${$N.tabId}`); it was not sent to the active tab instead | true |
 | `container_timeout` | A batch or workflow reached its deadline; steps in progress may have taken effect and later steps did not start | false |
+| `tab_claimed` | A resumed `parallel` sequence writes a tab that another call's `parallel` in progress writes (`state.tabId`, `state.call`); nothing in that sequence was sent (see [Checkpoint and resume](checkpoint-resume.md#parallel)) | true |
+| `checkpoint_not_found`, `resume_token_invalid`, `workflow_changed`, `observed_invalid`, `observed_required`, `resume_failed` | `browser_resume` refused or stopped; see [Checkpoint and resume](checkpoint-resume.md#errors) | `observed_*`: true; others: false |
 
 The connection codes (`bridge_unavailable`, `token_mismatch`, `port_conflict`,
 `extension_disconnected` before sending, `extension_version_mismatch`,
@@ -259,8 +261,8 @@ These results are not errors:
 - Results nested inside a successful result, such as
   `browser_click_and_wait_navigation`'s `navigation: {ok: false, timedOut: true}`
   after `clicked: true`.
-- Container results: `browser_batch`, `browser_parallel`, `browser_broadcast`, and
-  `browser_workflow` report each command's outcome in `results`. A failed command
+- Container results: `browser_batch`, `browser_parallel`, `browser_broadcast`,
+  `browser_workflow` and `browser_resume` report each command's outcome in `results`. A failed command
   there does not make the call an error, because commands before it may already
   have taken effect and must not be re-sent blindly. Inspect each entry, or its
   [`progress`](#container-progress) status. The container call itself is an error
@@ -545,7 +547,7 @@ with the token: MCP tools take `confirm_token`, and HTTP and batch bodies take
 - is single-use. Any presentation spends it, including a mismatched one;
 - expires after 120 seconds;
 - is honored only on a direct tool call. Inside `browser_batch`, `browser_parallel`,
-  `browser_retry`, `browser_broadcast`, workflows, and batch `sequence`/`if`/`while`,
+  `browser_retry`, `browser_broadcast`, `browser_resume`, workflows, and batch `sequence`/`if`/`while`,
   a token is spent and the step stays held. Batch `if`/`while` can therefore not run
   in ask mode.
 
@@ -827,7 +829,9 @@ The frames are `batch`/`sequence` `index`, workflow `name` and `index`, `paralle
 `sequence` and `index`, `broadcast` `tabId`, `retry` `attempt` (from 1), `if`
 `branch` and `index`, `while` `iteration` and `index`, and `try` `block` (`do` or
 `catch`) and `index`. A nested container (for example a `parallel` inside a batch)
-is logged after its steps. Direct calls have no `parent`.
+is logged after its steps. Direct calls have no `parent`. Steps run by
+`browser_resume` carry the original `call` and add `resumed: true` to `parent`; the
+resume token is never logged ([Checkpoint and resume](checkpoint-resume.md#audit-log)).
 
 ### Container progress
 
@@ -881,8 +885,9 @@ a `container_timeout`. It is text for people; read `progress` in code.
 
 `progress` is also what to resume from: the commands before the first record that
 is not `ok` have run, `unknown` ones must be observed before they are repeated, and
-`skipped` ones are safe to send. See [Checkpoint and resume](checkpoint-resume.md)
-for the design of resuming a container.
+`skipped` ones are safe to send. A call whose `status` is not `ok` adds `call` and
+`resume_token`; pass them to [`browser_resume`](#browser_resumecall-resume_token-observednone)
+to continue it without sending its `ok` writes again ([Checkpoint and resume](checkpoint-resume.md)).
 
 A batch stops at its deadline (the sum of its waits plus 15 s, at least 300 s; a
 workflow at 300 s): the command in progress is cancelled and later commands do not
@@ -1091,6 +1096,20 @@ or `cliclick`).
   permission). Set `KITSUNE_BROWSER_PROCESS` (comma list) to change the defaults.
 
 The bridge endpoint also accepts `title` and `process` to override these per call.
+
+### `browser_resume(call, resume_token, observed=None)`
+
+`parallel` group. Continues a `browser_batch`, `browser_parallel` or
+`browser_workflow` call that did not finish `ok`, from the checkpoint the bridge
+keeps in memory for 30 minutes (at most 20). `call` and `resume_token` come from
+that call's response. Steps that ran `ok` are not sent again. Each `unknown` write
+needs an `observed` entry by its `progress` path (`"1"`, `"0.1.2"` for a parallel
+sequence step): `"not_applied"` sends it again, `"applied"` marks it `ok` without
+sending it. Read-only mode, the URL policy and ask-before-act apply to every resumed
+step. The response has the original call's shape (`results`, `progress`, `status`,
+`summary`; a workflow adds `workflow` and `steps`). While the call is still not `ok`,
+the response also has `call` and a new `resume_token`. See
+[Checkpoint and resume](checkpoint-resume.md) for each decision and error.
 
 ### WordPress workflow
 
@@ -1355,7 +1374,17 @@ Note: every command that acts on a tab inside parallel sequences **must** have a
 
 Returns `{ "results": [...], "progress": [...], "status": "ok", "summary": "..." }`; `progress`, `status` and `summary` are described in [Container progress](#container-progress).
 
+A response whose `status` is not `ok` adds `call` and `resume_token` for
+[POST /api/resume](#post-apiresume).
+
 **Batch actions:** navigate, newTab, closeTab, switchTab, click, type, fill, scroll, hover, find, js, pageInfo, pageText, pageTextByTabId, tabs, forms, dom, highlight, screenshot, waitForElement, waitForResult, sleep, parallel.
+
+### POST /api/resume
+Continue a batch, parallel or workflow call that did not finish `ok` (`browser_resume`).
+```json
+{ "call": 42, "resume_token": "x3J...", "observed": { "1": "not_applied", "0.1.2": "applied" } }
+```
+Returns the original call's response shape; see [Checkpoint and resume](checkpoint-resume.md).
 
 ## Workflows (NEW)
 
@@ -1371,7 +1400,7 @@ Execute a named workflow from the workflows directory.
 { "name": "test", "variables": { "url": "https://example.com" } }
 ```
 Workflows are `.md` files with JSON code blocks. Variables use `{{name}}` syntax.
-Returns `{ "workflow": "test", "steps": 4, "results": [...], "progress": [...], "status": "ok", "summary": "..." }`. A workflow stops at its first failed step; `progress` marks the rest `skipped` (see [Container progress](#container-progress)).
+Returns `{ "workflow": "test", "steps": 4, "results": [...], "progress": [...], "status": "ok", "summary": "..." }`. A workflow stops at its first failed step; `progress` marks the rest `skipped` (see [Container progress](#container-progress)). A workflow that did not finish `ok` adds `call` and `resume_token` for [POST /api/resume](#post-apiresume); resuming is refused if the workflow file changed.
 
 ## Cache Control (NEW)
 
