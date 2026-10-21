@@ -77,7 +77,7 @@ function harness() {
       await flush();
     },
     assertClean() {
-      assert.equal(onUpdated.listeners.size, 0, 'onUpdated leaked');
+      assert.equal(onUpdated.listeners.size, 1, 'onUpdated leaked (the main-frame status listener remains)');
       assert.equal(onRemoved.listeners.size, 2, 'wait onRemoved leaked (dialog policy and opened-tab listeners remain)');
       assert.equal(timers.size, 0, 'timer leaked');
     },

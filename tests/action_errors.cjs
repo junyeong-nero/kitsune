@@ -151,12 +151,13 @@ function event() {
 
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
-// A fake setTimeout/clearTimeout; tick(ms) runs the timers due within ms.
+// A fake setTimeout/clearTimeout and Date.now; tick(ms) runs the timers due within ms.
 function fakeClock() {
   let now = 0, nextId = 0;
   const timers = new Map();
   return {
     timers,
+    Date: class extends Date { static now() { return now; } },
     setTimeout: (fn, delay = 0) => { timers.set(++nextId, { fn, at: now + delay }); return nextId; },
     clearTimeout: id => { timers.delete(id); },
     async tick(ms) {
@@ -176,10 +177,11 @@ function fakeClock() {
   };
 }
 
-function background(tabs, content, clock = { setTimeout, clearTimeout }) {
+function background(tabs, content, clock = { setTimeout, clearTimeout, Date }) {
   const sent = [];
   const injected = [];
   let injectError = null;
+  let requests = 0;
   const missing = id => new Error(`Invalid tab ID: ${id}`);
   const browser = {
     tabs: {
@@ -188,6 +190,7 @@ function background(tabs, content, clock = { setTimeout, clearTimeout }) {
       get: async id => { if (!tabs[id]) throw missing(id); return { ...tabs[id] }; },
       update: async id => { if (!tabs[id]) throw missing(id); return { ...tabs[id] }; },
       remove: async id => { if (!tabs[id]) throw missing(id); delete tabs[id]; browser.tabs.onRemoved.fire(id); },
+      reload: async id => { if (!tabs[id]) throw missing(id); },
       sendMessage: async (id, msg) => {
         if (msg.action === 'ping') {
           if (injectError) throw new Error('Could not establish connection. Receiving end does not exist.');
@@ -202,7 +205,8 @@ function background(tabs, content, clock = { setTimeout, clearTimeout }) {
     webRequest: { onHeadersReceived: event(), onBeforeRequest: event() },
   };
   const context = vm.createContext({
-    browser, URL, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout, setInterval, clearInterval,
+    browser, URL, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout, Date: clock.Date,
+    setInterval, clearInterval,
     console: { log() {}, error() {} }, WebSocket: class { close() {} },
   });
   vm.runInContext(fs.readFileSync('extension/background/background.js', 'utf8'), context);
@@ -210,8 +214,11 @@ function background(tabs, content, clock = { setTimeout, clearTimeout }) {
     sent, injected,
     statusWaiters: () => vm.runInContext('mainFrameStatusWaiters.size', context),
     failInjection: message => { injectError = message; },
+    // A main-frame request starts; response() records its status.
+    request: (tabId, url) => browser.webRequest.onBeforeRequest.fire({ tabId, requestId: ++requests, url, type: 'main_frame' }),
     response: (tabId, url, statusCode) =>
-      browser.webRequest.onHeadersReceived.fire({ tabId, url, statusCode, type: 'main_frame' }),
+      browser.webRequest.onHeadersReceived.fire({ tabId, requestId: requests, url, statusCode, type: 'main_frame' }),
+    tabUpdated: (tabId, changeInfo) => browser.tabs.onUpdated.fire(tabId, changeInfo, { ...tabs[tabId] }),
     send: command => context.handleCommand({ includeSnapshot: false, ...command })
       .then(result => JSON.parse(JSON.stringify(result))),
   };
@@ -398,6 +405,77 @@ async function testErrorPageWaitsForLateStatus() {
   assert.deepEqual([h.statusWaiters(), clock.timers.size], [0, 0]);
 }
 
+// Issue #95: a woken or reloaded tab shows its old document until the reload replaces it. Within
+// RELOAD_SETTLE_MS a refused injection is navigating unless a response since then is an error;
+// after it, a known status is final (PDF/JSON viewers answer 200), but a 2xx that only arrives
+// while the status is awaited belongs to a document still being replaced.
+async function testErrorPageClassification() {
+  const url = 'http://127.0.0.1:8000/doc';
+  const tabs = { 1: page(1, { active: true }), 2: page(2, { url, title: 'Doc' }) };
+  const clock = fakeClock();
+  const h = background(tabs, () => ({ ok: true }), clock);
+  h.failInjection('Missing host permission for the tab');
+  // Reads tab 2; `during` runs while a status wait is pending, which then resolves or times out.
+  const read = async (during = () => {}) => {
+    let result;
+    h.send({ action: 'getSnapshot', tabId: 2 }).then(r => { result = r; });
+    await clock.tick(10);
+    during();
+    await clock.tick(990);
+    assert.ok(result, 'the read settles within the status wait');
+    return [result.code, result.retryable, result.state.httpStatus];
+  };
+  const errorPage = status => ['error_page', false, status];
+  const navigating = status => ['navigating', true, status];
+
+  // Not reloaded: a known status is final.
+  h.request(2, url);
+  h.response(2, url, 200);
+  assert.deepEqual(await read(), errorPage(200), 'known 2xx');
+  h.response(2, url, 404);
+  assert.deepEqual(await read(), errorPage(404), 'known 404');
+  // A status arriving during the wait: a 2xx is a document still being replaced, an error is final.
+  h.request(2, url);
+  assert.deepEqual(await read(() => h.response(2, url, 200)), navigating(200), 'arriving 2xx');
+  h.request(2, url);
+  assert.deepEqual(await read(() => h.response(2, url, 404)), errorPage(404), 'arriving 404');
+  // A new main-frame request replaces the last status; with none arriving, no status is claimed.
+  h.response(2, url, 500);
+  h.request(2, url);
+  assert.deepEqual(await read(), errorPage(undefined), 'replaced by a new request');
+
+  // A reload clears the previous document's status: its 200 must not make the old document final.
+  h.request(2, url);
+  h.response(2, url, 200);
+  assert.deepEqual((await h.send({ action: 'reloadTabBrowser', tabId: 2 })).ok, true);
+  assert.deepEqual(await read(), navigating(undefined), 'reloaded, no response yet');
+  h.request(2, url);
+  assert.deepEqual(await read(() => h.response(2, url, 200)), navigating(200), 'reloaded, arriving 2xx');
+  assert.deepEqual(await read(), navigating(200), 'reloaded, known 2xx');
+  h.request(2, url);
+  assert.deepEqual(await read(() => h.response(2, url, 404)), errorPage(404), 'reloaded, arriving 404');
+  assert.deepEqual(await read(), errorPage(404), 'reloaded, known 404');
+  // The reload stops counting after RELOAD_SETTLE_MS, so the viewer's 200 becomes final.
+  await h.send({ action: 'reloadTabBrowser', tabId: 2 });
+  h.request(2, url);
+  h.response(2, url, 200);
+  assert.deepEqual(await read(), navigating(200));
+  await clock.tick(4000);
+  assert.deepEqual(await read(), errorPage(200), 'after the settle window');
+
+  // A status recorded before a wake by the browser is not fresh, even if nothing cleared it.
+  h.request(2, url);
+  h.response(2, url, 404);
+  await clock.tick(1);
+  h.tabUpdated(2, { discarded: false });
+  assert.deepEqual(await read(), navigating(undefined), 'woken by the browser, stale 404');
+  // A discard clears the status.
+  await clock.tick(5000);
+  h.tabUpdated(2, { discarded: true });
+  assert.deepEqual(await read(), errorPage(undefined), 'discarded, status cleared');
+  assert.deepEqual([h.statusWaiters(), clock.timers.size], [0, 0]);
+}
+
 async function testFocusChangeKeepsTarget() {
   const tabs = { 1: page(1, { active: true }), 2: page(2) };
   const h = background(tabs, (id, msg) => {
@@ -420,6 +498,7 @@ async function testFocusChangeKeepsTarget() {
   await testBackgroundErrors();
   await testEmptyErrorPage();
   await testErrorPageWaitsForLateStatus();
+  await testErrorPageClassification();
   await testFocusChangeKeepsTarget();
   console.log('action_errors: all tests passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

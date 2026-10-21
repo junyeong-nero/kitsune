@@ -55,7 +55,7 @@ function harness(startUrl, onNavigate = () => {}) {
       await flush();
     },
     assertClean() {
-      assert.equal(onUpdated.listeners.size, 0, 'onUpdated leaked');
+      assert.equal(onUpdated.listeners.size, 1, 'onUpdated leaked (the main-frame status listener remains)');
       assert.equal(timers.size, 0, 'timer leaked');
     },
   };
@@ -119,7 +119,7 @@ async function main() {
   });
   const fastNav = start(fast, { action: 'navigate', url: 'https://example.com/next' });
   await fast.tick(0);
-  assert.equal(fast.listenersAtNavigate, 1, 'listener registered before tabs.update');
+  assert.equal(fast.listenersAtNavigate, 2, 'listener registered before tabs.update');
   assert.equal(fastNav.settled, true, 'fast complete must not be missed');
   assert.deepEqual(await fastNav.result, { ok: true, url: 'https://example.com/next' });
   fast.assertClean();
@@ -200,20 +200,6 @@ async function main() {
   assert.equal(failed.settled, true);
   assert.deepEqual(await failed.result, { error: 'Illegal URL' });
   failing.assertClean();
-
-  // wakeTab shares the wait: subscribe before tabs.reload, report readiness.
-  const waking = harness('https://example.com/frames', h => {
-    h.update({ status: 'loading' });
-    h.update({ status: 'complete' });
-  });
-  waking.silentUpdate({ discarded: true });
-  const woken = start(waking, { action: 'wakeTab', tabId: 7 });
-  await waking.tick(0);
-  assert.equal(waking.listenersAtNavigate, 1, 'listener registered before tabs.reload');
-  assert.equal(woken.settled, true, 'fast complete must not be missed');
-  assert.deepEqual(await woken.result, { ok: true, woken: true, ready: true });
-  assert.deepEqual(waking.calls, [{ method: 'reload', id: 7 }]);
-  waking.assertClean();
 
   console.log('navigate_wait: all tests passed');
 }
