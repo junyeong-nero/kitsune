@@ -115,8 +115,14 @@ See `browser_wait_for` below for its element condition.
 
 ### Ref lifetime
 
-A ref names one element in one document of one tab, for one ref generation.
-Use refs only from the latest observation of that tab.
+A short ref such as `e12` names one element in one document of one tab, for one
+ref generation. Use refs only from the latest observation of that tab. Generation
+and tab identity are tracked privately by the extension, not encoded in the ref.
+Indexes increase across snapshots, additive observations and tabs; they do not
+restart at each snapshot, so an old ref can never alias a new element. The extension
+persists reserved indexes across reloads, but not ref mappings: after an extension
+reload, take a new snapshot (old short refs fail as `not_in_snapshot`). Legacy
+`s<generation>e<index>` inputs are still accepted.
 
 | Call | Effect on refs in that tab |
 |---|---|
@@ -774,7 +780,7 @@ run. `retryable` is `true` because nothing reached the page:
   "code": "confirmation_required", "retryable": true, "hint": "Nothing ran. Ask the user ...",
   "state": { "confirmToken": "…", "expiresInSeconds": 120, "action": "click",
              "reason": "submit_control", "description": "clicks a submit control (Place order)",
-             "tabId": 7, "url": "https://shop.example/cart", "params": { "ref": "s3e12" } } }
+             "tabId": 7, "url": "https://shop.example/cart", "params": { "ref": "e12" } } }
 ```
 
 To approve the action, the client asks the user. It then repeats the identical call
@@ -1428,8 +1434,8 @@ When playback does not start, `media` fails with `error`, `reason` and `media`, 
 For example, after an autoplay block, play muted with:
 
 ```json
-{"commands": [{"action": "media", "ref": "s1e2", "op": "mute"},
-              {"action": "media", "ref": "s1e2", "op": "play"}]}
+{"commands": [{"action": "media", "ref": "e2", "op": "mute"},
+              {"action": "media", "ref": "e2", "op": "play"}]}
 ```
 
 The model never receives audio content, even when playback succeeds. Muted playback
@@ -1510,9 +1516,9 @@ which skips them (`"method"`).
   "code": "ambiguous_target", "retryable": false,
   "hint": "Pass the ref of the form to submit from state.candidates, or fill one of its fields first.",
   "state": { "forms": 3, "candidates": [
-    { "ref": "s5e0", "action": "/wishlist/delete", "method": "post", "button": "Delete lantern" },
-    { "ref": "s5e1", "action": "/wishlist/delete", "method": "post", "button": "Delete mug" },
-    { "ref": "s5e2", "action": "/wishlist/add", "method": "post", "button": "Add" }] } }
+    { "ref": "e0", "action": "/wishlist/delete", "method": "post", "button": "Delete lantern" },
+    { "ref": "e1", "action": "/wishlist/delete", "method": "post", "button": "Delete mug" },
+    { "ref": "e2", "action": "/wishlist/add", "method": "post", "button": "Add" }] } }
 ```
 
 A successful submit names the form it submitted in `form`, with the same fields
@@ -1522,7 +1528,7 @@ replaces it; use `target_ref` and the snapshot's refs afterwards.
 
 ```json
 { "ok": true, "submitted": "button",
-  "form": { "ref": "s5e3", "action": "/wishlist/add", "method": "post", "button": "Add" } }
+  "form": { "ref": "e3", "action": "/wishlist/add", "method": "post", "button": "Add" } }
 ```
 
 ### `browser_wait_for(selector=None, text=None, text_gone=None, js=None, url=None, title=None, network_idle=False, time=None, timeout=10000, tab_id=None, ref=None, element=None)`
@@ -1674,7 +1680,7 @@ Sensitive fields report `redacted`/`hasValue` instead of `value`.
 All form fields on the page. Sensitive fields have `redacted`/`hasValue`
 instead of `value` (see [Sensitive-field redaction](#sensitive-field-redaction)).
 ```json
-{ "fields": [{ "ref": "s1e0", "tag": "input", "type": "password", "name": "password", "id": "password", "placeholder": "", "redacted": true, "hasValue": true, "label": "Password", "required": false, "selector": "#password", "bounds": [...] }] }
+{ "fields": [{ "ref": "e0", "tag": "input", "type": "password", "name": "password", "id": "password", "placeholder": "", "redacted": true, "hasValue": true, "label": "Password", "required": false, "selector": "#password", "bounds": [...] }] }
 ```
 
 ### GET /api/screenshot

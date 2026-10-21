@@ -209,7 +209,7 @@ class ExtensionControl:
 
 def refs_named(snapshot, text):
     """Refs of snapshot lines whose accessible name contains text."""
-    return re.findall(r'"[^"\n]*' + re.escape(text) + r'[^"\n]*" \[ref=(s\d+e\d+)\]', snapshot)
+    return re.findall(r'"[^"\n]*' + re.escape(text) + r'[^"\n]*" \[ref=(e\d+)\]', snapshot)
 
 
 class RealBrowserActionRaceTests(harness.RealBrowserTestCase):
@@ -252,6 +252,31 @@ class RealBrowserActionRaceTests(harness.RealBrowserTestCase):
         return join
 
     # ── Navigation and focus races ──
+
+    def test_short_refs_reject_replaced_snapshot_and_post_action_refs_without_extra_clicks(self):
+        tab_id = self.open_tab(self.site.url("short-refs"))
+        old = self.snapshot_ref(tab_id, "Act short-refs")
+        self.assertRegex(old, r"^e\d+$")
+        fresh = self.snapshot_ref(tab_id, "Act short-refs")
+        self.assertNotEqual(old, fresh)
+        stale = self.call("/api/click", {"tabId": tab_id, "ref": old})
+        self.assert_error(stale, "stale_ref", True)
+        self.assertEqual(stale["state"]["reason"], "snapshot_replaced", stale)
+        self.assertEqual(stale["state"]["ref"], old, stale)
+        self.assertEqual(stale["state"]["currentRef"], fresh, stale)
+        self.assertEqual(stale["state"]["latestObservation"], "browser_snapshot", stale)
+        self.assert_hits("short-refs", 0, settle=0)
+
+        clicked = self.assert_ok(self.call("/api/click", {"tabId": tab_id, "ref": fresh}))
+        self.assertRegex(clicked["target_ref"], r"^e\d+$")
+        self.assertNotEqual(clicked["target_ref"], fresh)
+        self.assertIn(f'[ref={clicked["target_ref"]}]', clicked["snapshot"])
+        replaced = self.call("/api/click", {"tabId": tab_id, "ref": fresh})
+        self.assert_error(replaced, "stale_ref", True)
+        self.assertEqual(replaced["state"]["reason"], "snapshot_replaced", replaced)
+        self.assertEqual(replaced["state"]["currentRef"], clicked["target_ref"], replaced)
+        self.assertEqual(replaced["state"]["latestObservation"], "browser_click", replaced)
+        self.assert_hits("short-refs", 1)
 
     def test_ref_after_navigation_fails_as_other_document_without_clicking_the_new_page(self):
         tab_id = self.open_tab(self.site.url("nav-a"))

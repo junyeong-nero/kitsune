@@ -334,7 +334,7 @@ class RealBrowserRedactionTests(harness.RealBrowserTestCase):
         # The username is only sensitive because the password manager filled it.
         self.assert_redacted(reads, "username")
         self.assert_redacted(reads, "password")
-        self.assertRegex(reads["browser_snapshot"]["snapshot"], r'textbox "Username" \[ref=s\d+e\d+\]\n')
+        self.assertRegex(reads["browser_snapshot"]["snapshot"], r'textbox "Username" \[ref=e\d+\]\n')
         self.assert_shown(reads, "q", "kittens", tab_id)
 
         # Editing the field, as a user would, makes Firefox clear its autofill state.
@@ -432,7 +432,7 @@ class RealBrowserRedactionTests(harness.RealBrowserTestCase):
                 self.assertEqual((rows["dom"]["redacted"], rows["dom"]["hasValue"]), (True, False))
                 self.assertEqual((rows["query"]["redacted"], rows["query"]["hasValue"]), (True, False))
                 self.assertNotIn("value", rows["query"]["attrs"])
-        self.assertRegex(reads["browser_snapshot"]["snapshot"], r'textbox "Vault key" \[ref=s\d+e\d+\]\n')
+        self.assertRegex(reads["browser_snapshot"]["snapshot"], r'textbox "Vault key" \[ref=e\d+\]\n')
         # A host whose shadow input is not sensitive keeps its reflected value.
         search = self.row(reads, "site-search")["query"]
         self.assertEqual((search.get("redacted"), search["attrs"]["value"]), (None, "kittens"))
@@ -476,7 +476,7 @@ class RealBrowserRedactionTests(harness.RealBrowserTestCase):
         self.assertIs(rows["dom"]["redacted"], True)
         self.assertIs(rows["query"]["redacted"], True)
         self.assertRegex(reads["browser_snapshot"]["snapshot"],
-                         re.compile(r'textbox "Backup code" \[ref=s\d+e\d+\]$', re.M))
+                         re.compile(r'textbox "Backup code" \[ref=e\d+\]$', re.M))
 
     def test_a_field_deeper_than_the_shadow_search_fails_as_not_fillable(self):
         tab_id = self.open_tab(self.site.origin + "/widgets")
@@ -533,7 +533,7 @@ class RealBrowserRedactionTests(harness.RealBrowserTestCase):
         self.assertIn('<textarea id="recovery" name="recovery" class="masked"></textarea>', html)
         self.assertIn('style="-webkit-text-security: square"></div>', html)
         # The label wrapping the masked textarea names it without the textarea's content.
-        self.assertRegex(reads["browser_snapshot"]["snapshot"], r'textbox "Recovery codes" \[ref=s\d+e\d+\]\n')
+        self.assertRegex(reads["browser_snapshot"]["snapshot"], r'textbox "Recovery codes" \[ref=e\d+\]\n')
         # Page text is rendered text, where the browser shows the square mask's characters.
         self.assertIn("\u25a0" * len(EDITABLE_TEXT), reads["browser_page_text"]["text"])
 
@@ -588,7 +588,7 @@ class RealBrowserRedactionTests(harness.RealBrowserTestCase):
                 self.assertNotIn("text", dom[field_id])
         self.assertEqual(reads["browser_wait_for #masked-static"]["text"], "")
         self.assertEqual(reads["browser_click"]["text"], "")
-        self.assertRegex(reads["browser_snapshot"]["snapshot"], r'textbox "Recovery code" \[ref=s\d+e\d+\]')
+        self.assertRegex(reads["browser_snapshot"]["snapshot"], r'textbox "Recovery code" \[ref=e\d+\]')
         self.assertIn('<p id="masked-static" class="masked"></p>', reads["browser_html"]["html"])
 
         # No false positives: ordinary text, unmasked elements and elements whose mask is

@@ -91,7 +91,7 @@ class RealBrowserIframeTests(harness.RealBrowserTestCase):
 
     def ref(self, tab, line):
         snapshot = self.call("/api/snapshot", {"tabId": tab})["snapshot"]
-        match = re.search(re.escape(line) + r" \[ref=(s\d+e\d+)\]", snapshot)
+        match = re.search(re.escape(line) + r" \[ref=(e\d+)\]", snapshot)
         self.assertIsNotNone(match, f"{line} in\n{snapshot}")
         return match.group(1), snapshot
 
@@ -101,10 +101,10 @@ class RealBrowserIframeTests(harness.RealBrowserTestCase):
         lines = snapshot.splitlines()
         frame = next(i for i, line in enumerate(lines) if 'iframe "배송지 편집"' in line)
         self.assertTrue(any('textbox "우편번호"' in line for line in lines[frame:]), snapshot)
-        self.assertRegex(snapshot, r'textbox "상세주소" \[ref=s\d+e\d+\]')
-        self.assertRegex(snapshot, r'button "저장" \[ref=s\d+e\d+\]')
+        self.assertRegex(snapshot, r'textbox "상세주소" \[ref=e\d+\]')
+        self.assertRegex(snapshot, r'button "저장" \[ref=e\d+\]')
         # The cross-origin widget is reported, without its query, and its field stays unread.
-        self.assertRegex(snapshot, r'iframe "결제 위젯" \[ref=s\d+e\d+\] '
+        self.assertRegex(snapshot, r'iframe "결제 위젯" \[ref=e\d+\] '
                                    r'\[content=cross_origin src="http://localhost:\d+/widget"\]')
         self.assertNotIn("KITSUNE_FAKE_TOKEN", snapshot)
         self.assertNotIn("카드 번호", snapshot)

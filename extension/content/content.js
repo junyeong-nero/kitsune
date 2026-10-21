@@ -3,7 +3,7 @@
 
 (function() {
   'use strict';
-  const CONTENT_VERSION = 38;
+  const CONTENT_VERSION = 39;
   if (window.__claudeBridgeVersion >= CONTENT_VERSION) return;
   window.__claudeBridgeVersion = CONTENT_VERSION;
 
@@ -122,8 +122,10 @@
   // focused; a submit without a target submits its form.
   let lastFilledField = null;
   // Persist across reinjection; seed per document so navigation cannot reuse refs.
-  let refGeneration = window.__kitsuneRefGeneration ||
-    `${Date.now()}${crypto.getRandomValues(new Uint32Array(1))[0]}`;
+  let refGeneration = window.__kitsuneRefGeneration
+    ? (BigInt(window.__kitsuneRefGeneration) + 1n).toString()
+    : `${Date.now()}${crypto.getRandomValues(new Uint32Array(1))[0]}`;
+  window.__kitsuneRefGeneration = refGeneration;
   // Generations in [refSeed, refGeneration] belong to this document; others name another one.
   const refSeed = window.__kitsuneRefSeed || (window.__kitsuneRefSeed = refGeneration);
   // Snapshot refs of the current generation: { label: 'role "name"', parent: ancestor's ref }.

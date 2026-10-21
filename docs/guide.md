@@ -76,11 +76,11 @@ text tree of visible controls, headings, and landmarks:
 
 ```text
 - main ""
-  - heading "Welcome" [ref=s3e0] [level=1]
-  - button "Log in" [ref=s3e1]
+  - heading "Welcome" [ref=e0] [level=1]
+  - button "Log in" [ref=e1]
 ```
 
-Prefer `browser_click(ref="s3e1", element="Log in", tab_id=...)` and
+Prefer `browser_click(ref="e1", element="Log in", tab_id=...)` and
 `browser_type(ref="...", text="...", mode="fill", tab_id=...)`. `element` is a description
 for audit logs only; CSS `selector` remains supported. For drag, use `ref` for
 the source and `to_ref` for the destination (or the existing selector arguments).
@@ -88,7 +88,9 @@ A write action's selector must match one element: several matches fail with
 `ambiguous_target` and act on nothing, unless `first=True` (see
 [Strict selectors](api-reference.md#strict-selectors)).
 
-Refs are scoped to the document and snapshot generation. A new snapshot,
+Short refs (`e12`) are scoped to the tab, document and snapshot generation, tracked
+by the extension. Indexes are never reused across snapshots or tabs; after an
+extension reload, take a new snapshot. A new snapshot,
 `browser_dom`, or the post-action snapshot below replaces earlier refs in that
 tab, and navigation invalidates them; `browser_find`, `browser_forms`, and
 `browser_wait_for(selector=...)` add refs without replacing any. Detached or

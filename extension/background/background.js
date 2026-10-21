@@ -3,7 +3,7 @@
 
 'use strict';
 
-const EXPECTED_CONTENT_VERSION = 37;
+const EXPECTED_CONTENT_VERSION = 39;
 const WS_URL = 'ws://127.0.0.1:47652';
 // scripts/build_extension.py sets 'signed' for the AMO build (see content.js).
 const KITSUNE_BUILD = 'dev';
@@ -1281,6 +1281,98 @@ async function ensureContentScript(tabId) {
 
 const MISSING_CONTENT_RECEIVER = 'Could not establish connection. Receiving end does not exist.';
 
+// Public refs never reuse an index. Keep the generation-qualified ref private so the
+// content script can still distinguish replaced snapshots and other documents.
+const shortRefs = new Map();
+const publicRefs = new Map();
+const REF_RESULT_ACTIONS = new Set([
+  'getSnapshot', 'getAccessibilityTree', 'getFormFields', 'find', 'waitForElement',
+  'getIframes', 'submitForm',
+]);
+let nextShortRef = null;
+let shortRefEnd = 0n;
+let shortRefQueue = Promise.resolve();
+
+async function reserveShortRefs(count) {
+  if (nextShortRef === null) {
+    const stored = await browser.storage.local.get('shortRefEnd');
+    const end = stored.shortRefEnd ?? '0';
+    if (!/^\d+$/.test(end)) throw new Error('Invalid short-ref counter');
+    nextShortRef = shortRefEnd = BigInt(end);
+  }
+  if (nextShortRef + BigInt(count) > shortRefEnd) {
+    const end = nextShortRef + BigInt(Math.max(1024, count));
+    // Reserve before issuing: a background reload loses the maps but skips every
+    // index it might have issued, including a partially used reservation.
+    await browser.storage.local.set({ shortRefEnd: end.toString() });
+    shortRefEnd = end;
+  }
+}
+
+function shortRefError(ref, reason) {
+  const hint = reason === 'other_document'
+    ? 'The ref belongs to another tab. Pass tab_id and take a new browser_snapshot.'
+    : 'This ref is unknown or expired; take a new browser_snapshot and use its refs.';
+  return { error: 'stale ref, call browser_snapshot again', code: 'stale_ref', retryable: true,
+    hint, state: { reason, ref } };
+}
+
+function expandShortRefs(params, tabId) {
+  const expanded = { ...params };
+  for (const key of ['ref', 'selector', 'from', 'to', 'toRef']) {
+    const ref = params[key];
+    if (typeof ref !== 'string' || !/^e\d+$/.test(ref)) continue;
+    const entry = shortRefs.get(ref);
+    if (!entry) return { error: shortRefError(ref, 'not_in_snapshot') };
+    if (entry.tabId !== tabId) return { error: shortRefError(ref, 'other_document') };
+    expanded[key] = entry.ref;
+  }
+  return { params: expanded };
+}
+
+function compactContentRefs(action, response, tabId, params) {
+  // Only protocol-owned fields are rewritten, never page text, JS results or values.
+  const visit = (value, convert) => {
+    if (Array.isArray(value)) return value.map(item => visit(item, convert));
+    if (!value || typeof value !== 'object') return value;
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => {
+      if (key === 'snapshot' && typeof item === 'string') {
+        return [key, item.replace(/\[ref=(s\d+e\d+)\]/g, (_, ref) => `[ref=${convert(ref)}]`)];
+      }
+      if (['ref', 'target_ref', 'currentRef'].includes(key) && typeof item === 'string' && /^s\d+e\d+$/.test(item)) {
+        // An error echoes the caller's ref, including legacy refs, verbatim.
+        if (response.code && value === response.state && key === 'ref') {
+          const original = ['ref', 'selector', 'from', 'to', 'toRef'].map(k => params[k])
+            .find(ref => shortRefs.get(ref)?.ref === item);
+          return [key, original || item];
+        }
+        return [key, convert(item)];
+      }
+      return [key, visit(item, convert)];
+    }));
+  };
+  const rewrite = async () => {
+    if (!REF_RESULT_ACTIONS.has(action) && !response.code) return response;
+    const missing = new Set();
+    visit(response, ref => {
+      if (!publicRefs.has(`${tabId}:${ref}`)) missing.add(ref);
+      return ref;
+    });
+    if (missing.size) {
+      await reserveShortRefs(missing.size);
+      for (const ref of missing) {
+        const short = `e${nextShortRef++}`;
+        shortRefs.set(short, { tabId, ref });
+        publicRefs.set(`${tabId}:${ref}`, short);
+      }
+    }
+    return visit(response, ref => publicRefs.get(`${tabId}:${ref}`));
+  };
+  const pending = shortRefQueue.then(rewrite);
+  shortRefQueue = pending.catch(() => {});
+  return pending;
+}
+
 async function forwardToContent(action, params) {
   const tabId = params.tabId || (await getActiveTabId());
   if (!tabId) return noActiveTab('No active tab found');
@@ -1300,9 +1392,11 @@ async function forwardToContent(action, params) {
       return await injectionFailure(tabId, e);
     }
 
+    const expanded = expandShortRefs(params, tabId);
+    if (expanded.error) return await withTabState(tabId, expanded.error);
     let response;
     try {
-      response = await browser.tabs.sendMessage(tabId, { action, ...params });
+      response = await browser.tabs.sendMessage(tabId, { action, ...expanded.params });
     } catch (e) {
       const missingReceiver = e.message === MISSING_CONTENT_RECEIVER;
       // A wake's receiver can disappear after the ping. Only this error proves nothing
@@ -1314,7 +1408,15 @@ async function forwardToContent(action, params) {
       return await tabFailure(tabId, `Content script error: ${e.message}`, !missingReceiver);
     }
     if (!response) return await tabFailure(tabId, 'No response from content script', true);
-    return response.code ? await withTabState(tabId, response) : response;
+    if (response.code) response = await withTabState(tabId, response);
+    const result = await compactContentRefs(action, response, tabId, params);
+    // Waits and drags echo their targets; keep their public spelling too.
+    for (const key of ['ref', 'selector', 'from', 'to', 'toRef']) {
+      if (!/^e\d+$/.test(params[key])) continue;
+      if (result[key] === expanded.params[key]) result[key] = params[key];
+      if (typeof result.error === 'string') result.error = result.error.replaceAll(expanded.params[key], params[key]);
+    }
+    return result;
   }
 }
 
