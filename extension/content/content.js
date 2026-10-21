@@ -408,6 +408,7 @@
       'submitForm':            () => submitForm(msg.selector, msg.first),
       'describeTarget':        () => describeTarget(msg.selector, msg.coords, msg.key),
       'formFill':              () => formFill(msg.fields, msg.first),
+      'media':                 () => controlMedia(msg.selector, msg.op, msg.time, msg.first),
       'drag':                  () => dragElement(msg.from, msg.to, msg.first),
       'waitForUrl':            () => waitForUrl(msg.pattern, msg.timeout),
       'waitForTitle':          () => waitForTitle(msg.pattern, msg.timeout),
@@ -678,13 +679,13 @@
         el.getAttribute('aria-hidden') === 'true' ||
         ['SCRIPT', 'STYLE', 'NOSCRIPT', 'SVG'].includes(el.tagName);
     }
-    const hasOwnText = el => Array.from(el.childNodes).some(node => node.nodeType === 3 && node.textContent.trim());
+    const hasOwnText = el => flatChildNodes(el).some(node => node.nodeType === 3 && node.textContent.trim());
     // [all, plain] text of el's inline content; plain omits controls and labels, which
     // already appear as control names. Form fields and sensitive elements never contribute.
     function inlineText(el) {
       let all = '', plain = '';
       const sensitive = holdsSensitiveText(el);
-      for (const node of el.childNodes) {
+      for (const node of flatChildNodes(el)) {
         if (node.nodeType === 3) {
           all += sensitive ? ' ' : node.textContent;
           plain += sensitive ? ' ' : node.textContent;
@@ -703,7 +704,10 @@
     // Bottom-up metadata avoids repeatedly scanning large clickable ancestor trees.
     function measure(el, domDepth = 0) {
       if (ignored(el)) return null;
-      const children = childrenAcrossFrames(el).map(child => measure(child, domDepth + 1)).filter(Boolean);
+      // A media element's children are sources, tracks and fallback content, not page structure.
+      const media = MEDIA_TAGS.has(el.tagName);
+      const children = media ? [] :
+        childrenAcrossFrames(el).map(child => measure(child, domDepth + 1)).filter(Boolean);
       const shape = JSON.stringify([el.tagName, el.getAttribute('role'), el.type || '',
         children.map(child => child.signature)]);
       if (!signatures.has(shape)) signatures.set(shape, signatures.size);
@@ -723,7 +727,7 @@
         (/^H[1-6]$/.test(el.tagName) ? 'heading' : inferRole(el));
       // Rendered frames are listed even when their content is unavailable (cross-origin).
       data.useful = (maxDepth == null || domDepth <= maxDepth) &&
-        (children.some(child => child.useful) || (interactive && !data.wrapper) ||
+        (children.some(child => child.useful) || (interactive && !data.wrapper) || media ||
           semanticRoles.has(role) || el === target || (withText && hasOwnText(el)) ||
           (FRAME_TAGS.has(el.tagName) && hasArea(el)));
       data.interactive += interactive ? 1 : 0;
@@ -736,11 +740,12 @@
       const labelledBy = el.getAttribute('aria-labelledby');
       if (labelledBy) {
         const label = labelledBy.split(/\s+/).map(id => {
-          const labelEl = docOf(el).getElementById(id);
+          const labelEl = elementByIdNear(el, id);
           return labelEl ? redactedText(labelEl) : '';
         }).join(' ');
         if (clean(label)) return clean(label);
       }
+      if (MEDIA_TAGS.has(el.tagName)) return clean(el.getAttribute('aria-label') || el.title);
       const explicitRole = el.getAttribute('role');
       const isLandmark = landmarks[el.tagName] ||
         (semanticRoles.has(explicitRole) && explicitRole !== 'heading');
@@ -773,7 +778,8 @@
       const frame = FRAME_TAGS.has(el.tagName);
       let role = el.getAttribute('role') || landmarks[el.tagName] ||
         (/^H[1-6]$/.test(el.tagName) ? 'heading' : inferRole(el)) || (frame ? 'iframe' : '');
-      const interactive = isInteractiveElement(el) && !metadata.get(el).wrapper;
+      const media = MEDIA_TAGS.has(el.tagName);
+      const interactive = (isInteractiveElement(el) && !metadata.get(el).wrapper) || media;
       const include = interactive || semanticRoles.has(role) || el === target || frame;
       if (include) {
         if (!role) {
@@ -796,6 +802,11 @@
         if (frameReason) {
           const src = clean(frameSource(el));
           states.push(`content=${frameReason}`, ...(src ? [`src=${JSON.stringify(src)}`] : []));
+        }
+        if (media) {
+          const { src, duration, currentTime, paused, muted, controls } = mediaState(el);
+          states.push(`src=${JSON.stringify(src)}`, `duration=${duration}`, `currentTime=${currentTime}`,
+            `paused=${paused}`, `muted=${muted}`, `controls=${controls}`);
         }
         const label = `${role} ${JSON.stringify(nameOf(el, interactive || el === target))}`;
         const line = `${'  '.repeat(Math.min(depth, 12))}- ${label} [ref=${ref}]${states.length ? ' [' + states.join(' ') + ']' : ''}`;
@@ -820,9 +831,9 @@
       // Only composite children / list items collapse: a toolbar of leaf controls
       // should remain fully discoverable. Text, IDs and classes are not structure.
       // In text mode, siblings with only inline content are prose, not cards.
-      const repeatable = child => (child.children.length > 0 || child.tagName === 'LI' ||
+      const repeatable = child => (flatChildren(child).length > 0 || child.tagName === 'LI' ||
         child.getAttribute('role') === 'listitem') &&
-        !(withText && Array.from(child.children).every(c => INLINE_TAGS.has(c.tagName)));
+        !(withText && flatChildren(child).every(c => INLINE_TAGS.has(c.tagName)));
       for (let start = 0; start < children.length && !truncated;) {
         let end = start + 1;
         if (repeatable(children[start])) {
@@ -909,33 +920,85 @@
   }
 
   // ── Find Elements ──
+  const FIND_LIMIT = 20;
+  const FIND_NO_MATCH_HINT = 'No element matches this query; try a shorter phrase from the element\'s ' +
+    'visible label, or browser_snapshot(text=True).';
+  // Filler words in descriptive queries ("the button in the filters") that match almost anything.
+  const FIND_STOP_WORDS = new Set(['a', 'an', 'the', 'in', 'on', 'of', 'to', 'for', 'or', 'and',
+    'with', 'at', 'by', 'from', 'is', 'that', 'this', 'its']);
+  // Words a query uses for a control's kind, matched against its role.
+  const FIND_ROLE_WORDS = {
+    button: 'button', link: 'link', checkbox: 'checkbox', radio: 'radio', tab: 'tab',
+    combobox: 'combobox dropdown select', listbox: 'listbox dropdown select list',
+    textbox: 'textbox input field box', searchbox: 'searchbox search input field box bar',
+    menuitem: 'menuitem menu item', option: 'option', slider: 'slider', switch: 'switch toggle',
+    heading: 'heading title', img: 'image img picture',
+  };
+  // Longer text belongs to a container; it can match the whole query but not single terms.
+  const FIND_TEXT_TERM_LIMIT = 200;
+
+  // Lowercase words, with camelCase and kebab/snake-case ids split apart.
+  function findWords(value) {
+    return String(value || '').replace(/(\p{Ll})(\p{Lu})/gu, '$1 $2').toLowerCase()
+      .match(/[\p{L}\p{N}]+/gu) || [];
+  }
+
+  // Terms are the query's words without filler; phrases are quoted parts and the whole query.
+  function parseFindQuery(query) {
+    const words = findWords(query);
+    const content = words.filter(word => !FIND_STOP_WORDS.has(word));
+    const terms = [...new Set(content.length ? content : words)];
+    const phrases = new Set(words.length > 1 ? [words.join(' ')] : []);
+    for (const [, double, single] of query.matchAll(/["\u201c\u201d]([^"\u201c\u201d]+)["\u201c\u201d]|(?:^|\s)['\u2018]([^'\u2018\u2019]+)['\u2019](?=\s|$|[.,;:!?])/g)) {
+      const phrase = findWords(double || single).join(' ');
+      if (phrase.includes(' ')) phrases.add(phrase);
+    }
+    return { terms, phrases: [...phrases] };
+  }
+
+  // A field word matches a term it starts with, or a slightly shorter form of it
+  // ("reviews" finds "review", "버튼을" finds "버튼").
+  function wordMatchesTerm(word, term) {
+    return word.startsWith(term) ||
+      (word.length >= 2 && term.startsWith(word) && term.length - word.length <= 3);
+  }
+
   function findElements(query) {
     pruneRefMap();
-    const q = query.toLowerCase();
     const results = [];
 
     // Try as CSS selector
     try {
       if (valueSelectorBlocked(query)) throw new Error(VALUE_SELECTOR_ERROR);
-      const matches = queryAllFrames(query);
+      const matches = deepQuerySelectorAll(query);
       if (matches.length > 0 && matches.length < 50) {
         matches.forEach(el => {
           if (!isHidden(el)) results.push(makeResult(el));
         });
-        if (results.length) return { results: results.slice(0, 20) };
+        if (results.length) return { results: results.slice(0, FIND_LIMIT) };
       }
     } catch {}
 
     // Text/attribute search
-    const candidates = queryAllFrames('a, button, input, select, textarea, [role], [onclick], label, h1, h2, h3, h4, h5, h6, p, span, div, li, td, th, img');
+    const parsed = parseFindQuery(query);
+    if (!parsed.terms.length) return { results: [], hint: FIND_NO_MATCH_HINT };
+    const scored = [];
+    const candidates = deepQuerySelectorAll('a, button, input, select, textarea, [role], [onclick], label, h1, h2, h3, h4, h5, h6, p, span, div, li, td, th, img');
     for (const el of candidates) {
       if (isHidden(el)) continue;
-      const score = scoreMatch(el, q);
-      if (score > 0) results.push({ ...makeResult(el), score });
+      const match = scoreMatch(el, parsed);
+      if (match) scored.push({ el, ...match });
     }
+    if (!scored.length) return { results: [], hint: FIND_NO_MATCH_HINT };
 
-    results.sort((a, b) => b.score - a.score);
-    return { results: results.slice(0, 20) };
+    // Drop weak partial matches: keep elements matching at least half as many terms as the best.
+    const bestMatched = Math.max(...scored.map(entry => entry.matched));
+    const kept = scored.filter(entry => entry.matched * 2 >= bestMatched);
+    // Between equal scores, the element with less text is the more specific one.
+    kept.sort((a, b) => b.score - a.score || a.textLength - b.textLength);
+    return {
+      results: kept.slice(0, FIND_LIMIT).map(entry => ({ ...makeResult(entry.el), score: entry.score })),
+    };
   }
 
   function makeResult(el) {
@@ -952,11 +1015,15 @@
     };
   }
 
-  function scoreMatch(el, query) {
-    let score = 0;
+  // Scores el against a parsed query, or returns null when el does not match it.
+  // Each term counts once, at the weight of the best field it matches.
+  function scoreMatch(el, { terms, phrases }) {
+    const text = redactedText(el).replace(/\s+/g, ' ').trim();
+    const role = el.getAttribute('role') || inferRole(el) ||
+      (/^H[1-6]$/.test(el.tagName) ? 'heading' : el.tagName === 'IMG' ? 'img' : '');
     const fields = [
-      [redactedText(el), 2],
-      [el.ariaLabel, 5],
+      [text, 2],
+      [el.getAttribute('aria-label'), 5],
       [el.placeholder, 4],
       [el.title, 3],
       [el.alt, 3],
@@ -964,12 +1031,36 @@
       [el.name, 2],
       // Matching on a sensitive value would let queries probe it.
       [isSensitiveField(el) ? '' : el.value, 2],
-    ];
-    for (const [val, weight] of fields) {
-      if (val && String(val).toLowerCase().includes(query)) score += weight;
+    ].filter(([value]) => value && typeof value === 'string').map(([value, weight]) => {
+      const words = findWords(value);
+      const joined = ` ${words.join(' ')} `;
+      const phrase = phrases.some(p => joined.includes(` ${p} `)) ? weight : 0;
+      return { words, weight, phrase, long: value === text && text.length > FIND_TEXT_TERM_LIMIT && !phrase };
+    });
+
+    let termScore = 0;
+    let matched = 0;
+    let matchedContent = 0;
+    const roleWords = findWords(FIND_ROLE_WORDS[role] || role);
+    for (const term of terms) {
+      let best = 0;
+      for (const field of fields) {
+        if (field.weight > best && !field.long && field.words.some(word => wordMatchesTerm(word, term))) {
+          best = field.weight;
+        }
+      }
+      if (best) matchedContent++;
+      else if (roleWords.includes(term)) best = 1;
+      if (best) { matched++; termScore += best; }
     }
+    // A role alone ("xyzzy button") is no match unless the query names nothing but roles ("button").
+    if (!matched || (!matchedContent && matched < terms.length)) return null;
+
+    let score = termScore * (matched / terms.length);
+    if (matched === terms.length) score += 4;
+    score += Math.max(0, ...fields.map(field => field.phrase)) * 3;
     if (isInteractiveElement(el)) score += 1;
-    return score;
+    return { score: Math.round(score * 100) / 100, matched, textLength: text.length };
   }
 
   // ── Click ──
@@ -1005,32 +1096,177 @@
     // el.click() below emits the click and performs native activation exactly once.
     for (const type of ['pointerover', 'pointerenter', 'pointerdown', 'mousedown', 'pointerup', 'mouseup']) {
       const EventCtor = type.startsWith('pointer') && window.PointerEvent ? PointerEvent : MouseEvent;
-      el.dispatchEvent(new EventCtor(type, {
+      const proceed = el.dispatchEvent(new EventCtor(type, {
         ...eventInit,
         pointerId: 1,
         pointerType: 'mouse',
         isPrimary: true,
       }));
+      // As a real mousedown does, unless the page cancelled it. The background has already
+      // refused a tab the user is using (user_active), so this never takes focus from them.
+      if (type === 'mousedown' && proceed) focusForClick(el, coords && { x, y });
     }
 
     const link = blankTargetLink(el);
+    const media = MEDIA_TAGS.has(el.tagName) ? el : null;
+    const wasPaused = media?.paused;
     let clickEvent = null;
     const onClick = event => { clickEvent = event; };
-    if (link) el.addEventListener('click', onClick);
+    if (link || media) el.addEventListener('click', onClick);
     if (typeof el.click === 'function') {
       el.click();
     }
+    if (link || media) el.removeEventListener('click', onClick);
     // A page handler that cancelled the click took the link over, including any tab it opens.
     let blankLink = {};
-    if (link) {
-      el.removeEventListener('click', onClick);
-      if (clickEvent && !clickEvent.defaultPrevented) {
-        blankLink = { targetBlankLink: { url: link.href, opener: link.relList.contains('opener') } };
-      }
+    if (link && clickEvent && !clickEvent.defaultPrevented) {
+      blankLink = { targetBlankLink: { url: link.href, opener: link.relList.contains('opener') } };
     }
 
-    return { ok: true, tag: el.tagName.toLowerCase(), text: redactedText(el).trim().slice(0, 60),
-      ...warning, ...blankLink };
+    // A media element's text is its fallback content, which the browser does not show.
+    const result = { ok: true, tag: el.tagName.toLowerCase(),
+      text: media ? '' : redactedText(el).trim().slice(0, 60), ...warning, ...blankLink };
+    // Synthetic clicks cannot press the browser's native media controls (they only answer
+    // trusted input), so a click the page neither cancelled nor handled toggles playback.
+    if (media && clickEvent && !clickEvent.defaultPrevented && media.paused === wasPaused) {
+      if (!wasPaused) media.pause();
+      return (wasPaused ? playMedia(media) : Promise.resolve(null))
+        .then(failure => ({ ...result, media: { ...mediaState(media), ...failure } }));
+    }
+    return result;
+  }
+
+  // ── Media ──
+  // <video> and <audio> are driven through HTMLMediaElement: play() needs no user
+  // activation for muted media, while unmuted playback may be refused (NotAllowedError).
+  const MEDIA_OPS = new Set(['play', 'pause', 'seek', 'mute', 'unmute']);
+  // How long play() or a seek may take to settle; a slow source keeps loading afterwards.
+  const MEDIA_SETTLE_MS = 2000;
+
+  function mediaState(el) {
+    const seconds = value => Number.isFinite(value) ? Math.round(value * 100) / 100 : null;
+    return { src: String(el.currentSrc || el.src || '').slice(0, 160), duration: seconds(el.duration),
+      currentTime: seconds(el.currentTime), paused: !!el.paused, muted: !!el.muted, controls: !!el.controls };
+  }
+
+  // Resolves to null once playback starts (or is still loading), else to { error, reason }.
+  // Firefox holds play() pending in a tab that has never been shown
+  // (media.block-autoplay-until-in-foreground), and agent tabs open in the background.
+  // Showing the tab is the caller's explicit choice, so the pending play is cancelled.
+  async function playMedia(el) {
+    let timer;
+    const pending = new Promise(resolve => { timer = setTimeout(resolve, MEDIA_SETTLE_MS, 'pending'); });
+    const started = Promise.resolve(el.play()).then(() => null, e => ({ reason: 'refused',
+      error: `play() was refused (${e.name}: ${e.message}); muted media can play, or use browser_trusted_click` }));
+    const outcome = await Promise.race([started, pending]).finally(() => clearTimeout(timer));
+    if (outcome !== 'pending') return outcome;
+    if (!document.hidden) return null;
+    el.pause();
+    return { reason: 'background_tab', error: 'Playback did not start: Firefox delays media in a tab ' +
+      'that has not been shown yet. Show it with browser_tabs select, then play again' };
+  }
+
+  // Resolves once the frame at time is shown, so a screenshot taken next shows it.
+  function seekMedia(el, time) {
+    return new Promise(resolve => {
+      const done = () => {
+        clearTimeout(timer);
+        el.removeEventListener('seeked', done);
+        resolve();
+      };
+      const timer = setTimeout(done, MEDIA_SETTLE_MS);
+      el.addEventListener('seeked', done);
+      el.currentTime = time;
+    });
+  }
+
+  async function controlMedia(selector, op, time, first) {
+    if (!MEDIA_OPS.has(op)) return { error: 'op must be play, pause, seek, mute or unmute' };
+    if (op === 'seek' && !(Number.isFinite(time) && time >= 0)) {
+      return { error: 'seek needs time: a non-negative number of seconds' };
+    }
+    const el = resolveTarget(selector, null, { first });
+    if (!el) return notFound();
+    if (!MEDIA_TAGS.has(el.tagName)) return { error: `Not a video or audio element: ${el.tagName.toLowerCase()}` };
+    let failure = null;
+    if (op === 'play') failure = await playMedia(el);
+    else if (op === 'pause') el.pause();
+    else if (op === 'seek') await seekMedia(el, time);
+    else el.muted = op === 'mute';
+    const media = mediaState(el);
+    return failure ? { ...failure, media } : { ok: true, tag: el.tagName.toLowerCase(), media };
+  }
+
+  // Focus what a click on el focuses; in an editor, put the caret at the click point, or at
+  // the end of el for a ref or selector click.
+  function focusForClick(el, coords) {
+    if (isEditableRegion(el)) {
+      placeEditableCaret(el, coords && caretRangeAt(el, coords));
+      return;
+    }
+    el.closest?.(FOCUSABLE_SELECTOR)?.focus?.({ preventScroll: true });
+  }
+
+  const FOCUSABLE_SELECTOR = 'a[href], area[href], button, input, select, textarea, iframe, summary, [tabindex]';
+
+  // The collapsed range at a viewport point, if it falls inside el.
+  function caretRangeAt(el, { x, y }) {
+    let range = null;
+    if (docOf(el).caretPositionFromPoint) {
+      const position = docOf(el).caretPositionFromPoint(x, y);
+      if (position?.offsetNode) {
+        range = docOf(el).createRange();
+        range.setStart(position.offsetNode, position.offset);
+      }
+    } else if (docOf(el).caretRangeFromPoint) {
+      range = docOf(el).caretRangeFromPoint(x, y);
+    }
+    return range && el.contains(range.startContainer) ? range : null;
+  }
+
+  // The editing host el belongs to: the element that takes focus for it.
+  function editingHost(el) {
+    let host = el;
+    while (host.parentElement?.isContentEditable) host = host.parentElement;
+    return host;
+  }
+
+  function selectionInside(el) {
+    const selection = (docOf(el).defaultView || window).getSelection();
+    if (!selection?.rangeCount) return null;
+    const range = selection.getRangeAt(0);
+    return el.contains(range.startContainer) && el.contains(range.endContainer) ? range.cloneRange() : null;
+  }
+
+  // Focus el's editing host and select range, by default a caret at the end of el. Focusing
+  // the host alone leaves Firefox's caret at the start of the editor.
+  function placeEditableCaret(el, range) {
+    if (!range) {
+      range = docOf(el).createRange();
+      range.selectNodeContents(el);
+      range.collapse(false);
+    }
+    editingHost(el).focus({ preventScroll: true });
+    const selection = (docOf(el).defaultView || window).getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+
+  // Replace the selection with text as typing does, firing beforeinput and input.
+  function insertEditableText(el, text) {
+    if (docOf(el).execCommand('insertText', false, text)) return;
+    const init = { bubbles: true, composed: true, inputType: 'insertText', data: text };
+    if (!el.dispatchEvent(new InputEvent('beforeinput', { ...init, cancelable: true }))) return;
+    const selection = (docOf(el).defaultView || window).getSelection();
+    const range = selection.getRangeAt(0);
+    range.deleteContents();
+    const node = docOf(el).createTextNode(text);
+    range.insertNode(node);
+    range.setStartAfter(node);
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    el.dispatchEvent(new InputEvent('input', init));
   }
 
   // The http(s) link a click on el follows into a new tab (target=_blank, or <base target>).
@@ -1048,10 +1284,19 @@
     if (!host) return notFound();
     // A web-component host types into the field in its (nested) open or closed shadow roots.
     const el = ['INPUT', 'TEXTAREA'].includes(host.tagName) ? host : shadowField(host, 'input, textarea') || host;
-    if (!['INPUT', 'TEXTAREA'].includes(el.tagName) && (clear || el.contentEditable !== 'true')) {
+    if (!['INPUT', 'TEXTAREA'].includes(el.tagName) && !isEditableRegion(el)) {
       return notFillable(el, 'input or textarea');
     }
     lastActedElement = lastFilledField = el;
+
+    // In an editor, type at the caret if it is in el, else at the end; clear replaces el's content.
+    if (isEditableRegion(el)) {
+      const range = clear ? docOf(el).createRange() : selectionInside(el);
+      if (clear) range.selectNodeContents(el);
+      placeEditableCaret(el, range);
+      insertEditableText(el, text);
+      return { ok: true };
+    }
 
     el.focus();
     
@@ -1065,10 +1310,6 @@
         el.value = text;
       }
     } else {
-      if (el.contentEditable === 'true') {
-        docOf(el).execCommand('insertText', false, text);
-        return { ok: true };
-      }
       const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
       const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
       if (setter) {
@@ -1099,6 +1340,8 @@
     if (!target) return { error: 'Element is not editable' };
     lastFilledField = target;
 
+    // Read before focus(), which can move the caret to the start of the editor.
+    const caret = isEditableRegion(target) ? selectionInside(target) : null;
     target.focus();
     const text = String(value ?? '');
 
@@ -1109,6 +1352,7 @@
         // @kitsune-dev-only:end
         target.innerText = text;
       } else {
+        placeEditableCaret(target, caret);
         docOf(target).execCommand(format === 'html' ? 'insertHTML' : 'insertText', false, text);
       }
       target.dispatchEvent(new InputEvent('input', {
@@ -1316,7 +1560,7 @@
   // Fields in same-origin frames name their frame; unreadable frames are listed.
   function getFormFields() {
     const fields = [];
-    queryAllFrames('input, select, textarea').forEach(el => {
+    deepQuerySelectorAll('input, select, textarea').forEach(el => {
       if (isHidden(el)) return;
       const rect = viewportRect(el);
       if (rect.width < 2 || rect.height < 2) return;
@@ -1401,7 +1645,7 @@
         try {
           // Preserve native CSS selector errors while resolving snapshot refs.
           el = /^(?:s\d+e\d+|r\d+)$/.test(selector)
-            ? resolveElement(selector) : queryFrames(selector);
+            ? resolveElement(selector) : deepQuerySelector(selector);
         } catch (e) {
           resolve(errorResult(e));
           return;
@@ -1638,42 +1882,26 @@
 
   // el's parent, continuing from a frame's root element to the frame element.
   function parentAcrossFrames(el) {
-    return el.parentElement || hostFrame(el.ownerDocument);
+    return flatParent(el) || hostFrame(el.ownerDocument);
   }
 
   // Element children, or a same-origin frame's body.
   function childrenAcrossFrames(el) {
     const doc = frameDocument(el);
     if (doc) return doc.body ? [doc.body] : [];
-    return Array.from(el.children);
+    return flatChildren(el);
   }
 
   // The top document, then each same-origin frame document after the document holding it.
   function searchedDocuments(doc = document, docs = []) {
     docs.push(doc);
     let frames = [];
-    try { frames = Array.from(doc.querySelectorAll('iframe, frame')); } catch {}
+    try { frames = queryTreeSelectorAll('iframe, frame', doc); } catch {}
     for (const frame of frames) {
       const inner = frameDocument(frame);
       if (inner) searchedDocuments(inner, docs);
     }
     return docs;
-  }
-
-  // querySelector over the top document, then its same-origin frames. An invalid
-  // selector throws, as document.querySelector does.
-  function queryFrames(selector) {
-    const el = document.querySelector(selector);
-    if (el) return el;
-    for (const doc of searchedDocuments().slice(1)) {
-      const found = doc.querySelector(selector);
-      if (found) return found;
-    }
-    return null;
-  }
-
-  function queryAllFrames(selector) {
-    return searchedDocuments().flatMap(doc => Array.from(doc.querySelectorAll(selector)));
   }
 
   // Where a frame's viewport starts in its parent's viewport: inside its border and padding.
@@ -1702,10 +1930,10 @@
   // The element at a point of the top viewport, inside same-origin frames too, and the
   // point in that element's own viewport.
   function elementAtPoint(x, y) {
-    let el = document.elementFromPoint(x, y);
+    let el = deepElementFromPoint(x, y);
     for (let doc = frameDocument(el); doc; doc = frameDocument(el)) {
       const offset = frameContentOffset(el);
-      const inner = doc.elementFromPoint(x - offset.x, y - offset.y);
+      const inner = deepElementFromPoint(x - offset.x, y - offset.y, doc);
       if (!inner) break;
       el = inner;
       x -= offset.x;
@@ -1716,8 +1944,8 @@
 
   // The focused element, inside a focused same-origin frame too.
   function activeElement() {
-    let el = document.activeElement;
-    for (let doc = frameDocument(el); doc?.activeElement; doc = frameDocument(el)) el = doc.activeElement;
+    let el = deepActiveElement();
+    for (let doc = frameDocument(el); doc?.activeElement; doc = frameDocument(el)) el = deepActiveElement(doc);
     return el;
   }
 
@@ -1738,7 +1966,7 @@
     const out = [];
     for (const doc of searchedDocuments()) {
       let frames = [];
-      try { frames = Array.from(doc.querySelectorAll('iframe, frame')); } catch {}
+      try { frames = queryTreeSelectorAll('iframe, frame', doc); } catch {}
       for (const frame of frames) {
         if (!FRAME_TAGS.has(frame.tagName)) continue;
         const { reason } = frameAccess(frame);
@@ -1754,6 +1982,83 @@
 
   const REF_SELECTOR = /^(?:s\d+e\d+|r\d+)$/;
 
+  // ── Shadow DOM ──
+  // Reads and selector resolution see open and closed shadow roots, as the fill path does.
+  function shadowRootOf(el) {
+    return el?.openOrClosedShadowRoot || el?.shadowRoot || null;
+  }
+
+  // Every shadow root in scope, each followed by the roots nested in it.
+  function shadowRootsIn(scope) {
+    const roots = [];
+    for (const el of scope.querySelectorAll('*')) {
+      const root = shadowRootOf(el);
+      if (root) roots.push(root, ...shadowRootsIn(root));
+    }
+    return roots;
+  }
+
+  // CSS matches within one tree; query each document and its shadow roots separately.
+  function queryTreeSelectorAll(selector, scope) {
+    return [scope, ...shadowRootsIn(scope)].flatMap(root => Array.from(root.querySelectorAll(selector)));
+  }
+
+  function deepQuerySelectorAll(selector) {
+    return searchedDocuments().flatMap(doc => queryTreeSelectorAll(selector, doc));
+  }
+
+  function deepQuerySelector(selector) {
+    return deepQuerySelectorAll(selector)[0] || null;
+  }
+
+  // Children as rendered (the flat tree): a host's shadow tree instead of its light children,
+  // which appear where a slot takes them; a slot's assigned nodes, else its fallback content.
+  function flatChildren(el) {
+    const root = shadowRootOf(el);
+    if (root) return Array.from(root.children);
+    if (el.tagName === 'SLOT' && el.assignedElements) return Array.from(el.assignedElements({ flatten: true }));
+    return Array.from(el.children);
+  }
+
+  function flatChildNodes(el) {
+    const root = shadowRootOf(el);
+    if (root) return Array.from(root.childNodes || []);
+    if (el.tagName === 'SLOT' && el.assignedNodes) return Array.from(el.assignedNodes({ flatten: true }));
+    return Array.from(el.childNodes);
+  }
+
+  function flatParent(el) {
+    return el.openOrClosedAssignedSlot || el.assignedSlot || el.parentElement || el.parentNode?.host || null;
+  }
+
+  // IDs are scoped to their tree: a field in a shadow root names labels in that root.
+  function elementByIdNear(el, id) {
+    const root = el.getRootNode?.();
+    return (root?.getElementById ? root : docOf(el)).getElementById?.(id);
+  }
+
+  // document.elementFromPoint stops at a shadow host; each shadow root hit-tests its own tree.
+  function deepElementFromPoint(x, y, doc = document) {
+    let el = doc.elementFromPoint(x, y);
+    const seen = new Set([el]);
+    for (let root = shadowRootOf(el); root?.elementFromPoint; root = shadowRootOf(el)) {
+      const inner = root.elementFromPoint(x, y);
+      if (!inner || seen.has(inner)) break;
+      seen.add(inner);
+      el = inner;
+    }
+    return el;
+  }
+
+  // document.activeElement is the host of a focused shadow-root element.
+  function deepActiveElement(doc = document) {
+    let el = doc.activeElement;
+    for (let inner = shadowRootOf(el)?.activeElement; inner && inner !== el; inner = shadowRootOf(el)?.activeElement) {
+      el = inner;
+    }
+    return el;
+  }
+
   function resolveElement(selector, coords) {
     if (!selector && coords) return elementAtPoint(coords.x, coords.y).el;
     if (!selector) return null;
@@ -1765,8 +2070,8 @@
       return el;
     }
     
-    // Try CSS selector, in same-origin frames too
-    try { return queryFrames(selector); } catch {}
+    // Try CSS selector
+    try { return deepQuerySelector(selector); } catch {}
     return null;
   }
 
@@ -1786,7 +2091,7 @@
 
   function assertOneTarget(selector, pointer) {
     let matches = [];
-    try { matches = queryAllFrames(selector); } catch {}
+    try { matches = deepQuerySelectorAll(selector); } catch {}
     if (matches.length < 2) return;
     const actionable = matches.filter(el => isActionable(el, pointer));
     if (actionable.length < 2) return;
@@ -1819,7 +2124,7 @@
     let cur = el;
     while (cur && cur !== docOf(cur).body) {
       if (isInteractiveElement(cur)) return cur;
-      cur = cur.parentElement;
+      cur = flatParent(cur);
     }
     return null;
   }
@@ -1829,6 +2134,8 @@
     const s = styleOf(el);
     return s.display === 'none' || s.visibility === 'hidden';
   }
+
+  const MEDIA_TAGS = new Set(['VIDEO', 'AUDIO']);
 
   function isInteractiveElement(el) {
     const interactiveTags = new Set(['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'DETAILS', 'SUMMARY']);
@@ -1844,7 +2151,8 @@
       checkbox: 'checkbox', radio: 'radio', range: 'slider', number: 'spinbutton',
       search: 'searchbox' };
     const map = { A: 'link', BUTTON: 'button', INPUT: inputRole[el.type] || 'textbox',
-      SELECT: 'combobox', TEXTAREA: 'textbox', SUMMARY: 'button', DETAILS: 'group' };
+      SELECT: 'combobox', TEXTAREA: 'textbox', SUMMARY: 'button', DETAILS: 'group',
+      VIDEO: 'video', AUDIO: 'audio' };
     return map[el.tagName] || '';
   }
 
@@ -2031,7 +2339,7 @@
 
   function valueSelectorBlocked(selector) {
     if (!isValueAttributeSelector(selector)) return false;
-    for (const el of queryAllFrames('[value]')) {
+    for (const el of deepQuerySelectorAll('[value]')) {
       if (isSensitiveField(el)) return true;
     }
     return false;
@@ -2067,7 +2375,8 @@
 
   function findLabel(el) {
     if (el.id) {
-      const lbl = docOf(el).querySelector(`label[for="${CSS.escape(el.id)}"]`);
+      const root = el.getRootNode?.();
+      const lbl = (root?.querySelector ? root : docOf(el)).querySelector(`label[for="${CSS.escape(el.id)}"]`);
       if (lbl) return redactedText(lbl).trim().slice(0, 80);
     }
     const parent = el.closest('label');
@@ -2587,7 +2896,7 @@
   function controlLabel(control, buttonInput) {
     const attr = name => String(control.getAttribute?.(name) || '').trim();
     const labelledBy = attr('aria-labelledby').split(/\s+/).filter(Boolean)
-      .map(id => { const el = docOf(control).getElementById?.(id); return el ? redactedText(el) : ''; })
+      .map(id => { const el = elementByIdNear(control, id); return el ? redactedText(el) : ''; })
       .join(' ').trim();
     const text = redactedText(control).trim();
     const icon = !text && control.querySelector?.('[aria-label], img[alt], svg title');
@@ -2625,11 +2934,18 @@
       text: label.slice(0, 80) };
   }
 
+  // The form's first submit control. A <button> without a type (or with an unknown one) is a
+  // submit button, and its type property reads "submit".
+  function formSubmitControl(form) {
+    return Array.from(form.querySelectorAll('button, input')).find(el =>
+      (el.tagName === 'BUTTON' && el.type === 'submit') ||
+      (el.tagName === 'INPUT' && (el.type === 'submit' || el.type === 'image'))) || null;
+  }
+
   // A form as submit results and ambiguous_target candidates name it, with a new ref in the
   // current generation. Attributes, not properties: a field named "action" shadows form.action.
   function formSummary(form, button) {
-    button ??= Array.from(form.querySelectorAll('button, input'))
-      .find(el => el.type === 'submit' || el.type === 'image');
+    button ??= formSubmitControl(form);
     return { ref: issueRef(form), action: form.getAttribute('action') || '',
       method: (form.getAttribute('method') || 'get').toLowerCase(),
       button: button ? controlLabel(button, button.tagName === 'INPUT').slice(0, 80) : '' };
@@ -2646,7 +2962,7 @@
     } else {
       form = lastFilledField?.isConnected ? lastFilledField.form || lastFilledField.closest('form') : null;
       if (!form) {
-        const forms = queryAllFrames('form');
+        const forms = deepQuerySelectorAll('form');
         if (forms.length > 1) {
           return ambiguousTarget(`${forms.length} forms on the page and no filled field names one; nothing was submitted`,
             'Pass the ref of the form to submit from state.candidates, or fill one of its fields first.',
@@ -2656,11 +2972,16 @@
       }
     }
     if (!form) return { error: 'No <form> found' };
-    // Prefer the submit-button click path so form-validation listeners fire.
-    const btn = form.querySelector('button[type="submit"], input[type="submit"]');
+    // Click the submit control, else requestSubmit, so submit handlers and validation run as
+    // for a user's submit. form.submit() skips both and is the last resort.
+    const btn = formSubmitControl(form);
     // Named before submitting, which can remove the form.
     const submitted = formSummary(form, btn);
     if (btn) { btn.click(); return { ok: true, submitted: 'button', form: submitted }; }
+    if (typeof form.requestSubmit === 'function') {
+      form.requestSubmit();
+      return { ok: true, submitted: 'requestSubmit', form: submitted };
+    }
     form.submit();
     return { ok: true, submitted: 'method', form: submitted };
   }
@@ -2678,6 +2999,25 @@
     return undefined;
   }
 
+  // form_fill's label match, else placeholder match, for key: at most one field per tree
+  // (the document, then each shadow root), as the light-DOM lookup always picked the first.
+  function fieldsByLabelText(key) {
+    const text = key.toLowerCase();
+    const fields = [];
+    for (const root of searchedDocuments().flatMap(doc => [doc, ...shadowRootsIn(doc)])) {
+      let el = null;
+      for (const lbl of root.querySelectorAll('label')) {
+        if (!(lbl.innerText || '').trim().toLowerCase().includes(text)) continue;
+        el = lbl.htmlFor ? root.getElementById(lbl.htmlFor) : lbl.querySelector('input, textarea, select');
+        if (el) break;
+      }
+      el ||= Array.from(root.querySelectorAll('input[placeholder], textarea[placeholder]'))
+        .find(inp => inp.placeholder.toLowerCase().includes(text));
+      if (el) fields.push(el);
+    }
+    return fields;
+  }
+
   function formFill(fieldMap, first) {
     if (!fieldMap || typeof fieldMap !== 'object') return { error: 'fields must be an object' };
     const results = {};
@@ -2687,7 +3027,7 @@
       let el = null;
       try {
         for (const selector of [key, `[name="${CSS.escape(key)}"]`]) {
-          try { el = queryFrames(selector); } catch {}
+          try { el = deepQuerySelector(selector); } catch {}
           if (el && !first) assertOneTarget(selector, false);
           if (el) break;
         }
@@ -2695,22 +3035,21 @@
         results[key] = errorResult(e);
         continue;
       }
-      // Try by label text
+      // Then by label text, then placeholder. A key matching fields in several trees (the
+      // page and web components' shadow roots) never silently writes into one of them.
       if (!el) {
-        for (const lbl of queryAllFrames('label')) {
-          const t = (lbl.innerText || '').trim();
-          if (t.toLowerCase().includes(key.toLowerCase())) {
-            if (lbl.htmlFor) el = docOf(lbl).getElementById(lbl.htmlFor);
-            else el = lbl.querySelector('input, textarea, select');
-            if (el) break;
-          }
+        const matches = fieldsByLabelText(key);
+        const actionable = matches.filter(field => isActionable(field, false));
+        if (actionable.length > 1 && !first) {
+          results[key] = ambiguousTarget(
+            `${actionable.length} fields in separate components match the label or placeholder; nothing was written`,
+            'Fill one of them with browser_type and its ref from state.candidates, or key it with a CSS ' +
+              'selector or name that matches one field. first: true fills the first match.',
+            { field: key, matches: actionable.length,
+              candidates: actionable.slice(0, AMBIGUOUS_CANDIDATE_LIMIT).map(targetSummary) });
+          continue;
         }
-      }
-      // Try by placeholder
-      if (!el) {
-        for (const inp of queryAllFrames('input[placeholder], textarea[placeholder]')) {
-          if (inp.placeholder.toLowerCase().includes(key.toLowerCase())) { el = inp; break; }
-        }
+        el = matches[0] || null;
       }
       if (!el) { results[key] = { error: 'Not found' }; continue; }
       // The same lookup as browser_type's fill mode, through nested open and closed shadow roots.

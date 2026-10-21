@@ -140,11 +140,10 @@ class Element {
   // find must not use the password as a match oracle, but still matches other values.
   const probe = await send({ action: 'find', query: DUMMY.slice(0, 8) });
   assertNoLeak('find', probe);
-  const scoreOf = (result, selector) => result.results.find(r => r.selector === selector).score;
-  assert.equal(scoreOf(probe, '#password'), scoreOf(probe, '#confirm'), 'filled password scores like an empty one');
+  assert.equal(probe.results.length, 0, 'the password value matches nothing');
   const byValue = await send({ action: 'find', query: 'a@b' });
   assert.equal(byValue.results[0].selector, '#email');
-  assert.ok(scoreOf(byValue, '#email') > scoreOf(byValue, '#confirm'));
+  assert.ok(!byValue.results.some(r => r.selector === '#confirm'), 'unmatched fields are left out');
 
   // Markup and attribute paths drop the synced password value attribute only.
   const passwordHtml = await send({ action: 'getHTML', selector: '#password' });

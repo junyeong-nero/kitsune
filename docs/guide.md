@@ -112,7 +112,7 @@ URL, title and tab ID in one bounded call (see
 Set `KITSUNE_POST_ACTION_SNAPSHOT=0` in the **bridge daemon's environment** and
 restart the daemon to disable these automatic snapshots. Explicit snapshots
 remain available. This is a DOM-based accessibility approximation, not Firefox's
-platform accessibility tree; closed shadow roots are not traversed. Same-origin
+platform accessibility tree; open and closed shadow roots are traversed. Same-origin
 iframes are read and acted on like the page; cross-origin iframes are listed but opaque
 (see [Frames](api-reference.md#frames)).
 

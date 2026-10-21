@@ -1,7 +1,8 @@
 // Run with: node tests/submit_form_target.cjs (no browser or npm dependencies).
 // #133: browser_submit_form without a target submits the form of the field Kitsune last
 // filled or focused, refuses with ambiguous_target when several forms leave that open,
-// and names the form it submitted.
+// and names the form it submitted. #154: a typeless <button> is a submit control, and a form
+// without one is submitted with requestSubmit, which runs its submit handlers and validation.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
@@ -175,10 +176,65 @@ async function testTargetedSubmitNamesItsForm() {
   assert.deepEqual(submissions(page), [0, 1, 0]);
 }
 
+function clickable(el) {
+  el.clicks = 0;
+  el.click = () => { el.clicks++; };
+  return el;
+}
+
+// requestSubmit as browsers have it; FormWithoutRequestSubmit stands for an engine without it.
+class FormWithRequestSubmit extends Form {
+  constructor(attrs, children) {
+    super(attrs, children);
+    this.requestSubmits = 0;
+  }
+  requestSubmit() { this.requestSubmits++; }
+}
+
+async function submitOnly(form) {
+  const page = { forms: [form], body: new Element('BODY', {}, [form]) };
+  return load(page)({ action: 'submitForm' });
+}
+
+async function testTypelessButtonIsTheSubmitControl() {
+  const save = new Button('Save');
+  const form = new FormWithRequestSubmit({ action: '/save', method: 'post' },
+    [new Element('INPUT', { name: 'title' }), new Button('Preview', { type: 'button' }), save]);
+  const result = await submitOnly(form);
+  assert.equal(result.submitted, 'button', JSON.stringify(result));
+  assert.equal(result.form.button, 'Save');
+  assert.deepEqual([save.clicks, form.requestSubmits, form.submits], [1, 0, 0]);
+
+  const image = clickable(new Element('INPUT', { type: 'image', alt: 'Go' }));
+  const imageForm = new FormWithRequestSubmit({ action: '/go' }, [new Button('Help', { type: 'button' }), image]);
+  const imageResult = await submitOnly(imageForm);
+  assert.equal(imageResult.submitted, 'button', JSON.stringify(imageResult));
+  assert.equal(imageResult.form.button, 'Go');
+  assert.deepEqual([image.clicks, imageForm.requestSubmits, imageForm.submits], [1, 0, 0]);
+}
+
+async function testFormWithoutSubmitControlUsesRequestSubmit() {
+  const preview = new Button('Preview', { type: 'button' });
+  const form = new FormWithRequestSubmit({ action: '/search' }, [new Element('INPUT', { name: 'q' }), preview]);
+  const result = await submitOnly(form);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.submitted, 'requestSubmit');
+  assert.equal(result.form.button, '');
+  assert.deepEqual([preview.clicks, form.requestSubmits, form.submits], [0, 1, 0]);
+
+  // Without requestSubmit, form.submit() is the fallback.
+  const old = new Form({ action: '/search' }, [new Element('INPUT', { name: 'q' })]);
+  const fallback = await submitOnly(old);
+  assert.equal(fallback.submitted, 'method', JSON.stringify(fallback));
+  assert.equal(old.submits, 1);
+}
+
 (async () => {
   await testFilledFieldNamesTheForm();
   await testSeveralFormsWithoutAFilledFieldAreAmbiguous();
   await testSingleFormKeepsItsBehavior();
   await testTargetedSubmitNamesItsForm();
+  await testTypelessButtonIsTheSubmitControl();
+  await testFormWithoutSubmitControlUsesRequestSubmit();
 })().then(() => console.log('Submit form target checks passed'))
   .catch(error => { console.error(error); process.exitCode = 1; });

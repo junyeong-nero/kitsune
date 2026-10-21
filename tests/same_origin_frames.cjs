@@ -11,7 +11,8 @@ const SECRET = 'KITSUNE_FAKE_FRAME_SECRET';
 
 // One compound selector: tag, #id, [attr], [attr=value]; comma lists of them.
 function matchesOne(el, selector) {
-  const m = /^([a-z0-9]*)(#[\w-]+)?((?:\[[^\]]+\])*)$/i.exec(selector.trim());
+  if (selector.trim() === '*') return true;
+  const m = /^([a-z0-9-]*)(#[\w-]+)?((?:\[[^\]]+\])*)$/i.exec(selector.trim());
   if (!m) return false;
   if (m[1] && el.tagName !== m[1].toUpperCase()) return false;
   if (m[2] && el.id !== m[2].slice(1)) return false;
@@ -51,6 +52,11 @@ class Element {
     for (let el = this; el; el = el.parentElement) if (el.matches(selector)) return el;
     return null;
   }
+  getRootNode() {
+    let node = this;
+    while (node.parentElement || node.parentNode) node = node.parentElement || node.parentNode;
+    return node.nodeType === 11 ? node : this.ownerDocument;
+  }
   focus() { this.ownerDocument.activeElement = this; }
   click() { this.clicks++; }
   scrollIntoView() {}
@@ -72,7 +78,12 @@ class Document {
     this.defaultView = { origin, frameElement, getComputedStyle: () => style };
     this.activeElement = body;
     this.at = at;
-    for (const el of [this.root, ...this.root.descendants]) el.ownerDocument = this;
+    const assign = el => {
+      el.ownerDocument = this;
+      for (const child of el.children) assign(child);
+      if (el.openOrClosedShadowRoot) assign(el.openOrClosedShadowRoot);
+    };
+    assign(this.root);
   }
   querySelectorAll(selector) { return this.root.querySelectorAll(selector); }
   querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
@@ -242,6 +253,58 @@ const refOf = (snapshot, line) => {
   assert.equal((await send({ action: 'click', selector: 'button' , first: true })).text, '저장');
   assert.equal((await send({ action: 'fill', selector: 'input[name=card]', value: 'x' })).code, 'not_found');
   assert.equal(p.innermost.clicks, 0);
+
+  // Composition: a frame inside a closed shadow root, with another shadow root in
+  // its document. Every read/selector and hit-test must cross both kinds of boundary.
+  const innerField = field({ id: 'inner-field', name: 'shared', 'aria-label': 'Inner value' });
+  const innerButton = h('BUTTON', {}, 'Composed action');
+  const innerHost = h('X-INNER', {});
+  const attach = (host, ...children) => {
+    const root = h('DIV', {}, ...children);
+    root.nodeType = 11;
+    root.host = host;
+    for (const child of root.children) {
+      child.parentElement = null;
+      child.parentNode = root;
+    }
+    root.getElementById = id => root.querySelector(`#${id}`);
+    host.openOrClosedShadowRoot = root;
+    return root;
+  };
+  const innerRoot = attach(innerHost, innerField, innerButton);
+  innerRoot.elementFromPoint = () => innerButton;
+  const composedFrame = frame({ title: 'Shadow frame' }, { x: 20, y: 40, width: 300, height: 200 },
+    el => new Document(h('BODY', {}, innerHost), { frameElement: el, at: () => innerHost }));
+  const outerHost = h('X-OUTER', {});
+  const outerField = field({ name: 'shared', 'aria-label': 'Outer value' });
+  const outerRoot = attach(outerHost, composedFrame, outerField);
+  outerRoot.elementFromPoint = () => composedFrame;
+  const composedTop = new Document(h('BODY', {}, outerHost), { at: () => outerHost });
+  const composedSend = load({ top: composedTop });
+  const composedSnapshot = await composedSend({ action: 'getSnapshot' });
+  refOf(composedSnapshot.snapshot, 'iframe "Shadow frame"');
+  const composedRef = refOf(composedSnapshot.snapshot, 'button "Composed action"');
+  refOf(composedSnapshot.snapshot, 'textbox "Inner value"');
+  assert.equal((await composedSend({ action: 'click', selector: composedRef })).ok, true);
+  assert.equal((await composedSend({ action: 'fill', selector: '#inner-field', value: 'inside' })).ok, true);
+  assert.equal(innerField.value, 'inside');
+  assert.equal((await composedSend({ action: 'fill', selector: '[name=shared]', value: 'unsafe' })).state.matches, 2);
+  const composedForms = await composedSend({ action: 'getFormFields' });
+  assert.equal(composedForms.fields.filter(f => f.name === 'shared').length, 2);
+  assert.equal(composedForms.fields.find(f => f.id === 'inner-field').frame, 'Shadow frame');
+  assert.equal((await composedSend({ action: 'find', query: '#inner-field' })).results.length, 1);
+  assert.match(JSON.stringify(await composedSend({ action: 'getAccessibilityTree', depth: 12 })), /inner-field/);
+  const composedClick = await composedSend({ action: 'click', coords: { x: 42, y: 62 } });
+  assert.equal(composedClick.tag, 'button', JSON.stringify(composedClick));
+  assert.equal(innerButton.clicks, 2);
+  const composedDown = innerButton.events.filter(e => e.type === 'mousedown').at(-1);
+  assert.deepEqual([composedDown.clientX, composedDown.clientY], [20, 20]);
+  composedTop.activeElement = outerHost;
+  outerRoot.activeElement = composedFrame;
+  composedFrame.contentDocument.activeElement = innerHost;
+  innerRoot.activeElement = innerField;
+  await composedSend({ action: 'keypress', key: 'Tab' });
+  assert.equal(innerField.events.at(-1).type, 'keyup');
 
   console.log('same_origin_frames: ok');
 })().catch(error => { console.error(error); process.exit(1); });

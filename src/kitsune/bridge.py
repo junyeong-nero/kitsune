@@ -766,7 +766,7 @@ WRITE_ACTIONS = {
     "pinTab", "muteTab", "duplicateTab", "reloadTabBrowser", "goBack", "goForward",
     "setZoom", "createWindow", "closeWindow", "moveTab", "detachTab",
     "storageOp", "reloadExtension", "wakeTab", "highlight", "clearHighlight",
-    "uploadFile", "handleDialog",
+    "uploadFile", "handleDialog", "media",
 }
 
 
@@ -2263,6 +2263,7 @@ BATCH_ACTION_MAP = {
     'doubleClick':         'doubleClick',
     'submitForm':          'submitForm',
     'formFill':            'formFill',
+    'media':               'media',
     'drag':                'drag',
     'waitForUrl':          'waitForUrl',
     'waitForTitle':        'waitForTitle',
