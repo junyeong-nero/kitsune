@@ -78,10 +78,11 @@ class BridgeActionWaitTests(unittest.TestCase):
                 handler.handle_batch()
             return handler.run_async.call_args.kwargs["timeout"]
 
-        self.assertEqual(batch([{"action": "click", "selector": "#go"}]), 300)
+        # The batch stops at its deadline; the request allows 15s more for cancelled steps to settle.
+        self.assertEqual(batch([{"action": "click", "selector": "#go"}]), 300 + 15)
         # 20 sequential 30s waits outlast the old fixed 300s deadline.
         self.assertEqual(batch([{"action": "click", "selector": f"#b{i}", "wait": True,
-                                 "timeout": 30000} for i in range(20)]), 615)
+                                 "timeout": 30000} for i in range(20)]), 615 + 15)
 
     def test_retry_http_deadline_covers_every_attempt(self):
         def retry(body):

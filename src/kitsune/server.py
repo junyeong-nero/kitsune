@@ -832,11 +832,12 @@ def browser_parallel(sequences: list[list[dict]]) -> dict:
     """Run command sequences in parallel — typically one sequence per tab.
 
     Each inner list is a sequence that runs serially; all sequences run
-    concurrently. Commands that target a specific tab (navigate, switchTab,
-    or any tab-aware action) MUST include "tabId" inside the parallel batch
-    to avoid race conditions over the active tab.
+    concurrently. Every command that acts on a tab MUST include "tabId", and
+    two sequences may not write the same tab; otherwise nothing runs
+    (tab_required, tab_owned).
 
-    Returns a list of result lists, one per input sequence.
+    Returns a list of result lists, one per input sequence; progress[0].sequences
+    gives each command's status.
 
     Args:
         sequences: List of command sequences. Each command is a dict with
@@ -1712,7 +1713,8 @@ def browser_batch(commands: list[dict]) -> dict:
     command to target a specific tab instead of the active one. For true
     concurrency across tabs, prefer browser_parallel. A failed command does not
     make the call an MCP error: inspect each result and resume from the failed
-    command, because earlier commands may already have taken effect.
+    command, because earlier commands may already have taken effect. progress
+    gives each command's status (ok, failed, held, unknown, skipped).
 
     Available actions: navigate, newTab, closeTab, switchTab, click, type,
     setEditableContent, fill, scroll, hover, find, js, pageInfo, pageText, screenshot, tabs,
