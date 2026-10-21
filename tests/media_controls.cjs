@@ -1,5 +1,5 @@
 // Run with: node tests/media_controls.cjs (no browser or npm dependencies).
-// Issue #158: <video>/<audio> in snapshots, click-to-toggle and the media command.
+// Issues #158, #172: media snapshots, click-to-toggle, autoplay blocks and the media command.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
@@ -50,7 +50,7 @@ async function testMedia() {
   const audio = Object.assign(new Media('AUDIO', {}, ''), { duration: NaN, currentSrc: '', src: '' });
   const button = new Element('BUTTON', 'Next');
   const body = new Element('BODY', '', {}, [new Element('MAIN', '', {}, [video, audio, button])]);
-  const elements = { '#video': video, '#button': button, 'video, audio': null };
+  const elements = { '#video': video, '#audio': audio, '#button': button, 'video, audio': null };
   const document = { body, hidden: false, getElementById: () => null,
     querySelector: selector => elements[selector] || null,
     querySelectorAll: selector => selector === 'video, audio' ? [video, audio] :
@@ -116,17 +116,39 @@ async function testMedia() {
   assert.equal(result.media.paused, true);
   assert.equal((await send({ action: 'media', selector: ref, op: 'unmute' })).media.muted, false);
 
-  // Unmuted playback refused by the browser is an error that carries the state.
+  // Autoplay blocks are distinct from other refusals; both audio and video can mute then play.
+  for (const selector of ['#video', '#audio']) {
+    await send({ action: 'media', selector, op: 'unmute' });
+    result = await send({ action: 'media', selector, op: 'play' });
+    assert.match(result.error, /play\(\) was refused \(NotAllowedError: play\(\) needs user activation\)/);
+    assert.equal(result.reason, 'autoplay_blocked');
+    assert.equal(result.media.paused, true);
+    assert.equal(result.media.muted, false, 'a blocked play never mutes automatically');
+    clicked = await send({ action: 'click', selector });
+    assert.equal(clicked.ok, true, 'the click itself was dispatched');
+    assert.equal(clicked.text, '', 'fallback content is not the click text');
+    assert.equal(clicked.media.reason, 'autoplay_blocked');
+    for (const error of [result.error, clicked.media.error]) {
+      assert.match(error, /NotAllowedError/);
+      assert.match(error, /media command mute then play/);
+      assert.match(error, /browser_trusted_click where available/);
+      assert.match(error, /ask the user/);
+    }
+    assert.equal((await send({ action: 'media', selector, op: 'mute' })).media.muted, true);
+    assert.equal((await send({ action: 'media', selector, op: 'play' })).media.paused, false);
+    await send({ action: 'media', selector, op: 'pause' });
+  }
+
+  // Unsupported sources and other failures keep the generic refused reason.
+  const play = video.play;
+  video.play = () => Promise.reject(Object.assign(new Error('Unsupported source'), { name: 'NotSupportedError' }));
   result = await send({ action: 'media', selector: ref, op: 'play' });
-  assert.match(result.error, /play\(\) was refused \(NotAllowedError: play\(\) needs user activation\)/);
   assert.equal(result.reason, 'refused');
-  assert.equal(result.media.paused, true);
+  assert.match(result.error, /NotSupportedError: Unsupported source/);
   clicked = await send({ action: 'click', selector: ref });
-  assert.equal(clicked.ok, true, 'the click itself was dispatched');
-  assert.equal(clicked.text, '', 'fallback content is not the click text');
   assert.equal(clicked.media.reason, 'refused');
-  assert.match(clicked.media.error, /NotAllowedError/);
-  assert.equal((await send({ action: 'media', selector: ref, op: 'mute' })).media.muted, true);
+  assert.match(clicked.media.error, /NotSupportedError/);
+  video.play = play;
 
   // A background tab that was never shown holds play() pending; Kitsune cancels it and says so.
   document.hidden = true;
