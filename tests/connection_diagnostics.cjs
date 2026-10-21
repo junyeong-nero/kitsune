@@ -33,6 +33,8 @@ function background({ tabs = {}, windows = 1, granted = () => true, files = null
       get: async id => { if (!tabs[id]) throw new Error(`Invalid tab ID: ${id}`); return { ...tabs[id] }; },
       sendMessage: async (id, msg) => {
         if (msg.action === 'ping') throw new Error('Could not establish connection. Receiving end does not exist.');
+        // The user-activity probe only reads; sent records commands.
+        if (msg.action === 'userActivity') return { active: false };
         sent.push(msg);
         return { ok: true };
       },

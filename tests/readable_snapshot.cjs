@@ -130,6 +130,7 @@ const field = (tagName, attrs, props) => new Element(tagName, attrs, [], props);
   const bridge = vm.createContext({
     getActiveTabId: async () => 42,
     tabsCreated: 0, openedTabs: [], actionStarts: new Map(),
+    userActiveError: async () => null, guardedTabId: async () => null, touchStart() {}, touchEnd() {},
     dispatchCommand: send,
     forwardToContent: (action, params) => { calls.push({ action, ...params }); return send({ action, ...params }); },
   });
