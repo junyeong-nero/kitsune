@@ -57,6 +57,7 @@ except ImportError:
     sys.exit("websockets is not installed. Reinstall kitsune with its dependencies.")
 
 from . import bridge_control
+from .task_modes import MODE_HEADER, permits_action, permits_route, task_mode
 from .version import BRIDGE_BUILD, PACKAGE_VERSION, SOURCE_ROOT, extension_manifest_hash, extension_source_hash
 from .waits import (
     RESUME_DEADLINE_SECONDS, WORKFLOW_DEADLINE_SECONDS, actionability_wait_seconds, batch_deadline_seconds,
@@ -162,6 +163,18 @@ _log_buffer = []  # mirrors bridge stdout lines
 _LOG_MAX = 5000
 # Ask-before-act is opt-in. askUrls are payment-like URL patterns it guards (case-insensitive).
 DEFAULT_ASK_URLS = [r"checkout", r"payment", r"billing", r"/pay\b", r"purchase", r"/order"]
+_task_mode = contextvars.ContextVar("kitsune_task_mode", default="act")
+
+
+def _mode_error(operation):
+    return {"error": f"{_task_mode.get()} mode refuses {operation}", "code": "mode_restricted",
+            "retryable": False, "hint": "Restart this MCP client with KITSUNE_MODE=act to perform this action."}
+
+
+def _ask_enabled():
+    return _policy["ask"] or _task_mode.get() == "draft"
+
+
 _policy = {"allow": [], "deny": [], "readonly": False,
            "ask": False, "askUrls": list(DEFAULT_ASK_URLS), "askLocked": False}
 _sessions_dir = os.path.join(DATA_DIR, "sessions")
@@ -784,6 +797,18 @@ _PERSISTENT_FAILURE_CODES = {"error_page", "ambiguous_target", "user_tab", "perm
 
 def _check_policy(action, params):
     """Return error dict if action/url violates current policy, else None."""
+    if not permits_action(_task_mode.get(), action):
+        return _mode_error(action)
+    if _task_mode.get() != "act":
+        if (params or {}).get("confirmToken") is not None:
+            return _mode_error("confirmation")
+        if action == "navigate":
+            from urllib.parse import urlsplit
+            url = (params or {}).get("url", "")
+            if urlsplit(url).scheme.lower() not in {"http", "https"} and url != "about:blank":
+                return _mode_error("navigation outside http(s) or about:blank")
+        if action == "setEditableContent" and (params or {}).get("format", "text") != "text":
+            return _mode_error("HTML insertion")
     # An if/while condition is JavaScript run on the page, so it is refused like js.
     if _policy["readonly"] and (action in WRITE_ACTIONS or action in _CONDITION_ACTIONS):
         # Read-only ops on cookies/storage/etc. are still allowed; tighten if needed.
@@ -1040,7 +1065,7 @@ def _confirmation_binding(action, params, tab_id):
 
 def _remember_outcome(action, params, result):
     """Under ask mode, remember writes whose outcome is unknown so repeating them is held."""
-    if (not _policy["ask"] or not isinstance(result, dict) or result.get("retryable") is not False
+    if (not _ask_enabled() or not isinstance(result, dict) or result.get("retryable") is not False
             or result.get("code") in _PERSISTENT_FAILURE_CODES):
         return
     now_s = time.monotonic()
@@ -1079,6 +1104,10 @@ def _spend_confirm_token(token, binding):
 
 async def _describe_target(params, inspect):
     target = {key: params[key] for key in ("tabId", "selector", "ref", "key", "first") if params.get(key) is not None}
+    if _task_mode.get() == "draft" and inspect:
+        target["draftFill"] = True
+        if isinstance(params.get("fields"), dict):
+            target["fieldKeys"] = list(params["fields"])
     coords = params.get("coords") or ({"x": params["x"], "y": params["y"]} if "x" in params and "y" in params else None)
     if coords and not target.get("selector") and not target.get("ref"):
         target["coords"] = coords
@@ -1106,7 +1135,9 @@ async def _held_reason(action, params):
     if action in _ASK_TAB_ACTIONS:
         submit_key = action == "keypress" and params.get("key") in {"Enter", "Return"}
         screen = action == "trustedClick" and (params.get("coordinateSpace") or params.get("space")) == "screen"
-        inspect = (action in _ASK_CLICK_ACTIONS or submit_key) and not screen
+        draft_fill = _task_mode.get() == "draft" and action in {
+            "type", "fill", "setEditableContent", "formFill", "selectOption", "checkBox"}
+        inspect = ((action in _ASK_CLICK_ACTIONS or submit_key) and not screen) or draft_fill
         described = await _describe_target(params, inspect)
         if isinstance(described, dict) and described.get("code") == "ambiguous_target":
             return described
@@ -1118,6 +1149,10 @@ async def _held_reason(action, params):
                     _coerce_tab_id(params.get("tabId")), None)
         tab_id, url_now = described.get("tabId"), described.get("url")
         target = described.get("target") or {}
+        if draft_fill and not isinstance(target.get("sensitive"), bool):
+            return "uninspectable_target", "fills a target without sensitive-field inspection", tab_id, url_now
+        if draft_fill and target.get("sensitive"):
+            reason, description = "sensitive_field", "fills a sensitive field"
         if reason is None and action in _ASK_PAGE_ACTIONS and _ask_url_match(url_now):
             reason, description = "payment_page", f"acts on a payment-like page ({_ask_url_match(url_now)})"
         elif reason is None and screen:
@@ -1145,7 +1180,7 @@ async def _ask_before_act(action, params, *, direct):
     retry, parallel, broadcast and workflows never confirm an action.
     """
     token = params.pop("confirmToken", None) if isinstance(params, dict) else None
-    if not _policy["ask"]:
+    if not _ask_enabled():
         return None
     held = await _held_reason(action, params)
     if held is None:
@@ -1153,6 +1188,10 @@ async def _ask_before_act(action, params, *, direct):
     if isinstance(held, dict):
         return held
     reason, description, tab_id, url = held
+    if _task_mode.get() != "act":
+        return {**_mode_error(description), "state": {"mode": _task_mode.get(), "reason": reason},
+                "hint": "Nothing ran. Leave this sensitive action to the user, or restart with KITSUNE_MODE=act "
+                        "and follow the ask-before-act policy."}
     binding = _confirmation_binding(action, params, tab_id)
     rejected = None
     if token is not None:
@@ -3230,6 +3269,26 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return False
         return True
 
+    def _dispatch(self, routes):
+        path = self.canonical_path()
+        try:
+            mode = task_mode(self.headers.get(MODE_HEADER))
+        except ValueError as exc:
+            self.send_json(400, {"error": str(exc), "code": "invalid_mode", "retryable": False})
+            return
+        token = _task_mode.set(mode)
+        try:
+            if not permits_route(mode, path):
+                self.send_json(403, _mode_error(path))
+                return
+            handler = routes.get(path)
+            if handler:
+                handler()
+            else:
+                self.send_json(404, {"error": "Not found"})
+        finally:
+            _task_mode.reset(token)
+
     def do_GET(self):
         if not self.authorized():
             return
@@ -3256,11 +3315,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "/view": self.handle_view,
         }
         
-        handler = routes.get(self.canonical_path())
-        if handler:
-            handler()
-        else:
-            self.send_json(404, {"error": "Not found"})
+        self._dispatch(routes)
     
     def do_POST(self):
         if not self.authorized():
@@ -3385,11 +3440,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "/api/bookmarks-search": lambda: self.handle_history_lookup("bookmarksSearch"),
         }
 
-        handler = routes.get(self.canonical_path())
-        if handler:
-            handler()
-        else:
-            self.send_json(404, {"error": "Not found"})
+        self._dispatch(routes)
     
     # ── GET Handlers ──
     
@@ -3518,7 +3569,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     def _held(self, action, body):
         """Apply ask-before-act to a direct call; send the held error and return True if held."""
-        if not _policy["ask"]:
+        if not _ask_enabled():
             body.pop("confirmToken", None)
             return False
         held = self.run_async(_ask_before_act(action, body, direct=True))
@@ -3963,7 +4014,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.send_json(200, {"ok": True, "policy": dict(_policy)})
 
     def handle_get_policy(self):
-        self.send_json(200, dict(_policy))
+        policy = dict(_policy)
+        if _task_mode.get() != "act":
+            policy.update(mode=_task_mode.get(), ask=_ask_enabled(), confirmAllowed=False)
+        self.send_json(200, policy)
 
     def handle_history_lookup(self, action):
         self.send_json(200, self.run_async(_history_lookup(action, self.read_body()), timeout=40))
