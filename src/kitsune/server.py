@@ -1260,7 +1260,8 @@ def browser_submit_form(
     ref: str | None = None, element: str | None = None, expect: dict | None = None, confirm_token: str | None = None,
 ) -> dict:
     """Submit the target form (or the target element's enclosing form).
-    Without selector/ref, submit the first <form> found. Pass expect to verify
+    Without selector/ref: the form of the field last filled or focused, else the only
+    form (several: ambiguous_target). Result form names it. Pass expect to verify
     the submit's effect. On a failure with retryable=false, inspect the page
     before submitting again.
     Action contract (ref, expect, confirm_token, refs): see browser_click.

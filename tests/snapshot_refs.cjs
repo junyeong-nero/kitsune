@@ -71,9 +71,9 @@ async function testContent() {
   assert.equal((await send({ action: 'blurElement', selector: ref })).ok, true);
   assert.equal(button.blurred, true);
   let submitted = false;
-  button.closest = selector => selector === 'form' ? {
-    querySelector: () => ({ click: () => { submitted = true; } }),
-  } : null;
+  const submitButton = Object.assign(new Element('BUTTON', 'Go'), { click: () => { submitted = true; } });
+  const loginForm = Object.assign(new Element('FORM', '', { action: '/login' }), { querySelector: () => submitButton });
+  button.closest = selector => selector === 'form' ? loginForm : null;
   assert.equal((await send({ action: 'submitForm', selector: ref })).ok, true);
   assert.equal(submitted, true);
   assert.equal((await send({ action: 'getMarkdown', selector: ref })).markdown, 'Log in');

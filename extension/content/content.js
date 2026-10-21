@@ -3,7 +3,7 @@
 
 (function() {
   'use strict';
-  const CONTENT_VERSION = 32;
+  const CONTENT_VERSION = 33;
   if (window.__claudeBridgeVersion >= CONTENT_VERSION) return;
   window.__claudeBridgeVersion = CONTENT_VERSION;
 
@@ -118,6 +118,9 @@
   const refMap = {};
   let refCounter = 0;
   let lastActedElement = null;
+  // The field type, fill, form_fill, select_option or check last wrote, or focus last
+  // focused; a submit without a target submits its form.
+  let lastFilledField = null;
   // Persist across reinjection; seed per document so navigation cannot reuse refs.
   let refGeneration = window.__kitsuneRefGeneration ||
     `${Date.now()}${crypto.getRandomValues(new Uint32Array(1))[0]}`;
@@ -174,6 +177,11 @@
 
   function actionError(message, code, hint, state) {
     return { error: message, code, retryable: true, hint, ...(state ? { state } : {}) };
+  }
+
+  // Nothing was dispatched, but the same command cannot succeed: it names several targets.
+  function ambiguousTarget(message, hint, state) {
+    return { ...actionError(message, 'ambiguous_target', hint, state), retryable: false };
   }
 
   function errorResult(e) {
@@ -976,7 +984,7 @@
     if (!['INPUT', 'TEXTAREA'].includes(el.tagName) && (clear || el.contentEditable !== 'true')) {
       return notFillable(el, 'input or textarea');
     }
-    lastActedElement = el;
+    lastActedElement = lastFilledField = el;
 
     el.focus();
     
@@ -1022,6 +1030,7 @@
 
     const target = getEditableTarget(el);
     if (!target) return { error: 'Element is not editable' };
+    lastFilledField = target;
 
     target.focus();
     const text = String(value ?? '');
@@ -1159,7 +1168,7 @@
     // Auto-pierce shadow DOM: if element isn't a standard input, look inside shadow root
     const target = getFillTarget(el);
     if (!FILL_TAGS.includes(target.tagName)) return notFillable(el, 'input, textarea or select');
-    lastActedElement = target;
+    lastActedElement = lastFilledField = target;
 
     if (target.type === 'checkbox' || target.type === 'radio') {
       target.checked = !!value;
@@ -2121,7 +2130,7 @@
     if (el.tagName !== 'SELECT') return { error: 'Element is not a <select>' };
     const matched = findSelectOption(el, value, byText);
     if (!matched) return { error: `No matching option for ${byText ? 'text' : 'value'}: ${value}` };
-    lastActedElement = el;
+    lastActedElement = lastFilledField = el;
     applySelectOption(el, matched);
     return { ok: true, value: el.value, text: matched.text };
   }
@@ -2130,7 +2139,7 @@
     const el = resolveElement(selector);
     if (!el) return notFound();
     if (el.type !== 'checkbox' && el.type !== 'radio') return { error: 'Element is not a checkbox/radio' };
-    lastActedElement = el;
+    lastActedElement = lastFilledField = el;
     el.checked = !!checked;
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
@@ -2140,6 +2149,7 @@
   function focusEl(selector) {
     const el = resolveElement(selector);
     if (!el) return notFound();
+    lastFilledField = el;
     el.focus();
     return { ok: true, active: document.activeElement === el };
   }
@@ -2347,6 +2357,21 @@
       text: label.slice(0, 80) };
   }
 
+  const AMBIGUOUS_CANDIDATE_LIMIT = 5;
+
+  // A form as submit results and ambiguous_target candidates name it, with a new ref in the
+  // current generation. Attributes, not properties: a field named "action" shadows form.action.
+  function formSummary(form, button) {
+    button ??= Array.from(form.querySelectorAll('button, input'))
+      .find(el => el.type === 'submit' || el.type === 'image');
+    const ref = `s${refGeneration}e${refCounter++}`;
+    refMap[ref] = form;
+    return { ref, action: form.getAttribute('action') || '',
+      method: (form.getAttribute('method') || 'get').toLowerCase(),
+      button: button ? controlLabel(button, button.tagName === 'INPUT').slice(0, 80) : '' };
+  }
+
+  // Without a target: the form of the field last filled or focused, else the only form.
   function submitForm(selector) {
     let form;
     if (selector) {
@@ -2355,14 +2380,25 @@
       lastActedElement = el;
       form = el.tagName === 'FORM' ? el : el.closest('form');
     } else {
-      form = document.querySelector('form');
+      form = lastFilledField?.isConnected ? lastFilledField.form || lastFilledField.closest('form') : null;
+      if (!form) {
+        const forms = Array.from(document.querySelectorAll('form'));
+        if (forms.length > 1) {
+          return ambiguousTarget(`${forms.length} forms on the page and no filled field names one; nothing was submitted`,
+            'Pass the ref of the form to submit from state.candidates, or fill one of its fields first.',
+            { forms: forms.length, candidates: forms.slice(0, AMBIGUOUS_CANDIDATE_LIMIT).map(f => formSummary(f)) });
+        }
+        form = forms[0];
+      }
     }
     if (!form) return { error: 'No <form> found' };
     // Prefer the submit-button click path so form-validation listeners fire.
     const btn = form.querySelector('button[type="submit"], input[type="submit"]');
-    if (btn) { btn.click(); return { ok: true, submitted: 'button' }; }
+    // Named before submitting, which can remove the form.
+    const submitted = formSummary(form, btn);
+    if (btn) { btn.click(); return { ok: true, submitted: 'button', form: submitted }; }
     form.submit();
-    return { ok: true, submitted: 'method' };
+    return { ok: true, submitted: 'method', form: submitted };
   }
 
   // Strict boolean parsing for checkbox/radio values: JS truthiness would turn "false" into checked.
@@ -2445,6 +2481,7 @@
       } catch (e) {
         results[key] = { error: e.message };
       }
+      if (results[key].ok) lastFilledField = el;
     }
     // Any filled field makes this a partial success; with none, nothing was written.
     const values = Object.values(results);
