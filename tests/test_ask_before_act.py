@@ -529,7 +529,7 @@ class ServerToolTests(unittest.TestCase):
 
     def test_annotations_are_unchanged_hints(self):
         tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
-        self.assertTrue(tools["browser_submit_form"].annotations.destructiveHint)
+        self.assertTrue(tools["browser_tabs"].annotations.destructiveHint)
         self.assertFalse(tools["browser_click"].annotations.readOnlyHint)
 
 

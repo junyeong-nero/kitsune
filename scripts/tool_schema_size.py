@@ -6,13 +6,13 @@
 
 Tool definitions are resent with every model request, so their size is per-request
 context (#88, #31). Sizes are characters of compact JSON (no whitespace, non-ASCII
-kept) for the default capability set (KITSUNE_CAPS=core): `total` is the whole
-definition as listed by tools/list, `description` and `inputSchema` are those
-fields alone. Characters are not tokenizer counts. tests/test_tool_schema_size.py
+kept) for every core tool (KITSUNE_CAPS=core, KITSUNE_TOOL_PRESET=full): `total` is
+the whole definition as listed by tools/list, `description` and `inputSchema` are
+those fields alone. Characters are not tokenizer counts. The default scope is the
+lean preset, reported as a subset of the full core group. tests/test_tool_schema_size.py
 fails when the sizes differ from tests/tool_schema_sizes.json, so every change
 to the definitions shows up in review as a snapshot diff, and when a total or a
 single tool grows past its budget below, which only a deliberate bump raises.
-The lean preset (KITSUNE_TOOL_PRESET=lean) is reported as a subset of core.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from pathlib import Path
 SNAPSHOT = Path(__file__).resolve().parent.parent / "tests" / "tool_schema_sizes.json"
 
 # browser-mcp-bench's Kitsune UI allowlist (browser_mcp_bench/miniwob.py UI_TOOLS["kitsune"]).
-# Its devtools-only names (focus, double_click, drag) are not registered by default.
+# Its devtools-only names (focus, double_click, drag) are not registered by KITSUNE_CAPS=core.
 BENCH_UI_TOOLS = (
     "browser_status", "browser_tabs", "browser_page_info", "browser_page_text",
     "browser_forms", "browser_dom", "browser_snapshot", "browser_screenshot", "browser_navigate",
@@ -39,7 +39,7 @@ BENCH_UI_TOOLS = (
 # Ceilings in compact JSON characters (#88). Growth past one fails the size test; raise it
 # deliberately, with the reason in the change, rather than alongside a snapshot update.
 # Set about 5% above the sizes once generated schema titles were dropped (#120).
-TOTAL_BUDGETS = {"core": 30_000, "bench allowlist": 20_500, "lean preset": 15_000}
+TOTAL_BUDGETS = {"default (lean)": 15_000, "full core": 30_000, "bench allowlist": 20_500}
 TOOL_BUDGET = 3_000  # any single core tool
 
 
@@ -48,9 +48,9 @@ def _compact(value) -> int:
 
 
 def measure() -> dict:
-    """Sizes of every tool registered with the default capability set."""
+    """Sizes of every core tool (KITSUNE_TOOL_PRESET=full), the default lean ones included."""
     os.environ["KITSUNE_CAPS"] = "core"
-    os.environ.pop("KITSUNE_TOOL_PRESET", None)
+    os.environ["KITSUNE_TOOL_PRESET"] = "full"
     from kitsune.server import mcp
 
     tools = {}
@@ -74,7 +74,7 @@ def selections() -> dict:
     """Tool names behind each budgeted total; None is every core tool."""
     from kitsune.server import TOOL_PRESETS
 
-    return {"core": None, "bench allowlist": BENCH_UI_TOOLS, "lean preset": TOOL_PRESETS["lean"]}
+    return {"default (lean)": TOOL_PRESETS["lean"], "full core": None, "bench allowlist": BENCH_UI_TOOLS}
 
 
 def over_budget(tools: dict) -> list[str]:
@@ -90,14 +90,14 @@ def report(tools: dict, snapshot: dict) -> str:
     def delta(now: int, before: int | None) -> str:
         return "new" if before is None else f"{now - before:+d}" if now != before else ""
 
-    lean = selections()["lean preset"]
+    lean = selections()["default (lean)"]
     lines = [f"{'tool':<32}{'description':>12}{'inputSchema':>12}{'total':>8}{'Δ total':>9}"]
     for name, sizes in tools.items():
         mark = "L" if name in lean else "*" if name in BENCH_UI_TOOLS else " "
         before = snapshot.get(name, {}).get("total")
         lines.append(f"{mark}{name:<31}{sizes['description']:>12}{sizes['inputSchema']:>12}"
                      f"{sizes['total']:>8}{delta(sizes['total'], before):>9}")
-    marks = {"core": "", "bench allowlist": "*/L ", "lean preset": "L "}
+    marks = {"default (lean)": "L ", "full core": "", "bench allowlist": "*/L "}
     for label, names in selections().items():
         now, before = totals(tools, names), totals(snapshot, names)
         heading = f"{marks[label]}{label} ({now['tools']} tools)"

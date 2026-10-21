@@ -1,4 +1,4 @@
-"""KITSUNE_TOOL_PRESET=lean (#31): what it drops, and that read + draft flows stay covered.
+"""KITSUNE_TOOL_PRESET (#31): lean is the default, what it drops, and that read + draft flows stay covered.
 
 This checks the registered catalog and schemas only. Whether the preset changes task
 success, safety, calls or input per model turn is browser-mcp-bench's A/B, not tested here.
@@ -16,7 +16,7 @@ from kitsune import server
 ROOT = Path(__file__).resolve().parent.parent
 
 # Every core tool the lean preset drops, with the lean (tool, parameter) that covers the
-# same need, or None when only the default surface can do it. docs/guide.md lists the same.
+# same need, or None when only KITSUNE_TOOL_PRESET=full can do it. docs/guide.md lists the same.
 LEAN_DROPPED = {
     "browser_check": ("browser_form_fill", "fields"),  # sets checkbox/radio state; click toggles
     "browser_submit_form": ("browser_click", "expect"),  # click the form's submit button
@@ -82,7 +82,7 @@ def documented_drops() -> set:
 class LeanToolPresetTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.core = list_tools()
+        cls.core = list_tools(preset="full")
         cls.lean = list_tools(preset="lean")
 
     def test_lean_registers_exactly_the_preset(self):
@@ -117,6 +117,7 @@ class LeanToolPresetTests(unittest.TestCase):
         devtools = set(list_tools("devtools"))
         self.assertEqual(set(list_tools("core,devtools", preset="lean")), set(self.lean) | devtools)
         self.assertEqual(set(list_tools("devtools", preset=" LEAN ")), devtools)
+        self.assertEqual(set(list_tools("devtools", preset="full")), devtools)
 
     def test_unknown_preset_fails_at_startup(self):
         env = {**os.environ, "KITSUNE_TOOL_PRESET": "tiny"}
@@ -125,8 +126,32 @@ class LeanToolPresetTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Unknown KITSUNE_TOOL_PRESET: tiny", result.stderr)
 
-    def test_empty_preset_keeps_default_surface(self):
-        self.assertEqual(set(list_tools(preset="")), set(self.core))
+    def test_lean_is_the_default(self):
+        self.assertEqual(len(self.core), 30)
+        for preset in (None, "", " "):
+            self.assertEqual(set(list_tools(preset=preset)), set(self.lean), repr(preset))
+        self.assertEqual(set(list_tools("core,devtools")), set(self.lean) | set(list_tools("devtools")))
+
+    def test_preset_and_caps_combinations(self):
+        everything = list_tools("all", preset="full")
+        self.assertEqual(len(everything), 96)
+        for caps, preset, expected in [
+            ("core", None, set(self.lean)),
+            ("all", None, set(everything)),  # all means every tool unless a preset narrows core
+            ("all", "lean", set(everything) - set(LEAN_DROPPED)),
+            ("core", "full", set(self.core)),
+            ("all", "full", set(everything)),
+        ]:
+            self.assertEqual(set(list_tools(caps, preset)), expected, (caps, preset))
+
+    def test_tool_preset_rules(self):
+        for preset, caps, expected in [
+            (None, {"core"}, "lean"), ("", {"core", "devtools"}, "lean"), (None, {"all"}, "full"),
+            (" Lean ", {"all"}, "lean"), ("full", {"core"}, "full"), ("FULL", {"all"}, "full"),
+        ]:
+            self.assertEqual(server.tool_preset(preset, frozenset(caps)), expected, (preset, caps))
+        with self.assertRaisesRegex(ValueError, "Unknown KITSUNE_TOOL_PRESET: tiny"):
+            server.tool_preset("tiny", frozenset({"all"}))
 
 
 if __name__ == "__main__":
