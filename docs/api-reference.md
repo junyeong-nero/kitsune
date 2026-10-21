@@ -990,14 +990,16 @@ from a failed `newTab`, an unresolved template) fails with `invalid_tab_id` inst
 falling back to the active tab, and a numeric string such as `"12"` is sent as `12`.
 A closed tab is never replaced: commands on it fail with `tab_closed`.
 
-### `browser_tabs(action="list", tab_id=None, url=None, force=False, raw=False, wait=False, timeout=15000)`
+### `browser_tabs(action="list", tab_id=None, url=None, force=False, raw=False, wait=False, timeout=15000, window_fields=False)`
 
 Replaces `browser_new_tab`, `browser_close_tab`, and `browser_switch_tab`.
 `action` is `list`, `new`, `close`, or `select`. List uses GET `/api/tabs`;
 new uses POST `/api/new-tab` (default URL `about:blank`), close uses
 `/api/close-tab`, and select uses `/api/switch-tab`. Close and select require
 `tab_id`. `force` disarms beforeunload for close; `raw` bypasses the image URL
-viewer for new tabs. List is never cached. New returns immediately unless
+viewer for new tabs. List is never cached; it drops each tab's `windowId` and
+`index` unless the tabs span more than one window or `window_fields=True`, and
+keeps every other field. New returns immediately unless
 `wait=True`, which waits up to `timeout` ms for the page to load and returns
 the actual URL and load status. Options for other actions are ignored.
 
