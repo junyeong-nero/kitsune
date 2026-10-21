@@ -1365,8 +1365,8 @@ def browser_form_fill(
     tab_id: TabId = None, expect: dict | None = None, confirm_token: str | None = None,
     first: bool = False,
 ) -> dict:
-    """Fill many fields via fuzzy matching; ambiguous keys fail unless first=True. ok=true
-    means dispatched; verify with expect (see browser_click).
+    """Fill many fields via fuzzy matching; ambiguous keys fail unless first=True.
+    ok=true means dispatched; verify with expect (see browser_click).
 
     Each key in `fields` is matched as: CSS selector → name attribute →
     label text (case-insensitive contains) → placeholder. Each value is

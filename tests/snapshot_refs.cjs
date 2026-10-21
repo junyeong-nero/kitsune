@@ -43,13 +43,14 @@ async function testContent() {
         if (selector === '[') throw new Error('Invalid CSS selector');
         return selector === '#login' ? button : null;
       },
-      querySelectorAll: selector => selector === 'button' ? [button] : [button, input, checkbox],
+      querySelectorAll: selector => ['button', '#login'].includes(selector) ? [button] : [button, input, checkbox],
     },
     browser: { runtime: { onMessage: { addListener: fn => { listener = fn; } },
       sendMessage: () => Promise.resolve(null) } },
   });
   vm.runInContext(fs.readFileSync('extension/content/content.js', 'utf8'), context);
-  const send = msg => new Promise(resolve => listener(msg, {}, resolve));
+  // Results come from the vm realm, so compare plain copies.
+  const send = msg => new Promise(resolve => listener(msg, {}, result => resolve(JSON.parse(JSON.stringify(result)))));
   const first = await send({ action: 'getSnapshot' });
   assert.match(first.snapshot, /- main ""/);
   assert.match(first.snapshot, /heading "Account" .*level=1/);
