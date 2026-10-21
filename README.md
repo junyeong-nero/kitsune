@@ -2,11 +2,31 @@
 
 ![Kitsune: an orange fox in a browser window, connecting your browser and your AI agent](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/kitsune-hero.svg)
 
-**Your browser. Your agent. One clever bridge.**
+**Bring your coding agent into Firefox—and keep working alongside it.**
 
 Kitsune lets AI agents like Claude Code, Codex, Pi, and OpenCode use the **Firefox, Zen,
 or LibreWolf browser you already have open**. Your sessions, cookies, and
 extensions stay in place. No Playwright, Chromium, or WebDriver required.
+
+Research in background tabs, prepare form drafts, and continue browser tasks with
+an agent you already use—not a separate browser or built-in AI assistant.
+
+## Why Kitsune?
+
+- **Work alongside your agent.** Agent-created tabs open in the background.
+  Writes to a tab you are actively using are held, and closing your own tabs
+  requires a separate confirmation step. These protections reduce interference;
+  OS-level clicks and site-opened popups still have
+  [focus and input limitations](docs/api-reference.md#shared-browser).
+- **Choose how much to delegate.** Configure `KITSUNE_MODE=read`, `draft`, or `act`
+  to limit the available tools and bridge requests. Draft mode allows supported
+  field input without click or submit tools; sites may still autosave edits.
+  The default is `act`, not a restricted mode. See [Task modes](docs/guide.md#task-modes).
+- **Recover without blindly repeating work.** With the optional `parallel`
+  capability, interrupted batch, parallel, and workflow calls can be resumed
+  without resending successful writes. Uncertain writes require an observation
+  before retrying. [Checkpoints](docs/checkpoint-resume.md) are temporary and
+  do not survive a bridge restart.
 
 ## What can it do?
 
@@ -33,18 +53,23 @@ extensions stay in place. No Playwright, Chromium, or WebDriver required.
    Ask your agent to check the connection before your first task.
 3. **Ask in plain language.** For example:
 
-   > Open a new tab, search for today's weather near Suseong Lake in Daegu,
-   > and summarize the forecast with a link to the source.
+   > Research these three products in new background tabs and compare them with
+   > source links. Leave my current tab alone.
 
    > Inspect this page's form and fill a draft. Don't submit it yet.
 
-   > Open Hacker News and summarize the top three stories with links.
+   > Open Hacker News in a background tab and summarize the top three stories
+   > with links.
+
+   For an enforced draft-only tool surface, configure `KITSUNE_MODE=draft` before
+   starting the MCP client; asking in plain language does not change the mode.
 
 Use a dedicated browser profile and only give access to accounts the agent
 needs. Ask for confirmation before sending, purchasing, or deleting anything.
 The opt-in [ask-before-act](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#ask-before-act)
 policy makes the bridge hold submits, payment pages, JavaScript, and cookie access
-until the agent repeats the call with a confirmation token.
+until the agent repeats the call with a confirmation token. That second step is
+not proof of human approval, and these controls do not prevent prompt injection.
 Read the [security guidance](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#security) before using sensitive accounts.
 
 ## MCP setup
