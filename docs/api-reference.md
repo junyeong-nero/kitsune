@@ -1397,6 +1397,12 @@ form. When that field is gone or outside every form and the page has several
 forms, nothing is submitted: the result is an `ambiguous_target`
 [action error](#action-errors) listing up to 5 forms.
 
+It clicks the form's first submit control (a `<button>` without a `type` counts,
+as in HTML), so the page's submit handlers and validation run: `"submitted": "button"`.
+A form without one is submitted with `requestSubmit()`, which runs them too
+(`"requestSubmit"`); only where that is missing does it fall back to `form.submit()`,
+which skips them (`"method"`).
+
 ```json
 { "error": "3 forms on the page and no filled field names one; nothing was submitted",
   "code": "ambiguous_target", "retryable": false,

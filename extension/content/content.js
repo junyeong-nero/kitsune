@@ -3,7 +3,7 @@
 
 (function() {
   'use strict';
-  const CONTENT_VERSION = 35;
+  const CONTENT_VERSION = 36;
   if (window.__claudeBridgeVersion >= CONTENT_VERSION) return;
   window.__claudeBridgeVersion = CONTENT_VERSION;
 
@@ -2456,11 +2456,18 @@
       text: label.slice(0, 80) };
   }
 
+  // The form's first submit control. A <button> without a type (or with an unknown one) is a
+  // submit button, and its type property reads "submit".
+  function formSubmitControl(form) {
+    return Array.from(form.querySelectorAll('button, input')).find(el =>
+      (el.tagName === 'BUTTON' && el.type === 'submit') ||
+      (el.tagName === 'INPUT' && (el.type === 'submit' || el.type === 'image'))) || null;
+  }
+
   // A form as submit results and ambiguous_target candidates name it, with a new ref in the
   // current generation. Attributes, not properties: a field named "action" shadows form.action.
   function formSummary(form, button) {
-    button ??= Array.from(form.querySelectorAll('button, input'))
-      .find(el => el.type === 'submit' || el.type === 'image');
+    button ??= formSubmitControl(form);
     return { ref: issueRef(form), action: form.getAttribute('action') || '',
       method: (form.getAttribute('method') || 'get').toLowerCase(),
       button: button ? controlLabel(button, button.tagName === 'INPUT').slice(0, 80) : '' };
@@ -2487,11 +2494,16 @@
       }
     }
     if (!form) return { error: 'No <form> found' };
-    // Prefer the submit-button click path so form-validation listeners fire.
-    const btn = form.querySelector('button[type="submit"], input[type="submit"]');
+    // Click the submit control, else requestSubmit, so submit handlers and validation run as
+    // for a user's submit. form.submit() skips both and is the last resort.
+    const btn = formSubmitControl(form);
     // Named before submitting, which can remove the form.
     const submitted = formSummary(form, btn);
     if (btn) { btn.click(); return { ok: true, submitted: 'button', form: submitted }; }
+    if (typeof form.requestSubmit === 'function') {
+      form.requestSubmit();
+      return { ok: true, submitted: 'requestSubmit', form: submitted };
+    }
     form.submit();
     return { ok: true, submitted: 'method', form: submitted };
   }
