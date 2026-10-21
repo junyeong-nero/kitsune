@@ -201,6 +201,8 @@ function background(tabs, content, clock = { setTimeout, clearTimeout, Date }) {
           if (injectError) throw new Error('Could not establish connection. Receiving end does not exist.');
           return { ok: true, version: Infinity };
         }
+        // The user-activity probe only reads; sent records commands.
+        if (msg.action === 'userActivity') return { active: false };
         sent.push({ tabId: id, ...msg });
         return content(id, msg);
       },
@@ -355,7 +357,7 @@ async function testEmptyErrorPage() {
   tabs[2].status = 'complete';
 
   // Statuses are per tab and forgotten when the tab closes.
-  await h.send({ action: 'closeTab', tabId: 2 });
+  await h.send({ action: 'closeTab', tabId: 2, userTabApproved: true });
   tabs[2] = page(2, { url: 'http://127.0.0.1:8000/nf-empty' });
   assert.equal((await sendUnknown({ action: 'getSnapshot', tabId: 2 })).state.httpStatus, undefined);
   assert.equal(h.statusWaiters(), 0);
@@ -406,7 +408,7 @@ async function testErrorPageWaitsForLateStatus() {
   // The tab closes during the wait: it reports tab_closed without waiting for the timeout.
   const closing = settled(h.send({ action: 'getPageText', tabId: 2 }));
   await clock.tick(10);
-  await h.send({ action: 'closeTab', tabId: 2 });
+  await h.send({ action: 'closeTab', tabId: 2, userTabApproved: true });
   await clock.tick(0);
   assert.deepEqual([closing.value.code, closing.value.state], ['tab_closed', { tabId: 2 }]);
   assert.deepEqual([h.statusWaiters(), clock.timers.size], [0, 0]);

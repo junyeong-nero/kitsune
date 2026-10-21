@@ -3,7 +3,7 @@
 
 (function() {
   'use strict';
-  const CONTENT_VERSION = 34;
+  const CONTENT_VERSION = 35;
   if (window.__claudeBridgeVersion >= CONTENT_VERSION) return;
   window.__claudeBridgeVersion = CONTENT_VERSION;
 
@@ -303,6 +303,52 @@
     }
   }
 
+  // ── User activity (docs/api-reference.md#user-activity) ──
+  // The user shares the browser with the agent, so agent writes back off from a page the user is
+  // using. Only trusted input counts: Kitsune's own DOM events are synthetic (isTrusted false),
+  // and the trusted OS click of browser_trusted_click follows its screenPoint, which opens a
+  // window for its pointer events. Typing counts while the field the user typed into keeps focus
+  // in a focused document and is not empty. Values are never read out.
+  const USER_INPUT_EVENTS = ['keydown', 'mousedown', 'pointerdown', 'touchstart', 'wheel', 'paste'];
+  const USER_INPUT_WINDOW_MS = 3000;
+  const AGENT_TRUSTED_CLICK_MS = 2000;
+  let lastUserInput = null;   // { at, type }
+  let userTypedField = null;  // the editable element (as the document sees it) the user last typed into
+  let agentTrustedClickUntil = 0;
+
+  function noteUserInput(event) {
+    if (!event.isTrusted) return;
+    const now = Date.now();
+    if (/^(mouse|pointer|touch)/.test(event.type) && now < agentTrustedClickUntil) return;
+    lastUserInput = { at: now, type: event.type };
+    if ((event.type === 'keydown' || event.type === 'paste') && isTypingTarget(event.target)) {
+      userTypedField = event.target;
+    }
+  }
+  // A field in a shadow root shows as its host, a custom element.
+  const isTypingTarget = el => ['INPUT', 'TEXTAREA'].includes(el?.tagName) || !!el?.isContentEditable ||
+    !!el?.tagName?.includes('-');
+  // Listeners on the window see input before page handlers can stop it (absent in vm test harnesses).
+  for (const type of USER_INPUT_EVENTS) window.addEventListener?.(type, noteUserInput, { capture: true, passive: true });
+
+  function hasUserContent(el) {
+    if (typeof el.value === 'string') return el.value.length > 0;
+    return el.isContentEditable ? (el.textContent || '').trim().length > 0 : true;
+  }
+
+  function userActivity() {
+    const now = Date.now();
+    if (lastUserInput && now - lastUserInput.at < USER_INPUT_WINDOW_MS) {
+      return { active: true, state: { reason: 'input', input: lastUserInput.type, sinceMs: now - lastUserInput.at,
+        windowMs: USER_INPUT_WINDOW_MS } };
+    }
+    const field = userTypedField;
+    if (field?.isConnected && field === document.activeElement && document.hasFocus() && hasUserContent(field)) {
+      return { active: true, state: { reason: 'typing', field: field.tagName.toLowerCase() } };
+    }
+    return { active: false };
+  }
+
   // ── Message Handler ──
   browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const handlers = {
@@ -333,7 +379,8 @@
       // Fixed operations the bridge and background used to send as code strings.
       'keepAlive':             () => ({ ok: true }),
       'neuterUnload':          () => neuterUnload(),
-      'screenPoint':           () => screenPoint(msg.selector, msg.x, msg.y),
+      'screenPoint':           () => screenPoint(msg.selector, msg.x, msg.y, msg.click),
+      'userActivity':          () => userActivity(),
       'captureMeasure':        () => captureMeasure(msg.selector),
       'captureScrollIntoView': () => captureScrollIntoView(msg.selector, msg.block),
       'captureScroll':         () => captureScroll(msg.to, msg.by),
@@ -1432,8 +1479,9 @@
     }
   }
 
-  function screenPoint(selector, x, y) {
+  function screenPoint(selector, x, y, click) {
     // Viewport point (element centre or x/y) plus its desktop position for OS-level clicks.
+    if (click) agentTrustedClickUntil = Date.now() + AGENT_TRUSTED_CLICK_MS;
     if (selector) {
       const el = resolveElement(selector);
       if (!el) return notFound();

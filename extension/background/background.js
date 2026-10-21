@@ -3,7 +3,7 @@
 
 'use strict';
 
-const EXPECTED_CONTENT_VERSION = 34;
+const EXPECTED_CONTENT_VERSION = 35;
 const WS_URL = 'ws://127.0.0.1:47652';
 // scripts/build_extension.py sets 'signed' for the AMO build (see content.js).
 const KITSUNE_BUILD = 'dev';
@@ -41,7 +41,8 @@ browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (changeInfo.discarded === true) mainFrameStatus.delete(tabId);
   // The browser also wakes discarded tabs, e.g. when one is selected.
   if (changeInfo.discarded === false) tabReloads.set(tabId, Date.now());
-  if (changeInfo.status === 'loading') tabLoads.set(tabId, { at: Date.now(), complete: false });
+  // agent: the agent was acting on the tab when it started loading (see userActivity).
+  if (changeInfo.status === 'loading') tabLoads.set(tabId, { at: Date.now(), complete: false, agent: agentTouched(tabId) });
   const load = tabLoads.get(tabId);
   if (load && changeInfo.status === 'complete') load.complete = true;
 });
@@ -75,15 +76,146 @@ browser.tabs.onCreated.addListener(tab => {
   tabsCreated++;
   if (tab.openerTabId != null) {
     openedTabs.push({ tabId: tab.id, openerTabId: tab.openerTabId, seq: tabsCreated });
+    if (agentTouched(tab.openerTabId)) keepOpenedTabInBackground(tab);
   }
 });
 browser.tabs.onRemoved.addListener(tabId => {
   actionStarts.delete(tabId);
   linkFallbackTabs.delete(tabId);
+  agentTabs.delete(tabId);
+  agentTouches.delete(tabId);
+  revertActivation.delete(tabId);
   for (let i = openedTabs.length - 1; i >= 0; i--) {
     if (openedTabs[i].tabId === tabId || openedTabs[i].openerTabId === tabId) openedTabs.splice(i, 1);
   }
 });
+
+// == Shared browser (docs/api-reference.md#shared-browser) ==
+// The user and the agent use this browser at the same time: agent work never takes the user's
+// focus, and it backs off from a tab the user is using.
+
+// Tabs the agent created or its page actions opened (getTabs `owned`); only these close without
+// the user's approval. They live in this background page, so a bridge restart keeps them; an
+// extension reload or browser restart forgets them, and those tabs then count as the user's.
+const agentTabs = new Set();
+// tabId -> { running, until }: agent commands on the tab now, and until when the tabs it opens
+// and the loads it starts are still the agent's (a click's tab or navigation can lag its reply).
+const agentTouches = new Map();
+const AGENT_EFFECT_GRACE_MS = 2000;
+const agentTouched = tabId => {
+  const touch = agentTouches.get(tabId);
+  return !!touch && (touch.running > 0 || Date.now() < touch.until);
+};
+function touchStart(tabId) {
+  const touch = agentTouches.get(tabId) || { running: 0, until: 0 };
+  touch.running++;
+  agentTouches.set(tabId, touch);
+}
+function touchEnd(tabId) {
+  const touch = agentTouches.get(tabId);
+  if (!touch) return;
+  touch.running = Math.max(0, touch.running - 1);
+  touch.until = Date.now() + AGENT_EFFECT_GRACE_MS;
+}
+function markAgentTab(tabId) {
+  agentTabs.add(tabId);
+  const load = tabLoads.get(tabId);
+  if (load) load.agent = true;
+  if (!agentTouches.has(tabId)) agentTouches.set(tabId, { running: 0, until: Date.now() + AGENT_EFFECT_GRACE_MS });
+}
+
+// Firefox shows a tab a page opens (target=_blank, window.open) at once. When an agent action
+// opened it, the tab the user saw is shown again right away, and a popup window gives the
+// window focus back; both flicker for a moment.
+const OPENED_TAB_REVERT_MS = 2000;
+const revertActivation = new Map(); // agent-opened tabId -> deadline for undoing its activation
+const lastActivation = new Map();   // windowId -> { tabId, previousTabId }
+const revertFocus = new Map();      // agent popup windowId -> deadline for undoing its focus
+let focusedWindowId = null, previousFocusedWindowId = null;
+browser.windows?.getLastFocused?.().then(w => {
+  focusedWindowId ??= w.focused ? w.id : browser.windows.WINDOW_ID_NONE;
+}, () => {});
+function keepOpenedTabInBackground(tab) {
+  markAgentTab(tab.id);
+  const deadline = Date.now() + OPENED_TAB_REVERT_MS;
+  revertActivation.set(tab.id, deadline);
+  const last = lastActivation.get(tab.windowId);
+  if (tab.active && last?.tabId === tab.id) undoActivation(tab.id, last.previousTabId);
+  browser.tabs.get(tab.openerTabId).then(opener => {
+    if (opener.windowId === tab.windowId) return;
+    revertFocus.set(tab.windowId, deadline);
+    if (focusedWindowId === tab.windowId) undoFocus(tab.windowId, previousFocusedWindowId);
+  }, () => {});
+}
+function undoActivation(tabId, previousTabId) {
+  const deadline = revertActivation.get(tabId);
+  revertActivation.delete(tabId);
+  if (deadline >= Date.now() && previousTabId != null && previousTabId !== tabId) {
+    browser.tabs.update(previousTabId, { active: true }).catch(() => {});
+  }
+}
+function undoFocus(windowId, previousWindowId) {
+  const deadline = revertFocus.get(windowId);
+  revertFocus.delete(windowId);
+  // Without a previously focused browser window the user was in another app; nothing to give back.
+  if (deadline >= Date.now() && previousWindowId != null && previousWindowId !== browser.windows.WINDOW_ID_NONE) {
+    browser.windows.update(previousWindowId, { focused: true }).catch(() => {});
+  }
+}
+browser.tabs.onActivated?.addListener(({ tabId, previousTabId, windowId }) => {
+  lastActivation.set(windowId, { tabId, previousTabId });
+  if (revertActivation.has(tabId)) undoActivation(tabId, previousTabId);
+});
+browser.windows?.onFocusChanged?.addListener(windowId => {
+  [previousFocusedWindowId, focusedWindowId] = [focusedWindowId, windowId];
+  if (revertFocus.has(windowId)) undoFocus(windowId, previousFocusedWindowId);
+});
+browser.windows?.onRemoved?.addListener(windowId => {
+  revertFocus.delete(windowId);
+  lastActivation.delete(windowId);
+});
+
+// Recent user activity on a tab (docs/api-reference.md#user-activity): agent writes and
+// navigations on it, and view switches away from it, return user_active instead of acting.
+// A navigation counts while the shown tab loads a document the agent did not start.
+const USER_NAVIGATION_WINDOW_MS = 10000;
+
+async function userActivity(tabId) {
+  const tab = await browser.tabs.get(tabId).catch(() => null);
+  if (!tab) return null;
+  const load = tabLoads.get(tabId);
+  const sinceLoad = load ? Date.now() - load.at : Infinity;
+  if (tab.active && tab.status === 'loading' && load && !load.complete && !load.agent
+      && sinceLoad < USER_NAVIGATION_WINDOW_MS) {
+    return { tabId, url: tab.url, reason: 'navigating', sinceMs: sinceLoad };
+  }
+  if (tab.discarded || isRestrictedUrl(tab.url)) return null;
+  const page = await browser.tabs.sendMessage(tabId, { action: 'userActivity' }).catch(() => null);
+  return page?.active ? { tabId, url: tab.url, ...page.state } : null;
+}
+
+// The tab whose user activity an action must respect: switching the view or window focus leaves
+// the tab the user sees; everything else acts on its own tab.
+async function guardedTabId(action, params) {
+  let windowId;
+  if (action === 'switchTab') {
+    const target = await browser.tabs.get(params.tabId).catch(() => null);
+    if (!target || target.active) return null;
+    windowId = target.windowId;
+  } else if (action === 'focusWindow') {
+    const focused = await browser.windows.getLastFocused().catch(() => null);
+    if (!focused || focused.id === params.windowId) return null;
+    windowId = focused.id;
+  } else {
+    return params.tabId;
+  }
+  return (await browser.tabs.query({ windowId, active: true }).catch(() => []))[0]?.id ?? null;
+}
+
+async function userActiveError(tabId) {
+  const state = tabId != null && await userActivity(tabId);
+  return state ? tabError(`The user is using tab ${tabId}; nothing was done`, 'user_active', state) : null;
+}
 browser.runtime.onMessage.addListener((msg, sender) => {
   if (msg.action === 'getDialogPolicy') {
     return Promise.resolve(dialogPolicies.get(sender.tab?.id) || null);
@@ -305,6 +437,14 @@ const OPENER_ACTIONS = new Set([
   'keypress', 'submitForm', 'formFill', 'hover', 'scroll', 'drag', 'focusElement', 'blurElement',
   'navigate', 'goBack', 'goForward', 'reloadTabBrowser', 'clickAndWaitNavigation',
 ]);
+// Writes and navigations that back off from a tab the user is using (see userActivity).
+// Element and full-page captures scroll the page.
+const USER_GUARDED_ACTIONS = new Set([
+  'click', 'doubleClick', 'type', 'fill', 'setEditableContent', 'selectOption', 'checkBox',
+  'keypress', 'submitForm', 'formFill', 'hover', 'scroll', 'drag', 'focusElement', 'blurElement',
+  'executeJS', 'uploadCommit', 'navigate', 'goBack', 'goForward', 'reloadTabBrowser',
+  'clickAndWaitNavigation', 'closeTab', 'switchTab', 'focusWindow', 'elementScreenshot', 'fullPageScreenshot',
+]);
 // A tab opened by a link starts on about:blank; wait this long for its real URL.
 const OPENED_TAB_URL_WAIT_MS = 1000;
 // How long a click on a target=_blank link waits for its tab before openBlockedLink opens it.
@@ -322,8 +462,25 @@ async function handleCommand(command) {
   // Text snapshots report which tab they read.
   const textSnapshot = params.action === 'getSnapshot' && !!params.text;
   const tracksOpenedTabs = OPENER_ACTIONS.has(params.action);
-  if ((withSnapshot || textSnapshot || tracksOpenedTabs) && params.tabId == null) params.tabId = await getActiveTabId();
+  // A trusted click's screenPoint (see screenPointForClick) acts on the page like a click.
+  const guarded = USER_GUARDED_ACTIONS.has(params.action) || (params.action === 'screenPoint' && !!params.click);
+  const touches = (tracksOpenedTabs || guarded) && params.action !== 'focusWindow';
+  if ((withSnapshot || textSnapshot || touches) && params.tabId == null) params.tabId = await getActiveTabId();
+  if (guarded) {
+    const busy = await userActiveError(await guardedTabId(params.action, params));
+    if (busy) return busy;
+  }
   if (tracksOpenedTabs && params.tabId != null) actionStarts.set(params.tabId, tabsCreated);
+  const touched = touches ? params.tabId : null;
+  if (touched != null) touchStart(touched);
+  try {
+    return await runCommand(params, { withSnapshot, textSnapshot, tracksOpenedTabs });
+  } finally {
+    if (touched != null) touchEnd(touched);
+  }
+}
+
+async function runCommand(params, { withSnapshot, textSnapshot, tracksOpenedTabs }) {
   const result = await dispatchCommand(params);
   const blankLink = result?.targetBlankLink;
   if (blankLink) delete result.targetBlankLink;
@@ -386,8 +543,10 @@ async function openBlockedLink(tabId, link, result) {
       const clicked = await browser.tabs.get(tabId);
       const tab = await browser.tabs.create({
         url: link.url, openerTabId: tabId, windowId: clicked.windowId, cookieStoreId: clicked.cookieStoreId,
+        active: false,
       });
       linkFallbackTabs.add(tab.id);
+      markAgentTab(tab.id);
       return;
     } catch {}
   }
@@ -409,7 +568,9 @@ async function dispatchCommand(command) {
     case 'navigate':     return await navigateTab(params.url, params.tabId, params.expectTitle);
     case 'switchTab':    return await switchTab(params.tabId);
     case 'newTab':       return await createTab(params.url, params);
-    case 'closeTab':     return await closeTab(params.tabId);
+    case 'closeTab':     return await closeTab(params.tabId, params);
+    case 'restoreActiveTab': return await restoreActiveTab(params.tabId, params.from);
+    case 'screenPoint':  return params.click ? await screenPointForClick(params) : await forwardToContent(action, params);
     case 'wakeTab':      return await wakeTab(params.tabId);
     case 'reloadExtension': return reloadExtensionAction();
     case 'getPageTextFromTab': return await getPageText(params);
@@ -425,7 +586,7 @@ async function dispatchCommand(command) {
     case 'setZoom':          return await setZoom(params.tabId, params.factor);
     case 'getWindows':       return await getWindowsList();
     case 'createWindow':     return await createWindow(params.url, params.incognito);
-    case 'closeWindow':      return await closeWindow(params.windowId);
+    case 'closeWindow':      return await closeWindow(params.windowId, params.userTabApproved);
     case 'focusWindow':      return await focusWindow(params.windowId);
     case 'moveTab':          return await moveTabAction(params.tabId, params.windowId, params.index);
     case 'detachTab':        return await detachTab(params.tabId);
@@ -502,7 +663,6 @@ async function dispatchCommand(command) {
     case 'uploadAbort':
     case 'keepAlive':
     case 'neuterUnload':
-    case 'screenPoint':
       return await forwardToContent(action, params);
 
     default:
@@ -574,11 +734,13 @@ async function waitForTabProperty(property, { tabId, pattern, timeout = 10000 })
   }
 }
 
+// tabs.captureTab renders a tab whether or not it is shown, so no capture activates a tab.
 async function captureScreenshot(params = {}) {
   try {
-    const dataUrl = await browser.tabs.captureVisibleTab(null, { format: 'png', quality: 90 });
-    const tabs = await browser.tabs.query({ active: true, currentWindow: true });
-    const tab = tabs[0];
+    const tab = params.tabId != null ? await browser.tabs.get(params.tabId)
+      : (await browser.tabs.query({ active: true, currentWindow: true }))[0];
+    if (!tab) return noActiveTab('No active tab found');
+    const dataUrl = await browser.tabs.captureTab(tab.id, { format: 'png', quality: 90 });
     return {
       dataUrl: params.imagePreview ? await imagePreview(dataUrl) : dataUrl,
       url: tab?.url || '',
@@ -597,7 +759,7 @@ async function getOpenTabs() {
     return {
       tabs: tabs.map(t => ({
         id: t.id, url: t.url, title: t.title,
-        active: t.active, windowId: t.windowId, index: t.index
+        active: t.active, windowId: t.windowId, index: t.index, owned: agentTabs.has(t.id)
       }))
     };
   } catch (e) {
@@ -685,6 +847,7 @@ async function navigateTab(url, tabId, expectTitle) {
   }
 }
 
+// Switches the user's view: only for an explicit request (browser_tabs select).
 async function switchTab(tabId) {
   try {
     await browser.tabs.update(tabId, { active: true });
@@ -694,12 +857,14 @@ async function switchTab(tabId) {
   }
 }
 
-// Immediate by default. With wait, resolves once the tab loads (or the timeout passes, leaving
-// the tab open) and reports the actual URL, so redirects are visible.
+// Opens an agent-owned tab in the background. Immediate by default. With wait, resolves once the
+// tab loads (or the timeout passes, leaving the tab open) and reports the actual URL, so
+// redirects are visible.
 async function createTab(url, { wait = false, timeout = 15000 } = {}) {
   try {
     const target = url || 'about:blank';
-    const tab = await browser.tabs.create({ url: target });
+    const tab = await browser.tabs.create({ url: target, active: false });
+    markAgentTab(tab.id);
     if (!wait) return { ok: true, tabId: tab.id };
     // A new tab has no previous document, so any non-about: 'complete' is the destination.
     const loaded = target.startsWith('about:')
@@ -714,10 +879,65 @@ async function createTab(url, { wait = false, timeout = 15000 } = {}) {
   }
 }
 
-async function closeTab(tabId) {
+// How long a forced close waits for the page to disarm beforeunload; a hung page still closes.
+const NEUTER_UNLOAD_WAIT_MS = 8000;
+
+// Closes a tab the agent owns. A user tab needs userTabApproved, which only the bridge sets, after
+// the user approved that close with the confirm token of its user_tab refusal.
+async function closeTab(tabId, { force = false, userTabApproved = false } = {}) {
   try {
+    if (!agentTabs.has(tabId) && !userTabApproved) {
+      const tab = await browser.tabs.get(tabId);
+      return tabError(`Tab ${tabId} was not opened by the agent, so it was not closed`, 'user_tab',
+        { tabId, url: tab.url, title: tab.title }, false);
+    }
+    if (force) {
+      let timer;
+      await Promise.race([forwardToContent('neuterUnload', { tabId }).catch(() => {}),
+        new Promise(resolve => { timer = setTimeout(resolve, NEUTER_UNLOAD_WAIT_MS); })]);
+      clearTimeout(timer);
+    }
     await browser.tabs.remove(tabId);
     return { ok: true };
+  } catch (e) {
+    return await tabApiError(tabId, e);
+  }
+}
+
+// A trusted OS click lands on whatever the screen shows, so a target tab that is not shown is
+// activated for the click; the bridge restores previousTabId right after it (restoreActiveTab).
+const TRUSTED_CLICK_PAINT_MS = 150;
+async function screenPointForClick(params) {
+  let previousTabId = null;
+  try {
+    const tab = await browser.tabs.get(params.tabId);
+    if (!tab.active) {
+      const [shown] = await browser.tabs.query({ windowId: tab.windowId, active: true });
+      const busy = shown && await userActiveError(shown.id);
+      if (busy) return busy;
+      previousTabId = shown?.id ?? null;
+      await browser.tabs.update(tab.id, { active: true });
+      await new Promise(resolve => setTimeout(resolve, TRUSTED_CLICK_PAINT_MS));
+    }
+  } catch (e) {
+    return await tabApiError(params.tabId, e);
+  }
+  const point = await forwardToContent('screenPoint', params);
+  if (previousTabId == null) return point;
+  if (point.error) {
+    await restoreActiveTab(previousTabId, params.tabId);
+    return point;
+  }
+  return { ...point, tabId: params.tabId, previousTabId };
+}
+
+// Shows the user's tab again after a trusted click, unless the user already moved elsewhere.
+async function restoreActiveTab(tabId, from) {
+  try {
+    const shown = await browser.tabs.get(from);
+    if (!shown.active) return { ok: true, restored: false };
+    await browser.tabs.update(tabId, { active: true });
+    return { ok: true, restored: true };
   } catch (e) {
     return await tabApiError(tabId, e);
   }
@@ -799,6 +1019,10 @@ const TAB_FAILURE_HINTS = {
   restricted_page: 'Browser-internal pages cannot be scripted; navigate the tab to a web page or target another tab.',
   error_page: 'The page has no scriptable document (often an error response with an empty body), so reading it again fails the same way; check state.httpStatus and state.title, then navigate the tab elsewhere or target another tab.',
   host_permission_denied: 'Firefox does not let Kitsune script this site. For state.reason not_granted, allow its site access in about:addons → Kitsune → Permissions; restricted_domain sites (addons.mozilla.org, …) are closed to all extensions, so use another tab.',
+  user_tab: 'The agent did not open this tab (owned: false in browser_tabs list), so it stays open. Leave it, ' +
+    'or ask the user and repeat a direct browser_tabs close with the confirm_token that call returns.',
+  user_active: 'The user is using this tab (state.reason); nothing was done. Retry in a few seconds, ' +
+    'work in a tab you opened, or ask the user.',
   // Matches the bridge's browser_window_unavailable diagnosis hint.
   browser_window_unavailable: 'Open a normal browser window in the profile where Kitsune is installed (private windows need Run in Private Windows in about:addons), or pass tab_id.',
 };
@@ -1007,7 +1231,8 @@ async function duplicateTab(tabId) {
   try {
     const id = tabId || (await getActiveTabId());
     if (!id) return { error: 'No tab' };
-    const dup = await browser.tabs.duplicate(id);
+    const dup = await browser.tabs.duplicate(id, { active: false });
+    markAgentTab(dup.id);
     return { ok: true, tabId: dup.id, sourceTabId: id };
   } catch (e) { return { error: e.message }; }
 }
@@ -1080,18 +1305,29 @@ async function createWindow(url, incognito) {
     const w = await browser.windows.create({
       url: urls,
       incognito: !!incognito,
+      focused: false,
     });
-    return { ok: true, windowId: w.id, tabIds: (w.tabs || []).map(t => t.id) };
+    const tabIds = (w.tabs || []).map(t => t.id);
+    tabIds.forEach(markAgentTab);
+    return { ok: true, windowId: w.id, tabIds };
   } catch (e) { return { error: e.message }; }
 }
 
-async function closeWindow(windowId) {
+// Closing a window closes its tabs, so one with user tabs needs approval like closeTab.
+async function closeWindow(windowId, userTabApproved = false) {
   try {
+    const userTabs = (await browser.windows.get(windowId, { populate: true })).tabs
+      .filter(tab => !agentTabs.has(tab.id)).map(tab => tab.id);
+    if (userTabs.length && !userTabApproved) {
+      return tabError(`Window ${windowId} has tabs the agent did not open, so it was not closed`, 'user_tab',
+        { windowId, tabIds: userTabs }, false);
+    }
     await browser.windows.remove(windowId);
     return { ok: true, windowId };
   } catch (e) { return { error: e.message }; }
 }
 
+// Moves the user's focus: only for an explicit request (browser_focus_window).
 async function focusWindow(windowId) {
   try {
     await browser.windows.update(windowId, { focused: true });
@@ -1108,25 +1344,9 @@ async function moveTabAction(tabId, windowId, index) {
 
 async function detachTab(tabId) {
   try {
-    const w = await browser.windows.create({ tabId });
+    const w = await browser.windows.create({ tabId, focused: false });
     return { ok: true, windowId: w.id, tabId };
   } catch (e) { return { error: e.message }; }
-}
-
-async function activateTabForCapture(tabId) {
-  const tab = await browser.tabs.get(tabId);
-  const activeTabs = await browser.tabs.query({ windowId: tab.windowId, active: true });
-  const previousTabId = activeTabs[0]?.id !== tabId ? activeTabs[0]?.id : null;
-  if (previousTabId) {
-    await browser.tabs.update(tabId, { active: true });
-    await new Promise(r => setTimeout(r, 100));
-  }
-  return { tab, previousTabId };
-}
-
-async function restoreTabAfterCapture(previousTabId) {
-  if (!previousTabId) return;
-  try { await browser.tabs.update(previousTabId, { active: true }); } catch {}
 }
 
 // Bound inline image payloads without adding a Python imaging dependency.
@@ -1174,10 +1394,10 @@ async function zlScroll(tabId, scroll) {
   return r ? r.sy : null;
 }
 
-// 2.1.1: scale (1-4) = output pixels per CSS pixel. captureVisibleTab renders the viewport at that scale, so
+// 2.1.1: scale (1-4) = output pixels per CSS pixel. captureTab renders the viewport at that scale, so
 // scale 2 gives a genuinely sharper image (text in article screenshots), not an upscale. Default 1 = old size.
 async function elementScreenshot(tabId, selector, scale, preview) {
-  let previousTabId = null, hidFixed = false, id = null, captureAttribute = null;
+  let hidFixed = false, id = null, captureAttribute = null;
   const want = Math.min(Math.max(Number(scale) || 1, 1), 4);
   try {
     id = tabId || (await getActiveTabId());
@@ -1190,7 +1410,6 @@ async function elementScreenshot(tabId, selector, scale, preview) {
     }
     const tab = await browser.tabs.get(id);
     if (isRestrictedUrl(tab.url)) return { error: 'Cannot access browser internal page' };
-    ({ previousTabId } = await activateTabForCapture(id));
     const measure = async () => {
       const r = await zlContent(id, 'captureMeasure', { selector });
       return r && !r.missing ? r : null;
@@ -1210,7 +1429,7 @@ async function elementScreenshot(tabId, selector, scale, preview) {
     let covered = 0, segments = 0;
     // 2.1.0: elements taller than the viewport are scrolled and stitched (they used to come back blank below the fold)
     for (let guard = 0; guard < 60 && covered < cssH; guard++) {
-      const img = await loadDataUrl(await browser.tabs.captureVisibleTab(tab.windowId, shot));
+      const img = await loadDataUrl(await browser.tabs.captureTab(id, shot));
       const d = img.width / m.vw;          // captured pixels per CSS pixel (dpr, or the requested scale)
       const o = W / cssW;                  // output pixels per CSS pixel
       const visTop = Math.max(0, m.y), visBot = Math.min(m.vh, m.y + m.h);
@@ -1240,18 +1459,16 @@ async function elementScreenshot(tabId, selector, scale, preview) {
       try { await forwardToContent('unmarkScreenshotTarget', { tabId: id, attribute: captureAttribute }); } catch (e) {}
     }
     if (hidFixed && id) { try { await zlRestoreFixed(id); } catch (e) {} }
-    await restoreTabAfterCapture(previousTabId);
   }
 }
 
 async function fullPageScreenshot(tabId, preview) {
-  let previousTabId = null, hidFixed = false, id = null;
+  let hidFixed = false, id = null;
   try {
     id = tabId || (await getActiveTabId());
     if (!id) return { error: 'No tab' };
     const tab = await browser.tabs.get(id);
     if (isRestrictedUrl(tab.url)) return { error: 'Cannot access browser internal page' };
-    ({ previousTabId } = await activateTabForCapture(id));
     const m = await forwardToContent('fullPageMetrics', { tabId: id });
     if (m.error) return m;
     const vh = m.viewportHeight, vw = m.viewportWidth;
@@ -1262,7 +1479,7 @@ async function fullPageScreenshot(tabId, preview) {
       await zlScroll(id, { to: y });
       await zlSleep(150);   // let lazy content settle
       const sy = Number(await zlScroll(id, {})) || 0;   // the page may clamp the last scroll
-      segments.push({ y: sy, data: await browser.tabs.captureVisibleTab(tab.windowId, { format: 'png' }) });
+      segments.push({ y: sy, data: await browser.tabs.captureTab(id, { format: 'png' }) });
       if (!hidFixed) { await zlHideFixed(id, null); hidFixed = true; }
       if (sy + vh >= docH) break;
       y = sy + vh;
@@ -1283,7 +1500,6 @@ async function fullPageScreenshot(tabId, preview) {
   } catch (e) { return { error: 'fullPageScreenshot failed: ' + e.message }; }
   finally {
     if (hidFixed && id) { try { await zlRestoreFixed(id); } catch (e) {} }
-    await restoreTabAfterCapture(previousTabId);
   }
 }
 

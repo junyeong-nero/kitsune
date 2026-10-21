@@ -138,13 +138,16 @@ class SignedBuildTransportTests(unittest.TestCase):
                                         "devicePixelRatio": 2, "title": "t"}) as send, \
                 patch.object(bridge, "_native_click_screen", return_value={"ok": True}):
             asyncio.run(bridge.trusted_click({"selector": "#go", "tabId": 3}))
-        send.assert_awaited_once_with("screenPoint", {"selector": "#go", "x": None, "y": None, "tabId": 3})
+        send.assert_awaited_once_with("screenPoint", {"selector": "#go", "x": None, "y": None, "click": True,
+                                                       "tabId": 3})
 
+        # The extension disarms beforeunload itself, once it agreed to close the tab.
         handler = BridgeForwardingTests.handler(None, {"tabId": 5, "force": True})
         handler._send_extension_action = Mock()
         with patch.object(bridge, "send_to_extension", new_callable=AsyncMock, return_value={"ok": True}) as send:
             handler.handle_close_tab()
-        send.assert_awaited_once_with("neuterUnload", {"tabId": 5}, timeout=8)
+        send.assert_not_awaited()
+        self.assertEqual(handler._send_extension_action.call_args.args, ("closeTab", {"tabId": 5, "force": True}))
 
 
 if __name__ == "__main__":

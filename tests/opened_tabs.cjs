@@ -178,7 +178,7 @@ async function main() {
   assert.deepEqual(blocked.created, [], 'waits for the browser to open the tab first');
   await blocked.tick(50);
   assert.deepEqual(blocked.created, [{
-    url: 'https://example.com/ok2', openerTabId: 1, windowId: 3, cookieStoreId: 'firefox-container-1',
+    url: 'https://example.com/ok2', openerTabId: 1, windowId: 3, cookieStoreId: 'firefox-container-1', active: false,
   }]);
   blocked.commit(20, 'https://example.com/ok2');
   assert.deepEqual(await blockedClick.result, {

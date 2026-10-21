@@ -91,7 +91,10 @@ class ToolSurfaceTests(unittest.TestCase):
             post.assert_not_called()
             server.browser_tabs("close", tab_id=7, force=True)
             post.assert_called_with("/api/close-tab", {"tabId": 7, "force": True})
-            server.browser_tabs("select", tab_id=7)
+            # #139: closing a user tab needs the confirm token of its user_tab refusal.
+            server.browser_tabs("close", tab_id=7, confirm_token="tok")
+            post.assert_called_with("/api/close-tab", {"tabId": 7, "confirmToken": "tok"})
+            server.browser_tabs("select", tab_id=7, confirm_token="tok")
             post.assert_called_with("/api/switch-tab", {"tabId": 7})
             for action in ["close", "select", "invalid"]:
                 self.assertIn("error", server.browser_tabs(action))
@@ -155,21 +158,17 @@ class ToolSurfaceTests(unittest.TestCase):
                 post.assert_called_once_with("/api/screenshot", {"imagePreview": False})
 
     def test_viewport_tab_and_errors(self):
+        # #139: a tab's viewport is captured in place; the user's tab and window focus stay.
         data = "data:image/png;base64," + base64.b64encode(b"fake png bytes").decode()
-        with patch.object(server, "_get", return_value={"tabs": [{"id": 7, "windowId": 2}]}), \
-             patch.object(server, "_post", side_effect=[{"ok": True}, {"ok": True},
-                                                       {"dataUrl": data, "url": "u"}]) as post:
+        with patch.object(server, "_get") as get, \
+             patch.object(server, "_post", return_value={"dataUrl": data, "url": "u"}) as post:
             image, meta = server.browser_screenshot(tab_id=7)
             self.assertIsInstance(image, server.Image)
             self.assertEqual(meta, {"url": "u"})
-            self.assertEqual([c.args[0] for c in post.call_args_list],
-                             ["/api/switch-tab", "/api/focus-window", "/api/screenshot"])
-            self.assertEqual(post.call_args.args[1], {"imagePreview": True})
-        with patch.object(server, "_get", return_value={"error": "offline"}):
-            self.assertEqual(server.browser_screenshot(tab_id=7), {"error": "offline"})
-        with patch.object(server, "_get", return_value={"tabs": []}), patch.object(server, "_post") as post:
-            self.assertIn("error", server.browser_screenshot(tab_id=7))
-            post.assert_not_called()
+            post.assert_called_once_with("/api/screenshot", {"imagePreview": True, "tabId": 7})
+            get.assert_not_called()
+        with patch.object(server, "_post", return_value={"error": "Invalid tab ID: 7", "code": "tab_closed"}):
+            self.assertEqual(server.browser_screenshot(tab_id=7)["code"], "tab_closed")
 
     def test_handle_dialog(self):
         with patch.object(server, "_post", return_value={"ok": True}) as post:
