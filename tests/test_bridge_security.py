@@ -41,9 +41,9 @@ def _bridge_env(home, http_port, ws_port, token=SYNTHETIC_TOKEN):
     return env
 
 
-def _request(port, method, path, headers=None, host=None, body=None):
+def _request(port, method, path, headers=None, host=None, body=None, timeout=5):
     """Send a request with an exact Host header; return (status, headers, body)."""
-    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
     try:
         conn.putrequest(method, path, skip_host=True, skip_accept_encoding=True)
         if host is not None:

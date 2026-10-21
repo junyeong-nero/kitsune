@@ -439,6 +439,20 @@ your live browser connection. File reproducible bugs in
 browser version, bridge `build` from `browser_status`, tool calls, and expected
 versus actual behavior. Use a minimal public or local page and redact secrets.
 
+The opt-in real-browser suite (`tests/test_real_browser.py`) covers action races,
+tab unloads and reconnects against a real Firefox, Zen or LibreWolf. It is skipped
+unless `KITSUNE_E2E_BROWSER` names the browser binary, and it takes about a minute:
+
+```bash
+KITSUNE_E2E_BROWSER=/Applications/Zen.app/Contents/MacOS/zen \
+  uv run python -m unittest discover -s tests -p test_real_browser.py -v
+```
+
+It starts a headless browser on a new temporary profile and HOME, plus its own bridge
+and fixture site on spare ports, and kills them afterwards. Your browser profiles
+and running bridge are not touched: the suite runs a copy of the extension whose
+bridge port is rewritten to the test bridge, and checks the copy before launch.
+
 To publish a new version to PyPI, see [Releasing](releasing.md).
 
 ## Layout
