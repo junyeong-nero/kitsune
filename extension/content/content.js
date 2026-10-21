@@ -1200,6 +1200,7 @@
     return null;
   }
 
+  // Whether el has shadow roots nested deeper than shadowField searches.
   function hasDeeperShadowRoot(el, depth = SHADOW_FIELD_DEPTH) {
     const root = el.openOrClosedShadowRoot || el.shadowRoot;
     if (!root) return false;
