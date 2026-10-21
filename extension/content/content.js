@@ -1090,8 +1090,7 @@
   }
 
   function makeResult(el) {
-    const ref = `s${refGeneration}e${refCounter++}`;
-    refMap[ref] = el;
+    const ref = issueRef(el);
     const rect = viewportRect(el);
     return {
       ref,
@@ -1369,6 +1368,11 @@
     return target?.toLowerCase() === '_blank' ? link : null;
   }
 
+  function nativeValueSetter(el) {
+    const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    return Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+  }
+
   // ── Type ──
   function typeText(selector, text, clear, first) {
     const host = resolveTarget(selector, null, { first });
@@ -1391,24 +1395,11 @@
 
     el.focus();
     
-    if (clear) {
-      // Use native value setter to properly trigger React/Vue state
-      const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-      const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-      if (setter) {
-        setter.call(el, text);
-      } else {
-        el.value = text;
-      }
-    } else {
-      const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-      const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-      if (setter) {
-        setter.call(el, el.value + text);
-      } else {
-        el.value += text;
-      }
-    }
+    // Use native value setter to properly trigger React/Vue state
+    const setter = nativeValueSetter(el);
+    if (setter) setter.call(el, clear ? text : el.value + text);
+    else if (clear) el.value = text;
+    else el.value += text;
 
     // Fire all the events React/Vue/Angular listen for
     el.dispatchEvent(new Event('input', { bubbles: true }));
@@ -1461,8 +1452,7 @@
     }
 
     if (['INPUT', 'TEXTAREA'].includes(target.tagName)) {
-      const proto = target.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-      const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+      const setter = nativeValueSetter(target);
       const next = clear ? text : `${target.value || ''}${text}`;
       if (setter) setter.call(target, next);
       else target.value = next;
@@ -1581,8 +1571,7 @@
     } else {
       // Use native setter to trigger React/Vue/custom element state
       target.focus();
-      const proto = target.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-      const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+      const setter = nativeValueSetter(target);
       if (setter) {
         setter.call(target, String(value));
       } else {
@@ -1656,8 +1645,7 @@
       const rect = viewportRect(el);
       if (rect.width < 2 || rect.height < 2) return;
 
-      const ref = `s${refGeneration}e${refCounter++}`;
-      refMap[ref] = el;
+      const ref = issueRef(el);
       const frame = hostFrame(el.ownerDocument);
 
       fields.push({
@@ -1735,16 +1723,14 @@
         let el;
         try {
           // Preserve native CSS selector errors while resolving snapshot refs.
-          el = /^(?:s\d+e\d+|r\d+)$/.test(selector)
-            ? resolveElement(selector) : deepQuerySelector(selector);
+          el = REF_SELECTOR.test(selector) ? resolveElement(selector) : deepQuerySelector(selector);
         } catch (e) {
           resolve(errorResult(e));
           return;
         }
         if (el && !isHidden(el)) {
           const elapsed = Date.now() - start;
-          const ref = `s${refGeneration}e${refCounter++}`;
-          refMap[ref] = el;
+          const ref = issueRef(el);
           resolve({
             ok: true,
             found: true,
@@ -2890,8 +2876,7 @@
       if (target.isContentEditable) {
         docOf(target).execCommand('insertText', false, text);
       } else if (['INPUT','TEXTAREA'].includes(target.tagName)) {
-        const proto = target.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-        const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+        const setter = nativeValueSetter(target);
         if (setter) setter.call(target, (target.value || '') + text);
         else target.value = (target.value || '') + text;
         target.dispatchEvent(new Event('input', { bubbles: true }));
@@ -3214,8 +3199,7 @@
           results[key] = { ok: true, tag: el.tagName.toLowerCase(), checked: el.checked };
         } else {
           el.focus();
-          const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-          const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+          const setter = nativeValueSetter(el);
           if (setter) setter.call(el, String(value));
           else el.value = String(value);
           el.dispatchEvent(new Event('input', { bubbles: true }));
