@@ -294,11 +294,55 @@ for early capture.
 until the condition holds in the top-level document's rendered text.
 Matching is case-sensitive substring matching.
 
+### Lean tool preset
+
+`KITSUNE_TOOL_PRESET=lean` is an opt-in, experimental preset for comparing tool
+surfaces (#31). It is not the default and is not shown to be better: it narrows
+`core` to the 14 tools browser-mcp-bench's read and draft tasks used in 72 runs, and
+leaves every tool definition unchanged. Whether it changes task success, safety,
+calls or input per model turn is for the benchmark A/B to measure. Groups added with
+`KITSUNE_CAPS` still register in full, and leaving the variable unset (or empty)
+keeps the whole `core` group. Unknown preset names fail at startup.
+
+```toml
+[mcp_servers.kitsune.env]
+KITSUNE_TOOL_PRESET = "lean"
+```
+
+It keeps `browser_status`, `browser_tabs`, `browser_navigate`, `browser_page_info`,
+`browser_page_text`, `browser_snapshot`, `browser_forms`, `browser_dom`,
+`browser_find`, `browser_screenshot`, `browser_click`, `browser_type`,
+`browser_select_option`, and `browser_form_fill`: finding, opening, reading and
+capturing pages, and filling forms with confirmation (ask-before-act) and `expect`
+checks on every write. It drops these 16 `core` tools; use the default surface for
+the tasks in the last column:
+
+| Dropped | Closest lean substitute | Needs the default surface |
+|---|---|---|
+| `browser_check` | `browser_form_fill` sets a checkbox/radio state; `browser_click` toggles it | Setting a checkbox by ref, or one form-fill cannot match by selector, name, label or placeholder |
+| `browser_submit_form` | `browser_click` the submit button, with `expect` | Forms without a clickable submit control |
+| `browser_back`, `browser_forward` | `browser_navigate` to the previous URL (a fresh load) | History navigation that must keep page state |
+| `browser_markdown` | `browser_page_text`, `browser_snapshot(text=True)` | Reading pages as Markdown |
+| `browser_wait_for` | `expect` and `wait` on actions, `browser_tabs(action="new", wait=True)` | Waiting without an action: selector, text, URL, title, JS or network idle |
+| `browser_hover` | None | Hover menus and tooltips |
+| `browser_keypress` | None (`browser_type` enters text only) | Enter/Escape/arrow keys, shortcuts, keyboard-only widgets |
+| `browser_scroll` | None; reads cover the whole page and clicks scroll their target into view | Infinite scroll, lazy loading, scroll position |
+| `browser_handle_dialog` | None; dialogs stay native and `browser_page_info` lists recent ones | Auto-answering alerts, confirms, prompts |
+| `browser_upload_file` | None | File uploads |
+| `browser_js` | None | Running page JavaScript, trusted HTML insertion |
+| `browser_watch_console`, `browser_console_logs` | None | Console debugging |
+| `browser_workflows`, `browser_workflow` | None | Named workflows |
+
+Tool descriptions still mention tools the preset drops (for example the ref rules in
+`browser_snapshot`). `tests/test_tool_preset.py` checks the dropped list and that the
+kept tools retain the parameters read and draft flows use.
+
 ## Configuration
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `KITSUNE_CAPS` | `core` | Comma-separated capability groups above; `all` enables everything |
+| `KITSUNE_TOOL_PRESET` | Unset | `lean` narrows `core` to 14 tools for benchmark comparisons; see [Lean tool preset](#lean-tool-preset) |
 | `KITSUNE_HOME` | `~/.kitsune` | Data directory (0700) |
 | `KITSUNE_HTTP_PORT` | `47651` | Bridge HTTP API |
 | `KITSUNE_WS_PORT` | `47652` | Extension WebSocket. Change `WS_URL` in `extension/background/background.js` too |
@@ -453,7 +497,9 @@ versus actual behavior. Use a minimal public or local page and redact secrets.
 Tool definitions are resent with every model request, so their size is tracked:
 `uv run python scripts/tool_schema_size.py` reports the compact JSON size of each
 default tool, and a test fails until `--update` records a change in
-`tests/tool_schema_sizes.json`. Action tools share one contract (ref, wait,
+`tests/tool_schema_sizes.json`. The same test fails when the `core`, benchmark
+allowlist or lean preset total, or any single tool, grows past `TOTAL_BUDGETS` /
+`TOOL_BUDGET` in the script; raise a budget only deliberately. Action tools share one contract (ref, wait,
 expect, confirm_token) documented in `browser_click`; point to it rather than
 repeating it.
 

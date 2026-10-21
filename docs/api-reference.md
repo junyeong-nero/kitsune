@@ -8,6 +8,16 @@ Base URL: `http://127.0.0.1:47651`
 95 tools. The groups are `core`, `tabs`, `network`, `storage`, `parallel`,
 `devtools`, `windows`, and `session`. A comma list selects those groups only.
 See [Tools and capabilities](guide.md#tools) for the complete tool list per group.
+
+`KITSUNE_TOOL_PRESET=lean` (opt-in; unset by default) narrows `core` to 14 tools:
+`browser_status`, `browser_tabs`, `browser_navigate`, `browser_page_info`,
+`browser_page_text`, `browser_snapshot`, `browser_forms`, `browser_dom`, `browser_find`,
+`browser_screenshot`, `browser_click`, `browser_type`, `browser_select_option`,
+`browser_form_fill`. Their definitions are unchanged, other `KITSUNE_CAPS` groups
+register in full, and an unknown preset fails at startup. It exists for the
+browser-mcp-bench A/B (#31); no token, cost or success effect is claimed. The
+[Lean tool preset](guide.md#lean-tool-preset) section lists the 16 dropped `core`
+tools and which tasks need the default surface.
 The bridge endpoints below remain available unchanged; MCP tool names and
 parameters are separate from HTTP endpoint names and JSON command actions.
 
