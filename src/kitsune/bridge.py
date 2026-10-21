@@ -930,6 +930,10 @@ async def _held_reason(action, params):
         elif reason is None and target.get("submitLabel"):
             what = "presses Enter on" if submit_key else "clicks"
             reason, description = "submit_label", f"{what} a button labeled like a submit or payment ({target.get('text')})"
+        elif reason is None and target.get("consequentialLabel"):
+            what = "presses Enter on" if submit_key else "clicks"
+            reason, description = ("consequential_label", f"{what} a button or link labeled like a send, transfer, "
+                                   f"delete or account change ({target.get('text')})")
     if reason is None:
         return None
     return reason, description, tab_id, url_now or url

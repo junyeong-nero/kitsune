@@ -486,6 +486,7 @@ In ask mode the bridge holds:
 | `submit` | `browser_submit_form` (`submitForm`) |
 | `submit_control` | Click, double-click, trusted click, or click-and-wait-navigation on a submit control (`button` whose type is submit, `input type=submit/image`, or an element inside one, with a form). Also Enter (`browser_keypress`) on a text-like `input` in a form or on a submit control |
 | `submit_label` | The same clicks, or Enter, on any other button whose label reads like a submit, order, or payment ("Place order", "Pay $12", "결제하기"), for example a JS-driven `type=button` or `role=button`. See [Submit labels](#submit-labels) |
+| `consequential_label` | The same clicks, or Enter, on a button or link whose label reads like a send, transfer, delete, or account change ("Send", "Delete account", "Unsubscribe", "송금하기"), including icon-only controls named by `aria-label`, `alt` or `title`. See [Submit labels](#submit-labels) |
 | `javascript` | Agent-supplied JavaScript: `browser_js` (including `full=True`), `browser_wait_for(js=...)`, `browser_sync_barrier`, batch `js`, and batch `if`/`while` conditions |
 | `cookies` | `browser_cookies` (every op, including `get`), `browser_save_session`, `browser_load_session` |
 | `storage` | `browser_storage` (every op, including `get`, `list` and `snapshot`), on any page |
@@ -585,13 +586,25 @@ Agent-settable ask mode (`browser_set_policy(ask=True)`) is not persisted.
 #### Submit labels
 
 `submit_label` covers buttons that submit or pay through JavaScript rather than
-through a form. The content script reads the label of the clicked control: its
-`aria-label`, else its text, else the `value` of an `input type=button/submit/image`.
-The control is a `button`, one of those inputs, or an element with `role="button"`,
-including an element inside one. The label is normalized: case, Unicode width, and
-whitespace are folded; a trailing parenthetical, an amount ("$12.00", "12,000원"),
-and leading or trailing punctuation are dropped; labels over 60 characters never
-match. The **whole** remaining label must then be one of a fixed set of phrases:
+through a form. `consequential_label` covers buttons and links that send, transfer,
+delete, or change an account. The two reasons are separate so a client can word its
+approval prompt; a label that matches both is reported as `submit_label`.
+
+The content script reads the label of the clicked control. The control is a `button`,
+an `input type=button/submit/image`, or an element with `role="button"`, including an
+element inside one. For `consequential_label` it can also be a link: an `<a href>` or
+an element with `role="link"` (an `<a>` without `href` is not a link). The label is
+the control's accessible name, in this order: the text of the elements named by
+`aria-labelledby`; `aria-label`; its text; the `value` (else `alt`) of a button input;
+for an icon-only control without text, the `aria-label`, `alt`, or SVG `<title>` of
+the first icon inside it; then `title`.
+
+The label is normalized: case, Unicode width, and whitespace are folded; a trailing
+parenthetical, an amount ("$12.00", "12,000원"), and leading or trailing punctuation
+are dropped; labels over 60 characters never match. The **whole** remaining label must
+then be one of a fixed set of phrases.
+
+Submit, order, and payment phrases (`submit_label`, buttons only):
 
 - English: place/submit/confirm/complete/finish (your/my/the) order/purchase/payment/
   booking/reservation; pay, pay now, pay securely, pay with …; buy, buy (it) now,
@@ -605,16 +618,50 @@ match. The **whole** remaining label must then be one of a fixed set of phrases:
   bestellen, zur Kasse; payer, acheter, commander, passer la commande; pagar,
   comprar, realizar pedido, finalizar compra.
 
+Send, transfer, delete, and account-change phrases (`consequential_label`, buttons
+and links):
+
+- English: send/transfer/wire (it/money/funds/payment) (now); confirm/complete/make
+  (the/a) transfer; confirm and send; delete/remove/erase (permanently/forever/all/
+  everything); (permanently) delete/remove/erase (my/your/the/this/all) account/
+  profile/data/repository/project/workspace; close/deactivate/terminate/cancel (my/…)
+  account; cancel/end (my/…) order/booking/reservation/subscription/membership/plan;
+  unsubscribe (from all/from everything/me/all);
+- Korean: 송금, 이체, 전송 (하기) with an optional 지금/바로 prefix; 보내기; (계정/회원/영구)
+  삭제/제거 (하기); (회원) 탈퇴 (하기); 구독/멤버십/정기결제/주문 해지/취소 (하기); 해지 (하기);
+  수신거부 (하기);
+- Japanese: 送金/振込/振り込み/送信 (する), 振り込む; (アカウントを) 削除 (する); 退会, 解約,
+  配信停止, 購読解除 (する); サブスクリプション/定期購入/プラン/注文を解約/キャンセル (する);
+- Chinese: (立即/确认) 发送, 转账, 汇款 (and traditional forms); (永久) 删除/移除 (账号/账户);
+  注销 (账号); 退订; 取消订阅, 取消订单;
+- German, French, Spanish: (jetzt) senden/absenden/überweisen/löschen/entfernen/
+  kündigen/abbestellen; Konto/Account/Profil löschen/schließen/kündigen; Abo/
+  Abonnement/Vertrag/Mitgliedschaft/Newsletter kündigen/abbestellen; Überweisung
+  absenden/ausführen/bestätigen; envoyer, transférer, supprimer, résilier (maintenant);
+  supprimer/fermer/clôturer/désactiver (mon/le/votre) compte; effectuer/confirmer/
+  valider le virement; se désabonner, se désinscrire; résilier/annuler (mon/votre/l')
+  abonnement; enviar, transferir, eliminar, borrar (ahora); enviar dinero; realizar/
+  confirmar/hacer transferencia; eliminar/borrar/cerrar/desactivar (mi) cuenta;
+  dar/darse/darme de baja; cancelar/anular (mi) suscripción/membresía.
+
 The match is deliberately conservative: "Submit search", "Search", "Add to cart",
-"Order history", "Payment methods", "Continue", "Send", and a bare "OK", "확인",
-"確認" or "确认" are not held. A JS-driven commit button with another label ("Send",
-"Transfer", "Delete account"), a link (`<a>` without `role="button"`), or a label
-drawn on a canvas is not caught. On a payment-like page every click is held anyway
-(`payment_page`). An extension older than this bridge does not report labels, so only
-structural submit controls are held there.
+"Order history", "Payment methods", "Continue", "Subscribe", "Send feedback", "Send
+code", "Transfer history", "Remove filter", "Manage subscription", a bare "Cancel",
+"OK", "확인", "취소", "確認", "确认" or "取消", and an `<a>` labeled "Place order" are not
+held. A commit control with other wording, a control without an accessible name (for
+example, an unlabeled icon or a label drawn on a canvas), or a clickable element that
+is neither a button nor a link is not caught. On a payment-like page every click is
+held anyway (`payment_page`).
+
+An extension older than this bridge reports fewer labels, and the bridge treats a
+missing flag as no match. With an extension from before `submit_label`, only
+structural submit controls are held; with one from before `consequential_label`,
+send, transfer, delete, and account-change labels are not held. A tab that still runs an older
+content script of a current extension gets the current one injected before the next
+command.
 
 **Check-then-act window.** The bridge inspects the target (tab, URL, and whether a
-click or Enter submits a form or hits a submit-labeled button) with `describeTarget` before it dispatches the action.
+click or Enter submits a form or hits a submit- or consequential-labeled control) with `describeTarget` before it dispatches the action.
 The page can change between the two: it can navigate to a payment-like URL, or a
 script can turn the target into a submit control. Such a change is not caught. Passing
 `tab_id` removes the active-tab part of this window, but not changes inside the page.
