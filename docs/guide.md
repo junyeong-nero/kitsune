@@ -430,10 +430,6 @@ uv run python -m unittest discover -s tests -q
 for test in tests/*.cjs; do node "$test"; done
 ```
 
-`tests/test_real_browser_opened_tabs.py` is skipped unless `KITSUNE_E2E_BROWSER` names a
-Firefox or Zen binary, which it runs headless with a temporary profile, HOME, and bridge.
-It runs once with popups allowed and once with the default popup blocker.
-
 The Python regression suite covers the MCP tool surface, snapshots, navigation
 waits, and bridge lifecycle; the Node harnesses cover content-script behavior
 such as refs, form filling, and password redaction. For an end-to-end check, load the extension in a
@@ -450,19 +446,27 @@ default tool, and a test fails until `--update` records a change in
 expect, confirm_token) documented in `browser_click`; point to it rather than
 repeating it.
 
-The opt-in real-browser suite (`tests/test_real_browser.py`) covers action races,
-tab unloads and reconnects against a real Firefox, Zen or LibreWolf. It is skipped
-unless `KITSUNE_E2E_BROWSER` names the browser binary, and it takes about a minute:
+The opt-in real-browser suites (`tests/test_real_browser*.py`) run against a real
+Firefox, Zen or LibreWolf. They cover action races, tab unloads and reconnects
+(`test_real_browser.py`), tabs opened by `target=_blank` clicks with popups allowed
+and with the default popup blocker (`test_real_browser_opened_tabs.py`), and every
+read tool on empty 404 and 500 pages (`test_real_browser_error_pages.py`). They are skipped unless `KITSUNE_E2E_BROWSER`
+names the browser binary. A full run takes a little over a minute:
 
 ```bash
 KITSUNE_E2E_BROWSER=/Applications/Zen.app/Contents/MacOS/zen \
-  uv run python -m unittest discover -s tests -p test_real_browser.py -v
+  uv run python -m unittest discover -s tests -p 'test_real_browser*.py' -v
 ```
 
-It starts a headless browser on a new temporary profile and HOME, plus its own bridge
-and fixture site on spare ports, and kills them afterwards. Your browser profiles
-and running bridge are not touched: the suite runs a copy of the extension whose
-bridge port is rewritten to the test bridge, and checks the copy before launch.
+Use `-p test_real_browser_error_pages.py` (or another file name) to run one suite.
+Each test class starts a headless browser on a new temporary profile and HOME, plus
+its own bridge and fixture site on spare ports, and kills them afterwards. Your
+browser profiles and running bridge are not touched. The suites run a copy of the
+extension whose bridge port is rewritten to the test bridge. The browser does not
+start if any script in the copy still names port 47652, or if the test bridge would
+use that port. The shared harness, `tests/real_browser_harness.py`, documents how to
+add a suite, including how to choose the profile prefs (browser defaults or
+popups allowed).
 
 To publish a new version to PyPI, see [Releasing](releasing.md).
 
