@@ -37,7 +37,13 @@ class ToolSurfaceTests(unittest.TestCase):
             "browser_element_screenshot", "browser_full_page_screenshot", "browser_wp_html",
         }
         self.assertFalse(all_tools & removed)
-        groups = [self.registered(g) for g in server.CAPABILITY_GROUPS]
+        # `all` enables every group except history, which reads personal data and must be named (#140).
+        self.assertEqual(server.NAMED_ONLY_GROUPS, {"history"})
+        history = {"browser_history_search", "browser_history_visits", "browser_bookmarks_search"}
+        self.assertEqual(self.registered("history"), history)
+        self.assertFalse(all_tools & history)
+        self.assertEqual(self.registered("all,history"), all_tools | history)
+        groups = [self.registered(g) for g in server.CAPABILITY_GROUPS - server.NAMED_ONLY_GROUPS]
         self.assertEqual(set.union(*groups), all_tools)
         self.assertEqual(sum(map(len, groups)), len(all_tools))
         self.assertEqual(self.registered(" CORE, parallel "), core | self.registered("parallel"))

@@ -19,6 +19,13 @@
     "clipboardWrite",
     "browsingData"
   ],
+  "optional_permissions": [
+    "history",
+    "bookmarks"
+  ],
+  "options_ui": {
+    "page": "options/options.html"
+  },
   "content_scripts": [{
     "matches": ["<all_urls>"],
     "js": ["content/content.js"],
@@ -26,7 +33,8 @@
   }],
   "background": {
     "scripts": [
-      "background/background.js"
+      "background/background.js",
+      "background/history.js"
     ]
   },
   "browser_specific_settings": {

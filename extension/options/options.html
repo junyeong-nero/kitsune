@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Kitsune options</title>
+  <style>
+    body { font: 14px/1.5 system-ui, sans-serif; margin: 1em; max-width: 40em; }
+    button { margin-right: 0.5em; }
+  </style>
+</head>
+<body>
+  <h2>History and bookmarks</h2>
+  <p>
+    Lets agents connected to Kitsune search your browsing history and bookmarks. They get
+    URLs, titles, visit times and bookmark folders only, never page contents, form data,
+    cookies or passwords, and only within the Kitsune bridge's history policy (by default
+    the last 30 days). The MCP server must also enable the <code>history</code> capability group.
+  </p>
+  <p>History: <strong id="history-status">checking…</strong>, bookmarks: <strong id="bookmarks-status">checking…</strong></p>
+  <p>
+    <button id="grant">Allow history and bookmarks</button>
+    <button id="revoke">Revoke</button>
+  </p>
+  <p id="error" hidden></p>
+  <script src="options.js"></script>
+</body>
+</html>

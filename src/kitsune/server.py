@@ -13,6 +13,7 @@ import re
 import subprocess
 import sys
 import time
+from datetime import datetime
 from time import sleep as _sleep
 from typing import Literal
 
@@ -86,7 +87,10 @@ class KitsuneMCP(FastMCP):
 
 mcp = KitsuneMCP("Kitsune")
 
-CAPABILITY_GROUPS = frozenset({"core", "tabs", "network", "storage", "parallel", "devtools", "windows", "session"})
+CAPABILITY_GROUPS = frozenset({"core", "tabs", "network", "storage", "parallel", "devtools", "windows", "session",
+                               "history"})
+# Groups that read personal data: KITSUNE_CAPS=all leaves them out, so they must be named (#140).
+NAMED_ONLY_GROUPS = frozenset({"history"})
 ENABLED_CAPS = frozenset(
     cap.strip().lower() for cap in os.environ.get("KITSUNE_CAPS", "core").split(",") if cap.strip()
 )
@@ -135,7 +139,7 @@ def _mcp_errors(function):
 def tool(group: str, annotations: ToolAnnotations | None = None):
     """Register a tool only when its capability group is enabled at startup.
 
-    A tool preset narrows the core group only; other enabled groups register in full.
+    `all` enables every group except NAMED_ONLY_GROUPS. A tool preset narrows the core group only; other enabled groups register in full.
     Only the MCP registration marks failures as errors; Python callers get the plain result.
     """
     if group not in CAPABILITY_GROUPS:
@@ -144,7 +148,7 @@ def tool(group: str, annotations: ToolAnnotations | None = None):
     def decorate(function):
         if group == "core" and TOOL_PRESET is not None and function.__name__ not in TOOL_PRESETS[TOOL_PRESET]:
             return function
-        if "all" in ENABLED_CAPS or group in ENABLED_CAPS:
+        if ("all" in ENABLED_CAPS and group not in NAMED_ONLY_GROUPS) or group in ENABLED_CAPS:
             mcp.tool(annotations=annotations)(_mcp_errors(function))
         return function
 
@@ -1820,8 +1824,11 @@ def browser_set_policy(
     readonly: bool | None = None,
     ask: bool | None = None,
     ask_urls: list[str] | None = None,
+    history_allow_domains: list[str] | None = None,
+    history_deny_domains: list[str] | None = None,
+    history_max_days: int | None = None,
 ) -> dict:
-    """Set URL allow/deny regex lists, read-only mode, and/or ask-before-act mode.
+    """Set URL allow/deny regex lists, read-only mode, ask-before-act mode, and/or the history scope.
 
     Read-only mode blocks write actions (click/type/navigate/cookies set/etc.), js and
     batch if/while conditions, while still allowing read ops. Useful for "let the agent
@@ -1836,6 +1843,11 @@ def browser_set_policy(
     is never honored inside batch/retry/parallel/broadcast/workflows. A bridge started with
     KITSUNE_ASK_BEFORE_ACT=1 locks ask mode on, also after restarts; then ask=False or
     dropping ask_urls fails.
+
+    History scope (history tools; docs/api-reference.md#history-and-bookmarks): domain lists
+    (a domain covers its subdomains, deny wins) and the time window in days. These can only
+    tighten: add denies, narrow the allow list, lower the days; loosening fails with
+    policy_locked. History results also stay filtered by every URL allow/deny list set before.
     """
     body = {}
     if allow is not None: body["allow"] = allow
@@ -1843,13 +1855,74 @@ def browser_set_policy(
     if readonly is not None: body["readonly"] = readonly
     if ask is not None: body["ask"] = ask
     if ask_urls is not None: body["askUrls"] = ask_urls
+    if history_allow_domains is not None: body["historyAllowDomains"] = history_allow_domains
+    if history_deny_domains is not None: body["historyDenyDomains"] = history_deny_domains
+    if history_max_days is not None: body["historyMaxDays"] = history_max_days
     return _post("/api/set-policy", body)
 
 
 @tool("devtools", annotations=ToolAnnotations(title="Get policy", **READ))
 def browser_get_policy() -> dict:
-    """Return the active URL/readonly/ask policy."""
+    """Return the active URL/readonly/ask/history policy."""
     return _post("/api/get-policy", {})
+
+
+# ════════════════════════════════════════════════════════════════════
+#  History and bookmarks (#140) — docs/api-reference.md#history-and-bookmarks
+# ════════════════════════════════════════════════════════════════════
+# Off unless KITSUNE_CAPS names history, and the user must also allow it on the extension's
+# options page. The bridge applies the history scope from its policy.
+
+def _epoch_ms(since: str) -> int | None:
+    """Epoch milliseconds of an ISO 8601 date or datetime (local time without an offset)."""
+    text = since.strip()
+    if text[-1:] in ("Z", "z"):  # Python 3.10 reads only numeric offsets
+        text = text[:-1] + "+00:00"
+    try:
+        moment = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return int(moment.timestamp() * 1000)
+
+
+@tool("history", annotations=ToolAnnotations(title="Search browsing history", **READ))
+def browser_history_search(query: str, since: str | None = None, limit: int = 20) -> dict:
+    """Search the user's browsing history by title/URL text ("" for all), newest first.
+
+    Returns results [{url, title, last_visit, visit_count}] inside the bridge's history
+    scope (domain lists; last 30 days by default); credential-like URL values read
+    [redacted]. Without the user's browser grant: permission_required, ask the user.
+    since: ISO 8601 date or datetime. Reopen a result with browser_tabs(action="new", url=...).
+    """
+    body: dict = {"query": query, "limit": limit}
+    if since is not None:
+        since_ms = _epoch_ms(since)
+        if since_ms is None:
+            return {"error": "since must be an ISO 8601 date or datetime, e.g. 2026-10-01"}
+        body["since"] = since_ms
+    return _post("/api/history-search", body)
+
+
+@tool("history", annotations=ToolAnnotations(title="List history visits", **READ))
+def browser_history_visits(url: str) -> dict:
+    """List the visits to a URL (as browser_history_search returned it), newest first.
+
+    Returns visits [{visit_time, transition, visit_id, referring_visit_id?}] inside the
+    history time window, to follow the user's trail; transition is how the visit started
+    (link, typed, reload, ...). referring_visit_id appears only where Firefox reports it.
+    """
+    return _post("/api/history-visits", {"url": url})
+
+
+@tool("history", annotations=ToolAnnotations(title="Search bookmarks", **READ))
+def browser_bookmarks_search(query: str, limit: int = 20) -> dict:
+    """Search the user's bookmarks by title/URL text ("" for the most recent).
+
+    Returns results [{url, title, folder}] inside the bridge's history domain scope;
+    credential-like URL values read [redacted]. Without the user's browser grant:
+    permission_required, ask the user.
+    """
+    return _post("/api/bookmarks-search", {"query": query, "limit": limit})
 
 
 @tool("parallel", annotations=ToolAnnotations(title="Retry a command", **DESTRUCTIVE))
