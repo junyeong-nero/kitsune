@@ -74,6 +74,8 @@ PAGES = {
 <x-code-input id="closed-otp" role="textbox" aria-label="Login code"></x-code-input>
 <x-search-input id="site-search" role="searchbox" aria-label="Search"></x-search-input>
 <x-nested-input id="nested" aria-label="Nickname"></x-nested-input>
+<x-nested-code id="nested-code" role="textbox" aria-label="Backup code"></x-nested-code>
+<x-deep-input id="too-deep" levels="9" aria-label="Deep field"></x-deep-input>
 <script src="/page.js"></script>""",
     "/notes": """<!doctype html><title>Notes</title>
 <style>.masked { -webkit-text-security: disc; }</style>
@@ -113,16 +115,35 @@ function defineControl(name, mode, inner) {
 defineControl('x-secret-input', 'open', '<input type="password">');
 defineControl('x-code-input', 'closed', '<input autocomplete="one-time-code" inputmode="numeric">');
 defineControl('x-search-input', 'open', '<input type="search">');
-// An input two closed roots deep, which browser_fill does not reach.
+// Inputs two closed roots deep: an ordinary one, and a one-time code inside x-code-input.
 defineControl('x-inner-field', 'closed', '<input>');
-customElements.define('x-nested-input', class extends HTMLElement {
+function defineNested(name, inner) {
+  customElements.define(name, class extends HTMLElement {
+    constructor() {
+      super();
+      const root = this.attachShadow({ mode: 'closed' });
+      root.innerHTML = `<${inner}></${inner}>`;
+      this.inner = root.firstChild;
+    }
+    get value() { return this.inner.value; }
+  });
+}
+defineNested('x-nested-input', 'x-inner-field');
+defineNested('x-nested-code', 'x-code-input');
+// An input `levels` closed roots deep; nine is one more than browser_fill searches.
+customElements.define('x-deep-input', class extends HTMLElement {
   constructor() {
     super();
-    const root = this.attachShadow({ mode: 'closed' });
-    root.innerHTML = '<x-inner-field></x-inner-field>';
-    this.inner = root.firstChild;
+    this.root = this.attachShadow({ mode: 'closed' });
   }
-  get value() { return this.inner.value; }
+  connectedCallback() {
+    if (this.root.firstChild) return;
+    const levels = Number(this.getAttribute('levels'));
+    const child = document.createElement(levels > 1 ? 'x-deep-input' : 'input');
+    if (levels > 1) child.setAttribute('levels', levels - 1);
+    this.root.append(child);
+  }
+  get value() { return this.root.firstChild.value; }
 });
 """
 
@@ -386,20 +407,67 @@ class RealBrowserRedactionTests(harness.RealBrowserTestCase):
         self.assertEqual((search.get("redacted"), search["attrs"]["value"]), (None, "kittens"))
         self.assertIn('value="kittens"', reads["browser_html"]["html"])
 
-    def test_a_field_browser_fill_cannot_reach_fails_as_not_fillable(self):
+    def host_value(self, tab_id, field_id):
+        return self.js(tab_id, f"document.getElementById('{field_id}').wrappedJSObject.value")
+
+    def test_fill_type_and_form_fill_reach_inputs_two_closed_shadow_roots_deep(self):
         tab_id = self.open_tab(self.site.origin + "/widgets")
-        for path, body in [("/api/fill", {"value": "fixture-nick"}),
-                           ("/api/type", {"text": "fixture-nick", "clear": True})]:
-            with self.subTest(path=path):
-                result = self.call(path, {"selector": "#nested", **body, "tabId": tab_id})
+        # #117: each tool writes through two nested closed roots.
+        filled, typed, form = fake("NESTED_FILLED"), fake("NESTED_TYPED"), fake("NESTED_FORM")
+        result = self.assert_ok(self.call("/api/fill", {"selector": "#nested-code", "value": filled,
+                                                        "tabId": tab_id, "includeSnapshot": True}))
+        self.assertEqual((result["pierced"], result["tag"]), (True, "input"))
+        self.assertIn("snapshot", result)
+        self.assertNotIn(MARKER, json.dumps(result), "a write result echoes a filled value")
+        self.assertEqual(self.host_value(tab_id, "nested-code"), filled)
+        self.type_into(tab_id, "#nested-code", typed)
+        self.assertEqual(self.host_value(tab_id, "nested-code"), typed)
+        # form_fill returns no post-action snapshot; the reads below cover it.
+        result = self.call("/api/form-fill", {"fields": {"#nested-code": form}, "tabId": tab_id})
+        self.assertNotIn("error", result)
+        self.assertEqual(result["results"], {"#nested-code": {"ok": True, "tag": "input"}})
+        self.assertNotIn(MARKER, json.dumps(result), "a write result echoes a filled value")
+        self.assertEqual(self.host_value(tab_id, "nested-code"), form)
+        # An ordinary field two closed roots deep, through each tool.
+        self.assert_ok(self.call("/api/fill", {"selector": "#nested", "value": "fixture-fill", "tabId": tab_id}))
+        self.assertEqual(self.host_value(tab_id, "nested"), "fixture-fill")
+        self.type_into(tab_id, "#nested", "fixture-type", sensitive=False)
+        self.assertEqual(self.host_value(tab_id, "nested"), "fixture-type")
+        result = self.call("/api/form-fill", {"fields": {"#nested": "fixture-form"}, "tabId": tab_id})
+        self.assertEqual(result.get("results"), {"#nested": {"ok": True, "tag": "input"}}, result)
+        self.assertEqual(self.host_value(tab_id, "nested"), "fixture-form")
+
+        # The one-time code stays redacted on its host, two roots up.
+        reads = self.read_all(tab_id)
+        self.assert_hidden(tab_id, reads, [filled, typed, form])
+        rows = self.row(reads, "nested-code")
+        self.assertIsNone(rows["forms"], "shadow inputs are not light-DOM form fields")
+        self.assertIs(rows["dom"]["redacted"], True)
+        self.assertIs(rows["query"]["redacted"], True)
+        self.assertRegex(reads["browser_snapshot"]["snapshot"],
+                         re.compile(r'textbox "Backup code" \[ref=s\d+e\d+\]$', re.M))
+
+    def test_a_field_deeper_than_the_shadow_search_fails_as_not_fillable(self):
+        tab_id = self.open_tab(self.site.origin + "/widgets")
+        self.assertEqual(self.js(tab_id, "document.getElementById('too-deep').wrappedJSObject.value"), "",
+                         "the fixture's input exists nine closed roots deep")
+        value = "fixture-deep"
+        results = {
+            "fill": self.call("/api/fill", {"selector": "#too-deep", "value": value, "tabId": tab_id}),
+            "type": self.call("/api/type", {"selector": "#too-deep", "text": value, "clear": True,
+                                            "tabId": tab_id}),
+        }
+        form = self.call("/api/form-fill", {"fields": {"#too-deep": value}, "tabId": tab_id})
+        self.assertEqual(form.get("error"), "No field was filled", form)
+        results["form_fill"] = form["results"]["#too-deep"]
+        for tool, result in results.items():
+            with self.subTest(tool=tool):
                 self.assert_error(result, "not_fillable", True)
-                self.assertRegex(result["error"], r"^Element is not a fillable field")
-                self.assertEqual(result["state"]["tag"], "x-nested-input")
-                self.assertNotIn("fixture-nick", json.dumps(result))
-                if path == "/api/fill":
-                    # The page-context fallback ran and could not see the closed roots either.
-                    self.assertEqual(result["state"]["pageContext"], "no_field")
-        self.assertEqual(self.js(tab_id, "document.getElementById('nested').wrappedJSObject.value"), "")
+                self.assertRegex(result["error"], r"^Element is not a fillable field: .* within 8 nested shadow roots")
+                self.assertEqual(result["state"], {"tag": "x-deep-input", "reason": "shadow_depth"})
+                self.assertNotIn(value, json.dumps(result))
+        self.assertNotIn(value, json.dumps(form))
+        self.assertEqual(self.host_value(tab_id, "too-deep"), "")
 
     # ── Textareas and editable regions ──
 
