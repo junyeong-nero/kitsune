@@ -3,7 +3,7 @@
 
 'use strict';
 
-const EXPECTED_CONTENT_VERSION = 25;
+const EXPECTED_CONTENT_VERSION = 26;
 const WS_URL = 'ws://127.0.0.1:47652';
 // scripts/build_extension.py sets 'signed' for the AMO build (see content.js).
 const KITSUNE_BUILD = 'dev';
@@ -15,7 +15,30 @@ const MAX_RECONNECT_DELAY = 15000;
 
 // Policies survive document navigation, but are cleared when a tab closes.
 const dialogPolicies = new Map();
-browser.tabs.onRemoved.addListener(tabId => dialogPolicies.delete(tabId));
+// The last main-frame HTTP status per tab, so an unscriptable error page can name it.
+const mainFrameStatus = new Map();
+browser.tabs.onRemoved.addListener(tabId => { dialogPolicies.delete(tabId); mainFrameStatus.delete(tabId); });
+browser.webRequest?.onHeadersReceived.addListener(
+  ({ tabId, url, statusCode }) => { if (tabId >= 0) mainFrameStatus.set(tabId, { url, statusCode }); },
+  { urls: ['<all_urls>'], types: ['main_frame'] });
+
+// Tabs a page opens (target=_blank links, window.open) name it as their opener.
+// Page actions report the tabs their tab opened since the action started.
+let tabsCreated = 0;
+const openedTabs = [];          // { tabId, openerTabId, seq } for open tabs with an opener
+const actionStarts = new Map(); // tabId -> tabsCreated when its last page action started
+browser.tabs.onCreated.addListener(tab => {
+  tabsCreated++;
+  if (tab.openerTabId != null) {
+    openedTabs.push({ tabId: tab.id, openerTabId: tab.openerTabId, seq: tabsCreated });
+  }
+});
+browser.tabs.onRemoved.addListener(tabId => {
+  actionStarts.delete(tabId);
+  for (let i = openedTabs.length - 1; i >= 0; i--) {
+    if (openedTabs[i].tabId === tabId || openedTabs[i].openerTabId === tabId) openedTabs.splice(i, 1);
+  }
+});
 browser.runtime.onMessage.addListener((msg, sender) => {
   if (msg.action === 'getDialogPolicy') {
     return Promise.resolve(dialogPolicies.get(sender.tab?.id) || null);
@@ -169,6 +192,14 @@ function isRestrictedUrl(url) {
 const POST_SNAPSHOT_ACTIONS = new Set([
   'click', 'type', 'fill', 'selectOption', 'checkBox', 'keypress', 'submitForm', 'navigate'
 ]);
+// Page actions on one existing tab (the bridge's outcome actions) report opened_tabs.
+const OPENER_ACTIONS = new Set([
+  'click', 'doubleClick', 'type', 'fill', 'setEditableContent', 'selectOption', 'checkBox',
+  'keypress', 'submitForm', 'formFill', 'hover', 'scroll', 'drag', 'focusElement', 'blurElement',
+  'navigate', 'goBack', 'goForward', 'reloadTabBrowser', 'clickAndWaitNavigation',
+]);
+// A tab opened by a link starts on about:blank; wait this long for its real URL.
+const OPENED_TAB_URL_WAIT_MS = 1000;
 
 async function handleCommand(command) {
   const params = { ...command };
@@ -179,12 +210,18 @@ async function handleCommand(command) {
     if (params.toRef) params.to = params.toRef;
   }
   const withSnapshot = POST_SNAPSHOT_ACTIONS.has(params.action) && params.includeSnapshot !== false;
-  if (withSnapshot && params.tabId == null) params.tabId = await getActiveTabId();
+  // Text snapshots report which tab they read.
+  const textSnapshot = params.action === 'getSnapshot' && !!params.text;
+  const tracksOpenedTabs = OPENER_ACTIONS.has(params.action);
+  if ((withSnapshot || textSnapshot || tracksOpenedTabs) && params.tabId == null) params.tabId = await getActiveTabId();
+  if (tracksOpenedTabs && params.tabId != null) actionStarts.set(params.tabId, tabsCreated);
   const result = await dispatchCommand(params);
+  if (textSnapshot && result && !result.error) result.tabId = params.tabId;
   if (withSnapshot && result && !result.error && result.ok !== false) {
     try {
       const snapshot = await forwardToContent('getSnapshot', {
         tabId: params.tabId, maxChars: 4000, focusLastAction: params.action !== 'navigate',
+        ...(params.snapshotText ? { text: true } : {}),
       });
       if (snapshot.error) result.snapshot_error = snapshot.error;
       else {
@@ -194,7 +231,30 @@ async function handleCommand(command) {
       }
     } catch (e) { result.snapshot_error = e.message; }
   }
+  // Checked after the snapshot, which gives a link's new tab time to be created.
+  if (tracksOpenedTabs && params.tabId != null && result && typeof result === 'object') {
+    const opened = await getOpenedTabs(params.tabId, OPENED_TAB_URL_WAIT_MS);
+    if (opened.opened_tabs.length) result.opened_tabs = opened.opened_tabs;
+  }
   return result;
+}
+
+// Tabs opened by tabId since its last page action started, with their current URLs.
+async function getOpenedTabs(tabId, urlWait = 0) {
+  const since = actionStarts.get(tabId);
+  if (since == null) return { opened_tabs: [] };
+  const entries = openedTabs.filter(t => t.openerTabId === tabId && t.seq > since);
+  const tabs = await Promise.all(entries.map(async ({ tabId: id }) => {
+    let url;
+    try { url = (await browser.tabs.get(id)).url; } catch { return null; }
+    if (url === 'about:blank' && urlWait > 0) {
+      const r = await waitForTabProperty('url', { tabId: id, pattern: '^(?!about:blank$)', timeout: urlWait });
+      if (r.ok) url = r.url;
+      else if (r.ok !== false) return null; // closed while waiting
+    }
+    return { tabId: id, url };
+  }));
+  return { opened_tabs: tabs.filter(Boolean) };
 }
 
 async function dispatchCommand(command) {
@@ -206,13 +266,14 @@ async function dispatchCommand(command) {
     case 'getTabs':      return await getOpenTabs();
     case 'waitForUrl':   return await waitForTabProperty('url', params);
     case 'waitForTitle': return await waitForTabProperty('title', params);
+    case 'getOpenedTabs': return await getOpenedTabs(params.tabId);
     case 'navigate':     return await navigateTab(params.url, params.tabId, params.expectTitle);
     case 'switchTab':    return await switchTab(params.tabId);
     case 'newTab':       return await createTab(params.url, params);
     case 'closeTab':     return await closeTab(params.tabId);
     case 'wakeTab':      return await wakeTab(params.tabId);
     case 'reloadExtension': return reloadExtensionAction();
-    case 'getPageTextFromTab': return await forwardToContent('getPageText', params);
+    case 'getPageTextFromTab': return await getPageText(params);
 
     // 1.4.0 browser-level additions
     case 'pinTab':           return await updateTab(params.tabId, { pinned: !!params.pinned });
@@ -249,9 +310,9 @@ async function dispatchCommand(command) {
       }
       return result;
     }
+    case 'getPageText':  return await getPageText(params);
     case 'waitForText':
     case 'getPageInfo':
-    case 'getPageText':
     case 'getSnapshot':
     case 'getAccessibilityTree':
     case 'getFormFields':
@@ -555,12 +616,14 @@ async function wakeTab(tabId) {
 // Error contract (see docs/api-reference.md#action-errors): `error` keeps its text; code,
 // retryable, hint and state are machine-readable. retryable is false when the message may
 // have reached the page, so its outcome is unknown; the bridge relaxes that for reads.
+// error_page is never retryable: nothing reached the page, but repeating cannot succeed.
 const TAB_FAILURE_HINTS = {
   tab_closed: 'The tab no longer exists; list tabs with browser_tabs and target an open tab.',
   tab_unloaded: 'The tab was unloaded; wake it with browser_wake_tab, then take a new browser_snapshot.',
   navigating: 'The tab is loading a new document; wait for it with browser_wait_for, then take a new browser_snapshot.',
   content_unavailable: 'The page did not answer; inspect it with browser_snapshot before repeating the action.',
   restricted_page: 'Browser-internal pages cannot be scripted; navigate the tab to a web page or target another tab.',
+  error_page: 'The page has no scriptable document (often an error response with an empty body), so reading it again fails the same way; check state.httpStatus and state.title, then navigate the tab elsewhere or target another tab.',
 };
 
 async function tabState(tabId) {
@@ -581,6 +644,34 @@ async function tabFailure(tabId, message, dispatched) {
   if (!state) return tabError(message, 'tab_closed', { tabId });
   const code = state.discarded ? 'tab_unloaded' : state.status === 'loading' ? 'navigating' : 'content_unavailable';
   return tabError(message, code, state, !dispatched);
+}
+
+function httpStatusFor(tabId, url) {
+  const seen = mainFrameStatus.get(tabId);
+  return seen && seen.url.split('#')[0] === url.split('#')[0] ? seen.statusCode : undefined;
+}
+
+// An http(s) page that loaded but refuses injection is a document the browser rendered
+// itself, such as an error response with an empty body; retrying cannot reach it.
+async function injectionFailure(tabId, e) {
+  const message = `Cannot inject content script: ${e.message}`;
+  const state = await tabState(tabId);
+  if (!state || state.discarded || state.status !== 'complete' || !/^https?:/i.test(state.url)) {
+    return await tabFailure(tabId, message, false);
+  }
+  const { title } = await browser.tabs.get(tabId).catch(() => ({}));
+  const httpStatus = httpStatusFor(tabId, state.url);
+  const page = httpStatus >= 400 ? `an HTTP ${httpStatus} error response` : 'a page';
+  return tabError(`The tab shows ${page} with no scriptable document. ${message}`, 'error_page',
+    { ...state, title, ...(httpStatus ? { httpStatus } : {}) }, false);
+}
+
+// An error response has no text of its own; report it as an empty page.
+async function getPageText(params) {
+  const result = await forwardToContent('getPageText', params);
+  if (result.code !== 'error_page' || params.selector || !(result.state.httpStatus >= 400)) return result;
+  const { tabId, url, title, httpStatus } = result.state;
+  return { text: '', empty: true, httpStatus, tabId, url, title };
 }
 
 // Tab APIs fail opaquely; name the common case of a tab that no longer exists.
@@ -624,7 +715,7 @@ async function forwardToContent(action, params) {
       await browser.tabs.executeScript(tabId, { file: '/content/content.js' });
       await new Promise(r => setTimeout(r, 150));
     } catch (e) {
-      return await tabFailure(tabId, `Cannot inject content script: ${e.message}`, false);
+      return await injectionFailure(tabId, e);
     }
   }
 

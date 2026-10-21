@@ -101,6 +101,9 @@ and retry with the new ref; never repeat a write just to refresh refs. See
 [Ref lifetime](api-reference.md#ref-lifetime) for the full contract and
 [MCP error results](api-reference.md#mcp-error-results) for which results are
 returned with `isError: true`.
+For reading tasks, `browser_snapshot(text=True)` also returns visible text lines,
+URL, title and tab ID in one bounded call (see
+[`browser_snapshot`](api-reference.md#browser_snapshottab_idnone-selectornone-refnone-max_depthnone-textfalse)).
 Set `KITSUNE_POST_ACTION_SNAPSHOT=0` in the **bridge daemon's environment** and
 restart the daemon to disable these automatic snapshots. Explicit snapshots
 remain available. This is a DOM-based accessibility approximation, not Firefox's
@@ -301,7 +304,7 @@ Matching is case-sensitive substring matching.
 | `KITSUNE_NO_BRIDGE_RESTART` | Unset | Set to `1` in the MCP server environment to skip automatic replacement of an outdated bridge |
 | `KITSUNE_BRIDGE_IDLE_TIMEOUT` | `0` (never) | Seconds without client activity before the bridge exits; see [Idle shutdown](#idle-shutdown-opt-in) |
 | `KITSUNE_ASK_BEFORE_ACT` | Unset | Set to `1` in the MCP server environment to start the bridge with [ask-before-act](#ask-before-act) locked on |
-| `KITSUNE_POST_ACTION_SNAPSHOT` | Enabled | Set to `0` in the bridge daemon environment and restart it to disable automatic post-action snapshots |
+| `KITSUNE_POST_ACTION_SNAPSHOT` | Enabled | Set to `0` in the bridge daemon environment and restart it to disable automatic post-action snapshots, or `text` to add readable text lines to them |
 
 `~/.kitsune/` holds:
 
@@ -342,7 +345,8 @@ What it does not protect against:
 - **Typed values outside the bridge.** The bridge audit log (`browser_audit`)
   keeps the action, target, tab, timing and outcome of each write action but
   replaces typed text (`browser_type`, `browser_form_fill` values,
-  `browser_keypress` text) and stored secrets (`browser_cookies`,
+  `browser_keypress` text, `browser_select_option` values and
+  `browser_handle_dialog` prompt answers) and stored secrets (`browser_cookies`,
   `browser_storage` and `browser_clipboard` values) with `"[redacted]"`; see
   [Audit log](api-reference.md#audit-log). The page and the MCP client's own
   transcript still see whatever the agent sent.
@@ -426,6 +430,9 @@ uv run python -m unittest discover -s tests -q
 for test in tests/*.cjs; do node "$test"; done
 ```
 
+`tests/test_real_browser_opened_tabs.py` is skipped unless `KITSUNE_E2E_BROWSER` names a
+Firefox or Zen binary, which it runs headless with a temporary profile, HOME, and bridge.
+
 The Python regression suite covers the MCP tool surface, snapshots, navigation
 waits, and bridge lifecycle; the Node harnesses cover content-script behavior
 such as refs, form filling, and password redaction. For an end-to-end check, load the extension in a
@@ -441,6 +448,20 @@ default tool, and a test fails until `--update` records a change in
 `tests/tool_schema_sizes.json`. Action tools share one contract (ref, wait,
 expect, confirm_token) documented in `browser_click`; point to it rather than
 repeating it.
+
+The opt-in real-browser suite (`tests/test_real_browser.py`) covers action races,
+tab unloads and reconnects against a real Firefox, Zen or LibreWolf. It is skipped
+unless `KITSUNE_E2E_BROWSER` names the browser binary, and it takes about a minute:
+
+```bash
+KITSUNE_E2E_BROWSER=/Applications/Zen.app/Contents/MacOS/zen \
+  uv run python -m unittest discover -s tests -p test_real_browser.py -v
+```
+
+It starts a headless browser on a new temporary profile and HOME, plus its own bridge
+and fixture site on spare ports, and kills them afterwards. Your browser profiles
+and running bridge are not touched: the suite runs a copy of the extension whose
+bridge port is rewritten to the test bridge, and checks the copy before launch.
 
 To publish a new version to PyPI, see [Releasing](releasing.md).
 

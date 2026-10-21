@@ -24,6 +24,9 @@ class SnapshotToolsTests(unittest.TestCase):
             ({'max_depth': 0}, {'maxDepth': 0}),
             ({'tab_id': 7, 'selector': '#fallback', 'ref': 's2e0', 'max_depth': 2},
              {'tabId': 7, 'selector': '#fallback', 'ref': 's2e0', 'maxDepth': 2}),
+            ({'text': True}, {'text': True}),
+            ({'tab_id': 7, 'selector': '#catalog', 'text': True},
+             {'tabId': 7, 'selector': '#catalog', 'text': True}),
         ]
         for kwargs, expected in cases:
             with self.subTest(kwargs=kwargs), patch.object(server, '_post', return_value={'snapshot': 'tree'}) as post:
@@ -46,6 +49,7 @@ class SnapshotToolsTests(unittest.TestCase):
             ('POST', {'selector': '#catalog', 'ref': 's2e0', 'maxDepth': 0, 'tabId': 7,
                       'ignored': 'not forwarded'},
              {'selector': '#catalog', 'ref': 's2e0', 'maxDepth': 0, 'tabId': 7}),
+            ('POST', {'text': True}, {'text': True}),
         ]:
             with self.subTest(command=command, body=body):
                 handler = bridge.BridgeHandler.__new__(bridge.BridgeHandler)
@@ -173,6 +177,11 @@ class SnapshotToolsTests(unittest.TestCase):
                 with patch.dict(os.environ, {'KITSUNE_POST_ACTION_SNAPSHOT': '1'}):
                     await bridge._send_to_extension_raw('click')
                     self.assertTrue(commands[-1]['includeSnapshot'])
+                    self.assertNotIn('snapshotText', commands[-1])
+                with patch.dict(os.environ, {'KITSUNE_POST_ACTION_SNAPSHOT': 'text'}):
+                    await bridge._send_to_extension_raw('click')
+                    self.assertTrue(commands[-1]['includeSnapshot'])
+                    self.assertTrue(commands[-1]['snapshotText'])
 
         asyncio.run(check())
 

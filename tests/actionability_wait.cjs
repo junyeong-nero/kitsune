@@ -102,6 +102,70 @@ async function testImmediateModeIsUnchanged() {
   assert.deepEqual(hidden.events, ['mousedown', 'click']);
 }
 
+// The same delayed content and dynamic form without wait: each action resolves its target once.
+async function testImmediateModeOnDelayedContentAndDynamicForms() {
+  const p = page();
+  const actions = [
+    [{ action: 'click', selector: '#go' }, 'Element not found'],
+    [{ action: 'doubleClick', selector: '#go' }, 'Element not found'],
+    [{ action: 'hover', selector: '#go' }, 'Element not found'],
+    [{ action: 'type', selector: '#name', text: 'Ada' }, 'Element not found'],
+    [{ action: 'fill', selector: '#email', value: 'a@b.c' }, 'Element not found'],
+    [{ action: 'selectOption', selector: '#color', value: 'blue' }, 'Element not found'],
+    [{ action: 'checkBox', selector: '#agree', checked: true }, 'Element not found'],
+    [{ action: 'keypress', selector: '#name', key: 'Enter' }, 'No target'],
+    [{ action: 'drag', from: '#from', to: '#to' }, 'from element not found'],
+  ];
+  for (const [msg, error] of actions) {
+    // A timeout without wait is ignored.
+    const pending = p.start({ ...msg, timeout: 5000 });
+    await p.tick(0);
+    assert.equal(pending.settled, true, `${msg.action} does not wait`);
+    const result = await pending.result;
+    assert.equal(result.error, error, msg.action);
+    assert.equal(result.code, 'not_found');
+    assert.equal(result.state, undefined, 'no wait state in immediate mode');
+  }
+  assert.equal(p.timers.size, 0, 'immediate mode schedules nothing');
+
+  // The content arrives with its pointer target still hidden and the native controls
+  // display:none behind custom widgets. Pointer actions dispatch anyway with the warning;
+  // value actions need no rendered target and get none.
+  const go = p.add('#go', new Element('BUTTON', 'go', { style: { display: 'none' } }));
+  const name = p.add('#name', new Element('INPUT', 'name', { type: 'text' }));
+  const email = p.add('#email', new Element('INPUT', 'email', { type: 'email' }));
+  const color = p.add('#color', new Element('SELECT', 'color', { style: { display: 'none' },
+    options: [{ value: 'red', text: 'Red' }, { value: 'blue', text: 'Blue' }] }));
+  const agree = p.add('#agree', new Element('INPUT', 'agree', { type: 'checkbox', checked: false,
+    style: { display: 'none' } }));
+  const from = p.add('#from', new Element('DIV', 'from'));
+  const to = p.add('#to', new Element('DIV', 'to'));
+  const results = {};
+  for (const [msg] of actions) {
+    const pending = p.start(msg);
+    await p.tick(0);
+    assert.equal(pending.settled, true, `${msg.action} does not wait`);
+    results[msg.action] = await pending.result;
+  }
+  for (const action of ['click', 'doubleClick', 'hover']) {
+    assert.equal(results[action].ok, true, action);
+    assert.equal(results[action].warning.code, 'hidden_or_covered', action);
+  }
+  assert.ok(['mousedown', 'click', 'dblclick', 'mouseover'].every(type => go.events.includes(type)));
+  assert.deepEqual(results.type, { ok: true });
+  assert.equal(name.value, 'Ada');
+  assert.deepEqual(results.fill, { ok: true, pierced: false, tag: 'input' });
+  assert.equal(email.value, 'a@b.c');
+  assert.deepEqual(results.selectOption, { ok: true, value: 'blue', text: 'Blue' });
+  assert.equal(color.value, 'blue');
+  assert.deepEqual(results.checkBox, { ok: true, checked: true });
+  assert.equal(agree.checked, true);
+  assert.deepEqual(results.keypress, { ok: true, key: 'Enter', target: 'input' });
+  assert.deepEqual(results.drag, { ok: true, from: '#from', to: '#to' });
+  assert.ok(from.events.includes('dragstart') && to.events.includes('drop'));
+  assert.equal(p.timers.size, 0, 'immediate mode schedules nothing');
+}
+
 async function testDelayedContent() {
   const p = page();
   const clicking = p.start({ action: 'click', selector: '#go', wait: true, timeout: 5000 });
@@ -278,6 +342,7 @@ async function testRefsAndTargetlessActions() {
 
 (async () => {
   await testImmediateModeIsUnchanged();
+  await testImmediateModeOnDelayedContentAndDynamicForms();
   await testDelayedContent();
   await testDynamicForms();
   await testTimeouts();

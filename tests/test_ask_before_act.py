@@ -251,6 +251,15 @@ class SensitiveActionTests(AskBeforeActTestCase):
                          (200, {"ok": True}))
         self.assertEqual(self.forward("click", {"selector": "#send", "tabId": 7}), (200, {"ok": True}))
 
+    def test_error_page_write_is_not_held(self):
+        # #86: nothing reached an unscriptable error page, so repeating the write is not held.
+        self.extension.reply = {"error": "The tab shows an HTTP 404 error response with no scriptable document.",
+                                "code": "error_page", "retryable": False}
+        for _ in range(2):
+            self.assertEqual(self.forward("click", {"selector": "#send", "tabId": 7})[1]["code"], "error_page")
+        self.assertEqual(self.extension.actions(), ["click", "click"])
+        self.assertEqual(bridge._unknown_outcomes, {})
+
 
     def test_expect_outcome_not_observed_is_held_before_repeating(self):
         # #67: a dispatched write whose expected outcome did not happen is retryable: false,
