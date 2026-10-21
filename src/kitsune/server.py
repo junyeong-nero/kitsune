@@ -237,10 +237,9 @@ def _bridge_unavailable(message: str, **state) -> dict:
 def _not_responding(pid: int) -> dict:
     error = _bridge_unavailable(f"Kitsune bridge (PID {pid}) accepts connections on port {HTTP_PORT} but does not "
                                 f"answer. See {LOG_FILE}", port=HTTP_PORT, reason="not_responding", pid=pid)
-    error["hint"] = ("The bridge hangs: run `kitsune-bridge stop` (it stops an unresponsive bridge by its PID), then "
-                     f"retry. If it hangs again, run `kitsune-bridge start` in a terminal and see {LOG_FILE}. If "
-                     f"another program holds port {HTTP_PORT}, find it with `lsof -nP -iTCP:{HTTP_PORT} "
-                     "-sTCP:LISTEN`.")
+    error["hint"] = ("The bridge hangs: run `kitsune-bridge stop`, then retry. If it hangs again, run "
+                     f"`kitsune-bridge start` in a terminal and see {LOG_FILE}. If another program holds port "
+                     f"{HTTP_PORT}, find it with `lsof -nP -iTCP:{HTTP_PORT} -sTCP:LISTEN`.")
     return error
 
 

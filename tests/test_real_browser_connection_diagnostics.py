@@ -2,7 +2,8 @@
 
 Opt-in and built on tests/real_browser_harness.py, which documents how to run it. Covers
 what a browser can show: no extension connected, then connected; an extension that drops
-its bridge connection; a developer build edited on disk but not reloaded; a restricted
+its bridge connection; a developer build edited on disk but not reloaded (a script, or only
+its manifest.json); a restricted
 domain (host_permission_denied) beside an empty error page (error_page); and, in its own
 browser, a profile without a normal window (browser_window_unavailable).
 """
@@ -131,14 +132,17 @@ class RealBrowserConnectionDiagnosisTests(_DiagnosisTestCase):
     def test_no_extension_then_connected_then_disconnected(self):
         before = self.status_before_browser
         self.assertFalse(before["extension_connected"], before)
-        # The owned bridge listens on a spare port, not the extension's default 47652, so before
-        # any extension connects it reports that port as the likely cause.
+        # The owned bridge listens on a spare port. Its KITSUNE_EXTENSION_DIR copy, whose WS_URL names
+        # that port, does not exist yet, so the bridge assumes the extension's default 47652 and,
+        # before any extension connects, reports that port as the likely cause.
         self.assertEqual(before["diagnosis"]["code"], "port_conflict", before)
-        self.assertEqual(before["diagnosis"]["state"], {"port": self.bridge.ws_port, "reason": "extension_ws_port"})
+        self.assertEqual(before["diagnosis"]["state"], {"port": self.bridge.ws_port, "reason": "extension_ws_port",
+                                                        "extensionPort": 47652})
 
         status = self.bridge.status()
         self.assertTrue(status["extension_connected"], status)
-        # Also proves that background.js fingerprints the loaded scripts as the bridge does.
+        # Also proves that background.js fingerprints the loaded scripts and manifest.json as the
+        # bridge does (fetch serves the manifest's bytes, or manifestHash is null and not compared).
         self.assertEqual(status["diagnosis"], {"code": "connected"}, status)
 
         generation = status["extension_generation"]
@@ -169,6 +173,21 @@ class RealBrowserConnectionDiagnosisTests(_DiagnosisTestCase):
         self.assertIn("about:debugging", status["diagnosis"]["hint"])
 
         content.write_text(source, encoding="utf-8")
+        self.wait_for_diagnosis("connected")
+
+    def test_manifest_only_edit_is_a_version_mismatch(self):
+        manifest = self.browser.extension / "manifest.json"
+        source = manifest.read_text(encoding="utf-8")
+        self.addCleanup(manifest.write_text, source, encoding="utf-8")
+        manifest.write_text(source + "\n", encoding="utf-8")
+
+        status = self.wait_for_diagnosis("extension_version_mismatch")
+        state = status["diagnosis"]["state"]
+        self.assertEqual(state["reason"], "stale_developer_build", status)
+        self.assertNotEqual(state["extensionManifestHash"], state["expectedManifestHash"])
+        self.assertNotIn("extensionSourceHash", state, "the scripts are unchanged")
+
+        manifest.write_text(source, encoding="utf-8")
         self.wait_for_diagnosis("connected")
 
     def test_restricted_domain_is_host_permission_denied_and_empty_error_page_is_error_page(self):

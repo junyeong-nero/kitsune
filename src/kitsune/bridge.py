@@ -1430,7 +1430,7 @@ def _connection_diagnosis():
     """browser_status diagnosis from bridge state (docs/api-reference.md#connection-diagnosis)."""
     if extension_ws is None:
         # An extension that connected once knows the port; one that never did may use another.
-        extension_port = _extension_source_ws_port()
+        extension_port = None if extension_ws_generation else _extension_source_ws_port()
         if WS_PORT != (extension_port or EXTENSION_WS_PORT) and not extension_ws_generation:
             uses = (f"the extension in {EXTENSION_SOURCE_DIR} connects to {extension_port} (WS_URL in "
                     "background/background.js)" if extension_port else
