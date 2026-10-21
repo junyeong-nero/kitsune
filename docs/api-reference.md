@@ -741,10 +741,43 @@ matching, scoring and result text, element `text` fields (`browser_dom`,
 `browser_query`, `browser_explain_selector`, `browser_wait_for` element
 results, click results), field labels, `browser_markdown` and
 `browser_readability`; `browser_html` and `browser_query` `html` serialize the
-element empty. Page text (`browser_page_text`) is rendered text, where the
-browser already shows masked text as mask characters. Unmasked textareas and
-editing regions are unchanged. Results and errors of write actions on sensitive fields
-(`browser_type`, `browser_form_fill`, …) do not echo the typed value.
+element empty. Unmasked textareas and editing regions are unchanged. Results
+and errors of write actions on sensitive fields (`browser_type`,
+`browser_form_fill`, …) do not echo the typed value.
+
+Masked static text is left out of the same reads. Text in any element whose
+computed `-webkit-text-security` is `disc`, `circle` or `square` (so an
+inherited mask counts) is sensitive, editable or not, and so is all text inside
+a masked editing region, including its `contenteditable="false"` parts, whatever
+their own style. That text is left out of snapshot names and text lines,
+`browser_find`, element `text` fields, labels (including a button's or button
+input's label), `browser_markdown` and `browser_readability`; `browser_html` and
+`browser_query` `html` keep the element and drop its text. Element `text` fields
+and markdown `pre` blocks and table cells leave masked text out rather than
+showing it as mask characters. A child that sets `-webkit-text-security: none`
+inside a masked element keeps its text, as do unmasked elements and ordinary
+text.
+
+Masks come from computed style, which is read per element. Within one
+synchronous read (`browser_snapshot`, `browser_dom`, `browser_forms`,
+`browser_find`, `browser_query`, `browser_html`, `browser_markdown`,
+`browser_readability`, `browser_explain_selector`), each element's mask and
+redacted text are computed once and reused, so nested names, labels and find
+scores do not walk the same subtree again. The cache is dropped when the read
+returns, so the next read sees page changes. Other results (click,
+`browser_wait_for`, ask-before-act labels) cache only within their one text
+lookup. Elements without child elements use the browser's `textContent`.
+
+Known limitations:
+
+- Page text (`browser_page_text`) is rendered text, where the browser shows
+  masked text as mask characters, so the length of masked content is visible
+  there, as it is on screen.
+- A non-editable part inside a masked editing region that sets its own
+  `-webkit-text-security: none` is visible on screen and therefore appears in
+  `browser_page_text`; structured reads still omit it.
+- Masking done with custom fonts or canvas drawing is not detected. Neither
+  leaves a reliable signal, so detecting it would cause false positives.
 
 There is no opt-in to reveal redacted values through these tools, and none is
 planned (decided in #71). A reveal switch, whether per call or as a bridge
@@ -776,7 +809,8 @@ a `/*` comment.
 
 If a cloned subtree does not mirror the page, sensitivity cannot be mapped
 onto it, so markup from that clone drops every `value` attribute and the
-content of every textarea and `contenteditable` element.
+content of every textarea and `contenteditable` element, and all of its text
+when any of the original's text is sensitive.
 
 These rules are heuristics: a field that is masked some other way (canvas,
 custom fonts) or named without a recognizable word is not detected.
