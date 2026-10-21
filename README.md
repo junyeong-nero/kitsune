@@ -128,6 +128,12 @@ Restart or reconnect your client after configuring it, then ask it to call
 `"extension_connected": true`. GUI apps may need the full path returned by
 `which uvx` instead of `uvx` if they do not inherit your shell's `PATH`.
 
+Kitsune registers a 14-tool lean surface by default. Set the environment variable
+`KITSUNE_TOOL_PRESET=full` for the other 16 `core` tools: check, submit form, hover,
+keypress, scroll, JavaScript, waits, dialogs, uploads, Markdown, back/forward, console
+and workflows
+(see [Lean tool preset](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#lean-tool-preset)).
+
 For Codex's TOML alternative, environment variables, version pinning, and
 upgrades, see [Installation](https://github.com/junyeong-nero/kitsune/blob/main/docs/installation.md).
 

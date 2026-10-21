@@ -4,22 +4,27 @@ Base URL: `http://127.0.0.1:47651`
 
 ## MCP tool surface
 
-`KITSUNE_CAPS=core` is the default (30 tools); `KITSUNE_CAPS=all` registers
+`KITSUNE_CAPS=core` is the default; `KITSUNE_CAPS=all` registers
 96 tools. The groups are `core`, `tabs`, `network`, `storage`, `parallel`,
 `devtools`, `windows`, `session`, and `history`. A comma list selects those groups only.
 `all` enables every group except `history`, which reads personal data and must be
 named (`KITSUNE_CAPS=all,history`); see [History and bookmarks](#history-and-bookmarks).
 See [Tools and capabilities](guide.md#tools) for the complete tool list per group.
 
-`KITSUNE_TOOL_PRESET=lean` (opt-in; unset by default) narrows `core` to 14 tools:
-`browser_status`, `browser_tabs`, `browser_navigate`, `browser_page_info`,
+**`KITSUNE_TOOL_PRESET` defaults to `lean` (#31)**, which registers 14 of the 30
+`core` tools: `browser_status`, `browser_tabs`, `browser_navigate`, `browser_page_info`,
 `browser_page_text`, `browser_snapshot`, `browser_forms`, `browser_dom`, `browser_find`,
 `browser_screenshot`, `browser_click`, `browser_type`, `browser_select_option`,
-`browser_form_fill`. Their definitions are unchanged, other `KITSUNE_CAPS` groups
-register in full, and an unknown preset fails at startup. It exists for the
-browser-mcp-bench A/B (#31); no token, cost or success effect is claimed. The
-[Lean tool preset](guide.md#lean-tool-preset) section lists the 16 dropped `core`
-tools and which tasks need the default surface.
+`browser_form_fill`. The other 16 `core` tools (`browser_check`, `browser_submit_form`,
+`browser_back`, `browser_forward`, `browser_markdown`, `browser_wait_for`,
+`browser_hover`, `browser_keypress`, `browser_scroll`, `browser_handle_dialog`,
+`browser_upload_file`, `browser_js`, `browser_watch_console`, `browser_console_logs`,
+`browser_workflows`, `browser_workflow`) need `KITSUNE_TOOL_PRESET=full`. With the
+preset unset, `KITSUNE_CAPS=all` registers the full `core` group; an explicit `lean`
+narrows it even then. Definitions are the same in both presets, other `KITSUNE_CAPS`
+groups register in full, and an unknown preset fails at startup. The
+[Lean tool preset](guide.md#lean-tool-preset) section has the rules and which tasks
+need `full`.
 The bridge endpoints below remain available unchanged; MCP tool names and
 parameters are separate from HTTP endpoint names and JSON command actions.
 
@@ -32,6 +37,38 @@ A stale/disconnected ref returns a `stale_ref` error (see [Action errors](#actio
 take another snapshot to refresh it. See [Ref lifetime](#ref-lifetime) for which
 calls replace refs.
 Existing positional selector arguments remain supported.
+
+#### Strict selectors
+
+A write action's CSS selector must name one element (#134). When it matches more
+than one actionable element, the action fails with `ambiguous_target`
+(`retryable: false`) and nothing is dispatched; `state.candidates` lists up to 5
+of them (`ref`, `role`, `name`) and `state.matches` counts them. Pass a candidate's
+`ref`, a more specific selector, or `first: true` (`"first": true` on the bridge
+endpoint or batch command) to act on the first match as before. This is an
+intended behavior change: these actions used to act on the first match silently.
+
+- Write actions: `click`, `doubleClick`, `hover`, `drag` (both ends), `type`, `fill`,
+  `setEditableContent`, `checkBox`, `selectOption`, `submitForm` and `keypress` with a
+  selector, the `uploadFile` target, and each `formFill` key matched as a selector or
+  by `name` (a per-key error; label and placeholder matches are unchanged). Batch,
+  parallel and workflow steps follow the same rule; `clickAndWaitNavigation` is strict
+  without the opt-in. MCP: `first=True` on `browser_click`, `browser_double_click`,
+  `browser_hover`, `browser_drag`, `browser_type`, `browser_check`,
+  `browser_select_option`, `browser_submit_form`, `browser_keypress`,
+  `browser_upload_file` and `browser_form_fill`.
+- Actionable: enabled, and not `<input type=hidden>`; for pointer actions (`click`,
+  `doubleClick`, `hover`, `drag`) also rendered, as in the
+  [actionability wait](#actionability-wait). Value actions count hidden native
+  inputs, which they can act on. A selector with one actionable match still acts on
+  its first match, as before.
+- Refs and coordinates name one element and are unaffected. Read tools
+  (`browser_html`, `browser_bounds`, `browser_wait_for`, screenshots, …) and
+  `browser_focus`, `browser_blur`, `browser_scroll` and `browser_trusted_click` keep
+  first-match semantics.
+- With `wait`, an ambiguous selector fails at once instead of waiting.
+- Under [ask-before-act](#ask-before-act) the target is inspected first, as before; an
+  ambiguous action that is held still fails with `ambiguous_target` after confirmation.
 
 These tools also accept refs (all new parameters are optional):
 
@@ -47,7 +84,8 @@ These tools also accept refs (all new parameters are optional):
 | `browser_markdown` | `selector=None, tab_id=None, ref=None, element=None` |
 
 Without selector/ref, keypress targets the active element (or body), blur targets
-the active element, submit-form submits the first form, and Markdown reads the
+the active element, submit-form submits the form of the field last filled or
+focused, else the only form (see [`browser_submit_form`](#browser_submit_formselectornone-tab_idnone-refnone-elementnone)), and Markdown reads the
 whole page. Submit-form can target a form or an element inside it. Scroll accepts
 an explicit container selector/ref; otherwise it scrolls the window and falls
 back to a scrollable container at viewport center. HTML, bounds, computed-style,
@@ -127,8 +165,9 @@ only `error`. MCP tools return these failures with `isError: true` (see
   an identical retry succeeds; follow `hint` first (for example, take a new snapshot).
   `false` means a write may already have taken effect (a submit, message, payment
   or deletion can be behind any click or keypress); inspect the page before acting again.
-  The exceptions are `error_page` and `permission_required`: nothing reached the page,
-  and repeating cannot succeed until the tab navigates or the user grants the permission.
+  The exceptions are `error_page`, `ambiguous_target`, `user_tab` and `permission_required`:
+  nothing reached the page, and repeating cannot succeed until the tab navigates, the target
+  is named uniquely, or the user approves the close or grants the permission.
 - `hint`: a short recovery step. `state`: the current state that explains the
   failure, where available (for page targets: `tabId`, `url`, `status`).
 
@@ -136,6 +175,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
 |---|---|---|
 | `not_found` | No element matches the selector (also `No target`, `from/to element not found`); after an [actionability wait](#actionability-wait), `state` has `timeoutMs` and `elapsed` | true |
 | `not_fillable` | `browser_type` (`type`/`fill` modes) or a `browser_form_fill` key found no field to write. The target is not a field (`fill` and `browser_form_fill`: input, textarea or select; `type`: input or textarea, or a `contenteditable` element without `clear`) and has none in its open or closed shadow roots, searched through nested hosts up to 8 roots deep (`fill` and `browser_form_fill` also look in its light DOM). Nothing was written. `state.tag` is the target's tag; `state.reason` is `no_field`, or `shadow_depth` when its shadow roots nest deeper than 8 | true |
+| `ambiguous_target` | The command names no single target, so nothing was dispatched: a write action's selector matches several actionable elements (`state.selector`, `state.matches`; see [Strict selectors](#strict-selectors)), or `browser_submit_form` without a target found several forms and no filled field naming one (`state.forms`). `state.candidates` lists up to 5 of them with a `ref` to target one | false |
 | `not_actionable` | An [actionability wait](#actionability-wait) timed out on a target that exists but never rendered (`state.reason: "not_rendered"`, `timeoutMs`, `elapsed`); nothing was dispatched | true |
 | `stale_ref` | The ref is no longer valid; `state.reason` is `element_removed`, `not_in_snapshot`, `snapshot_replaced` (a newer snapshot of this document; `state.latestObservation` and, for the same element, `state.currentRef`, see [Ref lifetime](#ref-lifetime)), or `other_document` (the tab navigated, or the ref came from another tab) | true |
 | `navigating` | The tab is loading: a `not_found`/`stale_ref` while loading (`state.cause`), or the page unloaded while handling the command. Also a page that refused the content script within 5 s of a wake or reload without an error status, or whose 2xx response arrived only while the command waited for it: it may be an old document about to be replaced | true before dispatch; false for writes after |
@@ -154,6 +194,8 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `host_permission_denied` | Firefox does not let Kitsune script the tab's site (`state.reason`: `not_granted`, `restricted_domain`) | true |
 | `permission_required` | A [history or bookmark lookup](#history-and-bookmarks) needs an optional browser permission the user has not granted (`state.permission`: `history` or `bookmarks`). Only the user can grant it, on Kitsune's options page; the agent cannot. Also returned, with a reload hint, when the permission is granted but the running extension has not picked it up | false |
 | `confirmation_required` | [Ask-before-act](#ask-before-act) held a sensitive action; nothing ran (`state.confirmToken`, `state.reason`) | true |
+| `user_tab` | `browser_tabs` close on a tab the agent did not open, or `browser_close_window` on a window with one; it stays open. A direct call's `state.confirmToken` closes it once the user approves (see [Agent-owned tabs](#agent-owned-tabs)) | false |
+| `user_active` | The user is using the tab (`state.reason`: `input`, `typing`, `navigating`); the write or navigation did not run (see [User activity](#user-activity)) | true |
 | `outcome_not_observed` | The action was dispatched, but the outcome given in `expect` did not happen in time (see [Action outcomes](#action-outcomes)) | false for writes |
 | `tab_required` | A `parallel` step that acts on a tab has no `tabId` (`state.sequence`, `state.index`); nothing was dispatched (see [Container progress](#container-progress)) | true |
 | `tab_owned` | Two `parallel` sequences write the same tab (`state.tabId`, `state.owner`); nothing was dispatched | true |
@@ -437,7 +479,9 @@ tab and that were created after the action started, with or without `expect`:
 { "ok": true, "snapshot": "...", "opened_tabs": [{ "tabId": 4, "url": "https://shop.example/addresses" }] }
 ```
 
-The list is read after the post-action snapshot. A new tab starts on `about:blank`, so
+These tabs are agent-owned (see [Shared browser](#shared-browser)): Firefox shows
+such a tab, and the extension shows the user's tab again at once. The list is read
+after the post-action snapshot. A new tab starts on `about:blank`, so
 the extension waits up to 1 s for its URL; a tab still loading after that is reported
 as `about:blank`. Results without an opened tab have no `opened_tabs` field. Act on an
 opened tab by passing its `tabId` as `tab_id`.
@@ -460,8 +504,8 @@ Clicks are synthetic DOM events without user activation. With the default popup 
 (`dom.disable_open_during_load=true`), the browser therefore drops the tab of a clicked
 `target="_blank"` link, although a user's click on the same link opens it. So when a
 `browser_click` follows a link into a new tab and no tab opens within 500 ms, the extension
-opens the link's own URL with `tabs.create` in the clicked tab's window and container, with
-the clicked tab as opener, and marks it in `opened_tabs`:
+opens the link's own URL with `tabs.create` in the background, in the clicked tab's window
+and container, with the clicked tab as opener, and marks it in `opened_tabs`:
 
 ```json
 { "ok": true, "opened_tabs": [{ "tabId": 5, "url": "https://shop.example/addresses", "via": "link_fallback" }] }
@@ -488,7 +532,123 @@ If such a link, or a failed `tabs.create`, leaves no tab, the click result has a
 With `expect`, an unmet outcome then uses that hint. Popups that page scripts open with
 `window.open` are never reopened. A `browser_trusted_click` is a real OS click with user
 activation, so the popup blocker lets its tab open. It needs a visible, focused browser
-window and OS permission (macOS: Accessibility), and its result does not list `opened_tabs`.
+window and OS permission (macOS: Accessibility), and its result does not list `opened_tabs`;
+the tab it opens is not agent-owned.
+
+### Shared browser
+
+The user and the agent use one browser at the same time. Agent work never takes the
+user's focus, never switches their view as a side effect, and does not act over what
+the user is doing (#139). Three rules follow:
+
+1. **Never take focus.** Tabs the agent opens open in the background, and no capture
+   or action shows a tab or focuses a window unless the call exists to do that
+   (`browser_tabs` select, `browser_focus_window`).
+2. **Agent-owned tabs.** The extension tracks the tabs the agent opened; only those
+   close without the user's approval.
+3. **Don't fight the user.** On a tab the user is using, agent writes and navigations
+   return `user_active` instead of acting.
+
+#### Never taking focus
+
+Every place that could show a tab or focus a window:
+
+| Site | Before | Now |
+|---|---|---|
+| `browser_tabs` new, batch/workflow `newTab`, session save/load and tab-pool tabs (`tabs.create`) | opened in the foreground | `active: false`: opens in the background |
+| Link fallback for popup-blocked links ([below](#popup-blocked-links), `tabs.create`) | foreground | `active: false` |
+| `duplicateTab` (`tabs.duplicate`) | showed the duplicate | `active: false` |
+| `createWindow`, `detachTab` (`windows.create`) | focused the new window | `focused: false` |
+| Tabs a page opens on an agent action (`target="_blank"`, `window.open`) | Firefox shows them | the extension shows the tab the user saw again at once (`tabs.onActivated`'s `previousTabId`) and gives a popup window's focus back to the window the user had focused; the new tab flickers for a moment. Firefox decides to show them, so this is an undo, not a prevention |
+| `browser_screenshot` viewport with `tab_id` | selected the tab and focused its window, and never restored them | `tabs.captureTab` captures the tab in place |
+| Element and full-page screenshots | showed the tab during capture, then restored it | `tabs.captureTab`; nothing is shown |
+| `browser_trusted_click` on a tab that is not shown | clicked whatever tab was shown | shows the tab for the click, then shows the user's tab again 300 ms after it (unless the user moved elsewhere meanwhile) |
+| `browser_trusted_click(focus=True)` | foregrounds the browser (OS) | unchanged: an explicit opt-in |
+| `browser_tabs` select, batch `switchTab` (`tabs.update({active: true})`) | switched the view | unchanged, but only for an explicit request; refused with `user_active` while the user is using the tab they would leave |
+| `browser_focus_window`, batch `focusWindow` (`windows.update({focused: true})`) | focused the window | unchanged, but only for an explicit request; refused with `user_active` while the user is using the focused window's tab |
+| `wakeTab`, `navigate`, reload, back/forward | | never showed a tab; unchanged |
+
+The OS click of `browser_trusted_click` still moves the real cursor and focuses the
+window it lands in; the bridge cannot give OS focus back to another application.
+
+**Changed behavior:** `browser_tabs` new (`POST /api/new-tab`, batch `newTab`) no longer
+shows the new tab. Pass its `tabId` as `tab_id` to act on it. A caller that relied on
+the new tab becoming the active tab must select it explicitly, and should do so only
+when the user asked to see it. Commands without `tab_id` still target the tab the user
+sees, which is not the new tab.
+
+#### Agent-owned tabs
+
+`browser_tabs` list (`GET /api/tabs`) marks every tab with `owned`: `true` for tabs the
+agent opened (`browser_tabs` new, `duplicateTab`, `createWindow`, session and pool
+tabs, the link fallback, and tabs a page opened on an agent action, which are also
+listed in [`opened_tabs`](#opened-tabs)), `false` for the user's tabs.
+
+`browser_tabs` close (`POST /api/close-tab`, batch `closeTab`) closes an owned tab. A
+user tab stays open, and the result is the error `user_tab` (`retryable: false`:
+repeating the same call fails the same way; `state`: `tabId`, `url`, `title`). On a
+direct call the refusal carries a confirm token, issued and spent like
+[ask-before-act](#ask-before-act)'s whether or not ask mode is on:
+
+```json
+{ "error": "Tab 12 was not opened by the agent, so it was not closed", "code": "user_tab", "retryable": false,
+  "hint": "Nothing was closed: the agent did not open this tab. Leave it open, or ask the user to approve closing it, ...",
+  "state": { "tabId": 12, "url": "https://mail.example/", "title": "Inbox",
+             "confirmToken": "…", "expiresInSeconds": 120 } }
+```
+
+After the user approves, repeat the identical call with `confirmToken` (MCP:
+`confirm_token`) within 120 s; it closes that tab once. The token is bound to the
+call's parameters (`tabId`, `force`), works once, and only on a direct call: batch,
+workflow and parallel steps never approve a close and get no token. A rejected token
+adds `state.tokenRejected` (`used`, `expired`) and a new token. With `force`, the
+extension disarms `beforeunload` only once it agreed to close the tab, so a refused
+close leaves the user's page as it was.
+
+Closing a window closes its tabs, so `browser_close_window` (`POST /api/close-window`,
+batch `closeWindow`) refuses a window with any tab the agent did not open the same way
+(`user_tab`, `state.windowId`, `state.tabIds`: its user tabs), with the same approval.
+
+Ownership lives in the extension's background page. A bridge restart or reconnect
+keeps it. An extension reload or update, or a browser restart, forgets it; the tabs
+the agent opened before then count as user tabs, so closing them needs approval.
+The extension also cannot tell an agent action's tab from one the user opened from the
+same tab within 2 s of that action; such a tab counts as the agent's.
+
+#### User activity
+
+An agent write or navigation on a tab the user is using returns the error
+`user_active` (`retryable: true`) instead of acting, with `state.tabId`, `state.url`
+and `state.reason`:
+
+| `state.reason` | The user is | Window |
+|---|---|---|
+| `input` | giving the page trusted input: `keydown`, `mousedown`, `pointerdown`, `touchstart`, `wheel` or `paste` (`state.input`, `state.sinceMs`, `state.windowMs`) | 3 s after the last such event |
+| `typing` | typing in a field: the input, textarea, editor or custom element (a shadow-root field shows as its host) that last got a trusted `keydown` or `paste` still has focus, holds content, and its document has focus (`state.field` is its tag; the value is never read out) | while all of that holds |
+| `navigating` | loading a new document in the tab they see (address bar, back button, a link), and no agent command on the tab started it (`state.sinceMs`) | while it loads, at most 10 s |
+
+Nothing reached the page; repeat after a few seconds, work in a tab you opened, or ask
+the user. Checked actions: click, double-click, type/fill/editable, select, check,
+keypress, submit, form fill, hover, scroll, drag, focus, blur, JavaScript, upload,
+navigate, back, forward, reload, click-and-wait-navigation, close, element and
+full-page screenshots (they scroll the page), and trusted click (viewport) on their own tab; select (`switchTab`) and `browser_focus_window` on the tab
+the user would leave. Reads never are.
+
+How it tells the user from the agent: Kitsune's own DOM events are synthetic, so their
+`isTrusted` is `false`, and the content script only counts trusted events. Its
+listeners are on the window in the capture phase, so a page that stops propagation does
+not hide input from them. The OS click of `browser_trusted_click` is trusted, so
+pointer events within 2 s of its `screenPoint` are not counted. `mousemove`, scrolling
+by itself and `input` events are not counted either, which keeps autofill, the agent's
+own editing and a mouse resting over the page from counting as use. A navigation counts
+as the agent's when an agent command on the tab was running, or ended at most 2 s
+before, when the load started, so a click's or a navigate's own load never blocks the
+agent; a load in a background tab never counts.
+
+Limits: input in iframes is not seen (the content script runs in the top document),
+nor input outside the page (address bar typing counts once the load starts). A
+screen-coordinate trusted click has no tab and is not checked, and its own click may
+count as user input on the tab it hits for 3 s.
 
 ### Ask-before-act
 
@@ -791,7 +951,7 @@ policy, would give an agent or an injected page instruction one more way to
 read secrets through tools that are otherwise safe to call on any page. The
 only way to read a raw value is `browser_js`, which stays the separate,
 explicit and unrestricted trust boundary. It is not registered with
-`KITSUNE_TOOL_PRESET=lean`, and read-only mode refuses it.
+the default `lean` tool preset (`KITSUNE_TOOL_PRESET=full` adds it), and read-only mode refuses it.
 
 Frameworks such as React mirror a typed value into the `value` attribute, so
 markup and attribute paths drop that attribute from sensitive fields, whether it
@@ -1000,7 +1160,7 @@ never ran:
 | `status` | Meaning |
 |---|---|
 | `ok` | The command ran without an error. Like any result, this means dispatched, not that the outcome happened (see [Action outcomes](#action-outcomes)) |
-| `failed` | It returned an error that is safe to repeat (`retryable: true`, unclassified errors, `error_page`, or `ok: false`) |
+| `failed` | It returned an error that is safe to repeat (`retryable: true`, unclassified errors, `error_page`, `ambiguous_target`, or `ok: false`) |
 | `held` | [Ask-before-act](#ask-before-act) held it; nothing ran |
 | `unknown` | It may have taken effect: an error with `retryable: false`, or it was in progress at the container's deadline. Observe the page before acting again |
 | `skipped` | It never started: an earlier step stopped the container (a held step, `stopOnWarning`, a failed workflow step) or the deadline passed |
@@ -1053,7 +1213,7 @@ sequence starts, the bridge refuses the whole `parallel` (`results` is one error
   tab (`sleep`, `newTab`, `tabs`, `getWindows`, `createWindow`, `closeWindow`,
   `focusWindow`, `cookies`, `clipboard`, `downloads`, `clearBrowsingData`, `intercept`,
   `reloadExtension`, `screenshot`, `broadcast`, `syncBarrier`) need none;
-  `screenshot` captures the visible tab.
+  `screenshot` captures the visible tab, or the tab its `tabId` names.
 - with `tab_owned` when two sequences write the same tab (the writes that make an
   unknown outcome unsafe to repeat, including `switchTab` and `closeTab`). The
   condition of an `if` or `while` counts as a write of its `tabId`: it is JavaScript
@@ -1068,16 +1228,22 @@ from a failed `newTab`, an unresolved template) fails with `invalid_tab_id` inst
 falling back to the active tab, and a numeric string such as `"12"` is sent as `12`.
 A closed tab is never replaced: commands on it fail with `tab_closed`.
 
-### `browser_tabs(action="list", tab_id=None, url=None, force=False, raw=False, wait=False, timeout=15000)`
+### `browser_tabs(action="list", tab_id=None, url=None, force=False, raw=False, wait=False, timeout=15000, window_fields=False)`
 
 Replaces `browser_new_tab`, `browser_close_tab`, and `browser_switch_tab`.
 `action` is `list`, `new`, `close`, or `select`. List uses GET `/api/tabs`;
 new uses POST `/api/new-tab` (default URL `about:blank`), close uses
 `/api/close-tab`, and select uses `/api/switch-tab`. Close and select require
 `tab_id`. `force` disarms beforeunload for close; `raw` bypasses the image URL
-viewer for new tabs. List is never cached. New returns immediately unless
+viewer for new tabs. List is never cached and marks agent-owned tabs `owned: true`;
+it drops each tab's `windowId` and `index` unless the tabs span more than one window
+or `window_fields=True`, and keeps every other field. New opens the tab in the
+background and returns immediately unless
 `wait=True`, which waits up to `timeout` ms for the page to load and returns
-the actual URL and load status. Options for other actions are ignored.
+the actual URL and load status. Close refuses a tab the agent did not open with
+`user_tab` until the user approves it (`confirm_token`, see
+[Agent-owned tabs](#agent-owned-tabs)). Select switches the user's view: use it only
+when the user asked. Options for other actions are ignored.
 
 ### `browser_page_text(tab_id=None)`
 
@@ -1172,6 +1338,36 @@ unselected radio is a no-op that reports `"checked": false`.
 { "results": { "Email": { "ok": true, "tag": "input" }, "Color": { "error": "No matching option for value: purple" } } }
 ```
 
+### `browser_submit_form(selector=None, tab_id=None, ref=None, element=None)`
+
+Submits the target form, or the form enclosing the target element, via POST
+`/api/submit-form`. Without `selector`/`ref` it submits the form that owns the
+field Kitsune last filled or focused in that document (`browser_type`, `browser_form_fill`,
+`browser_select_option`, `browser_check`, `browser_focus`), else the page's only
+form. When that field is gone or outside every form and the page has several
+forms, nothing is submitted: the result is an `ambiguous_target`
+[action error](#action-errors) listing up to 5 forms.
+
+```json
+{ "error": "3 forms on the page and no filled field names one; nothing was submitted",
+  "code": "ambiguous_target", "retryable": false,
+  "hint": "Pass the ref of the form to submit from state.candidates, or fill one of its fields first.",
+  "state": { "forms": 3, "candidates": [
+    { "ref": "s5e0", "action": "/wishlist/delete", "method": "post", "button": "Delete lantern" },
+    { "ref": "s5e1", "action": "/wishlist/delete", "method": "post", "button": "Delete mug" },
+    { "ref": "s5e2", "action": "/wishlist/add", "method": "post", "button": "Add" }] } }
+```
+
+A successful submit names the form it submitted in `form`, with the same fields
+(`action` and `method` as written in the form's attributes, `button` the submit
+control's label). Its `ref` is issued before the post-action snapshot, which
+replaces it; use `target_ref` and the snapshot's refs afterwards.
+
+```json
+{ "ok": true, "submitted": "button",
+  "form": { "ref": "s5e3", "action": "/wishlist/add", "method": "post", "button": "Add" } }
+```
+
 ### `browser_wait_for(selector=None, text=None, text_gone=None, js=None, url=None, title=None, network_idle=False, time=None, timeout=10000, tab_id=None, ref=None, element=None)`
 
 Replaces `browser_wait_for_element`, `browser_wait_for_result`,
@@ -1203,12 +1399,12 @@ Returns `[Image, metadata]` (MCP image content) by default; `save_to` writes the
 full PNG and returns metadata with `saved_to` instead, and `data_url=True` adds the
 raw PNG data URL. `selector`/`ref` and `full_page=True` are mutually exclusive.
 
-- Default: viewport capture via POST `/api/screenshot`. A supplied `tab_id`
-  selects that tab and focuses its window before capture.
+- Default: viewport capture via POST `/api/screenshot`. A supplied `tab_id` is
+  captured where it is (`tabs.captureTab`); no tab is shown and no window focused.
 - `selector`: crop one element via POST `/api/element-screenshot`.
 - `full_page=True`: scroll and stitch up to 30 viewports via POST `/api/full-page-screenshot`.
 
-Element/full-page capture temporarily activates the target tab. `save_to`
+No capture activates a tab. `save_to`
 overrides the file destination; `data_url=True` additionally returns `dataUrl`.
 The former element tool's `scale` option remains available through the bridge
 endpoint; the merged MCP tool uses its default scale of 1.
@@ -1219,7 +1415,11 @@ Clicks with the real OS mouse pointer via POST `/api/trusted-click`, for pages
 that ignore synthetic DOM clicks. It moves the user's cursor, so prefer
 `browser_click`. A `selector` is scrolled into view and clicked at its center;
 otherwise `x`/`y` are viewport coordinates, or desktop coordinates with
-`coordinate_space="screen"`.
+`coordinate_space="screen"`. The OS click lands on whatever the screen shows, so a
+`tab_id` that is not the shown tab of its window is shown for the click, and the
+user's tab is shown again 300 ms after it (see [Shared browser](#shared-browser)). A
+viewport click returns `user_active` without clicking while the user is using the
+target tab or the tab it would hide.
 
 | Platform | Click backend |
 |---|---|
@@ -1330,8 +1530,9 @@ Captures the active page as PNG and saves to the bridge screenshot directory
 ### POST /api/screenshot, /api/element-screenshot, /api/full-page-screenshot
 Return `dataUrl` and capture metadata. Set `imagePreview: true` for an inline preview
 under roughly 1 MB (large images are JPEG-encoded and downscaled in the extension).
-Without that flag, return full PNG data. Element requests require `selector` and
-accept `tabId` and `scale` (1–4); full-page requests accept `tabId`. Captures retain
+Without that flag, return full PNG data. Viewport requests accept `tabId`. Element
+requests require `selector` and accept `tabId` and `scale` (1–4); full-page requests
+accept `tabId`. A capture never shows the tab (`tabs.captureTab`). Captures retain
 existing canvas and scroll/segment limits and can truncate very large documents.
 
 MCP tool `browser_screenshot(selector=None, full_page=False, tab_id=None, save_to=None, data_url=False, ref=None, element=None)`
@@ -1401,7 +1602,8 @@ are not traversed. Returns `{ok, text, text_gone, elapsed}`; timeout returns
 
 ### POST /api/new-tab
 `{ "url": "https://example.com" }` — url optional, defaults to about:blank.
-Returns `{ "ok": true, "tabId": 123 }` immediately.
+Opens an agent-owned tab in the background (it is not shown; see
+[Shared browser](#shared-browser)). Returns `{ "ok": true, "tabId": 123 }` immediately.
 
 `{ "url": "https://example.com", "wait": true, "timeout": 15000 }` waits up to
 `timeout` ms (default 15000) for the load and returns
@@ -1410,10 +1612,14 @@ On timeout the tab stays open and the result is
 `{ "ok": false, "timedOut": true, "tabId": 123, "url": "...", "status": "loading" }`.
 
 ### POST /api/switch-tab
-`{ "tabId": 123 }`
+`{ "tabId": 123 }` shows the tab. It switches the user's view, so send it only on the
+user's request; while the user is using the tab it would hide, it returns `user_active`.
 
 ### POST /api/close-tab
-`{ "tabId": 123 }`
+`{ "tabId": 123, "force": true, "confirmToken": "…" }` closes an agent-owned tab. A
+user tab returns `user_tab` with a confirm token; `confirmToken` is that token after the
+user approved (see [Agent-owned tabs](#agent-owned-tabs)). `force` disarms
+`beforeunload` first.
 
 ### POST /api/wake-tab
 `{ "tabId": 123 }` reloads a discarded tab. A tab that is not discarded returns

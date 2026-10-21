@@ -274,7 +274,7 @@ def _focus_browser_window(title="", process=""):
 
 _NO_SCHEDULE_ACTIONS = {"ping", "getTabs", "getWindows"}
 _GLOBAL_SCOPE_ACTIONS = {
-    "screenshot", "switchTab", "newTab", "closeTab", "trustedClick",
+    "screenshot", "switchTab", "restoreActiveTab", "newTab", "closeTab", "trustedClick",
     "reloadExtension", "createWindow", "closeWindow", "focusWindow",
     "moveTab", "detachTab", "elementScreenshot", "fullPageScreenshot",
     "cookies", "clipboard", "downloads", "clearBrowsingData", "intercept",
@@ -603,6 +603,9 @@ def _native_click_screen(x, y):
     return {"ok": True, "backend": "win32"}
 
 
+TRUSTED_CLICK_RESTORE_DELAY = 0.3
+
+
 async def trusted_click(params):
     """Use a real OS-level mouse click at a browser viewport coordinate."""
     selector = params.get("selector") or ""
@@ -634,16 +637,24 @@ async def trusted_click(params):
             "clickBackend": clicked.get("backend"),
         }
 
-    point_params = {"selector": selector, "x": x, "y": y}
+    point_params = {"selector": selector, "x": x, "y": y, "click": True}
     if params.get("tabId") is not None:
         point_params["tabId"] = params.get("tabId")
+    # The extension shows a target tab that is not shown for the click (previousTabId) and
+    # refuses with user_active when the user is using either tab.
     point = await send_to_extension("screenPoint", point_params)
 
     if "error" in point:
         return point
 
-    focused = _focus_browser_window(title or point.get("title", ""), process) if focus else False
-    clicked = _native_click_screen(point["screenX"], point["screenY"])
+    try:
+        focused = _focus_browser_window(title or point.get("title", ""), process) if focus else False
+        clicked = _native_click_screen(point["screenX"], point["screenY"])
+    finally:
+        if point.get("previousTabId") is not None:
+            # The OS delivers the click asynchronously; let it land before showing the user's tab again.
+            await asyncio.sleep(TRUSTED_CLICK_RESTORE_DELAY)
+            await send_to_extension("restoreActiveTab", {"tabId": point["previousTabId"], "from": point.get("tabId")})
     if "error" in clicked:
         return clicked
 
@@ -762,9 +773,11 @@ WRITE_ACTIONS = {
 # Repeating these after an unknown outcome could duplicate a side effect (a submit,
 # message, payment or deletion), so their timeouts and disconnects are not retryable.
 _REPEAT_UNSAFE_ACTIONS = WRITE_ACTIONS | {"uploadCommit", "focusElement", "blurElement"}
-# Nothing reached the page, but repeating cannot succeed until the tab navigates
-# (error_page) or the user grants a browser permission (permission_required).
-_PERSISTENT_FAILURE_CODES = {"error_page", "permission_required"}
+# Nothing reached the page, but repeating cannot succeed: until the tab navigates (error_page),
+# because the command names several targets (ambiguous_target), until the user approves
+# closing their tab (user_tab), or until the user grants a browser permission
+# (permission_required).
+_PERSISTENT_FAILURE_CODES = {"error_page", "ambiguous_target", "user_tab", "permission_required"}
 
 
 def _check_policy(action, params):
@@ -1158,6 +1171,49 @@ async def _ask_before_act(action, params, *, direct):
               "batch, retry, parallel, broadcast or workflows)."),
         **state,
     )
+
+
+# ── User tabs (docs/api-reference.md#agent-owned-tabs) ──
+# The extension closes only tabs (closeTab) and windows (closeWindow) the agent opened. Its
+# user_tab refusal of a direct close carries a confirm token, issued and spent like
+# ask-before-act's; the identical direct call with it sends userTabApproved, which callers can
+# never set themselves.
+def _user_tab_binding(action, params):
+    return _confirmation_binding(
+        action, {k: v for k, v in params.items() if k not in ("confirmToken", "userTabApproved")}, "user_tab")
+
+
+def _take_user_tab_approval(action, params):
+    """Spend a user_tab confirm token for this exact close; return why it was rejected, if it was.
+
+    A token issued for anything else stays in params for ask-before-act.
+    """
+    token = params.get("confirmToken")
+    entry = _confirm_tokens.get(token) if isinstance(token, str) else None
+    binding = _user_tab_binding(action, params)
+    if entry is None or entry["binding"] != binding:
+        return None
+    del params["confirmToken"]
+    rejected = _spend_confirm_token(token, binding)
+    if rejected is None:
+        params["userTabApproved"] = True
+        _audit(action, {**params, "confirmation": "accepted", "reason": "user_tab"}, True, None, 0)
+    return rejected
+
+
+def _offer_user_tab_approval(action, params, result, rejected=None):
+    """Add a confirm token to a user_tab refusal of a direct close."""
+    if not isinstance(result, dict) or result.get("code") != "user_tab":
+        return result
+    state = result.setdefault("state", {})
+    state.update(confirmToken=_issue_confirm_token(_user_tab_binding(action, params)),
+                 expiresInSeconds=CONFIRM_TOKEN_TTL)
+    if rejected:
+        state["tokenRejected"] = rejected
+    result["hint"] = ("Nothing was closed: the agent did not open this tab. Leave it open, or ask the user to "
+                      "approve closing it, then repeat the identical call with confirmToken (MCP: confirm_token) "
+                      f"within {CONFIRM_TOKEN_TTL}s. The token works once and only for this close.")
+    return result
 
 
 def _ask_locked_on_start(flag):
@@ -2092,7 +2148,8 @@ async def _upload_files_async(body):
                       "start": start, "end": idx})
     sel, mode = body.get("selector"), body.get("mode") or "auto"
     r = await send_to_extension("uploadCommit", {"tabId": tab_id, "uploadId": uid, "selector": sel,
-                                                 "files": files, "mode": mode}, timeout=60)
+                                                 "files": files, "mode": mode, "first": bool(body.get("first"))},
+                                timeout=60)
     if isinstance(r, dict) and not r.get("error"):
         r.update({"tabId": tab_id, "chunks": idx, "bytes": total,
                   "seconds": round(time.time() - t0, 1)})
@@ -2878,7 +2935,8 @@ async def run_command(cmd):
     Inside a container step (_run_step) the command is audited like a direct call.
     """
     action = cmd.get('action', '')
-    params = {k: v for k, v in cmd.items() if k != 'action'}
+    # Only a confirmed direct close approves closing a user tab (_take_user_tab_approval).
+    params = {k: v for k, v in cmd.items() if k not in ('action', 'userTabApproved')}
     try:
         # Normalize find params: extension expects "query", users may send "selector"
         if action == 'find' and 'query' not in params and 'selector' in params:
@@ -3279,7 +3337,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "/api/set-zoom": lambda: self._forward("setZoom"),
             "/api/windows": lambda: self._forward("getWindows"),
             "/api/create-window": lambda: self._forward("createWindow"),
-            "/api/close-window": lambda: self._forward("closeWindow"),
+            "/api/close-window": lambda: self._close_with_approval("closeWindow", timeout=15),
             "/api/focus-window": lambda: self._forward("focusWindow"),
             "/api/move-tab": lambda: self._forward("moveTab"),
             "/api/detach-tab": lambda: self._forward("detachTab"),
@@ -3452,7 +3510,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self.send_json(403, held)
         return bool(held)
 
-    def _send_extension_action(self, action, body, timeout=35):
+    def _send_extension_action(self, action, body, timeout=35, on_result=None):
         policy_err = _check_policy(action, body)
         if policy_err:
             self.send_json(403, policy_err)
@@ -3483,6 +3541,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
                                         timeout=timeout + _outcome_budget_seconds(spec))
         except Exception as e:
             result = {"error": str(e)}
+        if on_result is not None:
+            result = on_result(result)
         _audit(
             action,
             body,
@@ -3588,13 +3648,15 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self._send_extension_action("clearHighlight", {})
 
     def handle_close_tab(self):
+        # With force, the extension disarms beforeunload once it has agreed to close the tab.
+        self._close_with_approval("closeTab")
+
+    def _close_with_approval(self, action, timeout=35):
         body = self.read_body()
-        if body.get("force"):
-            try:
-                self.run_async(send_to_extension("neuterUnload", {"tabId": body.get("tabId")}, timeout=8), timeout=10)
-            except Exception:
-                pass   # tab may be hung or already gone - still try to close it
-        self._send_extension_action("closeTab", body)
+        body.pop("userTabApproved", None)
+        rejected = _take_user_tab_approval(action, body)
+        self._send_extension_action(action, body, timeout=timeout,
+                                    on_result=lambda result: _offer_user_tab_approval(action, body, result, rejected))
 
     def handle_switch_tab(self):
         self._send_extension_action("switchTab", self.read_body())
