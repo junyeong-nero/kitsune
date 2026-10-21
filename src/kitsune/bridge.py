@@ -198,12 +198,6 @@ def _cache_set(key, data):
             del _cache[k]
 
 
-def _cache_clear(reason=None):
-    """Clear short-lived read cache after browser/page mutations."""
-    if _cache:
-        _cache.clear()
-
-
 def _focus_window_by_title(title):
     """Best-effort foreground focus for callers that explicitly ask for it."""
     if not sys.platform.startswith("win") or not title:
@@ -1294,8 +1288,9 @@ def _is_held(result):
 
 
 def _invalidate_cache_for_action(action):
+    """Clear the short-lived read cache after browser/page mutations."""
     if action in WRITE_ACTIONS or action in ("elementScreenshot", "fullPageScreenshot"):
-        _cache_clear(action)
+        _cache.clear()
 
 
 # ── Orchestration: broadcast and syncBarrier ──
