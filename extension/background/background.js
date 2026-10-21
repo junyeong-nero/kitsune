@@ -534,13 +534,11 @@ const OPENER_ACTIONS = new Set([
   'keypress', 'submitForm', 'formFill', 'hover', 'scroll', 'drag', 'focusElement', 'blurElement',
   'navigate', 'goBack', 'goForward', 'reloadTabBrowser', 'clickAndWaitNavigation',
 ]);
-// Writes and navigations that back off from a tab the user is using (see userActivity).
-// Element and full-page captures scroll the page.
+// Writes and navigations that back off from a tab the user is using (see userActivity): the page
+// actions above and these. Element and full-page captures scroll the page.
 const USER_GUARDED_ACTIONS = new Set([
-  'click', 'doubleClick', 'type', 'fill', 'setEditableContent', 'selectOption', 'checkBox',
-  'keypress', 'submitForm', 'formFill', 'hover', 'scroll', 'drag', 'focusElement', 'blurElement', 'media',
-  'executeJS', 'uploadCommit', 'navigate', 'goBack', 'goForward', 'reloadTabBrowser',
-  'clickAndWaitNavigation', 'closeTab', 'switchTab', 'focusWindow', 'elementScreenshot', 'fullPageScreenshot',
+  ...OPENER_ACTIONS, 'media', 'executeJS', 'uploadCommit',
+  'closeTab', 'switchTab', 'focusWindow', 'elementScreenshot', 'fullPageScreenshot',
 ]);
 // A tab opened by a link starts on about:blank; wait this long for its real URL.
 const OPENED_TAB_URL_WAIT_MS = 1000;
@@ -564,7 +562,7 @@ async function handleCommand(command) {
   const tracksOpenedTabs = OPENER_ACTIONS.has(params.action);
   // A trusted click's screenPoint (see screenPointForClick) acts on the page like a click.
   const guarded = USER_GUARDED_ACTIONS.has(params.action) || (params.action === 'screenPoint' && !!params.click);
-  const touches = (tracksOpenedTabs || guarded) && params.action !== 'focusWindow';
+  const touches = guarded && params.action !== 'focusWindow';
   if ((withSnapshot || textSnapshot || touches) && params.tabId == null) params.tabId = await getActiveTabId();
   if (guarded) {
     const busy = await userActiveError(await guardedTabId(params.action, params));
