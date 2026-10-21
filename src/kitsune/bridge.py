@@ -795,6 +795,14 @@ _REPEAT_UNSAFE_ACTIONS = WRITE_ACTIONS | {"uploadCommit", "focusElement", "blurE
 _PERSISTENT_FAILURE_CODES = {"error_page", "ambiguous_target", "user_tab", "permission_required"}
 
 
+def _url_matches(pattern, url, flags=0):
+    """re.search for a policy pattern; an invalid pattern matches nothing."""
+    try:
+        return bool(_re.search(pattern, url, flags))
+    except _re.error:
+        return False
+
+
 def _check_policy(action, params):
     """Return error dict if action/url violates current policy, else None."""
     if not permits_action(_task_mode.get(), action):
@@ -812,30 +820,18 @@ def _check_policy(action, params):
     # An if/while condition is JavaScript run on the page, so it is refused like js.
     if _policy["readonly"] and (action in WRITE_ACTIONS or action in _CONDITION_ACTIONS):
         # Read-only ops on cookies/storage/etc. are still allowed; tighten if needed.
-        sub_op = (params or {}).get("op") if isinstance(params, dict) else None
+        sub_op = params.get("op") if isinstance(params, dict) else None
         if action in ("cookies", "clipboard", "storageOp", "downloads") and sub_op in ("get", "read", "list", "snapshot"):
             return None
         return {"error": f"Read-only mode is active; refusing action: {action}"}
-    url = (params or {}).get("url") if isinstance(params, dict) else None
+    url = params.get("url") if isinstance(params, dict) else None
     if url:
         for pat in _policy.get("deny", []):
-            try:
-                if _re.search(pat, url):
-                    return {"error": f"URL denied by policy ({pat}): {url}"}
-            except _re.error:
-                pass
+            if _url_matches(pat, url):
+                return {"error": f"URL denied by policy ({pat}): {url}"}
         allow = _policy.get("allow", [])
-        if allow:
-            ok = False
-            for pat in allow:
-                try:
-                    if _re.search(pat, url):
-                        ok = True
-                        break
-                except _re.error:
-                    pass
-            if not ok:
-                return {"error": f"URL not in allowlist: {url}"}
+        if allow and not any(_url_matches(pat, url) for pat in allow):
+            return {"error": f"URL not in allowlist: {url}"}
     return None
 
 
@@ -942,14 +938,8 @@ def _raise_history_url_floor(body):
 
 def _history_url_blocked(url):
     """Whether the URL policy floor hides url from history results (patterns as in _check_policy)."""
-    def matches(pattern):
-        try:
-            return bool(_re.search(pattern, url))
-        except _re.error:
-            return False
-
-    return (any(matches(pattern) for pattern in _history_url_floor["deny"])
-            or any(not any(matches(pattern) for pattern in allow) for allow in _history_url_floor["allow"]))
+    return (any(_url_matches(pattern, url) for pattern in _history_url_floor["deny"])
+            or any(not any(_url_matches(pattern, url) for pattern in allow) for allow in _history_url_floor["allow"]))
 
 
 def _history_request(action, body, now_ms):
@@ -1045,12 +1035,10 @@ _unknown_outcomes = {}   # outcome key -> expiry, for writes that ended retryabl
 
 
 def _ask_url_match(url):
-    for pat in _policy.get("askUrls", []):
-        try:
-            if url and _re.search(pat, url, _re.I):
+    if url:
+        for pat in _policy.get("askUrls", []):
+            if _url_matches(pat, url, _re.I):
                 return pat
-        except _re.error:
-            pass
     return None
 
 
