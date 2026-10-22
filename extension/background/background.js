@@ -1303,12 +1303,20 @@ const MISSING_CONTENT_RECEIVER = 'Could not establish connection. Receiving end 
 // content script can still distinguish replaced snapshots and other documents.
 const shortRefs = new Map();
 const publicRefs = new Map();
+// Retired aliases still answer other_document, not not_in_snapshot; bounded, oldest first.
+const retiredShortRefs = new Set();
+const RETIRED_SHORT_REFS_MAX = 4096;
 // Retire aliases with their document/tab, without resetting the persisted monotonic counter.
 function pruneShortRefs(tabId) {
   for (const [short, entry] of shortRefs) {
     if (entry.tabId !== tabId) continue;
     shortRefs.delete(short);
     publicRefs.delete(`${tabId}:${entry.ref}`);
+    retiredShortRefs.add(short);
+  }
+  for (const short of retiredShortRefs) {
+    if (retiredShortRefs.size <= RETIRED_SHORT_REFS_MAX) break;
+    retiredShortRefs.delete(short);
   }
 }
 // The params that may carry a ref, and a public ref's spelling.
@@ -1340,7 +1348,8 @@ async function reserveShortRefs(count) {
 
 function shortRefError(ref, reason) {
   const hint = reason === 'other_document'
-    ? 'The ref belongs to another tab. Pass tab_id and take a new browser_snapshot.'
+    ? 'The ref belongs to another document: the tab navigated or a different tab is targeted. ' +
+      'Take a new browser_snapshot of the intended tab (pass tab_id).'
     : 'This ref is unknown or expired; take a new browser_snapshot and use its refs.';
   return { error: 'stale ref, call browser_snapshot again', code: 'stale_ref', retryable: true,
     hint, state: { reason, ref } };
@@ -1352,7 +1361,7 @@ function expandShortRefs(params, tabId) {
     const ref = params[key];
     if (!isShortRef(ref)) continue;
     const entry = shortRefs.get(ref);
-    if (!entry) return { error: shortRefError(ref, 'not_in_snapshot') };
+    if (!entry) return { error: shortRefError(ref, retiredShortRefs.has(ref) ? 'other_document' : 'not_in_snapshot') };
     if (entry.tabId !== tabId) return { error: shortRefError(ref, 'other_document') };
     expanded[key] = entry.ref;
   }
