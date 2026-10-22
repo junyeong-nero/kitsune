@@ -581,7 +581,14 @@ and the current tab state:
 action does not repeat it either. Inspect the page before acting again. If the check
 itself could not read the page, `observed` has its `error` and `code`. A tab that is
 navigating is checked again until the deadline. If the tab closed, `state.closed` is
-`true`. Sensitive fields are never read back, so a `value` outcome on one is reported
+`true`. For `browser_click`, when the clicked element (the result's `target_ref`, or
+the request's ref or selector if no post-action snapshot was taken) is still visible
+after the wait, the hint adds that the page may accept only trusted input and that
+`browser_trusted_click` (in the `devtools` capability) is the alternative. That is a
+possibility, not a diagnosis: the page may also be slow, or expect something else.
+Kitsune never retries the click or switches to an OS click on its own. A coordinate
+click with no `target_ref`, or a target that is gone, gets no such hint.
+Sensitive fields are never read back, so a `value` outcome on one is reported
 as not met with `observed.redacted: true`, and the expected value is not echoed.
 `value_changed` reads the value once before dispatch (`observed.before` reports it). If
 that read fails, or the field is sensitive, the action is not dispatched and the result
@@ -1972,7 +1979,8 @@ from `pointerup` on. `click` is a `PointerEvent` with `detail: 1` and
 `el.click()` does; a disabled form control gets no `click`. Limits: every event has
 `isTrusted: false` and grants no user activation, and no `pointermove`, `mousemove`,
 `pointerout` or `pointerleave` is sent. For pages that need trusted input, use
-`browser_trusted_click`.
+`browser_trusted_click`; an unmet `expect` whose target is still visible says so in its
+`hint` (see [Action outcomes](#action-outcomes)).
 Add `"wait": true, "timeout": 10000` to wait for the target first (see
 [Actionability wait](#actionability-wait)); the other action endpoints accept the same keys.
 
