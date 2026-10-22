@@ -277,10 +277,14 @@ async function testContent() {
   for (const child of body.children) child.parentElement = body;
   context.window.location = { href: 'https://shop.test/app/reviews' };
   context.document.title = 'Reviews';
-  toggle.click = () => {
+  // A dispatched click runs the page's click handling, as in a browser.
+  toggle.click = () => {};
+  toggle.dispatchEvent = event => {
+    if (event.type !== 'click') return true;
     toggle.attrs['aria-expanded'] = 'true';
     listbox.hidden = false;
     context.window.location.href = 'https://shop.test/app/reviews?filter=open';
+    return true;
   };
   context.document.elementFromPoint = () => toggle;
   const page = await send({ action: 'getSnapshot' });

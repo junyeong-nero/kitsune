@@ -1959,6 +1959,16 @@ command can reach the page. Two results report `ready: false`:
 
 ### POST /api/click
 `{ "selector": "button.submit" }` — also accepts `ref`, `position`.
+
+The click dispatches `pointerover`, `pointerenter`, `pointerdown`, `mousedown`,
+`pointerup`, `mouseup` and `click` on the target, at its center or at the given point,
+as a primary-button press: `button: 0`, with `buttons: 1` until the release and `0`
+from `pointerup` on. `click` is a `PointerEvent` with `detail: 1` and
+`pointerType: "mouse"`, and it runs the element's native activation once, as
+`el.click()` does; a disabled form control gets no `click`. Limits: every event has
+`isTrusted: false` and grants no user activation, and no `pointermove`, `mousemove`,
+`pointerout` or `pointerleave` is sent. For pages that need trusted input, use
+`browser_trusted_click`.
 Add `"wait": true, "timeout": 10000` to wait for the target first (see
 [Actionability wait](#actionability-wait)); the other action endpoints accept the same keys.
 

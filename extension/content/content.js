@@ -1151,8 +1151,12 @@
   }
 
   // ── Click ──
+  const DISABLED_CONTROLS = 'button:disabled, input:disabled, select:disabled, textarea:disabled';
+
   function dispatchPointerOrMouse(target, type, init) {
-    const EventCtor = type.startsWith('pointer') && window.PointerEvent ? PointerEvent : MouseEvent;
+    // Browsers dispatch a mouse click as a PointerEvent where they support one.
+    const pointer = type.startsWith('pointer') || type === 'click';
+    const EventCtor = pointer && window.PointerEvent ? PointerEvent : MouseEvent;
     return target.dispatchEvent(new EventCtor(type, {
       ...init, pointerId: 1, pointerType: 'mouse', isPrimary: true,
     }));
@@ -1186,10 +1190,11 @@
       button: 0,
       buttons: 1,
     };
+    // No button is held once it is released.
+    const released = { ...eventInit, buttons: 0 };
 
-    // el.click() below emits the click and performs native activation exactly once.
     for (const type of ['pointerover', 'pointerenter', 'pointerdown', 'mousedown', 'pointerup', 'mouseup']) {
-      const proceed = dispatchPointerOrMouse(el, type, eventInit);
+      const proceed = dispatchPointerOrMouse(el, type, type.endsWith('up') ? released : eventInit);
       // As a real mousedown does, unless the page cancelled it. The background has already
       // refused a tab the user is using (user_active), so this never takes focus from them.
       if (type === 'mousedown' && proceed) focusForClick(el, coords && { x, y });
@@ -1201,8 +1206,10 @@
     let clickEvent = null;
     const onClick = event => { clickEvent = event; };
     if (link || media) el.addEventListener('click', onClick);
-    if (typeof el.click === 'function') {
-      el.click();
+    // A dispatched click runs native activation exactly once, as el.click() does, and also
+    // carries the point. Like el.click(), it skips disabled form controls.
+    if (typeof el.click === 'function' && !el.matches?.(DISABLED_CONTROLS)) {
+      dispatchPointerOrMouse(el, 'click', { ...released, detail: 1 });
     }
     if (link || media) el.removeEventListener('click', onClick);
     // A page handler that cancelled the click took the link over, including any tab it opens.
