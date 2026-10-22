@@ -2131,6 +2131,31 @@ async def _click_target_visible(tab_id, params, result):
     return r.get("found") is True
 
 
+async def _poll_page_wait(action, params):
+    """Run a waitForText/waitForElement wait as single page reads polled until its timeout.
+
+    A wait inside the page runs on its timers, which the browser throttles in background
+    tabs, so it can end long after its timeout. A reply other than a timed-out read (met,
+    or an error) ends the wait; an unmet wait reports the requested timeout and elapsed.
+    """
+    timeout_ms = params.get("timeout", 10000)
+    poll_s = (params.get("pollInterval") or 100) / 1000
+    start = time.monotonic()
+    deadline = start + timeout_ms / 1000
+    while True:
+        remaining_s = max(0, deadline - time.monotonic())
+        r = await send_to_extension(action, {**params, "timeout": 0}, timeout=remaining_s + 5)
+        if not isinstance(r, dict) or r.get("ok") is not False or time.monotonic() >= deadline:
+            break
+        await asyncio.sleep(min(poll_s, max(0, deadline - time.monotonic())))
+    if isinstance(r, dict) and r.get("ok") is False:
+        r["elapsed"] = int((time.monotonic() - start) * 1000)
+        r["error"] = _re.sub(r"^Timed out after 0ms", f"Timed out after {timeout_ms}ms", r.get("error", ""))
+    elif isinstance(r, dict) and r.get("ok") is True:
+        r["elapsed"] = int((time.monotonic() - start) * 1000)
+    return r
+
+
 async def _send_with_expectation(action, params, spec, timeout=30, remember=None):
     result = await _dispatch_with_expectation(action, params, spec, timeout)
     if remember is not None:
@@ -3059,7 +3084,9 @@ async def _execute_command(action, effective_action, params):
                 with open(fp, 'wb') as f2: f2.write(img)
                 return {'saved_to': fp}
             return r
-        elif action in ('waitForElement', 'waitForResult'):
+        elif action == 'waitForElement':
+            return await _poll_page_wait(action, params)
+        elif action == 'waitForResult':
             return await send_to_extension(action, params, timeout=_dispatch_timeout(action, params))
         elif action == 'trustedClick':
             return await trusted_click(params)
@@ -3732,9 +3759,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     def handle_wait_for_element(self):
         body = self.read_body()
-        # waitForElement can take up to timeout + buffer; extend the WS timeout accordingly
-        result = self.run_async(send_to_extension("waitForElement", body,
-                                                  timeout=_dispatch_timeout("waitForElement", body)))
+        result = self.run_async(_poll_page_wait("waitForElement", body))
         self.send_json(200, result)
 
     def handle_wait_for_text(self):
@@ -3744,8 +3769,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self.send_json(400, {"error": "timeout must be non-negative milliseconds"})
             return
         timeout_s = timeout_ms / 1000 + 5
-        result = self.run_async(
-            send_to_extension("waitForText", body, timeout=timeout_s), timeout=timeout_s + 1)
+        result = self.run_async(_poll_page_wait("waitForText", body), timeout=timeout_s + 1)
         self.send_json(200, result)
 
     def handle_wait_for_result(self):

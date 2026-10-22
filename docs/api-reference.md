@@ -1709,7 +1709,7 @@ Invalid combinations return an error before contacting the bridge.
 | Condition | Meaning | Bridge endpoint |
 |---|---|---|
 | `selector` / `ref` | Wait for a visible element, poll every 200 ms | `/api/wait-for-element` |
-| `text`, `text_gone` | Literal substring of `document.body.innerText` appears/disappears, poll every 500 ms | `/api/wait-for-result` |
+| `text`, `text_gone` | Literal substring of `document.body.innerText` appears/disappears, poll every 100 ms | `/api/wait-for-text` |
 | `js` | Expression returns a non-empty result, poll every 500 ms | `/api/wait-for-result` |
 | `url`, `title` | JavaScript regex pattern matches | `/api/wait-for-url`, `/api/wait-for-title` |
 | `network_idle=True` | No new network resources for 500 ms | `/api/wait-for-network-idle` |
@@ -1717,7 +1717,12 @@ Invalid combinations return an error before contacting the bridge.
 
 `timeout` is in milliseconds and does not limit an explicit sleep. JS retains
 bridge non-empty-result semantics: `false` and `0` count as results; return
-`null` or an empty string while waiting for a predicate. Text waits use POST `/api/wait-for-text`.
+`null` or an empty string while waiting for a predicate.
+
+Element and text waits are single page reads that the bridge repeats until `timeout`,
+with a last read at it, as for `expect`. They do not depend on the page's timers, which
+browsers throttle in background tabs, so they end near `timeout`; one read of a very
+large page can add to `elapsed`. `js` waits still poll inside the page.
 
 ### `browser_screenshot(selector=None, full_page=False, tab_id=None, save_to=None, data_url=False, ref=None, element=None)`
 
@@ -1921,7 +1926,8 @@ Provide at least one non-empty condition (the HTTP endpoint accepts both at once
 about every 100 ms, excluding hidden text; if both conditions are provided they
 must both hold. Matching uses case-sensitive substrings. Frames and shadow roots
 are not traversed. Returns `{ok, text, text_gone, elapsed}`; timeout returns
-`ok: false` with an error. A zero timeout performs one immediate check.
+`ok: false` with an error. The bridge polls single reads (see `browser_wait_for`); a
+zero timeout performs one immediate check.
 
 ## Navigation (POST)
 
@@ -2055,7 +2061,9 @@ No body needed. Removes all highlights.
 
 ### POST /api/wait-for-element
 `{ "selector": ".loaded", "timeout": 10000, "pollInterval": 200 }`
-Polls until element appears. Returns `{ "ok": true, "found": true, "ref": "r0", "elapsed": 1200 }`
+Polls until element appears. Returns `{ "ok": true, "found": true, "ref": "r0", "elapsed": 1200 }`;
+timeout returns `ok: false, found: false` with an error. The bridge polls single reads (see
+`browser_wait_for`); a zero timeout performs one immediate check.
 
 ### POST /api/wait-for-result
 `{ "code": "document.querySelector('.data')?.textContent", "timeout": 15000, "pollInterval": 500 }`
