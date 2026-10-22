@@ -376,7 +376,7 @@ Use an `act` client or the browser itself for a sensitive action. Modes limit ag
 commands, not page scripts: navigation can still trigger site behavior and field events
 can autosave a draft. They are not an incognito session or an application-level sandbox.
 Exact token counts and research/account-lookup task measurements belong to
-browser-mcp-bench; character-size guards in this repo are not token measurements.
+kitsune-benchmark; character-size guards in this repo are not token measurements.
 
 ### Lean tool preset
 
@@ -389,7 +389,7 @@ includes `all`). Set `full` if you relied on them:
 KITSUNE_TOOL_PRESET = "full"
 ```
 
-`lean` narrows `core` to the 14 tools browser-mcp-bench's read and draft tasks used,
+`lean` narrows `core` to the 14 tools kitsune-benchmark's read and draft tasks used,
 and leaves every tool definition unchanged. In the #31 A/B (24 tasks, one model, one
 attempt per arm) it showed no detected success or safety loss against the 30-tool
 surface; that is workload-specific, and the dropped tools are needed for the tasks

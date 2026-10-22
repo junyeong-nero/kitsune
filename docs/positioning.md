@@ -226,7 +226,7 @@ language from an enforced mode.
 
 ### No measured general superiority
 
-The [external benchmark](https://github.com/junyeong-nero/browser-mcp-bench)
+The [external benchmark](https://github.com/junyeong-nero/kitsune-benchmark)
 compares Kitsune with Microsoft's Playwright MCP. Its six-task variant-0 pilot
 found workload-dependent trade-offs and a tab-inventory cache bottleneck. It does
 not establish superiority over Firefox-native competitors or the current versions

@@ -69,7 +69,7 @@ class TaskModeCatalogTests(unittest.TestCase):
             "browser_forms", "browser_dom", "browser_snapshot", "browser_find"})
         tabs = next(tool for tool in self.read["tools"] if tool["name"] == "browser_tab_list")
         self.assertEqual(tabs["inputSchema"]["properties"], {})
-        # Character guard, not a tokenizer claim; exact tokens/task success belong to browser-mcp-bench.
+        # Character guard, not a tokenizer claim; exact tokens/task success belong to kitsune-benchmark.
         definitions = json.dumps(self.read["tools"], separators=(",", ":"), ensure_ascii=False)
         self.assertLess(len(definitions), 6000)
 

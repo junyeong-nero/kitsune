@@ -13,7 +13,7 @@ Read `docs/philosophy.md` first. Fixes must follow it.
 1. **Read the issue and comments** (`gh issue view N --comments`). Extract environment,
    versions (`browser_status` build), tool calls, and expected vs actual behavior.
    If the issue carries `needs-validation` or is mainly a claim that needs measurement,
-   stop. That belongs to `candidate-builder` or browser-mcp-bench.
+   stop. That belongs to `candidate-builder` or kitsune-benchmark.
 2. **Reproduce before changing code.** Write the smallest failing test:
    - Python unit test in `tests/`, a Node harness in `tests/*.cjs`, or
    - a real-browser suite via `tests/real_browser_harness.py`, run with
@@ -35,7 +35,7 @@ Read `docs/philosophy.md` first. Fixes must follow it.
    Also run the relevant `test_real_browser*.py` suite when the fix touches browser
    behavior and a browser binary is available. Say which suites you could not run.
 5. **If the fix implies a performance, cost or behavior claim** ("this reduces timeouts"),
-   do not assert it. Draft a browser-mcp-bench hypothesis issue instead.
+   do not assert it. Draft a kitsune-benchmark hypothesis issue instead.
 
 ## Boundaries
 

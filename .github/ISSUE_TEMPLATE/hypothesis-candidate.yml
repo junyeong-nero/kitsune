@@ -1,12 +1,12 @@
 name: Hypothesis candidate
-description: Implement a change whose benefit must be validated in browser-mcp-bench first.
+description: Implement a change whose benefit must be validated in kitsune-benchmark first.
 title: "[Candidate] "
 labels: ["needs-validation"]
 body:
   - type: markdown
     attributes:
       value: |
-        Open the hypothesis in [browser-mcp-bench](https://github.com/junyeong-nero/browser-mcp-bench/issues/new?template=hypothesis.yml)
+        Open the hypothesis in [kitsune-benchmark](https://github.com/junyeong-nero/kitsune-benchmark/issues/new?template=hypothesis.yml)
         first. Adopt/reject criteria and the verdict live there, not here.
 
         Bugs that reproduce and clear design decisions do not need this template.
@@ -14,8 +14,8 @@ body:
     id: hypothesis
     attributes:
       label: Hypothesis
-      description: The browser-mcp-bench issue this implements.
-      placeholder: junyeong-nero/browser-mcp-bench#12
+      description: The kitsune-benchmark issue this implements.
+      placeholder: junyeong-nero/kitsune-benchmark#12
     validations:
       required: true
   - type: textarea

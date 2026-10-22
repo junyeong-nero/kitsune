@@ -148,7 +148,7 @@ if _unknown_caps:
     raise ValueError(f"Unknown KITSUNE_CAPS: {', '.join(sorted(_unknown_caps))}")
 
 # Core subsets (KITSUNE_TOOL_PRESET); full keeps the whole core group.
-# lean: the 14 tools browser-mcp-bench's read + draft tasks used, the default since the
+# lean: the 14 tools kitsune-benchmark's read + draft tasks used, the default since the
 # #31 A/B; docs/guide.md#lean-tool-preset lists what it drops.
 TOOL_PRESETS = {
     "lean": frozenset({

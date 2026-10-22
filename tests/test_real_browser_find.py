@@ -32,7 +32,7 @@ PAGE = """<!doctype html><title>Reviews</title>
 <script>document.getElementById('pw').value = %s;</script>""" % (
     "".join(f'<a href="#">{text}</a>' for text in NAV), json.dumps(SECRET))
 
-# A sticky-header page like the browser-mcp-bench gallery: hundreds of links before the content.
+# A sticky-header page like the kitsune-benchmark gallery: hundreds of links before the content.
 CROWDED_PAGE = """<!doctype html><title>Crowded</title>
 <header><nav>%s</nav></header>
 <main><section id="target"><h2>Target section</h2><button>Target action</button></section></main>""" % (

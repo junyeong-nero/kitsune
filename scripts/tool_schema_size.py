@@ -30,7 +30,7 @@ from pathlib import Path
 
 SNAPSHOT = Path(__file__).resolve().parent.parent / "tests" / "tool_schema_sizes.json"
 
-# browser-mcp-bench's Kitsune UI allowlist (browser_mcp_bench/miniwob.py UI_TOOLS["kitsune"]).
+# kitsune-benchmark's Kitsune UI allowlist (kitsune_benchmark/miniwob.py UI_TOOLS["kitsune"]).
 # Its devtools-only names (focus, double_click, drag) are not registered by KITSUNE_CAPS=core.
 BENCH_UI_TOOLS = (
     "browser_status", "browser_tabs", "browser_page_info", "browser_page_text",

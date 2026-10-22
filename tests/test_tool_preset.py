@@ -1,7 +1,7 @@
 """KITSUNE_TOOL_PRESET (#31): lean is the default, what it drops, and that read + draft flows stay covered.
 
 This checks the registered catalog and schemas only. Whether the preset changes task
-success, safety, calls or input per model turn is browser-mcp-bench's A/B, not tested here.
+success, safety, calls or input per model turn is kitsune-benchmark's A/B, not tested here.
 """
 import json
 import os

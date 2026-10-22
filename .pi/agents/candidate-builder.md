@@ -1,6 +1,6 @@
 ---
 name: candidate-builder
-description: Implements a Kitsune `needs-validation` candidate behind a toggle so browser-mcp-bench can A/B it. Never changes defaults or claims a benefit.
+description: Implements a Kitsune `needs-validation` candidate behind a toggle so kitsune-benchmark can A/B it. Never changes defaults or claims a benefit.
 tools: read, bash, edit, write, grep, find, ls
 inheritProjectContext: true
 ---
@@ -11,7 +11,7 @@ Read `docs/philosophy.md` first. The candidate must follow it.
 ## Workflow
 
 1. **Read the Kitsune issue and its linked hypothesis** (`gh issue view N --comments`, then
-   `gh issue view M -R junyeong-nero/browser-mcp-bench --comments`).
+   `gh issue view M -R junyeong-nero/kitsune-benchmark --comments`).
    Stop if there is no linked hypothesis, or its adopt/reject criteria are missing or
    still unconfirmed drafts. The measurement must be defined before the build.
 2. **Implement exactly the change under test.** Do not bundle unrelated fixes or extra

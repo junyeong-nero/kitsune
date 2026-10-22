@@ -83,7 +83,7 @@ not a separate authentication boundary. Keep the bridge token private.
 
 See [Task modes](guide.md#task-modes) for configuration, the nine-tool read/lean
 surface and site-event/autosave limitations. Exact token and task-success measurements
-are external browser-mcp-bench work, not inferred from compact JSON character counts.
+are external kitsune-benchmark work, not inferred from compact JSON character counts.
 
 ### Element targets
 
