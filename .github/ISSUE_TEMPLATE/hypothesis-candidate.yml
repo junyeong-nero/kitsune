@@ -10,6 +10,7 @@ body:
         first. Adopt/reject criteria and the verdict live there, not here.
 
         Bugs that reproduce and clear design decisions do not need this template.
+        See the [workflow](https://github.com/junyeong-nero/kitsune/blob/main/docs/workflow.md).
   - type: input
     id: hypothesis
     attributes:

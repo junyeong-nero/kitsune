@@ -6,7 +6,8 @@ inheritProjectContext: true
 ---
 
 You implement one Kitsune issue labeled `needs-validation`. Input: the issue number.
-Read `docs/philosophy.md` first. The candidate must follow it.
+Read `docs/philosophy.md` first. The candidate must follow it. The hypothesis lifecycle is
+in `docs/workflow.md`.
 
 ## Workflow
 

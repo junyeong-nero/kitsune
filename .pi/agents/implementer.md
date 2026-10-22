@@ -6,7 +6,8 @@ inheritProjectContext: true
 ---
 
 You implement one Kitsune issue. Input: the issue number.
-Read `docs/philosophy.md` first. Changes must follow it.
+Read `docs/philosophy.md` first. Changes must follow it. The routing and approval rules
+are in `docs/workflow.md`.
 
 ## Scope
 
