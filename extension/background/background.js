@@ -568,6 +568,8 @@ async function handleCommand(command) {
   const guarded = USER_GUARDED_ACTIONS.has(params.action) || (params.action === 'screenPoint' && !!params.click);
   const touches = guarded && params.action !== 'focusWindow';
   if ((withSnapshot || textSnapshot || touches) && params.tabId == null) params.tabId = await getActiveTabId();
+  const unprotected = await protectedTabError(params);
+  if (unprotected) return unprotected;
   if (guarded) {
     const busy = await userActiveError(await guardedTabId(params.action, params));
     if (busy) return busy;
@@ -580,6 +582,21 @@ async function handleCommand(command) {
   } finally {
     if (touched != null) touchEnd(touched);
   }
+}
+
+// Under a session's protectUserTabs (#199), only the bridge's userTabApproved navigates a tab the
+// agent did not open. Clicks, forms, reloads and page-initiated loads are not covered.
+const PROTECTED_NAVIGATIONS = new Set(['navigate', 'goBack', 'goForward']);
+async function protectedTabError(params) {
+  const tabId = params.tabId;
+  if (!params.protectUserTabs || params.userTabApproved || !PROTECTED_NAVIGATIONS.has(params.action) ||
+      tabId == null || agentTabs.has(tabId)) return null;
+  const tab = await browser.tabs.get(tabId).catch(() => null);
+  if (!tab) return null;
+  return { ...tabError(`Tab ${tabId} was not opened by the agent and this session protects user tabs, so it was ` +
+    'not navigated', 'user_tab', { tabId, url: tab.url, title: tab.title }, false),
+    hint: 'Nothing navigated. Open extra material with browser_tabs action=new and pass its tabId as tab_id, ' +
+      'or ask the user and repeat a direct call with tab_id and the confirm_token it returns.' };
 }
 
 async function runCommand(params, { withSnapshot, deltaSnapshot, textSnapshot, tracksOpenedTabs }) {

@@ -59,7 +59,7 @@ class UserTabCloseTests(unittest.TestCase):
         if action == "closeTab":
             handler.handle_close_tab()
         else:
-            handler._close_with_approval(action)
+            handler._with_user_tab_approval(action)
         status, result = handler.send_json.call_args.args
         self.assertEqual(status, 200)
         return result

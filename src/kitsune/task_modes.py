@@ -1,6 +1,8 @@
 """Startup tool surfaces and per-request bridge limits (#141)."""
 
 MODE_HEADER = "X-Kitsune-Mode"
+# KITSUNE_PROTECT_USER_TABS=1: this client's navigations leave user tabs alone (#199).
+PROTECT_USER_TABS_HEADER = "X-Kitsune-Protect-User-Tabs"
 
 
 def task_mode(value: str | None) -> str:

@@ -25,7 +25,7 @@ from pydantic import Field
 from . import bridge_control
 from .bridge_control import BRIDGE, HTTP_PORT, LOG_FILE, TOKEN_FILE, WS_PORT, headers as _headers
 from .version import BRIDGE_BUILD
-from .task_modes import MODE_HEADER, permits_tool, task_mode
+from .task_modes import MODE_HEADER, PROTECT_USER_TABS_HEADER, permits_tool, task_mode
 from .waits import (
     RESUME_DEADLINE_SECONDS, WORKFLOW_DEADLINE_SECONDS, batch_deadline_seconds, command_wait_seconds,
     container_request_seconds,
@@ -172,6 +172,7 @@ def tool_preset(preset: str | None, caps: frozenset) -> str:
 
 TOOL_PRESET = tool_preset(os.environ.get("KITSUNE_TOOL_PRESET"), ENABLED_CAPS)
 MODE = task_mode(os.environ.get("KITSUNE_MODE"))
+PROTECT_USER_TABS = os.environ.get("KITSUNE_PROTECT_USER_TABS", "").lower() in {"1", "true", "yes", "on"}
 
 # Known tools left out by caps, preset or mode: name -> (group, settings that publish it).
 UNPUBLISHED_TOOLS: dict[str, tuple[str, list[str]]] = {}
@@ -412,6 +413,8 @@ def _request(method: str, endpoint: str, **kwargs) -> dict:
             headers = _headers()
             if MODE != "act":
                 headers[MODE_HEADER] = MODE
+            if PROTECT_USER_TABS:
+                headers[PROTECT_USER_TABS_HEADER] = "1"
             r = httpx.request(method, f"{BRIDGE}{endpoint}", headers=headers, **kwargs)
             if r.status_code == 401:
                 return _token_mismatch()

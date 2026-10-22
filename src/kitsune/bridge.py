@@ -58,7 +58,7 @@ except ImportError:
     sys.exit("websockets is not installed. Reinstall kitsune with its dependencies.")
 
 from . import bridge_control
-from .task_modes import MODE_HEADER, permits_action, permits_route, task_mode
+from .task_modes import MODE_HEADER, PROTECT_USER_TABS_HEADER, permits_action, permits_route, task_mode
 from .version import BRIDGE_BUILD, PACKAGE_VERSION, SOURCE_ROOT, extension_manifest_hash, extension_source_hash
 from .waits import (
     RESUME_DEADLINE_SECONDS, WORKFLOW_DEADLINE_SECONDS, actionability_wait_seconds, batch_deadline_seconds,
@@ -165,6 +165,9 @@ _LOG_MAX = 5000
 # Ask-before-act is opt-in. askUrls are payment-like URL patterns it guards (case-insensitive).
 DEFAULT_ASK_URLS = [r"checkout", r"payment", r"billing", r"/pay\b", r"purchase", r"/order"]
 _task_mode = contextvars.ContextVar("kitsune_task_mode", default="act")
+# The calling client's KITSUNE_PROTECT_USER_TABS (#199): its navigations leave user tabs alone.
+_protect_user_tabs = contextvars.ContextVar("kitsune_protect_user_tabs", default=False)
+_PROTECTED_NAVIGATIONS = {"navigate", "goBack", "goForward"}
 
 
 def _mode_error(operation):
@@ -1204,10 +1207,10 @@ async def _ask_before_act(action, params, *, direct):
 
 
 # ── User tabs (docs/api-reference.md#agent-owned-tabs) ──
-# The extension closes only tabs (closeTab) and windows (closeWindow) the agent opened. Its
-# user_tab refusal of a direct close carries a confirm token, issued and spent like
-# ask-before-act's; the identical direct call with it sends userTabApproved, which callers can
-# never set themselves.
+# The extension closes only tabs (closeTab) and windows (closeWindow) the agent opened, and under
+# a client's protectUserTabs navigates only those (navigate, goBack, goForward). Its user_tab
+# refusal of a direct call carries a confirm token, issued and spent like ask-before-act's; the
+# identical direct call with it sends userTabApproved, which callers can never set themselves.
 def _user_tab_binding(action, params):
     return _confirmation_binding(
         action, {k: v for k, v in params.items() if k not in ("confirmToken", "userTabApproved")}, "user_tab")
@@ -1232,17 +1235,27 @@ def _take_user_tab_approval(action, params):
 
 
 def _offer_user_tab_approval(action, params, result, rejected=None):
-    """Add a confirm token to a user_tab refusal of a direct close."""
+    """Add a confirm token to a user_tab refusal of a direct close or protected navigation."""
     if not isinstance(result, dict) or result.get("code") != "user_tab":
         return result
     state = result.setdefault("state", {})
+    if action in _PROTECTED_NAVIGATIONS and state.get("tabId") is not None:
+        # Bound to the refused tab, so a call without tabId cannot carry it to whatever tab is active then.
+        params = {**params, "tabId": state["tabId"]}
+        hint = ("Nothing navigated: this session protects tabs the agent did not open. Open extra material "
+                "with browser_tabs action=new and pass its tabId as tab_id, or ask the user to approve "
+                f"navigating this tab, then repeat the call with tab_id={state['tabId']} and confirmToken "
+                f"(MCP: confirm_token) within {CONFIRM_TOKEN_TTL}s. The token works once and only for this "
+                "navigation.")
+    else:
+        hint = ("Nothing was closed: the agent did not open this tab. Leave it open, or ask the user to "
+                "approve closing it, then repeat the identical call with confirmToken (MCP: confirm_token) "
+                f"within {CONFIRM_TOKEN_TTL}s. The token works once and only for this close.")
     state.update(confirmToken=_issue_confirm_token(_user_tab_binding(action, params)),
                  expiresInSeconds=CONFIRM_TOKEN_TTL)
     if rejected:
         state["tokenRejected"] = rejected
-    result["hint"] = ("Nothing was closed: the agent did not open this tab. Leave it open, or ask the user to "
-                      "approve closing it, then repeat the identical call with confirmToken (MCP: confirm_token) "
-                      f"within {CONFIRM_TOKEN_TTL}s. The token works once and only for this close.")
+    result["hint"] = hint
     return result
 
 
@@ -1847,6 +1860,11 @@ def _disconnected_error(message, action, sent=True):
 
 async def send_to_extension(action, params=None, timeout=30):
     """Send command to extension and wait for response."""
+    if action in _PROTECTED_NAVIGATIONS:
+        # Only the calling client's setting decides whether its navigations are protected.
+        params = {k: v for k, v in (params or {}).items() if k != "protectUserTabs"}
+        if _protect_user_tabs.get():
+            params["protectUserTabs"] = True
     result = await _run_in_command_scope(
         action,
         params,
@@ -3238,6 +3256,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self.send_json(400, {"error": str(exc), "code": "invalid_mode", "retryable": False})
             return
         token = _task_mode.set(mode)
+        protect = _protect_user_tabs.set(self.headers.get(PROTECT_USER_TABS_HEADER) == "1")
         try:
             if not permits_route(mode, path):
                 self.send_json(403, _mode_error(path))
@@ -3248,6 +3267,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             else:
                 self.send_json(404, {"error": "Not found"})
         finally:
+            _protect_user_tabs.reset(protect)
             _task_mode.reset(token)
 
     def do_GET(self):
@@ -3356,13 +3376,13 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "/api/mute-tab": lambda: self._forward("muteTab"),
             "/api/duplicate-tab": lambda: self._forward("duplicateTab"),
             "/api/reload-tab": lambda: self._forward("reloadTabBrowser"),
-            "/api/back": lambda: self._forward("goBack"),
-            "/api/forward": lambda: self._forward("goForward"),
+            "/api/back": lambda: self._with_user_tab_approval("goBack", timeout=15),
+            "/api/forward": lambda: self._with_user_tab_approval("goForward", timeout=15),
             "/api/get-zoom": lambda: self._forward("getZoom"),
             "/api/set-zoom": lambda: self._forward("setZoom"),
             "/api/windows": lambda: self._forward("getWindows"),
             "/api/create-window": lambda: self._forward("createWindow"),
-            "/api/close-window": lambda: self._close_with_approval("closeWindow", timeout=15),
+            "/api/close-window": lambda: self._with_user_tab_approval("closeWindow", timeout=15),
             "/api/focus-window": lambda: self._forward("focusWindow"),
             "/api/move-tab": lambda: self._forward("moveTab"),
             "/api/detach-tab": lambda: self._forward("detachTab"),
@@ -3634,7 +3654,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self._send_extension_action("fill", self.read_body())
     
     def handle_navigate(self):
-        self._send_extension_action("navigate", _wrap_image_url(self.read_body()))
+        self._with_user_tab_approval("navigate", body=_wrap_image_url(self.read_body()))
 
     def handle_view(self):
         """2.0.9 - local wrapper page for bare image URLs (see _wrap_image_url)."""
@@ -3675,10 +3695,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     def handle_close_tab(self):
         # With force, the extension disarms beforeunload once it has agreed to close the tab.
-        self._close_with_approval("closeTab")
+        self._with_user_tab_approval("closeTab")
 
-    def _close_with_approval(self, action, timeout=35):
-        body = self.read_body()
+    def _with_user_tab_approval(self, action, timeout=35, body=None):
+        body = self.read_body() if body is None else body
         body.pop("userTabApproved", None)
         rejected = _take_user_tab_approval(action, body)
         self._send_extension_action(action, body, timeout=timeout,

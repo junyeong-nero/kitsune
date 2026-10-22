@@ -276,7 +276,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
   or deletion can be behind any click or keypress); inspect the page before acting again.
   The exceptions are `error_page`, `ambiguous_target`, `user_tab` and `permission_required`:
   nothing reached the page, and repeating cannot succeed until the tab navigates, the target
-  is named uniquely, or the user approves the close or grants the permission.
+  is named uniquely, or the user approves the close or navigation or grants the permission.
 - `hint`: a short recovery step. `state`: the current state that explains the
   failure, where available (for page targets: `tabId`, `url`, `status`).
 
@@ -303,7 +303,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `host_permission_denied` | Firefox does not let Kitsune script the tab's site (`state.reason`: `not_granted`, `restricted_domain`) | true |
 | `permission_required` | A [history or bookmark lookup](#history-and-bookmarks) needs an optional browser permission the user has not granted (`state.permission`: `history` or `bookmarks`). Only the user can grant it, on Kitsune's options page; the agent cannot. Also returned, with a reload hint, when the permission is granted but the running extension has not picked it up | false |
 | `confirmation_required` | [Ask-before-act](#ask-before-act) held a sensitive action; nothing ran (`state.confirmToken`, `state.reason`) | true |
-| `user_tab` | `browser_tabs` close on a tab the agent did not open, or `browser_close_window` on a window with one; it stays open. A direct call's `state.confirmToken` closes it once the user approves (see [Agent-owned tabs](#agent-owned-tabs)) | false |
+| `user_tab` | `browser_tabs` close on a tab the agent did not open, or `browser_close_window` on a window with one; it stays open. With [protected user tabs](#protected-user-tabs), also navigate, back or forward on such a tab; it stays where it is. A direct call's `state.confirmToken` closes or navigates it once the user approves (see [Agent-owned tabs](#agent-owned-tabs)) | false |
 | `user_active` | The user is using the tab (`state.reason`: `input`, `typing`, `navigating`); the write or navigation did not run (see [User activity](#user-activity)) | true |
 | `outcome_not_observed` | The action was dispatched, but the outcome given in `expect` did not happen in time (see [Action outcomes](#action-outcomes)) | false for writes |
 | `tab_required` | A `parallel` step that acts on a tab has no `tabId` (`state.sequence`, `state.index`); nothing was dispatched (see [Container progress](#container-progress)) | true |
@@ -735,6 +735,53 @@ keeps it. An extension reload or update, or a browser restart, forgets it; the t
 the agent opened before then count as user tabs, so closing them needs approval.
 The extension also cannot tell an agent action's tab from one the user opened from the
 same tab within 2 s of that action; such a tab counts as the agent's.
+
+#### Protected user tabs
+
+Ownership, permission to close and permission to navigate are three different things.
+Ownership (`owned`) only records who opened a tab. Closing a user tab always needs the
+user's approval (above). Navigating a user tab is allowed by default: an agent the user
+asked to work in their tab may do so.
+
+A task that must keep the user's tabs where they are, for example "preserve every
+starting tab's URL", should open extra material with `browser_tabs` new and pass the
+returned `tabId` as `tab_id` to every later call. A call without `tab_id` acts on the
+tab the user sees, which is usually a starting tab. Do not reuse a starting tab
+just because it is active.
+
+To enforce this for one MCP client, set `KITSUNE_PROTECT_USER_TABS=1` in its MCP
+server environment (opt-in, off by default). The MCP server sends it with every bridge
+request (`X-Kitsune-Protect-User-Tabs: 1`), so it covers that client's session only.
+Other clients sharing the bridge keep their own setting. Then `browser_navigate`,
+`browser_back` and `browser_forward` (`POST /api/navigate`, `/api/back`,
+`/api/forward`, and batch, workflow and parallel `navigate`, `goBack`, `goForward`)
+on a tab the agent did not open, including the active tab when `tab_id` is omitted,
+return `user_tab` (`retryable: false`) without navigating:
+
+```json
+{ "error": "Tab 12 was not opened by the agent and this session protects user tabs, so it was not navigated",
+  "code": "user_tab", "retryable": false,
+  "hint": "Nothing navigated: this session protects tabs the agent did not open. Open extra material with browser_tabs action=new and pass its tabId as tab_id, ...",
+  "state": { "tabId": 12, "url": "https://mail.example/", "title": "Inbox",
+             "confirmToken": "…", "expiresInSeconds": 120 } }
+```
+
+The command is never redirected to another tab. Tabs the agent owns navigate as before. After the user
+approves, repeat the call with `tab_id` set to `state.tabId` and `confirmToken` (MCP:
+`confirm_token`) within 120 s. The token navigates that tab to that URL once. It is
+bound to the call's parameters and the refused tab, so a call without `tab_id` cannot
+carry it to whatever tab is active later. Only direct calls get and accept a token:
+batch, workflow and parallel steps are refused without one. The token goes back to the
+agent, so it proves an explicit second step, not that the user approved: an agent can
+repeat the call with it without asking. For real approval, have the MCP client prompt
+before calls that carry `confirm_token`.
+
+Limits: only these server-mediated navigations are guarded. A user tab's URL can still
+change through link clicks (`browser_click`, `clickAndWaitNavigation`), form submits,
+Enter in a field, agent JavaScript, redirects, and navigation the page starts itself.
+Reload keeps the URL and is not guarded. This is not comprehensive URL preservation.
+Ownership is the extension's, as above: after an extension reload or a browser restart,
+the tabs the agent opened before count as user tabs and are protected too.
 
 #### Agent windows
 
@@ -1871,6 +1918,9 @@ are not traversed. Returns `{ok, text, text_gone, elapsed}`; timeout returns
 `{ "url": "https://example.com", "tabId": 1, "expectTitle": "Example" }`
 - `tabId` optional (defaults to active tab)
 - `expectTitle` optional — warns if title doesn't match (catches silent redirects)
+- With `X-Kitsune-Protect-User-Tabs: 1`, a tab the agent did not open returns `user_tab`;
+  `confirmToken` is its token after the user approved (see
+  [Protected user tabs](#protected-user-tabs)). The same holds for `/api/back` and `/api/forward`.
 
 ### POST /api/new-tab
 `{ "url": "https://example.com" }` — url optional, defaults to about:blank.
