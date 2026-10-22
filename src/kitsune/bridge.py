@@ -2118,6 +2118,19 @@ async def _observe_outcome(spec, tab_id, before, snapshot):
     return {"met": met, "observed": observed, "elapsed": int((time.monotonic() - start) * 1000)}
 
 
+async def _click_target_visible(tab_id, params, result):
+    """Whether the clicked element is still visible: the post-action snapshot's target_ref,
+    else, when no snapshot was taken, the request's ref or selector."""
+    target = result.get("target_ref")
+    if not target and "snapshot" not in result:
+        target = params.get("ref") or params.get("selector")
+    if not target:
+        return False
+    r = await send_to_extension("waitForElement", {"tabId": tab_id, "selector": target,
+                                                  "timeout": 1, "pollInterval": 100}, timeout=6)
+    return r.get("found") is True
+
+
 async def _send_with_expectation(action, params, spec, timeout=30, remember=None):
     result = await _dispatch_with_expectation(action, params, spec, timeout)
     if remember is not None:
@@ -2175,6 +2188,9 @@ async def _dispatch_with_expectation(action, params, spec, timeout):
                 "repeating the action.")
     elif (result.get("warning") or {}).get("code") == "popup_blocked":
         hint = result["warning"]["hint"]
+    elif action == "click" and await _click_target_visible(tab_id, params, result):
+        hint += (" The clicked element is still visible: the page may accept only trusted input, "
+                 "and browser_trusted_click (needs the devtools capability) is the alternative.")
     result.update(_action_error(
         f"Expected outcome not observed within {spec['timeout']}ms", "outcome_not_observed",
         retryable=_safe_to_repeat(action), hint=hint, **state,

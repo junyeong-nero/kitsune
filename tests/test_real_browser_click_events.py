@@ -36,6 +36,15 @@ PAGE = """<!doctype html><title>click events</title>
   }
 </script>"""
 
+# #205: the notice ignores untrusted clicks, as CHZZK's did in #200; #vanish removes itself.
+NOTICE = """<!doctype html><title>notice</title>
+<div id="notice" role="alertdialog">Ad blocker notice <button id="ok" type="button">OK</button></div>
+<button id="vanish" type="button">Vanish</button>
+<script>
+  ok.addEventListener('click', event => { if (event.isTrusted) notice.remove(); });
+  vanish.addEventListener('click', () => vanish.remove());
+</script>"""
+
 EVENTS = ["pointerover", "pointerenter", "pointerdown", "mousedown", "pointerup", "mouseup", "click"]
 STATE = """JSON.stringify({events: (document.getElementById('log')?.textContent || '').trim().split('\\n')
     .filter(Boolean).map(line => JSON.parse(line)), clicks: Number(sessionStorage.clicks || 0),
@@ -54,7 +63,8 @@ class ClickSite:
                 path = urlparse(self.path).path
                 with site.lock:
                     site.requests.append(("GET", path))
-                self.reply(PAGE if path == "/" else "<!doctype html><title>landed</title>landed")
+                self.reply(PAGE if path == "/" else NOTICE if path == "/notice"
+                           else "<!doctype html><title>landed</title>landed")
 
             def do_POST(self):
                 self.rfile.read(int(self.headers.get("Content-Length") or 0))
@@ -158,6 +168,26 @@ class RealBrowserClickEventTests(harness.RealBrowserTestCase):
         self.assertEqual(self.site.visits("GET", "/landed", 1), 1, "one link navigation")
         state = self.state(tab)
         self.assertEqual((state["path"], state["clicks"]), ("/landed", 1))
+
+    def test_unmet_click_suggests_a_trusted_click_only_while_the_target_is_visible(self):
+        tab = self.open_tab(self.site.origin + "/notice")
+        expect = {"text_gone": "Ad blocker notice", "timeout": 300}
+        ignored = self.call("/api/click", {"tabId": tab, "selector": "#ok", "expect": expect})
+        self.assertEqual(ignored.get("code"), "outcome_not_observed", ignored)
+        self.assertIs(ignored["dispatched"], True)
+        self.assertIn("browser_trusted_click", ignored["hint"], ignored)
+        self.assertIn("devtools", ignored["hint"])
+
+        ref = self.call("/api/find", {"tabId": tab, "query": "#ok"})["results"][0]["ref"]
+        by_ref = self.call("/api/click", {"tabId": tab, "ref": ref, "expect": expect})
+        self.assertIn("browser_trusted_click", by_ref.get("hint", ""), by_ref)
+
+        gone = self.call("/api/click", {"tabId": tab, "selector": "#vanish", "expect": expect})
+        self.assertEqual(gone.get("code"), "outcome_not_observed", gone)
+        self.assertNotIn("browser_trusted_click", gone["hint"], gone)
+
+        plain = self.assert_ok(self.call("/api/click", {"tabId": tab, "selector": "#ok"}))
+        self.assertNotIn("hint", plain)
 
 
 if __name__ == "__main__":

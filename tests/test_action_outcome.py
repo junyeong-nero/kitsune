@@ -93,7 +93,8 @@ class OutcomeNotObservedTests(unittest.TestCase):
         self.assertEqual(result["tag"], "button")
         self.assertEqual(result["outcome"]["observed"], {"source": "page", "visible": False})
         self.assertGreater(extension.actions().count("waitForElement"), 1)
-        self.assertEqual(extension.actions()[-2:], ["getTabs", "getOpenedTabs"])
+        # The last read checks whether the clicked element is still visible (#205).
+        self.assertEqual(extension.actions()[-3:], ["getTabs", "getOpenedTabs", "waitForElement"])
         self.assertEqual(extension.calls[1][1], {"tabId": 7, "selector": "#menu", "timeout": 0})
 
     def test_element_that_never_disappears_is_polled_until_the_deadline(self):
@@ -521,7 +522,7 @@ class OpenedTabTests(unittest.TestCase):
         self.assertEqual(result["code"], "outcome_not_observed")
         self.assertEqual(result["outcome"]["observed"],
                          {"source": "tabs", "error": "Unknown action: getOpenedTabs"})
-        self.assertEqual(extension.actions(), ["click", "getOpenedTabs", "getTabs"])
+        self.assertEqual(extension.actions(), ["click", "getOpenedTabs", "getTabs", "waitForElement"])
 
     def test_unobserved_outcome_after_a_blocked_popup_uses_its_hint(self):
         # #94: the extension could not open the link's tab and said why.
@@ -547,6 +548,102 @@ class OpenedTabTests(unittest.TestCase):
         ]:
             with self.subTest(expect=expect):
                 self.assertIn(message, bridge._parse_expect("click", expect)[1])
+
+
+class TrustedClickHintTests(unittest.TestCase):
+    """Issue #205: a click whose target is still visible after an unmet expect may need trusted input."""
+
+    UNMET = {"text_gone": "Notice", "timeout": 30}
+
+    def run_click(self, click, target=None, action="click", params=None, opened=None):
+        extension = FakeExtension(
+            getTabs={"tabs": [TAB]}, **{action: click},
+            waitForText={"ok": False, "error": "Timed out"},
+            getOpenedTabs={"opened_tabs": opened or []},
+            **({"waitForElement": target} if target is not None else {}),
+        )
+        result = run_expect(extension, action, params or {"tabId": 7, "ref": "e3"}, self.UNMET)
+        return result, extension
+
+    def assert_no_trusted_hint(self, result):
+        self.assertNotIn("browser_trusted_click", result.get("hint", ""))
+
+    def test_hint_when_the_clicked_element_is_still_visible(self):
+        result, extension = self.run_click({"ok": True, "snapshot": "- button \"OK\" [ref=e9]", "target_ref": "e9"},
+                                           target={"ok": True, "found": True})
+        self.assertEqual(result["code"], "outcome_not_observed")
+        self.assertTrue(result["hint"].startswith("The command was dispatched but the expected"))
+        self.assertIn("may", result["hint"])
+        self.assertIn("browser_trusted_click", result["hint"])
+        self.assertIn("devtools", result["hint"])
+        self.assertIn(("waitForElement", {"tabId": 7, "selector": "e9", "timeout": 1, "pollInterval": 100}),
+                      extension.calls)
+        # No retry and no OS click: the click ran once.
+        self.assertEqual(extension.actions().count("click"), 1)
+        self.assertNotIn("trustedClick", extension.actions())
+        self.assertNotIn("screenPoint", extension.actions())
+
+    def test_without_a_post_action_snapshot_the_request_target_is_checked(self):
+        for params, target in [({"tabId": 7, "ref": "e3", "selector": ""}, "e3"),
+                               ({"tabId": 7, "selector": "#ok"}, "#ok")]:
+            with self.subTest(params=params):
+                result, extension = self.run_click({"ok": True}, target={"ok": True, "found": True},
+                                                   params=params)
+                self.assertIn("browser_trusted_click", result["hint"])
+                self.assertEqual(extension.calls[-1][1]["selector"], target)
+
+    def test_no_hint_when_the_target_is_gone(self):
+        for target in [{"ok": False, "found": False, "error": "Timed out after 1ms"},
+                       {"error": "stale ref, call browser_snapshot again", "code": "stale_ref"}]:
+            with self.subTest(target=target):
+                result, _ = self.run_click({"ok": True, "snapshot": "- button [ref=e9]", "target_ref": "e9"},
+                                           target=target)
+                self.assertEqual(result["code"], "outcome_not_observed")
+                self.assert_no_trusted_hint(result)
+
+    def test_no_hint_when_the_snapshot_no_longer_has_the_target(self):
+        result, extension = self.run_click({"ok": True, "snapshot": "- heading \"Live\""},
+                                           target={"ok": True, "found": True})
+        self.assert_no_trusted_hint(result)
+        self.assertNotIn("waitForElement", extension.actions())
+
+    def test_no_hint_for_a_coordinate_click_without_a_target_ref(self):
+        result, extension = self.run_click({"ok": True}, target={"ok": True, "found": True},
+                                           params={"tabId": 7, "coords": {"x": 5, "y": 5}})
+        self.assert_no_trusted_hint(result)
+        self.assertNotIn("waitForElement", extension.actions())
+
+    def test_no_hint_when_nothing_was_dispatched(self):
+        result, extension = self.run_click({"error": "Element not found", "code": "not_found"},
+                                           target={"ok": True, "found": True})
+        self.assertNotIn("dispatched", result)
+        self.assert_no_trusted_hint(result)
+        self.assertEqual(extension.actions(), ["click"])
+
+    def test_no_hint_when_the_outcome_is_observed(self):
+        extension = FakeExtension(click={"ok": True, "target_ref": "e9"}, waitForText={"ok": True},
+                                  waitForElement={"ok": True, "found": True})
+        result = run_expect(extension, "click", {"tabId": 7, "ref": "e3"}, self.UNMET)
+        self.assertIs(result["ok"], True)
+        self.assert_no_trusted_hint(result)
+        self.assertEqual(extension.actions(), ["click", "waitForText"])
+
+    def test_no_hint_without_expect(self):
+        extension = FakeExtension(click={"ok": True, "target_ref": "e9"},
+                                  waitForElement={"ok": True, "found": True})
+        with patch.object(bridge, "send_to_extension", extension):
+            result = asyncio.run(bridge._execute_command("click", "click", {"tabId": 7, "ref": "e3"}))
+        self.assertEqual(result, {"ok": True, "target_ref": "e9"})
+        self.assertEqual(extension.actions(), ["click"])
+
+    def test_no_hint_for_other_actions_or_an_opened_tab(self):
+        result, _ = self.run_click({"ok": True, "target_ref": "e9"}, target={"ok": True, "found": True},
+                                   action="type", params={"tabId": 7, "ref": "e3", "text": "x"})
+        self.assert_no_trusted_hint(result)
+        result, _ = self.run_click({"ok": True, "target_ref": "e9"}, target={"ok": True, "found": True},
+                                   opened=[{"tabId": 4, "url": "about:blank"}])
+        self.assertIn("opened tab 4", result["hint"])
+        self.assert_no_trusted_hint(result)
 
 
 if __name__ == "__main__":
