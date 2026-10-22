@@ -1722,7 +1722,8 @@
 
   // ── Wait For Element ──
   function waitForElement(selector, timeout, pollInterval) {
-    const maxWait = timeout || 10000;
+    // A 0 ms timeout is a single check, as in waitForText.
+    const maxWait = timeout ?? 10000;
     const interval = pollInterval || 200;
     const start = Date.now();
 
