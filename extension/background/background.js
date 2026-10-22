@@ -1651,7 +1651,7 @@ async function elementScreenshot(tabId, selector, scale, preview) {
   try {
     id = tabId || (await getActiveTabId());
     if (!id || !selector) return { error: 'tabId and selector required' };
-    if (/^(?:s\d+e\d+|r\d+)$/.test(selector)) {
+    if (/^(?:s\d+e\d+|e\d+|r\d+)$/.test(selector)) {
       const target = await forwardToContent('markScreenshotTarget', { tabId: id, selector });
       if (target.error) return target;
       selector = target.selector;

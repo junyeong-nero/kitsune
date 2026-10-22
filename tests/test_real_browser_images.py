@@ -1,5 +1,5 @@
-"""Images in a real browser (issue #207): named images are snapshot lines with refs;
-decorative images and image sources are not listed.
+"""Images in a real browser (issue #207): named images are snapshot lines whose ref an element
+screenshot accepts; decorative images and image sources are not listed.
 
 Opt-in and built on tests/real_browser_harness.py, which documents how to run it.
 tests/snapshot_images.cjs covers the same rules on a mocked DOM.
@@ -71,6 +71,14 @@ class RealBrowserImageTests(harness.RealBrowserTestCase):
             self.assertRegex(snapshot, r'- textbox "문자" \[ref=\S+\]')
             if text:
                 self.assertIn('- text "이미지에 보이는 문자 6개를 입력하세요."', snapshot)
+
+    def test_element_screenshot_takes_the_image_ref(self):
+        tab = self.open_tab(f"{self.site.origin}/puzzle")
+        ref = IMAGE_LINE.search(self.call("/api/snapshot", {"tabId": tab})["snapshot"])[1]
+        self.assertRegex(ref, r"^e\d+$")
+        shot = self.call("/api/element-screenshot", {"tabId": tab, "selector": "", "ref": ref, "imagePreview": True})
+        self.assertTrue(shot.get("dataUrl", "").startswith("data:image/"), shot)
+        self.assertEqual(shot["bounds"]["width"], 420, shot)
 
 
 if __name__ == "__main__":
