@@ -1561,6 +1561,18 @@ A frame whose content is unavailable is still listed, with
 `frame` (its title, name or src) in `browser_forms`, and bounds are in the top
 viewport.
 
+#### Images
+
+A rendered `<img>` with a name appears as an `img` line with a ref, e.g.
+`- img "Distorted characters" [ref=…]`, with no state. Its name is `aria-labelledby`,
+`aria-label`, `alt`, or `title` when there is no `alt`, clipped at 160 characters like
+other names. Decorative images (`alt=""`, `role="presentation"`/`"none"`), `aria-hidden`
+images and images without a name are left out, and `src` is never listed (`browser_images`, in
+the `devtools` preset, lists sources). The line names the image but does not describe its
+pixels: pass its ref to `browser_screenshot` to see it. An image that is a control
+(`onclick`, `tabindex`, `role="button"`) is listed as a control instead, and an image
+inside a link is listed below the link.
+
 #### Media
 
 Rendered `<video>` and `<audio>` elements appear as `video`/`audio` lines with a ref

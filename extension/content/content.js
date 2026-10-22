@@ -726,6 +726,9 @@
         ['SCRIPT', 'STYLE', 'NOSCRIPT', 'SVG'].includes(el.tagName);
     }
     const hasOwnText = el => flatChildNodes(el).some(node => node.nodeType === 3 && node.textContent.trim());
+    // An <img> is content unless role=presentation/none marks it decorative; one without a
+    // name (alt="", no alt) is left out too. Its src is never listed.
+    const isImage = el => el.tagName === 'IMG' && !['presentation', 'none'].includes(el.getAttribute('role'));
     // [all, plain] text of el's inline content; plain omits controls and labels, which
     // already appear as control names. Form fields and sensitive elements never contribute.
     function inlineText(el) {
@@ -771,9 +774,10 @@
       const interactive = isInteractiveElement(el);
       const role = el.getAttribute('role') || landmarks[el.tagName] ||
         (/^H[1-6]$/.test(el.tagName) ? 'heading' : inferRole(el));
+      data.image = !interactive && isImage(el) && !!nameOf(el, false);
       // Rendered frames are listed even when their content is unavailable (cross-origin).
       data.useful = (maxDepth == null || domDepth <= maxDepth) &&
-        (children.some(child => child.useful) || (interactive && !data.wrapper) || media ||
+        (children.some(child => child.useful) || (interactive && !data.wrapper) || media || data.image ||
           semanticRoles.has(role) || el === target || (withText && hasOwnText(el)) ||
           (FRAME_TAGS.has(el.tagName) && hasArea(el)));
       data.interactive += interactive ? 1 : 0;
@@ -792,6 +796,9 @@
         if (clean(label)) return clean(label);
       }
       if (MEDIA_TAGS.has(el.tagName)) return clean(el.getAttribute('aria-label') || el.title);
+      if (!interactive && isImage(el)) {
+        return clean(el.getAttribute('aria-label') || el.getAttribute('alt') || (el.hasAttribute('alt') ? '' : el.title));
+      }
       const explicitRole = el.getAttribute('role');
       const isLandmark = landmarks[el.tagName] ||
         (semanticRoles.has(explicitRole) && explicitRole !== 'heading');
@@ -822,11 +829,12 @@
     function visit(el, depth, parent = -1, domDepth = 0, named = false) {
       if (!metadata.has(el) || (maxDepth != null && domDepth > maxDepth)) return;
       const frame = FRAME_TAGS.has(el.tagName);
+      const image = metadata.get(el).image;
       let role = el.getAttribute('role') || landmarks[el.tagName] ||
-        (/^H[1-6]$/.test(el.tagName) ? 'heading' : inferRole(el)) || (frame ? 'iframe' : '');
+        (/^H[1-6]$/.test(el.tagName) ? 'heading' : inferRole(el)) || (frame ? 'iframe' : '') || (image ? 'img' : '');
       const media = MEDIA_TAGS.has(el.tagName);
       const interactive = (isInteractiveElement(el) && !metadata.get(el).wrapper) || media;
-      const include = interactive || semanticRoles.has(role) || el === target || frame;
+      const include = interactive || semanticRoles.has(role) || el === target || frame || image;
       if (include) {
         if (!role) {
           if (el.isContentEditable) role = 'textbox';

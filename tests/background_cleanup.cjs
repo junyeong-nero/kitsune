@@ -15,7 +15,7 @@ function event() {
 }
 
 const copy = value => JSON.parse(JSON.stringify(value));
-const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
+const flush = () => new Promise(resolve => setImmediate(resolve));
 
 function harness() {
   let now = 0, nextTimer = 0;
@@ -205,11 +205,27 @@ async function elementScreenshotVanishedTarget() {
   }
 }
 
+// Issue #207: a public short ref (eN) is marked in the page like a full ref, not used as CSS.
+async function elementScreenshotShortRef() {
+  const h = harness();
+  const marked = [];
+  h.context.forwardToContent = async (action, params) => {
+    marked.push([action, params.selector]);
+    return { error: 'stop' };
+  };
+  h.context.zlContent = async () => ({ missing: true });
+  const pending = h.context.elementScreenshot(2, 'e5');
+  await h.tick(1000);
+  assert.deepEqual(copy(await pending), { error: 'stop' });
+  assert.deepEqual(marked, [['markScreenshotTarget', 'e5']]);
+}
+
 async function main() {
   await clickAndWaitNavigationCleanup();
   await screenPointForClickRestoration();
   await shortRefPruning();
   await elementScreenshotVanishedTarget();
+  await elementScreenshotShortRef();
   console.log('background cleanup: ok');
 }
 
