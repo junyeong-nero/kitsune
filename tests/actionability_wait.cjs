@@ -348,7 +348,33 @@ async function testRefsAndTargetlessActions() {
   assert.equal(p.timers.size, 0, 'no timer leaked');
 }
 
+// A 0 ms waitForElement is a single check that needs no page timer (#202): background tabs
+// throttle timers, so a check that waited for one could end long after its deadline.
+async function testZeroTimeoutElementWaitIsASingleCheck() {
+  const p = page();
+  const missing = p.start({ action: 'waitForElement', selector: '#menu', timeout: 0 });
+  await p.tick(0);
+  assert.equal(missing.settled, true, 'a single check settles without a timer');
+  const result = await missing.result;
+  assert.equal(result.found, false);
+  assert.equal(result.ok, false);
+  assert.equal(p.timers.size, 0, 'a single check schedules nothing');
+
+  p.add('#menu', new Element('DIV', 'menu'));
+  const present = p.start({ action: 'waitForElement', selector: '#menu', timeout: 0 });
+  await p.tick(0);
+  assert.equal((await present.result).found, true);
+
+  // Without a timeout the wait still defaults to 10 s.
+  const later = p.start({ action: 'waitForElement', selector: '#later' });
+  await p.tick(9900);
+  assert.equal(later.settled, false);
+  await p.tick(200);
+  assert.equal((await later.result).found, false);
+}
+
 (async () => {
+  await testZeroTimeoutElementWaitIsASingleCheck();
   await testImmediateModeIsUnchanged();
   await testImmediateModeOnDelayedContentAndDynamicForms();
   await testDelayedContent();

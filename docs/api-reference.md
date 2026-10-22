@@ -519,6 +519,10 @@ To check, pass an optional `expect` object. After dispatch, the bridge waits up 
 `expect.timeout` ms (default 5000) for that outcome in the same tab. Without `tab_id`,
 the bridge first resolves the active tab and sends the action to that tab, so the
 action and the check cannot target different tabs after a focus change.
+Page conditions (`selector`, `value`, `text`) are single reads that the bridge repeats
+until the deadline, with a last read at the deadline. They do not depend on the page's
+timers, which browsers throttle in background tabs. The check therefore ends near
+`expect.timeout`, though one read of a very large page can add to `elapsed`.
 
 `expect` takes exactly one condition:
 

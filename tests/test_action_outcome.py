@@ -92,10 +92,9 @@ class OutcomeNotObservedTests(unittest.TestCase):
         self.assert_not_observed(result)
         self.assertEqual(result["tag"], "button")
         self.assertEqual(result["outcome"]["observed"], {"source": "page", "visible": False})
-        self.assertEqual(extension.actions(), ["click", "waitForElement", "getTabs", "getOpenedTabs"])
-        params = extension.calls[1][1]
-        self.assertEqual((params["selector"], params["pollInterval"]), ("#menu", 100))
-        self.assertAlmostEqual(params["timeout"], 50, delta=10)
+        self.assertGreater(extension.actions().count("waitForElement"), 1)
+        self.assertEqual(extension.actions()[-2:], ["getTabs", "getOpenedTabs"])
+        self.assertEqual(extension.calls[1][1], {"tabId": 7, "selector": "#menu", "timeout": 0})
 
     def test_element_that_never_disappears_is_polled_until_the_deadline(self):
         extension = FakeExtension(getTabs={"tabs": [TAB]}, click={"ok": True},
@@ -146,6 +145,52 @@ class OutcomeNotObservedTests(unittest.TestCase):
         # The value is read before dispatch, then polled until the deadline.
         self.assertEqual(extension.actions()[:3], ["query", "click", "query"])
         self.assertGreater(extension.actions().count("query"), 2)
+
+
+class ThrottledPageExtension(FakeExtension):
+    """A background tab whose timers fire late: an in-page wait overshoots its timeout (#202)."""
+
+    LATE_SECONDS = 0.5
+
+    async def __call__(self, action, params=None, timeout=30):
+        wait_ms = (params or {}).get("timeout", 0)
+        if action in ("waitForText", "waitForElement") and wait_ms > 1:
+            await asyncio.sleep(wait_ms / 1000 + self.LATE_SECONDS)
+        return await super().__call__(action, params, timeout)
+
+
+class OutcomeDeadlineTests(unittest.TestCase):
+    TIMEOUT_MS = 300
+
+    def run_throttled(self, expect, **replies):
+        extension = ThrottledPageExtension(getTabs={"tabs": [TAB]}, click={"ok": True}, **replies)
+        spec, problem = bridge._parse_expect("click", {**expect, "timeout": self.TIMEOUT_MS})
+        assert problem is None, problem
+        with patch.object(bridge, "send_to_extension", extension), \
+             patch.object(bridge, "OUTCOME_POLL_SECONDS", 0.02):
+            return asyncio.run(bridge._send_with_expectation("click", {"tabId": 7}, spec)), extension
+
+    def assert_ends_at_timeout(self, result):
+        self.assertIs(result["outcome"]["met"], False)
+        self.assertIs(result["dispatched"], True)
+        self.assertGreaterEqual(result["outcome"]["elapsed"], self.TIMEOUT_MS)
+        self.assertLess(result["outcome"]["elapsed"], self.TIMEOUT_MS + 200)
+
+    def test_page_checks_are_single_reads_so_late_page_timers_cannot_extend_them(self):
+        unmet_text = {"ok": False, "error": "Timed out after 0ms waiting for visible text"}
+        result, extension = self.run_throttled({"text_gone": "Still shown"}, waitForText=unmet_text)
+        self.assert_ends_at_timeout(result)
+        self.assertEqual(result["outcome"]["observed"], {"source": "page", "textVisible": True})
+        self.assertGreater(extension.actions().count("waitForText"), 1)
+
+        result, extension = self.run_throttled({"text": "Saved"}, waitForText=unmet_text)
+        self.assert_ends_at_timeout(result)
+        self.assertEqual(result["outcome"]["observed"], {"source": "page", "textVisible": False})
+
+        result, extension = self.run_throttled(
+            {"selector": "#menu"}, waitForElement={"ok": False, "found": False, "error": "Timed out"})
+        self.assert_ends_at_timeout(result)
+        self.assertEqual(result["outcome"]["observed"], {"source": "page", "visible": False})
 
 
 class ValueChangedPreconditionTests(unittest.TestCase):
@@ -202,7 +247,7 @@ class OutcomeObservedTests(unittest.TestCase):
         self.assertEqual(result["outcome"]["observed"], {"source": "page", "textVisible": True})
         action, params = extension.calls[1]
         self.assertEqual((action, params["text"], params["text_gone"]), ("waitForText", "Saved", None))
-        self.assertAlmostEqual(params["timeout"], 2000, delta=50)
+        self.assertEqual(params["timeout"], 0)
         self.assertNotIn("error", result)
 
     def test_delayed_disappearance_is_polled(self):
@@ -214,7 +259,7 @@ class OutcomeObservedTests(unittest.TestCase):
         self.assertIs(result["outcome"]["met"], True)
         self.assertEqual(result["outcome"]["observed"], {"source": "page", "visible": False})
         self.assertEqual(extension.actions().count("waitForElement"), 3)
-        self.assertEqual(extension.calls[1][1]["timeout"], 1)
+        self.assertEqual(extension.calls[1][1]["timeout"], 0)
 
     def test_navigation_mid_wait_keeps_polling(self):
         navigating = {"error": "Page is navigating", "code": "navigating", "retryable": True}

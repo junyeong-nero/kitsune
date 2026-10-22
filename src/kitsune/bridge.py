@@ -2040,6 +2040,10 @@ async def _check_outcome(spec, tab_id, before, remaining_ms):
 
     before is the pre-dispatch observation: the tab URL for url_changed, or the
     first match's query item (None if absent) for value_changed.
+
+    Page reads are single checks that the caller polls: a wait inside the page runs on
+    its timers, which the browser throttles in background tabs, so it can end long
+    after remaining_ms.
     """
     wait_s = remaining_ms / 1000 + 5
     waited = True  # a wait that ends unmet has used up the remaining time
@@ -2057,9 +2061,11 @@ async def _check_outcome(spec, tab_id, before, remaining_ms):
         opened = r.get("opened_tabs") or []
         observed, met = {"source": "tabs", "opened_tabs": opened}, bool(opened)
     elif "text" in spec or "text_gone" in spec:
+        # A 0 ms waitForText is a single read of the visible text.
+        waited = False
         r = await send_to_extension("waitForText", {"tabId": tab_id, "text": spec.get("text"),
                                                    "text_gone": spec.get("text_gone"),
-                                                   "timeout": remaining_ms}, timeout=wait_s)
+                                                   "timeout": 0}, timeout=10)
         met = r.get("ok") is True
         observed = {"source": "page", "textVisible": met if "text" in spec else not met}
     elif "value" in spec or "value_changed" in spec:
@@ -2081,12 +2087,10 @@ async def _check_outcome(spec, tab_id, before, remaining_ms):
             observed = {"source": "page", "found": True, "value": item.get("value")}
             met = item.get("value") == spec["value"]
     else:
-        # A 1 ms waitForElement is a single visibility check; otherwise wait for it to appear.
-        waited = not spec.get("gone")
-        check_ms = max(1, remaining_ms) if waited else 1
+        # A 0 ms waitForElement is a single visibility check.
+        waited = False
         r = await send_to_extension("waitForElement", {"tabId": tab_id, "selector": spec["selector"],
-                                                      "timeout": check_ms, "pollInterval": 100},
-                                    timeout=check_ms / 1000 + 5)
+                                                      "timeout": 0}, timeout=10)
         visible = r.get("found") is True
         observed = {"source": "page", "visible": visible}
         met = r.get("found") is False if spec.get("gone") else visible
