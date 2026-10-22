@@ -96,6 +96,13 @@ def selections() -> dict:
     return {"default (lean)": TOOL_PRESETS["lean"], "full core": None, "bench allowlist": BENCH_UI_TOOLS}
 
 
+def candidate_presets() -> dict:
+    """Tool names of each preset other than lean, such as hypothesis candidates (#211)."""
+    from kitsune.server import TOOL_PRESETS
+
+    return {f"preset {name}": names for name, names in TOOL_PRESETS.items() if name != "lean"}
+
+
 # Budgeted views: the field each one totals and its ceilings.
 VIEWS = {"full": ("total", TOTAL_BUDGETS), "first paragraph": ("firstParagraphTotal", FIRST_PARAGRAPH_BUDGETS)}
 
@@ -132,6 +139,9 @@ def report(tools: dict, snapshot: dict) -> str:
         now, before = totals(tools, names), totals(snapshot, names)
         lines.append(row(f"{marks[label]}{label} ({now['tools']} tools)", now, before)
                      + f"  budgets {TOTAL_BUDGETS[label]} / {FIRST_PARAGRAPH_BUDGETS[label]}")
+    for label, names in candidate_presets().items():  # unbudgeted: measured, not defaults
+        now, before = totals(tools, names), totals(snapshot, names)
+        lines.append(row(f"{label} ({now['tools']} tools)", now, before) + "  candidate, not a default")
     lines.append(f"per-tool budget {TOOL_BUDGET} (full view)")
     removed = sorted(set(snapshot) - set(tools))
     if removed:
