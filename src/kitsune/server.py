@@ -158,6 +158,10 @@ TOOL_PRESETS = {
         "browser_select_option", "browser_form_fill",
     }),
 }
+# lean-keypress: the candidate arm of kitsune-benchmark#7 (#211), lean plus browser_keypress,
+# so both arms run from one revision. Not a user-facing preset and not the default; it is made
+# the lean default or removed once the hypothesis has a verdict.
+TOOL_PRESETS["lean-keypress"] = TOOL_PRESETS["lean"] | {"browser_keypress"}
 
 
 def tool_preset(preset: str | None, caps: frozenset) -> str:

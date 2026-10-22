@@ -181,6 +181,39 @@ class LeanToolPresetTests(unittest.TestCase):
             server.tool_preset("tiny", frozenset({"all"}))
 
 
+class LeanKeypressCandidateTests(unittest.TestCase):
+    """#211: KITSUNE_TOOL_PRESET=lean-keypress, the candidate arm of kitsune-benchmark#7, adds only browser_keypress."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.core = list_tools(preset="full")
+        cls.default = list_tools()
+        cls.candidate = list_tools(preset="lean-keypress")
+
+    def test_candidate_is_lean_plus_keypress(self):
+        self.assertEqual(set(self.candidate), server.TOOL_PRESETS["lean"] | {"browser_keypress"})
+        self.assertEqual(self.candidate["browser_keypress"], self.core["browser_keypress"])
+        # The baseline arm's definitions are the same bytes in both arms.
+        self.assertEqual({name: d for name, d in self.candidate.items() if name != "browser_keypress"},
+                         self.default)
+
+    def test_default_stays_lean_without_keypress(self):
+        self.assertNotIn("browser_keypress", self.default)
+        self.assertEqual(self.default, list_tools(preset="lean"))
+        self.assertEqual(server.tool_preset(None, frozenset({"core"})), "lean")
+
+    def test_status_reports_the_candidate_preset(self):
+        result = unpublished("core", "lean-keypress", "browser_scroll", "browser_keypress")
+        self.assertEqual(result["mcp_tools"], {"preset": "lean-keypress", "caps": ["core"],
+                                                "unpublished": len(unpublished("core", None)["unpublished"]) - 1})
+        self.assertNotIn("browser_keypress", result["unpublished"])
+        # Published: the call reaches argument validation instead of the not-published refusal.
+        self.assertIn("validation error for browser_keypressArguments", result["calls"]["browser_keypress"]["raised"])
+        scroll = result["calls"]["browser_scroll"]
+        self.assertEqual((scroll["code"], scroll["state"]["preset"]), ("tool_not_published", "lean-keypress"))
+        self.assertIn("KITSUNE_TOOL_PRESET=full", scroll["hint"])
+
+
 class UnpublishedToolTests(unittest.TestCase):
     """#171: a known tool left out by KITSUNE_CAPS or the preset names the setting that publishes it."""
 
