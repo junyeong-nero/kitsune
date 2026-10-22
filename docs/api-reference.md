@@ -1752,7 +1752,7 @@ Connection status and config; `diagnosis` is described under [Connection diagnos
 ### GET /api/version
 Bridge and extension version info.
 ```json
-{ "bridge": "0.2.1", "api": "1", "extension_connected": true, "extension_version": "0.2.1", "extension_build": "dev", "extension": 25 }
+{ "bridge": "0.3.0", "api": "1", "extension_connected": true, "extension_version": "0.3.0", "extension_build": "dev", "extension": 25 }
 ```
 
 ## Page Data (GET, cached 5s except page-info)

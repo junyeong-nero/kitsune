@@ -158,7 +158,7 @@ async function shortRefPruning() {
     assert.deepEqual(copy(h.refs()), { short: 1, public: 1 }, 'both maps prune only the retired tab');
     const expired = copy(h.context.expandShortRefs({ selector: old }, 1)).error;
     assert.equal(expired.code, 'stale_ref');
-    assert.equal(expired.state.reason, 'not_in_snapshot');
+    assert.equal(expired.state.reason, 'other_document', 'a retired alias still reports its document');
     assert.equal(expired.state.ref, old);
     assert.equal(h.context.expandShortRefs({ selector: other }, 2).params.selector, 's123e0');
     const fresh = await h.compact(1); // Even identical private refs/tab IDs must get new public aliases.
