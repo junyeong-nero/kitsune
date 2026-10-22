@@ -4,6 +4,19 @@ How work moves between this repository and
 [kitsune-benchmark](https://github.com/junyeong-nero/kitsune-benchmark). This file is
 the single source; the benchmark repository links here.
 
+## From a benchmark result to issues
+
+A finished benchmark report is triaged before anything is built. `result-triager`
+reads the report, splits it into observations, classifies each one with the question
+below, checks both repositories for existing issues, and returns drafts. A person reviews
+the triage table, confirms the hypothesis thresholds, and approves what gets published.
+
+- A task failure is not a Kitsune bug by default; the grader, task or agent choice may
+  explain it. Harness, grader and allowlist problems are benchmark bugs.
+- A cost or time gap is a hypothesis at most, never a bug.
+- Evidence for an open issue goes there as a comment, not a new issue.
+- One unexplained occurrence stays a note in the report.
+
 ## Route each issue by one question
 
 **Do we need a measurement to know whether it is right?**
@@ -62,8 +75,9 @@ Defined as project agents in `.pi/agents/`.
 | `implementer` | kitsune | Bug or decision issue | It cannot reproduce a bug locally; acceptance criteria are ambiguous or conflict with [Philosophy](philosophy.md); the issue is mainly an effect claim |
 | `candidate-builder` | kitsune | `needs-validation` issue | No linked hypothesis, or its criteria are not locked |
 | `hypothesis-verifier` | kitsune-benchmark | `hypothesis` issue | Criteria are missing or not locked; before any model run that costs quota (it returns a run plan first) |
+| `result-triager` | kitsune-benchmark | Result report | Never acts; always returns a triage table and drafts |
 
-All three work on local branches (`fix/`, `feat/`, `verify/`) in a separate worktree when
+The writing agents work on local branches (`fix/`, `feat/`, `verify/`) in a separate worktree when
 the checkout has changes they did not make. **Public actions need a person's approval**:
 agents never push, open PRs, comment, label or close. They return drafts.
 
