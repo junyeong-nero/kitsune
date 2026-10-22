@@ -448,6 +448,7 @@ kept tools retain the parameters read and draft flows use.
 | `KITSUNE_EXTENSION_DIR` | `extension/` in a checkout | Unpacked extension the bridge compares a developer build with, to report one that was edited but not reloaded, and whose `WS_URL` port it expects before the extension connects ([Connection diagnosis](api-reference.md#connection-diagnosis)) |
 | `KITSUNE_NO_BRIDGE_RESTART` | Unset | Set to `1` in the MCP server environment to skip automatic replacement of an outdated bridge |
 | `KITSUNE_BRIDGE_IDLE_TIMEOUT` | `0` (never) | Seconds without client activity before the bridge exits; see [Idle shutdown](#idle-shutdown-opt-in) |
+| `KITSUNE_PROTECT_USER_TABS` | Unset | Set to `1` in an MCP server environment to refuse that client's navigate, back and forward on tabs the agent did not open; see [Protecting your tabs](#protecting-your-tabs) |
 | `KITSUNE_ASK_BEFORE_ACT` | Unset | Set to `1` in the MCP server environment to start the bridge with [ask-before-act](#ask-before-act) locked on; the lock then persists in `ask-before-act-locked` under `KITSUNE_HOME` |
 | `KITSUNE_HISTORY_ALLOW_DOMAINS` | Unset (every domain) | Bridge: comma-separated domains (with subdomains) the `history` tools may return; see [History and bookmarks](api-reference.md#history-and-bookmarks) |
 | `KITSUNE_HISTORY_DENY_DOMAINS` | Unset (none) | Bridge: comma-separated domains (with subdomains) the `history` tools never return; wins over the allow list |
@@ -565,6 +566,30 @@ KITSUNE_ASK_BEFORE_ACT = "1"
 The token goes back to the agent, so it proves an explicit second step, not that
 you approved. For real approval, also have your MCP client prompt you before tool
 calls, or at least before calls that carry `confirm_token`.
+
+### Protecting your tabs
+
+The agent closes only the tabs it opened unless you approve. Navigating one of your
+tabs is a separate permission, and it is allowed by default, because sometimes you
+want the agent to work in your tab. If your tabs must stay where they are, tell
+the agent to open its material in new tabs (`browser_tabs` new) and pass their
+`tab_id`. Without `tab_id`, a call acts on the tab you see.
+
+To enforce this, set `KITSUNE_PROTECT_USER_TABS=1` in the MCP server environment
+and restart the client. It applies to that client only. Then `browser_navigate`,
+`browser_back` and `browser_forward` on a tab the agent did not open return a
+`user_tab` error instead of navigating, also inside batches. That error tells the
+agent to use its own tab, and on a direct call it carries a `confirm_token`. As with
+ask-before-act, the token proves an explicit second step, not that you approved.
+
+```toml
+[mcp_servers.kitsune.env]
+KITSUNE_PROTECT_USER_TABS = "1"
+```
+
+Limits: only those three calls are guarded. Clicked links, form submits, agent
+JavaScript, redirects and navigations the page starts can still change your tab's
+URL. Details are in the [API reference](api-reference.md#protected-user-tabs).
 
 ## Troubleshooting
 
