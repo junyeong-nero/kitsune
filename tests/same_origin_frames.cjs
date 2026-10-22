@@ -58,9 +58,13 @@ class Element {
     return node.nodeType === 11 ? node : this.ownerDocument;
   }
   focus() { this.ownerDocument.activeElement = this; }
-  click() { this.clicks++; }
+  click() { this.dispatchEvent({ type: 'click' }); }
   scrollIntoView() {}
-  dispatchEvent(event) { this.events.push(event); return true; }
+  dispatchEvent(event) {
+    this.events.push(event);
+    if (event.type === 'click') this.clicks++;
+    return true;
+  }
   getClientRects() { return [this.rect]; }
   getBoundingClientRect() { const r = this.rect; return { ...r, left: r.x, top: r.y }; }
 }

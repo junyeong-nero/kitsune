@@ -7,7 +7,8 @@ const { webcrypto } = require('node:crypto');
 class MouseEvent extends Event {
   constructor(type, init = {}) {
     super(type, init);
-    Object.assign(this, { clientX: init.clientX, clientY: init.clientY, detail: init.detail || 0 });
+    Object.assign(this, { clientX: init.clientX, clientY: init.clientY, detail: init.detail || 0,
+      button: init.button || 0, buttons: init.buttons || 0, pointerType: init.pointerType || '' });
   }
 }
 
@@ -15,21 +16,26 @@ class Element extends EventTarget {
   constructor(tagName, id, type) {
     super();
     Object.assign(this, { tagName, id, type, textContent: id, isConnected: true,
-      checked: false, nativeClicks: 0, events: [] });
+      checked: false, nativeClicks: 0, events: [], dispatched: [] });
     for (const type of ['pointerover', 'pointerenter', 'pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click', 'dblclick', 'input', 'change']) {
-      this.addEventListener(type, event => this.events.push(event.type));
+      this.addEventListener(type, event => { this.events.push(event.type); this.dispatched.push(event); });
     }
   }
+  matches() { return false; }
   getAttribute() { return null; }
   hasAttribute() { return false; }
   closest() { return null; }
   scrollIntoView() {}
   getBoundingClientRect() { return { x: 0, y: 0, width: 100, height: 30 }; }
-  click() {
-    this.nativeClicks++;
-    // Model native activation as well as the click listener invocation.
-    if (this.type === 'checkbox') this.checked = !this.checked;
-    this.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+  click() { this.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })); }
+  // As in a browser, any dispatched click runs native activation after its listeners.
+  dispatchEvent(event) {
+    const result = super.dispatchEvent(event);
+    if (event.type === 'click') {
+      this.nativeClicks++;
+      if (this.type === 'checkbox') this.checked = !this.checked;
+    }
+    return result;
   }
 }
 
@@ -81,7 +87,22 @@ async function testClickEvents(pointerEvents) {
     assert.equal(button.events.filter(type => type === 'click').length, 1, 'one click handler invocation per action');
     assert.equal(button.nativeClicks, nativeClicks + 1, 'retain native activation');
     assert.deepEqual(button.events, clickSequence);
+    // #201: released buttons read 0, and the click carries the point and a click count.
+    const x = target.coords ? 20 : 50, y = target.coords ? 10 : 15;
+    assert.deepEqual(button.dispatched.map(event => [event.clientX, event.clientY, event.button, event.buttons]),
+      clickSequence.map(type => [x, y, 0, ['pointerup', 'mouseup', 'click'].includes(type) ? 0 : 1]));
+    const click = button.dispatched.at(-1);
+    assert.equal(click.detail, 1);
+    assert.equal(click.pointerType, 'mouse');
+    button.dispatched = [];
   }
+
+  const disabled = new Element('BUTTON', 'off', 'button');
+  disabled.matches = selector => selector.includes('button:disabled');
+  elements['#off'] = disabled;
+  assert.equal((await send({ action: 'click', selector: '#off' })).ok, true);
+  assert.deepEqual(disabled.events, clickSequence.slice(0, -1), 'a disabled control gets no click, as with el.click()');
+  assert.equal(disabled.nativeClicks, 0);
 
   for (const checked of [true, false]) {
     checkbox.events = [];
@@ -94,7 +115,7 @@ async function testClickEvents(pointerEvents) {
   const nativeClicks = button.nativeClicks;
   assert.equal((await send({ action: 'doubleClick', selector: '#go' })).ok, true);
   assert.deepEqual(button.events, ['mousedown', 'mouseup', 'click', 'mousedown', 'mouseup', 'click', 'dblclick']);
-  assert.equal(button.nativeClicks, nativeClicks, 'doubleClick does not add native clicks to its synthetic clicks');
+  assert.equal(button.nativeClicks, nativeClicks + 2, 'each of doubleClick\'s two clicks activates once');
 
   for (const checked of [true, false]) {
     checkbox.events = [];
@@ -110,7 +131,7 @@ async function testClickEvents(pointerEvents) {
   button.events = [];
   assert.equal((await send({ action: 'submitForm', selector: '#form' })).ok, true);
   assert.deepEqual(button.events, ['click'], 'submit button activates once');
-  assert.equal(button.nativeClicks, nativeClicks + 1);
+  assert.equal(button.nativeClicks, nativeClicks + 3);
 
   // #94: a click on an http(s) link that opens a new tab names it for the background.
   const blankLink = async (link, base = null) => {

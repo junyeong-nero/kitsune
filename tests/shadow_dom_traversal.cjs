@@ -100,13 +100,15 @@ class Element extends Node {
     if (mode === 'open') this.shadowRoot = root;
     return root;
   }
-  click() {
-    this.events.push('click');
-    if (this.type === 'checkbox') this.checked = !this.checked;
-  }
+  click() { this.dispatchEvent({ type: 'click' }); }
   focus() { this.focused = true; }
   scrollIntoView() {}
-  dispatchEvent(event) { this.events.push(event.type); return true; }
+  // A dispatched click runs native activation, as in a browser.
+  dispatchEvent(event) {
+    this.events.push(event.type);
+    if (event.type === 'click' && this.type === 'checkbox') this.checked = !this.checked;
+    return true;
+  }
   getBoundingClientRect() { return { x: 0, y: 0, width: 100, height: 30 }; }
   getClientRects() { return [this.getBoundingClientRect()]; }
 }

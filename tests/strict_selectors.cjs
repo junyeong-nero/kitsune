@@ -27,12 +27,11 @@ class Element extends EventTarget {
   // Selectors used here: tag, .class, #id, [attr], [name="x"], ':disabled', and comma lists.
   matches(selector) {
     if (selector === '*') return true;
-    if (selector === ':disabled') return 'disabled' in this.attrs;
     return selector.split(',').map(s => s.trim()).some(s => {
-      const m = /^([a-z]*)(?:\.([\w-]+))?(?:#([\w-]+))?(?:\[(\w+)(?:="?([^"\]]*)"?)?\])?$/.exec(s);
+      const m = /^([a-z]*)(?:\.([\w-]+))?(?:#([\w-]+))?(?:\[(\w+)(?:="?([^"\]]*)"?)?\])?(:disabled)?$/.exec(s);
       if (!m) throw new SyntaxError(`unsupported selector ${s}`);
-      const [, tag, cls, id, attr, value] = m;
-      return (!tag || this.tagName === tag.toUpperCase()) &&
+      const [, tag, cls, id, attr, value, disabled] = m;
+      return (!disabled || 'disabled' in this.attrs) && (!tag || this.tagName === tag.toUpperCase()) &&
         (!cls || String(this.attrs.class || '').split(' ').includes(cls)) &&
         (!id || this.attrs.id === id) && (!attr || (value === undefined ? attr in this.attrs : this.attrs[attr] === value));
     });
