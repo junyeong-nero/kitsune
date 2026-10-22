@@ -11,6 +11,9 @@ extensions stay in place. No Playwright, Chromium, or WebDriver required.
 Research in background tabs, prepare form drafts, and continue browser tasks with
 an agent you already use—not a separate browser or built-in AI assistant.
 
+Two principles guide every trade-off: **the user's browser belongs to the user**,
+and **fewer, sharper tools**. See [Philosophy](docs/philosophy.md).
+
 ## Why Kitsune?
 
 - **Work alongside your agent.** Agent-created tabs open in the background.
