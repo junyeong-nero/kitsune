@@ -1,0 +1,34 @@
+name: Hypothesis candidate
+description: Implement a change whose benefit must be validated in browser-mcp-bench first.
+title: "[Candidate] "
+labels: ["needs-validation"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Open the hypothesis in [browser-mcp-bench](https://github.com/junyeong-nero/browser-mcp-bench/issues/new?template=hypothesis.yml)
+        first. Adopt/reject criteria and the verdict live there, not here.
+
+        Bugs that reproduce and clear design decisions do not need this template.
+  - type: input
+    id: hypothesis
+    attributes:
+      label: Hypothesis
+      description: The browser-mcp-bench issue this implements.
+      placeholder: junyeong-nero/browser-mcp-bench#12
+    validations:
+      required: true
+  - type: textarea
+    id: change
+    attributes:
+      label: Change
+      description: What will be implemented.
+    validations:
+      required: true
+  - type: textarea
+    id: toggle
+    attributes:
+      label: Toggle and rollback
+      description: How the candidate can be switched off for A/B measurement and removed if rejected (option, preset, capability, or revert).
+    validations:
+      required: true
