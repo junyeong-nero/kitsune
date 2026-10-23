@@ -1600,11 +1600,18 @@ text; subtree text is used only when at most 80 characters and five elements lon
 
 Consecutive composite siblings (children containing elements, or list items) with
 identical tag/role/input-type structure show the first five items, followed by
-`- … N more similar items`. Names, IDs and classes do not affect the signature.
-Leaf controls such as toolbar buttons are not collapsed. Hidden items are excluded
-from grouping; collapsed items have no refs. Scope a specific card/list item to
-inspect it fully. Post-action snapshots additionally keep the acted-on target's
-item, even beyond the first five, and return its `target_ref`. Character-limit
+`- … N more similar items; snapshot e14 to list all`. Names, IDs and classes do not
+affect the signature. Leaf controls such as toolbar buttons are not collapsed. Hidden
+items are excluded from grouping; collapsed items have no refs. The marker's ref (`e14`)
+names the items' container (a `tbody`, list or grid, which may have no line of its own):
+a snapshot scoped to that container, by this ref or a selector, lists all of its own
+items, with no cap beyond the snapshot's character limit. Runs nested deeper inside it
+still collapse, each with its own marker. The core `browser_find` searches every item,
+collapsed or not (it reads HTTP `/api/snapshot` with `"collapse": false`), and its matches
+carry refs that actions accept. Post-action snapshots
+additionally keep the acted-on target's item, even beyond the first five, and return its
+`target_ref`; a delta lists a run's marker after any of the run's lines it lists, or when
+the number of collapsed items changed. Character-limit
 truncation prioritizes the acted-on target and its ancestor context when that complete
 block fits. If it cannot fit, target_ref is omitted and truncation guidance says so.
 

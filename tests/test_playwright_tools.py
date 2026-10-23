@@ -125,6 +125,8 @@ class AdapterTests(unittest.TestCase):
             "- main [ref=e1]", "  - list [ref=e2]", '    - link "Error log" [ref=e3]',
             '    - link "Home" [ref=e4]', '- button "Retry" [ref=e5]'])}
         found = playwright_tools.browser_find(text="error")
+        # Items a snapshot collapses into "… N more similar items" are searched too (#237).
+        self.assertEqual(self.posted(), [("/api/snapshot", {"collapse": False})])
         self.assertEqual(found["count"], 1)
         self.assertEqual(found["matches"][0]["path"], ["- main [ref=e1]", "- list [ref=e2]"])
         self.assertEqual(found["matches"][0]["match"], '- link "Error log" [ref=e3]')

@@ -321,7 +321,7 @@
       'waitForText':           () => waitForText(msg.text, msg.text_gone, msg.timeout),
       'getPageText':           () => getPageText(msg.selector),
       'getSnapshot':           () => getSnapshot(msg.maxChars, msg.focusLastAction, msg.ref || msg.selector, msg.maxDepth, msg.text ?? (msg.observation ? false : undefined),
-                                     msg.observation, msg.delta ? 'delta' : 'full', !!msg.boxes),
+                                     msg.observation, msg.delta ? 'delta' : 'full', !!msg.boxes, msg.collapse !== false),
       'getAccessibilityTree':  () => getAccessibilityTree(msg.depth ?? 6, msg.ref || msg.selector),
       'getFormFields':         () => getFormFields(),
       'click':                 () => clickElement(msg.selector, msg.coords, msg.first, msg.button, msg.modifiers),
@@ -648,6 +648,7 @@
   // mode: 'full'; 'baseline' records actionBaseline and returns no snapshot; 'delta' lists only
   // the target and the lines that changed since the baseline, adding refs to the current
   // document's refs. A delta without a baseline (another document) is full.
+  // collapse=false lists every item of repeated sibling runs (core browser_find searches them).
   // Viewport-relative CSS-pixel bounding box as x,y,width,height.
   function boxOf(el) {
     const rect = el.getBoundingClientRect();
@@ -655,7 +656,7 @@
   }
 
   function getSnapshot(maxChars, focusLastAction, selector, maxDepth, textMode,
-      observation = 'browser_snapshot', mode = 'full', boxes = false) {
+      observation = 'browser_snapshot', mode = 'full', boxes = false, collapse = true) {
     const withText = textMode !== false;
     if (maxChars != null && (!Number.isFinite(maxChars) || maxChars < 0)) {
       return { error: 'maxChars must be a finite non-negative number' };
@@ -812,13 +813,14 @@
       const media = MEDIA_TAGS.has(el.tagName);
       const interactive = (isInteractiveElement(el) && !metadata.get(el).wrapper) || media;
       const include = interactive || semanticRoles.has(role) || el === target || frame || image;
+      let ref = null;
       if (include) {
         if (!role) {
           if (el.isContentEditable) role = 'textbox';
           else if (el === target) role = el.tagName.toLowerCase();
           else role = 'button';
         }
-        const ref = full ? elementRefs.get(el) || `s${refGeneration}e${refCounter++}` : null;
+        ref = full ? elementRefs.get(el) || `s${refGeneration}e${refCounter++}` : null;
         const states = [];
         if (role === 'heading') states.push(`level=${el.getAttribute('aria-level') || el.tagName.slice(1)}`);
         if ('value' in el && !isSensitiveField(el)) states.push(`value=${JSON.stringify(clean(el.value))}`);
@@ -879,17 +881,26 @@
       const repeatable = child => (flatChildren(child).length > 0 || child.tagName === 'LI' ||
         child.getAttribute('role') === 'listitem') &&
         !(withText && flatChildren(child).every(c => INLINE_TAGS.has(c.tagName)));
+      // A snapshot scoped to a container lists all of its own items.
+      const collapses = collapse && !(selector && el === root);
       for (let start = 0; start < children.length && !truncated;) {
         let end = start + 1;
-        if (repeatable(children[start])) {
+        // Entries from here on belong to this run; a delta keeps its marker with them.
+        const run = entries.length;
+        if (collapses && repeatable(children[start])) {
           while (end < children.length &&
               metadata.get(children[end]).signature === metadata.get(children[start]).signature) end++;
         }
         let omitted = 0;
         function flushOmitted() {
           if (!omitted || truncated) return;
-          append({ line: `${'  '.repeat(Math.min(childDepth, 12))}- … ${omitted} more similar items`,
-            parent, interactive: false });
+          // The marker names the container by ref: a snapshot scoped to it lists every item.
+          if (full) ref ??= elementRefs.get(el) || `s${refGeneration}e${refCounter++}`;
+          const signature = `… ${omitted} more similar items`;
+          const head = `${'  '.repeat(Math.min(childDepth, 12))}- ${signature}; snapshot `;
+          const tail = ' to list all';
+          append({ line: head + (ref ?? pendingRef) + tail, parent, interactive: false, source: el,
+            ref, head, tail, run, signature });
           omitted = 0;
         }
         for (let i = start; i < end && !truncated; i++) {
@@ -948,12 +959,18 @@
         if (el && !baseline.signatures.get(el)?.has(entry.signature)) changed.push(i);
       });
       for (const i of changed) add(i);
+      // A collapse marker follows the listed items of its run.
+      entries.forEach((entry, i) => {
+        if (entry.run === undefined || kept.has(i)) return;
+        for (let j = entry.run; j < i; j++) if (kept.has(j)) return add(i);
+      });
       selected = entries.filter((_, i) => kept.has(i));
       truncated = changed.some(i => !kept.has(i));
       // Refs add to the current generation; an element that already has one keeps it.
+      // A collapse marker's ref names its container (source).
       for (const entry of selected) {
         if (!entry.head) continue;
-        entry.ref = issueRef(entry.el);
+        entry.ref = issueRef(entry.el || entry.source);
         entry.line = entry.head + entry.ref + entry.tail;
       }
     } else if (size > limit) {
@@ -985,8 +1002,8 @@
     }
     for (const entry of selected) {
       if (entry.ref) {
-        refMap[entry.ref] = entry.el;
-        elementRefs.set(entry.el, entry.ref);
+        refMap[entry.ref] = entry.el || entry.source;
+        elementRefs.set(entry.el || entry.source, entry.ref);
       }
     }
     let snapshot = selected.map(entry => entry.line).join('\n');

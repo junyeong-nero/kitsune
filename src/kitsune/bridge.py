@@ -3615,7 +3615,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.send_json(200, result)
 
     def handle_snapshot(self):
-        params = self._dom_scope(('tabId', 'selector', 'ref', 'maxDepth', 'text', 'boxes', 'maxChars'))
+        params = self._dom_scope(('tabId', 'selector', 'ref', 'maxDepth', 'text', 'boxes', 'maxChars', 'collapse'))
         if params is None:
             return
         max_chars = params.get('maxChars')

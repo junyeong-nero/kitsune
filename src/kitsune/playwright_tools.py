@@ -282,7 +282,8 @@ def browser_find(text: str | None = None, regex: str | None = None, filename: st
     matches = _search(text, regex)
     if isinstance(matches, dict):
         return matches
-    result = k._post("/api/snapshot", k._request_body({}, _current_tab))
+    # Every item of a repeated sibling run, including those a snapshot collapses.
+    result = k._post("/api/snapshot", k._request_body({"collapse": False}, _current_tab))
     if k._failed(result):
         return result
     lines = (result.get("snapshot") or "").split("\n")
