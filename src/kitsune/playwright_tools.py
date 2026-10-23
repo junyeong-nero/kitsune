@@ -9,12 +9,23 @@ browser_emulate_media and browser_run_code_unsafe answer not_supported.
 
 Tools act on the current tab: the user's active tab until browser_tabs new or select makes
 another tab current. select does not switch the user's view.
+
+Relative file names resolve against KITSUNE_OUTPUT_DIR, else the MCP client's first file root,
+else the MCP server's working directory.
 """
 
 import json
+import os
 import re
 import sys
+from contextvars import ContextVar
 from pathlib import Path
+from urllib.parse import urlparse
+from urllib.request import url2pathname
+
+import anyio
+from mcp.shared.exceptions import McpError
+from mcp.types import ClientCapabilities, RootsCapability
 
 SCHEMAS = {tool["name"]: tool for tool in
            json.loads(Path(__file__).with_name("playwright_tools.json").read_text(encoding="utf-8"))["tools"]}
@@ -26,6 +37,11 @@ _current_tab: int | None = None
 _clicked: dict[int | None, str] = {}
 # The list browser_network_requests last returned per tab, which browser_network_request indexes.
 _requests: dict[int | None, list[dict]] = {}
+# The MCP client's first file root for this tool call; kitsune.server sets it around core calls
+# with a filename.
+client_root: ContextVar[Path | None] = ContextVar("client_root", default=None)
+# How long a filename call waits for the client's roots/list answer before using the fallback.
+ROOTS_TIMEOUT_SECONDS = 5
 
 _REF = re.compile(r"e\d+")
 # Resource timing initiators of static resources (browser_network_requests static=false).
@@ -71,9 +87,43 @@ def _selector(target: str) -> tuple[str, str | None]:
     return ("", target) if _REF.fullmatch(target) else (target, None)
 
 
+async def first_client_root(context) -> Path | None:
+    """The first file:// root the MCP client lists, or None.
+
+    None without a request (a direct call), with KITSUNE_OUTPUT_DIR set, when the client
+    declares no roots capability, lists no file root, fails, or does not answer within
+    ROOTS_TIMEOUT_SECONDS.
+    """
+    if os.environ.get("KITSUNE_OUTPUT_DIR"):
+        return None
+    try:
+        session = context.session
+    except ValueError:  # no MCP request
+        return None
+    if not session.check_client_capability(ClientCapabilities(roots=RootsCapability())):
+        return None
+    roots = []
+    with anyio.move_on_after(ROOTS_TIMEOUT_SECONDS):
+        try:
+            roots = (await session.list_roots()).roots
+        except McpError:
+            pass
+    for root in roots:
+        uri = urlparse(str(root.uri))
+        if uri.netloc in ("", "localhost"):  # a file root on this machine
+            return Path(url2pathname(uri.path))
+    return None
+
+
 def _path(filename: str) -> Path:
-    """A file name resolved against the workspace root (the MCP server's working directory)."""
-    return Path.cwd() / Path(filename).expanduser()
+    """A file name resolved against the workspace root; absolute names are kept.
+
+    The workspace root is KITSUNE_OUTPUT_DIR, else the MCP client's first file root, else
+    the MCP server's working directory.
+    """
+    output_dir = os.environ.get("KITSUNE_OUTPUT_DIR")
+    workspace = Path(output_dir).expanduser() if output_dir else client_root.get() or Path.cwd()
+    return Path.cwd() / workspace / Path(filename).expanduser()
 
 
 def _saved(filename: str, content: str) -> dict:
@@ -91,6 +141,27 @@ def _tabs() -> dict:
     if isinstance(tabs, list) and _current_tab is not None and all(tab.get("id") != _current_tab for tab in tabs):
         _current_tab = None
     return result
+
+
+def _tab_list() -> dict:
+    """The open tabs as browser_tabs list returns them, by index."""
+    result = _tabs()
+    if k._failed(result):
+        return result
+    return {"tabs": [{"index": i, "title": tab.get("title"), "url": tab.get("url"),
+                      **({"current": True} if tab.get("id") == _current_tab else {}),
+                      **({"active": True} if tab.get("active") else {}),
+                      **({"owned": True} if tab.get("owned") else {})}
+                     for i, tab in enumerate(result.get("tabs") or [])]}
+
+
+def _with_tab_list(result: dict) -> dict:
+    """An action's result with the tabs after it, as list returns them.
+
+    A failed listing leaves the result as it is: the action itself already happened.
+    """
+    listed = _tab_list()
+    return result if k._failed(listed) else {**result, **listed}
 
 
 def _tab_at(index) -> tuple[int | None, dict | None]:
@@ -424,20 +495,16 @@ def browser_tabs(action: str, index: float | None = None, url: str | None = None
                  confirm_token: str | None = None) -> dict:
     global _current_tab
     if action == "list":
-        result = _tabs()
-        if k._failed(result):
-            return result
-        tabs = [{"index": i, "title": tab.get("title"), "url": tab.get("url"),
-                 **({"current": True} if tab.get("id") == _current_tab else {}),
-                 **({"active": True} if tab.get("active") else {}),
-                 **({"owned": True} if tab.get("owned") else {})}
-                for i, tab in enumerate(result.get("tabs") or [])]
-        return {"tabs": tabs}
+        return _tab_list()
     if action == "new":
+        # The new tab's index replaces the bridge's tabId, which no core tool takes.
         result = k.browser_tabs("new", url=url, wait=url is not None, confirm_token=confirm_token)
-        if isinstance(result.get("tabId"), int):
-            _current_tab = result["tabId"]
-        return result
+        if not isinstance(result.get("tabId"), int):
+            return result
+        _current_tab = result["tabId"]
+        result = _with_tab_list({key: value for key, value in result.items() if key != "tabId"})
+        index = [tab["index"] for tab in result.get("tabs", ()) if tab.get("current")]
+        return {**result, "index": index[0]} if index else result
     if action == "select":
         if index is None:
             return {"error": "index is required for action=select"}
@@ -445,7 +512,7 @@ def browser_tabs(action: str, index: float | None = None, url: str | None = None
         if error:
             return error
         _current_tab = tab_id
-        return {"ok": True, "index": int(index)}
+        return _with_tab_list({"ok": True, "index": int(index)})
     if action == "close":
         if index is not None:
             tab_id, error = _tab_at(index)
@@ -468,6 +535,7 @@ def browser_tabs(action: str, index: float | None = None, url: str | None = None
             _requests.pop(tab_id, None)
             if tab_id == _current_tab:
                 _current_tab = None
+            return _with_tab_list(result)
         return result
     return {"error": "action must be list, new, close, or select"}
 

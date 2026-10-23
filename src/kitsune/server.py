@@ -141,6 +141,13 @@ class KitsuneMCP(FastMCP):
             return CallToolResult(content=[_compact_json({
                 "error": f"{MODE} mode does not permit confirmation", "code": "mode_restricted",
                 "retryable": False})], isError=True)
+        if name in playwright_tools.SCHEMAS and (arguments or {}).get("filename"):
+            # Relative file names resolve against the client's workspace root (#225).
+            root = playwright_tools.client_root.set(await playwright_tools.first_client_root(self.get_context()))
+            try:
+                return await super().call_tool(name, arguments)
+            finally:
+                playwright_tools.client_root.reset(root)
         return await super().call_tool(name, arguments)
 
 

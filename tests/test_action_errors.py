@@ -207,8 +207,9 @@ class McpErrorResultTests(unittest.TestCase):
         self.assertMcpResult(self.call("browser_tabs", {"action": "select"}),
                              {"error": "index is required for action=select"}, True)
         timed_out = {"ok": False, "timedOut": True, "tabId": 9, "url": "https://example.com/"}
+        # Core browser_tabs new reports the tab's index, not its tabId (#224).
         self.assertMcpResult(self.call("browser_tabs", {"action": "new", "url": "https://example.com/"}, timed_out),
-                             timed_out, True)
+                             {"ok": False, "timedOut": True, "url": "https://example.com/"}, True)
 
     def test_successes_and_warnings_are_not_errors(self):
         warned = {"ok": True, "tag": "input", "warning": {"code": "hidden_or_covered",

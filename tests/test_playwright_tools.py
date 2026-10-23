@@ -82,13 +82,14 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(playwright_tools.browser_tabs("list"), {"tabs": [
             {"index": 0, "title": "A", "url": "https://a/", "active": True},
             {"index": 1, "title": "B", "url": "https://b/", "owned": True}]})
-        self.assertEqual(playwright_tools.browser_tabs("select", index=1), {"ok": True, "index": 1})
+        self.assertEqual(playwright_tools.browser_tabs("select", index=1)["index"], 1)
         playwright_tools.browser_navigate(url="https://c/")
         self.assertEqual(self.posted()[-1], ("/api/navigate", {"url": "https://c/", "tabId": 8}))
         self.assertTrue(playwright_tools.browser_tabs("list")["tabs"][1]["current"])
         self.assertEqual(playwright_tools.browser_tabs("select", index=5)["error"], "Tab 5 not found")
 
         self.post.return_value = {"ok": True, "tabId": 11}
+        self.get.return_value = {"tabs": [*tabs["tabs"], {"id": 11, "title": "D", "url": "https://d/", "owned": True}]}
         playwright_tools.browser_tabs("new", url="https://d/")
         self.assertEqual(self.posted()[-1][1]["url"], "https://d/")
         self.assertIs(self.posted()[-1][1]["wait"], True)

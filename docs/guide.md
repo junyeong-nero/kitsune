@@ -306,7 +306,9 @@ Kitsune's compact JSON results, not Playwright's Markdown. Where the two differ:
 
 - **Current tab.** Tools act on the active tab until `browser_tabs` `new` or `select`
   makes another tab current; `select` does not switch your view. `index` is the position
-  in `browser_tabs` `list`, which also marks `active` and agent-`owned` tabs.
+  in `browser_tabs` `list`, which also marks `active` and agent-`owned` tabs. `new`,
+  `select` and `close` return the tabs after the change in the same form; `new` returns
+  the new tab's `index`.
   `browser_close` closes the current tab, never the browser; closing a tab the agent did
   not open needs the user's approval (`user_tab`).
 - **Targets.** `target` is a snapshot ref (`e12`) or a CSS selector, which must match one
@@ -327,7 +329,11 @@ Kitsune's compact JSON results, not Playwright's Markdown. Where the two differ:
 - **Not supported.** `browser_emulate_media` and `browser_run_code_unsafe` are listed but
   answer `not_supported` (`retryable: false`): an extension cannot override CSS media
   features, and there is no Playwright page to run code against.
-- File names (`filename`) are resolved against the MCP server's working directory.
+- **File names.** A relative `filename` is resolved against `KITSUNE_OUTPUT_DIR` if
+  set, else the first `file://` root the MCP client lists (MCP `roots`, asked for on each
+  call with a `filename`; no answer within 5 seconds counts as none), else the MCP
+  server's working directory. Absolute names and `~` are used as given. `saved_to` is the
+  absolute path written.
 
 Ask-before-act holds still apply. The core schemas have no `confirm_token`; the tools
 accept it anyway, so after the user approves a held action an agent can repeat the call
@@ -386,6 +392,7 @@ kitsune-benchmark; character-size guards in this repo are not token measurements
 | `KITSUNE_EXTENSION_DIR` | `extension/` in a checkout | Unpacked extension the bridge compares a developer build with, to report one that was edited but not reloaded, and whose `WS_URL` port it expects before the extension connects ([Connection diagnosis](api-reference.md#connection-diagnosis)) |
 | `KITSUNE_NO_BRIDGE_RESTART` | Unset | Set to `1` in the MCP server environment to skip automatic replacement of an outdated bridge |
 | `KITSUNE_BRIDGE_IDLE_TIMEOUT` | `0` (never) | Seconds without client activity before the bridge exits; see [Idle shutdown](#idle-shutdown-opt-in) |
+| `KITSUNE_OUTPUT_DIR` | Unset | Directory, in the MCP server environment, for relative `filename` arguments of the `core` tools; unset, they resolve against the client's first root, else the server's working directory (see [Core tools](#core-tools)) |
 | `KITSUNE_PROTECT_USER_TABS` | Unset | Set to `1` in an MCP server environment to refuse that client's navigate, back and forward on tabs the agent did not open; see [Protecting your tabs](#protecting-your-tabs) |
 | `KITSUNE_ASK_BEFORE_ACT` | Unset | Set to `1` in the MCP server environment to start the bridge with [ask-before-act](#ask-before-act) locked on; the lock then persists in `ask-before-act-locked` under `KITSUNE_HOME` |
 | `KITSUNE_HISTORY_ALLOW_DOMAINS` | Unset (every domain) | Bridge: comma-separated domains (with subdomains) the `history` tools may return; see [History and bookmarks](api-reference.md#history-and-bookmarks) |
