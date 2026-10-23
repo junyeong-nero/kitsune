@@ -58,7 +58,9 @@ except ImportError:
     sys.exit("websockets is not installed. Reinstall kitsune with its dependencies.")
 
 from . import bridge_control
-from .task_modes import MODE_HEADER, PROTECT_USER_TABS_HEADER, permits_action, permits_route, task_mode
+from .task_modes import (
+    GATEWAY_TOOL_HEADER, MODE_HEADER, PROTECT_USER_TABS_HEADER, permits_action, permits_route, task_mode,
+)
 from .version import BRIDGE_BUILD, PACKAGE_VERSION, SOURCE_ROOT, extension_manifest_hash, extension_source_hash
 from .waits import (
     RESUME_DEADLINE_SECONDS, WORKFLOW_DEADLINE_SECONDS, actionability_wait_seconds, batch_deadline_seconds,
@@ -167,6 +169,9 @@ DEFAULT_ASK_URLS = [r"checkout", r"payment", r"billing", r"/pay\b", r"purchase",
 _task_mode = contextvars.ContextVar("kitsune_task_mode", default="act")
 # The calling client's KITSUNE_PROTECT_USER_TABS (#199): its navigations leave user tabs alone.
 _protect_user_tabs = contextvars.ContextVar("kitsune_protect_user_tabs", default=False)
+# The tool a client's browser_tools_call runs (#227), which audit entries record.
+_gateway_tool = contextvars.ContextVar("kitsune_gateway_tool", default=None)
+_TOOL_NAME = _re.compile(r"browser_[a-z0-9_]{1,64}")
 _PROTECTED_NAVIGATIONS = {"navigate", "goBack", "goForward"}
 
 
@@ -769,6 +774,8 @@ def _audit(action, params, ok, error, ms, **fields):
     parent = _audit_parent.get()
     if parent is not None:
         entry["parent"] = parent
+    if _gateway_tool.get():
+        entry["via"] = {"gateway": "browser_tools_call", "tool": _gateway_tool.get()}
     _audit_log.append(entry)
     if len(_audit_log) > _AUDIT_MAX:
         del _audit_log[: len(_audit_log) - _AUDIT_MAX]
@@ -3314,6 +3321,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return
         token = _task_mode.set(mode)
         protect = _protect_user_tabs.set(self.headers.get(PROTECT_USER_TABS_HEADER) == "1")
+        called = self.headers.get(GATEWAY_TOOL_HEADER) or ""
+        gateway = _gateway_tool.set(called if _TOOL_NAME.fullmatch(called) else None)
         try:
             if not permits_route(mode, path):
                 self.send_json(403, _mode_error(path))
@@ -3324,6 +3333,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             else:
                 self.send_json(404, {"error": "Not found"})
         finally:
+            _gateway_tool.reset(gateway)
             _protect_user_tabs.reset(protect)
             _task_mode.reset(token)
 

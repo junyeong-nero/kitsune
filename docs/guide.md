@@ -292,6 +292,51 @@ example `KITSUNE_CAPS=browse,core` for `browser_scroll`. `browser_status` (`admi
 reports this server's `mcp_tools`: the enabled `caps`, and how many known tools are
 `unpublished`.
 
+### Finding tools without a restart
+
+`KITSUNE_CAPS` decides which tools this server runs. `KITSUNE_PUBLISH` decides which of
+them `tools/list` shows when a session starts; unset, it is `KITSUNE_CAPS`, so nothing
+changes. Set it to fewer groups to keep the list small and let the agent reach the rest
+in the same connection:
+
+```toml
+[mcp_servers.kitsune.env]
+KITSUNE_CAPS = "all"
+KITSUNE_PUBLISH = "core"
+```
+
+`tools/list` then has the 25 core tools and three gateway tools:
+
+- `browser_tools_search(query, limit=5)` finds the tools this server runs but does not
+  list, best match first, each with its full description, input schema and annotations.
+  An empty query lists their names by group.
+- `browser_tools_call(name, arguments)` runs one and returns its own result, images
+  included, and its error status.
+- `browser_tools_publish(names)` adds tools, or whole groups, to this session's
+  `tools/list` and sends `notifications/tools/list_changed`; clients that refresh on it
+  can then call them directly.
+
+`KITSUNE_PUBLISH` takes the group names `KITSUNE_CAPS` does, and only groups
+`KITSUNE_CAPS` enables: naming another one fails at startup. The gateway tools appear
+only when some enabled tool is not published.
+
+The gateway never runs more than a direct call could. It finds and runs only tools
+`KITSUNE_CAPS` and `KITSUNE_MODE` permit: `all` still leaves out `storage` and
+`history` unless named, and a name it does not permit gets the same `tool_not_published`
+as a direct call. A call through `browser_tools_call` takes the direct call's path, so
+argument validation, the task mode, confirmation tokens, protected user tabs, redaction
+and file name roots apply the same way, and its audit entries record
+`via: {"gateway": "browser_tools_call", "tool": …}`. Your client's permission prompt may
+show only `browser_tools_call` and its conservative annotations (destructive,
+open-world), not the tool it runs, so do not rely on per-tool client prompts for these
+calls. `browser_tools_publish` changes only that session's list, never what the server
+permits or another session's list. Clients differ in whether they act on
+`notifications/tools/list_changed`; the notification is not proof that the model sees
+the new tools, and `browser_tools_call` works either way.
+
+This reaches tools that are already installed. Changing `KITSUNE_CAPS` or upgrading
+Kitsune still needs a restart.
+
 The Kitsune-owned tools take `tab_id` to target background tabs and share an action
 contract (`ref`, `wait`, `expect`, `confirm_token`, `first`) documented on
 `browser_check`; see the [API reference](api-reference.md) and the
@@ -388,6 +433,8 @@ explicit opt-in.
 Restricted surfaces use first-paragraph descriptions and omit `confirm_token`.
 Calling an unpublished tool by name returns `tool_not_published` with the mode setting
 needed to publish it; `browser_status.mcp_tools.mode` identifies a restricted server.
+The [gateway tools](#finding-tools-without-a-restart) are listed in every mode and reach
+only the tools the mode permits.
 The bridge enforces the mode on every request, including calls made by name or directly
 over HTTP. A restricted request cannot change policy, run containers or resume an act
 call. Draft form-fill inspects every target before writing any field.
@@ -406,6 +453,7 @@ kitsune-benchmark; character-size guards in this repo are not token measurements
 | Variable | Default | Meaning |
 |---|---|---|
 | `KITSUNE_CAPS` | `core` | Comma-separated capability groups above; `all` enables every group except `storage` and `history`, which read personal data and must be named |
+| `KITSUNE_PUBLISH` | `KITSUNE_CAPS` | Groups of the enabled tools that `tools/list` shows when a session starts; the others stay reachable through the gateway tools. See [Finding tools without a restart](#finding-tools-without-a-restart) |
 | `KITSUNE_MODE` | `act` | Task surface and per-request policy: `read`, `draft`, or `act`. See [Task modes](#task-modes) |
 | `KITSUNE_HOME` | `~/.kitsune` | Data directory (0700) |
 | `KITSUNE_HTTP_PORT` | `47651` | Bridge HTTP API |

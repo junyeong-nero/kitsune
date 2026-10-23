@@ -3,6 +3,8 @@
 MODE_HEADER = "X-Kitsune-Mode"
 # KITSUNE_PROTECT_USER_TABS=1: this client's navigations leave user tabs alone (#199).
 PROTECT_USER_TABS_HEADER = "X-Kitsune-Protect-User-Tabs"
+# The tool a browser_tools_call runs (#227): the audit log records the call came through it.
+GATEWAY_TOOL_HEADER = "X-Kitsune-Gateway-Tool"
 
 
 def task_mode(value: str | None) -> str:
