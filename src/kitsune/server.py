@@ -153,10 +153,11 @@ class KitsuneMCP(FastMCP):
 
 mcp = KitsuneMCP("Kitsune")
 
-CAPABILITY_GROUPS = frozenset({"core", "tabs", "network", "storage", "parallel", "devtools", "windows", "session",
-                               "history"})
-# Groups that read personal data: KITSUNE_CAPS=all leaves them out, so they must be named (#140).
-NAMED_ONLY_GROUPS = frozenset({"history"})
+CAPABILITY_GROUPS = frozenset({"core", "browse", "read", "inspect", "tabs", "automation", "network", "admin",
+                               "storage", "history"})
+# Groups that read personal data (cookies, page storage, saved sessions, the clipboard, history):
+# KITSUNE_CAPS=all leaves them out, so they must be named (#140).
+NAMED_ONLY_GROUPS = frozenset({"storage", "history"})
 ENABLED_CAPS = frozenset(
     cap.strip().lower() for cap in os.environ.get("KITSUNE_CAPS", "core").split(",") if cap.strip()
 )
@@ -536,7 +537,7 @@ TabId = Annotated[int | None, Field(description="Default: active tab.")]
 
 # -- Read Operations ----------------------------------------------
 
-@tool("devtools", annotations=ToolAnnotations(title="Check browser status", **READ))
+@tool("admin", annotations=ToolAnnotations(title="Check browser status", **READ))
 def browser_status() -> dict:
     """Check bridge/extension connection; diagnosis explains failures."""
     result = _get("/api/status")
@@ -617,13 +618,13 @@ if MODE != "act":
         return _tab_list(_get("/api/tabs"), False)
 
 
-@tool("devtools", annotations=ToolAnnotations(title="Page info", **READ))
+@tool("read", annotations=ToolAnnotations(title="Page info", **READ))
 def browser_page_info(tab_id: TabId = None) -> dict:
     """Get current page URL, title, dimensions, scroll position, and recent dialogs."""
     return _read_page("/api/page-info", tab_id)
 
 
-@tool("devtools", annotations=ToolAnnotations(title="Page text", **READ))
+@tool("read", annotations=ToolAnnotations(title="Page text", **READ))
 def browser_page_text(
     tab_id: Annotated[int | None, Field(description="Default: active tab; others are read without focusing.")] = None,
 ) -> dict:
@@ -635,14 +636,14 @@ def browser_page_text(
     return _read_page("/api/page-text", tab_id)
 
 
-@tool("devtools", annotations=ToolAnnotations(title="Read page forms", **READ))
+@tool("read", annotations=ToolAnnotations(title="Read page forms", **READ))
 def browser_forms(tab_id: TabId = None) -> dict:
     """Get all form fields on the current page with their labels and values; password and
     other sensitive values are redacted (`redacted`/`hasValue` replace `value`)."""
     return _read_page("/api/forms", tab_id)
 
 
-@tool("devtools", annotations=ToolAnnotations(title="Read page DOM", **READ))
+@tool("read", annotations=ToolAnnotations(title="Read page DOM", **READ))
 def browser_dom(
     tab_id: TabId = None, selector: str | None = None,
     ref: str | None = None, max_depth: int | None = None,
@@ -773,7 +774,7 @@ def browser_click(
                         wait, timeout, expect)
 
 
-@tool("devtools", annotations=ToolAnnotations(title="Trusted click", **ACT))
+@tool("browse", annotations=ToolAnnotations(title="Trusted click", **ACT))
 def browser_trusted_click(
     selector: Annotated[str, Field(description="CSS selector; Kitsune clicks its center.")] = "",
     x: Annotated[int, Field(description="X coordinate, used if selector is empty.")] = 0,
@@ -828,7 +829,7 @@ def browser_type(
                         wait, timeout, expect)
 
 
-@tool("devtools", annotations=ToolAnnotations(title="Scroll", **ACT))
+@tool("browse", annotations=ToolAnnotations(title="Scroll", **ACT))
 def browser_scroll(
     direction: Annotated[str, Field(description="up, down, left, right, top or bottom.")] = "down",
     amount: Annotated[int, Field(description="Pixels (ignored for top/bottom).")] = 500,
@@ -887,7 +888,7 @@ def browser_js(
     return _post("/api/js", _request_body(body, tab_id))
 
 
-@tool("devtools", annotations=ToolAnnotations(title="Highlight", **ACT))
+@tool("inspect", annotations=ToolAnnotations(title="Highlight", **ACT))
 def browser_highlight(selector: str = "", tab_id: TabId = None, ref: str | None = None, element: str | None = None) -> dict:
     """Highlight an element (ref/selector, see browser_check) with a visual overlay."""
     return _post("/api/highlight", _request_body({"selector": selector}, tab_id, ref, element))
@@ -970,13 +971,13 @@ def browser_wait_for(
     return _post(endpoint, _request_body(body, tab_id), timeout=timeout / 1000 + 10)
 
 
-@tool("devtools", annotations=ToolAnnotations(title="List workflows", **READ))
+@tool("automation", annotations=ToolAnnotations(title="List workflows", **READ))
 def browser_workflows() -> dict:
     """List available named Kitsune workflows from the bridge workflow directory."""
     return _get("/api/workflows")
 
 
-@tool("devtools", annotations=ToolAnnotations(title="Run a named workflow", **DESTRUCTIVE))
+@tool("automation", annotations=ToolAnnotations(title="Run a named workflow", **DESTRUCTIVE))
 def browser_workflow(
     name: Annotated[str, Field(description="Workflow file name without .md.")],
     variables: Annotated[dict | None, Field(description="Template variables for the workflow.")] = None,
@@ -986,7 +987,7 @@ def browser_workflow(
                  timeout=container_request_seconds(WORKFLOW_DEADLINE_SECONDS))
 
 
-@tool("devtools", annotations=ToolAnnotations(title="Manage response cache", **DESTRUCTIVE))
+@tool("admin", annotations=ToolAnnotations(title="Manage response cache", **DESTRUCTIVE))
 def browser_cache(
     action: Annotated[str, Field(description='"clear", "status", or "ttl".')] = "clear",
     seconds: Annotated[int | None, Field(description='TTL value when action is "ttl".')] = None,
@@ -1018,7 +1019,7 @@ def browser_wake_tab(
     return _post("/api/wake-tab", {"tabId": tab_id}, timeout=25)
 
 
-@tool("parallel", annotations=ToolAnnotations(title="Keep alive", **IDEMPOTENT_ACT))
+@tool("tabs", annotations=ToolAnnotations(title="Keep alive", **IDEMPOTENT_ACT))
 def browser_keep_alive(
     tab_ids: Annotated[list[int], Field(description="Tab IDs to keep loaded.")],
     interval_seconds: Annotated[int, Field(
@@ -1043,7 +1044,7 @@ def browser_keep_alive(
     )
 
 
-@tool("parallel", annotations=ToolAnnotations(title="Keep alive stop", **IDEMPOTENT_ACT))
+@tool("tabs", annotations=ToolAnnotations(title="Keep alive stop", **IDEMPOTENT_ACT))
 def browser_keep_alive_stop(
     tab_ids: Annotated[list[int] | None, Field(description="Tabs to stop pinging. Omit to stop all.")] = None,
 ) -> dict:
@@ -1054,7 +1055,7 @@ def browser_keep_alive_stop(
     return _post("/api/keep-alive-stop", body)
 
 
-@tool("devtools", annotations=ToolAnnotations(title="Reload extension", **ACT))
+@tool("admin", annotations=ToolAnnotations(title="Reload extension", **ACT))
 def browser_reload_extension() -> dict:
     """Hot-reload the Kitsune extension in the browser.
 
@@ -1072,7 +1073,7 @@ def browser_reload_extension() -> dict:
     return _post("/api/reload-extension", {}, timeout=10)
 
 
-@tool("parallel", annotations=ToolAnnotations(title="Run parallel commands", **DESTRUCTIVE))
+@tool("automation", annotations=ToolAnnotations(title="Run parallel commands", **DESTRUCTIVE))
 def browser_parallel(
     sequences: Annotated[list[list[dict]], Field(
         description='Command sequences, each a list of browser_batch-shaped commands, e.g. '
@@ -1099,7 +1100,7 @@ def browser_parallel(
 #  1.4.0 — Content extraction
 # ════════════════════════════════════════════════════════════════════
 
-@tool("devtools", annotations=ToolAnnotations(title="Query page elements", **READ))
+@tool("read", annotations=ToolAnnotations(title="Query page elements", **READ))
 def browser_query(
     selector: str,
     fields: Annotated[list[str] | None, Field(
@@ -1119,7 +1120,7 @@ def browser_query(
     return _post("/api/query", _request_body(body, tab_id))
 
 
-@tool("devtools", annotations=ToolAnnotations(title="Read element HTML", **READ))
+@tool("read", annotations=ToolAnnotations(title="Read element HTML", **READ))
 def browser_html(
     selector: str = "", tab_id: TabId = None,
     ref: str | None = None, element: str | None = None,
@@ -1128,31 +1129,31 @@ def browser_html(
     return _post("/api/html", _request_body({"selector": selector}, tab_id, ref, element))
 
 
-@tool("devtools", annotations=ToolAnnotations(title="Read page links", **READ))
+@tool("read", annotations=ToolAnnotations(title="Read page links", **READ))
 def browser_links(internal_only: bool = False, tab_id: TabId = None) -> dict:
     """Return every anchor with href + text. Useful as a crawler primitive."""
     return _post("/api/links", _request_body({"internalOnly": internal_only}, tab_id))
 
 
-@tool("devtools", annotations=ToolAnnotations(title="Read page images", **READ))
+@tool("read", annotations=ToolAnnotations(title="Read page images", **READ))
 def browser_images(tab_id: TabId = None) -> dict:
     """Return every <img> with src, alt, and natural dimensions."""
     return _post("/api/images", _request_body({}, tab_id))
 
 
-@tool("devtools", annotations=ToolAnnotations(title="Read page metadata", **READ))
+@tool("read", annotations=ToolAnnotations(title="Read page metadata", **READ))
 def browser_meta(tab_id: TabId = None) -> dict:
     """Return all meta tags + link rels (canonical, RSS, icons, etc.)."""
     return _post("/api/meta", _request_body({}, tab_id))
 
 
-@tool("devtools", annotations=ToolAnnotations(title="Read structured page data", **READ))
+@tool("read", annotations=ToolAnnotations(title="Read structured page data", **READ))
 def browser_structured_data(tab_id: TabId = None) -> dict:
     """Extract JSON-LD blocks, OpenGraph (og:*), and Twitter card meta."""
     return _post("/api/structured-data", _request_body({}, tab_id))
 
 
-@tool("devtools", annotations=ToolAnnotations(title="Read element bounds", **READ))
+@tool("inspect", annotations=ToolAnnotations(title="Read element bounds", **READ))
 def browser_bounds(
     selector: str = "", tab_id: TabId = None,
     ref: str | None = None, element: str | None = None,
@@ -1162,7 +1163,7 @@ def browser_bounds(
     return _post("/api/bounds", _request_body({"selector": selector}, tab_id, ref, element))
 
 
-@tool("devtools", annotations=ToolAnnotations(title="Computed style", **READ))
+@tool("inspect", annotations=ToolAnnotations(title="Computed style", **READ))
 def browser_computed_style(
     selector: str = "", properties: list[str] | None = None, tab_id: TabId = None,
     ref: str | None = None, element: str | None = None,
@@ -1174,7 +1175,7 @@ def browser_computed_style(
     return _post("/api/computed-style", _request_body(body, tab_id, ref, element))
 
 
-@tool("devtools", annotations=ToolAnnotations(title="Extract readable article", **READ))
+@tool("read", annotations=ToolAnnotations(title="Extract readable article", **READ))
 def browser_readability(tab_id: TabId = None) -> dict:
     """Extract the main article on the page (title, byline, clean text).
 
@@ -1185,7 +1186,7 @@ def browser_readability(tab_id: TabId = None) -> dict:
     return _post("/api/readability", _request_body({}, tab_id))
 
 
-@tool("devtools", annotations=ToolAnnotations(title="Read page as Markdown", **READ))
+@tool("read", annotations=ToolAnnotations(title="Read page as Markdown", **READ))
 def browser_markdown(
     selector: str | None = None, tab_id: TabId = None,
     ref: str | None = None, element: str | None = None,
@@ -1196,13 +1197,13 @@ def browser_markdown(
     return _post("/api/markdown", _request_body(body, tab_id, ref, element))
 
 
-@tool("devtools", annotations=ToolAnnotations(title="List page iframes", **READ))
+@tool("read", annotations=ToolAnnotations(title="List page iframes", **READ))
 def browser_iframes(tab_id: TabId = None) -> dict:
     """List all iframes with src + same-origin/accessible flags."""
     return _post("/api/iframes", _request_body({}, tab_id))
 
 
-@tool("devtools", annotations=ToolAnnotations(title="Explain selector", **READ))
+@tool("inspect", annotations=ToolAnnotations(title="Explain selector", **READ))
 def browser_explain_selector(selector: str, tab_id: TabId = None) -> dict:
     """Diagnose a CSS selector: match count, sample matches, suggestions for
     a more-specific selector if you got too many."""
@@ -1226,7 +1227,7 @@ def browser_select_option(
                         wait, timeout, expect)
 
 
-@tool("devtools", annotations=ToolAnnotations(title="Check", **ACT))
+@tool("browse", annotations=ToolAnnotations(title="Check", **ACT))
 def browser_check(
     selector: Annotated[str, Field(description='e.g. "#agree", "input[name=plan]".')] = "",
     checked: bool = True, tab_id: TabId = None,
@@ -1265,7 +1266,7 @@ def browser_check(
                         wait, timeout, expect)
 
 
-@tool("devtools", annotations=ToolAnnotations(title="Focus", **ACT))
+@tool("browse", annotations=ToolAnnotations(title="Focus", **ACT))
 def browser_focus(
     selector: str = "", tab_id: TabId = None, ref: str | None = None, element: str | None = None,
     first: bool = False,
@@ -1274,7 +1275,7 @@ def browser_focus(
     return _post("/api/focus", _request_body({"selector": selector}, tab_id, ref, element, first=first))
 
 
-@tool("devtools", annotations=ToolAnnotations(title="Blur", **ACT))
+@tool("browse", annotations=ToolAnnotations(title="Blur", **ACT))
 def browser_blur(
     selector: str | None = None, tab_id: TabId = None,
     ref: str | None = None, element: str | None = None, first: bool = False,
@@ -1323,7 +1324,7 @@ def browser_double_click(
                         wait, timeout, expect)
 
 
-@tool("devtools", annotations=ToolAnnotations(title="Submit form", **DESTRUCTIVE))
+@tool("browse", annotations=ToolAnnotations(title="Submit form", **DESTRUCTIVE))
 def browser_submit_form(
     selector: str | None = None, tab_id: TabId = None,
     ref: str | None = None, element: str | None = None, expect: dict | None = None, confirm_token: str | None = None,
@@ -1380,7 +1381,7 @@ def browser_drag(
                         wait, timeout, expect)
 
 
-@tool("devtools", annotations=ToolAnnotations(title="Click and wait navigation", **ACT))
+@tool("browse", annotations=ToolAnnotations(title="Click and wait navigation", **ACT))
 def browser_click_and_wait_navigation(
     selector: str = "", timeout: int = 15000, tab_id: TabId = None,
     ref: str | None = None, element: str | None = None, confirm_token: str | None = None, first: bool = False,
@@ -1449,7 +1450,7 @@ def _screenshot_result(r: dict, save_to: str | None, data_url: bool):
     return [Image(data=raw, format="jpeg" if mime == "data:image/jpeg" else "png"), out]
 
 
-@tool("devtools", annotations=ToolAnnotations(title="Full page metrics", **READ))
+@tool("inspect", annotations=ToolAnnotations(title="Full page metrics", **READ))
 def browser_full_page_metrics(tab_id: TabId = None) -> dict:
     """Return document/viewport sizes + scroll position + devicePixelRatio."""
     return _post("/api/full-page-metrics", _request_body({}, tab_id))
@@ -1490,7 +1491,7 @@ def browser_back(tab_id: TabId = None, expect: dict | None = None) -> dict:
     return _post_action("/api/back", _request_body({}, tab_id), expect=expect)
 
 
-@tool("devtools", annotations=ToolAnnotations(title="Forward", **ACT))
+@tool("browse", annotations=ToolAnnotations(title="Forward", **ACT))
 def browser_forward(tab_id: TabId = None, expect: dict | None = None) -> dict:
     """Go forward in history. ok=true means dispatched; verify with expect (see browser_check)."""
     return _post_action("/api/forward", _request_body({}, tab_id), expect=expect)
@@ -1508,13 +1509,13 @@ def browser_set_zoom(factor: float, tab_id: TabId = None) -> dict:
     return _post("/api/set-zoom", _request_body({"factor": factor}, tab_id))
 
 
-@tool("windows", annotations=ToolAnnotations(title="List browser windows", **READ))
+@tool("tabs", annotations=ToolAnnotations(title="List browser windows", **READ))
 def browser_windows() -> dict:
     """List all open browser windows with their tabs."""
     return _post("/api/windows", {})
 
 
-@tool("windows", annotations=ToolAnnotations(title="Create window", **ACT))
+@tool("tabs", annotations=ToolAnnotations(title="Create window", **ACT))
 def browser_create_window(url: str | None = None, incognito: bool = False,
                           confirm_token: str | None = None) -> dict:
     """Open a new browser window. Pass a URL to load it at start."""
@@ -1523,20 +1524,20 @@ def browser_create_window(url: str | None = None, incognito: bool = False,
     return _post("/api/create-window", _request_body(body, confirm_token=confirm_token))
 
 
-@tool("windows", annotations=ToolAnnotations(title="Close window", **DESTRUCTIVE))
+@tool("tabs", annotations=ToolAnnotations(title="Close window", **DESTRUCTIVE))
 def browser_close_window(window_id: int, confirm_token: str | None = None) -> dict:
     """Close a browser window by ID (from browser_windows); one with tabs the agent did not
     open is refused (code user_tab) unless the user approves (confirm_token)."""
     return _post("/api/close-window", _request_body({"windowId": window_id}, confirm_token=confirm_token))
 
 
-@tool("windows", annotations=ToolAnnotations(title="Focus window", **IDEMPOTENT_ACT))
+@tool("tabs", annotations=ToolAnnotations(title="Focus window", **IDEMPOTENT_ACT))
 def browser_focus_window(window_id: int) -> dict:
     """Bring a browser window to the foreground; this moves the user's focus, so only when asked."""
     return _post("/api/focus-window", {"windowId": window_id})
 
 
-@tool("windows", annotations=ToolAnnotations(title="Move tab", **ACT))
+@tool("tabs", annotations=ToolAnnotations(title="Move tab", **ACT))
 def browser_move_tab(tab_id: Annotated[int, Field(description="The tab to move.")],
                      window_id: int | None = None, index: int = -1) -> dict:
     """Move a tab to a position (and optionally to a different window). -1 = end."""
@@ -1545,7 +1546,7 @@ def browser_move_tab(tab_id: Annotated[int, Field(description="The tab to move."
     return _post("/api/move-tab", body)
 
 
-@tool("windows", annotations=ToolAnnotations(title="Detach tab", **ACT))
+@tool("tabs", annotations=ToolAnnotations(title="Detach tab", **ACT))
 def browser_detach_tab(tab_id: Annotated[int, Field(description="The tab to pop out.")]) -> dict:
     """Pop a tab out into its own new window."""
     return _post("/api/detach-tab", {"tabId": tab_id})
@@ -1691,7 +1692,7 @@ def browser_console_logs(
 #  1.4.0 — Orchestration
 # ════════════════════════════════════════════════════════════════════
 
-@tool("parallel", annotations=ToolAnnotations(title="Broadcast", **DESTRUCTIVE))
+@tool("automation", annotations=ToolAnnotations(title="Broadcast", **DESTRUCTIVE))
 def browser_broadcast(
     tab_ids: Annotated[list[int], Field(description="Tabs to target.")],
     command: Annotated[dict, Field(
@@ -1710,7 +1711,7 @@ def browser_broadcast(
     )
 
 
-@tool("parallel", annotations=ToolAnnotations(title="Wait for JavaScript across tabs", **DESTRUCTIVE))
+@tool("automation", annotations=ToolAnnotations(title="Wait for JavaScript across tabs", **DESTRUCTIVE))
 def browser_sync_barrier(
     tab_ids: Annotated[list[int], Field(description="Tabs to monitor.")],
     predicate: Annotated[str, Field(
@@ -1733,32 +1734,32 @@ def browser_sync_barrier(
     )
 
 
-@tool("parallel", annotations=ToolAnnotations(title="Tag tab", **IDEMPOTENT_ACT))
+@tool("tabs", annotations=ToolAnnotations(title="Tag tab", **IDEMPOTENT_ACT))
 def browser_tag_tab(name: str, tab_id: Annotated[int, Field(description="The tab to name.")]) -> dict:
     """Give a tab a memorable name. Refer to it later via browser_resolve_tag.
     Names survive bridge restarts only if you re-tag — they live in memory."""
     return _post("/api/tag-tab", {"name": name, "tabId": tab_id})
 
 
-@tool("parallel", annotations=ToolAnnotations(title="Resolve tag", **READ))
+@tool("tabs", annotations=ToolAnnotations(title="Resolve tag", **READ))
 def browser_resolve_tag(name: str) -> dict:
     """Look up the tab id for a tag set via browser_tag_tab."""
     return _post("/api/resolve-tag", {"name": name})
 
 
-@tool("parallel", annotations=ToolAnnotations(title="List tags", **READ))
+@tool("tabs", annotations=ToolAnnotations(title="List tags", **READ))
 def browser_list_tags() -> dict:
     """List all tag → tab id mappings."""
     return _post("/api/list-tags", {})
 
 
-@tool("parallel", annotations=ToolAnnotations(title="Untag tab", **IDEMPOTENT_ACT))
+@tool("tabs", annotations=ToolAnnotations(title="Untag tab", **IDEMPOTENT_ACT))
 def browser_untag_tab(name: str) -> dict:
     """Remove a tag."""
     return _post("/api/untag-tab", {"name": name})
 
 
-@tool("parallel", annotations=ToolAnnotations(title="Resize browser tab pool", **DESTRUCTIVE))
+@tool("automation", annotations=ToolAnnotations(title="Resize browser tab pool", **DESTRUCTIVE))
 def browser_tab_pool(size: int, url: str = "about:blank") -> dict:
     """Maintain a warm pool of N tabs always ready to be acquired.
 
@@ -1768,13 +1769,13 @@ def browser_tab_pool(size: int, url: str = "about:blank") -> dict:
     return _post("/api/tab-pool", {"size": size, "url": url})
 
 
-@tool("parallel", annotations=ToolAnnotations(title="Acquire a pooled tab", **ACT))
+@tool("automation", annotations=ToolAnnotations(title="Acquire a pooled tab", **ACT))
 def browser_pool_acquire() -> dict:
     """Check out a warm tab from the pool. Returns its tab_id."""
     return _post("/api/pool-acquire", {})
 
 
-@tool("parallel", annotations=ToolAnnotations(title="Release a pooled tab", **IDEMPOTENT_ACT))
+@tool("automation", annotations=ToolAnnotations(title="Release a pooled tab", **IDEMPOTENT_ACT))
 def browser_pool_release(tab_id: Annotated[int, Field(description="The pooled tab to return.")]) -> dict:
     """Return a tab to the pool for reuse."""
     return _post("/api/pool-release", {"tabId": tab_id})
@@ -1784,7 +1785,7 @@ def browser_pool_release(tab_id: Annotated[int, Field(description="The pooled ta
 #  1.4.0 — Session save/restore (auth-once-use-many)
 # ════════════════════════════════════════════════════════════════════
 
-@tool("session", annotations=ToolAnnotations(title="Save session", **DESTRUCTIVE))
+@tool("storage", annotations=ToolAnnotations(title="Save session", **DESTRUCTIVE))
 def browser_save_session(
     name: Annotated[str, Field(
         description="A label for the session (becomes filename under ~/claude-zen-sessions/).")],
@@ -1801,19 +1802,19 @@ def browser_save_session(
     return _post("/api/save-session", _request_body({"name": name, "urls": urls or []}, confirm_token=confirm_token), timeout=120)
 
 
-@tool("session", annotations=ToolAnnotations(title="Load session", **DESTRUCTIVE))
+@tool("storage", annotations=ToolAnnotations(title="Load session", **DESTRUCTIVE))
 def browser_load_session(name: str, confirm_token: str | None = None) -> dict:
     """Restore cookies + localStorage from a previously saved session."""
     return _post("/api/load-session", _request_body({"name": name}, confirm_token=confirm_token), timeout=120)
 
 
-@tool("session", annotations=ToolAnnotations(title="List sessions", **READ))
+@tool("storage", annotations=ToolAnnotations(title="List sessions", **READ))
 def browser_list_sessions() -> dict:
     """List saved sessions with their metadata."""
     return _post("/api/list-sessions", {})
 
 
-@tool("session", annotations=ToolAnnotations(title="Delete session", **DESTRUCTIVE))
+@tool("storage", annotations=ToolAnnotations(title="Delete session", **DESTRUCTIVE))
 def browser_delete_session(name: str) -> dict:
     """Delete a saved session file."""
     return _post("/api/delete-session", {"name": name})
@@ -1823,14 +1824,14 @@ def browser_delete_session(name: str) -> dict:
 #  1.4.0 — Observability and policy
 # ════════════════════════════════════════════════════════════════════
 
-@tool("devtools", annotations=ToolAnnotations(title="Check browser health", **READ))
+@tool("admin", annotations=ToolAnnotations(title="Check browser health", **READ))
 def browser_health() -> dict:
     """Extended health/status: bridge version, ports, keep-alive list,
     pool state, tags, policy, sessions dir, audit/log sizes."""
     return _post("/api/health", {})
 
 
-@tool("devtools", annotations=ToolAnnotations(title="Read bridge logs", **READ))
+@tool("admin", annotations=ToolAnnotations(title="Read bridge logs", **READ))
 def browser_logs(limit: int = 200, since: str | None = None) -> dict:
     """Return recent bridge log lines (in-memory ring buffer)."""
     body = {"limit": limit}
@@ -1838,7 +1839,7 @@ def browser_logs(limit: int = 200, since: str | None = None) -> dict:
     return _post("/api/logs", body)
 
 
-@tool("devtools", annotations=ToolAnnotations(title="Read command audit log", **READ))
+@tool("admin", annotations=ToolAnnotations(title="Read command audit log", **READ))
 def browser_audit(limit: int = 100, since_ms: int = 0) -> dict:
     """Return recent command audit entries: action, params (JS code stripped,
     typed text, select values, dialog prompt answers and cookie/storage/
@@ -1847,7 +1848,7 @@ def browser_audit(limit: int = 100, since_ms: int = 0) -> dict:
     return _post("/api/audit", {"limit": limit, "since": since_ms})
 
 
-@tool("parallel", annotations=ToolAnnotations(title="Read scheduler state", **READ))
+@tool("automation", annotations=ToolAnnotations(title="Read scheduler state", **READ))
 def browser_scheduler() -> dict:
     """Return bridge scheduler state for multi-agent/tab work.
 
@@ -1857,7 +1858,7 @@ def browser_scheduler() -> dict:
     return _post("/api/scheduler", {})
 
 
-@tool("devtools", annotations=ToolAnnotations(title="Set policy", **DESTRUCTIVE))
+@tool("admin", annotations=ToolAnnotations(title="Set policy", **DESTRUCTIVE))
 def browser_set_policy(
     allow: list[str] | None = None,
     deny: list[str] | None = None,
@@ -1901,7 +1902,7 @@ def browser_set_policy(
     return _post("/api/set-policy", body)
 
 
-@tool("devtools", annotations=ToolAnnotations(title="Get policy", **READ))
+@tool("admin", annotations=ToolAnnotations(title="Get policy", **READ))
 def browser_get_policy() -> dict:
     """Return the active URL/readonly/ask/history policy."""
     return _post("/api/get-policy", {})
@@ -1967,7 +1968,7 @@ def browser_bookmarks_search(query: str, limit: int = 20) -> dict:
     return _post("/api/bookmarks-search", {"query": query, "limit": limit})
 
 
-@tool("parallel", annotations=ToolAnnotations(title="Retry a command", **DESTRUCTIVE))
+@tool("automation", annotations=ToolAnnotations(title="Retry a command", **DESTRUCTIVE))
 def browser_retry(
     command: Annotated[dict, Field(description="A command dict (same shape as browser_batch entries).")],
     max_attempts: Annotated[int, Field(description="Total tries including the first.")] = 3,
@@ -1986,7 +1987,7 @@ def browser_retry(
 
 # -- Batch --------------------------------------------------------
 
-@tool("parallel", annotations=ToolAnnotations(title="Run command batch", **DESTRUCTIVE))
+@tool("automation", annotations=ToolAnnotations(title="Run command batch", **DESTRUCTIVE))
 def browser_batch(
     commands: Annotated[list[dict], Field(
         description='e.g. [{"action": "navigate", "url": "..."}, {"action": "waitForElement", "selector": '
@@ -2015,7 +2016,7 @@ def browser_batch(
                  timeout=container_request_seconds(batch_deadline_seconds(commands)))
 
 
-@tool("parallel", annotations=ToolAnnotations(title="Resume a container call", **DESTRUCTIVE))
+@tool("automation", annotations=ToolAnnotations(title="Resume a container call", **DESTRUCTIVE))
 def browser_resume(
     call: Annotated[int, Field(description="The call id from that response.")],
     resume_token: Annotated[str, Field(description="The resume_token from that response.")],

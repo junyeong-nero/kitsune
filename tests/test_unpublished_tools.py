@@ -51,28 +51,31 @@ class UnpublishedToolTests(unittest.TestCase):
     def test_default_names_the_group(self):
         result = unpublished("core", "browser_scroll", "browser_history_search", "browser_nope")
         calls = result["calls"]
-        self.assert_not_published(calls["browser_scroll"], "devtools", "KITSUNE_CAPS=core,devtools")
-        self.assertEqual(calls["browser_scroll"]["state"], {"group": "devtools", "caps": ["core"]})
+        self.assert_not_published(calls["browser_scroll"], "browse", "KITSUNE_CAPS=browse,core")
+        self.assertEqual(calls["browser_scroll"]["state"], {"group": "browse", "caps": ["core"]})
         self.assert_not_published(calls["browser_history_search"], "history", "KITSUNE_CAPS=core,history")
         self.assertEqual(calls["browser_nope"], {"raised": "Unknown tool: browser_nope"})
 
         published = set(list_tools())
-        everything = set(list_tools("all,history"))
+        everything = set(list_tools("all,storage,history"))
         self.assertFalse(published & set(result["unpublished"]))
         self.assertEqual(published | set(result["unpublished"]), everything)
         self.assertEqual(result["mcp_tools"], {"caps": ["core"], "unpublished": len(everything) - 25})
 
     def test_core_tool_outside_caps_names_core(self):
-        result = unpublished("devtools", "browser_click")
-        self.assert_not_published(result["calls"]["browser_click"], "core", "KITSUNE_CAPS=core,devtools")
+        result = unpublished("browse", "browser_click")
+        self.assert_not_published(result["calls"]["browser_click"], "core", "KITSUNE_CAPS=browse,core")
 
-    def test_all_leaves_only_history_unpublished(self):
-        result = unpublished("all", "browser_bookmarks_search")
+    def test_all_leaves_only_named_groups_unpublished(self):
+        result = unpublished("all", "browser_bookmarks_search", "browser_clipboard")
         self.assert_not_published(result["calls"]["browser_bookmarks_search"], "history",
                                   "KITSUNE_CAPS=all,history")
-        self.assertEqual(result["unpublished"],
-                         ["browser_bookmarks_search", "browser_history_search", "browser_history_visits"])
-        self.assertEqual(result["mcp_tools"], {"caps": ["all"], "unpublished": 3})
+        self.assert_not_published(result["calls"]["browser_clipboard"], "storage", "KITSUNE_CAPS=all,storage")
+        self.assertEqual(result["unpublished"], [
+            "browser_bookmarks_search", "browser_clear_browsing_data", "browser_clipboard", "browser_cookies",
+            "browser_delete_session", "browser_history_search", "browser_history_visits",
+            "browser_list_sessions", "browser_load_session", "browser_save_session", "browser_storage"])
+        self.assertEqual(result["mcp_tools"], {"caps": ["all"], "unpublished": 11})
 
 
 if __name__ == "__main__":

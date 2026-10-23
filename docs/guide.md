@@ -151,7 +151,7 @@ installing the extension in your browser.
    [Installation](installation.md#2-install-the-browser-extension).
 3. **Check**: restart the agent and ask it to list your tabs (`browser_tabs` with
    `action: "list"`). An error's `hint` says what to fix; with
-   `KITSUNE_CAPS=core,devtools`, `browser_status` reports `"extension_connected": true`
+   `KITSUNE_CAPS=core,admin`, `browser_status` reports `"extension_connected": true`
    and a full diagnosis.
 
 ## Try it
@@ -256,32 +256,39 @@ default capabilities, with the same names, descriptions, input schemas and annot
 its `core` capability group (see [Core tools](#core-tools)). Kitsune's own tools are in
 the other groups. Set `KITSUNE_CAPS` in the MCP server environment before starting it;
 restart the MCP client after changing it. The comma-separated list selects exactly those
-groups (include `core` to retain the default tools). `all` enables all 101 tools in every
-group except `history`, which reads personal data and must be named
-(`KITSUNE_CAPS=all,history`). Whitespace and case are ignored; unknown group names fail at
-startup.
+groups (include `core` to retain the default tools). `all` enables all 93 tools in every
+group except `storage` and `history`, which read personal data and must be named
+(`KITSUNE_CAPS=all,storage,history`). Whitespace and case are ignored; unknown group names
+fail at startup.
 
 ```toml
 [mcp_servers.kitsune.env]
-KITSUNE_CAPS = "core,devtools"
+KITSUNE_CAPS = "core,browse,read"
 ```
 
 | Group | Tools |
 |---|---|
 | `core` (25, Playwright MCP's) | `browser_close`, `browser_resize`, `browser_console_messages`, `browser_handle_dialog`, `browser_emulate_media`, `browser_evaluate`, `browser_file_upload`, `browser_drop`, `browser_find`, `browser_fill_form`, `browser_press_key`, `browser_type`, `browser_navigate`, `browser_navigate_back`, `browser_network_requests`, `browser_network_request`, `browser_run_code_unsafe`, `browser_take_screenshot`, `browser_snapshot`, `browser_click`, `browser_drag`, `browser_hover`, `browser_select_option`, `browser_tabs`, `browser_wait_for` |
-| `devtools` (36) | `browser_status`, `browser_page_info`, `browser_page_text`, `browser_forms`, `browser_dom`, `browser_trusted_click`, `browser_scroll`, `browser_highlight`, `browser_workflows`, `browser_workflow`, `browser_cache`, `browser_reload_extension`, `browser_query`, `browser_html`, `browser_links`, `browser_images`, `browser_meta`, `browser_structured_data`, `browser_bounds`, `browser_computed_style`, `browser_readability`, `browser_markdown`, `browser_iframes`, `browser_explain_selector`, `browser_check`, `browser_focus`, `browser_blur`, `browser_submit_form`, `browser_click_and_wait_navigation`, `browser_full_page_metrics`, `browser_forward`, `browser_health`, `browser_logs`, `browser_audit`, `browser_set_policy`, `browser_get_policy` |
+| `admin` (8) | `browser_status`, `browser_cache`, `browser_reload_extension`, `browser_health`, `browser_logs`, `browser_audit`, `browser_set_policy`, `browser_get_policy` |
+| `automation` (12) | `browser_workflows`, `browser_workflow`, `browser_parallel`, `browser_broadcast`, `browser_sync_barrier`, `browser_tab_pool`, `browser_pool_acquire`, `browser_pool_release`, `browser_scheduler`, `browser_retry`, `browser_batch`, `browser_resume` |
+| `browse` (8) | `browser_trusted_click`, `browser_scroll`, `browser_check`, `browser_focus`, `browser_blur`, `browser_submit_form`, `browser_click_and_wait_navigation`, `browser_forward` |
+| `inspect` (5) | `browser_highlight`, `browser_bounds`, `browser_computed_style`, `browser_explain_selector`, `browser_full_page_metrics` |
 | `network` (3) | `browser_downloads`, `browser_intercept`, `browser_capture_network` |
-| `parallel` (16) | `browser_keep_alive`, `browser_keep_alive_stop`, `browser_parallel`, `browser_broadcast`, `browser_sync_barrier`, `browser_tag_tab`, `browser_resolve_tag`, `browser_list_tags`, `browser_untag_tab`, `browser_tab_pool`, `browser_pool_acquire`, `browser_pool_release`, `browser_scheduler`, `browser_retry`, `browser_batch`, `browser_resume` |
-| `session` (4) | `browser_save_session`, `browser_load_session`, `browser_list_sessions`, `browser_delete_session` |
-| `storage` (4) | `browser_cookies`, `browser_storage`, `browser_clipboard`, `browser_clear_browsing_data` |
-| `tabs` (7) | `browser_wake_tab`, `browser_pin_tab`, `browser_mute_tab`, `browser_duplicate_tab`, `browser_reload_tab`, `browser_get_zoom`, `browser_set_zoom` |
-| `windows` (6) | `browser_windows`, `browser_create_window`, `browser_close_window`, `browser_focus_window`, `browser_move_tab`, `browser_detach_tab` |
+| `read` (13) | `browser_page_info`, `browser_page_text`, `browser_forms`, `browser_dom`, `browser_query`, `browser_html`, `browser_links`, `browser_images`, `browser_meta`, `browser_structured_data`, `browser_readability`, `browser_markdown`, `browser_iframes` |
+| `tabs` (19) | `browser_wake_tab`, `browser_keep_alive`, `browser_keep_alive_stop`, `browser_pin_tab`, `browser_mute_tab`, `browser_duplicate_tab`, `browser_reload_tab`, `browser_get_zoom`, `browser_set_zoom`, `browser_windows`, `browser_create_window`, `browser_close_window`, `browser_focus_window`, `browser_move_tab`, `browser_detach_tab`, `browser_tag_tab`, `browser_resolve_tag`, `browser_list_tags`, `browser_untag_tab` |
 | `history` (3, not in `all`) | `browser_history_search`, `browser_history_visits`, `browser_bookmarks_search`. They also need your grant on Kitsune's options page; see [History and bookmarks](api-reference.md#history-and-bookmarks) |
+| `storage` (8, not in `all`) | `browser_cookies`, `browser_storage`, `browser_clipboard`, `browser_clear_browsing_data`, `browser_save_session`, `browser_load_session`, `browser_list_sessions`, `browser_delete_session`. They read and write cookies, page storage and the system clipboard, and saved sessions hold cookies and page storage |
+
+Earlier releases' `devtools`, `parallel`, `windows` and `session` groups are gone, and
+naming them fails at startup. `devtools` became `browse`, `read`, `inspect`, `admin` and
+(`browser_workflows`, `browser_workflow`) `automation`; `parallel` became `automation`
+and, for tab tags and keep-alive, `tabs`; `windows` joined `tabs`; `session` joined
+`storage`, which `all` no longer includes.
 
 A tool left out by `KITSUNE_CAPS` is absent from `tools/list`, and clients usually say
 nothing about it. Calling it anyway returns an MCP error with
 `code: "tool_not_published"` whose `hint` names the setting that publishes it, for
-example `KITSUNE_CAPS=core,devtools` for `browser_scroll`. `browser_status` (`devtools`)
+example `KITSUNE_CAPS=browse,core` for `browser_scroll`. `browser_status` (`admin`)
 reports this server's `mcp_tools`: the enabled `caps`, and how many known tools are
 `unpublished`.
 
@@ -367,15 +374,16 @@ KITSUNE_MODE = "read"
 | Mode | Published tools and enforced limits |
 |---|---|
 | `read` | Read tools plus navigation to HTTP(S) pages (or `about:blank`) and scrolling. `browser_tab_list()` replaces the multi-action `browser_tabs`. No clicks, field writes, JavaScript, submits, confirmations or screenshots/file writes. |
-| `draft` | Read surface plus `browser_type`, `browser_select_option`, `browser_fill_form` and, with `devtools`, `browser_check`. Fills plain text only; no click/keypress/submit/dialog confirmation or JavaScript. Ask-before-act is forced: sensitive fields, payment-like pages and uninspectable targets are refused before filling, without a confirmation token. |
+| `draft` | Read surface plus `browser_type`, `browser_select_option`, `browser_fill_form` and, with the `browse` group, `browser_check`. Fills plain text only; no click/keypress/submit/dialog confirmation or JavaScript. Ask-before-act is forced: sensitive fields, payment-like pages and uninspectable targets are refused before filling, without a confirmation token. |
 | `act` | Existing behavior, including the independently configured ask-before-act policy. |
 
 Modes intersect with `KITSUNE_CAPS`; they never enable a disabled group. With the
 default `core` group, `read` publishes eight tools: list-only tabs, navigate, snapshot,
 find, wait for text, console messages and the network request list and details.
-`draft` adds type, select-option and fill-form. Page text, forms, DOM and scrolling
-need `devtools`. Extra enabled groups contribute only their read tools. The
-personal-data `history` group still requires explicit opt-in.
+`draft` adds type, select-option and fill-form. Page text, forms and DOM need the
+`read` group, and scrolling the `browse` group. Extra enabled groups contribute only
+their read tools. The personal-data `storage` and `history` groups still require
+explicit opt-in.
 
 Restricted surfaces use first-paragraph descriptions and omit `confirm_token`.
 Calling an unpublished tool by name returns `tool_not_published` with the mode setting
@@ -397,7 +405,7 @@ kitsune-benchmark; character-size guards in this repo are not token measurements
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `KITSUNE_CAPS` | `core` | Comma-separated capability groups above; `all` enables every group except `history`, which reads personal data and must be named |
+| `KITSUNE_CAPS` | `core` | Comma-separated capability groups above; `all` enables every group except `storage` and `history`, which read personal data and must be named |
 | `KITSUNE_MODE` | `act` | Task surface and per-request policy: `read`, `draft`, or `act`. See [Task modes](#task-modes) |
 | `KITSUNE_HOME` | `~/.kitsune` | Data directory (0700) |
 | `KITSUNE_HTTP_PORT` | `47651` | Bridge HTTP API |
@@ -461,6 +469,10 @@ What it does not protect against:
   `browser_storage` and `browser_clipboard` values) with `"[redacted]"`; see
   [Audit log](api-reference.md#audit-log). The page and the MCP client's own
   transcript still see whatever the agent sent.
+- **Cookies, page storage, saved sessions and the clipboard.** Off unless you name
+  the `storage` capability group; `KITSUNE_CAPS=all` leaves it out. Its tools read and
+  write the cookies that keep you logged in, page storage and the system clipboard:
+  enable it only for agents you trust with your accounts.
 - **History and bookmarks.** Off unless you enable the `history` capability group
   *and* allow it on Kitsune's options page (about:addons → Kitsune → Options);
   revoke it there or in the add-on's Permissions tab. Lookups return only URLs,
@@ -564,7 +576,7 @@ URL. Details are in the [API reference](api-reference.md#protected-user-tabs).
 | `port_conflict` | `state.port` is held by another program (`lsof -nP -iTCP:47651 -sTCP:LISTEN`), or `KITSUNE_WS_PORT` differs from the extension's `WS_URL` |
 | `token_mismatch` (`401 Missing or invalid token`) | `KITSUNE_TOKEN` or `KITSUNE_HOME` set in one client but not in the daemon (or the other way round) |
 | `Cannot access browser internal page` | `about:` pages are off-limits to extensions; switch to a normal tab |
-| A click returns `dispatched: true` but the page does not react (`outcome_not_observed`, target still visible) | Some pages accept only trusted input and ignore Kitsune's synthetic events. Check the page with `browser_snapshot` first, then try one [`browser_trusted_click`](api-reference.md#browser_trusted_clickselector-x0-y0-coordinate_spaceviewport-focusfalse-tab_idnone-firstfalse) on the same target and verify it with a read. It needs the `devtools` capability, moves your real cursor and, on macOS, needs pyobjc Quartz or `cliclick` plus Accessibility permission. Kitsune never switches to it on its own |
+| A click returns `dispatched: true` but the page does not react (`outcome_not_observed`, target still visible) | Some pages accept only trusted input and ignore Kitsune's synthetic events. Check the page with `browser_snapshot` first, then try one [`browser_trusted_click`](api-reference.md#browser_trusted_clickselector-x0-y0-coordinate_spaceviewport-focusfalse-tab_idnone-firstfalse) on the same target and verify it with a read. It needs the `browse` capability, moves your real cursor and, on macOS, needs pyobjc Quartz or `cliclick` plus Accessibility permission. Kitsune never switches to it on its own |
 | `stale ref, call browser_snapshot again` | Take a fresh snapshot of the same `tab_id` and use its new refs |
 | Bridge updated but browser behavior is unchanged | Reload the extension, then reload affected pages so their content scripts update too |
 | Restart the daemon | Run `kitsune-bridge stop` with the same source as your clients (`uvx --from git+…` or `uv run` in a checkout); the next tool call starts it again. This briefly affects all clients sharing it |

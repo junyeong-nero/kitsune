@@ -29,7 +29,7 @@ class ToolSurfaceTests(unittest.TestCase):
         # The core group is exactly Playwright MCP's core tools.
         self.assertEqual(core, set(playwright_tools.SCHEMAS))
         self.assertEqual(len(core), 25)
-        self.assertEqual(len(all_tools), 101)
+        self.assertEqual(len(all_tools), 93)
         removed = {
             "browser_page_text_by_tab_id", "browser_fill", "browser_set_editable_content",
             "browser_new_tab", "browser_close_tab", "browser_switch_tab",
@@ -41,19 +41,28 @@ class ToolSurfaceTests(unittest.TestCase):
             "browser_upload_file", "browser_console_logs", "browser_watch_console", "browser_double_click",
         }
         self.assertFalse(all_tools & removed)
-        # `all` enables every group except history, which reads personal data and must be named (#140).
-        self.assertEqual(server.NAMED_ONLY_GROUPS, {"history"})
+        # `all` enables every group except storage and history, which read personal data and must be
+        # named (#140).
+        self.assertEqual(server.NAMED_ONLY_GROUPS, {"storage", "history"})
+        storage = {"browser_cookies", "browser_storage", "browser_clipboard", "browser_clear_browsing_data",
+                   "browser_save_session", "browser_load_session", "browser_list_sessions", "browser_delete_session"}
         history = {"browser_history_search", "browser_history_visits", "browser_bookmarks_search"}
+        self.assertEqual(self.registered("storage"), storage)
         self.assertEqual(self.registered("history"), history)
-        self.assertFalse(all_tools & history)
-        self.assertEqual(self.registered("all,history"), all_tools | history)
+        self.assertFalse(all_tools & (storage | history))
+        self.assertEqual(self.registered("all,storage,history"), all_tools | storage | history)
         groups = [self.registered(g) for g in server.CAPABILITY_GROUPS - server.NAMED_ONLY_GROUPS]
         self.assertEqual(set.union(*groups), all_tools)
         self.assertEqual(sum(map(len, groups)), len(all_tools))
-        self.assertEqual(self.registered(" CORE, parallel "), core | self.registered("parallel"))
-        self.assertTrue({"browser_scheduler", "browser_batch", "browser_retry", "browser_keep_alive",
-                         "browser_tab_pool", "browser_tag_tab", "browser_parallel",
-                         "browser_broadcast", "browser_sync_barrier", "browser_resume"} <= self.registered("parallel"))
+        self.assertEqual(self.registered(" CORE, automation "), core | self.registered("automation"))
+        self.assertTrue({"browser_scheduler", "browser_batch", "browser_retry", "browser_tab_pool",
+                         "browser_parallel", "browser_broadcast", "browser_sync_barrier", "browser_resume",
+                         "browser_workflow"} <= self.registered("automation"))
+        # Everyday page actions are not grouped with the bridge and policy administration tools.
+        self.assertTrue({"browser_scroll", "browser_forward", "browser_check"} <= self.registered("browse"))
+        self.assertTrue({"browser_status", "browser_set_policy", "browser_reload_extension"}
+                        <= self.registered("admin"))
+        self.assertTrue({"browser_windows", "browser_tag_tab", "browser_keep_alive"} <= self.registered("tabs"))
 
     def test_default_registration(self):
         with patch.dict(os.environ):

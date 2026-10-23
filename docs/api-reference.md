@@ -5,10 +5,11 @@ Base URL: `http://127.0.0.1:47651`
 ## MCP tool surface
 
 `KITSUNE_CAPS=core` is the default; `KITSUNE_CAPS=all` registers
-101 tools. The groups are `core`, `tabs`, `network`, `storage`, `parallel`,
-`devtools`, `windows`, `session`, and `history`. A comma list selects those groups only.
-`all` enables every group except `history`, which reads personal data and must be
-named (`KITSUNE_CAPS=all,history`); see [History and bookmarks](#history-and-bookmarks).
+93 tools. The groups are `core`, `browse`, `read`, `inspect`, `tabs`, `automation`,
+`network`, `admin`, `storage`, and `history`. A comma list selects those groups only.
+`all` enables every group except `storage` and `history`, which read personal data and
+must be named (`KITSUNE_CAPS=all,storage,history`); see
+[History and bookmarks](#history-and-bookmarks).
 See [Tools and capabilities](guide.md#tools) for the complete tool list per group.
 
 **The `core` group is Playwright MCP's 25 core tools**, published verbatim from
@@ -24,11 +25,11 @@ snapshot ref such as `e12` or a CSS selector), they act on the current tab, and
 `browser_emulate_media` and `browser_run_code_unsafe` answer `not_supported`; see
 [Core tools](guide.md#core-tools) for how each maps onto the extension. The tool
 sections below describe the Kitsune-owned tools and the bridge commands the core tools
-use; Kitsune's former `core` tools `browser_status`, `browser_page_info`,
-`browser_page_text`, `browser_forms`, `browser_dom`, `browser_scroll`,
-`browser_markdown`, `browser_check`, `browser_submit_form`, `browser_forward`,
-`browser_workflows` and `browser_workflow` are in `devtools`. The ones Playwright's
-replace (`browser_keypress`, `browser_js`, `browser_screenshot`, `browser_back`,
+use; Kitsune's former `core` tools are in `read` (`browser_page_info`,
+`browser_page_text`, `browser_forms`, `browser_dom`, `browser_markdown`), `browse`
+(`browser_scroll`, `browser_check`, `browser_submit_form`, `browser_forward`), `admin`
+(`browser_status`) and `automation` (`browser_workflows`, `browser_workflow`). The ones
+Playwright's replace (`browser_keypress`, `browser_js`, `browser_screenshot`, `browser_back`,
 `browser_form_fill`, `browser_upload_file`, `browser_watch_console`,
 `browser_console_logs`, `browser_double_click`, and Kitsune's own signatures of the
 shared names) are no longer MCP tools; their sections document the bridge commands.
@@ -38,10 +39,10 @@ error (`isError`) instead of FastMCP's `Unknown tool`. Its `hint` names the
 settings that publish it; restart the MCP client after changing them:
 
 ```json
-{ "error": "browser_drag is not published by this MCP server", "code": "tool_not_published",
+{ "error": "browser_scroll is not published by this MCP server", "code": "tool_not_published",
   "retryable": false,
-  "hint": "Set KITSUNE_CAPS=core,devtools in the MCP server environment, then restart the MCP client.",
-  "state": { "group": "devtools", "caps": ["core"] } }
+  "hint": "Set KITSUNE_CAPS=browse,core in the MCP server environment, then restart the MCP client.",
+  "state": { "group": "browse", "caps": ["core"] } }
 ```
 
 `browser_status` adds `mcp_tools` to the bridge status: this MCP server's enabled
@@ -56,13 +57,13 @@ command actions. Task-mode requests restrict the bridge routes too (below).
 `KITSUNE_MODE=read|draft|act` selects both the MCP surface and per-request bridge
 limits. Default: `act` (unchanged behavior). Case and surrounding whitespace are
 ignored; invalid modes fail at MCP startup. Modes intersect with the capability
-groups, including the named-only history group.
+groups, including the named-only storage and history groups.
 
 - `read`: read tools plus `browser_navigate` and `browser_scroll` (scroll needs
-  `devtools`). `browser_tab_list()` replaces `browser_tabs`: no parameters,
+  `browse`). `browser_tab_list()` replaces `browser_tabs`: no parameters,
   returns the same compact tab inventory as `browser_tabs(action="list")`, with no
   mutation action. Screenshots are excluded because they can write files.
-- `draft`: read plus type/select-option/fill-form/check (check needs `devtools`).
+- `draft`: read plus type/select-option/fill-form/check (check needs `browse`).
   Plain-text editor writes only. Forces ask-before-act checks; a sensitive field,
   payment-like page or uninspectable target returns `mode_restricted` before dispatch.
   Form-fill preflights the entire target set, sending only field keys for inspection.
@@ -589,7 +590,7 @@ navigating is checked again until the deadline. If the tab closed, `state.closed
 `true`. For `browser_click`, when the clicked element (the result's `target_ref`, or
 the request's ref or selector if no post-action snapshot was taken) is still visible
 after the wait, the hint adds that the page may accept only trusted input and that
-`browser_trusted_click` (in the `devtools` capability) is the alternative. That is a
+`browser_trusted_click` (in the `browse` capability) is the alternative. That is a
 possibility, not a diagnosis: the page may also be slow, or expect something else.
 Kitsune never retries the click or switches to an OS click on its own. A coordinate
 click with no `target_ref`, or a target that is gone, gets no such hint.
@@ -803,7 +804,7 @@ the tabs the agent opened before count as user tabs and are protected too.
 
 Agent work stays in background tabs of the user's window. Only an explicit
 `browser_create_window` or `browser_detach_tab` (batch `createWindow`, `detachTab`) opens a
-window; these tools are in the `windows` capability, which the default tools leave out.
+window; these tools are in the `tabs` capability, which the default tools leave out.
 Nothing else calls `windows.create`. A popup window that a page opens on an agent action is
 the page's own (see [Never taking focus](#never-taking-focus)).
 
@@ -1584,7 +1585,7 @@ A rendered `<img>` with a name appears as an `img` line with a ref, e.g.
 `aria-label`, `alt`, or `title` when there is no `alt`, clipped at 160 characters like
 other names. Decorative images (`alt=""`, `role="presentation"`/`"none"`), `aria-hidden`
 images and images without a name are left out, and `src` is never listed (`browser_images`, in
-the `devtools` preset, lists sources). The line names the image but does not describe its
+the `read` group, lists sources). The line names the image but does not describe its
 pixels: pass its ref to `browser_screenshot` to see it. An image that is a control
 (`onclick`, `tabindex`, `role="button"`) is listed as a control instead, and an image
 inside a link is listed below the link.
@@ -1811,7 +1812,7 @@ The bridge endpoint also accepts `title` and `process` to override these per cal
 
 ### `browser_resume(call, resume_token, observed=None)`
 
-`parallel` group. Continues a `browser_batch`, `browser_parallel` or
+`automation` group. Continues a `browser_batch`, `browser_parallel` or
 `browser_workflow` call that did not finish `ok`, from the checkpoint the bridge
 keeps in memory for 30 minutes (at most 20). `call` and `resume_token` come from
 that call's response. Steps that ran `ok` are not sent again. Each `unknown` write

@@ -42,7 +42,7 @@ browser_resume(call, resume_token, observed=None)
 ```
 
 POST `/api/resume` with `{"call", "resume_token", "observed"}`. The tool is in the
-`parallel` capability group (`KITSUNE_CAPS=parallel`), not in `core` or the lean preset.
+`automation` capability group (`KITSUNE_CAPS=automation`), not in `core` or the lean preset.
 
 The response has the shape of the original call: `results`, `progress`, `status` and
 `summary` for every command, plus `workflow` and `steps` for a workflow. If the
@@ -158,6 +158,6 @@ run get no new entry. The token never appears in the audit log or the bridge log
 
 ## Without browser_resume
 
-Without the `parallel` group, or after the checkpoint is gone, resume by hand. Send
+Without the `automation` group, or after the checkpoint is gone, resume by hand. Send
 a new batch that starts at the first record that is not `ok`, after observing the
 page for any `unknown` record.

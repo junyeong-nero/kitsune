@@ -49,7 +49,7 @@ def catalog(mode, caps="core"):
 class TaskModeCatalogTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.catalogs = {mode: catalog(mode, "all,history") for mode in ("read", "draft")}
+        cls.catalogs = {mode: catalog(mode, "all,storage,history") for mode in ("read", "draft")}
         cls.core = {mode: catalog(mode) for mode in ("read", "draft")}
 
     def test_every_published_tool_is_permitted_by_the_mode(self):

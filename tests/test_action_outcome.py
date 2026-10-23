@@ -575,7 +575,7 @@ class TrustedClickHintTests(unittest.TestCase):
         self.assertTrue(result["hint"].startswith("The command was dispatched but the expected"))
         self.assertIn("may", result["hint"])
         self.assertIn("browser_trusted_click", result["hint"])
-        self.assertIn("devtools", result["hint"])
+        self.assertIn("the browse capability", result["hint"])
         self.assertIn(("waitForElement", {"tabId": 7, "selector": "e9", "timeout": 1, "pollInterval": 100}),
                       extension.calls)
         # No retry and no OS click: the click ran once.

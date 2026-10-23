@@ -176,7 +176,7 @@ class RealBrowserClickEventTests(harness.RealBrowserTestCase):
         self.assertEqual(ignored.get("code"), "outcome_not_observed", ignored)
         self.assertIs(ignored["dispatched"], True)
         self.assertIn("browser_trusted_click", ignored["hint"], ignored)
-        self.assertIn("devtools", ignored["hint"])
+        self.assertIn("the browse capability", ignored["hint"])
 
         ref = self.call("/api/find", {"tabId": tab, "query": "#ok"})["results"][0]["ref"]
         by_ref = self.call("/api/click", {"tabId": tab, "ref": ref, "expect": expect})
