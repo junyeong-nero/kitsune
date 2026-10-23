@@ -5,27 +5,33 @@ Base URL: `http://127.0.0.1:47651`
 ## MCP tool surface
 
 `KITSUNE_CAPS=core` is the default; `KITSUNE_CAPS=all` registers
-96 tools. The groups are `core`, `tabs`, `network`, `storage`, `parallel`,
+101 tools. The groups are `core`, `tabs`, `network`, `storage`, `parallel`,
 `devtools`, `windows`, `session`, and `history`. A comma list selects those groups only.
 `all` enables every group except `history`, which reads personal data and must be
 named (`KITSUNE_CAPS=all,history`); see [History and bookmarks](#history-and-bookmarks).
 See [Tools and capabilities](guide.md#tools) for the complete tool list per group.
 
-**`KITSUNE_TOOL_PRESET` defaults to `lean` (#31)**, which registers 14 of the 30
-`core` tools: `browser_status`, `browser_tabs`, `browser_navigate`, `browser_page_info`,
-`browser_page_text`, `browser_snapshot`, `browser_forms`, `browser_dom`, `browser_find`,
-`browser_screenshot`, `browser_click`, `browser_type`, `browser_select_option`,
-`browser_form_fill`. The other 16 `core` tools (`browser_check`, `browser_submit_form`,
-`browser_back`, `browser_forward`, `browser_markdown`, `browser_wait_for`,
-`browser_hover`, `browser_keypress`, `browser_scroll`, `browser_handle_dialog`,
-`browser_upload_file`, `browser_js`, `browser_watch_console`, `browser_console_logs`,
-`browser_workflows`, `browser_workflow`) need `KITSUNE_TOOL_PRESET=full`. With the
-preset unset, `KITSUNE_CAPS=all` registers the full `core` group; an explicit `lean`
-narrows it even then. Definitions are the same in both presets, other `KITSUNE_CAPS`
-groups register in full, and an unknown preset fails at startup. The
-[Lean tool preset](guide.md#lean-tool-preset) section has the rules and which tasks
-need `full`. `browser_double_click`, `browser_drag`, `browser_focus` and
-`browser_blur` are `devtools` tools, so they also need `devtools` in `KITSUNE_CAPS`.
+**The `core` group is Playwright MCP's 25 core tools**, published verbatim from
+`src/kitsune/playwright_tools.json`: `browser_close`, `browser_resize`,
+`browser_console_messages`, `browser_handle_dialog`, `browser_emulate_media`,
+`browser_evaluate`, `browser_file_upload`, `browser_drop`, `browser_find`,
+`browser_fill_form`, `browser_press_key`, `browser_type`, `browser_navigate`,
+`browser_navigate_back`, `browser_network_requests`, `browser_network_request`,
+`browser_run_code_unsafe`, `browser_take_screenshot`, `browser_snapshot`,
+`browser_click`, `browser_drag`, `browser_hover`, `browser_select_option`,
+`browser_tabs`, `browser_wait_for`. Their arguments are Playwright's (`target` is a
+snapshot ref such as `e12` or a CSS selector), they act on the current tab, and
+`browser_emulate_media` and `browser_run_code_unsafe` answer `not_supported`; see
+[Core tools](guide.md#core-tools) for how each maps onto the extension. The tool
+sections below describe the Kitsune-owned tools and the bridge commands the core tools
+use; Kitsune's former `core` tools `browser_status`, `browser_page_info`,
+`browser_page_text`, `browser_forms`, `browser_dom`, `browser_scroll`,
+`browser_markdown`, `browser_check`, `browser_submit_form`, `browser_forward`,
+`browser_workflows` and `browser_workflow` are in `devtools`. The ones Playwright's
+replace (`browser_keypress`, `browser_js`, `browser_screenshot`, `browser_back`,
+`browser_form_fill`, `browser_upload_file`, `browser_watch_console`,
+`browser_console_logs`, `browser_double_click`, and Kitsune's own signatures of the
+shared names) are no longer MCP tools; their sections document the bridge commands.
 
 A call to a known tool that this configuration does not publish returns an MCP
 error (`isError`) instead of FastMCP's `Unknown tool`. Its `hint` names the
@@ -35,12 +41,12 @@ settings that publish it; restart the MCP client after changing them:
 { "error": "browser_drag is not published by this MCP server", "code": "tool_not_published",
   "retryable": false,
   "hint": "Set KITSUNE_CAPS=core,devtools in the MCP server environment, then restart the MCP client.",
-  "state": { "group": "devtools", "preset": "lean", "caps": ["core"] } }
+  "state": { "group": "devtools", "caps": ["core"] } }
 ```
 
-`browser_status` adds `mcp_tools` to the bridge status: this MCP server's `preset`,
-enabled `caps`, and the count of known tools it leaves `unpublished`, for example
-`{"preset": "lean", "caps": ["core"], "unpublished": 85}`. The bridge is shared by
+`browser_status` adds `mcp_tools` to the bridge status: this MCP server's enabled
+`caps` and the count of known tools it leaves `unpublished`, for example
+`{"caps": ["core"], "unpublished": 79}`. The bridge is shared by
 every MCP server, so `GET /api/status` does not have it.
 MCP tool names and parameters are separate from HTTP endpoint names and JSON
 command actions. Task-mode requests restrict the bridge routes too (below).
@@ -49,14 +55,14 @@ command actions. Task-mode requests restrict the bridge routes too (below).
 
 `KITSUNE_MODE=read|draft|act` selects both the MCP surface and per-request bridge
 limits. Default: `act` (unchanged behavior). Case and surrounding whitespace are
-ignored; invalid modes fail at MCP startup. Modes intersect with the preset and
-capability groups, including the named-only history group.
+ignored; invalid modes fail at MCP startup. Modes intersect with the capability
+groups, including the named-only history group.
 
-- `read`: read tools plus `browser_navigate` and `browser_scroll` (scroll still needs
-  the full preset). `browser_tab_list()` replaces `browser_tabs`: no parameters,
+- `read`: read tools plus `browser_navigate` and `browser_scroll` (scroll needs
+  `devtools`). `browser_tab_list()` replaces `browser_tabs`: no parameters,
   returns the same compact tab inventory as `browser_tabs(action="list")`, with no
   mutation action. Screenshots are excluded because they can write files.
-- `draft`: read plus type/select-option/form-fill/check (check still needs full).
+- `draft`: read plus type/select-option/fill-form/check (check needs `devtools`).
   Plain-text editor writes only. Forces ask-before-act checks; a sensitive field,
   payment-like page or uninspectable target returns `mode_restricted` before dispatch.
   Form-fill preflights the entire target set, sending only field keys for inspection.
@@ -68,7 +74,7 @@ capability groups, including the named-only history group.
 Restricted `tools/list` descriptions use their first paragraph, and schemas omit
 `confirm_token`. Calling an excluded name returns the existing `tool_not_published`
 MCP error, with `KITSUNE_MODE=draft` or `KITSUNE_MODE=act` in its hint, together with
-any required caps/preset changes. The error's `state` and `browser_status.mcp_tools`
+any required caps changes. The error's `state` and `browser_status.mcp_tools`
 include `mode` when restricted. `act` definitions and status fields are unchanged.
 
 The MCP server sends `X-Kitsune-Mode: read|draft` on **every** bridge request. No header
@@ -81,7 +87,7 @@ reports the shared policy plus the effective `mode`, `ask` and `confirmAllowed:f
 for restricted requests. Another authenticated client can still use act; this is
 not a separate authentication boundary. Keep the bridge token private.
 
-See [Task modes](guide.md#task-modes) for configuration, the nine-tool read/lean
+See [Task modes](guide.md#task-modes) for configuration, the eight-tool read
 surface and site-event/autosave limitations. Exact token and task-success measurements
 are external kitsune-benchmark work, not inferred from compact JSON character counts.
 
@@ -1174,9 +1180,9 @@ There is no opt-in to reveal redacted values through these tools, and none is
 planned (decided in #71). A reveal switch, whether per call or as a bridge
 policy, would give an agent or an injected page instruction one more way to
 read secrets through tools that are otherwise safe to call on any page. The
-only way to read a raw value is `browser_js`, which stays the separate,
-explicit and unrestricted trust boundary. It is not registered with
-the default `lean` tool preset (`KITSUNE_TOOL_PRESET=full` adds it), and read-only mode refuses it.
+only way to read a raw value is agent JavaScript (`browser_evaluate`), which stays the
+separate, explicit and unrestricted trust boundary. It needs the developer extension
+build, and read-only mode refuses it.
 
 Frameworks such as React mirror a typed value into the `value` attribute, so
 markup and attribute paths drop that attribute from sensitive fields, whether it

@@ -9,7 +9,7 @@ import httpx
 from mcp.server.fastmcp import FastMCP
 from mcp.shared.memory import create_connected_server_and_client_session
 
-from kitsune import bridge, server
+from kitsune import bridge, playwright_tools, server
 
 
 class SilentSocket:
@@ -127,6 +127,7 @@ class McpErrorResultTests(unittest.TestCase):
         logger = logging.getLogger("mcp.server.lowlevel.server")
         self.addCleanup(logger.setLevel, logger.level)
         logger.setLevel(logging.WARNING)
+        playwright_tools._current_tab = None
 
     def call(self, name, arguments, reply=None, mcp=server.mcp, **request):
         if reply is not None:
@@ -158,10 +159,10 @@ class McpErrorResultTests(unittest.TestCase):
                            "status": "complete"}}
         missing = {"error": "Element not found", "code": "not_found", "retryable": True,
                    "hint": "No element matches; take a new browser_snapshot."}
-        for name, arguments, reply in (("browser_click", {"ref": "s1e0", "tab_id": 7}, stale),
-                                       ("browser_type", {"ref": "s1e0", "text": "hi"}, stale),
-                                       ("browser_snapshot", {"ref": "s1e0"}, stale),
-                                       ("browser_click", {"selector": "#gone"}, missing)):
+        for name, arguments, reply in (("browser_click", {"target": "e1"}, stale),
+                                       ("browser_type", {"target": "e1", "text": "hi"}, stale),
+                                       ("browser_snapshot", {"target": "e1"}, stale),
+                                       ("browser_click", {"target": "#gone"}, missing)):
             with self.subTest(name=name, code=reply["code"]):
                 self.assertMcpResult(self.call(name, arguments, reply), reply, True)
 
@@ -169,7 +170,7 @@ class McpErrorResultTests(unittest.TestCase):
         with patch.object(bridge, "extension_ws", None):
             disconnected = asyncio.run(bridge._send_to_extension_raw("click", {}))
         self.assertEqual(disconnected["code"], "extension_disconnected")
-        self.assertMcpResult(self.call("browser_click", {"ref": "s1e0"}, disconnected), disconnected, True)
+        self.assertMcpResult(self.call("browser_click", {"target": "e1"}, disconnected), disconnected, True)
 
     def test_bridge_unavailable_is_an_error(self):
         with patch.object(server, "_ensure_bridge",
@@ -178,22 +179,23 @@ class McpErrorResultTests(unittest.TestCase):
         self.assertMcpResult(result, server._bridge_unavailable("Cannot start Kitsune bridge: denied"), True)
 
     def test_server_validation_and_ok_false_are_errors(self):
-        self.assertMcpResult(self.call("browser_tabs", {"action": "close"}),
-                             {"error": "tab_id is required for action=close"}, True)
+        self.assertMcpResult(self.call("browser_tabs", {"action": "select"}),
+                             {"error": "index is required for action=select"}, True)
         timed_out = {"ok": False, "timedOut": True, "tabId": 9, "url": "https://example.com/"}
-        self.assertMcpResult(self.call("browser_tabs", {"action": "new", "wait": True}, timed_out),
+        self.assertMcpResult(self.call("browser_tabs", {"action": "new", "url": "https://example.com/"}, timed_out),
                              timed_out, True)
 
     def test_successes_and_warnings_are_not_errors(self):
         warned = {"ok": True, "tag": "input", "warning": {"code": "hidden_or_covered",
                   "state": {"reason": "not_rendered"}, "hint": "prefer its label"}}
-        self.assertMcpResult(self.call("browser_click", {"ref": "s1e0"}, warned), warned, False)
+        self.assertMcpResult(self.call("browser_click", {"target": "e1"}, warned), warned, False)
         # The click happened; only the expected navigation was not observed.
         clicked = {"ok": True, "clicked": True, "navigation": {"ok": False, "timedOut": True}}
         self.assertMcpResult(self.call("browser_click_and_wait_navigation", {"ref": "s1e0"}, clicked,
                                        mcp=self.registered(server.browser_click_and_wait_navigation)),
                              clicked, False)
-        status = self.call("browser_status", {}, {"status": "running", "extension_connected": False})
+        status = self.call("browser_status", {}, {"status": "running", "extension_connected": False},
+                           mcp=self.registered(server.browser_status))
         self.assertIs(status.isError, False)
         # browser_status also reports the published tool surface (#171).
         self.assertEqual({key: value for key, value in json.loads(status.content[0].text).items()
@@ -220,15 +222,16 @@ class McpErrorResultTests(unittest.TestCase):
         missed = {"ok": False, "dispatched": True, "snapshot": "- button \"Pay\" [ref=s2e0]",
                   "target_ref": "s2e0", "error": "Expected outcome not observed within 5000ms",
                   "code": "outcome_not_observed", "retryable": False, "hint": "inspect the page"}
-        self.assertMcpResult(self.call("browser_click", {"ref": "s1e0", "expect": {"url_changed": True}}, missed),
-                             missed, True)
+        self.assertMcpResult(self.call("browser_check", {"ref": "s1e0", "expect": {"url_changed": True}}, missed,
+                                       mcp=self.registered(server.browser_check)), missed, True)
 
     def test_form_fill_fails_only_when_no_field_was_filled(self):
+        mcp = self.registered(server.browser_form_fill)
         none = {"error": "No field was filled", "results": {"Email": {"error": "Not found"}}}
-        self.assertMcpResult(self.call("browser_form_fill", {"fields": {"Email": "a@b"}}, none), none, True)
+        self.assertMcpResult(self.call("browser_form_fill", {"fields": {"Email": "a@b"}}, none, mcp=mcp), none, True)
         partial = {"results": {"Email": {"ok": True, "tag": "input"}, "Color": {"error": "Not found"}}}
-        self.assertMcpResult(self.call("browser_form_fill", {"fields": {"Email": "a@b", "Color": "x"}}, partial),
-                             partial, False)
+        self.assertMcpResult(self.call("browser_form_fill", {"fields": {"Email": "a@b", "Color": "x"}}, partial,
+                                       mcp=mcp), partial, False)
 
     def test_non_json_bridge_response_keeps_http_status(self):
         response = Mock(status_code=502, text="<html>Bad gateway</html>",

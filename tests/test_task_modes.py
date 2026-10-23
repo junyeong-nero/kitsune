@@ -12,18 +12,22 @@ from test_ask_before_act import AskBeforeActTestCase
 
 CATALOG = '''import asyncio, inspect, json
 from unittest.mock import patch
-from kitsune import server
+from kitsune import playwright_tools, server
+SAMPLES = {"fields": [{"target": "e1", "name": "Title", "type": "textbox", "value": "draft"}],
+           "url": "https://example.com", "values": ["example"], "index": 1}
+OPTIONAL = {"browser_wait_for": {"text": "example"}, "browser_find": {"text": "example"}}
 published = asyncio.run(server.mcp.list_tools())
 routes = {}
 for tool in published:
-    function = getattr(server, tool.name)
-    args = {name: ({"title": "draft"} if name == "fields" else "https://example.com" if name == "url" else "example")
+    function = getattr(playwright_tools if tool.name in playwright_tools.SCHEMAS else server, tool.name)
+    args = {name: SAMPLES.get(name, "example")
             for name, param in inspect.signature(function).parameters.items() if param.default is inspect.Parameter.empty}
+    args.update(OPTIONAL.get(tool.name, {}))
     with patch.object(server, "_get", return_value={}) as get, patch.object(server, "_post", return_value={}) as post:
         function(**args)
         routes[tool.name] = [call.args[0] for call in get.call_args_list + post.call_args_list]
 excluded = {}
-for name in ("browser_click", "browser_type", "browser_submit_form", "browser_tabs", "browser_js", "browser_set_policy"):
+for name in ("browser_click", "browser_type", "browser_submit_form", "browser_tabs", "browser_evaluate", "browser_set_policy"):
     if name not in {tool.name for tool in published}:
         result = asyncio.run(server.mcp.call_tool(name, {}))
         excluded[name] = {"isError": result.isError, **json.loads(result.content[0].text)}
@@ -32,8 +36,12 @@ print(json.dumps({"tools": [tool.model_dump(mode="json", exclude_none=True) for 
 '''
 
 
-def catalog(mode, preset="lean", caps="core"):
-    env = {**os.environ, "KITSUNE_MODE": mode, "KITSUNE_TOOL_PRESET": preset, "KITSUNE_CAPS": caps}
+# Tools that answer from state the MCP server keeps (the last browser_network_requests list).
+LOCAL_TOOLS = {"browser_network_request"}
+
+
+def catalog(mode, caps="core"):
+    env = {**os.environ, "KITSUNE_MODE": mode, "KITSUNE_CAPS": caps}
     result = subprocess.run([sys.executable, "-c", CATALOG], env=env, text=True, capture_output=True, check=True)
     return json.loads(result.stdout)
 
@@ -41,15 +49,14 @@ def catalog(mode, preset="lean", caps="core"):
 class TaskModeCatalogTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.catalogs = {(mode, preset): catalog(mode, preset, "all,history")
-                        for mode in ("read", "draft") for preset in ("lean", "full")}
-        cls.read = catalog("read")
+        cls.catalogs = {mode: catalog(mode, "all,history") for mode in ("read", "draft")}
+        cls.core = {mode: catalog(mode) for mode in ("read", "draft")}
 
     def test_every_published_tool_is_permitted_by_the_mode(self):
-        for (mode, preset), result in self.catalogs.items():
+        for mode, result in [*self.catalogs.items(), *self.core.items()]:
             for tool in result["tools"]:
                 name = tool["name"]
-                with self.subTest(mode=mode, preset=preset, tool=name):
+                with self.subTest(mode=mode, tool=name):
                     self.assertTrue(task_modes.permits_tool(mode, name))
                     action = {**task_modes.READ_TOOLS, **task_modes.DRAFT_TOOLS}[name]
                     if action:
@@ -59,35 +66,38 @@ class TaskModeCatalogTests(unittest.TestCase):
                         finally:
                             bridge._task_mode.reset(token)
                     self.assertNotIn("confirm_token", tool["inputSchema"]["properties"])
-                    self.assertTrue(result["routes"][name], "tool must reach the bridge")
+                    if name not in LOCAL_TOOLS:
+                        self.assertTrue(result["routes"][name], "tool must reach the bridge")
                     for route in result["routes"][name]:
                         self.assertTrue(task_modes.permits_route(mode, route), route)
 
-    def test_read_lean_is_a_small_list_only_surface(self):
-        self.assertEqual({tool["name"] for tool in self.read["tools"]}, {
-            "browser_status", "browser_tab_list", "browser_navigate", "browser_page_info", "browser_page_text",
-            "browser_forms", "browser_dom", "browser_snapshot", "browser_find"})
-        tabs = next(tool for tool in self.read["tools"] if tool["name"] == "browser_tab_list")
+    def test_read_core_is_a_small_list_only_surface(self):
+        read = self.core["read"]["tools"]
+        self.assertEqual({tool["name"] for tool in read}, {
+            "browser_tab_list", "browser_navigate", "browser_snapshot", "browser_find", "browser_wait_for",
+            "browser_console_messages", "browser_network_requests", "browser_network_request"})
+        tabs = next(tool for tool in read if tool["name"] == "browser_tab_list")
         self.assertEqual(tabs["inputSchema"]["properties"], {})
         # Character guard, not a tokenizer claim; exact tokens/task success belong to kitsune-benchmark.
-        definitions = json.dumps(self.read["tools"], separators=(",", ":"), ensure_ascii=False)
-        self.assertLess(len(definitions), 6000)
+        # Mostly Playwright MCP's definitions, published verbatim.
+        definitions = json.dumps(read, separators=(",", ":"), ensure_ascii=False)
+        self.assertLess(len(definitions), 6600)
 
-    def test_modes_intersect_presets_and_capabilities(self):
+    def test_modes_intersect_capabilities(self):
         for mode in ("read", "draft"):
-            lean = {tool["name"] for tool in self.catalogs[mode, "lean"]["tools"]}
-            full = {tool["name"] for tool in self.catalogs[mode, "full"]["tools"]}
-            self.assertLess(lean, full)
-            self.assertNotIn("browser_scroll", lean)
-            self.assertIn("browser_scroll", full)
-            self.assertIn("browser_history_search", full)
-        self.assertNotIn("browser_history_search", {tool["name"] for tool in self.read["tools"]})
-        read = {tool["name"] for tool in self.catalogs["read", "full"]["tools"]}
-        draft = {tool["name"] for tool in self.catalogs["draft", "full"]["tools"]}
+            core = {tool["name"] for tool in self.core[mode]["tools"]}
+            everything = {tool["name"] for tool in self.catalogs[mode]["tools"]}
+            self.assertLess(core, everything)
+            self.assertNotIn("browser_scroll", core)
+            self.assertIn("browser_scroll", everything)
+            self.assertIn("browser_history_search", everything)
+            self.assertNotIn("browser_history_search", core)
+        read = {tool["name"] for tool in self.catalogs["read"]["tools"]}
+        draft = {tool["name"] for tool in self.catalogs["draft"]["tools"]}
         self.assertEqual(draft - read, set(task_modes.DRAFT_TOOLS))
 
     def test_excluded_calls_by_name_explain_the_mode(self):
-        for (mode, preset), result in self.catalogs.items():
+        for mode, result in self.catalogs.items():
             for name, call in result["excluded"].items():
                 self.assertTrue(call["isError"], name)
                 self.assertEqual(call["code"], "tool_not_published")

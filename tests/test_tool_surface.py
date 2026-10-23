@@ -9,13 +9,13 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from kitsune import server
+from kitsune import playwright_tools, server
 from kitsune.bridge import _parse_workflow
 
 
 class ToolSurfaceTests(unittest.TestCase):
-    def registered(self, caps, preset="full"):
-        env = {**os.environ, "KITSUNE_CAPS": caps, "KITSUNE_TOOL_PRESET": preset}
+    def registered(self, caps):
+        env = {**os.environ, "KITSUNE_CAPS": caps}
         result = subprocess.run(
             [sys.executable, "-c", "import asyncio,json; from kitsune.server import mcp; "
              "print(json.dumps([t.name for t in asyncio.run(mcp.list_tools())]))"],
@@ -26,15 +26,19 @@ class ToolSurfaceTests(unittest.TestCase):
     def test_registration(self):
         core = self.registered("core")
         all_tools = self.registered("all")
-        self.assertEqual(len(core), 30)
-        self.assertEqual(len(all_tools), 96)
-        self.assertTrue({"browser_handle_dialog", "browser_snapshot"} <= core)
+        # The core group is exactly Playwright MCP's core tools.
+        self.assertEqual(core, set(playwright_tools.SCHEMAS))
+        self.assertEqual(len(core), 25)
+        self.assertEqual(len(all_tools), 101)
         removed = {
             "browser_page_text_by_tab_id", "browser_fill", "browser_set_editable_content",
             "browser_new_tab", "browser_close_tab", "browser_switch_tab",
             "browser_wait_for_element", "browser_wait_for_result", "browser_wait_for_url",
             "browser_wait_for_title", "browser_wait_for_network_idle",
             "browser_element_screenshot", "browser_full_page_screenshot", "browser_wp_html",
+            # Replaced by Playwright's core tools (browser_press_key, browser_evaluate, ...).
+            "browser_keypress", "browser_js", "browser_screenshot", "browser_back", "browser_form_fill",
+            "browser_upload_file", "browser_console_logs", "browser_watch_console", "browser_double_click",
         }
         self.assertFalse(all_tools & removed)
         # `all` enables every group except history, which reads personal data and must be named (#140).
@@ -54,9 +58,7 @@ class ToolSurfaceTests(unittest.TestCase):
     def test_default_registration(self):
         with patch.dict(os.environ):
             os.environ.pop("KITSUNE_CAPS", None)
-            os.environ.pop("KITSUNE_TOOL_PRESET", None)
-            self.assertEqual(self.registered_default(), self.registered("core", preset="lean"))
-            self.assertEqual(len(self.registered_default()), 14)
+            self.assertEqual(self.registered_default(), set(playwright_tools.SCHEMAS))
 
     def registered_default(self):
         result = subprocess.check_output(

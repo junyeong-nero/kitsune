@@ -286,7 +286,7 @@ def _focus_browser_window(title="", process=""):
 _NO_SCHEDULE_ACTIONS = {"ping", "getTabs", "getWindows"}
 _GLOBAL_SCOPE_ACTIONS = {
     "screenshot", "switchTab", "restoreActiveTab", "newTab", "closeTab", "trustedClick",
-    "reloadExtension", "createWindow", "closeWindow", "focusWindow",
+    "reloadExtension", "createWindow", "closeWindow", "focusWindow", "resizeWindow",
     "moveTab", "detachTab", "elementScreenshot", "fullPageScreenshot",
     "cookies", "clipboard", "downloads", "clearBrowsingData", "intercept",
 }
@@ -332,6 +332,7 @@ _API_ALIASES = {
     "/api/createWindow": "/api/create-window",
     "/api/closeWindow": "/api/close-window",
     "/api/focusWindow": "/api/focus-window",
+    "/api/resizeWindow": "/api/resize-window",
     "/api/moveTab": "/api/move-tab",
     "/api/detachTab": "/api/detach-tab",
     "/api/elementScreenshot": "/api/element-screenshot",
@@ -706,11 +707,12 @@ _AUDIT_SECRET_PARAMS = {
     "fill": ("value",),
     "setEditableContent": ("value",),
     "keypress": ("text",),
-    "selectOption": ("value",),
+    "selectOption": ("value", "values"),
     "handleDialog": ("prompt_text",),
     "cookies": ("value",),
     "storageOp": ("value",),
     "clipboard": ("text",),
+    "uploadFile": ("data",),
 }
 
 # JS bodies are dropped: "code" everywhere, plus the JS expressions that
@@ -779,7 +781,7 @@ WRITE_ACTIONS = {
     "formFill", "drag", "cookies", "clipboard", "downloads",
     "clearBrowsingData", "intercept", "clickAndWaitNavigation",
     "pinTab", "muteTab", "duplicateTab", "reloadTabBrowser", "goBack", "goForward",
-    "setZoom", "createWindow", "closeWindow", "moveTab", "detachTab",
+    "setZoom", "createWindow", "closeWindow", "resizeWindow", "moveTab", "detachTab",
     "storageOp", "reloadExtension", "wakeTab", "highlight", "clearHighlight",
     "uploadFile", "handleDialog", "media", "loadSession",
 }
@@ -2239,7 +2241,11 @@ async def _upload_files_async(body):
     import mimetypes
     import uuid
     paths = body.get("paths") or ([body["path"]] if body.get("path") else [])
-    if not paths:
+    data = body.get("data")
+    if data is not None and not (isinstance(data, dict) and all(
+            isinstance(key, str) and isinstance(value, str) for key, value in data.items())):
+        return {"error": "data must map MIME types to strings"}
+    if not paths and not (data and body.get("mode") == "drop"):
         return {"error": "path or paths is required"}
     resolved = []
     for p in paths:
@@ -2274,9 +2280,11 @@ async def _upload_files_async(body):
         files.append({"name": os.path.basename(p), "type": mimetypes.guess_type(p)[0] or "application/octet-stream",
                       "start": start, "end": idx})
     sel, mode = body.get("selector"), body.get("mode") or "auto"
-    r = await send_to_extension("uploadCommit", {"tabId": tab_id, "uploadId": uid, "selector": sel,
-                                                 "files": files, "mode": mode, "first": bool(body.get("first"))},
-                                timeout=60)
+    commit = {"tabId": tab_id, "uploadId": uid, "selector": sel, "files": files, "mode": mode,
+              "first": bool(body.get("first"))}
+    if data:
+        commit["data"] = data
+    r = await send_to_extension("uploadCommit", commit, timeout=60)
     if isinstance(r, dict) and not r.get("error"):
         r.update({"tabId": tab_id, "chunks": idx, "bytes": total,
                   "seconds": round(time.time() - t0, 1)})
@@ -2333,7 +2341,7 @@ BATCH_ACTION_MAP = {
         'navigate', 'newTab', 'closeTab', 'switchTab', 'click', 'type', 'setEditableContent', 'fill',
         'scroll', 'hover', 'find', 'highlight', 'wakeTab', 'reloadExtension', 'pinTab', 'muteTab',
         'duplicateTab', 'reloadTabBrowser', 'goBack', 'goForward', 'getZoom', 'setZoom', 'getWindows',
-        'createWindow', 'closeWindow', 'focusWindow', 'moveTab', 'detachTab', 'elementScreenshot',
+        'createWindow', 'closeWindow', 'focusWindow', 'resizeWindow', 'moveTab', 'detachTab', 'elementScreenshot',
         'fullPageScreenshot', 'cookies', 'clipboard', 'downloads', 'clearBrowsingData', 'intercept',
         'clickAndWaitNavigation', 'query', 'getHTML', 'getLinks', 'getImages', 'getMeta',
         'getStructuredData', 'getBounds', 'getComputedStyle', 'getReadability', 'getMarkdown',
@@ -3431,6 +3439,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "/api/create-window": lambda: self._forward("createWindow"),
             "/api/close-window": lambda: self._with_user_tab_approval("closeWindow", timeout=15),
             "/api/focus-window": lambda: self._forward("focusWindow"),
+            "/api/resize-window": lambda: self._forward("resizeWindow"),
             "/api/move-tab": lambda: self._forward("moveTab"),
             "/api/detach-tab": lambda: self._forward("detachTab"),
             "/api/element-screenshot": lambda: self._forward("elementScreenshot", default_timeout=20),
@@ -3560,7 +3569,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.send_json(200, result)
 
     def handle_snapshot(self):
-        params = self._dom_scope(('tabId', 'selector', 'ref', 'maxDepth', 'text'))
+        params = self._dom_scope(('tabId', 'selector', 'ref', 'maxDepth', 'text', 'boxes'))
         if params is None:
             return
         result = self.run_async(send_to_extension("getSnapshot", params))

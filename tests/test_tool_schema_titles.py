@@ -1,8 +1,9 @@
 """Published input schemas drop generated `title` annotations (#120).
 
-Every tool in every capability group is compared with FastMCP's own listing: the untitled
-stage removes only `title` keywords, and both schemas must accept and reject the same
-sample arguments. tests/test_tool_schema_optionals.py covers the optional-parameter
+Every Kitsune-owned tool in every capability group is compared with FastMCP's own listing:
+the untitled stage removes only `title` keywords, and both schemas must accept and reject
+the same sample arguments. The core tools publish Playwright MCP's schemas verbatim
+instead (tests/test_playwright_tools.py). tests/test_tool_schema_optionals.py covers the optional-parameter
 rewrite applied after it (#142).
 """
 import inspect
@@ -14,7 +15,7 @@ import unittest
 
 import jsonschema
 
-from kitsune import server
+from kitsune import playwright_tools, server
 
 # FastMCP.list_tools is the unstripped listing; mcp.list_tools is what tools/list publishes.
 DUMP = """
@@ -35,11 +36,12 @@ PROBES = ["x", "not-an-enum-value", "", 0, 1, -1, 1.5, True, False, None,
 
 
 def listings(caps="all") -> dict:
+    """Listings of the Kitsune-owned tools (not the Playwright core tools)."""
     env = {**os.environ, "KITSUNE_CAPS": caps}
-    env.pop("KITSUNE_TOOL_PRESET", None)
     result = subprocess.run([sys.executable, "-c", DUMP], env=env,
                             capture_output=True, text=True, check=True)
-    return json.loads(result.stdout)
+    return {stage: {name: tool for name, tool in tools.items() if name not in playwright_tools.SCHEMAS}
+            for stage, tools in json.loads(result.stdout).items()}
 
 
 def removed_paths(before, after, path=()) -> list[tuple]:
@@ -110,7 +112,7 @@ class ToolSchemaTitleTests(unittest.TestCase):
         cls.generated, cls.published = listing["generated"], listing["published"]
 
     def test_every_tool_is_compared(self):
-        self.assertEqual(len(self.published), 96)
+        self.assertEqual(len(self.published), 101 - len(playwright_tools.SCHEMAS))
         self.assertEqual(set(self.published), set(self.generated))
 
     def test_only_title_keywords_are_removed(self):
@@ -144,7 +146,7 @@ class ToolSchemaTitleTests(unittest.TestCase):
                                  "description keeps a common indent")
 
     def test_parameters_named_like_keywords_are_kept(self):
-        for name, parameter in (("browser_wait_for", "title"), ("browser_computed_style", "properties")):
+        for name, parameter in (("browser_computed_style", "properties"),):
             generated = self.generated[name]["inputSchema"]
             untitled = server._untitled_schema(generated)["properties"][parameter]
             self.assertEqual(untitled, {key: value for key, value in generated["properties"][parameter].items()

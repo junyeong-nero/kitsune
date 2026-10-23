@@ -146,14 +146,16 @@ installing the extension in your browser.
    signed `kitsune-<version>.xpi` via `about:addons` → gear → **Install Add-on
    From File…** (persistent), or the developer build as a temporary add-on via
    `about:debugging#/runtime/this-firefox` → **Load Temporary Add-on…**. Only the
-   developer build runs agent-supplied JavaScript (`browser_js`). See
+   developer build runs agent-supplied JavaScript (`browser_evaluate`, `browser_js`). See
    [Installation](installation.md#2-install-the-browser-extension).
-3. **Check**: restart the agent and ask it to call `browser_status`. It should
-   report `"extension_connected": true`.
+3. **Check**: restart the agent and ask it to list your tabs (`browser_tabs` with
+   `action: "list"`). An error's `hint` says what to fix; with
+   `KITSUNE_CAPS=core,devtools`, `browser_status` reports `"extension_connected": true`
+   and a full diagnosis.
 
 ## Try it
 
-Once `browser_status` reports `"extension_connected": true`, ask your agent:
+Once your tabs are listed, ask your agent:
 
 > Open a new tab, search for today's weather near Suseong Lake in Daegu,
 > and summarize the forecast with a link to the source. Leave the tab open.
@@ -168,15 +170,15 @@ A typical tool sequence looks like this (Python-style pseudocode; these are MCP
 calls made by your agent, not a standalone Python API):
 
 ```python
-tab = browser_tabs(action="new", url="https://example.com")
-browser_snapshot(tab_id=tab["tabId"])
+browser_tabs(action="new", url="https://example.com")  # the new tab becomes current
+browser_snapshot()
 # Inspect the returned snapshot, then use a ref from that result:
-# browser_click(tab_id=tab["tabId"], ref="<latest ref>", element="More information")
-browser_screenshot(tab_id=tab["tabId"], save_to="/tmp/kitsune-example.png")
+# browser_click(target="<latest ref>", element="More information")
+browser_take_screenshot(filename="/tmp/kitsune-example.png")
 ```
 
-Use a dedicated tab and pass its `tab_id` explicitly to avoid interacting with
-an unrelated active tab. You and the agent share the browser: the agent's tabs open
+Open a dedicated tab first (`browser_tabs` `new`) so the tools act on it rather than
+on an unrelated active tab. You and the agent share the browser: the agent's tabs open
 in the background, it closes only tabs it opened unless you approve, and it backs off
 from a tab you are using (see
 [Shared browser](api-reference.md#shared-browser)). Ask the agent to confirm before submitting forms,
@@ -248,26 +250,25 @@ seconds) in the **MCP server's environment**, or run the daemon yourself with
 
 ## Tools
 
-By default, Kitsune registers the 14 `browser_*` tools of the
-[lean preset](#lean-tool-preset) from the 30-tool `core` capability group;
-`KITSUNE_TOOL_PRESET=full` registers all 30. Tab-aware tools accept `tab_id` to
-target background tabs.
-Set `KITSUNE_CAPS` in the MCP server environment before starting it; restart the
-MCP client after changing it. The comma-separated list selects exactly those
-groups (include `core` to retain the default tools). `all` enables all 96 tools
-in every group except `history`, which reads personal data and must be named
-(`KITSUNE_CAPS=all,history`).
-Whitespace and case are ignored; unknown group names fail at startup.
+By default Kitsune publishes the 25 tools of [Playwright MCP](https://github.com/microsoft/playwright-mcp)'s
+default capabilities, with the same names, descriptions, input schemas and annotations, as
+its `core` capability group (see [Core tools](#core-tools)). Kitsune's own tools are in
+the other groups. Set `KITSUNE_CAPS` in the MCP server environment before starting it;
+restart the MCP client after changing it. The comma-separated list selects exactly those
+groups (include `core` to retain the default tools). `all` enables all 101 tools in every
+group except `history`, which reads personal data and must be named
+(`KITSUNE_CAPS=all,history`). Whitespace and case are ignored; unknown group names fail at
+startup.
 
 ```toml
 [mcp_servers.kitsune.env]
-KITSUNE_CAPS = "core,network,parallel"
+KITSUNE_CAPS = "core,devtools"
 ```
 
 | Group | Tools |
 |---|---|
-| `core` (30; 14 by default, see [Lean tool preset](#lean-tool-preset)) | `browser_status`, `browser_tabs`, `browser_page_info`, `browser_page_text`, `browser_forms`, `browser_dom`, `browser_screenshot`, `browser_navigate`, `browser_click`, `browser_type`, `browser_scroll`, `browser_hover`, `browser_find`, `browser_js`, `browser_wait_for`, `browser_workflows`, `browser_workflow`, `browser_markdown`, `browser_select_option`, `browser_check`, `browser_keypress`, `browser_submit_form`, `browser_form_fill`, `browser_upload_file`, `browser_back`, `browser_forward`, `browser_watch_console`, `browser_console_logs`, `browser_handle_dialog`, `browser_snapshot` |
-| `devtools` (26) | `browser_trusted_click`, `browser_highlight`, `browser_cache`, `browser_reload_extension`, `browser_query`, `browser_html`, `browser_links`, `browser_images`, `browser_meta`, `browser_structured_data`, `browser_bounds`, `browser_computed_style`, `browser_readability`, `browser_iframes`, `browser_explain_selector`, `browser_focus`, `browser_blur`, `browser_double_click`, `browser_drag`, `browser_click_and_wait_navigation`, `browser_full_page_metrics`, `browser_health`, `browser_logs`, `browser_audit`, `browser_set_policy`, `browser_get_policy` |
+| `core` (25, Playwright MCP's) | `browser_close`, `browser_resize`, `browser_console_messages`, `browser_handle_dialog`, `browser_emulate_media`, `browser_evaluate`, `browser_file_upload`, `browser_drop`, `browser_find`, `browser_fill_form`, `browser_press_key`, `browser_type`, `browser_navigate`, `browser_navigate_back`, `browser_network_requests`, `browser_network_request`, `browser_run_code_unsafe`, `browser_take_screenshot`, `browser_snapshot`, `browser_click`, `browser_drag`, `browser_hover`, `browser_select_option`, `browser_tabs`, `browser_wait_for` |
+| `devtools` (36) | `browser_status`, `browser_page_info`, `browser_page_text`, `browser_forms`, `browser_dom`, `browser_trusted_click`, `browser_scroll`, `browser_highlight`, `browser_workflows`, `browser_workflow`, `browser_cache`, `browser_reload_extension`, `browser_query`, `browser_html`, `browser_links`, `browser_images`, `browser_meta`, `browser_structured_data`, `browser_bounds`, `browser_computed_style`, `browser_readability`, `browser_markdown`, `browser_iframes`, `browser_explain_selector`, `browser_check`, `browser_focus`, `browser_blur`, `browser_submit_form`, `browser_click_and_wait_navigation`, `browser_full_page_metrics`, `browser_forward`, `browser_health`, `browser_logs`, `browser_audit`, `browser_set_policy`, `browser_get_policy` |
 | `network` (3) | `browser_downloads`, `browser_intercept`, `browser_capture_network` |
 | `parallel` (16) | `browser_keep_alive`, `browser_keep_alive_stop`, `browser_parallel`, `browser_broadcast`, `browser_sync_barrier`, `browser_tag_tab`, `browser_resolve_tag`, `browser_list_tags`, `browser_untag_tab`, `browser_tab_pool`, `browser_pool_acquire`, `browser_pool_release`, `browser_scheduler`, `browser_retry`, `browser_batch`, `browser_resume` |
 | `session` (4) | `browser_save_session`, `browser_load_session`, `browser_list_sessions`, `browser_delete_session` |
@@ -276,67 +277,61 @@ KITSUNE_CAPS = "core,network,parallel"
 | `windows` (6) | `browser_windows`, `browser_create_window`, `browser_close_window`, `browser_focus_window`, `browser_move_tab`, `browser_detach_tab` |
 | `history` (3, not in `all`) | `browser_history_search`, `browser_history_visits`, `browser_bookmarks_search`. They also need your grant on Kitsune's options page; see [History and bookmarks](api-reference.md#history-and-bookmarks) |
 
-`browser_double_click`, `browser_drag`, `browser_focus` and `browser_blur` are in
-`devtools`, not `core`: `KITSUNE_TOOL_PRESET=full` alone does not publish them; add
-`devtools` to `KITSUNE_CAPS` (#171). They stay there so the `core` definitions every
-model request carries do not grow (#88).
-
-A tool left out by `KITSUNE_CAPS` or the preset is absent from `tools/list`, and
-clients usually say nothing about it. Calling it anyway returns an MCP error with
+A tool left out by `KITSUNE_CAPS` is absent from `tools/list`, and clients usually say
+nothing about it. Calling it anyway returns an MCP error with
 `code: "tool_not_published"` whose `hint` names the setting that publishes it, for
-example `KITSUNE_CAPS=core,devtools` for `browser_drag`. `browser_status` reports
-this server's `mcp_tools`: the active `preset`, the enabled `caps`, and how many
-known tools are `unpublished`.
+example `KITSUNE_CAPS=core,devtools` for `browser_scroll`. `browser_status` (`devtools`)
+reports this server's `mcp_tools`: the enabled `caps`, and how many known tools are
+`unpublished`.
 
-The consolidated tools use options for related operations:
+The Kitsune-owned tools take `tab_id` to target background tabs and share an action
+contract (`ref`, `wait`, `expect`, `confirm_token`, `first`) documented on
+`browser_check`; see the [API reference](api-reference.md) and the
+[tool list](tool-list.md).
 
-- `browser_tabs(action="list"|"new"|"close"|"select", ...)`
-- `browser_type(selector, text, mode="type"|"fill"|"editable", ...)`
-- `browser_wait_for(selector=...|text=...|text_gone=...|js=...|url=...|title=...|network_idle=True|time=...)` (exactly one)
-- `browser_screenshot(selector=None, full_page=False, ...)` returns an inline image by default; use `save_to="/path/capture.png"` for a saved PNG.
+Every tool includes MCP annotations. The core tools carry Playwright MCP's; the
+Kitsune-owned ones have a human-readable title and read-only, destructive, idempotent,
+and open-world hints, annotated for their most dangerous operation. Clients can use
+these hints to inform permission prompts; enforcement depends on the client. The hints
+are not enforced policy. The bridge enforces task-mode limits and `browser_set_policy`
+(`readonly`, `allow`/`deny`, and [ask-before-act](api-reference.md#ask-before-act)).
 
-`browser_wait_for`, `browser_js`, `browser_workflow` and `browser_handle_dialog`
-below are `core` tools outside the default lean preset; they need
-`KITSUNE_TOOL_PRESET=full`.
+### Core tools
 
-`browser_js` runs JavaScript in the page. WordPress Elementor extraction is
-available as `browser_workflow("wp-html", {"site_url": "https://example.com", "page_id": 5719})`.
-See the [API reference](api-reference.md) for merged tool signatures and behavior,
-and the [tool list](tool-list.md) for the current tools by capability group.
+The `core` tools are Playwright MCP's, published verbatim from
+`src/kitsune/playwright_tools.json` (captured from `@playwright/mcp` with
+`node scripts/update_playwright_tools.mjs`), so a client or prompt written for Playwright
+MCP works unchanged. They drive your own browser through the Kitsune extension and return
+Kitsune's compact JSON results, not Playwright's Markdown. Where the two differ:
 
-Every tool includes MCP annotations with a human-readable title and read-only,
-destructive, idempotent, and open-world hints. Clients can use these hints to
-inform permission prompts; enforcement depends on the client. Tools combining
-read and write operations are annotated for their most dangerous operation,
-including when called in a read mode. The hints are not enforced policy. The bridge
-enforces task-mode limits and `browser_set_policy` (`readonly`, `allow`/`deny`, and
-[ask-before-act](api-reference.md#ask-before-act)).
+- **Current tab.** Tools act on the active tab until `browser_tabs` `new` or `select`
+  makes another tab current; `select` does not switch your view. `index` is the position
+  in `browser_tabs` `list`, which also marks `active` and agent-`owned` tabs.
+  `browser_close` closes the current tab, never the browser; closing a tab the agent did
+  not open needs the user's approval (`user_tab`).
+- **Targets.** `target` is a snapshot ref (`e12`) or a CSS selector, which must match one
+  element (else `ambiguous_target`).
+- **Dialogs.** `browser_handle_dialog` sets how the current tab answers its next dialogs
+  (Firefox answers dialogs synchronously, so one already open cannot be answered).
+- **Uploads and drops.** A synthetic click opens no file chooser, so `browser_file_upload`
+  fills the file input last clicked (or the input inside it, else the page's only file
+  input). `browser_drop` fires `dragenter`/`dragover`/`drop` with the files and data.
+- **JavaScript.** `browser_evaluate` needs the developer extension build and runs in the
+  content-script context; the result is JSON-parsed.
+- **Console and network.** `browser_console_messages` starts capture on first use, so
+  earlier messages are missed. `browser_network_requests` lists the page's resource
+  timing entries since it loaded; there are no headers or bodies, so
+  `browser_network_request` with `part` answers `not_supported`.
+- **Screenshots.** `browser_take_screenshot` returns an inline image; `filename` saves a
+  PNG (other formats answer `not_supported`); `scale` is ignored.
+- **Not supported.** `browser_emulate_media` and `browser_run_code_unsafe` are listed but
+  answer `not_supported` (`retryable: false`): an extension cannot override CSS media
+  features, and there is no Playwright page to run code against.
+- File names (`filename`) are resolved against the MCP server's working directory.
 
-Screenshots return MCP image content by default. Large previews are JPEG-encoded
-and downscaled to fit under roughly 1 MB; pass `save_to="/path/capture.png"` to
-save the full PNG instead. Element and full-page captures retain `data_url=True`
-for callers that need raw PNG data.
-
-`browser_handle_dialog(accept=True, prompt_text=None, tab_id=None)` sets a tab's
-policy for future alerts, confirms, and prompts and returns recent dialog history.
-Capture starts at document start. By default, alerts/confirms/prompts pass through
-to native browser UI and record the user's actual response; `beforeunload` also
-keeps native behavior. Only an explicit policy auto-answers dialogs. Call
-`browser_handle_dialog(accept=None, tab_id=...)` to clear a tab's policy and
-restore native behavior. Dialogs answer synchronously, so recorded answers cannot
-be changed afterward. `browser_page_info` also includes the last 100 dialogs for the
-current document, with type, message, default value, timestamp, and response.
-Policies survive navigation while the extension runs; native behavior applies briefly
-until the tab policy is restored. `accept=True` disarms `beforeunload` like
-`browser_close_tab(force=True)`; `accept=False` leaves native unload handling in
-place. Native prompts already open, scripts that saved original dialog functions
-before injection, and iframe dialogs (including cross-origin frames) cannot be
-controlled. Existing tabs are patched when the extension connects; reload them
-for early capture.
-
-`browser_wait_for(text="Ready")` or `browser_wait_for(text_gone="Loading")` waits
-until the condition holds in the top-level document's rendered text.
-Matching is case-sensitive substring matching.
+Ask-before-act holds still apply. The core schemas have no `confirm_token`; the tools
+accept it anyway, so after the user approves a held action an agent can repeat the call
+with `confirm_token` from the `confirmation_required` error.
 
 ### Task modes
 
@@ -352,15 +347,15 @@ KITSUNE_MODE = "read"
 | Mode | Published tools and enforced limits |
 |---|---|
 | `read` | Read tools plus navigation to HTTP(S) pages (or `about:blank`) and scrolling. `browser_tab_list()` replaces the multi-action `browser_tabs`. No clicks, field writes, JavaScript, submits, confirmations or screenshots/file writes. |
-| `draft` | Read surface plus `browser_type`, `browser_select_option`, `browser_form_fill` and, with the full preset, `browser_check`. Fills plain text only; no click/keypress/submit/dialog confirmation or JavaScript. Ask-before-act is forced: sensitive fields, payment-like pages and uninspectable targets are refused before filling, without a confirmation token. |
+| `draft` | Read surface plus `browser_type`, `browser_select_option`, `browser_fill_form` and, with `devtools`, `browser_check`. Fills plain text only; no click/keypress/submit/dialog confirmation or JavaScript. Ask-before-act is forced: sensitive fields, payment-like pages and uninspectable targets are refused before filling, without a confirmation token. |
 | `act` | Existing behavior, including the independently configured ask-before-act policy. |
 
-Modes intersect with `KITSUNE_CAPS` and `KITSUNE_TOOL_PRESET`; they never enable a
-disabled group or a tool the preset drops. With the default core/lean configuration,
-`read` publishes nine tools: status, list-only tabs, navigate, page info/text, forms,
-DOM, snapshot and find. `draft` adds type, select-option and form-fill. Scrolling
-requires `KITSUNE_TOOL_PRESET=full`. Extra enabled groups contribute only their read
-tools. The personal-data `history` group still requires explicit opt-in.
+Modes intersect with `KITSUNE_CAPS`; they never enable a disabled group. With the
+default `core` group, `read` publishes eight tools: list-only tabs, navigate, snapshot,
+find, wait for text, console messages and the network request list and details.
+`draft` adds type, select-option and fill-form. Page text, forms, DOM and scrolling
+need `devtools`. Extra enabled groups contribute only their read tools. The
+personal-data `history` group still requires explicit opt-in.
 
 Restricted surfaces use first-paragraph descriptions and omit `confirm_token`.
 Calling an unpublished tool by name returns `tool_not_published` with the mode setting
@@ -378,69 +373,12 @@ can autosave a draft. They are not an incognito session or an application-level 
 Exact token counts and research/account-lookup task measurements belong to
 kitsune-benchmark; character-size guards in this repo are not token measurements.
 
-### Lean tool preset
-
-**`lean` is the default `core` surface (#31).** The 16 `core` tools listed below
-are not registered unless `KITSUNE_TOOL_PRESET=full` is set (or `KITSUNE_CAPS`
-includes `all`). Set `full` if you relied on them:
-
-```toml
-[mcp_servers.kitsune.env]
-KITSUNE_TOOL_PRESET = "full"
-```
-
-`lean` narrows `core` to the 14 tools kitsune-benchmark's read and draft tasks used,
-and leaves every tool definition unchanged. In the #31 A/B (24 tasks, one model, one
-attempt per arm) it showed no detected success or safety loss against the 30-tool
-surface; that is workload-specific, and the dropped tools are needed for the tasks
-in the last column of the table below. Groups other than `core` register in full before the task-mode filter. Case and surrounding whitespace are ignored; unknown preset names fail at startup.
-A dropped tool is not in `tools/list`; calling it returns `tool_not_published` with
-the hint `KITSUNE_TOOL_PRESET=full`, and `browser_status` shows `mcp_tools.preset`
-(see [Tools](#tools)). An allowlist that names tools the server does not publish gets
-no other warning.
-
-| `KITSUNE_TOOL_PRESET` | `KITSUNE_CAPS` | `core` tools registered |
-|---|---|---|
-| Unset or empty | Unset, or a list without `all` | `lean` (14) |
-| Unset or empty | Includes `all` | All 30 (96 tools in total) |
-| `lean` | Any, including `all` | `lean` (14) |
-| `full` | Any | All 30 |
-
-It keeps `browser_status`, `browser_tabs`, `browser_navigate`, `browser_page_info`,
-`browser_page_text`, `browser_snapshot`, `browser_forms`, `browser_dom`,
-`browser_find`, `browser_screenshot`, `browser_click`, `browser_type`,
-`browser_select_option`, and `browser_form_fill`: finding, opening, reading and
-capturing pages, and filling forms with confirmation (ask-before-act) and `expect`
-checks on every write. It drops these 16 `core` tools; set
-`KITSUNE_TOOL_PRESET=full` for the tasks in the last column:
-
-| Dropped | Closest lean substitute | Needs `full` |
-|---|---|---|
-| `browser_check` | `browser_form_fill` sets a checkbox/radio state; `browser_click` toggles it | Setting a checkbox by ref, or one form-fill cannot match by selector, name, label or placeholder |
-| `browser_submit_form` | `browser_click` the submit button, with `expect` | Forms without a clickable submit control |
-| `browser_back`, `browser_forward` | `browser_navigate` to the previous URL (a fresh load) | History navigation that must keep page state |
-| `browser_markdown` | `browser_page_text`, `browser_snapshot(text=True)` | Reading pages as Markdown |
-| `browser_wait_for` | `expect` and `wait` on actions, `browser_tabs(action="new", wait=True)` | Waiting without an action: selector, text, URL, title, JS or network idle |
-| `browser_hover` | None | Hover menus and tooltips |
-| `browser_keypress` | None (`browser_type` enters text only) | Enter/Escape/arrow keys, shortcuts, keyboard-only widgets |
-| `browser_scroll` | None; reads cover the whole page and clicks scroll their target into view | Infinite scroll, lazy loading, scroll position |
-| `browser_handle_dialog` | None; dialogs stay native and `browser_page_info` lists recent ones | Auto-answering alerts, confirms, prompts |
-| `browser_upload_file` | None | File uploads |
-| `browser_js` | None | Running page JavaScript, trusted HTML insertion |
-| `browser_watch_console`, `browser_console_logs` | None | Console debugging |
-| `browser_workflows`, `browser_workflow` | None | Named workflows |
-
-Tool descriptions still mention tools the preset drops (for example the ref rules in
-`browser_snapshot`). `tests/test_tool_preset.py` checks the dropped list and that the
-kept tools retain the parameters read and draft flows use.
-
 ## Configuration
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `KITSUNE_CAPS` | `core` | Comma-separated capability groups above; `all` enables every group except `history`, which reads personal data and must be named, and enables all `core` tools unless `KITSUNE_TOOL_PRESET=lean` |
+| `KITSUNE_CAPS` | `core` | Comma-separated capability groups above; `all` enables every group except `history`, which reads personal data and must be named |
 | `KITSUNE_MODE` | `act` | Task surface and per-request policy: `read`, `draft`, or `act`. See [Task modes](#task-modes) |
-| `KITSUNE_TOOL_PRESET` | Unset (`lean`, or `full` with `KITSUNE_CAPS=all`) | `lean` registers 14 of the 30 `core` tools; `full` registers all 30. See [Lean tool preset](#lean-tool-preset) |
 | `KITSUNE_HOME` | `~/.kitsune` | Data directory (0700) |
 | `KITSUNE_HTTP_PORT` | `47651` | Bridge HTTP API |
 | `KITSUNE_WS_PORT` | `47652` | Extension WebSocket. Change `WS_URL` in `extension/background/background.js` too |
@@ -491,13 +429,13 @@ What it does not protect against:
   CSS-masked static text. Selectors that probe a sensitive field's `value`
   attribute are refused; see
   [Sensitive-field redaction](api-reference.md#sensitive-field-redaction).
-  This is not a sandbox: `browser_js` can read anything the page can, and the
+  This is not a sandbox: `browser_evaluate` can read anything the page can, and the
   detection is heuristic. Do not assume a visually masked field is hidden from
   the agent or its logs.
 - **Typed values outside the bridge.** The bridge audit log (`browser_audit`)
   keeps the action, target, tab, timing and outcome of each write action but
-  replaces typed text (`browser_type`, `browser_form_fill` values,
-  `browser_keypress` text, `browser_select_option` values and
+  replaces typed text (`browser_type`, `browser_fill_form` values,
+  `browser_press_key` text, `browser_select_option` values, `browser_drop` data and
   `browser_handle_dialog` prompt answers) and stored secrets (`browser_cookies`,
   `browser_storage` and `browser_clipboard` values) with `"[redacted]"`; see
   [Audit log](api-reference.md#audit-log). The page and the MCP client's own
@@ -577,7 +515,7 @@ the agent to open its material in new tabs (`browser_tabs` new) and pass their
 
 To enforce this, set `KITSUNE_PROTECT_USER_TABS=1` in the MCP server environment
 and restart the client. It applies to that client only. Then `browser_navigate`,
-`browser_back` and `browser_forward` on a tab the agent did not open return a
+`browser_navigate_back` and `browser_forward` on a tab the agent did not open return a
 `user_tab` error instead of navigating, also inside batches. That error tells the
 agent to use its own tab, and on a direct call it carries a `confirm_token`. As with
 ask-before-act, the token proves an explicit second step, not that you approved.
@@ -636,10 +574,11 @@ Tool definitions are resent with every model request, so their size is tracked:
 `core` tool in two views: the full definition, and the definition with its description
 cut to the first paragraph, as some clients (Claude Code `--bare`) send it. A test fails
 until `--update` records a change in `tests/tool_schema_sizes.json`. The same test fails
-when the default (lean), full `core` or benchmark allowlist total grows past
-`TOTAL_BUDGETS` or `FIRST_PARAGRAPH_BUDGETS`, or any single tool past `TOOL_BUDGET`;
-raise a budget only deliberately. Published input
-schemas omit the `title` keywords pydantic generates (`KitsuneMCP.list_tools`), and
+when the `core` total grows past `TOTAL_BUDGETS` or `FIRST_PARAGRAPH_BUDGETS`, or any
+single tool past `TOOL_BUDGET`; raise a budget only deliberately. The `core` tools are
+Playwright MCP's, published verbatim, and `tests/test_playwright_tools.py` checks the
+default `tools/list` against `src/kitsune/playwright_tools.json`. The Kitsune-owned tools'
+published input schemas omit the `title` keywords pydantic generates (`KitsuneMCP.list_tools`), and
 `tests/test_tool_schema_titles.py` checks that they still accept and reject the same
 arguments. They also publish an optional parameter whose default is null as its plain
 type instead of `anyOf: [type, null]`, and omit `null` and `""` defaults. Calls are
@@ -647,12 +586,12 @@ still validated against the pydantic models, so an explicit `null` still works a
 behaves as omitted; `tests/test_tool_schema_optionals.py` checks this for every tool.
 Every client sends input schemas in full, so parameters are documented there
 (`Annotated[..., Field(description=...)]`), not in `Args:` blocks. A tool's first
-paragraph says what it does and what a caller must know. The action tools share one
-contract (ref, element, wait, expect, confirm_token, first), documented once in
-`browser_click`'s parameter descriptions; the other action tools say in their first
-paragraph that `ok` means dispatched, name `expect` and point to `browser_click` rather
+paragraph says what it does and what a caller must know. The Kitsune-owned action tools
+share one contract (ref, element, wait, expect, confirm_token, first), documented once in
+`browser_check`'s parameter descriptions; the other action tools say in their first
+paragraph that `ok` means dispatched, name `expect` and point to `browser_check` rather
 than repeating it. `tab_id` is described wherever it is accepted.
-`tests/test_tool_first_paragraph.py` checks these rules for every tool.
+`tests/test_tool_first_paragraph.py` checks these rules for every Kitsune-owned tool.
 
 The opt-in real-browser suites (`tests/test_real_browser*.py`) run against a real
 Firefox, Zen or LibreWolf. They cover action races, tab unloads and reconnects
