@@ -2,6 +2,10 @@
 
 ![Kitsune: an orange fox in a browser window, connecting your browser and your AI agent](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/kitsune-hero.svg)
 
+[![PyPI](https://img.shields.io/pypi/v/kitsune-browser-mcp)](https://pypi.org/project/kitsune-browser-mcp/)
+[![Release](https://img.shields.io/github/v/release/junyeong-nero/kitsune)](https://github.com/junyeong-nero/kitsune/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 **Bring your coding agent into Firefox—and keep working alongside it.**
 
 Kitsune lets AI agents like Claude Code, Codex, Pi, and OpenCode use the **Firefox, Zen,
@@ -13,6 +17,10 @@ an agent you already use—not a separate browser or built-in AI assistant.
 
 Two principles guide every trade-off: **the user's browser belongs to the user**,
 and **fewer, sharper tools**. See [Philosophy](docs/philosophy.md).
+
+![Claude Code uses Kitsune to compare three PyPI pages in background tabs and draft a form without submitting it, while the user's video stays in front](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/demo.gif)
+
+<sub>A real run in Zen Browser. Page images are Kitsune's own screenshots of background tabs; the user's tab titles are hidden.</sub>
 
 ## Why Kitsune?
 
@@ -44,9 +52,15 @@ and **fewer, sharper tools**. See [Philosophy](docs/philosophy.md).
 - **Work across tabs.** Keep research and tasks in separate tabs without
   replacing the page you're using.
 
-![Claude Code uses Kitsune to open Hacker News and summarize the top three stories](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/demo.gif)
+## Benchmark
 
-<sub>A real browser session, captured with Kitsune and sped up.</sub>
+![Kitsune v0.4.0 vs Playwright MCP 0.0.83: kept the user's tab in front in 23 of 24 tasks vs 2 of 24; 0.83 to 0.93 times the cost on tasks both solved; 191 of 198 vs 197 of 198 tasks solved](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/benchmark.png)
+
+On the same tasks and tool allowlist, Kitsune v0.4.0 kept the user's tab in front
+in 23 of 24 shared-browser tasks (Playwright MCP: 2 of 24) and cost 0.83–0.93× as
+much on tasks both solved. It solved 191 of 198 tasks to Playwright MCP's 197.
+One attempt per task with Claude Opus 5.5; Playwright MCP was not designed to share
+a browser with a person. See the [full reports](https://github.com/junyeong-nero/kitsune-benchmark/tree/main/docs/results).
 
 ## How do I use it?
 
