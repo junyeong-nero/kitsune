@@ -286,15 +286,12 @@ class RealBrowserActionRaceTests(harness.RealBrowserTestCase):
 
     def test_click_returns_a_delta_of_what_changed_below_the_fold_and_keeps_earlier_refs(self):
         tab_id = self.open_tab(self.site.url("reviews", kind="reviews"))
-        # Default readable snapshots remain bounded even when link URLs add context (#218).
+        # Default readable snapshots must still reach controls beyond 12k (#218).
         readable = self.call("/api/snapshot", {"tabId": tab_id})
-        self.assertIs(readable.get("truncated"), True, readable)
-        self.assertLessEqual(len(readable["snapshot"]), 12000)
+        self.assertNotIn("truncated", readable)
+        self.assertGreater(len(readable["snapshot"]), 12000)
         self.assertIn("/url:", readable["snapshot"])
-        self.assertIn("truncated; scope", readable["snapshot"])
-        # This test exercises action deltas, not the readable budget. Keep its original
-        # compact internal observation; text is not added to the public core schema.
-        page = self.call("/api/snapshot", {"tabId": tab_id, "text": False, "maxChars": 30000})["snapshot"]
+        page = readable["snapshot"]
         [home], [toggle] = refs_named(page, "Home"), refs_named(page, "Review type")
         self.assertGreater(len(page), 4000, "a capped full snapshot would end inside the header")
 

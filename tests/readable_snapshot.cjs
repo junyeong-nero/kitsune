@@ -83,7 +83,7 @@ const field = (tagName, attrs, props) => new Element(tagName, attrs, [], props);
     assert.ok(!JSON.stringify(result).includes(MARKER), `${label} leaks a sensitive value`);
   };
 
-  // Default snapshots include bounded static prose without opting into text mode.
+  // Default snapshots include static prose without opting into text mode.
   const compact = await send({ action: 'getSnapshot' });
   assert.match(compact.snapshot, /- text "Cancel free until Oct 30\."/);
   assertNoLeak('default snapshot', compact);
@@ -184,6 +184,16 @@ const field = (tagName, attrs, props) => new Element(tagName, attrs, [], props);
   const long = Array.from({ length: 400 }, (_, i) => h('P', {}, `Paragraph ${i} `.padEnd(100, 'x')));
   body.childNodes = body.children = long;
   long.forEach(child => { child.parentElement = body; });
+  const late = h('BUTTON', {}, 'Late control beyond budget');
+  body.childNodes.push(late);
+  late.parentElement = body;
+  const defaultLong = await send({ action: 'getSnapshot' });
+  assert.ok(defaultLong.snapshot.length > 12000);
+  assert.equal(defaultLong.truncated, undefined);
+  assert.match(defaultLong.snapshot, /button "Late control beyond budget" \[ref=/);
+  const compactLong = await send({ action: 'getSnapshot', text: false });
+  assert.doesNotMatch(compactLong.snapshot, /Paragraph/);
+  assert.match(compactLong.snapshot, /button "Late control beyond budget" \[ref=/);
   const capped = await send({ action: 'getSnapshot', text: true });
   assert.equal(capped.truncated, true);
   assert.ok(capped.snapshot.length <= 12000, `length ${capped.snapshot.length}`);
@@ -197,6 +207,11 @@ const field = (tagName, attrs, props) => new Element(tagName, attrs, [], props);
   body.childNodes = body.children = [essay];
   essay.parentElement = body;
   assert.equal((await send({ action: 'getSnapshot', text: true })).snapshot, `- text "${'y'.repeat(1000)}…"`);
+
+  for (const maxChars of [-1, true, '100', Infinity, NaN]) {
+    assert.equal((await send({ action: 'getSnapshot', maxChars })).error,
+      'maxChars must be a finite non-negative number');
+  }
 
   // Repeated cards still collapse; prose siblings with inline links and text lists do not.
   const cards = Array.from({ length: 10 }, (_, i) => h('ARTICLE', {}, h('H2', {}, `Product ${i}`), h('BUTTON', {}, `Buy ${i}`)));

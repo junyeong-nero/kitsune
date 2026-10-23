@@ -6,7 +6,7 @@ const copy = value => JSON.parse(JSON.stringify(value));
 const event = () => ({ addListener() {}, removeListener() {} });
 
 function harness() {
-  const captures = [], encodings = [], operations = [];
+  const captures = [], encodings = [], operations = [], targets = [];
   const tab = { id: 2, url: 'https://example.test/', width: 100, height: 100 };
   const context = vm.createContext({
     console: { log() {}, error() {} },
@@ -38,13 +38,16 @@ function harness() {
   context.loadDataUrl = async () => ({ width: 100, height: 100 });
   context.forwardToContent = async (action, params) => {
     operations.push(action);
-    if (action === 'markScreenshotTarget') return { selector: '[data-kitsune-capture-1]', attribute: 'data-kitsune-capture-1' };
+    if (action === 'markScreenshotTarget') {
+      targets.push(params.selector);
+      return { selector: '[data-kitsune-capture-1]', attribute: 'data-kitsune-capture-1' };
+    }
     if (action === 'captureMeasure') return { x: 0, y: 0, w: 40, h: 30, vw: 100, vh: 100, sy: 0 };
     if (action === 'fullPageMetrics') return { viewportWidth: 100, viewportHeight: 100, docWidth: 100, docHeight: 100 };
     if (action === 'captureScroll') return { sy: 0 };
     return { ok: true };
   };
-  return { context, captures, encodings, operations };
+  return { context, captures, encodings, operations, targets };
 }
 
 async function formats() {
@@ -68,6 +71,23 @@ async function formats() {
   assert.deepEqual(h.captures, [[2, { format: 'png', quality: 90 }]]);
   assert.match((await h.context.captureScreenshot({ format: 'gif' })).error, /format must be png or jpeg/);
   assert.equal(h.captures.length, 1, 'invalid format does not capture');
+}
+
+async function selectors() {
+  for (const selector of ['#shadow-button', 'text=Capture', 'role=button[name="Capture"]',
+    'button:has-text("Capture") >> nth=0', 's1e0']) {
+    const h = harness();
+    const result = await h.context.elementScreenshot(2, selector, 1, false, 'png');
+    assert.ok(result.dataUrl, JSON.stringify(result));
+    assert.deepEqual(h.targets, [selector], 'all target spellings resolve before measurement');
+    assert.equal(h.operations.at(-1), 'unmarkScreenshotTarget');
+  }
+  const h = harness();
+  const unsupported = { error: 'Unsupported selector', code: 'unsupported_selector', retryable: false,
+    hint: 'Pass text= or role=', state: { selector: 'xpath=//button' } };
+  h.context.forwardToContent = async () => unsupported;
+  assert.deepEqual(copy(await h.context.elementScreenshot(2, 'xpath=//button', 1, false, 'png')), unsupported);
+  assert.equal(h.captures.length, 0, 'selector failure dispatches no capture');
 }
 
 async function diagnostics() {
@@ -123,5 +143,6 @@ async function diagnostics() {
 (async () => {
   await formats();
   await diagnostics();
+  await selectors();
   console.log('screenshot capture: ok');
 })().catch(error => { console.error(error); process.exitCode = 1; });

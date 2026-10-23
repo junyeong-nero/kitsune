@@ -26,6 +26,7 @@ for (const mode of ['open', 'closed']) {
   const innerRoot = innerHost.attachShadow({mode});
   const button = document.createElement('button');
   button.textContent = mode + ' shadow capture';
+  button.id = mode + '-capture';
   button.style.cssText = 'display:block;width:160px;height:64px;background:#f80;color:#000';
   innerRoot.append(button);
 }
@@ -86,6 +87,26 @@ class RealBrowserScreenshotTests(harness.RealBrowserTestCase):
                 clean = self.call("/api/js", {"tabId": tab, "selector": ref[1], "code":
                     "!Array.from(__kitsuneElement.attributes).some(a => a.name.startsWith('data-kitsune-capture-'))"})
                 self.assertEqual(clean.get("result"), "true", clean)
+
+    def test_shared_selector_resolution_and_cleanup(self):
+        tab = self.open_tab(self.site.origin + "/")
+        for mode in ("open", "closed"):
+            for selector in (f"#{mode}-capture", f'role=button[name="{mode} shadow capture"]',
+                             f'button:has-text("{mode} shadow capture") >> nth=0'):
+                with self.subTest(selector=selector):
+                    shot = self.call("/api/element-screenshot", {
+                        "tabId": tab, "selector": selector, "imagePreview": False})
+                    self.assert_image(shot, "png")
+                    self.assertEqual((shot["bounds"]["width"], shot["bounds"]["height"]), (160, 64))
+                    clean = self.call("/api/js", {"tabId": tab, "selector": f"#{mode}-capture", "code":
+                        "!Array.from(__kitsuneElement.attributes).some(a => a.name.startsWith('data-kitsune-capture-'))"})
+                    self.assertEqual(clean.get("result"), "true", clean)
+        for selector in ("xpath=//button", "e197 + *", "text=/capture/", "div["):
+            with self.subTest(selector=selector):
+                result = self.call("/api/element-screenshot", {"tabId": tab, "selector": selector})
+                self.assert_error(result, "unsupported_selector", False)
+                self.assertIn("text=", result["hint"])
+                self.assertEqual(result["state"]["selector"], selector)
 
     def test_playwright_jpg_filename_saves_actual_jpeg(self):
         tab = self.open_tab(self.site.origin + "/")

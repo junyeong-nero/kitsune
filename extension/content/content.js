@@ -3,7 +3,7 @@
 
 (function() {
   'use strict';
-  const CONTENT_VERSION = 41;
+  const CONTENT_VERSION = 42;
   if (window.__claudeBridgeVersion >= CONTENT_VERSION) return;
   window.__claudeBridgeVersion = CONTENT_VERSION;
 
@@ -320,7 +320,7 @@
       'handleDialog':          () => handleDialog(msg.accept, msg.prompt_text),
       'waitForText':           () => waitForText(msg.text, msg.text_gone, msg.timeout),
       'getPageText':           () => getPageText(msg.selector),
-      'getSnapshot':           () => getSnapshot(msg.maxChars, msg.focusLastAction, msg.ref || msg.selector, msg.maxDepth, msg.text ?? !msg.observation,
+      'getSnapshot':           () => getSnapshot(msg.maxChars, msg.focusLastAction, msg.ref || msg.selector, msg.maxDepth, msg.text ?? (msg.observation ? false : undefined),
                                      msg.observation, msg.delta ? 'delta' : 'full', !!msg.boxes),
       'getAccessibilityTree':  () => getAccessibilityTree(msg.depth ?? 6, msg.ref || msg.selector),
       'getFormFields':         () => getFormFields(),
@@ -621,7 +621,8 @@
     return { tree, refs, ...(truncated && { truncated: true, hint: DOM_TRUNCATED_HINT }) };
   }
 
-  // Text mode adds readable text lines (without refs) and is always capped.
+  // Explicit text=true is the bounded text mode. Omitted text is readable but has no
+  // new document-prefix cap; text=false remains the compact full-toolset observation.
   const TEXT_SNAPSHOT_LIMIT = 12000;
   const TEXT_LINE_LIMIT = 1000;
   const TEXT_TRUNCATED_LINE = '- … truncated; scope with selector, ref or max_depth';
@@ -653,8 +654,12 @@
     return [rect.x, rect.y, rect.width, rect.height].map(Math.round).join(',');
   }
 
-  function getSnapshot(maxChars, focusLastAction, selector, maxDepth, withText = true,
+  function getSnapshot(maxChars, focusLastAction, selector, maxDepth, textMode,
       observation = 'browser_snapshot', mode = 'full', boxes = false) {
+    const withText = textMode !== false;
+    if (maxChars != null && (!Number.isFinite(maxChars) || maxChars < 0)) {
+      return { error: 'maxChars must be a finite non-negative number' };
+    }
     if (maxDepth != null && (!Number.isInteger(maxDepth) || maxDepth < 0)) {
       return { error: 'max_depth must be a non-negative integer' };
     }
@@ -675,8 +680,10 @@
     const pendingRef = `s${refGeneration}e${refCounter}`;
     const entries = [];
     let limit = Number.isFinite(maxChars) ? Math.max(0, maxChars) : Infinity;
-    // Reserve room for the truncation marker so text snapshots stay within the cap.
-    if (withText) limit = Math.max(0, Math.min(limit, TEXT_SNAPSHOT_LIMIT) - TEXT_TRUNCATED_LINE.length - 1);
+    if (textMode === true) limit = Math.min(limit, TEXT_SNAPSHOT_LIMIT);
+    // Reserve marker space for bounded readable observations. The background reapplies
+    // the public budget after URL redaction and alias serialization, which can expand it.
+    if (withText && Number.isFinite(limit)) limit = Math.max(0, limit - TEXT_TRUNCATED_LINE.length - 1);
     let size = 0;
     let truncated = false;
     const landmarks = { MAIN: 'main', NAV: 'navigation', HEADER: 'banner',

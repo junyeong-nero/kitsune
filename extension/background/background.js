@@ -3,7 +3,7 @@
 
 'use strict';
 
-const EXPECTED_CONTENT_VERSION = 41;
+const EXPECTED_CONTENT_VERSION = 42;
 const WS_URL = 'ws://127.0.0.1:47652';
 // scripts/build_extension.py sets 'signed' for the AMO build (see content.js).
 const KITSUNE_BUILD = 'dev';
@@ -624,6 +624,7 @@ async function runCommand(params, { withSnapshot, deltaSnapshot, textSnapshot, t
           if (snapshot.title !== undefined) result.title = snapshot.title;
         }
         if (snapshot.truncated) result.snapshot_truncated = true;
+        if (snapshot.hint) result.snapshot_hint = snapshot.hint;
         if (snapshot.target_ref) result.target_ref = snapshot.target_ref;
       }
     } catch (e) { result.snapshot_error = e.message; }
@@ -1429,6 +1430,49 @@ function expandShortRefs(params, tabId) {
   return { params: expanded };
 }
 
+// Enforce explicit snapshot budgets on the final public protocol, after aliases and URL
+// redaction. Keep complete lines and their ancestors, prioritizing an action's target.
+function boundPublicSnapshot(response, params) {
+  let budget = Number.isFinite(params.maxChars) ? Math.max(0, params.maxChars) : Infinity;
+  if (params.text === true) budget = Math.min(budget, 12000);
+  if (!Number.isFinite(budget) || typeof response.snapshot !== 'string') return response;
+  if (!response.truncated && response.snapshot.length <= budget) return response;
+  const marker = '- … truncated; scope with selector, ref or max_depth';
+  const lines = response.snapshot.split('\n').filter(line => line && line !== marker);
+  const parents = [], stack = [];
+  for (let i = 0; i < lines.length; i++) {
+    const indent = lines[i].length - lines[i].trimStart().length;
+    while (stack.length && stack.at(-1).indent >= indent) stack.pop();
+    parents[i] = stack.at(-1)?.index;
+    stack.push({ indent, index: i });
+  }
+  const kept = new Set();
+  const showMarker = marker.length <= budget;
+  const available = showMarker ? budget - marker.length : budget + 1;
+  let used = 0;
+  const add = index => {
+    const block = [];
+    for (let i = index; i != null && !kept.has(i); i = parents[i]) block.push(i);
+    const cost = block.reduce((sum, i) => sum + lines[i].length + 1, 0);
+    if (used + cost > available) return false;
+    for (const i of block) kept.add(i);
+    used += cost;
+    return true;
+  };
+  const target = response.target_ref ? lines.findIndex(line => line.includes(`[ref=${response.target_ref}]`)) : -1;
+  if (target >= 0) add(target);
+  for (let i = 0; i < lines.length; i++) add(i);
+  const selected = lines.filter((_, i) => kept.has(i));
+  if (showMarker) selected.push(marker);
+  const result = { ...response, snapshot: selected.join('\n'), truncated: true,
+    hint: 'Snapshot truncated; scope with selector, ref or max_depth.' };
+  if (response.target_ref && !(target >= 0 && kept.has(target))) {
+    delete result.target_ref;
+    result.hint += ' The target and its ancestor context did not fit; take a scoped snapshot.';
+  }
+  return result;
+}
+
 function compactContentRefs(action, response, tabId, params) {
   // Only protocol-owned fields are rewritten, never page text, JS results or values.
   const visit = (value, convert) => {
@@ -1472,7 +1516,8 @@ function compactContentRefs(action, response, tabId, params) {
         publicRefs.set(`${tabId}:${ref}`, short);
       }
     }
-    return visit(response, ref => publicRefs.get(`${tabId}:${ref}`));
+    const result = visit(response, ref => publicRefs.get(`${tabId}:${ref}`));
+    return action === 'getSnapshot' ? boundPublicSnapshot(result, params) : result;
   };
   const pending = shortRefQueue.then(rewrite);
   shortRefQueue = pending.catch(() => {});
@@ -1724,12 +1769,12 @@ async function elementScreenshot(tabId, selector, scale, preview, format) {
     format = screenshotFormat(format);
     id = tabId || (await getActiveTabId());
     if (!id || !selector) return { error: 'tabId and selector required' };
-    if (/^(?:s\d+e\d+|e\d+|r\d+)$/.test(selector)) {
-      const target = await forwardToContent('markScreenshotTarget', { tabId: id, selector });
-      if (target.error) return target;
-      selector = target.selector;
-      captureAttribute = target.attribute;
-    }
+    // Every selector uses the shared resolver, then capture/cleanup holds the exact node
+    // (including shadow CSS and Playwright forms), not another document-only lookup.
+    const target = await forwardToContent('markScreenshotTarget', { tabId: id, selector });
+    if (target.error) return target;
+    selector = target.selector;
+    captureAttribute = target.attribute;
     const tab = await browser.tabs.get(id);
     if (isRestrictedUrl(tab.url)) return { error: 'Cannot access browser internal page' };
     const measure = async () => {

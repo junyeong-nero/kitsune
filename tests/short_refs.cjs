@@ -15,6 +15,7 @@ class Element {
   querySelectorAll() { return []; }
   closest() { return null; }
   focus() { this.focused = true; }
+  dispatchEvent() { return true; }
   getBoundingClientRect() { return { x: 0, y: 0, width: 100, height: 30 }; }
 }
 
@@ -25,7 +26,8 @@ function content() {
   const body = new Element('BODY', '', {}, [button, input]);
   let listener;
   const context = vm.createContext({
-    console, URL, crypto: webcrypto, setTimeout, CSS: { escape: x => x },
+    console, URL, crypto: webcrypto, setTimeout,
+    KeyboardEvent: class { constructor(type, options) { Object.assign(this, { type }, options); } }, CSS: { escape: x => x },
     window: { getComputedStyle: () => ({ display: 'block', visibility: 'visible' }) },
     document: { body, getElementById: () => null,
       querySelector: selector => selector === '#act' ? button : null,
@@ -183,6 +185,58 @@ async function main() {
   }
   documents[1] = { send: async () => ({ result: { snapshot: `  - /url: ${JSON.stringify(raw)}` } }) };
   assert.equal((await restarted.send('executeJS')).result.snapshot, `  - /url: ${JSON.stringify(raw)}`);
+
+  // Public budgets apply after URL redaction expands token=x, not to raw DOM strings.
+  const expandedDoc = content();
+  const expandingUrl = 'https://example.test/?' + Array(1000).fill('token=x').join('&');
+  const link = Object.assign(new Element('A', 'Expanding link'), { href: expandingUrl });
+  const main = new Element('MAIN', '', {}, [expandedDoc.button]);
+  expandedDoc.context.document.body.children = [link, main];
+  documents[1] = expandedDoc;
+  const rawSnapshot = await expandedDoc.send({ action: 'getSnapshot' });
+  assert.ok(rawSnapshot.snapshot.length < 12000);
+  const unbounded = await restarted.send('getSnapshot');
+  assert.ok(unbounded.snapshot.length > 17000);
+  assert.equal(unbounded.truncated, undefined, 'omitted text has no new default cutoff');
+  assert.match(unbounded.snapshot, /token=\[redacted\]/);
+  const bounded = await restarted.send('getSnapshot', { text: true });
+  assert.ok(bounded.snapshot.length <= 12000);
+  assert.equal(bounded.truncated, true);
+  assert.match(bounded.hint, /scope/);
+  assert.doesNotMatch(bounded.snapshot, /token=x/);
+  assert.match(bounded.snapshot, /truncated; scope/);
+  assert.match(bounded.snapshot, /button "Act" \[ref=e\d+\]/, 'skip oversized URL, keep later complete controls');
+  const targetRef = buttonRef(unbounded);
+  await restarted.send('keypress', { selector: targetRef, key: 'Escape' });
+  const targeted = await restarted.send('getSnapshot', { text: true, focusLastAction: true });
+  assert.ok(targeted.snapshot.length <= 12000);
+  assert.equal(targeted.target_ref, targetRef);
+  assert.match(targeted.snapshot, /- main "" \[ref=e\d+\]\n  - button "Act"/);
+  assert.equal(targeted.truncated, true);
+  for (const text of [undefined, false, true]) {
+    const small = await restarted.send('getSnapshot', { maxChars: 100, ...(text == null ? {} : { text }) });
+    assert.ok(small.snapshot.length <= 100, JSON.stringify(small));
+    assert.equal(small.truncated, true);
+    assert.match(small.hint, /scope/);
+    for (const line of small.snapshot.split('\n').filter(line => line.includes('[ref='))) {
+      assert.match(line, /\[ref=e\d+\]$/);
+    }
+    for (const line of small.snapshot.split('\n').filter(line => line.includes('/url:'))) {
+      assert.doesNotThrow(() => JSON.parse(line.split('/url: ')[1]));
+    }
+  }
+  await restarted.send('keypress', { selector: targetRef, key: 'Escape' });
+  const tooSmall = await restarted.send('getSnapshot', { maxChars: 80, focusLastAction: true });
+  assert.ok(tooSmall.snapshot.length <= 80);
+  assert.equal(tooSmall.target_ref, undefined, 'never advertise a target without its context');
+  assert.doesNotMatch(tooSmall.snapshot, /button "Act"/);
+  assert.match(tooSmall.hint, /target and its ancestor context did not fit/);
+  await restarted.send('keypress', { selector: targetRef, key: 'Escape' });
+  const tiny = await restarted.send('getSnapshot', { maxChars: 5, focusLastAction: true });
+  assert.equal(tiny.snapshot, '');
+  assert.equal(tiny.target_ref, undefined);
+  assert.equal(tiny.truncated, true);
+  assert.match(tiny.hint, /target and its ancestor context did not fit/);
 
   // A response larger than a reservation must still reserve every alias before
   // returning it. Invalid/unwritable counters must never fall back to index zero.

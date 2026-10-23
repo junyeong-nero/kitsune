@@ -204,6 +204,12 @@ const refOf = (snapshot, line) => {
     const ref = refOf(snapshot, closed ? 'textbox "Closed note"' : 'textbox "이메일"');
     // The email label also exists outside the component; take its component-specific ref.
     const targetRef = closed ? ref : refOf(snapshot.split('주간 소식')[1], 'textbox "이메일"');
+    target.setAttribute('id', 'shadow-capture');
+    const cssMarked = await send({ action: 'markScreenshotTarget', selector: '#shadow-capture' });
+    assert.ok(target.hasAttribute(cssMarked.attribute), 'shadow CSS uses the shared resolver');
+    assert.equal((await send({ action: 'captureMeasure', selector: cssMarked.selector })).w, 100);
+    await send({ action: 'unmarkScreenshotTarget', attribute: cssMarked.attribute });
+    assert.equal(target.hasAttribute(cssMarked.attribute), false);
     const marked = await send({ action: 'markScreenshotTarget', selector: targetRef });
     assert.ok(target.hasAttribute(marked.attribute));
     assert.equal(document.querySelector(marked.selector), null, 'the marker is invisible to document selectors');

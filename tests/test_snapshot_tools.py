@@ -10,12 +10,12 @@ from kitsune import bridge, server
 
 class SnapshotToolsTests(unittest.TestCase):
     def test_snapshot_routes_and_tabs(self):
-        with patch.object(server, '_get', return_value={'snapshot': 'tree'}) as get:
+        with patch.object(server, '_post', return_value={'snapshot': 'tree'}) as post:
             self.assertEqual(server.browser_snapshot(), {'snapshot': 'tree'})
-            get.assert_called_once_with('/api/snapshot')
+            post.assert_called_once_with('/api/snapshot', {'text': False})
         with patch.object(server, '_post', return_value={'snapshot': 'tree'}) as post:
             server.browser_snapshot(tab_id=7)
-            post.assert_called_once_with('/api/snapshot', {'tabId': 7})
+            post.assert_called_once_with('/api/snapshot', {'tabId': 7, 'text': False})
 
     def test_snapshot_scope_and_depth(self):
         cases = [
@@ -24,6 +24,7 @@ class SnapshotToolsTests(unittest.TestCase):
             ({'max_depth': 0}, {'maxDepth': 0}),
             ({'tab_id': 7, 'selector': '#fallback', 'ref': 's2e0', 'max_depth': 2},
              {'tabId': 7, 'selector': '#fallback', 'ref': 's2e0', 'maxDepth': 2}),
+            ({'text': False}, {'text': False}),
             ({'text': True}, {'text': True}),
             ({'tab_id': 7, 'selector': '#catalog', 'text': True},
              {'tabId': 7, 'selector': '#catalog', 'text': True}),
@@ -31,7 +32,7 @@ class SnapshotToolsTests(unittest.TestCase):
         for kwargs, expected in cases:
             with self.subTest(kwargs=kwargs), patch.object(server, '_post', return_value={'snapshot': 'tree'}) as post:
                 self.assertEqual(server.browser_snapshot(**kwargs), {'snapshot': 'tree'})
-                post.assert_called_once_with('/api/snapshot', expected)
+                post.assert_called_once_with('/api/snapshot', {'text': False, **expected})
         with patch.object(server, '_post') as post, patch.object(server, '_get') as get:
             invalid_cases: list[dict] = [{'max_depth': value} for value in (-1, 1.5, True, '2')]
             for kwargs in invalid_cases:
@@ -50,6 +51,9 @@ class SnapshotToolsTests(unittest.TestCase):
                       'ignored': 'not forwarded'},
              {'selector': '#catalog', 'ref': 's2e0', 'maxDepth': 0, 'tabId': 7}),
             ('POST', {'text': True}, {'text': True}),
+            ('POST', {'text': False}, {'text': False}),
+            ('POST', {'maxChars': 100, 'text': False}, {'maxChars': 100, 'text': False}),
+            ('POST', {'maxChars': 0}, {'maxChars': 0}),
         ]:
             with self.subTest(command=command, body=body):
                 handler = bridge.BridgeHandler.__new__(bridge.BridgeHandler)
@@ -75,6 +79,20 @@ class SnapshotToolsTests(unittest.TestCase):
                 handler.run_async.assert_not_called()
                 handler.send_json.assert_called_once_with(200, {
                     'error': 'max_depth must be a non-negative integer',
+                })
+
+    def test_bridge_snapshot_rejects_invalid_character_budget(self):
+        for value in (-1, True, '100', float('inf'), float('nan')):
+            with self.subTest(maxChars=value):
+                handler = bridge.BridgeHandler.__new__(bridge.BridgeHandler)
+                handler.command = 'POST'
+                handler.read_body = Mock(return_value={'maxChars': value})
+                handler.run_async = Mock()
+                handler.send_json = Mock()
+                handler.handle_snapshot()
+                handler.run_async.assert_not_called()
+                handler.send_json.assert_called_once_with(200, {
+                    'error': 'maxChars must be a finite non-negative number',
                 })
 
     def test_dom_scope_and_depth(self):

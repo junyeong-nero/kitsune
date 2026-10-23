@@ -5,6 +5,9 @@ Opt-in through KITSUNE_E2E_BROWSER; uses only the isolated real_browser_harness 
 from http.server import BaseHTTPRequestHandler
 import re
 import unittest
+from unittest.mock import patch
+
+from kitsune import playwright_tools, server
 
 import real_browser_harness as harness
 
@@ -86,6 +89,59 @@ class RealBrowserObservationTests(harness.RealBrowserTestCase):
         stale = self.call("/api/focus", {"tabId": tab, "ref": replacement})
         self.assert_error(stale, "stale_ref", True)
         self.assertEqual(stale["state"]["reason"], "other_document")
+
+    def test_core_snapshot_find_and_full_toolset_text_modes_on_long_page(self):
+        tab = self.open_tab(self.page.origin + "/")
+        self.js(tab, "document.body.innerHTML = '<p>Readable static fact</p>' + "
+                     "Array.from({length:220}, (_,i) => '<button>Control ' + i + ' ' + 'padding '.repeat(8) + '</button>').join('')"
+                     " + '<button id=deep>Deep target 71</button>'; 'done'")
+        def post(endpoint, body, **kwargs):
+            return self.call(endpoint, body)
+        with patch.object(playwright_tools, "_current_tab", tab), patch.object(server, "_post", side_effect=post):
+            default = playwright_tools.browser_snapshot()
+            self.assertGreater(len(default["snapshot"]), 12000)
+            self.assertNotIn("truncated", default)
+            self.assertIn('text "Readable static fact"', default["snapshot"])
+            self.assertRegex(default["snapshot"], r'button "Deep target 71" \[ref=e\d+\]')
+            found = playwright_tools.browser_find(text="Deep target 71")
+            self.assertTrue(any('button "Deep target 71"' in m["match"] for m in found["matches"]), found)
+            for kwargs in ({}, {"text": False}):
+                compact = server.browser_snapshot(tab_id=tab, **kwargs)
+                self.assertNotIn('text "Readable static fact"', compact["snapshot"])
+                self.assertIn('button "Deep target 71"', compact["snapshot"])
+                self.assertNotIn("truncated", compact)
+            bounded = server.browser_snapshot(tab_id=tab, text=True)
+            self.assertLessEqual(len(bounded["snapshot"]), 12000)
+            self.assertIs(bounded["truncated"], True)
+            self.assertIn("truncated; scope", bounded["snapshot"])
+            self.assertIn('text "Readable static fact"', bounded["snapshot"])
+
+    def test_public_budget_after_url_expansion_and_http_max_chars(self):
+        tab = self.open_tab(self.page.origin + "/")
+        self.js(tab, """document.body.innerHTML = '<a href="https://example.test/?' +
+                     Array(1000).fill('token=x').join('&') +
+                     '">Long URL</a><main><button id=target>Budget target</button></main>'; 'done'""")
+        default = self.call("/api/snapshot", {"tabId": tab})
+        self.assertGreater(len(default["snapshot"]), 17000)
+        self.assertNotIn("truncated", default)
+        for options, limit in (({"text": True}, 12000), ({"maxChars": 200}, 200),
+                               ({"text": False, "maxChars": 200}, 200), ({"maxChars": 5}, 5)):
+            with self.subTest(options=options):
+                bounded = self.call("/api/snapshot", {"tabId": tab, **options})
+                self.assertLessEqual(len(bounded["snapshot"]), limit)
+                self.assertIs(bounded["truncated"], True)
+                self.assertIn("scope", bounded["hint"])
+                self.assertNotIn("token=x", bounded["snapshot"])
+        # A 300-parameter raw link fits a 4k action snapshot but expands beyond it.
+        self.js(tab, "document.querySelector('a').href = 'https://example.test/?' + Array(300).fill('token=x').join('&'); 'done'")
+        target = re.search(r'button "Budget target" \[ref=(e\d+)\]', self.snapshot(tab))[1]
+        result = self.assert_ok(self.call("/api/click", {
+            "tabId": tab, "ref": target, "snapshot": "full", "snapshotText": True}))
+        self.assertLessEqual(len(result["snapshot"]), 4000)
+        self.assertIs(result["snapshot_truncated"], True)
+        self.assertEqual(result["target_ref"], target)
+        self.assertRegex(result["snapshot"], r'- main "" \[ref=e\d+\]\n  - button "Budget target"')
+        self.assertNotIn("token=x", result["snapshot"])
 
     def test_retired_frame_document_refs_are_invalid(self):
         tab = self.open_tab(self.page.origin + "/")

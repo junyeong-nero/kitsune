@@ -3571,8 +3571,13 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.send_json(200, result)
 
     def handle_snapshot(self):
-        params = self._dom_scope(('tabId', 'selector', 'ref', 'maxDepth', 'text', 'boxes'))
+        params = self._dom_scope(('tabId', 'selector', 'ref', 'maxDepth', 'text', 'boxes', 'maxChars'))
         if params is None:
+            return
+        max_chars = params.get('maxChars')
+        if max_chars is not None and (isinstance(max_chars, bool) or not isinstance(max_chars, (int, float))
+                                      or not math.isfinite(max_chars) or max_chars < 0):
+            self.send_json(200, {"error": "maxChars must be a finite non-negative number"})
             return
         result = self.run_async(send_to_extension("getSnapshot", params))
         self.send_json(200, result)

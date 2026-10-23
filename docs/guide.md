@@ -91,16 +91,15 @@ focus/blur, targeted scrolling, fuzzy form-fill keys, and uploads without a sele
 on pages with several file inputs. Ambiguous clicks fail before ask-before-act
 offers confirmation.
 
-Short refs (`e12`) are scoped to the tab, document and snapshot generation, tracked
-by the extension. Indexes are never reused across snapshots or tabs; after an
-extension reload, take a new snapshot. A new snapshot,
-`browser_dom`, or a full post-action snapshot below replaces earlier refs in that
-tab, and navigation invalidates them; `browser_find`, `browser_forms`,
-`browser_wait_for(selector=...)` and post-action deltas add refs without replacing any. Detached or
-outdated refs return `stale ref, call browser_snapshot again` (`code: "stale_ref"`);
-for a replaced ref, `state.latestObservation` names the call with the current refs
-and, when the element is unambiguously the same, `state.currentRef` is its current
-ref. Always use refs from the latest result.
+Short refs (`e12`) name attached nodes in one tab/document, tracked by the extension.
+New snapshots, `browser_dom`, find and full or delta post-action observations reuse
+those refs; an unchanged attached node keeps its ref even if its name or position changes.
+Detachment/replacement, frame-document retirement, navigation or content reinjection
+invalidates the old identity. Indexes are never reused across observations or tabs;
+after an extension reload, take a new snapshot. A stale ref reports `element_removed`,
+`not_in_snapshot` (never issued/unknown), or `other_document` in `state.reason`.
+Take a new scoped observation of the intended tab; never repeat a write merely to
+refresh refs. Earlier attached refs remain usable without another observation.
 
 Click, type, fill, select, check, keypress, submit, and navigate responses include
 a `snapshot` capped at 4,000 characters (`snapshot_truncated` indicates more
@@ -316,11 +315,15 @@ Kitsune's compact JSON results, not Playwright's Markdown. Where the two differ:
   subset of Playwright selectors: `text=`, `role=…[name="…"]`, `:has-text()`, `:text-is()`,
   `:text()`, `:visible`, `>>` chains, `nth=N` and `xpath=..` (parent). Unsupported forms
   return `unsupported_selector` with a hint, not a retryable missing target. General XPath
-  and refs combined with selectors are not supported; element screenshots still use refs
-  or plain CSS. Refs survive newer observations while their nodes remain attached in the
-  same document; navigation or replacement nodes require new refs.
-- **Snapshots.** Default snapshots include bounded, redacted static text and resolved
-  HTTP(S) link URLs. Very large pages still need a scoped snapshot.
+  and refs combined with selectors are not supported; element screenshots use the same
+  resolver and capture the exact selected node, including inside shadow roots. Refs
+  survive newer observations while their nodes remain attached in the same document; navigation or replacement nodes require new refs.
+- **Snapshots.** Default core snapshots include redacted static text and resolved HTTP(S) link
+  URLs without a new document-prefix character cap. Existing line clipping, structural
+  collapsing and depth rules still apply. In the full toolset, `text=False` is compact
+  and `text=True` enables explicitly bounded readable output (12,000 final public chars).
+  Explicit HTTP `maxChars` and post-action limits also apply after URL redaction; scoped
+  snapshots remain useful for large pages.
 - **Dialogs.** `browser_handle_dialog` sets how the current tab answers its next dialogs
   (Firefox answers dialogs synchronously, so one already open cannot be answered).
 - **Uploads and drops.** A synthetic click opens no file chooser, so `browser_file_upload`

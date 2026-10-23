@@ -83,6 +83,8 @@ class Element extends EventTarget {
   get protocol() { return new URL(this.attrs.href).protocol; }
   getAttribute(key) { return this.attrs[key] ?? null; }
   hasAttribute(key) { return key in this.attrs; }
+  setAttribute(key, value) { this.attrs[key] = value; }
+  removeAttribute(key) { delete this.attrs[key]; }
   matches(selector) { return selectorMatches(this, selector); }
   descendants() { return this.children.flatMap(child => [child, ...child.descendants()]); }
   querySelectorAll(selector) { return this.descendants().filter(el => el.matches(selector)); }
@@ -197,6 +199,13 @@ async function testReportedSelectorsResolve() {
   const parent = await send({ action: 'hover', selector: 'li:has-text("베트남") >> xpath=..' });
   assert.equal(parent.tag, 'ul', JSON.stringify(parent));
   assert.equal((await send({ action: 'hover', selector: 'li >> .. >> ..' })).tag, 'body');
+  for (const selector of ['role=button[name="2"]', 'button:text-is("2")', 'text="2"']) {
+    const marker = await send({ action: 'markScreenshotTarget', selector });
+    assert.ok(marker.attribute, JSON.stringify(marker));
+    assert.ok(dom.pages[1].hasAttribute(marker.attribute));
+    await send({ action: 'unmarkScreenshotTarget', attribute: marker.attribute });
+    assert.ok(!dom.pages[1].hasAttribute(marker.attribute));
+  }
   const bounds = await send({ action: 'getBounds', selector: 'role=listbox' });
   assert.ok(!bounds.error, JSON.stringify(bounds));
 }
@@ -261,6 +270,9 @@ async function testUnsupportedSyntaxIsNotRetryable() {
     assert.match(result.error, reason, selector);
     assert.match(result.hint, /text=.*role=.*>> chains/, selector);
     assert.equal(result.state.selector, selector);
+    const capture = await send({ action: 'markScreenshotTarget', selector });
+    assert.equal(capture.code, 'unsupported_selector', selector);
+    assert.equal(capture.retryable, false);
     assert.equal(dom.html.descendants().some(el => el.events.length), false, `${selector} dispatched nothing`);
   }
 
