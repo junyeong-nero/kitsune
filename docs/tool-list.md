@@ -9,7 +9,9 @@ comma-separated list to enable selected groups, for example
 `KITSUNE_CAPS=core,browse,read`. The `storage` and `history` groups are not part of `all`:
 they read personal data and must be named, as in `KITSUNE_CAPS=all,storage,history`.
 Calling a tool that is not published returns `tool_not_published` naming the setting
-([API reference](api-reference.md#mcp-tool-surface)).
+([API reference](api-reference.md#mcp-tool-surface)). With `KITSUNE_PUBLISH` set to fewer
+groups, `tools/list` starts with those and the gateway tools below reach the rest
+([Finding tools without a restart](guide.md#finding-tools-without-a-restart)).
 
 These counts describe the default `KITSUNE_MODE=act`. `KITSUNE_MODE=read|draft`
 further intersects the capability surface and enforces the same limits on bridge calls;
@@ -107,6 +109,14 @@ form submits and trusted OS clicks.
 - `browser_scroll`
 - `browser_submit_form`
 - `browser_trusted_click`
+
+## gateway — 3 (only with a narrower KITSUNE_PUBLISH)
+
+Not a capability group: listed when some enabled tool is not published.
+
+- `browser_tools_call`
+- `browser_tools_publish`
+- `browser_tools_search`
 
 ## history (named only) — 3
 

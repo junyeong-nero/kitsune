@@ -161,6 +161,9 @@ prompts and clients written for Playwright MCP work unchanged. Kitsune's own too
 (page text, scrolling, connection status, policies, parallel tabs, ...) are opt-in
 groups such as `KITSUNE_CAPS=core,browse,read`
 (see [Core tools](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#core-tools)).
+With `KITSUNE_CAPS=all` and `KITSUNE_PUBLISH=core` the tool list stays small and the
+agent finds and calls the rest without a restart
+([Finding tools without a restart](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#finding-tools-without-a-restart)).
 
 For Codex's TOML alternative, environment variables, version pinning, and
 upgrades, see [Installation](https://github.com/junyeong-nero/kitsune/blob/main/docs/installation.md).

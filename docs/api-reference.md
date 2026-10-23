@@ -47,10 +47,43 @@ settings that publish it; restart the MCP client after changing them:
 
 `browser_status` adds `mcp_tools` to the bridge status: this MCP server's enabled
 `caps` and the count of known tools it leaves `unpublished`, for example
-`{"caps": ["core"], "unpublished": 79}`. The bridge is shared by
+`{"caps": ["core"], "unpublished": 79}`. With the [tool gateway](#tool-gateway) it also
+has the `publish` groups and how many enabled tools are `unlisted` when a session starts. The bridge is shared by
 every MCP server, so `GET /api/status` does not have it.
 MCP tool names and parameters are separate from HTTP endpoint names and JSON
 command actions. Task-mode requests restrict the bridge routes too (below).
+
+### Tool gateway
+
+With `KITSUNE_PUBLISH` set to fewer groups than `KITSUNE_CAPS` enables, `tools/list`
+starts with the published groups plus three gateway tools, and the server advertises
+`tools.listChanged`. They reach only tools `KITSUNE_CAPS` and `KITSUNE_MODE` permit. See
+[Finding tools without a restart](guide.md#finding-tools-without-a-restart).
+
+`browser_tools_search(query, limit=5)` ranks the enabled tools that `tools/list` did not
+show at session start against the query words (name matches count most, then group
+names, then descriptions; words many tools share count less). `limit` is 1 to 10.
+
+```json
+{ "tools": [ { "name": "browser_scroll", "group": "browse", "listed": false,
+               "description": "…", "inputSchema": { … }, "annotations": { … } } ],
+  "matches": 3, "hint": "Run a tool with browser_tools_call(name, arguments)." }
+```
+
+`listed` tells whether `browser_tools_publish` added it to this session's list. With no
+match, or `query: ""`, `tools` is empty and `groups` maps each group to its tool names.
+
+`browser_tools_call(name, arguments={})` runs the tool through the same path as a direct
+call and returns that call's result: its content (text, images) and `isError`. A name
+the server does not permit returns the direct call's `tool_not_published`; an unknown
+name returns `unknown_tool`; a gateway tool returns `invalid_argument`. Its bridge
+requests carry `X-Kitsune-Gateway-Tool`, which [audit entries](#audit-log) record.
+
+`browser_tools_publish(names)` takes tool and group names and adds the permitted tools
+among them to this session's `tools/list`, then sends `notifications/tools/list_changed`.
+It returns `{"published": [...], "notified": bool}`; names already listed are a no-op.
+Any name it cannot add, unknown or not permitted alike, refuses the whole call with
+`tool_not_published` and `state.names`.
 
 ### Task modes
 
@@ -1247,6 +1280,10 @@ response body, so its entries are logged as sent. Nested commands (`batch`
 `if`/`while`/`try` blocks) follow the same rule. `uploadFile` entries keep their
 file paths; file contents are never logged. The extension still receives the
 unredacted value. Only the audit copy is scrubbed.
+
+Entries of commands a [`browser_tools_call`](#tool-gateway) ran add
+`via: {"gateway": "browser_tools_call", "tool": "<tool name>"}`. Direct calls have no
+`via`; entries never name the MCP tool otherwise.
 
 Each command run inside `browser_batch`, `browser_parallel`, `browser_broadcast`,
 `browser_retry`, a workflow, or a batch `sequence`/`if`/`while`/`try` gets its own
