@@ -35,7 +35,7 @@ PROBES = ["x", "not-an-enum-value", "", 0, 1, -1, 1.5, True, False, None,
           {}, {"a": 1}, [], ["x"], [1], [{"selector": "#a", "value": "b"}]]
 
 
-def listings(caps="all") -> dict:
+def listings(caps="all,storage") -> dict:
     """Listings of the Kitsune-owned tools (not the Playwright core tools)."""
     env = {**os.environ, "KITSUNE_CAPS": caps}
     result = subprocess.run([sys.executable, "-c", DUMP], env=env,
@@ -112,6 +112,7 @@ class ToolSchemaTitleTests(unittest.TestCase):
         cls.generated, cls.published = listing["generated"], listing["published"]
 
     def test_every_tool_is_compared(self):
+        # `all` (93) plus the named-only storage group (8).
         self.assertEqual(len(self.published), 101 - len(playwright_tools.SCHEMAS))
         self.assertEqual(set(self.published), set(self.generated))
 

@@ -2219,7 +2219,7 @@ async def _dispatch_with_expectation(action, params, spec, timeout):
         hint = result["warning"]["hint"]
     elif action == "click" and await _click_target_visible(tab_id, params, result):
         hint += (" The clicked element is still visible: the page may accept only trusted input, "
-                 "and browser_trusted_click (needs the devtools capability) is the alternative.")
+                 "and browser_trusted_click (needs the browse capability) is the alternative.")
     result.update(_action_error(
         f"Expected outcome not observed within {spec['timeout']}ms", "outcome_not_observed",
         retryable=_safe_to_repeat(action), hint=hint, **state,

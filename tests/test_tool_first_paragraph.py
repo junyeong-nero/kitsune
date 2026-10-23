@@ -32,7 +32,7 @@ def properties(definition: dict) -> dict:
 class FirstParagraphTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.full = listings("all,history")["published"]
+        cls.full = listings("all,storage,history")["published"]
         cls.first = {name: tool_schema_size.first_paragraph(definition["description"])
                      for name, definition in cls.full.items()}
 

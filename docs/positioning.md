@@ -159,7 +159,7 @@ injection or makes a full personal profile safe to expose. Follow the
 ### 3. Recovery that distinguishes uncertainty from failure
 
 An interrupted container can record which steps succeeded, never started, failed,
-were held, or have an unknown outcome. With the optional `parallel` capability,
+were held, or have an unknown outcome. With the optional `automation` capability,
 `browser_resume` does not resend successful writes. An unknown write requires an
 observation that it was applied or not applied before continuation. Parallel
 resumption checks tab availability/claims, workflows are checked for changes,

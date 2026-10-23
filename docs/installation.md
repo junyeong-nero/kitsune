@@ -163,8 +163,8 @@ for the **same version** as the server. There are two builds:
 The signed build cannot run JavaScript supplied by the agent, because Mozilla's
 [add-on policies](https://extensionworkshop.com/documentation/publish/add-on-policies/)
 forbid executing code that is not part of the signed package. Those tools return
-an error that names the developer build. `browser_status` (in the `devtools` group,
-`KITSUNE_CAPS=core,devtools`) reports which build is connected (`extension_build`:
+an error that names the developer build. `browser_status` (in the `admin` group,
+`KITSUNE_CAPS=core,admin`) reports which build is connected (`extension_build`:
 `signed` or `dev`).
 
 ### Signed build (recommended)
@@ -179,7 +179,7 @@ build below.
 3. Approve the permission prompt. The browser asks every time; nothing is
    installed silently.
 4. Restart or reconnect your MCP client and ask it to list your tabs (`browser_tabs`
-   with `action: "list"`). With `devtools` enabled, `browser_status` should report
+   with `action: "list"`). With `admin` enabled, `browser_status` should report
    `"extension_connected": true` and `"extension_build": "signed"`.
 
 Signed builds released after 0.2.0 update themselves (see
@@ -198,7 +198,7 @@ Use this for `browser_evaluate`, or to run an unreleased commit.
 3. Select `manifest.json` from the unzipped folder (`extension/manifest.json`
    in a repository ZIP or clone). In the macOS file dialog, press Cmd+Shift+G to
    paste a path.
-4. With `devtools` enabled, call `browser_status`; it should report
+4. With `admin` enabled, call `browser_status`; it should report
    `"extension_build": "dev"`.
 
 Both builds use the same add-on ID. While a developer build is loaded, it

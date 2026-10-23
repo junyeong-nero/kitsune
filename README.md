@@ -25,7 +25,7 @@ and **fewer, sharper tools**. See [Philosophy](docs/philosophy.md).
   to limit the available tools and bridge requests. Draft mode allows supported
   field input without click or submit tools; sites may still autosave edits.
   The default is `act`, not a restricted mode. See [Task modes](docs/guide.md#task-modes).
-- **Recover without blindly repeating work.** With the optional `parallel`
+- **Recover without blindly repeating work.** With the optional `automation`
   capability, interrupted batch, parallel, and workflow calls can be resumed
   without resending successful writes. Uncertain writes require an observation
   before retrying. [Checkpoints](docs/checkpoint-resume.md) are temporary and
@@ -159,7 +159,7 @@ By default Kitsune publishes exactly [Playwright MCP](https://github.com/microso
 25 core tools (same names, descriptions and schemas), driving your own browser, so
 prompts and clients written for Playwright MCP work unchanged. Kitsune's own tools
 (page text, scrolling, connection status, policies, parallel tabs, ...) are opt-in
-groups such as `KITSUNE_CAPS=core,devtools`
+groups such as `KITSUNE_CAPS=core,browse,read`
 (see [Core tools](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#core-tools)).
 
 For Codex's TOML alternative, environment variables, version pinning, and
