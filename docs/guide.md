@@ -292,6 +292,16 @@ example `KITSUNE_CAPS=browse,core` for `browser_scroll`. `browser_status` (`admi
 reports this server's `mcp_tools`: the enabled `caps`, and how many known tools are
 `unpublished`.
 
+The bridge enforces the groups too. The MCP server sends its enabled groups with every
+request, and the bridge refuses a route or a container step (of `browser_batch`,
+`browser_parallel`, `browser_retry`, `browser_broadcast`, `browser_workflow` or
+`browser_resume`) that belongs to another group with `code: "capability_restricted"`.
+So `automation` runs only commands of the groups you enabled: with
+`KITSUNE_CAPS=core,automation`, a batch `cookies` step is refused until you add
+`storage`, and a workflow needs the groups of its steps. Like task modes, this limits
+what an agent can do through this MCP server; it is not a boundary against other local
+programs that hold the bridge token.
+
 ### Finding tools without a restart
 
 `KITSUNE_CAPS` decides which tools this server runs. `KITSUNE_PUBLISH` decides which of
@@ -538,6 +548,10 @@ Kitsune does not provide a password-vault listing tool. Native password-manager
 autofill is browser-controlled; whether an autofilled value is accessible depends
 on what the browser makes available to the page. Test it only with disposable
 credentials, and never paste real secrets into bug reports.
+
+Capability groups bound what an agent can reach through one MCP server, and the bridge
+checks them on every request, container steps included. They are not a sandbox: the
+`kitsune-bridge` command and other local programs with the token are not restricted.
 
 Recommended: use a separate browser profile that only has the accounts the
 agent needs, and keep banking, mail and work SSO out of it. Enable only the

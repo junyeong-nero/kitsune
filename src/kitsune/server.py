@@ -26,6 +26,7 @@ from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import Field
 
 from . import bridge_control, playwright_tools
+from .capabilities import CAPABILITY_GROUPS, CAPS_HEADER, NAMED_ONLY_GROUPS, enabled_groups
 from .bridge_control import BRIDGE, HTTP_PORT, LOG_FILE, TOKEN_FILE, WS_PORT, headers as _headers
 from .version import BRIDGE_BUILD
 from .task_modes import GATEWAY_TOOL_HEADER, MODE_HEADER, PROTECT_USER_TABS_HEADER, permits_tool, task_mode
@@ -184,12 +185,6 @@ class KitsuneMCP(FastMCP):
 
 mcp = KitsuneMCP("Kitsune")
 
-CAPABILITY_GROUPS = frozenset({"core", "browse", "read", "inspect", "tabs", "automation", "network", "admin",
-                               "storage", "history"})
-# Groups that read personal data (cookies, page storage, saved sessions, the clipboard, history):
-# KITSUNE_CAPS=all leaves them out, so they must be named (#140).
-NAMED_ONLY_GROUPS = frozenset({"storage", "history"})
-
 
 def _caps(setting: str, value: str) -> frozenset:
     caps = frozenset(cap.strip().lower() for cap in value.split(",") if cap.strip())
@@ -201,7 +196,7 @@ def _caps(setting: str, value: str) -> frozenset:
 
 def _enables(caps: frozenset, group: str) -> bool:
     """`all` enables every group except NAMED_ONLY_GROUPS."""
-    return ("all" in caps and group not in NAMED_ONLY_GROUPS) or group in caps
+    return group in enabled_groups(caps)
 
 
 # The groups whose tools this server runs (#227: authorization, not just tools/list).
@@ -210,6 +205,8 @@ ENABLED_CAPS = _caps("KITSUNE_CAPS", os.environ.get("KITSUNE_CAPS", "core"))
 # The rest stay reachable through the gateway tools.
 PUBLISHED_CAPS = (_caps("KITSUNE_PUBLISH", os.environ["KITSUNE_PUBLISH"]) if "KITSUNE_PUBLISH" in os.environ
                   else ENABLED_CAPS)
+# Sent with every bridge request: the bridge refuses routes and container steps of other groups (#230).
+_CAPS_HEADER_VALUE = ",".join(sorted(enabled_groups(ENABLED_CAPS)))
 _unauthorized_caps = {cap for cap in PUBLISHED_CAPS - {"all"} if not _enables(ENABLED_CAPS, cap)}
 if _unauthorized_caps:
     raise ValueError(f"KITSUNE_PUBLISH names groups KITSUNE_CAPS does not enable: "
@@ -470,7 +467,7 @@ def _port_conflict(port: int, reason: str, message: str) -> dict:
 def _request(method: str, endpoint: str, **kwargs) -> dict:
     for attempt in range(2):
         try:
-            headers = _headers()
+            headers = {**_headers(), CAPS_HEADER: _CAPS_HEADER_VALUE}
             if MODE != "act":
                 headers[MODE_HEADER] = MODE
             if PROTECT_USER_TABS:

@@ -16,9 +16,10 @@
 > If a playbook doesn't exist for the target site, create one after you solve it.
 >
 > Playbook steps are [`/api/batch`](../api-reference.md#post-apibatch) commands.
-> Run them with the `browser_batch` MCP tool, which is in the `automation` group
-> (for example `KITSUNE_CAPS=core,automation`). The `js` and `waitForResult`
-> actions need the developer extension build.
+> Run them with the `browser_batch` MCP tool, which is in the `automation` group.
+> Each step also needs its action's group: `scroll` is `browse`, `pageText` and
+> `pageInfo` are `read` (for example `KITSUNE_CAPS=core,automation,browse,read`). The
+> `js` and `waitForResult` actions need the developer extension build.
 
 ---
 
