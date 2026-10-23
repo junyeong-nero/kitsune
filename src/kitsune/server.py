@@ -675,10 +675,11 @@ def browser_screenshot(
     selector: str | None = None, full_page: bool = False,
     tab_id: TabId = None, save_to: str | None = None,
     data_url: bool = False, ref: str | None = None, element: str | None = None,
+    format: str = "png",
 ):
     """Capture the viewport, one element (ref/selector, see browser_check) or the full page
     (not with selector/ref) as an inline image, JPEG-encoded or downscaled under ~1 MB.
-    save_to writes the full PNG there and returns metadata instead; data_url also returns
+    save_to writes the full PNG (or JPEG with format="jpeg") and returns metadata; data_url also returns
     it as a (large) data URL.
 
     No capture shows the tab or focuses a window.
@@ -687,14 +688,18 @@ def browser_screenshot(
         selector = ""
     if selector is not None and full_page:
         return {"error": "selector and full_page are mutually exclusive"}
+    if format not in {"png", "jpeg"}:
+        return {"error": "Screenshot format must be png or jpeg"}
     preview = not (save_to or data_url)
+    format_body = {"format": format} if format != "png" else {}
     if selector is not None or full_page:
         endpoint = "/api/element-screenshot" if selector is not None else "/api/full-page-screenshot"
         body = _request_body({"selector": selector}, ref=ref, element=element) if selector is not None else {}
         body["imagePreview"] = preview
+        body.update(format_body)
         result = _post(endpoint, _request_body(body, tab_id), timeout=120 if full_page else 45)
         return _screenshot_result(result, save_to, data_url)
-    result = _post("/api/screenshot", _request_body({"imagePreview": preview}, tab_id))
+    result = _post("/api/screenshot", _request_body({"imagePreview": preview, **format_body}, tab_id))
     return _screenshot_result(result, save_to, data_url)
 
 

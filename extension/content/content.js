@@ -1895,16 +1895,26 @@
     };
   }
 
+  // Markers resolve to the exact connected ref target, including inside closed shadow roots.
+  const screenshotTargets = new Map();
+
+  function screenshotTarget(selector) {
+    const marker = /^\[(data-kitsune-capture-\d+)\]$/.exec(selector);
+    if (!marker) return document.querySelector(selector);
+    const el = screenshotTargets.get(marker[1]);
+    return el?.isConnected ? el : null;
+  }
+
   function captureMeasure(selector) {
-    const el = document.querySelector(selector);
+    const el = screenshotTarget(selector);
     if (!el) return { missing: true };
-    const b = el.getBoundingClientRect();
+    const b = viewportRect(el);
     return { x: b.left, y: b.top, w: b.width, h: b.height, vw: innerWidth, vh: innerHeight,
       sy: scrollY, dpr: devicePixelRatio || 1 };
   }
 
   function captureScrollIntoView(selector, block) {
-    const el = document.querySelector(selector);
+    const el = screenshotTarget(selector);
     if (!el) return notFound();
     el.scrollIntoView({ block: block === 'start' ? 'start' : 'center', inline: 'center', behavior: 'instant' });
     return { ok: true };
@@ -1919,11 +1929,13 @@
   // Hide position:fixed/sticky elements (headers, cookie bars) so they don't repeat in every
   // stitched screenshot segment. Elements containing the capture target are left alone.
   function hideFixed(selector) {
-    const target = selector ? document.querySelector(selector) : null;
+    const target = selector ? screenshotTarget(selector) : null;
+    const ancestors = new Set();
+    for (let el = target; el; el = flatParent(el)) ancestors.add(el);
     let hidden = 0;
     document.querySelectorAll('body *').forEach(el => {
       const style = getComputedStyle(el);
-      if ((style.position === 'fixed' || style.position === 'sticky') && !(target && el.contains(target)) &&
+      if ((style.position === 'fixed' || style.position === 'sticky') && !ancestors.has(el) &&
           style.visibility !== 'hidden') {
         el.setAttribute('data-zl-fixed', el.style.visibility || '');
         el.style.visibility = 'hidden';
@@ -2990,18 +3002,22 @@
     return { html: outer.slice(0, 100000), length: outer.length, ...(truncated && { truncated: true }) };
   }
 
-  // A temporary exact selector lets the existing screenshot capture path use refs.
+  // Keep the exact target for capture and cleanup; document selectors cannot reach shadow roots.
   function markScreenshotTarget(ref) {
     const el = resolveElement(ref);
     if (!el) return notFound();
-    const attribute = `data-kitsune-capture-${crypto.getRandomValues(new Uint32Array(1))[0]}`;
+    let attribute;
+    do { attribute = `data-kitsune-capture-${crypto.getRandomValues(new Uint32Array(1))[0]}`; }
+    while (screenshotTargets.has(attribute));
     el.setAttribute(attribute, '');
+    screenshotTargets.set(attribute, el);
     return { selector: `[${attribute}]`, attribute };
   }
 
   function unmarkScreenshotTarget(attribute) {
     if (/^data-kitsune-capture-\d+$/.test(attribute)) {
-      document.querySelectorAll(`[${attribute}]`).forEach(el => el.removeAttribute(attribute));
+      screenshotTargets.get(attribute)?.removeAttribute(attribute);
+      screenshotTargets.delete(attribute);
     }
     return { ok: true };
   }

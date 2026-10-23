@@ -736,8 +736,8 @@ async function dispatchCommand(command) {
     case 'resizeWindow':     return await resizeWindow(params.tabId, params.width, params.height);
     case 'moveTab':          return await moveTabAction(params.tabId, params.windowId, params.index);
     case 'detachTab':        return await detachTab(params.tabId);
-    case 'elementScreenshot':return await elementScreenshot(params.tabId, params.selector, params.scale, params.imagePreview);
-    case 'fullPageScreenshot': return await fullPageScreenshot(params.tabId, params.imagePreview);
+    case 'elementScreenshot':return await elementScreenshot(params.tabId, params.selector, params.scale, params.imagePreview, params.format);
+    case 'fullPageScreenshot': return await fullPageScreenshot(params.tabId, params.imagePreview, params.format);
     case 'cookies':          return await cookiesOp(params.op, params.url, params.name, params.value, params.domain, params.path, params.secure);
     case 'clipboard':        return await clipboardOp(params.op, params.text);
     case 'downloads':        return await downloadsOp(params.op, params.url, params.filename, params.query);
@@ -885,13 +885,37 @@ async function waitForTabProperty(property, { tabId, pattern, timeout = 10000 })
   }
 }
 
+function screenshotFormat(format = 'png') {
+  if (format !== 'png' && format !== 'jpeg') throw new Error('Screenshot format must be png or jpeg');
+  return format;
+}
+
+function screenshotFailure(error, stage, tabId) {
+  const underlying = error?.screenshotResult || {};
+  const cause = error?.message || String(error);
+  return {
+    ...underlying,
+    error: `Screenshot failed during ${stage}: ${cause}`,
+    code: underlying.code || 'screenshot_failed',
+    retryable: underlying.retryable ?? false,
+    state: { ...underlying.state, tabId, stage, cause, name: error?.name || 'Error' },
+    hint: underlying.hint || 'If the tab is loading or was just resized, wait for it to settle before retrying. ' +
+      'Internal/protected pages cannot be captured. Otherwise report this cause and stage; do not retry blindly.'
+  };
+}
+
 // tabs.captureTab renders a tab whether or not it is shown, so no capture activates a tab.
 async function captureScreenshot(params = {}) {
+  let stage = 'resolve tab', tabId = params.tabId;
   try {
+    const format = screenshotFormat(params.format);
     const tab = params.tabId != null ? await browser.tabs.get(params.tabId)
       : (await browser.tabs.query({ active: true, currentWindow: true }))[0];
     if (!tab) return noActiveTab('No active tab found');
-    const dataUrl = await browser.tabs.captureTab(tab.id, { format: 'png', quality: 90 });
+    tabId = tab.id;
+    stage = 'tabs.captureTab';
+    const dataUrl = await browser.tabs.captureTab(tab.id, { format, quality: 90 });
+    stage = 'image preview';
     return {
       dataUrl: params.imagePreview ? await imagePreview(dataUrl) : dataUrl,
       url: tab.url || '',
@@ -900,7 +924,7 @@ async function captureScreenshot(params = {}) {
       height: tab.height || 0
     };
   } catch (e) {
-    return { error: `Screenshot failed: ${e.message}` };
+    return screenshotFailure(e, stage, tabId);
   }
 }
 
@@ -1678,20 +1702,26 @@ const zlSleep = (ms) => new Promise(r => setTimeout(r, ms));
 // Capture helpers call named content.js operations; no code strings leave the package.
 async function zlContent(tabId, action, params = {}) {
   const r = await forwardToContent(action, { tabId, ...params });
-  return r && !r.error ? r : null;
+  if (!r || r.error) {
+    const error = new Error(r?.error || `No response from content operation ${action}`);
+    error.screenshotResult = r;
+    throw error;
+  }
+  return r;
 }
 
 async function zlScroll(tabId, scroll) {
   const r = await zlContent(tabId, 'captureScroll', scroll);
-  return r ? r.sy : null;
+  return r.sy;
 }
 
 // 2.1.1: scale (1-4) = output pixels per CSS pixel. captureTab renders the viewport at that scale, so
 // scale 2 gives a genuinely sharper image (text in article screenshots), not an upscale. Default 1 = old size.
-async function elementScreenshot(tabId, selector, scale, preview) {
-  let hidFixed = false, id = null, captureAttribute = null;
+async function elementScreenshot(tabId, selector, scale, preview, format) {
+  let hidFixed = false, id = null, captureAttribute = null, stage = 'resolve target';
   const want = Math.min(Math.max(Number(scale) || 1, 1), 4);
   try {
+    format = screenshotFormat(format);
     id = tabId || (await getActiveTabId());
     if (!id || !selector) return { error: 'tabId and selector required' };
     if (/^(?:s\d+e\d+|e\d+|r\d+)$/.test(selector)) {
@@ -1703,6 +1733,7 @@ async function elementScreenshot(tabId, selector, scale, preview) {
     const tab = await browser.tabs.get(id);
     if (isRestrictedUrl(tab.url)) return { error: 'Cannot access browser internal page' };
     const measure = async () => {
+      stage = 'captureMeasure';
       const r = await zlContent(id, 'captureMeasure', { selector });
       return r && !r.missing ? r : null;
     };
@@ -1710,19 +1741,24 @@ async function elementScreenshot(tabId, selector, scale, preview) {
     if (!m) return { error: 'No element matches: ' + selector };
     if (m.w < 1 || m.h < 1) return { error: 'Element has no size: ' + selector };
     const tall = m.h > m.vh;
+    stage = 'captureScrollIntoView';
     await zlContent(id, 'captureScrollIntoView', { selector, block: tall ? 'start' : 'center' });
     await zlSleep(150);
     m = await measure();
     if (!m) return { error: 'No element matches: ' + selector };
     const cssW = Math.min(m.w, CANVAS_MAX / want), cssH = Math.min(m.h, CANVAS_MAX / want);
     const W = Math.max(1, Math.round(cssW * want)), H = Math.max(1, Math.round(cssH * want));
+    stage = 'create element canvas';
     const canvas = new OffscreenCanvas(W, H);
     const ctx = canvas.getContext('2d');
     const shot = want > 1 ? { format: 'png', scale: want } : { format: 'png' };
     let covered = 0, segments = 0;
     // 2.1.0: elements taller than the viewport are scrolled and stitched (they used to come back blank below the fold)
     for (let guard = 0; guard < 60 && covered < cssH; guard++) {
-      const img = await loadDataUrl(await browser.tabs.captureTab(id, shot));
+      stage = 'tabs.captureTab';
+      const dataUrl = await browser.tabs.captureTab(id, shot);
+      stage = 'decode element segment';
+      const img = await loadDataUrl(dataUrl);
       const d = img.width / m.vw;          // captured pixels per CSS pixel (dpr, or the requested scale)
       const o = W / cssW;                  // output pixels per CSS pixel
       const visTop = Math.max(0, m.y), visBot = Math.min(m.vh, m.y + m.h);
@@ -1735,19 +1771,22 @@ async function elementScreenshot(tabId, selector, scale, preview) {
         segments++;
       }
       if (covered >= cssH) break;
+      stage = 'hideFixed';
       if (!hidFixed) { await zlContent(id, 'hideFixed', { selector }); hidFixed = true; }
       const before = m.sy;
+      stage = 'captureScroll';
       await zlScroll(id, { by: Math.max(50, Math.floor(m.vh * 0.85)) });
       await zlSleep(160);
       m = await measure();
       if (!m) return { error: 'No element matches: ' + selector };
       if (m.sy === before) break;   // can't scroll any further
     }
-    const blob = await canvas.convertToBlob({ type: 'image/png' });
-    const cropped = arrayBufferToDataUrl(await blob.arrayBuffer(), 'image/png');
+    stage = 'encode element image';
+    const cropped = await encodeScreenshotCanvas(canvas, format);
+    stage = 'image preview';
     return { ok: true, selector, bounds: { x: m.x, y: m.y, width: W, height: H }, scale: want, segments,
              complete: covered >= cssH - 1, dataUrl: preview ? await imagePreview(cropped) : cropped };
-  } catch (e) { return { error: 'elementScreenshot failed: ' + e.message }; }
+  } catch (e) { return screenshotFailure(e, stage, id); }
   finally {
     if (captureAttribute) {
       try { await forwardToContent('unmarkScreenshotTarget', { tabId: id, attribute: captureAttribute }); } catch (e) {}
@@ -1756,28 +1795,33 @@ async function elementScreenshot(tabId, selector, scale, preview) {
   }
 }
 
-async function fullPageScreenshot(tabId, preview) {
-  let hidFixed = false, id = null;
+async function fullPageScreenshot(tabId, preview, format) {
+  let hidFixed = false, id = null, stage = 'resolve tab';
   try {
+    format = screenshotFormat(format);
     id = tabId || (await getActiveTabId());
     if (!id) return { error: 'No tab' };
     const tab = await browser.tabs.get(id);
     if (isRestrictedUrl(tab.url)) return { error: 'Cannot access browser internal page' };
-    const m = await forwardToContent('fullPageMetrics', { tabId: id });
-    if (m.error) return m;
+    stage = 'fullPageMetrics';
+    const m = await zlContent(id, 'fullPageMetrics');
     const vh = m.viewportHeight, vw = m.viewportWidth;
     const docH = Math.min(m.docHeight, CANVAS_MAX), docW = Math.min(Math.max(m.docWidth, 1), CANVAS_MAX);
     const segments = [];
     let y = 0;
     for (let i = 0; i < 40 && y < docH; i++) {
+      stage = 'captureScroll';
       await zlScroll(id, { to: y });
       await zlSleep(150);   // let lazy content settle
       const sy = Number(await zlScroll(id, {})) || 0;   // the page may clamp the last scroll
+      stage = 'tabs.captureTab';
       segments.push({ y: sy, data: await browser.tabs.captureTab(id, { format: 'png' }) });
+      stage = 'hideFixed';
       if (!hidFixed) { await zlContent(id, 'hideFixed', { selector: null }); hidFixed = true; }
       if (sy + vh >= docH) break;
       y = sy + vh;
     }
+    stage = 'stitch full-page canvas';
     const canvas = new OffscreenCanvas(Math.round(Math.min(Math.max(docW, vw), CANVAS_MAX)), Math.round(docH));
     const ctx = canvas.getContext('2d');
     for (const seg of segments) {
@@ -1787,14 +1831,29 @@ async function fullPageScreenshot(tabId, preview) {
       if (drawH <= 0) continue;
       ctx.drawImage(img, 0, 0, img.width, drawH * scale, 0, seg.y, vw, drawH);
     }
-    const blob = await canvas.convertToBlob({ type: 'image/png' });
-    const dataUrl = arrayBufferToDataUrl(await blob.arrayBuffer(), 'image/png');
+    stage = 'encode full-page image';
+    const dataUrl = await encodeScreenshotCanvas(canvas, format);
+    stage = 'image preview';
     return { ok: true, width: canvas.width, height: canvas.height, segments: segments.length,
              truncated: m.docHeight > CANVAS_MAX, dataUrl: preview ? await imagePreview(dataUrl) : dataUrl };
-  } catch (e) { return { error: 'fullPageScreenshot failed: ' + e.message }; }
+  } catch (e) { return screenshotFailure(e, stage, id); }
   finally {
     if (hidFixed) { try { await zlContent(id, 'restoreFixed'); } catch (e) {} }
   }
+}
+
+async function encodeScreenshotCanvas(canvas, format) {
+  const mime = `image/${format}`;
+  if (format === 'jpeg') {
+    // JPEG has no alpha channel; composite transparent/uncovered pixels onto white.
+    const ctx = canvas.getContext('2d');
+    ctx.globalCompositeOperation = 'destination-over';
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
+  const blob = await canvas.convertToBlob({ type: mime, quality: 0.9 });
+  if (blob.type !== mime) throw new Error(`Screenshot encoder returned ${blob.type || 'no MIME type'} instead of ${mime}`);
+  return arrayBufferToDataUrl(await blob.arrayBuffer(), blob.type);
 }
 
 async function loadDataUrl(dataUrl) {

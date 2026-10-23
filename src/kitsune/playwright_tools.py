@@ -349,11 +349,12 @@ def browser_take_screenshot(scale: str = "css", element: str | None = None, targ
     if target is not None and fullPage:
         return {"error": "fullPage cannot be used with element screenshots"}
     image_type = type or (_IMAGE_SUFFIXES.get(Path(filename).suffix.lower()) if filename else None) or "png"
-    if filename and image_type != "png":
+    if image_type not in {"png", "jpeg"}:
         return _not_supported(f"browser_take_screenshot type={image_type}",
-                              "Kitsune saves screenshots as PNG; use type png or a .png filename.")
+                              "Use type png or jpeg, or a .png, .jpg or .jpeg filename.")
     return k.browser_screenshot(full_page=bool(fullPage), tab_id=_current_tab, element=element,
-                                save_to=str(_path(filename)) if filename else None, **_target(target))
+                                save_to=str(_path(filename)) if filename else None,
+                                format=image_type, **_target(target))
 
 
 @_core
