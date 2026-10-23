@@ -210,8 +210,9 @@ equivalent coverage merely because it can click, inspect network data, or run JS
 Users may need to understand server/bridge/extension versions, capability groups
 (`KITSUNE_CAPS`), the published subset and gateway (`KITSUNE_PUBLISH`), task modes,
 and ask-before-act. The signed extension is convenient for ongoing installation,
-but agent-supplied JavaScript requires the temporary developer build. The current manifest requires Firefox 142+ and broad extension
-permissions; hiding MCP tools does not reduce those installation permissions.
+but agent-supplied JavaScript requires the temporary developer build. The current
+manifest requires Firefox 142+ and broad extension permissions; hiding MCP tools
+does not reduce those installation permissions.
 
 The opportunity is simpler task-oriented onboarding, not another layer of knobs.
 See [Installation](installation.md) and [Configuration](guide.md#configuration).
