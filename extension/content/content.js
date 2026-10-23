@@ -3,7 +3,7 @@
 
 (function() {
   'use strict';
-  const CONTENT_VERSION = 40;
+  const CONTENT_VERSION = 41;
   if (window.__claudeBridgeVersion >= CONTENT_VERSION) return;
   window.__claudeBridgeVersion = CONTENT_VERSION;
 
@@ -116,6 +116,9 @@
   // Issued refs live for this document while their nodes stay attached.
   const elementRefs = new WeakMap();
   const refMap = {};
+  // IDs only: preserve element_removed after pruning without retaining detached nodes.
+  // Like refMap, this belongs to this document/injection, never a later generation.
+  const removedRefs = new Set();
   let refCounter = 0;
   let lastActedElement = null;
   // The field type, fill, form_fill, select_option or check last wrote, or focus last
@@ -166,7 +169,7 @@
   function staleRef(ref, el) {
     const generation = /^s(\d+)e\d+$/.exec(ref)?.[1];
     const reason = generation && generation !== refGeneration ? 'other_document' :
-      el ? 'element_removed' : 'not_in_snapshot';
+      el || removedRefs.has(ref) ? 'element_removed' : 'not_in_snapshot';
     const { error, ...details } = actionError('stale ref, call browser_snapshot again', 'stale_ref',
       STALE_REF_HINTS[reason], { reason, ref });
     return new ActionError(error, details);
@@ -259,6 +262,7 @@
       if (refAttached(el)) continue;
       delete refMap[ref];
       elementRefs.delete(el);
+      removedRefs.add(ref);
     }
   }
 
@@ -2602,6 +2606,7 @@
         if (el && !refAttached(el)) {
           delete refMap[selector];
           elementRefs.delete(el);
+          removedRefs.add(selector);
         }
         throw staleRef(selector, el);
       }

@@ -88,8 +88,8 @@ async function testContentErrors() {
   go.isConnected = false;
   go.events = [];
   assert.equal((await stale(current)).state.reason, 'element_removed');
-  assert.equal((await stale(current, 'waitForElement')).state.reason, 'not_in_snapshot',
-    'async handlers keep the error details');
+  assert.equal((await stale(current, 'waitForElement')).state.reason, 'element_removed',
+    'async handlers preserve the removal reason even after the node was pruned');
   assert.deepEqual(go.events, [], 'no events reach a removed element');
   go.isConnected = true;
   const generation = current.match(/^s(\d+)e/)[1];
@@ -183,6 +183,7 @@ function background(tabs, content, clock = { setTimeout, clearTimeout, Date }) {
   const injected = [];
   const pinged = [];
   let receiverMissing = false;
+  let contentVersion = Infinity;
   let injectError = null;
   let requests = 0;
   const missing = id => new Error(`Invalid tab ID: ${id}`);
@@ -198,7 +199,7 @@ function background(tabs, content, clock = { setTimeout, clearTimeout, Date }) {
         if (msg.action === 'ping') {
           pinged.push(id);
           if (injectError || receiverMissing) throw new Error('Could not establish connection. Receiving end does not exist.');
-          return { ok: true, version: Infinity };
+          return { ok: true, version: contentVersion };
         }
         // The user-activity probe only reads; sent records commands.
         if (msg.action === 'userActivity') return { active: false };
@@ -223,6 +224,7 @@ function background(tabs, content, clock = { setTimeout, clearTimeout, Date }) {
   return {
     sent, injected, pinged,
     removeReceiver: () => { receiverMissing = true; },
+    setContentVersion: version => { contentVersion = version; },
     statusWaiters: () => vm.runInContext('mainFrameStatusWaiters.size', context),
     failInjection: message => { injectError = message; },
     // A main-frame request starts; response() records its status.
@@ -260,8 +262,13 @@ async function testBackgroundErrors() {
     assert.deepEqual([closed.error, closed.code, closed.state], ['Invalid tab ID: 9', 'tab_closed', { tabId: 9 }], action);
   }
 
-  // Successful results are unchanged.
+  // Existing v40 content must be reinjected for the integrated protocol, current v41 need not.
+  h.setContentVersion(40);
   assert.deepEqual(await h.send({ action: 'click', tabId: 2, selector: '#go' }), { ok: true });
+  assert.deepEqual(h.injected, [2]);
+  h.setContentVersion(41);
+  assert.deepEqual(await h.send({ action: 'click', tabId: 2, selector: '#go' }), { ok: true });
+  assert.deepEqual(h.injected, [2]);
 
   // Element errors gain the tab's current state.
   reply = () => missingElement;

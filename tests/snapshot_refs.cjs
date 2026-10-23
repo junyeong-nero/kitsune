@@ -319,7 +319,7 @@ async function testContent() {
   assert.equal(again.url, undefined);
   assert.equal(again.snapshot.split('\n').length, 3);
   assert.match(again.snapshot, /button "Review type" \[ref=s\d+e\d+\] \[expanded=true\]$/);
-  // A full snapshot on request replaces the generation, like browser_snapshot.
+  // A full snapshot on request also preserves refs, like browser_snapshot.
   const fullClick = await bridge.handleCommand({ action: 'click', coords: { x: 5, y: 5 }, snapshot: 'full' });
   assert.equal(fullClick.snapshot_delta, undefined);
   assert.equal(fullClick.target_ref, toggleRef);
@@ -479,15 +479,33 @@ async function testRefLifetime() {
   await send({ action: 'find', query: 'button' });
   assert.equal((await send({ action: 'focusElement', selector: first })).ok, true);
   archive.isConnected = false;
-  const detached = await send({ action: 'focusElement', selector: first });
-  assert.equal(detached.code, 'stale_ref');
-  assert.equal(detached.state.reason, 'element_removed');
+  // An intervening observation prunes detached nodes before the old ref is used.
+  main.children = [];
+  for (let i = 0; i < 3; i++) await send({ action: 'getSnapshot', selector: '#node' });
+  for (let i = 0; i < 2; i++) {
+    const detached = await send({ action: 'focusElement', selector: first });
+    assert.equal(detached.code, 'stale_ref');
+    assert.equal(detached.state.reason, 'element_removed');
+  }
+  const unknown = first.replace(/e\d+$/, 'e999999');
+  assert.equal((await send({ action: 'focusElement', selector: unknown })).state.reason, 'not_in_snapshot');
   archive.isConnected = true;
   const replacement = new Element('BUTTON', 'Unarchive');
   main.children = [replacement];
   context.document.querySelector = () => main;
   assert.notEqual(refOf(await send({ action: 'getSnapshot', selector: '#node' })), first);
-  assert.equal((await send({ action: 'focusElement', selector: first })).code, 'stale_ref');
+  assert.equal((await send({ action: 'focusElement', selector: first })).state.reason, 'element_removed');
+
+  // A new injection/document owns fresh maps and tombstones; old IDs cannot contaminate it.
+  context.window.__claudeBridgeVersion = 40;
+  vm.runInContext(fs.readFileSync('extension/content/content.js', 'utf8'), context);
+  assert.equal(context.window.__claudeBridgeVersion, 41, 'already-injected v40 content is upgraded');
+  const fresh = refOf(await send({ action: 'getSnapshot', selector: '#node' }));
+  assert.notEqual(fresh, first);
+  assert.equal((await send({ action: 'focusElement', selector: first })).state.reason, 'other_document');
+  assert.equal((await send({ action: 'focusElement', selector: fresh })).ok, true);
+  const unissued = fresh.replace(/e\d+$/, 'e999999');
+  assert.equal((await send({ action: 'focusElement', selector: unissued })).state.reason, 'not_in_snapshot');
 }
 
 async function testBackground() {

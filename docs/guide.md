@@ -311,8 +311,16 @@ Kitsune's compact JSON results, not Playwright's Markdown. Where the two differ:
   the new tab's `index`.
   `browser_close` closes the current tab, never the browser; closing a tab the agent did
   not open needs the user's approval (`user_tab`).
-- **Targets.** `target` is a snapshot ref (`e12`) or a CSS selector, which must match one
-  element (else `ambiguous_target`).
+- **Targets.** `target` is a snapshot ref (`e12`) or a CSS selector. Actions require one
+  actionable match (else `ambiguous_target`). Actions and scoped snapshots also accept a
+  subset of Playwright selectors: `text=`, `role=…[name="…"]`, `:has-text()`, `:text-is()`,
+  `:text()`, `:visible`, `>>` chains, `nth=N` and `xpath=..` (parent). Unsupported forms
+  return `unsupported_selector` with a hint, not a retryable missing target. General XPath
+  and refs combined with selectors are not supported; element screenshots still use refs
+  or plain CSS. Refs survive newer observations while their nodes remain attached in the
+  same document; navigation or replacement nodes require new refs.
+- **Snapshots.** Default snapshots include bounded, redacted static text and resolved
+  HTTP(S) link URLs. Very large pages still need a scoped snapshot.
 - **Dialogs.** `browser_handle_dialog` sets how the current tab answers its next dialogs
   (Firefox answers dialogs synchronously, so one already open cannot be answered).
 - **Uploads and drops.** A synthetic click opens no file chooser, so `browser_file_upload`
@@ -324,8 +332,9 @@ Kitsune's compact JSON results, not Playwright's Markdown. Where the two differ:
   earlier messages are missed. `browser_network_requests` lists the page's resource
   timing entries since it loaded; there are no headers or bodies, so
   `browser_network_request` with `part` answers `not_supported`.
-- **Screenshots.** `browser_take_screenshot` returns an inline image; `filename` saves a
-  PNG (other formats answer `not_supported`); `scale` is ignored.
+- **Screenshots.** `browser_take_screenshot` returns an inline image; `filename` saves
+  PNG or JPEG. `type` chooses the encoding; otherwise `.jpg`/`.jpeg` filenames infer JPEG,
+  with PNG as the default. Other formats answer `not_supported`; `scale` is ignored.
 - **Not supported.** `browser_emulate_media` and `browser_run_code_unsafe` are listed but
   answer `not_supported` (`retryable: false`): an extension cannot override CSS media
   features, and there is no Playwright page to run code against.
