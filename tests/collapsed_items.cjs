@@ -55,9 +55,25 @@ const header = h('TR', {}, ...['선택', '상품', '분류', '가격', '재고']
 const pager = [1, 2, 3].map(page => new Element('BUTTON', {}, [String(page)], {
   value: '', onEvent: event => { if (event.type === 'keydown' && event.key === 'Enter') showPage(page - 1); },
 }));
+// Adds a 9th row past the five shown: only the run's hidden count changes.
+function addRow() {
+  const checkbox = new Element('INPUT', { 'aria-label': '추가 상품 선택' }, [], { type: 'checkbox', checked: false, value: 'on' });
+  const row = h('TR', {}, h('TD', {}, checkbox), h('TD', {}, '추가 상품'), h('TD', {}, '사무용품'), h('TD', {}, '₩10,000'),
+    h('TD', {}, '1'));
+  row.parentElement = tbody;
+  tbody.children.push(row);
+  tbody.childNodes.push(row);
+}
+const addButton = new Element('BUTTON', {}, ['행 추가'], {
+  value: '', onEvent: event => { if (event.type === 'keydown' && event.key === 'Enter') addRow(); },
+});
 const main = h('MAIN', {}, h('H1', {}, '재고 관리'), h('TABLE', {}, h('THEAD', {}, header), tbody),
-  h('NAV', {}, ...pager));
-const body = h('BODY', {}, main);
+  h('NAV', {}, ...pager, addButton));
+// A 250-row log, and seven groups of seven items each.
+const big = h('TBODY', {}, ...Array.from({ length: 250 }, (_, i) => h('TR', {}, h('TD', {}, `행 ${i + 1}`), h('TD', {}, '기록'))));
+const groups = h('SECTION', {}, ...Array.from({ length: 7 }, (_, g) => h('DIV', {}, h('H2', {}, `그룹 ${g + 1}`),
+  h('UL', {}, ...Array.from({ length: 7 }, (_, i) => h('LI', {}, h('DIV', {}, `항목 ${g + 1}-${i + 1}`)))))));
+const body = h('BODY', {}, main, h('ASIDE', {}, h('TABLE', {}, big), groups));
 
 let listener;
 const content = vm.createContext({
@@ -69,7 +85,7 @@ const content = vm.createContext({
   window: { getComputedStyle: () => ({ display: 'block', visibility: 'visible', getPropertyValue: () => '' }) },
   document: { body, title: 'ui-table',
     getElementById: () => null,
-    querySelector: selector => ({ main, tbody, 'tbody tr:nth-child(8)': rows[7] })[selector] || null,
+    querySelector: selector => ({ main, tbody, 'tbody tr:nth-child(8)': rows[7], '#big': big, '#groups': groups })[selector] || null,
     querySelectorAll: () => [],
   },
   browser: { runtime: { onMessage: { addListener: fn => { listener = fn; } },
@@ -152,6 +168,37 @@ const rowLines = snapshot => snapshot.split('\n').filter(line => line.includes('
   const unchanged = await command({ action: 'keypress', ref: two, key: 'Escape' });
   assert.equal(unchanged.snapshot_delta, true);
   assert.doesNotMatch(unchanged.snapshot, /more similar items/);
+  // A delta that changes only the run's hidden count lists the new marker without any row.
+  const add = page.snapshot.match(/- button "행 추가" \[ref=(e\d+)\]/)[1];
+  const added = await command({ action: 'keypress', ref: add, key: 'Enter' });
+  assert.equal(added.snapshot_delta, true);
+  assert.deepEqual(added.snapshot.match(MARKER).slice(1), ['4', scopeRef]);
+  assert.deepEqual(rowLines(added.snapshot), []);
+
+  // A scoped snapshot lists at most SCOPED_ITEM_LIMIT (100) items of its own; browser_find
+  // (collapse: false) still reaches the rest.
+  const ROW = /- text "행 (\d+)"/g;
+  const bigRef = page.snapshot.split('\n').filter(line => MARKER.test(line)).map(line => line.match(MARKER))
+    .find(([, count]) => count === '245')[2];
+  for (const scope of [{ ref: bigRef }, { selector: '#big' }]) {
+    const capped = await send('getSnapshot', scope);
+    assert.deepEqual([...capped.snapshot.matchAll(ROW)].map(([, n]) => Number(n)),
+      Array.from({ length: 100 }, (_, i) => i + 1), JSON.stringify(scope));
+    assert.match(capped.snapshot, /^ *- … 150 more similar items; use browser_find to locate a specific one$/m);
+    assert.doesNotMatch(capped.snapshot, /to list all/);
+  }
+  const everything = await send('getSnapshot', { collapse: false });
+  assert.equal([...everything.snapshot.matchAll(ROW)].length, 250);
+  assert.match(everything.snapshot, /- text "행 250"/);
+
+  // A scope lists all seven of its own groups; each group's run of seven items still collapses.
+  const scopedGroups = await send('getSnapshot', { selector: '#groups' });
+  assert.equal(scopedGroups.snapshot.match(/heading "그룹 \d+"/g).length, 7);
+  const nested = scopedGroups.snapshot.split('\n').filter(line => MARKER.test(line));
+  assert.equal(nested.length, 7);
+  assert.ok(nested.every(line => line.match(MARKER)[1] === '2'));
+  assert.doesNotMatch(scopedGroups.snapshot, /항목 \d-6/);
+  assert.equal(new Set(nested.map(line => line.match(MARKER)[2])).size, 7, 'each run names its own list');
 
   console.log('Collapsed item checks passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

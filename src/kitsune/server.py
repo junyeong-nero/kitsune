@@ -776,7 +776,7 @@ def browser_snapshot(
     scoped snapshot; never repeat a write just to refresh refs. After an action, its
     target_ref names the same node when still attached and included. Repeated composite
     siblings show the first five items; a snapshot scoped to the ref in their "more similar
-    items" marker lists them all. Post-action snapshots prioritize the target and its
+    items" marker lists up to 100. Post-action snapshots prioritize the target and its
     ancestor context within their cap.
     """
     return _read_page("/api/snapshot", tab_id, selector, ref, max_depth, text)

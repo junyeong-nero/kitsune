@@ -631,6 +631,10 @@
     'I', 'KBD', 'LABEL', 'MARK', 'Q', 'S', 'SAMP', 'SMALL', 'SPAN', 'STRONG', 'SUB', 'SUP',
     'TIME', 'U', 'VAR']);
   const FIELD_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT', 'OPTION']);
+  // A run of similar siblings shows its first COLLAPSED_ITEM_LIMIT items. A snapshot scoped to
+  // their container shows up to SCOPED_ITEM_LIMIT of its own; browser_find searches the rest.
+  const COLLAPSED_ITEM_LIMIT = 5;
+  const SCOPED_ITEM_LIMIT = 100;
 
   // What a delta snapshot is diffed against: the page's snapshot lines (without refs) per
   // element, url and title, recorded right before an action (takeActionBaseline).
@@ -881,30 +885,37 @@
       const repeatable = child => (flatChildren(child).length > 0 || child.tagName === 'LI' ||
         child.getAttribute('role') === 'listitem') &&
         !(withText && flatChildren(child).every(c => INLINE_TAGS.has(c.tagName)));
-      // A snapshot scoped to a container lists all of its own items.
-      const collapses = collapse && !(selector && el === root);
+      const scopedRoot = selector && el === root;
+      const shown = scopedRoot ? SCOPED_ITEM_LIMIT : COLLAPSED_ITEM_LIMIT;
       for (let start = 0; start < children.length && !truncated;) {
         let end = start + 1;
         // Entries from here on belong to this run; a delta keeps its marker with them.
         const run = entries.length;
-        if (collapses && repeatable(children[start])) {
+        if (collapse && repeatable(children[start])) {
           while (end < children.length &&
               metadata.get(children[end]).signature === metadata.get(children[start]).signature) end++;
         }
         let omitted = 0;
         function flushOmitted() {
           if (!omitted || truncated) return;
-          // The marker names the container by ref: a snapshot scoped to it lists every item.
-          if (full) ref ??= elementRefs.get(el) || `s${refGeneration}e${refCounter++}`;
           const signature = `… ${omitted} more similar items`;
-          const head = `${'  '.repeat(Math.min(childDepth, 12))}- ${signature}; snapshot `;
+          const indent = '  '.repeat(Math.min(childDepth, 12));
+          if (scopedRoot) {
+            append({ line: `${indent}- ${signature}; use browser_find to locate a specific one`,
+              parent, interactive: false, source: el, run, signature });
+            omitted = 0;
+            return;
+          }
+          // The marker names the container by ref: a snapshot scoped to it lists its items.
+          if (full) ref ??= elementRefs.get(el) || `s${refGeneration}e${refCounter++}`;
+          const head = `${indent}- ${signature}; snapshot `;
           const tail = ' to list all';
           append({ line: head + (ref ?? pendingRef) + tail, parent, interactive: false, source: el,
             ref, head, tail, run, signature });
           omitted = 0;
         }
         for (let i = start; i < end && !truncated; i++) {
-          if (i - start < 5 || targetAncestors.has(children[i])) {
+          if (i - start < shown || targetAncestors.has(children[i])) {
             flushOmitted();
             if (!truncated) visit(children[i], childDepth, parent, domDepth + 1, named);
           } else omitted++;
