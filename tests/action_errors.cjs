@@ -78,21 +78,17 @@ async function testContentErrors() {
     return result;
   };
 
-  // An older snapshot of this document.
+  // Observing the document again does not expire an attached node ref.
   const older = await refFor();
   await send({ action: 'getAccessibilityTree', depth: 6 });
-  const replaced = await stale(older);
-  assert.equal(replaced.state.reason, 'snapshot_replaced');
-  assert.equal(replaced.state.latestObservation, 'browser_dom');
-  assert.equal(replaced.state.currentRef, undefined, 'a browser_find ref has no role/name to match');
-  assert.match(replaced.hint, /^A newer snapshot from browser_dom replaced this ref/);
+  assert.equal((await send({ action: 'click', selector: older })).ok, true);
 
   // Dynamic forms: the element left the DOM after the snapshot.
   const current = await refFor();
   go.isConnected = false;
   go.events = [];
   assert.equal((await stale(current)).state.reason, 'element_removed');
-  assert.equal((await stale(current, 'waitForElement')).state.reason, 'element_removed',
+  assert.equal((await stale(current, 'waitForElement')).state.reason, 'not_in_snapshot',
     'async handlers keep the error details');
   assert.deepEqual(go.events, [], 'no events reach a removed element');
   go.isConnected = true;
@@ -107,10 +103,10 @@ async function testContentErrors() {
   assert.equal(wrongTarget.state.reason, 'other_document');
   assert.match(wrongTarget.hint, /tab_id/);
   assert.deepEqual(go.events, [], 'a foreign ref never acts on this document');
-  assert.equal((await stale('r0')).state.reason, 'snapshot_replaced');
+  assert.equal((await stale('r0')).state.reason, 'not_in_snapshot');
   const unobserved = await otherDocument({ action: 'click', selector: 'r0' });
   assert.equal(unobserved.state.latestObservation, undefined, 'no snapshot in this document yet');
-  assert.equal(unobserved.hint, 'A newer snapshot replaced this ref; use refs from the latest snapshot or a new browser_snapshot.');
+  assert.equal(unobserved.hint, 'The latest snapshot did not issue this ref; take a new browser_snapshot and use its refs.');
 }
 
 async function testNotRenderedWarnings() {

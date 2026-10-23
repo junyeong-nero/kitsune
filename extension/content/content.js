@@ -113,8 +113,8 @@
     if (policy) handleDialog(policy.accept, policy.prompt_text);
   }).catch(() => {});
 
-  // Element reference map (capped to prevent memory leaks in long sessions)
-  const REF_MAP_LIMIT = 10000;
+  // Issued refs live for this document while their nodes stay attached.
+  const elementRefs = new WeakMap();
   const refMap = {};
   let refCounter = 0;
   let lastActedElement = null;
@@ -126,47 +126,6 @@
     ? (BigInt(window.__kitsuneRefGeneration) + 1n).toString()
     : `${Date.now()}${crypto.getRandomValues(new Uint32Array(1))[0]}`;
   window.__kitsuneRefGeneration = refGeneration;
-  // Generations in [refSeed, refGeneration] belong to this document; others name another one.
-  const refSeed = window.__kitsuneRefSeed || (window.__kitsuneRefSeed = refGeneration);
-  // Snapshot refs of the current generation: { label: 'role "name"', parent: ancestor's ref }.
-  const refLabels = {};
-  // The call whose observation started the current generation (state.latestObservation).
-  let refObservation = null;
-  // The last few generations, so a stale_ref can name the same element's current ref.
-  const RETIRED_GENERATION_LIMIT = 3;
-  const retiredGenerations = new Map();
-
-  function newRefGeneration(observation) {
-    retiredGenerations.set(refGeneration, { refs: { ...refMap }, labels: { ...refLabels } });
-    if (retiredGenerations.size > RETIRED_GENERATION_LIMIT) {
-      retiredGenerations.delete(retiredGenerations.keys().next().value);
-    }
-    refGeneration = (BigInt(refGeneration) + 1n).toString();
-    window.__kitsuneRefGeneration = refGeneration;
-    refObservation = observation;
-    refCounter = 0;
-    for (const key of Object.keys(refMap)) delete refMap[key];
-    for (const key of Object.keys(refLabels)) delete refLabels[key];
-  }
-
-  function labelPath(labels, ref) {
-    const path = [];
-    for (let entry = labels[ref]; entry; entry = labels[entry.parent]) path.push(entry.label);
-    return path.join('\n');
-  }
-
-  // A ref from a replaced generation names an element of the current one only when it is
-  // the same connected node with the same role, name and snapshot ancestors.
-  function currentRefFor(ref, generation) {
-    const retired = retiredGenerations.get(generation);
-    const el = retired?.refs[ref];
-    if (!el?.isConnected || !retired.labels[ref]) return null;
-    const path = labelPath(retired.labels, ref);
-    const matches = Object.keys(refMap).filter(current => refMap[current] === el &&
-      refLabels[current] && labelPath(refLabels, current) === path);
-    return matches.length === 1 ? matches[0] : null;
-  }
-
   // ── Action errors ──
   // `error` keeps its historical text; code/retryable/hint/state are the stable contract.
   // Content-script failures happen before any mutation, so repeating them is always safe.
@@ -200,34 +159,16 @@
   const STALE_REF_HINTS = {
     element_removed: 'The element was removed from the page; take a new browser_snapshot and use its refs.',
     not_in_snapshot: 'The latest snapshot did not issue this ref; take a new browser_snapshot and use its refs.',
-    snapshot_replaced: 'A newer snapshot replaced this ref; use refs from the latest snapshot or a new browser_snapshot.',
     other_document: 'The ref belongs to another document: the tab navigated or a different tab is targeted. ' +
       'Pass tab_id and take a new browser_snapshot.',
   };
 
-  const CURRENT_REF_HINT = 'A newer snapshot replaced this ref; state.currentRef is the same element (same node, ' +
-    'role, name and ancestors) in the latest snapshot. Use it only if that snapshot shows the action is still needed.';
-
   function staleRef(ref, el) {
     const generation = /^s(\d+)e\d+$/.exec(ref)?.[1];
-    let reason = 'snapshot_replaced';  // legacy r<n> refs predate generations
-    if (generation === refGeneration) reason = el ? 'element_removed' : 'not_in_snapshot';
-    else if (generation && (BigInt(generation) < BigInt(refSeed) ||
-        BigInt(generation) > BigInt(refGeneration))) reason = 'other_document';
-    const state = { reason, ref };
-    let hint = STALE_REF_HINTS[reason];
-    if (reason === 'snapshot_replaced') {
-      if (refObservation) {
-        state.latestObservation = refObservation;
-        hint = `A newer snapshot from ${refObservation} replaced this ref; use its refs or a new browser_snapshot.`;
-      }
-      const currentRef = generation && currentRefFor(ref, generation);
-      if (currentRef) {
-        state.currentRef = currentRef;
-        hint = CURRENT_REF_HINT;
-      }
-    }
-    const { error, ...details } = actionError('stale ref, call browser_snapshot again', 'stale_ref', hint, state);
+    const reason = generation && generation !== refGeneration ? 'other_document' :
+      el ? 'element_removed' : 'not_in_snapshot';
+    const { error, ...details } = actionError('stale ref, call browser_snapshot again', 'stale_ref',
+      STALE_REF_HINTS[reason], { reason, ref });
     return new ActionError(error, details);
   }
 
@@ -297,11 +238,27 @@
       { reason: 'not_rendered', ...state });
   }
 
+  // A node in a retired frame document can still report isConnected=true.
+  function refAttached(el) {
+    try {
+      if (!el.isConnected) return false;
+      for (let doc = el.ownerDocument; doc && doc !== document;) {
+        const frame = hostFrame(doc);
+        if (!frame?.isConnected || frame.contentDocument !== doc) return false;
+        doc = frame.ownerDocument;
+      }
+      return true;
+    } catch {
+      // Firefox revokes wrappers from a destroyed frame ("can't access dead object").
+      return false;
+    }
+  }
+
   function pruneRefMap() {
-    const keys = Object.keys(refMap);
-    if (keys.length > REF_MAP_LIMIT) {
-      // Drop oldest half
-      keys.slice(0, Math.floor(keys.length / 2)).forEach(k => delete refMap[k]);
+    for (const [ref, el] of Object.entries(refMap)) {
+      if (refAttached(el)) continue;
+      delete refMap[ref];
+      elementRefs.delete(el);
     }
   }
 
@@ -359,7 +316,7 @@
       'handleDialog':          () => handleDialog(msg.accept, msg.prompt_text),
       'waitForText':           () => waitForText(msg.text, msg.text_gone, msg.timeout),
       'getPageText':           () => getPageText(msg.selector),
-      'getSnapshot':           () => getSnapshot(msg.maxChars, msg.focusLastAction, msg.ref || msg.selector, msg.maxDepth, !!msg.text,
+      'getSnapshot':           () => getSnapshot(msg.maxChars, msg.focusLastAction, msg.ref || msg.selector, msg.maxDepth, msg.text ?? !msg.observation,
                                      msg.observation, msg.delta ? 'delta' : 'full', !!msg.boxes),
       'getAccessibilityTree':  () => getAccessibilityTree(msg.depth ?? 6, msg.ref || msg.selector),
       'getFormFields':         () => getFormFields(),
@@ -581,10 +538,11 @@
     'or use browser_snapshot.';
 
   function getAccessibilityTree(maxDepth, selector) {
-    // Resolve a subtree ref before invalidating the previous generation.
+    // Resolve the scope before pruning detached refs.
     const root = selector ? resolveElement(selector) : document.body;
     if (!root) return { error: 'Selector not found: ' + selector };
-    newRefGeneration('browser_dom');
+    pruneRefMap();
+    let refs = 0;
     let size = 0;
     let truncated = false;
 
@@ -604,7 +562,7 @@
       // Skip non-interactive elements with no text and small size
       if (!isInteractive && !text && rect.width < 5 && rect.height < 5) return null;
 
-      const ref = `s${refGeneration}e${refCounter}`;
+      const ref = elementRefs.get(el) || `s${refGeneration}e${refCounter}`;
       const node = { ref, tag };
       
       // Only include useful properties
@@ -640,8 +598,8 @@
       const cost = JSON.stringify(node).length + ',"children":[],'.length;
       if (size + cost > DOM_TREE_LIMIT) { truncated = true; return null; }
       size += cost;
-      refCounter++;
-      refMap[ref] = el;
+      issueRef(el);
+      refs++;
 
       // Recurse children, and the body of a same-origin frame
       const children = [];
@@ -656,7 +614,7 @@
     }
 
     const tree = buildNode(root, 0);
-    return { tree, refs: refCounter, ...(truncated && { truncated: true, hint: DOM_TRUNCATED_HINT }) };
+    return { tree, refs, ...(truncated && { truncated: true, hint: DOM_TRUNCATED_HINT }) };
   }
 
   // Text mode adds readable text lines (without refs) and is always capped.
@@ -684,19 +642,19 @@
   // observation: the tool whose call took this snapshot (an action's post-action snapshot).
   // mode: 'full'; 'baseline' records actionBaseline and returns no snapshot; 'delta' lists only
   // the target and the lines that changed since the baseline, adding refs to the current
-  // generation instead of starting one. A delta without a baseline (another document) is full.
+  // document's refs. A delta without a baseline (another document) is full.
   // Viewport-relative CSS-pixel bounding box as x,y,width,height.
   function boxOf(el) {
     const rect = el.getBoundingClientRect();
     return [rect.x, rect.y, rect.width, rect.height].map(Math.round).join(',');
   }
 
-  function getSnapshot(maxChars, focusLastAction, selector, maxDepth, withText = false,
+  function getSnapshot(maxChars, focusLastAction, selector, maxDepth, withText = true,
       observation = 'browser_snapshot', mode = 'full', boxes = false) {
     if (maxDepth != null && (!Number.isInteger(maxDepth) || maxDepth < 0)) {
       return { error: 'max_depth must be a non-negative integer' };
     }
-    // Resolve subtree refs before invalidating the previous snapshot's generation.
+    // Observations share refs; scoping never invalidates an earlier observation.
     const root = selector ? resolveElement(selector) : document.body;
     if (!root) return { error: 'Selector not found: ' + selector };
     const baseline = mode === 'delta' ? actionBaseline : null;
@@ -704,11 +662,11 @@
     let target = null;
     if (mode !== 'baseline') {
       actionBaseline = null;
-      // Keep the DOM element, not its old ref: starting a snapshot invalidates refs.
+      // Remember the actual node even when this snapshot omits it.
       target = focusLastAction && lastActedElement?.isConnected ? lastActedElement : null;
       lastActedElement = null;
     }
-    if (full) newRefGeneration(observation);
+    pruneRefMap();
     // Lines whose ref is assigned once a delta is selected are measured with this stand-in.
     const pendingRef = `s${refGeneration}e${refCounter}`;
     const entries = [];
@@ -849,7 +807,7 @@
           else if (el === target) role = el.tagName.toLowerCase();
           else role = 'button';
         }
-        const ref = full ? `s${refGeneration}e${refCounter++}` : null;
+        const ref = full ? elementRefs.get(el) || `s${refGeneration}e${refCounter++}` : null;
         const states = [];
         if (role === 'heading') states.push(`level=${el.getAttribute('aria-level') || el.tagName.slice(1)}`);
         if ('value' in el && !isSensitiveField(el)) states.push(`value=${JSON.stringify(clean(el.value))}`);
@@ -877,8 +835,17 @@
         const tail = stateTail + (boxes ? ` [box=${boxOf(el)}]` : '');
         if (!append({ el, ref, line: head + (ref ?? pendingRef) + tail, parent, interactive,
           head, tail, label, signature: label + stateTail })) return;
-        if (full) refLabels[ref] = { label, parent: entries[parent]?.ref ?? null };
         parent = entries.length - 1;
+        // Only web links are exposed: other schemes can hold executable code or local data.
+        if (role === 'link' && el.href) {
+          let url;
+          try { url = new URL(el.href); } catch {}
+          if (url && ['http:', 'https:'].includes(url.protocol)) {
+            const signature = `/url: ${JSON.stringify(url.href)}`;
+            if (!append({ line: `${'  '.repeat(Math.min(depth + 1, 12))}- ${signature}`,
+              parent, interactive: false, source: el, signature })) return;
+          }
+        }
       }
       const childDepth = depth + (include ? 1 : 0);
       named ||= interactive || role === 'heading';
@@ -973,12 +940,10 @@
       selected = entries.filter((_, i) => kept.has(i));
       truncated = changed.some(i => !kept.has(i));
       // Refs add to the current generation; an element that already has one keeps it.
-      const known = new Map(Object.entries(refMap).map(([ref, el]) => [el, ref]));
       for (const entry of selected) {
         if (!entry.head) continue;
-        entry.ref = known.get(entry.el) || `s${refGeneration}e${refCounter++}`;
+        entry.ref = issueRef(entry.el);
         entry.line = entry.head + entry.ref + entry.tail;
-        refLabels[entry.ref] = { label: entry.label, parent: entries[entry.parent]?.ref ?? null };
       }
     } else if (size > limit) {
       if (targetIndex >= 0) {
@@ -1008,7 +973,10 @@
       truncated = selected.length < entries.length;
     }
     for (const entry of selected) {
-      if (entry.ref) refMap[entry.ref] = entry.el;
+      if (entry.ref) {
+        refMap[entry.ref] = entry.el;
+        elementRefs.set(entry.el, entry.ref);
+      }
     }
     let snapshot = selected.map(entry => entry.line).join('\n');
     if (withText && truncated) snapshot += (snapshot ? '\n' : '') + TEXT_TRUNCATED_LINE;
@@ -1016,7 +984,7 @@
       snapshot,
       ...(truncated ? { truncated: true } : {}),
       ...(targetIndex >= 0 ? { target_ref: entries[targetIndex].ref } : {}),
-      ...(withText && !baseline ? { url: location.href, title: document.title } : {}),
+      ...(withText && !baseline ? { url: window.location?.href ?? globalThis.location?.href, title: document.title } : {}),
       ...(baseline ? {
         delta: true,
         ...(window.location?.href !== baseline.url ? { url: window.location?.href } : {}),
@@ -2218,7 +2186,13 @@
     // Try ref map first
     if (REF_SELECTOR.test(selector)) {
       const el = refMap[selector];
-      if (!selector.startsWith(`s${refGeneration}e`) || !el || !el.isConnected) throw staleRef(selector, el);
+      if (!selector.startsWith(`s${refGeneration}e`) || !el || !refAttached(el)) {
+        if (el && !refAttached(el)) {
+          delete refMap[selector];
+          elementRefs.delete(el);
+        }
+        throw staleRef(selector, el);
+      }
       return el;
     }
     
@@ -2257,10 +2231,13 @@
     throw new ActionError(error, details);
   }
 
-  // A new ref for el in the current generation.
+  // Reuse one ref per attached node, across all observation tools.
   function issueRef(el) {
+    const existing = elementRefs.get(el);
+    if (existing && refMap[existing] === el) return existing;
     const ref = `s${refGeneration}e${refCounter++}`;
     refMap[ref] = el;
+    elementRefs.set(el, ref);
     return ref;
   }
 

@@ -25,7 +25,7 @@ function content() {
   const body = new Element('BODY', '', {}, [button, input]);
   let listener;
   const context = vm.createContext({
-    console, crypto: webcrypto, setTimeout, CSS: { escape: x => x },
+    console, URL, crypto: webcrypto, setTimeout, CSS: { escape: x => x },
     window: { getComputedStyle: () => ({ display: 'block', visibility: 'visible' }) },
     document: { body, getElementById: () => null,
       querySelector: selector => selector === '#act' ? button : null,
@@ -44,7 +44,7 @@ function content() {
 function background(documents, stored = {}) {
   const sent = [];
   const context = vm.createContext({
-    console, Map, Set, Promise,
+    console, URL, Map, Set, Promise,
     browser: { storage: { local: {
       get: async () => ({ ...stored }),
       set: async value => { Object.assign(stored, value); },
@@ -58,6 +58,7 @@ function background(documents, stored = {}) {
     withTabState: async (tabId, response) => ({ ...response, state: { ...response.state, tabId } }),
   });
   const source = fs.readFileSync('extension/background/background.js', 'utf8');
+  vm.runInContext(fs.readFileSync('extension/background/history.js', 'utf8'), context);
   vm.runInContext(source.slice(source.indexOf('const MISSING_CONTENT_RECEIVER'), source.indexOf('async function getActiveTabId')), context);
   return { sent, stored,
     send: (action, params = {}) => context.forwardToContent(action, { tabId: 1, ...params })
@@ -82,25 +83,20 @@ async function main() {
   const field = (await h.send('getFormFields')).fields[0].ref;
   const waited = await h.send('waitForElement', { selector: old });
   assert.equal(waited.selector, old);
-  assert.equal(new Set([old, found, field, waited.ref]).size, 4);
+  assert.equal(new Set([old, found, field, waited.ref]).size, 2);
   for (const ref of [old, found, field, waited.ref]) {
     assert.match(ref, /^e\d+$/);
     assert.equal((await h.send('focusElement', { selector: ref })).ok, true);
   }
 
-  // The internal snapshot index is reused; the public index must never be reused.
+  // A newer observation reuses the same public alias and internal node ref.
   const second = await h.send('getSnapshot');
   const fresh = buttonRef(second);
-  assert.notEqual(fresh, old);
+  assert.equal(fresh, old);
   const before = h.sent.length;
-  const stale = await h.send('focusElement', { selector: old });
-  assert.equal(stale.code, 'stale_ref');
-  assert.equal(stale.retryable, true);
-  assert.deepEqual(stale.state, { reason: 'snapshot_replaced', ref: old,
-    latestObservation: 'browser_snapshot', currentRef: fresh, tabId: 1 });
-  assert.equal(h.sent.length, before + 1, 'content performs generation validation');
-  assert.equal((await h.send('focusElement', { selector: fresh })).ok, true);
-  assert.equal(h.sent.at(-1).selector.split('e')[1], internalOld.split('e')[1]);
+  assert.equal((await h.send('focusElement', { selector: old })).ok, true);
+  assert.equal(h.sent.length, before + 1);
+  assert.equal(h.sent.at(-1).selector, internalOld);
 
   // Scoped snapshots expand before the content script replaces the generation.
   const scoped = await h.send('getSnapshot', { ref: fresh });
@@ -134,7 +130,7 @@ async function main() {
   await restarted.send('find', { query: 'button' });
   const reinjected = await restarted.send('focusElement', { selector: additive });
   assert.equal(reinjected.code, 'stale_ref');
-  assert.equal(reinjected.state.reason, 'snapshot_replaced');
+  assert.equal(reinjected.state.reason, 'other_document');
 
   // Concurrent tabs reserve once and still get disjoint public indexes.
   const [a, b] = await Promise.all([
@@ -169,6 +165,24 @@ async function main() {
   const timedOut = await restarted.send('waitForElement', { selector: surfaces.target_ref });
   assert.equal(timedOut.selector, surfaces.target_ref);
   assert.equal(timedOut.error, `Timed out waiting for "${surfaces.target_ref}"`);
+
+  // Serializer-owned URL lines use the existing credential policy, even without refs.
+  // Ordinary page text is a JSON string on one line, never a URL protocol line.
+  const raw = 'https://user:password@example.test/order/2?token=SECRET&view=summary#/route?password=HASH';
+  const pageText = '- text ' + JSON.stringify('quoted " text\n- /url: "' + raw + '"');
+  documents[1] = { send: async () => ({ snapshot: `${pageText}\n  - /url: ${JSON.stringify(raw)}`, url: raw, title: 'Ordinary title' }) };
+  const metadata = await restarted.send('getSnapshot');
+  assert.equal(metadata.url, 'https://example.test/order/2?token=[redacted]&view=summary#/route?password=[redacted]');
+  assert.equal(metadata.title, 'Ordinary title');
+  const redacted = (await restarted.send('getSnapshot')).snapshot.split('\n');
+  assert.equal(redacted[0], pageText);
+  assert.equal(redacted[1], '  - /url: "https://example.test/order/2?token=[redacted]&view=summary#/route?password=[redacted]"');
+  for (const url of ['file:///private/path', 'data:text/plain,secret', 'about:blank']) {
+    documents[1] = { send: async () => ({ snapshot: '', url }) };
+    assert.equal((await restarted.send('getSnapshot')).url, undefined);
+  }
+  documents[1] = { send: async () => ({ result: { snapshot: `  - /url: ${JSON.stringify(raw)}` } }) };
+  assert.equal((await restarted.send('executeJS')).result.snapshot, `  - /url: ${JSON.stringify(raw)}`);
 
   // A response larger than a reservation must still reserve every alias before
   // returning it. Invalid/unwritable counters must never fall back to index zero.

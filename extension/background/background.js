@@ -1318,7 +1318,7 @@ async function ensureContentScript(tabId) {
 const MISSING_CONTENT_RECEIVER = 'Could not establish connection. Receiving end does not exist.';
 
 // Public refs never reuse an index. Keep the generation-qualified ref private so the
-// content script can still distinguish replaced snapshots and other documents.
+// content script can still reject refs from another document or an earlier injection.
 const shortRefs = new Map();
 const publicRefs = new Map();
 // Retired aliases still answer other_document, not not_in_snapshot; bounded, oldest first.
@@ -1392,8 +1392,15 @@ function compactContentRefs(action, response, tabId, params) {
     if (Array.isArray(value)) return value.map(item => visit(item, convert));
     if (!value || typeof value !== 'object') return value;
     return Object.fromEntries(Object.entries(value).map(([key, item]) => {
+      if (action === 'getSnapshot' && value === response && key === 'url' && typeof item === 'string') {
+        let url;
+        try { url = new URL(item); } catch {}
+        return [key, url && ['http:', 'https:'].includes(url.protocol) ? redactHistoryUrl(item) : undefined];
+      }
       if (key === 'snapshot' && typeof item === 'string') {
-        return [key, item.replace(/\[ref=(s\d+e\d+)\]/g, (_, ref) => `[ref=${convert(ref)}]`)];
+        const snapshot = item.replace(/^( *- \/url: )("(?:[^"\\\r\n]|\\.)*")$/gm,
+          (_, prefix, encoded) => prefix + JSON.stringify(redactHistoryUrl(JSON.parse(encoded))));
+        return [key, snapshot.replace(/\[ref=(s\d+e\d+)\]/g, (_, ref) => `[ref=${convert(ref)}]`)];
       }
       if (['ref', 'target_ref', 'currentRef'].includes(key) && typeof item === 'string' && /^s\d+e\d+$/.test(item)) {
         // An error echoes the caller's ref, including legacy refs, verbatim.
