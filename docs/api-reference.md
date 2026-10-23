@@ -70,7 +70,7 @@ error as its result:
 ```
 
 Container routes need `automation`, and each step needs its own action's group;
-actions the core tools also use (navigate, click, type, waits, screenshots, `js`, ...)
+actions the core tools also use (navigate, click, type, check, waits, screenshots, `js`, ...)
 are `core`. `/`, `/api/status`, `/api/version` and `/view` are open to every client.
 An unknown group in the header returns 400 `invalid_caps`. Requests without the header,
 such as the `kitsune-bridge` command's, are not restricted.

@@ -186,6 +186,18 @@ class AdapterTests(unittest.TestCase):
         failed = playwright_tools.browser_fill_form(fields=fields)
         self.assertEqual((failed["field"], failed["filled"]), ("Email", []))
 
+    def test_fill_form_checks_every_field_before_filling_any(self):
+        schema = playwright_tools.SCHEMAS["browser_fill_form"]["inputSchema"]["properties"]["fields"]["items"]
+        self.assertEqual(playwright_tools._FIELD_TYPES, set(schema["properties"]["type"]["enum"]))
+        valid = {"target": "e1", "name": "Email", "type": "textbox", "value": "a@b"}
+        for field, error in (({"target": "e2", "name": "Size", "type": "spinbutton", "value": "3"},
+                              "Unknown field type: spinbutton"),
+                             ({"name": "Agree", "type": "checkbox", "value": "true"}, "Each field needs a target")):
+            with self.subTest(error=error):
+                failed = playwright_tools.browser_fill_form(fields=[valid, field])
+                self.assertEqual((failed["error"], failed["field"], failed["filled"]), (error, field["name"], []))
+                self.assertEqual(self.posted(), [])
+
     def test_select_option_sends_every_value(self):
         playwright_tools.browser_select_option(target="e7", values=["a", "b"])
         self.assertEqual(self.posted(), [("/api/select-option", {"selector": "", "values": ["a", "b"], "ref": "e7"})])
