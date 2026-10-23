@@ -78,14 +78,10 @@ async function testContentErrors() {
     return result;
   };
 
-  // An older snapshot of this document.
+  // Observing the document again does not expire an attached node ref.
   const older = await refFor();
   await send({ action: 'getAccessibilityTree', depth: 6 });
-  const replaced = await stale(older);
-  assert.equal(replaced.state.reason, 'snapshot_replaced');
-  assert.equal(replaced.state.latestObservation, 'browser_dom');
-  assert.equal(replaced.state.currentRef, undefined, 'a browser_find ref has no role/name to match');
-  assert.match(replaced.hint, /^A newer snapshot from browser_dom replaced this ref/);
+  assert.equal((await send({ action: 'click', selector: older })).ok, true);
 
   // Dynamic forms: the element left the DOM after the snapshot.
   const current = await refFor();
@@ -93,7 +89,7 @@ async function testContentErrors() {
   go.events = [];
   assert.equal((await stale(current)).state.reason, 'element_removed');
   assert.equal((await stale(current, 'waitForElement')).state.reason, 'element_removed',
-    'async handlers keep the error details');
+    'async handlers preserve the removal reason even after the node was pruned');
   assert.deepEqual(go.events, [], 'no events reach a removed element');
   go.isConnected = true;
   const generation = current.match(/^s(\d+)e/)[1];
@@ -107,10 +103,10 @@ async function testContentErrors() {
   assert.equal(wrongTarget.state.reason, 'other_document');
   assert.match(wrongTarget.hint, /tab_id/);
   assert.deepEqual(go.events, [], 'a foreign ref never acts on this document');
-  assert.equal((await stale('r0')).state.reason, 'snapshot_replaced');
+  assert.equal((await stale('r0')).state.reason, 'not_in_snapshot');
   const unobserved = await otherDocument({ action: 'click', selector: 'r0' });
   assert.equal(unobserved.state.latestObservation, undefined, 'no snapshot in this document yet');
-  assert.equal(unobserved.hint, 'A newer snapshot replaced this ref; use refs from the latest snapshot or a new browser_snapshot.');
+  assert.equal(unobserved.hint, 'The latest snapshot did not issue this ref; take a new browser_snapshot and use its refs.');
 }
 
 async function testNotRenderedWarnings() {
@@ -187,6 +183,7 @@ function background(tabs, content, clock = { setTimeout, clearTimeout, Date }) {
   const injected = [];
   const pinged = [];
   let receiverMissing = false;
+  let contentVersion = Infinity;
   let injectError = null;
   let requests = 0;
   const missing = id => new Error(`Invalid tab ID: ${id}`);
@@ -202,7 +199,7 @@ function background(tabs, content, clock = { setTimeout, clearTimeout, Date }) {
         if (msg.action === 'ping') {
           pinged.push(id);
           if (injectError || receiverMissing) throw new Error('Could not establish connection. Receiving end does not exist.');
-          return { ok: true, version: Infinity };
+          return { ok: true, version: contentVersion };
         }
         // The user-activity probe only reads; sent records commands.
         if (msg.action === 'userActivity') return { active: false };
@@ -227,6 +224,7 @@ function background(tabs, content, clock = { setTimeout, clearTimeout, Date }) {
   return {
     sent, injected, pinged,
     removeReceiver: () => { receiverMissing = true; },
+    setContentVersion: version => { contentVersion = version; },
     statusWaiters: () => vm.runInContext('mainFrameStatusWaiters.size', context),
     failInjection: message => { injectError = message; },
     // A main-frame request starts; response() records its status.
@@ -264,8 +262,13 @@ async function testBackgroundErrors() {
     assert.deepEqual([closed.error, closed.code, closed.state], ['Invalid tab ID: 9', 'tab_closed', { tabId: 9 }], action);
   }
 
-  // Successful results are unchanged.
+  // Existing v40 content must be reinjected for the integrated protocol, current v42 need not.
+  h.setContentVersion(40);
   assert.deepEqual(await h.send({ action: 'click', tabId: 2, selector: '#go' }), { ok: true });
+  assert.deepEqual(h.injected, [2]);
+  h.setContentVersion(42);
+  assert.deepEqual(await h.send({ action: 'click', tabId: 2, selector: '#go' }), { ok: true });
+  assert.deepEqual(h.injected, [2]);
 
   // Element errors gain the tab's current state.
   reply = () => missingElement;

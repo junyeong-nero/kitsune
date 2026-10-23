@@ -113,7 +113,7 @@ PAGES = {
     # URL; an option click selects it. Home reports clicks.
     "reviews": """<header><button id="home" onclick="fetch('/hit?page={name}')">Home</button>
 <script>for (let i = 0; i < 150; i++) document.currentScript.before(Object.assign(document.createElement('a'),
-  {{ href: '#store-' + i, textContent: 'Store link ' + i }}));</script></header>
+  {{ href: '/store-' + i, textContent: 'Store link ' + i }}));</script></header>
 <main><h2>Reviews</h2><div role="region" aria-label="Review filters">
 <button id="toggle" aria-expanded="false" onclick="this.setAttribute('aria-expanded', 'true');
   document.getElementById('options').hidden = false; history.pushState(null, '', '?filter=open')">Review type</button>
@@ -265,36 +265,33 @@ class RealBrowserActionRaceTests(harness.RealBrowserTestCase):
 
     # ── Navigation and focus races ──
 
-    def test_short_refs_reject_replaced_snapshot_and_post_action_refs_without_extra_clicks(self):
+    def test_short_refs_survive_newer_snapshots_and_full_post_action_snapshots(self):
         tab_id = self.open_tab(self.site.url("short-refs"))
         old = self.snapshot_ref(tab_id, "Act short-refs")
         self.assertRegex(old, r"^e\d+$")
         fresh = self.snapshot_ref(tab_id, "Act short-refs")
-        self.assertNotEqual(old, fresh)
-        stale = self.call("/api/click", {"tabId": tab_id, "ref": old})
-        self.assert_error(stale, "stale_ref", True)
-        self.assertEqual(stale["state"]["reason"], "snapshot_replaced", stale)
-        self.assertEqual(stale["state"]["ref"], old, stale)
-        self.assertEqual(stale["state"]["currentRef"], fresh, stale)
-        self.assertEqual(stale["state"]["latestObservation"], "browser_snapshot", stale)
+        self.assertEqual(old, fresh, "observing the same attached node reuses its ref (#221)")
         self.assert_hits("short-refs", 0, settle=0)
 
-        # A full post-action snapshot replaces refs like browser_snapshot; a delta (the default) adds them.
-        clicked = self.assert_ok(self.call("/api/click", {"tabId": tab_id, "ref": fresh, "snapshot": "full"}))
+        # Full and delta post-action snapshots both preserve an attached node's ref.
+        clicked = self.assert_ok(self.call("/api/click", {"tabId": tab_id, "ref": old, "snapshot": "full"}))
         self.assertNotIn("snapshot_delta", clicked)
-        self.assertRegex(clicked["target_ref"], r"^e\d+$")
-        self.assertNotEqual(clicked["target_ref"], fresh)
-        self.assertIn(f'[ref={clicked["target_ref"]}]', clicked["snapshot"])
-        replaced = self.call("/api/click", {"tabId": tab_id, "ref": fresh})
-        self.assert_error(replaced, "stale_ref", True)
-        self.assertEqual(replaced["state"]["reason"], "snapshot_replaced", replaced)
-        self.assertEqual(replaced["state"]["currentRef"], clicked["target_ref"], replaced)
-        self.assertEqual(replaced["state"]["latestObservation"], "browser_click", replaced)
+        self.assertEqual(clicked["target_ref"], old)
+        self.assertIn(f'[ref={old}]', clicked["snapshot"])
         self.assert_hits("short-refs", 1)
+        repeated = self.assert_ok(self.call("/api/click", {"tabId": tab_id, "ref": fresh}))
+        self.assertIs(repeated.get("snapshot_delta"), True, repeated)
+        self.assertEqual(repeated["target_ref"], old)
+        self.assert_hits("short-refs", 2)
 
     def test_click_returns_a_delta_of_what_changed_below_the_fold_and_keeps_earlier_refs(self):
         tab_id = self.open_tab(self.site.url("reviews", kind="reviews"))
-        page = self.call("/api/snapshot", {"tabId": tab_id})["snapshot"]
+        # Default readable snapshots must still reach controls beyond 12k (#218).
+        readable = self.call("/api/snapshot", {"tabId": tab_id})
+        self.assertNotIn("truncated", readable)
+        self.assertGreater(len(readable["snapshot"]), 12000)
+        self.assertIn("/url:", readable["snapshot"])
+        page = readable["snapshot"]
         [home], [toggle] = refs_named(page, "Home"), refs_named(page, "Review type")
         self.assertGreater(len(page), 4000, "a capped full snapshot would end inside the header")
 

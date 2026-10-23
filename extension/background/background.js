@@ -3,7 +3,7 @@
 
 'use strict';
 
-const EXPECTED_CONTENT_VERSION = 40;
+const EXPECTED_CONTENT_VERSION = 42;
 const WS_URL = 'ws://127.0.0.1:47652';
 // scripts/build_extension.py sets 'signed' for the AMO build (see content.js).
 const KITSUNE_BUILD = 'dev';
@@ -603,6 +603,8 @@ async function runCommand(params, { withSnapshot, deltaSnapshot, textSnapshot, t
   const result = await dispatchCommand(params);
   const blankLink = result?.targetBlankLink;
   if (blankLink) delete result.targetBlankLink;
+  const newTabLink = result?.newTabLink;
+  if (newTabLink) delete result.newTabLink;
   if (textSnapshot && result && !result.error) result.tabId = params.tabId;
   if (withSnapshot && result && !result.error && result.ok !== false) {
     try {
@@ -622,17 +624,35 @@ async function runCommand(params, { withSnapshot, deltaSnapshot, textSnapshot, t
           if (snapshot.title !== undefined) result.title = snapshot.title;
         }
         if (snapshot.truncated) result.snapshot_truncated = true;
+        if (snapshot.hint) result.snapshot_hint = snapshot.hint;
         if (snapshot.target_ref) result.target_ref = snapshot.target_ref;
       }
     } catch (e) { result.snapshot_error = e.message; }
   }
   if (blankLink && params.tabId != null) await openBlockedLink(params.tabId, blankLink, result);
+  // A middle or Ctrl/Cmd click's link opens like a popup-blocked one; a cancelled click is the page's.
+  if (newTabLink && !newTabLink.prevented && params.tabId != null) {
+    await openBlockedLink(params.tabId, { url: newTabLink.url, opener: false }, result);
+  }
   // Checked after the snapshot, which gives a link's new tab time to be created.
   if (tracksOpenedTabs && params.tabId != null && result && typeof result === 'object') {
     const opened = await getOpenedTabs(params.tabId, OPENED_TAB_URL_WAIT_MS);
     if (opened.opened_tabs.length) result.opened_tabs = opened.opened_tabs;
+    else if (newTabLink) noNewTab(result, newTabLink);
   }
   return result;
+}
+
+// A click meant to open its link in a new tab says so when none opened (#223).
+function noNewTab(result, link) {
+  result.opened_tabs = [];
+  const state = { url: link.url, ...(link.prevented ? { reason: 'page_cancelled' } : {}) };
+  result.warning ??= { code: 'no_tab_opened', state,
+    hint: link.prevented
+      ? 'The page cancelled this click, so its link did not open in a new tab, and the page opened none ' +
+        '(the popup blocker drops tabs that synthetic clicks open). It may have acted in this tab instead; ' +
+        'check the snapshot, or open state.url with browser_tabs action=new.'
+      : 'No tab opened for this link; open state.url with browser_tabs action=new.' };
 }
 
 // Tabs opened by tabId since its last page action started, with their current URLs.
@@ -717,8 +737,8 @@ async function dispatchCommand(command) {
     case 'resizeWindow':     return await resizeWindow(params.tabId, params.width, params.height);
     case 'moveTab':          return await moveTabAction(params.tabId, params.windowId, params.index);
     case 'detachTab':        return await detachTab(params.tabId);
-    case 'elementScreenshot':return await elementScreenshot(params.tabId, params.selector, params.scale, params.imagePreview);
-    case 'fullPageScreenshot': return await fullPageScreenshot(params.tabId, params.imagePreview);
+    case 'elementScreenshot':return await elementScreenshot(params.tabId, params.selector, params.scale, params.imagePreview, params.format);
+    case 'fullPageScreenshot': return await fullPageScreenshot(params.tabId, params.imagePreview, params.format);
     case 'cookies':          return await cookiesOp(params.op, params.url, params.name, params.value, params.domain, params.path, params.secure);
     case 'clipboard':        return await clipboardOp(params.op, params.text);
     case 'downloads':        return await downloadsOp(params.op, params.url, params.filename, params.query);
@@ -866,13 +886,37 @@ async function waitForTabProperty(property, { tabId, pattern, timeout = 10000 })
   }
 }
 
+function screenshotFormat(format = 'png') {
+  if (format !== 'png' && format !== 'jpeg') throw new Error('Screenshot format must be png or jpeg');
+  return format;
+}
+
+function screenshotFailure(error, stage, tabId) {
+  const underlying = error?.screenshotResult || {};
+  const cause = error?.message || String(error);
+  return {
+    ...underlying,
+    error: `Screenshot failed during ${stage}: ${cause}`,
+    code: underlying.code || 'screenshot_failed',
+    retryable: underlying.retryable ?? false,
+    state: { ...underlying.state, tabId, stage, cause, name: error?.name || 'Error' },
+    hint: underlying.hint || 'If the tab is loading or was just resized, wait for it to settle before retrying. ' +
+      'Internal/protected pages cannot be captured. Otherwise report this cause and stage; do not retry blindly.'
+  };
+}
+
 // tabs.captureTab renders a tab whether or not it is shown, so no capture activates a tab.
 async function captureScreenshot(params = {}) {
+  let stage = 'resolve tab', tabId = params.tabId;
   try {
+    const format = screenshotFormat(params.format);
     const tab = params.tabId != null ? await browser.tabs.get(params.tabId)
       : (await browser.tabs.query({ active: true, currentWindow: true }))[0];
     if (!tab) return noActiveTab('No active tab found');
-    const dataUrl = await browser.tabs.captureTab(tab.id, { format: 'png', quality: 90 });
+    tabId = tab.id;
+    stage = 'tabs.captureTab';
+    const dataUrl = await browser.tabs.captureTab(tab.id, { format, quality: 90 });
+    stage = 'image preview';
     return {
       dataUrl: params.imagePreview ? await imagePreview(dataUrl) : dataUrl,
       url: tab.url || '',
@@ -881,7 +925,7 @@ async function captureScreenshot(params = {}) {
       height: tab.height || 0
     };
   } catch (e) {
-    return { error: `Screenshot failed: ${e.message}` };
+    return screenshotFailure(e, stage, tabId);
   }
 }
 
@@ -1318,7 +1362,7 @@ async function ensureContentScript(tabId) {
 const MISSING_CONTENT_RECEIVER = 'Could not establish connection. Receiving end does not exist.';
 
 // Public refs never reuse an index. Keep the generation-qualified ref private so the
-// content script can still distinguish replaced snapshots and other documents.
+// content script can still reject refs from another document or an earlier injection.
 const shortRefs = new Map();
 const publicRefs = new Map();
 // Retired aliases still answer other_document, not not_in_snapshot; bounded, oldest first.
@@ -1386,14 +1430,70 @@ function expandShortRefs(params, tabId) {
   return { params: expanded };
 }
 
+// The owned ref follows the JSON-quoted name. Ref-like text inside that name or a
+// quoted value is page data, never a target field; JSON escapes must stay inside it.
+function snapshotLineRef(line) {
+  return /^ *- [^"\n]+ "(?:[^"\\]|\\.)*" \[ref=(e\d+)\](?= |$)/.exec(line)?.[1];
+}
+
+// Enforce explicit snapshot budgets on the final public protocol, after aliases and URL
+// redaction. Keep complete lines and their ancestors, prioritizing an action's target.
+function boundPublicSnapshot(response, params) {
+  let budget = Number.isFinite(params.maxChars) ? Math.max(0, params.maxChars) : Infinity;
+  if (params.text === true) budget = Math.min(budget, 12000);
+  if (!Number.isFinite(budget) || typeof response.snapshot !== 'string') return response;
+  if (!response.truncated && response.snapshot.length <= budget) return response;
+  const marker = '- … truncated; scope with selector, ref or max_depth';
+  const lines = response.snapshot.split('\n').filter(line => line && line !== marker);
+  const parents = [], stack = [];
+  for (let i = 0; i < lines.length; i++) {
+    const indent = lines[i].length - lines[i].trimStart().length;
+    while (stack.length && stack.at(-1).indent >= indent) stack.pop();
+    parents[i] = stack.at(-1)?.index;
+    stack.push({ indent, index: i });
+  }
+  const kept = new Set();
+  const showMarker = marker.length <= budget;
+  const available = showMarker ? budget - marker.length : budget + 1;
+  let used = 0;
+  const add = index => {
+    const block = [];
+    for (let i = index; i != null && !kept.has(i); i = parents[i]) block.push(i);
+    const cost = block.reduce((sum, i) => sum + lines[i].length + 1, 0);
+    if (used + cost > available) return false;
+    for (const i of block) kept.add(i);
+    used += cost;
+    return true;
+  };
+  const target = response.target_ref ? lines.findIndex(line => snapshotLineRef(line) === response.target_ref) : -1;
+  if (target >= 0) add(target);
+  for (let i = 0; i < lines.length; i++) add(i);
+  const selected = lines.filter((_, i) => kept.has(i));
+  if (showMarker) selected.push(marker);
+  const result = { ...response, snapshot: selected.join('\n'), truncated: true,
+    hint: 'Snapshot truncated; scope with selector, ref or max_depth.' };
+  if (response.target_ref && !selected.some(line => snapshotLineRef(line) === response.target_ref)) {
+    delete result.target_ref;
+    result.hint += ' The target and its ancestor context did not fit; take a scoped snapshot.';
+  }
+  return result;
+}
+
 function compactContentRefs(action, response, tabId, params) {
   // Only protocol-owned fields are rewritten, never page text, JS results or values.
   const visit = (value, convert) => {
     if (Array.isArray(value)) return value.map(item => visit(item, convert));
     if (!value || typeof value !== 'object') return value;
     return Object.fromEntries(Object.entries(value).map(([key, item]) => {
+      if (action === 'getSnapshot' && value === response && key === 'url' && typeof item === 'string') {
+        let url;
+        try { url = new URL(item); } catch {}
+        return [key, url && ['http:', 'https:'].includes(url.protocol) ? redactHistoryUrl(item) : undefined];
+      }
       if (key === 'snapshot' && typeof item === 'string') {
-        return [key, item.replace(/\[ref=(s\d+e\d+)\]/g, (_, ref) => `[ref=${convert(ref)}]`)];
+        const snapshot = item.replace(/^( *- \/url: )("(?:[^"\\\r\n]|\\.)*")$/gm,
+          (_, prefix, encoded) => prefix + JSON.stringify(redactHistoryUrl(JSON.parse(encoded))));
+        return [key, snapshot.replace(/\[ref=(s\d+e\d+)\]/g, (_, ref) => `[ref=${convert(ref)}]`)];
       }
       if (['ref', 'target_ref', 'currentRef'].includes(key) && typeof item === 'string' && /^s\d+e\d+$/.test(item)) {
         // An error echoes the caller's ref, including legacy refs, verbatim.
@@ -1422,7 +1522,8 @@ function compactContentRefs(action, response, tabId, params) {
         publicRefs.set(`${tabId}:${ref}`, short);
       }
     }
-    return visit(response, ref => publicRefs.get(`${tabId}:${ref}`));
+    const result = visit(response, ref => publicRefs.get(`${tabId}:${ref}`));
+    return action === 'getSnapshot' ? boundPublicSnapshot(result, params) : result;
   };
   const pending = shortRefQueue.then(rewrite);
   shortRefQueue = pending.catch(() => {});
@@ -1652,31 +1753,38 @@ const zlSleep = (ms) => new Promise(r => setTimeout(r, ms));
 // Capture helpers call named content.js operations; no code strings leave the package.
 async function zlContent(tabId, action, params = {}) {
   const r = await forwardToContent(action, { tabId, ...params });
-  return r && !r.error ? r : null;
+  if (!r || r.error) {
+    const error = new Error(r?.error || `No response from content operation ${action}`);
+    error.screenshotResult = r;
+    throw error;
+  }
+  return r;
 }
 
 async function zlScroll(tabId, scroll) {
   const r = await zlContent(tabId, 'captureScroll', scroll);
-  return r ? r.sy : null;
+  return r.sy;
 }
 
 // 2.1.1: scale (1-4) = output pixels per CSS pixel. captureTab renders the viewport at that scale, so
 // scale 2 gives a genuinely sharper image (text in article screenshots), not an upscale. Default 1 = old size.
-async function elementScreenshot(tabId, selector, scale, preview) {
-  let hidFixed = false, id = null, captureAttribute = null;
+async function elementScreenshot(tabId, selector, scale, preview, format) {
+  let hidFixed = false, id = null, captureAttribute = null, stage = 'resolve target';
   const want = Math.min(Math.max(Number(scale) || 1, 1), 4);
   try {
+    format = screenshotFormat(format);
     id = tabId || (await getActiveTabId());
     if (!id || !selector) return { error: 'tabId and selector required' };
-    if (/^(?:s\d+e\d+|e\d+|r\d+)$/.test(selector)) {
-      const target = await forwardToContent('markScreenshotTarget', { tabId: id, selector });
-      if (target.error) return target;
-      selector = target.selector;
-      captureAttribute = target.attribute;
-    }
+    // Every selector uses the shared resolver, then capture/cleanup holds the exact node
+    // (including shadow CSS and Playwright forms), not another document-only lookup.
+    const target = await forwardToContent('markScreenshotTarget', { tabId: id, selector });
+    if (target.error) return target;
+    selector = target.selector;
+    captureAttribute = target.attribute;
     const tab = await browser.tabs.get(id);
     if (isRestrictedUrl(tab.url)) return { error: 'Cannot access browser internal page' };
     const measure = async () => {
+      stage = 'captureMeasure';
       const r = await zlContent(id, 'captureMeasure', { selector });
       return r && !r.missing ? r : null;
     };
@@ -1684,19 +1792,24 @@ async function elementScreenshot(tabId, selector, scale, preview) {
     if (!m) return { error: 'No element matches: ' + selector };
     if (m.w < 1 || m.h < 1) return { error: 'Element has no size: ' + selector };
     const tall = m.h > m.vh;
+    stage = 'captureScrollIntoView';
     await zlContent(id, 'captureScrollIntoView', { selector, block: tall ? 'start' : 'center' });
     await zlSleep(150);
     m = await measure();
     if (!m) return { error: 'No element matches: ' + selector };
     const cssW = Math.min(m.w, CANVAS_MAX / want), cssH = Math.min(m.h, CANVAS_MAX / want);
     const W = Math.max(1, Math.round(cssW * want)), H = Math.max(1, Math.round(cssH * want));
+    stage = 'create element canvas';
     const canvas = new OffscreenCanvas(W, H);
     const ctx = canvas.getContext('2d');
     const shot = want > 1 ? { format: 'png', scale: want } : { format: 'png' };
     let covered = 0, segments = 0;
     // 2.1.0: elements taller than the viewport are scrolled and stitched (they used to come back blank below the fold)
     for (let guard = 0; guard < 60 && covered < cssH; guard++) {
-      const img = await loadDataUrl(await browser.tabs.captureTab(id, shot));
+      stage = 'tabs.captureTab';
+      const dataUrl = await browser.tabs.captureTab(id, shot);
+      stage = 'decode element segment';
+      const img = await loadDataUrl(dataUrl);
       const d = img.width / m.vw;          // captured pixels per CSS pixel (dpr, or the requested scale)
       const o = W / cssW;                  // output pixels per CSS pixel
       const visTop = Math.max(0, m.y), visBot = Math.min(m.vh, m.y + m.h);
@@ -1709,19 +1822,22 @@ async function elementScreenshot(tabId, selector, scale, preview) {
         segments++;
       }
       if (covered >= cssH) break;
+      stage = 'hideFixed';
       if (!hidFixed) { await zlContent(id, 'hideFixed', { selector }); hidFixed = true; }
       const before = m.sy;
+      stage = 'captureScroll';
       await zlScroll(id, { by: Math.max(50, Math.floor(m.vh * 0.85)) });
       await zlSleep(160);
       m = await measure();
       if (!m) return { error: 'No element matches: ' + selector };
       if (m.sy === before) break;   // can't scroll any further
     }
-    const blob = await canvas.convertToBlob({ type: 'image/png' });
-    const cropped = arrayBufferToDataUrl(await blob.arrayBuffer(), 'image/png');
+    stage = 'encode element image';
+    const cropped = await encodeScreenshotCanvas(canvas, format);
+    stage = 'image preview';
     return { ok: true, selector, bounds: { x: m.x, y: m.y, width: W, height: H }, scale: want, segments,
              complete: covered >= cssH - 1, dataUrl: preview ? await imagePreview(cropped) : cropped };
-  } catch (e) { return { error: 'elementScreenshot failed: ' + e.message }; }
+  } catch (e) { return screenshotFailure(e, stage, id); }
   finally {
     if (captureAttribute) {
       try { await forwardToContent('unmarkScreenshotTarget', { tabId: id, attribute: captureAttribute }); } catch (e) {}
@@ -1730,28 +1846,33 @@ async function elementScreenshot(tabId, selector, scale, preview) {
   }
 }
 
-async function fullPageScreenshot(tabId, preview) {
-  let hidFixed = false, id = null;
+async function fullPageScreenshot(tabId, preview, format) {
+  let hidFixed = false, id = null, stage = 'resolve tab';
   try {
+    format = screenshotFormat(format);
     id = tabId || (await getActiveTabId());
     if (!id) return { error: 'No tab' };
     const tab = await browser.tabs.get(id);
     if (isRestrictedUrl(tab.url)) return { error: 'Cannot access browser internal page' };
-    const m = await forwardToContent('fullPageMetrics', { tabId: id });
-    if (m.error) return m;
+    stage = 'fullPageMetrics';
+    const m = await zlContent(id, 'fullPageMetrics');
     const vh = m.viewportHeight, vw = m.viewportWidth;
     const docH = Math.min(m.docHeight, CANVAS_MAX), docW = Math.min(Math.max(m.docWidth, 1), CANVAS_MAX);
     const segments = [];
     let y = 0;
     for (let i = 0; i < 40 && y < docH; i++) {
+      stage = 'captureScroll';
       await zlScroll(id, { to: y });
       await zlSleep(150);   // let lazy content settle
       const sy = Number(await zlScroll(id, {})) || 0;   // the page may clamp the last scroll
+      stage = 'tabs.captureTab';
       segments.push({ y: sy, data: await browser.tabs.captureTab(id, { format: 'png' }) });
+      stage = 'hideFixed';
       if (!hidFixed) { await zlContent(id, 'hideFixed', { selector: null }); hidFixed = true; }
       if (sy + vh >= docH) break;
       y = sy + vh;
     }
+    stage = 'stitch full-page canvas';
     const canvas = new OffscreenCanvas(Math.round(Math.min(Math.max(docW, vw), CANVAS_MAX)), Math.round(docH));
     const ctx = canvas.getContext('2d');
     for (const seg of segments) {
@@ -1761,14 +1882,29 @@ async function fullPageScreenshot(tabId, preview) {
       if (drawH <= 0) continue;
       ctx.drawImage(img, 0, 0, img.width, drawH * scale, 0, seg.y, vw, drawH);
     }
-    const blob = await canvas.convertToBlob({ type: 'image/png' });
-    const dataUrl = arrayBufferToDataUrl(await blob.arrayBuffer(), 'image/png');
+    stage = 'encode full-page image';
+    const dataUrl = await encodeScreenshotCanvas(canvas, format);
+    stage = 'image preview';
     return { ok: true, width: canvas.width, height: canvas.height, segments: segments.length,
              truncated: m.docHeight > CANVAS_MAX, dataUrl: preview ? await imagePreview(dataUrl) : dataUrl };
-  } catch (e) { return { error: 'fullPageScreenshot failed: ' + e.message }; }
+  } catch (e) { return screenshotFailure(e, stage, id); }
   finally {
     if (hidFixed) { try { await zlContent(id, 'restoreFixed'); } catch (e) {} }
   }
+}
+
+async function encodeScreenshotCanvas(canvas, format) {
+  const mime = `image/${format}`;
+  if (format === 'jpeg') {
+    // JPEG has no alpha channel; composite transparent/uncovered pixels onto white.
+    const ctx = canvas.getContext('2d');
+    ctx.globalCompositeOperation = 'destination-over';
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
+  const blob = await canvas.convertToBlob({ type: mime, quality: 0.9 });
+  if (blob.type !== mime) throw new Error(`Screenshot encoder returned ${blob.type || 'no MIME type'} instead of ${mime}`);
+  return arrayBufferToDataUrl(await blob.arrayBuffer(), blob.type);
 }
 
 async function loadDataUrl(dataUrl) {

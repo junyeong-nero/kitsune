@@ -22,6 +22,18 @@ class SilentSocket:
         self.sent.append(message)
 
 
+class ReplyingSocket(SilentSocket):
+    """An extension socket that answers every command with reply."""
+
+    def __init__(self, reply):
+        super().__init__()
+        self.reply = reply
+
+    async def send(self, message):
+        await super().send(message)
+        bridge.pending_commands[json.loads(message)["id"]]["future"].set_result(dict(self.reply))
+
+
 class BridgeTransportErrorTests(unittest.TestCase):
     def setUp(self):
         for name, value in (("extension_ws", None), ("_ws_send_lock", None)):
@@ -52,6 +64,19 @@ class BridgeTransportErrorTests(unittest.TestCase):
                 self.assertIs(result["retryable"], retryable)
                 self.assertEqual(result["state"], {"timeoutSeconds": 0.01})
                 self.assertEqual(len(bridge.extension_ws.sent), 1)
+
+    def test_unsupported_selector_stays_non_retryable_for_reads_and_writes(self):
+        # #219: the selector failed to parse before anything was dispatched; repeating cannot help.
+        unsupported = {"error": "Unsupported selector: XPath other than \"..\" (the parent element)",
+                       "code": "unsupported_selector", "retryable": False, "hint": "Pass a ref"}
+        for action in ("getSnapshot", "getHTML", "click", "hover"):
+            with self.subTest(action=action), patch.object(bridge, "extension_ws", ReplyingSocket(unsupported)):
+                result = asyncio.run(bridge._send_to_extension_raw(action, {"selector": "xpath=//ul"}))
+                self.assertEqual(result, unsupported)
+        # Other read failures stay safe to repeat.
+        not_found = {"error": "Element not found", "code": "not_found", "retryable": False}
+        with patch.object(bridge, "extension_ws", ReplyingSocket(not_found)):
+            self.assertIs(asyncio.run(bridge._send_to_extension_raw("getHTML", {}))["retryable"], True)
 
 
 class RetryActionTests(unittest.TestCase):
@@ -182,8 +207,9 @@ class McpErrorResultTests(unittest.TestCase):
         self.assertMcpResult(self.call("browser_tabs", {"action": "select"}),
                              {"error": "index is required for action=select"}, True)
         timed_out = {"ok": False, "timedOut": True, "tabId": 9, "url": "https://example.com/"}
+        # Core browser_tabs new reports the tab's index, not its tabId (#224).
         self.assertMcpResult(self.call("browser_tabs", {"action": "new", "url": "https://example.com/"}, timed_out),
-                             timed_out, True)
+                             {"ok": False, "timedOut": True, "url": "https://example.com/"}, True)
 
     def test_successes_and_warnings_are_not_errors(self):
         warned = {"ok": True, "tag": "input", "warning": {"code": "hidden_or_covered",

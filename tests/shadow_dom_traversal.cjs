@@ -65,7 +65,7 @@ class Element extends Node {
   constructor(tagName, attrs = {}, ...children) {
     super();
     Object.assign(this, { tagName, attrs, nodeType: 1, isConnected: true, events: [],
-      shadowRoot: null, openOrClosedShadowRoot: null });
+      shadowRoot: null, openOrClosedShadowRoot: null, style: {} });
     for (const prop of FIELD_PROPS) if (prop in attrs) this[prop] = attrs[prop];
     if (tagName === 'INPUT') {
       this.type ??= 'text';
@@ -88,6 +88,7 @@ class Element extends Node {
   getAttribute(key) { return this.attrs[key] ?? null; }
   hasAttribute(key) { return key in this.attrs; }
   setAttribute(key, value) { this.attrs[key] = String(value); }
+  removeAttribute(key) { delete this.attrs[key]; }
   matches(selector) { return matches(this, selector); }
   closest(selector) {
     for (let el = this; el; el = el.parentElement) if (el.matches(selector)) return el;
@@ -102,14 +103,14 @@ class Element extends Node {
   }
   click() { this.dispatchEvent({ type: 'click' }); }
   focus() { this.focused = true; }
-  scrollIntoView() {}
+  scrollIntoView(options) { this.scrolled = options; }
   // A dispatched click runs native activation, as in a browser.
   dispatchEvent(event) {
     this.events.push(event.type);
     if (event.type === 'click' && this.type === 'checkbox') this.checked = !this.checked;
     return true;
   }
-  getBoundingClientRect() { return { x: 0, y: 0, width: 100, height: 30 }; }
+  getBoundingClientRect() { return { x: 0, y: 0, left: 0, top: 0, width: 100, height: 30 }; }
   getClientRects() { return [this.getBoundingClientRect()]; }
 }
 
@@ -170,6 +171,8 @@ function page(body) {
   const event = class { constructor(type, options) { Object.assign(this, { type }, options); } };
   const context = vm.createContext({
     console, crypto: webcrypto, CSS: { escape: x => x }, setTimeout, document,
+    innerWidth: 800, innerHeight: 600, scrollY: 0, devicePixelRatio: 1,
+    getComputedStyle: el => ({ position: el.position || 'static', visibility: el.style.visibility || 'visible' }),
     location: { href: 'http://gallery.test/' },
     Event: event, MouseEvent: event, KeyboardEvent: event, InputEvent: event,
     HTMLInputElement: class {}, HTMLTextAreaElement: class {},
@@ -190,6 +193,43 @@ const refOf = (snapshot, line) => {
 };
 
 (async () => {
+  // Issue #222: exact capture markers reach open/closed shadow targets and clean up detached nodes.
+  for (const closed of [false, true]) {
+    const dom = fixture();
+    const host = closed ? dom.closedHost : dom.newsletter;
+    const target = closed ? dom.closedNote : dom.email;
+    host.position = 'sticky';
+    const { send, document } = page(dom.body);
+    const { snapshot } = await send({ action: 'getSnapshot' });
+    const ref = refOf(snapshot, closed ? 'textbox "Closed note"' : 'textbox "이메일"');
+    // The email label also exists outside the component; take its component-specific ref.
+    const targetRef = closed ? ref : refOf(snapshot.split('주간 소식')[1], 'textbox "이메일"');
+    target.setAttribute('id', 'shadow-capture');
+    const cssMarked = await send({ action: 'markScreenshotTarget', selector: '#shadow-capture' });
+    assert.ok(target.hasAttribute(cssMarked.attribute), 'shadow CSS uses the shared resolver');
+    assert.equal((await send({ action: 'captureMeasure', selector: cssMarked.selector })).w, 100);
+    await send({ action: 'unmarkScreenshotTarget', attribute: cssMarked.attribute });
+    assert.equal(target.hasAttribute(cssMarked.attribute), false);
+    const marked = await send({ action: 'markScreenshotTarget', selector: targetRef });
+    assert.ok(target.hasAttribute(marked.attribute));
+    assert.equal(document.querySelector(marked.selector), null, 'the marker is invisible to document selectors');
+    const measured = await send({ action: 'captureMeasure', selector: marked.selector });
+    assert.equal(measured.w, 100);
+    assert.equal(measured.h, 30);
+    assert.deepEqual(await send({ action: 'captureScrollIntoView', selector: marked.selector, block: 'start' }), { ok: true });
+    assert.equal(target.scrolled.block, 'start');
+    await send({ action: 'hideFixed', selector: marked.selector });
+    assert.notEqual(host.style.visibility, 'hidden', 'sticky shadow ancestor is not hidden');
+    await send({ action: 'restoreFixed' });
+    target.isConnected = false;
+    assert.deepEqual(await send({ action: 'captureMeasure', selector: marked.selector }), { missing: true });
+    await send({ action: 'unmarkScreenshotTarget', attribute: marked.attribute });
+    assert.equal(target.hasAttribute(marked.attribute), false, 'detached target marker is removed');
+    target.isConnected = true;
+    assert.deepEqual(await send({ action: 'captureMeasure', selector: marked.selector }), { missing: true }, 'registry entry is removed');
+    await send({ action: 'unmarkScreenshotTarget', attribute: marked.attribute });
+  }
+
   // The snapshot lists the component's fields with refs; a ref check toggles the checkbox.
   {
     const dom = fixture();

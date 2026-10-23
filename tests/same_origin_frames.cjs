@@ -45,6 +45,7 @@ class Element {
   getAttribute(key) { return this.attrs[key] ?? null; }
   hasAttribute(key) { return key in this.attrs; }
   setAttribute(key, value) { this.attrs[key] = String(value); }
+  removeAttribute(key) { delete this.attrs[key]; }
   matches(selector) { return selector.split(',').some(s => matchesOne(this, s)); }
   querySelectorAll(selector) { return this.descendants.filter(el => el.matches(selector)); }
   querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
@@ -143,6 +144,7 @@ function load(p) {
     location: { href: `${ORIGIN}/checkout`, origin: ORIGIN },
     window: { origin: ORIGIN, getComputedStyle: () => style },
     document: p.top,
+    innerWidth: 1000, innerHeight: 800, scrollY: 0, devicePixelRatio: 1,
     browser: { runtime: { onMessage: { addListener: fn => { listener = fn; } },
       sendMessage: () => Promise.resolve(null) } },
   });
@@ -179,6 +181,16 @@ const refOf = (snapshot, line) => {
 
   // Refs from the snapshot act on the frame's elements.
   const zipRef = refOf(snapshot, 'textbox "우편번호"');
+  // Issue #222: exact capture markers in frames measure in the top viewport, including nested offsets.
+  for (const [ref, x, y, w, h] of [[zipRef, 62, 212, 120, 20],
+      [refOf(snapshot, 'iframe "level 3"'), 4, 4, 200, 100]]) {
+    const marked = await send({ action: 'markScreenshotTarget', selector: ref });
+    assert.equal(p.top.querySelector(marked.selector), null);
+    const measured = await send({ action: 'captureMeasure', selector: marked.selector });
+    assert.deepEqual([measured.x, measured.y, measured.w, measured.h], [x, y, w, h]);
+    await send({ action: 'unmarkScreenshotTarget', attribute: marked.attribute });
+    assert.equal((await send({ action: 'captureMeasure', selector: marked.selector })).missing, true);
+  }
   const fill = await send({ action: 'fill', selector: zipRef, value: '06236' });
   assert.equal(fill.ok, true, JSON.stringify(fill));
   assert.equal(p.zip.value, '06236');

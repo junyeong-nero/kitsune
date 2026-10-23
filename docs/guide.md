@@ -91,20 +91,21 @@ focus/blur, targeted scrolling, fuzzy form-fill keys, and uploads without a sele
 on pages with several file inputs. Ambiguous clicks fail before ask-before-act
 offers confirmation.
 
-Short refs (`e12`) are scoped to the tab, document and snapshot generation, tracked
-by the extension. Indexes are never reused across snapshots or tabs; after an
-extension reload, take a new snapshot. A new snapshot,
-`browser_dom`, or a full post-action snapshot below replaces earlier refs in that
-tab, and navigation invalidates them; `browser_find`, `browser_forms`,
-`browser_wait_for(selector=...)` and post-action deltas add refs without replacing any. Detached or
-outdated refs return `stale ref, call browser_snapshot again` (`code: "stale_ref"`);
-for a replaced ref, `state.latestObservation` names the call with the current refs
-and, when the element is unambiguously the same, `state.currentRef` is its current
-ref. Always use refs from the latest result.
+Short refs (`e12`) name attached nodes in one tab/document, tracked by the extension.
+New snapshots, `browser_dom`, find and full or delta post-action observations reuse
+those refs; an unchanged attached node keeps its ref even if its name or position changes.
+Detachment/replacement, frame-document retirement, navigation or content reinjection
+invalidates the old identity. Indexes are never reused across observations or tabs;
+after an extension reload, take a new snapshot. A stale ref reports `element_removed`,
+`not_in_snapshot` (never issued/unknown), or `other_document` in `state.reason`.
+Take a new scoped observation of the intended tab; never repeat a write merely to
+refresh refs. Earlier attached refs remain usable without another observation.
 
 Click, type, fill, select, check, keypress, submit, and navigate responses include
 a `snapshot` capped at 4,000 characters (`snapshot_truncated` indicates more
-content), and `target_ref` is the acted-on element's ref for a follow-up action.
+content; `snapshot_hint` gives scope guidance and explains if the target/context
+could not fit). `target_ref`, when included, is the acted-on element's ref for a
+follow-up action.
 For click, type, fill, select, check and keypress it is a delta (`snapshot_delta: true`):
 only the target and what the action changed or revealed, such as an opened menu's
 options, anchored there instead of at the page top; earlier refs stay valid. Submit,
@@ -306,11 +307,25 @@ Kitsune's compact JSON results, not Playwright's Markdown. Where the two differ:
 
 - **Current tab.** Tools act on the active tab until `browser_tabs` `new` or `select`
   makes another tab current; `select` does not switch your view. `index` is the position
-  in `browser_tabs` `list`, which also marks `active` and agent-`owned` tabs.
+  in `browser_tabs` `list`, which also marks `active` and agent-`owned` tabs. `new`,
+  `select` and `close` return the tabs after the change in the same form; `new` returns
+  the new tab's `index`.
   `browser_close` closes the current tab, never the browser; closing a tab the agent did
   not open needs the user's approval (`user_tab`).
-- **Targets.** `target` is a snapshot ref (`e12`) or a CSS selector, which must match one
-  element (else `ambiguous_target`).
+- **Targets.** `target` is a snapshot ref (`e12`) or a CSS selector. Actions require one
+  actionable match (else `ambiguous_target`). Actions and scoped snapshots also accept a
+  subset of Playwright selectors: `text=`, `role=…[name="…"]`, `:has-text()`, `:text-is()`,
+  `:text()`, `:visible`, `>>` chains, `nth=N` and `xpath=..` (parent). Unsupported forms
+  return `unsupported_selector` with a hint, not a retryable missing target. General XPath
+  and refs combined with selectors are not supported; element screenshots use the same
+  resolver and capture the exact selected node, including inside shadow roots. Refs
+  survive newer observations while their nodes remain attached in the same document; navigation or replacement nodes require new refs.
+- **Snapshots.** Default core snapshots include redacted static text and resolved HTTP(S) link
+  URLs without a new document-prefix character cap. Existing line clipping, structural
+  collapsing and depth rules still apply. In the full toolset, `text=False` is compact
+  and `text=True` enables explicitly bounded readable output (12,000 final public chars).
+  Explicit HTTP `maxChars` and post-action limits also apply after URL redaction; scoped
+  snapshots remain useful for large pages.
 - **Dialogs.** `browser_handle_dialog` sets how the current tab answers its next dialogs
   (Firefox answers dialogs synchronously, so one already open cannot be answered).
 - **Uploads and drops.** A synthetic click opens no file chooser, so `browser_file_upload`
@@ -322,12 +337,17 @@ Kitsune's compact JSON results, not Playwright's Markdown. Where the two differ:
   earlier messages are missed. `browser_network_requests` lists the page's resource
   timing entries since it loaded; there are no headers or bodies, so
   `browser_network_request` with `part` answers `not_supported`.
-- **Screenshots.** `browser_take_screenshot` returns an inline image; `filename` saves a
-  PNG (other formats answer `not_supported`); `scale` is ignored.
+- **Screenshots.** `browser_take_screenshot` returns an inline image; `filename` saves
+  PNG or JPEG. `type` chooses the encoding; otherwise `.jpg`/`.jpeg` filenames infer JPEG,
+  with PNG as the default. Other formats answer `not_supported`; `scale` is ignored.
 - **Not supported.** `browser_emulate_media` and `browser_run_code_unsafe` are listed but
   answer `not_supported` (`retryable: false`): an extension cannot override CSS media
   features, and there is no Playwright page to run code against.
-- File names (`filename`) are resolved against the MCP server's working directory.
+- **File names.** A relative `filename` is resolved against `KITSUNE_OUTPUT_DIR` if
+  set, else the first `file://` root the MCP client lists (MCP `roots`, asked for on each
+  call with a `filename`; no answer within 5 seconds counts as none), else the MCP
+  server's working directory. Absolute names and `~` are used as given. `saved_to` is the
+  absolute path written.
 
 Ask-before-act holds still apply. The core schemas have no `confirm_token`; the tools
 accept it anyway, so after the user approves a held action an agent can repeat the call
@@ -386,6 +406,7 @@ kitsune-benchmark; character-size guards in this repo are not token measurements
 | `KITSUNE_EXTENSION_DIR` | `extension/` in a checkout | Unpacked extension the bridge compares a developer build with, to report one that was edited but not reloaded, and whose `WS_URL` port it expects before the extension connects ([Connection diagnosis](api-reference.md#connection-diagnosis)) |
 | `KITSUNE_NO_BRIDGE_RESTART` | Unset | Set to `1` in the MCP server environment to skip automatic replacement of an outdated bridge |
 | `KITSUNE_BRIDGE_IDLE_TIMEOUT` | `0` (never) | Seconds without client activity before the bridge exits; see [Idle shutdown](#idle-shutdown-opt-in) |
+| `KITSUNE_OUTPUT_DIR` | Unset | Directory, in the MCP server environment, for relative `filename` arguments of the `core` tools; unset, they resolve against the client's first root, else the server's working directory (see [Core tools](#core-tools)) |
 | `KITSUNE_PROTECT_USER_TABS` | Unset | Set to `1` in an MCP server environment to refuse that client's navigate, back and forward on tabs the agent did not open; see [Protecting your tabs](#protecting-your-tabs) |
 | `KITSUNE_ASK_BEFORE_ACT` | Unset | Set to `1` in the MCP server environment to start the bridge with [ask-before-act](#ask-before-act) locked on; the lock then persists in `ask-before-act-locked` under `KITSUNE_HOME` |
 | `KITSUNE_HISTORY_ALLOW_DOMAINS` | Unset (every domain) | Bridge: comma-separated domains (with subdomains) the `history` tools may return; see [History and bookmarks](api-reference.md#history-and-bookmarks) |

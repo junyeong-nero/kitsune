@@ -141,6 +141,13 @@ class KitsuneMCP(FastMCP):
             return CallToolResult(content=[_compact_json({
                 "error": f"{MODE} mode does not permit confirmation", "code": "mode_restricted",
                 "retryable": False})], isError=True)
+        if name in playwright_tools.SCHEMAS and (arguments or {}).get("filename"):
+            # Relative file names resolve against the client's workspace root (#225).
+            root = playwright_tools.client_root.set(await playwright_tools.first_client_root(self.get_context()))
+            try:
+                return await super().call_tool(name, arguments)
+            finally:
+                playwright_tools.client_root.reset(root)
         return await super().call_tool(name, arguments)
 
 
@@ -477,13 +484,13 @@ def _post_action(endpoint: str, body: dict, wait: bool = False, timeout: int = 1
 
 
 def _read_page(endpoint: str, tab_id: int | None, selector: str | None = None, ref: str | None = None,
-               max_depth: int | None = None, text: bool = False) -> dict:
+               max_depth: int | None = None, text: bool | None = None) -> dict:
     """Read the active page with GET, or POST a tab target and optional tree scope."""
     if max_depth is not None and (type(max_depth) is not int or max_depth < 0):
         return {"error": "max_depth must be a non-negative integer"}
     body = _request_body({}, tab_id)
-    if text:
-        body["text"] = True
+    if text is not None:
+        body["text"] = text
     if selector is not None:
         body["selector"] = selector
     if ref is not None:
@@ -647,9 +654,9 @@ def browser_dom(
 
 def browser_snapshot(
     tab_id: TabId = None,
-    selector: Annotated[str | None, Field(description="CSS subtree root (included).")] = None,
+    selector: Annotated[str | None, Field(description="Selector subtree root (included).")] = None,
     ref: Annotated[str | None, Field(
-        description="Subtree root ref, resolved before refs are replaced; wins over selector.")] = None,
+        description="Attached subtree root ref; wins over selector.")] = None,
     max_depth: Annotated[int | None, Field(
         description="Depth (>= 0) below the subtree root (body by default); 0 is the root only, omitted "
                     "all.")] = None,
@@ -657,16 +664,17 @@ def browser_snapshot(
         description="Visible text lines (no refs), url, title and tabId, capped at 12,000 chars with a "
                     "truncation marker.")] = False,
 ) -> dict:
-    """Get a compact accessibility-style text tree with fresh element refs; prefer them for
-    actions. text=True adds the page's visible text in the same call.
+    """Get a compact accessibility-style tree with stable element refs; prefer them for
+    actions. text=False omits static prose; text=True adds visible text and caps the final
+    public snapshot at 12,000 chars with truncation guidance.
 
-    Refs belong to one document in one tab. A snapshot, browser_dom, or a full post-action
-    snapshot (submit_form, navigate, a new document) replaces earlier refs; navigation
-    invalidates them. browser_find, browser_forms, wait_for(selector) and the
-    snapshot_delta (target plus changes) of click, type/fill, select_option, check or
-    keypress add refs. After an action, use its snapshot refs and target_ref. On stale_ref,
-    take a new snapshot; never repeat a write just to refresh refs. Repeated composite
-    siblings show the first five items; post-action snapshots also keep the target.
+    Refs name attached nodes in one document/tab and survive newer snapshots, browser_dom,
+    find and full or delta post-action observations. Detachment/replacement, navigation or
+    content reinjection invalidates them. On stale_ref, inspect state.reason and take a new
+    scoped snapshot; never repeat a write just to refresh refs. After an action, its
+    target_ref names the same node when still attached and included. Repeated composite
+    siblings show the first five items; post-action snapshots prioritize the target and
+    its ancestor context within their cap.
     """
     return _read_page("/api/snapshot", tab_id, selector, ref, max_depth, text)
 
@@ -675,10 +683,12 @@ def browser_screenshot(
     selector: str | None = None, full_page: bool = False,
     tab_id: TabId = None, save_to: str | None = None,
     data_url: bool = False, ref: str | None = None, element: str | None = None,
+    format: str = "png",
 ):
-    """Capture the viewport, one element (ref/selector, see browser_check) or the full page
-    (not with selector/ref) as an inline image, JPEG-encoded or downscaled under ~1 MB.
-    save_to writes the full PNG there and returns metadata instead; data_url also returns
+    """Capture the viewport, one exact element (ref or shared CSS/Playwright-subset selector,
+    including shadow roots), or the full page (not with selector/ref) as an inline image,
+    JPEG-encoded or downscaled under ~1 MB. Unsupported selectors fail before capture.
+    save_to writes the full PNG (or JPEG with format="jpeg") and returns metadata; data_url also returns
     it as a (large) data URL.
 
     No capture shows the tab or focuses a window.
@@ -687,14 +697,18 @@ def browser_screenshot(
         selector = ""
     if selector is not None and full_page:
         return {"error": "selector and full_page are mutually exclusive"}
+    if format not in {"png", "jpeg"}:
+        return {"error": "Screenshot format must be png or jpeg"}
     preview = not (save_to or data_url)
+    format_body = {"format": format} if format != "png" else {}
     if selector is not None or full_page:
         endpoint = "/api/element-screenshot" if selector is not None else "/api/full-page-screenshot"
         body = _request_body({"selector": selector}, ref=ref, element=element) if selector is not None else {}
         body["imagePreview"] = preview
+        body.update(format_body)
         result = _post(endpoint, _request_body(body, tab_id), timeout=120 if full_page else 45)
         return _screenshot_result(result, save_to, data_url)
-    result = _post("/api/screenshot", _request_body({"imagePreview": preview}, tab_id))
+    result = _post("/api/screenshot", _request_body({"imagePreview": preview, **format_body}, tab_id))
     return _screenshot_result(result, save_to, data_url)
 
 

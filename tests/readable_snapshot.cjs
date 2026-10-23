@@ -49,6 +49,7 @@ const field = (tagName, attrs, props) => new Element(tagName, attrs, [], props);
   booking.id = 'booking';
   const terms = h('P', {}, 'See ', h('A', { href: '/terms' }, 'terms'), ' for details.');
   terms.id = 'terms';
+  terms.children[0].href = 'https://example.test/terms';
   const main = h('MAIN', {},
     h('H1', {}, 'Booking ', h('SPAN', {}, 'details')),
     h('P', {}, 'Cancel free until ', h('B', {}, 'Oct 30'), '.'),
@@ -61,7 +62,7 @@ const field = (tagName, attrs, props) => new Element(tagName, attrs, [], props);
 
   let listener;
   const context = vm.createContext({
-    console, crypto: webcrypto, CSS: { escape: x => x }, setTimeout,
+    console, URL, crypto: webcrypto, CSS: { escape: x => x }, setTimeout,
     Event: class { constructor(type, options) { Object.assign(this, { type }, options); } },
     HTMLInputElement: class {}, HTMLTextAreaElement: class {},
     KeyboardEvent: class { constructor(type, options) { Object.assign(this, { type }, options); } },
@@ -82,11 +83,12 @@ const field = (tagName, attrs, props) => new Element(tagName, attrs, [], props);
     assert.ok(!JSON.stringify(result).includes(MARKER), `${label} leaks a sensitive value`);
   };
 
-  // The default snapshot is unchanged: no prose, url or title.
+  // Default snapshots include static prose without opting into text mode.
   const compact = await send({ action: 'getSnapshot' });
-  assert.doesNotMatch(compact.snapshot, /Cancel free|- text /);
-  assert.equal(compact.url, undefined);
-  assert.equal(compact.title, undefined);
+  assert.match(compact.snapshot, /- text "Cancel free until Oct 30\."/);
+  assertNoLeak('default snapshot', compact);
+  assert.equal(compact.url, 'https://example.test/booking');
+  assert.equal(compact.title, 'Booking - Example');
 
   // Paragraph facts appear next to editable controls, which keep their refs.
   const oldRef = compact.snapshot.match(/button "Book" \[ref=(s\d+e\d+)\]/)[1];
@@ -99,6 +101,7 @@ const field = (tagName, attrs, props) => new Element(tagName, attrs, [], props);
   assert.ok(lines.includes('  - text "Cancel free until Oct 30."'), read.snapshot);
   assert.ok(lines.includes('    - text "Card ending is on file."'), 'fields never join text lines');
   assert.ok(lines.includes('  - text "See terms for details."'), 'inline links stay in the sentence');
+  assert.match(read.snapshot, /- \/url: "https:\/\/example\.test\/terms"/);
   assert.match(read.snapshot, /heading "Booking details" \[ref=s\d+e\d+\] \[level=1\]/);
   assert.match(read.snapshot, /textbox "Email" \[ref=s\d+e\d+\] \[value="user@example.test"\]/);
   assert.match(read.snapshot, /textbox "Password" \[ref=s\d+e\d+\]$/m);
@@ -110,8 +113,8 @@ const field = (tagName, attrs, props) => new Element(tagName, attrs, [], props);
   }
   assert.doesNotMatch(read.snapshot, /Hidden fact|Aria hidden/);
   assert.ok(lines.filter(line => line.includes('- text ')).every(line => !line.includes('[ref=')), 'text lines have no refs');
-  // Text snapshots start a new ref generation like any snapshot.
-  assert.equal((await send({ action: 'focusElement', selector: oldRef })).error, 'stale ref, call browser_snapshot again');
+  // Text and targeted snapshots preserve an attached element's ref.
+  assert.equal((await send({ action: 'focusElement', selector: oldRef })).ok, true);
   const termsRef = read.snapshot.match(/link "terms" \[ref=(s\d+e\d+)\]/)[1];
   assert.equal((await send({ action: 'focusElement', selector: termsRef })).ok, true);
 
@@ -164,11 +167,33 @@ const field = (tagName, attrs, props) => new Element(tagName, attrs, [], props);
   assert.equal((await bridge.handleCommand({ action: 'getSnapshot', text: true, tabId: 7 })).tabId, 7);
   assert.equal((await bridge.handleCommand({ action: 'getSnapshot' })).tabId, undefined);
 
+  // Only resolved web links expose URLs; payloads and local paths stay private.
+  const hrefs = ['https://example.test/order/2', 'https://example.test/booking#details',
+    'javascript:alert("secret")', 'data:text/plain,secret', 'blob:https://example.test/secret',
+    'file:///private/secret', 'mailto:private@example.test', 'tel:12345'];
+  body.childNodes = body.children = hrefs.map((href, i) =>
+    new Element('A', {}, [`Destination ${i}`], { href }));
+  const links = await send({ action: 'getSnapshot' });
+  assert.equal((links.snapshot.match(/- \/url:/g) || []).length, 2);
+  assert.match(links.snapshot, /https:\/\/example\.test\/order\/2/);
+  assert.match(links.snapshot, /booking#details/);
+  assert.doesNotMatch(links.snapshot, /javascript:|data:|blob:|file:|mailto:|tel:|secret/);
+
   // Long pages are capped with an explicit marker; long lines are clipped.
   body.children.forEach(child => { child.isConnected = false; });
   const long = Array.from({ length: 400 }, (_, i) => h('P', {}, `Paragraph ${i} `.padEnd(100, 'x')));
   body.childNodes = body.children = long;
   long.forEach(child => { child.parentElement = body; });
+  const late = h('BUTTON', {}, 'Late control beyond budget');
+  body.childNodes.push(late);
+  late.parentElement = body;
+  const defaultLong = await send({ action: 'getSnapshot' });
+  assert.ok(defaultLong.snapshot.length > 12000);
+  assert.equal(defaultLong.truncated, undefined);
+  assert.match(defaultLong.snapshot, /button "Late control beyond budget" \[ref=/);
+  const compactLong = await send({ action: 'getSnapshot', text: false });
+  assert.doesNotMatch(compactLong.snapshot, /Paragraph/);
+  assert.match(compactLong.snapshot, /button "Late control beyond budget" \[ref=/);
   const capped = await send({ action: 'getSnapshot', text: true });
   assert.equal(capped.truncated, true);
   assert.ok(capped.snapshot.length <= 12000, `length ${capped.snapshot.length}`);
@@ -182,6 +207,11 @@ const field = (tagName, attrs, props) => new Element(tagName, attrs, [], props);
   body.childNodes = body.children = [essay];
   essay.parentElement = body;
   assert.equal((await send({ action: 'getSnapshot', text: true })).snapshot, `- text "${'y'.repeat(1000)}…"`);
+
+  for (const maxChars of [-1, true, '100', Infinity, NaN]) {
+    assert.equal((await send({ action: 'getSnapshot', maxChars })).error,
+      'maxChars must be a finite non-negative number');
+  }
 
   // Repeated cards still collapse; prose siblings with inline links and text lists do not.
   const cards = Array.from({ length: 10 }, (_, i) => h('ARTICLE', {}, h('H2', {}, `Product ${i}`), h('BUTTON', {}, `Buy ${i}`)));

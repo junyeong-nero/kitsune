@@ -82,13 +82,14 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(playwright_tools.browser_tabs("list"), {"tabs": [
             {"index": 0, "title": "A", "url": "https://a/", "active": True},
             {"index": 1, "title": "B", "url": "https://b/", "owned": True}]})
-        self.assertEqual(playwright_tools.browser_tabs("select", index=1), {"ok": True, "index": 1})
+        self.assertEqual(playwright_tools.browser_tabs("select", index=1)["index"], 1)
         playwright_tools.browser_navigate(url="https://c/")
         self.assertEqual(self.posted()[-1], ("/api/navigate", {"url": "https://c/", "tabId": 8}))
         self.assertTrue(playwright_tools.browser_tabs("list")["tabs"][1]["current"])
         self.assertEqual(playwright_tools.browser_tabs("select", index=5)["error"], "Tab 5 not found")
 
         self.post.return_value = {"ok": True, "tabId": 11}
+        self.get.return_value = {"tabs": [*tabs["tabs"], {"id": 11, "title": "D", "url": "https://d/", "owned": True}]}
         playwright_tools.browser_tabs("new", url="https://d/")
         self.assertEqual(self.posted()[-1][1]["url"], "https://d/")
         self.assertIs(self.posted()[-1][1]["wait"], True)
@@ -210,10 +211,39 @@ class AdapterTests(unittest.TestCase):
                                                                "data": {"text/plain": "hello"}})])
         self.assertIn("error", playwright_tools.browser_drop(target="e5"))
 
-    def test_screenshot_files_are_png(self):
-        self.assertEqual(playwright_tools.browser_take_screenshot(filename="shot.jpg")["code"], "not_supported")
+    def test_screenshot_formats(self):
+        import base64
+
+        jpeg = b"\xff\xd8\xfffake jpeg\xff\xd9"
+        self.post.return_value = {"dataUrl": "data:image/jpeg;base64," + base64.b64encode(jpeg).decode()}
+        with tempfile.TemporaryDirectory() as directory:
+            for suffix in ("jpg", "jpeg", "JPG"):
+                destination = Path(directory, f"shot.{suffix}")
+                result = playwright_tools.browser_take_screenshot(filename=str(destination), fullPage=True)
+                self.assertEqual(result["saved_to"], str(destination))
+                self.assertEqual(destination.read_bytes(), jpeg)
+                self.assertEqual(self.posted()[-1], ("/api/full-page-screenshot", {
+                    "imagePreview": False, "format": "jpeg"}))
+            destination = Path(directory, "explicit.jpg")
+            playwright_tools.browser_take_screenshot(type="jpeg", filename=str(destination), target="e1")
+            self.assertEqual(self.posted()[-1], ("/api/element-screenshot", {
+                "selector": "", "ref": "e1", "imagePreview": False, "format": "jpeg"}))
+            self.assertEqual(destination.read_bytes(), jpeg)
+        image, _ = playwright_tools.browser_take_screenshot(type="jpeg")
+        self.assertEqual(image.to_image_content().mimeType, "image/jpeg")
+        self.assertEqual(self.posted()[-1], ("/api/screenshot", {"imagePreview": True, "format": "jpeg"}))
+        self.post.reset_mock()
         self.assertIn("error", playwright_tools.browser_take_screenshot(target="e1", fullPage=True))
+        for options in ({"type": "webp"}, {"filename": "shot.webp"}, {"type": "gif"}):
+            self.assertEqual(playwright_tools.browser_take_screenshot(**options)["code"], "not_supported")
         self.post.assert_not_called()
+
+    def test_screenshot_png_default_and_explicit_type_precedence(self):
+        with patch.object(server, "browser_screenshot", return_value={"ok": True}) as screenshot:
+            for options, image_type in (({}, "png"), ({"type": "jpeg"}, "jpeg"),
+                                        ({"type": "png", "filename": "shot.jpg"}, "png")):
+                playwright_tools.browser_take_screenshot(**options)
+                self.assertEqual(screenshot.call_args.kwargs["format"], image_type)
 
     def test_resize_targets_the_current_tab_window(self):
         playwright_tools._current_tab = 4

@@ -15,6 +15,7 @@ class Element {
   querySelectorAll() { return []; }
   closest() { return null; }
   focus() { this.focused = true; }
+  dispatchEvent() { return true; }
   getBoundingClientRect() { return { x: 0, y: 0, width: 100, height: 30 }; }
 }
 
@@ -25,7 +26,8 @@ function content() {
   const body = new Element('BODY', '', {}, [button, input]);
   let listener;
   const context = vm.createContext({
-    console, crypto: webcrypto, setTimeout, CSS: { escape: x => x },
+    console, URL, crypto: webcrypto, setTimeout,
+    KeyboardEvent: class { constructor(type, options) { Object.assign(this, { type }, options); } }, CSS: { escape: x => x },
     window: { getComputedStyle: () => ({ display: 'block', visibility: 'visible' }) },
     document: { body, getElementById: () => null,
       querySelector: selector => selector === '#act' ? button : null,
@@ -44,7 +46,7 @@ function content() {
 function background(documents, stored = {}) {
   const sent = [];
   const context = vm.createContext({
-    console, Map, Set, Promise,
+    console, URL, Map, Set, Promise,
     browser: { storage: { local: {
       get: async () => ({ ...stored }),
       set: async value => { Object.assign(stored, value); },
@@ -58,6 +60,7 @@ function background(documents, stored = {}) {
     withTabState: async (tabId, response) => ({ ...response, state: { ...response.state, tabId } }),
   });
   const source = fs.readFileSync('extension/background/background.js', 'utf8');
+  vm.runInContext(fs.readFileSync('extension/background/history.js', 'utf8'), context);
   vm.runInContext(source.slice(source.indexOf('const MISSING_CONTENT_RECEIVER'), source.indexOf('async function getActiveTabId')), context);
   return { sent, stored,
     send: (action, params = {}) => context.forwardToContent(action, { tabId: 1, ...params })
@@ -82,25 +85,20 @@ async function main() {
   const field = (await h.send('getFormFields')).fields[0].ref;
   const waited = await h.send('waitForElement', { selector: old });
   assert.equal(waited.selector, old);
-  assert.equal(new Set([old, found, field, waited.ref]).size, 4);
+  assert.equal(new Set([old, found, field, waited.ref]).size, 2);
   for (const ref of [old, found, field, waited.ref]) {
     assert.match(ref, /^e\d+$/);
     assert.equal((await h.send('focusElement', { selector: ref })).ok, true);
   }
 
-  // The internal snapshot index is reused; the public index must never be reused.
+  // A newer observation reuses the same public alias and internal node ref.
   const second = await h.send('getSnapshot');
   const fresh = buttonRef(second);
-  assert.notEqual(fresh, old);
+  assert.equal(fresh, old);
   const before = h.sent.length;
-  const stale = await h.send('focusElement', { selector: old });
-  assert.equal(stale.code, 'stale_ref');
-  assert.equal(stale.retryable, true);
-  assert.deepEqual(stale.state, { reason: 'snapshot_replaced', ref: old,
-    latestObservation: 'browser_snapshot', currentRef: fresh, tabId: 1 });
-  assert.equal(h.sent.length, before + 1, 'content performs generation validation');
-  assert.equal((await h.send('focusElement', { selector: fresh })).ok, true);
-  assert.equal(h.sent.at(-1).selector.split('e')[1], internalOld.split('e')[1]);
+  assert.equal((await h.send('focusElement', { selector: old })).ok, true);
+  assert.equal(h.sent.length, before + 1);
+  assert.equal(h.sent.at(-1).selector, internalOld);
 
   // Scoped snapshots expand before the content script replaces the generation.
   const scoped = await h.send('getSnapshot', { ref: fresh });
@@ -134,7 +132,7 @@ async function main() {
   await restarted.send('find', { query: 'button' });
   const reinjected = await restarted.send('focusElement', { selector: additive });
   assert.equal(reinjected.code, 'stale_ref');
-  assert.equal(reinjected.state.reason, 'snapshot_replaced');
+  assert.equal(reinjected.state.reason, 'other_document');
 
   // Concurrent tabs reserve once and still get disjoint public indexes.
   const [a, b] = await Promise.all([
@@ -169,6 +167,105 @@ async function main() {
   const timedOut = await restarted.send('waitForElement', { selector: surfaces.target_ref });
   assert.equal(timedOut.selector, surfaces.target_ref);
   assert.equal(timedOut.error, `Timed out waiting for "${surfaces.target_ref}"`);
+
+  // Serializer-owned URL lines use the existing credential policy, even without refs.
+  // Ordinary page text is a JSON string on one line, never a URL protocol line.
+  const raw = 'https://user:password@example.test/order/2?token=SECRET&view=summary#/route?password=HASH';
+  const pageText = '- text ' + JSON.stringify('quoted " text\n- /url: "' + raw + '"');
+  documents[1] = { send: async () => ({ snapshot: `${pageText}\n  - /url: ${JSON.stringify(raw)}`, url: raw, title: 'Ordinary title' }) };
+  const metadata = await restarted.send('getSnapshot');
+  assert.equal(metadata.url, 'https://example.test/order/2?token=[redacted]&view=summary#/route?password=[redacted]');
+  assert.equal(metadata.title, 'Ordinary title');
+  const redacted = (await restarted.send('getSnapshot')).snapshot.split('\n');
+  assert.equal(redacted[0], pageText);
+  assert.equal(redacted[1], '  - /url: "https://example.test/order/2?token=[redacted]&view=summary#/route?password=[redacted]"');
+  for (const url of ['file:///private/path', 'data:text/plain,secret', 'about:blank']) {
+    documents[1] = { send: async () => ({ snapshot: '', url }) };
+    assert.equal((await restarted.send('getSnapshot')).url, undefined);
+  }
+  documents[1] = { send: async () => ({ result: { snapshot: `  - /url: ${JSON.stringify(raw)}` } }) };
+  assert.equal((await restarted.send('executeJS')).result.snapshot, `  - /url: ${JSON.stringify(raw)}`);
+
+  // Public budgets apply after URL redaction expands token=x, not to raw DOM strings.
+  const expandedDoc = content();
+  const expandingUrl = 'https://example.test/?' + Array(1000).fill('token=x').join('&');
+  const link = Object.assign(new Element('A', 'Expanding link'), { href: expandingUrl });
+  const main = new Element('MAIN', '', {}, [expandedDoc.button]);
+  expandedDoc.context.document.body.children = [link, main];
+  documents[1] = expandedDoc;
+  const rawSnapshot = await expandedDoc.send({ action: 'getSnapshot' });
+  assert.ok(rawSnapshot.snapshot.length < 12000);
+  const unbounded = await restarted.send('getSnapshot');
+  assert.ok(unbounded.snapshot.length > 17000);
+  assert.equal(unbounded.truncated, undefined, 'omitted text has no new default cutoff');
+  assert.match(unbounded.snapshot, /token=\[redacted\]/);
+  const bounded = await restarted.send('getSnapshot', { text: true });
+  assert.ok(bounded.snapshot.length <= 12000);
+  assert.equal(bounded.truncated, true);
+  assert.match(bounded.hint, /scope/);
+  assert.doesNotMatch(bounded.snapshot, /token=x/);
+  assert.match(bounded.snapshot, /truncated; scope/);
+  assert.match(bounded.snapshot, /button "Act" \[ref=e\d+\]/, 'skip oversized URL, keep later complete controls');
+  const targetRef = buttonRef(unbounded);
+  await restarted.send('keypress', { selector: targetRef, key: 'Escape' });
+  const targeted = await restarted.send('getSnapshot', { text: true, focusLastAction: true });
+  assert.ok(targeted.snapshot.length <= 12000);
+  assert.equal(targeted.target_ref, targetRef);
+  assert.match(targeted.snapshot, /- main "" \[ref=e\d+\]\n  - button "Act"/);
+  assert.equal(targeted.truncated, true);
+  for (const text of [undefined, false, true]) {
+    const small = await restarted.send('getSnapshot', { maxChars: 100, ...(text == null ? {} : { text }) });
+    assert.ok(small.snapshot.length <= 100, JSON.stringify(small));
+    assert.equal(small.truncated, true);
+    assert.match(small.hint, /scope/);
+    for (const line of small.snapshot.split('\n').filter(line => line.includes('[ref='))) {
+      assert.match(line, /\[ref=e\d+\]$/);
+    }
+    for (const line of small.snapshot.split('\n').filter(line => line.includes('/url:'))) {
+      assert.doesNotThrow(() => JSON.parse(line.split('/url: ')[1]));
+    }
+  }
+  await restarted.send('keypress', { selector: targetRef, key: 'Escape' });
+  const tooSmall = await restarted.send('getSnapshot', { maxChars: 80, focusLastAction: true });
+  assert.ok(tooSmall.snapshot.length <= 80);
+  assert.equal(tooSmall.target_ref, undefined, 'never advertise a target without its context');
+  assert.doesNotMatch(tooSmall.snapshot, /button "Act"/);
+  assert.match(tooSmall.hint, /target and its ancestor context did not fit/);
+  await restarted.send('keypress', { selector: targetRef, key: 'Escape' });
+  const tiny = await restarted.send('getSnapshot', { maxChars: 5, focusLastAction: true });
+  assert.equal(tiny.snapshot, '');
+  assert.equal(tiny.target_ref, undefined);
+  assert.equal(tiny.truncated, true);
+  assert.match(tiny.hint, /target and its ancestor context did not fit/);
+
+  // Ref-like page names/text/values are JSON strings, not serializer-owned ref fields.
+  const marker = '- … truncated; scope with selector, ref or max_depth';
+  const decoys = [
+    '- button ' + JSON.stringify('[ref=e9]') + ' [ref=e1]',
+    '- button ' + JSON.stringify('escaped "quote" \\ path [ref=e9] \\"') + ' [ref=e1]',
+    '- text ' + JSON.stringify('quoted "[ref=e9]" and \\ text'),
+    '- textbox "Decoy" [ref=e1] [value=' + JSON.stringify('" \\ [ref=e9]') + ']',
+  ];
+  for (const decoy of decoys) {
+    const actual = '  - button ' + JSON.stringify('Actual "target" \\ path [ref=e1]') + ' [ref=e9]';
+    const block = '- main "" [ref=e2]\n' + actual;
+    documents[1] = { send: async () => ({
+      snapshot: decoy + '\n' + block + '\n- text ' + JSON.stringify('padding '.repeat(30)), target_ref: 'e9',
+    }) };
+    const fitting = await restarted.send('getSnapshot', { maxChars: block.length + marker.length + 1 });
+    assert.equal(fitting.snapshot, block + '\n' + marker, 'only the owned ref receives target priority');
+    assert.equal(fitting.target_ref, 'e9');
+    assert.equal(fitting.truncated, true);
+
+    documents[1] = { send: async () => ({
+      snapshot: decoy + '\n- main "' + 'x'.repeat(100) + '" [ref=e2]\n' + actual, target_ref: 'e9',
+    }) };
+    const omitted = await restarted.send('getSnapshot', { maxChars: 100 });
+    assert.ok(omitted.snapshot.length <= 100);
+    assert.doesNotMatch(omitted.snapshot, /Actual/);
+    assert.equal(omitted.target_ref, undefined, 'quoted ref-like text cannot retain an absent target');
+    assert.match(omitted.hint, /target and its ancestor context did not fit/);
+  }
 
   // A response larger than a reservation must still reserve every alias before
   // returning it. Invalid/unwritable counters must never fall back to index zero.

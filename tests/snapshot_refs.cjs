@@ -56,7 +56,8 @@ async function testContent() {
   assert.match(first.snapshot, /heading "Account" .*level=1/);
   assert.match(first.snapshot, /textbox "Email address" .*value="a@b"/);
   assert.match(first.snapshot, /checkbox "Remember" .*checked=true disabled/);
-  assert.doesNotMatch(first.snapshot, /Prose|Secret/);
+  assert.match(first.snapshot, /- text "Prose should not appear"/);
+  assert.doesNotMatch(first.snapshot, /Secret/);
   const ref = first.snapshot.match(/button "Log in" \[ref=(s\d+e\d+)\]/)[1];
   assert.equal((await send({ action: 'focusElement', selector: ref })).ok, true);
   assert.equal(button.focused, true);
@@ -154,7 +155,7 @@ async function testContent() {
   const trailing = new Element('BUTTON', 'Trailing control');
   body.children = [...leading, deepMain, trailing];
   for (const child of body.children) child.parentElement = body;
-  const full = await send({ action: 'getSnapshot' });
+  const full = await send({ action: 'getSnapshot', text: false });
   const oldRef = full.snapshot.match(/searchbox "Deep search" \[ref=(s\d+e\d+)\]/)[1];
   assert.ok(full.snapshot.indexOf(`ref=${oldRef}`) > 4000);
   // snapshot: 'full' keeps the pre-delta post-action snapshot: capped, focused on the target.
@@ -163,7 +164,7 @@ async function testContent() {
   assert.equal(typed.snapshot_truncated, true);
   assert.ok(typed.snapshot.length <= 4000);
   assert.match(typed.target_ref, /^s\d+e\d+$/);
-  assert.notEqual(typed.target_ref, oldRef);
+  assert.equal(typed.target_ref, oldRef);
   assert.ok(typed.snapshot.includes(`    - searchbox "Deep search" [ref=${typed.target_ref}] [value="kitsune"]`));
   assert.match(typed.snapshot, /- main ""/);
   assert.match(typed.snapshot, /\n  - form "Search form"/);
@@ -173,7 +174,7 @@ async function testContent() {
   const fullOrder = full.snapshot.split('\n').map(line => line.replace(/s\d+e\d+/g, 'REF').replace(/value="[^"]*"/g, 'VALUE'));
   const selectedOrder = typed.snapshot.split('\n').map(line => fullOrder.indexOf(line.replace(/s\d+e\d+/g, 'REF').replace(/value="[^"]*"/g, 'VALUE')));
   assert.ok(selectedOrder.every((index, i) => index >= 0 && (!i || index > selectedOrder[i - 1])), 'keeps document order and indentation');
-  assert.equal((await send({ action: 'focusElement', selector: oldRef })).error, 'stale ref, call browser_snapshot again');
+  assert.equal((await send({ action: 'focusElement', selector: oldRef })).ok, true);
   const entered = await bridge.handleCommand({ action: 'keypress', ref: typed.target_ref, key: 'Enter' });
   assert.equal(entered.ok, true, 'fresh ref works for the next action');
   assert.ok(entered.snapshot.includes(`[ref=${entered.target_ref}] [value="kitsune"]`));
@@ -256,7 +257,7 @@ async function testContent() {
 
   // Uncapped and already-small snapshots also report a valid fresh target ref.
   await send({ action: 'type', selector: '#search', text: 'uncapped', clear: true });
-  const uncapped = await send({ action: 'getSnapshot', focusLastAction: true });
+  const uncapped = await send({ action: 'getSnapshot', focusLastAction: true, text: false });
   assert.equal(uncapped.truncated, undefined);
   assert.ok(uncapped.snapshot.includes(`[ref=${uncapped.target_ref}] [value="uncapped"]`));
   body.children = [deepMain];
@@ -318,12 +319,12 @@ async function testContent() {
   assert.equal(again.url, undefined);
   assert.equal(again.snapshot.split('\n').length, 3);
   assert.match(again.snapshot, /button "Review type" \[ref=s\d+e\d+\] \[expanded=true\]$/);
-  // A full snapshot on request replaces the generation, like browser_snapshot.
+  // A full snapshot on request also preserves refs, like browser_snapshot.
   const fullClick = await bridge.handleCommand({ action: 'click', coords: { x: 5, y: 5 }, snapshot: 'full' });
   assert.equal(fullClick.snapshot_delta, undefined);
-  assert.notEqual(fullClick.target_ref, toggleRef);
+  assert.equal(fullClick.target_ref, toggleRef);
   assert.match(fullClick.snapshot, /Header link 0/);
-  assert.equal((await send({ action: 'focusElement', selector: linkRef })).error, 'stale ref, call browser_snapshot again');
+  assert.equal((await send({ action: 'focusElement', selector: linkRef })).ok, true);
   // Without a baseline from this document's action, a delta request is full.
   const noBaseline = await send({ action: 'getSnapshot', maxChars: 4000, focusLastAction: true, delta: true });
   assert.equal(noBaseline.delta, undefined);
@@ -337,7 +338,7 @@ async function testContent() {
   const innerWrapper = Object.assign(new Element('DIV', wrapperText, {}, headerControls), { onclick() {} });
   const outerWrapper = Object.assign(new Element('DIV', wrapperText, {}, [innerWrapper]), { onclick() {} });
   body.children = [outerWrapper];
-  const wrappers = await send({ action: 'getSnapshot' });
+  const wrappers = await send({ action: 'getSnapshot', text: false });
   assert.doesNotMatch(wrappers.snapshot, /Whole header/);
   assert.equal(wrappers.snapshot.split('\n').length, 2);
   assert.equal((wrappers.snapshot.match(/button "Search"/g) || []).length, 1);
@@ -348,7 +349,7 @@ async function testContent() {
 
   const customChildren = [new Element('SPAN', 'One', { role: 'button' }), new Element('SPAN', 'Two', { tabindex: '0' })];
   body.children = [Object.assign(new Element('DIV', 'Custom wrapper', {}, customChildren), { onclick() {} })];
-  assert.doesNotMatch((await send({ action: 'getSnapshot' })).snapshot, /Custom wrapper/);
+  assert.doesNotMatch((await send({ action: 'getSnapshot', text: false })).snapshot, /Custom wrapper/);
   body.children = [Object.assign(new Element('DIV', 'Explicit wrapper', { role: 'button' }, headerControls), { onclick() {} })];
   assert.match((await send({ action: 'getSnapshot' })).snapshot, /button "Explicit wrapper"/);
 
@@ -382,9 +383,9 @@ async function testContent() {
   for (let i = 0; i < 5; i++) assert.match(collapsed.snapshot, new RegExp(`Product ${i}`));
   assert.doesNotMatch(collapsed.snapshot, /Product [5-9]|Buy [5-9]/);
   const visibleRefs = [...collapsed.snapshot.matchAll(/ref=(s\d+e(\d+))/g)];
-  assert.deepEqual(visibleRefs.map(match => Number(match[2])), visibleRefs.map((_, i) => i), 'collapsed items allocate no refs');
+  assert.deepEqual(visibleRefs.map(match => Number(match[2])), visibleRefs.map((_, i) => Number(visibleRefs[0][2]) + i), 'collapsed items allocate no refs');
   const generation = visibleRefs[0][1].match(/^s\d+e/)[0];
-  assert.equal((await send({ action: 'focusElement', selector: generation + visibleRefs.length })).error,
+  assert.equal((await send({ action: 'focusElement', selector: generation + (Number(visibleRefs.at(-1)[2]) + 1) })).error,
     'stale ref, call browser_snapshot again', 'no hidden item is registered in refMap');
 
   await send({ action: 'keypress', selector: '#buy-8', key: 'Enter' });
@@ -403,12 +404,12 @@ async function testContent() {
   assert.match(scoped.snapshot, /Buy 8/);
   assert.doesNotMatch(scoped.snapshot, /Catalog|Outside|more similar/);
   const catalogOnly = await send({ action: 'getSnapshot', selector: '#catalog', maxDepth: 0 });
-  assert.match(catalogOnly.snapshot, /^- main "" \[ref=s\d+e0\]$/);
-  const catalogRef = catalogOnly.snapshot.match(/ref=(s\d+e0)/)[1];
+  assert.match(catalogOnly.snapshot, /^- main "" \[ref=s\d+e\d+\]$/);
+  const catalogRef = catalogOnly.snapshot.match(/ref=(s\d+e\d+)/)[1];
   const byRef = await send({ action: 'getSnapshot', ref: catalogRef, selector: '#card-8', maxDepth: 1 });
   assert.match(byRef.snapshot, /Catalog/);
   assert.doesNotMatch(byRef.snapshot, /Product|Buy|Outside/);
-  assert.equal((await send({ action: 'getSnapshot', ref: catalogRef })).error, 'stale ref, call browser_snapshot again');
+  assert.match((await send({ action: 'getSnapshot', ref: catalogRef })).snapshot, /Catalog/);
   const shallowCatalog = await send({ action: 'getSnapshot', selector: '#catalog', maxDepth: 2 });
   assert.match(shallowCatalog.snapshot, /Catalog/);
   assert.doesNotMatch(shallowCatalog.snapshot, /Product|Buy|more similar/, 'no summary for items below the depth limit');
@@ -437,92 +438,74 @@ async function testContent() {
   assert.equal(domByRef.tree.tag, 'main', 'ref wins over selector');
   assert.deepEqual(domByRef.tree.children.map(node => node.tag), ['h1', 'section']);
   assert.equal(domByRef.tree.children[1].children, undefined);
-  assert.equal((await send({ action: 'getAccessibilityTree', depth: 6, ref: domCatalog.tree.ref })).error,
-    'stale ref, call browser_snapshot again');
+  assert.equal((await send({ action: 'getAccessibilityTree', depth: 6, ref: domCatalog.tree.ref })).tree.tag, 'main');
   assert.equal((await send({ action: 'getAccessibilityTree', depth: 6, selector: '#missing' })).error,
     'Selector not found: #missing');
   body.children = Array.from({ length: 12 }, () => new Element('DIV', '', {}, [new Element('SPAN', 'Decoration')]));
-  assert.equal((await send({ action: 'getSnapshot' })).snapshot, '', 'non-semantic decorations do not generate collapse noise');
+  assert.doesNotMatch((await send({ action: 'getSnapshot' })).snapshot, /more similar items/, 'prose does not generate collapse noise');
 }
 
-// stale_ref names the snapshot that replaced a ref and, only for the same node with the same
-// role, name and snapshot ancestors, its current ref. Nothing is dispatched either way.
-async function testStaleRefSuggestions() {
+// Refs name node identity, not an observation's position, label or ancestry.
+async function testRefLifetime() {
   const archive = new Element('BUTTON', 'Archive');
-  const main = new Element('MAIN', '', {}, [new Element('H1', 'Inbox'), archive]);
-  const nav = new Element('NAV', '', {}, [new Element('BUTTON', 'Archive')]);
-  const body = new Element('BODY', '', {}, [main, nav]);
+  const main = new Element('MAIN', '', {}, [archive]);
+  const body = new Element('BODY', '', {}, [main]);
   let listener;
   const context = vm.createContext({
     console, crypto: webcrypto, CSS: { escape: x => x }, setTimeout,
     window: { getComputedStyle: () => ({ display: 'block', visibility: 'visible' }) },
-    document: { body, getElementById: () => null, querySelector: () => null, querySelectorAll: () => [] },
+    document: { body, getElementById: () => null, querySelector: () => archive,
+      querySelectorAll: () => [archive] },
     browser: { runtime: { onMessage: { addListener: fn => { listener = fn; } },
       sendMessage: () => Promise.resolve(null) } },
   });
   vm.runInContext(fs.readFileSync('extension/content/content.js', 'utf8'), context);
   const send = msg => new Promise(resolve => listener(msg, {}, resolve));
-  const snapshot = async (msg = {}) => {
-    const lines = (await send({ action: 'getSnapshot', ...msg })).snapshot.split('\n');
-    // The first "Archive" button is the one in main; nav's has a different ancestor.
-    return lines.find(line => line.includes('button "Archive"')).match(/ref=(s\d+e\d+)/)[1];
-  };
-  const stale = async ref => {
-    const result = await send({ action: 'focusElement', selector: ref });
-    assert.equal(result.code, 'stale_ref');
-    assert.equal(result.state.reason, 'snapshot_replaced');
-    assert.equal(archive.focused, undefined, 'a replaced ref never acts');
-    return result;
-  };
+  const refOf = result => result.snapshot.match(/button "[^"]*" \[ref=(s\d+e\d+)\]/)[1];
+  const first = refOf(await send({ action: 'getSnapshot' }));
+  for (let i = 0; i < 5; i++) assert.equal(refOf(await send({ action: 'getSnapshot' })), first);
+  assert.equal((await send({ action: 'find', query: 'button' })).results[0].ref, first);
+  assert.equal(refOf(await send({ action: 'getSnapshot', ref: first })), first);
+  archive.textContent = 'Unarchive';
+  archive.childNodes = [{ nodeType: 3, textContent: 'Unarchive' }];
+  main.attrs['aria-label'] = 'Moved landmark';
+  assert.equal(refOf(await send({ action: 'getSnapshot' })), first);
+  assert.equal((await send({ action: 'focusElement', selector: first })).ok, true);
 
-  const first = await snapshot();
-  const second = await snapshot({ observation: 'browser_click' });
-  const replaced = await stale(first);
-  assert.equal(replaced.state.latestObservation, 'browser_click');
-  assert.equal(replaced.state.currentRef, second);
-  assert.match(replaced.hint, /state\.currentRef is the same element/);
-  assert.equal((await send({ action: 'focusElement', selector: second })).ok, true);
-  archive.focused = undefined;
-
-  // Only the three generations before the current one are kept; an older ref only names
-  // the latest observation.
-  for (let i = 0; i < 3; i++) await snapshot();
-  assert.ok((await stale(second)).state.currentRef, 'three snapshots later');
-  await snapshot();
-  const old = await stale(second);
-  assert.equal(old.state.latestObservation, 'browser_snapshot');
-  assert.equal(old.state.currentRef, undefined);
-  assert.equal(old.hint, 'A newer snapshot from browser_snapshot replaced this ref; use its refs or a new browser_snapshot.');
-
-  // A changed name, a changed ancestor, a replaced node or a removed node is not the same element.
-  let ref = await snapshot();
-  Object.assign(archive, { textContent: 'Unarchive', childNodes: [{ nodeType: 3, textContent: 'Unarchive' }] });
-  await send({ action: 'getSnapshot' });
-  assert.equal((await stale(ref)).state.currentRef, undefined, 'renamed');
-  Object.assign(archive, { textContent: 'Archive', childNodes: [{ nodeType: 3, textContent: 'Archive' }] });
-  ref = await snapshot();
-  main.attrs['aria-label'] = 'Archived mail';
-  await send({ action: 'getSnapshot' });
-  assert.equal((await stale(ref)).state.currentRef, undefined, 'moved under another landmark');
-  delete main.attrs['aria-label'];
-  ref = await snapshot();
-  const twin = new Element('BUTTON', 'Archive');
-  twin.parentElement = main;
-  main.children[1] = twin;
-  await send({ action: 'getSnapshot' });
-  assert.equal((await stale(ref)).state.currentRef, undefined, 'a re-rendered node is not the same element');
-  main.children[1] = archive;
-  ref = await snapshot();
-  await snapshot();
+  // No arbitrary cap may retire an issued ref whose node is still attached.
+  body.children = [main, ...Array.from({ length: 10050 }, (_, i) => new Element('BUTTON', `Item ${i}`))];
+  const large = await send({ action: 'getSnapshot', text: false });
+  assert.equal((large.snapshot.match(/ref=/g) || []).length, 10052);
+  await send({ action: 'find', query: 'button' });
+  assert.equal((await send({ action: 'focusElement', selector: first })).ok, true);
   archive.isConnected = false;
-  assert.equal((await stale(ref)).state.currentRef, undefined, 'removed');
+  // An intervening observation prunes detached nodes before the old ref is used.
+  main.children = [];
+  for (let i = 0; i < 3; i++) await send({ action: 'getSnapshot', selector: '#node' });
+  for (let i = 0; i < 2; i++) {
+    const detached = await send({ action: 'focusElement', selector: first });
+    assert.equal(detached.code, 'stale_ref');
+    assert.equal(detached.state.reason, 'element_removed');
+  }
+  const unknown = first.replace(/e\d+$/, 'e999999');
+  assert.equal((await send({ action: 'focusElement', selector: unknown })).state.reason, 'not_in_snapshot');
   archive.isConnected = true;
+  const replacement = new Element('BUTTON', 'Unarchive');
+  main.children = [replacement];
+  context.document.querySelector = () => main;
+  assert.notEqual(refOf(await send({ action: 'getSnapshot', selector: '#node' })), first);
+  assert.equal((await send({ action: 'focusElement', selector: first })).state.reason, 'element_removed');
 
-  // A ref from browser_find has no role and name to compare.
-  context.document.querySelectorAll = () => [archive];
-  const found = (await send({ action: 'find', query: 'button' })).results[0].ref;
-  await send({ action: 'getSnapshot' });
-  assert.equal((await stale(found)).state.currentRef, undefined, 'browser_find ref');
+  // A new injection/document owns fresh maps and tombstones; old IDs cannot contaminate it.
+  context.window.__claudeBridgeVersion = 40;
+  vm.runInContext(fs.readFileSync('extension/content/content.js', 'utf8'), context);
+  assert.equal(context.window.__claudeBridgeVersion, 42, 'already-injected v40 content is upgraded');
+  const fresh = refOf(await send({ action: 'getSnapshot', selector: '#node' }));
+  assert.notEqual(fresh, first);
+  assert.equal((await send({ action: 'focusElement', selector: first })).state.reason, 'other_document');
+  assert.equal((await send({ action: 'focusElement', selector: fresh })).ok, true);
+  const unissued = fresh.replace(/e\d+$/, 'e999999');
+  assert.equal((await send({ action: 'focusElement', selector: unissued })).state.reason, 'not_in_snapshot');
 }
 
 async function testBackground() {
@@ -599,7 +582,7 @@ async function testBackground() {
 
 (async () => {
   await testContent();
-  await testStaleRefSuggestions();
+  await testRefLifetime();
   await testBackground();
   console.log('Snapshot/ref and post-action snapshot checks passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

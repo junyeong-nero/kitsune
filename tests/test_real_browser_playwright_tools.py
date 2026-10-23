@@ -87,8 +87,10 @@ class RealBrowserPlaywrightToolTests(harness.RealBrowserTestCase):
 
     def open_current(self):
         result = self.tool("browser_tabs", {"action": "new", "url": self.site.origin + "/"})
-        self.addCleanup(self.call, "/api/close-tab", {"tabId": result["tabId"]})
-        return result["tabId"]
+        self.assertTrue(result["tabs"][result["index"]]["current"], result)
+        tab = playwright_tools._current_tab
+        self.addCleanup(self.call, "/api/close-tab", {"tabId": tab})
+        return tab
 
     def text(self, expected):
         self.tool("browser_wait_for", {"text": expected})

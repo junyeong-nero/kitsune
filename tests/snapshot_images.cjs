@@ -107,7 +107,7 @@ const img = attrs => h('IMG', { src: '/puzzle.png', ...attrs });
   // repeated siblings still collapse.
   const boxed = (await send({ action: 'getSnapshot', boxes: true })).snapshot;
   assert.match(boxed, /heading "Image puzzle" \[ref=s\d+e\d+\] \[level=2\] \[box=0,0,100,30\]$/m, boxed);
-  assert.ok(boxed.split('\n').filter(line => !line.includes('more similar items'))
+  assert.ok(boxed.split('\n').filter(line => !line.includes('more similar items') && !line.includes('- text '))
     .every(line => line.endsWith('[box=0,0,100,30]')), boxed);
   assert.match(boxed, /- … 3 more similar items/);
   assert.doesNotMatch((await send({ action: 'getSnapshot' })).snapshot, /box=/);

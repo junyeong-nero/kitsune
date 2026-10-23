@@ -98,7 +98,7 @@ For single-element tools, prefer `ref` from `browser_snapshot` over a CSS
 `element` is an audit-only human description, never a selector or fallback target.
 A stale/disconnected ref returns a `stale_ref` error (see [Action errors](#action-errors));
 take another snapshot to refresh it. See [Ref lifetime](#ref-lifetime) for which
-calls replace refs.
+events invalidate refs.
 Existing positional selector arguments remain supported.
 
 #### Strict selectors
@@ -168,24 +168,22 @@ See `browser_wait_for` below for its element condition.
 
 ### Ref lifetime
 
-A short ref such as `e12` names one element in one document of one tab, for one
-ref generation. Use refs only from the latest observation of that tab. Generation
-and tab identity are tracked privately by the extension, not encoded in the ref.
-Indexes increase across snapshots, additive observations and tabs; they do not
-restart at each snapshot, so an old ref can never alias a new element. The extension
-persists reserved indexes across reloads, but not ref mappings: after an extension
-reload, take a new snapshot (old short refs fail as `not_in_snapshot`). Legacy
-`s<generation>e<index>` inputs are still accepted.
+A short ref such as `e12` names one attached node in one document of one tab.
+Observations reuse the same identity while the node stays attached, even if it is
+renamed or reparented. Tab/document identity is tracked privately, not encoded in the
+public ref. Indexes increase across observations and tabs and never alias another node.
+The extension persists reserved indexes across reloads, but not ref mappings: after
+an extension reload, take a new snapshot (unknown old aliases report `not_in_snapshot`).
+Legacy `s<generation>e<index>` inputs are still accepted; a generation now identifies
+one document/content injection, not a snapshot.
 
-| Call | Effect on refs in that tab |
+| Call/event | Effect on refs in that tab |
 |---|---|
-| `browser_snapshot` (also scoped), `browser_dom` | Starts a new generation: earlier refs fail as `stale_ref`/`snapshot_replaced`. A `ref` argument to `browser_snapshot` or `browser_dom` is resolved first |
-| Successful `browser_submit_form`, `browser_navigate`, and any action below whose result has a full `snapshot` (no `snapshot_delta`) | Their post-action `snapshot` starts a new generation, like `browser_snapshot`. An `expect` failure (`outcome_not_observed`) is an error, but the action ran and its result still carries that `snapshot` and `target_ref` |
-| Successful `browser_click`, `browser_type` (`type`/`fill`), `browser_select_option`, `browser_check`, `browser_keypress` with `snapshot_delta: true` | Their [delta](#post-action-snapshots) adds refs to the current generation, like `browser_find`; earlier refs stay valid, and an element that already had a ref keeps it |
-| Navigation, reload, or back/forward to another document | Earlier refs fail as `stale_ref` (`not_in_snapshot` after the background retires their aliases, otherwise `other_document`) |
-| `browser_find`, `browser_forms`, `browser_wait_for(selector/ref)` | Add refs to the current generation; earlier refs stay valid |
-| Other failed actions, other reads, `browser_hover`, `browser_scroll`, `browser_type(mode="editable")` and other actions without a post-action snapshot | No change, unless the page itself removes the element (`element_removed`) |
-| A failed `browser_snapshot` or `browser_dom` (bad `max_depth`, missing `selector`, stale `ref`) | No change: it fails before starting a generation |
+| `browser_snapshot` (also scoped), `browser_dom`, `browser_find`, `browser_forms`, `browser_wait_for(selector/ref)` | Reuse attached-node refs and add identities for newly observed nodes; earlier attached refs stay valid |
+| Full or delta post-action snapshots | Reuse attached-node refs; a full observation does not invalidate earlier refs. An `expect` failure can still carry the action's snapshot and target_ref |
+| Node detachment/replacement or a frame's document navigation/removal | The issued node ref fails as `stale_ref`/`element_removed`, including after detached entries have been pruned. A replacement node gets a different ref |
+| Navigation, reload, back/forward to another document or content reinjection | Old refs fail as `stale_ref`/`other_document`; aliases unknown after an extension restart report `not_in_snapshot` |
+| Other reads/actions or failed observations | No identity change unless the page itself detaches nodes or changes document |
 
 Closing a tab or starting a document load prunes its short-ref mappings without
 resetting the index counter. Same-document URL changes alone do not prune refs.
@@ -198,8 +196,10 @@ After an action, use the refs in its `snapshot`. `target_ref` is the ref of
 the acted-on element (absent for `browser_navigate`, or when that element is gone),
 so a follow-up such as `browser_keypress(key="Enter", ref=target_ref)` needs no
 extra snapshot. Only emitted lines carry new refs: when `snapshot_truncated`
-is set and the element you need is missing, or when `snapshot_error` replaces the
-snapshot, call `browser_snapshot` before using a ref the result did not show. With the post-action
+is set and the element you need is missing, `snapshot_hint` provides scope guidance
+and explains if the target and its ancestor context could not fit. When the target
+is omitted, `target_ref` is omitted too. If `snapshot_error` replaces the snapshot,
+call `browser_snapshot` before using a ref the result did not show. With the post-action
 snapshot disabled (`KITSUNE_POST_ACTION_SNAPSHOT=0`, or `includeSnapshot: false`
 in a batch), actions leave refs unchanged.
 
@@ -209,16 +209,11 @@ Recovering without repeating a consequential action:
   Take a new `browser_snapshot` of the same `tab_id`, find the element again,
   and retry with its new ref. Do not fall back to another element by its
   `element` description.
-- A `stale_ref` with `state.reason: "snapshot_replaced"` names the call whose
-  snapshot holds the current refs in `state.latestObservation` (`browser_snapshot`,
-  `browser_dom`, or the action tool whose post-action snapshot replaced them).
-  When the ref's element is still the same DOM node with the same role, name and
-  snapshot ancestors in that snapshot, `state.currentRef` is its current ref.
-  Kitsune never retargets the command itself: check that snapshot (an earlier
-  action may already have done what you meant) and use `state.currentRef` only if
-  the action is still needed. Refs from the three generations before the current
-  one are compared; refs from `browser_find`, `browser_forms` or `browser_wait_for`
-  carry no role and name, so they get no `currentRef`.
+- For `stale_ref`, `state.reason` distinguishes `element_removed`, `not_in_snapshot`
+  (unknown/unissued alias) and `other_document`. Observe the intended tab/document
+  again and select its current node; do not infer that a replacement is the old node.
+  Newer observations alone do not cause stale refs; no `latestObservation` or
+  `currentRef` substitution is needed or returned.
 - To get refs after a successful write, use its `snapshot`/`target_ref` (with
   `snapshot_delta`, earlier refs also stay valid) or call `browser_snapshot`. Never
   repeat the write.
@@ -228,8 +223,9 @@ Recovering without repeating a consequential action:
 - In a batch, earlier commands may already have run. Resume from the failed
   command instead of re-running the whole batch.
 
-Refs are not stable across snapshots: an unchanged element gets a new ref in
-each generation.
+Refs remain stable across snapshots while the same node stays attached to its live
+document. Detached-node entries are pruned; ID-only removal history lasts for that
+content injection. Unobserved detach-and-reinsert of the same node is not tracked.
 
 #### Post-action snapshots
 
@@ -241,8 +237,10 @@ afterwards the delta lists the acted-on target and every line that record lacks:
 newly shown elements (an opened menu's options, a toast, autocomplete suggestions) and
 elements whose name, value or state changed. Unchanged parts of the page, such as a
 header above the target, are left out; removed elements are not listed. A delta is
-capped at 4,000 characters like a full snapshot (`snapshot_truncated`), and a
-same-document URL or title change (`history.pushState`) adds `url` or `title`:
+capped at 4,000 characters like a full snapshot (`snapshot_truncated`); when truncated,
+`snapshot_hint` gives scope guidance, including when the target/context did not fit
+and `target_ref` was omitted. A same-document URL or title change (`history.pushState`)
+adds `url` or `title`:
 
 ```json
 { "ok": true, "tag": "button", "text": "Review type", "snapshot_delta": true,
@@ -253,13 +251,13 @@ same-document URL or title change (`history.pushState`) adds `url` or `title`:
 An empty delta means nothing visible changed apart from removals. Use `expect` to
 verify an outcome, or `browser_snapshot` for the whole page.
 
-The snapshot is full (no `snapshot_delta`; it starts a new generation) for
+The snapshot is full (no `snapshot_delta`; existing attached refs stay valid) for
 `browser_submit_form` and `browser_navigate`, which usually load another document,
 when the action loaded another document before the snapshot was taken (it has no
 record to compare with), and on request: `"snapshot": "full"` on an HTTP or batch
 command, or `KITSUNE_POST_ACTION_SNAPSHOT=full` in the bridge environment for every
-action. A full post-action snapshot keeps the acted-on target within its cap and fills
-the rest in document order.
+action. A full post-action snapshot prioritizes the acted-on target and its ancestor
+context when that block fits, then fills the rest in document order.
 
 ### Action errors
 
@@ -292,7 +290,8 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `not_fillable` | `browser_type` (`type`/`fill` modes) or a `browser_form_fill` key found no field to write. The target is not a field (`fill` and `browser_form_fill`: input, textarea or select; `type`: input, textarea or `contenteditable` region) and has none in its open or closed shadow roots, searched through nested hosts up to 8 roots deep (`fill` and `browser_form_fill` also look in its light DOM). Nothing was written. `state.tag` is the target's tag; `state.reason` is `no_field`, or `shadow_depth` when its shadow roots nest deeper than 8 | true |
 | `ambiguous_target` | The command names no single target, so nothing was dispatched: a write action's selector matches several actionable elements (`state.selector`, `state.matches`; see [Strict selectors](#strict-selectors)), a `browser_form_fill` label or placeholder key matches several actionable fields (`state.field`, `state.matches`), or `browser_submit_form` without a target found several forms and no filled field naming one (`state.forms`). `state.candidates` lists up to 5 of them with a `ref` to target one | false |
 | `not_actionable` | An [actionability wait](#actionability-wait) timed out on a target that exists but never rendered (`state.reason: "not_rendered"`, `timeoutMs`, `elapsed`); nothing was dispatched | true |
-| `stale_ref` | The ref is no longer valid; `state.reason` is `element_removed`, `not_in_snapshot`, `snapshot_replaced` (a newer snapshot of this document; `state.latestObservation` and, for the same element, `state.currentRef`, see [Ref lifetime](#ref-lifetime)), or `other_document` (the tab navigated, or the ref came from another tab) | true |
+| `unsupported_selector` | The shared target resolver rejected unsupported/invalid syntax before dispatch; `state.selector` echoes the selector and `hint` lists accepted forms. Applies to actions, scoped snapshots and element screenshots | false |
+| `stale_ref` | The ref is no longer valid; `state.reason` is `element_removed`, `not_in_snapshot` (unknown/unissued ref), or `other_document` (the tab navigated, or the ref came from another tab) | true |
 | `navigating` | The tab is loading: a `not_found`/`stale_ref` while loading (`state.cause`), or the page unloaded while handling the command. Also a page that refused the content script within 5 s of a wake or reload without an error status, or whose 2xx response arrived only while the command waited for it: it may be an old document about to be replaced | true before dispatch; false for writes after |
 | `tab_closed` | The target tab no longer exists | true |
 | `tab_unloaded` | The tab is discarded and its page cannot be reached; use `browser_wake_tab` | true |
@@ -552,7 +551,7 @@ Supported on `browser_click`, `browser_double_click`, `browser_hover`, `browser_
 `browser_select_option`, `browser_check`, `browser_navigate`, `browser_back`,
 `browser_forward`, and `browser_reload_tab`. Over HTTP and in batch commands (including
 `retry`), `expect` is also accepted by focus, blur, and click-and-wait-navigation. Element conditions take a CSS selector, not a ref, because
-a full post-action snapshot replaces the refs from earlier snapshots. An invalid `expect` is
+the page may navigate or replace nodes before an outcome is observed. An invalid `expect` is
 rejected before anything is dispatched.
 
 When the condition is met, the result is the usual action result plus two fields:
@@ -1501,9 +1500,13 @@ usable refs.
 
 ### `browser_snapshot(tab_id=None, selector=None, ref=None, max_depth=None, text=False)`
 
-Returns a compact accessibility-style text tree with fresh refs. With no arguments,
-reads the full page via GET `/api/snapshot`. Optional arguments use POST to the same
-endpoint (`tabId`, `selector`, `ref`, `maxDepth` in the JSON body).
+This full-toolset function returns a compact accessibility-style tree with stable
+refs and explicitly forwards `text: false` by default via POST `/api/snapshot`.
+The core Playwright-schema tool instead omits `text`: it includes readable static
+text and HTTP(S) link URLs without a new document-prefix character cap. Direct HTTP
+GET or POST with omitted `text` has the same readable default. Explicit `text: true`
+selects the bounded readable mode; `text: false` omits static prose. Optional scope
+arguments are `tabId`, `selector`, `ref` and `maxDepth` in the JSON body.
 
 - `selector` scopes the snapshot to a CSS-selected subtree, including its root.
 - Open and closed shadow roots are read as rendered: a web component's shadow tree
@@ -1513,16 +1516,16 @@ endpoint (`tabId`, `selector`, `ref`, `maxDepth` in the JSON body).
   root), so a descendant combinator does not cross a host. Coordinate clicks and a
   `browser_keypress` without a target resolve into shadow roots as well.
 - `ref` scopes to an existing snapshot element and takes precedence over `selector`.
-  It is resolved before generating fresh refs. Missing selectors and stale refs
-  return errors rather than silently falling back to the full page.
+  It resolves to the same attached node across observations. Missing selectors and
+  stale refs return errors rather than silently falling back to the full page.
 - `max_depth` is a non-negative integer DOM depth relative to that root (`body`
   without a scope). `0` considers only the root, `1` also considers its immediate
   element children, and `None` traverses all depths. Non-semantic containers still
   count toward DOM depth, even when they produce no snapshot line.
 
-Every successful snapshot, even a scoped one, invalidates earlier refs in that tab.
-Only emitted elements receive usable refs. Generic clickable wrappers with any
-native interactive descendant or at least two interactive descendants are not
+Successful snapshots, including scoped reads, preserve earlier attached-node refs.
+Only emitted elements receive new usable refs; repeated observations reuse them.
+Generic clickable wrappers with any native interactive descendant or at least two interactive descendants are not
 reported as buttons; their children remain discoverable. Explicit roles and native
 controls are preserved. Custom controls use explicit labels/title/alt, then direct
 text; subtree text is used only when at most 80 characters and five elements long.
@@ -1534,7 +1537,8 @@ Leaf controls such as toolbar buttons are not collapsed. Hidden items are exclud
 from grouping; collapsed items have no refs. Scope a specific card/list item to
 inspect it fully. Post-action snapshots additionally keep the acted-on target's
 item, even beyond the first five, and return its `target_ref`. Character-limit
-truncation can still omit other context but never the visible acted-on target.
+truncation prioritizes the acted-on target and its ancestor context when that complete
+block fits. If it cannot fit, target_ref is omitted and truncation guidance says so.
 
 `text=True` (opt-in; the default is unchanged) adds readable text in the same call:
 each block's visible inline text becomes a `- text "…"` line in document order,
@@ -1542,10 +1546,16 @@ and the result adds `url`, `title` and `tabId`. Text lines have no refs; refs ke
 the lifetime above. Text that only repeats a control, label or heading name is
 omitted, as are hidden, `aria-hidden`, form-field and sensitive-field content.
 Lines are clipped at 1,000 characters with `…`; the snapshot is capped at 12,000
-characters, and truncation sets `truncated: true` and ends it with
-`- … truncated; scope with selector, ref or max_depth`. Repeated composite items
-still collapse, but siblings with only inline content (prose paragraphs, text list
-items) do not. `selector`, `ref` and `max_depth` scope text the same way.
+final public characters after URL redaction/alias serialization. Explicit HTTP
+`maxChars` (also with omitted/false text) and post-action limits are enforced there
+as well, on complete lines with ancestor context. Truncation sets `truncated: true`,
+includes a scope hint, and normally ends the snapshot with
+`- … truncated; scope with selector, ref or max_depth`.
+For budgets too small for the marker, the snapshot may be empty but the flag and hint
+remain. Repeated composite items still collapse, but siblings with only inline content
+(prose paragraphs, text list items) do not. `selector`, `ref` and `max_depth` scope
+text the same way. HTTP `maxChars` accepts a finite non-negative number (zero is
+valid); invalid or nonfinite budgets return an error before reading.
 With `KITSUNE_POST_ACTION_SNAPSHOT=text` in the bridge environment, post-action
 snapshots use the same text lines within their 4,000-character cap (a delta lists
 the text lines the action changed), so an `expect={"text": ...}` already present
@@ -1556,7 +1566,7 @@ there needs no further read.
 The content script runs in the top document and reads into same-origin frames
 (`iframe`/`frame` whose `contentDocument` it can access), at most three frames deep.
 `browser_snapshot`, `browser_dom`, `browser_find` and `browser_forms` include their
-elements with refs in the same generation as the page, and refs, CSS selectors
+elements with refs in the same document/injection scope as the page, and refs, CSS selectors
 (the top document first, then each frame), `form_fill` labels and coordinate clicks
 reach into them; sensitive fields inside frames are redacted the same way. A frame is
 a snapshot line such as `- iframe "배송지 편집" [ref=…]` with its content below it.
@@ -1705,8 +1715,8 @@ which skips them (`"method"`).
 
 A successful submit names the form it submitted in `form`, with the same fields
 (`action` and `method` as written in the form's attributes, `button` the submit
-control's label). Its `ref` is issued before the full post-action snapshot, which
-replaces it; use `target_ref` and the snapshot's refs afterwards.
+control's label). Its `ref` remains valid across the full post-action snapshot while
+that node stays attached in the same document; navigation or replacement invalidates it.
 
 ```json
 { "ok": true, "submitted": "button",
@@ -1742,16 +1752,20 @@ with a last read at it, as for `expect`. They do not depend on the page's timers
 browsers throttle in background tabs, so they end near `timeout`; one read of a very
 large page can add to `elapsed`. `js` waits still poll inside the page.
 
-### `browser_screenshot(selector=None, full_page=False, tab_id=None, save_to=None, data_url=False, ref=None, element=None)`
+### `browser_screenshot(selector=None, full_page=False, tab_id=None, save_to=None, data_url=False, ref=None, element=None, format="png")`
 
 Replaces `browser_element_screenshot` and `browser_full_page_screenshot`.
 Returns `[Image, metadata]` (MCP image content) by default; `save_to` writes the
-full PNG and returns metadata with `saved_to` instead, and `data_url=True` adds the
-raw PNG data URL. `selector`/`ref` and `full_page=True` are mutually exclusive.
+full PNG (or JPEG with `format="jpeg"`) and returns metadata with `saved_to` instead,
+and `data_url=True` adds the raw image data URL. `selector`/`ref` and `full_page=True`
+are mutually exclusive.
 
 - Default: viewport capture via POST `/api/screenshot`. A supplied `tab_id` is
   captured where it is (`tabs.captureTab`); no tab is shown and no window focused.
-- `selector`: crop one element via POST `/api/element-screenshot`.
+- `selector`: crop one element via POST `/api/element-screenshot`. Nonempty selectors
+  use the shared resolver (CSS, including shadow trees, and the supported Playwright
+  subset) and an exact-element marker that is cleaned up even after capture failure.
+  Unsupported syntax returns persistent `unsupported_selector` before capturing.
 - `full_page=True`: scroll and stitch up to 30 viewports via POST `/api/full-page-screenshot`.
 
 No capture activates a tab. `save_to`
@@ -1883,15 +1897,15 @@ Captures the active page as PNG and saves to the bridge screenshot directory
 ### POST /api/screenshot, /api/element-screenshot, /api/full-page-screenshot
 Return `dataUrl` and capture metadata. Set `imagePreview: true` for an inline preview
 under roughly 1 MB (large images are JPEG-encoded and downscaled in the extension).
-Without that flag, return full PNG data. Viewport requests accept `tabId`. Element
-requests require `selector` and accept `tabId` and `scale` (1–4); full-page requests
+Without that flag, return full PNG data by default, or JPEG with `format: "jpeg"`.
+Viewport requests accept `tabId`. Element requests require `selector` and accept `tabId` and `scale` (1–4); full-page requests
 accept `tabId`. A capture never shows the tab (`tabs.captureTab`). Captures retain
 existing canvas and scroll/segment limits and can truncate very large documents.
 
-MCP tool `browser_screenshot(selector=None, full_page=False, tab_id=None, save_to=None, data_url=False, ref=None, element=None)`
+MCP tool `browser_screenshot(selector=None, full_page=False, tab_id=None, save_to=None, data_url=False, ref=None, element=None, format="png")`
 returns `[Image, metadata]` by default, giving the model actual MCP image content.
-`save_to` writes a full PNG and returns metadata with `saved_to` instead.
-`data_url=True` returns raw PNG data in metadata.
+`save_to` writes the full requested PNG/JPEG and returns metadata with `saved_to`
+instead. `data_url=True` returns the raw image data in metadata.
 Inline preview dimensions can be smaller than the original capture metadata.
 
 ### POST /api/handle-dialog
