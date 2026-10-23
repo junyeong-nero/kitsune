@@ -48,10 +48,32 @@ settings that publish it; restart the MCP client after changing them:
 `browser_status` adds `mcp_tools` to the bridge status: this MCP server's enabled
 `caps` and the count of known tools it leaves `unpublished`, for example
 `{"caps": ["core"], "unpublished": 79}`. With the [tool gateway](#tool-gateway) it also
-has the `publish` groups and how many enabled tools are `unlisted` when a session starts. The bridge is shared by
-every MCP server, so `GET /api/status` does not have it.
+has the `publish` groups and how many enabled tools are `unlisted` when a session
+starts. The bridge is shared by every MCP server, so `GET /api/status` does not have it.
 MCP tool names and parameters are separate from HTTP endpoint names and JSON
 command actions. Task-mode requests restrict the bridge routes too (below).
+
+### Capability enforcement
+
+The MCP server sends its enabled groups (`all` expanded) in `X-Kitsune-Caps` on every
+bridge request. The bridge maps every route and every container action to the groups
+whose tools use it (`src/kitsune/capabilities.py`) and refuses the others. A route is
+refused with HTTP 403; a container step (`batch`, `parallel`, `retry`, `broadcast`,
+`if`/`while`/`try`/`sequence` blocks, workflow and resumed steps) fails with the same
+error as its result:
+
+```json
+{ "error": "cookies needs the storage capability", "code": "capability_restricted",
+  "retryable": false,
+  "hint": "Enable that group in this MCP server's KITSUNE_CAPS, then restart the MCP client.",
+  "state": { "groups": ["storage"], "caps": ["automation", "core"] } }
+```
+
+Container routes need `automation`, and each step needs its own action's group;
+actions the core tools also use (navigate, click, type, waits, screenshots, `js`, ...)
+are `core`. `/`, `/api/status`, `/api/version` and `/view` are open to every client.
+An unknown group in the header returns 400 `invalid_caps`. Requests without the header,
+such as the `kitsune-bridge` command's, are not restricted.
 
 ### Tool gateway
 

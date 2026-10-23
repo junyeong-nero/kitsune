@@ -58,6 +58,7 @@ except ImportError:
     sys.exit("websockets is not installed. Reinstall kitsune with its dependencies.")
 
 from . import bridge_control
+from .capabilities import ACTION_GROUPS, CAPS_HEADER, OPEN_ROUTES, ROUTE_GROUPS, caps_refusal, header_caps
 from .task_modes import (
     GATEWAY_TOOL_HEADER, MODE_HEADER, PROTECT_USER_TABS_HEADER, permits_action, permits_route, task_mode,
 )
@@ -169,6 +170,8 @@ DEFAULT_ASK_URLS = [r"checkout", r"payment", r"billing", r"/pay\b", r"purchase",
 _task_mode = contextvars.ContextVar("kitsune_task_mode", default="act")
 # The calling client's KITSUNE_PROTECT_USER_TABS (#199): its navigations leave user tabs alone.
 _protect_user_tabs = contextvars.ContextVar("kitsune_protect_user_tabs", default=False)
+# The calling client's capability groups (#230); None (no header) leaves every group open.
+_client_caps = contextvars.ContextVar("kitsune_client_caps", default=None)
 # The tool a client's browser_tools_call runs (#227), which audit entries record.
 _gateway_tool = contextvars.ContextVar("kitsune_gateway_tool", default=None)
 _TOOL_NAME = _re.compile(r"browser_[a-z0-9_]{1,64}")
@@ -3027,6 +3030,9 @@ async def run_command(cmd):
             params['query'] = params.pop('selector')
 
         effective_action = BATCH_ACTION_MAP.get(action, action)
+        caps_err = caps_refusal(_client_caps.get(), effective_action, ACTION_GROUPS.get(effective_action))
+        if caps_err:
+            return caps_err
         tab_err = _check_step_tab(effective_action, params)
         if tab_err:
             return tab_err
@@ -3319,13 +3325,23 @@ class BridgeHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self.send_json(400, {"error": str(exc), "code": "invalid_mode", "retryable": False})
             return
+        try:
+            caps = header_caps(self.headers.get(CAPS_HEADER))
+        except ValueError as exc:
+            self.send_json(400, {"error": str(exc), "code": "invalid_caps", "retryable": False})
+            return
         token = _task_mode.set(mode)
+        caps_token = _client_caps.set(caps)
         protect = _protect_user_tabs.set(self.headers.get(PROTECT_USER_TABS_HEADER) == "1")
         called = self.headers.get(GATEWAY_TOOL_HEADER) or ""
         gateway = _gateway_tool.set(called if _TOOL_NAME.fullmatch(called) else None)
         try:
             if not permits_route(mode, path):
                 self.send_json(403, _mode_error(path))
+                return
+            refused = None if path in OPEN_ROUTES else caps_refusal(caps, path, ROUTE_GROUPS.get(path))
+            if refused and path in routes:
+                self.send_json(403, refused)
                 return
             handler = routes.get(path)
             if handler:
@@ -3335,6 +3351,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         finally:
             _gateway_tool.reset(gateway)
             _protect_user_tabs.reset(protect)
+            _client_caps.reset(caps_token)
             _task_mode.reset(token)
 
     def do_GET(self):
