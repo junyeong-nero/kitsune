@@ -227,6 +227,15 @@ class ContainerProgressTests(ContainerTests):
         self.assertEqual(self.statuses(payload["progress"]), ["failed"])
         self.assertEqual(payload["status"], "failed")
 
+    def test_unsupported_selector_failed_without_running(self):
+        # #219: the selector failed to parse before dispatch, so the step is failed, not unknown.
+        self.replies["click"] = [{"error": "Unsupported selector: regular-expression text",
+                                  "code": "unsupported_selector", "retryable": False}]
+        payload = self.batch({"action": "click", "selector": "text=/Save/", "tabId": 3})
+        self.assertEqual(payload["results"][0]["code"], "unsupported_selector")
+        self.assertEqual(self.statuses(payload["progress"]), ["failed"])
+        self.assertEqual(payload["status"], "failed")
+
     def test_stopped_batch_marks_later_steps_skipped(self):
         self.replies["click"] = [{"ok": True, "warning": "hidden_or_covered"}]
         payload = self.batch({"action": "click", "selector": "#a"}, {"action": "click", "selector": "#b"},

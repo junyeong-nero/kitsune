@@ -229,6 +229,57 @@ async function main() {
   await hidden.tick(500);
   assert.deepEqual(await hiddenClick.result, { ok: true, warning: { code: 'hidden_or_covered' } });
 
+  // #223: a middle or Ctrl/Cmd click's link opens in a background tab after the bounded wait,
+  // as a popup-blocked link does, whatever its target.
+  const middle = { url: 'https://example.com/order/2', prevented: false };
+  const silent = harness(() => ({ ok: true, button: 'middle', newTabLink: middle }));
+  const silentClick = start(silent, { action: 'click', tabId: 1, selector: '#order', button: 'middle' });
+  await silent.tick(450);
+  assert.deepEqual(silent.created, [], 'waits for a tab the browser or page opens first');
+  await silent.tick(50);
+  assert.deepEqual(silent.created, [{
+    url: middle.url, openerTabId: 1, windowId: 3, cookieStoreId: 'firefox-container-1', active: false,
+  }]);
+  silent.commit(20, middle.url);
+  assert.deepEqual(await silentClick.result, {
+    ok: true, button: 'middle', opened_tabs: [{ tabId: 20, url: middle.url, via: 'link_fallback' }],
+  });
+  silent.assertClean();
+
+  // A tab the page or browser opened for the click is the click's tab, not opened again.
+  const native = harness(h => { h.open(4, 1, middle.url); return { ok: true, newTabLink: middle }; });
+  assert.deepEqual(await native.send({ action: 'click', tabId: 1, selector: '#order', modifiers: ['ControlOrMeta'] }),
+    { ok: true, opened_tabs: [{ tabId: 4, url: middle.url }] });
+  assert.deepEqual(native.created, []);
+  native.assertClean();
+
+  // A click the page cancelled is the page's: its own tab is reported, and none is opened for it.
+  const cancelledLink = { ...middle, prevented: true };
+  const scripted = harness(h => { h.open(4, 1, 'https://example.com/popup'); return { ok: true, newTabLink: cancelledLink }; });
+  assert.deepEqual(await scripted.send({ action: 'click', tabId: 1, selector: '#order', modifiers: ['ControlOrMeta'] }),
+    { ok: true, opened_tabs: [{ tabId: 4, url: 'https://example.com/popup' }] });
+  assert.deepEqual(scripted.created, []);
+
+  // When no tab opened, the result says so instead of a bare ok.
+  const prevented = harness(() => ({ ok: true, newTabLink: cancelledLink }));
+  const none = await prevented.send({ action: 'click', tabId: 1, selector: '#order', modifiers: ['ControlOrMeta'] });
+  assert.deepEqual(prevented.created, []);
+  assert.deepEqual(none.opened_tabs, []);
+  assert.equal(none.warning.code, 'no_tab_opened');
+  assert.deepEqual(none.warning.state, { url: middle.url, reason: 'page_cancelled' });
+  assert.match(none.warning.hint, /cancelled/);
+  assert.match(none.warning.hint, /browser_tabs action=new/);
+  assert.equal('newTabLink' in none, false, 'the content-script field stays internal');
+  prevented.assertClean();
+
+  // A failed fallback (the clicked tab closed meanwhile) keeps its popup_blocked warning.
+  const gone = harness(h => { delete h.tabs[1]; return { ok: true, newTabLink: middle }; });
+  const goneClick = start(gone, { action: 'click', tabId: 1, selector: '#order', button: 'middle' });
+  await gone.tick(500);
+  const goneResult = await goneClick.result;
+  assert.deepEqual(goneResult.opened_tabs, []);
+  assert.equal(goneResult.warning.code, 'popup_blocked');
+
   console.log('Opened tab checks passed');
   finished = true;
 }

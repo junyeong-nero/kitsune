@@ -603,6 +603,8 @@ async function runCommand(params, { withSnapshot, deltaSnapshot, textSnapshot, t
   const result = await dispatchCommand(params);
   const blankLink = result?.targetBlankLink;
   if (blankLink) delete result.targetBlankLink;
+  const newTabLink = result?.newTabLink;
+  if (newTabLink) delete result.newTabLink;
   if (textSnapshot && result && !result.error) result.tabId = params.tabId;
   if (withSnapshot && result && !result.error && result.ok !== false) {
     try {
@@ -627,12 +629,29 @@ async function runCommand(params, { withSnapshot, deltaSnapshot, textSnapshot, t
     } catch (e) { result.snapshot_error = e.message; }
   }
   if (blankLink && params.tabId != null) await openBlockedLink(params.tabId, blankLink, result);
+  // A middle or Ctrl/Cmd click's link opens like a popup-blocked one; a cancelled click is the page's.
+  if (newTabLink && !newTabLink.prevented && params.tabId != null) {
+    await openBlockedLink(params.tabId, { url: newTabLink.url, opener: false }, result);
+  }
   // Checked after the snapshot, which gives a link's new tab time to be created.
   if (tracksOpenedTabs && params.tabId != null && result && typeof result === 'object') {
     const opened = await getOpenedTabs(params.tabId, OPENED_TAB_URL_WAIT_MS);
     if (opened.opened_tabs.length) result.opened_tabs = opened.opened_tabs;
+    else if (newTabLink) noNewTab(result, newTabLink);
   }
   return result;
+}
+
+// A click meant to open its link in a new tab says so when none opened (#223).
+function noNewTab(result, link) {
+  result.opened_tabs = [];
+  const state = { url: link.url, ...(link.prevented ? { reason: 'page_cancelled' } : {}) };
+  result.warning ??= { code: 'no_tab_opened', state,
+    hint: link.prevented
+      ? 'The page cancelled this click, so its link did not open in a new tab, and the page opened none ' +
+        '(the popup blocker drops tabs that synthetic clicks open). It may have acted in this tab instead; ' +
+        'check the snapshot, or open state.url with browser_tabs action=new.'
+      : 'No tab opened for this link; open state.url with browser_tabs action=new.' };
 }
 
 // Tabs opened by tabId since its last page action started, with their current URLs.

@@ -62,7 +62,7 @@ async function testClickEvents(pointerEvents) {
   let listener;
   const context = vm.createContext({
     console, crypto: webcrypto, Event, MouseEvent, PointerEvent: MouseEvent,
-    CSS: { escape: x => x },
+    CSS: { escape: x => x }, navigator: { platform: 'Linux x86_64' },
     window: { PointerEvent: pointerEvents ? MouseEvent : undefined,
       getComputedStyle: () => ({ display: 'block', visibility: 'visible' }) },
     document: {
@@ -161,6 +161,36 @@ async function testClickEvents(pointerEvents) {
   label.closest = () => parent;
   elements['#label'] = label;
   assert.deepEqual({ ...(await send({ action: 'click', selector: '#label' })).targetBlankLink }, { url, opener: false });
+
+  // #223: a middle or Ctrl/Cmd click on any http(s) link asks the background for its new tab,
+  // and says whether the page cancelled the click (auxclick for the middle button).
+  const newTabLink = async (link, extra) => {
+    elements['#link'] = link;
+    elements['base[target]'] = null;
+    const result = await send({ action: 'click', selector: '#link', ...extra });
+    assert.equal(result.ok, true);
+    assert.equal(result.targetBlankLink, undefined, 'not also reported as a target=_blank link');
+    return result.newTabLink && { ...result.newTabLink };  // copy out of the vm realm
+  };
+  for (const extra of [{ modifiers: ['ControlOrMeta'] }, { modifiers: ['Meta'] }, { modifiers: ['Control', 'Shift'] },
+    { button: 'middle' }]) {
+    const label = JSON.stringify(extra);
+    assert.deepEqual(await newTabLink(new Anchor('plain', {}), extra), { url, prevented: false }, label);
+    assert.deepEqual(await newTabLink(new Anchor('blank', { target: '_blank' }), extra), { url, prevented: false }, label);
+    const handled = new Anchor('handled', {});
+    for (const type of ['click', 'auxclick']) handled.addEventListener(type, event => event.preventDefault());
+    assert.deepEqual(await newTabLink(handled, extra), { url, prevented: true }, label);
+    assert.equal(await newTabLink(new Anchor('download', { download: '' }), extra), undefined, label);
+    assert.equal(await newTabLink(new Anchor('mail', {}, 'mailto:a@example.com'), extra), undefined, label);
+  }
+  // Shift alone, Alt and the right button do not open a link in a new tab.
+  assert.equal(await newTabLink(new Anchor('shift', {}), { modifiers: ['Shift'] }), undefined);
+  assert.equal(await newTabLink(new Anchor('alt', {}), { modifiers: ['Alt'] }), undefined);
+  assert.equal(await newTabLink(new Anchor('right', {}), { button: 'right' }), undefined);
+  // A modified click on a button is not a link click.
+  const modified = await send({ action: 'click', selector: '#go', modifiers: ['ControlOrMeta'] });
+  assert.equal(modified.ok, true);
+  assert.equal(modified.newTabLink, undefined);
 }
 
 (async () => {

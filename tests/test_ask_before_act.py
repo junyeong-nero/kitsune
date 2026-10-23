@@ -349,6 +349,16 @@ class SensitiveActionTests(AskBeforeActTestCase):
         self.assertEqual(self.extension.actions(), ["click", "click"])
         self.assertEqual(bridge._unknown_outcomes, {})
 
+    def test_unsupported_selector_write_is_not_held(self):
+        # #219: an unparseable selector dispatched nothing, so its outcome is not unknown.
+        self.extension.reply = {"error": "Unsupported selector: the :near() pseudo-class",
+                                "code": "unsupported_selector", "retryable": False}
+        for _ in range(2):
+            result = self.forward("click", {"selector": "button:near(#a)", "tabId": 7})[1]
+            self.assertEqual((result["code"], result["retryable"]), ("unsupported_selector", False))
+        self.assertEqual(self.extension.actions(), ["click", "click"])
+        self.assertEqual(bridge._unknown_outcomes, {})
+
 
     def test_expect_outcome_not_observed_is_held_before_repeating(self):
         # #67: a dispatched write whose expected outcome did not happen is retryable: false,

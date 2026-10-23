@@ -791,10 +791,12 @@ WRITE_ACTIONS = {
 # message, payment or deletion), so their timeouts and disconnects are not retryable.
 _REPEAT_UNSAFE_ACTIONS = WRITE_ACTIONS | {"uploadCommit", "focusElement", "blurElement"}
 # Nothing reached the page, but repeating cannot succeed: until the tab navigates (error_page),
-# because the command names several targets (ambiguous_target), until the user approves
-# closing their tab (user_tab), or until the user grants a browser permission
+# because the command names several targets (ambiguous_target) or its target selector failed
+# to parse or validate before anything was dispatched (unsupported_selector), until the user
+# approves closing their tab (user_tab), or until the user grants a browser permission
 # (permission_required).
-_PERSISTENT_FAILURE_CODES = {"error_page", "ambiguous_target", "user_tab", "permission_required"}
+_PERSISTENT_FAILURE_CODES = {"error_page", "ambiguous_target", "unsupported_selector", "user_tab",
+                             "permission_required"}
 
 
 def _url_matches(pattern, url, flags=0):

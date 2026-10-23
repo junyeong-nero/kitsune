@@ -1,10 +1,12 @@
-"""Issues #87 and #94 in a real browser: a target=_blank click reports the tab it opened.
+"""Issues #87, #94 and #223 in a real browser: a click reports the tab it opened.
 
 Opt-in and built on tests/real_browser_harness.py, which documents how to run it. The
 first class allows popups, as the benchmark profiles do; the default-prefs class keeps
-the browser's own popup blocker (#94).
+the browser's own popup blocker (#94). A middle or Ctrl/Cmd click on a link (#223) never
+opens a tab by itself, being synthetic, so the extension opens it in both.
 """
 from http.server import BaseHTTPRequestHandler
+import time
 import unittest
 
 import real_browser_harness as harness
@@ -13,7 +15,13 @@ PAGES = {
     "/ok": '<title>ok</title><a id="new" href="/ok2" target="_blank">new tab link</a>'
            '<button id="noop">noop</button>'
            '<a id="opener" href="/ok2" target="_blank" rel="opener">opener link</a>'
-           '<a id="handled" href="/ok2" target="_blank" onclick="event.preventDefault()">handled link</a>',
+           '<a id="handled" href="/ok2" target="_blank" onclick="event.preventDefault()">handled link</a>'
+           '<p><a id="plain" href="/ok2">plain link</a></p>'
+           '<a id="cancelled" href="/ok2" onclick="event.preventDefault()" onauxclick="event.preventDefault()">'
+           'cancelled link</a>'
+           '<a id="scripted" href="/ok2" onauxclick="event.preventDefault(); window.open(\'/ok2?script\')"'
+           ' onclick="if (event.ctrlKey || event.metaKey) { event.preventDefault(); window.open(\'/ok2?script\') }">'
+           'scripted link</a>',
     "/ok2": "<title>ok2</title><h1>second</h1>",
 }
 
@@ -34,6 +42,7 @@ class RealBrowserOpenedTabTests(harness.RealBrowserTestCase):
     # The popup blocker drops a synthetic click's new tab, so allow popups here.
     PROFILE_PREFS = harness.POPUPS_ALLOWED
     opened_via = None  # the browser opens the link's tab itself
+    script_tabs_open = True  # a page's window.open from a synthetic click
 
     @classmethod
     def setUpClass(cls):
@@ -42,11 +51,15 @@ class RealBrowserOpenedTabTests(harness.RealBrowserTestCase):
         cls.page_url = cls.page.origin
         super().setUpClass()
 
-    def click_on_new_page(self, selector, expect=None):
-        body = {"tabId": self.open_tab(self.page_url + "/ok"), "selector": selector}
+    def click_on_new_page(self, selector, expect=None, **extra):
+        self.clicked_tab = self.open_tab(self.page_url + "/ok")
+        body = {"tabId": self.clicked_tab, "selector": selector, **extra}
         if expect:
             body["expect"] = expect
         return self.call("/api/click", body)
+
+    def tab_urls(self):
+        return {t["id"]: t["url"] for t in self.call("/api/tabs")["tabs"]}
 
     def assert_opened_ok2(self, result):
         self.assertEqual(len(result["opened_tabs"]), 1, result)
@@ -75,6 +88,50 @@ class RealBrowserOpenedTabTests(harness.RealBrowserTestCase):
         self.assertIs(result["outcome"]["met"], True)
         self.assert_opened_ok2(result)
 
+    def test_middle_and_modifier_clicks_open_a_plain_link_in_one_new_tab(self):
+        for extra in ({"modifiers": ["ControlOrMeta"]}, {"button": "middle"}):
+            with self.subTest(extra):
+                before = set(self.tab_urls())
+                result = self.click_on_new_page("#plain", **extra)
+                self.assertIs(result["ok"], True, result)
+                self.assertNotIn("warning", result)
+                self.assertEqual(len(result["opened_tabs"]), 1, result)
+                opened = result["opened_tabs"][0]
+                self.addCleanup(self.call, "/api/close-tab", {"tabId": opened["tabId"]})
+                self.assertEqual((opened["url"], opened.get("via")), (self.page_url + "/ok2", "link_fallback"))
+                time.sleep(1)  # a second tab would have opened by now
+                urls = self.tab_urls()
+                self.assertEqual(urls[self.clicked_tab], self.page_url + "/ok", "the clicked tab stays")
+                self.assertEqual(set(urls) - before - {self.clicked_tab}, {opened["tabId"]}, "no duplicate tab")
+
+    def test_cancelled_modifier_click_says_no_tab_opened(self):
+        before = set(self.tab_urls())
+        result = self.click_on_new_page("#cancelled", modifiers=["ControlOrMeta"])
+        self.assertIs(result["ok"], True, result)
+        self.assertEqual(result["opened_tabs"], [], result)
+        self.assertEqual(result["warning"]["code"], "no_tab_opened")
+        self.assertEqual(result["warning"]["state"], {"url": self.page_url + "/ok2", "reason": "page_cancelled"})
+        self.assertEqual(set(self.tab_urls()) - before, {self.clicked_tab})
+
+    def test_page_opened_tab_is_reported_once(self):
+        for extra in ({"modifiers": ["ControlOrMeta"]}, {"button": "middle"}):
+            with self.subTest(extra):
+                before = set(self.tab_urls())
+                result = self.click_on_new_page("#scripted", **extra)
+                self.assertIs(result["ok"], True, result)
+                time.sleep(1)
+                new = set(self.tab_urls()) - before - {self.clicked_tab}
+                for tab_id in new:
+                    self.addCleanup(self.call, "/api/close-tab", {"tabId": tab_id})
+                if self.script_tabs_open:
+                    self.assertEqual([t["url"] for t in result["opened_tabs"]], [self.page_url + "/ok2?script"])
+                    self.assertNotIn("warning", result)
+                    self.assertEqual(len(new), 1, "the page's tab is not duplicated")
+                else:
+                    self.assertEqual(result["opened_tabs"], [], result)
+                    self.assertEqual(result["warning"]["code"], "no_tab_opened")
+                    self.assertEqual(new, set())
+
     def test_no_op_click_opens_no_tab(self):
         result = self.click_on_new_page("#noop", {"url_changed": True, "timeout": 500})
         self.assertEqual(result["code"], "outcome_not_observed", result)
@@ -86,6 +143,7 @@ class RealBrowserDefaultPrefsOpenedTabTests(RealBrowserOpenedTabTests):
     """#94: under the default popup blocker the extension opens the link's tab itself."""
     PROFILE_PREFS = {}
     opened_via = "link_fallback"
+    script_tabs_open = False
 
     def ok2_tabs(self):
         return sum(t["url"] == self.page_url + "/ok2" for t in self.call("/api/tabs")["tabs"])
@@ -94,9 +152,9 @@ class RealBrowserDefaultPrefsOpenedTabTests(RealBrowserOpenedTabTests):
         self.assertNotIn("opened_tabs", result)
         self.assertEqual(self.ok2_tabs(), self.ok2_before, result)
 
-    def click_on_new_page(self, selector, expect=None):
+    def click_on_new_page(self, selector, expect=None, **extra):
         self.ok2_before = self.ok2_tabs()
-        return super().click_on_new_page(selector, expect)
+        return super().click_on_new_page(selector, expect, **extra)
 
     def test_rel_opener_link_reports_popup_blocked(self):
         result = self.click_on_new_page("#opener")

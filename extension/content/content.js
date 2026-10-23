@@ -1165,6 +1165,10 @@
       return { error: 'button must be left, middle or right' };
     }
     const [buttonIndex, buttonBit] = MOUSE_BUTTONS[button];
+    const flags = modifierFlags(modifiers);
+    // A user's middle or Ctrl/Cmd click opens a link in a new tab; a synthetic one never does,
+    // so newTabLink asks the background to, unless the page cancelled the click (#223).
+    const newTab = button === 'middle' || (button === 'left' && (flags.ctrlKey || flags.metaKey));
     let el = resolveTarget(selector, coords, { first, pointer: true });
     if (!el) return notFound();
 
@@ -1191,7 +1195,7 @@
       clientY: y,
       button: buttonIndex,
       buttons: buttonBit,
-      ...modifierFlags(modifiers),
+      ...flags,
     };
     // No button is held once it is released.
     const released = { ...eventInit, buttons: 0 };
@@ -1204,12 +1208,14 @@
     }
     // Other buttons fire auxclick (middle) or contextmenu (right) in place of click.
     if (button !== 'left') {
-      dispatchPointerOrMouse(el, button === 'right' ? 'contextmenu' : 'auxclick', { ...released, detail: 1 });
+      const proceed = dispatchPointerOrMouse(el, button === 'right' ? 'contextmenu' : 'auxclick',
+        { ...released, detail: 1 });
+      const link = newTab ? followedLink(el) : null;
       return { ok: true, tag: el.tagName.toLowerCase(), text: redactedText(el).trim().slice(0, 60), button,
-        ...warning };
+        ...warning, ...(link ? { newTabLink: { url: link.href, prevented: !proceed } } : {}) };
     }
 
-    const link = blankTargetLink(el);
+    const link = newTab ? followedLink(el) : blankTargetLink(el);
     const media = MEDIA_TAGS.has(el.tagName) ? el : null;
     const wasPaused = media?.paused;
     let clickEvent = null;
@@ -1222,14 +1228,16 @@
     }
     if (link || media) el.removeEventListener('click', onClick);
     // A page handler that cancelled the click took the link over, including any tab it opens.
-    let blankLink = {};
-    if (link && clickEvent && !clickEvent.defaultPrevented) {
-      blankLink = { targetBlankLink: { url: link.href, opener: link.relList.contains('opener') } };
+    const prevented = !clickEvent || clickEvent.defaultPrevented;
+    let linkTab = {};
+    if (link && newTab) linkTab = { newTabLink: { url: link.href, prevented } };
+    else if (link && !prevented) {
+      linkTab = { targetBlankLink: { url: link.href, opener: link.relList.contains('opener') } };
     }
 
     // A media element's text is its fallback content, which the browser does not show.
     const result = { ok: true, tag: el.tagName.toLowerCase(),
-      text: media ? '' : redactedText(el).trim().slice(0, 60), ...warning, ...blankLink };
+      text: media ? '' : redactedText(el).trim().slice(0, 60), ...warning, ...linkTab };
     // Synthetic clicks cannot press the browser's native media controls (they only answer
     // trusted input), so a click the page neither cancelled nor handled toggles playback.
     if (media && clickEvent && !clickEvent.defaultPrevented && media.paused === wasPaused) {
@@ -1376,11 +1384,17 @@
     el.dispatchEvent(new InputEvent('input', init));
   }
 
+  // The http(s) link a click on el follows, unless it downloads.
+  function followedLink(el) {
+    const link = el.closest('a[href], area[href]');
+    return link && !link.hasAttribute('download') && /^https?:$/.test(link.protocol) ? link : null;
+  }
+
   // The http(s) link a click on el follows into a new tab (target=_blank, or <base target>).
   // The popup blocker can drop that tab for a synthetic click, so the background checks it.
   function blankTargetLink(el) {
-    const link = el.closest('a[href], area[href]');
-    if (!link || link.hasAttribute('download') || !/^https?:$/.test(link.protocol)) return null;
+    const link = followedLink(el);
+    if (!link) return null;
     const target = link.getAttribute('target') ?? docOf(link).querySelector('base[target]')?.getAttribute('target');
     return target?.toLowerCase() === '_blank' ? link : null;
   }
@@ -1538,6 +1552,10 @@
     const el = resolveTarget(selector, coords, { first, pointer: true });
     if (!el) return notFound();
 
+    // As a pointer reaching it would, bring the target into view first (#220). scrollIntoView
+    // scrolls every scrolling ancestor, so an inner list that loads more at its end sees it;
+    // the point is read after the scroll.
+    if (!coords) el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
     const rect = el.getBoundingClientRect();
     const x = rect.x + rect.width / 2;
     const y = rect.y + rect.height / 2;
@@ -2179,6 +2197,388 @@
     return el;
   }
 
+  // ── Playwright selectors (#219) ──
+  // Besides refs and CSS, targets may use the Playwright forms agents write most: text=,
+  // role= (and internal:text=/internal:role=), the :has-text(), :text-is(), :text() and
+  // :visible pseudo-classes, >> chains, nth= and xpath=.. (the parent). This is a subset, not
+  // Playwright's engine. Text and names are read redacted, as snapshots show them; general
+  // XPath is refused because it reads attributes (value) the selector checks cannot see.
+  // Anything else fails with unsupported_selector, which repeating cannot fix.
+  const UNSUPPORTED_SELECTOR_HINT = 'Pass a ref from browser_snapshot (e12) on its own, a CSS selector, ' +
+    'or one of the Playwright forms Kitsune resolves: text=…, role=…[name="…"], :has-text("…"), ' +
+    ':text-is("…"), :text("…"), :visible, >> chains, nth=N and xpath=.. (the parent).';
+  // Valid CSS never starts with an engine name and =, two dots, // or a quote.
+  const SELECTOR_ENGINE = /^([a-z][\w-]*(?::[a-z][\w-]*)*)\s*=/i;
+  const PLAYWRIGHT_PSEUDO =
+    /:(has-text|text-is|text-matches|text|visible|nth-match|left-of|right-of|above|below|near)(?![\w-])/i;
+  const PLAYWRIGHT_FILTERS = new Set(['has-text', 'text-is', 'text', 'visible']);
+  // Never matched by text: their text is not page content.
+  const TEXTLESS_TAGS = new Set(['HEAD', 'TITLE', 'SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE']);
+  // Implicit roles beyond the ones snapshots infer (inferRole).
+  const IMPLICIT_ROLES = { ARTICLE: 'article', ASIDE: 'complementary', DIALOG: 'dialog', FIELDSET: 'group',
+    FOOTER: 'contentinfo', FORM: 'form', HEADER: 'banner', HR: 'separator', IMG: 'img', LI: 'listitem',
+    MAIN: 'main', MENU: 'list', NAV: 'navigation', OL: 'list', OPTION: 'option', PROGRESS: 'progressbar',
+    TABLE: 'table', TD: 'cell', TH: 'columnheader', TR: 'row', UL: 'list' };
+  // A snapshot line's `role "name"`, passed as a target instead of its ref.
+  const SNAPSHOT_LABEL = /^[a-z]+ "(?:[^"\\]|\\.)*"$/i;
+
+  function unsupportedSelector(selector, reason) {
+    return new ActionError(`Unsupported selector: ${reason}`, { code: 'unsupported_selector', retryable: false,
+      hint: UNSUPPORTED_SELECTOR_HINT, state: { selector } });
+  }
+
+  // A native CSS failure: invalid syntax can never match, so it is not a retryable not_found.
+  function cssSelectorError(selector, e) {
+    if (e?.name !== 'SyntaxError') return null;
+    return unsupportedSelector(selector, SNAPSHOT_LABEL.test(selector.trim())
+      ? 'this is a snapshot line\'s role and name; pass that line\'s ref instead'
+      : 'it is not valid CSS');
+  }
+
+  // The index after the string, (…) or […] group that opens at text[i]. As in CSS, the end of
+  // the text closes whatever is still open.
+  function groupEnd(text, i) {
+    const open = text[i];
+    const close = open === '(' ? ')' : open === '[' ? ']' : open;
+    for (let j = i + 1; j < text.length; j++) {
+      const c = text[j];
+      if (c === '\\') j++;
+      else if (c === close) return j + 1;
+      else if (close !== '"' && close !== "'" && '"\'(['.includes(c)) j = groupEnd(text, j) - 1;
+    }
+    return text.length;
+  }
+
+  // text split at each separator outside strings and groups.
+  function splitTopLevel(text, separator) {
+    const parts = [];
+    let start = 0;
+    for (let i = 0; i < text.length; i++) {
+      if (text[i] === '\\') i++;
+      else if ('"\'(['.includes(text[i])) i = groupEnd(text, i) - 1;
+      else if (text.startsWith(separator, i)) {
+        parts.push(text.slice(start, i));
+        i += separator.length - 1;
+        start = i + 1;
+      }
+    }
+    parts.push(text.slice(start));
+    return parts;
+  }
+
+  const withoutStrings = text => text.replace(/"(?:[^"\\]|\\.)*"?|'(?:[^'\\]|\\.)*'?/g, '""');
+  const unescapeSelector = text => text.replace(/\\([\s\S])/g, '$1');
+  const normalizeSelectorText = text => String(text || '').replace(/\s+/g, ' ').trim();
+  // A pseudo-class argument: a quoted string, or the bare text.
+  function selectorArgument(arg) {
+    const quoted = /^(["'])([\s\S]*)\1$/.exec(arg.trim());
+    return quoted ? unescapeSelector(quoted[2]) : arg.trim();
+  }
+
+  // Lax: a case-insensitive substring. Strict: the whole text, case-sensitive. Both after
+  // whitespace is collapsed, as Playwright matches text.
+  function textMatcher(value, strict) {
+    const wanted = normalizeSelectorText(value);
+    if (strict) return text => text === wanted;
+    const lower = wanted.toLowerCase();
+    return text => text.toLowerCase().includes(lower);
+  }
+
+  // Parts of a selector that needs this engine (separated by >>), or null for plain CSS.
+  function parseTargetSelector(selector) {
+    const text = selector.trim();
+    const parts = splitTopLevel(text, '>>').map(part => part.trim());
+    if (parts.length === 1 && !SELECTOR_ENGINE.test(text) && !/^(?:\.\.|\/\/|["'])/.test(text) &&
+        !PLAYWRIGHT_PSEUDO.test(withoutStrings(text))) return null;
+    if (parts.some(part => !part)) throw unsupportedSelector(selector, 'a >> chain has an empty part');
+    const parsed = parts.map(part => parseSelectorPart(part, selector));
+    if (parsed[0].kind === 'nth') throw unsupportedSelector(selector, 'nth= must follow another selector');
+    return parsed;
+  }
+
+  function parseSelectorPart(part, selector) {
+    if (REF_SELECTOR.test(part) || /^e\d+$/.test(part)) {
+      throw unsupportedSelector(selector, 'a snapshot ref cannot be combined with >>; pass the ref on its own');
+    }
+    const engine = SELECTOR_ENGINE.exec(part);
+    if (!engine) {
+      if (part === '..') return { kind: 'parent' };
+      if (part.startsWith('//') || part.startsWith('..')) {
+        throw unsupportedSelector(selector, 'XPath other than ".." (the parent element)');
+      }
+      return part[0] === '"' || part[0] === "'" ? textPart(part, false, selector) : cssPart(part, selector);
+    }
+    const name = engine[1].toLowerCase();
+    const body = part.slice(engine[0].length).trim();
+    if (name === 'css') return cssPart(body, selector);
+    if (name === 'text' || name === 'internal:text') return textPart(body, name !== 'text', selector);
+    if (name === 'role' || name === 'internal:role') return rolePart(body, name !== 'role', selector);
+    if (name === 'nth' || name === 'internal:nth') {
+      if (!/^-?\d+$/.test(body)) throw unsupportedSelector(selector, 'nth= takes an integer index');
+      return { kind: 'nth', index: Number(body) };
+    }
+    if (name === 'xpath') {
+      if (body === '..') return { kind: 'parent' };
+      throw unsupportedSelector(selector, 'XPath other than ".." (the parent element)');
+    }
+    throw unsupportedSelector(selector, `the ${name}= selector engine`);
+  }
+
+  // text=foo is lax; a quoted text="foo" (or "foo"s) is strict and "foo"i is lax again.
+  function textPart(body, internal, selector) {
+    const quoted = /^(["'])((?:\\[\s\S]|(?!\1)[^\\])*)\1([is])?$/.exec(body);
+    if (quoted) {
+      const match = textMatcher(unescapeSelector(quoted[2]), quoted[3] !== 'i');
+      return { kind: 'text', match };
+    }
+    if (body.startsWith('/')) throw unsupportedSelector(selector, 'regular-expression text');
+    if (internal || !normalizeSelectorText(body)) {
+      throw unsupportedSelector(selector, internal ? 'internal:text= takes a quoted string' : 'text= needs text');
+    }
+    return { kind: 'text', match: textMatcher(body, false) };
+  }
+
+  // role=button[name="Save"] matches the whole name ignoring case, [name="Save"s] exactly;
+  // internal:role (getByRole) takes [name="Save"i] as a substring. Also [level=N] and
+  // [include-hidden]; hidden elements are skipped otherwise.
+  function rolePart(body, internal, selector) {
+    const role = /^[a-z][\w-]*/i.exec(body)?.[0];
+    if (!role) throw unsupportedSelector(selector, 'role= needs a role, e.g. role=button[name="Save"]');
+    const part = { kind: 'role', role: role.toLowerCase(), includeHidden: false, level: null, name: null };
+    let rest = body.slice(role.length).trim();
+    while (rest) {
+      if (rest[0] !== '[') throw unsupportedSelector(selector, `unexpected "${rest}" after role=${role}`);
+      const end = groupEnd(rest, 0);
+      const attr = /^\[\s*([\w-]+)\s*(?:([*^$]?=)\s*(?:(["'])((?:\\[\s\S]|(?!\3)[^\\])*)\3\s*([is])?|(-?\d+|true|false)))?\s*\]$/i
+        .exec(rest.slice(0, end));
+      const key = attr?.[1].toLowerCase();
+      if (key === 'name' && attr[3]) {
+        const caseSensitive = attr[5] === 's';
+        const op = internal && attr[2] === '=' && !caseSensitive ? '*=' : attr[2];
+        part.name = { op, caseSensitive, value: normalizeSelectorText(unescapeSelector(attr[4])) };
+      } else if (key === 'level' && attr[2] === '=' && /^\d+$/.test(attr[6] || '')) {
+        part.level = Number(attr[6]);
+      } else if (key === 'include-hidden' && (!attr[2] || (attr[2] === '=' && /^(?:true|false)$/i.test(attr[6] || '')))) {
+        part.includeHidden = !attr[2] || attr[6].toLowerCase() === 'true';
+      } else {
+        throw unsupportedSelector(selector, `the role= attribute ${rest.slice(0, end)}`);
+      }
+      rest = rest.slice(end).trim();
+    }
+    return part;
+  }
+
+  // CSS whose compounds may carry :has-text(), :text-is(), :text() or :visible. Each
+  // alternative is a list of { combinator, css, filters }, matched right to left.
+  function cssPart(css, selector) {
+    if (!PLAYWRIGHT_PSEUDO.test(withoutStrings(css))) return { kind: 'css', css };
+    return { kind: 'css', css, alternatives: splitTopLevel(css, ',').map(alt => complexSelector(alt.trim(), selector)) };
+  }
+
+  function complexSelector(text, selector) {
+    const compounds = [];
+    let current = { combinator: null, css: '', filters: [] };
+    const finish = () => {
+      if (!current.css && !current.filters.length) throw unsupportedSelector(selector, 'it is not valid CSS');
+      compounds.push(current);
+    };
+    for (let i = 0; i < text.length;) {
+      const c = text[i];
+      if (/[\s>+~]/.test(c)) {
+        let j = i, next = ' ';
+        for (; j < text.length && /[\s>+~]/.test(text[j]); j++) {
+          if (text[j].trim()) {
+            if (next !== ' ') throw unsupportedSelector(selector, 'it is not valid CSS');
+            next = text[j];
+          }
+        }
+        finish();
+        current = { combinator: next, css: '', filters: [] };
+        i = j;
+      } else if (c === '\\') {
+        current.css += text.slice(i, i + 2);
+        i += 2;
+      } else if ('"\'(['.includes(c)) {
+        const end = groupEnd(text, i);
+        current.css += text.slice(i, end);
+        i = end;
+      } else if (c === ':' && text[i + 1] !== ':') {
+        const name = /^:([\w-]+)/.exec(text.slice(i))?.[1] || '';
+        const end = i + 1 + name.length;
+        const argEnd = text[end] === '(' ? groupEnd(text, end) : end;
+        const lower = name.toLowerCase();
+        if (PLAYWRIGHT_FILTERS.has(lower)) {
+          if ((lower === 'visible') !== (argEnd === end)) {
+            throw unsupportedSelector(selector, `:${lower}${lower === 'visible' ? ' takes no argument' : '() needs text'}`);
+          }
+          current.filters.push(selectorFilter(lower, text.slice(end + 1, argEnd - 1)));
+        } else if (PLAYWRIGHT_PSEUDO.test(`:${lower}`)) {
+          throw unsupportedSelector(selector, `the :${lower}() pseudo-class`);
+        } else if (PLAYWRIGHT_PSEUDO.test(withoutStrings(text.slice(end, argEnd)))) {
+          throw unsupportedSelector(selector, `Playwright pseudo-classes inside :${lower}()`);
+        } else {
+          current.css += text.slice(i, argEnd);
+        }
+        i = argEnd;
+      } else {
+        current.css += c;
+        i++;
+      }
+    }
+    finish();
+    return compounds;
+  }
+
+  // :has-text() is any element containing the text, :text() the smallest one, :text-is()
+  // one whose whole text it is.
+  function selectorFilter(name, arg) {
+    if (name === 'visible') return el => isRendered(el);
+    const value = selectorArgument(arg);
+    const match = textMatcher(value, name === 'text-is');
+    if (name === 'text') return (el, scan) => scan.smallest(el, match);
+    return (el, scan) => match(scan.text(el));
+  }
+
+  // The text a selector matches: redacted text content, or a button input's value.
+  function selectorText(el) {
+    if (el.tagName === 'INPUT' && ['button', 'submit', 'reset'].includes(String(el.type).toLowerCase())) {
+      return isSensitiveField(el) ? '' : String(el.value || '');
+    }
+    return TEXTLESS_TAGS.has(el.tagName) ? '' : redactedText(el);
+  }
+
+  // The role snapshots and role= selectors give el.
+  function targetRole(el) {
+    const explicit = String(el.getAttribute('role') || '').trim().split(/\s+/)[0].toLowerCase();
+    if (explicit) return explicit;
+    if (/^H[1-6]$/.test(el.tagName)) return 'heading';
+    if (el.tagName === 'A' || el.tagName === 'AREA') return el.hasAttribute('href') ? 'link' : '';
+    if (el.tagName === 'SELECT' && (el.multiple || el.size > 1)) return 'listbox';
+    return IMPLICIT_ROLES[el.tagName] || inferRole(el);
+  }
+
+  // Matches for each parsed part in turn; a later part searches inside the earlier matches.
+  function matchSelectorParts(parts, selector) {
+    const texts = new Map(), smallest = new Map();
+    const scan = {
+      text: el => {
+        if (!texts.has(el)) texts.set(el, normalizeSelectorText(selectorText(el)));
+        return texts.get(el);
+      },
+      // el's text matches and no child element's does.
+      smallest: (el, match) => {
+        let byElement = smallest.get(match);
+        if (!byElement) smallest.set(match, byElement = new Map());
+        if (!byElement.has(el)) {
+          byElement.set(el, !TEXTLESS_TAGS.has(el.tagName) && match(scan.text(el)) &&
+            !Array.from(el.children || []).some(child => !TEXTLESS_TAGS.has(child.tagName) && match(scan.text(child))));
+        }
+        return byElement.get(el);
+      },
+    };
+    let matches = null;
+    for (const part of parts) {
+      if (part.kind === 'nth') {
+        const el = matches.at(part.index);
+        matches = el ? [el] : [];
+      } else if (part.kind === 'parent') {
+        matches = [...new Set((matches || [document.documentElement]).map(el => el.parentElement).filter(Boolean))];
+      } else {
+        const found = new Set();
+        for (const scope of matches || [null]) {
+          for (const el of partMatches(part, scope, scan, selector)) found.add(el);
+        }
+        matches = [...found];
+      }
+    }
+    return matches;
+  }
+
+  function partMatches(part, scope, scan, selector) {
+    const query = css => {
+      try { return scope ? queryTreeSelectorAll(css, scope) : deepQuerySelectorAll(css); } catch (e) {
+        throw cssSelectorError(selector, e) || e;
+      }
+    };
+    if (part.kind === 'text') return query('*').filter(el => scan.smallest(el, part.match));
+    if (part.kind === 'role') return query('*').filter(el => roleMatches(el, part));
+    if (!part.alternatives) return query(part.css);
+    const last = part.alternatives.map(compounds => compounds.at(-1).css || '*');
+    return query(last.join(', ')).filter(el => part.alternatives.some(compounds => {
+      try { return complexMatches(el, compounds, compounds.length - 1, scan); } catch (e) {
+        throw cssSelectorError(selector, e) || e;
+      }
+    }));
+  }
+
+  function complexMatches(el, compounds, i, scan) {
+    const { combinator, css, filters } = compounds[i];
+    if ((css && !el.matches(css)) || !filters.every(filter => filter(el, scan))) return false;
+    if (i === 0) return true;
+    const step = combinator === '+' || combinator === '~' ? node => node.previousElementSibling
+      : node => node.parentElement;
+    for (let node = step(el); node; node = step(node)) {
+      if (complexMatches(node, compounds, i - 1, scan)) return true;
+      if (combinator === '>' || combinator === '+') break;
+    }
+    return false;
+  }
+
+  function roleMatches(el, part) {
+    if (targetRole(el) !== part.role) return false;
+    if (!part.includeHidden && (!isRendered(el) || el.closest('[aria-hidden="true"]'))) return false;
+    if (part.level != null) {
+      const level = Number(el.getAttribute('aria-level')) || Number(/^H([1-6])$/.exec(el.tagName)?.[1]);
+      if (level !== part.level) return false;
+    }
+    if (!part.name) return true;
+    const { op, caseSensitive, value } = part.name;
+    let name = normalizeSelectorText(accessibleName(el));
+    let wanted = value;
+    if (!caseSensitive) [name, wanted] = [name.toLowerCase(), wanted.toLowerCase()];
+    if (op === '*=') return name.includes(wanted);
+    if (op === '^=') return name.startsWith(wanted);
+    if (op === '$=') return name.endsWith(wanted);
+    return name === wanted;
+  }
+
+  // Every element a non-ref selector names, in document order per searched tree.
+  function targetMatches(selector) {
+    const parts = parseTargetSelector(selector);
+    if (parts) return withRedactionCache(() => matchSelectorParts(parts, selector));
+    try { return deepQuerySelectorAll(selector); } catch (e) {
+      const error = cssSelectorError(selector, e);
+      if (error) throw error;
+      return [];
+    }
+  }
+
+  // A type selector no HTML element has: a snapshot ref (e12) or a word that is not ASCII,
+  // such as an element's text, passed as CSS.
+  function impossibleTypeSelector(css) {
+    if (css.includes('\\')) return null;
+    let bare = '';
+    for (let i = 0; i < css.length; i++) {
+      if ('"\'(['.includes(css[i])) i = groupEnd(css, i) - 1;
+      else bare += css[i];
+    }
+    for (const compound of bare.split(/[\s>+~,]+/)) {
+      const type = /^[^.#:*|]+/.exec(compound)?.[0];
+      if (type && (/^(?:s\d+)?e\d+$/i.test(type) || (/[^\x00-\x7f]/.test(type) && !type.includes('-')))) return type;
+    }
+    return null;
+  }
+
+  // A CSS selector that matched nothing: unsupported when it can never match.
+  function cssMiss(selector) {
+    const type = impossibleTypeSelector(selector);
+    if (type) {
+      throw unsupportedSelector(selector, `"${type}" is not an element name; it looks like a ref or element ` +
+        'text (use the ref on its own, or text=…)');
+    }
+    return null;
+  }
+
   function resolveElement(selector, coords) {
     if (!selector && coords) return elementAtPoint(coords.x, coords.y).el;
     if (!selector) return null;
@@ -2195,17 +2595,28 @@
       }
       return el;
     }
-    
+
+    const parts = parseTargetSelector(selector);
+    if (parts) return withRedactionCache(() => matchSelectorParts(parts, selector))[0] || null;
     // Try CSS selector
-    try { return deepQuerySelector(selector); } catch {}
+    try { return deepQuerySelector(selector) || cssMiss(selector); } catch (e) {
+      if (e instanceof ActionError) throw e;
+      const error = cssSelectorError(selector, e);
+      if (error) throw error;
+    }
     return null;
   }
 
-  // Write actions: like resolveElement, but a CSS selector matching several actionable
-  // elements is ambiguous unless first is set. Refs and coordinates name one element.
+  // Write actions: like resolveElement, but a selector matching several actionable elements
+  // is ambiguous unless first is set; one actionable match among others is the target.
+  // Refs and coordinates name one element.
   function resolveTarget(selector, coords, { first = false, pointer = false } = {}) {
-    if (selector && !first && !REF_SELECTOR.test(selector)) assertOneTarget(selector, pointer);
-    return resolveElement(selector, coords);
+    if (!selector || REF_SELECTOR.test(selector)) return resolveElement(selector, coords);
+    const matches = targetMatches(selector);
+    if (!matches.length) return parseTargetSelector(selector) ? null : resolveElement(selector, coords);
+    if (first) return matches[0];
+    const actionable = assertOneTarget(selector, pointer, matches);
+    return actionable.length === 1 ? actionable[0] : matches[0];
   }
 
   // What a write action could act on: enabled and not <input type=hidden>; for pointer
@@ -2215,13 +2626,10 @@
     return !pointer || isRendered(el);
   }
 
-  function assertOneTarget(selector, pointer, matches) {
-    if (!matches) {
-      try { matches = deepQuerySelectorAll(selector); } catch { matches = []; }
-    }
-    if (matches.length < 2) return;
+  // The actionable matches, unless there are several.
+  function assertOneTarget(selector, pointer, matches = targetMatches(selector)) {
     const actionable = matches.filter(el => isActionable(el, pointer));
-    if (actionable.length < 2) return;
+    if (actionable.length < 2) return actionable;
     const { error, ...details } = ambiguousTarget(
       `${actionable.length} elements match the selector; nothing was dispatched`,
       'Act on one element: pass its ref from state.candidates or a new browser_snapshot, or a more ' +
@@ -2243,11 +2651,15 @@
 
   // An ambiguous_target candidate: its ref, role and name (never a field value).
   function targetSummary(el) {
-    const buttonInput = el.tagName === 'INPUT' && BUTTON_INPUT_TYPES.has(String(el.type).toLowerCase());
-    const name = controlLabel(el, buttonInput) ||
-      (FILL_TAGS.includes(el.tagName) ? findLabel(el) || el.placeholder || '' : '');
     return { ref: issueRef(el), role: el.getAttribute('role') || inferRole(el) || el.tagName.toLowerCase(),
-      name: String(name).trim().slice(0, 80) };
+      name: String(accessibleName(el)).trim().slice(0, 80) };
+  }
+
+  // The name ambiguous_target candidates and role= selectors use (never a field value).
+  function accessibleName(el) {
+    const buttonInput = el.tagName === 'INPUT' && BUTTON_INPUT_TYPES.has(String(el.type).toLowerCase());
+    return controlLabel(el, buttonInput) ||
+      (FILL_TAGS.includes(el.tagName) ? findLabel(el) || el.placeholder || '' : '');
   }
 
   function nearestInteractiveAncestor(el) {
