@@ -347,7 +347,8 @@ the new tools, and `browser_tools_call` works either way.
 This reaches tools that are already installed. Changing `KITSUNE_CAPS` or upgrading
 Kitsune still needs a restart.
 
-The Kitsune-owned tools take `tab_id` to target background tabs and share an action
+The Kitsune-owned tools take `tab_id` to target background tabs; without it they act on
+the [current tab](#core-tools) like the core tools. They share an action
 contract (`ref`, `wait`, `expect`, `confirm_token`, `first`) documented on
 `browser_check`; see the [API reference](api-reference.md) and the
 [tool list](tool-list.md).
@@ -368,7 +369,9 @@ MCP works unchanged. They drive your own browser through the Kitsune extension a
 Kitsune's compact JSON results, not Playwright's Markdown. Where the two differ:
 
 - **Current tab.** Tools act on the active tab until `browser_tabs` `new` or `select`
-  makes another tab current; `select` does not switch your view. `index` is the position
+  makes another tab current; `select` does not switch your view. Kitsune's own tools
+  called without `tab_id`, and `browser_batch`, `browser_retry` and `browser_workflow`
+  commands that name no `tabId`, act on the current tab too. `index` is the position
   in `browser_tabs` `list`, which also marks `active` and agent-`owned` tabs. `new`,
   `select` and `close` return the tabs after the change in the same form; `new` returns
   the new tab's `index`.

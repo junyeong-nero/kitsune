@@ -275,11 +275,32 @@ def _mcp_errors(function):
     return call
 
 
+def _on_current_tab(function):
+    """Run an omitted optional tab_id on the core tools' current tab (#232).
+
+    The current tab is the one browser_tabs last opened or selected, else the user's active tab,
+    so a tool the agent calls without tab_id acts on the tab its core tools work in, not on the
+    tab the user is looking at.
+    """
+    parameter = inspect.signature(function).parameters.get("tab_id")
+    if parameter is None or parameter.default is not None:
+        return function
+
+    @functools.wraps(function)
+    def call(*args, **kwargs):
+        if kwargs.get("tab_id") is None:
+            kwargs["tab_id"] = playwright_tools._current_tab
+        return function(*args, **kwargs)
+
+    return call
+
+
 def tool(group: str, annotations: ToolAnnotations | None = None):
     """Register a tool only when its startup capability and mode permit it.
 
     `all` enables every group except NAMED_ONLY_GROUPS; modes narrow every group.
-    Only the MCP registration marks failures as errors; Python callers get the plain result.
+    Only the MCP registration marks failures as errors and runs an omitted tab_id on the current
+    tab; Python callers get the plain function.
     Tools left out go to UNPUBLISHED_TOOLS with the settings that would publish them.
     A registered tool outside PUBLISHED_CAPS is left out of tools/list, not of calls.
     """
@@ -297,7 +318,7 @@ def tool(group: str, annotations: ToolAnnotations | None = None):
         if settings:
             UNPUBLISHED_TOOLS[name] = (group, settings)
         else:
-            mcp.tool(annotations=annotations)(_mcp_errors(function))
+            mcp.tool(annotations=annotations)(_mcp_errors(_on_current_tab(function)))
             if _enables(PUBLISHED_CAPS, group):
                 PUBLISHED_TOOLS.add(name)
         return function
@@ -576,7 +597,16 @@ def _read_page(endpoint: str, tab_id: int | None, selector: str | None = None, r
 # by the action tools (ref, element, wait, expect, confirm_token, first) are documented
 # once, on browser_check; the other action tools name expect and point there in their
 # first paragraph, which keeps the repeated text small (#88).
-TabId = Annotated[int | None, Field(description="Default: active tab.")]
+#
+# An omitted tab_id is the current tab: the one browser_tabs last opened or selected, else
+# the active tab (#232, _on_current_tab).
+TabId = Annotated[int | None, Field(description="Default: current tab.")]
+# A container's default tab: the bridge runs its commands that name no tabId there.
+DefaultTabId = Annotated[int | None, Field(description="Tab for commands that name no tabId. Default: current tab.")]
+
+
+def _default_tab(body: dict, tab_id: int | None) -> dict:
+    return {**body, "tabId": tab_id} if tab_id is not None else body
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -584,8 +614,9 @@ TabId = Annotated[int | None, Field(description="Default: active tab.")]
 # ════════════════════════════════════════════════════════════════════
 #
 # Every tab-aware tool below accepts an optional `tab_id`. If omitted, it
-# targets the active tab. Pass `tab_id` to drive a specific tab without
-# stealing focus — that's the foundation for parallel multi-tab work.
+# targets the current tab (the one browser_tabs last opened or selected, else
+# the active tab). Pass `tab_id` to drive a specific tab without stealing
+# focus — that's the foundation for parallel multi-tab work.
 #
 # Recipe for reliable parallel agentic work:
 #
@@ -696,7 +727,7 @@ def browser_page_info(tab_id: TabId = None) -> dict:
 
 @tool("read", annotations=ToolAnnotations(title="Page text", **READ))
 def browser_page_text(
-    tab_id: Annotated[int | None, Field(description="Default: active tab; others are read without focusing.")] = None,
+    tab_id: Annotated[int | None, Field(description="Default: current tab; others are read without focusing.")] = None,
 ) -> dict:
     """Extract all readable text from the current page.
 
@@ -1051,9 +1082,10 @@ def browser_workflows() -> dict:
 def browser_workflow(
     name: Annotated[str, Field(description="Workflow file name without .md.")],
     variables: Annotated[dict | None, Field(description="Template variables for the workflow.")] = None,
+    tab_id: DefaultTabId = None,
 ) -> dict:
     """Execute a named Kitsune workflow from the bridge workflow directory."""
-    return _post("/api/workflow", {"name": name, "variables": variables or {}},
+    return _post("/api/workflow", _default_tab({"name": name, "variables": variables or {}}, tab_id),
                  timeout=container_request_seconds(WORKFLOW_DEADLINE_SECONDS))
 
 
@@ -2046,13 +2078,14 @@ def browser_retry(
     on_errors: Annotated[list[str] | None, Field(
         description="Only retry if the error string contains one of these substrings. Default: retry "
                     "on any error.")] = None,
+    tab_id: DefaultTabId = None,
 ) -> dict:
     """Wrap any command in exponential-backoff retry; an error with retryable=false (a write
     whose outcome is unknown) is never repeated."""
     body = {"command": command, "maxAttempts": max_attempts, "backoffMs": backoff_ms}
     if on_errors: body["onErrors"] = on_errors
     retry = {"action": "retry", **body}
-    return _post("/api/retry", body, timeout=max(60, command_wait_seconds(retry) + 15))
+    return _post("/api/retry", _default_tab(body, tab_id), timeout=max(60, command_wait_seconds(retry) + 15))
 
 
 # -- Batch --------------------------------------------------------
@@ -2062,13 +2095,14 @@ def browser_batch(
     commands: Annotated[list[dict], Field(
         description='e.g. [{"action": "navigate", "url": "..."}, {"action": "waitForElement", "selector": '
                     '".results", "timeout": 10000}, {"action": "pageText"}]')],
+    tab_id: DefaultTabId = None,
 ) -> dict:
     """Run multiple commands in a single request for speed. A failed command does not
     make the call an MCP error: inspect each result, because earlier commands may
     already have taken effect.
 
-    Each command is a dict with "action" and parameters. Add "tabId" to any
-    command to target a specific tab instead of the active one. For true
+    Each command is a dict with "action" and parameters. Add "tabId" to a
+    command to target another tab than tab_id. For true
     concurrency across tabs, prefer browser_parallel. Resume from the failed
     command; progress gives each command's status (ok, failed, held, unknown, skipped).
 
@@ -2082,7 +2116,7 @@ def browser_batch(
     wait for their target first, like the matching tools.
     """
     # Outlast the bridge's deadline, so a batch it stops still returns its partial progress.
-    return _post("/api/batch", {"commands": commands},
+    return _post("/api/batch", _default_tab({"commands": commands}, tab_id),
                  timeout=container_request_seconds(batch_deadline_seconds(commands)))
 
 

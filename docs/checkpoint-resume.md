@@ -111,6 +111,10 @@ A workflow checkpoint keeps the SHA-256 hash of the workflow file it ran. If the
 changed or is gone, the resume is refused with `workflow_changed` and nothing is sent.
 A resume runs the stored commands, so changing the variables is not possible.
 
+A batch or workflow checkpoint also keeps the call's default tab (`tabId`, by default the
+current tab of the MCP server that ran it). Resumed steps that name no tab run there, even
+if the agent has opened or selected another tab since.
+
 ### Parallel
 
 Each sequence of a resumed `parallel` continues from its own records: a sequence that

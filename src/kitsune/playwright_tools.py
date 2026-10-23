@@ -8,7 +8,8 @@ Kitsune drives the user's own browser through an extension, not a Playwright pag
 browser_emulate_media and browser_run_code_unsafe answer not_supported.
 
 Tools act on the current tab: the user's active tab until browser_tabs new or select makes
-another tab current. select does not switch the user's view.
+another tab current. select does not switch the user's view. Kitsune's own tools that are called
+without tab_id act on it too (kitsune.server._on_current_tab).
 
 Relative file names resolve against KITSUNE_OUTPUT_DIR, else the MCP client's first file root,
 else the MCP server's working directory.

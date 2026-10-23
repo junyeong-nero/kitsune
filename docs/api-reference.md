@@ -577,9 +577,10 @@ A successful action result (`ok: true`, no `error`) only means the command was
 dispatched: the click, keypress or submit reached the page. It does not prove the
 task succeeded, because a submit can be blocked by validation or a click can do nothing.
 To check, pass an optional `expect` object. After dispatch, the bridge waits up to
-`expect.timeout` ms (default 5000) for that outcome in the same tab. Without `tab_id`,
-the bridge first resolves the active tab and sends the action to that tab, so the
-action and the check cannot target different tabs after a focus change.
+`expect.timeout` ms (default 5000) for that outcome in the same tab. An MCP tool called
+without `tab_id` sends the current tab (the one `browser_tabs` last opened or selected);
+a request with no tab at all is resolved to the active tab first and sent to that tab, so
+the action and the check cannot target different tabs after a focus change.
 Page conditions (`selector`, `value`, `text`) are single reads that the bridge repeats
 until the deadline, with a last read at the deadline. They do not depend on the page's
 timers, which browsers throttle in background tabs. The check therefore ends near
@@ -1518,6 +1519,13 @@ write from another sequence fails with `tab_owned` without being dispatched. In 
 batch, workflow or parallel step, a `tabId` that is not a tab id (`0`, `""`, `null`
 from a failed `newTab`, an unresolved template) fails with `invalid_tab_id` instead of
 falling back to the active tab, and a numeric string such as `"12"` is sent as `12`.
+A step that acts on a tab and names no `tabId` runs on the call's default tab: the
+top-level `tabId` of `/api/batch`, `/api/retry` or `/api/workflow`, which
+`browser_batch`, `browser_retry` and `browser_workflow` set to their `tab_id`, by default
+the current tab. Without one it goes to the active tab. Parallel sequences still name
+their tabs, tabless actions (`newTab`, `tabs`, `cookies`, ...) get none, and a resumed
+call keeps its original default tab. A default `tabId` that is not a tab id is refused
+with `invalid_tab_id` before anything runs.
 A closed tab is never replaced: commands on it fail with `tab_closed`.
 
 ### `browser_tabs(action="list", tab_id=None, url=None, force=False, raw=False, wait=False, timeout=15000, window_fields=False, include_active=False)`
@@ -1887,7 +1895,7 @@ the response also has `call` and a new `resume_token`. See
 
 `browser_wp_html` is removed. Run
 `browser_workflow("wp-html", {"site_url": "https://example.com", "page_id": 5719})`
-from a browser logged into WordPress. The workflow navigates the active tab,
+from a browser logged into WordPress. The workflow navigates the current tab,
 waits for Elementor preview widgets, then extracts their HTML. Its final step
 returns the JSON string containing widget data inside the workflow's `results`.
 
@@ -2175,9 +2183,12 @@ Execute multiple commands sequentially or in parallel.
     { "action": "sleep", "ms": 2000 },
     { "action": "pageText" }
   ],
-  "stopOnWarning": false
+  "stopOnWarning": false,
+  "tabId": 12
 }
 ```
+`tabId` (optional) is the tab for commands that name none; see
+[Container progress](#container-progress) for how steps pick their tab.
 
 **Parallel sequences** (commands within each sequence run sequentially, sequences run concurrently):
 ```json
@@ -2218,8 +2229,9 @@ List workflow files bundled in the `kitsune/workflows` package directory.
 ### POST /api/workflow
 Execute a named workflow from the workflows directory.
 ```json
-{ "name": "test", "variables": { "url": "https://example.com" } }
+{ "name": "test", "variables": { "url": "https://example.com" }, "tabId": 12 }
 ```
+`tabId` (optional) is the tab for steps that name none.
 Workflows are `.md` files with JSON code blocks. Variables use `{{name}}` syntax.
 Returns `{ "workflow": "test", "steps": 4, "results": [...], "progress": [...], "status": "ok", "summary": "..." }`. A workflow stops at its first failed step; `progress` marks the rest `skipped` (see [Container progress](#container-progress)). A workflow that did not finish `ok` adds `call` and `resume_token` for [POST /api/resume](#post-apiresume); resuming is refused if the workflow file changed.
 

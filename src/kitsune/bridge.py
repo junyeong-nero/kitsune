@@ -170,6 +170,9 @@ DEFAULT_ASK_URLS = [r"checkout", r"payment", r"billing", r"/pay\b", r"purchase",
 _task_mode = contextvars.ContextVar("kitsune_task_mode", default="act")
 # The calling client's KITSUNE_PROTECT_USER_TABS (#199): its navigations leave user tabs alone.
 _protect_user_tabs = contextvars.ContextVar("kitsune_protect_user_tabs", default=False)
+# A container call's default tab (#232): its steps that name no tabId run there instead of the
+# extension's active tab.
+_default_tab = contextvars.ContextVar("kitsune_default_tab", default=None)
 # The calling client's capability groups (#230); None (no header) leaves every group open.
 _client_caps = contextvars.ContextVar("kitsune_client_caps", default=None)
 # The tool a client's browser_tools_call runs (#227), which audit entries record.
@@ -2393,6 +2396,17 @@ def _explicit_tab_id(value):
     return value if type(value) is int and value > 0 else None
 
 
+def _container_default_tab(body):
+    """(default tab, None) from a container request's top-level tabId, else (None, 400 refusal)."""
+    raw = body.pop("tabId", None)
+    tab_id = _explicit_tab_id(raw)
+    if raw is not None and tab_id is None:
+        return None, (400, _action_error(f"tabId {raw!r} is not a tab id", "invalid_tab_id", retryable=False,
+                                         hint="Nothing was dispatched. Use a tab id from browser_tabs.",
+                                         tabId=raw))
+    return tab_id, None
+
+
 def _tab_required_error(action, sequence, **state):
     return _action_error(
         f'Sequence {sequence}: "{action}" inside parallel requires explicit tabId to avoid race conditions',
@@ -2460,11 +2474,15 @@ def _check_step_tab(action, params):
     """Return an error when a container step names no usable tab, else None.
 
     The extension sends a step with a falsy tabId to the active tab, so a named tabId that is not
-    a tab id (0, "", "null", an unresolved ${$N.tabId}) is refused; "12" becomes 12. Inside a
-    parallel sequence, a step that acts on a tab must name it, and a write or an if/while condition
-    claims the tab for its sequence.
+    a tab id (0, "", "null", an unresolved ${$N.tabId}) is refused; "12" becomes 12. A step that
+    acts on a tab and names none runs on the call's default tab, if it has one. Inside a parallel
+    sequence, a step that acts on a tab must name it, and a write or an if/while condition claims
+    the tab for its sequence.
     """
     raw = params.get("tabId")
+    chain = _tab_owners.get()
+    if raw is None and not chain and action not in _TABLESS_ACTIONS and _default_tab.get() is not None:
+        raw = params["tabId"] = _default_tab.get()
     tab_id = _explicit_tab_id(raw)
     if raw is not None:
         if tab_id is None:
@@ -2475,7 +2493,6 @@ def _check_step_tab(action, params):
                       "result a ${$N.tabId} substitution reads."),
                 tabId=raw)
         params["tabId"] = tab_id
-    chain = _tab_owners.get()
     if not chain or action in _TABLESS_ACTIONS:
         return None
     sequence = chain[-1][1]
@@ -3882,12 +3899,21 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     def handle_retry(self):
         body = self.read_body()
+        default_tab, refused = _container_default_tab(body)
+        if refused:
+            self.send_json(*refused)
+            return
         cmd = {
             "action": "retry",
             **body,
         }
+
+        async def run_retry():
+            _default_tab.set(default_tab)
+            return await run_command(cmd)
+
         # Every attempt may wait for its target, and the backoff sleeps add up.
-        result = self.run_async(run_command(cmd), timeout=max(35, command_wait_seconds(cmd) + 15))
+        result = self.run_async(run_retry(), timeout=max(35, command_wait_seconds(cmd) + 15))
         self.send_json(200, result)
 
     # ── Tag tabs ──
@@ -4074,6 +4100,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     def handle_batch(self):
         body = self.read_body()
+        default_tab, refused = _container_default_tab(body)
+        if refused:
+            self.send_json(*refused)
+            return
         commands = body.get('commands', [])
         stop_on_warning = body.get('stopOnWarning', False)
         results, steps = [], []
@@ -4081,6 +4111,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
         async def run_all():
             _container_steps.set(steps)
+            _default_tab.set(default_tab)
             await _run_batch(commands, stop_on_warning, call, results)
 
         # Commands run in sequence, so the deadline must cover every wait in the batch.
@@ -4092,7 +4123,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
         response['summary'] = _container_summary(response['progress'], deadline if timed_out else None)
         if response['status'] != 'ok':
             response.update(_save_checkpoint(call['call'], kind='batch', commands=commands,
-                                             progress=response['progress'], stopOnWarning=stop_on_warning))
+                                             progress=response['progress'], stopOnWarning=stop_on_warning,
+                                             tabId=default_tab))
         self.send_json(200, response)
 
     def handle_cache(self):
@@ -4117,6 +4149,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     def handle_workflow(self):
         body = self.read_body()
+        default_tab, refused = _container_default_tab(body)
+        if refused:
+            self.send_json(*refused)
+            return
         name = body.get("name", "")
         variables = body.get("variables", {})
 
@@ -4147,6 +4183,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
         async def run_workflow():
             _container_steps.set(steps)
+            _default_tab.set(default_tab)
             await _run_workflow(name, commands, call, results)
 
         deadline = WORKFLOW_DEADLINE_SECONDS
@@ -4159,7 +4196,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         if response["status"] != "ok":
             response.update(_save_checkpoint(call["call"], kind="workflow", commands=commands,
                                              progress=response["progress"], workflow=name, path=filepath,
-                                             digest=hashlib.sha256(content).hexdigest()))
+                                             digest=hashlib.sha256(content).hexdigest(), tabId=default_tab))
         self.send_json(200, response)
 
     def handle_resume(self):
@@ -4175,6 +4212,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
         async def resume():
             _container_steps.set(steps)
             _resume_plan.set(plan)
+            # Steps that name no tab resume on the original call's default tab, not a later one.
+            _default_tab.set(checkpoint.get("tabId"))
             steps.extend(_resumed_records(plan, call))
             if checkpoint["kind"] == "workflow":
                 await _run_workflow(workflow, commands, call, results)
