@@ -1,5 +1,0 @@
-blank_issues_enabled: true
-contact_links:
-  - name: Propose a hypothesis
-    url: https://github.com/junyeong-nero/kitsune-benchmark/issues/new?template=hypothesis.yml
-    about: Claims that need measurement start in kitsune-benchmark.
