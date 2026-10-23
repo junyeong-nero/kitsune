@@ -139,6 +139,7 @@ class RealBrowserObservationTests(harness.RealBrowserTestCase):
             "tabId": tab, "ref": target, "snapshot": "full", "snapshotText": True}))
         self.assertLessEqual(len(result["snapshot"]), 4000)
         self.assertIs(result["snapshot_truncated"], True)
+        self.assertIn("scope", result["snapshot_hint"])
         self.assertEqual(result["target_ref"], target)
         self.assertRegex(result["snapshot"], r'- main "" \[ref=e\d+\]\n  - button "Budget target"')
         self.assertNotIn("token=x", result["snapshot"])

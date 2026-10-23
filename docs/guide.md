@@ -103,7 +103,9 @@ refresh refs. Earlier attached refs remain usable without another observation.
 
 Click, type, fill, select, check, keypress, submit, and navigate responses include
 a `snapshot` capped at 4,000 characters (`snapshot_truncated` indicates more
-content), and `target_ref` is the acted-on element's ref for a follow-up action.
+content; `snapshot_hint` gives scope guidance and explains if the target/context
+could not fit). `target_ref`, when included, is the acted-on element's ref for a
+follow-up action.
 For click, type, fill, select, check and keypress it is a delta (`snapshot_delta: true`):
 only the target and what the action changed or revealed, such as an opened menu's
 options, anchored there instead of at the page top; earlier refs stay valid. Submit,

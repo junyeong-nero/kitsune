@@ -1430,6 +1430,12 @@ function expandShortRefs(params, tabId) {
   return { params: expanded };
 }
 
+// The owned ref follows the JSON-quoted name. Ref-like text inside that name or a
+// quoted value is page data, never a target field; JSON escapes must stay inside it.
+function snapshotLineRef(line) {
+  return /^ *- [^"\n]+ "(?:[^"\\]|\\.)*" \[ref=(e\d+)\](?= |$)/.exec(line)?.[1];
+}
+
 // Enforce explicit snapshot budgets on the final public protocol, after aliases and URL
 // redaction. Keep complete lines and their ancestors, prioritizing an action's target.
 function boundPublicSnapshot(response, params) {
@@ -1459,14 +1465,14 @@ function boundPublicSnapshot(response, params) {
     used += cost;
     return true;
   };
-  const target = response.target_ref ? lines.findIndex(line => line.includes(`[ref=${response.target_ref}]`)) : -1;
+  const target = response.target_ref ? lines.findIndex(line => snapshotLineRef(line) === response.target_ref) : -1;
   if (target >= 0) add(target);
   for (let i = 0; i < lines.length; i++) add(i);
   const selected = lines.filter((_, i) => kept.has(i));
   if (showMarker) selected.push(marker);
   const result = { ...response, snapshot: selected.join('\n'), truncated: true,
     hint: 'Snapshot truncated; scope with selector, ref or max_depth.' };
-  if (response.target_ref && !(target >= 0 && kept.has(target))) {
+  if (response.target_ref && !selected.some(line => snapshotLineRef(line) === response.target_ref)) {
     delete result.target_ref;
     result.hint += ' The target and its ancestor context did not fit; take a scoped snapshot.';
   }

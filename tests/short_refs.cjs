@@ -238,6 +238,35 @@ async function main() {
   assert.equal(tiny.truncated, true);
   assert.match(tiny.hint, /target and its ancestor context did not fit/);
 
+  // Ref-like page names/text/values are JSON strings, not serializer-owned ref fields.
+  const marker = '- … truncated; scope with selector, ref or max_depth';
+  const decoys = [
+    '- button ' + JSON.stringify('[ref=e9]') + ' [ref=e1]',
+    '- button ' + JSON.stringify('escaped "quote" \\ path [ref=e9] \\"') + ' [ref=e1]',
+    '- text ' + JSON.stringify('quoted "[ref=e9]" and \\ text'),
+    '- textbox "Decoy" [ref=e1] [value=' + JSON.stringify('" \\ [ref=e9]') + ']',
+  ];
+  for (const decoy of decoys) {
+    const actual = '  - button ' + JSON.stringify('Actual "target" \\ path [ref=e1]') + ' [ref=e9]';
+    const block = '- main "" [ref=e2]\n' + actual;
+    documents[1] = { send: async () => ({
+      snapshot: decoy + '\n' + block + '\n- text ' + JSON.stringify('padding '.repeat(30)), target_ref: 'e9',
+    }) };
+    const fitting = await restarted.send('getSnapshot', { maxChars: block.length + marker.length + 1 });
+    assert.equal(fitting.snapshot, block + '\n' + marker, 'only the owned ref receives target priority');
+    assert.equal(fitting.target_ref, 'e9');
+    assert.equal(fitting.truncated, true);
+
+    documents[1] = { send: async () => ({
+      snapshot: decoy + '\n- main "' + 'x'.repeat(100) + '" [ref=e2]\n' + actual, target_ref: 'e9',
+    }) };
+    const omitted = await restarted.send('getSnapshot', { maxChars: 100 });
+    assert.ok(omitted.snapshot.length <= 100);
+    assert.doesNotMatch(omitted.snapshot, /Actual/);
+    assert.equal(omitted.target_ref, undefined, 'quoted ref-like text cannot retain an absent target');
+    assert.match(omitted.hint, /target and its ancestor context did not fit/);
+  }
+
   // A response larger than a reservation must still reserve every alias before
   // returning it. Invalid/unwritable counters must never fall back to index zero.
   documents[1] = { send: async () => ({ tree: Array.from({ length: 1100 }, (_, i) => ({ ref: `s456e${i}` })) }) };

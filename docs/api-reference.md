@@ -196,8 +196,10 @@ After an action, use the refs in its `snapshot`. `target_ref` is the ref of
 the acted-on element (absent for `browser_navigate`, or when that element is gone),
 so a follow-up such as `browser_keypress(key="Enter", ref=target_ref)` needs no
 extra snapshot. Only emitted lines carry new refs: when `snapshot_truncated`
-is set and the element you need is missing, or when `snapshot_error` replaces the
-snapshot, call `browser_snapshot` before using a ref the result did not show. With the post-action
+is set and the element you need is missing, `snapshot_hint` provides scope guidance
+and explains if the target and its ancestor context could not fit. When the target
+is omitted, `target_ref` is omitted too. If `snapshot_error` replaces the snapshot,
+call `browser_snapshot` before using a ref the result did not show. With the post-action
 snapshot disabled (`KITSUNE_POST_ACTION_SNAPSHOT=0`, or `includeSnapshot: false`
 in a batch), actions leave refs unchanged.
 
@@ -235,8 +237,10 @@ afterwards the delta lists the acted-on target and every line that record lacks:
 newly shown elements (an opened menu's options, a toast, autocomplete suggestions) and
 elements whose name, value or state changed. Unchanged parts of the page, such as a
 header above the target, are left out; removed elements are not listed. A delta is
-capped at 4,000 characters like a full snapshot (`snapshot_truncated`), and a
-same-document URL or title change (`history.pushState`) adds `url` or `title`:
+capped at 4,000 characters like a full snapshot (`snapshot_truncated`); when truncated,
+`snapshot_hint` gives scope guidance, including when the target/context did not fit
+and `target_ref` was omitted. A same-document URL or title change (`history.pushState`)
+adds `url` or `title`:
 
 ```json
 { "ok": true, "tag": "button", "text": "Review type", "snapshot_delta": true,
