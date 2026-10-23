@@ -360,10 +360,10 @@
       'waitForText':           () => waitForText(msg.text, msg.text_gone, msg.timeout),
       'getPageText':           () => getPageText(msg.selector),
       'getSnapshot':           () => getSnapshot(msg.maxChars, msg.focusLastAction, msg.ref || msg.selector, msg.maxDepth, !!msg.text,
-                                     msg.observation, msg.delta ? 'delta' : 'full'),
+                                     msg.observation, msg.delta ? 'delta' : 'full', !!msg.boxes),
       'getAccessibilityTree':  () => getAccessibilityTree(msg.depth ?? 6, msg.ref || msg.selector),
       'getFormFields':         () => getFormFields(),
-      'click':                 () => clickElement(msg.selector, msg.coords, msg.first),
+      'click':                 () => clickElement(msg.selector, msg.coords, msg.first, msg.button, msg.modifiers),
       'type':                  () => typeText(msg.selector, msg.text, msg.clear, msg.first),
       'setEditableContent':    () => setEditableContent(msg.selector, msg.value, msg.format || 'text', msg.clear !== false,
                                      msg.first),
@@ -372,7 +372,7 @@
       'fill':                  () => fillFieldSafe(msg.selector, msg.value, msg.first),
       'find':                  () => findElements(msg.query),
       // @kitsune-dev-only:start
-      'executeJS':             () => executeJS(msg.code),
+      'executeJS':             () => executeJS(msg.code, msg.selector),
       'waitForResult':         () => waitForResult(msg.code, msg.timeout, msg.pollInterval),
       // @kitsune-dev-only:end
       'highlight':             () => highlightElement(msg.selector),
@@ -401,12 +401,12 @@
       'getComputedStyle':      () => getComputedStyleFor(msg.selector, msg.properties),
       'getReadability':        () => getReadability(),
       'getMarkdown':           () => getMarkdown(msg.selector),
-      'selectOption':          () => selectOption(msg.selector, msg.value, msg.byText, msg.first),
+      'selectOption':          () => selectOption(msg.selector, msg.value, msg.byText, msg.first, msg.values),
       'checkBox':              () => checkBox(msg.selector, msg.checked, msg.first),
       'focusElement':          () => focusEl(msg.selector, msg.first),
       'blurElement':           () => blurEl(msg.selector, msg.first),
       'keypress':              () => keypress(msg.selector, msg.key, msg.modifiers, msg.text, msg.first),
-      'doubleClick':           () => doubleClick(msg.selector, msg.first),
+      'doubleClick':           () => doubleClick(msg.selector, msg.first, msg.modifiers),
       'submitForm':            () => submitForm(msg.selector, msg.first),
       'describeTarget':        () => describeTarget(msg.selector, msg.coords, msg.key, msg.first, msg.fieldKeys, msg.draftFill),
       'formFill':              () => formFill(msg.fields, msg.first),
@@ -424,7 +424,7 @@
       'fullPageMetrics':       () => fullPageMetrics(),
       // ── 2.1.0 file upload ──
       'uploadChunk':           () => uploadChunk(msg.uploadId, msg.index, msg.data),
-      'uploadCommit':          () => uploadCommit(msg.uploadId, msg.selector, msg.files, msg.mode, msg.first),
+      'uploadCommit':          () => uploadCommit(msg.uploadId, msg.selector, msg.files, msg.mode, msg.first, msg.data),
       'uploadAbort':           () => uploadAbort(msg.uploadId),
     };
 
@@ -477,8 +477,9 @@
     return { ok: true, index };
   }
   function uploadAbort(id) { delete __zlUploads[id]; return { ok: true }; }
-  function uploadCommit(id, selector, files, mode, first) {
-    const parts = __zlUploads[id];
+  function uploadCommit(id, selector, files, mode, first, data) {
+    // A drop of data alone (browser_drop) sends no chunks.
+    const parts = __zlUploads[id] || (files.length ? null : []);
     delete __zlUploads[id];
     if (!parts) return { error: 'upload ' + id + ' not found (chunks never arrived)' };
     if (!first) {
@@ -486,9 +487,9 @@
       else if (mode !== 'drop') assertOneTarget('input[type=file]', false,
         Array.from(document.querySelectorAll('input[type=file]')));
     }
-    return __zlAttachFiles(parts, selector, files, mode);
+    return __zlAttachFiles(parts, selector, files, mode, data);
   }
-  const __zlAttachFiles = function(parts, selector, files, mode) {
+  const __zlAttachFiles = function(parts, selector, files, mode, data) {
     var toBytes = function (b64) { var bin = atob(b64), a = new Uint8Array(bin.length); for (var i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i); return a; };
     // 2.1.0: build the File + DataTransfer with the PAGE's own constructors (wrappedJSObject + cloneInto).
     // Content-script Files were silently dropped by some uploaders (YouTube thumbnails, TikTok/Instagram covers).
@@ -498,7 +499,7 @@
       return W ? new W.File(cloneInto(bytes, W), f.name, cloneInto(opts, W)) : new File(bytes, f.name, opts);
     });
     var target = null;
-    if (selector) { target = document.querySelector(selector); if (!target) return { error: 'No element matches: ' + selector }; }
+    if (selector) { target = resolveElement(selector); if (!target) return { error: 'No element matches: ' + selector }; }
     var input = null;
     if (mode !== 'drop') {
       if (target) input = target.matches('input[type=file]') ? target : target.querySelector('input[type=file]');
@@ -507,6 +508,7 @@
     }
     var dt = W ? new W.DataTransfer() : new DataTransfer();
     objs.forEach(function (f) { dt.items.add(f); });
+    Object.entries(data || {}).forEach(function ([type, value]) { dt.setData(type, String(value)); });
     var info = objs.map(function (f) { return { name: f.name, size: f.size, type: f.type }; });
     if (input) {
       if (!input.multiple && objs.length > 1) return { error: 'This input takes one file; got ' + objs.length };
@@ -683,8 +685,14 @@
   // mode: 'full'; 'baseline' records actionBaseline and returns no snapshot; 'delta' lists only
   // the target and the lines that changed since the baseline, adding refs to the current
   // generation instead of starting one. A delta without a baseline (another document) is full.
+  // Viewport-relative CSS-pixel bounding box as x,y,width,height.
+  function boxOf(el) {
+    const rect = el.getBoundingClientRect();
+    return [rect.x, rect.y, rect.width, rect.height].map(Math.round).join(',');
+  }
+
   function getSnapshot(maxChars, focusLastAction, selector, maxDepth, withText = false,
-      observation = 'browser_snapshot', mode = 'full') {
+      observation = 'browser_snapshot', mode = 'full', boxes = false) {
     if (maxDepth != null && (!Number.isInteger(maxDepth) || maxDepth < 0)) {
       return { error: 'max_depth must be a non-negative integer' };
     }
@@ -864,9 +872,11 @@
         }
         const label = `${role} ${JSON.stringify(nameOf(el, interactive || el === target))}`;
         const head = `${'  '.repeat(Math.min(depth, 12))}- ${label} [ref=`;
-        const tail = `]${states.length ? ' [' + states.join(' ') + ']' : ''}`;
+        const stateTail = `]${states.length ? ' [' + states.join(' ') + ']' : ''}`;
+        // Boxes stay out of the signature, so repeated siblings still group.
+        const tail = stateTail + (boxes ? ` [box=${boxOf(el)}]` : '');
         if (!append({ el, ref, line: head + (ref ?? pendingRef) + tail, parent, interactive,
-          head, tail, label, signature: label + tail })) return;
+          head, tail, label, signature: label + stateTail })) return;
         if (full) refLabels[ref] = { label, parent: entries[parent]?.ref ?? null };
         parent = entries.length - 1;
       }
@@ -1170,7 +1180,23 @@
     }));
   }
 
-  function clickElement(selector, coords, first) {
+  // MouseEvent.button and the held-buttons bit of left, middle and right.
+  const MOUSE_BUTTONS = { left: [0, 1], middle: [1, 4], right: [2, 2] };
+
+  // Modifier flags for mouse events; ControlOrMeta is Meta on macOS, else Control.
+  function modifierFlags(modifiers) {
+    const names = new Set(modifiers || []);
+    const meta = names.has('Meta') || (names.has('ControlOrMeta') && /Mac/.test(navigator.platform));
+    const ctrl = names.has('Control') || (names.has('ControlOrMeta') && !meta);
+    return { altKey: names.has('Alt'), ctrlKey: ctrl, metaKey: meta, shiftKey: names.has('Shift') };
+  }
+
+  function clickElement(selector, coords, first, button, modifiers) {
+    button ??= 'left';
+    if (!Object.prototype.hasOwnProperty.call(MOUSE_BUTTONS, button)) {
+      return { error: 'button must be left, middle or right' };
+    }
+    const [buttonIndex, buttonBit] = MOUSE_BUTTONS[button];
     let el = resolveTarget(selector, coords, { first, pointer: true });
     if (!el) return notFound();
 
@@ -1195,8 +1221,9 @@
       view: el.ownerDocument?.defaultView || window,
       clientX: x,
       clientY: y,
-      button: 0,
-      buttons: 1,
+      button: buttonIndex,
+      buttons: buttonBit,
+      ...modifierFlags(modifiers),
     };
     // No button is held once it is released.
     const released = { ...eventInit, buttons: 0 };
@@ -1206,6 +1233,12 @@
       // As a real mousedown does, unless the page cancelled it. The background has already
       // refused a tab the user is using (user_active), so this never takes focus from them.
       if (type === 'mousedown' && proceed) focusForClick(el, coords && { x, y });
+    }
+    // Other buttons fire auxclick (middle) or contextmenu (right) in place of click.
+    if (button !== 'left') {
+      dispatchPointerOrMouse(el, button === 'right' ? 'contextmenu' : 'auxclick', { ...released, detail: 1 });
+      return { ok: true, tag: el.tagName.toLowerCase(), text: redactedText(el).trim().slice(0, 60), button,
+        ...warning };
     }
 
     const link = blankTargetLink(el);
@@ -1564,7 +1597,7 @@
       : `no ${fields} in it or in its open or closed shadow roots`;
     return actionError(`Element is not a fillable field: ${reason}`,
       'not_fillable', 'Target the field or its web-component host from a new browser_snapshot. ' +
-        (tooDeep ? 'A field nested deeper is not reached; use browser_js for it. ' : '') +
+        (tooDeep ? 'A field nested deeper is not reached; use browser_evaluate for it. ' : '') +
         'For a contenteditable editor use mode="editable".',
       { tag: el.tagName.toLowerCase(), reason: tooDeep ? 'shadow_depth' : 'no_field' });
   }
@@ -1687,15 +1720,26 @@
   const JS_RESULT_LIMIT = 8000000; // 2.1.0: bridge WebSocket now takes up to 256 MB (was 50 KB under the old 1 MB socket limit)
 
   // @kitsune-dev-only:start
-  function executeJS(code) {
-    try {
-      const result = eval(code);
+  // A selector or ref binds the element the code sees as __kitsuneElement (browser_evaluate);
+  // a promise result is awaited.
+  function executeJS(code, selector) {
+    const format = result => {
       const str = String(result ?? '');
       const truncated = str.length > JS_RESULT_LIMIT;
       return {
         result: truncated ? str.slice(0, JS_RESULT_LIMIT) : str,
         ...(truncated && { truncated: true, fullLength: str.length }),
       };
+    };
+    try {
+      // Read only by the evaluated code, which direct eval lets see this scope.
+      const __kitsuneElement = selector ? resolveElement(selector) : undefined;
+      if (selector && !__kitsuneElement) return notFound();
+      const result = eval(code);
+      if (result && typeof result.then === 'function') {
+        return Promise.resolve(result).then(format, e => ({ error: e?.message || String(e) }));
+      }
+      return format(result);
     } catch (e) {
       return { error: e.message };
     }
@@ -2809,10 +2853,31 @@
     el.dispatchEvent(new Event('input', { bubbles: true }));
   }
 
-  function selectOption(selector, value, byText, first) {
+  // Several values (browser_select_option): each matches an option's value, else its text.
+  function selectOptions(el, values) {
+    if (values.length > 1 && !el.multiple) return { error: 'This <select> takes one value; got ' + values.length };
+    const matched = [];
+    for (const value of values) {
+      const opt = findSelectOption(el, value, false) || findSelectOption(el, value, true);
+      if (!opt) return { error: `No matching option for value or text: ${value}` };
+      matched.push(opt);
+    }
+    lastActedElement = lastFilledField = el;
+    if (el.multiple) {
+      for (const opt of el.options) opt.selected = matched.includes(opt);
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    } else if (matched.length) {
+      applySelectOption(el, matched[0]);
+    }
+    return { ok: true, values: matched.map(opt => opt.value), texts: matched.map(opt => opt.text) };
+  }
+
+  function selectOption(selector, value, byText, first, values) {
     const el = resolveTarget(selector, null, { first });
     if (!el) return notFound();
     if (el.tagName !== 'SELECT') return { error: 'Element is not a <select>' };
+    if (Array.isArray(values)) return selectOptions(el, values);
     const matched = findSelectOption(el, value, byText);
     if (!matched) return { error: `No matching option for ${byText ? 'text' : 'value'}: ${value}` };
     lastActedElement = lastFilledField = el;
@@ -2903,13 +2968,13 @@
     return { ok: true, key, target: target.tagName?.toLowerCase() };
   }
 
-  function doubleClick(selector, first) {
+  function doubleClick(selector, first, modifiers) {
     const el = resolveTarget(selector, null, { first, pointer: true });
     if (!el) return notFound();
     el.scrollIntoView({ behavior: 'instant', block: 'center' });
     const r = el.getBoundingClientRect();
     const init = { bubbles: true, cancelable: true, composed: true, view: el.ownerDocument?.defaultView || window,
-      clientX: r.x + r.width/2, clientY: r.y + r.height/2, button: 0 };
+      clientX: r.x + r.width/2, clientY: r.y + r.height/2, button: 0, ...modifierFlags(modifiers) };
     for (const type of ['mousedown', 'mouseup', 'click', 'mousedown', 'mouseup', 'click']) {
       el.dispatchEvent(new MouseEvent(type, init));
     }
@@ -3363,6 +3428,14 @@
       __netState.entries.length = 0;
       return { ok: true, cleared: true };
     }
+    if (op === 'all') {
+      // Every request since the page loaded, whether or not capture was started.
+      const entries = performance.getEntriesByType('navigation').concat(performance.getEntriesByType('resource'));
+      return { count: entries.length, entries: entries.slice(-1000).map(e => ({
+        url: e.name, initiator: e.initiatorType, startTime: Math.round(e.startTime),
+        duration: Math.round(e.duration), transferSize: e.transferSize, responseStatus: e.responseStatus,
+      })) };
+    }
     // Default: read
     const sinceMs = since || 0;
     const entries = sinceMs ? __netState.entries.filter(e => e.startTime >= sinceMs) : __netState.entries.slice();
@@ -3397,23 +3470,38 @@
   // ── Console intercept ──
   const __conState = window.__zenlinkConsole = window.__zenlinkConsole || { enabled: false, logs: [], patched: false };
 
+  function recordConsole(lvl, args) {
+    try {
+      __conState.logs.push({
+        level: lvl,
+        time: Date.now(),
+        message: Array.from(args, a => {
+          try { return typeof a === 'string' ? a : JSON.stringify(a); } catch { return String(a); }
+        }).join(' ').slice(0, 2000),
+      });
+      if (__conState.logs.length > 500) __conState.logs.shift();
+    } catch {}
+  }
+
   function watchConsole(enabled) {
     __conState.enabled = !!enabled;
     if (enabled && !__conState.patched) {
       __conState.patched = true;
+      // The page's own console: a content script's console is a separate object, so
+      // patching only that one never saw the page's messages.
+      const pageConsole = typeof exportFunction === 'function' ? window.wrappedJSObject?.console : null;
       for (const lvl of ['log','info','warn','error','debug']) {
+        if (pageConsole) {
+          const original = pageConsole[lvl];
+          exportFunction(function (...args) {
+            recordConsole(lvl, args);
+            return original.apply(pageConsole, args);
+          }, pageConsole, { defineAs: lvl });
+          continue;
+        }
         const orig = console[lvl].bind(console);
         console[lvl] = function(...args) {
-          try {
-            __conState.logs.push({
-              level: lvl,
-              time: Date.now(),
-              message: args.map(a => {
-                try { return typeof a === 'string' ? a : JSON.stringify(a); } catch { return String(a); }
-              }).join(' ').slice(0, 2000),
-            });
-            if (__conState.logs.length > 500) __conState.logs.shift();
-          } catch {}
+          recordConsole(lvl, args);
           orig(...args);
         };
       }

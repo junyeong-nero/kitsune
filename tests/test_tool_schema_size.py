@@ -18,7 +18,6 @@ _spec.loader.exec_module(tool_schema_size)
 
 def run_script(*args) -> str:
     env = {**os.environ, "KITSUNE_CAPS": "core"}
-    env.pop("KITSUNE_TOOL_PRESET", None)
     return subprocess.run([sys.executable, str(SCRIPT), *args],
                           env=env, capture_output=True, text=True, check=True).stdout
 

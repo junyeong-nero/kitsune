@@ -40,7 +40,10 @@ READ_TOOLS = {
     "browser_full_page_metrics": "fullPageMetrics",
     "browser_get_zoom": "getZoom",
     "browser_windows": "getWindows",
-    "browser_console_logs": "consoleLogs",
+    "browser_console_messages": "consoleLogs",
+    "browser_network_requests": "captureNetwork",
+    "browser_network_request": "captureNetwork",
+    "browser_wait_for": "waitForText",
     "browser_resolve_tag": None,
     "browser_list_tags": None,
     "browser_list_sessions": None,
@@ -57,9 +60,10 @@ DRAFT_TOOLS = {
     "browser_type": "type",
     "browser_select_option": "selectOption",
     "browser_check": "checkBox",
-    "browser_form_fill": "formFill",
+    "browser_fill_form": "formFill",
 }
-READ_ACTIONS = frozenset(action for action in READ_TOOLS.values() if action)
+# browser_console_messages starts console capture before it reads it.
+READ_ACTIONS = frozenset(action for action in READ_TOOLS.values() if action) | {"watchConsole"}
 DRAFT_ACTIONS = READ_ACTIONS | frozenset(DRAFT_TOOLS.values()) | {"fill", "setEditableContent"}
 
 
@@ -79,7 +83,8 @@ READ_ROUTES = frozenset({
     "/api/navigate", "/api/scroll", "/api/workflows", "/api/query", "/api/html", "/api/links",
     "/api/images", "/api/meta", "/api/structured-data", "/api/bounds", "/api/computed-style",
     "/api/readability", "/api/markdown", "/api/iframes", "/api/explain-selector",
-    "/api/full-page-metrics", "/api/get-zoom", "/api/windows", "/api/console-logs",
+    "/api/full-page-metrics", "/api/get-zoom", "/api/windows", "/api/console-logs", "/api/watch-console",
+    "/api/capture-network", "/api/wait-for-text",
     "/api/resolve-tag", "/api/list-tags", "/api/list-sessions", "/api/health", "/api/logs",
     "/api/audit", "/api/scheduler", "/api/get-policy", "/api/history-search",
     "/api/history-visits", "/api/bookmarks-search",

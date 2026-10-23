@@ -18,6 +18,8 @@ import unittest
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
+from mcp.server.fastmcp import FastMCP
+
 from kitsune import server
 import real_browser_harness as harness
 
@@ -165,10 +167,17 @@ class RealBrowserSubmitFormTargetTests(harness.RealBrowserTestCase):
         self.assertEqual(items, [*ITEMS, ""], "existing items are kept")
 
     def call_tool(self, name, arguments):
-        """Call a tool through FastMCP's argument validation, against this class's bridge."""
+        """Call Kitsune's own tool through FastMCP's argument validation, against this class's bridge.
+
+        The published browser_type and browser_snapshot are Playwright MCP's, which run these
+        functions; tests/test_real_browser_playwright_tools.py covers them.
+        """
+        mcp = FastMCP("kitsune-functions")
+        for function in (server.browser_snapshot, server.browser_type):
+            mcp.tool()(server._mcp_errors(function))
         with patch.object(server, "_get", self.call), \
                 patch.object(server, "_post", lambda endpoint, data, timeout=15: self.call(endpoint, data)):
-            result = asyncio.run(server.mcp.call_tool(name, arguments))
+            result = asyncio.run(mcp.call_tool(name, arguments))
         return json.loads(result.content[0].text)
 
     def test_mcp_calls_pass_the_schema_documented_contract_parameters(self):

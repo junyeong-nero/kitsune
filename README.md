@@ -51,7 +51,7 @@ and **fewer, sharper tools**. See [Philosophy](docs/philosophy.md).
    then follow the [MCP setup](#mcp-setup) for your agent below.
    [Install the browser extension](https://github.com/junyeong-nero/kitsune/blob/main/docs/installation.md#2-install-the-browser-extension)
    in Firefox, Zen, or LibreWolf: the signed build installs once, while the
-   developer build (needed for `browser_js`) is a temporary add-on.
+   developer build (needed for `browser_evaluate`) is a temporary add-on.
 2. **Keep your browser open.** Kitsune starts its shared bridge automatically.
    Ask your agent to check the connection before your first task.
 3. **Ask in plain language.** For example:
@@ -151,16 +151,16 @@ config; keep any existing servers:
 }
 ```
 
-Restart or reconnect your client after configuring it, then ask it to call
-`browser_status`. With the browser extension loaded, the response should include
-`"extension_connected": true`. GUI apps may need the full path returned by
+Restart or reconnect your client after configuring it, then ask it to list your tabs
+(`browser_tabs` with `action: "list"`); an error's `hint` says what to fix. GUI apps may need the full path returned by
 `which uvx` instead of `uvx` if they do not inherit your shell's `PATH`.
 
-Kitsune registers a 14-tool lean surface by default. Set the environment variable
-`KITSUNE_TOOL_PRESET=full` for the other 16 `core` tools: check, submit form, hover,
-keypress, scroll, JavaScript, waits, dialogs, uploads, Markdown, back/forward, console
-and workflows
-(see [Lean tool preset](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#lean-tool-preset)).
+By default Kitsune publishes exactly [Playwright MCP](https://github.com/microsoft/playwright-mcp)'s
+25 core tools (same names, descriptions and schemas), driving your own browser, so
+prompts and clients written for Playwright MCP work unchanged. Kitsune's own tools
+(page text, scrolling, connection status, policies, parallel tabs, ...) are opt-in
+groups such as `KITSUNE_CAPS=core,devtools`
+(see [Core tools](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#core-tools)).
 
 For Codex's TOML alternative, environment variables, version pinning, and
 upgrades, see [Installation](https://github.com/junyeong-nero/kitsune/blob/main/docs/installation.md).

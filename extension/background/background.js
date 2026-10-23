@@ -526,7 +526,7 @@ function isRestrictedUrl(url) {
 // Actions whose success returns a snapshot, and the tool named in a later stale_ref.
 const POST_SNAPSHOT_ACTIONS = new Map([
   ['click', 'browser_click'], ['type', 'browser_type'], ['fill', 'browser_type'],
-  ['selectOption', 'browser_select_option'], ['checkBox', 'browser_check'], ['keypress', 'browser_keypress'],
+  ['selectOption', 'browser_select_option'], ['checkBox', 'browser_check'], ['keypress', 'browser_press_key'],
   ['submitForm', 'browser_submit_form'], ['navigate', 'browser_navigate'],
 ]);
 // These usually load another document, so their snapshot is full. The others return a delta
@@ -714,6 +714,7 @@ async function dispatchCommand(command) {
     case 'createWindow':     return await createWindow(params.url, params.incognito);
     case 'closeWindow':      return await closeWindow(params.windowId, params.userTabApproved);
     case 'focusWindow':      return await focusWindow(params.windowId);
+    case 'resizeWindow':     return await resizeWindow(params.tabId, params.width, params.height);
     case 'moveTab':          return await moveTabAction(params.tabId, params.windowId, params.index);
     case 'detachTab':        return await detachTab(params.tabId);
     case 'elementScreenshot':return await elementScreenshot(params.tabId, params.selector, params.scale, params.imagePreview);
@@ -1366,7 +1367,7 @@ async function reserveShortRefs(count) {
 function shortRefError(ref, reason) {
   const hint = reason === 'other_document'
     ? 'The ref belongs to another document: the tab navigated or a different tab is targeted. ' +
-      'Take a new browser_snapshot of the intended tab (pass tab_id).'
+      'Take a new browser_snapshot of the intended tab (select it with browser_tabs, or pass tab_id).'
     : 'This ref is unknown or expired; take a new browser_snapshot and use its refs.';
   return { error: 'stale ref, call browser_snapshot again', code: 'stale_ref', retryable: true,
     hint, state: { reason, ref } };
@@ -1588,6 +1589,22 @@ async function focusWindow(windowId) {
     if (agentWindow) agentWindow.focusWindowId = null;
     await browser.windows.update(windowId, { focused: true });
     return { ok: true, windowId };
+  } catch (e) { return { error: e.message }; }
+}
+
+// Resizes the window holding the tab (default: the active tab); does not focus it.
+async function resizeWindow(tabId, width, height) {
+  try {
+    if (![width, height].every(value => Number.isFinite(value) && value > 0)) {
+      return { error: 'width and height must be positive numbers' };
+    }
+    const tab = tabId != null ? await browser.tabs.get(tabId)
+      : (await browser.tabs.query({ active: true, currentWindow: true }))[0];
+    if (!tab) return noActiveTab('No active tab found');
+    const updated = await browser.windows.update(tab.windowId, {
+      state: 'normal', width: Math.round(width), height: Math.round(height),
+    });
+    return { ok: true, windowId: updated.id, width: updated.width, height: updated.height };
   } catch (e) { return { error: e.message }; }
 }
 

@@ -1,82 +1,85 @@
 # Tool list
 
-Current tools registered in [server.py](../src/kitsune/server.py), grouped by
-capability. The default `KITSUNE_CAPS=core` exposes 14 of the 30 `core` tools
-(the [lean preset](guide.md#lean-tool-preset)); `KITSUNE_TOOL_PRESET=full` exposes
-all 30. `KITSUNE_CAPS=all` exposes all 96. Set a comma-separated list to enable selected
-groups, for example `KITSUNE_CAPS=core,tabs,network`. The `history` group is not
-part of `all`: it reads personal data and must be named, as in `KITSUNE_CAPS=all,history`.
+Current tools registered in [server.py](../src/kitsune/server.py) and
+[playwright_tools.py](../src/kitsune/playwright_tools.py), grouped by capability. The
+default `KITSUNE_CAPS=core` exposes the 25 `core` tools, which are
+[Playwright MCP](https://github.com/microsoft/playwright-mcp)'s core tools with the same
+definitions ([Core tools](guide.md#core-tools)). `KITSUNE_CAPS=all` exposes all 101. Set a
+comma-separated list to enable selected groups, for example
+`KITSUNE_CAPS=core,devtools,network`. The `history` group is not part of `all`: it reads
+personal data and must be named, as in `KITSUNE_CAPS=all,history`.
 
 These counts describe the default `KITSUNE_MODE=act`. `KITSUNE_MODE=read|draft`
-further intersects the preset/capability surface and enforces the same limits on
-bridge calls; see [Task modes](guide.md#task-modes). With core/lean:
+further intersects the capability surface and enforces the same limits on bridge calls;
+see [Task modes](guide.md#task-modes). With `core`:
 
-- `read` (9): `browser_status`, `browser_tab_list`, `browser_navigate`,
-  `browser_page_info`, `browser_page_text`, `browser_forms`, `browser_dom`,
-  `browser_snapshot`, `browser_find`.
-- `draft` (12): read plus `browser_type`, `browser_select_option`, `browser_form_fill`.
-- Full preset adds the other read tools (including `browser_scroll`) and, for draft,
-  `browser_check`. Other enabled groups contribute only read tools. Restricted modes
-  replace multi-action `browser_tabs` with read-only `browser_tab_list()` and omit
-  clicks, submit, JavaScript, screenshots/file writes, policy changes and containers.
-  Draft refuses sensitive/payment-like fills without issuing confirmation tokens.
+- `read` (8): `browser_tab_list`, `browser_navigate`, `browser_snapshot`, `browser_find`,
+  `browser_wait_for`, `browser_console_messages`, `browser_network_requests`,
+  `browser_network_request`.
+- `draft` (11): read plus `browser_type`, `browser_select_option`, `browser_fill_form`.
+- Other enabled groups contribute only read tools (`devtools` adds `browser_scroll` and,
+  for draft, `browser_check`). Restricted modes replace multi-action `browser_tabs` with
+  read-only `browser_tab_list()` and omit clicks, submit, JavaScript, screenshots/file
+  writes, policy changes and containers. Draft refuses sensitive/payment-like fills
+  without issuing confirmation tokens.
 
 See the [API reference](api-reference.md) for parameters and behavior.
 
-## core — 30 (14 in the default lean preset)
+## core — 25 (Playwright MCP)
 
-- `browser_back`
-- `browser_check`
 - `browser_click`
-- `browser_console_logs`
-- `browser_dom`
+- `browser_close`
+- `browser_console_messages`
+- `browser_drag`
+- `browser_drop`
+- `browser_emulate_media`
+- `browser_evaluate`
+- `browser_file_upload`
+- `browser_fill_form`
 - `browser_find`
-- `browser_form_fill`
-- `browser_forms`
-- `browser_forward`
 - `browser_handle_dialog`
 - `browser_hover`
-- `browser_js`
-- `browser_keypress`
-- `browser_markdown`
 - `browser_navigate`
-- `browser_page_info`
-- `browser_page_text`
-- `browser_screenshot`
-- `browser_scroll`
+- `browser_navigate_back`
+- `browser_network_request`
+- `browser_network_requests`
+- `browser_press_key`
+- `browser_resize`
+- `browser_run_code_unsafe`
 - `browser_select_option`
 - `browser_snapshot`
-- `browser_status`
-- `browser_submit_form`
 - `browser_tabs`
+- `browser_take_screenshot`
 - `browser_type`
-- `browser_upload_file`
 - `browser_wait_for`
-- `browser_watch_console`
-- `browser_workflow`
-- `browser_workflows`
 
-Targeted writes use [strict selectors](api-reference.md#strict-selectors), including
-focus/blur, scroll, trusted clicks, fuzzy form-fill keys and implicit upload inputs.
-Pass `first=True` to explicitly opt into the first match.
+`browser_emulate_media` and `browser_run_code_unsafe` are listed for compatibility and
+answer `not_supported`.
 
-## devtools — 26
+Targeted writes use [strict selectors](api-reference.md#strict-selectors): a core tool's
+selector `target` must match one element. The Kitsune-owned tools apply the same rule to
+focus/blur, scroll, trusted clicks, fuzzy form-fill keys and implicit upload inputs, and
+take `first=True` to explicitly opt into the first match.
 
-`browser_double_click`, `browser_drag`, `browser_focus` and `browser_blur` are here,
-not in `core`; publish them with `devtools` in `KITSUNE_CAPS`. Calling a tool that is
-not published returns `tool_not_published` naming the setting
+## devtools — 36
+
+Kitsune's own page reading and action tools, including its former `core` tools
+(`browser_status`, `browser_page_text`, `browser_scroll`, `browser_check`, ...). Calling
+a tool that is not published returns `tool_not_published` naming the setting
 ([API reference](api-reference.md#mcp-tool-surface)).
 
 - `browser_audit`
 - `browser_blur`
 - `browser_bounds`
 - `browser_cache`
+- `browser_check`
 - `browser_click_and_wait_navigation`
 - `browser_computed_style`
-- `browser_double_click`
-- `browser_drag`
+- `browser_dom`
 - `browser_explain_selector`
 - `browser_focus`
+- `browser_forms`
+- `browser_forward`
 - `browser_full_page_metrics`
 - `browser_get_policy`
 - `browser_health`
@@ -86,13 +89,21 @@ not published returns `tool_not_published` naming the setting
 - `browser_images`
 - `browser_links`
 - `browser_logs`
+- `browser_markdown`
 - `browser_meta`
+- `browser_page_info`
+- `browser_page_text`
 - `browser_query`
 - `browser_readability`
 - `browser_reload_extension`
+- `browser_scroll`
 - `browser_set_policy`
+- `browser_status`
 - `browser_structured_data`
-- `browser_trusted_click` (Windows and macOS; macOS needs pyobjc Quartz or `cliclick` plus Accessibility permission)
+- `browser_submit_form`
+- `browser_trusted_click`
+- `browser_workflow`
+- `browser_workflows`
 
 ## history (named only) — 3
 

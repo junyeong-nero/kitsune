@@ -6,12 +6,11 @@
 
 Tool definitions are resent with every model request, so their size is per-request
 context (#88, #31). Sizes are characters of compact JSON (no whitespace, non-ASCII
-kept) for every core tool (KITSUNE_CAPS=core, KITSUNE_TOOL_PRESET=full): `total` is
-the whole definition as listed by tools/list, `description` and `inputSchema` are
-those fields alone. Characters are not tokenizer counts. Some clients send only the
+kept) for every core tool (KITSUNE_CAPS=core), which are Playwright MCP's core tools:
+`total` is the whole definition as listed by tools/list, `description` and `inputSchema`
+are those fields alone. Characters are not tokenizer counts. Some clients send only the
 first paragraph of each description (#135), so `firstParagraph` is that part of the
-description and `firstParagraphTotal` the definition as such a client sends it. The
-default scope is the lean preset, reported as a subset of the full core group.
+description and `firstParagraphTotal` the definition as such a client sends it.
 tests/test_tool_schema_size.py fails when the sizes differ from tests/tool_schema_sizes.json,
 so every change to the definitions shows up in review as a snapshot diff, and when a
 total or a single tool grows past its budget below, in either view, which only a
@@ -30,26 +29,12 @@ from pathlib import Path
 
 SNAPSHOT = Path(__file__).resolve().parent.parent / "tests" / "tool_schema_sizes.json"
 
-# kitsune-benchmark's Kitsune UI allowlist (kitsune_benchmark/miniwob.py UI_TOOLS["kitsune"]).
-# Its devtools-only names (focus, double_click, drag) are not registered by KITSUNE_CAPS=core.
-BENCH_UI_TOOLS = (
-    "browser_status", "browser_tabs", "browser_page_info", "browser_page_text",
-    "browser_forms", "browser_dom", "browser_snapshot", "browser_screenshot", "browser_navigate",
-    "browser_click", "browser_type", "browser_scroll", "browser_hover", "browser_find",
-    "browser_select_option", "browser_check", "browser_focus", "browser_keypress",
-    "browser_double_click", "browser_submit_form", "browser_form_fill", "browser_drag",
-)
-
 # Ceilings in compact JSON characters (#88). Growth past one fails the size test; raise it
 # deliberately, with the reason in the change, rather than alongside a snapshot update.
-# Set about 5% above the sizes once nullable optionals and empty defaults were dropped (#142);
-# default (lean) and bench allowlist raised by 100 for the agent-owned tab rules (#139);
-# all three raised for browser_dom scoping (#160), bench also for its earlier overage.
-# Tightened again once the shared action contract was documented once (#135): lean and
-# full core back to their values before #160, bench just above its size. First-paragraph
-# views set about 5% above the sizes once first paragraphs became self-contained (#135).
-TOTAL_BUDGETS = {"default (lean)": 13_300, "full core": 25_500, "bench allowlist": 17_700}
-FIRST_PARAGRAPH_BUDGETS = {"default (lean)": 11_200, "full core": 23_100, "bench allowlist": 15_700}
+# The core tools are Playwright MCP's, published verbatim (playwright_tools.json): set about
+# 5% above their size, so refreshing that file shows what Playwright's growth costs.
+TOTAL_BUDGETS = {"core": 21_300}
+FIRST_PARAGRAPH_BUDGETS = {"core": 21_300}
 TOOL_BUDGET = 3_000  # any single core tool, full view
 
 
@@ -63,9 +48,8 @@ def first_paragraph(description: str) -> str:
 
 
 def measure() -> dict:
-    """Sizes of every core tool (KITSUNE_TOOL_PRESET=full), the default lean ones included."""
+    """Sizes of every core tool."""
     os.environ["KITSUNE_CAPS"] = "core"
-    os.environ["KITSUNE_TOOL_PRESET"] = "full"
     from kitsune.server import mcp
 
     tools = {}
@@ -91,16 +75,7 @@ def totals(tools: dict, names=None) -> dict:
 
 def selections() -> dict:
     """Tool names behind each budgeted total; None is every core tool."""
-    from kitsune.server import TOOL_PRESETS
-
-    return {"default (lean)": TOOL_PRESETS["lean"], "full core": None, "bench allowlist": BENCH_UI_TOOLS}
-
-
-def candidate_presets() -> dict:
-    """Tool names of each preset other than lean, such as hypothesis candidates (#211)."""
-    from kitsune.server import TOOL_PRESETS
-
-    return {f"preset {name}": names for name, names in TOOL_PRESETS.items() if name != "lean"}
+    return {"core": None}
 
 
 # Budgeted views: the field each one totals and its ceilings.
@@ -121,7 +96,6 @@ def report(tools: dict, snapshot: dict) -> str:
     def delta(now: int, before: int | None) -> str:
         return "new" if before is None else f"{now - before:+d}" if now != before else ""
 
-    lean = selections()["default (lean)"]
     lines = [f"{'tool':<32}{'description':>12}{'first ¶':>9}{'inputSchema':>12}{'total':>8}{'Δ':>7}"
              f"{'first ¶ total':>14}{'Δ':>7}"]
 
@@ -132,16 +106,11 @@ def report(tools: dict, snapshot: dict) -> str:
                 f"{delta(now['firstParagraphTotal'], before.get('firstParagraphTotal')):>7}")
 
     for name, sizes in tools.items():
-        mark = "L" if name in lean else "*" if name in BENCH_UI_TOOLS else " "
-        lines.append(row(mark + name, sizes, snapshot.get(name, {})))
-    marks = {"default (lean)": "L ", "full core": "", "bench allowlist": "*/L "}
+        lines.append(row(name, sizes, snapshot.get(name, {})))
     for label, names in selections().items():
         now, before = totals(tools, names), totals(snapshot, names)
-        lines.append(row(f"{marks[label]}{label} ({now['tools']} tools)", now, before)
+        lines.append(row(f"{label} ({now['tools']} tools)", now, before)
                      + f"  budgets {TOTAL_BUDGETS[label]} / {FIRST_PARAGRAPH_BUDGETS[label]}")
-    for label, names in candidate_presets().items():  # unbudgeted: measured, not defaults
-        now, before = totals(tools, names), totals(snapshot, names)
-        lines.append(row(f"{label} ({now['tools']} tools)", now, before) + "  candidate, not a default")
     lines.append(f"per-tool budget {TOOL_BUDGET} (full view)")
     removed = sorted(set(snapshot) - set(tools))
     if removed:

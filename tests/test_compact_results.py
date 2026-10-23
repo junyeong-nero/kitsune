@@ -40,6 +40,13 @@ STALE = {"error": "stale ref, call browser_snapshot again", "code": "stale_ref",
                    "tabId": 5, "url": "https://ko.wikipedia.org/wiki/여우", "status": "complete"}}
 
 
+def as_listed(result):
+    """browser_tabs action=list (Playwright's): tabs by index, with Kitsune's active and owned flags."""
+    return {"tabs": [{"index": i, "title": tab["title"], "url": tab["url"],
+                      **{key: True for key in ("active", "owned") if tab.get(key)}}
+                     for i, tab in enumerate(result["tabs"])]}
+
+
 def without_window_fields(result):
     return {**result, "tabs": [{key: value for key, value in tab.items() if key not in ("windowId", "index")}
                                for tab in result["tabs"]]}
@@ -71,9 +78,9 @@ class CompactResultTests(unittest.TestCase):
     def test_results_are_compact_json_parsing_to_the_same_objects(self):
         for name, arguments, reply, expected, is_error in (
                 ("browser_snapshot", {}, SNAPSHOT, SNAPSHOT, False),
-                ("browser_tabs", {}, TABS, without_window_fields(TABS), False),
-                ("browser_click", {"ref": "s17925763275161094491287e2"}, CLICK, CLICK, False),
-                ("browser_click", {"ref": "s17925763275161094491287e2"}, STALE, STALE, True)):
+                ("browser_tabs", {"action": "list"}, TABS, as_listed(TABS), False),
+                ("browser_click", {"target": "e2"}, CLICK, CLICK, False),
+                ("browser_click", {"target": "e2"}, STALE, STALE, True)):
             with self.subTest(name=name, is_error=is_error):
                 result = self.call(name, arguments, reply)
                 text = self.text(result)
@@ -83,7 +90,7 @@ class CompactResultTests(unittest.TestCase):
                 self.assertNotIn("\n", text)
 
     def test_non_ascii_text_stays_readable(self):
-        text = self.text(self.call("browser_click", {"ref": "s1e0"}, STALE))
+        text = self.text(self.call("browser_click", {"target": "e1"}, STALE))
         self.assertIn("ko.wikipedia.org/wiki/여우", text)
         self.assertNotIn("\\u", text)
 
@@ -92,11 +99,11 @@ class CompactResultTests(unittest.TestCase):
         sizes = {}
         for label, name, arguments, reply, before in (
                 ("snapshot", "browser_snapshot", {}, SNAPSHOT, SNAPSHOT),
-                ("tabs list", "browser_tabs", {}, TABS, TABS),
-                ("action result", "browser_click", {"ref": "s1e0"}, CLICK, CLICK),
-                ("error", "browser_click", {"ref": "s1e0"}, STALE, STALE)):
+                ("tabs list", "browser_tabs", {"action": "list"}, TABS, TABS),
+                ("action result", "browser_click", {"target": "e1"}, CLICK, CLICK),
+                ("error", "browser_click", {"target": "e1"}, STALE, STALE)):
             sizes[label] = (len(indented(before)), len(self.text(self.call(name, arguments, reply))))
-        self.assertEqual(sizes, {"snapshot": (328, 319), "tabs list": (506, 247),
+        self.assertEqual(sizes, {"snapshot": (328, 319), "tabs list": (506, 226),
                                  "action result": (258, 218), "error": (464, 398)})
 
     def test_short_ref_fixture_sizes(self):
@@ -115,7 +122,7 @@ class CompactResultTests(unittest.TestCase):
                                    ("error", "browser_click", STALE)):
             before = json.dumps(reply, separators=(",", ":"), ensure_ascii=False)
             short = json.loads(re.sub(r"s\d+e\d+", shorten, before))
-            arguments = {} if name == "browser_snapshot" else {"ref": "e2"}
+            arguments = {} if name == "browser_snapshot" else {"target": "e2"}
             result = self.call(name, arguments, short)
             after = self.text(result)
             self.assertEqual(json.loads(after), short)

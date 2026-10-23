@@ -157,14 +157,15 @@ for the **same version** as the server. There are two builds:
 |---|---|---|
 | Install | Once; survives browser restarts | Temporary add-on; load it again after every restart |
 | Signed by Mozilla | Yes (self-distributed, not listed on AMO) | No |
-| `browser_js`, JS conditions in `browser_wait_for` / `browser_sync_barrier`, HTML mode of editable typing, bundled workflows that use `js` steps | Not available | Available |
+| `browser_evaluate`, JS conditions in `browser_sync_barrier` and batch `if`/`while`, HTML mode of editable typing, bundled workflows that use `js` steps | Not available | Available |
 | Everything else | Available | Available |
 
 The signed build cannot run JavaScript supplied by the agent, because Mozilla's
 [add-on policies](https://extensionworkshop.com/documentation/publish/add-on-policies/)
 forbid executing code that is not part of the signed package. Those tools return
-an error that names the developer build. `browser_status` reports which build is
-connected (`extension_build`: `signed` or `dev`).
+an error that names the developer build. `browser_status` (in the `devtools` group,
+`KITSUNE_CAPS=core,devtools`) reports which build is connected (`extension_build`:
+`signed` or `dev`).
 
 ### Signed build (recommended)
 
@@ -177,15 +178,16 @@ build below.
    and select the XPI. Dragging the file onto a browser window also works.
 3. Approve the permission prompt. The browser asks every time; nothing is
    installed silently.
-4. Restart or reconnect your MCP client and ask it to call `browser_status`. It
-   should report `"extension_connected": true` and `"extension_build": "signed"`.
+4. Restart or reconnect your MCP client and ask it to list your tabs (`browser_tabs`
+   with `action: "list"`). With `devtools` enabled, `browser_status` should report
+   `"extension_connected": true` and `"extension_build": "signed"`.
 
 Signed builds released after 0.2.0 update themselves (see
 [Automatic extension updates](#automatic-extension-updates)).
 
 ### Developer build
 
-Use this for `browser_js`, or to run an unreleased commit.
+Use this for `browser_evaluate`, or to run an unreleased commit.
 
 1. Download `kitsune-extension-dev-<version>.zip` from
    [GitHub Releases](https://github.com/junyeong-nero/kitsune/releases) and unzip
@@ -196,7 +198,8 @@ Use this for `browser_js`, or to run an unreleased commit.
 3. Select `manifest.json` from the unzipped folder (`extension/manifest.json`
    in a repository ZIP or clone). In the macOS file dialog, press Cmd+Shift+G to
    paste a path.
-4. Call `browser_status`; it should report `"extension_build": "dev"`.
+4. With `devtools` enabled, call `browser_status`; it should report
+   `"extension_build": "dev"`.
 
 Both builds use the same add-on ID. While a developer build is loaded, it
 replaces the signed one; after a browser restart the signed build is back.

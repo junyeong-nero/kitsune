@@ -1,0 +1,79 @@
+"""#171: a known tool left out by KITSUNE_CAPS names the setting that publishes it."""
+import json
+import os
+import subprocess
+import sys
+import unittest
+
+
+def list_tools(caps="core") -> dict:
+    env = {**os.environ, "KITSUNE_CAPS": caps}
+    result = subprocess.run(
+        [sys.executable, "-c", "import asyncio,json; from kitsune.server import mcp; print(json.dumps("
+         "{t.name: t.model_dump(mode='json', exclude_none=True) for t in asyncio.run(mcp.list_tools())}))"],
+        env=env, capture_output=True, text=True, check=True,
+    )
+    return json.loads(result.stdout)
+
+
+# Calls known and unknown tool names through FastMCP's call_tool, and browser_status with the bridge mocked.
+UNPUBLISHED_SCRIPT = """import asyncio, json, sys
+from unittest.mock import patch
+from kitsune import server
+def call(name):
+    try:
+        result = asyncio.run(server.mcp.call_tool(name, {}))
+    except Exception as error:
+        return {"raised": str(error)}
+    return {"isError": result.isError, **json.loads(result.content[0].text)}
+with patch.object(server, "_get", return_value={"status": "running"}):
+    status = server.browser_status()
+print(json.dumps({"calls": {name: call(name) for name in sys.argv[1:]}, "mcp_tools": status["mcp_tools"],
+                  "unpublished": sorted(server.UNPUBLISHED_TOOLS)}))
+"""
+
+
+def unpublished(caps, *names) -> dict:
+    env = {**os.environ, "KITSUNE_CAPS": caps}
+    result = subprocess.run([sys.executable, "-c", UNPUBLISHED_SCRIPT, *names],
+                            env=env, capture_output=True, text=True, check=True)
+    return json.loads(result.stdout)
+
+
+class UnpublishedToolTests(unittest.TestCase):
+    def assert_not_published(self, call, group, hint):
+        self.assertEqual(call, {
+            "isError": True, "error": call["error"], "code": "tool_not_published", "retryable": False,
+            "hint": f"Set {hint} in the MCP server environment, then restart the MCP client.",
+            "state": {**call["state"], "group": group}})
+        self.assertIn("is not published", call["error"])
+
+    def test_default_names_the_group(self):
+        result = unpublished("core", "browser_scroll", "browser_history_search", "browser_nope")
+        calls = result["calls"]
+        self.assert_not_published(calls["browser_scroll"], "devtools", "KITSUNE_CAPS=core,devtools")
+        self.assertEqual(calls["browser_scroll"]["state"], {"group": "devtools", "caps": ["core"]})
+        self.assert_not_published(calls["browser_history_search"], "history", "KITSUNE_CAPS=core,history")
+        self.assertEqual(calls["browser_nope"], {"raised": "Unknown tool: browser_nope"})
+
+        published = set(list_tools())
+        everything = set(list_tools("all,history"))
+        self.assertFalse(published & set(result["unpublished"]))
+        self.assertEqual(published | set(result["unpublished"]), everything)
+        self.assertEqual(result["mcp_tools"], {"caps": ["core"], "unpublished": len(everything) - 25})
+
+    def test_core_tool_outside_caps_names_core(self):
+        result = unpublished("devtools", "browser_click")
+        self.assert_not_published(result["calls"]["browser_click"], "core", "KITSUNE_CAPS=core,devtools")
+
+    def test_all_leaves_only_history_unpublished(self):
+        result = unpublished("all", "browser_bookmarks_search")
+        self.assert_not_published(result["calls"]["browser_bookmarks_search"], "history",
+                                  "KITSUNE_CAPS=all,history")
+        self.assertEqual(result["unpublished"],
+                         ["browser_bookmarks_search", "browser_history_search", "browser_history_visits"])
+        self.assertEqual(result["mcp_tools"], {"caps": ["all"], "unpublished": 3})
+
+
+if __name__ == "__main__":
+    unittest.main()

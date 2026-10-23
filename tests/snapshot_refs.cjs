@@ -553,7 +553,8 @@ async function testBackground() {
     assert.equal(calls[1].tabId, 42);
     assert.equal(calls[1].focusLastAction, action !== 'navigate');
     assert.equal(calls[1].observation, { type: 'browser_type', fill: 'browser_type', selectOption: 'browser_select_option',
-      checkBox: 'browser_check', submitForm: 'browser_submit_form' }[action] || `browser_${action}`);
+      checkBox: 'browser_check', keypress: 'browser_press_key', submitForm: 'browser_submit_form' }[action] ||
+      `browser_${action}`);
     assert.equal(result.target_ref, action !== 'navigate' ? 's2e100' : undefined);
     // submitForm and navigate usually load another document, so their snapshot is full.
     const delta = !['submitForm', 'navigate'].includes(action);

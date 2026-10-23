@@ -1,6 +1,6 @@
 """Published optional parameters drop the nullable anyOf and empty defaults (#142).
 
-tools/list publishes the untitled schema (#120) with every non-required
+tools/list publishes each Kitsune-owned tool's untitled schema (#120) with every non-required
 `anyOf: [X, {"type": "null"}]` parameter whose default is null rewritten to X, and
 `default` removed where it is null or "". Calls are still validated by the registered
 pydantic argument models, so for every tool and every sample argument set, explicit
@@ -50,7 +50,7 @@ class ToolSchemaOptionalTests(unittest.TestCase):
         cls.tools = {name: Tool.from_function(getattr(server, name)) for name in cls.published}
 
     def test_every_tool_is_compared_against_its_registered_model(self):
-        self.assertEqual(len(self.published), 96)
+        self.assertEqual(len(self.published), 76)
         for name, tool in self.tools.items():
             self.assertEqual(server._untitled_schema(tool.parameters), self.untitled[name], name)
 
@@ -80,12 +80,14 @@ class ToolSchemaOptionalTests(unittest.TestCase):
                     self.assertFalse("default" in after and after["default"] in (None, ""), parameter)
                 collapsed_total += len(collapsed)
                 dropped_total += len(dropped)
-        self.assertGreater(collapsed_total, 150)
+        self.assertGreater(collapsed_total, 100)
         self.assertGreater(dropped_total, collapsed_total)
 
     def test_null_with_a_different_default_stays_published(self):
-        # accept=None clears the dialog policy; omitting it means accept=True.
-        accept = self.published["browser_handle_dialog"]["properties"]["accept"]
+        # Kitsune's browser_handle_dialog: accept=None clears the dialog policy; omitting it
+        # means accept=True. (The published core tool is Playwright's, with no such parameter.)
+        accept = server._published_schema(Tool.from_function(server.browser_handle_dialog).parameters)
+        accept = accept["properties"]["accept"]
         self.assertEqual(accept["anyOf"], [{"type": "boolean"}, {"type": "null"}])
         self.assertIs(accept["default"], True)
 
