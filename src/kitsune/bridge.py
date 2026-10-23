@@ -98,6 +98,8 @@ ALLOWED_WS_ORIGIN_PREFIX = "moz-extension://"
 UNAUTHENTICATED_GET_PATHS = {"/view"}
 # The largest body the bridge reads to answer an unauthenticated request (see drain_body).
 UNAUTHENTICATED_BODY_LIMIT = 1024 * 1024
+# How long the bridge reads a body no handler read before it closes the connection instead.
+BODY_DRAIN_SECONDS = 2
 
 
 def _load_or_create_token():
@@ -3319,24 +3321,29 @@ class BridgeHTTPServer(ThreadingHTTPServer):
 
 class BridgeHandler(BaseHTTPRequestHandler):
     body_read = False
+    body_limit = None
 
     def canonical_path(self):
         path = self.path.split("?", 1)[0]
         return _API_ALIASES.get(path, path)
 
     def authorized(self):
-        """Check Host (DNS rebinding) and bearer token. Sends the error itself."""
+        """Check Host (DNS rebinding) and bearer token. Sends the error itself.
+
+        A request that skips or fails the token check keeps body_limit (see drain_body).
+        """
+        self.body_limit = UNAUTHENTICATED_BODY_LIMIT
         if self.headers.get("Host", "") not in ALLOWED_HOSTS:
-            self.refuse(403, {"error": "Host not allowed"}, body_limit=UNAUTHENTICATED_BODY_LIMIT)
+            self.refuse(403, {"error": "Host not allowed"})
             return False
         if self.command == "GET" and self.canonical_path() in UNAUTHENTICATED_GET_PATHS:
             return True
         auth = self.headers.get("Authorization", "")
         supplied = auth[len("Bearer "):] if auth.startswith("Bearer ") else ""
         if not hmac.compare_digest(supplied.encode(), AUTH_TOKEN.encode()):
-            self.refuse(401, {"error": f"Missing or invalid token (see {TOKEN_FILE})"},
-                        body_limit=UNAUTHENTICATED_BODY_LIMIT)
+            self.refuse(401, {"error": f"Missing or invalid token (see {TOKEN_FILE})"})
             return False
+        self.body_limit = None
         return True
 
     def _dispatch(self, routes):
@@ -4280,31 +4287,53 @@ class BridgeHandler(BaseHTTPRequestHandler):
         tab_id = body.get('tabId')
         return {'tabId': tab_id} if tab_id is not None else {}
     
-    def drain_body(self, body_limit=None):
+    def drain_body(self):
         """Read the request body no handler read (#235).
 
         Closing the connection with unread request data resets it, and the client loses the
-        response. A body over body_limit bytes is left unread: the response is sent and the
-        connection closed instead of reading it.
+        response. A body over body_limit bytes (set for unauthenticated requests) is left
+        unread: the response is sent and the connection closed instead of reading it. So is
+        the rest of a body not sent within BODY_DRAIN_SECONDS, so a stalled client does not
+        hold the handler thread and keep the bridge from an idle shutdown. A chunked body
+        without Content-Length is deliberately left unread, as read_body never reads one.
+
+        Returns False when the client reset the connection, so there is no one to answer.
         """
         try:
             length = 0 if self.body_read else int(self.headers.get("Content-Length", 0))
         except ValueError:
             length = 0
-        if body_limit is not None and length > body_limit:
-            self.close_connection = True
-            return
-        while length > 0:
-            chunk = self.rfile.read(min(length, 64 * 1024))
-            if not chunk:
-                break
-            length -= len(chunk)
         self.body_read = True
+        if self.body_limit is not None and length > self.body_limit:
+            self.close_connection = True
+            return True
+        if length <= 0:
+            return True
+        deadline = time.monotonic() + BODY_DRAIN_SECONDS
+        previous_timeout = self.connection.gettimeout()
+        try:
+            while length > 0:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError
+                self.connection.settimeout(remaining)
+                chunk = self.rfile.read1(min(length, 64 * 1024))
+                if not chunk:
+                    break
+                length -= len(chunk)
+        except TimeoutError:
+            self.close_connection = True
+        except OSError:
+            self.close_connection = True
+            return False
+        finally:
+            self.connection.settimeout(previous_timeout)
+        return True
 
-    def refuse(self, code, data, body_limit=None):
+    def refuse(self, code, data):
         """Answer without running a handler, after reading the request body (see drain_body)."""
-        self.drain_body(body_limit)
-        self.send_json(code, data)
+        if self.drain_body():
+            self.send_json(code, data)
 
     def send_json(self, code, data):
         self.send_response(code)
