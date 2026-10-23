@@ -25,6 +25,9 @@ and **fewer, sharper tools**. See [Philosophy](docs/philosophy.md).
   to limit the available tools and bridge requests. Draft mode allows supported
   field input without click or submit tools; sites may still autosave edits.
   The default is `act`, not a restricted mode. See [Task modes](docs/guide.md#task-modes).
+- **Keep the tool list small.** Start with Playwright MCP's 25 core tools. Kitsune's
+  other tools stay off until you allow them, and the agent can find and call the ones
+  you allow without restarting its session. See [Choosing tools](https://github.com/junyeong-nero/kitsune#choosing-tools).
 - **Recover without blindly repeating work.** With the optional `automation`
   capability, interrupted batch, parallel, and workflow calls can be resumed
   without resending successful writes. Uncertain writes require an observation
@@ -155,15 +158,44 @@ Restart or reconnect your client after configuring it, then ask it to list your 
 (`browser_tabs` with `action: "list"`); an error's `hint` says what to fix. GUI apps may need the full path returned by
 `which uvx` instead of `uvx` if they do not inherit your shell's `PATH`.
 
+### Choosing tools
+
 By default Kitsune publishes exactly [Playwright MCP](https://github.com/microsoft/playwright-mcp)'s
 25 core tools (same names, descriptions and schemas), driving your own browser, so
-prompts and clients written for Playwright MCP work unchanged. Kitsune's own tools
-(page text, scrolling, connection status, policies, parallel tabs, ...) are opt-in
-groups such as `KITSUNE_CAPS=core,browse,read`
-(see [Core tools](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#core-tools)).
-With `KITSUNE_CAPS=all` and `KITSUNE_PUBLISH=core` the tool list stays small and the
-agent finds and calls the rest without a restart
-([Finding tools without a restart](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#finding-tools-without-a-restart)).
+prompts and clients written for Playwright MCP work unchanged
+([Core tools](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#core-tools)). Kitsune's own tools come in capability groups that
+you enable with `KITSUNE_CAPS` in the MCP server's environment:
+
+| Group | Tools for |
+| --- | --- |
+| `browse` | Scrolling, forward navigation, checkboxes, focus, form submits, trusted OS clicks |
+| `read` | Page text and Markdown, forms, DOM, links, images, metadata |
+| `inspect` | Element bounds, computed styles, selector diagnosis, highlights |
+| `tabs` | Pinning, muting, zoom, windows, tab tags, keep-alive |
+| `automation` | Batches, retries, workflows, parallel tabs, resume |
+| `network` | Downloads, request interception and capture |
+| `admin` | Connection status, logs, audit, cache, policy |
+| `storage`, `history` | Cookies, page storage, clipboard and saved sessions; history and bookmarks. They read personal data, so `all` leaves them out: name them |
+
+To keep the agent's tool list small, allow more than you publish. With
+`KITSUNE_CAPS=all` and `KITSUNE_PUBLISH=core`, the agent starts with the core tools
+and finds and calls the others in the same session
+([Finding tools without a restart](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#finding-tools-without-a-restart)). For
+example, with Claude Code:
+
+```bash
+claude mcp add --scope user kitsune -e KITSUNE_CAPS=all -e KITSUNE_PUBLISH=core -- uvx --from kitsune-browser-mcp kitsune
+```
+
+In the JSON configurations above, add `"env": {"KITSUNE_CAPS": "all", "KITSUNE_PUBLISH": "core"}`
+next to `"args"`. The bridge checks the groups on every request, batch steps included,
+and tools you call without a tab act on the agent's current tab, not the one you are
+looking at.
+
+Upgrading from 0.3? The `devtools`, `parallel`, `windows` and `session` groups were
+replaced by the groups above, and `all` no longer includes `storage`. A configuration
+that names a removed group fails at startup; see [Tools](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#tools) for where each
+tool went.
 
 For Codex's TOML alternative, environment variables, version pinning, and
 upgrades, see [Installation](https://github.com/junyeong-nero/kitsune/blob/main/docs/installation.md).
