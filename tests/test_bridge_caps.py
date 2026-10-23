@@ -8,7 +8,7 @@ import sys
 import unittest
 from unittest.mock import Mock, patch
 
-from kitsune import bridge, capabilities
+from kitsune import bridge, capabilities, task_modes
 from kitsune.capabilities import ACTION_GROUPS, CAPS_HEADER, OPEN_ROUTES, ROUTE_GROUPS
 from test_ask_before_act import AskBeforeActTestCase
 
@@ -102,13 +102,15 @@ class CapabilityTableTests(unittest.TestCase):
 class BridgeCapsTests(AskBeforeActTestCase):
     ask = False
 
-    def request(self, path, body, caps=None, method="POST"):
+    def request(self, path, body, caps=None, method="POST", mode=None):
         """Call a route through BridgeHandler; caps=None sends no capability header."""
         handler = self.handler(body)
         handler.authorized = Mock(return_value=True)
         handler.path = path
         handler.command = method
         handler.headers = {} if caps is None else {CAPS_HEADER: caps}
+        if mode is not None:
+            handler.headers[bridge.MODE_HEADER] = mode
         handler.do_POST() if method == "POST" else handler.do_GET()
         return handler.send_json.call_args.args
 
@@ -142,6 +144,18 @@ class BridgeCapsTests(AskBeforeActTestCase):
                                       "automation,core")
         self.assertEqual((status, result["results"]), (200, [{"ok": True}]))
         self.assertEqual(self.extension.actions(), ["checkBox", "checkBox", "checkBox"])
+
+    def test_core_permits_everything_draft_mode_adds(self):
+        # #241: draft mode exists to fill forms, so under the default caps its routes and
+        # actions must not be refused by the capability tables instead.
+        self.assertEqual(sorted(path for path in task_modes.DRAFT_ROUTES - task_modes.READ_ROUTES
+                                if "core" not in ROUTE_GROUPS.get(path, ())), [])
+        self.assertEqual(sorted(action for action in task_modes.DRAFT_TOOLS.values()
+                                if "core" not in ACTION_GROUPS.get(action, ())), [])
+        self.extension.target = {"ok": True, "tag": "input", "submits": False, "sensitive": False}
+        status, result = self.request("/api/check", {"selector": "#agree", "checked": True}, "core", mode="draft")
+        self.assertEqual(status, 200, result)
+        self.assertEqual(self.extension.actions(), ["checkBox"])
 
     def test_requests_without_the_header_are_not_restricted(self):
         status, result = self.request("/api/cookies", {"op": "get", "url": "https://example.com"})
