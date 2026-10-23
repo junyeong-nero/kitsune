@@ -2,6 +2,10 @@
 
 ![Kitsune: an orange fox in a browser window, connecting your browser and your AI agent](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/kitsune-hero.svg)
 
+[![PyPI](https://img.shields.io/pypi/v/kitsune-browser-mcp)](https://pypi.org/project/kitsune-browser-mcp/)
+[![Release](https://img.shields.io/github/v/release/junyeong-nero/kitsune)](https://github.com/junyeong-nero/kitsune/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 **Bring your coding agent into Firefox—and keep working alongside it.**
 
 Kitsune lets AI agents like Claude Code, Codex, Pi, and OpenCode use the **Firefox, Zen,
@@ -13,6 +17,10 @@ an agent you already use—not a separate browser or built-in AI assistant.
 
 Two principles guide every trade-off: **the user's browser belongs to the user**,
 and **fewer, sharper tools**. See [Philosophy](docs/philosophy.md).
+
+![Claude Code uses Kitsune to open Hacker News and summarize the top three stories](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/demo.gif)
+
+<sub>A real browser session, captured with Kitsune and sped up.</sub>
 
 ## Why Kitsune?
 
@@ -43,10 +51,6 @@ and **fewer, sharper tools**. See [Philosophy](docs/philosophy.md).
   and Markdown.
 - **Work across tabs.** Keep research and tasks in separate tabs without
   replacing the page you're using.
-
-![Claude Code uses Kitsune to open Hacker News and summarize the top three stories](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/demo.gif)
-
-<sub>A real browser session, captured with Kitsune and sped up.</sub>
 
 ## How do I use it?
 
