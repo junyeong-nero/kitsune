@@ -1,4 +1,4 @@
-"""Playwright selector targets (#219) and hover scrolling (#220), in a real browser.
+"""Playwright selector targets (#219, #240) and hover scrolling (#220), in a real browser.
 
 Opt-in and built on tests/real_browser_harness.py, which documents how to run it.
 tests/playwright_selectors.cjs and tests/hover_scroll.cjs check the same rules on a mocked
@@ -8,6 +8,7 @@ whenever its last item scrolls into view inside the list's own scroll container.
 """
 from http.server import BaseHTTPRequestHandler
 import json
+import re
 import time
 import unittest
 
@@ -56,6 +57,16 @@ PAGE = """<!doctype html><meta charset="utf-8"><title>selectors</title>
   more();
 </script>"""
 
+# #240: the gallery, table and meeting-notes forms. No redacted content, so XPath runs.
+GALLERY = """<!doctype html><meta charset="utf-8"><title>gallery</title>
+<img id="puzzle" alt="왜곡된 문자 퍼즐" width="40" height="20">
+<div id="grid"><div id="cell1-wrap"><button aria-label="1번 칸"><img alt="1번 칸 그림" width="20" height="20"></button></div>
+<button id="cell2" aria-label="2번 칸"><img alt="2번 칸 그림" width="20" height="20"></button></div>
+<section id="stock"><h2>재고 표</h2><p>사과 3개</p></section>
+<input type="checkbox" id="mic"><label for="mic">마이크 선택</label>
+<span id="t71">#71 완료</span> <span id="t8">#8 진행</span>
+<button id="save68" aria-label="회의록 #68 저장">저장</button><button id="save66">회의록 #66 저장</button>"""
+
 STATE = """JSON.stringify({clicked: JSON.parse(document.documentElement.dataset.clicked || '[]'),
     hovered: JSON.parse(document.documentElement.dataset.hovered || '[]'),
     items: document.getElementById('feed').children.length, feedTop: document.getElementById('feed').scrollTop})"""
@@ -64,7 +75,7 @@ RESET = "document.documentElement.dataset.clicked = '[]'"
 
 class _Page(BaseHTTPRequestHandler):
     def do_GET(self):
-        body = PAGE.encode()
+        body = (GALLERY if self.path == "/gallery" else PAGE).encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
@@ -117,7 +128,8 @@ class RealBrowserPlaywrightSelectorTests(harness.RealBrowserTestCase):
 
     def test_unsupported_syntax_is_reported_not_retried(self):
         tab = self.open_tab(self.page.origin + "/")
-        for selector in ("xpath=//button", "text=/베트/", 'button:near(#p1)', 'checkbox "마이크 선택"', "저장",
+        # This page has a password field with a value attribute, which XPath would read.
+        for selector in ("xpath=//button", "text=/(/", 'button:near(#p1)', 'checkbox "마이크 선택"', "저장",
                          "div[", "button >> "):
             with self.subTest(selector):
                 result = self.call("/api/click", {"tabId": tab, "selector": selector})
@@ -129,6 +141,33 @@ class RealBrowserPlaywrightSelectorTests(harness.RealBrowserTestCase):
         # A subtree snapshot resolves Playwright forms as targets do.
         listbox = self.call("/api/snapshot", {"tabId": tab, "selector": "role=listbox"})
         self.assertIn("캐나다", listbox.get("snapshot", ""), listbox)
+
+    def test_remaining_playwright_forms_resolve(self):
+        tab = self.open_tab(self.page.origin + "/gallery")
+        cases = [
+            ('role=img[name="왜곡된 문자 퍼즐"]', "img"),
+            ('role=img[name="2번 칸 그림"]', "img"),
+            ("xpath=//h2[text()='재고 표']/..", "section"),
+            ("xpath=//button[@aria-label='1번 칸']/..", "div"),
+            ('#grid >> xpath=//h2', None),
+            ('internal:label="마이크 선택"i', "input"),
+            ("text=/#7\\d/", "span"),
+            ("role=button[name=/#66 저장/]", "button"),
+            ('button[aria-label="회의록 #68 저장"], button:has-text("회의록 #68 저장")', "button"),
+        ]
+        for selector, tag in cases:
+            with self.subTest(selector):
+                result = self.call("/api/hover", {"tabId": tab, "selector": selector})
+                if tag:
+                    self.assertEqual(self.assert_ok(result)["tag"], tag)
+                else:
+                    self.assert_error(result, "not_found", True)
+        observed = self.call("/api/snapshot", {"tabId": tab})
+        ref = re.search(r'- img "2번 칸 그림" \[ref=(e\d+)\]', observed.get("snapshot", "")).group(1)
+        parent = self.assert_ok(self.call("/api/hover", {"tabId": tab, "selector": f"{ref} >> xpath=.."}))
+        self.assertEqual(parent["tag"], "button")
+        missing = 'button[aria-label="회의록 #69 저장"], button:has-text("회의록 #69 저장")'
+        self.assert_error(self.call("/api/snapshot", {"tabId": tab, "selector": missing}), "not_found", True)
 
     def test_hover_scrolls_nested_containers_so_more_items_load(self):
         tab = self.open_tab(self.page.origin + "/")

@@ -103,6 +103,19 @@ async function main() {
   // Scoped snapshots expand before the content script replaces the generation.
   const scoped = await h.send('getSnapshot', { ref: fresh });
   assert.match(scoped.snapshot, /button "Act" \[ref=e\d+\]/);
+  // #240: a short ref may start a >> chain; the rest reaches the page unchanged, and
+  // echoes keep the public spelling.
+  assert.equal((await h.send('focusElement', { selector: `${fresh} >> xpath=..` })).ok, true);
+  assert.equal(h.sent.at(-1).selector, `${internalOld} >> xpath=..`);
+  const refused = await h.send('focusElement', { selector: `${fresh} >> id=x` });
+  assert.equal(refused.code, 'unsupported_selector');
+  assert.equal(refused.state.selector, `${fresh} >> id=x`);
+  const unknownChain = await h.send('focusElement', { selector: 'e999999999 >> xpath=..' });
+  assert.equal(unknownChain.code, 'stale_ref');
+  assert.equal(unknownChain.state.ref, 'e999999999');
+  // Only a leading ref is expanded; CSS that merely starts with one is not a chain.
+  await h.send('focusElement', { selector: `${fresh}>button` });
+  assert.equal(h.sent.at(-1).selector, `${fresh}>button`);
   const otherTab = await h.send('focusElement', { selector: old, tabId: 2 });
   assert.equal(otherTab.state.reason, 'other_document');
   assert.equal(otherTab.state.ref, old);
@@ -110,6 +123,9 @@ async function main() {
   const navigated = await h.send('focusElement', { selector: old });
   assert.equal(navigated.state.reason, 'other_document');
   assert.equal(navigated.state.ref, old);
+  const navigatedChain = await h.send('focusElement', { selector: `${old} >> xpath=..` });
+  assert.equal(navigatedChain.state.reason, 'other_document');
+  assert.equal(navigatedChain.state.ref, old);
 
   const unknown = await h.send('focusElement', { selector: 'e999999999' });
   assert.equal(unknown.code, 'stale_ref');
