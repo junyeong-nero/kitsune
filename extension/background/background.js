@@ -1498,7 +1498,10 @@ function compactContentRefs(action, response, tabId, params) {
       if (key === 'snapshot' && typeof item === 'string') {
         const snapshot = item.replace(/^( *- \/url: )("(?:[^"\\\r\n]|\\.)*")$/gm,
           (_, prefix, encoded) => prefix + JSON.stringify(redactHistoryUrl(JSON.parse(encoded))));
-        return [key, snapshot.replace(/\[ref=(s\d+e\d+)\]/g, (_, ref) => `[ref=${convert(ref)}]`)];
+        return [key, snapshot.replace(/\[ref=(s\d+e\d+)\]/g, (_, ref) => `[ref=${convert(ref)}]`)
+          // A collapse marker names its container's ref.
+          .replace(/^( *- … \d+ more similar items; snapshot )(s\d+e\d+)( to list all)$/gm,
+            (_, head, ref, tail) => head + convert(ref) + tail)];
       }
       if (['ref', 'target_ref', 'currentRef'].includes(key) && typeof item === 'string' && /^s\d+e\d+$/.test(item)) {
         // An error echoes the caller's ref, including legacy refs, verbatim.

@@ -389,7 +389,10 @@ Kitsune's compact JSON results, not Playwright's Markdown. Where the two differ:
   survive newer observations while their nodes remain attached in the same document; navigation or replacement nodes require new refs.
 - **Snapshots.** Default core snapshots include redacted static text and resolved HTTP(S) link
   URLs without a new document-prefix character cap. Existing line clipping, structural
-  collapsing and depth rules still apply. In the full toolset, `text=False` is compact
+  collapsing and depth rules still apply: past the fifth of a run of similar items the
+  snapshot shows `- … N more similar items; snapshot e14 to list all`, and a snapshot
+  with `target` `e14` (the items' container) lists up to 100 of them. `browser_find`
+  searches collapsed items too. In the full toolset, `text=False` is compact
   and `text=True` enables explicitly bounded readable output (12,000 final public chars).
   Explicit HTTP `maxChars` and post-action limits also apply after URL redaction; scoped
   snapshots remain useful for large pages.

@@ -138,6 +138,23 @@ class ServerTransportErrorTests(unittest.TestCase):
             self.assertEqual(result["error"], "read timed out")
             self.assertEqual((result["code"], result["retryable"]), ("timeout", retryable))
 
+    def test_closed_connection_says_whether_the_command_may_have_run(self):
+        # #235: a reset reached the agent as a bare error string.
+        for method, error, sent, retryable in (
+                ("POST", httpx.ReadError("[Errno 54] Connection reset by peer"), True, False),
+                ("POST", httpx.RemoteProtocolError("Server disconnected without sending a response."), True, False),
+                ("GET", httpx.ReadError("[Errno 54] Connection reset by peer"), True, True),
+                ("POST", httpx.WriteError("[Errno 32] Broken pipe"), False, True)):
+            with self.subTest(method=method, error=type(error).__name__), \
+                 patch.object(server.httpx, "request", side_effect=error), \
+                 patch.object(server, "_ensure_bridge") as ensure:
+                result = server._request(method, "/api/check", json={}, timeout=1)
+            ensure.assert_not_called()
+            self.assertEqual(result["error"], str(error))
+            self.assertEqual((result["code"], result["retryable"], result["state"]),
+                             ("bridge_disconnected", retryable, {"requestSent": sent}))
+            self.assertEqual("may have run" in result["hint"], sent and method == "POST", result["hint"])
+
     def test_bridge_error_fields_pass_through_unchanged(self):
         error = {"error": "stale ref, call browser_snapshot again", "code": "stale_ref", "retryable": True,
                  "hint": "snapshot", "state": {"reason": "other_document", "ref": "s1e0", "tabId": 7}}

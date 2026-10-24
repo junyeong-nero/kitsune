@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -245,6 +246,63 @@ class BridgeHttpSecurityTests(unittest.TestCase):
                 status, _, _ = self.request("POST", path, {"Content-Type": "application/json"}, body="{}")
                 self.assertEqual(status, 401)
         self.assertEqual(self.bridge.status_code(), 200, "unauthenticated shutdown must not stop the bridge")
+
+    def test_early_responses_arrive_whole_after_a_large_body(self):
+        # #235: answering before the body was read reset the connection instead of sending the JSON.
+        auth = {**self.bridge.auth(), "Content-Type": "application/json"}
+        cases = {"capability": ("/api/cookies", {**auth, "X-Kitsune-Caps": "core"}, 403, "capability_restricted"),
+                 "mode": ("/api/click", {**auth, "X-Kitsune-Mode": "read"}, 403, "mode_restricted"),
+                 "invalid caps": ("/api/click", {**auth, "X-Kitsune-Caps": "devtools"}, 400, "invalid_caps"),
+                 "unknown route": ("/api/does-not-exist", auth, 404, None),
+                 "unauthenticated": ("/api/click", {"Content-Type": "application/json"}, 401, None),
+                 "unread by the handler": ("/api/health", auth, 200, None)}
+        for name, (path, headers, status, code) in cases.items():
+            for size in (40, 2_000, 20_000, 200_000):
+                body = json.dumps({"selector": "#x", "checked": True, "pad": "x" * size})
+                with self.subTest(name=name, size=size):
+                    for _ in range(10):
+                        got, _, text = self.request("POST", path, headers, body=body)
+                        self.assertEqual(got, status)
+                        self.assertEqual(json.loads(text).get("code"), code)
+
+    def test_unauthenticated_body_over_the_limit_is_not_read(self):
+        # The body is announced but never sent: the bridge answers without waiting for it.
+        with socket.create_connection(("127.0.0.1", self.bridge.http_port), timeout=5) as sock:
+            sock.sendall(f"POST /api/click HTTP/1.1\r\nHost: {self.bridge.host}\r\n"
+                         f"Content-Length: {2 * 1024 * 1024}\r\n\r\n".encode())
+            self.assertTrue(sock.makefile("rb").readline().startswith(b"HTTP/1.0 401 "))
+
+    def test_tokenless_view_body_over_the_limit_is_not_read(self):
+        # /view skips the token check, so its body is limited like an unauthenticated one.
+        for name, extra, status in (("view", "", b"200"), ("invalid mode", "X-Kitsune-Mode: bogus\r\n", b"400")):
+            with self.subTest(name=name), \
+                    socket.create_connection(("127.0.0.1", self.bridge.http_port), timeout=1) as sock:
+                sock.sendall(f"GET /view?src=a.png HTTP/1.1\r\nHost: {self.bridge.host}\r\n{extra}"
+                             f"Content-Length: {2 * 1024 * 1024}\r\n\r\n".encode())
+                response = sock.makefile("rb").read()  # the bridge closes the connection after it
+                self.assertTrue(response.startswith(b"HTTP/1.0 " + status + b" "), response[:80])
+
+    def test_stalled_body_is_abandoned_and_the_connection_closed(self):
+        # The client announces a body and stops sending it: the refusal still arrives.
+        with socket.create_connection(("127.0.0.1", self.bridge.http_port), timeout=5) as sock:
+            sock.sendall(f"POST /api/does-not-exist HTTP/1.1\r\nHost: {self.bridge.host}\r\n"
+                         f"Authorization: Bearer {SYNTHETIC_TOKEN}\r\nContent-Length: 100\r\n\r\n{{}}".encode())
+            started = time.monotonic()
+            response = sock.makefile("rb").read()
+        self.assertTrue(response.startswith(b"HTTP/1.0 404 "), response[:80])
+        self.assertLess(time.monotonic() - started, 4)
+        self.assertEqual(self.bridge.status_code(), 200)
+
+    def test_client_reset_while_the_body_is_read_logs_no_traceback(self):
+        sock = socket.create_connection(("127.0.0.1", self.bridge.http_port), timeout=5)
+        sock.sendall(f"POST /api/does-not-exist HTTP/1.1\r\nHost: {self.bridge.host}\r\n"
+                     f"Authorization: Bearer {SYNTHETIC_TOKEN}\r\nContent-Length: 100\r\n\r\n{{}}".encode())
+        time.sleep(0.2)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        sock.close()  # a zero linger time closes with a reset
+        time.sleep(0.3)
+        self.assertEqual(self.bridge.status_code(), 200)
+        self.assertNotIn("Traceback", self.bridge.log())
 
     def test_unknown_get_route_requires_auth_before_routing(self):
         status, _, _ = self.request("GET", "/api/does-not-exist")
