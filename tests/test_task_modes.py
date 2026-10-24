@@ -147,7 +147,8 @@ class TaskModePolicyTests(AskBeforeActTestCase):
         for action in ("click", "type", "submitForm", "executeJS", "if", "while", "newTab", "handleDialog"):
             self.assertEqual(bridge._check_policy(action, {})["code"], "mode_restricted")
             result = asyncio.run(bridge.run_command({"action": action}))
-            self.assertEqual(result["code"], "mode_restricted")
+            # handleDialog is no batch action, which a container step learns first (#249).
+            self.assertEqual(result["code"], "unknown_action" if action == "handleDialog" else "mode_restricted")
         self.assertEqual(self.extension.sent, [])
 
     def test_draft_fills_ordinary_fields_without_changing_shared_policy(self):

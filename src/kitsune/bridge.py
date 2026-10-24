@@ -36,6 +36,7 @@ import time
 import ctypes
 import concurrent.futures
 import contextvars
+import difflib
 import itertools
 from collections import Counter
 from contextlib import asynccontextmanager
@@ -810,10 +811,12 @@ _REPEAT_UNSAFE_ACTIONS = WRITE_ACTIONS | {"uploadCommit", "focusElement", "blurE
 # Nothing reached the page, but repeating cannot succeed: until the tab navigates (error_page),
 # because the command names several targets (ambiguous_target) or its target selector failed
 # to parse or validate before anything was dispatched (unsupported_selector), until the user
-# approves closing their tab (user_tab), or until the user grants a browser permission
-# (permission_required).
+# approves closing their tab (user_tab), until the user grants a browser permission
+# (permission_required), or until the client's KITSUNE_CAPS or KITSUNE_MODE permits it or the
+# container step names a batch action (capability_restricted, mode_restricted, unknown_action).
 _PERSISTENT_FAILURE_CODES = {"error_page", "ambiguous_target", "unsupported_selector", "user_tab",
-                             "permission_required"}
+                             "permission_required", "capability_restricted", "mode_restricted",
+                             "unknown_action"}
 
 
 def _url_matches(pattern, url, flags=0):
@@ -2370,6 +2373,23 @@ BATCH_ACTION_MAP = {
         'fullPageMetrics',
     )},
 }
+# Names a batch step may use: BATCH_ACTION_MAP's and the actions the bridge runs itself, not the
+# extension actions the map's aliases forward to.
+_BATCH_ACTION_NAMES = sorted(set(BATCH_ACTION_MAP) | (
+    set(ACTION_GROUPS) - {name for alias, name in BATCH_ACTION_MAP.items() if alias != name}))
+
+
+def _unknown_action_error(action):
+    """The error for a container step whose action is no batch action, naming the closest one."""
+    names = {name.lower(): name for name in _BATCH_ACTION_NAMES}
+    close = difflib.get_close_matches(action.lower(), names, n=1) if isinstance(action, str) else []
+    suggestion = names[close[0]] if close else None
+    if suggestion is None:
+        return _action_error(f"Unknown batch action: {action}", "unknown_action", retryable=False,
+                             hint="Nothing was dispatched. Use an action browser_batch lists.", action=action)
+    return _action_error(f"Unknown batch action: {action} (did you mean {suggestion}?)", "unknown_action",
+                         retryable=False, hint=f"Nothing was dispatched. Use {suggestion}.", action=action,
+                         suggestion=suggestion)
 
 
 def _audit_call():
@@ -3050,6 +3070,8 @@ async def run_command(cmd):
         if action == 'find' and 'query' not in params and 'selector' in params:
             params['query'] = params.pop('selector')
 
+        if action not in BATCH_ACTION_MAP and action not in ACTION_GROUPS:
+            return _unknown_action_error(action)
         effective_action = BATCH_ACTION_MAP.get(action, action)
         caps_err = caps_refusal(_client_caps.get(), effective_action, ACTION_GROUPS.get(effective_action))
         if caps_err:

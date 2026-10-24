@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
@@ -104,6 +105,34 @@ class CapabilityTableTests(unittest.TestCase):
                                     env=env, capture_output=True, text=True, check=True)
             self.assertEqual(result.stdout.strip(), header)
 
+    def test_pre_dispatch_refusals_are_failed_not_unknown(self):
+        # #249: nothing was dispatched, so these are not outcomes that may have taken effect.
+        caps = frozenset({"core", "automation", "read"})
+        for refusal in (capabilities.caps_refusal(caps, "cookies", ACTION_GROUPS["cookies"]),
+                        capabilities.caps_refusal(caps, "teleport", None),
+                        {"error": "read mode refuses click", "code": "mode_restricted", "retryable": False},
+                        bridge._unknown_action_error("html")):
+            with self.subTest(code=refusal["code"]):
+                self.assertEqual(bridge._result_status(refusal), "failed")
+        self.assertEqual(bridge._result_status({"error": "URL denied by policy (x): y"}), "failed")
+        self.assertEqual(bridge._result_status({"error": "timed out", "code": "timeout", "retryable": False}),
+                         "unknown")
+
+    def test_unknown_action_names_the_closest_batch_action(self):
+        for action, suggestion in (("html", "getHTML"), ("GETHTML", "getHTML"), ("clik", "click"),
+                                   ("snap", "snapshot")):
+            with self.subTest(action=action):
+                error = bridge._unknown_action_error(action)
+                self.assertEqual((error["code"], error["retryable"], error["state"]),
+                                 ("unknown_action", False, {"action": action, "suggestion": suggestion}))
+                self.assertEqual(error["error"], f"Unknown batch action: {action} (did you mean {suggestion}?)")
+                self.assertIn(suggestion, error["hint"])
+        error = bridge._unknown_action_error("teleport")
+        self.assertEqual((error["error"], error["state"]), ("Unknown batch action: teleport", {"action": "teleport"}))
+        # Only names a batch step can run are suggested, not the extension actions aliases forward to.
+        self.assertNotIn("executeJS", bridge._BATCH_ACTION_NAMES)
+        self.assertTrue({"js", "getHTML", "screenshot", "parallel"} <= set(bridge._BATCH_ACTION_NAMES))
+
 
 class BridgeCapsTests(AskBeforeActTestCase):
     ask = False
@@ -187,12 +216,72 @@ class BridgeCapsTests(AskBeforeActTestCase):
         self.assertEqual(self.extension.actions(), ["navigate"])
         self.assertIn('"capability_restricted"', json.dumps(rest))
         self.assertIn('"browse"', json.dumps(rest))
+        # #249: refused before dispatch, so failed, never "may have taken effect".
+        self.assertEqual([record["status"] for record in result["progress"]], ["ok", "failed", "failed", "failed"])
+        self.assertEqual(result["status"], "failed")
+        self.assertNotIn('"unknown"', json.dumps(result["progress"]))
+        self.assertNotIn("may have taken effect", result["summary"])
+        self.assertIn("Failed, safe to repeat after its hint", result["summary"])
 
         self.extension.sent.clear()
         status, result = self.request("/api/batch", {"commands": commands}, "automation,browse,core,storage")
         self.assertEqual(status, 200)
         self.assertNotIn("capability_restricted", json.dumps(result))
         self.assertEqual(self.extension.actions(), ["navigate", "cookies", "clipboard", "scroll"])
+
+    def test_refused_write_resumes_without_observed_once_its_group_is_enabled(self):
+        self.addCleanup(bridge._drop_all_checkpoints)
+        status, result = self.request("/api/batch", {"commands": [
+            {"action": "scroll", "tabId": 7, "direction": "down"}]}, "automation,core")
+        self.assertEqual((status, result["status"], result["progress"][0]["status"]), (200, "failed", "failed"))
+        self.assertEqual(self.extension.actions(), [])
+        status, resumed = self.request("/api/resume", {"call": result["call"], "resume_token": result["resume_token"]},
+                                       "automation,browse,core")
+        self.assertEqual((status, resumed["status"]), (200, "ok"), resumed)
+        self.assertEqual(self.extension.actions(), ["scroll"])
+
+    def test_mode_restricted_container_steps_are_failed(self):
+        # Restricted modes refuse the container routes; a step refused by the mode is failed too.
+        token = bridge._task_mode.set("read")
+        self.addCleanup(bridge._task_mode.reset, token)
+        self.addCleanup(bridge._drop_all_checkpoints)
+        status, result = self.call(lambda h: h.handle_batch(), {"commands": [
+            {"action": "click", "selector": "#a", "tabId": 7},
+            {"action": "sequence", "commands": [{"action": "type", "selector": "#q", "text": "x", "tabId": 7}]}]})
+        self.assertEqual(status, 200)
+        self.assertEqual(result["results"][0]["code"], "mode_restricted")
+        self.assertEqual([record["status"] for record in result["progress"]], ["failed", "failed"])
+        self.assertNotIn('"unknown"', json.dumps(result["progress"]))
+        self.assertNotIn("may have taken effect", result["summary"])
+        self.assertEqual(self.extension.actions(), [])
+
+    def test_unknown_batch_actions_are_refused_with_the_closest_name(self):
+        self.addCleanup(bridge._drop_all_checkpoints)
+        # The header of KITSUNE_CAPS=all,history, as in the issue, and no header.
+        for caps in (",".join(sorted(capabilities.enabled_groups(frozenset({"all", "history"})))), None):
+            with self.subTest(caps=caps):
+                status, result = self.request("/api/batch", {"commands": [
+                    {"action": "html", "selector": "#item"},
+                    {"action": "parallel", "sequences": [[{"action": "teleport", "tabId": 7}]]}]}, caps)
+                self.assertEqual(status, 200)
+                html = result["results"][0]
+                self.assertEqual((html["code"], html["retryable"], html["state"]),
+                                 ("unknown_action", False, {"action": "html", "suggestion": "getHTML"}))
+                self.assertIn('"Unknown batch action: teleport"', json.dumps(result["results"][1]))
+                self.assertEqual([record["status"] for record in result["progress"]], ["failed", "failed"])
+                self.assertNotIn('"unknown"', json.dumps(result["progress"]))
+                self.assertEqual(self.extension.sent, [])
+
+    def test_refused_workflow_steps_are_failed(self):
+        self.addCleanup(bridge._drop_all_checkpoints)
+        with tempfile.TemporaryDirectory() as tmp, patch.object(bridge, "WORKFLOW_DIR", tmp):
+            with open(os.path.join(tmp, "refused.md"), "w", encoding="utf-8") as f:
+                f.write('```json\n{"action": "scroll", "tabId": 7, "direction": "down"}\n```\n')
+            status, result = self.request("/api/workflow", {"name": "refused"}, "automation,core")
+        self.assertEqual(status, 200, result)
+        self.assertEqual(result["results"][0]["code"], "capability_restricted")
+        self.assertEqual((result["status"], result["progress"][0]["status"]), ("failed", "failed"))
+        self.assertNotIn("may have taken effect", result["summary"])
 
     def test_containers_need_automation(self):
         status, result = self.request("/api/batch", {"commands": [{"action": "navigate", "url": "https://a.test"}]},
