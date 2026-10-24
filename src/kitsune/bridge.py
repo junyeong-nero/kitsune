@@ -3095,6 +3095,137 @@ def _dispatch_timeout(action, params, base=30):
     return base + actionability_wait_seconds(action, params)
 
 
+async def _run_parallel(params):
+    """Run independent sequences with per-sequence tab ownership and resume plans."""
+    sequences = params.get('sequences', [])
+    writers = {}
+    problem = _parallel_tab_problem(sequences, writers)
+    if problem:
+        return problem
+    call = _audit_call()
+    # A resumed parallel keeps the tab claims its sequences made before.
+    plan = _resume_plan.get()
+    owners = dict(plan.owners or {}) if plan is not None else {}
+    if plan is not None:
+        await _refuse_unsafe_sequences(plan, owners, call['call'])
+    record = _running_step.get()
+    if record is not None:
+        record.owners = owners
+
+    async def run_sequence(i, seq):
+        _tab_owners.set((*_tab_owners.get(), (owners, i)))
+        results = []
+        for j, cmd in enumerate(seq):
+            results.append(await _run_step(cmd, call, action='parallel', sequence=i, index=j))
+            if _is_held(results[-1]):
+                break  # later steps may depend on the held one
+        return results
+
+    _running_parallels[id(owners)] = (call['call'], writers, owners)
+    try:
+        return list(await asyncio.gather(*(run_sequence(i, seq) for i, seq in enumerate(sequences))))
+    finally:
+        del _running_parallels[id(owners)]
+
+
+async def _run_retry(params):
+    """Retry eligible failures without repeating held or non-retryable actions."""
+    command = params.get('command') or {}
+    attempts = max(1, int(params.get('maxAttempts', 3)))
+    backoff_ms = int(params.get('backoffMs', 500))
+    on_errors = params.get('onErrors')
+    call = _audit_call()
+    last = None
+    for i in range(attempts):
+        last = await _run_step(command, call, action='retry', attempt=i + 1)
+        if not (isinstance(last, dict) and last.get('error')):
+            return {'ok': True, 'attempts': i + 1, 'result': last}
+        # Retrying cannot confirm a held action; only the caller can.
+        if _is_held(last):
+            return {'ok': False, 'attempts': i + 1, 'result': last, 'reason': 'confirmation required'}
+        # Never blindly repeat a command that may already have taken effect.
+        if last.get('retryable') is False:
+            return {'ok': False, 'attempts': i + 1, 'result': last, 'reason': 'not retryable'}
+        if on_errors and not any(substr in last.get('error', '') for substr in on_errors):
+            return {'ok': False, 'attempts': i + 1, 'result': last, 'reason': 'error not in onErrors'}
+        await asyncio.sleep((backoff_ms / 1000) * (2 ** i))
+    return {'ok': False, 'attempts': attempts, 'result': last}
+
+
+async def _run_if(params):
+    """Evaluate the condition once; a failed evaluation runs neither branch."""
+    check = await send_to_extension('executeJS', {
+        'tabId': params.get('tabId'), 'code': params.get('condition') or '1'}, timeout=10)
+    if check.get('error'):
+        return check
+    branch = 'then' if _condition_true(check) else 'else'
+    call = _audit_call()
+    results = [await _run_step(cmd, call, action='if', branch=branch, index=i)
+               for i, cmd in enumerate(params.get(branch, []))]
+    return {'branch': branch, 'condition': check.get('result'), 'results': results}
+
+
+async def _run_while(params):
+    """Run the body in order, retaining completed iterations when the condition fails."""
+    condition = params.get('condition')
+    tab_id = params.get('tabId')
+    commands = params.get('do', [])
+    max_iters = int(params.get('maxIterations', 20))
+    call = _audit_call()
+    results = []
+    for i in range(max_iters):
+        check = await send_to_extension('executeJS', {'tabId': tab_id, 'code': condition or '0'}, timeout=10)
+        if check.get('error'):
+            return {**check, 'iterations': i, 'results': results, 'stoppedBy': 'conditionError'}
+        if not _condition_true(check):
+            return {'iterations': i, 'results': results, 'stoppedBy': 'condition'}
+        results.append([await _run_step(cmd, call, action='while', iteration=i, index=j)
+                        for j, cmd in enumerate(commands)])
+    return {'iterations': max_iters, 'results': results, 'stoppedBy': 'maxIterations'}
+
+
+async def _run_try(params):
+    """Stop the body at its first error and run the catch steps in order."""
+    commands = params.get('do', [])
+    catch = params.get('catch', [])
+    call = _audit_call()
+    try:
+        results = []
+        for i, cmd in enumerate(commands):
+            result = await _run_step(cmd, call, action='try', block='do', index=i)
+            results.append(result)
+            if isinstance(result, dict) and result.get('error'):
+                raise RuntimeError(result['error'])
+        return {'ok': True, 'results': results}
+    except Exception as e:
+        caught = [await _run_step(cmd, call, action='try', block='catch', index=i)
+                  for i, cmd in enumerate(catch)]
+        return {'ok': False, 'error': str(e), 'catch_results': caught}
+
+
+async def _run_sequence(params):
+    """Substitute prior results into each step, stopping before any step after a held one."""
+    commands = params.get('do', [])
+    call = _audit_call()
+    results = []
+    for i, cmd in enumerate(commands):
+        resolved = _substitute_vars(cmd, results)
+        results.append(await _run_step(resolved, call, action='sequence', index=i))
+        if _is_held(results[-1]):
+            break
+    return {'results': results}
+
+
+_CONTROL_FLOW_HANDLERS = {
+    'parallel': _run_parallel,
+    'retry': _run_retry,
+    'if': _run_if,
+    'while': _run_while,
+    'try': _run_try,
+    'sequence': _run_sequence,
+}
+
+
 async def _execute_command(action, effective_action, params):
     """Dispatch a batch command that passed policy and ask-before-act checks."""
     try:
@@ -3137,35 +3268,6 @@ async def _execute_command(action, effective_action, params):
         elif action == 'sleep':
             await asyncio.sleep(params.get('ms', 1000) / 1000)
             return {'ok': True}
-        elif action == 'parallel':
-            sequences = params.get('sequences', [])
-            writers = {}
-            problem = _parallel_tab_problem(sequences, writers)
-            if problem:
-                return problem
-            call = _audit_call()
-            # A resumed parallel keeps the tab claims its sequences made before.
-            plan = _resume_plan.get()
-            owners = dict(plan.owners or {}) if plan is not None else {}
-            if plan is not None:
-                await _refuse_unsafe_sequences(plan, owners, call['call'])
-            record = _running_step.get()
-            if record is not None:
-                record.owners = owners
-
-            async def run_sequence(i, seq):
-                _tab_owners.set((*_tab_owners.get(), (owners, i)))
-                results = []
-                for j, c in enumerate(seq):
-                    results.append(await _run_step(c, call, action='parallel', sequence=i, index=j))
-                    if _is_held(results[-1]):
-                        break  # later steps may depend on the held one
-                return results
-            _running_parallels[id(owners)] = (call['call'], writers, owners)
-            try:
-                return list(await asyncio.gather(*[run_sequence(i, s) for i, s in enumerate(sequences)]))
-            finally:
-                del _running_parallels[id(owners)]
         elif action == 'broadcast':
             return await _broadcast_async(params.get('tabIds', []), params.get('command', {}))
         elif action == 'syncBarrier':
@@ -3175,90 +3277,10 @@ async def _execute_command(action, effective_action, params):
                 timeout=params.get('timeout', 30000),
                 poll_interval=params.get('pollInterval', 300),
             )
-        elif action == 'retry':
-            inner = params.get('command') or {}
-            attempts = max(1, int(params.get('maxAttempts', 3)))
-            backoff_ms = int(params.get('backoffMs', 500))
-            on_errors = params.get('onErrors')
-            call = _audit_call()
-            last = None
-            for i in range(attempts):
-                last = await _run_step(inner, call, action='retry', attempt=i + 1)
-                if not (isinstance(last, dict) and last.get('error')):
-                    return {'ok': True, 'attempts': i + 1, 'result': last}
-                # Retrying cannot confirm a held action; only the caller can.
-                if _is_held(last):
-                    return {'ok': False, 'attempts': i + 1, 'result': last, 'reason': 'confirmation required'}
-                # Never blindly repeat a command that may already have taken effect.
-                if last.get('retryable') is False:
-                    return {'ok': False, 'attempts': i + 1, 'result': last, 'reason': 'not retryable'}
-                if on_errors and not any(substr in last.get('error', '') for substr in on_errors):
-                    return {'ok': False, 'attempts': i + 1, 'result': last, 'reason': 'error not in onErrors'}
-                await asyncio.sleep((backoff_ms / 1000) * (2 ** i))
-            return {'ok': False, 'attempts': attempts, 'result': last}
-        elif action == 'if':
-            cond = params.get('condition')  # JS expression to evaluate on tabId
-            tab_id = params.get('tabId')
-            then_cmds = params.get('then', [])
-            else_cmds = params.get('else', [])
-            check = await send_to_extension('executeJS', {'tabId': tab_id, 'code': cond or '1'}, timeout=10)
-            if check.get('error'):
-                return check  # a condition that could not run is not false: run neither branch
-            truthy = _condition_true(check)
-            branch = then_cmds if truthy else else_cmds
-            call = _audit_call()
-            out = []
-            for j, c in enumerate(branch):
-                out.append(await _run_step(c, call, action='if', branch='then' if truthy else 'else', index=j))
-            return {'branch': 'then' if truthy else 'else', 'condition': check.get('result'), 'results': out}
-        elif action == 'while':
-            cond = params.get('condition')
-            tab_id = params.get('tabId')
-            body = params.get('do', [])
-            max_iters = int(params.get('maxIterations', 20))
-            call = _audit_call()
-            results = []
-            for i in range(max_iters):
-                check = await send_to_extension('executeJS', {'tabId': tab_id, 'code': cond or '0'}, timeout=10)
-                if check.get('error'):
-                    return {**check, 'iterations': i, 'results': results, 'stoppedBy': 'conditionError'}
-                if not _condition_true(check):
-                    return {'iterations': i, 'results': results, 'stoppedBy': 'condition'}
-                step = []
-                for j, c in enumerate(body):
-                    step.append(await _run_step(c, call, action='while', iteration=i, index=j))
-                results.append(step)
-            return {'iterations': max_iters, 'results': results, 'stoppedBy': 'maxIterations'}
-        elif action == 'try':
-            body = params.get('do', [])
-            catch = params.get('catch', [])
-            call = _audit_call()
-            try:
-                results = []
-                for j, c in enumerate(body):
-                    r = await _run_step(c, call, action='try', block='do', index=j)
-                    results.append(r)
-                    if isinstance(r, dict) and r.get('error'):
-                        raise RuntimeError(r['error'])
-                return {'ok': True, 'results': results}
-            except Exception as e:
-                caught = []
-                for j, c in enumerate(catch):
-                    caught.append(await _run_step(c, call, action='try', block='catch', index=j))
-                return {'ok': False, 'error': str(e), 'catch_results': caught}
-        elif action == 'sequence':
-            # Run a list of commands with variable substitution between them
-            inner = params.get('do', [])
-            call = _audit_call()
-            results = []
-            for j, command in enumerate(inner):
-                resolved = _substitute_vars(command, results)
-                results.append(await _run_step(resolved, call, action='sequence', index=j))
-                if _is_held(results[-1]):
-                    break
-            return {'results': results}
-        else:
-            return {'error': f'Unknown batch action: {action}'}
+        handler = _CONTROL_FLOW_HANDLERS.get(action)
+        if handler is not None:
+            return await handler(params)
+        return {'error': f'Unknown batch action: {action}'}
     except Exception as e:
         return {'error': str(e)}
 
