@@ -1905,13 +1905,14 @@ before scrolling the element or invoking the OS; `first=True` opts into the firs
 |---|---|
 | Windows | `user32` `SetCursorPos` + `mouse_event` |
 | macOS | Quartz `CGEventCreateMouseEvent` when pyobjc is importable (`uvx --from 'kitsune-browser-mcp[macos]' kitsune`), else [`cliclick`](https://github.com/BlueM/cliclick) on `PATH` |
-| Linux | Not supported; returns `{error}` |
+| Linux (X11) | [`xdotool`](https://github.com/jordansissel/xdotool) on `PATH` (`sudo apt install xdotool`). Wayland sessions (`XDG_SESSION_TYPE=wayland`, or no `DISPLAY`) are not supported and return `{error}`. Coordinates are not scaled for HiDPI X11 (`GDK_SCALE`, `layout.css.devPixelsPerPx`), so clicks there may land off by the scale factor |
 
 On macOS, the app running the bridge (your terminal or MCP client) needs
 Accessibility permission (System Settings > Privacy & Security > Accessibility);
 without it, or without either backend, the call returns `{error}` explaining what
-is missing instead of clicking. Results include `clickBackend` (`win32`, `quartz`,
-or `cliclick`).
+is missing instead of clicking. On Linux, a missing `xdotool`, a failed `xdotool`
+run or a Wayland session also returns `{error}` without clicking. Results include
+`clickBackend` (`win32`, `quartz`, `cliclick`, or `xdotool`).
 
 `focus=True` tries to foreground the browser first and reports `focused`:
 
@@ -1921,6 +1922,7 @@ or `cliclick`).
 - macOS activates the first running process named `zen`, `firefox`, or
   `librewolf` through System Events (`osascript`, which may ask for Automation
   permission). Set `KITSUNE_BROWSER_PROCESS` (comma list) to change the defaults.
+- Linux does not focus the browser; `focused` is `false`.
 
 The bridge endpoint also accepts `title` and `process` to override these per call.
 
@@ -2140,7 +2142,7 @@ Add `"wait": true, "timeout": 10000` to wait for the target first (see
 ### POST /api/trusted-click
 `{ "selector": "button.submit", "focus": true }` or
 `{ "coords": { "x": 640, "y": 400 }, "coordinateSpace": "screen" }` — optional
-`tabId`, `title`, `process`. OS-level click on Windows and macOS; see
+`tabId`, `title`, `process`. OS-level click on Windows, macOS and Linux (X11); see
 [`browser_trusted_click`](#browser_trusted_clickselector-x0-y0-coordinate_spaceviewport-focusfalse-tab_idnone-firstfalse).
 A click that does not finish within 35 s returns a `timeout` [action error](#action-errors)
 with `retryable: false`.
