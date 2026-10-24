@@ -25,7 +25,7 @@ the agent gets fewer, sharper tools. See [Philosophy](https://github.com/junyeon
 
 ![Claude Code uses Kitsune to open three PyPI pages and a pizza order form in background Zen tabs, compare the packages and fill in the form without submitting it, while the user's video keeps playing in front](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/demo.gif)
 
-<sub>A real screen recording of Claude Code and Zen Browser, sped up while the agent thinks and zoomed in afterwards. The video in the user's tab is <a href="https://peach.blender.org/">Big Buck Bunny</a> © 2008 Blender Foundation, <a href="https://creativecommons.org/licenses/by/3.0/">CC BY 3.0</a>.</sub>
+<sub>A real screen recording of Claude Code and Zen Browser, sped up while the agent thinks and zoomed in afterwards (<a href="https://github.com/user-attachments/assets/76a39f2e-674e-4d6e-aaaf-a78f80a6aa69">full 38-second video</a>). The video in the user's tab is <a href="https://peach.blender.org/">Big Buck Bunny</a> © 2008 Blender Foundation, <a href="https://creativecommons.org/licenses/by/3.0/">CC BY 3.0</a>.</sub>
 
 ## Why Kitsune?
 
