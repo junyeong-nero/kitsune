@@ -1,0 +1,52 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.junyeong-nero/kitsune",
+  "title": "Kitsune",
+  "description": "Let your coding agent use the Firefox, Zen, or LibreWolf browser you already have open.",
+  "repository": {
+    "url": "https://github.com/junyeong-nero/kitsune",
+    "source": "github"
+  },
+  "websiteUrl": "https://github.com/junyeong-nero/kitsune",
+  "version": "0.4.0",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "kitsune-browser-mcp",
+      "version": "0.4.0",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "KITSUNE_MODE",
+          "description": "Task surface and per-request policy: read, draft, or act",
+          "format": "string",
+          "choices": ["read", "draft", "act"],
+          "default": "act",
+          "isRequired": false
+        },
+        {
+          "name": "KITSUNE_CAPS",
+          "description": "Comma-separated capability groups to enable; all enables every group except storage and history",
+          "format": "string",
+          "default": "core",
+          "isRequired": false
+        },
+        {
+          "name": "KITSUNE_PUBLISH",
+          "description": "Groups listed when a session starts; other enabled tools stay reachable through the gateway tools",
+          "format": "string",
+          "isRequired": false
+        },
+        {
+          "name": "KITSUNE_ASK_BEFORE_ACT",
+          "description": "Set to 1 to hold submits, payment pages, JavaScript, and cookie access until the call is confirmed",
+          "format": "string",
+          "isRequired": false
+        }
+      ]
+    }
+  ]
+}

@@ -39,8 +39,9 @@ API token is stored in the repository or in GitHub secrets.
 
 ## Releasing a version
 
-1. Bump `version` in `pyproject.toml` **and** `extension/manifest.json` (a test
-   checks they match), run `uv lock`, and merge the change to `main`. AMO accepts
+1. Bump `version` in `pyproject.toml`, `extension/manifest.json`, and both
+   `version` fields of `server.json` (tests check they match), run `uv lock`, and
+   merge the change to `main`. AMO accepts
    each extension version only once, so a failed signing also needs a new version.
 2. Optional dry run: build and check locally.
    ```bash
@@ -68,7 +69,11 @@ API token is stored in the repository or in GitHub secrets.
    publish to PyPI and create a GitHub release, marked as latest, with the dist
    files, `kitsune-<version>.xpi` (signed), `updates.json` (see
    [Extension updates](#extension-updates)), and
-   `kitsune-extension-dev-<version>.zip` (developer build).
+   `kitsune-extension-dev-<version>.zip` (developer build). After the PyPI
+   publish, it also publishes `server.json` to the
+   [MCP Registry](https://registry.modelcontextprotocol.io) as
+   `io.github.junyeong-nero/kitsune`, authenticated with GitHub OIDC. The registry
+   checks for the `mcp-name:` comment in the README published to PyPI, so keep it.
 
    Automated signing usually takes minutes; the job waits up to 30 minutes. If
    AMO selects the version for manual review and the job times out, nothing is

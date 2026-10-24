@@ -1,7 +1,8 @@
 # Publishes kitsune-browser-mcp with PyPI Trusted Publishing (no API tokens).
 # - Push a tag `vX.Y.Z` matching pyproject.toml's version: test, build, sign the
 #   extension on AMO (unlisted), publish to PyPI, and create a GitHub release with
-#   the dist files, the signed XPI, its updates.json, and the developer-build zip.
+#   the dist files, the signed XPI, its updates.json, and the developer-build zip,
+#   and publish server.json to the MCP Registry.
 # - Run manually (workflow_dispatch) to publish the current ref to TestPyPI.
 # See docs/releasing.md.
 name: Release
@@ -120,6 +121,24 @@ jobs:
           path: dist/
       - uses: astral-sh/setup-uv@v6
       - run: uv publish --trusted-publishing always
+
+  # The registry checks the published PyPI README for `mcp-name:`, so this runs
+  # after the PyPI publish. GitHub OIDC grants the io.github.junyeong-nero namespace.
+  mcp-registry:
+    if: github.ref_type == 'tag'
+    needs: pypi
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+      - name: Authenticate to MCP Registry
+        run: ./mcp-publisher login github-oidc
+      - name: Publish to MCP Registry
+        run: ./mcp-publisher publish
 
   github-release:
     if: github.ref_type == 'tag'
