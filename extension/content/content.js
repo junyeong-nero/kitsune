@@ -2550,12 +2550,13 @@
     return (el, scan) => match(scan.text(el));
   }
 
-  // The text a selector matches: redacted text content, or a button input's value.
+  // The text a selector matches: redacted text content without script or style text, or a
+  // button input's value.
   function selectorText(el) {
     if (el.tagName === 'INPUT' && ['button', 'submit', 'reset'].includes(String(el.type).toLowerCase())) {
       return isSensitiveField(el) ? '' : String(el.value || '');
     }
-    return TEXTLESS_TAGS.has(el.tagName) ? '' : redactedText(el);
+    return redactedText(el, true);
   }
 
   // The role snapshots and role= selectors give el.
@@ -2922,7 +2923,7 @@
 
   function withRedactionCache(read) {
     if (redactionCache) return read();
-    redactionCache = { masked: new WeakMap(), region: new WeakMap(), text: new WeakMap() };
+    redactionCache = { masked: new WeakMap(), region: new WeakMap(), text: new WeakMap(), pageText: new WeakMap() };
     try { return read(); } finally { redactionCache = null; }
   }
 
@@ -2989,15 +2990,16 @@
 
   // el.textContent without sensitive text. A masked element's children that set
   // `-webkit-text-security: none` keep their text; sensitive fields lose all of it.
-  function redactedText(el) {
-    return withRedactionCache(() => cachedFor('text', el, () => {
-      if (isSensitiveTextField(el)) return '';
+  // pageTextOnly also leaves out TEXTLESS_TAGS elements (scripts, styles), as selectors do.
+  function redactedText(el, pageTextOnly = false) {
+    return withRedactionCache(() => cachedFor(pageTextOnly ? 'pageText' : 'text', el, () => {
+      if (isSensitiveTextField(el) || (pageTextOnly && TEXTLESS_TAGS.has(el.tagName))) return '';
       const sensitive = holdsSensitiveText(el);
       if (!el.firstElementChild) return sensitive ? '' : el.textContent || '';
       let text = '';
       for (const node of el.childNodes) {
         if (node.nodeType === 3) text += sensitive ? '' : node.textContent;
-        else if (node.nodeType === 1) text += redactedText(node);
+        else if (node.nodeType === 1) text += redactedText(node, pageTextOnly);
       }
       return text;
     }));

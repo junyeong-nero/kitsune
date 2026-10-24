@@ -220,6 +220,25 @@ function shadowPage(...fields) {
   return { html: h('html', {}, body), body, xpaths: [] };
 }
 
+// The real-browser screenshot fixture: "capture" is in two buttons in nested shadow roots and
+// in the inline script and style; the heading says "Capture formats".
+function captureShadowPage() {
+  const hosts = ['open', 'closed'].map(mode => {
+    const host = h('capture-host', {});
+    const inner = h('capture-inner', {});
+    new ShadowRoot(host, [inner]);
+    new ShadowRoot(inner, [h('button', { id: `${mode}-capture` }, `${mode} shadow capture`)]);
+    return host;
+  });
+  const buttons = hosts.map(host => host.shadowRoot.children[0].shadowRoot.children[0]);
+  const body = h('body', {},
+    h('style', {}, 'capture-host button { width: 160px; }'),
+    h('h1', { id: 'heading' }, 'Capture formats'), h('div', { id: 'components' }, ...hosts),
+    h('label', { for: 'email' }, 'Email', h('script', {}, 'trackCapture()')), h('input', { id: 'email' }),
+    h('script', {}, "document.createElement('capture-host').attachShadow({ mode })"));
+  return { html: h('html', {}, body), body, buttons, xpaths: [] };
+}
+
 // The same form inside a same-origin frame.
 function framePage(...fields) {
   const xpaths = [];
@@ -582,6 +601,30 @@ async function testRegexValuesAndQuotesInChains() {
   assert.equal(caseSensitive.code, 'not_found', JSON.stringify(caseSensitive));
 }
 
+async function testScriptTextNeverMatchesAndShadowTextDoes() {
+  // #240: script and style text is not page text, for regexes as for lax text, so the body
+  // holding the script is never the smallest match. Shadow buttons match either way.
+  const dom = captureShadowPage();
+  const send = load(dom);
+  for (const selector of ['text=/capture-host/', 'text=capture-host', 'internal:text=/attachShadow/',
+    'text=/width: 160px/', 'text=/trackCapture/', 'internal:label=/trackCapture/']) {
+    const result = await send({ action: 'hover', selector });
+    assert.equal(result.code, 'not_found', `${selector}: ${JSON.stringify(result)}`);
+  }
+  for (const [selector, matches] of [['text=/capture/', 2], ['internal:text=/shadow capture$/', 2],
+    ['text=capture', 3]]) {
+    const result = await send({ action: 'hover', selector });
+    assert.equal(result.code, 'ambiguous_target', `${selector}: ${JSON.stringify(result)}`);
+    assert.equal(result.state.matches, matches, selector);
+  }
+  assert.equal((await send({ action: 'hover', selector: 'text=/capture/ >> nth=1' })).ok, true);
+  assert.equal((await send({ action: 'hover', selector: 'text=/^Capture formats$/' })).ok, true);
+  assert.equal((await send({ action: 'hover', selector: 'internal:label=/^Email$/' })).ok, true);
+  const hovered = el => el.events.includes('mouseover');
+  assert.deepEqual(dom.buttons.map(hovered), [false, true]);
+  assert.deepEqual([dom.html, ...dom.html.descendants()].filter(hovered).map(el => el.id), ['heading', 'email']);
+}
+
 async function testXPathGuardCoversShadowRootsAndFrames() {
   // #240: a scope inside a shadow root evaluates XPath in that root, so a sensitive value
   // attribute or masked text there refuses XPath, scoped or not, before it runs.
@@ -677,5 +720,6 @@ async function testPlainCssIsUnchanged() {
   await testSelectorListsAndScopedMisses();
   await testRegexValuesAndQuotesInChains();
   await testXPathGuardCoversShadowRootsAndFrames();
+  await testScriptTextNeverMatchesAndShadowTextDoes();
   console.log('Playwright selector checks passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

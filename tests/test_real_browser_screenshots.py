@@ -101,7 +101,15 @@ class RealBrowserScreenshotTests(harness.RealBrowserTestCase):
                     clean = self.call("/api/js", {"tabId": tab, "selector": f"#{mode}-capture", "code":
                         "!Array.from(__kitsuneElement.attributes).some(a => a.name.startsWith('data-kitsune-capture-'))"})
                     self.assertEqual(clean.get("result"), "true", clean)
-        for selector in ("xpath=//button", "e197 + *", "text=/capture/", "div["):
+        # Regex text matches the shadow buttons, never the body holding the script's text.
+        shot = self.call("/api/element-screenshot", {"tabId": tab, "selector": "text=/capture/", "imagePreview": False})
+        self.assert_image(shot, "png")
+        self.assertEqual((shot["bounds"]["width"], shot["bounds"]["height"]), (160, 64))
+        # XPath does not pierce shadow roots, as in Playwright, so it finds no button here.
+        missing = self.call("/api/element-screenshot", {"tabId": tab, "selector": "xpath=//button"})
+        self.assert_error(missing, "not_found", True)
+        self.assertIn("browser_snapshot", missing["hint"])
+        for selector in ("e197 + *", "div["):
             with self.subTest(selector=selector):
                 result = self.call("/api/element-screenshot", {"tabId": tab, "selector": selector})
                 self.assert_error(result, "unsupported_selector", False)
