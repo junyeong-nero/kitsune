@@ -1,8 +1,8 @@
 {
   "manifest_version": 2,
   "name": "Kitsune",
-  "version": "0.4.0",
-  "description": "Brings Claude Code, Codex, and other agents into this browser through the Kitsune MCP server, so you keep working alongside them",
+  "version": "0.4.1",
+  "description": "Lets AI agents use this browser through the Kitsune MCP server.",
   "icons": {
     "48": "icons/icon-48.png",
     "96": "icons/icon-96.png"

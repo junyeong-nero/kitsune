@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "kitsune-browser-mcp"
-version = "0.4.0"
-description = "MCP server that brings Claude Code, Codex, and other agents into the Firefox, Zen, or LibreWolf browser you already use, so you keep working alongside them."
+version = "0.4.1"
+description = "MCP server that lets AI agents use your Firefox, Zen, or LibreWolf browser."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
