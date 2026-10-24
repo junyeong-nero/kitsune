@@ -467,6 +467,25 @@ def _not_responding(pid: int) -> dict:
     return error
 
 
+def _bridge_disconnected(method: str, exc: httpx.TransportError) -> dict:
+    """The bridge closed the connection before its reply (#235).
+
+    Bridge handlers read the whole request body before they act, so a request whose body could not
+    be sent did not run; once it was sent, a POST may have run.
+    """
+    sent = not isinstance(exc, httpx.WriteError)
+    if not sent:
+        hint = "The bridge closed the connection before it read the request, so the command did not run; repeat it."
+    elif method == "GET":
+        hint = "The request was a read; repeat it."
+    else:
+        hint = ("The command may have run before the connection closed; check the page with browser_snapshot "
+                "before repeating it.")
+    return {"error": str(exc) or "Kitsune bridge closed the connection before replying",
+            "code": "bridge_disconnected", "retryable": not sent or method == "GET",
+            "hint": f"{hint} If this repeats, see {LOG_FILE}", "state": {"requestSent": sent}}
+
+
 def _token_mismatch() -> dict:
     source = "KITSUNE_TOKEN" if os.environ.get("KITSUNE_TOKEN") else TOKEN_FILE
     return {"error": f"The Kitsune bridge on port {HTTP_PORT} rejected this MCP server's token",
@@ -520,6 +539,8 @@ def _request(method: str, endpoint: str, **kwargs) -> dict:
                     "retryable": method == "GET",
                     "hint": "The command's effect is unknown; check the page with browser_snapshot "
                             "before repeating it."}
+        except (httpx.ReadError, httpx.WriteError, httpx.RemoteProtocolError) as e:
+            return _bridge_disconnected(method, e)
         except Exception as e:
             return {"error": str(e)}
     return _bridge_unavailable(f"Kitsune bridge is not reachable. See {LOG_FILE}")

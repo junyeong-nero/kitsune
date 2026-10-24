@@ -45,6 +45,7 @@ client_root: ContextVar[Path | None] = ContextVar("client_root", default=None)
 ROOTS_TIMEOUT_SECONDS = 5
 
 _REF = re.compile(r"e\d+")
+_FIELD_TYPES = {"textbox", "slider", "checkbox", "radio", "combobox"}
 # Resource timing initiators of static resources (browser_network_requests static=false).
 _STATIC = {"img", "image", "css", "link", "script", "font", "video", "audio", "track", "embed",
            "object", "icon", "input"}
@@ -305,22 +306,24 @@ def browser_find(text: str | None = None, regex: str | None = None, filename: st
 
 @_core
 def browser_fill_form(fields: list[dict], confirm_token: str | None = None) -> dict:
+    # Fields that cannot be filled fail before any is, so the form is not left half filled.
+    for field in fields:
+        if not isinstance(field.get("target"), str):
+            return {"error": "Each field needs a target", "field": field.get("name"), "filled": []}
+        if field.get("type") not in _FIELD_TYPES:
+            return {"error": f"Unknown field type: {field.get('type')}", "field": field.get("name"), "filled": []}
     filled, last = [], {}
     for field in fields:
-        target, kind, value = field.get("target"), field.get("type"), field.get("value")
+        target, kind, value = field["target"], field["type"], field.get("value")
         element = field.get("element") or field.get("name")
-        if not isinstance(target, str):
-            last = {"error": "Each field needs a target"}
-        elif kind in ("textbox", "slider"):
+        if kind in ("textbox", "slider"):
             last = k.browser_type(text=str(value), mode="fill", tab_id=_current_tab, element=element,
                                   confirm_token=confirm_token, **_target(target))
         elif kind in ("checkbox", "radio"):
             last = k.browser_check(checked=str(value).lower() == "true", tab_id=_current_tab, element=element,
                                    confirm_token=confirm_token, **_target(target))
-        elif kind == "combobox":
-            last = _select(target, [str(value)], element, confirm_token)
         else:
-            last = {"error": f"Unknown field type: {kind}"}
+            last = _select(target, [str(value)], element, confirm_token)
         if k._failed(last):
             return {**last, "field": field.get("name"), "filled": filled}
         filled.append(field.get("name"))
