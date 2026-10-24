@@ -23,9 +23,9 @@ separate browser or a built-in assistant.
 The design follows two principles: the user's browser belongs to the user, and
 the agent gets fewer, sharper tools. See [Philosophy](https://github.com/junyeong-nero/kitsune/blob/main/docs/philosophy.md).
 
-![Claude Code uses Kitsune to compare three PyPI pages in background tabs and draft a form without submitting it, while the user's video stays in front](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/demo.gif)
+![Claude Code uses Kitsune to open three PyPI pages and a pizza order form in background Zen tabs, compare the packages and fill in the form without submitting it, while the user's video keeps playing in front](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/demo.gif)
 
-<sub>A real run in Zen Browser. Page images are Kitsune's own screenshots of background tabs; the user's tab titles are hidden.</sub>
+<sub>A real screen recording of Claude Code and Zen Browser, sped up while the agent thinks and zoomed in afterwards. The video in the user's tab is <a href="https://peach.blender.org/">Big Buck Bunny</a> © 2008 Blender Foundation, <a href="https://creativecommons.org/licenses/by/3.0/">CC BY 3.0</a>.</sub>
 
 ## Why Kitsune?
 
