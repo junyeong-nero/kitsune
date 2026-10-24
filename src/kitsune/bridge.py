@@ -618,11 +618,34 @@ def _mac_click_screen(x, y):
     }
 
 
+def _linux_click_screen(x, y):
+    # xdotool cannot move the pointer in a native Wayland session; refuse rather than misclick.
+    if os.environ.get("XDG_SESSION_TYPE") == "wayland" or not os.environ.get("DISPLAY"):
+        return {"error": "trustedClick on Linux needs an X11 session (DISPLAY set); Wayland is not supported"}
+
+    xdotool = shutil.which("xdotool")
+    if not xdotool:
+        return {"error": "trustedClick on Linux needs xdotool on PATH (for example sudo apt install xdotool)"}
+    try:
+        result = subprocess.run(
+            [xdotool, "mousemove", "--sync", str(int(round(x))), str(int(round(y))), "click", "1"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        return {"error": f"xdotool failed: {e}"}
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip() or f"exit code {result.returncode}"
+        return {"error": f"xdotool failed: {detail}"}
+    return {"ok": True, "backend": "xdotool"}
+
+
 def _native_click_screen(x, y):
     if sys.platform == "darwin":
         return _mac_click_screen(x, y)
+    if sys.platform.startswith("linux"):
+        return _linux_click_screen(x, y)
     if not sys.platform.startswith("win"):
-        return {"error": "trustedClick is only implemented on Windows and macOS"}
+        return {"error": "trustedClick is only implemented on Windows, macOS and Linux (X11)"}
 
     user32 = ctypes.windll.user32
     user32.SetCursorPos(int(round(x)), int(round(y)))

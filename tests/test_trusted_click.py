@@ -97,10 +97,60 @@ class NativeClickTests(unittest.TestCase):
         with patch.object(bridge.ctypes.cdll, "LoadLibrary", side_effect=OSError("missing")):
             self.assertIsNone(bridge._mac_accessibility_trusted())
 
-    def test_other_platforms_are_unsupported(self):
-        with patch.object(bridge.sys, "platform", "linux"):
+    def linux(self):
+        return patch.object(bridge.sys, "platform", "linux"), \
+            patch.dict(os.environ, {"XDG_SESSION_TYPE": "x11", "DISPLAY": ":0"})
+
+    def test_linux_clicks_with_xdotool(self):
+        platform, env = self.linux()
+        with platform, env, patch.object(bridge.shutil, "which", return_value="/usr/bin/xdotool"), \
+             patch.object(bridge.subprocess, "run",
+                          return_value=subprocess.CompletedProcess([], 0, "", "")) as run:
+            result = bridge._native_click_screen(10.4, 19.6)
+        self.assertEqual(result, {"ok": True, "backend": "xdotool"})
+        self.assertEqual(run.call_args.args[0],
+                         ["/usr/bin/xdotool", "mousemove", "--sync", "10", "20", "click", "1"])
+
+    def test_linux_without_xdotool_explains_install(self):
+        platform, env = self.linux()
+        with platform, env, patch.object(bridge.shutil, "which", return_value=None), \
+             patch.object(bridge.subprocess, "run") as run:
             result = bridge._native_click_screen(1, 2)
-        self.assertEqual(result, {"error": "trustedClick is only implemented on Windows and macOS"})
+        self.assertIn("sudo apt install xdotool", result["error"])
+        run.assert_not_called()
+
+    def test_linux_reports_xdotool_failure(self):
+        platform, env = self.linux()
+        with platform, env, patch.object(bridge.shutil, "which", return_value="/usr/bin/xdotool"):
+            with patch.object(bridge.subprocess, "run",
+                              return_value=subprocess.CompletedProcess([], 1, "", "Can't open display\n")):
+                self.assertEqual(bridge._native_click_screen(1, 2),
+                                 {"error": "xdotool failed: Can't open display"})
+            with patch.object(bridge.subprocess, "run",
+                              return_value=subprocess.CompletedProcess([], 2, "", "")):
+                self.assertEqual(bridge._native_click_screen(1, 2), {"error": "xdotool failed: exit code 2"})
+            with patch.object(bridge.subprocess, "run",
+                              side_effect=subprocess.TimeoutExpired("xdotool", 10)):
+                self.assertIn("xdotool failed:", bridge._native_click_screen(1, 2)["error"])
+
+    def test_linux_without_x11_does_not_click(self):
+        for session, display in (("wayland", ":0"), ("x11", None)):
+            with self.subTest(session=session, display=display), \
+                 patch.object(bridge.sys, "platform", "linux"), \
+                 patch.dict(os.environ, {"XDG_SESSION_TYPE": session}), \
+                 patch.object(bridge.shutil, "which", return_value="/usr/bin/xdotool"), \
+                 patch.object(bridge.subprocess, "run") as run:
+                os.environ.pop("DISPLAY", None)
+                if display:
+                    os.environ["DISPLAY"] = display
+                result = bridge._native_click_screen(1, 2)
+                self.assertIn("X11", result["error"])
+                run.assert_not_called()
+
+    def test_other_platforms_are_unsupported(self):
+        with patch.object(bridge.sys, "platform", "freebsd14"):
+            result = bridge._native_click_screen(1, 2)
+        self.assertEqual(result, {"error": "trustedClick is only implemented on Windows, macOS and Linux (X11)"})
 
 
 class BrowserFocusTests(unittest.TestCase):
@@ -185,6 +235,17 @@ class TrustedClickTests(unittest.TestCase):
         focus.assert_called_once_with("Docs", "firefox")
         click.assert_called_once_with(110, 220)
         self.assertEqual(result["clickBackend"], "cliclick")
+
+    def test_linux_screen_click_reports_xdotool_backend(self):
+        with patch.object(bridge.sys, "platform", "linux"), \
+             patch.dict(os.environ, {"XDG_SESSION_TYPE": "x11", "DISPLAY": ":0"}), \
+             patch.object(bridge.shutil, "which", return_value="/usr/bin/xdotool"), \
+             patch.object(bridge.subprocess, "run",
+                          return_value=subprocess.CompletedProcess([], 0, "", "")) as run:
+            result = asyncio.run(bridge.trusted_click(
+                {"coords": {"x": 5, "y": 6}, "coordinateSpace": "screen", "focus": True}))
+        run.assert_called_once()
+        self.assertEqual((result["focused"], result["clickBackend"]), (False, "xdotool"))
 
     def test_click_errors_are_returned(self):
         error = {"error": "trustedClick needs macOS Accessibility permission: ..."}

@@ -916,8 +916,9 @@ def browser_trusted_click(
     confirm_token and first work as in browser_check.
 
     This is slower and moves the user's cursor, so prefer browser_click unless a page
-    specifically ignores synthetic clicks. Works on Windows and macOS; macOS needs
-    pyobjc Quartz or cliclick plus Accessibility permission for the bridge.
+    specifically ignores synthetic clicks. Works on Windows, macOS and Linux (X11);
+    macOS needs pyobjc Quartz or cliclick plus Accessibility permission for the bridge,
+    and Linux needs xdotool (Wayland is not supported).
     """
     if selector:
         body = {"selector": selector, "focus": focus}
