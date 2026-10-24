@@ -107,6 +107,11 @@ async function main() {
   // echoes keep the public spelling.
   assert.equal((await h.send('focusElement', { selector: `${fresh} >> xpath=..` })).ok, true);
   assert.equal(h.sent.at(-1).selector, `${internalOld} >> xpath=..`);
+  // Surrounding whitespace does not hide the ref from expansion, alone or in a chain.
+  assert.equal((await h.send('focusElement', { selector: ` ${fresh} >> xpath=..` })).ok, true);
+  assert.equal(h.sent.at(-1).selector, `${internalOld} >> xpath=..`);
+  assert.equal((await h.send('focusElement', { selector: ` ${fresh} ` })).ok, true);
+  assert.equal(h.sent.at(-1).selector, internalOld);
   const refused = await h.send('focusElement', { selector: `${fresh} >> id=x` });
   assert.equal(refused.code, 'unsupported_selector');
   assert.equal(refused.state.selector, `${fresh} >> id=x`);

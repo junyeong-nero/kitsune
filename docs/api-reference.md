@@ -168,7 +168,7 @@ trees), and this subset of Playwright's selectors; it is not Playwright's engine
 |---|---|
 | `e12` | The snapshot element |
 | `text=Save`, `"Save"` | Lax `text=Save`: the smallest element whose whitespace-collapsed text contains it, ignoring case. Quoted `text="Save"` (also `"Save"s`, `'Save'`) is the whole text, case-sensitive; `"Save"i` is lax again |
-| `text=/Sav(e\|ed)/i` | The smallest element whose whitespace-collapsed text the regular expression matches |
+| `text=/Sav(e\|ed)/i` | The smallest element whose whitespace-collapsed text the regular expression matches. Only flags may follow the last `/`; otherwise the value is lax text (`text=/api/users`) |
 | `internal:text="Save"i`, `internal:text=/…/` | `getByText`: as `text=`, but the value is quoted or a regex |
 | `role=button[name="Save"]` | Elements with that role (explicit or implicit) whose accessible name is the whole name, ignoring case; `[name="Save"s]` is case-sensitive, `[name*=…]`/`[name^=…]`/`[name$=…]` match part of it, `[name=/…/flags]` tests it with a regex. Also `[level=N]` and `[include-hidden]`; hidden and `aria-hidden` elements are skipped otherwise |
 | `internal:role=button[name="Save"i]` | `getByRole`: as `role=`, but `"…"i` is a substring |
@@ -178,7 +178,7 @@ trees), and this subset of Playwright's selectors; it is not Playwright's engine
 | `a >> b` | Chains: `b` searched inside each match of `a`. A chain may start with a ref (`e12 >> xpath=..`, `e12 >> text=Save`) |
 | `nth=N` | The Nth match so far (0-based; `-1` is the last); not first in a chain |
 | `xpath=..`, `..` | The parent element |
-| `xpath=//h2[text()='Stock']/..`, `//…`, `..…` | General XPath (`document.evaluate`), elements only; after `>>`, a leading `/` is relative to the earlier match. It does not enter shadow roots. Because XPath reads text and the `value` attribute unredacted, it is refused (`unsupported_selector`) in a document holding a sensitive field with a `value` attribute or masked text |
+| `xpath=//h2[text()='Stock']/..`, `//…`, `..…` | General XPath (`document.evaluate`), elements only; after `>>`, a leading `/` is relative to the earlier match, which may be inside a shadow root or same-origin frame. It does not cross into shadow roots or frames. Because XPath reads text and the `value` attribute unredacted, it is refused (`unsupported_selector`) when a document it would run in, including that document's shadow roots, holds a sensitive field with a `value` attribute or masked text |
 
 Images, `<area>` and `<svg>` graphics are named as snapshots name images: by
 `aria-labelledby`, `aria-label`, `alt` (an `<svg>`'s `<title>`), then `title` unless
@@ -189,6 +189,10 @@ or `data-testid=`, `:near()` and other layout pseudo-classes, Playwright pseudo-
 inside `:has()`, a ref after the start of a chain, invalid CSS, XPath or regex) fails
 with `unsupported_selector` (not retryable) before anything is dispatched. A valid
 selector that matches nothing is `not_found`, for scoped snapshots too.
+
+Regular expressions and XPath run on the page's main thread, as in Playwright, and are
+not capped: a pathological pattern (such as `text=/(a+)+$/` on long text) can block the
+page until the bridge command times out.
 
 #### Strict selectors
 

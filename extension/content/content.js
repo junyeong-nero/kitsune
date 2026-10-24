@@ -786,8 +786,9 @@
         (semanticRoles.has(explicitRole) && explicitRole !== 'heading');
       const isField = ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName);
       if (interactive && !nativeTags.has(el.tagName)) {
-        const name = clean(el.getAttribute('aria-label') || el.getAttribute('title') ||
-          el.getAttribute('alt') || directText(el));
+        // A clickable image keeps the name role= selectors match it by.
+        const name = clean(ALTERNATIVE_NAMED_TAGS.has(el.tagName.toUpperCase()) ? alternativeName(el)
+          : el.getAttribute('aria-label') || el.getAttribute('title') || el.getAttribute('alt') || directText(el));
         if (name) return name;
         const text = metadata.get(el).nodes <= 5 ? normalize(redactedText(el)) : '';
         return text.length <= 80 ? text : '';
@@ -2266,27 +2267,49 @@
   }
 
   // The index after the string, (…) or […] group that opens at text[i]. As in CSS, the end of
-  // the text closes whatever is still open.
+  // the text closes whatever is still open. A role= [name=/regex/] skips the regex.
   function groupEnd(text, i) {
     const open = text[i];
     const close = open === '(' ? ')' : open === '[' ? ']' : open;
     for (let j = i + 1; j < text.length; j++) {
       const c = text[j];
       if (c === '\\') j++;
+      else if (c === '/' && open === '[' && /^\s*name\s*[*^$]?=\s*$/i.test(text.slice(i + 1, j))) j = regexEnd(text, j) - 1;
       else if (c === close) return j + 1;
       else if (close !== '"' && close !== "'" && '"\'(['.includes(c)) j = groupEnd(text, j) - 1;
     }
     return text.length;
   }
 
-  // text split at each separator outside strings and groups.
+  // The index after the /regex/ that opens at text[i]; a [class] may hold a /.
+  function regexEnd(text, i) {
+    for (let j = i + 1; j < text.length; j++) {
+      if (text[j] === '\\') j++;
+      else if (text[j] === '/') return j + 1;
+      else if (text[j] === '[') {
+        for (j++; j < text.length && text[j] !== ']'; j++) if (text[j] === '\\') j++;
+      }
+    }
+    return text.length;
+  }
+
+  // A regex value opens at a / that follows text=, internal:text= or internal:label= at the
+  // start of a >> part. Quotes and brackets inside a lax text= value that does not start with
+  // a quote are plain characters, as in Playwright.
+  const REGEX_VALUE_START = /^\s*(?:text|internal:text|internal:label)\s*=\s*$/i;
+  const LAX_TEXT_VALUE = /^\s*text\s*=\s*[^\s"']/i;
+
+  // text split at each separator outside strings and groups, and for >>, outside regex values.
   function splitTopLevel(text, separator) {
     const parts = [];
     let start = 0;
+    const chain = separator === '>>';
     for (let i = 0; i < text.length; i++) {
       if (text[i] === '\\') i++;
-      else if ('"\'(['.includes(text[i])) i = groupEnd(text, i) - 1;
-      else if (text.startsWith(separator, i)) {
+      else if (chain && text[i] === '/' && REGEX_VALUE_START.test(text.slice(start, i))) i = regexEnd(text, i) - 1;
+      else if ('"\'(['.includes(text[i]) && !(chain && LAX_TEXT_VALUE.test(text.slice(start, i)))) {
+        i = groupEnd(text, i) - 1;
+      } else if (text.startsWith(separator, i)) {
         parts.push(text.slice(start, i));
         i += separator.length - 1;
         start = i + 1;
@@ -2335,7 +2358,7 @@
     }
     const engine = SELECTOR_ENGINE.exec(part);
     if (!engine) {
-      if (part.startsWith('//') || part.startsWith('..')) return xpathPart(part);
+      if (part.startsWith('//') || part.startsWith('..')) return xpathPart(part, index, selector);
       return part[0] === '"' || part[0] === "'" ? { kind: 'text', match: textMatcherFor(part, 'text', selector) }
         : cssPart(part, selector);
     }
@@ -2351,12 +2374,25 @@
     }
     if (name === 'xpath') {
       if (!body) throw unsupportedSelector(selector, 'xpath= needs an expression');
-      return xpathPart(body);
+      return xpathPart(body, index, selector);
     }
     throw unsupportedSelector(selector, `the ${name}= selector engine`);
   }
 
-  const xpathPart = expression => expression === '..' ? { kind: 'parent' } : { kind: 'xpath', expression };
+  // As in Playwright, an absolute path after >> is made relative to the earlier match. The
+  // expression compiles here, so an invalid one is unsupported even when an earlier part
+  // matches nothing; compiling reads nothing from the page.
+  function xpathPart(expression, index, selector) {
+    if (expression === '..') return { kind: 'parent' };
+    const relative = index > 0 && expression.startsWith('/') ? '.' + expression : expression;
+    try { document.createExpression(relative); } catch {
+      throw unsupportedSelector(selector, `"${expression}" is not an XPath expression that selects elements`);
+    }
+    return { kind: 'xpath', expression: relative, source: expression };
+  }
+
+  // A /regex/ value: the source up to the last /, when only flags follow it.
+  const REGEX_VALUE = /^\/([\s\S]*)\/([dgimsuvy]*)$/;
 
   // text=foo is lax; a quoted text="foo" (or "foo"s) is strict and "foo"i is lax again.
   // /regex/flags tests the whitespace-collapsed text. internal:text= and internal:label=
@@ -2364,9 +2400,9 @@
   function textMatcherFor(body, engine, selector) {
     const quoted = /^(["'])((?:\\[\s\S]|(?!\1)[^\\])*)\1([is])?$/.exec(body);
     if (quoted) return textMatcher(unescapeSelector(quoted[2]), quoted[3] !== 'i');
-    if (body.startsWith('/') && body.lastIndexOf('/') > 0) {
-      const end = body.lastIndexOf('/');
-      const re = selectorRegex(body.slice(1, end), body.slice(end + 1), selector);
+    const regex = REGEX_VALUE.exec(body);
+    if (regex) {
+      const re = selectorRegex(regex[1], regex[2], selector);
       return text => { re.lastIndex = 0; return re.test(text); };
     }
     if (engine !== 'text') throw unsupportedSelector(selector, `${engine}= takes a quoted string or /regex/`);
@@ -2558,7 +2594,7 @@
     if (part.kind === 'label') {
       return query('*').filter(el => selectorLabels(el, scan).some(label => part.match(label)));
     }
-    if (part.kind === 'xpath') return xpathMatches(part.expression, scope, scan, selector);
+    if (part.kind === 'xpath') return xpathMatches(part, scope, scan, selector);
     if (!part.alternatives) return query(part.css);
     const last = part.alternatives.map(compounds => compounds.at(-1).css || '*');
     return query(last.join(', ')).filter(el => part.alternatives.some(compounds => {
@@ -2617,29 +2653,29 @@
   }
 
   // XPath sees what redaction hides from the other forms: a sensitive field's value
-  // attribute and masked text. It runs only in documents that hold neither.
+  // attribute and masked text. It runs only in documents that hold neither, in any of their
+  // trees: a scope inside a shadow root evaluates in that root.
   function holdsRedactedContent(doc) {
-    return withRedactionCache(() => Array.from(doc.querySelectorAll('*')).some(el =>
+    return withRedactionCache(() => queryTreeSelectorAll('*', doc).some(el =>
       (el.hasAttribute('value') && isSensitiveField(el)) ||
       (holdsSensitiveText(el) && String(el.textContent || '').trim() !== '')));
   }
 
-  // Elements an XPath expression selects in each searched document, or within scope. As in
-  // Playwright, an absolute path after >> is made relative to the earlier match. XPath does
-  // not enter shadow roots.
-  function xpathMatches(expression, scope, scan, selector) {
+  // Elements an XPath expression selects in each searched document, or within scope. XPath
+  // does not cross into shadow roots or frames.
+  function xpathMatches({ expression, source }, scope, scan, selector) {
+    const docs = scope ? [docOf(scope)] : searchedDocuments();
+    if (docs.some(scan.redacted)) {
+      throw unsupportedSelector(selector, 'XPath on a page holding redacted text or sensitive values; ' +
+        'use CSS, text= or role= instead');
+    }
     const found = [];
-    for (const doc of scope ? [docOf(scope)] : searchedDocuments()) {
-      if (scan.redacted(doc)) {
-        throw unsupportedSelector(selector, 'XPath on a page holding redacted text or sensitive values; ' +
-          'use CSS, text= or role= instead');
-      }
+    for (const doc of docs) {
       let result;
       try {
-        result = doc.evaluate(scope && expression.startsWith('/') ? '.' + expression : expression,
-          scope || doc, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+        result = doc.evaluate(expression, scope || doc, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
       } catch {
-        throw unsupportedSelector(selector, `"${expression}" is not an XPath expression that selects elements`);
+        throw unsupportedSelector(selector, `"${source}" is not an XPath expression that selects elements`);
       }
       for (let i = 0; i < result.snapshotLength; i++) {
         const node = result.snapshotItem(i);

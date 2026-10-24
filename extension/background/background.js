@@ -1384,8 +1384,9 @@ function pruneShortRefs(tabId) {
 // The params that may carry a ref, and a public ref's spelling.
 const REF_PARAMS = ['ref', 'selector', 'from', 'to', 'toRef'];
 // A short ref given alone or starting a >> chain (e12 >> xpath=..): the ref and the rest.
+// Surrounding whitespace is dropped, as the content script trims selectors.
 function leadingShortRef(value) {
-  const match = typeof value === 'string' && /^(e\d+)(\s*>>[\s\S]*)?$/.exec(value);
+  const match = typeof value === 'string' && /^\s*(e\d+)(\s*>>[\s\S]*?)?\s*$/.exec(value);
   return match ? { ref: match[1], rest: match[2] || '' } : null;
 }
 const REF_RESULT_ACTIONS = new Set([

@@ -67,6 +67,14 @@ GALLERY = """<!doctype html><meta charset="utf-8"><title>gallery</title>
 <span id="t71">#71 완료</span> <span id="t8">#8 진행</span>
 <button id="save68" aria-label="회의록 #68 저장">저장</button><button id="save66">회의록 #66 저장</button>"""
 
+# #240: a sign-in form in a shadow root; ?value gives its password field a value attribute.
+SHADOW = """<!doctype html><meta charset="utf-8"><title>shadow</title>
+<h2>Sign in</h2><div id="host"></div>
+<script>
+  document.getElementById('host').attachShadow({ mode: 'open' }).innerHTML =
+    '<form class="in-shadow"><input type="password" id="pw"' + (location.search ? ' value="hunter2"' : '') + '></form>';
+</script>"""
+
 STATE = """JSON.stringify({clicked: JSON.parse(document.documentElement.dataset.clicked || '[]'),
     hovered: JSON.parse(document.documentElement.dataset.hovered || '[]'),
     items: document.getElementById('feed').children.length, feedTop: document.getElementById('feed').scrollTop})"""
@@ -75,7 +83,8 @@ RESET = "document.documentElement.dataset.clicked = '[]'"
 
 class _Page(BaseHTTPRequestHandler):
     def do_GET(self):
-        body = (GALLERY if self.path == "/gallery" else PAGE).encode()
+        path = self.path.split("?")[0]
+        body = (GALLERY if path == "/gallery" else SHADOW if path == "/shadow" else PAGE).encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
@@ -168,6 +177,16 @@ class RealBrowserPlaywrightSelectorTests(harness.RealBrowserTestCase):
         self.assertEqual(parent["tag"], "button")
         missing = 'button[aria-label="회의록 #69 저장"], button:has-text("회의록 #69 저장")'
         self.assert_error(self.call("/api/snapshot", {"tabId": tab, "selector": missing}), "not_found", True)
+
+    def test_xpath_in_a_shadow_root_is_refused_when_the_root_holds_a_password_value(self):
+        probe = "css=form.in-shadow >> xpath=.//input"
+        tab = self.open_tab(self.page.origin + "/shadow")
+        self.assertEqual(self.assert_ok(self.call("/api/hover", {"tabId": tab, "selector": probe}))["tag"], "input")
+        tab = self.open_tab(self.page.origin + "/shadow?value")
+        for selector in (probe, "css=form.in-shadow >> xpath=.//input[starts-with(@value,'h')]", "xpath=//h2"):
+            with self.subTest(selector):
+                self.assert_error(self.call("/api/hover", {"tabId": tab, "selector": selector}),
+                                  "unsupported_selector", False)
 
     def test_hover_scrolls_nested_containers_so_more_items_load(self):
         tab = self.open_tab(self.page.origin + "/")

@@ -125,14 +125,32 @@ class Element extends EventTarget {
 
 const h = (tag, attrs, ...children) => new Element(tag, attrs, children);
 
-// The XPath the tests write: [.]//tag with a [text()='…'] or [@attr='…'] predicate, then /.. or
+// A shadow root attached to host; its children have no parent element.
+class ShadowRoot {
+  constructor(host, children) {
+    Object.assign(this, { nodeType: 11, host, childNodes: children });
+    for (const child of children) Object.assign(child, { parentElement: null, parentNode: this });
+    host.shadowRoot = this;
+  }
+  get children() { return this.childNodes.filter(node => node.nodeType === 1); }
+  descendants() { return this.children.flatMap(child => [child, ...child.descendants()]); }
+  querySelectorAll(selector) { return this.descendants().filter(el => el.matches(selector)); }
+  querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
+  getElementById(id) { return this.descendants().find(el => el.id === id) || null; }
+}
+
+// The XPath the tests write: [.]//tag with a [text()='…'] (or "…") or [@attr='…'] predicate, then /.. or
 // /text(). Anything else is a SyntaxError, as document.evaluate throws.
-const XPATH = /^(\.)?\/\/([\w*]+)(?:\[(?:text\(\)='([^']*)'|@([\w-]+)='([^']*)')\])?(\/\.\.|\/text\(\))?$/;
-function evaluateXPath(dom, expression, context) {
-  dom.xpaths.push(expression);
+const XPATH = /^(\.)?\/\/([\w*]+)(?:\[(?:text\(\)=(?:'([^']*)'|"([^"]*)")|@([\w-]+)='([^']*)')\])?(\/\.\.|\/text\(\))?$/;
+function compileXPath(expression) {
   const m = XPATH.exec(expression);
   if (!m) throw new DOMException(`'${expression}' is not a valid XPath expression`, 'SyntaxError');
-  const [, relative, tag, text, attr, value, step] = m;
+  return m;
+}
+function evaluateXPath(dom, expression, context) {
+  dom.xpaths.push(expression);
+  const [, relative, tag, single, double, attr, value, step] = compileXPath(expression);
+  const text = single ?? double;
   let nodes = (relative ? context.descendants() : [dom.html, ...dom.html.descendants()])
     .filter(el => (tag === '*' || el.tagName === tag.toUpperCase()) &&
       (text === undefined || el.childNodes.some(node => node.nodeType === 3 && node.textContent === text)) &&
@@ -186,8 +204,58 @@ function galleryPage() {
     h('input', { type: 'image', id: 'search', alt: '검색' }),
     h('map', {}, h('area', { id: 'seoul', href: 'https://example.com/seoul', alt: '서울' })),
     h('svg', { id: 'logo', role: 'img' }, h('title', {}, '로고'), h('desc', {}, '회사 로고 설명')),
-    h('img', { id: 'spacer', alt: '', title: '간격' }));
+    h('img', { id: 'spacer', alt: '', title: '간격' }),
+    h('img', { id: 'zoom', alt: 'Zoom in', title: 'Magnifier', tabindex: '0' }),
+    h('span', { id: 'dont' }, "Don't stop"), h('h2', { id: 'its' }, "It's here"),
+    h('span', { id: 'chevron' }, 'Next >> page'), h('code', { id: 'endpoint' }, 'GET /api/users'),
+    h('span', { id: 'email-label' }, 'Email Address'), h('input', { id: 'email', 'aria-labelledby': 'email-label' }));
   return { html: h('html', {}, body), body, xpaths: [] };
+}
+
+// A sign-in form inside a shadow root: XPath scoped to the form evaluates in that root.
+function shadowPage(...fields) {
+  const host = h('div', { id: 'host' });
+  new ShadowRoot(host, [h('form', { class: 'in-shadow' }, ...fields)]);
+  const body = h('body', {}, h('h2', { id: 'title' }, 'Sign in'), host);
+  return { html: h('html', {}, body), body, xpaths: [] };
+}
+
+// The same form inside a same-origin frame.
+function framePage(...fields) {
+  const xpaths = [];
+  const body = h('body', {}, h('h2', { id: 'title' }, 'Sign in'),
+    frame(xpaths, h('body', {}, h('form', { class: 'in-frame' }, ...fields))));
+  return { html: h('html', {}, body), body, xpaths };
+}
+
+const fakeWindow = () => ({ getComputedStyle: el => ({ display: 'block', visibility: 'visible',
+  webkitTextSecurity: 'data-mask' in el.attrs ? 'disc' : 'none', getPropertyValue: () => '' }) });
+
+// A document over dom.html; XPath evaluations are recorded in dom.xpaths.
+function fakeDocument(dom) {
+  return {
+    body: dom.body, documentElement: Object.assign(dom.html, { appendChild() {} }), activeElement: dom.body,
+    createElement: () => ({ remove() {} }),
+    getElementById: id => dom.html.querySelector('#' + id),
+    querySelector: selector => dom.html.matches(selector) ? dom.html : dom.html.querySelector(selector),
+    querySelectorAll: selector => [dom.html, ...dom.html.descendants()].filter(el => el.matches(selector)),
+    createExpression: expression => { compileXPath(expression); return {}; },
+    evaluate: (expression, context) => evaluateXPath(dom, expression, context),
+  };
+}
+
+// A same-origin frame showing body (and its elements' shadow roots); XPath evaluations in it
+// are recorded in xpaths.
+function frame(xpaths, body) {
+  const iframe = h('iframe', { id: 'frame' });
+  const html = h('html', {}, body);
+  const doc = fakeDocument({ html, body, xpaths });
+  doc.defaultView = { ...fakeWindow(), frameElement: iframe };
+  for (const el of [html, ...html.descendants(), ...html.descendants().flatMap(el => el.shadowRoot?.descendants() || [])]) {
+    el.ownerDocument = doc;
+  }
+  iframe.contentDocument = doc;
+  return iframe;
 }
 
 function load(dom) {
@@ -196,16 +264,8 @@ function load(dom) {
     console, crypto: webcrypto, Event, MouseEvent: Event, KeyboardEvent: Event, InputEvent: Event,
     CSS: { escape: x => x }, setTimeout, HTMLInputElement: class {}, HTMLTextAreaElement: class {},
     XPathResult: { ORDERED_NODE_SNAPSHOT_TYPE: 7 },
-    window: { getComputedStyle: el => ({ display: 'block', visibility: 'visible',
-      webkitTextSecurity: 'data-mask' in el.attrs ? 'disc' : 'none', getPropertyValue: () => '' }) },
-    document: {
-      body: dom.body, documentElement: Object.assign(dom.html, { appendChild() {} }), activeElement: dom.body,
-      createElement: () => ({ remove() {} }),
-      getElementById: id => dom.html.querySelector('#' + id),
-      querySelector: selector => dom.html.matches(selector) ? dom.html : dom.html.querySelector(selector),
-      querySelectorAll: selector => [dom.html, ...dom.html.descendants()].filter(el => el.matches(selector)),
-      evaluate: (expression, context) => evaluateXPath(dom, expression, context),
-    },
+    window: fakeWindow(),
+    document: fakeDocument(dom),
     browser: { runtime: {
       onMessage: { addListener: fn => { listener = fn; } },
       sendMessage: () => Promise.resolve(null),
@@ -307,6 +367,8 @@ async function testUnsupportedSyntaxIsNotRetryable() {
     // This page holds masked text, which XPath would read unredacted.
     'xpath=//button': /XPath on a page holding redacted text/,
     '//button[text()="2"]': /XPath on a page holding redacted text/,
+    // XPath compiles before an earlier part is searched.
+    '#missing >> xpath=((': /"\(\(" is not an XPath expression/,
     'text=/(/': /not a valid regular expression/,
     'role=button[name=/(/]': /not a valid regular expression/,
     'internal:label=마이크': /internal:label= takes a quoted string or \/regex\//,
@@ -347,6 +409,9 @@ async function testUnsupportedSyntaxIsNotRetryable() {
   const started = Date.now();
   const waited = await send({ action: 'click', selector: 'xpath=//button', wait: true, timeout: 5000 });
   assert.equal(waited.code, 'unsupported_selector');
+  assert.ok(Date.now() - started < 1000);
+  const invalidAfterMiss = await send({ action: 'click', selector: '#missing >> xpath=((', wait: true, timeout: 5000 });
+  assert.equal(invalidAfterMiss.code, 'unsupported_selector', JSON.stringify(invalidAfterMiss));
   assert.ok(Date.now() - started < 1000);
   // Read actions report it too.
   assert.equal((await send({ action: 'getBounds', selector: 'text=/(/' })).code, 'unsupported_selector');
@@ -400,6 +465,10 @@ async function testImagesMatchByAlternativeName() {
   const decorative = await send({ action: 'hover', selector: 'role=img[name="간격"]' });
   assert.equal(decorative.code, 'not_found', JSON.stringify(decorative));
   assert.doesNotMatch(snapshot, /간격/);
+  // A clickable image is named by its alt before its title, in the snapshot as in role=.
+  await hoverOnly('role=img[name="Zoom in"]', 'zoom');
+  assert.match(snapshot, /- button "Zoom in" \[ref=/);
+  assert.doesNotMatch(snapshot, /Magnifier/);
 }
 
 async function testRemainingPlaywrightForms() {
@@ -435,6 +504,12 @@ async function testRemainingPlaywrightForms() {
   await hoverOnly('internal:label="음량"i', 'volume');
   const partial = await send({ action: 'hover', selector: 'internal:label="마이크"' });
   assert.equal(partial.code, 'not_found', JSON.stringify(partial));
+  // aria-labelledby names a field; "…"i ignores ASCII case, "…" does not.
+  await hoverOnly('internal:label="email address"i', 'email');
+  await hoverOnly('internal:label="Email Address"', 'email');
+  await hoverOnly('internal:label=/^EMAIL/i', 'email');
+  const exactCase = await send({ action: 'hover', selector: 'internal:label="email address"' });
+  assert.equal(exactCase.code, 'not_found', JSON.stringify(exactCase));
   // Regex text matches the smallest element, as lax text does; flags apply.
   await hoverOnly('text=/#71 완료/', 't71');
   await hoverOnly('internal:text=/#8 진행/i', 't8');
@@ -471,6 +546,86 @@ async function testRefStartsChain() {
   const later = await send({ action: 'hover', selector: `#grid >> ${image}` });
   assert.equal(later.code, 'unsupported_selector');
   assert.match(later.error, /only start a >> chain/);
+
+  // A chain starting at a ref whose element was removed is stale, not a miss.
+  const cell7 = byId(dom, 'cell7');
+  cell7.parentElement.childNodes.splice(cell7.parentElement.childNodes.indexOf(cell7), 1);
+  cell7.isConnected = false;
+  const removed = await send({ action: 'hover', selector: `${button} >> role=img` });
+  assert.equal(removed.code, 'stale_ref', JSON.stringify(removed));
+  assert.equal(removed.state.reason, 'element_removed');
+  assert.equal(removed.state.ref, button);
+}
+
+async function testRegexValuesAndQuotesInChains() {
+  // A /…/ value is a regex only when flags (or nothing) follow its last /; otherwise text= is
+  // lax text, as in Playwright.
+  await hoverOnly('text=/api/users', 'endpoint');
+  await hoverOnly('text=/API\\/USERS$/i', 'endpoint');
+  const dom = galleryPage();
+  const send = load(dom);
+  const internal = await send({ action: 'hover', selector: 'internal:text=/api/users' });
+  assert.equal(internal.code, 'unsupported_selector', JSON.stringify(internal));
+  assert.equal((await send({ action: 'hover', selector: 'text=/api/x' })).code, 'not_found');
+
+  // An apostrophe inside a regex, or inside a lax text= value, does not open a string; a
+  // quoted >> stays part of its string. Regex flags ignore ASCII case.
+  await hoverOnly("text=/don't/i >> nth=0", 'dont');
+  await hoverOnly("text=don't STOP >> nth=0", 'dont');
+  await hoverOnly("role=heading[name=/it's/i][level=2]", 'its');
+  await hoverOnly("role=heading[name=/it's/i][level=2] >> nth=0", 'its');
+  await hoverOnly('text="Next >> page"', 'chevron');
+  await hoverOnly("text='Next >> page' >> nth=0", 'chevron');
+  await hoverOnly('span:has-text("next >> page") >> nth=0', 'chevron');
+  await hoverOnly('role=heading[name="It\'s here"] >> nth=0', 'its');
+  const caseSensitive = await send({ action: 'hover', selector: "text=/don't/ >> nth=0" });
+  assert.equal(caseSensitive.code, 'not_found', JSON.stringify(caseSensitive));
+}
+
+async function testXPathGuardCoversShadowRootsAndFrames() {
+  // #240: a scope inside a shadow root evaluates XPath in that root, so a sensitive value
+  // attribute or masked text there refuses XPath, scoped or not, before it runs.
+  const probe = 'css=form.in-shadow >> xpath=.//input';
+  let dom = shadowPage(h('input', { type: 'password', id: 'pw' }));
+  let send = load(dom);
+  const clean = await send({ action: 'hover', selector: probe });
+  assert.equal(clean.ok, true, JSON.stringify(clean));
+  assert.deepEqual(dom.xpaths, ['.//input']);
+  const redacted = {
+    password: () => h('input', { type: 'password', id: 'pw', value: 'hunter2' }),
+    masked: () => h('span', { id: 'otp', 'data-mask': '' }, '483920'),
+  };
+  for (const [kind, field] of Object.entries(redacted)) {
+    for (const selector of [probe, 'form.in-shadow >> xpath=.//span', 'xpath=//h2']) {
+      dom = shadowPage(field());
+      send = load(dom);
+      const refused = await send({ action: 'hover', selector });
+      assert.equal(refused.code, 'unsupported_selector', `${kind} ${selector}: ${JSON.stringify(refused)}`);
+      assert.match(refused.error, /XPath on a page holding redacted text/);
+      assert.deepEqual(dom.xpaths, [], `${kind} ${selector} never evaluated XPath`);
+    }
+  }
+
+  // Same-origin frames: XPath runs in each frame document, which is checked with its shadow roots.
+  dom = framePage(h('input', { type: 'password', id: 'pw' }));
+  send = load(dom);
+  const inFrame = await send({ action: 'hover', selector: 'form.in-frame >> xpath=.//input' });
+  assert.equal(inFrame.ok, true, JSON.stringify(inFrame));
+  assert.deepEqual(dom.xpaths, ['.//input']);
+  const shadowInFrame = () => {
+    const host = h('div', { id: 'widget' });
+    new ShadowRoot(host, [h('b', { 'data-mask': '' }, '483920')]);
+    return host;
+  };
+  for (const [kind, field] of Object.entries({ ...redacted, shadowInFrame })) {
+    for (const selector of ['form.in-frame >> xpath=.//input', 'xpath=//h2']) {
+      dom = framePage(h('input', { type: 'password', id: 'pw' }), field());
+      send = load(dom);
+      const refused = await send({ action: 'hover', selector });
+      assert.equal(refused.code, 'unsupported_selector', `${kind} ${selector}: ${JSON.stringify(refused)}`);
+      assert.deepEqual(dom.xpaths, [], `${kind} ${selector} never evaluated XPath`);
+    }
+  }
 }
 
 async function testSelectorListsAndScopedMisses() {
@@ -520,5 +675,7 @@ async function testPlainCssIsUnchanged() {
   await testRemainingPlaywrightForms();
   await testRefStartsChain();
   await testSelectorListsAndScopedMisses();
+  await testRegexValuesAndQuotesInChains();
+  await testXPathGuardCoversShadowRootsAndFrames();
   console.log('Playwright selector checks passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });
