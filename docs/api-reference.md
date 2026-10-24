@@ -61,7 +61,7 @@ bridge request. The bridge maps every route and every container action to the gr
 whose tools use it (`src/kitsune/capabilities.py`) and refuses the others. A route is
 refused with HTTP 403; a container step (`batch`, `parallel`, `retry`, `broadcast`,
 `if`/`while`/`try`/`sequence` blocks, workflow and resumed steps) fails with the same
-error as its result:
+error as its result, and its [progress](#container-progress) status is `failed`:
 
 ```json
 { "error": "cookies needs the storage capability", "code": "capability_restricted",
@@ -371,9 +371,11 @@ only `error`. MCP tools return these failures with `isError: true` (see
   an identical retry succeeds; follow `hint` first (for example, take a new snapshot).
   `false` means a write may already have taken effect (a submit, message, payment
   or deletion can be behind any click or keypress); inspect the page before acting again.
-  The exceptions are `error_page`, `ambiguous_target`, `user_tab` and `permission_required`:
-  nothing reached the page, and repeating cannot succeed until the tab navigates, the target
-  is named uniquely, or the user approves the close or navigation or grants the permission.
+  The exceptions are `error_page`, `ambiguous_target`, `user_tab`, `permission_required`,
+  `capability_restricted`, `mode_restricted` and `unknown_action`: nothing reached the page,
+  and repeating cannot succeed until the tab navigates, the target is named uniquely, the user
+  approves the close or navigation or grants the permission, the client's `KITSUNE_CAPS` or
+  `KITSUNE_MODE` permits the action, or the step names a batch action.
 - `hint`: a short recovery step. `state`: the current state that explains the
   failure, where available (for page targets: `tabId`, `url`, `status`).
 
@@ -408,6 +410,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `tab_required` | A `parallel` step that acts on a tab has no `tabId` (`state.sequence`, `state.index`); nothing was dispatched (see [Container progress](#container-progress)) | true |
 | `tab_owned` | Two `parallel` sequences write the same tab (`state.tabId`, `state.owner`); nothing was dispatched | true |
 | `invalid_tab_id` | A batch, workflow or parallel step names a `tabId` that is not a tab id (`0`, `""`, an unresolved `${$N.tabId}`); it was not sent to the active tab instead | true |
+| `unknown_action` | A container step's `action` is not a batch action, so nothing was dispatched (`state.action`). When a batch action is close to it, ignoring case, `state.suggestion` and the hint name it (`html` → `getHTML`) | false |
 | `container_timeout` | A batch or workflow reached its deadline; steps in progress may have taken effect and later steps did not start | false |
 | `tab_claimed` | A resumed `parallel` sequence writes a tab that another call's `parallel` in progress writes (`state.tabId`, `state.call`); nothing in that sequence was sent (see [Checkpoint and resume](checkpoint-resume.md#parallel)) | true |
 | `checkpoint_not_found`, `resume_token_invalid`, `workflow_changed`, `observed_invalid`, `observed_required`, `resume_failed` | `browser_resume` refused or stopped; see [Checkpoint and resume](checkpoint-resume.md#errors) | `observed_*`: true; others: false |
@@ -1427,8 +1430,8 @@ after filtering.
 
 The lookups are not batch actions: `browser_batch`, `browser_parallel`,
 `browser_broadcast`, `browser_retry` and workflows reject them as an unknown
-action, so none can run them outside this scope. Read-only mode allows them;
-ask-before-act does not hold them.
+action (`unknown_action`), so none can run them outside this scope. Read-only
+mode allows them; ask-before-act does not hold them.
 
 #### History URL redaction
 
@@ -1489,7 +1492,7 @@ never ran:
 | `status` | Meaning |
 |---|---|
 | `ok` | The command ran without an error. Like any result, this means dispatched, not that the outcome happened (see [Action outcomes](#action-outcomes)) |
-| `failed` | It returned an error that is safe to repeat (`retryable: true`, unclassified errors, `error_page`, `ambiguous_target`, `user_tab`, `permission_required`, or `ok: false`) |
+| `failed` | It returned an error that is safe to repeat (`retryable: true`, unclassified errors, `error_page`, `ambiguous_target`, `user_tab`, `permission_required`, the pre-dispatch refusals `capability_restricted`, `mode_restricted` and `unknown_action`, or `ok: false`) |
 | `held` | [Ask-before-act](#ask-before-act) held it; nothing ran |
 | `unknown` | It may have taken effect: an error with `retryable: false`, or it was in progress at the container's deadline. Observe the page before acting again |
 | `skipped` | It never started: an earlier step stopped the container (a held step, `stopOnWarning`, a failed workflow step) or the deadline passed |
