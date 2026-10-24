@@ -64,10 +64,16 @@ def bridge_routes() -> set[str]:
 
 def bridge_run_actions() -> set[str]:
     """Container actions the bridge runs itself rather than forwarding (_execute_command)."""
-    return set(re.findall(r"action == '(\w+)'", inspect.getsource(bridge._execute_command)))
+    direct = set(re.findall(r"action == '(\w+)'", inspect.getsource(bridge._execute_command)))
+    return direct | set(bridge._CONTROL_FLOW_HANDLERS)
 
 
 class CapabilityTableTests(unittest.TestCase):
+    def test_control_flow_handlers_are_not_shadowed_by_forwarded_actions(self):
+        self.assertFalse(set(bridge._CONTROL_FLOW_HANDLERS) & set(bridge.BATCH_ACTION_MAP))
+        self.assertTrue(all(inspect.iscoroutinefunction(handler)
+                            for handler in bridge._CONTROL_FLOW_HANDLERS.values()))
+
     def test_every_route_and_container_action_has_a_group(self):
         served = bridge_routes()
         self.assertEqual(served - set(ROUTE_GROUPS) - OPEN_ROUTES, set(), "a bridge route without a group")
