@@ -54,6 +54,8 @@ class SnapshotToolsTests(unittest.TestCase):
             ('POST', {'text': False}, {'text': False}),
             ('POST', {'maxChars': 100, 'text': False}, {'maxChars': 100, 'text': False}),
             ('POST', {'maxChars': 0}, {'maxChars': 0}),
+            ('POST', {'collapse': False}, {'collapse': False}),
+            ('POST', {'collapse': True}, {'collapse': True}),
         ]:
             with self.subTest(command=command, body=body):
                 handler = bridge.BridgeHandler.__new__(bridge.BridgeHandler)
@@ -94,6 +96,18 @@ class SnapshotToolsTests(unittest.TestCase):
                 handler.send_json.assert_called_once_with(200, {
                     'error': 'maxChars must be a finite non-negative number',
                 })
+
+    def test_bridge_snapshot_rejects_non_boolean_collapse(self):
+        for value in ('false', 0, 1, 'true'):
+            with self.subTest(collapse=value):
+                handler = bridge.BridgeHandler.__new__(bridge.BridgeHandler)
+                handler.command = 'POST'
+                handler.read_body = Mock(return_value={'collapse': value})
+                handler.run_async = Mock()
+                handler.send_json = Mock()
+                handler.handle_snapshot()
+                handler.run_async.assert_not_called()
+                handler.send_json.assert_called_once_with(200, {'error': 'collapse must be a boolean'})
 
     def test_dom_scope_and_depth(self):
         with patch.object(server, '_get', return_value={'tree': {}}) as get:
