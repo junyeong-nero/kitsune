@@ -1,5 +1,11 @@
 # Kitsune
 
+[![PyPI](https://img.shields.io/pypi/v/kitsune-browser-mcp)](https://pypi.org/project/kitsune-browser-mcp/)
+[![Python](https://img.shields.io/pypi/pyversions/kitsune-browser-mcp)](https://pypi.org/project/kitsune-browser-mcp/)
+[![License: MIT](https://img.shields.io/github/license/junyeong-nero/kitsune)](https://github.com/junyeong-nero/kitsune/blob/main/LICENSE)
+
+<!-- mcp-name: io.github.junyeong-nero/kitsune -->
+
 ![Kitsune: an orange fox in a browser window, connecting your browser and your AI agent](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/kitsune-hero.svg)
 
 **Bring your coding agent into Firefox—and keep working alongside it.**
@@ -12,7 +18,7 @@ Research in background tabs, prepare form drafts, and continue browser tasks wit
 an agent you already use—not a separate browser or built-in AI assistant.
 
 Two principles guide every trade-off: **the user's browser belongs to the user**,
-and **fewer, sharper tools**. See [Philosophy](docs/philosophy.md).
+and **fewer, sharper tools**. See [Philosophy](https://github.com/junyeong-nero/kitsune/blob/main/docs/philosophy.md).
 
 ## Why Kitsune?
 
@@ -20,18 +26,18 @@ and **fewer, sharper tools**. See [Philosophy](docs/philosophy.md).
   Writes to a tab you are actively using are held, and closing your own tabs
   requires a separate confirmation step. These protections reduce interference;
   OS-level clicks and site-opened popups still have
-  [focus and input limitations](docs/api-reference.md#shared-browser).
+  [focus and input limitations](https://github.com/junyeong-nero/kitsune/blob/main/docs/api-reference.md#shared-browser).
 - **Choose how much to delegate.** Configure `KITSUNE_MODE=read`, `draft`, or `act`
   to limit the available tools and bridge requests. Draft mode allows supported
   field input without click or submit tools; sites may still autosave edits.
-  The default is `act`, not a restricted mode. See [Task modes](docs/guide.md#task-modes).
+  The default is `act`, not a restricted mode. See [Task modes](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#task-modes).
 - **Keep the tool list small.** Start with Playwright MCP's 25 core tools. Kitsune's
   other tools stay off until you allow them, and the agent can find and call the ones
   you allow without restarting its session. See [Choosing tools](https://github.com/junyeong-nero/kitsune#choosing-tools).
 - **Recover without blindly repeating work.** With the optional `automation`
   capability, interrupted batch, parallel, and workflow calls can be resumed
   without resending successful writes. Uncertain writes require an observation
-  before retrying. [Checkpoints](docs/checkpoint-resume.md) are temporary and
+  before retrying. [Checkpoints](https://github.com/junyeong-nero/kitsune/blob/main/docs/checkpoint-resume.md) are temporary and
   do not survive a bridge restart.
 
 ## What can it do?
@@ -47,6 +53,24 @@ and **fewer, sharper tools**. See [Philosophy](docs/philosophy.md).
 ![Claude Code uses Kitsune to open Hacker News and summarize the top three stories](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/demo.gif)
 
 <sub>A real browser session, captured with Kitsune and sped up.</sub>
+
+## How is it different?
+
+Kitsune is one of several ways to connect an agent to a browser. Choose by the
+browser you use and the work you want to hand off:
+
+| If you want to… | Consider |
+| --- | --- |
+| Delegate tasks in the Firefox-family browser you are using, with background tabs, read/draft/act modes, and resumable batches | **Kitsune** |
+| Debug or profile pages in Firefox (debugger, profiler, deep protocol access) | [Mozilla Firefox DevTools MCP](https://github.com/mozilla/firefox-devtools-mcp), which attaches to a running Firefox started with remote-debugging flags |
+| Test across Chromium, Firefox, and WebKit in launched browsers | [Playwright MCP](https://github.com/microsoft/playwright-mcp); Kitsune publishes its 25 core tools, so prompts written for it carry over |
+| Drive the Chrome you already use | A Chromium extension MCP such as [Browser MCP](https://github.com/BrowserMCP/mcp) |
+
+Kitsune connects through an extension and a local bridge, so Firefox needs no
+startup flags or WebDriver. Other Firefox extension projects also reuse your
+logins; Kitsune's focus is working alongside you in the same browser. For the
+full comparison and its limits, see
+[Positioning](https://github.com/junyeong-nero/kitsune/blob/main/docs/positioning.md).
 
 ## How do I use it?
 
@@ -208,7 +232,7 @@ For the details: [Tools](https://github.com/junyeong-nero/kitsune/blob/main/docs
 [Development](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#development)
 
 For architecture, product trade-offs, and the wider browser MCP landscape, see
-[Positioning](docs/positioning.md).
+[Positioning](https://github.com/junyeong-nero/kitsune/blob/main/docs/positioning.md).
 
 ---
 

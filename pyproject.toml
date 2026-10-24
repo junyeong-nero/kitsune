@@ -40,6 +40,9 @@ Changelog = "https://github.com/junyeong-nero/kitsune/releases"
 
 [project.scripts]
 kitsune = "kitsune.server:main"
+# Same entry point under the package name, so `uvx kitsune-browser-mcp` works
+# (MCP Registry clients run PyPI packages that way).
+kitsune-browser-mcp = "kitsune.server:main"
 kitsune-bridge = "kitsune.bridge:run"
 
 [tool.hatch.build.targets.wheel]
