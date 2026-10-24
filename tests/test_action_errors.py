@@ -67,7 +67,8 @@ class BridgeTransportErrorTests(unittest.TestCase):
 
     def test_unsupported_selector_stays_non_retryable_for_reads_and_writes(self):
         # #219: the selector failed to parse before anything was dispatched; repeating cannot help.
-        unsupported = {"error": "Unsupported selector: XPath other than \"..\" (the parent element)",
+        unsupported = {"error": "Unsupported selector: XPath on a page holding redacted text or sensitive "
+                                "values; use CSS, text= or role= instead",
                        "code": "unsupported_selector", "retryable": False, "hint": "Pass a ref"}
         for action in ("getSnapshot", "getHTML", "click", "hover"):
             with self.subTest(action=action), patch.object(bridge, "extension_ws", ReplyingSocket(unsupported)):

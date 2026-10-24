@@ -159,6 +159,11 @@
       'No element matches; take a new browser_snapshot, or browser_wait_for the element if the page is still updating.');
   }
 
+  // A scoped read whose selector matched nothing.
+  function selectorNotFound(selector) {
+    return { ...notFound(`Selector not found: ${selector}`), state: { selector } };
+  }
+
   const STALE_REF_HINTS = {
     element_removed: 'The element was removed from the page; take a new browser_snapshot and use its refs.',
     not_in_snapshot: 'The latest snapshot did not issue this ref; take a new browser_snapshot and use its refs.',
@@ -544,7 +549,7 @@
   function getAccessibilityTree(maxDepth, selector) {
     // Resolve the scope before pruning detached refs.
     const root = selector ? resolveElement(selector) : document.body;
-    if (!root) return { error: 'Selector not found: ' + selector };
+    if (!root) return selectorNotFound(selector);
     pruneRefMap();
     let refs = 0;
     let size = 0;
@@ -670,7 +675,7 @@
     }
     // Observations share refs; scoping never invalidates an earlier observation.
     const root = selector ? resolveElement(selector) : document.body;
-    if (!root) return { error: 'Selector not found: ' + selector };
+    if (!root) return selectorNotFound(selector);
     const baseline = mode === 'delta' ? actionBaseline : null;
     const full = mode === 'full' || (mode === 'delta' && !baseline);
     let target = null;
@@ -779,15 +784,16 @@
       }
       if (MEDIA_TAGS.has(el.tagName)) return clean(el.getAttribute('aria-label') || el.title);
       if (!interactive && isImage(el)) {
-        return clean(el.getAttribute('aria-label') || el.getAttribute('alt') || (el.hasAttribute('alt') ? '' : el.title));
+        return clean(alternativeName(el));
       }
       const explicitRole = el.getAttribute('role');
       const isLandmark = landmarks[el.tagName] ||
         (semanticRoles.has(explicitRole) && explicitRole !== 'heading');
       const isField = ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName);
       if (interactive && !nativeTags.has(el.tagName)) {
-        const name = clean(el.getAttribute('aria-label') || el.getAttribute('title') ||
-          el.getAttribute('alt') || directText(el));
+        // A clickable image keeps the name role= selectors match it by.
+        const name = clean(ALTERNATIVE_NAMED_TAGS.has(el.tagName.toUpperCase()) ? alternativeName(el)
+          : el.getAttribute('aria-label') || el.getAttribute('title') || el.getAttribute('alt') || directText(el));
         if (name) return name;
         const text = metadata.get(el).nodes <= 5 ? normalize(redactedText(el)) : '';
         return text.length <= 80 ? text : '';
@@ -2249,15 +2255,17 @@
   }
 
   // ── Playwright selectors (#219) ──
-  // Besides refs and CSS, targets may use the Playwright forms agents write most: text=,
-  // role= (and internal:text=/internal:role=), the :has-text(), :text-is(), :text() and
-  // :visible pseudo-classes, >> chains, nth= and xpath=.. (the parent). This is a subset, not
-  // Playwright's engine. Text and names are read redacted, as snapshots show them; general
-  // XPath is refused because it reads attributes (value) the selector checks cannot see.
-  // Anything else fails with unsupported_selector, which repeating cannot fix.
-  const UNSUPPORTED_SELECTOR_HINT = 'Pass a ref from browser_snapshot (e12) on its own, a CSS selector, ' +
-    'or one of the Playwright forms Kitsune resolves: text=…, role=…[name="…"], :has-text("…"), ' +
-    ':text-is("…"), :text("…"), :visible, >> chains, nth=N and xpath=.. (the parent).';
+  // Besides refs and CSS, targets may use the Playwright forms agents write most: text=
+  // (also /regex/), role= (also [name=/regex/]), internal:text=, internal:role= and
+  // internal:label=, the :has-text(), :text-is(), :text() and :visible pseudo-classes,
+  // >> chains (also starting at a ref), nth= and xpath=. This is a subset, not Playwright's
+  // engine. Text and names are read redacted, as snapshots show them. XPath reads text and
+  // attributes (value) unredacted, so other than .. it runs only in documents holding no
+  // redacted content. Anything else fails with unsupported_selector, which repeating cannot fix.
+  const UNSUPPORTED_SELECTOR_HINT = 'Pass a ref from browser_snapshot (e12), a CSS selector, ' +
+    'or one of the Playwright forms Kitsune resolves: text=… (or text=/regex/), role=…[name="…"] ' +
+    '(or [name=/regex/]), internal:label="…", :has-text("…"), :text-is("…"), :text("…"), :visible, ' +
+    '>> chains (e12 >> … too), nth=N and xpath=….';
   // Valid CSS never starts with an engine name and =, two dots, // or a quote.
   const SELECTOR_ENGINE = /^([a-z][\w-]*(?::[a-z][\w-]*)*)\s*=/i;
   const PLAYWRIGHT_PSEUDO =
@@ -2287,27 +2295,49 @@
   }
 
   // The index after the string, (…) or […] group that opens at text[i]. As in CSS, the end of
-  // the text closes whatever is still open.
+  // the text closes whatever is still open. A role= [name=/regex/] skips the regex.
   function groupEnd(text, i) {
     const open = text[i];
     const close = open === '(' ? ')' : open === '[' ? ']' : open;
     for (let j = i + 1; j < text.length; j++) {
       const c = text[j];
       if (c === '\\') j++;
+      else if (c === '/' && open === '[' && /^\s*name\s*[*^$]?=\s*$/i.test(text.slice(i + 1, j))) j = regexEnd(text, j) - 1;
       else if (c === close) return j + 1;
       else if (close !== '"' && close !== "'" && '"\'(['.includes(c)) j = groupEnd(text, j) - 1;
     }
     return text.length;
   }
 
-  // text split at each separator outside strings and groups.
+  // The index after the /regex/ that opens at text[i]; a [class] may hold a /.
+  function regexEnd(text, i) {
+    for (let j = i + 1; j < text.length; j++) {
+      if (text[j] === '\\') j++;
+      else if (text[j] === '/') return j + 1;
+      else if (text[j] === '[') {
+        for (j++; j < text.length && text[j] !== ']'; j++) if (text[j] === '\\') j++;
+      }
+    }
+    return text.length;
+  }
+
+  // A regex value opens at a / that follows text=, internal:text= or internal:label= at the
+  // start of a >> part. Quotes and brackets inside a lax text= value that does not start with
+  // a quote are plain characters, as in Playwright.
+  const REGEX_VALUE_START = /^\s*(?:text|internal:text|internal:label)\s*=\s*$/i;
+  const LAX_TEXT_VALUE = /^\s*text\s*=\s*[^\s"']/i;
+
+  // text split at each separator outside strings and groups, and for >>, outside regex values.
   function splitTopLevel(text, separator) {
     const parts = [];
     let start = 0;
+    const chain = separator === '>>';
     for (let i = 0; i < text.length; i++) {
       if (text[i] === '\\') i++;
-      else if ('"\'(['.includes(text[i])) i = groupEnd(text, i) - 1;
-      else if (text.startsWith(separator, i)) {
+      else if (chain && text[i] === '/' && REGEX_VALUE_START.test(text.slice(start, i))) i = regexEnd(text, i) - 1;
+      else if ('"\'(['.includes(text[i]) && !(chain && LAX_TEXT_VALUE.test(text.slice(start, i)))) {
+        i = groupEnd(text, i) - 1;
+      } else if (text.startsWith(separator, i)) {
         parts.push(text.slice(start, i));
         i += separator.length - 1;
         start = i + 1;
@@ -2342,56 +2372,85 @@
     if (parts.length === 1 && !SELECTOR_ENGINE.test(text) && !/^(?:\.\.|\/\/|["'])/.test(text) &&
         !PLAYWRIGHT_PSEUDO.test(withoutStrings(text))) return null;
     if (parts.some(part => !part)) throw unsupportedSelector(selector, 'a >> chain has an empty part');
-    const parsed = parts.map(part => parseSelectorPart(part, selector));
+    const parsed = parts.map((part, index) => parseSelectorPart(part, index, selector));
     if (parsed[0].kind === 'nth') throw unsupportedSelector(selector, 'nth= must follow another selector');
     return parsed;
   }
 
-  function parseSelectorPart(part, selector) {
+  // A ref may start a chain (e12 >> xpath=..); the background expands its short form, so
+  // one that reaches the page unexpanded is unknown (stale_ref).
+  function parseSelectorPart(part, index, selector) {
     if (REF_SELECTOR.test(part) || /^e\d+$/.test(part)) {
-      throw unsupportedSelector(selector, 'a snapshot ref cannot be combined with >>; pass the ref on its own');
+      if (index === 0) return { kind: 'ref', ref: part };
+      throw unsupportedSelector(selector, 'a snapshot ref can only start a >> chain');
     }
     const engine = SELECTOR_ENGINE.exec(part);
     if (!engine) {
-      if (part === '..') return { kind: 'parent' };
-      if (part.startsWith('//') || part.startsWith('..')) {
-        throw unsupportedSelector(selector, 'XPath other than ".." (the parent element)');
-      }
-      return part[0] === '"' || part[0] === "'" ? textPart(part, false, selector) : cssPart(part, selector);
+      if (part.startsWith('//') || part.startsWith('..')) return xpathPart(part, index, selector);
+      return part[0] === '"' || part[0] === "'" ? { kind: 'text', match: textMatcherFor(part, 'text', selector) }
+        : cssPart(part, selector);
     }
     const name = engine[1].toLowerCase();
     const body = part.slice(engine[0].length).trim();
     if (name === 'css') return cssPart(body, selector);
-    if (name === 'text' || name === 'internal:text') return textPart(body, name !== 'text', selector);
+    if (name === 'text' || name === 'internal:text') return { kind: 'text', match: textMatcherFor(body, name, selector) };
     if (name === 'role' || name === 'internal:role') return rolePart(body, name !== 'role', selector);
+    if (name === 'internal:label') return { kind: 'label', match: textMatcherFor(body, name, selector) };
     if (name === 'nth' || name === 'internal:nth') {
       if (!/^-?\d+$/.test(body)) throw unsupportedSelector(selector, 'nth= takes an integer index');
       return { kind: 'nth', index: Number(body) };
     }
     if (name === 'xpath') {
-      if (body === '..') return { kind: 'parent' };
-      throw unsupportedSelector(selector, 'XPath other than ".." (the parent element)');
+      if (!body) throw unsupportedSelector(selector, 'xpath= needs an expression');
+      return xpathPart(body, index, selector);
     }
     throw unsupportedSelector(selector, `the ${name}= selector engine`);
   }
 
-  // text=foo is lax; a quoted text="foo" (or "foo"s) is strict and "foo"i is lax again.
-  function textPart(body, internal, selector) {
-    const quoted = /^(["'])((?:\\[\s\S]|(?!\1)[^\\])*)\1([is])?$/.exec(body);
-    if (quoted) {
-      const match = textMatcher(unescapeSelector(quoted[2]), quoted[3] !== 'i');
-      return { kind: 'text', match };
+  // As in Playwright, an absolute path after >> is made relative to the earlier match. The
+  // expression compiles here, so an invalid one is unsupported even when an earlier part
+  // matches nothing; compiling reads nothing from the page.
+  function xpathPart(expression, index, selector) {
+    if (expression === '..') return { kind: 'parent' };
+    const relative = index > 0 && expression.startsWith('/') ? '.' + expression : expression;
+    try { document.createExpression(relative); } catch {
+      throw unsupportedSelector(selector, `"${expression}" is not an XPath expression that selects elements`);
     }
-    if (body.startsWith('/')) throw unsupportedSelector(selector, 'regular-expression text');
-    if (internal || !normalizeSelectorText(body)) {
-      throw unsupportedSelector(selector, internal ? 'internal:text= takes a quoted string' : 'text= needs text');
-    }
-    return { kind: 'text', match: textMatcher(body, false) };
+    return { kind: 'xpath', expression: relative, source: expression };
   }
 
+  // A /regex/ value: the source up to the last /, when only flags follow it.
+  const REGEX_VALUE = /^\/([\s\S]*)\/([dgimsuvy]*)$/;
+
+  // text=foo is lax; a quoted text="foo" (or "foo"s) is strict and "foo"i is lax again.
+  // /regex/flags tests the whitespace-collapsed text. internal:text= and internal:label=
+  // (engine) take a quoted string or a regex.
+  function textMatcherFor(body, engine, selector) {
+    const quoted = /^(["'])((?:\\[\s\S]|(?!\1)[^\\])*)\1([is])?$/.exec(body);
+    if (quoted) return textMatcher(unescapeSelector(quoted[2]), quoted[3] !== 'i');
+    const regex = REGEX_VALUE.exec(body);
+    if (regex) {
+      const re = selectorRegex(regex[1], regex[2], selector);
+      return text => { re.lastIndex = 0; return re.test(text); };
+    }
+    if (engine !== 'text') throw unsupportedSelector(selector, `${engine}= takes a quoted string or /regex/`);
+    if (!normalizeSelectorText(body)) throw unsupportedSelector(selector, 'text= needs text');
+    return textMatcher(body, false);
+  }
+
+  function selectorRegex(source, flags, selector) {
+    try { return new RegExp(source, flags); } catch {
+      throw unsupportedSelector(selector, `/${source}/${flags} is not a valid regular expression`);
+    }
+  }
+
+  // [key], or [key op value] with a quoted string (and i/s), a number or boolean, or /regex/flags.
+  const ROLE_ATTRIBUTE =
+    /^\[\s*([\w-]+)\s*(?:([*^$]?=)\s*(?:(["'])((?:\\[\s\S]|(?!\3)[^\\])*)\3\s*([is])?|(-?\d+|true|false)|\/((?:\\[\s\S]|\[(?:\\[\s\S]|[^\]\\])*\]|[^\\/[])+)\/([a-z]*)))?\s*\]$/i;
+
   // role=button[name="Save"] matches the whole name ignoring case, [name="Save"s] exactly;
-  // internal:role (getByRole) takes [name="Save"i] as a substring. Also [level=N] and
-  // [include-hidden]; hidden elements are skipped otherwise.
+  // internal:role (getByRole) takes [name="Save"i] as a substring. [name=/Save/i] tests the
+  // name with a regex. Also [level=N] and [include-hidden]; hidden elements are skipped otherwise.
   function rolePart(body, internal, selector) {
     const role = /^[a-z][\w-]*/i.exec(body)?.[0];
     if (!role) throw unsupportedSelector(selector, 'role= needs a role, e.g. role=button[name="Save"]');
@@ -2400,10 +2459,11 @@
     while (rest) {
       if (rest[0] !== '[') throw unsupportedSelector(selector, `unexpected "${rest}" after role=${role}`);
       const end = groupEnd(rest, 0);
-      const attr = /^\[\s*([\w-]+)\s*(?:([*^$]?=)\s*(?:(["'])((?:\\[\s\S]|(?!\3)[^\\])*)\3\s*([is])?|(-?\d+|true|false)))?\s*\]$/i
-        .exec(rest.slice(0, end));
+      const attr = ROLE_ATTRIBUTE.exec(rest.slice(0, end));
       const key = attr?.[1].toLowerCase();
-      if (key === 'name' && attr[3]) {
+      if (key === 'name' && attr[7] && attr[2] === '=') {
+        part.name = { regex: selectorRegex(attr[7], attr[8], selector) };
+      } else if (key === 'name' && attr[3]) {
         const caseSensitive = attr[5] === 's';
         const op = internal && attr[2] === '=' && !caseSensitive ? '*=' : attr[2];
         part.name = { op, caseSensitive, value: normalizeSelectorText(unescapeSelector(attr[4])) };
@@ -2490,12 +2550,13 @@
     return (el, scan) => match(scan.text(el));
   }
 
-  // The text a selector matches: redacted text content, or a button input's value.
+  // The text a selector matches: redacted text content without script or style text, or a
+  // button input's value.
   function selectorText(el) {
     if (el.tagName === 'INPUT' && ['button', 'submit', 'reset'].includes(String(el.type).toLowerCase())) {
       return isSensitiveField(el) ? '' : String(el.value || '');
     }
-    return TEXTLESS_TAGS.has(el.tagName) ? '' : redactedText(el);
+    return redactedText(el, true);
   }
 
   // The role snapshots and role= selectors give el.
@@ -2510,7 +2571,7 @@
 
   // Matches for each parsed part in turn; a later part searches inside the earlier matches.
   function matchSelectorParts(parts, selector) {
-    const texts = new Map(), smallest = new Map();
+    const texts = new Map(), smallest = new Map(), redacted = new Map();
     const scan = {
       text: el => {
         if (!texts.has(el)) texts.set(el, normalizeSelectorText(selectorText(el)));
@@ -2526,10 +2587,16 @@
         }
         return byElement.get(el);
       },
+      redacted: doc => {
+        if (!redacted.has(doc)) redacted.set(doc, holdsRedactedContent(doc));
+        return redacted.get(doc);
+      },
     };
     let matches = null;
     for (const part of parts) {
-      if (part.kind === 'nth') {
+      if (part.kind === 'ref') {
+        matches = [refElement(part.ref)];
+      } else if (part.kind === 'nth') {
         const el = matches.at(part.index);
         matches = el ? [el] : [];
       } else if (part.kind === 'parent') {
@@ -2553,6 +2620,10 @@
     };
     if (part.kind === 'text') return query('*').filter(el => scan.smallest(el, part.match));
     if (part.kind === 'role') return query('*').filter(el => roleMatches(el, part));
+    if (part.kind === 'label') {
+      return query('*').filter(el => selectorLabels(el, scan).some(label => part.match(label)));
+    }
+    if (part.kind === 'xpath') return xpathMatches(part, scope, scan, selector);
     if (!part.alternatives) return query(part.css);
     const last = part.alternatives.map(compounds => compounds.at(-1).css || '*');
     return query(last.join(', ')).filter(el => part.alternatives.some(compounds => {
@@ -2583,14 +2654,64 @@
       if (level !== part.level) return false;
     }
     if (!part.name) return true;
-    const { op, caseSensitive, value } = part.name;
+    const { op, caseSensitive, value, regex } = part.name;
     let name = normalizeSelectorText(accessibleName(el));
+    if (regex) {
+      regex.lastIndex = 0;
+      return regex.test(name);
+    }
     let wanted = value;
     if (!caseSensitive) [name, wanted] = [name.toLowerCase(), wanted.toLowerCase()];
     if (op === '*=') return name.includes(wanted);
     if (op === '^=') return name.startsWith(wanted);
     if (op === '$=') return name.endsWith(wanted);
     return name === wanted;
+  }
+
+  // The labels internal:label= (getByLabel) matches, as Playwright reads them: the
+  // aria-labelledby elements, else aria-label, else a labelable element's <label>s.
+  const LABELABLE_TAGS = new Set(['BUTTON', 'INPUT', 'METER', 'OUTPUT', 'PROGRESS', 'SELECT', 'TEXTAREA']);
+  function selectorLabels(el, scan) {
+    const labelledBy = String(el.getAttribute('aria-labelledby') || '').split(/\s+/).filter(Boolean)
+      .map(id => elementByIdNear(el, id)).filter(Boolean);
+    if (labelledBy.length) return labelledBy.map(scan.text);
+    const ariaLabel = normalizeSelectorText(el.getAttribute('aria-label'));
+    if (ariaLabel) return [ariaLabel];
+    if (!LABELABLE_TAGS.has(el.tagName) || (el.tagName === 'INPUT' && el.type === 'hidden')) return [];
+    return Array.from(el.labels || [], scan.text);
+  }
+
+  // XPath sees what redaction hides from the other forms: a sensitive field's value
+  // attribute and masked text. It runs only in documents that hold neither, in any of their
+  // trees: a scope inside a shadow root evaluates in that root.
+  function holdsRedactedContent(doc) {
+    return withRedactionCache(() => queryTreeSelectorAll('*', doc).some(el =>
+      (el.hasAttribute('value') && isSensitiveField(el)) ||
+      (holdsSensitiveText(el) && String(el.textContent || '').trim() !== '')));
+  }
+
+  // Elements an XPath expression selects in each searched document, or within scope. XPath
+  // does not cross into shadow roots or frames.
+  function xpathMatches({ expression, source }, scope, scan, selector) {
+    const docs = scope ? [docOf(scope)] : searchedDocuments();
+    if (docs.some(scan.redacted)) {
+      throw unsupportedSelector(selector, 'XPath on a page holding redacted text or sensitive values; ' +
+        'use CSS, text= or role= instead');
+    }
+    const found = [];
+    for (const doc of docs) {
+      let result;
+      try {
+        result = doc.evaluate(expression, scope || doc, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+      } catch {
+        throw unsupportedSelector(selector, `"${source}" is not an XPath expression that selects elements`);
+      }
+      for (let i = 0; i < result.snapshotLength; i++) {
+        const node = result.snapshotItem(i);
+        if (node.nodeType === 1) found.push(node);
+      }
+    }
+    return found;
   }
 
   // Every element a non-ref selector names, in document order per searched tree.
@@ -2630,23 +2751,25 @@
     return null;
   }
 
+  // A ref's attached element; a stale ref throws.
+  function refElement(ref) {
+    const el = refMap[ref];
+    if (!ref.startsWith(`s${refGeneration}e`) || !el || !refAttached(el)) {
+      if (el && !refAttached(el)) {
+        delete refMap[ref];
+        elementRefs.delete(el);
+        removedRefs.add(ref);
+      }
+      throw staleRef(ref, el);
+    }
+    return el;
+  }
+
   function resolveElement(selector, coords) {
     if (!selector && coords) return elementAtPoint(coords.x, coords.y).el;
     if (!selector) return null;
     
-    // Try ref map first
-    if (REF_SELECTOR.test(selector)) {
-      const el = refMap[selector];
-      if (!selector.startsWith(`s${refGeneration}e`) || !el || !refAttached(el)) {
-        if (el && !refAttached(el)) {
-          delete refMap[selector];
-          elementRefs.delete(el);
-          removedRefs.add(selector);
-        }
-        throw staleRef(selector, el);
-      }
-      return el;
-    }
+    if (REF_SELECTOR.test(selector)) return refElement(selector);
 
     const parts = parseTargetSelector(selector);
     if (parts) return withRedactionCache(() => matchSelectorParts(parts, selector))[0] || null;
@@ -2709,6 +2832,7 @@
 
   // The name ambiguous_target candidates and role= selectors use (never a field value).
   function accessibleName(el) {
+    if (ALTERNATIVE_NAMED_TAGS.has(el.tagName.toUpperCase())) return alternativeName(el);
     const buttonInput = el.tagName === 'INPUT' && BUTTON_INPUT_TYPES.has(String(el.type).toLowerCase());
     return controlLabel(el, buttonInput) ||
       (FILL_TAGS.includes(el.tagName) ? findLabel(el) || el.placeholder || '' : '');
@@ -2742,7 +2866,7 @@
 
   function inferRole(el) {
     const inputRole = { button: 'button', submit: 'button', reset: 'button',
-      checkbox: 'checkbox', radio: 'radio', range: 'slider', number: 'spinbutton',
+      image: 'button', checkbox: 'checkbox', radio: 'radio', range: 'slider', number: 'spinbutton',
       search: 'searchbox' };
     const map = { A: 'link', BUTTON: 'button', INPUT: inputRole[el.type] || 'textbox',
       SELECT: 'combobox', TEXTAREA: 'textbox', SUMMARY: 'button', DETAILS: 'group',
@@ -2799,7 +2923,7 @@
 
   function withRedactionCache(read) {
     if (redactionCache) return read();
-    redactionCache = { masked: new WeakMap(), region: new WeakMap(), text: new WeakMap() };
+    redactionCache = { masked: new WeakMap(), region: new WeakMap(), text: new WeakMap(), pageText: new WeakMap() };
     try { return read(); } finally { redactionCache = null; }
   }
 
@@ -2866,15 +2990,16 @@
 
   // el.textContent without sensitive text. A masked element's children that set
   // `-webkit-text-security: none` keep their text; sensitive fields lose all of it.
-  function redactedText(el) {
-    return withRedactionCache(() => cachedFor('text', el, () => {
-      if (isSensitiveTextField(el)) return '';
+  // pageTextOnly also leaves out TEXTLESS_TAGS elements (scripts, styles), as selectors do.
+  function redactedText(el, pageTextOnly = false) {
+    return withRedactionCache(() => cachedFor(pageTextOnly ? 'pageText' : 'text', el, () => {
+      if (isSensitiveTextField(el) || (pageTextOnly && TEXTLESS_TAGS.has(el.tagName))) return '';
       const sensitive = holdsSensitiveText(el);
       if (!el.firstElementChild) return sensitive ? '' : el.textContent || '';
       let text = '';
       for (const node of el.childNodes) {
         if (node.nodeType === 3) text += sensitive ? '' : node.textContent;
-        else if (node.nodeType === 1) text += redactedText(node);
+        else if (node.nodeType === 1) text += redactedText(node, pageTextOnly);
       }
       return text;
     }));
@@ -3431,6 +3556,7 @@
     'color', 'range', 'submit', 'image']);
 
   const BUTTON_INPUT_TYPES = new Set(['button', 'submit', 'image']);
+  const ALTERNATIVE_NAMED_TAGS = new Set(['IMG', 'AREA', 'SVG']);
 
   // Ask-before-act: button labels that commit an order, payment, or form submission, for
   // JS-driven buttons that are not structural submit controls. The whole label (after
@@ -3535,9 +3661,7 @@
   // then title.
   function controlLabel(control, buttonInput) {
     const attr = name => String(control.getAttribute?.(name) || '').trim();
-    const labelledBy = attr('aria-labelledby').split(/\s+/).filter(Boolean)
-      .map(id => { const el = elementByIdNear(control, id); return el ? redactedText(el) : ''; })
-      .join(' ').trim();
+    const labelledBy = labelledByText(control);
     const text = redactedText(control).trim();
     const icon = !text && control.querySelector?.('[aria-label], img[alt], svg title');
     const iconLabel = icon ? String(icon.getAttribute('aria-label') || icon.getAttribute('alt') ||
@@ -3545,6 +3669,23 @@
     return labelledBy || attr('aria-label') || text ||
       (buttonInput ? (isSensitiveField(control) ? '' : String(control.value || '').trim()) || attr('alt') : '') ||
       iconLabel || attr('title');
+  }
+
+  function labelledByText(el) {
+    return String(el.getAttribute?.('aria-labelledby') || '').split(/\s+/).filter(Boolean)
+      .map(id => { const label = elementByIdNear(el, id); return label ? redactedText(label) : ''; })
+      .join(' ').trim();
+  }
+
+  // Images, areas and SVG graphics are named by their alternative text, not their content:
+  // aria-labelledby, aria-label, alt (an <svg>'s <title>), then title unless alt="" marks
+  // the image decorative. Snapshots name images the same way.
+  function alternativeName(el) {
+    const attr = name => String(el.getAttribute(name) || '').trim();
+    const svgTitle = el.tagName.toLowerCase() === 'svg' &&
+      Array.from(el.children).find(child => child.tagName.toLowerCase() === 'title');
+    return labelledByText(el) || attr('aria-label') || attr('alt') ||
+      (svgTitle ? redactedText(svgTitle).trim() : '') || (el.hasAttribute('alt') ? '' : attr('title'));
   }
 
   // Ask-before-act: whether clicking the target (or pressing Enter on it, with key) can submit

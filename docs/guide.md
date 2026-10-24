@@ -379,11 +379,13 @@ Kitsune's compact JSON results, not Playwright's Markdown. Where the two differ:
   not open needs the user's approval (`user_tab`).
 - **Targets.** `target` is a snapshot ref (`e12`) or a CSS selector. Actions require one
   actionable match (else `ambiguous_target`). Actions and scoped snapshots also accept a
-  subset of Playwright selectors: `text=`, `role=…[name="…"]`, `:has-text()`, `:text-is()`,
-  `:text()`, `:visible`, `>>` chains, `nth=N` and `xpath=..` (parent). Unsupported forms
-  return `unsupported_selector` with a hint, not a retryable missing target. General XPath
-  and refs combined with selectors are not supported; element screenshots use the same
-  resolver and capture the exact selected node, including inside shadow roots. Refs
+  subset of Playwright selectors: `text=` (also `/regex/`), `role=…[name="…"]` (also
+  `[name=/regex/]`), `internal:text=`, `internal:role=`, `internal:label=`, `:has-text()`,
+  `:text-is()`, `:text()`, `:visible`, CSS lists, `>>` chains (also starting at a ref, as in
+  `e12 >> xpath=..`), `nth=N` and `xpath=` (refused on pages holding redacted content); see
+  [Target selectors](api-reference.md#target-selectors). Unsupported forms return
+  `unsupported_selector` with a hint, not a retryable missing target. Element screenshots
+  use the same resolver and capture the exact selected node, including inside shadow roots. Refs
   survive newer observations while their nodes remain attached in the same document; navigation or replacement nodes require new refs.
 - **Snapshots.** Default core snapshots include redacted static text and resolved HTTP(S) link
   URLs without a new document-prefix character cap. Existing line clipping, structural

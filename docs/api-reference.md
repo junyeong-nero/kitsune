@@ -21,7 +21,8 @@ See [Tools and capabilities](guide.md#tools) for the complete tool list per grou
 `browser_run_code_unsafe`, `browser_take_screenshot`, `browser_snapshot`,
 `browser_click`, `browser_drag`, `browser_hover`, `browser_select_option`,
 `browser_tabs`, `browser_wait_for`. Their arguments are Playwright's (`target` is a
-snapshot ref such as `e12` or a CSS selector), they act on the current tab, and
+snapshot ref such as `e12`, a CSS selector or one of the
+[Playwright selector forms](#target-selectors) Kitsune resolves), they act on the current tab, and
 `browser_emulate_media` and `browser_run_code_unsafe` answer `not_supported`; see
 [Core tools](guide.md#core-tools) for how each maps onto the extension. The tool
 sections below describe the Kitsune-owned tools and the bridge commands the core tools
@@ -156,6 +157,42 @@ A stale/disconnected ref returns a `stale_ref` error (see [Action errors](#actio
 take another snapshot to refresh it. See [Ref lifetime](#ref-lifetime) for which
 events invalidate refs.
 Existing positional selector arguments remain supported.
+
+#### Target selectors
+
+Actions, scoped snapshots (`browser_snapshot`, `browser_dom`) and element screenshots
+resolve a target with one shared resolver. It accepts a ref, CSS (including shadow
+trees), and this subset of Playwright's selectors; it is not Playwright's engine:
+
+| Form | Matches |
+|---|---|
+| `e12` | The snapshot element |
+| `text=Save`, `"Save"` | Lax `text=Save`: the smallest element whose whitespace-collapsed text contains it, ignoring case. Quoted `text="Save"` (also `"Save"s`, `'Save'`) is the whole text, case-sensitive; `"Save"i` is lax again |
+| `text=/Sav(e\|ed)/i` | The smallest element whose whitespace-collapsed text the regular expression matches. Only flags may follow the last `/`; otherwise the value is lax text (`text=/api/users`) |
+| `internal:text="Save"i`, `internal:text=/…/` | `getByText`: as `text=`, but the value is quoted or a regex |
+| `role=button[name="Save"]` | Elements with that role (explicit or implicit) whose accessible name is the whole name, ignoring case; `[name="Save"s]` is case-sensitive, `[name*=…]`/`[name^=…]`/`[name$=…]` match part of it, `[name=/…/flags]` tests it with a regex. Also `[level=N]` and `[include-hidden]`; hidden and `aria-hidden` elements are skipped otherwise |
+| `internal:role=button[name="Save"i]` | `getByRole`: as `role=`, but `"…"i` is a substring |
+| `internal:label="Email"i` | `getByLabel`: elements whose `aria-labelledby` text, else `aria-label`, else `<label>` (for a form control) contains the text, ignoring case. `"Email"` and `"Email"s` are the whole label, case-sensitive; `/…/flags` is a regex |
+| `:has-text("…")`, `:text-is("…")`, `:text("…")`, `:visible` | CSS pseudo-classes: contains the text (lax), whose whole text it is, the smallest element containing it, rendered |
+| `a, b` | A CSS list, with or without the pseudo-classes above: the union of its alternatives |
+| `a >> b` | Chains: `b` searched inside each match of `a`. A chain may start with a ref (`e12 >> xpath=..`, `e12 >> text=Save`) |
+| `nth=N` | The Nth match so far (0-based; `-1` is the last); not first in a chain |
+| `xpath=..`, `..` | The parent element |
+| `xpath=//h2[text()='Stock']/..`, `//…`, `..…` | General XPath (`document.evaluate`), elements only; after `>>`, a leading `/` is relative to the earlier match, which may be inside a shadow root or same-origin frame. It does not cross into shadow roots or frames. Because XPath reads text and the `value` attribute unredacted, it is refused (`unsupported_selector`) when a document it would run in, including that document's shadow roots, holds a sensitive field with a `value` attribute or masked text |
+
+Images, `<area>` and `<svg>` graphics are named as snapshots name images: by
+`aria-labelledby`, `aria-label`, `alt` (an `<svg>`'s `<title>`), then `title` unless
+`alt=""`. `<input type=image>` is a `button` named by its `alt`. Text and names are read
+redacted, so masked text and sensitive values never match. Write actions stay
+[strict](#strict-selectors) for every form. Anything else (other engines such as `id=`
+or `data-testid=`, `:near()` and other layout pseudo-classes, Playwright pseudo-classes
+inside `:has()`, a ref after the start of a chain, invalid CSS, XPath or regex) fails
+with `unsupported_selector` (not retryable) before anything is dispatched. A valid
+selector that matches nothing is `not_found`, for scoped snapshots too.
+
+Regular expressions and XPath run on the page's main thread, as in Playwright, and are
+not capped: a pathological pattern (such as `text=/(a+)+$/` on long text) can block the
+page until the bridge command times out.
 
 #### Strict selectors
 
@@ -342,11 +379,11 @@ only `error`. MCP tools return these failures with `isError: true` (see
 
 | `code` | Meaning | `retryable` |
 |---|---|---|
-| `not_found` | No element matches the selector (also `No target`, `from/to element not found`); after an [actionability wait](#actionability-wait), `state` has `timeoutMs` and `elapsed` | true |
+| `not_found` | No element matches the selector (also `No target`, `from/to element not found`; a scoped `browser_snapshot`/`browser_dom` reports `Selector not found: …` with `state.selector`); after an [actionability wait](#actionability-wait), `state` has `timeoutMs` and `elapsed` | true |
 | `not_fillable` | `browser_type` (`type`/`fill` modes) or a `browser_form_fill` key found no field to write. The target is not a field (`fill` and `browser_form_fill`: input, textarea or select; `type`: input, textarea or `contenteditable` region) and has none in its open or closed shadow roots, searched through nested hosts up to 8 roots deep (`fill` and `browser_form_fill` also look in its light DOM). Nothing was written. `state.tag` is the target's tag; `state.reason` is `no_field`, or `shadow_depth` when its shadow roots nest deeper than 8 | true |
 | `ambiguous_target` | The command names no single target, so nothing was dispatched: a write action's selector matches several actionable elements (`state.selector`, `state.matches`; see [Strict selectors](#strict-selectors)), a `browser_form_fill` label or placeholder key matches several actionable fields (`state.field`, `state.matches`), or `browser_submit_form` without a target found several forms and no filled field naming one (`state.forms`). `state.candidates` lists up to 5 of them with a `ref` to target one | false |
 | `not_actionable` | An [actionability wait](#actionability-wait) timed out on a target that exists but never rendered (`state.reason: "not_rendered"`, `timeoutMs`, `elapsed`); nothing was dispatched | true |
-| `unsupported_selector` | The shared target resolver rejected unsupported/invalid syntax before dispatch; `state.selector` echoes the selector and `hint` lists accepted forms. Applies to actions, scoped snapshots and element screenshots | false |
+| `unsupported_selector` | The shared target resolver rejected unsupported/invalid syntax (see [Target selectors](#target-selectors)) before dispatch; `state.selector` echoes the selector and `hint` lists accepted forms. Applies to actions, scoped snapshots and element screenshots | false |
 | `stale_ref` | The ref is no longer valid; `state.reason` is `element_removed`, `not_in_snapshot` (unknown/unissued ref), or `other_document` (the tab navigated, or the ref came from another tab) | true |
 | `navigating` | The tab is loading: a `not_found`/`stale_ref` while loading (`state.cause`), or the page unloaded while handling the command. Also a page that refused the content script within 5 s of a wake or reload without an error status, or whose 2xx response arrived only while the command waited for it: it may be an old document about to be replaced | true before dispatch; false for writes after |
 | `tab_closed` | The target tab no longer exists | true |
@@ -1577,7 +1614,8 @@ GET or POST with omitted `text` has the same readable default. Explicit `text: t
 selects the bounded readable mode; `text: false` omits static prose. Optional scope
 arguments are `tabId`, `selector`, `ref` and `maxDepth` in the JSON body.
 
-- `selector` scopes the snapshot to a CSS-selected subtree, including its root.
+- `selector` scopes the snapshot to the subtree of its first match, including its root; it
+  takes the [target selector](#target-selectors) forms.
 - Open and closed shadow roots are read as rendered: a web component's shadow tree
   appears under its host, with refs, and slotted children appear where their slot is.
   `browser_dom`, `browser_find`, `browser_forms` and CSS selectors in action tools
