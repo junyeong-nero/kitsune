@@ -1,28 +1,27 @@
 # Kitsune
 
-[![PyPI](https://img.shields.io/pypi/v/kitsune-browser-mcp)](https://pypi.org/project/kitsune-browser-mcp/)
-[![Python](https://img.shields.io/pypi/pyversions/kitsune-browser-mcp)](https://pypi.org/project/kitsune-browser-mcp/)
-[![License: MIT](https://img.shields.io/github/license/junyeong-nero/kitsune)](https://github.com/junyeong-nero/kitsune/blob/main/LICENSE)
-
 <!-- mcp-name: io.github.junyeong-nero/kitsune -->
 
 ![Kitsune: an orange fox in a browser window, connecting your browser and your AI agent](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/kitsune-hero.svg)
 
 [![PyPI](https://img.shields.io/pypi/v/kitsune-browser-mcp)](https://pypi.org/project/kitsune-browser-mcp/)
+[![Python](https://img.shields.io/pypi/pyversions/kitsune-browser-mcp)](https://pypi.org/project/kitsune-browser-mcp/)
 [![Release](https://img.shields.io/github/v/release/junyeong-nero/kitsune)](https://github.com/junyeong-nero/kitsune/releases/latest)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![License: MIT](https://img.shields.io/github/license/junyeong-nero/kitsune)](https://github.com/junyeong-nero/kitsune/blob/main/LICENSE)
 
-**Bring your coding agent into Firefox—and keep working alongside it.**
+**Bring your coding agent into Firefox and keep working alongside it.**
 
-Kitsune lets AI agents like Claude Code, Codex, Pi, and OpenCode use the **Firefox, Zen,
-or LibreWolf browser you already have open**. Your sessions, cookies, and
-extensions stay in place. No Playwright, Chromium, or WebDriver required.
+Kitsune lets AI agents such as Claude Code, Codex, Pi, and OpenCode use the Firefox,
+Zen, or LibreWolf browser you already have open. Your sessions, cookies, and
+extensions stay where they are, and there is no Playwright, Chromium, or WebDriver
+to install.
 
-Research in background tabs, prepare form drafts, and continue browser tasks with
-an agent you already use—not a separate browser or built-in AI assistant.
+The agent can research in background tabs and prepare form drafts while you keep
+using the same browser. You stay with the agent you already use; Kitsune is not a
+separate browser or a built-in assistant.
 
-Two principles guide every trade-off: **the user's browser belongs to the user**,
-and **fewer, sharper tools**. See [Philosophy](https://github.com/junyeong-nero/kitsune/blob/main/docs/philosophy.md).
+The design follows two principles: the user's browser belongs to the user, and
+the agent gets fewer, sharper tools. See [Philosophy](https://github.com/junyeong-nero/kitsune/blob/main/docs/philosophy.md).
 
 ![Claude Code uses Kitsune to compare three PyPI pages in background tabs and draft a form without submitting it, while the user's video stays in front](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/demo.gif)
 
@@ -30,48 +29,49 @@ and **fewer, sharper tools**. See [Philosophy](https://github.com/junyeong-nero/
 
 ## Why Kitsune?
 
-- **Work alongside your agent.** Agent-created tabs open in the background.
-  Writes to a tab you are actively using are held, and closing your own tabs
-  requires a separate confirmation step. These protections reduce interference;
-  OS-level clicks and site-opened popups still have
-  [focus and input limitations](https://github.com/junyeong-nero/kitsune/blob/main/docs/api-reference.md#shared-browser).
-- **Choose how much to delegate.** Configure `KITSUNE_MODE=read`, `draft`, or `act`
-  to limit the available tools and bridge requests. Draft mode allows supported
-  field input without click or submit tools; sites may still autosave edits.
-  The default is `act`, not a restricted mode. See [Task modes](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#task-modes).
-- **Keep the tool list small.** Start with Playwright MCP's 25 core tools. Kitsune's
-  other tools stay off until you allow them, and the agent can find and call the ones
-  you allow without restarting its session. See [Choosing tools](https://github.com/junyeong-nero/kitsune#choosing-tools).
-- **Recover without blindly repeating work.** With the optional `automation`
-  capability, interrupted batch, parallel, and workflow calls can be resumed
-  without resending successful writes. Uncertain writes require an observation
-  before retrying. [Checkpoints](https://github.com/junyeong-nero/kitsune/blob/main/docs/checkpoint-resume.md) are temporary and
-  do not survive a bridge restart.
+- Tabs the agent creates open in the background. Kitsune holds writes to a tab
+  you are actively using, and closing one of your own tabs takes a separate
+  confirmation step. This reduces interference, but OS-level clicks and popups
+  opened by sites still have [focus and input limitations](https://github.com/junyeong-nero/kitsune/blob/main/docs/api-reference.md#shared-browser).
+- You decide how much to delegate. `KITSUNE_MODE=read`, `draft`, or `act` limits
+  both the tools the agent sees and the requests the bridge accepts. Draft mode
+  lets the agent fill supported fields without click or submit tools, although
+  sites may still autosave what it types. The default, `act`, has no such
+  restriction. See [Task modes](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#task-modes).
+- The agent starts with Playwright MCP's 25 core tools. Kitsune's other tools
+  stay off until you allow them, and the agent can find and call the allowed ones
+  without restarting its session. See [Choosing tools](https://github.com/junyeong-nero/kitsune#choosing-tools).
+- With the optional `automation` capability, an interrupted batch, parallel, or
+  workflow call can be resumed without resending the writes that already
+  succeeded. A write with an uncertain outcome needs an observation before it is
+  retried. [Checkpoints](https://github.com/junyeong-nero/kitsune/blob/main/docs/checkpoint-resume.md) are temporary and are lost when the bridge restarts.
 
 ## What can it do?
 
-- **Research the web.** Search, read pages, and summarize findings with links.
-- **Interact with websites.** Click, type, select options, and fill forms—even
-  on sites you're already signed into.
-- **Capture and extract.** Take screenshots or turn page content into text
-  and Markdown.
-- **Work across tabs.** Keep research and tasks in separate tabs without
-  replacing the page you're using.
+In your browser, the agent can:
+
+- Search the web, read pages, and summarize what it finds with links.
+- Click, type, select options, and fill forms, including on sites where you are
+  already signed in.
+- Take screenshots or turn page content into text and Markdown.
+- Keep research and tasks in separate tabs without replacing the page you are
+  using.
 
 ## Benchmark
 
 ![Kitsune v0.4.0 vs Playwright MCP 0.0.83: kept the user's tab in front in 23 of 24 tasks vs 2 of 24; 0.83 to 0.93 times the cost on tasks both solved; 191 of 198 vs 197 of 198 tasks solved](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/benchmark.png)
 
-On the same tasks and tool allowlist, Kitsune v0.4.0 kept the user's tab in front
-in 23 of 24 shared-browser tasks (Playwright MCP: 2 of 24) and cost 0.83–0.93× as
-much on tasks both solved. It solved 191 of 198 tasks to Playwright MCP's 197.
-One attempt per task with Claude Opus 5.5; Playwright MCP was not designed to share
-a browser with a person. See the [full reports](https://github.com/junyeong-nero/kitsune-benchmark/tree/main/docs/results).
+With the same tasks and tool allowlist, Kitsune v0.4.0 kept the user's tab in
+front in 23 of 24 shared-browser tasks, against 2 of 24 for Playwright MCP. On
+the tasks both solved, Kitsune cost 0.83 to 0.93 times as much. It solved 191 of
+198 tasks, and Playwright MCP solved 197. Each task was run once with Claude Opus
+5.5. Playwright MCP was not designed to share a browser with a person. See the
+[full reports](https://github.com/junyeong-nero/kitsune-benchmark/tree/main/docs/results).
 
 ## How is it different?
 
-Kitsune is one of several ways to connect an agent to a browser. Choose by the
-browser you use and the work you want to hand off:
+Kitsune is one of several ways to connect an agent to a browser. Which one fits
+depends on the browser you use and the work you want to hand off:
 
 | If you want to… | Consider |
 | --- | --- |
@@ -82,20 +82,20 @@ browser you use and the work you want to hand off:
 
 Kitsune connects through an extension and a local bridge, so Firefox needs no
 startup flags or WebDriver. Other Firefox extension projects also reuse your
-logins; Kitsune's focus is working alongside you in the same browser. For the
-full comparison and its limits, see
-[Positioning](https://github.com/junyeong-nero/kitsune/blob/main/docs/positioning.md).
+logins. Kitsune concentrates on sharing the browser with you while the agent
+works. [Positioning](https://github.com/junyeong-nero/kitsune/blob/main/docs/positioning.md)
+has the full comparison and its limits.
 
 ## How do I use it?
 
-1. **Connect once.** Install [uv](https://docs.astral.sh/uv/getting-started/installation/),
-   then follow the [MCP setup](#mcp-setup) for your agent below.
+1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then
+   follow the [MCP setup](#mcp-setup) for your agent below.
    [Install the browser extension](https://github.com/junyeong-nero/kitsune/blob/main/docs/installation.md#2-install-the-browser-extension)
-   in Firefox, Zen, or LibreWolf: the signed build installs once, while the
-   developer build (needed for `browser_evaluate`) is a temporary add-on.
-2. **Keep your browser open.** Kitsune starts its shared bridge automatically.
-   Ask your agent to check the connection before your first task.
-3. **Ask in plain language.** For example:
+   in Firefox, Zen, or LibreWolf. The signed build stays installed; the
+   developer build, which `browser_evaluate` needs, is a temporary add-on.
+2. Keep the browser open. Kitsune starts its shared bridge automatically. Before
+   your first task, ask the agent to check the connection.
+3. Ask in plain language. For example:
 
    > Research these three products in new background tabs and compare them with
    > source links. Leave my current tab alone.
@@ -105,55 +105,55 @@ full comparison and its limits, see
    > Open Hacker News in a background tab and summarize the top three stories
    > with links.
 
-   For an enforced draft-only tool surface, configure `KITSUNE_MODE=draft` before
-   starting the MCP client; asking in plain language does not change the mode.
+   Asking in plain language does not change the mode. To enforce a draft-only
+   tool set, set `KITSUNE_MODE=draft` before starting the MCP client.
 
-Use a dedicated browser profile and only give access to accounts the agent
-needs. Ask for confirmation before sending, purchasing, or deleting anything.
-The opt-in [ask-before-act](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#ask-before-act)
+Use a dedicated browser profile, and give the agent access only to the accounts
+it needs. Have it ask you before it sends, buys, or deletes anything. The opt-in
+[ask-before-act](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#ask-before-act)
 policy makes the bridge hold submits, payment pages, JavaScript, and cookie access
-until the agent repeats the call with a confirmation token. That second step is
-not proof of human approval, and these controls do not prevent prompt injection.
-Read the [security guidance](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#security) before using sensitive accounts.
+until the agent repeats the call with a confirmation token. The agent can make
+that second call on its own, so it does not prove that a person approved, and
+none of these controls prevent prompt injection. Read the [security guidance](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#security) before using sensitive accounts.
 
 ## MCP setup
 
-All clients launch the same local **stdio** server:
-`uvx --from kitsune-browser-mcp kitsune`. Choose **one** setup method for each
-client you use. Several clients can share the same bridge; keep their Kitsune
-versions and install sources consistent.
+Every client launches the same local stdio server:
+`uvx --from kitsune-browser-mcp kitsune`. Use only one setup method per client.
+Several clients can share one bridge; keep them on the same Kitsune version and
+install source.
 
 ### CLI registration: Claude Code, Codex, and Pi
 
-**Claude Code** — available in every project with `--scope user`:
+**Claude Code**, available in every project with `--scope user`:
 
 ```bash
 claude mcp add --scope user kitsune -- uvx --from kitsune-browser-mcp kitsune
 ```
 
-**Codex CLI** — registers the server in `~/.codex/config.toml`:
+**Codex CLI**, which registers the server in `~/.codex/config.toml`:
 
 ```bash
 codex mcp add kitsune -- uvx --from kitsune-browser-mcp kitsune
 ```
 
-**Pi** — uses [built-in MCP support](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/mcp.md)
-with user-level configuration by default:
+**Pi** has [built-in MCP support](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/mcp.md)
+and registers servers for your user by default:
 
 ```bash
 pi mcp add kitsune -- uvx --from kitsune-browser-mcp kitsune
 pi mcp list
 ```
 
-Add `--local` before `kitsune` to register Pi's server only for the current
-project. In an already running Pi session, run `/reload`, then `/mcp` to inspect
-the connection. If an MCP adapter extension overrides Pi's built-in support,
-follow that extension's configuration instructions instead.
+To register the server only for the current project, add `--local` before
+`kitsune`. In a Pi session that is already running, run `/reload`, then `/mcp` to
+check the connection. If an MCP adapter extension replaces Pi's built-in support,
+follow that extension's instructions instead.
 
 ### OpenCode
 
 Merge this into `~/.config/opencode/opencode.json` (global) or `opencode.json`
-in your project root. OpenCode uses an `mcp` object and a command array, not
+in your project root. OpenCode uses an `mcp` object with a command array, not
 `mcpServers`:
 
 ```json
@@ -171,9 +171,9 @@ in your project root. OpenCode uses an `mcp` object and a command array, not
 
 ### JSON configuration: Pi, Claude Desktop, and Cursor
 
-These clients share the same `mcpServers` format. As an alternative to CLI
-registration where available, merge the following entry into your client's
-config; keep any existing servers:
+These clients use the same `mcpServers` format. Instead of CLI registration,
+where a client has it, you can merge this entry into the client's config file
+and keep any servers already there:
 
 | Client | Config file |
 | --- | --- |
@@ -192,17 +192,18 @@ config; keep any existing servers:
 }
 ```
 
-Restart or reconnect your client after configuring it, then ask it to list your tabs
-(`browser_tabs` with `action: "list"`); an error's `hint` says what to fix. GUI apps may need the full path returned by
-`which uvx` instead of `uvx` if they do not inherit your shell's `PATH`.
+After configuring a client, restart or reconnect it and ask it to list your tabs
+(`browser_tabs` with `action: "list"`). If that fails, the error's `hint` says
+what to fix. A GUI app that does not inherit your shell's `PATH` may need the
+full path from `which uvx` in place of `uvx`.
 
 ### Choosing tools
 
-By default Kitsune publishes exactly [Playwright MCP](https://github.com/microsoft/playwright-mcp)'s
-25 core tools (same names, descriptions and schemas), driving your own browser, so
-prompts and clients written for Playwright MCP work unchanged
-([Core tools](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#core-tools)). Kitsune's own tools come in capability groups that
-you enable with `KITSUNE_CAPS` in the MCP server's environment:
+By default Kitsune publishes [Playwright MCP](https://github.com/microsoft/playwright-mcp)'s
+25 core tools with the same names, descriptions, and schemas, and they drive your
+own browser. Prompts and clients written for Playwright MCP work unchanged
+([Core tools](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#core-tools)). Kitsune's own tools are sorted into capability groups,
+which you enable with `KITSUNE_CAPS` in the MCP server's environment:
 
 | Group | Tools for |
 | --- | --- |
@@ -213,42 +214,37 @@ you enable with `KITSUNE_CAPS` in the MCP server's environment:
 | `automation` | Batches, retries, workflows, parallel tabs, resume |
 | `network` | Downloads, request interception and capture |
 | `admin` | Connection status, logs, audit, cache, policy |
-| `storage`, `history` | Cookies, page storage, clipboard and saved sessions; history and bookmarks. They read personal data, so `all` leaves them out: name them |
+| `storage`, `history` | Cookies, page storage, clipboard and saved sessions; history and bookmarks. They read personal data, so `all` leaves them out and you enable them by name |
 
-To keep the agent's tool list small, allow more than you publish. With
-`KITSUNE_CAPS=all` and `KITSUNE_PUBLISH=core`, the agent starts with the core tools
-and finds and calls the others in the same session
-([Finding tools without a restart](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#finding-tools-without-a-restart)). For
-example, with Claude Code:
+You can allow more tools than you publish, which keeps the agent's starting tool
+list small. With `KITSUNE_CAPS=all` and `KITSUNE_PUBLISH=core`, the agent starts
+with the core tools and can find and call the others in the same session
+([Finding tools without a restart](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#finding-tools-without-a-restart)). With Claude Code, for
+example:
 
 ```bash
 claude mcp add --scope user kitsune -e KITSUNE_CAPS=all -e KITSUNE_PUBLISH=core -- uvx --from kitsune-browser-mcp kitsune
 ```
 
 In the JSON configurations above, add `"env": {"KITSUNE_CAPS": "all", "KITSUNE_PUBLISH": "core"}`
-next to `"args"`. The bridge checks the groups on every request, batch steps included,
-and tools you call without a tab act on the agent's current tab, not the one you are
-looking at.
+next to `"args"`. The bridge checks the groups on every request, including batch
+steps. A tool called without a tab acts on the agent's current tab, not the one
+you are looking at.
 
-Upgrading from 0.3? The `devtools`, `parallel`, `windows` and `session` groups were
-replaced by the groups above, and `all` no longer includes `storage`. A configuration
-that names a removed group fails at startup; see [Tools](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#tools) for where each
-tool went.
+If you are upgrading from 0.3: the `devtools`, `parallel`, `windows` and `session`
+groups were replaced by the groups above, and `all` no longer includes `storage`.
+A configuration that names a removed group fails at startup. [Tools](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#tools) lists
+where each tool went.
 
-For Codex's TOML alternative, environment variables, version pinning, and
-upgrades, see [Installation](https://github.com/junyeong-nero/kitsune/blob/main/docs/installation.md).
+[Installation](https://github.com/junyeong-nero/kitsune/blob/main/docs/installation.md) covers Codex's TOML configuration, environment
+variables, version pinning, and upgrades.
 
-For the details: [Tools](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#tools) ·
+More documentation: [Tools](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#tools) ·
 [Configuration](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#configuration) ·
 [Troubleshooting](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#troubleshooting) ·
 [Updating](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#updating-kitsune) ·
 [API reference](https://github.com/junyeong-nero/kitsune/blob/main/docs/api-reference.md) ·
 [Development](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#development)
 
-For architecture, product trade-offs, and the wider browser MCP landscape, see
-[Positioning](https://github.com/junyeong-nero/kitsune/blob/main/docs/positioning.md).
-
----
-
-MIT · Based on ZenLink and ZenLink-MCP by Jay-Quan.
-[Credits](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#credits) · [License](https://github.com/junyeong-nero/kitsune/blob/main/LICENSE)
+The architecture, product trade-offs, and comparisons with other browser MCP
+servers are in [Positioning](https://github.com/junyeong-nero/kitsune/blob/main/docs/positioning.md).
