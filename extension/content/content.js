@@ -774,7 +774,7 @@
       }
       if (MEDIA_TAGS.has(el.tagName)) return clean(el.getAttribute('aria-label') || el.title);
       if (!interactive && isImage(el)) {
-        return clean(el.getAttribute('aria-label') || el.getAttribute('alt') || (el.hasAttribute('alt') ? '' : el.title));
+        return clean(alternativeName(el));
       }
       const explicitRole = el.getAttribute('role');
       const isLandmark = landmarks[el.tagName] ||
@@ -2681,6 +2681,7 @@
 
   // The name ambiguous_target candidates and role= selectors use (never a field value).
   function accessibleName(el) {
+    if (ALTERNATIVE_NAMED_TAGS.has(el.tagName.toUpperCase())) return alternativeName(el);
     const buttonInput = el.tagName === 'INPUT' && BUTTON_INPUT_TYPES.has(String(el.type).toLowerCase());
     return controlLabel(el, buttonInput) ||
       (FILL_TAGS.includes(el.tagName) ? findLabel(el) || el.placeholder || '' : '');
@@ -2714,7 +2715,7 @@
 
   function inferRole(el) {
     const inputRole = { button: 'button', submit: 'button', reset: 'button',
-      checkbox: 'checkbox', radio: 'radio', range: 'slider', number: 'spinbutton',
+      image: 'button', checkbox: 'checkbox', radio: 'radio', range: 'slider', number: 'spinbutton',
       search: 'searchbox' };
     const map = { A: 'link', BUTTON: 'button', INPUT: inputRole[el.type] || 'textbox',
       SELECT: 'combobox', TEXTAREA: 'textbox', SUMMARY: 'button', DETAILS: 'group',
@@ -3403,6 +3404,7 @@
     'color', 'range', 'submit', 'image']);
 
   const BUTTON_INPUT_TYPES = new Set(['button', 'submit', 'image']);
+  const ALTERNATIVE_NAMED_TAGS = new Set(['IMG', 'AREA', 'SVG']);
 
   // Ask-before-act: button labels that commit an order, payment, or form submission, for
   // JS-driven buttons that are not structural submit controls. The whole label (after
@@ -3507,9 +3509,7 @@
   // then title.
   function controlLabel(control, buttonInput) {
     const attr = name => String(control.getAttribute?.(name) || '').trim();
-    const labelledBy = attr('aria-labelledby').split(/\s+/).filter(Boolean)
-      .map(id => { const el = elementByIdNear(control, id); return el ? redactedText(el) : ''; })
-      .join(' ').trim();
+    const labelledBy = labelledByText(control);
     const text = redactedText(control).trim();
     const icon = !text && control.querySelector?.('[aria-label], img[alt], svg title');
     const iconLabel = icon ? String(icon.getAttribute('aria-label') || icon.getAttribute('alt') ||
@@ -3517,6 +3517,23 @@
     return labelledBy || attr('aria-label') || text ||
       (buttonInput ? (isSensitiveField(control) ? '' : String(control.value || '').trim()) || attr('alt') : '') ||
       iconLabel || attr('title');
+  }
+
+  function labelledByText(el) {
+    return String(el.getAttribute?.('aria-labelledby') || '').split(/\s+/).filter(Boolean)
+      .map(id => { const label = elementByIdNear(el, id); return label ? redactedText(label) : ''; })
+      .join(' ').trim();
+  }
+
+  // Images, areas and SVG graphics are named by their alternative text, not their content:
+  // aria-labelledby, aria-label, alt (an <svg>'s <title>), then title unless alt="" marks
+  // the image decorative. Snapshots name images the same way.
+  function alternativeName(el) {
+    const attr = name => String(el.getAttribute(name) || '').trim();
+    const svgTitle = el.tagName.toLowerCase() === 'svg' &&
+      Array.from(el.children).find(child => child.tagName.toLowerCase() === 'title');
+    return labelledByText(el) || attr('aria-label') || attr('alt') ||
+      (svgTitle ? redactedText(svgTitle).trim() : '') || (el.hasAttribute('alt') ? '' : attr('title'));
   }
 
   // Ask-before-act: whether clicking the target (or pressing Enter on it, with key) can submit
