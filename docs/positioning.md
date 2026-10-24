@@ -146,7 +146,7 @@ the user” or treat ownership as a security boundary.
 | `act` | Perform enabled interactions | Default mode; ask-before-act is configured separately |
 
 This makes delegation more concrete than a prompt saying “please do not submit.”
-The restricted modes intersect with capability groups and presets; they do not
+The restricted modes intersect with the enabled capability groups; they do not
 silently enable missing tools. See [Task modes](guide.md#task-modes) and
 [the explicit policy map](../src/kitsune/task_modes.py).
 
@@ -207,22 +207,25 @@ equivalent coverage merely because it can click, inspect network data, or run JS
 
 ### Setup and configuration complexity
 
-Users may need to understand server/bridge/extension versions, lean/full presets,
-capability groups, task modes, and ask-before-act. The signed extension is convenient
-for ongoing installation, but agent-supplied JavaScript requires the temporary
-developer build. The current manifest requires Firefox 142+ and broad extension
-permissions; hiding MCP tools does not reduce those installation permissions.
+Users may need to understand server/bridge/extension versions, capability groups
+(`KITSUNE_CAPS`), the published subset and gateway (`KITSUNE_PUBLISH`), task modes,
+and ask-before-act. The signed extension is convenient for ongoing installation,
+but agent-supplied JavaScript requires the temporary developer build. The current
+manifest requires Firefox 142+ and broad extension permissions; hiding MCP tools
+does not reduce those installation permissions.
 
 The opportunity is simpler task-oriented onboarding, not another layer of knobs.
 See [Installation](installation.md) and [Configuration](guide.md#configuration).
 
 ### Default experience versus advanced promises
 
-The default lean surface has 14 core tools. Batch/parallel/resume capabilities
-are optional, and restricted modes are opt-in. Do not advertise every advanced
-workflow as available immediately after the default setup. Show the required
-configuration beside the example, and distinguish an instruction in natural
-language from an enforced mode.
+The default `KITSUNE_CAPS=core` surface is Playwright MCP's 25 core tools. Kitsune's
+other groups, including batch/parallel/resume in `automation`, are enabled with
+`KITSUNE_CAPS`; `KITSUNE_PUBLISH` can keep them out of the initial tool list behind
+the gateway tools. Restricted task modes and ask-before-act are opt-in. Do not
+advertise every advanced workflow as available immediately after the default setup.
+Show the required configuration beside the example, and distinguish an instruction
+in natural language from an enforced mode.
 
 ### No measured general superiority
 

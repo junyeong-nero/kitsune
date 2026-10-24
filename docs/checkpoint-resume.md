@@ -42,7 +42,7 @@ browser_resume(call, resume_token, observed=None)
 ```
 
 POST `/api/resume` with `{"call", "resume_token", "observed"}`. The tool is in the
-`automation` capability group (`KITSUNE_CAPS=automation`), not in `core` or the lean preset.
+`automation` capability group (`KITSUNE_CAPS=automation`), not in `core`.
 
 The response has the shape of the original call: `results`, `progress`, `status` and
 `summary` for every command, plus `workflow` and `steps` for a workflow. If the
