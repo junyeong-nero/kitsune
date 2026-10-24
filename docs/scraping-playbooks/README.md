@@ -12,6 +12,7 @@
 > - [`bestbuy.md`](./bestbuy.md) — Lazy loading, `scroll` (`scrollBy`) fix, correct 2026 selectors
 > - [`newegg.md`](./newegg.md) — Silent category redirects, use `/p/pl?d=` search URL
 > - [`bhphotovideo.md`](./bhphotovideo.md) — CSS Modules hashed classes, wildcard selector pattern
+> - [`ebay.md`](./ebay.md) — Hidden placeholder cards, `li.s-item` gone, one-selector-per-field extraction without JS
 >
 > If a playbook doesn't exist for the target site, create one after you solve it.
 >
@@ -33,6 +34,7 @@
 | **Best Buy** | Intersection-observer lazy loading | `scroll amount:800` + correct selector `.product-list-item` | [bestbuy.md](./bestbuy.md) |
 | **Newegg** | SubCategory URLs silently redirect | Use `/p/pl?d=keywords` search URL instead | [newegg.md](./newegg.md) |
 | **B&H Photo** | CSS Modules hashed class names | `[class*="product_"]` wildcard + innerText parsing | [bhphotovideo.md](./bhphotovideo.md) |
+| **eBay** | `li.s-item` returns 0; `li.s-card` adds 2 hidden placeholders | `ul.srp-results > li.s-card` + one `query` per field | [ebay.md](./ebay.md) |
 
 ---
 
