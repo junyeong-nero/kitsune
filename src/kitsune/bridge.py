@@ -738,7 +738,8 @@ def _log(msg):
 
 AUDIT_REDACTED = "[redacted]"
 # Params holding typed text or stored secrets (cookie, storage and clipboard
-# contents); selectors, refs, tabId, op, name, url and key stay.
+# contents); selectors, refs, tabId, op, name, url and key stay, except a
+# keypress key that types itself (_typed_key).
 # selectOption values are always redacted: the bridge only sees a selector/ref,
 # and whether the <select> is sensitive (isSensitiveField) is known only in the page.
 _AUDIT_SECRET_PARAMS = {
@@ -763,6 +764,13 @@ _AUDIT_JS_PARAMS = {
 }
 
 
+def _typed_key(key, modifiers) -> bool:
+    """Whether a keypress key types itself into a field: one character without Control, Alt or
+    Meta (#267). Named keys (Enter, Backspace) and shortcuts stay in the audit log."""
+    mods = modifiers if isinstance(modifiers, dict) else {}
+    return isinstance(key, str) and len(key) == 1 and not any(mods.get(m) for m in ("ctrl", "alt", "meta"))
+
+
 def _audit_params(action, params):
     """Copy params for the audit log without JS bodies, typed values or secrets.
 
@@ -784,7 +792,7 @@ def _audit_params(action, params):
     for k, v in (params or {}).items():
         if k == "code" or k in js:  # don't log JS bodies
             continue
-        if k in secret:
+        if k in secret or (action == "keypress" and k == "key" and _typed_key(v, params.get("modifiers"))):
             out[k] = AUDIT_REDACTED
         elif action == "formFill" and k == "fields":
             # Keys are selectors/labels and stay; every value is typed content.

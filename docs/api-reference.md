@@ -1350,6 +1350,8 @@ typed text or stored secrets. These values are replaced with
 `"[redacted]"`:
 
 - `text` of `type` and `keypress`;
+- `key` of `keypress` when it types itself into a field: one character without
+  Control, Alt or Meta. Named keys such as `Enter` and shortcuts are kept;
 - `value` of `fill` and `setEditableContent`;
 - `value` of `selectOption`, whether or not the `<select>` is a sensitive field
   (the bridge sees only the selector or ref);
@@ -1361,7 +1363,7 @@ typed text or stored secrets. These values are replaced with
 - `text` of `clipboard` (`browser_clipboard` write).
 
 The action, `selector`/`ref`/`element`, `tabId`, other options (`op`, `name`,
-`url`, `domain`, `kind`, `key`, `modifiers`, `clear`, …), duration
+`url`, `domain`, `kind`, other `key`s, `modifiers`, `clear`, …), duration
 and outcome are kept. `intercept` takes only URL patterns and an effect, never a
 response body, so its entries are logged as sent. Nested commands (`batch`
 `commands`, `parallel` `sequences`, `retry`/`broadcast` `command`,
