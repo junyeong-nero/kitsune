@@ -941,7 +941,7 @@ def browser_type(
     selector: str = "", text: str = "",
     mode: Annotated[Literal["type", "fill", "editable"], Field(
         description="type: typing events, clearing first if clear. fill: replace the value via native "
-                    "setters and input/change events. editable: insert plain text into an "
+                    "setters and input/change events, or an editor's content. editable: insert plain text into an "
                     "editor/input/textarea, appending unless clear. HTML: browser_js.")] = "type",
     clear: bool = False, tab_id: TabId = None,
     ref: str | None = None, element: str | None = None, wait: bool = False, timeout: int = 10000,
