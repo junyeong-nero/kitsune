@@ -736,7 +736,8 @@ To publish a new version to PyPI, see [Releasing](releasing.md).
 
 ```
 extension/          WebExtension (manifest v2, Gecko)
-src/kitsune/
+packages/kitsune-browser-mcp/  The MCP server's PyPI package: pins kitsune-browser[mcp], adds the commands
+src/kitsune/        The kitsune-browser package (the repository root's pyproject.toml)
   server.py         MCP server: registers the tools on FastMCP, within KITSUNE_CAPS and KITSUNE_MODE
   tools.py          The agent tools (Kitsune's own) without MCP code; playwright_tools.py has the core group
   browser.py        Python API (kitsune.connect, Browser, Tab); errors.py has its exceptions

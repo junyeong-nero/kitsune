@@ -253,9 +253,10 @@ servers are in [Positioning](https://github.com/junyeong-nero/kitsune/blob/main/
 
 ## Python API
 
-The same extension and bridge also work from your own code. The package the MCP
-server ships in (`pip install kitsune-browser-mcp`) is a Python API with every
-capability group, storage and history included:
+The same extension and bridge also work from your own code. The code is the
+`kitsune-browser` package, which the MCP server's package installs with the server;
+`pip install kitsune-browser` alone gives you a Python API with every capability group,
+storage and history included:
 
 ```python
 import kitsune

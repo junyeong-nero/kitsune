@@ -17,11 +17,13 @@ your approval, and sensitive fields are redacted. Ask-before-act, when it is on,
 holds the same actions.
 
 ```bash
-pip install kitsune-browser-mcp      # or: uv add kitsune-browser-mcp
+pip install kitsune-browser      # or: uv add kitsune-browser
 ```
 
-The package is the one the MCP server ships in; it needs the Kitsune extension
-installed in Firefox, Zen or LibreWolf ([Installation](installation.md)).
+kitsune-browser is the code; the MCP server's package, kitsune-browser-mcp, installs it
+with the `mcp` extra. Keep a script on the version your MCP clients run, since they share
+one bridge ([Connecting](#connecting)). It needs the Kitsune extension installed in
+Firefox, Zen or LibreWolf ([Installation](installation.md)).
 
 ```python
 import kitsune

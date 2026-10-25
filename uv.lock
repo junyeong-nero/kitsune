@@ -10,6 +10,12 @@ resolution-markers = [
     "python_full_version < '3.11' and sys_platform != 'win32'",
 ]
 
+[manifest]
+members = [
+    "kitsune-browser",
+    "kitsune-browser-mcp",
+]
+
 [[package]]
 name = "annotated-doc"
 version = "0.0.5"
@@ -354,12 +360,12 @@ wheels = [
 ]
 
 [[package]]
-name = "kitsune-browser-mcp"
+name = "kitsune-browser"
 version = "0.6.0"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },
-    { name = "mcp", extra = ["cli"] },
+    { name = "pydantic" },
     { name = "websockets", version = "16.1.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "websockets", version = "17.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
@@ -368,13 +374,45 @@ dependencies = [
 macos = [
     { name = "pyobjc-framework-quartz", marker = "sys_platform == 'darwin'" },
 ]
+mcp = [
+    { name = "mcp", extra = ["cli"] },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "kitsune-browser-mcp" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "httpx", specifier = ">=0.27.0" },
-    { name = "mcp", extras = ["cli"], specifier = ">=1.2.0,<2" },
+    { name = "mcp", extras = ["cli"], marker = "extra == 'mcp'", specifier = ">=1.2.0,<2" },
+    { name = "pydantic", specifier = ">=2.7,<3" },
     { name = "pyobjc-framework-quartz", marker = "sys_platform == 'darwin' and extra == 'macos'", specifier = ">=10" },
     { name = "websockets", specifier = ">=14.2" },
+]
+provides-extras = ["mcp", "macos"]
+
+[package.metadata.requires-dev]
+dev = [{ name = "kitsune-browser-mcp", editable = "packages/kitsune-browser-mcp" }]
+
+[[package]]
+name = "kitsune-browser-mcp"
+version = "0.6.0"
+source = { editable = "packages/kitsune-browser-mcp" }
+dependencies = [
+    { name = "kitsune-browser", extra = ["mcp"] },
+]
+
+[package.optional-dependencies]
+macos = [
+    { name = "kitsune-browser", extra = ["macos"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "kitsune-browser", extras = ["macos"], marker = "extra == 'macos'", editable = "." },
+    { name = "kitsune-browser", extras = ["mcp"], editable = "." },
 ]
 provides-extras = ["macos"]
 
