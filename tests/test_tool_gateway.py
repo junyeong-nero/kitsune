@@ -17,7 +17,7 @@ from unittest.mock import Mock, patch
 import anyio
 from mcp import types
 from mcp.shared.memory import create_connected_server_and_client_session
-from kitsune import server
+from kitsune import bridge_client, server
 
 PNG = "data:image/png;base64," + base64.b64encode(b"\x89PNG\r\n\x1a\n").decode()
 RESPONSES = {"/api/screenshot": {"ok": True, "dataUrl": PNG}, "/api/snapshot": {"ok": True, "snapshot": "- button"},
@@ -53,7 +53,7 @@ async def connect(stack, notes):
 async def main(calls):
     from contextlib import AsyncExitStack
     out = {}
-    with patch.object(server.httpx, "request", side_effect=bridge):
+    with patch.object(bridge_client.httpx, "request", side_effect=bridge):
         async with AsyncExitStack() as stack:
             notes_a, notes_b = [], []
             a = await connect(stack, notes_a)

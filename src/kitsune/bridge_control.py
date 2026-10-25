@@ -1,4 +1,4 @@
-"""Local bridge lifecycle operations shared by the MCP server and CLI."""
+"""Local bridge lifecycle operations shared by the bridge client and CLI."""
 
 from contextlib import contextmanager
 import fcntl

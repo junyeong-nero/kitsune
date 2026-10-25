@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 from mcp.server.fastmcp import FastMCP
 from mcp.shared.memory import create_connected_server_and_client_session
 
-from kitsune import server
+from kitsune import bridge_client, server
 
 SNAPSHOT = {
     "snapshot": "\n".join([
@@ -68,7 +68,7 @@ class CompactResultTests(unittest.TestCase):
             async with create_connected_server_and_client_session(mcp._mcp_server) as session:
                 return await session.call_tool(name, arguments)
 
-        with patch.object(server.httpx, "request", return_value=Mock(json=Mock(return_value=reply))):
+        with patch.object(bridge_client.httpx, "request", return_value=Mock(json=Mock(return_value=reply))):
             return asyncio.run(run())
 
     def text(self, result) -> str:

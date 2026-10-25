@@ -15,7 +15,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from kitsune import bridge, server
+from kitsune import bridge, bridge_client, server
 import kitsune.bridge_control as control
 from test_bridge_security import SYNTHETIC_TOKEN, Bridge
 
@@ -116,7 +116,8 @@ class BridgeIdleShutdownProcessTests(unittest.TestCase):
         for patcher in (
             patch.dict(os.environ, self.bridge.env, clear=True), self.daemon_paths(),
             patch.multiple(control, BRIDGE=url, TOKEN_FILE=os.path.join(self.home, "token"), LOG_FILE=log_file),
-            patch.multiple(server, BRIDGE=url, LOG_FILE=log_file, _extension_wait_until=0.0),
+            patch.multiple(bridge_client, BRIDGE=url, LOG_FILE=log_file),
+            patch.object(server._client, "_extension_wait_until", 0.0),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -127,16 +128,16 @@ class BridgeIdleShutdownProcessTests(unittest.TestCase):
         self.addCleanup(httpx_logger.setLevel, httpx_logger.level)
         httpx_logger.setLevel(logging.WARNING)
 
-        # The MCP server's normal path: ConnectError -> _ensure_bridge spawns a new daemon.
+        # The MCP server's normal path: ConnectError -> ensure_bridge spawns a new daemon.
         popen = subprocess.Popen
 
         def spawn(*args, **kwargs):
             spawned.append(popen(*args, **kwargs))
             return spawned[-1]
 
-        with patch.object(server.subprocess, "Popen", side_effect=spawn):
+        with patch.object(bridge_client.subprocess, "Popen", side_effect=spawn):
             status = server._get("/api/status")
-        self.assertEqual(status.get("build"), server.BRIDGE_BUILD, status)
+        self.assertEqual(status.get("build"), bridge_client.BRIDGE_BUILD, status)
         self.assertEqual(len(spawned), 1)
         self.assertEqual(control._locked_pid(), spawned[0].pid)
         # The respawned daemon inherited the client's idle timeout and idles out too.

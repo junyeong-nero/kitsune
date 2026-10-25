@@ -12,7 +12,7 @@ import unittest
 from unittest.mock import ANY, AsyncMock, Mock, mock_open, patch
 
 import httpx
-from kitsune import bridge, server
+from kitsune import bridge, bridge_client, server
 import kitsune.bridge_control as control
 import kitsune.version as version
 
@@ -26,67 +26,67 @@ class EnsureBridgeTests(unittest.TestCase):
         self.env.start()
         self.addCleanup(self.env.stop)
         # A started bridge makes the next command wait for its extension (#258); keep that to this test.
-        wait = patch.object(server, "_extension_wait_until", 0.0)
+        wait = patch.object(server._client, "_extension_wait_until", 0.0)
         wait.start()
         self.addCleanup(wait.stop)
 
     def test_matching_build_does_not_restart(self):
-        with patch.object(control, "status", return_value={"build": server.BRIDGE_BUILD}), \
+        with patch.object(control, "status", return_value={"build": bridge_client.BRIDGE_BUILD}), \
                 patch.object(control, "lifecycle_lock") as lock, patch.object(control, "stop") as stop:
-            self.assertIsNone(server._ensure_bridge())
+            self.assertIsNone(server._client.ensure_bridge())
             lock.assert_not_called()
             stop.assert_not_called()
 
     def test_mismatch_and_old_bridge_restart_then_wait_for_matching_build(self):
         for old in ({"build": "old"}, {"bridge_version": "2.1.0"}):
             with self.subTest(old=old), \
-                    patch.object(control, "status", side_effect=[old, old, None, {"build": server.BRIDGE_BUILD}]), \
+                    patch.object(control, "status", side_effect=[old, old, None, {"build": bridge_client.BRIDGE_BUILD}]), \
                     patch.object(control, "lifecycle_lock", return_value=nullcontext()), \
                     patch.object(control, "stop", return_value=None) as stop, \
                     patch("builtins.open", mock_open()), \
-                    patch.object(server.subprocess, "Popen", **RUNNING) as spawn, patch.object(server.time, "sleep"):
-                self.assertIsNone(server._ensure_bridge())
+                    patch.object(bridge_client.subprocess, "Popen", **RUNNING) as spawn, patch.object(bridge_client.time, "sleep"):
+                self.assertIsNone(server._client.ensure_bridge())
                 stop.assert_called_once_with()
                 self.assertEqual(spawn.call_count, 1)
-                self.assertEqual(spawn.call_args.args[0], [server.sys.executable, "-m", "kitsune.bridge"])
+                self.assertEqual(spawn.call_args.args[0], [bridge_client.sys.executable, "-m", "kitsune.bridge"])
 
     def test_opt_out_keeps_old_or_mismatched_bridge(self):
         for old in ({}, {"build": "old"}):
             with self.subTest(old=old), patch.dict(os.environ, {"KITSUNE_NO_BRIDGE_RESTART": "1"}), \
                     patch.object(control, "status", return_value=old), patch.object(control, "stop") as stop:
-                self.assertIsNone(server._ensure_bridge())
+                self.assertIsNone(server._client.ensure_bridge())
                 stop.assert_not_called()
 
     def test_recheck_under_lock_reuses_replacement_from_another_client(self):
-        with patch.object(control, "status", side_effect=[{}, {"build": server.BRIDGE_BUILD}]), \
+        with patch.object(control, "status", side_effect=[{}, {"build": bridge_client.BRIDGE_BUILD}]), \
                 patch.object(control, "lifecycle_lock", return_value=nullcontext()), \
                 patch.object(control, "stop") as stop:
-            self.assertIsNone(server._ensure_bridge())
+            self.assertIsNone(server._client.ensure_bridge())
             stop.assert_not_called()
 
     def test_stop_failure_does_not_spawn(self):
         with patch.object(control, "status", return_value={}), \
                 patch.object(control, "lifecycle_lock", return_value=nullcontext()), \
                 patch.object(control, "stop", return_value="cannot safely stop"), \
-                patch.object(server.subprocess, "Popen", **RUNNING) as spawn:
-            self.assertEqual(server._ensure_bridge(), server._bridge_unavailable("cannot safely stop"))
+                patch.object(bridge_client.subprocess, "Popen", **RUNNING) as spawn:
+            self.assertEqual(server._client.ensure_bridge(), bridge_client._bridge_unavailable("cannot safely stop"))
             spawn.assert_not_called()
 
     def test_no_bridge_starts_even_with_opt_out(self):
         with patch.dict(os.environ, {"KITSUNE_NO_BRIDGE_RESTART": "1"}), \
-                patch.object(control, "status", side_effect=[None, None, {"build": server.BRIDGE_BUILD}]), \
+                patch.object(control, "status", side_effect=[None, None, {"build": bridge_client.BRIDGE_BUILD}]), \
                 patch.object(control, "lifecycle_lock", return_value=nullcontext()), \
-                patch("builtins.open", mock_open()), patch.object(server.subprocess, "Popen", **RUNNING) as spawn:
-            self.assertIsNone(server._ensure_bridge())
+                patch("builtins.open", mock_open()), patch.object(bridge_client.subprocess, "Popen", **RUNNING) as spawn:
+            self.assertIsNone(server._client.ensure_bridge())
             spawn.assert_called_once()
 
     def test_start_wait_rejects_wrong_build(self):
         with patch.object(control, "status", side_effect=[None, None, {"build": "wrong"}]), \
                 patch.object(control, "lifecycle_lock", return_value=nullcontext()), \
-                patch("builtins.open", mock_open()), patch.object(server.subprocess, "Popen", **RUNNING), \
-                patch.object(server.time, "monotonic", side_effect=[0, 0, 16]), patch.object(server.time, "sleep"), \
+                patch("builtins.open", mock_open()), patch.object(bridge_client.subprocess, "Popen", **RUNNING), \
+                patch.object(bridge_client.time, "monotonic", side_effect=[0, 0, 16]), patch.object(bridge_client.time, "sleep"), \
                 patch.object(control, "port_in_use") as port_in_use:
-            error = server._ensure_bridge() or {}
+            error = server._client.ensure_bridge() or {}
             self.assertIn("did not start", error.get("error", ""))
             self.assertEqual(error.get("code"), "bridge_unavailable")
             port_in_use.assert_not_called()  # a bridge of another build answers on the port
@@ -267,11 +267,11 @@ class BridgeCliAndStatusTests(unittest.TestCase):
         handler.send_json = Mock()
         handler.handle_status()
         data = handler.send_json.call_args.args[1]
-        self.assertEqual(data["build"], server.BRIDGE_BUILD)
+        self.assertEqual(data["build"], bridge_client.BRIDGE_BUILD)
         self.assertEqual(data["bridge_version"], version.PACKAGE_VERSION)
         self.assertIn("extension_connected", data)
         with patch.object(server, "_get", return_value=data):
-            self.assertEqual(server.browser_status()["build"], server.BRIDGE_BUILD)
+            self.assertEqual(server.browser_status()["build"], bridge_client.BRIDGE_BUILD)
 
 
 class BridgeIdleShutdownTests(unittest.TestCase):

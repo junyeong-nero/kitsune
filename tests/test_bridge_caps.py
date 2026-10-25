@@ -48,7 +48,7 @@ for name, group in server.TOOL_GROUPS.items():
                 function(**required)
             seen |= {call.args[0] for call in get.call_args_list + post.call_args_list}
     routes[name] = [group, sorted(seen)]
-print(json.dumps({"routes": routes, "header": server._CAPS_HEADER_VALUE}))
+print(json.dumps({"routes": routes, "header": server._client.caps}))
 '''
 
 
@@ -101,7 +101,7 @@ class CapabilityTableTests(unittest.TestCase):
                              ("all,storage", "admin,automation,browse,core,inspect,network,read,storage,tabs"),
                              ("", "")):
             env = {**os.environ, "KITSUNE_CAPS": caps}
-            result = subprocess.run([sys.executable, "-c", "from kitsune import server; print(server._CAPS_HEADER_VALUE)"],
+            result = subprocess.run([sys.executable, "-c", "from kitsune import server; print(server._client.caps)"],
                                     env=env, capture_output=True, text=True, check=True)
             self.assertEqual(result.stdout.strip(), header)
 

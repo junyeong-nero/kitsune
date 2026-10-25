@@ -9,7 +9,7 @@ import httpx
 from mcp.server.fastmcp import FastMCP
 from mcp.shared.memory import create_connected_server_and_client_session
 
-from kitsune import bridge, playwright_tools, server
+from kitsune import bridge, bridge_client, playwright_tools, server
 
 
 class SilentSocket:
@@ -117,24 +117,24 @@ class RetryActionTests(unittest.TestCase):
 
 class ServerTransportErrorTests(unittest.TestCase):
     def test_unreachable_bridge_is_retryable(self):
-        with patch.object(server.httpx, "request", side_effect=httpx.ConnectError("refused")), \
-             patch.object(server, "_ensure_bridge", return_value=None):
-            result = server._request("POST", "/api/click", json={}, timeout=1)
+        with patch.object(bridge_client.httpx, "request", side_effect=httpx.ConnectError("refused")), \
+             patch.object(server._client, "ensure_bridge", return_value=None):
+            result = server._client.request("POST", "/api/click", json={}, timeout=1)
         self.assertTrue(result["error"].startswith("Kitsune bridge is not reachable"))
         self.assertEqual((result["code"], result["retryable"]), ("bridge_unavailable", True))
 
-        with patch.object(server.httpx, "request", side_effect=httpx.ConnectError("refused")), \
-             patch.object(server, "_ensure_bridge",
-                          return_value=server._bridge_unavailable("Cannot start Kitsune bridge: denied")):
-            result = server._request("POST", "/api/click", json={}, timeout=1)
+        with patch.object(bridge_client.httpx, "request", side_effect=httpx.ConnectError("refused")), \
+             patch.object(server._client, "ensure_bridge",
+                          return_value=bridge_client._bridge_unavailable("Cannot start Kitsune bridge: denied")):
+            result = server._client.request("POST", "/api/click", json={}, timeout=1)
         self.assertEqual(result["error"], "Cannot start Kitsune bridge: denied")
         self.assertEqual(result["code"], "bridge_unavailable")
 
     def test_timeout_is_retryable_only_for_get(self):
         for method, retryable in (("POST", False), ("GET", True)):
             with self.subTest(method=method), \
-                 patch.object(server.httpx, "request", side_effect=httpx.ReadTimeout("read timed out")):
-                result = server._request(method, "/api/submit-form", timeout=1)
+                 patch.object(bridge_client.httpx, "request", side_effect=httpx.ReadTimeout("read timed out")):
+                result = server._client.request(method, "/api/submit-form", timeout=1)
             self.assertEqual(result["error"], "read timed out")
             self.assertEqual((result["code"], result["retryable"]), ("timeout", retryable))
 
@@ -146,9 +146,9 @@ class ServerTransportErrorTests(unittest.TestCase):
                 ("GET", httpx.ReadError("[Errno 54] Connection reset by peer"), True, True),
                 ("POST", httpx.WriteError("[Errno 32] Broken pipe"), False, True)):
             with self.subTest(method=method, error=type(error).__name__), \
-                 patch.object(server.httpx, "request", side_effect=error), \
-                 patch.object(server, "_ensure_bridge") as ensure:
-                result = server._request(method, "/api/check", json={}, timeout=1)
+                 patch.object(bridge_client.httpx, "request", side_effect=error), \
+                 patch.object(server._client, "ensure_bridge") as ensure:
+                result = server._client.request(method, "/api/check", json={}, timeout=1)
             ensure.assert_not_called()
             self.assertEqual(result["error"], str(error))
             self.assertEqual((result["code"], result["retryable"], result["state"]),
@@ -158,7 +158,7 @@ class ServerTransportErrorTests(unittest.TestCase):
     def test_bridge_error_fields_pass_through_unchanged(self):
         error = {"error": "stale ref, call browser_snapshot again", "code": "stale_ref", "retryable": True,
                  "hint": "snapshot", "state": {"reason": "other_document", "ref": "s1e0", "tabId": 7}}
-        with patch.object(server.httpx, "request", return_value=Mock(json=Mock(return_value=error))):
+        with patch.object(bridge_client.httpx, "request", return_value=Mock(json=Mock(return_value=error))):
             self.assertEqual(server.browser_click(ref="s1e0", tab_id=7), error)
 
 
@@ -180,7 +180,7 @@ class McpErrorResultTests(unittest.TestCase):
             async with create_connected_server_and_client_session(mcp._mcp_server) as session:
                 return await session.call_tool(name, arguments)
 
-        with patch.object(server.httpx, "request", **request):
+        with patch.object(bridge_client.httpx, "request", **request):
             return asyncio.run(run())
 
     def assertMcpResult(self, result, payload, is_error):
@@ -216,10 +216,10 @@ class McpErrorResultTests(unittest.TestCase):
         self.assertMcpResult(self.call("browser_click", {"target": "e1"}, disconnected), disconnected, True)
 
     def test_bridge_unavailable_is_an_error(self):
-        with patch.object(server, "_ensure_bridge",
-                          return_value=server._bridge_unavailable("Cannot start Kitsune bridge: denied")):
+        with patch.object(server._client, "ensure_bridge",
+                          return_value=bridge_client._bridge_unavailable("Cannot start Kitsune bridge: denied")):
             result = self.call("browser_snapshot", {}, side_effect=httpx.ConnectError("refused"))
-        self.assertMcpResult(result, server._bridge_unavailable("Cannot start Kitsune bridge: denied"), True)
+        self.assertMcpResult(result, bridge_client._bridge_unavailable("Cannot start Kitsune bridge: denied"), True)
 
     def test_server_validation_and_ok_false_are_errors(self):
         self.assertMcpResult(self.call("browser_tabs", {"action": "select"}),
@@ -255,7 +255,7 @@ class McpErrorResultTests(unittest.TestCase):
         sequences = {"results": [[partial["results"]]]}
         self.assertMcpResult(self.call("browser_parallel", {"sequences": [[{"action": "click"}] * 2]},
                                        sequences, mcp=mcp), sequences, False)
-        unavailable = server._bridge_unavailable("Kitsune bridge is not reachable")
+        unavailable = bridge_client._bridge_unavailable("Kitsune bridge is not reachable")
         self.assertMcpResult(self.call("browser_batch", {"commands": []}, unavailable, mcp=mcp), unavailable, True)
         exhausted = {"ok": False, "attempts": 1, "reason": "not retryable",
                      "result": {"error": "Command timed out after 30s", "code": "timeout", "retryable": False}}
@@ -286,7 +286,7 @@ class McpErrorResultTests(unittest.TestCase):
 
     def test_python_callers_still_get_plain_results(self):
         error = {"error": "Element not found", "code": "not_found", "retryable": True}
-        with patch.object(server.httpx, "request", return_value=Mock(json=Mock(return_value=error))):
+        with patch.object(bridge_client.httpx, "request", return_value=Mock(json=Mock(return_value=error))):
             self.assertEqual(server.browser_click(selector="#gone"), error)
 
 
