@@ -1746,7 +1746,7 @@ again. It is an observation, not an error, and Kitsune adds no wait of its own:
 ```json
 { "snapshot": "", "url": "https://example.test/hotels", "title": "Hotels",
   "readyState": "complete", "empty": true,
-  "hint": "The page shows no content yet. If it should, wait for text you expect with browser_wait_for, then take a new snapshot; a loaded page can also be empty." }
+  "hint": "The page shows no content yet. If it should, wait for text you expect with browser_wait_for (page text, not a field's placeholder or label), then take a new snapshot; a loaded page can also be empty." }
 ```
 
 Saving is separate from readiness: the core `browser_snapshot(filename=...)` returns
@@ -1932,7 +1932,7 @@ Invalid combinations return an error before contacting the bridge.
 | Condition | Meaning | Bridge endpoint |
 |---|---|---|
 | `selector` / `ref` | Wait for a visible element, poll every 200 ms | `/api/wait-for-element` |
-| `text`, `text_gone` | Literal substring of `document.body.innerText` appears/disappears, poll every 100 ms | `/api/wait-for-text` |
+| `text`, `text_gone` | Literal substring of `document.body.innerText` appears/disappears, poll every 100 ms; placeholders and aria-labels are not page text | `/api/wait-for-text` |
 | `js` | Expression returns a non-empty result, poll every 500 ms | `/api/wait-for-result` |
 | `url`, `title` | JavaScript regex pattern matches | `/api/wait-for-url`, `/api/wait-for-title` |
 | `network_idle=True` | No new network resources for 500 ms | `/api/wait-for-network-idle` |
@@ -2156,8 +2156,13 @@ MCP tool: `browser_wait_for(text=...)` or `browser_wait_for(text_gone=...)`.
 Provide at least one non-empty condition (the HTTP endpoint accepts both at once). Polls rendered top-level document text
 about every 100 ms, excluding hidden text; if both conditions are provided they
 must both hold. Matching uses case-sensitive substrings. Frames and shadow roots
-are not traversed. Returns `{ok, text, text_gone, elapsed}`; timeout returns
-`ok: false` with an error. The bridge polls single reads (see `browser_wait_for`); a
+are not traversed. Field names from `placeholder`, `aria-label` or `aria-labelledby`,
+which snapshots show as names, are not page text and never match. Returns
+`{ok, text, text_gone, elapsed}`; timeout returns `ok: false` with an error. When the
+text of a timed-out `text` wait is the name of a visible element, the result also has
+`matched_as: "accessible_name"`, `name_matches` (up to 3 `{ref, role, name, source}`,
+where `source` is the attribute) and a `hint`: act on the ref, or wait for text the page
+shows. The bridge polls single reads (see `browser_wait_for`); a
 zero timeout performs one immediate check.
 
 ## Navigation (POST)

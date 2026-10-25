@@ -323,7 +323,7 @@
       'ping':                  () => ({ ok: true, version: CONTENT_VERSION }),
       'getPageInfo':           () => getPageInfo(),
       'handleDialog':          () => handleDialog(msg.accept, msg.prompt_text),
-      'waitForText':           () => waitForText(msg.text, msg.text_gone, msg.timeout),
+      'waitForText':           () => waitForText(msg.text, msg.text_gone, msg.timeout, msg.diagnose === true),
       'getPageText':           () => getPageText(msg.selector),
       'getSnapshot':           () => getSnapshot(msg.maxChars, msg.focusLastAction, msg.ref || msg.selector, msg.maxDepth, msg.text ?? (msg.observation ? false : undefined),
                                      msg.observation, msg.delta ? 'delta' : 'full', !!msg.boxes, msg.collapse !== false),
@@ -635,7 +635,8 @@
   // A loaded tab is not loaded content (#259): an empty readable snapshot may be a page that
   // still renders asynchronously or one that is empty, and readyState alone cannot tell.
   const EMPTY_SNAPSHOT_HINT = 'The page shows no content yet. If it should, wait for text you ' +
-    'expect with browser_wait_for, then take a new snapshot; a loaded page can also be empty.';
+    'expect with browser_wait_for (page text, not a field\'s placeholder or label), then take a ' +
+    'new snapshot; a loaded page can also be empty.';
   // A bounded snapshot never ends inside a block (an element's lines below the root, such as
   // a product card or a short section) of at most this many characters or a quarter of its
   // budget (#262): the block is kept or left out whole.
@@ -1844,7 +1845,33 @@
   }
   // @kitsune-dev-only:end
 
-  function waitForText(text, textGone, timeout = 10000) {
+  // Names a snapshot shows but innerText lacks (#275): placeholders and aria labels.
+  const TEXT_NAME_SOURCES = ['aria-label', 'aria-labelledby', 'placeholder'];
+  const TEXT_NAME_MATCH_LIMIT = 3;
+  function textNameSource(el, text) {
+    return TEXT_NAME_SOURCES.find(attr => normalizeSelectorText(
+      attr === 'aria-labelledby' ? labelledByText(el) : el.getAttribute(attr)).includes(text));
+  }
+
+  // A timed-out text wait whose text is a visible element's name, not page text: the
+  // elements and a hint. Only an unmet wait asks, so a met wait costs nothing.
+  function textNameDiagnosis(text) {
+    const matches = [];
+    for (const el of deepQuerySelectorAll('[aria-label], [aria-labelledby], [placeholder]')) {
+      if (matches.length >= TEXT_NAME_MATCH_LIMIT) break;
+      if (isHidden(el) || !hasArea(el)) continue;
+      const source = textNameSource(el, text);
+      if (source) matches.push({ ...targetSummary(el), source });
+    }
+    if (!matches.length) return {};
+    const [first] = matches;
+    return { matched_as: 'accessible_name', name_matches: matches,
+      hint: `Found as the name of ${first.role} ${JSON.stringify(first.name)} (${first.source}), not page ` +
+        'text: text waits match only rendered page text (innerText). Act on its ref from ' +
+        'name_matches, or wait for text the page shows.' };
+  }
+
+  function waitForText(text, textGone, timeout = 10000, diagnose = false) {
     if ((text == null && textGone == null) ||
         [text, textGone].some(t => t != null && (typeof t !== 'string' || !t.length)) ||
         !Number.isFinite(timeout) || timeout < 0) {
@@ -1863,7 +1890,8 @@
         const elapsed = Date.now() - start;
         if (appeared && disappeared) resolve({ ok: true, text, text_gone: textGone, elapsed });
         else if (elapsed >= timeout) resolve({ ok: false, text, text_gone: textGone, elapsed,
-          error: `Timed out after ${timeout}ms waiting for visible text` });
+          error: `Timed out after ${timeout}ms waiting for visible text`,
+          ...(diagnose && !appeared ? textNameDiagnosis(text) : {}) });
         else setTimeout(poll, Math.min(100, timeout - elapsed));
       }
       poll();

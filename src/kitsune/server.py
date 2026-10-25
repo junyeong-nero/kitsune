@@ -1110,8 +1110,8 @@ def browser_wait_for(
     confirm_token: Annotated[str | None, Field(description="js waits; see browser_check.")] = None,
 ) -> dict:
     """Wait for exactly one condition, or sleep for time seconds: selector/ref (a visible
-    element, see browser_check; ref wins), text/text_gone (visible page text, literal
-    substring), js (a non-empty result, including false/0; developer extension build only),
+    element, see browser_check; ref wins), text/text_gone (rendered page text, literal
+    substring; placeholders and aria-labels shown as snapshot names are not matched), js (a non-empty result, including false/0; developer extension build only),
     url/title (JavaScript regex on tab metadata, so it survives navigation) or network_idle
     (500 ms without new resources). timeout is the maximum wait in ms; it does not limit time.
 

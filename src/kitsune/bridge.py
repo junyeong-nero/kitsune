@@ -2207,12 +2207,21 @@ async def _poll_page_wait(action, params):
     poll_s = (params.get("pollInterval") or 100) / 1000
     start = time.monotonic()
     deadline = start + timeout_ms / 1000
+    # A text wait's last read also says whether unmet text is an element's name, not
+    # page text (#275); earlier reads skip that search.
+    diagnose = action == "waitForText" and params.get("text") is not None
     while True:
         remaining_s = max(0, deadline - time.monotonic())
-        r = await send_to_extension(action, {**params, "timeout": 0}, timeout=remaining_s + 5)
+        last = diagnose and remaining_s <= poll_s
+        r = await send_to_extension(action, {**params, "timeout": 0, **({"diagnose": True} if last else {})},
+                                    timeout=remaining_s + 5)
         if not isinstance(r, dict) or r.get("ok") is not False or time.monotonic() >= deadline:
             break
         await asyncio.sleep(min(poll_s, max(0, deadline - time.monotonic())))
+    if diagnose and not last and isinstance(r, dict) and r.get("ok") is False:
+        diagnosed = await send_to_extension(action, {**params, "timeout": 0, "diagnose": True}, timeout=10)
+        if isinstance(diagnosed, dict) and "ok" in diagnosed:
+            r = diagnosed
     if isinstance(r, dict) and r.get("ok") is False:
         r["elapsed"] = int((time.monotonic() - start) * 1000)
         r["error"] = _re.sub(r"^Timed out after 0ms", f"Timed out after {timeout_ms}ms", r.get("error", ""))

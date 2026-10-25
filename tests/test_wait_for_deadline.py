@@ -86,8 +86,30 @@ class PageWaitDeadlineTests(unittest.TestCase):
     def test_a_zero_timeout_is_one_read(self):
         page = ThrottledPage(UNMET_TEXT)
         result, _ = run_wait(page, "waitForText", {"text": "Saved", "timeout": 0})
-        self.assertEqual(len(page.calls), 1)
+        self.assertEqual(page.calls, [("waitForText", {"text": "Saved", "timeout": 0, "diagnose": True})])
         self.assertEqual(result["error"], "Timed out after 0ms waiting for visible text")
+
+    def test_only_an_unmet_text_waits_last_read_asks_for_names(self):
+        # #275: the text is an element's name, which the timed-out result reports.
+        named = {**UNMET_TEXT, "matched_as": "accessible_name", "hint": "Found as the name of textbox",
+                 "name_matches": [{"ref": "e0", "role": "textbox", "name": "Saved", "source": "placeholder"}]}
+        page = ThrottledPage(UNMET_TEXT, UNMET_TEXT, named)
+        result, wall_ms = run_wait(page, "waitForText", {"text": "Saved", "timeout": TIMEOUT_MS})
+        self.assert_timed_out_at_deadline(result, wall_ms)
+        self.assertEqual(result["error"], f"Timed out after {TIMEOUT_MS}ms waiting for visible text")
+        self.assertEqual(result["name_matches"], named["name_matches"])
+        self.assertEqual(result["matched_as"], "accessible_name")
+        asked = [params.get("diagnose") for _, params in page.calls]
+        self.assertIs(asked[-1], True)
+        self.assertNotIn(True, asked[:-2])
+
+        met = ThrottledPage({"ok": True, "text": "Saved", "elapsed": 0})
+        run_wait(met, "waitForText", {"text": "Saved", "timeout": 5000})
+        self.assertEqual(met.calls, [("waitForText", {"text": "Saved", "timeout": 0})])
+
+        gone = ThrottledPage(UNMET_TEXT)
+        run_wait(gone, "waitForText", {"text_gone": "Saved", "timeout": 0})
+        self.assertNotIn("diagnose", gone.calls[0][1])
 
     def test_batch_wait_for_element_polls_single_reads(self):
         page = ThrottledPage(UNMET_ELEMENT)
