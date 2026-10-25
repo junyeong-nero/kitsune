@@ -7,7 +7,7 @@ import sys
 import unittest
 from unittest.mock import Mock, patch
 
-from kitsune import bridge, server, task_modes
+from kitsune import bridge, bridge_client, server, task_modes
 from test_ask_before_act import AskBeforeActTestCase
 
 CATALOG = '''import asyncio, inspect, json
@@ -147,7 +147,7 @@ class TaskModeCatalogTests(unittest.TestCase):
         get.assert_not_called()
 
     def test_mcp_forwards_mode_on_every_bridge_request(self):
-        with patch.object(server, "MODE", "read"), patch.object(server.httpx, "request") as request:
+        with patch.object(server._client, "mode", "read"), patch.object(bridge_client.httpx, "request") as request:
             request.return_value.status_code = 200
             request.return_value.json.return_value = {"ok": True}
             server._get("/api/tabs")

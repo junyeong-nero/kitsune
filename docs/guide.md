@@ -736,7 +736,8 @@ To publish a new version to PyPI, see [Releasing](releasing.md).
 ```
 extension/          WebExtension (manifest v2, Gecko)
 src/kitsune/
-  server.py         MCP server, starts the bridge on demand
+  server.py         MCP server
+  bridge_client.py  Bridge requests and connection errors; starts the bridge on demand
   bridge.py         Bridge daemon (HTTP API + WebSocket)
   workflows/        Named workflows for browser_workflow
 docs/               Guide, installation, API reference, scraping playbooks, TODO

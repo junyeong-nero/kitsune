@@ -21,7 +21,7 @@ from unittest.mock import Mock, mock_open, patch
 import httpx
 from websockets.asyncio.client import connect
 
-from kitsune import bridge, server
+from kitsune import bridge, bridge_client, server
 import kitsune.bridge_control as control
 from kitsune.version import extension_manifest_hash, extension_source_hash
 from test_bridge_lifecycle import RUNNING
@@ -51,7 +51,7 @@ def _unpacked_extension(test, files=HASH_FILES):
 
 
 class _Clock:
-    """server.time's monotonic and sleep; status probes that time out also take their timeout."""
+    """bridge_client.time's monotonic and sleep; status probes that time out also take their timeout."""
 
     def __init__(self):
         self.now = 0.0
@@ -78,14 +78,14 @@ time.sleep(120)
 
 
 def _ensure_bridge_with(status, port_in_use=False):
-    """Run _ensure_bridge without spawning: status() is called before and while waiting."""
+    """Run ensure_bridge without spawning: status() is called before and while waiting."""
     with patch.dict(os.environ, {"KITSUNE_NO_BRIDGE_RESTART": "0"}), \
             patch.object(control, "status", side_effect=status), \
             patch.object(control, "lifecycle_lock", return_value=nullcontext()), \
-            patch("builtins.open", mock_open()), patch.object(server.subprocess, "Popen", **RUNNING), \
-            patch.object(server.time, "monotonic", side_effect=[0, 0, 16]), patch.object(server.time, "sleep"), \
+            patch("builtins.open", mock_open()), patch.object(bridge_client.subprocess, "Popen", **RUNNING), \
+            patch.object(bridge_client.time, "monotonic", side_effect=[0, 0, 16]), patch.object(bridge_client.time, "sleep"), \
             patch.object(control, "port_in_use", side_effect=port_in_use) as probe:
-        return server._ensure_bridge(), probe
+        return server._client.ensure_bridge(), probe
 
 
 class BridgeDiagnosisTests(unittest.TestCase):
@@ -333,29 +333,29 @@ class SourceHashTests(unittest.TestCase):
 class ServerDiagnosisTests(unittest.TestCase):
     def test_rejected_token_is_a_token_mismatch_without_the_token(self):
         rejected = httpx.Response(401, json={"error": "Missing or invalid token (see token)"},
-                                  request=httpx.Request("GET", server.BRIDGE))
-        for env, source in (({"KITSUNE_TOKEN": SECRET}, "KITSUNE_TOKEN"), ({}, server.TOKEN_FILE)):
+                                  request=httpx.Request("GET", bridge_client.BRIDGE))
+        for env, source in (({"KITSUNE_TOKEN": SECRET}, "KITSUNE_TOKEN"), ({}, bridge_client.TOKEN_FILE)):
             with self.subTest(source=source), patch.dict(os.environ, env), \
-                    patch.object(server.httpx, "request", return_value=rejected):
+                    patch.object(bridge_client.httpx, "request", return_value=rejected):
                 if not env:
                     os.environ.pop("KITSUNE_TOKEN", None)
-                result = server._request("GET", "/api/status")
+                result = server._client.request("GET", "/api/status")
                 self.assertEqual((result["code"], result["retryable"]), ("token_mismatch", True))
-                self.assertEqual(result["state"], {"port": server.HTTP_PORT, "tokenSource": source})
+                self.assertEqual(result["state"], {"port": bridge_client.HTTP_PORT, "tokenSource": source})
                 self.assertIn("KITSUNE_TOKEN", result["hint"])
                 self.assertNotIn(SECRET, json.dumps(result))
 
     def test_reply_that_is_not_json_is_a_port_conflict(self):
-        page = httpx.Response(200, text="<html>other app</html>", request=httpx.Request("GET", server.BRIDGE))
-        with patch.object(server.httpx, "request", return_value=page):
-            result = server._request("POST", "/api/click", json={})
+        page = httpx.Response(200, text="<html>other app</html>", request=httpx.Request("GET", bridge_client.BRIDGE))
+        with patch.object(bridge_client.httpx, "request", return_value=page):
+            result = server._client.request("POST", "/api/click", json={})
         self.assertEqual(result["code"], "port_conflict")
-        self.assertEqual(result["state"], {"port": server.HTTP_PORT, "reason": "not_kitsune"})
-        self.assertIn(f"lsof -nP -iTCP:{server.HTTP_PORT}", result["hint"])
+        self.assertEqual(result["state"], {"port": bridge_client.HTTP_PORT, "reason": "not_kitsune"})
+        self.assertIn(f"lsof -nP -iTCP:{bridge_client.HTTP_PORT}", result["hint"])
 
     def test_start_failures_are_classified(self):
         def http_error(code):
-            request = httpx.Request("GET", server.BRIDGE)
+            request = httpx.Request("GET", bridge_client.BRIDGE)
             return httpx.HTTPStatusError("error", request=request, response=httpx.Response(code, request=request))
 
         for status, code in ((http_error(401), "token_mismatch"), (http_error(404), "port_conflict"),
@@ -367,13 +367,13 @@ class ServerDiagnosisTests(unittest.TestCase):
         # Nothing answers after the start: a port held by another program explains it.
         error, probe = _ensure_bridge_with([None, None, None], port_in_use=[False, True])
         self.assertEqual(error["code"], "port_conflict")
-        self.assertEqual(error["state"], {"port": server.WS_PORT, "reason": "in_use"})
+        self.assertEqual(error["state"], {"port": bridge_client.WS_PORT, "reason": "in_use"})
         self.assertIn("KITSUNE_WS_PORT", error["hint"])
         self.assertEqual(probe.call_count, 2)
         error, _ = _ensure_bridge_with([None, None, None], port_in_use=[False, False])
         self.assertEqual(error["code"], "bridge_unavailable")
         self.assertIn("kitsune-bridge start", error["hint"])
-        self.assertEqual((error["state"]["port"], error["state"]["reason"]), (server.HTTP_PORT, "not_listening"))
+        self.assertEqual((error["state"]["port"], error["state"]["reason"]), (bridge_client.HTTP_PORT, "not_listening"))
         self.assertIn("did not listen", error["error"])
 
     def test_started_bridge_that_does_not_answer_is_diagnosed_before_the_start_timeout(self):
@@ -389,19 +389,19 @@ class ServerDiagnosisTests(unittest.TestCase):
         with patch.dict(os.environ, {"KITSUNE_TOKEN": SECRET}), patch.object(control, "status", side_effect=status), \
                 patch.object(control, "lifecycle_lock", return_value=nullcontext()), \
                 patch("builtins.open", mock_open()), \
-                patch.object(server.subprocess, "Popen", **RUNNING, **{"return_value.pid": 4242}), \
-                patch.object(server.time, "monotonic", side_effect=clock.monotonic), \
-                patch.object(server.time, "sleep", side_effect=clock.sleep), \
+                patch.object(bridge_client.subprocess, "Popen", **RUNNING, **{"return_value.pid": 4242}), \
+                patch.object(bridge_client.time, "monotonic", side_effect=clock.monotonic), \
+                patch.object(bridge_client.time, "sleep", side_effect=clock.sleep), \
                 patch.object(control, "port_in_use") as port_in_use:
-            error = server._ensure_bridge()
+            error = server._client.ensure_bridge()
         port_in_use.assert_not_called()
-        self.assertLess(clock.now, server.BRIDGE_START_TIMEOUT / 2)
-        self.assertEqual(set(probes[2:]), {server.READY_PROBE_TIMEOUT})
+        self.assertLess(clock.now, bridge_client.BRIDGE_START_TIMEOUT / 2)
+        self.assertEqual(set(probes[2:]), {bridge_client.READY_PROBE_TIMEOUT})
         self.assertEqual((error["code"], error["retryable"]), ("bridge_unavailable", True))
-        self.assertEqual(error["state"], {"port": server.HTTP_PORT, "reason": "not_responding", "pid": 4242})
+        self.assertEqual(error["state"], {"port": bridge_client.HTTP_PORT, "reason": "not_responding", "pid": 4242})
         self.assertIn("PID 4242", error["error"])
         self.assertIn("kitsune-bridge stop", error["hint"])
-        self.assertIn(f"see {server.LOG_FILE}", error["hint"])
+        self.assertIn(f"see {bridge_client.LOG_FILE}", error["hint"])
         self.assertNotIn(SECRET, json.dumps(error))
 
     def test_unanswered_port_after_a_start_that_exits_is_another_program(self):
@@ -416,27 +416,27 @@ class ServerDiagnosisTests(unittest.TestCase):
             clock.timed_out(timeout)
 
         process = Mock(**{"poll.side_effect": lambda: None if clock.now < 2 else 1, "returncode": 1, "pid": 4242})
-        with tempfile.TemporaryDirectory() as home, patch.object(server, "LOG_FILE", os.path.join(home, "bridge.log")), \
+        with tempfile.TemporaryDirectory() as home, patch.object(bridge_client, "LOG_FILE", os.path.join(home, "bridge.log")), \
                 patch.object(control, "status", side_effect=status), \
                 patch.object(control, "lifecycle_lock", return_value=nullcontext()), \
-                patch.object(server.subprocess, "Popen", return_value=process), \
-                patch.object(server.time, "monotonic", side_effect=clock.monotonic), \
-                patch.object(server.time, "sleep", side_effect=clock.sleep), \
+                patch.object(bridge_client.subprocess, "Popen", return_value=process), \
+                patch.object(bridge_client.time, "monotonic", side_effect=clock.monotonic), \
+                patch.object(bridge_client.time, "sleep", side_effect=clock.sleep), \
                 patch.object(control, "port_in_use", return_value=True):
-            error = server._ensure_bridge()
+            error = server._client.ensure_bridge()
         self.assertEqual(error["code"], "port_conflict")
-        self.assertEqual(error["state"], {"port": server.HTTP_PORT, "reason": "in_use", "exitCode": 1})
+        self.assertEqual(error["state"], {"port": bridge_client.HTTP_PORT, "reason": "in_use", "exitCode": 1})
 
     def test_running_bridge_that_does_not_answer_is_not_replaced(self):
-        for pid, code, state in ((4242, "bridge_unavailable", {"port": server.HTTP_PORT, "reason": "not_responding",
+        for pid, code, state in ((4242, "bridge_unavailable", {"port": bridge_client.HTTP_PORT, "reason": "not_responding",
                                                                "pid": 4242}),
-                                 (None, "port_conflict", {"port": server.HTTP_PORT, "reason": "in_use"})):
+                                 (None, "port_conflict", {"port": bridge_client.HTTP_PORT, "reason": "in_use"})):
             with self.subTest(pid=pid), patch.dict(os.environ, {"KITSUNE_TOKEN": SECRET}), \
                     patch.object(control, "status", side_effect=httpx.ReadTimeout("timed out")), \
                     patch.object(control, "daemon_pid", return_value=pid), \
                     patch.object(control, "lifecycle_lock") as lock, patch.object(control, "stop") as stop, \
-                    patch.object(server.subprocess, "Popen") as spawn:
-                error = server._ensure_bridge()
+                    patch.object(bridge_client.subprocess, "Popen") as spawn:
+                error = server._client.ensure_bridge()
             for not_called in (lock, stop, spawn):
                 not_called.assert_not_called()
             self.assertEqual((error["code"], error["state"]), (code, state))
@@ -457,13 +457,13 @@ class ServerDiagnosisTests(unittest.TestCase):
 
             for in_use, code in (([False, False], "bridge_unavailable"), ([False, True], "port_conflict")):
                 with self.subTest(code=code), patch.dict(os.environ, {"KITSUNE_TOKEN": SECRET}), \
-                        patch.object(server, "LOG_FILE", log_file), \
+                        patch.object(bridge_client, "LOG_FILE", log_file), \
                         patch.object(control, "status", return_value=None), \
                         patch.object(control, "lifecycle_lock", return_value=nullcontext()), \
-                        patch.object(server.subprocess, "Popen", side_effect=exits_at_startup), \
-                        patch.object(server.time, "sleep") as sleep, \
+                        patch.object(bridge_client.subprocess, "Popen", side_effect=exits_at_startup), \
+                        patch.object(bridge_client.time, "sleep") as sleep, \
                         patch.object(control, "port_in_use", side_effect=in_use):
-                    error = server._ensure_bridge()
+                    error = server._client.ensure_bridge()
                 sleep.assert_not_called()  # no wait for BRIDGE_START_TIMEOUT
                 self.assertEqual(error["code"], code)
                 excerpt = ("OSError: [Errno 48] address already in use; Authorization: Bearer [redacted] "
@@ -477,21 +477,21 @@ class ServerDiagnosisTests(unittest.TestCase):
                     self.assertEqual(error["error"], f"Kitsune bridge exited at startup with code 1: {excerpt}. "
                                                      f"See {log_file}")
                 else:
-                    self.assertEqual((error["state"]["port"], error["state"]["reason"]), (server.WS_PORT, "in_use"))
+                    self.assertEqual((error["state"]["port"], error["state"]["reason"]), (bridge_client.WS_PORT, "in_use"))
 
     def test_startup_log_excerpt_is_short(self):
         with tempfile.TemporaryDirectory() as home:
             log_file = os.path.join(home, "bridge.log")
             with open(log_file, "w", encoding="utf-8") as log:
                 log.write("x" * 20000 + "\n")
-            with patch.object(server, "LOG_FILE", log_file):
-                self.assertEqual(server._startup_log_excerpt(0), "x" * server.STARTUP_EXCERPT_CHARS)
-                self.assertEqual(server._startup_log_excerpt(20001), "", "nothing written since the start")
-            with patch.object(server, "LOG_FILE", os.path.join(home, "missing.log")):
-                self.assertEqual(server._startup_log_excerpt(0), "")
+            with patch.object(bridge_client, "LOG_FILE", log_file):
+                self.assertEqual(bridge_client._startup_log_excerpt(0), "x" * bridge_client.STARTUP_EXCERPT_CHARS)
+                self.assertEqual(bridge_client._startup_log_excerpt(20001), "", "nothing written since the start")
+            with patch.object(bridge_client, "LOG_FILE", os.path.join(home, "missing.log")):
+                self.assertEqual(bridge_client._startup_log_excerpt(0), "")
 
     def test_browser_status_always_has_a_diagnosis(self):
-        unavailable = server._bridge_unavailable("Kitsune bridge is not reachable")
+        unavailable = bridge_client._bridge_unavailable("Kitsune bridge is not reachable")
         with patch.object(server, "_get", return_value=dict(unavailable)):
             result = server.browser_status()
         self.assertEqual(result["diagnosis"], {"code": "bridge_unavailable", "hint": unavailable["hint"]})
@@ -502,12 +502,12 @@ class ServerDiagnosisTests(unittest.TestCase):
 
 
 def _bridge_status(code):
-    return {"build": server.BRIDGE_BUILD, "extension_connected": code not in {"extension_disconnected", "port_conflict"},
+    return {"build": bridge_client.BRIDGE_BUILD, "extension_connected": code not in {"extension_disconnected", "port_conflict"},
             "diagnosis": {"code": code}}
 
 
 def _reply(result):
-    return httpx.Response(200, json=result, request=httpx.Request("POST", server.BRIDGE))
+    return httpx.Response(200, json=result, request=httpx.Request("POST", bridge_client.BRIDGE))
 
 
 NEW_TAB = {"ok": True, "tabId": 7}
@@ -526,85 +526,85 @@ class ExtensionReadinessTests(unittest.TestCase):
     def setUp(self):
         self.clock = _Clock()
         for patcher in (patch.dict(os.environ, {"KITSUNE_NO_BRIDGE_RESTART": "0"}),
-                        patch.object(server, "_extension_wait_until", 0.0),
+                        patch.object(server._client, "_extension_wait_until", 0.0),
                         patch.object(control, "lifecycle_lock", return_value=nullcontext()),
                         patch.object(control, "stop", return_value=None),
-                        patch("builtins.open", mock_open()), patch.object(server.subprocess, "Popen", **RUNNING),
-                        patch.object(server.time, "monotonic", side_effect=self.clock.monotonic),
-                        patch.object(server.time, "sleep", side_effect=self.clock.sleep)):
+                        patch("builtins.open", mock_open()), patch.object(bridge_client.subprocess, "Popen", **RUNNING),
+                        patch.object(bridge_client.time, "monotonic", side_effect=self.clock.monotonic),
+                        patch.object(bridge_client.time, "sleep", side_effect=self.clock.sleep)):
             patcher.start()
             self.addCleanup(patcher.stop)
 
     def replace_bridge(self):
-        """_ensure_bridge replaces an old build; the new bridge answers before any extension connects."""
+        """ensure_bridge replaces an old build; the new bridge answers before any extension connects."""
         with patch.object(control, "status", side_effect=[{"build": "old"}, {"build": "old"},
                                                           _bridge_status("extension_disconnected")]):
-            self.assertIsNone(server._ensure_bridge())
+            self.assertIsNone(server._client.ensure_bridge())
         self.started = self.clock.now
 
     def test_first_command_after_a_replacement_waits_for_the_extension(self):
         self.replace_bridge()
         reconnecting = [_bridge_status("extension_disconnected")] * 3 + [_bridge_status("connected")]
         with patch.object(control, "status", side_effect=reconnecting) as status, \
-                patch.object(server.httpx, "request", return_value=_reply(NEW_TAB)) as request:
+                patch.object(bridge_client.httpx, "request", return_value=_reply(NEW_TAB)) as request:
             self.assertEqual(server._post("/api/new-tab", {"url": "about:blank"}), NEW_TAB)
             self.assertEqual(server._post("/api/new-tab", {"url": "about:blank"}), NEW_TAB)
         self.assertEqual(status.call_count, 4, "the second command does not wait")
-        self.assertEqual({call.kwargs["timeout"] for call in status.call_args_list}, {server.READY_PROBE_TIMEOUT})
+        self.assertEqual({call.kwargs["timeout"] for call in status.call_args_list}, {bridge_client.READY_PROBE_TIMEOUT})
         self.assertEqual(request.call_count, 2, "each command is sent once")
         self.assertLess(self.clock.now - self.started, 1)
 
     def test_extension_that_never_connects_gets_the_bridge_error_after_a_bounded_wait(self):
         self.replace_bridge()
         with patch.object(control, "status", return_value=_bridge_status("extension_disconnected")) as status, \
-                patch.object(server.httpx, "request", return_value=_reply(NOT_SENT)) as request:
+                patch.object(bridge_client.httpx, "request", return_value=_reply(NOT_SENT)) as request:
             self.assertEqual(server._post("/api/new-tab", {"url": "about:blank"}), NOT_SENT)
             waited = self.clock.now - self.started
             polls = status.call_count
             self.assertEqual(server._post("/api/new-tab", {"url": "about:blank"}), NOT_SENT)
-        self.assertGreaterEqual(waited, server.EXTENSION_RECONNECT_SECONDS)
-        self.assertLess(waited, server.EXTENSION_RECONNECT_SECONDS + 1)
+        self.assertGreaterEqual(waited, bridge_client.EXTENSION_RECONNECT_SECONDS)
+        self.assertLess(waited, bridge_client.EXTENSION_RECONNECT_SECONDS + 1)
         self.assertEqual(status.call_count, polls, "later commands fail at once")
         self.assertEqual(request.call_count, 2, "a command that was not sent is not repeated either")
 
     def test_disconnect_after_dispatch_is_returned_once(self):
         self.replace_bridge()
         with patch.object(control, "status", return_value=_bridge_status("connected")), \
-                patch.object(server.httpx, "request", return_value=_reply(SENT)) as request:
+                patch.object(bridge_client.httpx, "request", return_value=_reply(SENT)) as request:
             self.assertEqual(server._post("/api/click", {"ref": "e1"}), SENT)
         request.assert_called_once()
 
     def test_browser_status_does_not_wait_and_other_diagnoses_end_the_wait(self):
         self.replace_bridge()
         with patch.object(control, "status") as status, \
-                patch.object(server.httpx, "request", return_value=_reply(_bridge_status("extension_disconnected"))):
+                patch.object(bridge_client.httpx, "request", return_value=_reply(_bridge_status("extension_disconnected"))):
             server._get("/api/status")
         status.assert_not_called()
         for code in ("port_conflict", "extension_version_mismatch"):
             with self.subTest(code=code):
                 self.replace_bridge()
                 with patch.object(control, "status", return_value=_bridge_status(code)) as status, \
-                        patch.object(server.httpx, "request", return_value=_reply(NEW_TAB)):
+                        patch.object(bridge_client.httpx, "request", return_value=_reply(NEW_TAB)):
                     server._post("/api/new-tab", {})
                 status.assert_called_once()
                 self.assertEqual(self.clock.now, self.started)
 
     def test_matching_bridge_is_neither_replaced_nor_waited_for(self):
         with patch.object(control, "status", return_value=_bridge_status("extension_disconnected")) as status, \
-                patch.object(server.httpx, "request", return_value=_reply(NOT_SENT)) as request:
-            self.assertIsNone(server._ensure_bridge())
+                patch.object(bridge_client.httpx, "request", return_value=_reply(NOT_SENT)) as request:
+            self.assertIsNone(server._client.ensure_bridge())
             self.assertEqual(server._post("/api/new-tab", {}), NOT_SENT)
         control.stop.assert_not_called()
-        server.subprocess.Popen.assert_not_called()
-        status.assert_called_once()  # by _ensure_bridge
+        bridge_client.subprocess.Popen.assert_not_called()
+        status.assert_called_once()  # by ensure_bridge
         request.assert_called_once()
         self.assertEqual(self.clock.now, 0)
 
     def test_bridge_started_by_a_command_waits_for_the_extension_before_it_is_sent(self):
-        statuses = [None, None, _bridge_status("extension_disconnected"),  # _ensure_bridge starts a bridge
+        statuses = [None, None, _bridge_status("extension_disconnected"),  # ensure_bridge starts a bridge
                     _bridge_status("extension_disconnected"), _bridge_status("connected")]
         with patch.object(control, "status", side_effect=statuses) as status, \
-                patch.object(server.httpx, "request",
+                patch.object(bridge_client.httpx, "request",
                              side_effect=[httpx.ConnectError("refused"), _reply(NEW_TAB)]) as request:
             self.assertEqual(server._post("/api/new-tab", {}), NEW_TAB)
         self.assertEqual(status.call_count, 5)
@@ -652,7 +652,7 @@ class IsolatedBridgeDiagnosisTests(unittest.TestCase):
         logger.setLevel(logging.WARNING)
 
     def against(self, port):
-        return patch.object(server, "BRIDGE", f"http://127.0.0.1:{port}"), patch.object(server, "HTTP_PORT", port)
+        return patch.object(bridge_client, "BRIDGE", f"http://127.0.0.1:{port}"), patch.object(bridge_client, "HTTP_PORT", port)
 
     def test_isolated_bridge_reports_token_mismatch_and_its_extension_port(self):
         with tempfile.TemporaryDirectory() as home:
@@ -664,7 +664,7 @@ class IsolatedBridgeDiagnosisTests(unittest.TestCase):
                               "extensionPort": bridge.EXTENSION_WS_PORT})
             bridge_url, http_port = self.against(daemon.http_port)
             with bridge_url, http_port, patch.dict(os.environ, {"KITSUNE_TOKEN": SECRET}), \
-                    patch.object(server, "_ensure_bridge") as ensure:
+                    patch.object(server._client, "ensure_bridge") as ensure:
                 result = server.browser_status()
                 ensure.assert_not_called()
             self.assertEqual(result["diagnosis"]["code"], "token_mismatch")
@@ -675,7 +675,7 @@ class IsolatedBridgeDiagnosisTests(unittest.TestCase):
                 self.assertEqual(server.browser_status()["diagnosis"]["code"], "port_conflict")
 
     def test_bridge_that_cannot_listen_fails_without_waiting_for_the_start_timeout(self):
-        """A real bridge spawned by _ensure_bridge on spare ports, its WebSocket port held by this test."""
+        """A real bridge spawned by ensure_bridge on spare ports, its WebSocket port held by this test."""
         with tempfile.TemporaryDirectory() as home, socket.socket() as holder:
             holder.bind(("127.0.0.1", 0))
             holder.listen()
@@ -684,26 +684,26 @@ class IsolatedBridgeDiagnosisTests(unittest.TestCase):
             env = _bridge_env(home, http_port, ws_port, SECRET)
             bridge_url = f"http://127.0.0.1:{http_port}"
             with patch.dict(os.environ, env, clear=True), \
-                    patch.object(control, "BRIDGE", bridge_url), patch.object(server, "BRIDGE", bridge_url), \
+                    patch.object(control, "BRIDGE", bridge_url), patch.object(bridge_client, "BRIDGE", bridge_url), \
                     patch.object(control, "DATA_DIR", home), \
                     patch.object(control, "LOCK_FILE", os.path.join(home, "bridge.lock")), \
-                    patch.object(server, "LOG_FILE", os.path.join(home, "bridge.log")), \
-                    patch.object(server, "HTTP_PORT", http_port), patch.object(server, "WS_PORT", ws_port):
+                    patch.object(bridge_client, "LOG_FILE", os.path.join(home, "bridge.log")), \
+                    patch.object(bridge_client, "HTTP_PORT", http_port), patch.object(bridge_client, "WS_PORT", ws_port):
                 started = time.monotonic()
-                error = server._ensure_bridge()
+                error = server._client.ensure_bridge()
                 elapsed = time.monotonic() - started
                 self.assertIsNone(control.status(), "nothing may answer on the spare HTTP port")
-        self.assertLess(elapsed, server.BRIDGE_START_TIMEOUT - 5, error)
+        self.assertLess(elapsed, bridge_client.BRIDGE_START_TIMEOUT - 5, error)
         self.assertEqual(error["code"], "port_conflict", error)
         self.assertEqual({k: error["state"][k] for k in ("port", "reason", "exitCode")},
                          {"port": ws_port, "reason": "in_use", "exitCode": 1})
         self.assertIn("in use", error["state"]["logExcerpt"].lower())
-        self.assertLessEqual(len(error["state"]["logExcerpt"]), server.STARTUP_EXCERPT_CHARS)
+        self.assertLessEqual(len(error["state"]["logExcerpt"]), bridge_client.STARTUP_EXCERPT_CHARS)
         self.assertNotIn(SECRET, json.dumps(error))
 
     def test_hung_bridge_is_diagnosed_without_waiting_for_the_start_timeout(self):
-        """_ensure_bridge spawns a real process that listens on a spare HTTP port but never answers."""
-        popen = server.subprocess.Popen
+        """ensure_bridge spawns a real process that listens on a spare HTTP port but never answers."""
+        popen = bridge_client.subprocess.Popen
         spawned = []
 
         def spawn_hung_bridge(args, **kwargs):
@@ -720,22 +720,22 @@ class IsolatedBridgeDiagnosisTests(unittest.TestCase):
             bridge_url = f"http://127.0.0.1:{http_port}"
             log_file = os.path.join(home, "bridge.log")
             with patch.dict(os.environ, env, clear=True), \
-                    patch.object(control, "BRIDGE", bridge_url), patch.object(server, "BRIDGE", bridge_url), \
+                    patch.object(control, "BRIDGE", bridge_url), patch.object(bridge_client, "BRIDGE", bridge_url), \
                     patch.object(control, "DATA_DIR", home), \
                     patch.object(control, "LOCK_FILE", os.path.join(home, "bridge.lock")), \
                     patch.object(control, "PID_FILE", os.path.join(home, "bridge.pid")), \
-                    patch.object(server, "LOG_FILE", log_file), \
-                    patch.object(server, "HTTP_PORT", http_port), patch.object(server, "WS_PORT", ws_port), \
-                    patch.object(server.subprocess, "Popen", side_effect=spawn_hung_bridge):
+                    patch.object(bridge_client, "LOG_FILE", log_file), \
+                    patch.object(bridge_client, "HTTP_PORT", http_port), patch.object(bridge_client, "WS_PORT", ws_port), \
+                    patch.object(bridge_client.subprocess, "Popen", side_effect=spawn_hung_bridge):
                 started = time.monotonic()
-                error = server._ensure_bridge()
+                error = server._client.ensure_bridge()
                 elapsed = time.monotonic() - started
                 self.assertEqual(len(spawned), 1)
                 self.assertIsNone(spawned[0].poll(), "the hung process still runs")
                 # The next call finds it before starting anything; it holds no Kitsune pid lock.
-                again = server._ensure_bridge()
+                again = server._client.ensure_bridge()
                 self.assertEqual(len(spawned), 1, "nothing else was started")
-        self.assertLess(elapsed, server.BRIDGE_START_TIMEOUT - 5, error)
+        self.assertLess(elapsed, bridge_client.BRIDGE_START_TIMEOUT - 5, error)
         self.assertEqual(error["code"], "bridge_unavailable", error)
         self.assertEqual(error["state"], {"port": http_port, "reason": "not_responding", "pid": spawned[0].pid})
         self.assertEqual((again["code"], again["state"]), ("port_conflict", {"port": http_port, "reason": "in_use"}))
@@ -749,7 +749,7 @@ class IsolatedBridgeDiagnosisTests(unittest.TestCase):
         self.addCleanup(other.shutdown)
         port = other.server_address[1]
         bridge_url, http_port = self.against(port)
-        with bridge_url, http_port, patch.object(server, "_ensure_bridge") as ensure:
+        with bridge_url, http_port, patch.object(server._client, "ensure_bridge") as ensure:
             result = server.browser_status()
             ensure.assert_not_called()
         self.assertEqual(result["diagnosis"]["code"], "port_conflict")
@@ -761,8 +761,8 @@ class IsolatedBridgeDiagnosisTests(unittest.TestCase):
         self.addCleanup(failing.server_close)
         self.addCleanup(failing.shutdown)
         bridge_url, http_port = self.against(failing.server_address[1])
-        with bridge_url, http_port, patch.object(server, "_ensure_bridge") as ensure:
-            result = server._request("POST", "/api/click", json={})
+        with bridge_url, http_port, patch.object(server._client, "ensure_bridge") as ensure:
+            result = server._client.request("POST", "/api/click", json={})
             ensure.assert_not_called()
         self.assertEqual(result["error"], "Kitsune bridge returned HTTP 500 without a JSON body")
         self.assertEqual(result["state"]["httpStatus"], 500)

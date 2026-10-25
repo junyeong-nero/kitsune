@@ -8,7 +8,7 @@ import asyncio
 import unittest
 from unittest.mock import Mock, patch
 
-from kitsune import bridge, server, task_modes
+from kitsune import bridge, bridge_client, server, task_modes
 
 ACTIVE_TAB = 4
 
@@ -155,8 +155,8 @@ class ProtectedTabTests(unittest.TestCase):
 class ServerProtectUserTabsTests(unittest.TestCase):
     def test_mcp_forwards_protection_on_every_bridge_request(self):
         for protect in (True, False):
-            with patch.object(server, "PROTECT_USER_TABS", protect), \
-                    patch.object(server.httpx, "request") as request:
+            with patch.object(server._client, "protect_user_tabs", protect), \
+                    patch.object(bridge_client.httpx, "request") as request:
                 request.return_value.status_code = 200
                 request.return_value.json.return_value = {"ok": True}
                 server._post("/api/navigate", {"url": "https://example.com"})

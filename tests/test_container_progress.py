@@ -7,7 +7,7 @@ from threading import Thread
 import unittest
 from unittest.mock import Mock, patch
 
-from kitsune import bridge, server, waits
+from kitsune import bridge, bridge_client, server, waits
 
 
 TIMEOUT = {"error": "Command timed out after 30s", "code": "timeout", "retryable": False}
@@ -492,10 +492,10 @@ class ContainerDeadlineTests(ContainerTests):
         with patch.object(bridge, "loop", loop), patch.object(bridge, "AUTH_TOKEN", token), \
                 patch.object(bridge.BridgeHandler, "log_message"), \
                 patch.object(bridge, "ALLOWED_HOSTS", {f"127.0.0.1:{port}"}), \
-                patch.object(server, "BRIDGE", f"http://127.0.0.1:{port}"), \
-                patch.object(server, "_CAPS_HEADER_VALUE", "automation,core"), \
+                patch.object(bridge_client, "BRIDGE", f"http://127.0.0.1:{port}"), \
+                patch.object(server._client, "caps", "automation,core"), \
                 patch.dict(os.environ, {"KITSUNE_TOKEN": token}), \
-                patch.object(server, "_ensure_bridge") as ensure, \
+                patch.object(server._client, "ensure_bridge") as ensure, \
                 patch.object(waits, "CONTAINER_MIN_DEADLINE_SECONDS", 0.5), \
                 patch.object(waits, "CONTAINER_MARGIN_SECONDS", 0.5):
             payload = server.browser_batch([
