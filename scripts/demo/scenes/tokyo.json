@@ -1,0 +1,33 @@
+{
+  "description": "Plan a weekend in Tokyo on Google Flights and Google Maps in background tabs; book nothing.",
+  "prompt": "I'm planning a long weekend in Tokyo. In background tabs, find the cheapest nonstop round trip from Seoul to Tokyo on Google Flights for Nov 20 to 23, and on Google Maps, plan a day route through Senso-ji, Tokyo Skytree and Ueno Park by public transit. Don't book anything. Give me the flight and the order of stops with travel times.",
+  "start_url": "https://www.google.com/",
+  "setup_clicks": ["text=English"],
+  "browser_prefs": {
+    "intl.accept_languages": "en-US, en",
+    "intl.locale.requested": "en-US"
+  },
+  "display": {
+    "avfoundation_device": 6,
+    "origin": [1920, 124],
+    "scale": 2
+  },
+  "stage": [1920, 157, 1470, 923],
+  "terminal": {
+    "font_size": 14,
+    "columns": 62,
+    "theme": "Everforest Dark Hard"
+  },
+  "model": "opus",
+  "mcp_env": {
+    "KITSUNE_PROTECT_USER_TABS": "1"
+  },
+  "done_when": {
+    "min_new_tabs": 2,
+    "idle_seconds": 12
+  },
+  "review": [
+    ["google.com/travel/flights", 6],
+    ["google.com/maps", 7]
+  ]
+}

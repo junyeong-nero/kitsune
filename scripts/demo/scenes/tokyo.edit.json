@@ -1,0 +1,41 @@
+{
+  "comment": "Edit for the take behind assets/demo.gif. Source times come from sync.py: typing 5.6-17.7 s, enter 18.4, agent tabs appear 25.3, \"Cheapest outbound ... doesn't book anything\" 56.2, answer 120.9, user opens Flights 135.3 and Maps 141.4, end 147.5. Views are [x0, y0, width] in stage pixels: Zen spans 0-1790 (sidebar to ~440), Claude Code starts at 1774.",
+  "views": {
+    "full": "full",
+    "prompt": [1772, -30, 1220],
+    "tabs": [-20, -20, 1480],
+    "reasoning": [1772, 480, 1228],
+    "answer": [1772, -30, 1220],
+    "answer_low": [1772, 620, 1220],
+    "results": [240, -20, 1700]
+  },
+  "cuts": {
+    "full": {
+      "time": [[0.0, 2.0], [1.6, 3.6], [2.0, 5.6], [6.4, 17.7], [8.0, 24.8], [13.0, 37.0], [18.0, 60.0],
+               [21.0, 118.0], [23.0, 121.5], [28.0, 134.9], [32.5, 140.9], [37.5, 147.5], [38.5, 147.5]],
+      "camera": [[0.0, "full", 0], [2.3, "prompt", 0.8], [8.4, "tabs", 1.0], [13.4, "reasoning", 0.9],
+                 [18.4, "full", 0.8], [23.3, "answer", 0.9], [26.6, "answer_low", 1.4], [28.8, "results", 0.8]],
+      "captions": [[0.1, 2.0, "Your own browser, as you left it"],
+                   [2.1, 7.9, "Asking Claude Code to plan a weekend in Tokyo"],
+                   [8.4, 13.2, "It opens Google Flights and Maps in background tabs"],
+                   [13.4, 17.0, "It reads the tabs without switching yours"],
+                   [17.1, 22.6, "It checks fares without booking anything"],
+                   [22.8, 28.3, "Cheapest nonstop flight and a day route by transit"],
+                   [28.5, 38.5, "You review the results in its tabs"]]
+    },
+    "short": {
+      "caption_size": 36,
+      "time": [[0.0, 2.0], [1.0, 3.0], [1.4, 5.6], [4.2, 17.7], [5.0, 24.8], [8.2, 37.0], [11.6, 60.0],
+               [13.4, 118.0], [14.6, 121.5], [18.2, 134.9], [21.6, 140.9], [25.4, 147.5], [26.4, 147.5]],
+      "camera": [[0.0, "full", 0], [1.6, "prompt", 0.6], [5.2, "tabs", 0.9], [8.6, "reasoning", 0.7],
+                 [13.6, "full", 0.6], [15.0, "answer", 0.7], [17.8, "answer_low", 1.2], [18.9, "results", 0.6]],
+      "captions": [[0.1, 1.3, "Your own browser, as you left it"],
+                   [1.4, 4.9, "Asking Claude Code to plan a weekend in Tokyo"],
+                   [5.1, 8.4, "It opens Google Flights and Maps in background tabs"],
+                   [8.6, 11.0, "It reads the tabs without switching yours"],
+                   [11.1, 14.3, "It checks fares without booking anything"],
+                   [14.5, 18.3, "Cheapest nonstop flight and a day route by transit"],
+                   [18.5, 26.4, "You review the results in its tabs"]]
+    }
+  }
+}
