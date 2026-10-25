@@ -244,8 +244,30 @@ More documentation: [Tools](https://github.com/junyeong-nero/kitsune/blob/main/d
 [Troubleshooting](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#troubleshooting) ·
 [Updating](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#updating-kitsune) ·
 [API reference](https://github.com/junyeong-nero/kitsune/blob/main/docs/api-reference.md) ·
+[Python API](https://github.com/junyeong-nero/kitsune/blob/main/docs/python-api.md) ·
 [Development](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#development) ·
 [FAQ](https://github.com/junyeong-nero/kitsune/blob/main/docs/faq.md)
 
 The architecture, product trade-offs, and comparisons with other browser MCP
 servers are in [Positioning](https://github.com/junyeong-nero/kitsune/blob/main/docs/positioning.md).
+
+## Python API
+
+The same extension and bridge also work from your own code. The package the MCP
+server ships in (`pip install kitsune-browser-mcp`) is a Python API with every
+capability group, storage and history included:
+
+```python
+import kitsune
+
+browser = kitsune.connect()                        # starts the bridge if none runs
+tab = browser.new_tab("https://news.ycombinator.com")   # a background tab you don't see
+for link in tab.query(".titleline > a", fields=["text", "href"], limit=3):
+    print(link["text"], link["href"])
+tab.close()
+```
+
+The MCP server limits what an agent sees; the Python API does not, but the bridge's
+shared-browser rules hold for both: tabs open in the background, your own tabs close
+only with your approval, and sensitive fields stay redacted. `kitsune.connect(confirm=...)`
+lets a person approve each action that needs it. See [Python API](https://github.com/junyeong-nero/kitsune/blob/main/docs/python-api.md).

@@ -6,7 +6,7 @@ import subprocess
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
-from kitsune import bridge, server
+from kitsune import bridge, server, waits
 
 TAB = {"id": 7, "url": "https://shop.test/checkout", "title": "Checkout", "active": True}
 
@@ -403,7 +403,7 @@ class OutcomeRoutingTests(unittest.TestCase):
 
 class ServerExpectTests(unittest.TestCase):
     def test_default_timeout_matches_bridge(self):
-        self.assertEqual(server.OUTCOME_TIMEOUT_MS, bridge.OUTCOME_TIMEOUT_MS)
+        self.assertEqual(waits.OUTCOME_TIMEOUT_MS, bridge.OUTCOME_TIMEOUT_MS)
 
     def test_tools_forward_expect_with_a_longer_timeout(self):
         expect = {"url_changed": True, "timeout": 8000}

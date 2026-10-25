@@ -25,10 +25,11 @@ from pydantic import Field
 from . import playwright_tools
 from .capabilities import CAPABILITY_GROUPS, NAMED_ONLY_GROUPS, enabled_groups
 from .bridge_client import BridgeClient
+from .errors import failed as _failed  # whether a tool's own result reports failure
 from .task_modes import GATEWAY_TOOL_HEADER, permits_tool, task_mode
 from .waits import (
-    RESUME_DEADLINE_SECONDS, WORKFLOW_DEADLINE_SECONDS, batch_deadline_seconds, command_wait_seconds,
-    container_request_seconds,
+    RESUME_DEADLINE_SECONDS, WORKFLOW_DEADLINE_SECONDS, action_request_seconds, batch_deadline_seconds,
+    command_wait_seconds, container_request_seconds,
 )
 
 # Annotation hints describe the whole tool, including its most dangerous operation.
@@ -248,15 +249,6 @@ def _unpublished_tool(name: str) -> dict:
                       **({"mode": MODE} if MODE != "act" else {})}}
 
 
-def _failed(result) -> bool:
-    """Whether a tool's own result reports failure: a non-empty top-level error or ok=false.
-
-    Warnings accompany successes, and batch/parallel/broadcast/workflow results report
-    per-command outcomes that may include completed writes, so neither marks the call failed.
-    """
-    return isinstance(result, dict) and (bool(result.get("error")) or result.get("ok") is False)
-
-
 def _compact_json(result) -> TextContent:
     """Unindented JSON text: every result is resent with each later model request (#136)."""
     text = json.dumps(result, separators=(",", ":"), ensure_ascii=False, default=str)
@@ -364,9 +356,6 @@ def _request_body(body: dict, tab_id: int | None = None, ref: str | None = None,
     return body
 
 
-OUTCOME_TIMEOUT_MS = 5000  # default expect.timeout; matches bridge.OUTCOME_TIMEOUT_MS
-
-
 def _post_action(endpoint: str, body: dict, wait: bool = False, timeout: int = 10000,
                  expect: dict | None = None) -> dict:
     """POST a page action.
@@ -374,18 +363,13 @@ def _post_action(endpoint: str, body: dict, wait: bool = False, timeout: int = 1
     wait=True lets the page wait up to timeout ms for the target before dispatch;
     expect makes the bridge check the outcome after dispatch, within expect.timeout.
     """
-    request_timeout = 15
     if wait:
         if timeout <= 0:
             return {"error": "timeout must be positive"}
         body = {**body, "wait": True, "timeout": timeout}
-        request_timeout += timeout / 1000
     if expect is not None:
-        wait_ms = expect.get("timeout", OUTCOME_TIMEOUT_MS) if isinstance(expect, dict) else 0
-        if isinstance(wait_ms, bool) or not isinstance(wait_ms, (int, float)) or not math.isfinite(wait_ms):
-            wait_ms = 0  # the bridge rejects it before dispatch
         body = {**body, "expect": expect}
-        request_timeout += max(0, wait_ms) / 1000 + 45
+    request_timeout = action_request_seconds(wait, timeout, expect)
     if request_timeout == 15:
         return _post(endpoint, body)
     return _post(endpoint, body, timeout=request_timeout)
