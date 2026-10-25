@@ -25,6 +25,10 @@ class EnsureBridgeTests(unittest.TestCase):
         self.env = patch.dict(os.environ, {"KITSUNE_NO_BRIDGE_RESTART": "0"})
         self.env.start()
         self.addCleanup(self.env.stop)
+        # A started bridge makes the next command wait for its extension (#258); keep that to this test.
+        wait = patch.object(server, "_extension_wait_until", 0.0)
+        wait.start()
+        self.addCleanup(wait.stop)
 
     def test_matching_build_does_not_restart(self):
         with patch.object(control, "status", return_value={"build": server.BRIDGE_BUILD}), \
