@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from kitsune import bridge, server
+from kitsune import bridge, server, tools
 from test_container_progress import ContainerTests
 
 AMBIGUOUS = {"error": "3 elements match the selector; nothing was dispatched", "code": "ambiguous_target",
@@ -40,11 +40,11 @@ class ServerFirstTests(unittest.TestCase):
         ]
         for name, kwargs, endpoint in cases:
             with self.subTest(tool=name, endpoint=endpoint), \
-                    patch.object(server, "_post", return_value={"ok": True}) as post:
-                getattr(server, "browser_" + name)(tab_id=7, first=True, **kwargs)
+                    patch.object(tools, "_post", return_value={"ok": True}) as post:
+                getattr(tools, "browser_" + name)(tab_id=7, first=True, **kwargs)
                 self.assertEqual(post.call_args.args[0], endpoint)
                 self.assertIs(post.call_args.args[1]["first"], True)
-                getattr(server, "browser_" + name)(tab_id=7, **kwargs)
+                getattr(tools, "browser_" + name)(tab_id=7, **kwargs)
                 self.assertNotIn("first", post.call_args.args[1])
 
 

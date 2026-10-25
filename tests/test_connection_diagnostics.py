@@ -21,7 +21,7 @@ from unittest.mock import Mock, mock_open, patch
 import httpx
 from websockets.asyncio.client import connect
 
-from kitsune import bridge, bridge_client, server
+from kitsune import bridge, bridge_client, server, tools
 import kitsune.bridge_control as control
 from kitsune.version import extension_manifest_hash, extension_source_hash
 from test_bridge_lifecycle import RUNNING
@@ -492,11 +492,11 @@ class ServerDiagnosisTests(unittest.TestCase):
 
     def test_browser_status_always_has_a_diagnosis(self):
         unavailable = bridge_client._bridge_unavailable("Kitsune bridge is not reachable")
-        with patch.object(server, "_get", return_value=dict(unavailable)):
+        with patch.object(tools, "_get", return_value=dict(unavailable)):
             result = server.browser_status()
         self.assertEqual(result["diagnosis"], {"code": "bridge_unavailable", "hint": unavailable["hint"]})
         running = {"status": "running", "diagnosis": {"code": "connected"}}
-        with patch.object(server, "_get", return_value=dict(running)):
+        with patch.object(tools, "_get", return_value=dict(running)):
             result = server.browser_status()
         self.assertEqual({key: value for key, value in result.items() if key != "mcp_tools"}, running)
 
@@ -547,8 +547,8 @@ class ExtensionReadinessTests(unittest.TestCase):
         reconnecting = [_bridge_status("extension_disconnected")] * 3 + [_bridge_status("connected")]
         with patch.object(control, "status", side_effect=reconnecting) as status, \
                 patch.object(bridge_client.httpx, "request", return_value=_reply(NEW_TAB)) as request:
-            self.assertEqual(server._post("/api/new-tab", {"url": "about:blank"}), NEW_TAB)
-            self.assertEqual(server._post("/api/new-tab", {"url": "about:blank"}), NEW_TAB)
+            self.assertEqual(tools._post("/api/new-tab", {"url": "about:blank"}), NEW_TAB)
+            self.assertEqual(tools._post("/api/new-tab", {"url": "about:blank"}), NEW_TAB)
         self.assertEqual(status.call_count, 4, "the second command does not wait")
         self.assertEqual({call.kwargs["timeout"] for call in status.call_args_list}, {bridge_client.READY_PROBE_TIMEOUT})
         self.assertEqual(request.call_count, 2, "each command is sent once")
@@ -558,10 +558,10 @@ class ExtensionReadinessTests(unittest.TestCase):
         self.replace_bridge()
         with patch.object(control, "status", return_value=_bridge_status("extension_disconnected")) as status, \
                 patch.object(bridge_client.httpx, "request", return_value=_reply(NOT_SENT)) as request:
-            self.assertEqual(server._post("/api/new-tab", {"url": "about:blank"}), NOT_SENT)
+            self.assertEqual(tools._post("/api/new-tab", {"url": "about:blank"}), NOT_SENT)
             waited = self.clock.now - self.started
             polls = status.call_count
-            self.assertEqual(server._post("/api/new-tab", {"url": "about:blank"}), NOT_SENT)
+            self.assertEqual(tools._post("/api/new-tab", {"url": "about:blank"}), NOT_SENT)
         self.assertGreaterEqual(waited, bridge_client.EXTENSION_RECONNECT_SECONDS)
         self.assertLess(waited, bridge_client.EXTENSION_RECONNECT_SECONDS + 1)
         self.assertEqual(status.call_count, polls, "later commands fail at once")
@@ -571,21 +571,21 @@ class ExtensionReadinessTests(unittest.TestCase):
         self.replace_bridge()
         with patch.object(control, "status", return_value=_bridge_status("connected")), \
                 patch.object(bridge_client.httpx, "request", return_value=_reply(SENT)) as request:
-            self.assertEqual(server._post("/api/click", {"ref": "e1"}), SENT)
+            self.assertEqual(tools._post("/api/click", {"ref": "e1"}), SENT)
         request.assert_called_once()
 
     def test_browser_status_does_not_wait_and_other_diagnoses_end_the_wait(self):
         self.replace_bridge()
         with patch.object(control, "status") as status, \
                 patch.object(bridge_client.httpx, "request", return_value=_reply(_bridge_status("extension_disconnected"))):
-            server._get("/api/status")
+            tools._get("/api/status")
         status.assert_not_called()
         for code in ("port_conflict", "extension_version_mismatch"):
             with self.subTest(code=code):
                 self.replace_bridge()
                 with patch.object(control, "status", return_value=_bridge_status(code)) as status, \
                         patch.object(bridge_client.httpx, "request", return_value=_reply(NEW_TAB)):
-                    server._post("/api/new-tab", {})
+                    tools._post("/api/new-tab", {})
                 status.assert_called_once()
                 self.assertEqual(self.clock.now, self.started)
 
@@ -593,7 +593,7 @@ class ExtensionReadinessTests(unittest.TestCase):
         with patch.object(control, "status", return_value=_bridge_status("extension_disconnected")) as status, \
                 patch.object(bridge_client.httpx, "request", return_value=_reply(NOT_SENT)) as request:
             self.assertIsNone(server._client.ensure_bridge())
-            self.assertEqual(server._post("/api/new-tab", {}), NOT_SENT)
+            self.assertEqual(tools._post("/api/new-tab", {}), NOT_SENT)
         control.stop.assert_not_called()
         bridge_client.subprocess.Popen.assert_not_called()
         status.assert_called_once()  # by ensure_bridge
@@ -606,7 +606,7 @@ class ExtensionReadinessTests(unittest.TestCase):
         with patch.object(control, "status", side_effect=statuses) as status, \
                 patch.object(bridge_client.httpx, "request",
                              side_effect=[httpx.ConnectError("refused"), _reply(NEW_TAB)]) as request:
-            self.assertEqual(server._post("/api/new-tab", {}), NEW_TAB)
+            self.assertEqual(tools._post("/api/new-tab", {}), NEW_TAB)
         self.assertEqual(status.call_count, 5)
         self.assertEqual(request.call_count, 2)
 

@@ -9,7 +9,7 @@ browser_emulate_media and browser_run_code_unsafe answer not_supported.
 
 Tools act on the current tab: the user's active tab until browser_tabs new or select makes
 another tab current. select does not switch the user's view. Kitsune's own tools that are called
-without tab_id act on it too (kitsune.server._on_current_tab).
+without tab_id act on it too (kitsune.tools._on_current_tab).
 
 Relative file names resolve against KITSUNE_OUTPUT_DIR, else the MCP client's first file root,
 else the MCP server's working directory.
@@ -21,17 +21,11 @@ import re
 import sys
 from contextvars import ContextVar
 from pathlib import Path
-from urllib.parse import urlparse
-from urllib.request import url2pathname
-
-import anyio
-from mcp.shared.exceptions import McpError
-from mcp.types import ClientCapabilities, RootsCapability
 
 SCHEMAS = {tool["name"]: tool for tool in
            json.loads(Path(__file__).with_name("playwright_tools.json").read_text(encoding="utf-8"))["tools"]}
 
-k = None  # kitsune.server, set by register()
+k = None  # kitsune.tools, set by register()
 _TOOLS = []
 _current_tab: int | None = None
 # The target last clicked per tab: browser_file_upload fills the file input it opened.
@@ -41,8 +35,6 @@ _requests: dict[int | None, list[dict]] = {}
 # The MCP client's first file root for this tool call; kitsune.server sets it around core calls
 # with a filename.
 client_root: ContextVar[Path | None] = ContextVar("client_root", default=None)
-# How long a filename call waits for the client's roots/list answer before using the fallback.
-ROOTS_TIMEOUT_SECONDS = 5
 
 _REF = re.compile(r"e\d+")
 _FIELD_TYPES = {"textbox", "slider", "checkbox", "radio", "combobox"}
@@ -61,15 +53,15 @@ def _core(function):
     return function
 
 
-def register(server):
-    """Register the core tools on kitsune.server's MCP server (called once, at its import)."""
+def register(tools):
+    """Add the core tools to kitsune.tools, which they are built on (called once, at its import)."""
     global k
-    k = server
+    k = tools
     missing = set(SCHEMAS) ^ {function.__name__ for function in _TOOLS}
     if missing:
         raise RuntimeError(f"core tools and playwright_tools.json differ: {', '.join(sorted(missing))}")
     for function in _TOOLS:
-        server.tool("core")(function)
+        tools.tool("core")(function)
 
 
 def _not_supported(name: str, hint: str) -> dict:
@@ -87,34 +79,6 @@ def _target(target: str | None) -> dict:
 def _selector(target: str) -> tuple[str, str | None]:
     """(selector, ref) for request bodies; the extension reads a ref given as selector too."""
     return ("", target) if _REF.fullmatch(target) else (target, None)
-
-
-async def first_client_root(context) -> Path | None:
-    """The first file:// root the MCP client lists, or None.
-
-    None without a request (a direct call), with KITSUNE_OUTPUT_DIR set, when the client
-    declares no roots capability, lists no file root, fails, or does not answer within
-    ROOTS_TIMEOUT_SECONDS.
-    """
-    if os.environ.get("KITSUNE_OUTPUT_DIR"):
-        return None
-    try:
-        session = context.session
-    except ValueError:  # no MCP request
-        return None
-    if not session.check_client_capability(ClientCapabilities(roots=RootsCapability())):
-        return None
-    roots = []
-    with anyio.move_on_after(ROOTS_TIMEOUT_SECONDS):
-        try:
-            roots = (await session.list_roots()).roots
-        except McpError:
-            pass
-    for root in roots:
-        uri = urlparse(str(root.uri))
-        if uri.netloc in ("", "localhost"):  # a file root on this machine
-            return Path(url2pathname(uri.path))
-    return None
 
 
 def _path(filename: str) -> Path:

@@ -15,7 +15,7 @@ from test_resume import NOT_FOUND, ResumeTests
 # tab and 7 the user's active tab.
 CALLS = r'''import asyncio, json
 from unittest.mock import patch
-from kitsune import playwright_tools, server
+from kitsune import playwright_tools, server, tools
 sent = []
 
 def post(endpoint, body, timeout=15):
@@ -32,7 +32,7 @@ async def main():
         start = len(sent)
         await server.mcp.call_tool(name, arguments)
         steps[label] = [entry for entry in sent[start:] if entry[0] != "/api/tabs"]
-    with patch.object(server, "_post", side_effect=post), patch.object(server, "_get", side_effect=get):
+    with patch.object(tools, "_post", side_effect=post), patch.object(tools, "_get", side_effect=get):
         await step("before", "browser_scroll", {"direction": "down"})
         await step("new", "browser_tabs", {"action": "new"})
         await step("scroll", "browser_scroll", {"direction": "down"})

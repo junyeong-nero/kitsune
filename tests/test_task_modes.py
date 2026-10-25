@@ -7,23 +7,23 @@ import sys
 import unittest
 from unittest.mock import Mock, patch
 
-from kitsune import bridge, bridge_client, server, task_modes
+from kitsune import bridge, bridge_client, server, task_modes, tools
 from test_ask_before_act import AskBeforeActTestCase
 
 CATALOG = '''import asyncio, inspect, json
 from unittest.mock import patch
-from kitsune import playwright_tools, server
+from kitsune import playwright_tools, server, tools
 SAMPLES = {"fields": [{"target": "e1", "name": "Title", "type": "textbox", "value": "draft"}],
            "url": "https://example.com", "values": ["example"], "index": 1}
 OPTIONAL = {"browser_wait_for": {"text": "example"}, "browser_find": {"text": "example"}}
 published = asyncio.run(server.mcp.list_tools())
 routes = {}
 for tool in published:
-    function = getattr(playwright_tools if tool.name in playwright_tools.SCHEMAS else server, tool.name)
+    function = getattr(playwright_tools if tool.name in playwright_tools.SCHEMAS else tools, tool.name)
     args = {name: SAMPLES.get(name, "example")
             for name, param in inspect.signature(function).parameters.items() if param.default is inspect.Parameter.empty}
     args.update(OPTIONAL.get(tool.name, {}))
-    with patch.object(server, "_get", return_value={}) as get, patch.object(server, "_post", return_value={}) as post:
+    with patch.object(tools, "_get", return_value={}) as get, patch.object(tools, "_post", return_value={}) as post:
         function(**args)
         routes[tool.name] = [call.args[0] for call in get.call_args_list + post.call_args_list]
 excluded = {}
@@ -116,7 +116,7 @@ class TaskModeCatalogTests(unittest.TestCase):
         self.assertIn("Unknown KITSUNE_MODE: unsafe", result.stderr)
 
     def test_confirmation_is_refused_on_a_published_tool(self):
-        with patch.object(server, "MODE", "read"), patch.object(server, "_post") as post:
+        with patch.object(server, "MODE", "read"), patch.object(tools, "_post") as post:
             result = asyncio.run(server.mcp.call_tool("browser_navigate", {
                 "url": "https://example.com", "confirm_token": "token"}))
         self.assertTrue(result.isError)
@@ -124,14 +124,14 @@ class TaskModeCatalogTests(unittest.TestCase):
         post.assert_not_called()
 
     def test_tab_list_new_tab_opens_the_current_tab_without_selecting_it(self):
-        server.browser_tab_list  # published only in read and draft
+        tools.browser_tab_list  # published only in read and draft
         tabs = {"tabs": [{"id": 3, "title": "user", "url": "https://user.example/", "active": True},
                          {"id": 9, "title": "Example", "url": "https://example.com/", "owned": True}]}
         opened = {"ok": True, "tabId": 9, "url": "https://example.com/", "status": "complete", "snapshot": "x"}
-        with patch.object(server, "_post", return_value=opened) as post, \
-                patch.object(server, "_get", return_value=tabs), \
+        with patch.object(tools, "_post", return_value=opened) as post, \
+                patch.object(tools, "_get", return_value=tabs), \
                 patch.object(server.playwright_tools, "_current_tab", None):
-            result = server.browser_tab_list(new_tab="https://example.com/")
+            result = tools.browser_tab_list(new_tab="https://example.com/")
             current = server.playwright_tools._current_tab
         self.assertEqual(post.call_args.args[0], "/api/new-tab")
         self.assertEqual(post.call_args.args[1], {"url": "https://example.com/", "wait": True, "timeout": 15000})
@@ -140,9 +140,9 @@ class TaskModeCatalogTests(unittest.TestCase):
                                   "tabs": tabs["tabs"]})
         # A refused or failed open changes nothing and returns the error.
         refused = {"error": "read mode refuses newTab", "code": "mode_restricted", "retryable": False}
-        with patch.object(server, "_post", return_value=refused), patch.object(server, "_get") as get, \
+        with patch.object(tools, "_post", return_value=refused), patch.object(tools, "_get") as get, \
                 patch.object(server.playwright_tools, "_current_tab", 3):
-            self.assertEqual(server.browser_tab_list(new_tab="file:///etc/passwd"), refused)
+            self.assertEqual(tools.browser_tab_list(new_tab="file:///etc/passwd"), refused)
             self.assertEqual(server.playwright_tools._current_tab, 3)
         get.assert_not_called()
 
@@ -150,8 +150,8 @@ class TaskModeCatalogTests(unittest.TestCase):
         with patch.object(server._client, "mode", "read"), patch.object(bridge_client.httpx, "request") as request:
             request.return_value.status_code = 200
             request.return_value.json.return_value = {"ok": True}
-            server._get("/api/tabs")
-            server._post("/api/navigate", {"url": "https://example.com"})
+            tools._get("/api/tabs")
+            tools._post("/api/navigate", {"url": "https://example.com"})
         for call in request.call_args_list:
             self.assertEqual(call.kwargs["headers"][task_modes.MODE_HEADER], "read")
 

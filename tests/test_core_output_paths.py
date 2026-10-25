@@ -17,7 +17,7 @@ from mcp.shared.exceptions import McpError
 from mcp.shared.memory import create_connected_server_and_client_session
 from mcp.types import ErrorData, ListRootsResult, Root
 
-from kitsune import playwright_tools, server
+from kitsune import playwright_tools, server, tools
 
 
 def _environment(**settings):
@@ -54,7 +54,7 @@ class _Context:
 
 
 def _first_root(context):
-    return asyncio.run(playwright_tools.first_client_root(context))
+    return asyncio.run(server.first_client_root(context))
 
 
 class PathTests(unittest.TestCase):
@@ -117,7 +117,7 @@ class FirstClientRootTests(unittest.TestCase):
     def test_a_failing_or_silent_client_gives_none(self):
         error = McpError(ErrorData(code=-32601, message="List roots not supported"))
         self.assertIsNone(_first_root(_Context(_Session(["file:///work"], error=error))))
-        with patch.object(playwright_tools, "ROOTS_TIMEOUT_SECONDS", 0.05):
+        with patch.object(server, "ROOTS_TIMEOUT_SECONDS", 0.05):
             self.assertIsNone(_first_root(_Context(_Session(["file:///work"], delay=5))))
 
     def test_output_dir_skips_the_roots_request(self):
@@ -139,7 +139,7 @@ class ClientRootsTests(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
         playwright_tools._current_tab = None
-        post = patch.object(server, "_post", return_value={"snapshot": '- button "OK" [ref=e1]', "url": "https://a/"})
+        post = patch.object(tools, "_post", return_value={"snapshot": '- button "OK" [ref=e1]', "url": "https://a/"})
         post.start()
         self.addCleanup(post.stop)
         directory = tempfile.TemporaryDirectory()

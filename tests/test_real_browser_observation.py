@@ -7,7 +7,7 @@ import re
 import unittest
 from unittest.mock import patch
 
-from kitsune import playwright_tools, server
+from kitsune import playwright_tools, server, tools
 
 import real_browser_harness as harness
 
@@ -97,7 +97,7 @@ class RealBrowserObservationTests(harness.RealBrowserTestCase):
                      " + '<button id=deep>Deep target 71</button>'; 'done'")
         def post(endpoint, body, **kwargs):
             return self.call(endpoint, body)
-        with patch.object(playwright_tools, "_current_tab", tab), patch.object(server, "_post", side_effect=post):
+        with patch.object(playwright_tools, "_current_tab", tab), patch.object(tools, "_post", side_effect=post):
             # Inline core snapshots are bounded (#262); browser_find searches past the cut.
             default = playwright_tools.browser_snapshot()
             self.assertLessEqual(len(default["snapshot"]), playwright_tools.SNAPSHOT_LIMIT)
@@ -110,11 +110,11 @@ class RealBrowserObservationTests(harness.RealBrowserTestCase):
             scoped = playwright_tools.browser_snapshot(target=deep)
             self.assertIn(f'- button "Deep target 71" [ref={deep}]', scoped["snapshot"])
             for kwargs in ({}, {"text": False}):
-                compact = server.browser_snapshot(tab_id=tab, **kwargs)
+                compact = tools.browser_snapshot(tab_id=tab, **kwargs)
                 self.assertNotIn('text "Readable static fact"', compact["snapshot"])
                 self.assertIn('button "Deep target 71"', compact["snapshot"])
                 self.assertNotIn("truncated", compact)
-            bounded = server.browser_snapshot(tab_id=tab, text=True)
+            bounded = tools.browser_snapshot(tab_id=tab, text=True)
             self.assertLessEqual(len(bounded["snapshot"]), 12000)
             self.assertIs(bounded["truncated"], True)
             self.assertIn("truncated; scope", bounded["snapshot"])

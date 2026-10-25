@@ -8,7 +8,7 @@ import asyncio
 import unittest
 from unittest.mock import Mock, patch
 
-from kitsune import bridge, bridge_client, server, task_modes
+from kitsune import bridge, bridge_client, server, task_modes, tools
 
 ACTIVE_TAB = 4
 
@@ -159,7 +159,7 @@ class ServerProtectUserTabsTests(unittest.TestCase):
                     patch.object(bridge_client.httpx, "request") as request:
                 request.return_value.status_code = 200
                 request.return_value.json.return_value = {"ok": True}
-                server._post("/api/navigate", {"url": "https://example.com"})
+                tools._post("/api/navigate", {"url": "https://example.com"})
             headers = request.call_args.kwargs["headers"]
             self.assertEqual(headers.get(task_modes.PROTECT_USER_TABS_HEADER), "1" if protect else None)
 

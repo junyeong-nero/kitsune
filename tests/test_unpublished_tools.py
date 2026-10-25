@@ -19,14 +19,14 @@ def list_tools(caps="core") -> dict:
 # Calls known and unknown tool names through FastMCP's call_tool, and browser_status with the bridge mocked.
 UNPUBLISHED_SCRIPT = """import asyncio, json, sys
 from unittest.mock import patch
-from kitsune import server
+from kitsune import server, tools
 def call(name):
     try:
         result = asyncio.run(server.mcp.call_tool(name, {}))
     except Exception as error:
         return {"raised": str(error)}
     return {"isError": result.isError, **json.loads(result.content[0].text)}
-with patch.object(server, "_get", return_value={"status": "running"}):
+with patch.object(tools, "_get", return_value={"status": "running"}):
     status = server.browser_status()
 print(json.dumps({"calls": {name: call(name) for name in sys.argv[1:]}, "mcp_tools": status["mcp_tools"],
                   "unpublished": sorted(server.UNPUBLISHED_TOOLS)}))

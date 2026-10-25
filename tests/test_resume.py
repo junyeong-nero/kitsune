@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from kitsune import bridge, server, waits
+from kitsune import bridge, server, tools, waits
 
 from test_container_progress import TIMEOUT, ContainerTests
 
@@ -566,9 +566,9 @@ class ResumeAuditTests(ResumeTests):
 
 class ResumeToolTests(unittest.TestCase):
     def test_tool_posts_to_the_bridge_and_outlasts_its_deadline(self):
-        with patch.object(server, "_post", return_value={"results": []}) as post:
-            server.browser_resume(7, "token", {"1": "not_applied"})
-            server.browser_resume(7, "token")
+        with patch.object(tools, "_post", return_value={"results": []}) as post:
+            tools.browser_resume(7, "token", {"1": "not_applied"})
+            tools.browser_resume(7, "token")
         first, second = post.call_args_list
         self.assertEqual(first.args, ("/api/resume", {"call": 7, "resume_token": "token",
                                                       "observed": {"1": "not_applied"}}))

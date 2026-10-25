@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from kitsune import playwright_tools, server
+from kitsune import playwright_tools, server, tools
 import real_browser_harness as harness
 
 PAGE = """<!doctype html><meta charset="utf-8"><title>Screenshot fixture</title>
@@ -121,7 +121,7 @@ class RealBrowserScreenshotTests(harness.RealBrowserTestCase):
         def post(endpoint, body, **kwargs):
             return self.call(endpoint, body)
         with tempfile.TemporaryDirectory() as directory, \
-             patch.object(playwright_tools, "_current_tab", tab), patch.object(server, "_post", side_effect=post):
+             patch.object(playwright_tools, "_current_tab", tab), patch.object(tools, "_post", side_effect=post):
             destination = Path(directory, "page.jpg")
             result = playwright_tools.browser_take_screenshot(type="jpeg", fullPage=True, filename=str(destination))
             self.assertEqual(result["saved_to"], str(destination))

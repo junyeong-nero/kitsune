@@ -5,16 +5,16 @@ import os
 import unittest
 from unittest.mock import Mock, patch
 
-from kitsune import bridge, server
+from kitsune import bridge, server, tools
 
 
 class SnapshotToolsTests(unittest.TestCase):
     def test_snapshot_routes_and_tabs(self):
-        with patch.object(server, '_post', return_value={'snapshot': 'tree'}) as post:
-            self.assertEqual(server.browser_snapshot(), {'snapshot': 'tree'})
+        with patch.object(tools, "_post", return_value={'snapshot': 'tree'}) as post:
+            self.assertEqual(tools.browser_snapshot(), {'snapshot': 'tree'})
             post.assert_called_once_with('/api/snapshot', {'text': False})
-        with patch.object(server, '_post', return_value={'snapshot': 'tree'}) as post:
-            server.browser_snapshot(tab_id=7)
+        with patch.object(tools, "_post", return_value={'snapshot': 'tree'}) as post:
+            tools.browser_snapshot(tab_id=7)
             post.assert_called_once_with('/api/snapshot', {'tabId': 7, 'text': False})
 
     def test_snapshot_scope_and_depth(self):
@@ -30,14 +30,14 @@ class SnapshotToolsTests(unittest.TestCase):
              {'tabId': 7, 'selector': '#catalog', 'text': True}),
         ]
         for kwargs, expected in cases:
-            with self.subTest(kwargs=kwargs), patch.object(server, '_post', return_value={'snapshot': 'tree'}) as post:
-                self.assertEqual(server.browser_snapshot(**kwargs), {'snapshot': 'tree'})
+            with self.subTest(kwargs=kwargs), patch.object(tools, "_post", return_value={'snapshot': 'tree'}) as post:
+                self.assertEqual(tools.browser_snapshot(**kwargs), {'snapshot': 'tree'})
                 post.assert_called_once_with('/api/snapshot', {'text': False, **expected})
-        with patch.object(server, '_post') as post, patch.object(server, '_get') as get:
+        with patch.object(tools, "_post") as post, patch.object(tools, "_get") as get:
             invalid_cases: list[dict] = [{'max_depth': value} for value in (-1, 1.5, True, '2')]
             for kwargs in invalid_cases:
                 with self.subTest(kwargs=kwargs):
-                    self.assertEqual(server.browser_snapshot(**kwargs), {
+                    self.assertEqual(tools.browser_snapshot(**kwargs), {
                         'error': 'max_depth must be a non-negative integer',
                     })
             post.assert_not_called()
@@ -110,8 +110,8 @@ class SnapshotToolsTests(unittest.TestCase):
                 handler.send_json.assert_called_once_with(200, {'error': 'collapse must be a boolean'})
 
     def test_dom_scope_and_depth(self):
-        with patch.object(server, '_get', return_value={'tree': {}}) as get:
-            self.assertEqual(server.browser_dom(), {'tree': {}})
+        with patch.object(tools, "_get", return_value={'tree': {}}) as get:
+            self.assertEqual(tools.browser_dom(), {'tree': {}})
             get.assert_called_once_with('/api/dom')
         cases = [
             ({'tab_id': 7}, {'tabId': 7}),
@@ -122,14 +122,14 @@ class SnapshotToolsTests(unittest.TestCase):
              {'tabId': 7, 'selector': '#fallback', 'ref': 's2e0', 'maxDepth': 2}),
         ]
         for kwargs, expected in cases:
-            with self.subTest(kwargs=kwargs), patch.object(server, '_post', return_value={'tree': {}}) as post:
-                self.assertEqual(server.browser_dom(**kwargs), {'tree': {}})
+            with self.subTest(kwargs=kwargs), patch.object(tools, "_post", return_value={'tree': {}}) as post:
+                self.assertEqual(tools.browser_dom(**kwargs), {'tree': {}})
                 post.assert_called_once_with('/api/dom', expected)
-        with patch.object(server, '_post') as post, patch.object(server, '_get') as get:
+        with patch.object(tools, "_post") as post, patch.object(tools, "_get") as get:
             invalid_cases: list[dict] = [{'max_depth': value} for value in (-1, 1.5, True, '2')]
             for kwargs in invalid_cases:
                 with self.subTest(kwargs=kwargs):
-                    self.assertEqual(server.browser_dom(**kwargs), {
+                    self.assertEqual(tools.browser_dom(**kwargs), {
                         'error': 'max_depth must be a non-negative integer',
                     })
             post.assert_not_called()
@@ -179,8 +179,8 @@ class SnapshotToolsTests(unittest.TestCase):
             ('computed_style', {}), ('click_and_wait_navigation', {}), ('markdown', {}),
         ]
         for action, kwargs in cases:
-            with self.subTest(action=action), patch.object(server, '_post', return_value={'ok': True}) as post:
-                getattr(server, 'browser_' + action)(ref='s2e0', element='human description', tab_id=7, **kwargs)
+            with self.subTest(action=action), patch.object(tools, "_post", return_value={'ok': True}) as post:
+                getattr(tools, 'browser_' + action)(ref='s2e0', element='human description', tab_id=7, **kwargs)
                 body = post.call_args.args[1]
                 self.assertEqual(body['ref'], 's2e0')
                 self.assertEqual(body['element'], 'human description')
@@ -190,8 +190,8 @@ class SnapshotToolsTests(unittest.TestCase):
                     self.assertEqual(body['toRef'], 's2e1')
 
     def test_existing_positional_selector_arguments(self):
-        with patch.object(server, '_post', return_value={'ok': True}) as post:
-            server.browser_type('#email', 'a@b', clear=True, tab_id=7)
+        with patch.object(tools, "_post", return_value={'ok': True}) as post:
+            tools.browser_type('#email', 'a@b', clear=True, tab_id=7)
             self.assertEqual(post.call_args.args[1], {
                 'selector': '#email', 'text': 'a@b', 'clear': True, 'tabId': 7,
             })
@@ -206,8 +206,8 @@ class SnapshotToolsTests(unittest.TestCase):
             ('markdown', {}, {}),
         ]
         for action, kwargs, default_body in cases:
-            with self.subTest(action=action), patch.object(server, '_post', return_value={'ok': True}) as post:
-                function = getattr(server, 'browser_' + action)
+            with self.subTest(action=action), patch.object(tools, "_post", return_value={'ok': True}) as post:
+                function = getattr(tools, 'browser_' + action)
                 function(**kwargs)
                 self.assertEqual(post.call_args.args[1], default_body)
                 function(element='audit only', **kwargs)
@@ -220,8 +220,8 @@ class SnapshotToolsTests(unittest.TestCase):
                 })
 
     def test_wait_for_ref_is_one_element_condition(self):
-        with patch.object(server, '_post', return_value={'ok': True}) as post:
-            server.browser_wait_for(selector='#fallback', ref='s2e0', element='audit only',
+        with patch.object(tools, "_post", return_value={'ok': True}) as post:
+            tools.browser_wait_for(selector='#fallback', ref='s2e0', element='audit only',
                                     timeout=12000, tab_id=7)
             post.assert_called_once_with('/api/wait-for-element', {
                 'selector': '#fallback', 'ref': 's2e0', 'element': 'audit only',
@@ -237,7 +237,7 @@ class SnapshotToolsTests(unittest.TestCase):
             ]
             for args in invalid_conditions:
                 with self.subTest(args=args):
-                    self.assertIn('error', server.browser_wait_for(**args))
+                    self.assertIn('error', tools.browser_wait_for(**args))
             post.assert_not_called()
 
     def test_bridge_snapshot_environment_and_override(self):

@@ -13,7 +13,7 @@ import time
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from kitsune import bridge, server
+from kitsune import bridge, server, tools
 
 from test_bridge_security import Bridge, _request
 from test_tab_inventory_bridge import ScriptedExtension
@@ -24,40 +24,40 @@ RESULT_URL = "https://result.example/private-path"
 
 class HistoryToolTests(unittest.TestCase):
     def test_tools_post_their_arguments(self):
-        with patch.object(server, "_post", return_value={"ok": True}) as post:
-            server.browser_history_search("kitsune")
+        with patch.object(tools, "_post", return_value={"ok": True}) as post:
+            tools.browser_history_search("kitsune")
             post.assert_called_with("/api/history-search", {"query": "kitsune", "limit": 20})
-            server.browser_history_search("", since="2026-10-01T00:00:00Z", limit=5)
+            tools.browser_history_search("", since="2026-10-01T00:00:00Z", limit=5)
             post.assert_called_with("/api/history-search", {"query": "", "limit": 5, "since": 1790812800000})
-            server.browser_history_search("", since="2026-10-01T09:00:00+09:00")
+            tools.browser_history_search("", since="2026-10-01T09:00:00+09:00")
             self.assertEqual(post.call_args.args[1]["since"], 1790812800000)
-            server.browser_history_visits(RESULT_URL)
+            tools.browser_history_visits(RESULT_URL)
             post.assert_called_with("/api/history-visits", {"url": RESULT_URL})
-            server.browser_bookmarks_search("docs", limit=3)
+            tools.browser_bookmarks_search("docs", limit=3)
             post.assert_called_with("/api/bookmarks-search", {"query": "docs", "limit": 3})
 
     def test_invalid_since_is_refused_before_the_bridge(self):
-        with patch.object(server, "_post") as post:
+        with patch.object(tools, "_post") as post:
             for since in ("yesterday", "", "2026-13-01"):
-                self.assertIn("ISO 8601", server.browser_history_search("x", since=since)["error"])
+                self.assertIn("ISO 8601", tools.browser_history_search("x", since=since)["error"])
             post.assert_not_called()
 
     def test_set_policy_sends_history_scope(self):
-        with patch.object(server, "_post", return_value={"ok": True}) as post:
-            server.browser_set_policy(history_allow_domains=["example.com"], history_deny_domains=["bank.test"],
+        with patch.object(tools, "_post", return_value={"ok": True}) as post:
+            tools.browser_set_policy(history_allow_domains=["example.com"], history_deny_domains=["bank.test"],
                                       history_max_days=7)
             post.assert_called_with("/api/set-policy", {"historyAllowDomains": ["example.com"],
                                                         "historyDenyDomains": ["bank.test"], "historyMaxDays": 7})
 
     def test_descriptions_lead_with_the_key_facts(self):
         # #135: the first paragraph says what comes back and that the user must grant access.
-        for function, returns in [(server.browser_history_search, "results [{url, title, last_visit, visit_count}]"),
-                                  (server.browser_history_visits, "visits [{visit_time, transition"),
-                                  (server.browser_bookmarks_search, "results [{url, title, folder}]")]:
+        for function, returns in [(tools.browser_history_search, "results [{url, title, last_visit, visit_count}]"),
+                                  (tools.browser_history_visits, "visits [{visit_time, transition"),
+                                  (tools.browser_bookmarks_search, "results [{url, title, folder}]")]:
             first = " ".join(function.__doc__.split("\n\n")[0].split())
             self.assertIn(returns, first)
             self.assertIn("permission_required", first)
-        self.assertIn("ISO 8601", " ".join(server.browser_history_search.__doc__.split("\n\n")[0].split()))
+        self.assertIn("ISO 8601", " ".join(tools.browser_history_search.__doc__.split("\n\n")[0].split()))
 
 
 class HistoryPolicyTests(unittest.TestCase):

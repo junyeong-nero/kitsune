@@ -737,7 +737,8 @@ To publish a new version to PyPI, see [Releasing](releasing.md).
 ```
 extension/          WebExtension (manifest v2, Gecko)
 src/kitsune/
-  server.py         MCP server
+  server.py         MCP server: registers the tools on FastMCP, within KITSUNE_CAPS and KITSUNE_MODE
+  tools.py          The agent tools (Kitsune's own) without MCP code; playwright_tools.py has the core group
   browser.py        Python API (kitsune.connect, Browser, Tab); errors.py has its exceptions
   bridge_client.py  Bridge requests and connection errors; starts the bridge on demand
   bridge.py         Bridge daemon (HTTP API + WebSocket)
