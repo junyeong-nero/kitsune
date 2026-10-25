@@ -67,6 +67,8 @@ agent ──stdio──▶ kitsune (MCP server, one per agent)
    detached daemon. If its build differs, Kitsune safely replaces it first.
    A file lock serializes starts and replacements across agents.
 3. The extension keeps reconnecting to the daemon, so it attaches by itself.
+   After `kitsune` starts or replaces a daemon, its first tool call other than
+   `browser_status` waits up to 16 s for the extension; it is sent once either way.
 4. The daemon keeps running after the agent exits; the next agent reuses it.
 
 ## Snapshot and element refs
@@ -637,7 +639,7 @@ URL. Details are in the [API reference](api-reference.md#protected-user-tabs).
 | Symptom | Check |
 |---|---|
 | Any connection problem | Call `browser_status` and follow `diagnosis.hint`; each `diagnosis.code` is listed in [Connection diagnosis](api-reference.md#connection-diagnosis). It never shows the token |
-| `extension_disconnected` (`extension_connected: false`) | Extension installed and enabled in the browser profile you opened? Developer build: browser restarted (temporary add-on gone)? It reconnects within 15 s of a bridge start |
+| `extension_disconnected` (`extension_connected: false`) | Extension installed and enabled in the browser profile you opened? Developer build: browser restarted (temporary add-on gone)? It reconnects within 15 s of a bridge start; the first tool call after the MCP server starts a bridge waits up to 16 s for it |
 | `extension_version_mismatch` | The extension and server versions differ; install the matching extension or update the server, then reload open tabs. `state.reason: "stale_developer_build"`: the developer build's files changed since the browser loaded them; reload it in about:debugging |
 | `browser_window_unavailable` | The browser runs without a normal window Kitsune can use; open one, or allow Kitsune in private windows (about:addons → Kitsune → Run in Private Windows) |
 | `host_permission_denied` | `not_granted`: allow site access in about:addons → Kitsune → Permissions. `restricted_domain`: Firefox keeps extensions off Mozilla sites such as addons.mozilla.org; use another tab |

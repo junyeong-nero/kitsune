@@ -116,7 +116,7 @@ class BridgeIdleShutdownProcessTests(unittest.TestCase):
         for patcher in (
             patch.dict(os.environ, self.bridge.env, clear=True), self.daemon_paths(),
             patch.multiple(control, BRIDGE=url, TOKEN_FILE=os.path.join(self.home, "token"), LOG_FILE=log_file),
-            patch.multiple(server, BRIDGE=url, LOG_FILE=log_file),
+            patch.multiple(server, BRIDGE=url, LOG_FILE=log_file, _extension_wait_until=0.0),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)

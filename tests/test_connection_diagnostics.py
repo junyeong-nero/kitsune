@@ -501,6 +501,116 @@ class ServerDiagnosisTests(unittest.TestCase):
         self.assertEqual({key: value for key, value in result.items() if key != "mcp_tools"}, running)
 
 
+def _bridge_status(code):
+    return {"build": server.BRIDGE_BUILD, "extension_connected": code not in {"extension_disconnected", "port_conflict"},
+            "diagnosis": {"code": code}}
+
+
+def _reply(result):
+    return httpx.Response(200, json=result, request=httpx.Request("POST", server.BRIDGE))
+
+
+NEW_TAB = {"ok": True, "tabId": 7}
+# The bridge's replies for a command it could not send, and for one the extension dropped after it was sent.
+NOT_SENT = {"error": "Kitsune extension not connected. Open Firefox or Zen and make sure the Kitsune extension "
+                     "is loaded.", "code": "extension_disconnected", "retryable": True,
+            "hint": "Open the browser profile where Kitsune is installed ...", "state": {"connected": False}}
+SENT = {"error": "Extension disconnected while waiting for response", "code": "extension_disconnected",
+        "retryable": False, "hint": "The extension disconnected after the command was sent ...",
+        "state": {"connected": False}}
+
+
+class ExtensionReadinessTests(unittest.TestCase):
+    """Issue #258: a bridge this server starts answers before the extension reconnects to it."""
+
+    def setUp(self):
+        self.clock = _Clock()
+        for patcher in (patch.dict(os.environ, {"KITSUNE_NO_BRIDGE_RESTART": "0"}),
+                        patch.object(server, "_extension_wait_until", 0.0),
+                        patch.object(control, "lifecycle_lock", return_value=nullcontext()),
+                        patch.object(control, "stop", return_value=None),
+                        patch("builtins.open", mock_open()), patch.object(server.subprocess, "Popen", **RUNNING),
+                        patch.object(server.time, "monotonic", side_effect=self.clock.monotonic),
+                        patch.object(server.time, "sleep", side_effect=self.clock.sleep)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def replace_bridge(self):
+        """_ensure_bridge replaces an old build; the new bridge answers before any extension connects."""
+        with patch.object(control, "status", side_effect=[{"build": "old"}, {"build": "old"},
+                                                          _bridge_status("extension_disconnected")]):
+            self.assertIsNone(server._ensure_bridge())
+        self.started = self.clock.now
+
+    def test_first_command_after_a_replacement_waits_for_the_extension(self):
+        self.replace_bridge()
+        reconnecting = [_bridge_status("extension_disconnected")] * 3 + [_bridge_status("connected")]
+        with patch.object(control, "status", side_effect=reconnecting) as status, \
+                patch.object(server.httpx, "request", return_value=_reply(NEW_TAB)) as request:
+            self.assertEqual(server._post("/api/new-tab", {"url": "about:blank"}), NEW_TAB)
+            self.assertEqual(server._post("/api/new-tab", {"url": "about:blank"}), NEW_TAB)
+        self.assertEqual(status.call_count, 4, "the second command does not wait")
+        self.assertEqual({call.kwargs["timeout"] for call in status.call_args_list}, {server.READY_PROBE_TIMEOUT})
+        self.assertEqual(request.call_count, 2, "each command is sent once")
+        self.assertLess(self.clock.now - self.started, 1)
+
+    def test_extension_that_never_connects_gets_the_bridge_error_after_a_bounded_wait(self):
+        self.replace_bridge()
+        with patch.object(control, "status", return_value=_bridge_status("extension_disconnected")) as status, \
+                patch.object(server.httpx, "request", return_value=_reply(NOT_SENT)) as request:
+            self.assertEqual(server._post("/api/new-tab", {"url": "about:blank"}), NOT_SENT)
+            waited = self.clock.now - self.started
+            polls = status.call_count
+            self.assertEqual(server._post("/api/new-tab", {"url": "about:blank"}), NOT_SENT)
+        self.assertGreaterEqual(waited, server.EXTENSION_RECONNECT_SECONDS)
+        self.assertLess(waited, server.EXTENSION_RECONNECT_SECONDS + 1)
+        self.assertEqual(status.call_count, polls, "later commands fail at once")
+        self.assertEqual(request.call_count, 2, "a command that was not sent is not repeated either")
+
+    def test_disconnect_after_dispatch_is_returned_once(self):
+        self.replace_bridge()
+        with patch.object(control, "status", return_value=_bridge_status("connected")), \
+                patch.object(server.httpx, "request", return_value=_reply(SENT)) as request:
+            self.assertEqual(server._post("/api/click", {"ref": "e1"}), SENT)
+        request.assert_called_once()
+
+    def test_browser_status_does_not_wait_and_other_diagnoses_end_the_wait(self):
+        self.replace_bridge()
+        with patch.object(control, "status") as status, \
+                patch.object(server.httpx, "request", return_value=_reply(_bridge_status("extension_disconnected"))):
+            server._get("/api/status")
+        status.assert_not_called()
+        for code in ("port_conflict", "extension_version_mismatch"):
+            with self.subTest(code=code):
+                self.replace_bridge()
+                with patch.object(control, "status", return_value=_bridge_status(code)) as status, \
+                        patch.object(server.httpx, "request", return_value=_reply(NEW_TAB)):
+                    server._post("/api/new-tab", {})
+                status.assert_called_once()
+                self.assertEqual(self.clock.now, self.started)
+
+    def test_matching_bridge_is_neither_replaced_nor_waited_for(self):
+        with patch.object(control, "status", return_value=_bridge_status("extension_disconnected")) as status, \
+                patch.object(server.httpx, "request", return_value=_reply(NOT_SENT)) as request:
+            self.assertIsNone(server._ensure_bridge())
+            self.assertEqual(server._post("/api/new-tab", {}), NOT_SENT)
+        control.stop.assert_not_called()
+        server.subprocess.Popen.assert_not_called()
+        status.assert_called_once()  # by _ensure_bridge
+        request.assert_called_once()
+        self.assertEqual(self.clock.now, 0)
+
+    def test_bridge_started_by_a_command_waits_for_the_extension_before_it_is_sent(self):
+        statuses = [None, None, _bridge_status("extension_disconnected"),  # _ensure_bridge starts a bridge
+                    _bridge_status("extension_disconnected"), _bridge_status("connected")]
+        with patch.object(control, "status", side_effect=statuses) as status, \
+                patch.object(server.httpx, "request",
+                             side_effect=[httpx.ConnectError("refused"), _reply(NEW_TAB)]) as request:
+            self.assertEqual(server._post("/api/new-tab", {}), NEW_TAB)
+        self.assertEqual(status.call_count, 5)
+        self.assertEqual(request.call_count, 2)
+
+
 class PortProbeTests(unittest.TestCase):
     def test_port_in_use_binds_without_connecting(self):
         with socket.socket() as listener:

@@ -5,13 +5,18 @@ what a browser can show: no extension connected, then connected; an extension th
 its bridge connection; a developer build edited on disk but not reloaded (a script, or only
 its manifest.json); a restricted
 domain (host_permission_denied) beside an empty error page (error_page); the MCP server's
-browser_status and unpublished-tool error over stdio (#171); and, in its own
-browser, a profile without a normal window (browser_window_unavailable).
+browser_status and unpublished-tool error over stdio (#171); and, each in its own
+browser, a profile without a normal window (browser_window_unavailable) and an MCP server
+whose first tool call follows the bridge it started (#258).
 """
 import asyncio
 from http.server import BaseHTTPRequestHandler
 import json
+import os
+from pathlib import Path
+import signal
 import sys
+import threading
 import time
 
 from mcp import ClientSession, StdioServerParameters
@@ -97,6 +102,17 @@ async def _mcp_status_and_unpublished(env):
         status = await session.call_tool("browser_status", {})
         cookies = await session.call_tool("browser_cookies", {"op": "get"})
     return names, status, cookies
+
+
+async def _mcp_first_tab(env, url, on_initialized):
+    """Over stdio, browser_tabs new as the first tool call, then browser_tabs list."""
+    server = StdioServerParameters(command=sys.executable, args=["-m", "kitsune.server"], env=env)
+    async with stdio_client(server) as (read, write), ClientSession(read, write) as session:
+        await session.initialize()
+        on_initialized()
+        opened = await session.call_tool("browser_tabs", {"action": "new", "url": url})
+        listed = await session.call_tool("browser_tabs", {"action": "list"})
+    return opened, listed
 
 
 class _Pages(BaseHTTPRequestHandler):
@@ -253,6 +269,47 @@ class RealBrowserConnectionDiagnosisTests(_DiagnosisTestCase):
         self.assert_error(cookies, "tool_not_published", False)
         self.assertIn("KITSUNE_CAPS=admin,core,storage", cookies["hint"])
         self.assertEqual(cookies["state"], {"group": "storage", "caps": ["admin", "core"]})
+
+
+class RealBrowserBridgeStartTests(_DiagnosisTestCase):
+    """Its own browser: the MCP server replaces this class's bridge with one it starts."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.site = harness.FixtureServer(_Pages)
+        cls.addClassCleanup(cls.site.stop)
+        super().setUpClass()
+
+    def stop_started_bridge(self):
+        port, auth, host = self.bridge.http_port, self.bridge.auth(), self.bridge.host
+        deadline = time.monotonic() + 10
+        try:
+            harness._request(port, "POST", "/api/shutdown", auth, host)
+            while time.monotonic() < deadline:
+                harness._request(port, "GET", "/api/status", auth, host)
+                time.sleep(0.1)
+        except OSError:
+            return  # it stopped
+        pid = Path(self.bridge.home, "bridge.pid").read_text(encoding="utf-8").strip()
+        os.kill(int(pid), signal.SIGKILL)
+
+    def test_first_tool_call_after_the_server_starts_the_bridge_waits_for_the_extension(self):
+        tabs = len(self.call("/api/tabs")["tabs"])
+        # The extension stays away until the server has started its bridge and its first call runs.
+        self.assertEqual(self.control.call("holdBridge"), {"held": True})
+        self.wait_for_diagnosis("extension_disconnected")
+        self.bridge.stop()
+        self.addCleanup(self.stop_started_bridge)
+        release = threading.Timer(1, self.control.call, ("releaseBridge",))
+        self.addCleanup(release.cancel)
+
+        opened, listed = asyncio.run(asyncio.wait_for(
+            _mcp_first_tab(self.bridge.env, self.site.origin + "/", release.start), MCP_SESSION_TIMEOUT))
+        self.assertFalse(opened.isError, opened)
+        opened = json.loads(opened.content[0].text)
+        self.assertIsInstance(opened.get("index"), int, opened)
+        self.assertFalse(listed.isError, listed)
+        self.assertEqual(len(json.loads(listed.content[0].text)["tabs"]), tabs + 1, "one new tab")
 
 
 class RealBrowserNoWindowTests(_DiagnosisTestCase):

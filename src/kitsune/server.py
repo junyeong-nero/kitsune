@@ -342,6 +342,10 @@ BRIDGE_START_TIMEOUT = 15
 # for NOT_RESPONDING_SECONDS hangs (a bridge that cannot listen exits within that time).
 READY_PROBE_TIMEOUT = 1
 NOT_RESPONDING_SECONDS = 3
+# The extension retries its WebSocket at least every 15 s (MAX_RECONNECT_DELAY in background.js),
+# so it reaches a bridge this server started within EXTENSION_RECONNECT_SECONDS (#258).
+EXTENSION_RECONNECT_SECONDS = 16
+_extension_wait_until = 0.0  # set when this server starts a bridge; see _await_extension
 
 
 def _bridge_matches(status: dict) -> bool:
@@ -350,6 +354,7 @@ def _bridge_matches(status: dict) -> bool:
 
 def _ensure_bridge() -> dict | None:
     """Start or replace the shared bridge, serializing lifecycle changes; return an error result."""
+    global _extension_wait_until
     try:
         status = bridge_control.status()
         if status is not None and _bridge_matches(status):
@@ -386,6 +391,7 @@ def _ensure_bridge() -> dict | None:
                     if process.poll() is None and time.monotonic() - unanswered_since >= NOT_RESPONDING_SECONDS:
                         return _not_responding(process.pid)
                 if status is not None and status.get("build") == BRIDGE_BUILD:
+                    _extension_wait_until = time.monotonic() + EXTENSION_RECONNECT_SECONDS
                     return None
                 if process.poll() is not None:
                     break  # it exited at startup; diagnose now instead of at the deadline
@@ -429,6 +435,26 @@ def _ensure_bridge() -> dict | None:
             f"Kitsune bridge (PID {process.pid}) runs but did not listen on port {HTTP_PORT} within "
             f"{BRIDGE_START_TIMEOUT}s. See {LOG_FILE}", port=HTTP_PORT, reason="not_listening", pid=process.pid)
     return _bridge_unavailable(f"Kitsune bridge did not start within {BRIDGE_START_TIMEOUT}s. See {LOG_FILE}")
+
+
+def _await_extension() -> None:
+    """Before the first command to a bridge this server started, wait for the extension to connect.
+
+    The new bridge answers before the extension's WebSocket reconnects, and a command sent in
+    between fails with extension_disconnected (#258). Waiting instead of retrying sends each
+    command once. Past the deadline, or for any other diagnosis, the command runs and returns the
+    bridge's own error.
+    """
+    global _extension_wait_until
+    while time.monotonic() < _extension_wait_until:
+        try:
+            status = bridge_control.status(timeout=READY_PROBE_TIMEOUT)
+        except (httpx.HTTPError, ValueError):
+            break  # the command reports why
+        if status is None or (status.get("diagnosis") or {}).get("code") != "extension_disconnected":
+            break
+        time.sleep(0.3)
+    _extension_wait_until = 0.0
 
 
 STARTUP_EXCERPT_CHARS = 300
@@ -516,6 +542,8 @@ def _port_conflict(port: int, reason: str, message: str) -> dict:
 
 def _request(method: str, endpoint: str, **kwargs) -> dict:
     for attempt in range(2):
+        if endpoint != "/api/status":  # browser_status reports the extension as it is
+            _await_extension()
         try:
             headers = {**_headers(), CAPS_HEADER: _CAPS_HEADER_VALUE}
             if MODE != "act":
