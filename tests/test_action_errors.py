@@ -9,7 +9,7 @@ import httpx
 from mcp.server.fastmcp import FastMCP
 from mcp.shared.memory import create_connected_server_and_client_session
 
-from kitsune import bridge, bridge_client, playwright_tools, server
+from kitsune import bridge, bridge_client, playwright_tools, server, tools
 
 
 class SilentSocket:
@@ -159,7 +159,7 @@ class ServerTransportErrorTests(unittest.TestCase):
         error = {"error": "stale ref, call browser_snapshot again", "code": "stale_ref", "retryable": True,
                  "hint": "snapshot", "state": {"reason": "other_document", "ref": "s1e0", "tabId": 7}}
         with patch.object(bridge_client.httpx, "request", return_value=Mock(json=Mock(return_value=error))):
-            self.assertEqual(server.browser_click(ref="s1e0", tab_id=7), error)
+            self.assertEqual(tools.browser_click(ref="s1e0", tab_id=7), error)
 
 
 class McpErrorResultTests(unittest.TestCase):
@@ -236,7 +236,7 @@ class McpErrorResultTests(unittest.TestCase):
         # The click happened; only the expected navigation was not observed.
         clicked = {"ok": True, "clicked": True, "navigation": {"ok": False, "timedOut": True}}
         self.assertMcpResult(self.call("browser_click_and_wait_navigation", {"ref": "s1e0"}, clicked,
-                                       mcp=self.registered(server.browser_click_and_wait_navigation)),
+                                       mcp=self.registered(tools.browser_click_and_wait_navigation)),
                              clicked, False)
         status = self.call("browser_status", {}, {"status": "running", "extension_connected": False},
                            mcp=self.registered(server.browser_status))
@@ -246,7 +246,7 @@ class McpErrorResultTests(unittest.TestCase):
                           if key != "mcp_tools"}, {"status": "running", "extension_connected": False})
 
     def test_containers_report_per_command_failures_without_failing_the_call(self):
-        mcp = self.registered(server.browser_batch, server.browser_parallel, server.browser_retry)
+        mcp = self.registered(tools.browser_batch, tools.browser_parallel, tools.browser_retry)
         partial = {"results": [{"ok": True, "snapshot": "- button \"Pay\" [ref=s2e0]"},
                                {"error": "stale ref, call browser_snapshot again", "code": "stale_ref",
                                 "retryable": True}]}
@@ -267,10 +267,10 @@ class McpErrorResultTests(unittest.TestCase):
                   "target_ref": "s2e0", "error": "Expected outcome not observed within 5000ms",
                   "code": "outcome_not_observed", "retryable": False, "hint": "inspect the page"}
         self.assertMcpResult(self.call("browser_check", {"ref": "s1e0", "expect": {"url_changed": True}}, missed,
-                                       mcp=self.registered(server.browser_check)), missed, True)
+                                       mcp=self.registered(tools.browser_check)), missed, True)
 
     def test_form_fill_fails_only_when_no_field_was_filled(self):
-        mcp = self.registered(server.browser_form_fill)
+        mcp = self.registered(tools.browser_form_fill)
         none = {"error": "No field was filled", "results": {"Email": {"error": "Not found"}}}
         self.assertMcpResult(self.call("browser_form_fill", {"fields": {"Email": "a@b"}}, none, mcp=mcp), none, True)
         partial = {"results": {"Email": {"ok": True, "tag": "input"}, "Color": {"error": "Not found"}}}
@@ -287,7 +287,7 @@ class McpErrorResultTests(unittest.TestCase):
     def test_python_callers_still_get_plain_results(self):
         error = {"error": "Element not found", "code": "not_found", "retryable": True}
         with patch.object(bridge_client.httpx, "request", return_value=Mock(json=Mock(return_value=error))):
-            self.assertEqual(server.browser_click(selector="#gone"), error)
+            self.assertEqual(tools.browser_click(selector="#gone"), error)
 
 
 class SessionFailureTests(unittest.TestCase):

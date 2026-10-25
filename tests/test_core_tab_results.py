@@ -5,7 +5,7 @@ new reports the new tab's index (the index every other action takes), not the br
 import unittest
 from unittest.mock import patch
 
-from kitsune import playwright_tools, server
+from kitsune import playwright_tools, server, tools
 
 
 def _tab(tab_id, title, **flags):
@@ -18,8 +18,8 @@ class TabResultTests(unittest.TestCase):
         playwright_tools._clicked.clear()
         playwright_tools._requests.clear()
         self.open = [_tab(3, "A", active=True), _tab(8, "B", owned=True)]
-        post = patch.object(server, "_post", side_effect=self.bridge)
-        get = patch.object(server, "_get", side_effect=lambda endpoint: {"tabs": list(self.open)})
+        post = patch.object(tools, "_post", side_effect=self.bridge)
+        get = patch.object(tools, "_get", side_effect=lambda endpoint: {"tabs": list(self.open)})
         self.post, self.get = post.start(), get.start()
         self.addCleanup(post.stop)
         self.addCleanup(get.stop)

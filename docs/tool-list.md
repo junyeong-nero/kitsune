@@ -1,7 +1,8 @@
 # Tool list
 
-Current tools registered in [server.py](../src/kitsune/server.py) and
-[playwright_tools.py](../src/kitsune/playwright_tools.py), grouped by capability. The
+Current tools defined in [tools.py](../src/kitsune/tools.py) and
+[playwright_tools.py](../src/kitsune/playwright_tools.py) and registered by
+[server.py](../src/kitsune/server.py), grouped by capability. The
 default `KITSUNE_CAPS=core` exposes the 25 `core` tools, which are
 [Playwright MCP](https://github.com/microsoft/playwright-mcp)'s core tools with the same
 definitions ([Core tools](guide.md#core-tools)). `KITSUNE_CAPS=all` exposes all 93. Set a

@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from kitsune import bridge, bridge_control, server
+from kitsune import bridge, bridge_control, server, tools
 from test_bridge_security import Bridge, _request
 
 PAGE = "https://shop.example/products/1"
@@ -550,22 +550,22 @@ class PersistedLockProcessTests(unittest.TestCase):
 
 class ServerToolTests(unittest.TestCase):
     def test_confirm_token_is_forwarded_only_when_given(self):
-        with patch.object(server, "_post", return_value={"ok": True}) as post:
-            server.browser_submit_form(selector="#pay", tab_id=7)
+        with patch.object(tools, "_post", return_value={"ok": True}) as post:
+            tools.browser_submit_form(selector="#pay", tab_id=7)
             post.assert_called_with("/api/submit-form", {"selector": "#pay", "tabId": 7})
-            server.browser_submit_form(selector="#pay", tab_id=7, confirm_token="t")
+            tools.browser_submit_form(selector="#pay", tab_id=7, confirm_token="t")
             post.assert_called_with("/api/submit-form", {"selector": "#pay", "tabId": 7, "confirmToken": "t"})
-            server.browser_js("1", confirm_token="t")
+            tools.browser_js("1", confirm_token="t")
             post.assert_called_with("/api/js", {"code": "1", "confirmToken": "t"})
-            server.browser_cookies("get", confirm_token="t")
+            tools.browser_cookies("get", confirm_token="t")
             post.assert_called_with("/api/cookies", {"op": "get", "secure": False, "confirmToken": "t"})
-            server.browser_clipboard("read", confirm_token="t")
+            tools.browser_clipboard("read", confirm_token="t")
             post.assert_called_with("/api/clipboard", {"op": "read", "confirmToken": "t"})
-            server.browser_downloads("list")
+            tools.browser_downloads("list")
             post.assert_called_with("/api/downloads", {"op": "list"})
-            server.browser_downloads("list", confirm_token="t")
+            tools.browser_downloads("list", confirm_token="t")
             post.assert_called_with("/api/downloads", {"op": "list", "confirmToken": "t"})
-            server.browser_set_policy(ask=True, ask_urls=["checkout"])
+            tools.browser_set_policy(ask=True, ask_urls=["checkout"])
             post.assert_called_with("/api/set-policy", {"ask": True, "askUrls": ["checkout"]})
 
     def test_annotations_are_unchanged_hints(self):

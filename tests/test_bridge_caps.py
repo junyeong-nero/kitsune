@@ -17,7 +17,7 @@ from test_ask_before_act import AskBeforeActTestCase
 # request shapes are called once per shape.
 TOOL_ROUTES = r'''import inspect, json
 from unittest.mock import patch
-from kitsune import playwright_tools, server
+from kitsune import playwright_tools, server, tools
 # browser_fill_form gets one field of every type its schema offers (#236).
 FIELD_TYPES = playwright_tools.SCHEMAS["browser_fill_form"]["inputSchema"]["properties"]["fields"]["items"][
     "properties"]["type"]["enum"]
@@ -35,13 +35,13 @@ routes = {}
 for name, group in server.TOOL_GROUPS.items():
     if name in server.UNPUBLISHED_TOOLS:
         continue
-    function = getattr(playwright_tools if name in playwright_tools.SCHEMAS else server, name)
+    function = getattr(playwright_tools if name in playwright_tools.SCHEMAS else tools, name)
     required = {p: SAMPLES.get(p, "example") for p, param in inspect.signature(function).parameters.items()
                 if param.default is inspect.Parameter.empty}
     seen = set()
     for shape in SHAPES.get(name, [{}]):
-        with patch.object(server, "_get", return_value=REPLY) as get, \
-                patch.object(server, "_post", return_value=REPLY) as post, patch("time.sleep"):
+        with patch.object(tools, "_get", return_value=REPLY) as get, \
+                patch.object(tools, "_post", return_value=REPLY) as post, patch("time.sleep"):
             try:
                 function(**{**required, **shape})
             except TypeError:

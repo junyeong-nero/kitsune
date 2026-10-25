@@ -16,7 +16,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from kitsune import server
+from kitsune import server, tools
 import real_browser_harness as harness
 
 PAGES = {
@@ -236,9 +236,9 @@ class RealBrowserSharedBrowserTests(harness.RealBrowserTestCase):
         # #138: the MCP tool composes the inventory and the active page; route it to this bridge.
         user_tab = self.user_page()
         before = self.user_view()
-        with patch.object(server, "_get", self.call), \
-                patch.object(server, "_post", lambda endpoint, data, timeout=15: self.call(endpoint, data)):
-            result = server.browser_tabs(include_active=True)
+        with patch.object(tools, "_get", self.call), \
+                patch.object(tools, "_post", lambda endpoint, data, timeout=15: self.call(endpoint, data)):
+            result = tools.browser_tabs(include_active=True)
 
         self.assertIs({t["id"]: t for t in result["tabs"]}[user_tab]["active"], True, result)
         page = result["active_page"]

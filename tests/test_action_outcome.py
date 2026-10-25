@@ -6,7 +6,7 @@ import subprocess
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
-from kitsune import bridge, server, waits
+from kitsune import bridge, server, tools, waits
 
 TAB = {"id": 7, "url": "https://shop.test/checkout", "title": "Checkout", "active": True}
 
@@ -425,12 +425,12 @@ class ServerExpectTests(unittest.TestCase):
             ("reload_tab", {}, "/api/reload-tab"),
         ]
         for name, kwargs, endpoint in cases:
-            with self.subTest(tool=name), patch.object(server, "_post", return_value={"ok": True}) as post:
-                getattr(server, "browser_" + name)(tab_id=7, expect=expect, **kwargs)
+            with self.subTest(tool=name), patch.object(tools, "_post", return_value={"ok": True}) as post:
+                getattr(tools, "browser_" + name)(tab_id=7, expect=expect, **kwargs)
                 self.assertEqual(post.call_args.args[0], endpoint)
                 self.assertEqual(post.call_args.args[1]["expect"], expect)
                 self.assertEqual(post.call_args.kwargs, {"timeout": 15 + 8 + 45})
-                getattr(server, "browser_" + name)(tab_id=7, **kwargs)
+                getattr(tools, "browser_" + name)(tab_id=7, **kwargs)
                 self.assertNotIn("expect", post.call_args.args[1])
                 self.assertEqual(post.call_args.kwargs, {})
 
@@ -445,10 +445,10 @@ class ServerExpectTests(unittest.TestCase):
                 self.assertIsNone(bridge._parse_expect(action, {"url_changed": True})[1])
 
     def test_default_and_invalid_expect_timeouts(self):
-        with patch.object(server, "_post", return_value={"ok": True}) as post:
-            server.browser_click("#a", expect={"text": "Saved"})
+        with patch.object(tools, "_post", return_value={"ok": True}) as post:
+            tools.browser_click("#a", expect={"text": "Saved"})
             self.assertEqual(post.call_args.kwargs, {"timeout": 15 + 5 + 45})
-            server.browser_click("#a", expect={"text": "Saved", "timeout": "soon"})
+            tools.browser_click("#a", expect={"text": "Saved", "timeout": "soon"})
             self.assertEqual(post.call_args.kwargs, {"timeout": 15 + 45})
 
 

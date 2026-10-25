@@ -15,7 +15,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from kitsune import bridge, bridge_client, server
+from kitsune import bridge, bridge_client, server, tools
 import kitsune.bridge_control as control
 from test_bridge_security import SYNTHETIC_TOKEN, Bridge
 
@@ -136,7 +136,7 @@ class BridgeIdleShutdownProcessTests(unittest.TestCase):
             return spawned[-1]
 
         with patch.object(bridge_client.subprocess, "Popen", side_effect=spawn):
-            status = server._get("/api/status")
+            status = tools._get("/api/status")
         self.assertEqual(status.get("build"), bridge_client.BRIDGE_BUILD, status)
         self.assertEqual(len(spawned), 1)
         self.assertEqual(control._locked_pid(), spawned[0].pid)

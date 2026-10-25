@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from kitsune import bridge, playwright_tools, server
+from kitsune import bridge, playwright_tools, server, tools
 
 ROOT = Path(__file__).resolve().parent.parent
 VENDORED = json.loads((ROOT / "src" / "kitsune" / "playwright_tools.json").read_text(encoding="utf-8"))
@@ -37,8 +37,8 @@ class AdapterTests(unittest.TestCase):
         playwright_tools._current_tab = None
         playwright_tools._clicked.clear()
         playwright_tools._requests.clear()
-        post = patch.object(server, "_post", return_value={"ok": True})
-        get = patch.object(server, "_get", return_value={"tabs": []})
+        post = patch.object(tools, "_post", return_value={"ok": True})
+        get = patch.object(tools, "_get", return_value={"tabs": []})
         self.post, self.get = post.start(), get.start()
         self.addCleanup(post.stop)
         self.addCleanup(get.stop)
@@ -198,7 +198,7 @@ class AdapterTests(unittest.TestCase):
                          "not_supported")
 
     def test_wait_for_runs_time_then_text_gone_then_text(self):
-        with patch.object(server, "_sleep") as sleep:
+        with patch.object(tools, "_sleep") as sleep:
             self.post.return_value = {"ok": True}
             playwright_tools.browser_wait_for(time=60, text="Done", textGone="Loading")
         sleep.assert_called_once_with(30)
@@ -274,7 +274,9 @@ class AdapterTests(unittest.TestCase):
                 "selector": "", "ref": "e1", "imagePreview": False, "format": "jpeg"}))
             self.assertEqual(destination.read_bytes(), jpeg)
         image, _ = playwright_tools.browser_take_screenshot(type="jpeg")
-        self.assertEqual(image.to_image_content().mimeType, "image/jpeg")
+        self.assertEqual(image, tools.Image(jpeg, "jpeg"))
+        # The MCP server sends it as image content of its format.
+        self.assertEqual(server._mcp_errors(lambda: [image, {}])()[0].to_image_content().mimeType, "image/jpeg")
         self.assertEqual(self.posted()[-1], ("/api/screenshot", {"imagePreview": True, "format": "jpeg"}))
         self.post.reset_mock()
         self.assertIn("error", playwright_tools.browser_take_screenshot(target="e1", fullPage=True))
@@ -283,7 +285,7 @@ class AdapterTests(unittest.TestCase):
         self.post.assert_not_called()
 
     def test_screenshot_png_default_and_explicit_type_precedence(self):
-        with patch.object(server, "browser_screenshot", return_value={"ok": True}) as screenshot:
+        with patch.object(tools, "browser_screenshot", return_value={"ok": True}) as screenshot:
             for options, image_type in (({}, "png"), ({"type": "jpeg"}, "jpeg"),
                                         ({"type": "png", "filename": "shot.jpg"}, "png")):
                 playwright_tools.browser_take_screenshot(**options)

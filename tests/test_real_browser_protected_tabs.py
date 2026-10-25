@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 import real_browser_harness as harness
-from kitsune import playwright_tools, server
+from kitsune import playwright_tools, server, tools
 from kitsune.task_modes import MODE_HEADER, PROTECT_USER_TABS_HEADER
 
 
@@ -92,9 +92,9 @@ class RealBrowserProtectedTabTests(harness.RealBrowserTestCase):
         user = self.user_tab()
         get = lambda path: self.restricted(path)[1]
         post = lambda path, body, timeout=15: self.restricted(path, body)[1]
-        with patch.object(server, "_get", get), patch.object(server, "_post", post), \
+        with patch.object(tools, "_get", get), patch.object(tools, "_post", post), \
                 patch.object(playwright_tools, "_current_tab", None):
-            opened = server.browser_tab_list(new_tab=self.page.origin + "/own")
+            opened = tools.browser_tab_list(new_tab=self.page.origin + "/own")
             self.assertIsInstance(opened.get("tabId"), int, opened)
             own = opened["tabId"]
             self.addCleanup(self.call, "/api/close-tab", {"tabId": own})

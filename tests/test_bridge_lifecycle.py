@@ -12,7 +12,7 @@ import unittest
 from unittest.mock import ANY, AsyncMock, Mock, mock_open, patch
 
 import httpx
-from kitsune import bridge, bridge_client, server
+from kitsune import bridge, bridge_client, server, tools
 import kitsune.bridge_control as control
 import kitsune.version as version
 
@@ -270,7 +270,7 @@ class BridgeCliAndStatusTests(unittest.TestCase):
         self.assertEqual(data["build"], bridge_client.BRIDGE_BUILD)
         self.assertEqual(data["bridge_version"], version.PACKAGE_VERSION)
         self.assertIn("extension_connected", data)
-        with patch.object(server, "_get", return_value=data):
+        with patch.object(tools, "_get", return_value=data):
             self.assertEqual(server.browser_status()["build"], bridge_client.BRIDGE_BUILD)
 
 

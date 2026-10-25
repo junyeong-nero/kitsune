@@ -12,7 +12,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from kitsune import playwright_tools, server
+from kitsune import playwright_tools, server, tools
 import real_browser_harness as harness
 
 PAGE = """<!doctype html><meta charset="utf-8"><title>pw tools</title>
@@ -90,8 +90,8 @@ class RealBrowserPlaywrightToolTests(harness.RealBrowserTestCase):
 
     def call_tool(self, name, arguments=None):
         """(isError, content) of a core tool call through FastMCP, against this class's bridge."""
-        with patch.object(server, "_get", self.call), \
-                patch.object(server, "_post", lambda endpoint, data, timeout=15: self.call(endpoint, data)):
+        with patch.object(tools, "_get", self.call), \
+                patch.object(tools, "_post", lambda endpoint, data, timeout=15: self.call(endpoint, data)):
             result = asyncio.run(server.mcp.call_tool(name, arguments or {}))
         if isinstance(result, list):  # image results are a content list
             return False, result

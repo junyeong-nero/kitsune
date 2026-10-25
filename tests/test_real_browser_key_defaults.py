@@ -12,7 +12,7 @@ import re
 import unittest
 from unittest.mock import patch
 
-from kitsune import playwright_tools, server
+from kitsune import playwright_tools, server, tools
 import real_browser_harness as harness
 
 PAGE = """<!doctype html><meta charset="utf-8"><title>keys</title>
@@ -89,8 +89,8 @@ class RealBrowserKeyDefaultTests(harness.RealBrowserTestCase):
 
     def tool(self, name, arguments=None):
         """A core tool call's JSON result through FastMCP, against this class's bridge."""
-        with patch.object(server, "_get", self.call), \
-                patch.object(server, "_post", lambda endpoint, data, timeout=15: self.call(endpoint, data)):
+        with patch.object(tools, "_get", self.call), \
+                patch.object(tools, "_post", lambda endpoint, data, timeout=15: self.call(endpoint, data)):
             result = asyncio.run(server.mcp.call_tool(name, arguments or {}))
         content = json.loads(result.content[0].text)
         self.assertFalse(result.isError, (name, content))

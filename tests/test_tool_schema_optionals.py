@@ -14,7 +14,7 @@ import jsonschema
 from mcp.server.fastmcp.tools import Tool
 from pydantic import ValidationError
 
-from kitsune import server
+from kitsune import server, tools
 from test_tool_schema_titles import arguments, listings, sample
 
 INVALID = "invalid"
@@ -47,7 +47,7 @@ class ToolSchemaOptionalTests(unittest.TestCase):
         cls.published = {name: tool["inputSchema"] for name, tool in listing["published"].items()}
         cls.untitled = {name: server._untitled_schema(tool["inputSchema"])
                         for name, tool in listing["generated"].items()}
-        cls.tools = {name: Tool.from_function(getattr(server, name)) for name in cls.published}
+        cls.tools = {name: Tool.from_function(getattr(tools, name)) for name in cls.published}
 
     def test_every_tool_is_compared_against_its_registered_model(self):
         self.assertEqual(len(self.published), 76)
@@ -86,7 +86,7 @@ class ToolSchemaOptionalTests(unittest.TestCase):
     def test_null_with_a_different_default_stays_published(self):
         # Kitsune's browser_handle_dialog: accept=None clears the dialog policy; omitting it
         # means accept=True. (The published core tool is Playwright's, with no such parameter.)
-        accept = server._published_schema(Tool.from_function(server.browser_handle_dialog).parameters)
+        accept = server._published_schema(Tool.from_function(tools.browser_handle_dialog).parameters)
         accept = accept["properties"]["accept"]
         self.assertEqual(accept["anyOf"], [{"type": "boolean"}, {"type": "null"}])
         self.assertIs(accept["default"], True)

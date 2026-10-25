@@ -7,7 +7,7 @@ from threading import Thread
 import unittest
 from unittest.mock import Mock, patch
 
-from kitsune import bridge, bridge_client, server, waits
+from kitsune import bridge, bridge_client, server, tools, waits
 
 
 TIMEOUT = {"error": "Command timed out after 30s", "code": "timeout", "retryable": False}
@@ -451,15 +451,15 @@ class ContainerDeadlineTests(ContainerTests):
         click = {"action": "click", "selector": "#go", "tabId": 3}
         slow = {"action": "waitForElement", "selector": "#a", "timeout": 60000, "tabId": 3}
         with tempfile.TemporaryDirectory() as tmp, patch.object(bridge, "WORKFLOW_DIR", tmp), \
-                patch.object(server, "_post", return_value={"results": []}) as post:
+                patch.object(tools, "_post", return_value={"results": []}) as post:
             with open(os.path.join(tmp, "fixture.md"), "w", encoding="utf-8") as f:
                 f.write("```json\n" + json.dumps(click) + "\n```\n")
             calls = [
-                (lambda: server.browser_batch([click]), lambda h: h.handle_batch(), {"commands": [click]}),
-                (lambda: server.browser_batch([slow] * 10), lambda h: h.handle_batch(), {"commands": [slow] * 10}),
-                (lambda: server.browser_parallel([[slow] * 10, [click]]), lambda h: h.handle_batch(),
+                (lambda: tools.browser_batch([click]), lambda h: h.handle_batch(), {"commands": [click]}),
+                (lambda: tools.browser_batch([slow] * 10), lambda h: h.handle_batch(), {"commands": [slow] * 10}),
+                (lambda: tools.browser_parallel([[slow] * 10, [click]]), lambda h: h.handle_batch(),
                  {"commands": [{"action": "parallel", "sequences": [[slow] * 10, [click]]}]}),
-                (lambda: server.browser_workflow("fixture"), lambda h: h.handle_workflow(), {"name": "fixture"}),
+                (lambda: tools.browser_workflow("fixture"), lambda h: h.handle_workflow(), {"name": "fixture"}),
             ]
             for tool, route, body in calls:
                 with self.subTest(body=body):
@@ -498,7 +498,7 @@ class ContainerDeadlineTests(ContainerTests):
                 patch.object(server._client, "ensure_bridge") as ensure, \
                 patch.object(waits, "CONTAINER_MIN_DEADLINE_SECONDS", 0.5), \
                 patch.object(waits, "CONTAINER_MARGIN_SECONDS", 0.5):
-            payload = server.browser_batch([
+            payload = tools.browser_batch([
                 {"action": "click", "selector": "#a", "tabId": 3},
                 {"action": "fill", "selector": "#q", "value": "x", "tabId": 3},
                 {"action": "click", "selector": "#b", "tabId": 3}])

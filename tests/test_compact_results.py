@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 from mcp.server.fastmcp import FastMCP
 from mcp.shared.memory import create_connected_server_and_client_session
 
-from kitsune import bridge_client, server
+from kitsune import bridge_client, server, tools
 
 SNAPSHOT = {
     "snapshot": "\n".join([
@@ -150,8 +150,8 @@ class CompactResultTests(unittest.TestCase):
 
 class TabListTests(unittest.TestCase):
     def list_tabs(self, reply, **kwargs):
-        with patch.object(server, "_get", return_value=reply) as get:
-            result = server.browser_tabs(**kwargs)
+        with patch.object(tools, "_get", return_value=reply) as get:
+            result = tools.browser_tabs(**kwargs)
         get.assert_called_once_with("/api/tabs")
         return result
 
@@ -181,9 +181,9 @@ class ActivePageTests(unittest.TestCase):
                    "tabId": 5}
 
     def list_tabs(self, tabs, page, **kwargs):
-        with patch.object(server, "_get", return_value=tabs) as get, \
-                patch.object(server, "_post", return_value=page) as post:
-            result = server.browser_tabs(**kwargs)
+        with patch.object(tools, "_get", return_value=tabs) as get, \
+                patch.object(tools, "_post", return_value=page) as post:
+            result = tools.browser_tabs(**kwargs)
         get.assert_called_once_with("/api/tabs")
         return result, post
 
@@ -210,8 +210,8 @@ class ActivePageTests(unittest.TestCase):
         self.assertEqual(result, error)
 
     def test_include_active_is_ignored_by_other_actions(self):
-        with patch.object(server, "_post", return_value={"ok": True, "tabId": 9}) as post:
-            result = server.browser_tabs("new", include_active=True)
+        with patch.object(tools, "_post", return_value={"ok": True, "tabId": 9}) as post:
+            result = tools.browser_tabs("new", include_active=True)
         post.assert_called_once_with("/api/new-tab", {"url": "about:blank"})
         self.assertEqual(result, {"ok": True, "tabId": 9})
 
