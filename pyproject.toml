@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "kitsune-browser-mcp"
-version = "0.4.1"
+version = "0.5.0"
 description = "MCP server that lets AI agents use your Firefox, Zen, or LibreWolf browser."
 readme = "README.md"
 license = "MIT"
