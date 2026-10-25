@@ -22,10 +22,13 @@ PAGE = """<!doctype html><title>Python API</title>
 </form>
 <p id=status>Idle</p>
 <button class=twin>One</button><button class=twin>Two</button>
+<button id=log>Log</button>
 <script>
+window.appState = 'ready';
 document.getElementById('save').addEventListener('click', () => {
   document.getElementById('status').textContent = 'Saved ' + document.getElementById('name').value;
 });
+document.getElementById('log').addEventListener('click', () => console.warn('kitsune-python'));
 </script>
 """
 DONE = "<!doctype html><title>Done</title><p>Thanks</p>"
@@ -87,6 +90,33 @@ class RealBrowserPythonApiTests(harness.RealBrowserTestCase):
         self.assertTrue(self.tab.screenshot().startswith(b"\x89PNG"))
         batch = self.browser.batch([{"action": "pageText"}], tab=self.tab)
         self.assertIn("Saved Ada", batch["results"][0]["text"])
+
+    def test_storage_console_tabs_windows_and_tags(self):
+        self.tab.local_storage.set("theme", "dark")
+        self.assertEqual(self.tab.local_storage.get("theme"), "dark")
+        self.assertEqual(self.tab.local_storage.items(), {"theme": "dark"})
+        self.tab.local_storage.clear()
+        self.assertIsNone(self.tab.local_storage.get("theme"))
+
+        self.tab.watch_console()
+        self.tab.click("#log")  # the page's own console, which watch_console records
+        self.assertIn("kitsune-python", [log.get("message") for log in self.tab.console_logs()])
+        # evaluate runs in the extension's content-script world: the page's DOM, not its globals.
+        self.assertEqual(self.tab.evaluate("() => typeof window.appState"), "undefined")
+        self.assertEqual(self.tab.evaluate("() => window.wrappedJSObject.appState"), "ready")
+        self.assertEqual(self.tab.computed_style("#status", ["display"]), {"display": "block"})
+        self.assertEqual(self.tab.meta()["title"], "Python API")
+
+        copy = self.tab.duplicate()
+        self.addCleanup(copy.close)
+        self.assertNotEqual(copy, self.tab)
+        self.assertIs({tab["id"]: tab for tab in self.browser.tabs()}[copy.id]["owned"], True)
+        self.assertIn(self.tab.id, [tab["id"] for window in self.browser.windows.list() for tab in window["tabs"]])
+
+        self.tab.tag("orders")
+        self.addCleanup(self.browser.tags.remove, "orders")
+        self.assertEqual(self.browser.tags.tab("orders"), self.tab)
+        self.assertEqual(self.browser.tags.list()["orders"], self.tab.id)
 
     def test_failures_raise_their_codes(self):
         with self.assertRaises(kitsune.KitsuneError) as raised:
