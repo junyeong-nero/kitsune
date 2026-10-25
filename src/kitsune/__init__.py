@@ -1,4 +1,4 @@
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 from .browser import Bookmarks, Browser, Cookies, History, Tab, connect
 from .errors import ConfirmationRequired, ConnectionFailed, KitsuneError, TimedOut
