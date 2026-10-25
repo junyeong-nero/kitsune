@@ -1,8 +1,17 @@
 # Releasing
 
-Kitsune is published to PyPI as **`kitsune-browser-mcp`** (the import package
-and commands stay `kitsune` and `kitsune-bridge`). `kitsune-mcp` on PyPI is an
-unrelated project.
+Kitsune is published to PyPI as two distributions with one version, both from this
+repository:
+
+- **`kitsune-browser`** (the repository root): the code, which is the import package `kitsune`
+  with the Python API, the agent tools, the bridge and, with its `mcp` extra, the MCP
+  server. It provides the `kitsune-bridge` command.
+- **`kitsune-browser-mcp`** ([`packages/kitsune-browser-mcp`](../packages/kitsune-browser-mcp)):
+  no code of its own. It pins `kitsune-browser[mcp]` to its own version and provides the
+  `kitsune`, `kitsune-browser-mcp` and `kitsune-bridge` commands. MCP clients and the MCP
+  Registry install this one.
+
+`kitsune-mcp` on PyPI is an unrelated project.
 
 Releases run from [`.github/workflows/release.yml`](../.github/workflows/release.yml)
 with [PyPI Trusted Publishing](https://docs.pypi.org/trusted-publishers/), so no
@@ -15,14 +24,16 @@ API token is stored in the repository or in GitHub secrets.
 
    | Field | Value |
    |---|---|
-   | PyPI project name | `kitsune-browser-mcp` |
+   | PyPI project name | `kitsune-browser` |
    | Owner | `junyeong-nero` |
    | Repository name | `kitsune` |
    | Workflow name | `release.yml` |
    | Environment name | `pypi` |
 
    The first successful publish creates the project and turns the pending
-   publisher into a normal one.
+   publisher into a normal one. `kitsune-browser-mcp` already has this publisher
+   (Your projects → kitsune-browser-mcp → Publishing); a new project needs the same
+   entry. One release publishes both, so both need it before the first tag.
 2. **TestPyPI (optional, recommended for the first release).** Repeat on
    <https://test.pypi.org> with environment name `testpypi`.
 3. **GitHub environments.** In the repository, open *Settings → Environments*
@@ -39,14 +50,15 @@ API token is stored in the repository or in GitHub secrets.
 
 ## Releasing a version
 
-1. Bump `version` in `pyproject.toml`, `extension/manifest.json`, and both
+1. Bump `version` in `pyproject.toml`, in `packages/kitsune-browser-mcp/pyproject.toml`
+   (its `version` and both `kitsune-browser[...]==` pins), `extension/manifest.json`, and both
    `version` fields of `server.json` (tests check they match), run `uv lock`, and
    merge the change to `main`. AMO accepts
    each extension version only once, so a failed signing also needs a new version.
-2. Optional dry run: build and check locally.
+2. Optional dry run: build both distributions and check them locally.
    ```bash
-   rm -rf dist && uv build && uvx twine check dist/*
-   uvx --from ./dist/kitsune_browser_mcp-<version>-py3-none-any.whl kitsune-bridge status
+   rm -rf dist && uv build --all-packages && uvx twine check dist/*
+   uvx --find-links ./dist --from kitsune-browser-mcp==<version> kitsune-bridge status
    ```
 3. Optional TestPyPI run: *Actions → Release → Run workflow* on `main`, then
    ```bash
@@ -73,7 +85,8 @@ API token is stored in the repository or in GitHub secrets.
    publish, it also publishes `server.json` to the
    [MCP Registry](https://registry.modelcontextprotocol.io) as
    `io.github.junyeong-nero/kitsune`, authenticated with GitHub OIDC. The registry
-   checks for the `mcp-name:` comment in the README published to PyPI, so keep it.
+   checks for the `mcp-name:` comment in the README kitsune-browser-mcp publishes to PyPI
+   (`packages/kitsune-browser-mcp/README.md`), so keep it.
 
    Automated signing usually takes minutes; the job waits up to 30 minutes. If
    AMO selects the version for manual review and the job times out, nothing is
@@ -118,14 +131,16 @@ downgrades through an update manifest. Keep the XPI asset while `updates.json`
 links to it. To fix the copies that already updated, release a new patch
 version.
 
-## What is in the package
+## What is in the packages
 
-- **Wheel:** `src/kitsune` only (server, bridge, bundled workflows). The browser
-  extension is not part of the Python package; users get it from the GitHub
-  release (signed XPI or developer zip) or the repository at the same tag.
-- **sdist:** `src/kitsune`, `tests`, `README.md`, `LICENSE`, and `pyproject.toml`.
+- **kitsune-browser wheel:** `src/kitsune` only (Python API, tools, server, bridge, bundled
+  workflows). The browser extension is not part of the Python packages; users get it from
+  the GitHub release (signed XPI or developer zip) or the repository at the same tag.
+- **kitsune-browser sdist:** `src/kitsune`, `tests`, `README.md`, `LICENSE`, and `pyproject.toml`.
+- **kitsune-browser-mcp wheel and sdist:** metadata only: the pinned dependency, the
+  commands, and `packages/kitsune-browser-mcp/README.md`.
 
-The README is also the PyPI project description, so it uses absolute GitHub URLs
+Each README is its PyPI project description, so it uses absolute GitHub URLs
 for links and images.
 
 ## Extension builds

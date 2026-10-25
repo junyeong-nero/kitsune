@@ -1,4 +1,5 @@
-# Publishes kitsune-browser-mcp with PyPI Trusted Publishing (no API tokens).
+# Publishes kitsune-browser and kitsune-browser-mcp (packages/kitsune-browser-mcp) with PyPI
+# Trusted Publishing (no API tokens).
 # - Push a tag `vX.Y.Z` matching pyproject.toml's version: test, build, sign the
 #   extension on AMO (unlisted), publish to PyPI, and create a GitHub release with
 #   the dist files, the signed XPI, its updates.json, and the developer-build zip,
@@ -36,9 +37,10 @@ jobs:
           uv run python -m unittest discover -s tests -q
           for test in tests/*.cjs; do node "$test"; done
 
+      # Both distributions: the tests check that kitsune-browser-mcp pins this version.
       - name: Build
         run: |
-          uv build
+          uv build --all-packages
           uvx twine check dist/*
 
       - name: Build extension variants

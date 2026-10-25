@@ -13,7 +13,7 @@ SOURCE_ROOT = PACKAGE_DIR.parent.parent
 
 def package_version() -> str:
     try:
-        return version("kitsune-browser-mcp")
+        return version("kitsune-browser")  # the distribution with the code, not kitsune-browser-mcp
     except PackageNotFoundError:
         # Python 3.10 has no tomllib; only read the project version string.
         try:

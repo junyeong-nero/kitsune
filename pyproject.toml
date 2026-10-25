@@ -2,15 +2,17 @@
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+# kitsune-browser: the Python API, the agent tools, the bridge and, with the mcp extra, the MCP
+# server. kitsune-browser-mcp (packages/kitsune-browser-mcp) installs that server's commands.
 [project]
-name = "kitsune-browser-mcp"
+name = "kitsune-browser"
 version = "0.6.0"
-description = "MCP server that lets AI agents use your Firefox, Zen, or LibreWolf browser."
+description = "Drive the Firefox, Zen, or LibreWolf browser you already have open from Python or an AI agent."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 authors = [{ name = "junyeong-nero" }]
-keywords = ["mcp", "firefox", "zen-browser", "browser-automation", "ai-agents"]
+keywords = ["firefox", "zen-browser", "browser-automation", "ai-agents", "mcp"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
@@ -23,12 +25,14 @@ classifiers = [
     "Topic :: Software Development :: Testing",
 ]
 dependencies = [
-    "mcp[cli]>=1.2.0,<2",  # mcp 2.x renamed FastMCP to MCPServer
     "httpx>=0.27.0",
+    "pydantic>=2.7,<3",  # the agent tools' parameter descriptions (kitsune.tools)
     "websockets>=14.2",
 ]
 
 [project.optional-dependencies]
+# The MCP server, kitsune.server; kitsune-browser-mcp installs it with the `kitsune` command.
+mcp = ["mcp[cli]>=1.2.0,<2"]  # mcp 2.x renamed FastMCP to MCPServer
 # Native trusted clicks on macOS (browser_trusted_click); cliclick on PATH also works.
 macos = ["pyobjc-framework-Quartz>=10; sys_platform == 'darwin'"]
 
@@ -39,11 +43,17 @@ Issues = "https://github.com/junyeong-nero/kitsune/issues"
 Changelog = "https://github.com/junyeong-nero/kitsune/releases"
 
 [project.scripts]
-kitsune = "kitsune.server:main"
-# Same entry point under the package name, so `uvx kitsune-browser-mcp` works
-# (MCP Registry clients run PyPI packages that way).
-kitsune-browser-mcp = "kitsune.server:main"
 kitsune-bridge = "kitsune.bridge:run"
+
+[dependency-groups]
+# A checkout runs the MCP server and every test: `uv run kitsune`, `uv run python -m unittest`.
+dev = ["kitsune-browser-mcp"]
+
+[tool.uv.workspace]
+members = ["packages/kitsune-browser-mcp"]
+
+[tool.uv.sources]
+kitsune-browser-mcp = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/kitsune"]

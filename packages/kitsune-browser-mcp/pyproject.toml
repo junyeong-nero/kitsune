@@ -1,0 +1,53 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# The Kitsune MCP server's package. Its code is kitsune-browser's (the repository root); this
+# package installs it with the mcp extra and the server's commands. Both release together with one
+# version: the MCP server only uses a bridge of its own build.
+[project]
+name = "kitsune-browser-mcp"
+version = "0.6.0"
+description = "MCP server that lets AI agents use your Firefox, Zen, or LibreWolf browser."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "junyeong-nero" }]
+keywords = ["mcp", "firefox", "zen-browser", "browser-automation", "ai-agents"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Internet :: WWW/HTTP :: Browsers",
+    "Topic :: Software Development :: Testing",
+]
+dependencies = ["kitsune-browser[mcp]==0.6.0"]
+
+[project.optional-dependencies]
+# Native trusted clicks on macOS (browser_trusted_click); cliclick on PATH also works.
+macos = ["kitsune-browser[macos]==0.6.0"]
+
+[project.urls]
+Homepage = "https://github.com/junyeong-nero/kitsune"
+Documentation = "https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md"
+Issues = "https://github.com/junyeong-nero/kitsune/issues"
+Changelog = "https://github.com/junyeong-nero/kitsune/releases"
+
+[project.scripts]
+kitsune = "kitsune.server:main"
+# Same entry point under the package name, so `uvx kitsune-browser-mcp` works
+# (MCP Registry clients run PyPI packages that way).
+kitsune-browser-mcp = "kitsune.server:main"
+# kitsune-browser's command too, so `uvx --from kitsune-browser-mcp kitsune-bridge` runs the
+# bridge of the MCP clients' install without uvx's "provided by a dependency" warning.
+kitsune-bridge = "kitsune.bridge:run"
+
+[tool.uv.sources]
+kitsune-browser = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+bypass-selection = true  # no modules of its own: kitsune-browser has them

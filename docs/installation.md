@@ -217,10 +217,11 @@ and [GitHub Releases](https://github.com/junyeong-nero/kitsune/releases), which
 also carries the matching signed XPI and developer-build zip.
 
 To run a commit, tag, or branch that is not on PyPI, use the Git source with
-`@<ref>` (requires Git):
+`@<ref>` (requires Git). The MCP server's package is in `packages/kitsune-browser-mcp`;
+uv builds the code it depends on, kitsune-browser, from the same ref:
 
 ```bash
-claude mcp add --scope user kitsune -- uvx --from git+https://github.com/junyeong-nero/kitsune.git@<ref> kitsune
+claude mcp add --scope user kitsune -- uvx --from "git+https://github.com/junyeong-nero/kitsune.git@<ref>#subdirectory=packages/kitsune-browser-mcp" kitsune
 ```
 
 Without `@<ref>`, the Git source follows the latest default-branch commit. Get
@@ -243,6 +244,13 @@ the extension from the same ref:
   the `claude mcp add` command again with the new version.
 - **Unpinned Git source**: uv checks for the latest default-branch commit each
   time the MCP server starts (observed with uv 0.7.20).
+- **A pip install of 0.6.0 or earlier**, such as a virtual environment for the Python API:
+  until 0.6.0 kitsune-browser-mcp held the code that kitsune-browser holds now. pip installs
+  kitsune-browser first and then removes the old kitsune-browser-mcp with the files they
+  share, so `import kitsune` fails afterwards. Restore them once with
+  `pip install --force-reinstall --no-deps kitsune-browser`. The same holds after
+  `pip uninstall kitsune-browser-mcp` in an environment that kept 0.6.0. uv and uvx
+  are not affected.
 
 After the server is upgraded, the next MCP connection detects that the running
 bridge has a different `build` and replaces it automatically. This briefly
@@ -342,9 +350,17 @@ build). To try the signed variant locally, build it and load
 uv run python scripts/build_extension.py signed
 ```
 
-To test the installed-package path of a branch, run `uvx --from . kitsune` from the
-checkout. uv installs a snapshot and does not rebuild it after you edit files;
-add `--refresh` to pick up changes.
+To test the installed-package path of a branch, build both packages and run the server
+from their wheels; rebuild after you edit files:
+
+```bash
+uv build --all-packages
+uvx --from dist/kitsune_browser_mcp-<version>-py3-none-any.whl \
+    --with dist/kitsune_browser-<version>-py3-none-any.whl kitsune
+```
+
+(`uvx --from ./packages/kitsune-browser-mcp kitsune` instead runs the working tree's
+code, which uv installs editable.)
 
 Run the tests from the repository root:
 
