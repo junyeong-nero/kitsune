@@ -250,6 +250,30 @@ These tools also accept refs (all new parameters are optional):
 
 `browser_keypress` accepts characters, Space/Spacebar, Enter/Return, Escape/Esc, ArrowUp/Down/Left/Right (or Up/Down/Left/Right), Tab and Backspace; `text` explicitly inserts text.
 
+Synthetic key events have no browser default, so in an input, textarea or editor
+keypress applies the key's default edit itself (#267), unless the page cancels
+`keydown`, `keypress` (fired for a typed character and Enter) or `beforeinput`: a
+character or Space types at the caret, replacing a selection; Backspace/Delete remove
+the selection or the character before/after the caret; arrows, Home and End move the
+caret, and with Shift extend the selection; Control/Meta+A selects all. Words are
+Alt+arrow/Backspace/Delete on macOS and Control+ them elsewhere; on macOS
+Meta+Left/Right/Backspace/Delete reach the line boundary and Meta+Up/Down the
+whole text, elsewhere Control+Home/End. Up/Down move between a textarea's own lines
+(not its wrapped ones). Enter adds a line to a textarea, a paragraph to an editor
+(Shift+Enter a line break), and in a text input submits its form as a browser's
+implicit submission does: it clicks the form's first submit control, or submits a
+form that has none and no other text input (#257). The result reports:
+
+- `key`: the key with its modifiers, e.g. `Shift+ArrowLeft`.
+- `effect`: what changed: an input type such as `insertText`, `insertParagraph`,
+  `deleteContentBackward` or `deleteWordBackward`; `moveCaret`, `extendSelection`,
+  `selectAll` or `implicitSubmit`; `null` when nothing changed (End at the end, Enter
+  in an input without a form, a key outside a field).
+- `prevented: true`: the page cancelled the key, so its default was not applied.
+- `note`: a default Kitsune does not apply: Tab does not move focus, Enter and Space
+  do not activate buttons or links (click them), keys do not scroll the page, and
+  clipboard and undo shortcuts do nothing.
+
 Without selector/ref, keypress targets the active element (or body), blur targets
 the active element, submit-form submits the form of the field last filled or
 focused, else the only form (see [`browser_submit_form`](#browser_submit_formselectornone-tab_idnone-refnone-elementnone)), and Markdown reads the

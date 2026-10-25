@@ -168,7 +168,7 @@ async function testImmediateModeOnDelayedContentAndDynamicForms() {
   assert.equal(color.value, 'blue');
   assert.deepEqual(results.checkBox, { ok: true, checked: true });
   assert.equal(agree.checked, true);
-  assert.deepEqual(results.keypress, { ok: true, key: 'Enter', target: 'input' });
+  assert.deepEqual(results.keypress, { ok: true, key: 'Enter', target: 'input', effect: null });
   assert.deepEqual(results.drag, { ok: true, from: '#from', to: '#to', via: 'pointer' });
   assert.ok(from.events.includes('dragstart') && to.events.includes('drop'));
   assert.equal(p.timers.size, 0, 'immediate mode schedules nothing');
@@ -235,7 +235,7 @@ async function testDynamicForms() {
   assert.equal(color.value, 'blue', 'a hidden native select need not render');
   assert.deepEqual(await checking.result, { ok: true, checked: true });
   assert.equal(agree.checked, true, 'a hidden native checkbox need not render');
-  assert.deepEqual(await pressing.result, { ok: true, key: 'Enter', target: 'input' });
+  assert.deepEqual(await pressing.result, { ok: true, key: 'Enter', target: 'input', effect: null });
 
   // Drag waits for both ends.
   const from = p.add('#from', new Element('DIV', 'from'));
@@ -337,7 +337,7 @@ async function testRefsAndTargetlessActions() {
   await p.tick(0);
   assert.equal((await atPoint.result).ok, true);
   assert.deepEqual(target.events, ['mousedown', 'click']);
-  assert.deepEqual(await active.result, { ok: true, key: 'Escape', target: 'body' });
+  assert.deepEqual(await active.result, { ok: true, key: 'Escape', target: 'body', effect: null });
   assert.deepEqual(p.body.events, ['keydown']);
 
   // Other actions ignore wait.

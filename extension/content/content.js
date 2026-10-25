@@ -1412,11 +1412,12 @@
     selection.addRange(range);
   }
 
-  // Replace the selection with text as typing does, firing beforeinput and input.
+  // Replace the selection with text as typing does, firing beforeinput and input. False when
+  // the page cancelled beforeinput.
   function insertEditableText(el, text) {
-    if (docOf(el).execCommand('insertText', false, text)) return;
+    if (docOf(el).execCommand('insertText', false, text)) return true;
     const init = { bubbles: true, composed: true, inputType: 'insertText', data: text };
-    if (!el.dispatchEvent(new InputEvent('beforeinput', { ...init, cancelable: true }))) return;
+    if (!el.dispatchEvent(new InputEvent('beforeinput', { ...init, cancelable: true }))) return false;
     const selection = (docOf(el).defaultView || window).getSelection();
     const range = selection.getRangeAt(0);
     range.deleteContents();
@@ -1427,6 +1428,7 @@
     selection.removeAllRanges();
     selection.addRange(range);
     el.dispatchEvent(new InputEvent('input', init));
+    return true;
   }
 
   // The http(s) link a click on el follows, unless it downloads.
@@ -3506,13 +3508,307 @@
     return { key, code, keyCode, which: keyCode };
   }
 
+  // ── Key defaults (#267) ──
+  // Synthetic key events have no browser default, so keypress applies the default edit of a
+  // key in an input, textarea or editor itself, unless the page cancels keydown, keypress or
+  // beforeinput. It never moves focus out of the field or brings the tab forward.
+  const IS_MAC = /Mac/.test(globalThis.navigator?.platform || '');
+  const CARET_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End']);
+  const BACKWARD_KEYS = new Set(['ArrowLeft', 'ArrowUp', 'Home', 'Backspace']);
+  const SCROLL_KEYS = new Set([' ', 'PageUp', 'PageDown', 'Home', 'End', 'ArrowUp', 'ArrowDown']);
+  // Inputs that block implicit submission of a form without a submit button.
+  const IMPLICIT_SUBMIT_TYPES = new Set(['text', 'search', 'email', 'url', 'tel', 'password', 'date', 'month',
+    'week', 'time', 'datetime-local', 'number']);
+  const WORD_CHARACTER = /[\p{L}\p{N}\p{M}_]/u;
+  const KEY_NOTES = {
+    focus: 'Kitsune does not move focus for Tab; act on the next field by its ref.',
+    activation: 'Kitsune does not activate a control for Enter or Space; click it instead.',
+    scroll: 'Kitsune does not scroll the page for this key.',
+    shortcut: 'Kitsune does not emulate clipboard or undo shortcuts.',
+  };
+
+  // The key with its modifiers as Playwright names them: Control+Shift+ArrowLeft.
+  function keyCombination(key, mods) {
+    return [mods.ctrl && 'Control', mods.alt && 'Alt', mods.shift && 'Shift', mods.meta && 'Meta', key]
+      .filter(Boolean).join('+');
+  }
+
+  // What a key types: one character (Shift capitalizes a letter) or a space. With Control, Alt
+  // or Meta it is a shortcut and types nothing.
+  function typedText(key, mods) {
+    if (mods.ctrl || mods.alt || mods.meta || [...key].length !== 1) return null;
+    return mods.shift ? key.toUpperCase() : key;
+  }
+
+  function selectAllKey(key, mods) {
+    return !!(IS_MAC ? mods.meta : mods.ctrl) && /^a$/i.test(key);
+  }
+
+  // The field a key edits: a textarea, a text-like input or the editing host of an editor.
+  function keyField(el) {
+    if (el.tagName === 'TEXTAREA') return el;
+    if (el.tagName === 'INPUT') return NON_TEXT_INPUT_TYPES.has(String(el.type || 'text').toLowerCase()) ? null : el;
+    return isEditableRegion(el) ? editingHost(el) : null;
+  }
+
+  // How far a caret or delete key reaches with the platform's modifiers: a character, a word
+  // (Alt on macOS, else Control), the line boundary (Home/End; Meta+arrow/Backspace/Delete on
+  // macOS), a line (Up/Down) or the whole text (Control+Home/End; Meta+Up/Down on macOS).
+  function keyUnit(key, mods) {
+    if (key === 'Home' || key === 'End') return !IS_MAC && mods.ctrl ? 'document' : 'lineboundary';
+    if (key === 'ArrowUp' || key === 'ArrowDown') return IS_MAC && mods.meta ? 'document' : 'line';
+    if (IS_MAC && mods.meta) return 'lineboundary';
+    return (IS_MAC ? mods.alt : mods.ctrl) ? 'word' : 'character';
+  }
+
+  function deleteInputType(backward, unit) {
+    const kind = { word: 'Word', lineboundary: 'SoftLine' }[unit] || 'Content';
+    return `delete${kind}${backward ? 'Backward' : 'Forward'}`;
+  }
+
+  function lineStart(text, pos) {
+    return pos > 0 ? text.lastIndexOf('\n', pos - 1) + 1 : 0;
+  }
+
+  function lineEnd(text, pos) {
+    const end = text.indexOf('\n', pos);
+    return end < 0 ? text.length : end;
+  }
+
+  // The grapheme boundary before or after pos.
+  function graphemeOffset(text, pos, backward) {
+    if (!globalThis.Intl?.Segmenter) return Math.min(text.length, Math.max(0, pos + (backward ? -1 : 1)));
+    const segments = new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text);
+    let before = 0;
+    for (const { index } of segments) {
+      if (!backward && index > pos) return index;
+      if (backward && index >= pos) break;
+      before = index;
+    }
+    return backward ? before : text.length;
+  }
+
+  // Where a caret at pos in text goes moving one unit backward or forward. Lines are the
+  // text's own: a textarea's wrapped lines are not seen.
+  function textOffset(text, pos, backward, unit, multiline) {
+    if (unit === 'document' || (unit === 'lineboundary' && !multiline)) return backward ? 0 : text.length;
+    if (unit === 'lineboundary') return backward ? lineStart(text, pos) : lineEnd(text, pos);
+    if (unit === 'line') {
+      if (!multiline) return pos;
+      const start = lineStart(text, pos);
+      if (backward) return start ? Math.min(lineStart(text, start - 1) + pos - start, start - 1) : 0;
+      const end = lineEnd(text, pos);
+      return end < text.length ? Math.min(end + 1 + pos - start, lineEnd(text, end + 1)) : text.length;
+    }
+    if (unit === 'word') {
+      let i = pos;
+      const at = j => WORD_CHARACTER.test(text[j] || '');
+      if (backward) {
+        while (i > 0 && !at(i - 1)) i--;
+        while (i > 0 && at(i - 1)) i--;
+      } else {
+        while (i < text.length && !at(i)) i++;
+        while (i < text.length && at(i)) i++;
+      }
+      return i;
+    }
+    return graphemeOffset(text, pos, backward);
+  }
+
+  // Replace [from, to) of an input or textarea with text as an edit does: beforeinput, which
+  // the page can cancel, the change, then input. maxlength caps what is inserted.
+  function replaceFieldText(el, from, to, text, inputType) {
+    if (el.readOnly) return { effect: null };
+    const value = String(el.value ?? '');
+    if (text && el.maxLength >= 0) text = text.slice(0, Math.max(0, el.maxLength - value.length + to - from));
+    if (!text && from === to) return { effect: null };
+    const init = { bubbles: true, composed: true, inputType, data: inputType === 'insertText' ? text : null };
+    if (!el.dispatchEvent(new InputEvent('beforeinput', { ...init, cancelable: true }))) {
+      return { effect: null, prevented: true };
+    }
+    if (typeof el.selectionStart === 'number') {
+      el.setRangeText(text, from, to, 'end');
+    } else {
+      // email and number inputs have no selection: edit at the end.
+      const next = value.slice(0, from) + text + value.slice(to);
+      const setter = nativeValueSetter(el);
+      if (setter) setter.call(el, next);
+      else el.value = next;
+    }
+    el.dispatchEvent(new InputEvent('input', init));
+    return { effect: inputType };
+  }
+
+  // A key's default in an input or textarea: typing replaces the selection; Backspace/Delete
+  // remove it or the unit before/after the caret; caret keys move the caret or, with Shift,
+  // the selection's focus; Enter adds a line to a textarea and submits an input's form.
+  function fieldKey(el, key, mods, text) {
+    const value = String(el.value ?? '');
+    const ranged = typeof el.selectionStart === 'number';
+    const start = ranged ? el.selectionStart : value.length;
+    const end = ranged ? el.selectionEnd : value.length;
+    const multiline = el.tagName === 'TEXTAREA';
+    if (text != null) return replaceFieldText(el, start, end, text, 'insertText');
+    if (key === 'Enter') return multiline ? replaceFieldText(el, start, end, '\n', 'insertLineBreak') : implicitSubmit(el);
+    if (selectAllKey(key, mods)) {
+      if (!ranged || (start === 0 && end === value.length)) return { effect: null };
+      el.setSelectionRange(0, value.length);
+      return { effect: 'selectAll' };
+    }
+    const unit = keyUnit(key, mods);
+    const backward = BACKWARD_KEYS.has(key);
+    if (key === 'Backspace' || key === 'Delete') {
+      if (start !== end) return replaceFieldText(el, start, end, '', deleteInputType(backward, 'character'));
+      const reach = textOffset(value, start, backward, unit, multiline);
+      return replaceFieldText(el, Math.min(start, reach), Math.max(start, reach), '', deleteInputType(backward, unit));
+    }
+    if (!CARET_KEYS.has(key) || !ranged) return { effect: null };
+    if (mods.shift) {
+      const [anchor, focus] = el.selectionDirection === 'backward' ? [end, start] : [start, end];
+      const next = textOffset(value, focus, backward, unit, multiline);
+      if (next === focus) return { effect: null };
+      el.setSelectionRange(Math.min(anchor, next), Math.max(anchor, next), next < anchor ? 'backward' : 'forward');
+      return { effect: 'extendSelection' };
+    }
+    // An arrow first collapses a selection to its start or end.
+    const next = start !== end && unit === 'character' && (key === 'ArrowLeft' || key === 'ArrowRight')
+      ? (backward ? start : end) : textOffset(value, backward ? start : end, backward, unit, multiline);
+    if (next === start && next === end) return { effect: null };
+    el.setSelectionRange(next, next);
+    return { effect: 'moveCaret' };
+  }
+
+  // Enter in a text input submits its form as a browser does (HTML implicit submission): it
+  // clicks the first submit control, or submits a form that has none and no other text input.
+  // A disabled submit control submits nothing.
+  function implicitSubmit(el) {
+    const form = el.form;
+    if (!form) return { effect: null };
+    const button = formSubmitControl(form);
+    if (button) {
+      if (button.disabled) return { effect: null };
+      button.click();
+      return { effect: 'implicitSubmit' };
+    }
+    const blocking = Array.from(form.querySelectorAll('input')).filter(input =>
+      IMPLICIT_SUBMIT_TYPES.has(String(input.type || 'text').toLowerCase()));
+    if (blocking.length > 1) return { effect: null };
+    if (typeof form.requestSubmit === 'function') form.requestSubmit();
+    else form.submit();
+    return { effect: 'implicitSubmit' };
+  }
+
+  // An editing command at an editor's selection; null when the editor did not change.
+  function editorCommand(host, command, inputType) {
+    const observer = new MutationObserver(() => {});
+    observer.observe(host, { childList: true, characterData: true, subtree: true });
+    const done = docOf(host).execCommand(command, false);
+    const changed = observer.takeRecords().length > 0;
+    observer.disconnect();
+    return { effect: done && changed ? inputType : null };
+  }
+
+  // The first or last text node in node, itself included.
+  function edgeText(node, last) {
+    if (!node || node.nodeType === 3) return node || null;
+    const children = Array.from(node.childNodes || []);
+    for (const child of last ? children.reverse() : children) {
+      const text = edgeText(child, last);
+      if (text) return text;
+    }
+    return null;
+  }
+
+  // A selection point in text where there is text next to it (the end of the text before it,
+  // else the start of the text after it), so equivalent points such as (div, 1) and the end
+  // of the div's text compare equal.
+  function textPoint(node, offset) {
+    if (!node || node.nodeType === 3) return [node, offset];
+    const before = edgeText(node.childNodes?.[offset - 1], true);
+    if (before) return [before, before.length];
+    const after = edgeText(node.childNodes?.[offset], false);
+    return after ? [after, 0] : [node, offset];
+  }
+
+  function selectionPoints(selection) {
+    return [...textPoint(selection.anchorNode, selection.anchorOffset),
+      ...textPoint(selection.focusNode, selection.focusOffset)];
+  }
+
+  // A key's default in an editor: the same edits through editing commands, with the caret
+  // moved by Selection.modify within the editor.
+  function editorKey(host, key, mods, text) {
+    const doc = docOf(host);
+    const selection = (doc.defaultView || window).getSelection?.();
+    if (text != null) return insertEditableText(host, text) ? { effect: 'insertText' } : { effect: null, prevented: true };
+    if (key === 'Enter') {
+      const command = mods.shift ? 'insertLineBreak' : 'insertParagraph';
+      return editorCommand(host, command, command);
+    }
+    if (!selection?.rangeCount) return { effect: null };
+    if (selectAllKey(key, mods)) {
+      const range = doc.createRange();
+      range.selectNodeContents(host);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return { effect: 'selectAll' };
+    }
+    const unit = keyUnit(key, mods);
+    const backward = BACKWARD_KEYS.has(key);
+    const direction = backward ? 'backward' : 'forward';
+    if (key === 'Backspace' || key === 'Delete') {
+      const inputType = deleteInputType(backward, selection.isCollapsed ? unit : 'character');
+      if (selection.isCollapsed && unit !== 'character') selection.modify('extend', direction, unit);
+      return editorCommand(host, backward ? 'delete' : 'forwardDelete', inputType);
+    }
+    if (!CARET_KEYS.has(key)) return { effect: null };
+    const before = selectionPoints(selection);
+    const raw = [selection.anchorNode, selection.anchorOffset, selection.focusNode, selection.focusOffset];
+    if (unit === 'document') {
+      const range = doc.createRange();
+      range.selectNodeContents(host);
+      range.collapse(backward);
+      if (mods.shift) selection.extend(range.startContainer, range.startOffset);
+      else {
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+    } else if (!mods.shift && !selection.isCollapsed && unit === 'character' &&
+        (key === 'ArrowLeft' || key === 'ArrowRight')) {
+      if (backward) selection.collapseToStart();
+      else selection.collapseToEnd();
+    } else {
+      selection.modify(mods.shift ? 'extend' : 'move', direction, unit);
+    }
+    // A caret key does not leave the editor.
+    if (!host.contains(selection.focusNode)) selection.setBaseAndExtent(...raw);
+    if (selectionPoints(selection).every((value, i) => value === before[i])) return { effect: null };
+    return { effect: mods.shift ? 'extendSelection' : 'moveCaret' };
+  }
+
+  // Why a key whose browser default Kitsune does not apply had no effect.
+  function keyNote(target, field, key, mods) {
+    if ((IS_MAC ? mods.meta : mods.ctrl) && /^[cxvyz]$/i.test(key)) return KEY_NOTES.shortcut;
+    if (key === 'Tab') return KEY_NOTES.focus;
+    if (field) return null;
+    const control = target.closest?.('a[href], button, input, select, summary, [role="button"], [role="link"], ' +
+      '[role="checkbox"], [role="switch"], [role="tab"], [role="menuitem"], [role="option"]');
+    if (control && (key === 'Enter' || key === ' ')) return KEY_NOTES.activation;
+    if (!control && SCROLL_KEYS.has(key)) return KEY_NOTES.scroll;
+    return null;
+  }
+
+  // Dispatches keydown, keypress (for a typed character or Enter) and keyup, and applies the
+  // key's default in a field (#267). effect names what changed, null if nothing did;
+  // prevented: the page cancelled the key; note: a default Kitsune does not apply.
   function keypress(selector, key, modifiers, text, first) {
     const target = selector ? resolveTarget(selector, null, { first }) : (activeElement() || document.body);
     if (!target) return notFound('No target');
     lastActedElement = selector || target !== docOf(target).body ? target : null;
     const mods = modifiers || {};
+    const options = keyboardKeyOptions(key);
     const opts = {
-      ...keyboardKeyOptions(key),
+      ...options,
       bubbles: true,
       cancelable: true,
       composed: true,
@@ -3521,21 +3817,28 @@
       altKey: !!mods.alt,
       metaKey: !!mods.meta,
     };
-    target.dispatchEvent(new KeyboardEvent('keydown', opts));
-    if (text) {
-      target.dispatchEvent(new KeyboardEvent('keypress', opts));
-      // Insert text into editable targets
-      if (target.isContentEditable) {
-        docOf(target).execCommand('insertText', false, text);
-      } else if (['INPUT','TEXTAREA'].includes(target.tagName)) {
-        const setter = nativeValueSetter(target);
-        if (setter) setter.call(target, (target.value || '') + text);
-        else target.value = (target.value || '') + text;
-        target.dispatchEvent(new Event('input', { bubbles: true }));
-      }
+    const field = keyField(target);
+    // As for a user's key, the field has focus, and an editor a caret: where it was if inside
+    // the target, else at the target's end.
+    if (field && isEditableRegion(field)) {
+      const at = isEditableRegion(target) ? target : field;
+      if ((docOf(at).defaultView || window).getSelection && !selectionInside(at)) placeEditableCaret(at);
+    } else if (field && activeElement() !== field) {
+      field.focus({ preventScroll: true });
     }
+    const typed = text ?? typedText(options.key, mods);
+    const plainEnter = options.key === 'Enter' && !mods.ctrl && !mods.alt && !mods.meta;
+    const result = { ok: true, key: keyCombination(key, mods), target: target.tagName?.toLowerCase(), effect: null };
+    let applies = target.dispatchEvent(new KeyboardEvent('keydown', opts));
+    if (applies && (typed != null || plainEnter)) applies = target.dispatchEvent(new KeyboardEvent('keypress', opts));
+    if (!applies) result.prevented = true;
+    else if (field) Object.assign(result, isEditableRegion(field) ? editorKey(field, options.key, mods, typed)
+      : fieldKey(field, options.key, mods, typed));
+    const note = !applies || result.effect ? null : keyNote(target, field, options.key, mods);
+    if (note) result.note = note;
     target.dispatchEvent(new KeyboardEvent('keyup', opts));
-    return { ok: true, key, target: target.tagName?.toLowerCase() };
+    if (result.effect && result.effect !== 'implicitSubmit') lastFilledField = field;
+    return result;
   }
 
   function doubleClick(selector, first, modifiers) {
