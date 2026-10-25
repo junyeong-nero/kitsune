@@ -1442,8 +1442,10 @@ function snapshotLineRef(line) {
 }
 
 // Enforce explicit snapshot budgets on the final public protocol, after aliases and URL
-// redaction. Keep complete lines and their ancestors, prioritizing an action's target.
-function boundPublicSnapshot(response, params) {
+// redaction. Keep complete lines and their ancestors, prioritizing an action's target;
+// without one, keep or skip whole spans between the content script's cuts, so a block it
+// keeps whole (a product card) is never split.
+function boundPublicSnapshot({ cuts, ...response }, params) {
   let budget = Number.isFinite(params.maxChars) ? Math.max(0, params.maxChars) : Infinity;
   if (params.text === true) budget = Math.min(budget, 12000);
   if (!Number.isFinite(budget) || typeof response.snapshot !== 'string') return response;
@@ -1461,10 +1463,13 @@ function boundPublicSnapshot(response, params) {
   const showMarker = marker.length <= budget;
   const available = showMarker ? budget - marker.length : budget + 1;
   let used = 0;
-  const add = index => {
-    const block = [];
-    for (let i = index; i != null && !kept.has(i); i = parents[i]) block.push(i);
-    const cost = block.reduce((sum, i) => sum + lines[i].length + 1, 0);
+  // Lines from..to-1, each with its ancestors.
+  const add = (from, to = from + 1) => {
+    const block = new Set();
+    for (let index = from; index < to; index++) {
+      for (let i = index; i != null && !kept.has(i) && !block.has(i); i = parents[i]) block.add(i);
+    }
+    const cost = [...block].reduce((sum, i) => sum + lines[i].length + 1, 0);
     if (used + cost > available) return false;
     for (const i of block) kept.add(i);
     used += cost;
@@ -1472,7 +1477,12 @@ function boundPublicSnapshot(response, params) {
   };
   const target = response.target_ref ? lines.findIndex(line => snapshotLineRef(line) === response.target_ref) : -1;
   if (target >= 0) add(target);
-  for (let i = 0; i < lines.length; i++) add(i);
+  const ends = target < 0 && cuts ? cuts : lines.map((_, i) => i + 1);
+  let from = 0;
+  for (const to of ends) {
+    add(from, to);
+    from = to;
+  }
   const selected = lines.filter((_, i) => kept.has(i));
   if (showMarker) selected.push(marker);
   const result = { ...response, snapshot: selected.join('\n'), truncated: true,

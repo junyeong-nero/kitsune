@@ -98,13 +98,17 @@ class RealBrowserObservationTests(harness.RealBrowserTestCase):
         def post(endpoint, body, **kwargs):
             return self.call(endpoint, body)
         with patch.object(playwright_tools, "_current_tab", tab), patch.object(server, "_post", side_effect=post):
+            # Inline core snapshots are bounded (#262); browser_find searches past the cut.
             default = playwright_tools.browser_snapshot()
-            self.assertGreater(len(default["snapshot"]), 12000)
-            self.assertNotIn("truncated", default)
+            self.assertLessEqual(len(default["snapshot"]), playwright_tools.SNAPSHOT_LIMIT)
+            self.assertIs(default["truncated"], True)
             self.assertIn('text "Readable static fact"', default["snapshot"])
-            self.assertRegex(default["snapshot"], r'button "Deep target 71" \[ref=e\d+\]')
+            self.assertNotIn("Deep target 71", default["snapshot"])
             found = playwright_tools.browser_find(text="Deep target 71")
-            self.assertTrue(any('button "Deep target 71"' in m["match"] for m in found["matches"]), found)
+            match = next(m["match"] for m in found["matches"] if 'button "Deep target 71"' in m["match"])
+            deep = re.search(r"\[ref=(e\d+)\]", match)[1]
+            scoped = playwright_tools.browser_snapshot(target=deep)
+            self.assertIn(f'- button "Deep target 71" [ref={deep}]', scoped["snapshot"])
             for kwargs in ({}, {"text": False}):
                 compact = server.browser_snapshot(tab_id=tab, **kwargs)
                 self.assertNotIn('text "Readable static fact"', compact["snapshot"])

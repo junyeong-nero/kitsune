@@ -433,10 +433,19 @@ def browser_take_screenshot(scale: str = "css", element: str | None = None, targ
                                 format=image_type, **_target(target))
 
 
+# Inline snapshots are capped (#262); one saved to a file is whole. The cut falls between
+# blocks such as product cards (extension getSnapshot), and its guidance names core tools only.
+SNAPSHOT_LIMIT = 12000
+_TRUNCATED_LINE = "- … truncated; browser_find searches the rest"
+_TRUNCATED_HINT = (f"Snapshot truncated at {SNAPSHOT_LIMIT:,} characters, between blocks. browser_find searches "
+                   "the whole page; pass a ref from it or from this snapshot as target to read that part "
+                   "(\"e12 >> ..\" reads its container), or set filename to save the whole snapshot.")
+
+
 @_core
 def browser_snapshot(target: str | None = None, filename: str | None = None, depth: float | None = None,
                      boxes: bool | None = None) -> dict:
-    body = k._request_body({}, _current_tab)
+    body = k._request_body({} if filename else {"maxChars": SNAPSHOT_LIMIT}, _current_tab)
     if target is not None:
         body.update(_target(target))
     if depth is not None:
@@ -449,6 +458,12 @@ def browser_snapshot(target: str | None = None, filename: str | None = None, dep
     if filename and not k._failed(result):
         return {**_saved(filename, result.get("snapshot") or ""),
                 **{key: value for key, value in result.items() if key not in ("snapshot", "ok")}}
+    if result.get("truncated") and "hint" in result and isinstance(result.get("snapshot"), str):
+        # The extension's marker and hint name the full toolset's scope parameters.
+        lines = result["snapshot"].split("\n")
+        if lines[-1].startswith("- … truncated"):
+            lines[-1] = _TRUNCATED_LINE
+        result = {**result, "snapshot": "\n".join(lines), "hint": _TRUNCATED_HINT}
     return result
 
 
