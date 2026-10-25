@@ -24,7 +24,7 @@ from .bridge_client import BridgeClient
 from .errors import ConfirmationRequired, ConnectionFailed, KitsuneError, TimedOut, raise_for
 from .waits import (
     RESUME_DEADLINE_SECONDS, WORKFLOW_DEADLINE_SECONDS, action_request_seconds, batch_deadline_seconds,
-    container_request_seconds,
+    command_wait_seconds, container_request_seconds,
 )
 
 MODES = ("read", "draft", "act")
@@ -48,6 +48,20 @@ def _scope(target: str | None) -> dict:
 
 def _tab_id(tab) -> int:
     return tab.id if isinstance(tab, Tab) else tab
+
+
+def _tab_ids(tabs) -> list[int]:
+    return [_tab_id(tab) for tab in tabs]
+
+
+def _with_confirm(body: dict, confirm: str | None) -> dict:
+    """body with the confirm token of an approved action, if any."""
+    return {**body, "confirmToken": confirm} if confirm is not None else body
+
+
+def _epoch_ms(moment: datetime) -> int:
+    """Epoch milliseconds of a datetime; a naive one is local time."""
+    return int(moment.timestamp() * 1000)
 
 
 def _cut(result: dict, what: str) -> dict:
@@ -96,6 +110,14 @@ class Browser:
         self.cookies = Cookies(self)
         self.history = History(self)
         self.bookmarks = Bookmarks(self)
+        self.windows = Windows(self)
+        self.downloads = Downloads(self)
+        self.clipboard = Clipboard(self)
+        self.sessions = Sessions(self)
+        self.tags = Tags(self)
+        self.pool = Pool(self)
+        self.intercept = Intercept(self)
+        self.policy = Policy(self)
 
     def request(self, route: str, body: dict | None = None, *, timeout: float = 15) -> dict:
         """Send a bridge request, GET without a body, else POST; return its result or raise KitsuneError.
@@ -144,9 +166,7 @@ class Browser:
         wait=True waits up to timeout ms for the load; a load that does not finish raises
         TimedOut and leaves the tab open, with its id in error.result["tabId"].
         """
-        body = {"url": url}
-        if confirm is not None:
-            body["confirmToken"] = confirm
+        body = _with_confirm({"url": url}, confirm)
         if not wait:
             return Tab(self, self.request("/api/new-tab", body)["tabId"])
         if timeout <= 0:
@@ -189,6 +209,91 @@ class Browser:
             body["observed"] = observed
         return self.request("/api/resume", body, timeout=container_request_seconds(RESUME_DEADLINE_SECONDS))
 
+    def retry(self, command: dict, *, max_attempts: int = 3, backoff_ms: int = 500,
+              on_errors: list[str] | None = None, tab=None) -> dict:
+        """Run one batch command until it succeeds, max_attempts times with exponential backoff; only
+        retryable failures (or on_errors codes) are retried."""
+        body = {"command": command, "maxAttempts": max_attempts, "backoffMs": backoff_ms}
+        if on_errors:
+            body["onErrors"] = on_errors
+        timeout = max(60, command_wait_seconds({"action": "retry", **body}) + 15)
+        if tab is not None:
+            body["tabId"] = _tab_id(tab)
+        return self.request("/api/retry", body, timeout=timeout)
+
+    # -- Several tabs ----------------------------------------------
+
+    def keep_alive(self, tabs, *, interval_seconds: int = 60) -> dict:
+        """Ping tabs every interval_seconds, so the browser's tab unloader does not discard them."""
+        return self.request("/api/keep-alive", {"tabIds": _tab_ids(tabs), "intervalSeconds": interval_seconds})
+
+    def stop_keep_alive(self, tabs=None) -> dict:
+        """Stop keep_alive for tabs, else for every tab."""
+        return self.request("/api/keep-alive-stop", {} if tabs is None else {"tabIds": _tab_ids(tabs)})
+
+    def broadcast(self, tabs, command: dict, *, timeout: int = 30) -> dict:
+        """Run one batch command in several tabs at once, within timeout seconds."""
+        return self.request("/api/broadcast", {"tabIds": _tab_ids(tabs), "command": command, "timeout": timeout},
+                            timeout=timeout + 10)
+
+    def sync_barrier(self, tabs, predicate: str, *, timeout: int = 30000, poll_interval: int = 300,
+                     confirm: str | None = None) -> dict:
+        """Wait up to timeout ms until a JavaScript predicate holds in every tab (developer build)."""
+        body = {"tabIds": _tab_ids(tabs), "predicate": predicate, "timeout": timeout, "pollInterval": poll_interval}
+        return self.request("/api/sync-barrier", _with_confirm(body, confirm), timeout=timeout / 1000 + 10)
+
+    # -- Browser data ----------------------------------------------
+
+    def clear_browsing_data(self, types: list[str], *, since: datetime | None = None) -> dict:
+        """Remove the named kinds of browsing data ("cache", "cookies", "history", "localStorage",
+        "passwords", "downloads"), only since a time if given.
+
+        types has no default: without it the extension removes every one of these kinds.
+        """
+        if not types:
+            raise ValueError("Name the kinds of browsing data to remove")
+        body = {"types": list(types)}
+        if since is not None:
+            body["since"] = _epoch_ms(since)
+        return self.request("/api/clear-browsing-data", body, timeout=60)
+
+    # -- The bridge ------------------------------------------------
+
+    def version(self) -> dict:
+        """The bridge's and the extension's versions."""
+        return self.request("/api/version")
+
+    def health(self) -> dict:
+        """Bridge version, ports, keep-alive tabs, pool, tags, policy, sessions directory and log sizes."""
+        return self.request("/api/health", {})
+
+    def logs(self, *, limit: int = 200, since: str | None = None) -> list[str]:
+        """The bridge's recent log lines."""
+        body = {"limit": limit}
+        if since:
+            body["since"] = since
+        return self.request("/api/logs", body)["lines"]
+
+    def audit(self, *, limit: int = 100, since: datetime | None = None) -> list[dict]:
+        """The bridge's audit log of every client's commands, newest last."""
+        body = {"limit": limit, "since": _epoch_ms(since) if since is not None else 0}
+        return self.request("/api/audit", body)["entries"]
+
+    def scheduler(self) -> dict:
+        """The bridge's active per-tab and global command scopes, pending commands and tab locks."""
+        return self.request("/api/scheduler", {})
+
+    def cache(self, action: str = "status", *, seconds: int | None = None) -> dict:
+        """The bridge's read cache: "status", "clear", or "ttl" with seconds."""
+        body = {"action": action}
+        if seconds is not None:
+            body["seconds"] = seconds
+        return self.request("/api/cache", body)
+
+    def reload_extension(self) -> dict:
+        """Reload the extension, for example after editing a developer build."""
+        return self.request("/api/reload-extension", {}, timeout=10)
+
 
 class Cookies:
     """The browser's cookies."""
@@ -198,9 +303,7 @@ class Cookies:
 
     def _op(self, op: str, confirm: str | None = None, **fields) -> dict:
         body = {"op": op, **{key: value for key, value in fields.items() if value is not None}}
-        if confirm is not None:
-            body["confirmToken"] = confirm
-        return self._browser.request("/api/cookies", body)
+        return self._browser.request("/api/cookies", _with_confirm(body, confirm))
 
     def get(self, *, url: str | None = None, name: str | None = None, domain: str | None = None) -> list[dict]:
         return self._op("get", url=url, name=name, domain=domain)["cookies"]
@@ -227,7 +330,7 @@ class History:
         """Visited pages whose title or URL contains query, newest first; a naive since is local time."""
         body = {"query": query, "limit": limit}
         if since is not None:
-            body["since"] = int(since.timestamp() * 1000)
+            body["since"] = _epoch_ms(since)
         return self._browser.request("/api/history-search", body)["results"]
 
     def visits(self, url: str) -> list[dict]:
@@ -245,6 +348,166 @@ class Bookmarks:
         return self._browser.request("/api/bookmarks-search", {"query": query, "limit": limit})["results"]
 
 
+class Windows:
+    """The browser's windows."""
+
+    def __init__(self, browser: Browser):
+        self._browser = browser
+
+    def list(self) -> list[dict]:
+        """Every window with its id, focused/incognito state and tabs."""
+        return self._browser.request("/api/windows", {})["windows"]
+
+    def create(self, url: str | None = None, *, incognito: bool = False, confirm: str | None = None) -> dict:
+        """Open a window a client owns; returns its windowId and tabIds."""
+        body = {"incognito": incognito, **({"url": url} if url else {})}
+        return self._browser.request("/api/create-window", _with_confirm(body, confirm))
+
+    def close(self, window_id: int, *, confirm: str | None = None) -> dict:
+        """Close a window whose tabs a client opened; one with the user's tabs needs their approval."""
+        return self._browser.request("/api/close-window", _with_confirm({"windowId": window_id}, confirm))
+
+    def focus(self, window_id: int) -> dict:
+        """Bring a window to the front. Only on the user's request: it takes their focus."""
+        return self._browser.request("/api/focus-window", {"windowId": window_id})
+
+
+class Downloads:
+    """Downloads; ask-before-act holds every operation."""
+
+    def __init__(self, browser: Browser):
+        self._browser = browser
+
+    def _op(self, op: str, confirm: str | None, **fields) -> dict:
+        body = {"op": op, **{key: value for key, value in fields.items() if value}}
+        return self._browser.request("/api/downloads", _with_confirm(body, confirm))
+
+    def start(self, url: str, filename: str | None = None, *, confirm: str | None = None) -> int:
+        """Download url into the browser's download folder; returns the download id."""
+        return self._op("download", confirm, url=url, filename=filename)["downloadId"]
+
+    def list(self, query: dict | None = None, *, confirm: str | None = None) -> list[dict]:
+        """Downloads matching a downloads.search query, by default the 20 latest."""
+        return self._op("list", confirm, query=query)["items"]
+
+    def cancel(self, download_id: int, *, confirm: str | None = None) -> dict:
+        return self._op("cancel", confirm, query={"id": download_id})
+
+
+class Clipboard:
+    """The system clipboard, which reaches outside the browser; ask-before-act holds both operations."""
+
+    def __init__(self, browser: Browser):
+        self._browser = browser
+
+    def read(self, *, confirm: str | None = None) -> str:
+        return self._browser.request("/api/clipboard", _with_confirm({"op": "read"}, confirm))["text"]
+
+    def write(self, text: str, *, confirm: str | None = None) -> dict:
+        return self._browser.request("/api/clipboard", _with_confirm({"op": "write", "text": text}, confirm))
+
+
+class Sessions:
+    """Saved sessions: cookies and page storage of a set of sites, stored by the bridge."""
+
+    def __init__(self, browser: Browser):
+        self._browser = browser
+
+    def save(self, name: str, urls: list[str] | None = None, *, confirm: str | None = None) -> dict:
+        """Save the browser's cookies, and the localStorage of each of urls' origins, under name."""
+        return self._browser.request("/api/save-session", _with_confirm({"name": name, "urls": urls or []}, confirm),
+                                     timeout=120)
+
+    def load(self, name: str, *, confirm: str | None = None) -> dict:
+        return self._browser.request("/api/load-session", _with_confirm({"name": name}, confirm), timeout=120)
+
+    def list(self) -> list[dict]:
+        return self._browser.request("/api/list-sessions", {})["sessions"]
+
+    def delete(self, name: str) -> dict:
+        return self._browser.request("/api/delete-session", {"name": name})
+
+
+class Tags:
+    """Names for tabs, kept by the bridge while it runs (Tab.tag adds one)."""
+
+    def __init__(self, browser: Browser):
+        self._browser = browser
+
+    def list(self) -> dict[str, int]:
+        """Every tag and the id of its tab."""
+        return self._browser.request("/api/list-tags", {})["tags"]
+
+    def tab(self, name: str) -> "Tab":
+        """The tab with this tag."""
+        return Tab(self._browser, self._browser.request("/api/resolve-tag", {"name": name})["tabId"])
+
+    def remove(self, name: str) -> dict:
+        return self._browser.request("/api/untag-tab", {"name": name})
+
+
+class Pool:
+    """A pool of reusable background tabs."""
+
+    def __init__(self, browser: Browser):
+        self._browser = browser
+
+    def create(self, size: int, url: str = "about:blank") -> dict:
+        """Open size tabs at url for acquire to hand out."""
+        return self._browser.request("/api/tab-pool", {"size": size, "url": url})
+
+    def acquire(self) -> "Tab":
+        """A free tab of the pool, which grows when every tab is in use."""
+        return Tab(self._browser, self._browser.request("/api/pool-acquire", {})["tabId"])
+
+    def release(self, tab) -> dict:
+        return self._browser.request("/api/pool-release", {"tabId": _tab_id(tab)})
+
+
+class Intercept:
+    """Request interception for every tab: block or redirect requests whose URL matches a regex."""
+
+    def __init__(self, browser: Browser):
+        self._browser = browser
+
+    def _op(self, op: str, patterns: list[str] | None = None, effect: str = "block") -> dict:
+        body = {"op": op, "effect": effect, **({"patterns": patterns} if patterns else {})}
+        return self._browser.request("/api/intercept", body)
+
+    def add(self, patterns: list[str], effect: str = "block") -> dict:
+        return self._op("add", patterns, effect)
+
+    def clear(self) -> dict:
+        return self._op("clear")
+
+    def rules(self) -> list[dict]:
+        return self._op("list")["rules"]
+
+    def log(self) -> list[dict]:
+        """The latest requests seen: time, url, method, tabId, type."""
+        return self._op("log")["requests"]
+
+
+class Policy:
+    """The bridge's URL allow/deny lists, read-only and ask-before-act modes, and history scope."""
+
+    def __init__(self, browser: Browser):
+        self._browser = browser
+
+    def get(self) -> dict:
+        return self._browser.request("/api/get-policy", {})
+
+    def set(self, *, allow: list[str] | None = None, deny: list[str] | None = None, readonly: bool | None = None,
+            ask: bool | None = None, ask_urls: list[str] | None = None,
+            history_allow_domains: list[str] | None = None, history_deny_domains: list[str] | None = None,
+            history_max_days: int | None = None) -> dict:
+        """Change the given settings for every client of the bridge; a locked ask-before-act stays on."""
+        fields = {"allow": allow, "deny": deny, "readonly": readonly, "ask": ask, "askUrls": ask_urls,
+                  "historyAllowDomains": history_allow_domains, "historyDenyDomains": history_deny_domains,
+                  "historyMaxDays": history_max_days}
+        return self._browser.request("/api/set-policy", {key: value for key, value in fields.items() if value is not None})
+
+
 class Tab:
     """One tab, by id. Every method sends its tabId, so it acts on this tab whether or not the user
     is viewing it.
@@ -259,6 +522,9 @@ class Tab:
     def __init__(self, browser: Browser, tab_id: int):
         self.browser = browser
         self.id = tab_id
+        self.network = Network(self)
+        self.local_storage = PageStorage(self, "local")
+        self.session_storage = PageStorage(self, "session")
 
     def __repr__(self) -> str:
         return f"<Tab {self.id}>"
@@ -365,16 +631,16 @@ class Tab:
         """Call a JavaScript function in the page and return its JSON value, None for undefined.
 
         evaluate("() => document.title"), or evaluate("el => el.textContent", "e12") to pass the
-        target element. Needs the developer extension build; the signed build refuses it.
+        target element. It runs in the extension's content-script world, which sees the page's DOM
+        and reaches the page's own JavaScript globals only through window.wrappedJSObject. Needs
+        the developer extension build; the signed build refuses it.
         """
         # As the core browser_evaluate: the extension binds the target as __kitsuneElement.
         argument = "__kitsuneElement" if target is not None else ""
         body = {"code": f"Promise.resolve(({function})({argument})).then(value => JSON.stringify(value) ?? 'undefined')"}
         if target is not None:
             body["selector"] = target
-        if confirm is not None:
-            body["confirmToken"] = confirm
-        value = _cut(self._request("/api/js", body), "The result")["result"]
+        value = _cut(self._request("/api/js", _with_confirm(body, confirm)), "The result")["result"]
         if value == "undefined":
             return None
         if not isinstance(value, str):
@@ -383,6 +649,74 @@ class Tab:
             return json.loads(value)
         except ValueError:
             return value  # cut at the size cap
+
+    # -- Inspecting ------------------------------------------------
+
+    def dom(self, target: str | None = None, *, max_depth: int | None = None) -> dict:
+        """The accessibility tree of interactive elements (6 levels by default), of the page or of target."""
+        if max_depth is not None and (type(max_depth) is not int or max_depth < 0):
+            raise ValueError("max_depth must be a non-negative integer")
+        body = _scope(target)
+        if max_depth is not None:
+            body["maxDepth"] = max_depth
+        return _cut(self._request("/api/dom", body), "The DOM tree")["tree"]
+
+    def images(self) -> list[dict]:
+        return self._request("/api/images")["images"]
+
+    def iframes(self) -> list[dict]:
+        return self._request("/api/iframes")["iframes"]
+
+    def meta(self) -> dict:
+        """The page's title, URL, canonical link, meta tags (meta) and <link> rels (links)."""
+        return self._request("/api/meta")
+
+    def structured_data(self) -> dict:
+        """The page's JSON-LD (jsonld), Open Graph (openGraph) and Twitter card (twitter) data."""
+        return self._request("/api/structured-data")
+
+    def readability(self) -> dict:
+        """The page's main article: title, byline, published date, excerpt and text (textContent)."""
+        return self._request("/api/readability")
+
+    def bounds(self, target: str) -> dict:
+        """An element's bounding box, the viewport and page sizes, and whether it is in view (inView)."""
+        return self._request("/api/bounds", _action_target(target))
+
+    def computed_style(self, target: str, properties: list[str] | None = None) -> dict:
+        """An element's computed CSS, a useful set of properties by default."""
+        body = _action_target(target)
+        if properties:
+            body["properties"] = properties
+        return self._request("/api/computed-style", body)["computed"]
+
+    def explain_selector(self, selector: str) -> dict:
+        """How many elements a CSS selector matches, samples of them, and more specific suggestions."""
+        return self._request("/api/explain-selector", {"selector": selector})
+
+    def full_page_metrics(self) -> dict:
+        """The document's size, the viewport, the scroll position and the device pixel ratio."""
+        return self._request("/api/full-page-metrics")
+
+    def highlight(self, target: str) -> dict:
+        """Outline an element on the page until clear_highlight."""
+        return self._request("/api/highlight", _action_target(target))
+
+    def clear_highlight(self) -> dict:
+        return self._request("/api/clear-highlight")
+
+    def watch_console(self, enabled: bool = True) -> dict:
+        """Start (or stop) recording the page's console messages, for console_logs."""
+        return self._request("/api/watch-console", {"enabled": enabled})
+
+    def console_logs(self, *, since: int | None = None, level: str | None = None) -> list[dict]:
+        """Console messages recorded since watch_console, the latest 200; since is epoch ms."""
+        body = {}
+        if since is not None:
+            body["since"] = since
+        if level:
+            body["level"] = level
+        return self._request("/api/console-logs", body)["logs"]
 
     # -- Navigation and tabs ---------------------------------------
 
@@ -409,10 +743,42 @@ class Tab:
     def close(self, *, force: bool = False, confirm: str | None = None) -> dict:
         """Close a tab a client opened. One of the user's own tabs raises ConfirmationRequired
         (user_tab) and closes with its token once the user approves. force disarms beforeunload."""
-        body = {"force": True} if force else {}
-        if confirm is not None:
-            body["confirmToken"] = confirm
-        return self._request("/api/close-tab", body)
+        return self._request("/api/close-tab", _with_confirm({"force": True} if force else {}, confirm))
+
+    def pin(self, pinned: bool = True) -> dict:
+        return self._request("/api/pin-tab", {"pinned": pinned})
+
+    def mute(self, muted: bool = True) -> dict:
+        return self._request("/api/mute-tab", {"muted": muted})
+
+    def duplicate(self) -> "Tab":
+        """A copy of this tab, in the background, which a client owns."""
+        return Tab(self.browser, self._request("/api/duplicate-tab")["tabId"])
+
+    def zoom(self) -> float:
+        return self._request("/api/get-zoom")["factor"]
+
+    def set_zoom(self, factor: float) -> dict:
+        return self._request("/api/set-zoom", {"factor": factor})
+
+    def move(self, *, window_id: int | None = None, index: int = -1) -> dict:
+        """Move the tab to index (-1: last) of its window, or of window_id."""
+        body = {"index": index}
+        if window_id is not None:
+            body["windowId"] = window_id
+        return self._request("/api/move-tab", body)
+
+    def detach(self) -> dict:
+        """Move the tab into a new window of its own; returns its windowId."""
+        return self._request("/api/detach-tab")
+
+    def resize_window(self, width: int, height: int) -> dict:
+        """Resize the window this tab is in."""
+        return self._request("/api/resize-window", {"width": width, "height": height})
+
+    def tag(self, name: str) -> dict:
+        """Name this tab, so browser.tags.tab(name) finds it."""
+        return self._request("/api/tag-tab", {"name": name})
 
     # -- Actions ---------------------------------------------------
 
@@ -503,10 +869,60 @@ class Tab:
                        confirm: str | None = None) -> dict:
         """Answer this tab's future alert/confirm/prompt dialogs: accept or dismiss them, or None to
         leave them to the user again. Returns the policy and recent dialogs."""
-        body = {"accept": accept, "prompt_text": prompt_text}
-        if confirm is not None:
-            body["confirmToken"] = confirm
-        return self._request("/api/handle-dialog", body)
+        return self._request("/api/handle-dialog", _with_confirm({"accept": accept, "prompt_text": prompt_text}, confirm))
+
+    def focus(self, target: str, *, first: bool = False) -> dict:
+        return self._action("/api/focus", _action_target(target), first=first)
+
+    def blur(self, target: str | None = None, *, first: bool = False) -> dict:
+        """Remove focus from target, else from the focused element."""
+        return self._action("/api/blur", _scope(target), first=first)
+
+    def drag(self, source: str, destination: str, *, wait: bool = False, timeout: int = 10000,
+             expect: dict | None = None, first: bool = False, confirm: str | None = None) -> dict:
+        """Drag source onto destination with HTML5 drag events, else pointer events (via says which)."""
+        # The extension reads refs given as from/to, as the core browser_drag sends them.
+        return self._action("/api/drag", {"from": source, "to": destination, "toRef": None}, wait=wait,
+                            timeout=timeout, expect=expect, first=first, confirm=confirm)
+
+    def insert(self, target: str, text: str, *, html: bool = False, clear: bool = False, wait: bool = False,
+               timeout: int = 10000, expect: dict | None = None, first: bool = False,
+               confirm: str | None = None) -> dict:
+        """Insert text into an editor, input or textarea, appending unless clear; html=True inserts
+        it as HTML into an editor (developer build)."""
+        body = {**_action_target(target), "value": text, "format": "html" if html else "text", "clear": clear}
+        return self._action("/api/set-editable-content", body, wait=wait, timeout=timeout, expect=expect,
+                            first=first, confirm=confirm)
+
+    def upload_files(self, paths: list[str], target: str | None = None, *, first: bool = False,
+                     confirm: str | None = None) -> dict:
+        """Put local files into target's file input, else the page's only file input."""
+        body = {"paths": list(paths), "mode": "auto", **({"selector": target} if target else {})}
+        if first:
+            body["first"] = True
+        return self._request("/api/upload-file", _with_confirm(body, confirm), timeout=320)
+
+    def drop(self, target: str, paths: list[str] | None = None, *, data: dict[str, str] | None = None,
+             confirm: str | None = None) -> dict:
+        """Drop local files and/or data ({mime type: value}) onto target."""
+        if not paths and not data:
+            raise ValueError("Pass paths or data to drop")
+        body = {"paths": list(paths or []), "mode": "drop", "selector": target, **({"data": data} if data else {})}
+        return self._request("/api/upload-file", _with_confirm(body, confirm), timeout=320)
+
+    def trusted_click(self, target: str | None = None, *, x: int = 0, y: int = 0,
+                      coordinate_space: str = "viewport", focus: bool = False, first: bool = False,
+                      confirm: str | None = None) -> dict:
+        """Click with the real OS pointer, for pages that ignore synthetic clicks: target's center,
+        else x, y in "viewport" or "screen" coordinates. It moves the user's cursor and may show
+        the tab for the click; focus=True brings the browser forward first."""
+        if target:
+            body = {"selector": target, "focus": focus}
+        else:
+            body = {"coords": {"x": x, "y": y}, "coordinateSpace": coordinate_space, "focus": focus}
+        if first:
+            body["first"] = True
+        return self._request("/api/trusted-click", _with_confirm(body, confirm))
 
     # -- Waiting ---------------------------------------------------
 
@@ -536,9 +952,7 @@ class Tab:
             body.update(text=text, text_gone=text_gone)
         elif js is not None:
             route = "/api/wait-for-result"
-            body.update(code=js, pollInterval=500)
-            if confirm is not None:
-                body["confirmToken"] = confirm
+            body = _with_confirm({**body, "code": js, "pollInterval": 500}, confirm)
         elif url is not None or title is not None:
             route = "/api/wait-for-url" if url is not None else "/api/wait-for-title"
             body["pattern"] = url if url is not None else title
@@ -552,3 +966,59 @@ class Tab:
             if type(error) is KitsuneError and error.code is None and error.result.get("ok") is False:
                 raise TimedOut(error.result) from None
             raise
+
+
+class Network:
+    """One tab's requests, read from the page's resource timing: no headers or bodies."""
+
+    def __init__(self, tab: Tab):
+        self._tab = tab
+
+    def _op(self, op: str, since: int = 0) -> dict:
+        return self._tab._request("/api/capture-network", {"op": op, "since": since})
+
+    def start(self) -> dict:
+        """Start capturing the page's requests for requests()."""
+        return self._op("start")
+
+    def stop(self) -> dict:
+        return self._op("stop")
+
+    def clear(self) -> dict:
+        return self._op("clear")
+
+    def requests(self, *, since: int = 0) -> list[dict]:
+        """The requests captured since start(), the latest 500; since is epoch ms."""
+        return self._op("read", since)["entries"]
+
+    def resources(self) -> list[dict]:
+        """Every resource the document loaded, without start(), the latest 1000."""
+        return self._tab._request("/api/capture-network", {"op": "all"})["entries"]
+
+
+class PageStorage:
+    """One tab's localStorage or sessionStorage; ask-before-act holds every operation."""
+
+    def __init__(self, tab: Tab, kind: str):
+        self._tab = tab
+        self._kind = kind
+
+    def _op(self, op: str, confirm: str | None, **fields) -> dict:
+        body = {"kind": self._kind, "op": op, **{key: value for key, value in fields.items() if value is not None}}
+        return self._tab._request("/api/storage", _with_confirm(body, confirm))
+
+    def get(self, key: str, *, confirm: str | None = None) -> str | None:
+        return self._op("get", confirm, key=key)["value"]
+
+    def set(self, key: str, value: str, *, confirm: str | None = None) -> dict:
+        return self._op("set", confirm, key=key, value=value)
+
+    def remove(self, key: str, *, confirm: str | None = None) -> dict:
+        return self._op("remove", confirm, key=key)
+
+    def clear(self, *, confirm: str | None = None) -> dict:
+        return self._op("clear", confirm)
+
+    def items(self, *, confirm: str | None = None) -> dict[str, str]:
+        """Every key and value."""
+        return self._op("list", confirm)["items"]

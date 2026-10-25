@@ -66,11 +66,22 @@ checkpoints, so the Python API does that only with `replace_bridge=True` (or aft
 | `active_tab()` | The tab you are viewing. With several windows, each has one: it raises `ambiguous_target`, and you pick one from `tabs()` |
 
 A `Tab` sends its id with every request, so it acts on that tab whether or not you are
-viewing it. `tab.show()` switches your view to it; call it only when you want that.
-`tab.close(force=False)` closes a tab a client opened; closing one of your own tabs
-needs your approval ([Ask-before-act](#ask-before-act)). `force` disarms
-`beforeunload`.
-`tab.wake()` reloads a tab the browser discarded.
+viewing it.
+
+| `Tab` method | Does |
+| --- | --- |
+| `close(force=False)` | Close a tab a client opened; closing one of your own tabs needs your approval ([Ask-before-act](#ask-before-act)). `force` disarms `beforeunload` |
+| `show()` | Switch your view to the tab; call it only when you want that |
+| `wake()` | Reload a tab the browser discarded and wait until the page answers |
+| `duplicate()` | A `Tab` for a background copy |
+| `pin(pinned=True)`, `mute(muted=True)`, `zoom()`, `set_zoom(factor)` | Tab state |
+| `move(window_id=None, index=-1)`, `detach()`, `resize_window(width, height)` | Place the tab, give it a window of its own, or resize its window |
+| `tag(name)` | Name the tab; `browser.tags.tab(name)` finds it, `.list()` and `.remove(name)` manage names |
+
+`browser.windows` has `list()`, `create(url=None, incognito=False)`, `close(window_id)`
+(a window with your own tabs needs your approval) and `focus(window_id)`, which takes
+your focus. `browser.pool` keeps reusable background tabs: `create(size, url)`,
+`acquire()` for a `Tab`, `release(tab)`.
 
 ## Reading
 
@@ -87,12 +98,34 @@ needs your approval ([Ask-before-act](#ask-before-act)). `force` disarms
 | `info()` | URL, title, `readyState`, sizes, scroll position and recent dialogs |
 | `screenshot(path=None, target=None, full_page=False, format="png")` | PNG or JPEG bytes, also written to `path`. No capture shows the tab |
 | `evaluate(function, target=None)` | The JSON value a JavaScript function returns, for example `evaluate("() => document.title")` or `evaluate("el => el.value", "e3")`. Needs the developer extension build |
+| `dom(target=None, max_depth=None)` | The accessibility tree of interactive elements, as nested dicts |
+| `images()`, `iframes()` | The page's images and frames, as lists |
+| `meta()`, `structured_data()`, `readability()` | Meta tags and `<link>`s; JSON-LD, Open Graph and Twitter cards; the main article |
 
 Sensitive values read redacted, as for the MCP tools
 ([Sensitive-field redaction](api-reference.md#sensitive-field-redaction)). When the
 bridge cuts a read at its size cap (page text at 20,000 characters, HTML at 100 KB,
 Markdown at 80 KB), the method warns with a `UserWarning`; read a part of the page
 with a `target` instead.
+
+`evaluate` runs in the extension's content-script world, not in the page's: it sees the
+page's DOM, and reaches the page's own JavaScript globals only through
+`window.wrappedJSObject`, so `evaluate("() => window.wrappedJSObject.appState")`.
+
+## Inspecting
+
+| `Tab` method | Returns |
+| --- | --- |
+| `bounds(target)` | An element's box, the viewport and page sizes, and `inView` |
+| `computed_style(target, properties=None)` | Computed CSS, a common set of properties by default |
+| `explain_selector(selector)` | How many elements a CSS selector matches, samples, and more specific suggestions |
+| `full_page_metrics()` | Document size, viewport, scroll position and device pixel ratio |
+| `highlight(target)`, `clear_highlight()` | Outline an element on the page |
+| `watch_console(enabled=True)`, `console_logs(since=None, level=None)` | Record the page's console, then read the messages |
+| `network.start()`, `.requests(since=0)`, `.stop()`, `.clear()`, `.resources()` | The page's requests from its resource timing (no headers or bodies); `resources()` needs no `start()` |
+
+`browser.intercept` blocks or redirects requests in every tab: `add(patterns, effect="block")`
+with URL regexes, `rules()`, `log()` and `clear()`.
 
 ## Acting
 
@@ -115,6 +148,11 @@ acts on the first match ([Strict selectors](api-reference.md#strict-selectors)).
 | `scroll(direction="down", amount=500, target=None)` | Scroll the target or the window |
 | `submit_form(target=None)` | Submit a form |
 | `handle_dialogs(accept=True, prompt_text=None)` | Answer this tab's future dialogs; `None` leaves them to you again |
+| `focus(target)`, `blur(target=None)` | Move focus |
+| `drag(source, destination)` | HTML5 drag events, else pointer events (`via` says which) |
+| `insert(target, text, html=False, clear=False)` | Insert text into an editor, input or textarea, appending unless `clear`; `html=True` (developer build) inserts HTML into an editor |
+| `upload_files(paths, target=None)`, `drop(target, paths=None, data=None)` | Put local files into a file input, or drop files and data on an element |
+| `trusted_click(target=None, x=0, y=0, coordinate_space="viewport")` | A click with the real OS pointer, for pages that ignore synthetic clicks. It moves your cursor and may show the tab for the click ([`browser_trusted_click`](api-reference.md#browser_trusted_clickselector-x0-y0-coordinate_spaceviewport-focusfalse-tab_idnone-firstfalse)) |
 
 Actions return the bridge's result. `ok: True` only means the action was dispatched.
 To check what happened, pass `expect`, for example `expect={"url_changed": True}` or
@@ -145,17 +183,32 @@ and `browser.workflow(name, variables)` runs a named workflow (`browser.workflow
 lists them). A failed command does not raise: each one's outcome is in `results` and
 `progress` ([Container progress](api-reference.md#container-progress)). A call that
 did not finish `ok` returns `call` and `resume_token` for `browser.resume(...)`
-([Checkpoint and resume](checkpoint-resume.md)).
+([Checkpoint and resume](checkpoint-resume.md)). `browser.retry(command, max_attempts=3)`
+repeats one command while it fails retryably.
 
-## Cookies, history and bookmarks
+For several tabs, `browser.keep_alive(tabs)` stops the browser's tab unloader from
+discarding them until `stop_keep_alive()`, `browser.broadcast(tabs, command)` runs one
+command in each, and `browser.sync_barrier(tabs, predicate)` waits until a JavaScript
+predicate holds in all of them.
+
+## Browser data
 
 | Method | Returns |
 | --- | --- |
+| `tab.local_storage`, `tab.session_storage`: `.get(key)`, `.set(key, value)`, `.remove(key)`, `.clear()`, `.items()` | The page's storage |
 | `browser.cookies.get(url=None, name=None, domain=None)` | Matching cookies |
 | `browser.cookies.set(url, name, value, domain=None, path=None, secure=False)`, `.remove(url, name)`, `.clear(url=None, domain=None)` | The bridge's result |
+| `browser.clipboard.read()`, `.write(text)` | The system clipboard |
+| `browser.downloads.start(url, filename=None)`, `.list(query=None)`, `.cancel(download_id)` | A download id, the latest downloads |
+| `browser.sessions.save(name, urls=None)`, `.load(name)`, `.list()`, `.delete(name)` | Cookies, and the localStorage of `urls`' origins, saved to disk by the bridge |
+| `browser.clear_browsing_data(types, since=None)` | Remove the named kinds of data, such as `["cache"]`. `types` is required: without it the extension would also remove cookies, history and saved passwords |
 | `browser.history.search(query="", since=None, limit=20)` | Visited pages, newest first; `since` is a `datetime` (naive is local time) |
 | `browser.history.visits(url)` | The visits to one URL from `search` |
 | `browser.bookmarks.search(query="", limit=20)` | Matching bookmarks |
+
+With ask-before-act on, page storage, cookies, the clipboard and downloads raise
+`ConfirmationRequired` for every operation, reads included
+([Ask-before-act](api-reference.md#ask-before-act)).
 
 History and bookmarks need a browser permission that only you can grant, once, with
 **Allow history and bookmarks** on Kitsune's options page (about:addons → Kitsune →
@@ -197,9 +250,19 @@ def ask(held):
 browser = kitsune.connect(confirm=ask)
 ```
 
+## The bridge
+
+| `Browser` method | Returns |
+| --- | --- |
+| `status()`, `version()`, `health()` | Connection state with its [diagnosis](api-reference.md#connection-diagnosis), versions, and the bridge's own state |
+| `logs(limit=200)`, `audit(limit=100, since=None)` | The bridge's log lines; every client's commands from its [audit log](api-reference.md#audit-log) |
+| `scheduler()` | Command scopes, pending commands and tab locks |
+| `policy.get()`, `policy.set(allow=None, deny=None, readonly=None, ask=None, ask_urls=None, ...)` | The bridge's policy, for every client; a locked ask-before-act stays on |
+| `cache(action="status", seconds=None)`, `reload_extension()` | The read cache; reload the extension |
+
 ## Any other route
 
 `browser.request(route, body=None, timeout=15)` sends any
 [bridge route](api-reference.md#http-bridge-endpoints): GET without a body, POST with
 one. It raises the same errors and applies `confirm`. Tab routes take `tabId` in the
-body, for example `browser.request("/api/meta", {"tabId": tab.id})`.
+body, for example `browser.request("/api/full-page-metrics", {"tabId": tab.id})`.

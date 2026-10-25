@@ -38,6 +38,25 @@ REPLIES = {
     "/api/history-search": {"results": [{"url": "https://example.com/"}], "count": 1},
     "/api/history-visits": {"ok": True, "visits": [{"visit_time": 1}], "count": 1},
     "/api/bookmarks-search": {"results": [{"url": "https://example.com/"}], "count": 1},
+    "/api/dom": {"tree": {"ref": "e0", "tag": "body"}, "refs": 1},
+    "/api/images": {"count": 0, "images": []},
+    "/api/iframes": {"count": 0, "iframes": []},
+    "/api/computed-style": {"computed": {"color": "rgb(0, 0, 0)"}},
+    "/api/console-logs": {"count": 0, "logs": []},
+    "/api/duplicate-tab": {"ok": True, "tabId": 11, "sourceTabId": 7},
+    "/api/get-zoom": {"ok": True, "tabId": 7, "factor": 1.5},
+    "/api/capture-network": {"count": 0, "entries": []},
+    "/api/storage": {"ok": True, "key": "k", "value": "v", "count": 0, "items": {}},
+    "/api/windows": {"count": 0, "windows": []},
+    "/api/downloads": {"ok": True, "downloadId": 4, "count": 0, "items": []},
+    "/api/clipboard": {"ok": True, "text": "copied"},
+    "/api/list-sessions": {"sessions": [], "dir": "/tmp"},
+    "/api/list-tags": {"tags": {"docs": 7}, "count": 1},
+    "/api/resolve-tag": {"name": "docs", "tabId": 7},
+    "/api/pool-acquire": {"ok": True, "tabId": 12},
+    "/api/intercept": {"ok": True, "rules": [], "requests": []},
+    "/api/logs": {"count": 0, "lines": []},
+    "/api/audit": {"count": 0, "entries": [], "total": 0},
 }
 
 
@@ -497,6 +516,143 @@ class McpParityTests(BridgeTestCase):
                 sent = self.sent(library_call)
                 self.assertTrue(sent)
                 self.assertEqual(sent, self.sent(mcp_call))
+
+    def test_every_other_capability_matches_its_mcp_tool(self):
+        tab, browser = self.tab, self.browser
+        with patch.object(playwright_tools, "_current_tab", 7), patch.object(playwright_tools, "_requests", {}):
+            pairs = [
+                (lambda: playwright_tools.browser_resize(width=800, height=600), lambda: tab.resize_window(800, 600)),
+                (lambda: playwright_tools.browser_drag(startTarget="e1", endTarget="e2"), lambda: tab.drag("e1", "e2")),
+                (lambda: playwright_tools.browser_drop(target="e5", paths=["/tmp/a.txt"]),
+                 lambda: tab.drop("e5", ["/tmp/a.txt"])),
+                (lambda: playwright_tools.browser_network_requests(), lambda: tab.network.resources()),
+            ]
+            for mcp_call, library_call in pairs:
+                with self.subTest(tool=mcp_call.__code__.co_names[-1]):
+                    sent = self.sent(library_call)
+                    self.assertTrue(sent)
+                    self.assertEqual(sent, self.sent(mcp_call))
+        command = {"action": "click", "selector": "#a"}
+        pairs = [
+            (lambda: server.browser_dom(tab_id=7, ref="e2", max_depth=2), lambda: tab.dom("e2", max_depth=2)),
+            (lambda: server.browser_images(tab_id=7), lambda: tab.images()),
+            (lambda: server.browser_iframes(tab_id=7), lambda: tab.iframes()),
+            (lambda: server.browser_meta(tab_id=7), lambda: tab.meta()),
+            (lambda: server.browser_structured_data(tab_id=7), lambda: tab.structured_data()),
+            (lambda: server.browser_readability(tab_id=7), lambda: tab.readability()),
+            (lambda: server.browser_bounds(ref="e2", tab_id=7), lambda: tab.bounds("e2")),
+            (lambda: server.browser_computed_style(selector="h1", properties=["color"], tab_id=7),
+             lambda: tab.computed_style("h1", ["color"])),
+            (lambda: server.browser_explain_selector("a.more", tab_id=7), lambda: tab.explain_selector("a.more")),
+            (lambda: server.browser_full_page_metrics(tab_id=7), lambda: tab.full_page_metrics()),
+            (lambda: server.browser_highlight(selector="h1", tab_id=7), lambda: tab.highlight("h1")),
+            (lambda: server.browser_watch_console(tab_id=7), lambda: tab.watch_console()),
+            (lambda: server.browser_console_logs(since=5, level="error", tab_id=7),
+             lambda: tab.console_logs(since=5, level="error")),
+            (lambda: server.browser_pin_tab(pinned=False, tab_id=7), lambda: tab.pin(False)),
+            (lambda: server.browser_mute_tab(tab_id=7), lambda: tab.mute()),
+            (lambda: server.browser_duplicate_tab(tab_id=7), lambda: tab.duplicate()),
+            (lambda: server.browser_get_zoom(tab_id=7), lambda: tab.zoom()),
+            (lambda: server.browser_set_zoom(1.5, tab_id=7), lambda: tab.set_zoom(1.5)),
+            (lambda: server.browser_move_tab(7, window_id=2, index=0), lambda: tab.move(window_id=2, index=0)),
+            (lambda: server.browser_detach_tab(7), lambda: tab.detach()),
+            (lambda: server.browser_tag_tab("docs", 7), lambda: tab.tag("docs")),
+            (lambda: server.browser_focus(ref="e2", tab_id=7, first=True), lambda: tab.focus("e2", first=True)),
+            (lambda: server.browser_blur(selector="#q", tab_id=7), lambda: tab.blur("#q")),
+            (lambda: server.browser_type(selector="#ed", text="hi", mode="editable", clear=True, tab_id=7),
+             lambda: tab.insert("#ed", "hi", clear=True)),
+            (lambda: server.browser_upload_file(["/tmp/a.txt"], selector="#file", tab_id=7),
+             lambda: tab.upload_files(["/tmp/a.txt"], "#file")),
+            (lambda: server.browser_trusted_click(selector="#go", tab_id=7, first=True),
+             lambda: tab.trusted_click("#go", first=True)),
+            (lambda: server.browser_trusted_click(x=5, y=6, coordinate_space="screen", tab_id=7),
+             lambda: tab.trusted_click(x=5, y=6, coordinate_space="screen")),
+            (lambda: server.browser_capture_network(op="start", tab_id=7), lambda: tab.network.start()),
+            (lambda: server.browser_capture_network(since=10, tab_id=7), lambda: tab.network.requests(since=10)),
+            (lambda: server.browser_storage("local", "get", key="k", tab_id=7), lambda: tab.local_storage.get("k")),
+            (lambda: server.browser_storage("session", "set", key="k", value="v", tab_id=7, confirm_token="tok"),
+             lambda: tab.session_storage.set("k", "v", confirm="tok")),
+            (lambda: server.browser_storage("local", "list", tab_id=7), lambda: tab.local_storage.items()),
+            (lambda: server.browser_windows(), lambda: browser.windows.list()),
+            (lambda: server.browser_create_window(url="https://a.example/", incognito=True),
+             lambda: browser.windows.create("https://a.example/", incognito=True)),
+            (lambda: server.browser_close_window(3), lambda: browser.windows.close(3)),
+            (lambda: server.browser_focus_window(3), lambda: browser.windows.focus(3)),
+            (lambda: server.browser_downloads("download", url="https://a.example/f.zip", filename="f.zip"),
+             lambda: browser.downloads.start("https://a.example/f.zip", "f.zip")),
+            (lambda: server.browser_downloads("list"), lambda: browser.downloads.list()),
+            (lambda: server.browser_downloads("cancel", query={"id": 4}), lambda: browser.downloads.cancel(4)),
+            (lambda: server.browser_clipboard("read"), lambda: browser.clipboard.read()),
+            (lambda: server.browser_clipboard("write", text="x"), lambda: browser.clipboard.write("x")),
+            (lambda: server.browser_save_session("work", urls=["https://a.example/"]),
+             lambda: browser.sessions.save("work", ["https://a.example/"])),
+            (lambda: server.browser_load_session("work"), lambda: browser.sessions.load("work")),
+            (lambda: server.browser_list_sessions(), lambda: browser.sessions.list()),
+            (lambda: server.browser_delete_session("work"), lambda: browser.sessions.delete("work")),
+            (lambda: server.browser_list_tags(), lambda: browser.tags.list()),
+            (lambda: server.browser_resolve_tag("docs"), lambda: browser.tags.tab("docs")),
+            (lambda: server.browser_untag_tab("docs"), lambda: browser.tags.remove("docs")),
+            (lambda: server.browser_tab_pool(3), lambda: browser.pool.create(3)),
+            (lambda: server.browser_pool_acquire(), lambda: browser.pool.acquire()),
+            (lambda: server.browser_pool_release(12), lambda: browser.pool.release(12)),
+            (lambda: server.browser_intercept("add", patterns=["ads\\."]), lambda: browser.intercept.add(["ads\\."])),
+            (lambda: server.browser_intercept("clear"), lambda: browser.intercept.clear()),
+            (lambda: server.browser_intercept("list"), lambda: browser.intercept.rules()),
+            (lambda: server.browser_intercept("log"), lambda: browser.intercept.log()),
+            (lambda: server.browser_get_policy(), lambda: browser.policy.get()),
+            (lambda: server.browser_set_policy(ask=True, ask_urls=["pay"], history_max_days=7),
+             lambda: browser.policy.set(ask=True, ask_urls=["pay"], history_max_days=7)),
+            (lambda: server.browser_keep_alive([7, 8], interval_seconds=30),
+             lambda: browser.keep_alive([tab, 8], interval_seconds=30)),
+            (lambda: server.browser_keep_alive_stop(), lambda: browser.stop_keep_alive()),
+            (lambda: server.browser_broadcast([7], {"action": "pageText"}, timeout=20),
+             lambda: browser.broadcast([tab], {"action": "pageText"}, timeout=20)),
+            (lambda: server.browser_sync_barrier([7, 8], "window.ready", timeout=5000),
+             lambda: browser.sync_barrier([7, 8], "window.ready", timeout=5000)),
+            (lambda: server.browser_retry(command, max_attempts=2, tab_id=7),
+             lambda: browser.retry(command, max_attempts=2, tab=tab)),
+            (lambda: server.browser_clear_browsing_data(types=["cache"], since_ms=1000),
+             lambda: browser.clear_browsing_data(["cache"], since=datetime.fromtimestamp(1))),
+            (lambda: server.browser_health(), lambda: browser.health()),
+            (lambda: server.browser_logs(limit=50), lambda: browser.logs(limit=50)),
+            (lambda: server.browser_audit(limit=10), lambda: browser.audit(limit=10)),
+            (lambda: server.browser_scheduler(), lambda: browser.scheduler()),
+            (lambda: server.browser_cache("status"), lambda: browser.cache("status")),
+            (lambda: server.browser_reload_extension(), lambda: browser.reload_extension()),
+        ]
+        for mcp_call, library_call in pairs:
+            with self.subTest(tool=mcp_call.__code__.co_names[-1]):
+                sent = self.sent(library_call)
+                self.assertTrue(sent)
+                self.assertEqual(sent, self.sent(mcp_call))
+
+
+class CapabilityTests(BridgeTestCase):
+    def test_values_the_new_methods_return(self):
+        self.assertEqual(self.tab.dom(), {"ref": "e0", "tag": "body"})
+        self.assertEqual(self.tab.computed_style("h1"), {"color": "rgb(0, 0, 0)"})
+        self.assertEqual(self.tab.duplicate(), self.browser.tab(11))
+        self.assertEqual(self.tab.zoom(), 1.5)
+        self.assertEqual(self.tab.local_storage.get("k"), "v")
+        self.assertEqual(self.browser.tags.tab("docs"), self.browser.tab(7))
+        self.assertEqual(self.browser.pool.acquire(), self.browser.tab(12))
+        self.assertEqual(self.browser.downloads.start("https://a.example/f.zip"), 4)
+        self.assertEqual(self.browser.clipboard.read(), "copied")
+
+    def test_routes_without_an_mcp_tool(self):
+        self.tab.clear_highlight()
+        self.assertEqual((self.bridge.last.route, self.bridge.last.body), ("/api/clear-highlight", {"tabId": 7}))
+        self.browser.version()
+        self.assertEqual((self.bridge.last.method, self.bridge.last.route), ("GET", "/api/version"))
+
+    def test_destructive_calls_need_their_arguments(self):
+        # The extension clears cookies, history and passwords when types is omitted.
+        for types in (None, []):
+            with self.subTest(types=types), self.assertRaises((TypeError, ValueError)):
+                self.browser.clear_browsing_data(types) if types is not None else self.browser.clear_browsing_data()
+        with self.assertRaises(ValueError):
+            self.tab.drop("e5")
+        self.assertEqual(self.bridge.requests, [])
 
 
 if __name__ == "__main__":
