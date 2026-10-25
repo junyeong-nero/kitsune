@@ -1391,7 +1391,7 @@ function leadingShortRef(value) {
 }
 const REF_RESULT_ACTIONS = new Set([
   'getSnapshot', 'getAccessibilityTree', 'getFormFields', 'find', 'waitForElement',
-  'getIframes', 'submitForm',
+  'waitForText', 'getIframes', 'submitForm',
 ]);
 let nextShortRef = null;
 let shortRefEnd = 0n;
