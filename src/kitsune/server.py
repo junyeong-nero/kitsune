@@ -214,6 +214,16 @@ if _unauthorized_caps:
 
 MODE = task_mode(os.environ.get("KITSUNE_MODE"))
 PROTECT_USER_TABS = os.environ.get("KITSUNE_PROTECT_USER_TABS", "").lower() in {"1", "true", "yes", "on"}
+# Sent once at initialize. The core tools keep Playwright MCP's descriptions, which cannot say
+# that the browser is shared with its user; without this, agents avoid `select` to spare the
+# user's view and work around background tabs instead of reading them.
+mcp._mcp_server.instructions = (
+    "Kitsune controls the user's own Firefox-family browser while the user keeps using it. "
+    + ("browser_tabs `new` opens a tab in the background, and `select` makes a tab your current "
+       "tab without switching the user's view, so you can read, fill and screenshot background "
+       "tabs without interrupting the user. Until you open or select a tab, tools act on the tab "
+       "the user is viewing."
+       if permits_tool(MODE, "browser_tabs") else "Tools act on the tab the user is viewing."))
 # The tool browser_tools_call is running; its bridge requests name it for the audit log.
 _gateway_call: ContextVar[str | None] = ContextVar("kitsune_gateway_call", default=None)
 
