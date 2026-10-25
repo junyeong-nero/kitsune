@@ -1435,9 +1435,11 @@ def browser_keypress(
     timeout: int = 10000,
     expect: dict | None = None, confirm_token: str | None = None, first: bool = False,
 ) -> dict:
-    """Dispatch a synthetic keyboard event to the ref/selector target (wait needs one), else
-    the focused element (or body). ok=true means dispatched; verify with expect (see
-    browser_check).
+    """Press a key on the ref/selector target (wait needs one), else the focused element (or
+    body). In an input, textarea or editor the key applies its default edit unless the page
+    cancels it: characters type, Backspace/Delete delete, arrows/Home/End move the caret
+    (Shift selects), Enter adds a line or submits a text input's form. effect names what
+    changed (null: nothing); verify outcomes with expect (see browser_check).
     """
     body = {"key": key}
     if selector: body["selector"] = selector

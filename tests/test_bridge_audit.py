@@ -36,6 +36,20 @@ class AuditRedactionTests(unittest.TestCase):
                                  (action, False, "Element not found", 12))
                 self.assertEqual(params[typed_key], TYPED)  # caller's body is not mutated
 
+    def test_a_key_that_types_itself_is_redacted(self):
+        # A single character types into a field (#267); named keys and shortcuts type nothing.
+        for key, modifiers, logged in [
+            ("k", None, REDACTED), ("K", {"shift": True}, REDACTED), ("한", None, REDACTED),
+            (" ", None, REDACTED), ("a", {"ctrl": True}, "a"), ("v", {"meta": True}, "v"),
+            ("a", {"alt": True}, "a"), ("Enter", None, "Enter"), ("Backspace", {"alt": True}, "Backspace"),
+            ("Space", None, "Space"),
+        ]:
+            with self.subTest(key=key, modifiers=modifiers):
+                params = {"key": key, **({"modifiers": modifiers} if modifiers else {})}
+                self.assertEqual(self.audited("keypress", params)["params"], {**params, "key": logged})
+        # Other actions keep a param named key, such as a storage key.
+        self.assertEqual(self.audited("storageOp", {"op": "get", "key": "t"})["params"], {"op": "get", "key": "t"})
+
     def test_form_fill_keeps_field_keys_and_redacts_every_value(self):
         fields = {"#email": TYPED, "Password": TYPED + "-2", "#remember": True}
         entry = self.audited("formFill", {"fields": fields, "tabId": 3})
@@ -100,7 +114,7 @@ class AuditRedactionTests(unittest.TestCase):
             ],
             "sequences": [[{"action": "type", "selector": "#b", "text": REDACTED, "tabId": 2}]],
             "command": {"action": "formFill", "fields": {"#c": REDACTED}},
-            "do": [{"action": "keypress", "key": "a", "text": REDACTED}],
+            "do": [{"action": "keypress", "key": REDACTED, "text": REDACTED}],
             "catch": [{"action": "click", "selector": "#retry"}],
             "then": [
                 {"action": "cookies", "op": "set", "name": "sid", "value": REDACTED},

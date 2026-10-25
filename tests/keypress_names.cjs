@@ -1,5 +1,6 @@
 // Run with: node tests/keypress_names.cjs (no browser or npm dependencies).
 // #173: key names become matching key/code/legacy fields without changing text insertion.
+// What a key does in a field (#267) is tested in tests/key_defaults.cjs.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
@@ -37,14 +38,16 @@ class HTMLTextAreaElement extends HTMLInputElement {
 const input = new HTMLInputElement();
 const textarea = new HTMLTextAreaElement();
 const editor = Object.assign(new Element('DIV'), { isContentEditable: true });
+// Names are checked on an element that is not a field, where no key edits anything.
+const panel = new Element('DIV');
 const commands = [];
 const document = {
-  body: new Element('BODY'), activeElement: input,
+  body: new Element('BODY'), activeElement: panel,
   execCommand: (...args) => commands.push(args),
 };
 let listener;
 const context = vm.createContext({
-  console, crypto: webcrypto, Event, KeyboardEvent, HTMLInputElement, HTMLTextAreaElement,
+  console, crypto: webcrypto, Event, KeyboardEvent, InputEvent: Event, HTMLInputElement, HTMLTextAreaElement,
   document, window: {},
   browser: { runtime: {
     onMessage: { addListener: fn => { listener = fn; } },
@@ -73,20 +76,23 @@ const send = msg => new Promise(resolve => listener({ action: 'keypress', ...msg
     ['?', '?', '', 0], ['한', '한', '', 0], ['UnknownKey', 'UnknownKey', '', 0],
     ['constructor', 'constructor', '', 0],
   ]) {
-    input.events = [];
+    panel.events = [];
     const result = await send({ key: name });
-    assert.deepEqual(result, { ok: true, key: name, target: 'input' }, 'keep the response key as supplied');
-    assert.deepEqual(input.events.map(event => event.type), ['keydown', 'keyup']);
-    for (const event of input.events) {
+    assert.deepEqual([result.ok, result.key, result.target, result.effect], [true, name, 'div', null],
+      'keep the response key as supplied');
+    // A typed character and Enter also fire keypress, as in Firefox.
+    const pressed = [...key].length === 1 || key === 'Enter';
+    assert.deepEqual(panel.events.map(event => event.type), pressed ? ['keydown', 'keypress', 'keyup'] : ['keydown', 'keyup'], name);
+    for (const event of panel.events) {
       assert.deepEqual([event.key, event.code, event.keyCode, event.which], [key, code, keyCode, keyCode], name);
       assert.ok(event.bubbles && event.cancelable && event.composed);
     }
-    assert.equal(input.value, '', 'key alone does not insert text');
   }
 
-  input.events = [];
-  await send({ key: 'a', modifiers: { ctrl: true, shift: true, alt: true, meta: true } });
-  for (const event of input.events) {
+  panel.events = [];
+  const combined = await send({ key: 'a', modifiers: { ctrl: true, shift: true, alt: true, meta: true } });
+  assert.equal(combined.key, 'Control+Alt+Shift+Meta+a', 'the response names the whole combination');
+  for (const event of panel.events) {
     assert.deepEqual([event.key, event.code, event.ctrlKey, event.shiftKey, event.altKey, event.metaKey],
       ['a', 'KeyA', true, true, true, true], 'modifiers do not rewrite the supplied character');
   }
