@@ -1,8 +1,9 @@
 """Requests to the shared Kitsune bridge, which a BridgeClient starts on demand.
 
-The MCP server sends every tool's bridge request through one BridgeClient. Connection failures
-are returned as results in the action error contract (docs/api-reference.md#connection-diagnosis),
-not raised. This module imports no MCP code.
+The MCP server sends every tool's bridge request through one BridgeClient, and the Python API
+(kitsune.browser) through another. Connection failures are returned as results in the action
+error contract (docs/api-reference.md#connection-diagnosis), not raised. This module imports
+no MCP code.
 """
 
 import os
@@ -65,7 +66,7 @@ def _startup_log_excerpt(offset: int) -> str:
 def _bridge_unavailable(message: str, **state) -> dict:
     error = {"error": message, "code": "bridge_unavailable", "retryable": True,
              "hint": "Run `kitsune-bridge start` (`uv run kitsune-bridge start` in a checkout) in a terminal "
-                     f"to see why the bridge does not start; the MCP server starts it on demand. See {LOG_FILE}"}
+                     f"to see why the bridge does not start; Kitsune starts it on demand. See {LOG_FILE}"}
     if state:
         error["state"] = state
     return error
@@ -101,11 +102,23 @@ def _bridge_disconnected(method: str, exc: httpx.TransportError) -> dict:
 
 def _token_mismatch() -> dict:
     source = "KITSUNE_TOKEN" if os.environ.get("KITSUNE_TOKEN") else TOKEN_FILE
-    return {"error": f"The Kitsune bridge on port {HTTP_PORT} rejected this MCP server's token",
+    return {"error": f"The Kitsune bridge on port {HTTP_PORT} rejected the token this process sent",
             "code": "token_mismatch", "retryable": True,
-            "hint": "Set the same KITSUNE_TOKEN and KITSUNE_HOME (or neither) for every MCP client, or run "
-                    "`kitsune-bridge stop` so the next tool call starts a bridge with this server's token.",
+            "hint": "Set the same KITSUNE_TOKEN and KITSUNE_HOME (or neither) for every MCP client and script "
+                    "that uses the bridge, or run `kitsune-bridge stop` so the next request starts a bridge "
+                    "with this token.",
             "state": {"port": HTTP_PORT, "tokenSource": source}}
+
+
+def _bridge_version_mismatch(status: dict) -> dict:
+    """A running bridge of another build, which a client with replace_bridge=False leaves running."""
+    return {"error": f"The Kitsune bridge on port {HTTP_PORT} is build {status.get('build')}, not this "
+                     f"client's {BRIDGE_BUILD}",
+            "code": "bridge_version_mismatch", "retryable": False,
+            "hint": "Install the Kitsune version the bridge's other clients use, from the same source, or "
+                    "replace the bridge (connect(replace_bridge=True) or `kitsune-bridge stop`), which drops "
+                    "their keep-alives, intercepts and resume checkpoints.",
+            "state": {"port": HTTP_PORT, "bridgeBuild": status.get("build"), "clientBuild": BRIDGE_BUILD}}
 
 
 def _port_conflict(port: int, reason: str, message: str) -> dict:
@@ -121,16 +134,19 @@ class BridgeClient:
     """Bridge requests that carry one caller's capability groups, task mode and user-tab protection.
 
     caps are the groups the bridge lets these requests use: it refuses routes and container steps
-    of other groups (#230). Without the header nothing would be refused, so caps has no default.
-    extra_headers, if set, returns headers to add to each request, such as the tool a gateway call
-    runs.
+    of other groups (#230). caps=None sends no caps header, so the bridge refuses no group; caps
+    has no default, so each caller chooses. extra_headers, if set, returns headers to add to each
+    request, such as the tool a gateway call runs. ensure_bridge replaces a running bridge of
+    another build unless replace_bridge is False; then it reports bridge_version_mismatch.
     """
 
-    def __init__(self, *, caps, mode: str = "act", protect_user_tabs: bool = False, extra_headers=None):
-        self.caps = ",".join(sorted(caps))
+    def __init__(self, *, caps, mode: str = "act", protect_user_tabs: bool = False, extra_headers=None,
+                 replace_bridge: bool = True):
+        self.caps = None if caps is None else ",".join(sorted(caps))
         self.mode = mode
         self.protect_user_tabs = protect_user_tabs
         self.extra_headers = extra_headers
+        self.replace_bridge = replace_bridge
         self._extension_wait_until = 0.0  # set when this client starts a bridge; see await_extension
 
     def ensure_bridge(self) -> dict | None:
@@ -139,12 +155,16 @@ class BridgeClient:
             status = bridge_control.status()
             if status is not None and _bridge_matches(status):
                 return None
+            if status is not None and not self.replace_bridge:
+                return _bridge_version_mismatch(status)
             with bridge_control.lifecycle_lock():
-                # Another MCP server may already have replaced it while we waited.
+                # Another client may already have replaced it while we waited.
                 status = bridge_control.status()
                 if status is not None:
                     if _bridge_matches(status):
                         return None
+                    if not self.replace_bridge:
+                        return _bridge_version_mismatch(status)
                     error = bridge_control.stop()
                     if error:
                         return _bridge_unavailable(error)
@@ -239,7 +259,9 @@ class BridgeClient:
             if endpoint != "/api/status":  # browser_status reports the extension as it is
                 self.await_extension()
             try:
-                headers = {**_headers(), CAPS_HEADER: self.caps}
+                headers = _headers()
+                if self.caps is not None:
+                    headers[CAPS_HEADER] = self.caps
                 if self.mode != "act":
                     headers[MODE_HEADER] = self.mode
                 if self.protect_user_tabs:

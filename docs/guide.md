@@ -170,7 +170,8 @@ Or try:
 - “Capture a screenshot of this page and save it to a file.”
 
 A typical tool sequence looks like this (Python-style pseudocode; these are MCP
-calls made by your agent, not a standalone Python API):
+calls made by your agent; to drive the browser from your own code, see the
+[Python API](python-api.md)):
 
 ```python
 browser_tabs(action="new", url="https://example.com")  # the new tab becomes current
@@ -737,6 +738,7 @@ To publish a new version to PyPI, see [Releasing](releasing.md).
 extension/          WebExtension (manifest v2, Gecko)
 src/kitsune/
   server.py         MCP server
+  browser.py        Python API (kitsune.connect, Browser, Tab); errors.py has its exceptions
   bridge_client.py  Bridge requests and connection errors; starts the bridge on demand
   bridge.py         Bridge daemon (HTTP API + WebSocket)
   workflows/        Named workflows for browser_workflow

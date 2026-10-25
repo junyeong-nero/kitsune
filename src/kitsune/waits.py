@@ -1,4 +1,10 @@
-"""Wait bounds shared by the MCP server and the bridge, so transport timeouts outlast the waits."""
+"""Wait bounds shared by the bridge and its clients (the MCP server and the Python API), so
+transport timeouts outlast the waits."""
+
+import math
+
+# The default expect.timeout; matches bridge.OUTCOME_TIMEOUT_MS.
+OUTCOME_TIMEOUT_MS = 5000
 
 # With an opt-in `wait`, the content script waits up to `timeout` ms for these actions' targets.
 ACTIONABILITY_WAIT_ACTIONS = frozenset({
@@ -103,3 +109,17 @@ def container_settle_seconds(deadline):
 def container_request_seconds(deadline):
     """MCP request timeout of a container call: past the bridge's settle time, so the partial report arrives."""
     return container_settle_seconds(deadline) + CONTAINER_MARGIN_SECONDS
+
+
+def action_request_seconds(wait, timeout, expect):
+    """Request timeout of a direct action: 15 s, plus its actionability wait (wait, timeout ms)
+    and, with expect, its outcome check (expect.timeout ms) and 45 s for the reply."""
+    seconds = 15
+    if wait:
+        seconds += timeout / 1000
+    if expect is not None:
+        wait_ms = expect.get("timeout", OUTCOME_TIMEOUT_MS) if isinstance(expect, dict) else 0
+        if isinstance(wait_ms, bool) or not isinstance(wait_ms, (int, float)) or not math.isfinite(wait_ms):
+            wait_ms = 0  # the bridge rejects it before dispatch
+        seconds += max(0, wait_ms) / 1000 + 45
+    return seconds
