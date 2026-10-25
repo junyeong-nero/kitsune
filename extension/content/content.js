@@ -501,6 +501,7 @@
       ...dialogInfo(),
       url: location.href,
       title: document.title,
+      readyState: document.readyState,
       lang: document.documentElement.lang || 'unknown',
       width: document.documentElement.scrollWidth,
       height: document.documentElement.scrollHeight,
@@ -631,6 +632,10 @@
   const TEXT_SNAPSHOT_LIMIT = 12000;
   const TEXT_LINE_LIMIT = 1000;
   const TEXT_TRUNCATED_LINE = '- … truncated; scope with selector, ref or max_depth';
+  // A loaded tab is not loaded content (#259): an empty readable snapshot may be a page that
+  // still renders asynchronously or one that is empty, and readyState alone cannot tell.
+  const EMPTY_SNAPSHOT_HINT = 'The page shows no content yet. If it should, wait for text you ' +
+    'expect with browser_wait_for, then take a new snapshot; a loaded page can also be empty.';
   // Inline content joins its block's text line; other elements start their own.
   const INLINE_TAGS = new Set(['A', 'ABBR', 'B', 'BDI', 'BDO', 'CITE', 'CODE', 'DATA', 'DFN', 'EM',
     'I', 'KBD', 'LABEL', 'MARK', 'Q', 'S', 'SAMP', 'SMALL', 'SPAN', 'STRONG', 'SUB', 'SUP',
@@ -1025,11 +1030,16 @@
     }
     let snapshot = selected.map(entry => entry.line).join('\n');
     if (withText && truncated) snapshot += (snapshot ? '\n' : '') + TEXT_TRUNCATED_LINE;
+    // An explicit readable snapshot reports readiness; a compact one omits prose, so its
+    // emptiness says nothing about content.
+    const explicit = withText && !baseline && observation === 'browser_snapshot';
     return {
       snapshot,
       ...(truncated ? { truncated: true } : {}),
       ...(targetIndex >= 0 ? { target_ref: entries[targetIndex].ref } : {}),
       ...(withText && !baseline ? { url: window.location?.href ?? globalThis.location?.href, title: document.title } : {}),
+      ...(explicit ? { readyState: document.readyState } : {}),
+      ...(explicit && !snapshot && !truncated ? { empty: true, hint: EMPTY_SNAPSHOT_HINT } : {}),
       ...(baseline ? {
         delta: true,
         ...(window.location?.href !== baseline.url ? { url: window.location?.href } : {}),

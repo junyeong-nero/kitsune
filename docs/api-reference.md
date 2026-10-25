@@ -1705,6 +1705,29 @@ snapshots use the same text lines within their 4,000-character cap (a delta list
 the text lines the action changed), so an `expect={"text": ...}` already present
 there needs no further read.
 
+#### Snapshot readiness
+
+A readable snapshot (the core tool's, or HTTP `/api/snapshot` without `text: false`)
+adds `readyState`, the document's `document.readyState` (`loading`, `interactive` or
+`complete`). A tab that finished loading is not a page that finished rendering: an
+application can still insert its content, and a complete page can be empty. When the
+snapshot has no lines and is not truncated, the result also has `empty: true` and a `hint`
+to wait for text the task expects (`browser_wait_for` with `text`) before snapshotting
+again. It is an observation, not an error, and Kitsune adds no wait of its own:
+
+```json
+{ "snapshot": "", "url": "https://example.test/hotels", "title": "Hotels",
+  "readyState": "complete", "empty": true,
+  "hint": "The page shows no content yet. If it should, wait for text you expect with browser_wait_for, then take a new snapshot; a loaded page can also be empty." }
+```
+
+Saving is separate from readiness: the core `browser_snapshot(filename=...)` returns
+`ok: true` and `saved_to` once the file is written, with the snapshot's `readyState`,
+`empty` and `hint` alongside. `empty: true` means the saved file is empty. Compact
+(`text: false`) and post-action snapshots have none of these fields, since they leave
+prose out. A tab showing an HTTP error response without a document fails with
+`error_page` instead (see [Action errors](#action-errors)).
+
 #### Frames
 
 The content script runs in the top document and reads into same-origin frames
@@ -2002,8 +2025,10 @@ Bridge and extension version info.
 Page metadata plus current dialog policy and recent dialog history. Never cached.
 Also accepts POST with `{ "tabId": 123 }`. MCP tool: `browser_page_info(tab_id=None)`.
 ```json
-{ "url": "...", "title": "...", "lang": "en", "width": 890, "height": 992, "forms": 0, "links": 1, "images": 0 }
+{ "url": "...", "title": "...", "readyState": "complete", "lang": "en", "width": 890, "height": 992, "forms": 0, "links": 1, "images": 0 }
 ```
+`readyState` is the document's `document.readyState`; see
+[Snapshot readiness](#snapshot-readiness).
 
 ### GET /api/page-text
 All visible text on the page.

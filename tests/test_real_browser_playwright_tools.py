@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import re
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -40,12 +41,28 @@ PAGE = """<!doctype html><meta charset="utf-8"><title>pw tools</title>
   });
   fetch('/api/data');
 </script>"""
+# Loads with an empty body; its results arrive once the test releases /api/results (#259).
+ASYNC_PAGE = """<!doctype html><meta charset="utf-8"><title>async results</title><body><script>
+  fetch('/api/results').then(r => r.json()).then(data => {
+    const p = document.createElement('p');
+    p.textContent = data.found;
+    document.body.append(p);
+  });
+</script>"""
+# A completed HTTP 200 document that is genuinely empty.
+EMPTY_PAGE = '<!doctype html><meta charset="utf-8"><title>empty</title><body></body>'
+results_released = threading.Event()
 
 
 class _Site(BaseHTTPRequestHandler):
     def do_GET(self):
-        body = (b'{"ok":true}' if self.path.startswith("/api/") else
-                f"<title>second</title><p>second page</p>".encode() if self.path == "/second" else PAGE.encode())
+        if self.path == "/api/results":
+            results_released.wait(30)
+        body = (b'{"found":"3 hotels found"}' if self.path == "/api/results" else
+                b'{"ok":true}' if self.path.startswith("/api/") else
+                f"<title>second</title><p>second page</p>".encode() if self.path == "/second" else
+                ASYNC_PAGE.encode() if self.path == "/async" else
+                EMPTY_PAGE.encode() if self.path == "/empty" else PAGE.encode())
         self.send_response(200)
         self.send_header("Content-Type", "application/json" if self.path.startswith("/api/") else "text/html")
         self.send_header("Content-Length", str(len(body)))
@@ -65,6 +82,8 @@ class RealBrowserPlaywrightToolTests(harness.RealBrowserTestCase):
         super().setUpClass()
 
     def setUp(self):
+        results_released.clear()
+        self.addCleanup(results_released.set)
         playwright_tools._current_tab = None
         playwright_tools._clicked.clear()
         playwright_tools._requests.clear()
@@ -85,8 +104,8 @@ class RealBrowserPlaywrightToolTests(harness.RealBrowserTestCase):
         self.assertFalse(is_error, (name, result))
         return result
 
-    def open_current(self):
-        result = self.tool("browser_tabs", {"action": "new", "url": self.site.origin + "/"})
+    def open_current(self, path="/"):
+        result = self.tool("browser_tabs", {"action": "new", "url": self.site.origin + path})
         self.assertTrue(result["tabs"][result["index"]]["current"], result)
         tab = playwright_tools._current_tab
         self.addCleanup(self.call, "/api/close-tab", {"tabId": tab})
@@ -117,6 +136,37 @@ class RealBrowserPlaywrightToolTests(harness.RealBrowserTestCase):
         self.tool("browser_navigate_back", {})
         self.text("idle")
         self.assertEqual(self.call("/api/page-info", {"tabId": tab})["title"], "pw tools")
+
+    def test_snapshots_report_readiness_and_empty_content(self):
+        self.open_current()
+        normal = self.tool("browser_snapshot", {})
+        self.assertEqual(normal["readyState"], "complete")
+        self.assertNotIn("empty", normal)
+        self.assertNotIn("hint", normal)
+
+        # Loaded but still waiting for its results: empty, including the saved file.
+        self.tool("browser_navigate", {"url": self.site.origin + "/async"})
+        waiting = self.tool("browser_snapshot", {})
+        self.assertEqual((waiting["snapshot"], waiting["readyState"], waiting["empty"]), ("", "complete", True))
+        self.assertIn("browser_wait_for", waiting["hint"])
+        with tempfile.TemporaryDirectory() as directory:
+            saved = self.tool("browser_snapshot", {"filename": str(Path(directory, "async.md"))})
+            self.assertEqual(Path(saved["saved_to"]).read_text(), "")
+            self.assertTrue(saved["ok"])
+            self.assertTrue(saved["empty"])
+            self.assertEqual(saved["readyState"], "complete")
+        results_released.set()
+        self.text("3 hotels found")
+        ready = self.tool("browser_snapshot", {})
+        self.assertIn("3 hotels found", ready["snapshot"])
+        self.assertNotIn("empty", ready)
+
+        # A completed empty 200 page is the same observation, not an error.
+        self.tool("browser_navigate", {"url": self.site.origin + "/empty"})
+        empty = self.tool("browser_snapshot", {})
+        self.assertEqual((empty["snapshot"], empty["title"], empty["empty"]), ("", "empty", True))
+        self.assertEqual(self.call("/api/page-info", {"tabId": playwright_tools._current_tab})["readyState"],
+                         "complete")
 
     def test_pointer_keyboard_and_form_tools(self):
         self.open_current()
