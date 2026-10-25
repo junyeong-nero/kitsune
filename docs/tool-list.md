@@ -23,7 +23,8 @@ see [Task modes](guide.md#task-modes). With `core`:
 - `draft` (11): read plus `browser_type`, `browser_select_option`, `browser_fill_form`.
 - Other enabled groups contribute only read tools (`browse` adds `browser_scroll` and,
   for draft, `browser_check`). Restricted modes replace multi-action `browser_tabs` with
-  read-only `browser_tab_list()` and omit clicks, submit, JavaScript, screenshots/file
+  `browser_tab_list`, which lists tabs and opens background tabs (`new_tab`) but cannot
+  close or select them, and omit clicks, submit, JavaScript, screenshots/file
   writes, policy changes and containers. Draft refuses sensitive/payment-like fills
   without issuing confirmation tokens.
 

@@ -64,8 +64,10 @@ DRAFT_TOOLS = {
     "browser_check": "checkBox",
     "browser_fill_form": "formFill",
 }
-# browser_console_messages starts console capture before it reads it.
-READ_ACTIONS = frozenset(action for action in READ_TOOLS.values() if action) | {"watchConsole"}
+# browser_console_messages starts console capture before it reads it. browser_tab_list(new_tab=...)
+# opens a background tab (#270): read can already navigate anywhere http(s), and a tab of its own
+# keeps that navigation off the user's tabs.
+READ_ACTIONS = frozenset(action for action in READ_TOOLS.values() if action) | {"watchConsole", "newTab"}
 DRAFT_ACTIONS = READ_ACTIONS | frozenset(DRAFT_TOOLS.values()) | {"fill", "setEditableContent"}
 
 
@@ -86,7 +88,7 @@ READ_ROUTES = frozenset({
     "/api/images", "/api/meta", "/api/structured-data", "/api/bounds", "/api/computed-style",
     "/api/readability", "/api/markdown", "/api/iframes", "/api/explain-selector",
     "/api/full-page-metrics", "/api/get-zoom", "/api/windows", "/api/console-logs", "/api/watch-console",
-    "/api/capture-network", "/api/wait-for-text",
+    "/api/capture-network", "/api/wait-for-text", "/api/new-tab",
     "/api/resolve-tag", "/api/list-tags", "/api/list-sessions", "/api/health", "/api/logs",
     "/api/audit", "/api/scheduler", "/api/get-policy", "/api/history-search",
     "/api/history-visits", "/api/bookmarks-search",

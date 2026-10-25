@@ -6,9 +6,11 @@ browser's startup tab stands in for the user's starting tab: the agent did not o
 from http.server import BaseHTTPRequestHandler
 import json
 import unittest
+from unittest.mock import patch
 
 import real_browser_harness as harness
-from kitsune.task_modes import PROTECT_USER_TABS_HEADER
+from kitsune import playwright_tools, server
+from kitsune.task_modes import MODE_HEADER, PROTECT_USER_TABS_HEADER
 
 
 class _Page(BaseHTTPRequestHandler):
@@ -74,6 +76,58 @@ class RealBrowserProtectedTabTests(harness.RealBrowserTestCase):
         self.assertEqual(self.tab_url(tab), self.page.origin + "/approved")
         self.assert_ok(self.call("/api/navigate", {"url": self.page.origin + "/free", "tabId": tab}))
         self.assertEqual(self.tab_url(tab), self.page.origin + "/free")
+
+    def restricted(self, path, body=None, mode="read"):
+        """(HTTP status, reply) of a request from a read/draft client that protects user tabs."""
+        headers = {**self.bridge.auth(), MODE_HEADER: mode, PROTECT_USER_TABS_HEADER: "1"}
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+        status, _, text = harness._request(self.bridge.http_port, "GET" if body is None else "POST", path,
+                                           headers, self.bridge.host,
+                                           None if body is None else json.dumps(body), timeout=90)
+        return status, json.loads(text)
+
+    def test_read_mode_opens_and_reads_its_own_tab_and_leaves_user_tabs_alone(self):
+        # #270: read + KITSUNE_PROTECT_USER_TABS=1 can reach any page in a tab of its own.
+        user = self.user_tab()
+        get = lambda path: self.restricted(path)[1]
+        post = lambda path, body, timeout=15: self.restricted(path, body)[1]
+        with patch.object(server, "_get", get), patch.object(server, "_post", post), \
+                patch.object(playwright_tools, "_current_tab", None):
+            opened = server.browser_tab_list(new_tab=self.page.origin + "/own")
+            self.assertIsInstance(opened.get("tabId"), int, opened)
+            own = opened["tabId"]
+            self.addCleanup(self.call, "/api/close-tab", {"tabId": own})
+            self.assertEqual(playwright_tools._current_tab, own)
+            self.assertIn(own, [tab["id"] for tab in opened["tabs"]])
+            self.assertEqual(opened["status"], "complete")
+        status, navigated = self.restricted("/api/navigate", {"url": self.page.origin + "/next", "tabId": own})
+        self.assertEqual(status, 200, navigated)
+        self.assert_ok(navigated)
+        self.assertEqual(self.tab_url(own), self.page.origin + "/next")
+        status, page = self.restricted("/api/page-text", {"tabId": own})
+        self.assertIn("/next", page.get("text", ""), page)
+        self.assertEqual(next(t for t in self.call("/api/tabs")["tabs"] if t["id"] == user)["active"], True,
+                         "the user's view did not change")
+
+        status, refused = self.restricted("/api/navigate", {"url": self.page.origin + "/other", "tabId": user})
+        self.assert_error(refused, "user_tab", False)
+        self.assertIn("browser_tab_list new_tab", refused["hint"])
+        self.assertNotIn("confirm_token", refused["hint"])
+        self.assertNotIn("confirmToken", refused.get("state", {}), "read mode cannot use a token")
+        for path in ("/api/switch-tab", "/api/close-tab"):
+            status, result = self.restricted(path, {"tabId": own})
+            self.assertEqual((status, result.get("code")), (403, "mode_restricted"), path)
+        self.assertEqual(self.tab_url(user), self.page.origin + "/start")
+
+    def test_draft_mode_opens_a_tab_without_a_confirmation(self):
+        status, opened = self.restricted("/api/new-tab", {"url": self.page.origin + "/draft", "wait": True},
+                                         mode="draft")
+        self.assertEqual(status, 200, opened)
+        self.assert_ok(opened)
+        self.addCleanup(self.call, "/api/close-tab", {"tabId": opened["tabId"]})
+        status, refused = self.restricted("/api/new-tab", {"url": "file:///etc/hosts"}, mode="draft")
+        self.assertEqual((status, refused["code"]), (403, "mode_restricted"))
 
 
 if __name__ == "__main__":

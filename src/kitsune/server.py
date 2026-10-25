@@ -223,7 +223,9 @@ mcp._mcp_server.instructions = (
        "tab without switching the user's view, so you can read, fill and screenshot background "
        "tabs without interrupting the user. Until you open or select a tab, tools act on the tab "
        "the user is viewing."
-       if permits_tool(MODE, "browser_tabs") else "Tools act on the tab the user is viewing."))
+       if permits_tool(MODE, "browser_tabs") else
+       "Tools act on the tab the user is viewing until browser_tab_list new_tab opens a background "
+       "tab of your own; later tools act on that tab without switching the user's view."))
 # The tool browser_tools_call is running; its bridge requests name it for the audit log.
 _gateway_call: ContextVar[str | None] = ContextVar("kitsune_gateway_call", default=None)
 
@@ -771,11 +773,29 @@ def browser_tabs(
     return {"error": "action must be list, new, close, or select"}
 
 
-if MODE != "act":
-    @tool("core", annotations=ToolAnnotations(title="List browser tabs", **READ))
-    def browser_tab_list() -> dict:
-        """List open tabs with IDs, titles and URLs; does not open, close or select tabs."""
+def browser_tab_list(
+    new_tab: Annotated[str | None, Field(
+        description="http(s) URL to open first in a new background tab, which later tools act on.")] = None,
+) -> dict:
+    """List open tabs with IDs, titles and URLs; new_tab opens a background tab first and
+    returns its tabId. Does not close tabs or switch the user's view.
+    """
+    # read and draft publish this instead of browser_tabs. A tab of its own lets a restricted
+    # agent read any page without navigating the user's tabs, which KITSUNE_PROTECT_USER_TABS
+    # refuses (#270).
+    if new_tab is None:
         return _tab_list(_get("/api/tabs"), False)
+    opened = browser_tabs("new", url=new_tab, wait=True)
+    if not isinstance(opened.get("tabId"), int):
+        return opened
+    playwright_tools._current_tab = opened["tabId"]
+    listed = _tab_list(_get("/api/tabs"), False)
+    tab = {key: opened[key] for key in ("tabId", "url", "status") if key in opened}
+    return {**tab, **({} if _failed(listed) else {"tabs": listed.get("tabs")})}
+
+
+if MODE != "act":
+    tool("core", annotations=ToolAnnotations(title="List or open browser tabs", **ACT))(browser_tab_list)
 
 
 @tool("read", annotations=ToolAnnotations(title="Page info", **READ))

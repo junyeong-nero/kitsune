@@ -865,9 +865,9 @@ def _check_policy(action, params):
     if _task_mode.get() != "act":
         if (params or {}).get("confirmToken") is not None:
             return _mode_error("confirmation")
-        if action == "navigate":
+        if action in {"navigate", "newTab"}:
             from urllib.parse import urlsplit
-            url = (params or {}).get("url", "")
+            url = (params or {}).get("url", "about:blank" if action == "newTab" else "")
             if urlsplit(url).scheme.lower() not in {"http", "https"} and url != "about:blank":
                 return _mode_error("navigation outside http(s) or about:blank")
         if action == "setEditableContent" and (params or {}).get("format", "text") != "text":
@@ -1293,6 +1293,9 @@ def _offer_user_tab_approval(action, params, result, rejected=None):
     """Add a confirm token to a user_tab refusal of a direct close or protected navigation."""
     if not isinstance(result, dict) or result.get("code") != "user_tab":
         return result
+    if _task_mode.get() != "act":
+        # read and draft cannot confirm; they open a tab of their own instead (#270).
+        return {**result, "hint": RESTRICTED_USER_TAB_HINT}
     state = result.setdefault("state", {})
     if action in _PROTECTED_NAVIGATIONS and state.get("tabId") is not None:
         # Bound to the refused tab, so a call without tabId cannot carry it to whatever tab is active then.
@@ -1913,6 +1916,10 @@ def _disconnected_error(message, action, sent=True):
     )
 
 
+RESTRICTED_USER_TAB_HINT = ("Nothing navigated. Open the page in a tab of your own with browser_tab_list "
+                            "new_tab, or leave this tab to the user.")
+
+
 async def send_to_extension(action, params=None, timeout=30):
     """Send command to extension and wait for response."""
     if action in _PROTECTED_NAVIGATIONS:
@@ -1926,6 +1933,9 @@ async def send_to_extension(action, params=None, timeout=30):
         lambda: _send_to_extension_raw(action, params=params, timeout=timeout),
     )
     _remember_outcome(action, params, result)
+    if _task_mode.get() != "act" and isinstance(result, dict) and result.get("code") == "user_tab":
+        # The extension's hint names browser_tabs and confirm_token, which read and draft lack (#270).
+        result = {**result, "hint": RESTRICTED_USER_TAB_HINT}
     return result
 
 

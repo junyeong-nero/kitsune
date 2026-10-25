@@ -56,10 +56,12 @@ class ProtectedTabTests(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-    def call(self, path, body, protect=True):
+    def call(self, path, body, protect=True, mode=None):
         handler = bridge.BridgeHandler.__new__(bridge.BridgeHandler)
         handler.path = path
         handler.headers = {task_modes.PROTECT_USER_TABS_HEADER: "1"} if protect else {}
+        if mode:
+            handler.headers[task_modes.MODE_HEADER] = mode
         handler.read_body = Mock(return_value=dict(body))
         handler.send_json = Mock()
         handler.run_async = Mock(side_effect=lambda coro, **kwargs: asyncio.run(coro))
@@ -93,6 +95,17 @@ class ProtectedTabTests(unittest.TestCase):
         # Without tab_id the active (user) tab is the target; it is refused, not swapped for another tab.
         self.assertEqual(self.refuse("/api/navigate", {"url": "https://a.example/"})["state"]["tabId"], ACTIVE_TAB)
         self.assertEqual([p.get("tabId") for a, p in self.extension.sent if a == "navigate"], [4, None])
+
+    def test_restricted_modes_get_no_token_and_open_a_tab_of_their_own(self):
+        # read and draft cannot confirm (#270): the refusal points to browser_tab_list new_tab.
+        for mode in ("read", "draft"):
+            with self.subTest(mode=mode):
+                result = self.call("/api/navigate", {"url": "https://a.example/", "tabId": 4}, mode=mode)
+                self.assertEqual(result["code"], "user_tab")
+                self.assertEqual(result["hint"], bridge.RESTRICTED_USER_TAB_HINT)
+                self.assertNotIn("confirmToken", result["state"])
+                self.assertEqual(self.call("/api/new-tab", {"url": "https://a.example/"}, mode=mode), {"ok": True})
+        self.assertEqual(bridge._confirm_tokens, {})
 
     def test_batch_steps_are_refused_without_a_token(self):
         result = self.call("/api/batch", {"commands": [
