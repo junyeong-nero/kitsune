@@ -436,7 +436,7 @@ KITSUNE_MODE = "read"
 
 | Mode | Published tools and enforced limits |
 |---|---|
-| `read` | Read tools plus navigation to HTTP(S) pages (or `about:blank`) and scrolling. `browser_tab_list()` replaces the multi-action `browser_tabs`. No clicks, field writes, JavaScript, submits, confirmations or screenshots/file writes. |
+| `read` | Read tools plus navigation to HTTP(S) pages (or `about:blank`) and scrolling. `browser_tab_list` replaces the multi-action `browser_tabs`; with `new_tab` it opens a background tab that later calls act on. It cannot close or select tabs. No clicks, field writes, JavaScript, submits, confirmations or screenshots/file writes. |
 | `draft` | Read surface plus `browser_type`, `browser_select_option`, `browser_fill_form` and, with the `browse` group, `browser_check`. Fills plain text only; no click/keypress/submit/dialog confirmation or JavaScript. Ask-before-act is forced: sensitive fields, payment-like pages and uninspectable targets are refused before filling, without a confirmation token. |
 | `act` | Existing behavior, including the independently configured ask-before-act policy. |
 
@@ -622,6 +622,9 @@ and restart the client. It applies to that client only. Then `browser_navigate`,
 `user_tab` error instead of navigating, also inside batches. That error tells the
 agent to use its own tab, and on a direct call it carries a `confirm_token`. As with
 ask-before-act, the token proves an explicit second step, not that you approved.
+In `read` and `draft` modes, which cannot confirm, the error carries no token; the
+agent opens its own tab with `browser_tab_list(new_tab=...)` instead, so a read-only
+agent can still reach any page without touching yours.
 
 ```toml
 [mcp_servers.kitsune.env]

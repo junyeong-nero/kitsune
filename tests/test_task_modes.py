@@ -77,7 +77,9 @@ class TaskModeCatalogTests(unittest.TestCase):
             "browser_tab_list", "browser_navigate", "browser_snapshot", "browser_find", "browser_wait_for",
             "browser_console_messages", "browser_network_requests", "browser_network_request"})
         tabs = next(tool for tool in read if tool["name"] == "browser_tab_list")
-        self.assertEqual(tabs["inputSchema"]["properties"], {})
+        # new_tab opens a background tab (#270); there is no close or select.
+        self.assertEqual(set(tabs["inputSchema"]["properties"]), {"new_tab"})
+        self.assertEqual(tabs["inputSchema"].get("required", []), [])
         # Character guard, not a tokenizer claim; exact tokens/task success belong to kitsune-benchmark.
         # Mostly Playwright MCP's definitions, published verbatim.
         definitions = json.dumps(read, separators=(",", ":"), ensure_ascii=False)
@@ -121,6 +123,29 @@ class TaskModeCatalogTests(unittest.TestCase):
         self.assertEqual(json.loads(result.content[0].text)["code"], "mode_restricted")
         post.assert_not_called()
 
+    def test_tab_list_new_tab_opens_the_current_tab_without_selecting_it(self):
+        server.browser_tab_list  # published only in read and draft
+        tabs = {"tabs": [{"id": 3, "title": "user", "url": "https://user.example/", "active": True},
+                         {"id": 9, "title": "Example", "url": "https://example.com/", "owned": True}]}
+        opened = {"ok": True, "tabId": 9, "url": "https://example.com/", "status": "complete", "snapshot": "x"}
+        with patch.object(server, "_post", return_value=opened) as post, \
+                patch.object(server, "_get", return_value=tabs), \
+                patch.object(server.playwright_tools, "_current_tab", None):
+            result = server.browser_tab_list(new_tab="https://example.com/")
+            current = server.playwright_tools._current_tab
+        self.assertEqual(post.call_args.args[0], "/api/new-tab")
+        self.assertEqual(post.call_args.args[1], {"url": "https://example.com/", "wait": True, "timeout": 15000})
+        self.assertEqual(current, 9, "later tools act on the new tab")
+        self.assertEqual(result, {"tabId": 9, "url": "https://example.com/", "status": "complete",
+                                  "tabs": tabs["tabs"]})
+        # A refused or failed open changes nothing and returns the error.
+        refused = {"error": "read mode refuses newTab", "code": "mode_restricted", "retryable": False}
+        with patch.object(server, "_post", return_value=refused), patch.object(server, "_get") as get, \
+                patch.object(server.playwright_tools, "_current_tab", 3):
+            self.assertEqual(server.browser_tab_list(new_tab="file:///etc/passwd"), refused)
+            self.assertEqual(server.playwright_tools._current_tab, 3)
+        get.assert_not_called()
+
     def test_mcp_forwards_mode_on_every_bridge_request(self):
         with patch.object(server, "MODE", "read"), patch.object(server.httpx, "request") as request:
             request.return_value.status_code = 200
@@ -144,12 +169,57 @@ class TaskModePolicyTests(AskBeforeActTestCase):
 
     def test_read_refuses_writes_and_container_steps_before_dispatch(self):
         self.mode("read")
-        for action in ("click", "type", "submitForm", "executeJS", "if", "while", "newTab", "handleDialog"):
+        for action in ("click", "type", "submitForm", "executeJS", "if", "while", "closeTab", "switchTab",
+                       "handleDialog"):
             self.assertEqual(bridge._check_policy(action, {})["code"], "mode_restricted")
             result = asyncio.run(bridge.run_command({"action": action}))
             # handleDialog is no batch action, which a container step learns first (#249).
             self.assertEqual(result["code"], "unknown_action" if action == "handleDialog" else "mode_restricted")
         self.assertEqual(self.extension.sent, [])
+
+    def test_read_and_draft_open_background_tabs_for_http_urls(self):
+        # A tab of its own keeps a restricted agent's navigation off the user's tabs (#270).
+        for mode in ("read", "draft"):
+            with self.subTest(mode=mode):
+                self.mode(mode)
+                self.extension.sent.clear()
+                for url in ("https://example.com/a", "http://example.com/", "about:blank", None):
+                    body = {} if url is None else {"url": url}
+                    self.assertEqual(self.call(lambda h: h.handle_new_tab(), body), (200, {"ok": True}), url)
+                self.assertEqual(self.extension.actions(), ["newTab"] * 4)
+                self.extension.sent.clear()
+                for url in ("file:///etc/passwd", "javascript:alert(1)", "moz-extension://x/page.html"):
+                    status, result = self.call(lambda h: h.handle_new_tab(), {"url": url})
+                    self.assertEqual((status, result["code"]), (403, "mode_restricted"), url)
+                self.assertEqual(self.extension.actions(), [])
+
+    def test_a_protected_user_tab_points_restricted_modes_to_a_tab_of_their_own(self):
+        refused = {"error": "Tab 3 was not opened by the agent and this session protects user tabs, so it was "
+                            "not navigated", "code": "user_tab", "retryable": False,
+                   "hint": "Nothing navigated. Open extra material with browser_tabs action=new and pass its "
+                           "tabId as tab_id, or ask the user and repeat a direct call with tab_id and the "
+                           "confirm_token it returns."}
+        self.extension.reply = refused
+        for mode in ("read", "draft", "act"):
+            with self.subTest(mode=mode):
+                self.mode(mode)
+                status, result = self.forward("navigate", {"tabId": 3, "url": "https://example.com"})
+                self.assertEqual((status, result["code"]), (200, "user_tab"))
+                if mode == "act":
+                    self.assertEqual(result["hint"], refused["hint"])
+                else:
+                    self.assertIn("browser_tab_list new_tab", result["hint"])
+                    self.assertNotIn("confirm_token", result["hint"])
+                    self.assertNotIn("browser_tabs", result["hint"])
+
+    def test_draft_refuses_a_payment_like_new_tab_as_it_refuses_navigate(self):
+        # Draft's forced ask-before-act holds a payment-like URL; draft cannot confirm it.
+        self.mode("draft")
+        for route in (lambda h: h.handle_new_tab(), lambda h: h._forward("navigate")):
+            status, result = self.call(route, {"url": "https://shop.example/checkout"})
+            self.assertEqual((status, result["code"], result["state"]["reason"]),
+                             (403, "mode_restricted", "payment_url"))
+        self.assertEqual(self.extension.actions(), [])
 
     def test_draft_fills_ordinary_fields_without_changing_shared_policy(self):
         self.mode("draft")
@@ -204,7 +274,8 @@ class TaskModePolicyTests(AskBeforeActTestCase):
         route.assert_not_called()
         self.assertEqual(handler.send_json.call_args.args[1]["code"], "mode_restricted")
         self.assertEqual(bridge._task_mode.get(), "act")
-        for path in ("/api/batch", "/api/resume", "/api/shutdown", "/api/new-tab", "/api/screenshot"):
+        for path in ("/api/batch", "/api/resume", "/api/shutdown", "/api/close-tab", "/api/switch-tab",
+                     "/api/screenshot"):
             handler.path = path
             handler._dispatch({path: route})
             route.assert_not_called()

@@ -30,6 +30,7 @@ class ServerInstructionsTests(unittest.TestCase):
                 text = instructions(mode)
                 self.assertNotIn("browser_tabs", text)
                 self.assertIn("act on the tab the user is viewing", text)
+                self.assertIn("browser_tab_list new_tab opens a background tab", text)
 
 
 if __name__ == "__main__":

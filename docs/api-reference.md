@@ -116,17 +116,23 @@ ignored; invalid modes fail at MCP startup. Modes intersect with the capability
 groups, including the named-only storage and history groups.
 
 - `read`: read tools plus `browser_navigate` and `browser_scroll` (scroll needs
-  `browse`). `browser_tab_list()` replaces `browser_tabs`: no parameters,
-  returns the same compact tab inventory as `browser_tabs(action="list")`, with no
-  mutation action. Screenshots are excluded because they can write files.
+  `browse`). `browser_tab_list(new_tab=None)` replaces `browser_tabs`: it returns the
+  same compact tab inventory as `browser_tabs(action="list")`. With `new_tab`, an
+  HTTP(S) URL (or `about:blank`), it first opens that URL in a background tab, waits
+  for the load and returns its `tabId`, final `url` and `status` with the inventory;
+  later calls without `tab_id` act on that tab, as after `browser_tabs` new (#270). It
+  cannot close or select tabs, and it never switches the user's view. Screenshots are
+  excluded because they can write files.
 - `draft`: read plus type/select-option/fill-form/check (check needs `browse`).
   Plain-text editor writes only. Forces ask-before-act checks; a sensitive field,
   payment-like page or uninspectable target returns `mode_restricted` before dispatch.
   Form-fill preflights the entire target set, sending only field keys for inspection.
 - Neither restricted mode permits click, submit, keypress, dialog confirmation,
   agent JavaScript, policy changes, container calls or resume. No confirmation tokens
-  are issued or accepted. Navigate permits HTTP(S) or `about:blank`, not script,
-  data or local-file URLs. Existing global URL/readonly/ask policy can tighten this.
+  are issued or accepted. Navigate and new tabs permit HTTP(S) or `about:blank`, not
+  script, data or local-file URLs. Under `KITSUNE_PROTECT_USER_TABS`, a refused
+  navigation of a user tab carries no token; its hint points to
+  `browser_tab_list(new_tab=...)`. Existing global URL/readonly/ask policy can tighten this.
 
 Restricted `tools/list` descriptions use their first paragraph, and schemas omit
 `confirm_token`. Calling an excluded name returns the existing `tool_not_published`
