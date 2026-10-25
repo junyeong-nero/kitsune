@@ -4,7 +4,8 @@
 
 ![Kitsune: an orange fox in a browser window, connecting your browser and your AI agent](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/kitsune-hero.svg)
 
-[![PyPI](https://img.shields.io/pypi/v/kitsune-browser-mcp)](https://pypi.org/project/kitsune-browser-mcp/)
+[![kitsune-browser-mcp on PyPI](https://img.shields.io/pypi/v/kitsune-browser-mcp?label=kitsune-browser-mcp)](https://pypi.org/project/kitsune-browser-mcp/)
+[![kitsune-browser on PyPI](https://img.shields.io/pypi/v/kitsune-browser?label=kitsune-browser)](https://pypi.org/project/kitsune-browser/)
 [![Python](https://img.shields.io/pypi/pyversions/kitsune-browser-mcp)](https://pypi.org/project/kitsune-browser-mcp/)
 [![Release](https://img.shields.io/github/v/release/junyeong-nero/kitsune)](https://github.com/junyeong-nero/kitsune/releases/latest)
 [![License: MIT](https://img.shields.io/github/license/junyeong-nero/kitsune)](https://github.com/junyeong-nero/kitsune/blob/main/LICENSE)
@@ -14,7 +15,8 @@
 Kitsune lets AI agents such as Claude Code, Codex, Pi, and OpenCode use the Firefox,
 Zen, or LibreWolf browser you already have open. Your sessions, cookies, and
 extensions stay where they are, and there is no Playwright, Chromium, or WebDriver
-to install.
+to install. Your own scripts can use it the same way, through the
+[Python API](https://github.com/junyeong-nero/kitsune#python-api).
 
 The agent can research in background tabs and prepare form drafts while you keep
 using the same browser. You stay with the agent you already use; Kitsune is not a
@@ -87,6 +89,10 @@ works. [Positioning](https://github.com/junyeong-nero/kitsune/blob/main/docs/pos
 has the full comparison and its limits.
 
 ## How do I use it?
+
+Kitsune is two PyPI packages, released together with one version. `kitsune-browser-mcp`
+is the MCP server for agents, set up as below. `kitsune-browser`, which it installs, is the
+code, with a [Python API](https://github.com/junyeong-nero/kitsune#python-api) for your own scripts.
 
 1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then
    follow the [MCP setup](#mcp-setup) for your agent below.
@@ -239,18 +245,6 @@ where each tool went.
 [Installation](https://github.com/junyeong-nero/kitsune/blob/main/docs/installation.md) covers Codex's TOML configuration, environment
 variables, version pinning, and upgrades.
 
-More documentation: [Tools](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#tools) ·
-[Configuration](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#configuration) ·
-[Troubleshooting](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#troubleshooting) ·
-[Updating](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#updating-kitsune) ·
-[API reference](https://github.com/junyeong-nero/kitsune/blob/main/docs/api-reference.md) ·
-[Python API](https://github.com/junyeong-nero/kitsune/blob/main/docs/python-api.md) ·
-[Development](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#development) ·
-[FAQ](https://github.com/junyeong-nero/kitsune/blob/main/docs/faq.md)
-
-The architecture, product trade-offs, and comparisons with other browser MCP
-servers are in [Positioning](https://github.com/junyeong-nero/kitsune/blob/main/docs/positioning.md).
-
 ## Python API
 
 The same extension and bridge also work from your own code. The code is the
@@ -272,3 +266,22 @@ The MCP server limits what an agent sees; the Python API does not, but the bridg
 shared-browser rules hold for both: tabs open in the background, your own tabs close
 only with your approval, and sensitive fields stay redacted. `kitsune.connect(confirm=...)`
 lets a person approve each action that needs it. See [Python API](https://github.com/junyeong-nero/kitsune/blob/main/docs/python-api.md).
+
+Until 0.6.0 the code was part of `kitsune-browser-mcp`. If you upgrade a pip install
+of 0.6.0 or earlier, see
+[Upgrading](https://github.com/junyeong-nero/kitsune/blob/main/docs/installation.md#upgrading)
+for the one extra step.
+
+## More documentation
+
+[Tools](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#tools) ·
+[Configuration](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#configuration) ·
+[Troubleshooting](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#troubleshooting) ·
+[Updating](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#updating-kitsune) ·
+[API reference](https://github.com/junyeong-nero/kitsune/blob/main/docs/api-reference.md) ·
+[Python API](https://github.com/junyeong-nero/kitsune/blob/main/docs/python-api.md) ·
+[Development](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#development) ·
+[FAQ](https://github.com/junyeong-nero/kitsune/blob/main/docs/faq.md)
+
+The architecture, product trade-offs, and comparisons with other browser MCP
+servers are in [Positioning](https://github.com/junyeong-nero/kitsune/blob/main/docs/positioning.md).
