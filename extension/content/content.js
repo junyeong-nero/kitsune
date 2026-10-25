@@ -636,6 +636,10 @@
   // still renders asynchronously or one that is empty, and readyState alone cannot tell.
   const EMPTY_SNAPSHOT_HINT = 'The page shows no content yet. If it should, wait for text you ' +
     'expect with browser_wait_for, then take a new snapshot; a loaded page can also be empty.';
+  // A bounded snapshot never ends inside a block (an element's lines below the root, such as
+  // a product card or a short section) of at most this many characters or a quarter of its
+  // budget (#262): the block is kept or left out whole.
+  const SMALL_BLOCK_LIMIT = 2000;
   // Inline content joins its block's text line; other elements start their own.
   const INLINE_TAGS = new Set(['A', 'ABBR', 'B', 'BDI', 'BDO', 'CITE', 'CODE', 'DATA', 'DFN', 'EM',
     'I', 'KBD', 'LABEL', 'MARK', 'Q', 'S', 'SAMP', 'SMALL', 'SPAN', 'STRONG', 'SUB', 'SUP',
@@ -812,11 +816,8 @@
         (['button', 'submit', 'reset'].includes(el.type) && !isSensitiveField(el) ? el.value : '') || fallback);
     }
     function append(entry) {
-      const cost = entry.line.length + (entries.length ? 1 : 0);
-      if (!target && full && size + cost > limit) { truncated = true; return false; }
+      size += entry.line.length + (entries.length ? 1 : 0);
       entries.push(entry);
-      size += cost;
-      return true;
     }
     // named: an ancestor control or heading already shows this text as its name.
     function visit(el, depth, parent = -1, domDepth = 0, named = false) {
@@ -861,8 +862,8 @@
         const stateTail = `]${states.length ? ' [' + states.join(' ') + ']' : ''}`;
         // Boxes stay out of the signature, so repeated siblings still group.
         const tail = stateTail + (boxes ? ` [box=${boxOf(el)}]` : '');
-        if (!append({ el, ref, line: head + (ref ?? pendingRef) + tail, parent, interactive,
-          head, tail, label, signature: label + stateTail })) return;
+        append({ el, ref, line: head + (ref ?? pendingRef) + tail, parent, interactive,
+          head, tail, label, signature: label + stateTail });
         parent = entries.length - 1;
         // Only web links are exposed: other schemes can hold executable code or local data.
         if (role === 'link' && el.href) {
@@ -870,8 +871,8 @@
           try { url = new URL(el.href); } catch {}
           if (url && ['http:', 'https:'].includes(url.protocol)) {
             const signature = `/url: ${JSON.stringify(url.href)}`;
-            if (!append({ line: `${'  '.repeat(Math.min(depth + 1, 12))}- ${signature}`,
-              parent, interactive: false, source: el, signature })) return;
+            append({ line: `${'  '.repeat(Math.min(depth + 1, 12))}- ${signature}`,
+              parent, interactive: false, source: el, signature });
           }
         }
       }
@@ -884,8 +885,8 @@
         if (normalize(plain)) {
           const clipped = text.length > TEXT_LINE_LIMIT ? text.slice(0, TEXT_LINE_LIMIT) + '…' : text;
           const signature = `text ${JSON.stringify(clipped)}`;
-          if (!append({ line: `${'  '.repeat(Math.min(childDepth, 12))}- ${signature}`,
-            parent, interactive: false, source: el, signature })) return;
+          append({ line: `${'  '.repeat(Math.min(childDepth, 12))}- ${signature}`,
+            parent, interactive: false, source: el, signature });
         }
       }
       if (maxDepth != null && domDepth >= maxDepth) return;
@@ -898,7 +899,7 @@
         !(withText && flatChildren(child).every(c => INLINE_TAGS.has(c.tagName)));
       const scopedRoot = selector && el === root;
       const shown = scopedRoot ? SCOPED_ITEM_LIMIT : COLLAPSED_ITEM_LIMIT;
-      for (let start = 0; start < children.length && !truncated;) {
+      for (let start = 0; start < children.length;) {
         let end = start + 1;
         // Entries from here on belong to this run; a delta keeps its marker with them.
         const run = entries.length;
@@ -908,7 +909,7 @@
         }
         let omitted = 0;
         function flushOmitted() {
-          if (!omitted || truncated) return;
+          if (!omitted) return;
           const signature = `… ${omitted} more similar items`;
           const indent = '  '.repeat(Math.min(childDepth, 12));
           if (scopedRoot) {
@@ -925,10 +926,10 @@
             ref, head, tail, run, signature });
           omitted = 0;
         }
-        for (let i = start; i < end && !truncated; i++) {
+        for (let i = start; i < end; i++) {
           if (i - start < shown || targetAncestors.has(children[i])) {
             flushOmitted();
-            if (!truncated) visit(children[i], childDepth, parent, domDepth + 1, named);
+            visit(children[i], childDepth, parent, domDepth + 1, named);
           } else omitted++;
         }
         flushOmitted();
@@ -950,6 +951,26 @@
     }
 
     const targetIndex = entries.findIndex(entry => entry.el === target);
+    // Where a bounded snapshot without a target may end: before entry i unless a small block
+    // (SMALL_BLOCK_LIMIT) has lines on both sides of it.
+    let cuts = null;
+    if (!baseline && targetIndex < 0 && Number.isFinite(limit)) {
+      const blockLimit = Math.min(SMALL_BLOCK_LIMIT, limit / 4);
+      const blocks = new Map();
+      entries.forEach((entry, i) => {
+        const cost = entry.line.length + 1;
+        for (let el = entry.el || entry.source; el && el !== root; el = parentAcrossFrames(el)) {
+          const block = blocks.get(el);
+          if (block) Object.assign(block, { last: i, cost: block.cost + cost });
+          else blocks.set(el, { first: i, last: i, cost });
+        }
+      });
+      const inside = new Array(entries.length + 1).fill(false);
+      for (const { first, last, cost } of blocks.values()) {
+        if (cost <= blockLimit) for (let i = first + 1; i <= last; i++) inside[i] = true;
+      }
+      cuts = inside.flatMap((split, i) => split ? [] : [i]);
+    }
     let selected = entries;
     const kept = new Set();
     let used = 0;
@@ -1013,11 +1034,16 @@
             }
           }
         }
-      }
-      // With no surviving target this is the usual document-order prefix.
-      for (let i = 0; i < entries.length; i++) {
-        if (targetIndex < 0 && used + entries[i].line.length + 1 > limit + 1) break;
-        add(i);
+        for (let i = 0; i < entries.length; i++) add(i);
+      } else {
+        // With no surviving target this is the longest document-order prefix ending at a cut.
+        for (let i = 0, c = 0; c < cuts.length; c++) {
+          let cost = used;
+          for (let j = i; j < cuts[c]; j++) cost += entries[j].line.length + 1;
+          if (cost > limit + 1) break;
+          for (; i < cuts[c]; i++) kept.add(i);
+          used = cost;
+        }
       }
       selected = entries.filter((_, i) => kept.has(i));
       truncated = selected.length < entries.length;
@@ -1037,6 +1063,8 @@
       snapshot,
       ...(truncated ? { truncated: true } : {}),
       ...(targetIndex >= 0 ? { target_ref: entries[targetIndex].ref } : {}),
+      // For boundPublicSnapshot, which can cut again after aliases and URL redaction.
+      ...(cuts ? { cuts: cuts.filter(cut => cut <= selected.length) } : {}),
       ...(withText && !baseline ? { url: window.location?.href ?? globalThis.location?.href, title: document.title } : {}),
       ...(explicit ? { readyState: document.readyState } : {}),
       ...(explicit && !snapshot && !truncated ? { empty: true, hint: EMPTY_SNAPSHOT_HINT } : {}),

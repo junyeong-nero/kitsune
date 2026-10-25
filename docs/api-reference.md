@@ -1638,10 +1638,25 @@ usable refs.
 This full-toolset function returns a compact accessibility-style tree with stable
 refs and explicitly forwards `text: false` by default via POST `/api/snapshot`.
 The core Playwright-schema tool instead omits `text`: it includes readable static
-text and HTTP(S) link URLs without a new document-prefix character cap. Direct HTTP
-GET or POST with omitted `text` has the same readable default. Explicit `text: true`
-selects the bounded readable mode; `text: false` omits static prose. Optional scope
-arguments are `tabId`, `selector`, `ref` and `maxDepth` in the JSON body.
+text and HTTP(S) link URLs. Direct HTTP GET or POST with omitted `text` has the same
+readable default and no character cap. Explicit `text: true` selects the bounded
+readable mode; `text: false` omits static prose. Optional scope arguments are `tabId`,
+`selector`, `ref` and `maxDepth` in the JSON body.
+
+The core `browser_snapshot` returned inline is capped at 12,000 final public characters
+(it sends `"maxChars": 12000`; #262); with `filename` it sends no budget and saves the
+whole snapshot. A cut core snapshot has `truncated: true`, ends with
+`- … truncated; browser_find searches the rest` and has a `hint` that names only core
+tools and arguments: `browser_find` (which reads the whole page), a ref from it or from
+the snapshot as `target` (`"e12 >> .."` reads that element's container, such as the card
+around a product name), or `filename`. On the deterministic fixtures of
+`tests/test_real_browser_bounded_snapshot.py`, the inline core snapshot of 80
+heterogeneous product cards went from about 24,200 to 9,200 characters (the first 30
+cards, each whole) and that of a 24-section article from about 44,600 to 10,800
+characters (the first 29 paragraphs, each with its links and URLs). The cap counts
+lines before refs are shortened to their public `e12` form, so a snapshot can stop
+well below it. Cards and paragraphs past the cut stay reachable through
+`browser_find` and a scoped `target`.
 
 - `selector` scopes the snapshot to the subtree of its first match, including its root; it
   takes the [target selector](#target-selectors) forms.
@@ -1692,7 +1707,14 @@ omitted, as are hidden, `aria-hidden`, form-field and sensitive-field content.
 Lines are clipped at 1,000 characters with `…`; the snapshot is capped at 12,000
 final public characters after URL redaction/alias serialization. Explicit HTTP
 `maxChars` (also with omitted/false text) and post-action limits are enforced there
-as well, on complete lines with ancestor context. Truncation sets `truncated: true`,
+as well, on complete lines with ancestor context. Without an acted-on target, a cut
+snapshot is a document-order prefix that never ends inside a block: the lines of an
+element below the snapshot root (a product card's name, URL, variant, price and
+discount; a paragraph with its links) that total at most 2,000 characters or a quarter
+of the budget are kept or left out whole, so a card is never split or joined to its
+neighbor. When URL redaction or ref aliases lengthen the snapshot past its budget, the
+bridge cuts again only at those boundaries; it can leave out a whole block that no
+longer fits and keep a later one. Truncation sets `truncated: true`,
 includes a scope hint, and normally ends the snapshot with
 `- … truncated; scope with selector, ref or max_depth`.
 For budgets too small for the marker, the snapshot may be empty but the flag and hint

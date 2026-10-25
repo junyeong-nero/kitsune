@@ -111,7 +111,8 @@ class AdapterTests(unittest.TestCase):
 
     def test_snapshot_scope_depth_boxes_and_file(self):
         playwright_tools.browser_snapshot(target="e4", depth=2, boxes=True)
-        self.assertEqual(self.posted(), [("/api/snapshot", {"ref": "e4", "maxDepth": 2, "boxes": True})])
+        self.assertEqual(self.posted(), [("/api/snapshot", {"maxChars": 12000, "ref": "e4", "maxDepth": 2,
+                                                            "boxes": True})])
         self.assertIn("error", playwright_tools.browser_snapshot(depth=1.5))
         self.post.return_value = {"snapshot": '- button "OK" [ref=e1]', "url": "https://a/"}
         with tempfile.TemporaryDirectory() as directory, patch.object(Path, "cwd", return_value=Path(directory)):
@@ -119,6 +120,35 @@ class AdapterTests(unittest.TestCase):
             self.assertEqual((Path(directory) / "out" / "snap.yml").read_text(), '- button "OK" [ref=e1]')
         self.assertEqual(result, {"ok": True, "saved_to": str(Path(directory) / "out" / "snap.yml"),
                                   "url": "https://a/"})
+        # A saved snapshot is whole (#262).
+        self.assertEqual(self.posted()[-1], ("/api/snapshot", {}))
+
+    def test_inline_snapshot_truncation_names_core_tools_only(self):
+        marker = "- … truncated; scope with selector, ref or max_depth"
+        self.post.return_value = {"snapshot": '- link "Desk 1" [ref=e1]\n  - /url: "https://a/1"\n' + marker,
+                                  "truncated": True, "url": "https://a/", "title": "Desks",
+                                  "hint": "Snapshot truncated; scope with selector, ref or max_depth."}
+        result = playwright_tools.browser_snapshot()
+        self.assertEqual(self.posted(), [("/api/snapshot", {"maxChars": playwright_tools.SNAPSHOT_LIMIT})])
+        lines = result["snapshot"].split("\n")
+        self.assertEqual(lines[:2], ['- link "Desk 1" [ref=e1]', '  - /url: "https://a/1"'])
+        self.assertEqual(lines[-1], "- … truncated; browser_find searches the rest")
+        # The bridge reserved the extension marker's length; the core marker fits in it.
+        self.assertLessEqual(len(lines[-1]), len(marker))
+        self.assertEqual((result["truncated"], result["url"], result["title"]), (True, "https://a/", "Desks"))
+        self.assertIn("12,000 characters", result["hint"])
+        guidance = lines[-1] + " " + result["hint"]
+        for name in ("selector", "max_depth", "tab_id", "text=", "browser_dom", "browser_page_text"):
+            self.assertNotIn(name, guidance)
+        self.assertIn("browser_find", playwright_tools.SCHEMAS)
+        snapshot_parameters = playwright_tools.SCHEMAS["browser_snapshot"]["inputSchema"]["properties"]
+        self.assertIn("target", snapshot_parameters)
+        self.assertIn("filename", snapshot_parameters)
+        for word in ("browser_find", "target", "filename"):
+            self.assertIn(word, result["hint"])
+        # A whole snapshot is returned as the bridge sent it.
+        self.post.return_value = {"snapshot": '- button "OK" [ref=e1]', "url": "https://a/"}
+        self.assertEqual(playwright_tools.browser_snapshot(), self.post.return_value)
 
     def test_find_searches_the_snapshot_with_paths(self):
         self.post.return_value = {"snapshot": "\n".join([
