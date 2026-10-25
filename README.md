@@ -244,7 +244,8 @@ More documentation: [Tools](https://github.com/junyeong-nero/kitsune/blob/main/d
 [Troubleshooting](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#troubleshooting) ·
 [Updating](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#updating-kitsune) ·
 [API reference](https://github.com/junyeong-nero/kitsune/blob/main/docs/api-reference.md) ·
-[Development](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#development)
+[Development](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#development) ·
+[FAQ](https://github.com/junyeong-nero/kitsune/blob/main/docs/faq.md)
 
 The architecture, product trade-offs, and comparisons with other browser MCP
 servers are in [Positioning](https://github.com/junyeong-nero/kitsune/blob/main/docs/positioning.md).
