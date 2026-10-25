@@ -758,7 +758,7 @@
       data.wrapper = !nativeTags.has(el.tagName) && !el.getAttribute('role') &&
         !el.isContentEditable && el.contentEditable !== 'true' &&
         (data.native > 0 || data.interactive >= 2);
-      const interactive = isInteractiveElement(el);
+      const interactive = isSnapshotControl(el);
       const role = el.getAttribute('role') || landmarks[el.tagName] ||
         (/^H[1-6]$/.test(el.tagName) ? 'heading' : inferRole(el));
       data.image = !interactive && isImage(el) && !!nameOf(el, false);
@@ -821,12 +821,12 @@
       let role = el.getAttribute('role') || landmarks[el.tagName] ||
         (/^H[1-6]$/.test(el.tagName) ? 'heading' : inferRole(el)) || (frame ? 'iframe' : '') || (image ? 'img' : '');
       const media = MEDIA_TAGS.has(el.tagName);
-      const interactive = (isInteractiveElement(el) && !metadata.get(el).wrapper) || media;
+      const interactive = (isSnapshotControl(el) && !metadata.get(el).wrapper) || media;
       const include = interactive || semanticRoles.has(role) || el === target || frame || image;
       let ref = null;
       if (include) {
         if (!role) {
-          if (el.isContentEditable) role = 'textbox';
+          if (isEditingHost(el)) role = 'textbox';
           else if (el === target) role = el.tagName.toLowerCase();
           else role = 'button';
         }
@@ -1629,7 +1629,7 @@
     return actionError(`Element is not a fillable field: ${reason}`,
       'not_fillable', 'Target the field or its web-component host from a new browser_snapshot. ' +
         (tooDeep ? 'A field nested deeper is not reached; use browser_evaluate for it. ' : '') +
-        'For a contenteditable editor use mode="editable".',
+        'A contenteditable editor is filled through its textbox ref.',
       { tag: el.tagName.toLowerCase(), reason: tooDeep ? 'shadow_depth' : 'no_field' });
   }
 
@@ -1637,9 +1637,11 @@
     const el = resolveTarget(selector, null, { first });
     if (!el) return notFound();
 
-    // Auto-pierce shadow DOM: if element isn't a standard input, look inside shadow root
-    const target = getFillTarget(el);
-    if (!FILL_TAGS.includes(target.tagName)) return notFillable(el, 'input, textarea or select');
+    const target = fillDestination(el);
+    if (!FILL_TAGS.includes(target.tagName)) {
+      if (isEditableRegion(target)) return fillEditable(target, value, target !== el);
+      return notFillable(el, 'input, textarea, select or editor');
+    }
     lastActedElement = lastFilledField = target;
 
     if (target.type === 'checkbox' || target.type === 'radio') {
@@ -1661,6 +1663,31 @@
       target.dispatchEvent(new Event('change', { bubbles: true }));
     }
     return { ok: true, pierced: target !== el, tag: target.tagName.toLowerCase() };
+  }
+
+  const EDITOR_SELECTOR = '[contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"]';
+
+  // What fill writes to: el's field (piercing shadow roots), else the editing host of el or of
+  // an editor inside it, else el itself.
+  function fillDestination(el) {
+    if (isEditableRegion(el)) return editingHost(el);
+    const field = getFillTarget(el);
+    if (FILL_TAGS.includes(field.tagName)) return field;
+    const editor = shadowField(el, EDITOR_SELECTOR) || el.querySelector?.(EDITOR_SELECTOR);
+    return editor ? editingHost(editor) : el;
+  }
+
+  // Replace an editing host's content as typing over a full selection does, so the editor
+  // sees beforeinput and input (#255).
+  function fillEditable(host, value, pierced) {
+    lastActedElement = lastFilledField = host;
+    const range = docOf(host).createRange();
+    range.selectNodeContents(host);
+    placeEditableCaret(host, range);
+    const text = String(value ?? '');
+    if (text) insertEditableText(host, text);
+    else docOf(host).execCommand('delete', false);
+    return { ok: true, pierced, tag: host.tagName.toLowerCase(), contentEditable: true };
   }
 
   // Shadow roots searched for a host's field: its own, and those of hosts nested in it.
@@ -2856,9 +2883,19 @@
   const MEDIA_TAGS = new Set(['VIDEO', 'AUDIO']);
 
   function isInteractiveElement(el) {
+    return isEditableRegion(el) || isControl(el);
+  }
+
+  // A snapshot lists an editor once, as its editing host: its descendants inherit
+  // isContentEditable but are not separate textboxes (#256).
+  function isSnapshotControl(el) {
+    return isEditingHost(el) || isControl(el);
+  }
+
+  function isControl(el) {
     const interactiveTags = new Set(['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'DETAILS', 'SUMMARY']);
     if (interactiveTags.has(el.tagName)) return true;
-    if (el.onclick || el.hasAttribute('tabindex') || el.isContentEditable || el.contentEditable === 'true') return true;
+    if (el.onclick || el.hasAttribute('tabindex')) return true;
     const role = el.getAttribute('role');
     if (role && ['button', 'link', 'textbox', 'checkbox', 'radio', 'combobox', 'tab', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'listbox', 'option', 'treeitem', 'spinbutton', 'searchbox', 'switch', 'slider'].includes(role)) return true;
     return false;
@@ -2945,6 +2982,11 @@
   // Editing hosts and their descendants (isContentEditable is inherited).
   function isEditableRegion(el) {
     return el.isContentEditable || el.contentEditable === 'true';
+  }
+
+  // The element that takes focus for an editor: editable, in a parent that is not.
+  function isEditingHost(el) {
+    return isEditableRegion(el) && !el.parentElement?.isContentEditable;
   }
 
   function isSensitiveField(el) {
@@ -3715,7 +3757,7 @@
     const link = !button && ((tag === 'a' && !!control.hasAttribute?.('href')) || role === 'link');
     const label = button || link ? controlLabel(control, buttonInput)
       : String(control.getAttribute?.('aria-label') || redactedText(control) || '').trim();
-    return { ok: true, tag, type, ...(draftFill ? { sensitive: isSensitiveField(getFillTarget(el)) } : {}),
+    return { ok: true, tag, type, ...(draftFill ? { sensitive: isSensitiveField(fillDestination(el)) } : {}),
       inForm: !!control.form, submits: submitControl || enterSubmits,
       submitLabel: button && isSubmitLabel(label), consequentialLabel: (button || link) && isConsequentialLabel(label),
       text: label.slice(0, 80) };
