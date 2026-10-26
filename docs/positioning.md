@@ -13,11 +13,26 @@ already use, preferably a dedicated profile with narrowly scoped accounts.
 
 The strongest differentiation candidate is not browser control itself. It is the
 combination of **shared-browser behavior, bounded delegation, and recovery that
-accounts for uncertain action outcomes**.
+accounts for uncertain action outcomes**. Two supporting benefits make that
+position more concrete: **compact observations with measured input-token savings
+on a specified workload**, and **reuse of an existing Firefox-family browser
+without launching a separate Chromium instance**.
 
-This is a qualitative comparison of Kitsune's implementation and competitors'
-public documentation, not a performance ranking or a security audit. Competitor
-capabilities below describe the documentation inspected for this revision;
+### Message hierarchy
+
+1. **Work alongside your agent in the Firefox you already use.** Lead with
+   coexistence and bounded delegation, not generic browser control.
+2. **Send the agent compact observations.** Support token-efficiency claims with
+   the versioned benchmark and its task-specific results, not a universal savings
+   percentage or a claim that fewer tool calls are always better.
+3. **No separate Chromium to launch.** This is a setup and workspace benefit for
+   someone already using Firefox, not proof that Firefox uses less RAM than Chrome
+   or that connecting Kitsune adds no resource cost.
+
+The competitor comparison below is qualitative, based on Kitsune's implementation
+and competitors' public documentation, not a performance ranking or a security
+audit. The separate benchmark evidence is limited to its named versions and cohort.
+Competitor capabilities below describe the documentation inspected for this revision;
 linked default branches can change. Absence from a README is not proof that a
 feature is absent. Pin releases and inspect implementations before publishing
 quantitative or exclusivity claims.
@@ -187,8 +202,25 @@ fresh snapshot. Refs have a lifecycle and can become stale. See
 [Action errors](api-reference.md#action-errors).
 
 The testable hypothesis is **lower observation and recovery overhead per successful
-task**, not “fewer calls always wins.” Schema size, larger responses, missing
-context, and repeated observations can offset any savings.
+task**, not “fewer calls always wins.” The v0.7.0 benchmark below provides evidence
+of lower input-token use on its joint-success workloads; it does not isolate the
+causal contribution of snapshots, deltas, or recovery. Schema size, larger
+responses, missing context, and repeated observations can offset any savings.
+
+### 5. Reuse the browser instead of launching another one
+
+For a user already working in Firefox, Zen, or LibreWolf, Kitsune connects through
+an extension and local bridge. It does not require installing or launching a
+separate Chromium instance for the agent. Existing-session Chrome MCPs can offer a
+similar reuse benefit to Chrome users, so this is not an exclusive capability.
+
+The defensible wording is **“Use the Firefox you already have open; no separate
+Chromium to launch.”** Avoid turning that into “Firefox is lighter than Chrome.”
+Browser memory depends on pages, profiles, extensions, and workload. Kitsune's
+bridge, extension, and additional agent tabs also consume resources. A dedicated
+profile is still recommended for sensitive accounts, even if that reduces the
+convenience of reusing the user's everyday session. See the resource measurement
+plan below before making a RAM-savings claim.
 
 ## Weaknesses and product trade-offs
 
@@ -227,18 +259,48 @@ advertise every advanced workflow as available immediately after the default set
 Show the required configuration beside the example, and distinguish an instruction
 in natural language from an enforced mode.
 
-### No measured general superiority
+### Measured token efficiency, not general superiority
 
-The [external benchmark](https://github.com/junyeong-nero/kitsune-benchmark)
-compares Kitsune with Microsoft's Playwright MCP. Its six-task variant-0 pilot
-found workload-dependent trade-offs and a tab-inventory cache bottleneck. It does
-not establish superiority over Firefox-native competitors or the current versions
-of either server. Its UI-only policy excludes orchestration/code surfaces, so it
-does not evaluate the complete Kitsune product.
+The [v0.7.0 report](https://github.com/junyeong-nero/kitsune-benchmark/blob/main/docs/results/2026-10-26-opus-subscription-v0.7.0.md)
+compares Kitsune v0.7.0 with Microsoft's Playwright MCP 0.0.83 using Claude Opus
+5.5 (medium) on `taskset-v3`. Personal and gallery use the same 23-tool UI allowlist.
+Each task/variant/layout unit has one attempt, with no retries. Both targets
+solved 209 of 210 personal/gallery units; the separate MiniWoB smoke-test pair
+also passed. The separate user-seeded coexistence track kept the user's shown tab
+in place in 28/28 tasks for Kitsune versus 2/28 for Playwright. Playwright MCP was
+not designed to share a browser with a person.
 
-Historical findings should guide retesting, not serve as current performance
-claims. See the benchmark repository's `docs/optimization-findings.md` and
-[Roadmap #47](https://github.com/junyeong-nero/kitsune/issues/47).
+On units both targets solved, ratios of Kitsune totals to Playwright totals were:
+
+| Track | Joint successes | Input tokens | Tool calls | List-price cost estimate |
+| --- | ---: | ---: | ---: | ---: |
+| Personal | 83 | 0.807 | 0.990 | 0.837 |
+| Gallery crowded | 62 | 0.840 | 1.045 | 0.675 |
+| Gallery isolated | 63 | 0.954 | 0.964 | 0.908 |
+
+A bounded claim is **about 5–19% fewer input tokens across these joint-success
+tracks**, with tool-call totals within 5% of Playwright's. Input includes cache
+reads and writes. In the 12 joint-success long-page personal units, Kitsune used
+**35% fewer input tokens while making 28% more calls**. The 35% figure belongs to
+that category, not to all browser work. Compact observations can be useful even
+when the agent needs more calls; this is not a controlled attribution experiment.
+
+Cost ratios round to 0.68–0.91 per track. These are Claude Code's **list-price
+estimates**, not actual charges, subscription savings, or input-token ratios.
+Do not substitute the cost reduction for the token reduction in promotional copy.
+
+**Limits:** personal/gallery targets ran concurrently, cache state differed, and
+there were no repeated or counterbalanced attempts. Effective viewport equality
+was measured on personal pages, not every track. These are observations from one
+cohort, not a causal estimate or a guarantee for other sites, models, or versions.
+`taskset-v3` changed tasks and grading; scores cannot be compared directly with
+older Kitsune reports to claim a release improvement. The UI allowlist does not
+evaluate the complete orchestration/code surface, and the report does not
+establish superiority over Firefox-native competitors.
+
+The report also does **not** establish a general RAM advantage over Chrome or
+resource savings from browser reuse. Historical optimization findings should
+guide controlled retesting rather than stand in for current measurements.
 
 ## Adjacent tools: useful, but a different comparison cohort
 
@@ -284,6 +346,7 @@ without resending a completed write.
 | Better recovery | Duplicate writes/submits after injected timeouts/disconnects, recovery success, and unresolved outcomes |
 | Useful compact observations | Correctness, wrong-target actions, tokens/time per successful task, stale refs, and extra observation calls |
 | Easier adoption | Time from installation to first successful task, reconnect success, and multi-client setup failures |
+| Avoid another browser instance | Total and incremental memory for matched tasks, including existing browser, agent tabs, bridge/server, extension, and any driver processes |
 
 Use pinned server/browser versions, dedicated profiles, deterministic tasks,
 matched permissions and viewports, repeated trials, and a fixed outer agent.
@@ -291,6 +354,22 @@ Separate Firefox and Chromium cohorts, cold and warm costs, and UI-only versus
 full-native capability tracks. Include browser/bridge/driver resource costs rather
 than treating an already-running browser as free. Test within-Kitsune toggles as
 well as product-to-product differences to attribute effects.
+
+### Measure resource reuse before claiming RAM savings
+
+Compare two practical setups for someone already using Firefox: (a) that browser
+plus Kitsune and (b) that browser kept open plus a separate automation browser and
+its server/driver. Record the pre-task baseline, incremental and total memory,
+peak and steady-state usage, process-tree coverage, and task success. State the
+OS and memory metric explicitly, accounting for shared pages rather than blindly
+summing process RSS. Repeat matched workloads with controlled tab counts,
+profiles/extensions, viewports, versions, and cold/warm starts.
+
+This tests the cost of an additional browser instance, not Firefox-versus-Chrome
+engine efficiency. A separate comparison should include a Chrome user's existing
+browser plus an attached MCP; otherwise the comparison unfairly assumes all Chrome
+MCPs launch a second browser. Do not trade away the dedicated-profile security
+recommendation merely to obtain a smaller memory number.
 
 ## Claims to avoid
 
@@ -302,12 +381,18 @@ well as product-to-product differences to attribute effects.
 - “Kitsune never steals focus or interferes with user input.”
 - “Resume guarantees exactly-once execution or survives a daemon restart.”
 - “Kitsune is faster, cheaper, or more memory-efficient” without matched evidence.
+- “Firefox uses less RAM than Chrome” based only on Kitsune's connection model.
+- “Reusing a browser has zero additional memory cost.”
+- “35% fewer tokens everywhere” or treating list-price cost ratios as token ratios.
 
 ## Bottom line
 
 Firefox support is the entry point, not the whole position. Kitsune's strongest
 credible direction is **working alongside an external agent in an ongoing
 Firefox-family workspace, with explicit delegation limits and thoughtful recovery**.
+Measured input-token efficiency and avoiding a separate Chromium instance support
+that story; they do not replace it with a claim of universal performance or RAM
+superiority.
 
 Prioritize reliable coexistence, understandable defaults, and evidence from real
 tasks over a larger tool catalog. That gives users a concrete reason to choose
