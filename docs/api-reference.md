@@ -429,7 +429,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `content_unavailable` | The page's content script could not be injected or did not answer. `state.reason: "no_receiver"`: the injection succeeded but no ping from the current content script was answered within 0.5 s, so nothing was sent | true before dispatch; false for writes after |
 | `error_page` | A loaded `http(s)` page refused the content script: the browser shows its own document, such as an error response with an empty body. `state` adds `title` and, when the extension saw the response, `httpStatus`. Nothing was dispatched, but reads fail the same way until the tab navigates; for a 4xx/5xx status, `browser_page_text` instead returns an empty result (`text: ""`, `empty: true`, `httpStatus`, `tabId`, `url`, `title`) | false |
 | `extension_disconnected` | The extension is not connected, reconnected before sending, or disconnected while waiting (`state.connected`) | true if not sent; false for writes after |
-| `timeout` | The bridge sent the command but no reply arrived in time (`state.timeoutSeconds`); from the MCP server, the bridge did not answer | false for writes (MCP: POST) |
+| `timeout` | The bridge sent the command but no reply arrived in time (`state.timeoutSeconds`); from the MCP server, the bridge did not answer. An element or text wait whose page reads all went unanswered within its `timeout` (see `browser_wait_for`) | false for writes (MCP: POST) |
 | `bridge_unavailable` | The MCP server cannot reach or start the bridge (`state.exitCode`, `state.logExcerpt` when it exited at startup; `state.reason`, `state.pid` when it runs but does not answer) | true |
 | `bridge_disconnected` | From the MCP server: the bridge closed the connection before its reply. `state.requestSent` is `false` when the request could not be sent in full, so the command did not run | true if not sent; false for writes (MCP: POST) after |
 | `token_mismatch` | The bridge rejected the MCP server's token (`state.port`, `state.tokenSource`) | true |
@@ -1949,10 +1949,19 @@ Invalid combinations return an error before contacting the bridge.
 bridge non-empty-result semantics: `false` and `0` count as results; return
 `null` or an empty string while waiting for a predicate.
 
-Element and text waits are single page reads that the bridge repeats until `timeout`,
-with a last read at it, as for `expect`. They do not depend on the page's timers, which
-browsers throttle in background tabs, so they end near `timeout`; one read of a very
-large page can add to `elapsed`. `js` waits still poll inside the page.
+Element and text waits are single page reads that the bridge repeats until `timeout`.
+They do not depend on the page's timers, which browsers throttle in background tabs.
+Each read, including its wait behind other commands on the tab, must answer before
+`timeout`, and no read starts after it, so a wait ends near `timeout` (`elapsed` is
+measured, not clamped). The last read starts one poll interval before `timeout`, which
+is how long it has to answer, and a text wait's last read also looks for the text among
+element names. If the read in progress at `timeout` does not answer, an unmet wait
+returns its last completed read with `observationIncomplete: true`, and its error says
+so: the condition was not observed within `timeout`, but the final read did not finish.
+A late reply, met or an error, is ignored. If no read answered at all, the wait returns
+code `timeout` without `ok`: whether the condition holds is unknown. A zero `timeout`
+(HTTP and batch only) is one read that may take up to 5 s. `js` waits still poll inside
+the page.
 
 ### `browser_screenshot(selector=None, full_page=False, tab_id=None, save_to=None, data_url=False, ref=None, element=None, format="png")`
 

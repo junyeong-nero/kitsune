@@ -1,8 +1,13 @@
-"""browser_wait_for's text and selector waits end at their timeout in a throttled tab (#209)."""
+"""browser_wait_for's text and selector waits end at their timeout in a throttled tab (#209),
+and with slow or queued reads (#292)."""
 import asyncio
+import json
+import logging
 import time
 import unittest
 from unittest.mock import patch
+
+from websockets.asyncio.client import connect
 
 from kitsune import bridge
 
@@ -33,10 +38,21 @@ UNMET_ELEMENT = {"ok": False, "found": False, "selector": "#menu", "elapsed": 0,
 TIMEOUT_MS = 300
 
 
+# Test-only guard: a wait that overruns this fails its test instead of hanging the suite.
+WATCHDOG_S = 10
+
+
+async def watchdog(awaitable):
+    try:
+        return await asyncio.wait_for(awaitable, WATCHDOG_S)
+    except asyncio.TimeoutError:
+        raise AssertionError(f"still running after the {WATCHDOG_S}s test watchdog") from None
+
+
 def run_wait(page, action, params):
     start = time.monotonic()
     with patch.object(bridge, "send_to_extension", page):
-        result = asyncio.run(bridge._poll_page_wait(action, params))
+        result = asyncio.run(watchdog(bridge._poll_page_wait(action, params)))
     return result, (time.monotonic() - start) * 1000
 
 
@@ -115,11 +131,282 @@ class PageWaitDeadlineTests(unittest.TestCase):
         page = ThrottledPage(UNMET_ELEMENT)
         start = time.monotonic()
         with patch.object(bridge, "send_to_extension", page):
-            result = asyncio.run(bridge._execute_command(
+            result = asyncio.run(watchdog(bridge._execute_command(
                 "waitForElement", "waitForElement",
-                {"selector": "#menu", "timeout": TIMEOUT_MS, "pollInterval": 20}))
+                {"selector": "#menu", "timeout": TIMEOUT_MS, "pollInterval": 20})))
         self.assert_timed_out_at_deadline(result, (time.monotonic() - start) * 1000)
         self.assertTrue(all(params["timeout"] == 0 for _, params in page.calls))
+
+
+# A read this slow never answers within a test's timeout: whether it is cut off does not
+# depend on scheduling jitter.
+NEVER_S = 30
+
+
+class SlowPage:
+    """A page whose single reads answer after a scripted latency (#292).
+
+    Each script entry is (latency_s, reply) for the next read; the last one repeats.
+    diagnose_reply, when given, answers reads that ask for names instead.
+    """
+
+    def __init__(self, *script, diagnose_reply=None):
+        self.script = list(script)
+        self.diagnose_reply = diagnose_reply
+        self.calls = []
+        self.budgets = []
+        self.answered = []
+
+    async def __call__(self, action, params=None, timeout=30):
+        params = dict(params or {})
+        self.calls.append((action, params))
+        self.budgets.append(timeout)
+        if params.get("diagnose") and self.diagnose_reply is not None:
+            latency, reply = self.diagnose_reply
+        else:
+            latency, reply = self.script.pop(0) if len(self.script) > 1 else self.script[0]
+        await asyncio.sleep(latency)
+        self.answered.append(len(self.calls) - 1)
+        return dict(reply)
+
+
+TEXT_FOUND = {"ok": True, "text": "Saved", "elapsed": 0}
+ELEMENT_FOUND = {"ok": True, "found": True, "selector": "#menu", "elapsed": 0, "ref": "e3"}
+NAMED_TEXT = {**UNMET_TEXT, "matched_as": "accessible_name", "hint": "Found as the name of textbox",
+              "name_matches": [{"ref": "e0", "role": "textbox", "name": "Saved", "source": "placeholder"}]}
+INCOMPLETE = "; the read in progress at the timeout did not finish, so this is the last completed read"
+
+
+class SlowReadDeadlineTests(unittest.TestCase):
+    def assert_ends_at(self, result, wall_ms, timeout_ms=TIMEOUT_MS):
+        self.assertGreaterEqual(result["elapsed"], timeout_ms)
+        self.assertLess(result["elapsed"], timeout_ms + 150)
+        self.assertLess(wall_ms, timeout_ms + 150)
+
+    def assert_last_completed_read(self, result, wall_ms, error, timeout_ms=TIMEOUT_MS):
+        self.assertIs(result["ok"], False)
+        self.assertIs(result["observationIncomplete"], True)
+        self.assertEqual(result["error"], error + INCOMPLETE)
+        self.assertNotIn("code", result)
+        self.assert_ends_at(result, wall_ms, timeout_ms)
+
+    def assert_no_read_answered(self, result, wall_ms, timeout_ms=TIMEOUT_MS):
+        self.assertNotIn("ok", result)
+        self.assertEqual(result["code"], "timeout")
+        self.assertIs(result["retryable"], True)
+        self.assertEqual(result["error"], f"The page did not answer a read within {timeout_ms}ms, so "
+                                          "whether the wait's condition holds is unknown")
+        self.assertEqual(result["state"], {"timeoutSeconds": timeout_ms / 1000})
+        self.assert_ends_at(result, wall_ms, timeout_ms)
+
+    def test_the_issue_reads_of_500ms_end_at_a_1050ms_timeout(self):
+        # #292's probe: the second read crossed the deadline and a diagnosis followed it.
+        page = SlowPage((0.5, UNMET_TEXT))
+        result, wall_ms = run_wait(page, "waitForText", {"text": "Saved", "timeout": 1050})
+        self.assert_last_completed_read(result, wall_ms, "Timed out after 1050ms waiting for visible text", 1050)
+        self.assertEqual(len(page.calls), 2)
+        self.assertEqual(page.answered, [0])
+        self.assertLessEqual(max(page.budgets), 1.05)
+        self.assertAlmostEqual(page.budgets[1], 0.45, delta=0.05)
+
+    def test_the_last_read_starts_a_poll_interval_before_the_deadline(self):
+        # A read started with a sliver of the timeout left would almost never answer in time.
+        page = SlowPage((0.004, UNMET_TEXT))
+        result, wall_ms = run_wait(page, "waitForText", {"text": "Saved", "timeout": 1050})
+        self.assertIs(result["ok"], False)
+        self.assertNotIn("observationIncomplete", result)
+        self.assert_ends_at(result, wall_ms, 1050)
+        self.assertEqual(page.answered, list(range(len(page.calls))))
+        self.assertGreaterEqual(min(page.budgets), 0.09)
+        self.assertAlmostEqual(page.budgets[-1], 0.1, delta=0.01)
+        self.assertEqual([params.get("diagnose") for _, params in page.calls].count(True), 1)
+        self.assertIs(page.calls[-1][1].get("diagnose"), True)
+
+    def test_a_late_success_or_error_is_not_an_observation(self):
+        for late in (TEXT_FOUND, {"error": "Content script unavailable", "code": "content_unavailable"}):
+            with self.subTest(late=late):
+                page = SlowPage((0, UNMET_TEXT), (NEVER_S, late))
+                result, wall_ms = run_wait(page, "waitForText", {"text": "Saved", "timeout": TIMEOUT_MS})
+                self.assert_last_completed_read(
+                    result, wall_ms, f"Timed out after {TIMEOUT_MS}ms waiting for visible text")
+                self.assertEqual(page.answered, [0])
+                self.assertEqual(len(page.calls), 2)
+
+    def test_a_slow_selector_read_keeps_the_last_completed_read(self):
+        page = SlowPage((0, UNMET_ELEMENT), (NEVER_S, ELEMENT_FOUND))
+        result, wall_ms = run_wait(page, "waitForElement", {"selector": "#menu", "timeout": TIMEOUT_MS})
+        self.assert_last_completed_read(result, wall_ms, f'Timed out after {TIMEOUT_MS}ms waiting for "#menu"')
+        self.assertIs(result["found"], False)
+        self.assertNotIn("ref", result)
+
+    def test_a_slow_final_name_diagnosis_does_not_extend_the_wait(self):
+        page = SlowPage((0, UNMET_TEXT), diagnose_reply=(NEVER_S, NAMED_TEXT))
+        result, wall_ms = run_wait(page, "waitForText", {"text": "Saved", "timeout": TIMEOUT_MS})
+        self.assert_last_completed_read(result, wall_ms, f"Timed out after {TIMEOUT_MS}ms waiting for visible text")
+        self.assertNotIn("name_matches", result)
+        asked = [params.get("diagnose") for _, params in page.calls]
+        self.assertEqual(asked.count(True), 1)
+        self.assertIs(asked[-1], True)
+        self.assertEqual(page.answered, list(range(len(page.calls) - 1)))
+
+    def test_a_name_diagnosis_that_answers_in_time_is_reported(self):
+        page = SlowPage((0, UNMET_TEXT), diagnose_reply=(0.03, NAMED_TEXT))
+        result, wall_ms = run_wait(page, "waitForText", {"text": "Saved", "timeout": TIMEOUT_MS})
+        self.assertIs(result["ok"], False)
+        self.assertNotIn("observationIncomplete", result)
+        self.assertEqual(result["name_matches"], NAMED_TEXT["name_matches"])
+        self.assert_ends_at(result, wall_ms)
+
+    def test_a_wait_whose_reads_never_answer_reports_the_condition_unknown(self):
+        for action, params, reply in (("waitForText", {"text": "Saved"}, UNMET_TEXT),
+                                      ("waitForElement", {"selector": "#menu"}, UNMET_ELEMENT)):
+            with self.subTest(action=action):
+                page = SlowPage((NEVER_S, reply))
+                result, wall_ms = run_wait(page, action, {**params, "timeout": TIMEOUT_MS})
+                self.assert_no_read_answered(result, wall_ms)
+                self.assertEqual(len(page.calls), 1)
+
+    def test_an_error_within_the_budget_is_not_replaced_by_an_earlier_read(self):
+        error = {"error": "Element ref is stale", "code": "stale_ref"}
+        page = SlowPage((0, UNMET_ELEMENT), (0.02, error))
+        result, _ = run_wait(page, "waitForElement", {"selector": "#menu", "timeout": 5000})
+        self.assertEqual(result, error)
+        self.assertEqual(len(page.calls), 2)
+
+    def test_a_zero_timeout_read_has_its_own_allowance(self):
+        page = SlowPage((0.2, NAMED_TEXT))
+        result, _ = run_wait(page, "waitForText", {"text": "Saved", "timeout": 0})
+        self.assertEqual(result["name_matches"], NAMED_TEXT["name_matches"])
+        self.assertEqual(result["error"], "Timed out after 0ms waiting for visible text")
+        self.assertEqual(page.calls, [("waitForText", {"text": "Saved", "timeout": 0, "diagnose": True})])
+        self.assertEqual(page.budgets, [bridge.PAGE_WAIT_SINGLE_READ_SECONDS])
+
+        page = SlowPage((NEVER_S, NAMED_TEXT))
+        with patch.object(bridge, "PAGE_WAIT_SINGLE_READ_SECONDS", 0.2):
+            result, wall_ms = run_wait(page, "waitForText", {"text": "Saved", "timeout": 0})
+        self.assert_no_read_answered(result, wall_ms, timeout_ms=200)
+        self.assertEqual(len(page.calls), 1)  # no second name-diagnosis request
+
+
+class _SchedulerState(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        for name, value in (("_global_command_lock", None), ("_tab_command_locks", {}),
+                            ("_scheduler_gate", None), ("_ws_send_lock", None),
+                            ("extension_ws", None), ("extension_ws_generation", 0),
+                            ("extension_info", {})):
+            patcher = patch.object(bridge, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        for state in (bridge._scheduler_active, bridge._scheduler_queued, bridge.pending_commands):
+            patcher = patch.dict(state, clear=True)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+
+class QueuedReadDeadlineTests(_SchedulerState):
+    """The deadline covers a read's wait in the tab's scheduler queue (#292)."""
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        self.sent = []
+
+        async def raw(action, params=None, timeout=30):
+            self.sent.append((action, dict(params or {})))
+            return dict(UNMET_ELEMENT)
+
+        patcher = patch.object(bridge, "_send_to_extension_raw", raw)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    async def hold_tab_lock(self):
+        """Hold tab 7's scheduler lock, as another command on the tab would, until released."""
+        lock = bridge._get_scope_lock(("tab", 7))
+        await lock.acquire()
+        self.addCleanup(lambda: lock.release() if lock.locked() else None)
+        return lock
+
+    async def test_a_read_queued_past_the_deadline_is_never_dispatched(self):
+        lock = await self.hold_tab_lock()
+        start = time.monotonic()
+        result = await watchdog(bridge._poll_page_wait(
+            "waitForElement", {"tabId": 7, "selector": "#menu", "timeout": TIMEOUT_MS}))
+        wall_ms = (time.monotonic() - start) * 1000
+        self.assertEqual(result["code"], "timeout")
+        self.assertNotIn("ok", result)
+        self.assertGreaterEqual(result["elapsed"], TIMEOUT_MS)
+        self.assertLess(wall_ms, TIMEOUT_MS + 150)
+        self.assertEqual(bridge._scheduler_queued, {})
+        self.assertEqual(bridge._scheduler_active, {})
+        lock.release()
+        await asyncio.sleep(0.05)
+        self.assertEqual(self.sent, [])  # nothing detached sends the cancelled read later
+        self.assertFalse(lock.locked())
+
+    async def test_a_read_queued_briefly_still_observes_before_the_deadline(self):
+        lock = await self.hold_tab_lock()
+        asyncio.get_running_loop().call_later(0.1, lambda: lock.release() if lock.locked() else None)
+        result = await watchdog(bridge._poll_page_wait(
+            "waitForElement", {"tabId": 7, "selector": "#menu", "timeout": TIMEOUT_MS}))
+        self.assertIs(result["ok"], False)
+        self.assertNotIn("observationIncomplete", result)
+        self.assertEqual(result["error"], f'Timed out after {TIMEOUT_MS}ms waiting for "#menu"')
+        self.assertGreaterEqual(len(self.sent), 1)
+        self.assertLess(result["elapsed"], TIMEOUT_MS + 150)
+
+
+class LateReplyRoutingTests(_SchedulerState):
+    """A read cut off at the deadline leaves no pending command; its late reply resolves nothing."""
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        log = patch.object(bridge, "_log")
+        self.log = log.start()
+        self.addCleanup(log.stop)
+        library_logs = patch.object(logging.getLogger("websockets.server"), "disabled", True)
+        library_logs.start()
+        self.addCleanup(library_logs.stop)
+        self.server = await bridge.serve_extension_ws(0)
+        self.addAsyncCleanup(self.close_server)
+        self.uri = f"ws://127.0.0.1:{self.server.sockets[0].getsockname()[1]}"
+
+    async def close_server(self):
+        self.server.close()
+        await self.server.wait_closed()
+
+    async def test_a_late_reply_is_not_taken_as_a_later_reads_answer(self):
+        await watchdog(self.late_reply_is_not_taken_as_a_later_reads_answer())
+
+    async def late_reply_is_not_taken_as_a_later_reads_answer(self):
+        async with connect(self.uri, origin="moz-extension://0b5e3f9c-test", open_timeout=5) as client:
+            for _ in range(200):
+                if bridge.extension_ws is not None:
+                    break
+                await asyncio.sleep(0.01)
+            body = {"tabId": 7, "text": "Saved", "timeout": TIMEOUT_MS}
+
+            first = asyncio.create_task(bridge._poll_page_wait("waitForText", body))
+            stale = json.loads(await client.recv())  # never answered within the wait
+            result = await first
+            self.assertEqual(result["code"], "timeout")
+            self.assertEqual(bridge.pending_commands, {})
+
+            second = asyncio.create_task(bridge._poll_page_wait("waitForText", body))
+            current = json.loads(await client.recv())
+            self.assertNotEqual(current["id"], stale["id"])
+            await client.send(json.dumps({"id": stale["id"], "result": TEXT_FOUND}))
+            await asyncio.sleep(0.02)
+            await client.send(json.dumps({"id": current["id"], "result": UNMET_TEXT}))
+            while not second.done():  # answer the remaining reads of the second wait
+                try:
+                    command = json.loads(await asyncio.wait_for(client.recv(), 0.05))
+                except asyncio.TimeoutError:
+                    continue
+                await client.send(json.dumps({"id": command["id"], "result": UNMET_TEXT}))
+            result = await second
+            self.assertIn(stale["id"], " ".join(str(call.args[0]) for call in self.log.call_args_list))
+            self.assertIs(result["ok"], False)
+            self.assertNotIn("observationIncomplete", result)
+            self.assertEqual(bridge.pending_commands, {})
 
 
 if __name__ == "__main__":
