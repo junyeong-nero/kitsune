@@ -61,14 +61,17 @@ In your browser, the agent can:
 
 ## Benchmark
 
-![Kitsune v0.4.0 vs Playwright MCP 0.0.83: kept the user's tab in front in 23 of 24 tasks vs 2 of 24; 0.83 to 0.93 times the cost on tasks both solved; 191 of 198 vs 197 of 198 tasks solved](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/benchmark.png)
+![Kitsune v0.7.0 vs Playwright MCP 0.0.83: kept the user's tab in front in 28 of 28 tasks vs 2 of 28; 0.68 to 0.91 times the cost on tasks both solved; both solved 209 of 210 tasks](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/benchmark.png)
 
-With the same tasks and tool allowlist, Kitsune v0.4.0 kept the user's tab in
-front in 23 of 24 shared-browser tasks, against 2 of 24 for Playwright MCP. On
-the tasks both solved, Kitsune cost 0.83 to 0.93 times as much. It solved 191 of
-198 tasks, and Playwright MCP solved 197. Each task was run once with Claude Opus
-5.5. Playwright MCP was not designed to share a browser with a person. See the
-[full reports](https://github.com/junyeong-nero/kitsune-benchmark/tree/main/docs/results).
+With the same tasks and tool allowlist, Kitsune v0.7.0 kept the user's tab in
+front in 28 of 28 shared-browser tasks, against 2 of 28 for Playwright MCP. On
+the tasks both solved, Kitsune cost 0.68 to 0.91 times as much, at about the
+same number of tool calls. Each solved 209 of 210 tasks. Each task was run once
+with Claude Opus 5.5. Playwright MCP was not designed to share a browser with a
+person. See the
+[v0.7.0 report](https://github.com/junyeong-nero/kitsune-benchmark/blob/main/docs/results/2026-10-26-opus-subscription-v0.7.0.md)
+and the [full reports](https://github.com/junyeong-nero/kitsune-benchmark/tree/main/docs/results).
+`scripts/benchmark_chart.py` draws the chart from the report's numbers.
 
 ## How is it different?
 
