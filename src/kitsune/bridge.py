@@ -2198,6 +2198,9 @@ async def _click_target_visible(tab_id, params, result):
 
 # A zero-timeout page wait is one read, which may take up to this long (#292).
 PAGE_WAIT_SINGLE_READ_SECONDS = 5
+# A page wait's last read starts this long before its deadline, which is how long it has
+# to answer: a property of read latency, not of the caller's pollInterval (#292).
+PAGE_WAIT_LAST_READ_SECONDS = 0.1
 
 
 async def _read_page_once(action, params, budget_s):
@@ -2242,7 +2245,8 @@ async def _poll_page_wait(action, params):
             action, {**params, **({"diagnose": True} if diagnose else {})}, allowance_s)
     else:
         allowance_s = timeout_ms / 1000
-        last = timeout_ms / 1000 <= poll_s
+        lead_s = min(PAGE_WAIT_LAST_READ_SECONDS, allowance_s)
+        last = allowance_s <= lead_s
         while True:
             remaining_s = deadline - time.monotonic()
             if remaining_s <= 0 and completed is not None:
@@ -2256,13 +2260,16 @@ async def _poll_page_wait(action, params):
             if not isinstance(r, dict) or r.get("ok") is not False:
                 break
             remaining_s = deadline - time.monotonic()
-            if last or remaining_s <= poll_s:
+            if last:
                 await asyncio.sleep(max(0, remaining_s))
                 break
-            # The last read starts a poll interval before the deadline, so it has that long
-            # to answer; a read squeezed in just before the deadline could not.
-            last = remaining_s <= 2 * poll_s
-            await asyncio.sleep(remaining_s - poll_s if last else poll_s)
+            if remaining_s <= 0:
+                break
+            # Reads are pollInterval apart until the last one, which starts lead_s before the
+            # deadline (at once after a read that ran into that time).
+            to_last_s = remaining_s - lead_s
+            last = to_last_s <= poll_s
+            await asyncio.sleep(max(0, to_last_s) if last else poll_s)
     elapsed = int((time.monotonic() - start) * 1000)
     if completed is None:
         allowance_ms = int(allowance_s * 1000)

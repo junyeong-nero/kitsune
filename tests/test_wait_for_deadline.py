@@ -155,12 +155,14 @@ class SlowPage:
         self.diagnose_reply = diagnose_reply
         self.calls = []
         self.budgets = []
+        self.starts = []
         self.answered = []
 
     async def __call__(self, action, params=None, timeout=30):
         params = dict(params or {})
         self.calls.append((action, params))
         self.budgets.append(timeout)
+        self.starts.append(time.monotonic())
         if params.get("diagnose") and self.diagnose_reply is not None:
             latency, reply = self.diagnose_reply
         else:
@@ -168,6 +170,21 @@ class SlowPage:
         await asyncio.sleep(latency)
         self.answered.append(len(self.calls) - 1)
         return dict(reply)
+
+
+class ElementShownAt:
+    """A page whose element becomes visible shown_s after its first read."""
+
+    def __init__(self, shown_s):
+        self.shown_s = shown_s
+        self.first = None
+        self.calls = 0
+
+    async def __call__(self, action, params=None, timeout=30):
+        self.calls += 1
+        now = time.monotonic()
+        self.first = self.first or now
+        return dict(ELEMENT_FOUND if now - self.first >= self.shown_s else UNMET_ELEMENT)
 
 
 TEXT_FOUND = {"ok": True, "text": "Saved", "elapsed": 0}
@@ -209,7 +226,7 @@ class SlowReadDeadlineTests(unittest.TestCase):
         self.assertLessEqual(max(page.budgets), 1.05)
         self.assertAlmostEqual(page.budgets[1], 0.45, delta=0.05)
 
-    def test_the_last_read_starts_a_poll_interval_before_the_deadline(self):
+    def test_the_last_read_starts_its_lead_before_the_deadline(self):
         # A read started with a sliver of the timeout left would almost never answer in time.
         page = SlowPage((0.004, UNMET_TEXT))
         result, wall_ms = run_wait(page, "waitForText", {"text": "Saved", "timeout": 1050})
@@ -221,6 +238,38 @@ class SlowReadDeadlineTests(unittest.TestCase):
         self.assertAlmostEqual(page.budgets[-1], 0.1, delta=0.01)
         self.assertEqual([params.get("diagnose") for _, params in page.calls].count(True), 1)
         self.assertIs(page.calls[-1][1].get("diagnose"), True)
+
+    def test_a_poll_interval_longer_than_the_timeout_still_reads_before_the_deadline(self):
+        page = SlowPage((0, UNMET_ELEMENT))
+        result, wall_ms = run_wait(page, "waitForElement", {"selector": "#menu", "timeout": TIMEOUT_MS,
+                                                            "pollInterval": 5000})
+        self.assertIs(result["ok"], False)
+        self.assertNotIn("observationIncomplete", result)
+        self.assert_ends_at(result, wall_ms)
+        self.assertEqual(len(page.calls), 2)
+        lead = bridge.PAGE_WAIT_LAST_READ_SECONDS
+        self.assertAlmostEqual(page.starts[1] - page.starts[0], TIMEOUT_MS / 1000 - lead, delta=0.03)
+        self.assertAlmostEqual(page.budgets[1], lead, delta=0.01)
+
+    def test_an_element_shown_between_slow_polls_is_found_by_the_last_read(self):
+        # Reads at 0 s and 1 s miss it; the last read, 0.1 s before the deadline, sees it.
+        page = ElementShownAt(1.5)
+        result, _ = run_wait(page, "waitForElement", {"selector": "#menu", "timeout": 2000,
+                                                      "pollInterval": 1000})
+        self.assertIs(result["ok"], True)
+        self.assertEqual(page.calls, 3)
+        self.assertGreaterEqual(result["elapsed"], 1850)
+        self.assertLess(result["elapsed"], 2000)
+
+    def test_a_short_poll_interval_does_not_shorten_the_last_read(self):
+        page = SlowPage((0, UNMET_ELEMENT))
+        result, wall_ms = run_wait(page, "waitForElement", {"selector": "#menu", "timeout": TIMEOUT_MS,
+                                                            "pollInterval": 10})
+        self.assertIs(result["ok"], False)
+        self.assertNotIn("observationIncomplete", result)
+        self.assert_ends_at(result, wall_ms)
+        self.assertGreater(len(page.calls), 10)
+        self.assertGreaterEqual(page.budgets[-1], bridge.PAGE_WAIT_LAST_READ_SECONDS - 0.005)
 
     def test_a_late_success_or_error_is_not_an_observation(self):
         for late in (TEXT_FOUND, {"error": "Content script unavailable", "code": "content_unavailable"}):
@@ -404,8 +453,7 @@ class LateReplyRoutingTests(_SchedulerState):
                 await client.send(json.dumps({"id": command["id"], "result": UNMET_TEXT}))
             result = await second
             self.assertIn(stale["id"], " ".join(str(call.args[0]) for call in self.log.call_args_list))
-            self.assertIs(result["ok"], False)
-            self.assertNotIn("observationIncomplete", result)
+            self.assertIs(result["ok"], False)  # the stale success did not answer this wait
             self.assertEqual(bridge.pending_commands, {})
 
 

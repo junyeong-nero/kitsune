@@ -1953,14 +1953,16 @@ Element and text waits are single page reads that the bridge repeats until `time
 They do not depend on the page's timers, which browsers throttle in background tabs.
 Each read, including its wait behind other commands on the tab, must answer before
 `timeout`, and no read starts after it, so a wait ends near `timeout` (`elapsed` is
-measured, not clamped). The last read starts one poll interval before `timeout`, which
-is how long it has to answer, and a text wait's last read also looks for the text among
-element names. If the read in progress at `timeout` does not answer, an unmet wait
+measured, not clamped). Reads are the poll interval apart, except the last, which starts
+100 ms before `timeout` (the whole of a shorter `timeout`) whatever the poll interval,
+so that is how long it has to answer; a text wait's last read also looks for the text
+among element names. If the read in progress at `timeout` does not answer, an unmet wait
 returns its last completed read with `observationIncomplete: true`, and its error says
 so: the condition was not observed within `timeout`, but the final read did not finish.
 A late reply, met or an error, is ignored. If no read answered at all, the wait returns
-code `timeout` without `ok`: whether the condition holds is unknown. A zero `timeout`
-(HTTP and batch only) is one read that may take up to 5 s. `js` waits still poll inside
+code `timeout` without `ok`: whether the condition holds is unknown, which is the usual
+result of a positive `timeout` shorter than one read takes. A zero `timeout` (HTTP and
+batch only) is instead one read that may take up to 5 s. `js` waits still poll inside
 the page.
 
 ### `browser_screenshot(selector=None, full_page=False, tab_id=None, save_to=None, data_url=False, ref=None, element=None, format="png")`
