@@ -1,4 +1,5 @@
 """The real-browser harness's opt-in failure artifacts (issue #293); runs without a browser."""
+import collections
 import contextlib
 from http.server import BaseHTTPRequestHandler
 import http.client
@@ -6,10 +7,15 @@ import io
 import json
 import os
 from pathlib import Path
+import socket
 import subprocess
+import sys
 import tempfile
+import threading
+import time
 import unittest
 from unittest import mock
+import weakref
 
 import real_browser_failure_artifacts as artifacts
 import real_browser_harness as harness
@@ -24,6 +30,18 @@ class _Page(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+class _AbortedReply(BaseHTTPRequestHandler):
+    """Sends a 200 and its headers, then fails as if the browser had dropped the connection."""
+
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        raise BrokenPipeError("synthetic abort detail")
 
     def log_message(self, *args):
         pass
@@ -83,7 +101,7 @@ class FixtureTimingTests(unittest.TestCase):
             self.assertIs(server.server.RequestHandlerClass, _Page)
             self.assertIsNone(artifacts.FailureArtifacts.from_environment("x.Y"))
 
-    def test_enabled_records_receive_and_finish_without_query_or_headers(self):
+    def test_enabled_records_receive_and_handled_without_query_or_headers(self):
         _artifact_root(self)
         started = artifacts.now_ms()
         server = harness.FixtureServer(_Page)
@@ -93,14 +111,91 @@ class FixtureTimingTests(unittest.TestCase):
                          b"<p>page-body-text</p>")
         port = server.server.server_address[1]
         events = [e for e in artifacts.events_since(started) if e["source"] == "fixture" and e["port"] == port]
-        self.assertEqual([e["kind"] for e in events], ["connection-accepted", "request-received", "request-finished"])
-        received, finished = events[1], events[2]
+        self.assertEqual([e["kind"] for e in events], ["connection-accepted", "request-received", "request-handled"])
+        received, handled = events[1], events[2]
         self.assertEqual((received["method"], received["path"]), ("GET", "/page"))
-        self.assertEqual((finished["request"], finished["status"]), (received["request"], 200))
-        self.assertLessEqual(received["t"], finished["t"])
+        self.assertEqual((handled["request"], handled["status"]), (received["request"], 200))
+        self.assertNotIn("error", handled)
+        self.assertLessEqual(received["t"], handled["t"])
         dumped = json.dumps(events)
         for secret in ("query-value", "header-secret", "cookie-secret", "page-body-text"):
             self.assertNotIn(secret, dumped)
+
+    def test_handler_that_raises_after_its_200_is_recorded_as_failed_and_still_raises(self):
+        _artifact_root(self)
+        started = artifacts.now_ms()
+        server = harness.FixtureServer(_AbortedReply)
+        self.addCleanup(server.stop)
+        handled_errors = []
+        errored = threading.Event()
+
+        def handle_error(request, client_address):
+            handled_errors.append(sys.exc_info()[0])
+            errored.set()
+
+        server.server.handle_error = handle_error  # the server's own path for a raising handler
+        with socket.create_connection(server.server.server_address, timeout=5) as client:
+            client.sendall(b"GET /aborted?secret=query-value HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                           b"Authorization: Bearer header-secret\r\n\r\n")
+            reply = b""
+            while chunk := client.recv(4096):  # the server closes the connection after handle_error
+                reply += chunk
+        self.assertTrue(errored.wait(5))
+        self.assertEqual(handled_errors, [BrokenPipeError])
+        self.assertTrue(reply.startswith(b"HTTP/1.0 200"), reply)
+        port = server.server.server_address[1]
+        events = [e for e in artifacts.events_since(started) if e["source"] == "fixture" and e["port"] == port]
+        self.assertEqual([e["kind"] for e in events], ["connection-accepted", "request-received", "request-failed"])
+        received, failed = events[1], events[2]
+        self.assertEqual((failed["request"], failed["status"], failed["error"]),
+                         (received["request"], 200, "BrokenPipeError"))
+        dumped = json.dumps(events)
+        for secret in ("query-value", "header-secret", "synthetic abort detail"):
+            self.assertNotIn(secret, dumped)
+
+
+class EventLossTests(unittest.TestCase):
+    """The process-wide harness/fixture buffer reports what it evicted."""
+
+    def setUp(self):
+        self.root = _artifact_root(self)
+        for name, value in (("_events", collections.deque(maxlen=3)), ("_dropped_in_process", 0),
+                            ("_watchers", weakref.WeakSet())):
+            patcher = mock.patch.object(artifacts, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def record(self, count):
+        for _ in range(count):
+            artifacts.record("harness", "synthetic")
+            time.sleep(0.002)  # distinct timestamps on either side of a class start
+
+    def summary(self, owner):
+        with contextlib.redirect_stderr(io.StringIO()):
+            target = owner.preserve("test_x", (None, None, {}))
+        return json.loads((target / "summary.json").read_text())["harnessAndFixtureEvents"]
+
+    def test_overflow_since_the_class_started_is_reported(self):
+        owner = artifacts.FailureArtifacts(self.root, "suite.Overflow")
+        self.record(5)
+        self.assertEqual(self.summary(owner), {"limit": 3, "droppedSinceClassStart": 2, "complete": False,
+                                               "droppedInProcess": 2})
+
+    def test_evictions_from_before_the_class_started_are_not_its_loss(self):
+        self.record(3)  # an earlier class's events fill the buffer
+        time.sleep(0.002)
+        owner = artifacts.FailureArtifacts(self.root, "suite.Later")
+        self.record(3)  # evicts the three earlier events only
+        self.assertEqual(self.summary(owner), {"limit": 3, "droppedSinceClassStart": 0, "complete": True,
+                                               "droppedInProcess": 3})
+        self.record(1)  # now one of this class's events goes
+        self.assertEqual(self.summary(owner)["droppedSinceClassStart"], 1)
+
+    def test_a_finished_class_stops_counting(self):
+        owner = artifacts.FailureArtifacts(self.root, "suite.Done")
+        owner.finish_class(setup_failed=False)
+        self.record(5)
+        self.assertEqual(owner.dropped_events, 0)
 
 
 class _Process:

@@ -5,12 +5,23 @@ test class's setUpClass fails. Unset, nothing here runs: fixture handlers, bridg
 and the browser are left exactly as they are.
 
 When set:
-- Every harness FixtureServer records, per request, when the connection was accepted, when
-  the request line and headers were read and when the reply was flushed: method, path without
-  its query, status and port. Never headers or bodies.
+- Every harness FixtureServer records, per request, when the connection was accepted
+  (connection-accepted), when the request line and headers were read (request-received: method,
+  path without its query) and how the handler ended, both on the server side only:
+  request-handled when the handler returned and the server flushed its write buffer, or
+  request-failed with the exception's type name (no message) when the handler raised, e.g.
+  BrokenPipeError after the browser dropped the connection; the exception still propagates to
+  the server's handle_error. status is the code the handler passed to send_response, if any,
+  so request-failed can carry a 200 whose reply never fully left. Neither event says that
+  the browser received the reply. Never headers or bodies.
 - Every RealBrowserTestCase.call records when a bridge request was sent and answered: its path,
   HTTP status, and only the url (see sanitize_url), tabId, wait and timeout fields of the
   request and the ok, code, retryable, timedOut, status, tabId and url fields of the reply.
+  open_tab (/api/new-tab, the request that timed out in #293) goes through call(). Suites that
+  send bridge requests with harness._request directly (test_real_browser.py,
+  test_real_browser_protected_tabs.py, test_real_browser_submit_form.py,
+  test_real_browser_connection_diagnostics.py) bypass call(), so those requests are not in
+  the timeline; the bridge log still lists them.
 - The owned browser records top-level navigation events in its parent process: state changes
   (start/stop flags and status), location changes and tab open/close, each with Date.now().
 - Resource samples hold the load average, the CPU count, and ps columns (pid, ppid, pgid, %cpu,
@@ -25,6 +36,11 @@ resources.json, and the last MAX_LOG_BYTES of browser.log and bridge.log. A clas
 first MAX_PRESERVED_FAILURES_PER_CLASS failures; later ones are only counted, in a stderr note
 when the class finishes. The harness never deletes or prunes anything under <root>; the
 class's temporary directory is still deleted on every path, after the artifacts are copied.
+Harness and fixture events share one process-wide buffer of MAX_EVENTS; when it is full the
+oldest event is evicted. summary.json reports evictions of events recorded since the class
+started (droppedSinceClassStart, so complete is false when the timeline lost any of them)
+and, separately labelled, every eviction in the process (droppedInProcess), which includes
+earlier classes' events.
 Text written there has the bridge token, Authorization values, Bearer credentials and token=
 query values replaced by [redacted]; URLs keep only a loopback origin and path.
 """
@@ -38,6 +54,7 @@ import sys
 import threading
 import time
 from urllib.parse import urlsplit
+import weakref
 
 ARTIFACTS_ENV = "KITSUNE_E2E_ARTIFACTS"
 MAX_EVENTS = 4000
@@ -54,6 +71,9 @@ REPLY_FIELDS = ("ok", "code", "retryable", "timedOut", "status", "tabId")
 # events go to one bounded log and each class reads the events since it started.
 _events = collections.deque(maxlen=MAX_EVENTS)
 _events_lock = threading.Lock()
+_dropped_in_process = 0
+# FailureArtifacts of classes still running; each counts the evicted events it would have shown.
+_watchers = weakref.WeakSet()
 _ids = iter(range(1, sys.maxsize))
 _run_directories = {}
 
@@ -67,8 +87,15 @@ def now_ms():
 
 
 def record(source, kind, **fields):
+    global _dropped_in_process
     event = {"t": now_ms(), "source": source, "kind": kind, **fields}
     with _events_lock:
+        if len(_events) == _events.maxlen:
+            evicted = _events[0]
+            _dropped_in_process += 1
+            for watcher in _watchers:
+                if evicted["t"] >= watcher.started:
+                    watcher.dropped_events += 1
         _events.append(event)
     return event
 
@@ -138,10 +165,15 @@ def recorded_handler(handler_class):
             self._artifact_status = None
             try:
                 super().handle_one_request()
-            finally:
+            except BaseException as error:
                 if self._artifact_request is not None:
-                    record("fixture", "request-finished", request=self._artifact_request,
-                           port=self.server.server_address[1], status=self._artifact_status)
+                    record("fixture", "request-failed", request=self._artifact_request,
+                           port=self.server.server_address[1], status=self._artifact_status,
+                           error=type(error).__name__)
+                raise
+            if self._artifact_request is not None:
+                record("fixture", "request-handled", request=self._artifact_request,
+                       port=self.server.server_address[1], status=self._artifact_status)
 
         def parse_request(self):
             parsed = super().parse_request()
@@ -296,6 +328,9 @@ class FailureArtifacts:
         self.setup_snapshot = None
         self.preserved = 0
         self.omitted = 0
+        self.dropped_events = 0  # evicted harness/fixture events recorded since self.started
+        with _events_lock:
+            _watchers.add(self)
 
     @classmethod
     def from_environment(cls, class_name, environ=os.environ):
@@ -380,10 +415,12 @@ class FailureArtifacts:
         if setup_failed:
             self.setup_snapshot = self.live_snapshot()
 
-    def preserve_failed_setup(self, setup_failed):
+    def finish_class(self, setup_failed):
         """Class cleanup run after the browser and bridge stop, before the temporary directory goes."""
         if setup_failed:
             self.preserve("setUpClass", self.setup_snapshot)
+        with _events_lock:
+            _watchers.discard(self)
         if self.omitted:
             print(f"kitsune e2e artifacts: {self.class_name}: {self.omitted} later failure(s) not preserved "
                   f"(limit {MAX_PRESERVED_FAILURES_PER_CLASS} per class)", file=sys.stderr)
@@ -404,7 +441,11 @@ class FailureArtifacts:
     def _write(self, target, name, snapshot):
         events, browser_error, resources = snapshot
         target.mkdir(parents=True, exist_ok=False)
-        timeline = events_since(self.started)
+        with _events_lock:
+            timeline = [event for event in _events if event["t"] >= self.started]
+            harness_events = {"limit": _events.maxlen, "droppedSinceClassStart": self.dropped_events,
+                              "complete": self.dropped_events == 0,
+                              "droppedInProcess": _dropped_in_process}
         browser_events = (events or {}).get("events") or []
         for event in browser_events:
             timeline.append({**event, "source": "browser", "url": sanitize_url(event.get("url"))})
@@ -425,7 +466,7 @@ class FailureArtifacts:
             "browserEvents": {"collected": events is not None, "count": len(browser_events),
                               "dropped": (events or {}).get("dropped", 0), "error": browser_error,
                               "limit": MAX_BROWSER_EVENTS},
-            "harnessAndFixtureEventLimit": MAX_EVENTS, "logs": logs,
+            "harnessAndFixtureEvents": harness_events, "logs": logs,
         }
         (target / "summary.json").write_text(redact(json.dumps(summary, indent=2), self.secrets), encoding="utf-8")
         print(f"kitsune e2e artifacts: {self.class_name} {name}: {target}", file=sys.stderr)

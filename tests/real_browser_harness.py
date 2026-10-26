@@ -41,6 +41,8 @@ top-level navigation events, and owned-process resource samples. Unset, nothing 
 recorded and fixture handlers are used unchanged. real_browser_failure_artifacts.py
 documents what is kept and what is redacted. Failures are detected through the unittest
 runner's result; the class cleanups copy the evidence out before the directory is deleted.
+Only bridge requests made through call() (open_tab included) are in the timeline; a suite
+that sends harness._request directly bypasses it, and only the bridge log lists those.
 
 Safety: the browser never sees a user profile or the user's bridge. Its environment
 drops KITSUNE_* and MOZ_* variables and sets HOME to the temporary directory. Right
@@ -294,7 +296,7 @@ class RealBrowserTestCase(unittest.TestCase):
         cls.failure_artifacts = artifacts
         if artifacts:
             # Runs after the browser and bridge stop and before the temporary directory is deleted.
-            cls.addClassCleanup(lambda: artifacts.preserve_failed_setup(cls._setup_failed()))
+            cls.addClassCleanup(lambda: artifacts.finish_class(cls._setup_failed()))
         home = Path(temp.name, "bridge")
         home.mkdir()
         cls.bridge = Bridge(str(home))
