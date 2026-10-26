@@ -113,8 +113,10 @@ const document = {
   },
 };
 let listener;
+// Edits run through runEditCommand, which watches the editor; these mocks record none.
+class MutationObserver { observe() {} takeRecords() { return []; } disconnect() {} }
 const context = vm.createContext({
-  console, crypto: webcrypto, Event, MouseEvent, InputEvent, PointerEvent: MouseEvent, document,
+  console, crypto: webcrypto, Event, MouseEvent, InputEvent, PointerEvent: MouseEvent, MutationObserver, document,
   CSS: { escape: x => x },
   window: { PointerEvent: MouseEvent, getSelection: () => selection,
     getComputedStyle: () => ({ display: 'block', visibility: 'visible' }) },
@@ -213,11 +215,11 @@ const reset = () => {
   assert.deepEqual(last.events, ['beforeinput', 'input']);
   assert.deepEqual(point(selection.ranges[0]), [inserted[0].node, 10, inserted[0].node, 10], 'caret after the text');
 
-  // A page that cancels beforeinput keeps its content.
+  // A page that cancels beforeinput keeps its content, and the result says so (#289).
   reset();
   const refuse = event => event.preventDefault();
   last.addEventListener('beforeinput', refuse);
-  assert.deepEqual(await send({ action: 'type', selector: '#last', text: ' No.' }), { ok: true });
+  assert.deepEqual(await send({ action: 'type', selector: '#last', text: ' No.' }), { ok: true, prevented: true });
   last.removeEventListener('beforeinput', refuse);
   assert.deepEqual(inserted, []);
   assert.deepEqual(last.events, ['beforeinput']);

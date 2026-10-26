@@ -46,8 +46,10 @@ const document = {
   execCommand: (...args) => commands.push(args),
 };
 let listener;
+// Edits run through runEditCommand, which watches the editor; these mocks record none.
+class MutationObserver { observe() {} takeRecords() { return []; } disconnect() {} }
 const context = vm.createContext({
-  console, crypto: webcrypto, Event, KeyboardEvent, InputEvent: Event, HTMLInputElement, HTMLTextAreaElement,
+  console, crypto: webcrypto, Event, KeyboardEvent, InputEvent: Event, MutationObserver, HTMLInputElement, HTMLTextAreaElement,
   document, window: {},
   browser: { runtime: {
     onMessage: { addListener: fn => { listener = fn; } },

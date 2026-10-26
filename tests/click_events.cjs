@@ -58,6 +58,8 @@ async function testClickEvents(pointerEvents) {
   const form = new Element('FORM', 'form');
   form.querySelector = () => button;
   form.querySelectorAll = () => [button];
+  form.getRootNode = () => form;
+  button.form = form;
   const elements = { '#go': button, '#toggle': checkbox, '#form': form };
   let listener;
   const context = vm.createContext({

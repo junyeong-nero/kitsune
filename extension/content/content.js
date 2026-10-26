@@ -1451,12 +1451,42 @@
     selection.addRange(range);
   }
 
-  // Replace the selection with text as typing does, firing beforeinput and input. False when
-  // the page cancelled beforeinput.
+  // Runs an editing command at the selection in el's editor and reports what it did: done,
+  // execCommand's result; fired, whether the editor saw beforeinput; prevented, whether the
+  // page cancelled it; changed, whether the editor's content changed. execCommand's result
+  // alone proves no edit: Firefox returns true for one the page cancelled (#289).
+  function runEditCommand(el, command, value) {
+    const host = editingHost(el);
+    let beforeInput = null;
+    const onBeforeInput = event => { beforeInput ??= event; };
+    host.addEventListener('beforeinput', onBeforeInput);
+    const observer = new MutationObserver(() => {});
+    observer.observe(host, { childList: true, characterData: true, subtree: true });
+    const done = docOf(host).execCommand(command, false, value);
+    const changed = observer.takeRecords().length > 0;
+    observer.disconnect();
+    host.removeEventListener('beforeinput', onBeforeInput);
+    return { done, fired: !!beforeInput, prevented: !!beforeInput?.defaultPrevented, changed };
+  }
+
+  // An editing command's outcome as keypress reports it: effect is inputType when the editor
+  // changed, else null; prevented: the page cancelled beforeinput, and its edit was not
+  // applied or repeated.
+  function editOutcome(edit, inputType) {
+    if (edit.prevented) return { effect: null, prevented: true };
+    return { effect: edit.done && edit.changed ? inputType : null };
+  }
+
+  // Replace the selection with text as typing does, firing beforeinput and input; the outcome
+  // as editOutcome reports it. Only where the editing command did not run at all is the text
+  // inserted directly, after a beforeinput of Kitsune's own.
   function insertEditableText(el, text) {
-    if (docOf(el).execCommand('insertText', false, text)) return true;
+    const edit = runEditCommand(el, 'insertText', text);
+    if (edit.done || edit.fired) return editOutcome(edit, 'insertText');
     const init = { bubbles: true, composed: true, inputType: 'insertText', data: text };
-    if (!el.dispatchEvent(new InputEvent('beforeinput', { ...init, cancelable: true }))) return false;
+    if (!el.dispatchEvent(new InputEvent('beforeinput', { ...init, cancelable: true }))) {
+      return { effect: null, prevented: true };
+    }
     const selection = (docOf(el).defaultView || window).getSelection();
     const range = selection.getRangeAt(0);
     range.deleteContents();
@@ -1467,7 +1497,7 @@
     selection.removeAllRanges();
     selection.addRange(range);
     el.dispatchEvent(new InputEvent('input', init));
-    return true;
+    return { effect: 'insertText' };
   }
 
   // The http(s) link a click on el follows, unless it downloads.
@@ -1506,8 +1536,8 @@
       const range = clear ? docOf(el).createRange() : selectionInside(el);
       if (clear) range.selectNodeContents(el);
       placeEditableCaret(el, range);
-      insertEditableText(el, text);
-      return { ok: true };
+      const edit = insertEditableText(el, text);
+      return { ok: true, ...(edit.prevented ? { prevented: true } : {}) };
     }
 
     el.focus();
@@ -1719,16 +1749,18 @@
   }
 
   // Replace an editing host's content as typing over a full selection does, so the editor
-  // sees beforeinput and input (#255).
+  // sees beforeinput and input (#255). prevented: the page cancelled the replacement or the
+  // clearing, so the content is as the page left it (#289).
   function fillEditable(host, value, pierced) {
     lastActedElement = lastFilledField = host;
     const range = docOf(host).createRange();
     range.selectNodeContents(host);
     placeEditableCaret(host, range);
     const text = String(value ?? '');
-    if (text) insertEditableText(host, text);
-    else docOf(host).execCommand('delete', false);
-    return { ok: true, pierced, tag: host.tagName.toLowerCase(), contentEditable: true };
+    const edit = text ? insertEditableText(host, text)
+      : editOutcome(runEditCommand(host, 'delete'), 'deleteContentBackward');
+    return { ok: true, pierced, tag: host.tagName.toLowerCase(), contentEditable: true,
+      ...(edit.prevented ? { prevented: true } : {}) };
   }
 
   // Shadow roots searched for a host's field: its own, and those of hosts nested in it.
@@ -3787,8 +3819,8 @@
   }
 
   // Enter in a text input submits its form as a browser does (HTML implicit submission): it
-  // clicks the first submit control, or submits a form that has none and no other text input.
-  // A disabled submit control submits nothing.
+  // clicks the form's default button, or submits a form that has none and no other text
+  // input. A disabled default button submits nothing. Both go by form ownership (#288).
   function implicitSubmit(el) {
     const form = el.form;
     if (!form) return { effect: null };
@@ -3798,7 +3830,7 @@
       button.click();
       return { effect: 'implicitSubmit' };
     }
-    const blocking = Array.from(form.querySelectorAll('input')).filter(input =>
+    const blocking = formOwnedControls(form, 'input').filter(input =>
       IMPLICIT_SUBMIT_TYPES.has(String(input.type || 'text').toLowerCase()));
     if (blocking.length > 1) return { effect: null };
     if (typeof form.requestSubmit === 'function') form.requestSubmit();
@@ -3806,14 +3838,9 @@
     return { effect: 'implicitSubmit' };
   }
 
-  // An editing command at an editor's selection; null when the editor did not change.
+  // An editing command at an editor's selection; effect null when the editor did not change.
   function editorCommand(host, command, inputType) {
-    const observer = new MutationObserver(() => {});
-    observer.observe(host, { childList: true, characterData: true, subtree: true });
-    const done = docOf(host).execCommand(command, false);
-    const changed = observer.takeRecords().length > 0;
-    observer.disconnect();
-    return { effect: done && changed ? inputType : null };
+    return editOutcome(runEditCommand(host, command), inputType);
   }
 
   // The first or last text node in node, itself included.
@@ -3848,7 +3875,7 @@
   function editorKey(host, key, mods, text) {
     const doc = docOf(host);
     const selection = (doc.defaultView || window).getSelection?.();
-    if (text != null) return insertEditableText(host, text) ? { effect: 'insertText' } : { effect: null, prevented: true };
+    if (text != null) return insertEditableText(host, text);
     if (key === 'Enter') {
       const command = mods.shift ? 'insertLineBreak' : 'insertParagraph';
       return editorCommand(host, command, command);
@@ -4132,10 +4159,20 @@
       text: label.slice(0, 80) };
   }
 
-  // The form's first submit control. A <button> without a type (or with an unknown one) is a
-  // submit button, and its type property reads "submit".
+  // The controls matching selector whose form owner is form, in tree order: its descendants
+  // and the controls a form attribute associates with it, but not descendants whose form
+  // attribute names another form (#288). Searched in the form's tree, which a form attribute
+  // cannot leave; form.elements is not used because it omits <input type=image>.
+  function formOwnedControls(form, selector) {
+    const root = form.getRootNode?.() || docOf(form);
+    return Array.from(root.querySelectorAll(selector)).filter(control => control.form === form);
+  }
+
+  // The form's default button: its first submit control by form ownership. A <button>
+  // without a type (or with an unknown one) is a submit button, and its type property reads
+  // "submit".
   function formSubmitControl(form) {
-    return Array.from(form.querySelectorAll('button, input')).find(el =>
+    return formOwnedControls(form, 'button, input').find(el =>
       (el.tagName === 'BUTTON' && el.type === 'submit') ||
       (el.tagName === 'INPUT' && (el.type === 'submit' || el.type === 'image'))) || null;
   }
