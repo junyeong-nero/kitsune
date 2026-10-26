@@ -102,6 +102,10 @@ class RealBrowserOutcomeDeadlineTests(harness.RealBrowserTestCase):
     def assert_timed_out_near_deadline(self, result, wall_ms):
         self.assertIs(result.get("ok"), False, result)
         self.assertNotIn("code", result)  # observed from the page, not a command timeout
+        if "observationIncomplete" in result:
+            # A final read the throttled tab did not answer in time (#292) is reported as such.
+            self.assertIs(result["observationIncomplete"], True, result)
+            self.assertIn("the read in progress at the timeout did not finish", result["error"], result)
         self.assertIn(f"Timed out after {TIMEOUT_MS}ms", result.get("error", ""), result)
         self.assertGreaterEqual(result["elapsed"], TIMEOUT_MS, result)
         self.assertLess(result["elapsed"], TIMEOUT_MS + SLACK_MS, result)

@@ -2196,12 +2196,39 @@ async def _click_target_visible(tab_id, params, result):
     return r.get("found") is True
 
 
+# A zero-timeout page wait is one read, which may take up to this long (#292).
+PAGE_WAIT_SINGLE_READ_SECONDS = 5
+# A page wait's last read starts this long before its deadline, which is how long it has
+# to answer: a property of read latency, not of the caller's pollInterval (#292).
+PAGE_WAIT_LAST_READ_SECONDS = 0.1
+
+
+async def _read_page_once(action, params, budget_s):
+    """One single page read (timeout 0); None when it does not answer within budget_s.
+
+    The budget covers the whole read, including the wait for the tab's scheduler queue, so
+    a read cut off while queued is never dispatched, and a late reply is not accepted.
+    """
+    if budget_s <= 0:
+        return None  # asyncio.wait_for may still start a coroutine given no time
+    try:
+        r = await asyncio.wait_for(send_to_extension(action, {**params, "timeout": 0}, timeout=budget_s),
+                                   budget_s)
+    except asyncio.TimeoutError:
+        return None
+    if isinstance(r, dict) and r.get("code") == "timeout":
+        return None  # sent, but the reply did not arrive within the budget
+    return r
+
+
 async def _poll_page_wait(action, params):
     """Run a waitForText/waitForElement wait as single page reads polled until its timeout.
 
     A wait inside the page runs on its timers, which the browser throttles in background
-    tabs, so it can end long after its timeout. A reply other than a timed-out read (met,
-    or an error) ends the wait; an unmet wait reports the requested timeout and elapsed.
+    tabs, so it can end long after its timeout. Every read must answer by the deadline
+    (#292). A reply other than a timed-out read (met, or an error) ends the wait; an unmet
+    wait reports the requested timeout and elapsed from its last completed read, with
+    observationIncomplete when the read in progress at the deadline did not answer.
     """
     timeout_ms = params.get("timeout", 10000)
     poll_s = (params.get("pollInterval") or 100) / 1000
@@ -2210,23 +2237,57 @@ async def _poll_page_wait(action, params):
     # A text wait's last read also says whether unmet text is an element's name, not
     # page text (#275); earlier reads skip that search.
     diagnose = action == "waitForText" and params.get("text") is not None
-    while True:
-        remaining_s = max(0, deadline - time.monotonic())
-        last = diagnose and remaining_s <= poll_s
-        r = await send_to_extension(action, {**params, "timeout": 0, **({"diagnose": True} if last else {})},
-                                    timeout=remaining_s + 5)
-        if not isinstance(r, dict) or r.get("ok") is not False or time.monotonic() >= deadline:
-            break
-        await asyncio.sleep(min(poll_s, max(0, deadline - time.monotonic())))
-    if diagnose and not last and isinstance(r, dict) and r.get("ok") is False:
-        diagnosed = await send_to_extension(action, {**params, "timeout": 0, "diagnose": True}, timeout=10)
-        if isinstance(diagnosed, dict) and "ok" in diagnosed:
-            r = diagnosed
+    completed, incomplete = None, False
+    if timeout_ms <= 0:
+        # No read fits a 0 ms deadline, so a zero timeout is one read with its own allowance.
+        allowance_s = PAGE_WAIT_SINGLE_READ_SECONDS
+        completed = await _read_page_once(
+            action, {**params, **({"diagnose": True} if diagnose else {})}, allowance_s)
+    else:
+        allowance_s = timeout_ms / 1000
+        lead_s = min(PAGE_WAIT_LAST_READ_SECONDS, allowance_s)
+        last = allowance_s <= lead_s
+        while True:
+            remaining_s = deadline - time.monotonic()
+            if remaining_s <= 0 and completed is not None:
+                break  # a late poll timer: no read starts after the deadline
+            r = await _read_page_once(
+                action, {**params, **({"diagnose": True} if diagnose and last else {})}, remaining_s)
+            if r is None:
+                incomplete = True
+                break
+            completed = r
+            if not isinstance(r, dict) or r.get("ok") is not False:
+                break
+            remaining_s = deadline - time.monotonic()
+            if last:
+                await asyncio.sleep(max(0, remaining_s))
+                break
+            if remaining_s <= 0:
+                break
+            # Reads are pollInterval apart until the last one, which starts lead_s before the
+            # deadline (at once after a read that ran into that time).
+            to_last_s = remaining_s - lead_s
+            last = to_last_s <= poll_s
+            await asyncio.sleep(max(0, to_last_s) if last else poll_s)
+    elapsed = int((time.monotonic() - start) * 1000)
+    if completed is None:
+        allowance_ms = int(allowance_s * 1000)
+        return {**_action_error(
+            f"The page did not answer a read within {allowance_ms}ms, so whether the wait's "
+            "condition holds is unknown", "timeout", retryable=True,
+            hint="The tab may be busy or unresponsive; check it with browser_snapshot, then wait again.",
+            timeoutSeconds=allowance_s), "elapsed": elapsed}
+    r = completed
     if isinstance(r, dict) and r.get("ok") is False:
-        r["elapsed"] = int((time.monotonic() - start) * 1000)
+        r["elapsed"] = elapsed
         r["error"] = _re.sub(r"^Timed out after 0ms", f"Timed out after {timeout_ms}ms", r.get("error", ""))
+        if incomplete:
+            r["observationIncomplete"] = True
+            r["error"] += ("; the read in progress at the timeout did not finish, so this is the "
+                           "last completed read")
     elif isinstance(r, dict) and r.get("ok") is True:
-        r["elapsed"] = int((time.monotonic() - start) * 1000)
+        r["elapsed"] = elapsed
     return r
 
 
