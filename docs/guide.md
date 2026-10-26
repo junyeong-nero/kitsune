@@ -713,7 +713,8 @@ and with the default popup blocker (`test_real_browser_opened_tabs.py`), every
 read tool on empty 404 and 500 pages (`test_real_browser_error_pages.py`), and
 which form or button an action picks on a page with repeated controls
 (`test_real_browser_action_targets.py`). They are skipped unless `KITSUNE_E2E_BROWSER`
-names the browser binary. A full run takes a little over a minute:
+names the browser binary. A full run takes several minutes, depending on the host
+and browser; run one suite when iterating:
 
 ```bash
 KITSUNE_E2E_BROWSER=/Applications/Zen.app/Contents/MacOS/zen \
@@ -729,6 +730,43 @@ start if any script in the copy still names port 47652, or if the test bridge wo
 use that port. The shared harness, `tests/real_browser_harness.py`, documents how to
 add a suite, including how to choose the profile prefs (browser defaults or
 popups allowed).
+
+To keep evidence from a failing run, set `KITSUNE_E2E_ARTIFACTS` to a directory:
+
+```bash
+KITSUNE_E2E_BROWSER=/Applications/Zen.app/Contents/MacOS/zen \
+  KITSUNE_E2E_ARTIFACTS=/tmp/kitsune-e2e-artifacts \
+  uv run python -m unittest discover -s tests -p 'test_real_browser*.py' -v
+```
+
+Each failing test, or failing class setup, writes one directory under
+`kitsune-e2e-<UTC time>-<pid>/<module.Class>/` and prints its path to stderr.
+`timeline.jsonl` puts the harness's bridge requests, the fixture server's request
+events and the browser's top-level navigation events (load start/stop, location
+changes, tab open/close) on one wall clock, so a slow page load can be told apart from
+a slow fixture reply. For each fixture request it records when the request was
+received and then either `request-handled` (the handler returned and the server
+flushed its reply) or `request-failed` with the exception type (for example
+`BrokenPipeError` after the browser dropped the connection; the error still reaches
+the server). Both are server-side only and do not show that the browser received the
+reply. Only bridge requests sent through the harness's `call()` are in the timeline;
+`open_tab` (`/api/new-tab`) is, but suites that send `harness._request` directly
+(`test_real_browser.py`, `test_real_browser_protected_tabs.py`,
+`test_real_browser_submit_form.py`, `test_real_browser_connection_diagnostics.py`)
+appear only in `bridge.log`. Harness and fixture events share one buffer of 4000
+events per test process; `summary.json` reports how many events recorded since the
+class started were evicted (`droppedSinceClassStart`, with `complete: false` when
+any were) and, separately, all evictions in the process (`droppedInProcess`).
+`browser.log` and `bridge.log` hold the last 256 KiB of the owned browser's and
+bridge's output, `resources.json` the load average and ps samples of the test runner,
+the bridge and the browser's process group, and `summary.json` what was collected. Passing classes write nothing; a class
+keeps at most five failures; nothing under the directory is ever deleted by the
+harness. The timeline and summaries hold no headers, request bodies or page contents,
+and URLs in them keep only a loopback origin and path. The two log tails are copied as
+the owned processes wrote them, with the bridge token, Authorization, Bearer and
+`token=` values redacted; with the variable set, the owned bridge writes its log
+unbuffered so that it is current when a test fails. Without the variable the suites
+run exactly as before.
 
 To publish a new version to PyPI, see [Releasing](releasing.md).
 
