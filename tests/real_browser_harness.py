@@ -34,6 +34,14 @@ API, kept small so suites can rely on it:
   runs it before launching anything.
 - BROWSER, BASE_PREFS, POPUPS_ALLOWED.
 
+Failure artifacts (issue #293, diagnostics only): with KITSUNE_E2E_ARTIFACTS set to a
+directory, a failing test or setUpClass keeps its class's browser and bridge log tails, a
+timeline of bridge requests, fixture request receive/finish times and the browser's
+top-level navigation events, and owned-process resource samples. Unset, nothing is
+recorded and fixture handlers are used unchanged. real_browser_failure_artifacts.py
+documents what is kept and what is redacted. Failures are detected through the unittest
+runner's result; the class cleanups copy the evidence out before the directory is deleted.
+
 Safety: the browser never sees a user profile or the user's bridge. Its environment
 drops KITSUNE_* and MOZ_* variables and sets HOME to the temporary directory. Right
 before launch, RealBrowser refuses to start if it would load the repository's extension
@@ -62,7 +70,9 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import util
 
+import real_browser_failure_artifacts
 from test_bridge_security import Bridge, _free_port, _request
 
 REPO = Path(__file__).resolve().parent.parent
@@ -95,6 +105,8 @@ class FixtureServer:
     """A local HTTP server on a spare port, answering with one BaseHTTPRequestHandler class."""
 
     def __init__(self, handler_class):
+        if real_browser_failure_artifacts.enabled():
+            handler_class = real_browser_failure_artifacts.recorded_handler(handler_class)
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), handler_class)
         self.server.daemon_threads = True
         self.origin = f"http://127.0.0.1:{self.server.server_address[1]}"
@@ -108,8 +120,8 @@ class FixtureServer:
 class RemoteDebugger:
     """Minimal Firefox remote debugging protocol client: length-prefixed JSON packets."""
 
-    def __init__(self, port):
-        deadline = time.monotonic() + START_TIMEOUT
+    def __init__(self, port, connect_timeout=START_TIMEOUT):
+        deadline = time.monotonic() + connect_timeout
         while True:
             try:
                 self.sock = socket.create_connection(("127.0.0.1", port), timeout=10)
@@ -268,6 +280,7 @@ class RealBrowserTestCase(unittest.TestCase):
     """One owned bridge and headless browser per test class; see the module docstring."""
 
     PROFILE_PREFS = {}
+    failure_artifacts = None
 
     @classmethod
     def extension_scripts(cls):
@@ -277,18 +290,58 @@ class RealBrowserTestCase(unittest.TestCase):
     def setUpClass(cls):
         temp = tempfile.TemporaryDirectory(prefix="kitsune-real-browser-")
         cls.addClassCleanup(temp.cleanup)
+        artifacts = real_browser_failure_artifacts.FailureArtifacts.from_environment(util.strclass(cls))
+        cls.failure_artifacts = artifacts
+        if artifacts:
+            # Runs after the browser and bridge stop and before the temporary directory is deleted.
+            cls.addClassCleanup(lambda: artifacts.preserve_failed_setup(cls._setup_failed()))
         home = Path(temp.name, "bridge")
         home.mkdir()
         cls.bridge = Bridge(str(home))
         # Compare the loaded build with the copy the browser runs, not the repository's extension/.
         cls.bridge.env["KITSUNE_EXTENSION_DIR"] = str(Path(temp.name, "extension"))
         cls.addClassCleanup(cls.bridge.stop)
+        if artifacts:
+            artifacts.watch_bridge(cls.bridge)
         cls.bridge.start()
         cls.browser = RealBrowser(BROWSER, temp.name, cls.bridge.ws_port, cls.PROFILE_PREFS,
                                   cls.extension_scripts())
         cls.addClassCleanup(cls.browser.stop)
+        if artifacts:
+            artifacts.watch_browser(cls.browser)
+            # Runs before the browser stops, so a failed setUpClass keeps the live browser's events.
+            cls.addClassCleanup(lambda: artifacts.capture_setup_snapshot(cls._setup_failed()))
         cls.browser.start()
+        if artifacts:
+            artifacts.install_browser_recorder(
+                lambda: cls.evaluate_for_artifacts(real_browser_failure_artifacts.BROWSER_RECORDER_INSTALL),
+                lambda: cls.evaluate_for_artifacts(real_browser_failure_artifacts.BROWSER_RECORDER_READ))
         cls.wait_for_extension()
+
+    @classmethod
+    def _setup_failed(cls):
+        # unittest sets this before it runs the class cleanups of a setUpClass that raised.
+        return getattr(cls, "_classSetupFailed", False)
+
+    @classmethod
+    def evaluate_for_artifacts(cls, script):
+        debugger = RemoteDebugger(cls.browser.rdp_port, connect_timeout=5)
+        try:
+            return debugger.evaluate_in_parent(script)
+        finally:
+            debugger.close()
+
+    def run(self, result=None):
+        # With KITSUNE_E2E_ARTIFACTS set, a test that adds a failure or error preserves the class's evidence.
+        artifacts = type(self).failure_artifacts
+        problems = getattr(result, "failures", None), getattr(result, "errors", None)
+        if artifacts is None or None in problems:
+            return super().run(result)
+        before = len(problems[0]) + len(problems[1])
+        outcome = super().run(result)
+        if len(problems[0]) + len(problems[1]) > before:
+            artifacts.preserve(self.id())
+        return outcome
 
     @classmethod
     def wait_for_extension(cls, after_generation=0):
@@ -310,9 +363,17 @@ class RealBrowserTestCase(unittest.TestCase):
         headers = cls.bridge.auth()
         if body is not None:
             headers["Content-Type"] = "application/json"
-        # The bridge answers every action within its own timeout; allow for that here.
-        status, _, text = _request(cls.bridge.http_port, "GET" if body is None else "POST", path, headers,
-                                   cls.bridge.host, None if body is None else json.dumps(body), timeout=90)
+        request = real_browser_failure_artifacts.bridge_request_sent(path, body) if cls.failure_artifacts else None
+        try:
+            # The bridge answers every action within its own timeout; allow for that here.
+            status, _, text = _request(cls.bridge.http_port, "GET" if body is None else "POST", path, headers,
+                                       cls.bridge.host, None if body is None else json.dumps(body), timeout=90)
+        except Exception as error:
+            if request is not None:
+                real_browser_failure_artifacts.bridge_request_failed(request, path, error)
+            raise
+        if request is not None:
+            real_browser_failure_artifacts.bridge_request_answered(request, path, status, text)
         if status != 200:
             raise AssertionError(f"{path} answered HTTP {status}: {text}")
         return json.loads(text)

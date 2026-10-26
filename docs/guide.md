@@ -730,6 +730,31 @@ use that port. The shared harness, `tests/real_browser_harness.py`, documents ho
 add a suite, including how to choose the profile prefs (browser defaults or
 popups allowed).
 
+To keep evidence from a failing run, set `KITSUNE_E2E_ARTIFACTS` to a directory:
+
+```bash
+KITSUNE_E2E_BROWSER=/Applications/Zen.app/Contents/MacOS/zen \
+  KITSUNE_E2E_ARTIFACTS=/tmp/kitsune-e2e-artifacts \
+  uv run python -m unittest discover -s tests -p 'test_real_browser*.py' -v
+```
+
+Each failing test, or failing class setup, writes one directory under
+`kitsune-e2e-<UTC time>-<pid>/<module.Class>/` and prints its path to stderr.
+`timeline.jsonl` puts the harness's bridge requests, the fixture server's request
+receive and finish times and the browser's top-level navigation events (load
+start/stop, location changes, tab open/close) on one wall clock, so a slow page load
+can be told apart from a slow fixture reply. `browser.log` and `bridge.log` hold the
+last 256 KiB of the owned browser's and bridge's output, `resources.json` the load
+average and ps samples of the test runner, the bridge and the browser's process
+group, and `summary.json` what was collected. Passing classes write nothing; a class
+keeps at most five failures; nothing under the directory is ever deleted by the
+harness. The timeline and summaries hold no headers, request bodies or page contents,
+and URLs in them keep only a loopback origin and path. The two log tails are copied as
+the owned processes wrote them, with the bridge token, Authorization, Bearer and
+`token=` values redacted; with the variable set, the owned bridge writes its log
+unbuffered so that it is current when a test fails. Without the variable the suites
+run exactly as before.
+
 To publish a new version to PyPI, see [Releasing](releasing.md).
 
 ## Layout
