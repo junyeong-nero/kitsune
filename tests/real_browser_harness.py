@@ -1,7 +1,8 @@
 """Shared harness for the opt-in real-browser suites (tests/test_real_browser*.py).
 
 Opt-in: every suite is skipped unless KITSUNE_E2E_BROWSER names a Firefox, Zen or
-LibreWolf binary. Run all of them (a little over a minute) with:
+LibreWolf binary. A full run takes several minutes, depending on the host and browser.
+Run all of them with:
 KITSUNE_E2E_BROWSER=/Applications/Zen.app/Contents/MacOS/zen \
     uv run python -m unittest discover -s tests -p 'test_real_browser*.py' -v
 

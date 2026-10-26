@@ -713,7 +713,8 @@ and with the default popup blocker (`test_real_browser_opened_tabs.py`), every
 read tool on empty 404 and 500 pages (`test_real_browser_error_pages.py`), and
 which form or button an action picks on a page with repeated controls
 (`test_real_browser_action_targets.py`). They are skipped unless `KITSUNE_E2E_BROWSER`
-names the browser binary. A full run takes a little over a minute:
+names the browser binary. A full run takes several minutes, depending on the host
+and browser; run one suite when iterating:
 
 ```bash
 KITSUNE_E2E_BROWSER=/Applications/Zen.app/Contents/MacOS/zen \

@@ -2,7 +2,6 @@
 import collections
 import contextlib
 from http.server import BaseHTTPRequestHandler
-import http.client
 import io
 import json
 import os
@@ -87,12 +86,18 @@ class SanitizingTests(unittest.TestCase):
 
 class FixtureTimingTests(unittest.TestCase):
     def request(self, server, path, headers):
-        conn = http.client.HTTPConnection("127.0.0.1", server.server.server_address[1], timeout=5)
-        try:
-            conn.request("GET", path, headers=headers)
-            return conn.getresponse().read()
-        finally:
-            conn.close()
+        request = (f"GET {path} HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n"
+                   + "".join(f"{name}: {value}\r\n" for name, value in headers.items()) + "\r\n")
+        with socket.create_connection(server.server.server_address, timeout=5) as client:
+            client.sendall(request.encode("ascii"))
+            reply = b""
+            # Content-Length bytes can arrive before request-handled is recorded. EOF follows
+            # the handler's return and the server's shutdown_request, so it is the barrier.
+            while chunk := client.recv(4096):
+                reply += chunk
+        head, body = reply.split(b"\r\n\r\n", 1)
+        self.assertTrue(head.startswith(b"HTTP/1.0 200"), head)
+        return body
 
     def test_disabled_leaves_the_handler_and_class_alone(self):
         with mock.patch.dict(os.environ, {artifacts.ARTIFACTS_ENV: ""}):
