@@ -54,14 +54,18 @@ class Field extends Node {
   }
 }
 
+// A form owns controls (their form property); tree is every control in its document, in
+// tree order, including ones another form owns (#288).
 class Form {
-  constructor(controls) {
-    Object.assign(this, { controls, submits: 0 });
+  constructor(controls, tree = controls) {
+    Object.assign(this, { controls, tree, submits: 0 });
     for (const control of controls) control.form = this;
   }
-  querySelectorAll(selector) {
-    const tags = selector.split(',').map(tag => tag.trim().toUpperCase());
-    return this.controls.filter(control => tags.includes(control.tagName));
+  getRootNode() {
+    return { querySelectorAll: selector => {
+      const tags = selector.split(',').map(tag => tag.trim().toUpperCase());
+      return this.tree.filter(control => tags.includes(control.tagName));
+    } };
   }
   requestSubmit() { this.submits++; }
 }
@@ -115,15 +119,23 @@ class MutationObserver {
   disconnect() {}
 }
 
+const COMMAND_INPUT_TYPES = { delete: 'deleteContentBackward', forwardDelete: 'deleteContentForward' };
 let document;
 // The content script on a platform: navigator.platform picks macOS's or the others' modifiers.
 function load(platform) {
   document = {
     body: new Node('BODY'), activeElement: null,
     createRange: () => new Range(),
+    // As in Firefox: beforeinput at the editor, which the page can cancel, then the edit and
+    // input; true even when the page cancelled it (#289).
     execCommand(command, ui, value) {
       commands.push(value === undefined ? command : [command, value]);
-      if (changes) mutations++;
+      const inputType = COMMAND_INPUT_TYPES[command] || command;
+      if (!editor.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType }))) return true;
+      if (changes) {
+        mutations++;
+        editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType }));
+      }
       return true;
     },
   };
@@ -281,6 +293,30 @@ const state = field => [field.value, field.selectionStart, field.selectionEnd];
   form = new Form([field, new Field('INPUT', '', { type: 'password' })]);
   assert.equal((await press(field, 'Enter')).effect, null);
   assert.equal(form.submits, 0);
+  // Ownership, not containment (#288): another form's button among the form's descendants
+  // is not its default button, a button or text input associated from outside is, and the
+  // default button is the first in tree order.
+  field = new Field('INPUT', 'query');
+  let foreign = button();
+  form = new Form([field], [field, foreign]);
+  new Form([foreign], [field, foreign]);
+  assert.equal((await press(field, 'Enter')).effect, 'implicitSubmit');
+  assert.deepEqual([foreign.clicks, form.submits], [0, 1]);
+  field = new Field('INPUT', 'query');
+  const external = button();
+  const later = button();
+  form = new Form([field, external, later], [foreign, field, external, later]);
+  assert.equal((await press(field, 'Enter')).effect, 'implicitSubmit');
+  assert.deepEqual([foreign.clicks, external.clicks, later.clicks, form.submits], [0, 1, 0, 0]);
+  field = new Field('INPUT', 'query');
+  form = new Form([field, new Field('INPUT', '')]);
+  assert.equal((await press(field, 'Enter')).effect, null, 'an associated text input blocks it');
+  assert.equal(form.submits, 0);
+  field = new Field('INPUT', 'query');
+  const image = new Node('INPUT', { type: 'image', clicks: 0, click() { this.clicks++; } });
+  form = new Form([field, image]);
+  assert.equal((await press(field, 'Enter')).effect, 'implicitSubmit');
+  assert.deepEqual([image.clicks, form.submits], [1, 0], 'an image input is a submit control');
   // A page that handles Enter itself and cancels it is not submitted as well.
   submit = button();
   field = new Field('INPUT', 'query');
@@ -312,14 +348,26 @@ const state = field => [field.value, field.selectionStart, field.selectionEnd];
   assert.deepEqual(commands, ['insertLineBreak']);
   assert.equal((await press(editor, 'x')).effect, 'insertText');
   assert.deepEqual(commands, [['insertText', 'x']]);
-  assert.deepEqual(editor.events, ['keydown', 'keypress', 'keyup']);
+  assert.deepEqual(editor.events, ['keydown', 'keypress', 'beforeinput:insertText', 'input:insertText', 'keyup']);
   selection.modified = [];
   assert.equal((await press(editor, 'Backspace', { ctrl: true })).effect, 'deleteWordBackward');
   assert.deepEqual([selection.modified, commands], [[['extend', 'backward', 'word']], ['delete']]);
-  // A command that changes nothing (Backspace at the start) has no effect.
+  // A command that changes nothing (Backspace at the start) has no effect, and was not
+  // cancelled; an edit the page cancels in beforeinput is reported as prevented (#289).
   changes = false;
-  assert.equal((await press(editor, 'Backspace')).effect, null);
+  assert.deepEqual(await press(editor, 'Backspace'), { ok: true, key: 'Backspace', target: 'div', effect: null });
+  assert.deepEqual(await press(editor, 'x'), { ok: true, key: 'x', target: 'div', effect: null });
   changes = true;
+  const refuse = event => event.preventDefault();
+  editor.addEventListener('beforeinput', refuse);
+  for (const key of ['x', 'Backspace', 'Enter']) {
+    const before = mutations;
+    assert.deepEqual(await press(editor, key), { ok: true, key, target: 'div', effect: null, prevented: true }, key);
+    assert.equal(mutations, before, key);
+    assert.equal(commands.length, 1, `${key} is not applied another way`);
+    assert.ok(!editor.events.some(event => event.startsWith('input')), key);
+  }
+  editor.removeEventListener('beforeinput', refuse);
 
   selection.setBaseAndExtent(editor, 3, editor, 3);
   selection.modified = [];

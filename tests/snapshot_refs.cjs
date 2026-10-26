@@ -75,6 +75,8 @@ async function testContent() {
   let submitted = false;
   const submitButton = Object.assign(new Element('BUTTON', 'Go'), { type: 'submit', click: () => { submitted = true; } });
   const loginForm = Object.assign(new Element('FORM', '', { action: '/login' }), { querySelector: () => submitButton, querySelectorAll: () => [submitButton] });
+  loginForm.getRootNode = () => loginForm;
+  submitButton.form = loginForm;
   button.closest = selector => selector === 'form' ? loginForm : null;
   assert.equal((await send({ action: 'submitForm', selector: ref })).ok, true);
   assert.equal(submitted, true);
@@ -232,6 +234,8 @@ async function testContent() {
   form.querySelector = () => after;
   after.type = 'submit';
   form.querySelectorAll = () => [after];
+  form.getRootNode = () => form;
+  after.form = form;
   const formResult = await bridge.handleCommand({ action: 'submitForm', selector: '#search' });
   assert.ok(formResult.snapshot.includes(`searchbox "Deep search" [ref=${formResult.target_ref}]`));
 

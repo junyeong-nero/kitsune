@@ -110,6 +110,13 @@ const byId = Object.fromEntries(body.descendants().filter(el => el.attrs.id).map
 
 let execCommandWorks = true;
 const commands = [];
+// Edits since the start, for MutationObserver.takeRecords.
+let mutations = 0;
+class MutationObserver {
+  observe() { this.seen = mutations; }
+  takeRecords() { return mutations > this.seen ? [{}] : []; }
+  disconnect() {}
+}
 const document = {
   body, title: 'papago', activeElement: null,
   getElementById: id => byId[`#${id}`] || null,
@@ -117,19 +124,26 @@ const document = {
   querySelectorAll: selector => selector === '*' ? body.descendants() : byId[selector] ? [byId[selector]] : [],
   createRange: () => new Range(),
   createTextNode: text => new Text(text),
-  // Records each command with the selection it applied to; insertText also edits like Firefox.
+  // Records each command with the selection it applied to, and edits like Firefox: beforeinput
+  // at the editing host, which the page can cancel, and true even when it does (#289).
   execCommand(command, ui, value) {
     commands.push({ command, value, at: point(selection.ranges[0]) });
     if (!execCommandWorks) return false;
     const range = selection.ranges[0];
+    const inputType = command === 'insertText' ? 'insertText' : 'deleteContentBackward';
+    const editHost = range.startContainer;
+    if (!editHost.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType,
+      data: command === 'insertText' ? value : null }))) return true;
     range.deleteContents();
     if (command === 'insertText') range.insertNode(new Text(value));
+    mutations++;
+    editHost.dispatchEvent(new InputEvent('input', { bubbles: true, inputType }));
     return true;
   },
 };
 let listener;
 const context = vm.createContext({
-  console, URL, crypto: webcrypto, CSS: { escape: x => x }, setTimeout, Event, InputEvent, document,
+  console, URL, crypto: webcrypto, CSS: { escape: x => x }, setTimeout, Event, InputEvent, MutationObserver, document,
   HTMLInputElement: class {}, HTMLTextAreaElement: class {},
   KeyboardEvent: class extends Event {},
   location: { href: 'https://papago.test/' },
@@ -216,14 +230,28 @@ const refOf = (snapshot, el, label) => {
   assert.deepEqual(host.events, ['beforeinput']);
   execCommandWorks = true;
 
-  // 6. Inputs still fill through their native setter.
+  // 6. The editor's own beforeinput cancellation is reported, for a replacement and for
+  //    clearing, and the edit is not applied another way (#289).
+  for (const value of ['Replacement', '']) {
+    reset();
+    restoreSource();
+    host.addEventListener('beforeinput', refuse);
+    assert.deepEqual(await send({ action: 'fill', selector: sourceRef, value }),
+      { ok: true, pierced: false, tag: 'div', contentEditable: true, prevented: true }, value);
+    host.removeEventListener('beforeinput', refuse);
+    assert.equal(host.textContent, '이전 문장', value);
+    assert.deepEqual(host.events, ['beforeinput'], value);
+    assert.equal(commands.length, 1, value);
+  }
+
+  // 7. Inputs still fill through their native setter.
   reset();
   assert.deepEqual(await send({ action: 'fill', selector: '#name', value: 'Kitsune' }),
     { ok: true, pierced: false, tag: 'input' });
   assert.equal(name.value, 'Kitsune');
   assert.deepEqual(name.events, ['input', 'change']);
 
-  // 7. A target that is neither field nor editor is not fillable, and the hint names no
+  // 8. A target that is neither field nor editor is not fillable, and the hint names no
   //    parameter the core browser_type lacks (mode=).
   reset();
   const refused = await send({ action: 'fill', selector: '#slider', value: '50' });

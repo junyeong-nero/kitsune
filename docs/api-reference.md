@@ -267,15 +267,20 @@ Meta+Left/Right/Backspace/Delete reach the line boundary and Meta+Up/Down the
 whole text, elsewhere Control+Home/End. Up/Down move between a textarea's own lines
 (not its wrapped ones). Enter adds a line to a textarea, a paragraph to an editor
 (Shift+Enter a line break), and in a text input submits its form as a browser's
-implicit submission does: it clicks the form's first submit control, or submits a
-form that has none and no other text input (#257). The result reports:
+implicit submission does: it clicks the form's default button, or submits a form
+that has none and no other text input (#257). Both go by form ownership, not
+containment: a control's `form` attribute associates it with that form, wherever it
+is in the document, and the default button is the first submit button or image input
+the form owns in document order (#288). A disabled default button submits nothing.
+The result reports:
 
 - `key`: the key with its modifiers, e.g. `Shift+ArrowLeft`.
 - `effect`: what changed: an input type such as `insertText`, `insertParagraph`,
   `deleteContentBackward` or `deleteWordBackward`; `moveCaret`, `extendSelection`,
   `selectAll` or `implicitSubmit`; `null` when nothing changed (End at the end, Enter
   in an input without a form, a key outside a field).
-- `prevented: true`: the page cancelled the key, so its default was not applied.
+- `prevented: true`: the page cancelled the key, or in an editor the edit's
+  `beforeinput`, so its default was not applied (#289). `effect` is then `null`.
 - `note`: a default Kitsune does not apply: Tab does not move focus, Enter and Space
   do not activate buttons or links (click them), keys do not scroll the page, and
   clipboard and undo shortcuts do nothing.
@@ -1839,7 +1844,9 @@ Replaces `browser_fill` and `browser_set_editable_content`.
 
 In a `contenteditable` editor, `type` and `editable` insert at the caret when it is
 inside the target and otherwise at the end of the target, firing `beforeinput` and
-`input`; `clear=True` replaces the target's content. `browser_click` moves focus as a
+`input`; `clear=True` replaces the target's content. When the editor's page cancels
+that `beforeinput`, `type` and `fill` leave the content as the page left it and return
+`prevented: true` (#289). `browser_click` moves focus as a
 real click does, unless the page cancels `mousedown`: it focuses the clicked control,
 or the editor with the caret at the click point (`x`/`y`) or at the end of the clicked
 element (`selector`/`ref`). So clicking an editor's last paragraph and then typing
@@ -1892,8 +1899,8 @@ form. When that field is gone or outside every form and the page has several
 forms, nothing is submitted: the result is an `ambiguous_target`
 [action error](#action-errors) listing up to 5 forms.
 
-It clicks the form's first submit control (a `<button>` without a `type` counts,
-as in HTML), so the page's submit handlers and validation run: `"submitted": "button"`.
+It clicks the form's first submit control by form ownership (#288; a `<button>`
+without a `type` counts, as in HTML), so the page's submit handlers and validation run: `"submitted": "button"`.
 A form without one is submitted with `requestSubmit()`, which runs them too
 (`"requestSubmit"`); only where that is missing does it fall back to `form.submit()`,
 which skips them (`"method"`).
