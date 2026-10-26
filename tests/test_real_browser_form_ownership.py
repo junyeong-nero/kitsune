@@ -1,4 +1,5 @@
-"""Enter in a text input submits by form ownership, not containment, in a real browser (#288).
+"""Enter in a text input, and browser_submit_form, submit by form ownership, not containment,
+in a real browser (#288).
 
 Opt-in like every real-browser suite; see tests/real_browser_harness.py. Each form of the
 fixture is one case of HTML implicit submission. Submit handlers cancel the navigation, and
@@ -75,6 +76,24 @@ CASES = {
     "disabled": ("disabled-q", None, []),
 }
 
+# browser_submit_form on each form: (input, submitted, the result's button label, events). It
+# clicks the form's default button by the same ownership, else calls requestSubmit.
+SUBMIT_FORM_CASES = {
+    # The descendant button belongs to "foreign", so "owner" has no default button.
+    "owner": ("owner-q", "requestSubmit", "", [{"submit": "owner", "submitter": None}]),
+    "external": ("external-q", "button", "Search",
+                 [{"click": "external-send"}, {"submit": "external", "submitter": "external-send"}]),
+    # An explicit submission is not blocked by a second text input.
+    "blocked": ("blocked-q", "requestSubmit", "", [{"submit": "blocked", "submitter": None}]),
+    "ordered": ("ordered-q", "button", "Early",
+                [{"click": "early"}, {"submit": "ordered", "submitter": "early"}]),
+    "image": ("image-q", "button", "Go",
+              [{"click": "image-send"}, {"submit": "image", "submitter": "image-send"}]),
+    # A form whose button is its own descendant, as before #288.
+    "cancelled": ("cancelled-q", "button", "Go",
+                  [{"click": "cancelled-send"}, {"submit": "cancelled", "submitter": "cancelled-send"}]),
+}
+
 
 class _Site(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -111,6 +130,14 @@ class RealBrowserFormOwnershipTests(harness.RealBrowserTestCase):
         self.assertFalse(result.isError, (name, content))
         return content
 
+    def submit_form(self, selector):
+        """browser_submit_form's result in the current tab. It is a browse tool, which the core
+        MCP server does not publish, so it is called directly."""
+        with patch.object(tools, "_post", lambda endpoint, data, timeout=15: self.call(endpoint, data)):
+            result = tools.browser_submit_form(selector, tab_id=playwright_tools._current_tab)
+        self.assertNotIn("error", result)
+        return result
+
     def events(self):
         """The page's log since the last call, which it clears."""
         text = self.tool("browser_evaluate", {"function": (
@@ -140,6 +167,18 @@ class RealBrowserFormOwnershipTests(harness.RealBrowserTestCase):
                     value = self.tool("browser_evaluate", {
                         "function": f"() => document.getElementById('{element_id}').value"})["result"]
                     self.assertEqual(value, "query")
+
+    def test_submit_form_clicks_the_button_the_form_owns(self):
+        # The form named by selector, or without one, the form of the field last filled.
+        for by_filled_field in (False, True):
+            for form, (element_id, submitted, button, expected) in SUBMIT_FORM_CASES.items():
+                with self.subTest(form=form, by_filled_field=by_filled_field):
+                    self.tool("browser_type", {"target": "#" + element_id, "text": "query"})
+                    self.events()
+                    result = self.submit_form(None if by_filled_field else "#" + form)
+                    self.assertEqual((result.get("submitted"), result.get("form", {}).get("button")),
+                                     (submitted, button), result)
+                    self.assertEqual(self.events(), expected)
 
     def test_a_page_that_cancels_enter_is_not_submitted(self):
         for separate_enter in (False, True):
