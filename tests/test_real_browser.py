@@ -75,6 +75,27 @@ let restoreReceiver = null;
 })();
 """
 
+# Fault injection for #291, run in the browser's parent process. Gecko's ExtensionParent refuses every
+# extension message to a tab marked pending ("no receivers in discarded tabs") before delivering it,
+# with "Receiving end does not exist". Keeping the mark on a woken tab, by ignoring its removal,
+# gives the reported signature: the page loads and accepts the content script, which is already
+# initialized, but no ping is answered. This demonstrates a mechanism with that signature; it does
+# not establish why routing was unavailable in the original failure. Unpinning restores the tab.
+PENDING_FAULT = """(() => {
+  const { ExtensionParent } = ChromeUtils.importESModule('resource://gre/modules/ExtensionParent.sys.mjs');
+  const tab = ExtensionParent.apiManager.global.tabTracker.getTab(%d);
+  if (%s) {
+    tab.removeAttribute = function (name) {
+      if (name !== 'pending') Object.getPrototypeOf(tab).removeAttribute.call(this, name);
+    };
+    tab.setAttribute('pending', 'true');
+  } else {
+    delete tab.removeAttribute;
+    tab.removeAttribute('pending');
+  }
+  return { pending: tab.getAttribute('pending'), pinned: Object.hasOwn(tab, 'removeAttribute') };
+})()"""
+
 # Every fixture button reports its click to /hit, keyed by page name.
 PAGES = {
     "buttons": """<button id="act" onclick="fetch('/hit?page={name}')">Act {name}</button>
@@ -435,6 +456,65 @@ class RealBrowserActionRaceTests(harness.RealBrowserTestCase):
                 self.assertEqual(self.control.call("discard", tabId=tab_id), {"discarded": True})
                 self.wake_and_click(tab_id, f"wake-{i}")
         self.assert_hits("wake-other", 0, settle=0)
+
+    def pin_pending(self, tab_id, pinned):
+        """PENDING_FAULT: pin or unpin the tab's pending mark; returns the tab's resulting mark."""
+        debugger = harness.RemoteDebugger(self.browser.rdp_port)
+        try:
+            return debugger.evaluate_in_parent(PENDING_FAULT % (tab_id, "true" if pinned else "false"))
+        finally:
+            debugger.close()
+
+    def discard_with_pinned_pending(self, name):
+        """Open and discard a fixture tab whose pending mark survives its wake; unpinned on cleanup."""
+        tab_id = self.open_tab(self.site.url(name))
+        other = self.open_tab(self.site.url(f"{name}-other"))
+        self.assert_ok(self.call("/api/switch-tab", {"tabId": other}))
+        self.assertEqual(self.control.call("discard", tabId=tab_id), {"discarded": True})
+        self.assertEqual(self.pin_pending(tab_id, True), {"pending": "true", "pinned": True})
+        # Runs before the tab closes, also when the test fails.
+        self.addCleanup(lambda: self.assertEqual(self.pin_pending(tab_id, False), {"pending": None, "pinned": False}))
+        return tab_id
+
+    def test_wake_without_a_message_receiver_is_not_ready_and_sends_nothing(self):
+        # Issue #291 (PENDING_FAULT): the woken page loads and accepts injection, but no ping is
+        # answered. The wake must not report ready, and no action may reach the page.
+        tab_id = self.discard_with_pinned_pending("wake-silent")
+        started = time.monotonic()
+        woken = self.call("/api/wake-tab", {"tabId": tab_id})
+        elapsed = time.monotonic() - started
+        self.assertEqual(woken, {"ok": True, "woken": True, "ready": False, "timedOut": True, "state": {
+            "tabId": tab_id, "url": self.site.url("wake-silent"), "status": "complete", "reason": "no_receiver"}})
+        # The wake's own 15 s bound ended it, not the bridge's 20 s command timeout.
+        self.assertLess(elapsed, 18)
+
+        result = self.call("/api/click", {"selector": "#act", "tabId": tab_id, "includeSnapshot": False})
+        self.assert_error(result, "content_unavailable", True)
+        self.assertEqual(result["state"]["reason"], "no_receiver")
+        self.assert_hits("wake-silent", 0)
+
+        # Once the tab routes messages again, the repeated click lands exactly once.
+        self.assertEqual(self.pin_pending(tab_id, False), {"pending": None, "pinned": False})
+        self.assert_ok(self.call("/api/click", {"selector": "#act", "tabId": tab_id, "includeSnapshot": False}))
+        self.assert_hits("wake-silent", 1)
+        self.assert_hits("wake-silent-other", 0, settle=0)
+
+    def test_wake_is_ready_once_message_routing_returns(self):
+        # Issue #291 (PENDING_FAULT): the wake keeps checking the loaded page, so it becomes ready
+        # when the tab routes messages again before the deadline, and the first click lands once.
+        tab_id = self.discard_with_pinned_pending("wake-routing")
+        result = {}
+        thread = threading.Thread(target=lambda: result.update(value=self.call("/api/wake-tab", {"tabId": tab_id})),
+                                  daemon=True)
+        thread.start()
+        time.sleep(3)  # the page loads within this; its pings go unanswered
+        self.assertNotIn("value", result, "the wake reported a result while no ping was answered")
+        self.assertEqual(self.pin_pending(tab_id, False), {"pending": None, "pinned": False})
+        thread.join(timeout=30)
+        self.assertEqual(result.get("value"), {"ok": True, "woken": True, "ready": True})
+        self.assert_ok(self.call("/api/click", {"selector": "#act", "tabId": tab_id, "includeSnapshot": False}))
+        self.assert_hits("wake-routing", 1)
+        self.assert_hits("wake-routing-other", 0, settle=0)
 
     def test_first_click_after_wake_recovers_from_missing_receiver(self):
         # Issue #169: deterministically lose delivery after a real readiness ping. The

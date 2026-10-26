@@ -16,9 +16,13 @@ function event() {
 
 const flush = () => new Promise(resolve => setImmediate(resolve));
 const URL_ = 'https://example.com/doc';
+const CONTENT_VERSION = Number(/const CONTENT_VERSION = (\d+);/
+  .exec(fs.readFileSync('extension/content/content.js', 'utf8'))[1]);
+const MISSING_RECEIVER = 'Could not establish connection. Receiving end does not exist.';
 
 // A discarded tab 7. onReload(h) runs inside tabs.reload. The page answers the content script
 // once h.scriptable is true; until then injection fails as it does on Gecko's placeholder.
+// h.receiver false: injection succeeds but nothing answers (#291); h.ping replaces a ping's answer.
 function harness(onReload = () => {}) {
   let now = 0, nextId = 0;
   const timers = new Map();
@@ -28,6 +32,12 @@ function harness(onReload = () => {}) {
   const h = {
     reloads: 0,
     scriptable: false,
+    receiver: true,
+    injections: 0,
+    pings: 0,
+    // Messages other than pings that reached the page.
+    sent: [],
+    ping: () => ({ ok: true, version: CONTENT_VERSION }),
     onPing: () => {},
     send: command => context.handleCommand({ includeSnapshot: false, ...command })
       .then(result => JSON.parse(JSON.stringify(result))),
@@ -68,11 +78,18 @@ function harness(onReload = () => {}) {
       },
       reload: async () => { h.reloads++; await onReload(h); },
       sendMessage: async (id, msg) => {
-        if (!h.scriptable) throw new Error('Could not establish connection. Receiving end does not exist.');
+        if (msg.action === 'ping') h.pings++;
+        if (!h.scriptable || !h.receiver) throw new Error(MISSING_RECEIVER);
+        if (msg.action === 'userActivity') return { active: false };
+        if (msg.action !== 'ping') {
+          h.sent.push(msg.action);
+          return { ok: true };
+        }
         h.onPing();
-        return { ok: true, version: Infinity };
+        return h.ping();
       },
       executeScript: async () => {
+        h.injections++;
         if (!h.scriptable) throw new Error('Missing host permission for the tab');
       },
     },
@@ -247,6 +264,87 @@ async function main() {
   await closing.tick(100);
   assert.deepEqual(await closed.result, { error: 'Invalid tab ID: 7' });
   closing.assertClean();
+
+  // #291: the woken page loaded and accepts injection, but nothing answers a ping (Gecko refuses
+  // messages to a tab it still marks pending; the page's content script is already initialized).
+  // A successful injection is not readiness: each check injects and pings again until the deadline.
+  const silent = harness(h => { restorePlaceholder(h); loadResponse(h, 200); h.scriptable = true; h.receiver = false; });
+  const silentWake = start(silent, { action: 'wakeTab', tabId: 7 });
+  await silent.tick(14999);
+  assert.equal(silentWake.settled, false, 'an injected page that does not answer is not ready');
+  assert.ok(silent.injections > 10, `checks repeat until the deadline (${silent.injections} injections)`);
+  await silent.tick(1);
+  assert.equal(silentWake.settled, true, 'the wake ends at its 15 s deadline');
+  assert.deepEqual(await silentWake.result, { ok: true, woken: true, ready: false, timedOut: true,
+    state: { tabId: 7, url: URL_, status: 'complete', reason: 'no_receiver' } });
+  silent.assertClean();
+  // A command afterwards is not sent: it fails before dispatch, so it may be repeated.
+  const click = start(silent, { action: 'click', tabId: 7, selector: '#go' });
+  await silent.tick(600);
+  assert.equal(click.settled, true, 'the confirmation is bounded');
+  assert.deepEqual(await click.result, { error: 'The content script was injected but the page did not answer',
+    code: 'content_unavailable', retryable: true,
+    hint: 'The page did not answer; inspect it with browser_snapshot before repeating the action.',
+    state: { tabId: 7, url: URL_, status: 'complete', reason: 'no_receiver' } });
+  assert.deepEqual(silent.sent, [], 'no action reached the page while it did not answer');
+  // Once the page answers again, the repeated command is sent exactly once.
+  silent.receiver = true;
+  const retried = start(silent, { action: 'click', tabId: 7, selector: '#go' });
+  await silent.tick(0);
+  assert.deepEqual(await retried.result, { ok: true });
+  assert.deepEqual(silent.sent, ['click']);
+  silent.assertClean();
+
+  // A receiver that starts answering during the wake ends it as ready at the next check.
+  const recovering = harness(h => { restorePlaceholder(h); loadResponse(h, 200); h.scriptable = true; h.receiver = false; });
+  const recoveringWake = start(recovering, { action: 'wakeTab', tabId: 7 });
+  await recovering.tick(3000);
+  assert.equal(recoveringWake.settled, false);
+  recovering.receiver = true;
+  await recovering.tick(700);
+  assert.equal(recoveringWake.settled, true, 'ready at the next check');
+  assert.deepEqual(await recoveringWake.result, { ok: true, woken: true, ready: true });
+  assert.deepEqual(recovering.sent, [], 'waking sends no action');
+  recovering.assertClean();
+
+  // Only the current content script counts: an older version's answer, or an answer without
+  // ok, is not readiness, even after injecting.
+  for (const answer of [{ ok: true, version: CONTENT_VERSION - 1 }, { version: CONTENT_VERSION }, null]) {
+    const old = harness(h => { restorePlaceholder(h); loadResponse(h, 200); h.scriptable = true; });
+    old.ping = () => answer;
+    const oldWake = start(old, { action: 'wakeTab', tabId: 7 });
+    await old.tick(15100);
+    assert.deepEqual(await oldWake.result, { ok: true, woken: true, ready: false, timedOut: true,
+      state: { tabId: 7, url: URL_, status: 'complete', reason: 'no_receiver' } }, JSON.stringify(answer));
+    old.assertClean();
+  }
+
+  // A ping that never answers cannot hold the wake past its deadline.
+  const hung = harness(h => { restorePlaceholder(h); loadResponse(h, 200); h.scriptable = true; });
+  hung.ping = () => new Promise(() => {});
+  const hungWake = start(hung, { action: 'wakeTab', tabId: 7 });
+  await hung.tick(14999);
+  assert.equal(hungWake.settled, false);
+  await hung.tick(1);
+  assert.equal(hungWake.settled, true, 'each ping ends by the deadline');
+  assert.deepEqual(await hungWake.result, { ok: true, woken: true, ready: false, timedOut: true,
+    state: { tabId: 7, url: URL_, status: 'complete', reason: 'no_receiver' } });
+  // The last check's ping took the remaining time, so no confirming ping followed its injection:
+  // the reason comes from the check before it.
+  assert.ok(hung.pings > 2, `pings are retried (${hung.pings})`);
+  hung.assertClean();
+
+  // The reason is only reported for a page that was checked: a placeholder that is never
+  // replaced still times out without one (above), and a page that starts loading again after a
+  // silent check reports its actual state.
+  const restarted = harness(h => { restorePlaceholder(h); loadResponse(h, 200); h.scriptable = true; h.receiver = false; });
+  const restartedWake = start(restarted, { action: 'wakeTab', tabId: 7 });
+  await restarted.tick(14000);
+  restarted.update({ status: 'loading' });
+  await restarted.tick(1100);
+  assert.deepEqual(await restartedWake.result, { ok: true, woken: true, ready: false, timedOut: true,
+    state: { tabId: 7, url: URL_, status: 'loading' } });
+  restarted.assertClean();
 
   console.log('wake_tab: all tests passed');
 }
