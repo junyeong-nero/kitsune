@@ -151,6 +151,8 @@ function event() {
 }
 
 const flush = () => new Promise(resolve => setImmediate(resolve));
+const CONTENT_VERSION = Number(/const CONTENT_VERSION = (\d+);/
+  .exec(fs.readFileSync('extension/content/content.js', 'utf8'))[1]);
 
 // A fake setTimeout/clearTimeout and Date.now; tick(ms) runs the timers due within ms.
 function fakeClock() {
@@ -183,6 +185,8 @@ function background(tabs, content, clock = { setTimeout, clearTimeout, Date }) {
   const injected = [];
   const pinged = [];
   let receiverMissing = false;
+  // A frozen page keeps whatever content script it has: an injection changes nothing (#291).
+  let contentFrozen = false;
   let contentVersion = Infinity;
   let injectError = null;
   let requests = 0;
@@ -209,7 +213,9 @@ function background(tabs, content, clock = { setTimeout, clearTimeout, Date }) {
       executeScript: async id => {
         injected.push(id);
         if (injectError) throw new Error(injectError);
+        if (contentFrozen) return;
         receiverMissing = false;
+        contentVersion = Math.max(contentVersion, CONTENT_VERSION);
       },
     },
     runtime: { onMessage: event(), onStartup: event(), onInstalled: event() },
@@ -224,6 +230,8 @@ function background(tabs, content, clock = { setTimeout, clearTimeout, Date }) {
   return {
     sent, injected, pinged,
     removeReceiver: () => { receiverMissing = true; },
+    restoreReceiver: () => { receiverMissing = false; },
+    freezeContent: frozen => { contentFrozen = frozen; },
     setContentVersion: version => { contentVersion = version; },
     statusWaiters: () => vm.runInContext('mainFrameStatusWaiters.size', context),
     failInjection: message => { injectError = message; },
@@ -337,9 +345,9 @@ async function testMissingReceiverRecovery() {
   }, clock);
   const command = { action: 'click', selector: '#go', includeSnapshot: false };
   const recovered = h.send(command);
-  await clock.tick(150);
+  await clock.tick(0);
   assert.deepEqual(await recovered, { ok: true });
-  assert.deepEqual(h.pinged, [1, 1], 'readiness is checked again on the original tab');
+  assert.deepEqual(h.pinged, [1, 1, 1], 'readiness is checked again on the original tab and confirmed after injecting');
   assert.deepEqual(h.injected, [1], 'the vanished receiver is reinjected');
   assert.deepEqual(h.sent, [command, command].map(msg => ({ tabId: 1, ...msg })),
     'the action and target are unchanged despite a focus change');
@@ -387,6 +395,55 @@ async function testMissingReceiverRecovery() {
     assert.equal(result.code, { closed: 'tab_closed', restricted: 'restricted_page', unloaded: 'tab_unloaded' }[change]);
     assert.equal(h.sent.length, 1, 'recovery validates the tab and injection before resending');
   }
+}
+
+// Issue #291: an injection that succeeds is not a receiver. When nothing answers the confirming
+// pings, the command is not sent and fails as retryable, classified by the tab's state.
+async function testNoReceiverAfterInjection() {
+  const tabs = { 1: page(1) };
+  const clock = fakeClock();
+  const h = background(tabs, () => ({ ok: true }), clock);
+  const click = { action: 'click', tabId: 1, selector: '#go' };
+  const settle = async command => {
+    let result;
+    h.send(command).then(r => { result = r; });
+    await clock.tick(600);
+    assert.ok(result, 'the confirmation is bounded');
+    return result;
+  };
+  h.removeReceiver();
+  h.freezeContent(true);
+  const silent = await settle(click);
+  assert.deepEqual(silent, { error: 'The content script was injected but the page did not answer',
+    code: 'content_unavailable', retryable: true,
+    hint: 'The page did not answer; inspect it with browser_snapshot before repeating the action.',
+    state: { tabId: 1, url: 'https://example.com/1', status: 'complete', reason: 'no_receiver' } });
+  assert.deepEqual(h.injected, [1], 'injected once per command');
+  assert.ok(h.pinged.length > 2 && h.pinged.length <= 12, `bounded confirming pings (${h.pinged.length})`);
+  // A loading or discarded tab explains the silence by its state.
+  tabs[1].status = 'loading';
+  assert.deepEqual(Object.values(await settle(click)).slice(1, 3), ['navigating', true]);
+  tabs[1] = page(1, { discarded: true });
+  const unloaded = await settle(click);
+  assert.deepEqual([unloaded.code, unloaded.retryable, unloaded.state.reason], ['tab_unloaded', true, undefined]);
+  tabs[1] = page(1);
+  // An answer from an older content script that the injection did not replace is not readiness.
+  h.restoreReceiver();
+  h.setContentVersion(CONTENT_VERSION - 1);
+  assert.equal((await settle(click)).state.reason, 'no_receiver');
+  assert.deepEqual(h.sent, [], 'no command reached a page that did not answer');
+  // The receiver answering within the confirmation window sends the command once.
+  h.setContentVersion(CONTENT_VERSION);
+  h.removeReceiver();
+  let result;
+  h.send(click).then(r => { result = r; });
+  await clock.tick(120);
+  assert.equal(result, undefined, 'still confirming');
+  h.restoreReceiver();
+  await clock.tick(100);
+  assert.deepEqual(result, { ok: true });
+  assert.deepEqual(h.sent.map(msg => msg.action), ['click']);
+  assert.equal(clock.timers.size, 0);
 }
 
 async function testEmptyErrorPage() {
@@ -582,14 +639,25 @@ async function testFocusChangeKeepsTarget() {
   assert.deepEqual(h.sent.map(msg => [msg.action, msg.tabId]), [['click', 1], ['getSnapshot', 1]]);
 }
 
+// A command that never settles leaves node with nothing to run, and it would exit cleanly.
+let finished = false;
+process.on('exit', () => {
+  if (!finished && !process.exitCode) {
+    console.error('action_errors: a test never finished');
+    process.exitCode = 1;
+  }
+});
+
 (async () => {
   await testContentErrors();
   await testNotRenderedWarnings();
   await testBackgroundErrors();
   await testMissingReceiverRecovery();
+  await testNoReceiverAfterInjection();
   await testEmptyErrorPage();
   await testErrorPageWaitsForLateStatus();
   await testErrorPageClassification();
   await testFocusChangeKeepsTarget();
+  finished = true;
   console.log('action_errors: all tests passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

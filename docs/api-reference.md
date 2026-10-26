@@ -426,7 +426,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `tab_closed` | The target tab no longer exists | true |
 | `tab_unloaded` | The tab is discarded and its page cannot be reached; use `browser_wake_tab` | true |
 | `restricted_page` | Browser-internal page (`about:`, `moz-extension:`, …) | true |
-| `content_unavailable` | The page's content script could not be injected or did not answer | true before dispatch; false for writes after |
+| `content_unavailable` | The page's content script could not be injected or did not answer. `state.reason: "no_receiver"`: the injection succeeded but no ping from the current content script was answered within 0.5 s, so nothing was sent | true before dispatch; false for writes after |
 | `error_page` | A loaded `http(s)` page refused the content script: the browser shows its own document, such as an error response with an empty body. `state` adds `title` and, when the extension saw the response, `httpStatus`. Nothing was dispatched, but reads fail the same way until the tab navigates; for a 4xx/5xx status, `browser_page_text` instead returns an empty result (`text: ""`, `empty: true`, `httpStatus`, `tabId`, `url`, `title`) | false |
 | `extension_disconnected` | The extension is not connected, reconnected before sending, or disconnected while waiting (`state.connected`) | true if not sent; false for writes after |
 | `timeout` | The bridge sent the command but no reply arrived in time (`state.timeoutSeconds`); from the MCP server, the bridge did not answer | false for writes (MCP: POST) |
@@ -2214,6 +2214,14 @@ command can reach the page. Two results report `ready: false`:
   viewer or an error response with an empty body. Commands fail with `error_page`.
 - `{ "ok": true, "woken": true, "ready": false, "timedOut": true, "state": { "tabId", "url", "status" } }`:
   the page did not become ready within 15 s; `state` is the last observed state.
+  `state.reason: "no_receiver"` means the last check found the reloaded page loaded and
+  accepting the content script, but nothing answered its ping. While the page stays silent,
+  commands fail with `content_unavailable` (`state.reason: "no_receiver"`) before anything is sent.
+
+Ready means the content script answered a ping after the load, not that an injection
+succeeded. Until the deadline, each check injects and pings again, so a page that starts
+answering late still ends the wait as ready. Each ping waits at most 1 s; the injection is
+one browser call whose own duration the deadline cannot cut short.
 
 ## Interaction (POST)
 

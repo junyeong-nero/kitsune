@@ -1150,15 +1150,19 @@ async function wakeTab(tabId) {
     const since = Date.now();
     const deadline = since + WAKE_TAB_TIMEOUT_MS;
     await browser.tabs.reload(tabId);
-    while (true) {
-      const page = await wokenPageState(tabId, since);
+    // The last completed check; one the deadline cut short observed nothing and keeps it.
+    let page = {};
+    while (Date.now() < deadline) {
+      page = await wokenPageState(tabId, since, deadline) ?? page;
       if (page.ready) return { ok: true, woken: true, ready: true };
       if (page.unscriptable) return { ok: true, woken: true, ready: false, unscriptable: true, state: page.state };
-      if (Date.now() >= deadline) {
-        return { ok: true, woken: true, ready: false, timedOut: true, state: await tabState(tabId) };
-      }
-      await new Promise(r => setTimeout(r, WAKE_TAB_POLL_MS));
+      const remaining = deadline - Date.now();
+      if (remaining > 0) await new Promise(r => setTimeout(r, Math.min(WAKE_TAB_POLL_MS, remaining)));
     }
+    const state = await tabState(tabId);
+    // The last check found the woken page loaded, but nothing answered after injection.
+    return { ok: true, woken: true, ready: false, timedOut: true,
+      state: page.noReceiver && state ? { ...state, reason: 'no_receiver' } : state };
   } catch (e) {
     return { error: e.message };
   }
@@ -1169,13 +1173,16 @@ async function wakeTab(tabId) {
 // reached it would be lost with it. So the woken page counts only once the tab reported loading
 // after the wake (`since`), then complete. It is ready when it answers the content script and
 // is still that complete load afterwards; it is final (unscriptable) when it refuses injection.
-async function wokenPageState(tabId, since) {
+// A page that accepts injection but does not answer is not ready (noReceiver); the next check
+// tries again, until the wake's deadline. null: the deadline left no time for a confirming ping.
+async function wokenPageState(tabId, since, deadline) {
   const tab = await browser.tabs.get(tabId);
   const load = tabLoads.get(tabId);
   if (tab.discarded || tab.status !== 'complete' || !(load?.at >= since && load.complete)) return {};
   try {
-    await ensureContentScript(tabId);
-  } catch {
+    await ensureContentScript(tabId, deadline);
+  } catch (e) {
+    if (e instanceof NoContentReceiver) return e.pings ? { noReceiver: true } : null;
     const httpStatus = await waitForHttpStatus(tabId, tab.url, since);
     return { unscriptable: true,
       state: { ...await tabState(tabId), title: tab.title, ...(httpStatus ? { httpStatus } : {}) } };
@@ -1349,14 +1356,51 @@ async function withTabState(tabId, response) {
   return { ...response, state };
 }
 
-// Injects the content script unless the page already runs the current one; throws if it cannot.
-async function ensureContentScript(tabId) {
-  try {
-    const ping = await browser.tabs.sendMessage(tabId, { action: 'ping' });
-    if (ping && ping.version >= EXPECTED_CONTENT_VERSION) return;
-  } catch {}
+// A successful injection does not prove a receiver (#291). For example, Gecko refuses every message
+// to a tab it marks pending while injection still succeeds, finding the content script initialized.
+// pings: how many confirming pings went unanswered (none when the deadline left no time).
+class NoContentReceiver extends Error {
+  constructor(message, pings) {
+    super(message);
+    this.pings = pings;
+  }
+}
+
+// With a deadline (wakeTab), how long one ping may wait for its answer.
+const CONTENT_PING_TIMEOUT_MS = 1000;
+// After an injection, how long the content script has to answer a ping, polling this often.
+const CONTENT_CONFIRM_MS = 500;
+const CONTENT_CONFIRM_POLL_MS = 50;
+
+// Whether the tab's current document answers a ping from the current content script, within
+// budgetMs (Infinity waits for the answer). Inactive documents never answer.
+async function pingContent(tabId, budgetMs) {
+  if (!(budgetMs > 0)) return false;
+  const ping = browser.tabs.sendMessage(tabId, { action: 'ping' }).catch(() => null);
+  let timer;
+  const reply = budgetMs === Infinity ? await ping
+    : await Promise.race([ping, new Promise(resolve => { timer = setTimeout(() => resolve(null), budgetMs); })]);
+  clearTimeout(timer);
+  return reply?.ok === true && reply.version >= EXPECTED_CONTENT_VERSION;
+}
+
+// Injects the content script unless the page already answers, then confirms that it answers.
+// Throws the injection's error if the page refuses it, or NoContentReceiver if nothing answers.
+// With a deadline, every ping ends by it; the injection is one browser call it cannot cut short.
+// Without one, the first ping waits for its answer, as a busy page answers late.
+async function ensureContentScript(tabId, deadline = Infinity) {
+  const firstBudget = deadline === Infinity ? Infinity : Math.min(CONTENT_PING_TIMEOUT_MS, deadline - Date.now());
+  if (await pingContent(tabId, firstBudget)) return;
   await browser.tabs.executeScript(tabId, { file: '/content/content.js' });
-  await new Promise(r => setTimeout(r, 150));
+  const confirmBy = Math.min(Date.now() + CONTENT_CONFIRM_MS, deadline);
+  let pings = 0;
+  while (Date.now() < confirmBy) {
+    pings++;
+    if (await pingContent(tabId, confirmBy - Date.now())) return;
+    if (confirmBy - Date.now() <= CONTENT_CONFIRM_POLL_MS) break;
+    await new Promise(r => setTimeout(r, CONTENT_CONFIRM_POLL_MS));
+  }
+  throw new NoContentReceiver('The content script was injected but the page did not answer', pings);
 }
 
 const MISSING_CONTENT_RECEIVER = 'Could not establish connection. Receiving end does not exist.';
@@ -1564,7 +1608,11 @@ async function forwardToContent(action, params) {
     try {
       await ensureContentScript(tabId);
     } catch (e) {
-      return await injectionFailure(tabId, e);
+      if (!(e instanceof NoContentReceiver)) return await injectionFailure(tabId, e);
+      // Nothing was sent; the tab's state explains the silence where it can.
+      const failure = await tabFailure(tabId, e.message, false);
+      if (failure.code === 'content_unavailable') failure.state.reason = 'no_receiver';
+      return failure;
     }
 
     const expanded = expandShortRefs(params, tabId);
