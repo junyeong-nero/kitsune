@@ -268,7 +268,8 @@ class BridgeClient:
                     headers[PROTECT_USER_TABS_HEADER] = "1"
                 if self.extra_headers:
                     headers.update(self.extra_headers())
-                r = httpx.request(method, f"{BRIDGE}{endpoint}", headers=headers, **kwargs)
+                r = httpx.request(method, f"{BRIDGE}{endpoint}", headers=headers,
+                                  verify=bridge_control.tls_context(), **kwargs)
                 if r.status_code == 401:
                     return _token_mismatch()
                 try:

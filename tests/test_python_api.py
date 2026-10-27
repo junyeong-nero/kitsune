@@ -67,7 +67,7 @@ class FakeBridge:
         self.replies = {**REPLIES, **replies}
         self.requests = []
 
-    def __call__(self, method, url, headers=None, json=None, timeout=None):
+    def __call__(self, method, url, headers=None, json=None, timeout=None, verify=None):
         route = url.removeprefix(bridge_client.BRIDGE)
         self.requests.append(SimpleNamespace(method=method, route=route, headers=headers, body=json, timeout=timeout))
         reply = self.replies.get(route, {"ok": True})
