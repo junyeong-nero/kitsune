@@ -404,6 +404,9 @@ function connect() {
     };
     
     ws.onclose = () => {
+      // A replaced socket closes after connect() opened the next one; cleaning up then would
+      // close its replacement and drop the bridge connection a second later (#299).
+      if (ws !== socket) return;
       console.log('[Kitsune] Disconnected');
       cleanup();
       scheduleReconnect();
@@ -2171,8 +2174,14 @@ async function clickAndWaitNavigation(tabId, selector, timeout, first) {
 
 // == Init ==
 connect();
-browser.runtime.onStartup.addListener(connect);
+// onStartup and onInstalled fire just after the connect() above, on browser start and on
+// install or update. Connecting again would replace a connection that is opening or open (#299).
+function connectUnlessConnected() {
+  if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) return;
+  connect();
+}
+browser.runtime.onStartup.addListener(connectUnlessConnected);
 browser.runtime.onInstalled.addListener(() => {
   console.log('[Kitsune] Extension installed');
-  connect();
+  connectUnlessConnected();
 });
