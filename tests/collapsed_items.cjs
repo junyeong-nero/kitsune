@@ -1,6 +1,7 @@
 // Run with: node tests/collapsed_items.cjs (no browser or npm dependencies).
 // Items a snapshot collapses into "- … N more similar items" stay reachable (#237): the steps
-// of the issue on gallery ui-table, a table of 8 rows per page whose 8th row is 마이크.
+// of the issue on gallery ui-table, with 12 rows per page (a run hiding at most five items is
+// listed in full, so ui-table's 8 rows no longer collapse); the 8th row is 마이크.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
@@ -31,9 +32,10 @@ const h = (tagName, attrs, ...nodes) => new Element(tagName, attrs, nodes);
 
 const PAGES = [
   [['노트북 거치대', 12], ['무선 마우스', 30], ['기계식 키보드', 8], ['USB 허브', 15], ['모니터 암', 7],
-    ['웹캠', 9], ['헤드셋', 11], ['마이크', 3]],
+    ['웹캠', 9], ['헤드셋', 11], ['마이크', 3], ['외장 SSD', 16], ['충전기', 21], ['멀티탭', 13], ['LED 조명', 17]],
   [['스피커', 2], ['마우스패드', 40], ['케이블 정리함', 6], ['노트북 파우치', 14], ['손목 받침대', 22],
-    ['태블릿 펜', 4], ['독 스테이션', 10], ['HDMI 케이블', 25]],
+    ['태블릿 펜', 4], ['독 스테이션', 10], ['HDMI 케이블', 25], ['데스크 매트', 18], ['북엔드', 19], ['모니터 조명', 23],
+    ['USB-C 젠더', 26]],
 ];
 const checkboxes = [];
 const rows = PAGES[0].map(([name, stock]) => {
@@ -55,7 +57,7 @@ const header = h('TR', {}, ...['선택', '상품', '분류', '가격', '재고']
 const pager = [1, 2, 3].map(page => new Element('BUTTON', {}, [String(page)], {
   value: '', onEvent: event => { if (event.type === 'keydown' && event.key === 'Enter') showPage(page - 1); },
 }));
-// Adds a 9th row past the five shown: only the run's hidden count changes.
+// Adds a 13th row past the five shown: only the run's hidden count changes.
 function addRow() {
   const checkbox = new Element('INPUT', { 'aria-label': '추가 상품 선택' }, [], { type: 'checkbox', checked: false, value: 'on' });
   const row = h('TR', {}, h('TD', {}, checkbox), h('TD', {}, '추가 상품'), h('TD', {}, '사무용품'), h('TD', {}, '₩10,000'),
@@ -69,10 +71,10 @@ const addButton = new Element('BUTTON', {}, ['행 추가'], {
 });
 const main = h('MAIN', {}, h('H1', {}, '재고 관리'), h('TABLE', {}, h('THEAD', {}, header), tbody),
   h('NAV', {}, ...pager, addButton));
-// A 250-row log, and seven groups of seven items each.
+// A 250-row log, and seven groups of twelve items each.
 const big = h('TBODY', {}, ...Array.from({ length: 250 }, (_, i) => h('TR', {}, h('TD', {}, `행 ${i + 1}`), h('TD', {}, '기록'))));
 const groups = h('SECTION', {}, ...Array.from({ length: 7 }, (_, g) => h('DIV', {}, h('H2', {}, `그룹 ${g + 1}`),
-  h('UL', {}, ...Array.from({ length: 7 }, (_, i) => h('LI', {}, h('DIV', {}, `항목 ${g + 1}-${i + 1}`)))))));
+  h('UL', {}, ...Array.from({ length: 12 }, (_, i) => h('LI', {}, h('DIV', {}, `항목 ${g + 1}-${i + 1}`)))))));
 const body = h('BODY', {}, main, h('ASIDE', {}, h('TABLE', {}, big), groups));
 
 let listener;
@@ -122,14 +124,14 @@ const rowLines = snapshot => snapshot.split('\n').filter(line => line.includes('
   const page = await send('getSnapshot');
   assert.deepEqual(rowLines(page.snapshot).map(line => line.match(/"(.+) 선택"/)[1]), PAGES[0].slice(0, 5).map(([name]) => name));
   const [, omitted, scopeRef] = page.snapshot.match(MARKER);
-  assert.equal(omitted, '3');
+  assert.equal(omitted, '7');
   assert.doesNotMatch(page.snapshot, /마이크/);
   assert.match(page.snapshot, /- button "1" \[ref=e\d+\]/, 'the marker is followed by the rest of the page');
 
   // 2. browser_find reads the snapshot without collapse: 마이크 has refs that actions take.
   const found = await send('getSnapshot', { collapse: false });
   assert.doesNotMatch(found.snapshot, /more similar items/);
-  assert.equal(rowLines(found.snapshot).length, 8);
+  assert.equal(rowLines(found.snapshot).length, 12);
   const matches = found.snapshot.split('\n').filter(line => line.includes('마이크'));
   assert.deepEqual(matches.map(line => line.trim().replace(/\[ref=e\d+\]/, '[ref]')),
     ['- checkbox "마이크 선택" [ref] [value="on" checked=false]', '- text "마이크"']);
@@ -142,7 +144,7 @@ const rowLines = snapshot => snapshot.split('\n').filter(line => line.includes('
   for (const scope of [{ ref: scopeRef }, { selector: 'tbody' }]) {
     const scoped = await send('getSnapshot', scope);
     assert.doesNotMatch(scoped.snapshot, /more similar items/, JSON.stringify(scope));
-    assert.equal(rowLines(scoped.snapshot).length, 8, JSON.stringify(scope));
+    assert.equal(rowLines(scoped.snapshot).length, 12, JSON.stringify(scope));
     assert.ok(scoped.snapshot.includes(`checkbox "마이크 선택" [ref=${micRef}]`), 'refs are kept');
     assert.match(scoped.snapshot, /- text "3"/);
     assert.doesNotMatch(scoped.snapshot, /재고 관리|button "1"/, 'only the container');
@@ -160,10 +162,10 @@ const rowLines = snapshot => snapshot.split('\n').filter(line => line.includes('
   const paged = await command({ action: 'keypress', ref: two, key: 'Enter' });
   assert.equal(paged.snapshot_delta, true);
   assert.deepEqual(rowLines(paged.snapshot).map(line => line.match(/"(.+) 선택"/)[1]), PAGES[1].slice(0, 5).map(([name]) => name));
-  assert.deepEqual(paged.snapshot.match(MARKER).slice(1), ['3', scopeRef]);
+  assert.deepEqual(paged.snapshot.match(MARKER).slice(1), ['7', scopeRef]);
   assert.ok(paged.snapshot.trimEnd().split('\n').findIndex(line => MARKER.test(line)) >
     paged.snapshot.split('\n').findIndex(line => line.includes('손목 받침대')), 'the marker follows its rows');
-  assert.equal(rowLines((await send('getSnapshot', { ref: scopeRef })).snapshot).at(-1).match(/"(.+) 선택"/)[1], 'HDMI 케이블');
+  assert.equal(rowLines((await send('getSnapshot', { ref: scopeRef })).snapshot).at(-1).match(/"(.+) 선택"/)[1], 'USB-C 젠더');
   // A delta that touches no row of the run leaves its marker out.
   const unchanged = await command({ action: 'keypress', ref: two, key: 'Escape' });
   assert.equal(unchanged.snapshot_delta, true);
@@ -172,7 +174,7 @@ const rowLines = snapshot => snapshot.split('\n').filter(line => line.includes('
   const add = page.snapshot.match(/- button "행 추가" \[ref=(e\d+)\]/)[1];
   const added = await command({ action: 'keypress', ref: add, key: 'Enter' });
   assert.equal(added.snapshot_delta, true);
-  assert.deepEqual(added.snapshot.match(MARKER).slice(1), ['4', scopeRef]);
+  assert.deepEqual(added.snapshot.match(MARKER).slice(1), ['8', scopeRef]);
   assert.deepEqual(rowLines(added.snapshot), []);
 
   // A scoped snapshot lists at most SCOPED_ITEM_LIMIT (100) items of its own; browser_find
@@ -191,12 +193,12 @@ const rowLines = snapshot => snapshot.split('\n').filter(line => line.includes('
   assert.equal([...everything.snapshot.matchAll(ROW)].length, 250);
   assert.match(everything.snapshot, /- text "행 250"/);
 
-  // A scope lists all seven of its own groups; each group's run of seven items still collapses.
+  // A scope lists all seven of its own groups; each group's run of twelve items still collapses.
   const scopedGroups = await send('getSnapshot', { selector: '#groups' });
   assert.equal(scopedGroups.snapshot.match(/heading "그룹 \d+"/g).length, 7);
   const nested = scopedGroups.snapshot.split('\n').filter(line => MARKER.test(line));
   assert.equal(nested.length, 7);
-  assert.ok(nested.every(line => line.match(MARKER)[1] === '2'));
+  assert.ok(nested.every(line => line.match(MARKER)[1] === '7'));
   assert.doesNotMatch(scopedGroups.snapshot, /항목 \d-6/);
   assert.equal(new Set(nested.map(line => line.match(MARKER)[2])).size, 7, 'each run names its own list');
 
