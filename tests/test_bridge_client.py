@@ -1,6 +1,7 @@
 """kitsune.bridge_client: the bridge connection the MCP server's tools use, without MCP code."""
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import logging
 import os
 import ssl
 import subprocess
@@ -39,6 +40,15 @@ class BridgeClientTests(unittest.TestCase):
                                 "KITSUNE_PROTECT_USER_TABS": "1"}, ["core,tabs", "draft", True])):
             with self.subTest(env=env):
                 self.assertEqual(json.loads(_run(code, env)), settings)
+
+    def test_mcp_server_quiets_only_its_per_call_info_logs(self):
+        # #298: one Rich-rendered INFO line each from the MCP server and httpx on every tool call.
+        code = ("import json, logging; from unittest.mock import patch; from kitsune import server\n"
+                "with patch.object(server._client, 'ensure_bridge', return_value=None), patch.object(server.mcp, 'run'):\n"
+                "    server.main()\n"
+                "print(json.dumps([logging.getLogger(name).getEffectiveLevel() for name in "
+                "('mcp.server.lowlevel.server', 'httpx', 'mcp.server.fastmcp')]))")
+        self.assertEqual(json.loads(_run(code)), [logging.WARNING, logging.WARNING, logging.INFO])
 
 
 class BridgeTlsContextTests(unittest.TestCase):
