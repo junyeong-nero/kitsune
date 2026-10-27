@@ -2013,6 +2013,9 @@ async def _send_to_extension_raw(action, params=None, timeout=30):
 # within a bounded time, that the caller's expected outcome actually happened.
 OUTCOME_TIMEOUT_MS = 5000
 OUTCOME_POLL_SECONDS = 0.2
+# The reads after an unmet outcome (tab state, opened tabs, the click hint) share this
+# allowance, which starts when the observation ends (#295).
+OUTCOME_DIAGNOSIS_SECONDS = 2
 _OUTCOME_CONDITIONS = ("url", "url_changed", "new_tab", "selector", "text", "text_gone")
 # A check that hit one of these may succeed on the next document, so keep polling.
 _OUTCOME_TRANSIENT_CODES = {"navigating", "content_unavailable"}
@@ -2076,15 +2079,20 @@ def _outcome_budget_seconds(spec):
     return spec["timeout"] / 1000 + 45
 
 
-async def _opened_tabs(tab_id):
-    """Tabs that tab_id opened since its last page action started ([] if unknown)."""
-    r = await send_to_extension("getOpenedTabs", {"tabId": tab_id}, timeout=10)
+async def _opened_tabs(tab_id, budget_s):
+    """Tabs that tab_id opened since its last page action started ([] if unknown or not
+    answered within budget_s)."""
+    r = await _reply_within("getOpenedTabs", {"tabId": tab_id}, budget_s)
     return (r.get("opened_tabs") or []) if isinstance(r, dict) else []
 
 
-async def _tab_state(tab_id):
-    """Current url/title of a tab, for outcome checks and failure state."""
-    tabs = await send_to_extension("getTabs", {}, timeout=10)
+async def _tab_state(tab_id, budget_s=None):
+    """Current url/title of a tab, for outcome checks and failure state; only the tabId when
+    unknown. With budget_s, the read answers within it (_reply_within)."""
+    if budget_s is None:
+        tabs = await send_to_extension("getTabs", {}, timeout=10)
+    else:
+        tabs = await _reply_within("getTabs", {}, budget_s)
     if not isinstance(tabs, dict) or tabs.get("error"):
         return {"tabId": tab_id}
     tab = next((t for t in tabs.get("tabs", []) if t.get("id") == tab_id), None)
@@ -2100,42 +2108,57 @@ async def _query_value(tab_id, selector):
     return r, (r.get("items") or [None])[0]
 
 
-async def _check_outcome(spec, tab_id, before, remaining_ms):
-    """One observation bounded by remaining_ms; returns (met, observed, final).
+def _outcome_source(spec):
+    """observed.source of the checks for spec."""
+    if "url" in spec or "url_changed" in spec:
+        return "tab"
+    return "tabs" if "new_tab" in spec else "page"
+
+
+async def _check_outcome(spec, tab_id, before, budget_s):
+    """One check; returns (met, observed, final), or None when it does not answer within
+    budget_s (_reply_within: the check's wait behind other commands on the tab included).
 
     before is the pre-dispatch observation: the tab URL for url_changed, or the
     first match's query item (None if absent) for value_changed.
 
     Page reads are single checks that the caller polls: a wait inside the page runs on
     its timers, which the browser throttles in background tabs, so it can end long
-    after remaining_ms.
+    after its timeout.
     """
-    wait_s = remaining_ms / 1000 + 5
-    waited = True  # a wait that ends unmet has used up the remaining time
     if "url" in spec or "url_changed" in spec:
-        # Tab metadata survives document replacement, unlike content-script reads.
+        # Tab metadata survives document replacement, unlike content-script reads. The wait
+        # runs in the extension until the last check's lead before the deadline (half of a
+        # shorter budget), leaving its reply that time to arrive.
         pattern = spec.get("url") or "^(?!%s$)" % _re.escape(before or "")
-        r = await send_to_extension("waitForUrl", {"tabId": tab_id, "pattern": pattern,
-                                                  "timeout": remaining_ms}, timeout=wait_s)
+        wait_ms = int(max(budget_s - PAGE_WAIT_LAST_READ_SECONDS, budget_s / 2) * 1000)
+        r = await _reply_within("waitForUrl", {"tabId": tab_id, "pattern": pattern,
+                                              "timeout": wait_ms}, budget_s)
+        if r is None:
+            return None
         observed = {"source": "tab", "url": r.get("url")}
         met = r.get("ok") is True
     elif "new_tab" in spec:
         # One read per poll: the extension records the tabs this tab opened.
-        waited = False
-        r = await send_to_extension("getOpenedTabs", {"tabId": tab_id}, timeout=10)
+        r = await _reply_within("getOpenedTabs", {"tabId": tab_id}, budget_s)
+        if r is None:
+            return None
         opened = r.get("opened_tabs") or []
         observed, met = {"source": "tabs", "opened_tabs": opened}, bool(opened)
     elif "text" in spec or "text_gone" in spec:
         # A 0 ms waitForText is a single read of the visible text.
-        waited = False
-        r = await send_to_extension("waitForText", {"tabId": tab_id, "text": spec.get("text"),
-                                                   "text_gone": spec.get("text_gone"),
-                                                   "timeout": 0}, timeout=10)
+        r = await _read_page_once("waitForText", {"tabId": tab_id, "text": spec.get("text"),
+                                                 "text_gone": spec.get("text_gone")}, budget_s)
+        if r is None:
+            return None
         met = r.get("ok") is True
         observed = {"source": "page", "textVisible": met if "text" in spec else not met}
     elif "value" in spec or "value_changed" in spec:
-        waited = False
-        r, item = await _query_value(tab_id, spec["selector"])
+        r = await _reply_within("query", {"tabId": tab_id, "selector": spec["selector"],
+                                         "fields": ["value"], "limit": 1}, budget_s)
+        if r is None:
+            return None
+        item = (r.get("items") or [None])[0]
         if item is None:
             observed, met = {"source": "page", "found": False}, False
         elif item.get("redacted"):
@@ -2153,9 +2176,10 @@ async def _check_outcome(spec, tab_id, before, remaining_ms):
             met = item.get("value") == spec["value"]
     else:
         # A 0 ms waitForElement is a single visibility check.
-        waited = False
-        r = await send_to_extension("waitForElement", {"tabId": tab_id, "selector": spec["selector"],
-                                                      "timeout": 0}, timeout=10)
+        r = await _read_page_once("waitForElement", {"tabId": tab_id, "selector": spec["selector"]},
+                                  budget_s)
+        if r is None:
+            return None
         visible = r.get("found") is True
         observed = {"source": "page", "visible": visible}
         met = r.get("found") is False if spec.get("gone") else visible
@@ -2164,36 +2188,50 @@ async def _check_outcome(spec, tab_id, before, remaining_ms):
         observed = {"source": observed["source"], "error": r["error"],
                     **({"code": r["code"]} if r.get("code") else {})}
         return False, observed, r.get("code") not in _OUTCOME_TRANSIENT_CODES
-    return met, observed, waited
+    return met, observed, False
 
 
 async def _observe_outcome(spec, tab_id, before, snapshot):
-    """Poll until the expected outcome is observed or spec['timeout'] ms pass."""
+    """Check until the expected outcome is observed or spec['timeout'] ms pass.
+
+    The checks are polled like a page wait's reads (_poll_reads): each answers by the
+    deadline or is not an observation, so the check ends near spec['timeout'] (#295). When
+    the check in progress at the deadline did not answer, the outcome is the last completed
+    check with observationIncomplete; when none answered, whether it happened is unknown.
+    """
     start = time.monotonic()
     # Reuse the post-action snapshot: text already in it needs no further read.
     if "text" in spec and isinstance(snapshot, str) and spec["text"] in snapshot:
         return {"met": True, "observed": {"source": "snapshot", "textVisible": True}, "elapsed": 0}
-    deadline = start + spec["timeout"] / 1000
-    while True:
-        remaining_ms = max(0, math.ceil((deadline - time.monotonic()) * 1000))
-        met, observed, final = await _check_outcome(spec, tab_id, before, remaining_ms)
-        if met or final or time.monotonic() >= deadline:
-            break
-        await asyncio.sleep(min(OUTCOME_POLL_SECONDS, max(0, deadline - time.monotonic())))
-    return {"met": met, "observed": observed, "elapsed": int((time.monotonic() - start) * 1000)}
+    timeout_s = spec["timeout"] / 1000
+    completed, incomplete = await _poll_reads(
+        start + timeout_s, timeout_s, OUTCOME_POLL_SECONDS,
+        lambda budget_s, last: _check_outcome(spec, tab_id, before, budget_s),
+        lambda check: check[0] or check[2])
+    elapsed = int((time.monotonic() - start) * 1000)
+    if completed is None:
+        observed = {"source": _outcome_source(spec), "code": "timeout",
+                    "error": f"No check answered within {spec['timeout']}ms, so whether the outcome "
+                             "happened is unknown"}
+        return {"met": False, "observed": observed, "elapsed": elapsed, "observationIncomplete": True}
+    met, observed, _ = completed
+    outcome = {"met": met, "observed": observed, "elapsed": elapsed}
+    if incomplete:
+        outcome["observationIncomplete"] = True
+    return outcome
 
 
-async def _click_target_visible(tab_id, params, result):
+async def _click_target_visible(tab_id, params, result, budget_s):
     """Whether the clicked element is still visible: the post-action snapshot's target_ref,
-    else, when no snapshot was taken, the request's ref or selector."""
+    else, when no snapshot was taken, the request's ref or selector. False when unknown or
+    not answered within budget_s."""
     target = result.get("target_ref")
     if not target and "snapshot" not in result:
         target = params.get("ref") or params.get("selector")
     if not target:
         return False
-    r = await send_to_extension("waitForElement", {"tabId": tab_id, "selector": target,
-                                                  "timeout": 1, "pollInterval": 100}, timeout=6)
-    return r.get("found") is True
+    r = await _read_page_once("waitForElement", {"tabId": tab_id, "selector": target}, budget_s)
+    return isinstance(r, dict) and r.get("found") is True
 
 
 # A zero-timeout page wait is one read, which may take up to this long (#292).
@@ -2203,22 +2241,61 @@ PAGE_WAIT_SINGLE_READ_SECONDS = 5
 PAGE_WAIT_LAST_READ_SECONDS = 0.1
 
 
-async def _read_page_once(action, params, budget_s):
-    """One single page read (timeout 0); None when it does not answer within budget_s.
+async def _reply_within(action, params, budget_s):
+    """The extension's reply to a command; None when it does not answer within budget_s.
 
-    The budget covers the whole read, including the wait for the tab's scheduler queue, so
-    a read cut off while queued is never dispatched, and a late reply is not accepted.
+    The budget covers the whole command, including the wait for the tab's scheduler queue, so
+    a command cut off while queued is never dispatched, and a late reply is not accepted.
     """
     if budget_s <= 0:
         return None  # asyncio.wait_for may still start a coroutine given no time
     try:
-        r = await asyncio.wait_for(send_to_extension(action, {**params, "timeout": 0}, timeout=budget_s),
-                                   budget_s)
+        r = await asyncio.wait_for(send_to_extension(action, params, timeout=budget_s), budget_s)
     except asyncio.TimeoutError:
         return None
     if isinstance(r, dict) and r.get("code") == "timeout":
         return None  # sent, but the reply did not arrive within the budget
     return r
+
+
+async def _read_page_once(action, params, budget_s):
+    """One single page read (timeout 0); None when it does not answer within budget_s."""
+    return await _reply_within(action, {**params, "timeout": 0}, budget_s)
+
+
+async def _poll_reads(deadline, allowance_s, poll_s, read, done):
+    """Poll read(budget_s, last) until done(reply), the deadline, or a read that does not answer.
+
+    Every read must answer by the deadline (read returns None when it does not), and no read
+    starts after it (#292). Reads are poll_s apart until the last, which starts
+    PAGE_WAIT_LAST_READ_SECONDS before the deadline (the whole of a shorter allowance_s), at
+    once after a read that ran into that time; an unmet last read waits out the deadline.
+    Returns (the last completed reply or None, whether a read was cut off at the deadline).
+    """
+    lead_s = min(PAGE_WAIT_LAST_READ_SECONDS, allowance_s)
+    last = allowance_s <= lead_s
+    completed, incomplete = None, False
+    while True:
+        remaining_s = deadline - time.monotonic()
+        if remaining_s <= 0 and completed is not None:
+            break  # a late poll timer: no read starts after the deadline
+        r = await read(remaining_s, last)
+        if r is None:
+            incomplete = True
+            break
+        completed = r
+        if done(r):
+            break
+        remaining_s = deadline - time.monotonic()
+        if last:
+            await asyncio.sleep(max(0, remaining_s))
+            break
+        if remaining_s <= 0:
+            break
+        to_last_s = remaining_s - lead_s
+        last = to_last_s <= poll_s
+        await asyncio.sleep(max(0, to_last_s) if last else poll_s)
+    return completed, incomplete
 
 
 async def _poll_page_wait(action, params):
@@ -2237,7 +2314,7 @@ async def _poll_page_wait(action, params):
     # A text wait's last read also says whether unmet text is an element's name, not
     # page text (#275); earlier reads skip that search.
     diagnose = action == "waitForText" and params.get("text") is not None
-    completed, incomplete = None, False
+    incomplete = False
     if timeout_ms <= 0:
         # No read fits a 0 ms deadline, so a zero timeout is one read with its own allowance.
         allowance_s = PAGE_WAIT_SINGLE_READ_SECONDS
@@ -2245,31 +2322,11 @@ async def _poll_page_wait(action, params):
             action, {**params, **({"diagnose": True} if diagnose else {})}, allowance_s)
     else:
         allowance_s = timeout_ms / 1000
-        lead_s = min(PAGE_WAIT_LAST_READ_SECONDS, allowance_s)
-        last = allowance_s <= lead_s
-        while True:
-            remaining_s = deadline - time.monotonic()
-            if remaining_s <= 0 and completed is not None:
-                break  # a late poll timer: no read starts after the deadline
-            r = await _read_page_once(
-                action, {**params, **({"diagnose": True} if diagnose and last else {})}, remaining_s)
-            if r is None:
-                incomplete = True
-                break
-            completed = r
-            if not isinstance(r, dict) or r.get("ok") is not False:
-                break
-            remaining_s = deadline - time.monotonic()
-            if last:
-                await asyncio.sleep(max(0, remaining_s))
-                break
-            if remaining_s <= 0:
-                break
-            # Reads are pollInterval apart until the last one, which starts lead_s before the
-            # deadline (at once after a read that ran into that time).
-            to_last_s = remaining_s - lead_s
-            last = to_last_s <= poll_s
-            await asyncio.sleep(max(0, to_last_s) if last else poll_s)
+        completed, incomplete = await _poll_reads(
+            deadline, allowance_s, poll_s,
+            lambda budget_s, last: _read_page_once(
+                action, {**params, **({"diagnose": True} if diagnose and last else {})}, budget_s),
+            lambda r: not isinstance(r, dict) or r.get("ok") is not False)
     elapsed = int((time.monotonic() - start) * 1000)
     if completed is None:
         allowance_ms = int(allowance_s * 1000)
@@ -2333,12 +2390,18 @@ async def _dispatch_with_expectation(action, params, spec, timeout):
     result["outcome"] = {"expected": expected, **outcome}
     if outcome["met"]:
         return result
-    state = await _tab_state(tab_id)
+    # The reads below share one allowance, and none starts once it is used up (#295).
+    diagnosis_deadline = time.monotonic() + OUTCOME_DIAGNOSIS_SECONDS
+
+    def diagnosis_left():
+        return diagnosis_deadline - time.monotonic()
+
+    state = await _tab_state(tab_id, diagnosis_left())
     result["outcome"]["state"] = state
     hint = ("The command was dispatched but the expected outcome did not happen; inspect the page "
             "with browser_snapshot before acting again.")
     # An outcome that happened in a tab the action opened is not a no-op.
-    opened = [] if "new_tab" in spec else await _opened_tabs(tab_id)
+    opened = [] if "new_tab" in spec else await _opened_tabs(tab_id, diagnosis_left())
     if opened:
         result["opened_tabs"] = opened
         ids = ", ".join(str(t.get("tabId")) for t in opened)
@@ -2348,11 +2411,18 @@ async def _dispatch_with_expectation(action, params, spec, timeout):
                 "repeating the action.")
     elif (result.get("warning") or {}).get("code") == "popup_blocked":
         hint = result["warning"]["hint"]
-    elif action == "click" and await _click_target_visible(tab_id, params, result):
+    elif action == "click" and await _click_target_visible(tab_id, params, result, diagnosis_left()):
         hint += (" The clicked element is still visible: the page may accept only trusted input, "
                  "and browser_trusted_click (needs the browse capability) is the alternative.")
+    error = f"Expected outcome not observed within {spec['timeout']}ms"
+    if outcome.get("observationIncomplete"):
+        # Not evidence that the action failed or that repeating it is safe (#295).
+        error += ("; no check finished in time, so whether it happened is unknown"
+                  if outcome["observed"].get("code") == "timeout" else
+                  "; the check in progress at the timeout did not finish, so this is the last "
+                  "completed check")
     result.update(_action_error(
-        f"Expected outcome not observed within {spec['timeout']}ms", "outcome_not_observed",
+        error, "outcome_not_observed",
         retryable=_safe_to_repeat(action), hint=hint, **state,
     ))
     result["ok"] = False

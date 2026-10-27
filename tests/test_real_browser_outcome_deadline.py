@@ -1,4 +1,4 @@
-"""Page waits end at their requested timeout in a throttled tab (issues #202 and #209).
+"""Page waits end at their requested timeout in a throttled tab (issues #202, #209 and #295).
 
 Covers an action's expect check and browser_wait_for's text and selector waits.
 
@@ -54,34 +54,49 @@ class RealBrowserOutcomeDeadlineTests(harness.RealBrowserTestCase):
                                           "expect": {**expect, "timeout": TIMEOUT_MS}})
         return result, (time.monotonic() - start) * 1000
 
-    def assert_unmet_near_deadline(self, result, wall_ms):
+    def assert_unmet_near_deadline(self, result, wall_ms, tab):
         self.assertEqual(result.get("code"), "outcome_not_observed", result)
         self.assertIs(result["dispatched"], True, result)
+        self.assertIs(result["retryable"], False, result)
         outcome = result["outcome"]
         self.assertIs(outcome["met"], False, result)
         self.assertNotIn("error", outcome["observed"], result)  # observed from the page, not a timeout
+        if "observationIncomplete" in outcome:
+            # A last check the throttled tab did not answer in time (#295) is reported as such.
+            self.assertIs(outcome["observationIncomplete"], True, result)
+            self.assertIn("the check in progress at the timeout did not finish", result["error"], result)
         self.assertGreaterEqual(outcome["elapsed"], TIMEOUT_MS, result)
         self.assertLess(outcome["elapsed"], TIMEOUT_MS + SLACK_MS, result)
         self.assertLess(wall_ms, TIMEOUT_MS + 3 * SLACK_MS, result)
+        # The reads after the check finished within their allowance.
+        self.assertEqual(result["state"], {"tabId": tab, "url": self.site.origin + "/notice",
+                                           "title": "Ad-block notice"}, result)
         return outcome["observed"]
 
     def test_text_gone_on_persistent_text_ends_at_its_timeout(self):
         tab = self.throttled_tab()
         result, wall_ms = self.click_expecting(tab, {"text_gone": "Still shown"})
-        observed = self.assert_unmet_near_deadline(result, wall_ms)
+        observed = self.assert_unmet_near_deadline(result, wall_ms, tab)
         self.assertEqual(observed, {"source": "page", "textVisible": True})
 
     def test_text_that_never_appears_ends_at_its_timeout(self):
         tab = self.throttled_tab()
         result, wall_ms = self.click_expecting(tab, {"text": "Notice closed"})
-        observed = self.assert_unmet_near_deadline(result, wall_ms)
+        observed = self.assert_unmet_near_deadline(result, wall_ms, tab)
         self.assertEqual(observed, {"source": "page", "textVisible": False})
 
     def test_selector_that_never_appears_ends_at_its_timeout(self):
         tab = self.throttled_tab()
         result, wall_ms = self.click_expecting(tab, {"selector": ".closed-banner"})
-        observed = self.assert_unmet_near_deadline(result, wall_ms)
+        observed = self.assert_unmet_near_deadline(result, wall_ms, tab)
         self.assertEqual(observed, {"source": "page", "visible": False})
+
+    def test_url_that_never_changes_ends_at_its_timeout(self):
+        # The URL check waits in the extension and must answer before expect.timeout (#295).
+        tab = self.throttled_tab()
+        result, wall_ms = self.click_expecting(tab, {"url_changed": True})
+        observed = self.assert_unmet_near_deadline(result, wall_ms, tab)
+        self.assertEqual(observed, {"source": "tab", "url": self.site.origin + "/notice"})
 
     def test_met_text_gone_is_still_observed(self):
         # Unchanged behaviour: a check that is met ends early with met=true.
