@@ -413,6 +413,8 @@ _TRUNCATED_LINE = "- … truncated; browser_find searches the rest"
 _TRUNCATED_HINT = (f"Snapshot truncated at {SNAPSHOT_LIMIT:,} characters, between blocks. browser_find searches "
                    "the whole page; pass a ref from it or from this snapshot as target to read that part "
                    "(\"e12 >> ..\" reads its container), or set filename to save the whole snapshot.")
+_URLS_OMITTED_HINT = (" This truncated snapshot lists no link URLs (a link without a /url line does not repeat "
+                      "another's); snapshot a ref, or save with filename, to see them.")
 
 
 @_core
@@ -436,7 +438,8 @@ def browser_snapshot(target: str | None = None, filename: str | None = None, dep
         lines = result["snapshot"].split("\n")
         if lines[-1].startswith("- … truncated"):
             lines[-1] = _TRUNCATED_LINE
-        result = {**result, "snapshot": "\n".join(lines), "hint": _TRUNCATED_HINT}
+        result = {**result, "snapshot": "\n".join(lines),
+                  "hint": _TRUNCATED_HINT + (_URLS_OMITTED_HINT if result.get("urls_omitted") else "")}
     return result
 
 

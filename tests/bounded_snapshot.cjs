@@ -39,7 +39,7 @@ function card(i) {
 }
 
 // Every listed card has its name, URL, variant, price and discount, in order, and no line of
-// another card in between. In a cut snapshot the last card's URL can be shortened to "…" (#310).
+// another card in between. A cut snapshot without a target lists no URLs (#321).
 function assertWholeCards(snapshot, label, cut = false) {
   const lines = snapshot.split('\n').filter(line => !line.includes('truncated'));
   let current = null;
@@ -55,8 +55,9 @@ function assertWholeCards(snapshot, label, cut = false) {
   }
   const last = [...seen.keys()].at(-1);
   for (const [i, got] of seen) {
-    const url = cut && i === last && got.includes('- /url: "…"') ? '/url: "…"' : `/url: "/p/desk-${i}"`;
-    const expected = [`heading "Desk ${i}"`, `link "Desk ${i}"`, url,
+    // A cut snapshot without a target lists no link URLs at all (#321).
+    const url = cut ? [] : [`/url: "/p/desk-${i}"`];
+    const expected = [`heading "Desk ${i}"`, `link "Desk ${i}"`, ...url,
       `text "Variant ${i}:`, `text "Price ${i}:`, ...(i % 2 ? [`text "Discount ${i}:`] : []),
       ...(i % 3 === 0 ? [`button "Add desk ${i} to cart"`] : [])];
     assert.equal(got.length, expected.length, `${label}: card ${i} is incomplete\n${got.join('\n')}`);
@@ -187,10 +188,10 @@ function assertWholeCards(snapshot, label, cut = false) {
   assert.equal(core.truncated, true);
   assert.ok(core.snapshot.length <= 12000);
   const bannerRef = coreLines[0].match(/^- banner "" \[ref=(s\d+e\d+)\]$/)[1];
-  assert.equal(coreLines[1], `  - … 71 lines (69 links) not shown; snapshot ${bannerRef} to list all`);
+  assert.equal(coreLines[1], `  - … 70 lines (69 links) not shown; snapshot ${bannerRef} to list all`);
   assert.match(coreLines[2], /^- main "" \[ref=/, 'main follows the banner in document order');
   const footerRef = coreLines.at(-3).match(/^- contentinfo "" \[ref=(s\d+e\d+)\]$/)[1];
-  assert.equal(coreLines.at(-2), `  - … 80 lines (40 links) not shown; snapshot ${footerRef} to list all`);
+  assert.equal(coreLines.at(-2), `  - … 40 lines (40 links) not shown; snapshot ${footerRef} to list all`);
   assert.equal(coreLines.at(-1), '- … truncated; scope with selector, ref or max_depth');
   const kept = assertWholeCards(core.snapshot, 'crowded core', true);
   assert.ok(kept.length > 30 && kept.every((n, j) => n === j), `main is a prefix of its cards: ${kept.length}`);
@@ -210,7 +211,7 @@ function assertWholeCards(snapshot, label, cut = false) {
   const short = await send({ action: 'getSnapshot', maxChars: 2500 });
   const shortLines = short.snapshot.split('\n');
   assert.ok(short.snapshot.length <= 2500);
-  assert.equal(assertWholeCards(short.snapshot, 'short main').length, 3);
+  assert.equal(assertWholeCards(short.snapshot, 'short main', true).length, 3);
   assert.match(short.snapshot, /- contentinfo "" \[ref=s\d+e\d+\]\n  - link "Help 0"/, 'the footer is listed whole');
   const listed = shortLines.filter(line => line.startsWith('    - link "메뉴 항목')).length;
   assert.ok(listed > 10 && listed < 68, `${listed} navigation links listed`);
@@ -223,7 +224,7 @@ function assertWholeCards(snapshot, label, cut = false) {
   setBody(h('NAV', {}, link('Home', 'https://shop.test/'), link('Cart', 'https://shop.test/cart')),
     h('MAIN', {}, h('UL', {}, ...Array.from({ length: 60 }, (_, i) => card(i)))));
   assert.deepEqual((await send({ action: 'getSnapshot', maxChars: 5000 })).snapshot.split('\n').slice(0, 4)
-    .map(line => line.replace(/ \[ref=.*/, '')), ['- navigation ""', '  - link "Home"', '    - /url: "/"', '  - link "Cart"']);
+    .map(line => line.replace(/ \[ref=.*/, '')), ['- navigation ""', '  - link "Home"', '  - link "Cart"', '- main ""']);
   crowded(3);
   // A budget that fits everything collapses nothing.
   const roomy = await send({ action: 'getSnapshot', maxChars: 100000 });

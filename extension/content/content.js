@@ -709,6 +709,7 @@
     if (withText && Number.isFinite(limit)) limit = Math.max(0, limit - TEXT_TRUNCATED_LINE.length - 1);
     let size = 0;
     let truncated = false;
+    let urlsOmitted = false;
     const landmarks = { MAIN: 'main', NAV: 'navigation', HEADER: 'banner',
       FOOTER: 'contentinfo', ASIDE: 'complementary', FORM: 'form' };
     const semanticRoles = new Set(['heading', 'main', 'navigation', 'banner',
@@ -1098,6 +1099,14 @@
         // On a page with a main landmark, a navigation, banner or contentinfo landmark outside
         // main that is larger than a small block waits (#310): it is reserved as its line and a
         // marker, and listed after the rest, whole or as far as it fits.
+        // A truncated snapshot without a target lists no link URLs (#321): links keep their names and
+        // refs, `urls_omitted` says so, and a whole, scoped or saved snapshot still has every URL.
+        urlsOmitted = entries.some(entry => entry.url);
+        for (const entry of entries) {
+          delete entry.urlIndex;
+          delete entry.urlFrom;
+        }
+        const listed = i => !entries[i].url;
         const after = entries.map((_, i) => i + 1);
         for (let i = entries.length - 1; i >= 0; i--) {
           const parent = entries[i].parent;
@@ -1120,10 +1129,10 @@
           const links = hidden.filter(i => entries[i].role === 'link').length;
           return `${indent}- … ${hidden.length} lines (${links} links) not shown; snapshot ${entries[l].ref} to list all`;
         };
-        const reserved = deferred.filter(l => add(l, true, markerLine(l, inside(l)).length + 1));
-        if (fill(i => !reserved.some(l => i > l && i < after[l]))) {
-          const partial = reserved.filter(l => !add(inside(l)));
-          for (const l of partial) if (!fill(i => i > l && i < after[l])) break;
+        const reserved = deferred.filter(l => add(l, true, markerLine(l, inside(l).filter(listed)).length + 1));
+        if (fill(i => listed(i) && !reserved.some(l => i > l && i < after[l]))) {
+          const partial = reserved.filter(l => !add(inside(l).filter(listed)));
+          for (const l of partial) if (!fill(i => listed(i) && i > l && i < after[l])) break;
         }
         // Kept lines in document order, a marker after a landmark's last kept line, and the
         // entry index each one stands at, so the cuts carry over to them.
@@ -1133,7 +1142,7 @@
           let last = l;
           for (let i = l + 1; i < after[l]; i++) {
             if (kept.has(i)) last = i;
-            else hidden.push(i);
+            else if (listed(i)) hidden.push(i);
           }
           if (hidden.length) markers.set(last, { line: markerLine(l, hidden) });
         }
@@ -1170,6 +1179,7 @@
     return {
       snapshot,
       ...(truncated ? { truncated: true } : {}),
+      ...(urlsOmitted ? { urls_omitted: true } : {}),
       ...(targetIndex >= 0 ? { target_ref: entries[targetIndex].ref } : {}),
       // For boundPublicSnapshot, which can cut again after aliases and URL redaction.
       ...(cuts ? { cuts: cuts.filter(cut => cut <= selected.length) } : {}),
