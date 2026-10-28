@@ -2081,8 +2081,9 @@ Accessibility permission (System Settings > Privacy & Security > Accessibility);
 without it, or without either backend, the call returns `{error}` explaining what
 is missing instead of clicking. The click runs in the bridge, which keeps the Python
 and `PATH` of the MCP server that started it, so after adding the `[macos]` extra or
-`cliclick`, run `kitsune-bridge stop` and let a client that has it start the bridge again. On Linux, a missing `xdotool`, a failed `xdotool`
-run or a Wayland session also returns `{error}` without clicking. Results include
+`cliclick`, run `kitsune-bridge stop` and let a client that has it start the bridge
+again. On Linux, a missing `xdotool`, a failed `xdotool` run or a Wayland session also
+returns `{error}` without clicking. Results include
 `clickBackend` (`win32`, `quartz`, `cliclick`, or `xdotool`) and `pointerRestored`:
 `true` once the cursor is back, `false` with `restore_pointer=False` or when it could not
 be read or moved back. A failed restore adds `pointerRestoreError` and still returns

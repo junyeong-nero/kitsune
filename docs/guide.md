@@ -665,7 +665,7 @@ URL. Details are in the [API reference](api-reference.md#protected-user-tabs).
 | `token_mismatch` (`401 Missing or invalid token`) | `KITSUNE_TOKEN` or `KITSUNE_HOME` set in one client but not in the daemon (or the other way round) |
 | `Cannot access browser internal page` | `about:` pages are off-limits to extensions; switch to a normal tab |
 | A click returns `dispatched: true` but the page does not react (`outcome_not_observed`, target still visible) | Some pages accept only trusted input and ignore Kitsune's synthetic events. Check the page with `browser_snapshot` first, then try one [`browser_trusted_click`](api-reference.md#browser_trusted_clickselector-x0-y0-coordinate_spaceviewport-focusfalse-tab_idnone-firstfalse-restore_pointertrue) on the same target and verify it with a read. It needs the `browse` capability, moves your real cursor for the click (then back, unless `restore_pointer=False` for a hover menu that closes when the pointer leaves) and, on macOS, needs pyobjc Quartz or `cliclick` plus Accessibility permission; on Linux, needs `xdotool` in an X11 session (not Wayland), and HiDPI X11 scaling is not compensated, so the click may land off by the scale factor. Kitsune never switches to it on its own |
-| "Continue with Google" or another sign-in button opens no popup, or the site says "Something went wrong" | Synthetic clicks cannot open OAuth/SSO popups; ask the user to click, or use a trusted click. See [Sign-in popups (OAuth/SSO)](#sign-in-popups-oauthsso) |
+| "Continue with Google" or another sign-in button opens no popup, or the site says "Something went wrong" | With Firefox's default popup blocker, synthetic clicks cannot open OAuth/SSO popups; ask the user to click, or use a trusted click. See [Sign-in popups (OAuth/SSO)](#sign-in-popups-oauthsso) |
 | `stale ref, call browser_snapshot again` | Take a fresh snapshot of the same `tab_id` and use its new refs |
 | Bridge updated but browser behavior is unchanged | Reload the extension, then reload affected pages so their content scripts update too |
 | Restart the daemon | Run `kitsune-bridge stop` with the same source as your clients (`uvx --from git+…` or `uv run` in a checkout); the next tool call starts it again. This briefly affects all clients sharing it |
@@ -675,8 +675,10 @@ URL. Details are in the [API reference](api-reference.md#protected-user-tabs).
 ### Sign-in popups (OAuth/SSO)
 
 "Continue with Google", "Sign in with Apple" and similar buttons open the provider's
-sign-in in a popup window or tab with `window.open`. Firefox allows that only during
-user activation, that is, a real click or key press. `browser_click` dispatches
+sign-in in a popup window or tab with `window.open`. With the default popup blocker
+(`dom.disable_open_during_load=true`, see
+[Popup-blocked links](api-reference.md#popup-blocked-links)), Firefox allows that only
+during user activation, that is, a real click or key press. `browser_click` dispatches
 synthetic DOM events without user activation, so the popup is blocked or the site's
 sign-in script fails: no window opens, or the page shows an error such as "Something
 went wrong. Please try again." Ordinary buttons on the same page still work. Kitsune
