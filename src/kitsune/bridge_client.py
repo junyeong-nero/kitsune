@@ -6,6 +6,7 @@ error contract (docs/api-reference.md#connection-diagnosis), not raised. This mo
 no MCP code.
 """
 
+import functools
 import os
 import re
 import secrets
@@ -18,7 +19,7 @@ import httpx
 from . import bridge_control
 from .bridge_control import BRIDGE, HTTP_PORT, LOG_FILE, TOKEN_FILE, WS_PORT, headers as _headers
 from .capabilities import CAPS_HEADER
-from .task_modes import CLIENT_HEADER, MODE_HEADER, PROTECT_USER_TABS_HEADER
+from .task_modes import CLIENT_HEADER, CLIENT_ID_PATTERN, MODE_HEADER, OWNER_HEADER, PROTECT_USER_TABS_HEADER
 from .version import BRIDGE_BUILD
 
 BRIDGE_START_TIMEOUT = 15
@@ -34,6 +35,51 @@ EXTENSION_RECONNECT_SECONDS = 16
 
 def _bridge_matches(status: dict) -> bool:
     return status.get("build") == BRIDGE_BUILD or os.environ.get("KITSUNE_NO_BRIDGE_RESTART") == "1"
+
+
+# The owner id (#325) skips the processes that start an MCP server for its client: uv run, uvx
+# (which runs as uv) and the Python interpreter, at most OWNER_ANCESTOR_LEVELS of them.
+_LAUNCHER = re.compile(r"(uvx?|python[0-9.]*w?)(\.exe)?", re.IGNORECASE)
+OWNER_ANCESTOR_LEVELS = 4
+
+
+def owner_id() -> str:
+    """The id of the client this process works for (#325), which the bridge records as the owner
+    of the tabs it opens.
+
+    KITSUNE_CLIENT_ID if it is a valid id (CLIENT_ID_PATTERN), else `<name>-<pid>` of the nearest
+    ancestor process that is not a launcher, else `ppid-<parent pid>`. An MCP client such as
+    Claude Code starts a new server process when it reconnects, but it keeps running itself, so
+    its id stays the same.
+    """
+    configured = os.environ.get("KITSUNE_CLIENT_ID", "")
+    if re.fullmatch(CLIENT_ID_PATTERN, configured):
+        return configured
+    return _ancestor_owner(os.getppid()) or f"ppid-{os.getppid()}"
+
+
+@functools.lru_cache(maxsize=1)
+def _ancestor_owner(pid: int) -> str | None:
+    """`<name>-<pid>` of pid or its nearest ancestor that is not a launcher; None if ps cannot tell."""
+    if sys.platform == "win32":
+        return None
+    for _ in range(OWNER_ANCESTOR_LEVELS):
+        if pid <= 1:  # init or launchd adopts the processes of every exited client
+            return None
+        try:
+            line = subprocess.run(["ps", "-o", "ppid=,comm=", "-p", str(pid)], capture_output=True,
+                                  text=True, timeout=2).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            return None
+        fields = line.split(None, 1)
+        if len(fields) != 2 or not fields[0].isdigit():
+            return None
+        parent, name = int(fields[0]), os.path.basename(fields[1].strip())
+        if not _LAUNCHER.fullmatch(name):
+            pid_text = f"-{pid}"
+            return re.sub(r"[^A-Za-z0-9._:-]", "_", name)[:64 - len(pid_text)] + pid_text
+        pid = parent
+    return None
 
 
 STARTUP_EXCERPT_CHARS = 300
@@ -141,6 +187,8 @@ class BridgeClient:
     another build unless replace_bridge is False; then it reports bridge_version_mismatch.
     client_id, sent in CLIENT_HEADER, tells this client's commands apart in the bridge's audit
     log: its process id and a random suffix, so it can be matched with this process's logs.
+    owner_id (see owner_id()), sent in OWNER_HEADER, survives an MCP server restart: the bridge
+    records the tabs these requests open as its own (#325).
     """
 
     def __init__(self, *, caps, mode: str = "act", protect_user_tabs: bool = False, extra_headers=None,
@@ -151,6 +199,7 @@ class BridgeClient:
         self.extra_headers = extra_headers
         self.replace_bridge = replace_bridge
         self.client_id = f"{os.getpid()}-{secrets.token_hex(3)}"
+        self.owner_id = owner_id()
         self._extension_wait_until = 0.0  # set when this client starts a bridge; see await_extension
 
     def ensure_bridge(self) -> dict | None:
@@ -263,7 +312,7 @@ class BridgeClient:
             if endpoint != "/api/status":  # browser_status reports the extension as it is
                 self.await_extension()
             try:
-                headers = {**_headers(), CLIENT_HEADER: self.client_id}
+                headers = {**_headers(), CLIENT_HEADER: self.client_id, OWNER_HEADER: self.owner_id}
                 if self.caps is not None:
                     headers[CAPS_HEADER] = self.caps
                 if self.mode != "act":

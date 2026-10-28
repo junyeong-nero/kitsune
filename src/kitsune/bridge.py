@@ -61,8 +61,8 @@ except ImportError:
 from . import bridge_control
 from .capabilities import ACTION_GROUPS, CAPS_HEADER, OPEN_ROUTES, ROUTE_GROUPS, caps_refusal, header_caps
 from .task_modes import (
-    CLIENT_HEADER, GATEWAY_TOOL_HEADER, MODE_HEADER, PROTECT_USER_TABS_HEADER, permits_action, permits_route,
-    task_mode,
+    CLIENT_HEADER, CLIENT_ID_PATTERN, GATEWAY_TOOL_HEADER, MODE_HEADER, OWNER_HEADER, PROTECT_USER_TABS_HEADER,
+    permits_action, permits_route, task_mode,
 )
 from .version import BRIDGE_BUILD, PACKAGE_VERSION, SOURCE_ROOT, extension_manifest_hash, extension_source_hash
 from .waits import (
@@ -186,7 +186,12 @@ _gateway_tool = contextvars.ContextVar("kitsune_gateway_tool", default=None)
 _TOOL_NAME = _re.compile(r"browser_[a-z0-9_]{1,64}")
 # The calling client's id (CLIENT_HEADER, #303), which audit entries record.
 _client_id = contextvars.ContextVar("kitsune_client_id", default=None)
-_CLIENT_ID = _re.compile(r"[A-Za-z0-9._:-]{1,64}")
+_CLIENT_ID = _re.compile(CLIENT_ID_PATTERN)
+# The calling MCP client's owner id (OWNER_HEADER, #325), validated like the client id.
+_owner_id = contextvars.ContextVar("kitsune_owner_id", default=None)
+# tab id -> {"owner", "opened" (time.monotonic())} of open tabs that a request with an owner id
+# opened (#325). Only this process holds it: a restarted bridge knows no tab's owner.
+_tab_openers = {}
 # Tabs a batch or workflow call's newTab steps opened and did not close, oldest first (#303).
 _container_new_tabs = contextvars.ContextVar("kitsune_container_new_tabs", default=None)
 _PROTECTED_NAVIGATIONS = {"navigate", "goBack", "goForward"}
@@ -1023,6 +1028,8 @@ def _audit(action, params, ok, error, ms, **fields):
         entry["via"] = {"gateway": "browser_tools_call", "tool": _gateway_tool.get()}
     if _client_id.get():
         entry["client"] = _client_id.get()
+    if _owner_id.get():
+        entry["owner"] = _owner_id.get()
     _audit_log.append(entry)
     if len(_audit_log) > _AUDIT_MAX:
         del _audit_log[: len(_audit_log) - _AUDIT_MAX]
@@ -2148,10 +2155,64 @@ async def send_to_extension(action, params=None, timeout=30):
         lambda: _send_to_extension_raw(action, params=params, timeout=timeout),
     )
     _remember_outcome(action, params, result)
+    _note_tab_openers(action, params, result)
     if _task_mode.get() != "act" and isinstance(result, dict) and result.get("code") == "user_tab":
         # The extension's hint names browser_tabs and confirm_token, which read and draft lack (#270).
         result = {**result, "hint": RESTRICTED_USER_TAB_HINT}
     return result
+
+
+def _note_tab_openers(action, params, result):
+    """Record the tabs a command opened as its client's (#325), and forget tabs that closed.
+
+    Every extension command passes here, so a tab counts whether a direct call, a container step,
+    the tab pool or a session opened it: a newTab's tabId and the tabs in opened_tabs (an action's,
+    link_fallback included). A tab keeps its first owner. A closeTab and a tab list without the tab
+    forget it.
+    """
+    if not isinstance(result, dict):
+        return
+    if action == "closeTab":
+        if not result.get("error"):
+            _tab_openers.pop(_explicit_tab_id((params or {}).get("tabId")), None)
+        return
+    if action == "getTabs":
+        tabs = result.get("tabs")
+        if isinstance(tabs, list):
+            listed = {tab.get("id") for tab in tabs if isinstance(tab, dict)}
+            for tab_id in [tab_id for tab_id in _tab_openers if tab_id not in listed]:
+                del _tab_openers[tab_id]
+        return
+    owner = _owner_id.get()
+    if owner is None:
+        return
+    opened = [result.get("tabId")] if action == "newTab" else []
+    if isinstance(result.get("opened_tabs"), list):
+        opened += [tab.get("tabId") for tab in result["opened_tabs"] if isinstance(tab, dict)]
+    for tab_id in opened:
+        if type(tab_id) is int and tab_id not in _tab_openers:
+            _tab_openers[tab_id] = {"owner": owner, "opened": time.monotonic()}
+
+
+def _with_own_tabs(result, own_only):
+    """A getTabs result whose tabs the calling client opened carry mine: true (#325).
+
+    own_only keeps only those, most recently opened first. Without an owner id no tab is mine.
+    """
+    tabs = result.get("tabs") if isinstance(result, dict) else None
+    if not isinstance(tabs, list):
+        return result
+    owner = _owner_id.get()
+
+    def opener(tab):
+        return _tab_openers.get(tab.get("id")) if isinstance(tab, dict) else None
+
+    def mine(tab):
+        return owner is not None and (opener(tab) or {}).get("owner") == owner
+
+    if own_only:
+        tabs = sorted(filter(mine, tabs), key=lambda tab: opener(tab)["opened"], reverse=True)
+    return {**result, "tabs": [{**tab, "mine": True} if mine(tab) else tab for tab in tabs]}
 
 
 async def _send_to_extension_raw(action, params=None, timeout=30):
@@ -3821,6 +3882,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
         gateway = _gateway_tool.set(called if _TOOL_NAME.fullmatch(called) else None)
         client = self.headers.get(CLIENT_HEADER) or ""
         client_token = _client_id.set(client if _CLIENT_ID.fullmatch(client) else None)
+        owner = self.headers.get(OWNER_HEADER) or ""
+        owner_token = _owner_id.set(owner if _CLIENT_ID.fullmatch(owner) else None)
         try:
             if not permits_route(mode, path):
                 self.refuse(403, _mode_error(path))
@@ -3836,6 +3899,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             else:
                 self.refuse(404, {"error": "Not found"})
         finally:
+            _owner_id.reset(owner_token)
             _client_id.reset(client_token)
             _gateway_tool.reset(gateway)
             _protect_user_tabs.reset(protect)
@@ -4064,9 +4128,12 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.send_json(200, result)
 
     def handle_tabs(self):
+        # A POST of {"mine": true} lists only the caller's own tabs (#325).
+        body = self.read_body()
+        own_only = isinstance(body, dict) and body.get("mine") is True
         # Tabs change through async navigation and outside the bridge; never cache the inventory.
         result = self.run_async(send_to_extension("getTabs"))
-        self.send_json(200, result)
+        self.send_json(200, _with_own_tabs(result, own_only))
 
     def _dom_scope(self, keys):
         """The POST body's non-null keys among keys; None after refusing an invalid maxDepth."""

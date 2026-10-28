@@ -146,6 +146,36 @@ def _no_current_tab(name: str, arguments: dict) -> dict | None:
             "state": {"tool": name, **({"action": action} if action else {})}}
 
 
+# At most this many of the client's own tabs are offered in a no_current_tab refusal (#325).
+OWN_TABS_OFFERED = 5
+
+
+def _offering_own_tabs(refusal: dict) -> dict:
+    """A no_current_tab refusal with the open tabs this MCP client opened (#325), else unchanged.
+
+    The bridge records which client opened each tab under an id that survives an MCP server
+    restart (BridgeClient.owner_id), so a restarted server can offer the tab its client worked
+    in: state.ownTabs lists them, most recently opened first, and the hint names the first. It
+    is not made current, since the tab may belong to an earlier conversation of that client. A
+    failed lookup leaves the refusal as it was.
+    """
+    try:
+        listed = _post("/api/tabs", {"mine": True})
+    except Exception:
+        return refusal
+    tabs = listed.get("tabs") if isinstance(listed, dict) and not _failed(listed) else None
+    own = [{"tabId": tab["id"], "url": tab.get("url"), "title": tab.get("title")}
+           for tab in tabs if isinstance(tab, dict) and tab.get("mine") is True and isinstance(tab.get("id"), int)
+           ] if isinstance(tabs, list) else []
+    if not own:
+        return refusal
+    tab_id = own[0]["tabId"]
+    hint = (f"{refusal['hint']} Tab {tab_id} is the tab this MCP client opened most recently (state.ownTabs), "
+            f"maybe in an earlier conversation: to keep working in it, pass tab_id={tab_id} or select it "
+            "with browser_tabs action=select at its index in browser_tabs action=list.")
+    return {**refusal, "hint": hint, "state": {**refusal["state"], "ownTabs": own[:OWN_TABS_OFFERED]}}
+
+
 def _adopted_tab(name: str, result, tab_id: int | None, current: int | None) -> int | None:
     """The tab a call's result makes current (#303), else None; tab_id is the tab the call ran on
     and current the current tab before it.
@@ -177,7 +207,8 @@ def _on_current_tab(function):
     without tab_id acts on the tab its core tools work in, not on the tab the user is looking at.
     Without a current tab, reads go to the user's active tab, while a write or navigation that
     names no tab returns no_current_tab: after an MCP server restart the agent has no current
-    tab even though it worked in one. A tab that a batch or workflow opened, or that an action
+    tab even though it worked in one, so the refusal offers the tabs its client opened
+    (_offering_own_tabs, #325). A tab that a batch or workflow opened, or that an action
     opened from the current tab (_adopted_tab), becomes current, and the result says so in
     current_tab. Only the MCP registration applies this; Python callers name their tabs, so
     kitsune.tools and kitsune.browser keep the active-tab default.
@@ -196,7 +227,7 @@ def _on_current_tab(function):
         if kwargs.get("tab_id") is None and current is None:
             refusal = _no_current_tab(name, kwargs)
             if refusal:
-                return refusal
+                return _offering_own_tabs(refusal)
         result = function(*args, **kwargs)
         # Core tools without tab_id run on the current tab.
         adopted = _adopted_tab(name, result, kwargs.get("tab_id", current), current)
@@ -356,7 +387,8 @@ def browser_tabs(
     """List, open, close, or select tabs; new opens a background tab (act on it with tab_id)
     and returns its tabId.
 
-    list is always a fresh read; owned=true marks tabs the agent opened; windowId/index only
+    list is always a fresh read; owned=true marks tabs the agent opened, mine=true those this
+    MCP client opened (also before a restart); windowId/index only
     with several windows or window_fields. close refuses a tab the agent did not open
     (user_tab) unless the user approves (confirm_token). select switches the user's view:
     only when the user asks. Options of other actions are ignored.
