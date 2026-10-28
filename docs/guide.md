@@ -665,11 +665,52 @@ URL. Details are in the [API reference](api-reference.md#protected-user-tabs).
 | `token_mismatch` (`401 Missing or invalid token`) | `KITSUNE_TOKEN` or `KITSUNE_HOME` set in one client but not in the daemon (or the other way round) |
 | `Cannot access browser internal page` | `about:` pages are off-limits to extensions; switch to a normal tab |
 | A click returns `dispatched: true` but the page does not react (`outcome_not_observed`, target still visible) | Some pages accept only trusted input and ignore Kitsune's synthetic events. Check the page with `browser_snapshot` first, then try one [`browser_trusted_click`](api-reference.md#browser_trusted_clickselector-x0-y0-coordinate_spaceviewport-focusfalse-tab_idnone-firstfalse-restore_pointertrue) on the same target and verify it with a read. It needs the `browse` capability, moves your real cursor for the click (then back, unless `restore_pointer=False` for a hover menu that closes when the pointer leaves) and, on macOS, needs pyobjc Quartz or `cliclick` plus Accessibility permission; on Linux, needs `xdotool` in an X11 session (not Wayland), and HiDPI X11 scaling is not compensated, so the click may land off by the scale factor. Kitsune never switches to it on its own |
+| "Continue with Google" or another sign-in button opens no popup, or the site says "Something went wrong" | Synthetic clicks cannot open OAuth/SSO popups; ask the user to click, or use a trusted click. See [Sign-in popups (OAuth/SSO)](#sign-in-popups-oauthsso) |
 | `stale ref, call browser_snapshot again` | Take a fresh snapshot of the same `tab_id` and use its new refs |
 | Bridge updated but browser behavior is unchanged | Reload the extension, then reload affected pages so their content scripts update too |
 | Restart the daemon | Run `kitsune-bridge stop` with the same source as your clients (`uvx --from git+…` or `uv run` in a checkout); the next tool call starts it again. This briefly affects all clients sharing it |
 | `value-attribute selectors are disabled …` | A sensitive field on the page has a `value` attribute; target it by ref, label, or a selector that does not test `value` |
 | Setup, uv, or upgrade problems | See [Installation troubleshooting](installation.md#troubleshooting) |
+
+### Sign-in popups (OAuth/SSO)
+
+"Continue with Google", "Sign in with Apple" and similar buttons open the provider's
+sign-in in a popup window or tab with `window.open`. Firefox allows that only during
+user activation, that is, a real click or key press. `browser_click` dispatches
+synthetic DOM events without user activation, so the popup is blocked or the site's
+sign-in script fails: no window opens, or the page shows an error such as "Something
+went wrong. Please try again." Ordinary buttons on the same page still work. Kitsune
+reopens only blocked `target="_blank"` links (see
+[Popup-blocked links](api-reference.md#popup-blocked-links)); popups that page scripts
+open get no `popup_blocked` warning, so the click can still look successful or end in
+`outcome_not_observed`.
+
+There are two ways through:
+
+1. **Ask the user to click (recommended).** The agent asks the user to click the
+   button, waits for them, then lists tabs with `browser_tabs` to find the popup or
+   tab that opened and continues there by `tab_id`. The user may also have to finish
+   the provider's sign-in (account chooser, password, two-factor). This is the
+   default to prefer because the browser is shared (#139): a trusted click moves your
+   real pointer, may show the target tab and can take focus.
+2. **[`browser_trusted_click`](api-reference.md#browser_trusted_clickselector-x0-y0-coordinate_spaceviewport-focusfalse-tab_idnone-firstfalse-restore_pointertrue).**
+   A real OS click has user activation, so the popup opens. It needs the `browse`
+   capability and a visible browser window, and its result does not list
+   `opened_tabs`, so find the popup with `browser_tabs`. Kitsune never switches to it
+   on its own. On Linux it needs `xdotool` in an X11 session. On macOS, set it up once:
+   - Install a click backend: register the server with
+     `uvx --from 'kitsune-browser-mcp[macos]' kitsune` (pyobjc Quartz; the extra
+     installs nothing on other platforms), or run `brew install cliclick` so
+     `cliclick` is on the `PATH` your MCP client passes to the server.
+   - Grant Accessibility permission to the app running the bridge, usually the
+     terminal or MCP client app that started it (System Settings > Privacy &
+     Security > Accessibility).
+   - Run `kitsune-bridge stop` with the same source as your clients so that the next
+     start picks up the change. The click runs in the shared bridge, and the bridge
+     runs with the Python (`sys.executable`) and `PATH` of whichever MCP server
+     started it first. Adding the extra to one client's command does nothing until
+     the bridge starts again from that client, so make the next tool call from it, or
+     add the extra to every client.
 
 ## Development
 

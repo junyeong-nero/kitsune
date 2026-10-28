@@ -822,7 +822,8 @@ If such a link, or a failed `tabs.create`, leaves no tab, the click result has a
 ```
 
 With `expect`, an unmet outcome then uses that hint. Popups that page scripts open with
-`window.open` are never reopened. A `browser_trusted_click` is a real OS click with user
+`window.open`, such as OAuth/SSO sign-in popups, are never reopened and get no warning
+(see [Sign-in popups](guide.md#sign-in-popups-oauthsso)). A `browser_trusted_click` is a real OS click with user
 activation, so the popup blocker lets its tab open. It needs a visible, focused browser
 window and OS permission (macOS: Accessibility), and its result does not list `opened_tabs`;
 the tab it opens is not agent-owned.
@@ -2078,7 +2079,9 @@ before scrolling the element or invoking the OS; `first=True` opts into the firs
 On macOS, the app running the bridge (your terminal or MCP client) needs
 Accessibility permission (System Settings > Privacy & Security > Accessibility);
 without it, or without either backend, the call returns `{error}` explaining what
-is missing instead of clicking. On Linux, a missing `xdotool`, a failed `xdotool`
+is missing instead of clicking. The click runs in the bridge, which keeps the Python
+and `PATH` of the MCP server that started it, so after adding the `[macos]` extra or
+`cliclick`, run `kitsune-bridge stop` and let a client that has it start the bridge again. On Linux, a missing `xdotool`, a failed `xdotool`
 run or a Wayland session also returns `{error}` without clicking. Results include
 `clickBackend` (`win32`, `quartz`, `cliclick`, or `xdotool`) and `pointerRestored`:
 `true` once the cursor is back, `false` with `restore_pointer=False` or when it could not
