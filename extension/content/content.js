@@ -189,12 +189,47 @@
     return !isHidden(el) && (typeof el.getClientRects !== 'function' || el.getClientRects().length > 0);
   }
 
+  // A background tab or a minimized window. Pages may then skip painting and animation frames, so
+  // a menu a click just opened can stay unpainted until the tab is shown (#328).
+  const tabHidden = () => document.visibilityState === 'hidden';
+
+  // What a click usually just opened. A role popup has no open state of its own, so it counts as
+  // open while it renders; dialogs and popovers say so themselves.
+  const POPUP_SELECTOR = '[role=menu], [role=listbox], [role=dialog], dialog[open], [popover]';
+
+  function inOpenPopup(el) {
+    for (let node = flatParent(el); node; node = flatParent(node)) {
+      if (!node.matches?.(POPUP_SELECTOR)) continue;
+      if (node.matches('dialog[open]') || isRendered(node)) return true;
+      try {
+        if (node.matches(':popover-open')) return true;
+      } catch {}
+    }
+    return false;
+  }
+
   // Synthetic events still reach an unrendered target, so pointer actions report it instead of refusing.
+  // A hidden form control has a label to act on instead, in a popup or a hidden tab too: CSS hides it
+  // whether or not the page paints. Another item of an open popup, or any other target in a hidden
+  // tab, is usually the intended one that the page has not painted (#328).
   function notRenderedWarning(el) {
     if (isRendered(el)) return {};
-    return { warning: { code: 'hidden_or_covered', state: { reason: 'not_rendered' },
-      hint: 'Events were dispatched to a hidden element a user could not click; ' +
-        'prefer its label or visible control from a new browser_snapshot.' } };
+    const hiddenTab = tabHidden();
+    const formControl = ['INPUT', 'SELECT', 'TEXTAREA'].includes(el.tagName);
+    const inPopup = !formControl && inOpenPopup(el);
+    const state = { reason: 'not_rendered', ...(hiddenTab ? { hiddenTab: true } : {}),
+      ...(inPopup ? { inPopup: true } : {}) };
+    if (formControl || (!hiddenTab && !inPopup)) {
+      return { warning: { code: 'hidden_or_covered', state,
+        hint: 'Events were dispatched to a hidden element a user could not click; ' +
+          'prefer its label or visible control from a new browser_snapshot.' } };
+    }
+    const cause = hiddenTab
+      ? 'The tab is in the background, and the page may not paint this element until the tab is shown. '
+      : 'The element is in an open menu, listbox, dialog or popover that the page has not painted. ';
+    return { warning: { code: 'hidden_or_covered', state,
+      hint: cause + 'Events dispatched to it work normally: if it belongs to the control you meant, ' +
+        'act on it and check the effect instead of looking for another element.' } };
   }
 
   // ── Actionability wait ──
@@ -325,6 +360,18 @@
   }
 
   // ── Message Handler ──
+  // Snapshots and page actions in a hidden tab say so: an empty snapshot or an unrendered target
+  // can then mean the page has not painted yet (#328). Visible tabs add nothing.
+  const VISIBILITY_ACTIONS = new Set(['getSnapshot', 'click', 'doubleClick', 'type', 'fill',
+    'setEditableContent', 'selectOption', 'checkBox', 'keypress', 'submitForm', 'formFill', 'hover',
+    'scroll', 'drag', 'focusElement', 'blurElement']);
+
+  function withVisibility(action, result) {
+    if (!VISIBILITY_ACTIONS.has(action) || !tabHidden() || !result || typeof result !== 'object' ||
+        Array.isArray(result)) return result;
+    return { ...result, visibilityState: 'hidden' };
+  }
+
   browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const handlers = {
       'ping':                  () => ({ ok: true, version: CONTENT_VERSION }),
@@ -409,6 +456,7 @@
       return false;
     }
 
+    const respond = result => sendResponse(withVisibility(msg.action, result));
     try {
       if (['click', 'type', 'fill', 'selectOption', 'checkBox', 'keypress', 'submitForm'].includes(msg.action)) {
         lastActedElement = null;
@@ -424,18 +472,18 @@
       const run = msg.deltaBaseline ? () => { takeActionBaseline(!!msg.snapshotText); return handler(); } : handler;
       if (msg.wait && (POINTER_WAIT_ACTIONS.has(msg.action) || VALUE_WAIT_ACTIONS.has(msg.action))) {
         waitForActionable(msg).then(failure => failure || run())
-          .then(r => sendResponse(r)).catch(e => sendResponse(errorResult(e)));
+          .then(respond).catch(e => respond(errorResult(e)));
         return true;
       }
       const result = REDACTION_CACHED_READS.has(msg.action) ? withRedactionCache(handler) : run();
       if (result && typeof result.then === 'function') {
         // Async handler — keep message channel open
-        result.then(r => sendResponse(r)).catch(e => sendResponse(errorResult(e)));
+        result.then(respond).catch(e => respond(errorResult(e)));
         return true;
       }
-      sendResponse(result);
+      respond(result);
     } catch (e) {
-      sendResponse(errorResult(e));
+      respond(errorResult(e));
     }
     return false;
   });

@@ -628,6 +628,10 @@ async function runCommand(params, { withSnapshot, deltaSnapshot, textSnapshot, t
         }
         if (snapshot.truncated) result.snapshot_truncated = true;
         if (snapshot.hint) result.snapshot_hint = snapshot.hint;
+        // The field describes the snapshot it comes with; a navigation's own result does not come from
+        // the page, and an action's may predate the user showing the tab (#328).
+        if (snapshot.visibilityState) result.visibilityState = snapshot.visibilityState;
+        else delete result.visibilityState;
         if (snapshot.target_ref) result.target_ref = snapshot.target_ref;
       }
     } catch (e) { result.snapshot_error = e.message; }

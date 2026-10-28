@@ -123,6 +123,23 @@ class AdapterTests(unittest.TestCase):
         # A saved snapshot is whole (#262).
         self.assertEqual(self.posted()[-1], ("/api/snapshot", {}))
 
+    def test_hidden_tab_fields_reach_core_and_kitsune_results(self):
+        # The extension adds visibilityState and the not_rendered hint flags (#328); the tools keep them.
+        snapshot = {"snapshot": "", "url": "https://a/", "readyState": "complete", "empty": True,
+                    "hint": "The page shows no content yet.", "visibilityState": "hidden"}
+        self.post.return_value = snapshot
+        self.assertEqual(playwright_tools.browser_snapshot(), snapshot)
+        self.assertEqual(tools.browser_snapshot(tab_id=3, text=True), snapshot)
+        with tempfile.TemporaryDirectory() as directory, patch.object(Path, "cwd", return_value=Path(directory)):
+            saved = playwright_tools.browser_snapshot(filename="snap.yml")
+        self.assertEqual((saved["visibilityState"], saved["empty"]), ("hidden", True))
+        clicked = {"ok": True, "tag": "div", "visibilityState": "hidden", "snapshot": "",
+                   "warning": {"code": "hidden_or_covered", "hint": "The tab is in the background, ...",
+                               "state": {"reason": "not_rendered", "hiddenTab": True, "inPopup": True}}}
+        self.post.return_value = clicked
+        self.assertEqual(playwright_tools.browser_click(target="e3"), clicked)
+        self.assertEqual(tools.browser_click(ref="e3", tab_id=3), clicked)
+
     def test_inline_snapshot_truncation_names_core_tools_only(self):
         marker = "- … truncated; scope with selector, ref or max_depth"
         self.post.return_value = {"snapshot": '- link "Desk 1" [ref=e1]\n  - /url: "https://a/1"\n' + marker,
