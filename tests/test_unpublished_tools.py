@@ -34,7 +34,7 @@ print(json.dumps({"calls": {name: call(name) for name in sys.argv[1:]}, "mcp_too
 
 
 def unpublished(caps, *names) -> dict:
-    env = {**os.environ, "KITSUNE_CAPS": caps, "KITSUNE_CLIENT_ID": "owner-171"}
+    env = {**os.environ, "KITSUNE_CAPS": caps, "KITSUNE_OWNER_ID": "owner-171"}
     result = subprocess.run([sys.executable, "-c", UNPUBLISHED_SCRIPT, *names],
                             env=env, capture_output=True, text=True, check=True)
     return json.loads(result.stdout)

@@ -38,8 +38,9 @@ def _bridge_matches(status: dict) -> bool:
 
 
 # The owner id (#325) skips the processes that start an MCP server for its client: uv run, uvx
-# (which runs as uv) and the Python interpreter, at most OWNER_ANCESTOR_LEVELS of them.
-_LAUNCHER = re.compile(r"(uvx?|python[0-9.]*w?)(\.exe)?", re.IGNORECASE)
+# (which runs as uv) and, below them, the Python interpreter, at most OWNER_ANCESTOR_LEVELS of them.
+_UV = re.compile(r"uvx?(\.exe)?", re.IGNORECASE)
+_PYTHON = re.compile(r"python[0-9.]*w?(\.exe)?", re.IGNORECASE)
 OWNER_ANCESTOR_LEVELS = 4
 
 
@@ -47,12 +48,12 @@ def owner_id() -> str:
     """The id of the client this process works for (#325), which the bridge records as the owner
     of the tabs it opens.
 
-    KITSUNE_CLIENT_ID if it is a valid id (CLIENT_ID_PATTERN), else `<name>-<pid>` of the nearest
+    KITSUNE_OWNER_ID if it is a valid id (CLIENT_ID_PATTERN), else `<name>-<pid>` of the nearest
     ancestor process that is not a launcher, else `ppid-<parent pid>`. An MCP client such as
     Claude Code starts a new server process when it reconnects, but it keeps running itself, so
     its id stays the same.
     """
-    configured = os.environ.get("KITSUNE_CLIENT_ID", "")
+    configured = os.environ.get("KITSUNE_OWNER_ID", "")
     if re.fullmatch(CLIENT_ID_PATTERN, configured):
         return configured
     return _ancestor_owner(os.getppid()) or f"ppid-{os.getppid()}"
@@ -60,9 +61,14 @@ def owner_id() -> str:
 
 @functools.lru_cache(maxsize=1)
 def _ancestor_owner(pid: int) -> str | None:
-    """`<name>-<pid>` of pid or its nearest ancestor that is not a launcher; None if ps cannot tell."""
+    """`<name>-<pid>` of pid or its nearest ancestor that is not a launcher; None if ps cannot tell.
+
+    A Python process above uv is the MCP client itself (an MCP Python SDK client, for example), not
+    a launcher, so Python clients started from the same shell get ids of their own.
+    """
     if sys.platform == "win32":
         return None
+    below_uv = True
     for _ in range(OWNER_ANCESTOR_LEVELS):
         if pid <= 1:  # init or launchd adopts the processes of every exited client
             return None
@@ -75,7 +81,9 @@ def _ancestor_owner(pid: int) -> str | None:
         if len(fields) != 2 or not fields[0].isdigit():
             return None
         parent, name = int(fields[0]), os.path.basename(fields[1].strip())
-        if not _LAUNCHER.fullmatch(name):
+        if _UV.fullmatch(name):
+            below_uv = False
+        elif not (below_uv and _PYTHON.fullmatch(name)):
             pid_text = f"-{pid}"
             return re.sub(r"[^A-Za-z0-9._:-]", "_", name)[:64 - len(pid_text)] + pid_text
         pid = parent

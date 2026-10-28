@@ -382,7 +382,8 @@ Kitsune's compact JSON results, not Playwright's Markdown. Where the two differ:
   opened before, the most recent first, in `state.ownTabs`, and the hint names that tab,
   so the agent can pass it as `tab_id` or select it. The server does not pick one itself:
   the tab may belong to an earlier conversation. The bridge knows a tab's MCP client
-  until the bridge restarts ([Tab owners](api-reference.md#tab-owners)). A tab a batch or
+  until the bridge, the browser or the extension restarts
+  ([Tab owners](api-reference.md#tab-owners)). A tab a batch or
   workflow `newTab` opens, or an action on the
   current tab opens (a click on a `target=_blank` link, for example), becomes current,
   and the result names it in `current_tab`.
@@ -516,7 +517,7 @@ kitsune-benchmark; character-size guards in this repo are not token measurements
 | `KITSUNE_NO_BRIDGE_RESTART` | Unset | Set to `1` in the MCP server environment to skip automatic replacement of an outdated bridge |
 | `KITSUNE_BRIDGE_IDLE_TIMEOUT` | `0` (never) | Seconds without client activity before the bridge exits; see [Idle shutdown](#idle-shutdown-opt-in) |
 | `KITSUNE_OUTPUT_DIR` | Unset | Directory, in the MCP server environment, for relative `filename` arguments of the `core` tools; unset, they resolve against the client's first root, else the server's working directory (see [Core tools](#core-tools)) |
-| `KITSUNE_CLIENT_ID` | The MCP client's process | Id of the MCP client, in the MCP server environment: the bridge records the tabs it opens as this client's and offers them after a server restart. Up to 64 letters, digits, `.`, `_`, `:` or `-`. Set it when the server runs through a launcher other than `uv`, `uvx` or Python; see [Tab owners](api-reference.md#tab-owners) |
+| `KITSUNE_OWNER_ID` | The MCP client's process | Tab owner id of the MCP client, in the MCP server environment: the bridge records the tabs it opens as this client's and offers them after a server restart. Up to 64 letters, digits, `.`, `_`, `:` or `-`. Set it when the server runs through a launcher other than `uv`, `uvx` or Python. Give each MCP client its own value: clients with the same value share their tabs. See [Tab owners](api-reference.md#tab-owners) |
 | `KITSUNE_PROTECT_USER_TABS` | Unset | Set to `1` in an MCP server environment to refuse that client's navigate, back and forward on tabs the agent did not open; see [Protecting your tabs](#protecting-your-tabs) |
 | `KITSUNE_ASK_BEFORE_ACT` | Unset | Set to `1` in the MCP server environment to start the bridge with [ask-before-act](#ask-before-act) locked on; the lock then persists in `ask-before-act-locked` under `KITSUNE_HOME` |
 | `KITSUNE_HISTORY_ALLOW_DOMAINS` | Unset (every domain) | Bridge: comma-separated domains (with subdomains) the `history` tools may return; see [History and bookmarks](api-reference.md#history-and-bookmarks) |

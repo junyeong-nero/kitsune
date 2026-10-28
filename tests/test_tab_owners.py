@@ -9,7 +9,7 @@ import json
 import subprocess
 import tempfile
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from kitsune import bridge, bridge_client, playwright_tools, task_modes, tools
 from kitsune.bridge_client import BridgeClient
@@ -37,30 +37,33 @@ class OwnerIdTests(unittest.TestCase):
                         patch.object(bridge_client.os, "getppid", return_value=100)):
             patcher.start()
             self.addCleanup(patcher.stop)
-        bridge_client.os.environ.pop("KITSUNE_CLIENT_ID", None)
+        bridge_client.os.environ.pop("KITSUNE_OWNER_ID", None)
 
     def owner(self, chain):
         bridge_client._ancestor_owner.cache_clear()
         with patch.object(bridge_client.subprocess, "run", side_effect=ps_replies(chain)) as run:
             return bridge_client.owner_id(), run
 
-    def test_kitsune_client_id_is_the_owner_when_valid(self):
-        bridge_client.os.environ["KITSUNE_CLIENT_ID"] = "my-session:1"
+    def test_kitsune_owner_id_is_the_owner_when_valid(self):
+        bridge_client.os.environ["KITSUNE_OWNER_ID"] = "my-session:1"
         owner, run = self.owner({100: (50, "claude")})
         self.assertEqual(owner, "my-session:1")
         run.assert_not_called()
         for invalid in ("has space", "x" * 65, "new\nline", ""):
             with self.subTest(invalid=invalid):
-                bridge_client.os.environ["KITSUNE_CLIENT_ID"] = invalid
+                bridge_client.os.environ["KITSUNE_OWNER_ID"] = invalid
                 self.assertEqual(self.owner({100: (50, "claude")})[0], "claude-100")
 
     def test_the_nearest_ancestor_that_is_not_a_launcher(self):
         # uv run: the server's parent is uv; uvx runs as uv too; a macOS framework Python re-execs.
-        chain = {100: (200, "/Users/me/.local/bin/uv"), 200: (300, "/opt/homebrew/bin/python3.13"),
+        chain = {100: (200, "/opt/homebrew/bin/python3.13"), 200: (300, "/Users/me/.local/bin/uv"),
                  300: (1, "/Applications/Claude.app/Contents/MacOS/claude")}
         owner, run = self.owner(chain)
         self.assertEqual(owner, "claude-300")
         self.assertEqual(run.call_args_list[0].args[0], ["ps", "-o", "ppid=,comm=", "-p", "100"])
+        # Above uv, a Python process is the MCP client (an MCP Python SDK client), not a launcher.
+        self.assertEqual(self.owner({100: (200, "uv"), 200: (300, "python3.12"), 300: (1, "zsh")})[0],
+                         "python3.12-200")
         self.assertEqual(self.owner({100: (1, "Python")})[0], "ppid-100", "Python alone leads to launchd")
         self.assertEqual(self.owner({100: (300, "uvx"), 300: (1, "Code Helper (Plugin)")})[0],
                          "Code_Helper__Plugin_-300")
@@ -69,7 +72,7 @@ class OwnerIdTests(unittest.TestCase):
         self.assertTrue(bridge._CLIENT_ID.fullmatch(long_name))
 
     def test_falls_back_to_the_parent_pid(self):
-        launchers = {100: (101, "uv"), 101: (102, "python"), 102: (103, "python3"), 103: (104, "uvx"),
+        launchers = {100: (101, "python"), 101: (102, "python3"), 102: (103, "uv"), 103: (104, "uvx"),
                      104: (1, "claude")}
         self.assertEqual(self.owner(launchers)[0], "ppid-100", "only a few levels are walked")
         self.assertEqual(self.owner({})[0], "ppid-100", "ps does not know the process")
@@ -90,7 +93,7 @@ class OwnerIdTests(unittest.TestCase):
             self.assertTrue(bridge._CLIENT_ID.fullmatch(bridge_client.owner_id()))
 
     def test_each_request_sends_the_owner_next_to_the_client(self):
-        bridge_client.os.environ["KITSUNE_CLIENT_ID"] = OWNER
+        bridge_client.os.environ["KITSUNE_OWNER_ID"] = OWNER
         first, restarted = BridgeClient(caps=None), BridgeClient(caps=None)
         self.assertEqual((first.owner_id, restarted.owner_id), (OWNER, OWNER))
         self.assertNotEqual(first.client_id, restarted.client_id)
@@ -140,6 +143,7 @@ class TabOpenersTests(ContainerTests):
         self.addCleanup(openers.stop)
         self.next_tab = iter(range(50, 70))
         self.open_tabs = [1, 2]
+        self.user_tabs = {1, 2}  # the extension's owned: false
 
         async def new_tab(params):
             tab_id = next(self.next_tab)
@@ -147,7 +151,7 @@ class TabOpenersTests(ContainerTests):
             return {"ok": True, "tabId": tab_id}
 
         async def get_tabs(params):
-            return {"tabs": [{"id": t, "url": f"https://t{t}.test/", "title": f"T{t}"}
+            return {"tabs": [{"id": t, "url": f"https://t{t}.test/", "title": f"T{t}", "owned": t not in self.user_tabs}
                              for t in self.open_tabs if t not in self.closed]}
 
         self.replies.update(newTab=new_tab, getTabs=get_tabs)
@@ -175,7 +179,7 @@ class TabOpenersTests(ContainerTests):
         opener = self.openers[50]
         self.assertIsInstance(opener["opened"], float)
 
-    def test_container_pool_and_session_tabs_are_recorded(self):
+    def test_container_and_pool_tabs_are_recorded(self):
         payload = self.as_owner(OWNER, lambda h: h.handle_batch(), {"commands": [
             {"action": "newTab"}, {"action": "sequence", "do": [{"action": "newTab"}]}]})
         self.assertEqual(payload["newTabs"], [50, 51])
@@ -185,6 +189,23 @@ class TabOpenersTests(ContainerTests):
         with patch.dict(bridge._tab_pool, {"size": 0, "available": [], "in_use": set(), "url": "about:blank"}):
             self.as_owner(OTHER, lambda h: h.handle_tab_pool(), {"size": 1})
         self.assertEqual(self.owners(), {50: OWNER, 51: OWNER, 63: OTHER, 52: OTHER})
+
+    def test_a_session_temp_tab_is_recorded_until_it_closes(self):
+        at_close = []
+
+        async def close_tab(params):
+            at_close.append(self.owners())
+            return {"ok": True}
+        self.replies.update(cookies=[{"cookies": []}], storageOp=[{"ok": True, "items": {}}], closeTab=close_tab)
+        token = bridge._owner_id.set(OWNER)
+        try:
+            with tempfile.TemporaryDirectory() as home, patch.object(bridge, "_sessions_dir", home), \
+                    patch.object(bridge.asyncio, "sleep", new=AsyncMock()):
+                saved = asyncio.run(bridge._save_session_async("work", ["https://a.test/"]))
+        finally:
+            bridge._owner_id.reset(token)
+        self.assertIs(saved["ok"], True, saved)
+        self.assertEqual((at_close, self.owners()), ([{50: OWNER}], {}))
 
     def test_requests_without_an_owner_and_failed_new_tabs_record_nothing(self):
         self.call(lambda h: h.handle_new_tab(), {"url": "https://a.test/"})
@@ -229,10 +250,41 @@ class TabOpenersTests(ContainerTests):
         self.openers.update({50: {"owner": OWNER, "opened": 3.0}, 51: {"owner": OTHER, "opened": 4.0},
                              52: {"owner": OWNER, "opened": 5.0}, 53: {"owner": OWNER, "opened": 6.0}})
         self.assertEqual(self.tabs(OWNER, mine=True), [
-            {"id": 52, "url": "https://t52.test/", "title": "T52", "mine": True},
-            {"id": 50, "url": "https://t50.test/", "title": "T50", "mine": True}])
+            {"id": 52, "url": "https://t52.test/", "title": "T52", "owned": True, "mine": True},
+            {"id": 50, "url": "https://t50.test/", "title": "T50", "owned": True, "mine": True}])
         self.assertNotIn(53, self.openers, "the closed tab 53 was forgotten")
         self.assertEqual(self.tabs(None, mine=True), [])
+
+    def test_a_tab_the_extension_no_longer_owns_is_not_mine(self):
+        # An extension reload or a synced copy going back to the user makes the agent's tab the user's.
+        self.as_owner(OWNER, lambda h: h.handle_new_tab(), {})
+        self.user_tabs.add(50)
+        self.assertEqual([tab.get("mine") for tab in self.tabs(OWNER)], [None, None, None])
+        self.assertEqual(self.tabs(OWNER, mine=True), [])
+        self.assertEqual(self.owners(), {50: OWNER}, "the tab is still open, so its record stays")
+
+    def test_a_new_extension_connection_forgets_every_owner(self):
+        self.openers.update({50: {"owner": OWNER, "opened": 1.0}})
+
+        class Socket:
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                raise StopAsyncIteration
+        with patch.object(bridge, "extension_ws", None), patch.object(bridge, "extension_info", {}), \
+                patch.object(bridge, "_log"):
+            asyncio.run(bridge.ws_handler(Socket()))
+        self.assertEqual(self.owners(), {})
+
+
+class OwningExtension(ScriptedExtension):
+    """A scripted extension whose newTab tabs are the agent's (getTabs owned: true), like agentTabs."""
+
+    def _new_tab(self, command):
+        result = super()._new_tab(command)
+        self.tabs[-1]["owned"] = True
+        return result
 
 
 class OwnedBridgeTests(unittest.TestCase):
@@ -243,8 +295,12 @@ class OwnedBridgeTests(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.bridge = Bridge(temp.name).start()
         self.addCleanup(self.bridge.stop)
-        self.extension = ScriptedExtension(self.bridge, [tab(1, "https://user.test/", active=True)])
-        self.addCleanup(self.extension.close)
+        self.extension = self.connect_extension()
+
+    def connect_extension(self):
+        extension = OwningExtension(self.bridge, [tab(1, "https://user.test/", active=True)])
+        self.addCleanup(extension.close)
+        return extension
 
     def call(self, method, path, client, owner, body=None):
         headers = {**self.bridge.auth(), task_modes.CLIENT_HEADER: client, task_modes.OWNER_HEADER: owner}
@@ -268,6 +324,17 @@ class OwnedBridgeTests(unittest.TestCase):
         # The user closed it: it is no longer offered.
         self.extension.set_tabs(tab(1, "https://user.test/", active=True), tab(3, "https://b.test/"))
         self.assertEqual(self.call("POST", "/api/tabs", "101-cccccc", OWNER, {"mine": True})["tabs"], [])
+
+    def test_a_restarted_browser_reusing_a_tab_id_does_not_offer_another_clients_tab(self):
+        opened = self.call("POST", "/api/new-tab", "100-aaaaaa", OWNER, {"url": "https://a.test/"})
+        self.extension.close()
+        self.extension = self.connect_extension()
+        # The restarted browser gives the next tab, another client's, the same id.
+        reused = self.call("POST", "/api/new-tab", "200-bbbbbb", OTHER, {"url": "https://b.test/"})
+        self.assertEqual(reused["tabId"], opened["tabId"])
+        self.assertEqual(self.call("POST", "/api/tabs", "101-cccccc", OWNER, {"mine": True})["tabs"], [])
+        self.assertEqual([t["id"] for t in self.call("POST", "/api/tabs", "200-bbbbbb", OTHER, {"mine": True})["tabs"]],
+                         [reused["tabId"]])
 
 
 class OwnTabsRefusalTests(unittest.TestCase):
@@ -310,7 +377,7 @@ class OwnTabsRefusalTests(unittest.TestCase):
         unchanged = tools._no_current_tab("browser_scroll", {"direction": "down", "tab_id": None})
         self.assertTrue(result["hint"].startswith(unchanged["hint"]))
         self.assertIn("Tab 58 is the tab this MCP client opened most recently", result["hint"])
-        self.assertIn("pass tab_id=58 or select it with browser_tabs action=select", result["hint"])
+        self.assertTrue(result["hint"].endswith("to keep working in it, pass tab_id=58."), result["hint"])
         self.assertEqual({k: v for k, v in result.items() if k not in ("hint", "state")},
                          {k: v for k, v in unchanged.items() if k not in ("hint", "state")})
 
@@ -323,10 +390,15 @@ class OwnTabsRefusalTests(unittest.TestCase):
                 self.assertEqual(self.refuse(listed), unchanged)
 
     def test_reads_and_named_tabs_do_not_look_up_own_tabs(self):
+        def browser_snapshot(tab_id: int | None = None) -> dict:
+            self.sent.append(tab_id)
+            return {"ok": True}
+        snapshot = tools._on_current_tab(browser_snapshot)
         with patch.object(tools, "_post") as post:
             self.assertEqual(self.scroll(tab_id=7), {"ok": True})
+            self.assertEqual(snapshot(), {"ok": True})
         post.assert_not_called()
-        self.assertEqual(self.sent, [7])
+        self.assertEqual(self.sent, [7, None], "the read went to the active tab")
 
 
 if __name__ == "__main__":

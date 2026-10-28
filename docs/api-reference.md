@@ -1096,7 +1096,7 @@ hint names the first one (#325):
 ```json
 { "error": "browser_navigate writes a tab but names none, and there is no current tab, so it was not sent to the tab the user is viewing",
   "code": "no_current_tab", "retryable": false,
-  "hint": "Nothing was dispatched. ... Tab 812 is the tab this MCP client opened most recently (state.ownTabs), maybe in an earlier conversation: to keep working in it, pass tab_id=812 or select it with browser_tabs action=select at its index in browser_tabs action=list.",
+  "hint": "Nothing was dispatched. ... Tab 812 is the tab this MCP client opened most recently (state.ownTabs), maybe in an earlier conversation: to keep working in it, pass tab_id=812.",
   "state": { "tool": "browser_navigate",
              "ownTabs": [{ "tabId": 812, "url": "https://example.com/report", "title": "Report" }] } }
 ```
@@ -1134,25 +1134,32 @@ the active-tab default.
 
 Every bridge request from an MCP server or a Python API `connect()` carries
 `X-Kitsune-Owner`, an id of the client it works for that survives an MCP server restart
-(#325). It is `KITSUNE_CLIENT_ID` from the process environment when that is 1 to 64
+(#325). It is `KITSUNE_OWNER_ID` from the process environment when that is 1 to 64
 letters, digits, `.`, `_`, `:` or `-` (the characters `X-Kitsune-Client` allows; another
 value is ignored). Otherwise it is `<name>-<pid>` of the nearest process above the MCP
-server that is not `uv`, `uvx` or a Python interpreter (at most 4 levels, read with `ps`),
-such as `claude-48190`: an MCP client that reconnects starts a new server process but keeps
-running itself. When `ps` cannot tell, and on Windows, it is `ppid-<parent pid>`. Set
-`KITSUNE_CLIENT_ID` when the MCP client runs its server through another launcher, such as
-a shell script, or to keep the id across MCP client restarts. `browser_status` shows it
-as `mcp_tools.owner`, and a Python `Browser` has it as `browser.client.owner_id`.
+server that is not `uv`, `uvx` or a Python interpreter below them (at most 4 levels, read
+with `ps`), such as `claude-48190`: an MCP client that reconnects starts a new server
+process but keeps running itself. A Python process above `uv` is the MCP client, such as
+one built on the MCP Python SDK. When `ps` cannot tell, and on Windows, it is
+`ppid-<parent pid>`. Set `KITSUNE_OWNER_ID` when the MCP client runs its server through
+another launcher, such as a shell script, or to keep the id across MCP client restarts.
+Give each MCP client its own value: clients with the same value share their tabs.
+`browser_status` shows it as `mcp_tools.owner`, and a Python `Browser` has it as
+`browser.client.owner_id`. It is not the audit `client` id (`X-Kitsune-Client`), which
+changes with every MCP server process.
 
 The bridge records the owner of each tab a request with this header opens: `newTab`
 (direct, batch and workflow steps, pool and session tabs) and the tabs in an action's
 `opened_tabs` (`link_fallback` included). A tab keeps its first owner. The bridge forgets a
-tab when `closeTab` closes it or a tab list no longer has it. The record lives in the
-bridge process only: after a bridge restart, the tabs opened before it have no owner.
-`owned` (above) is the extension's and says whether the agent, any client, opened a tab.
+tab when `closeTab` closes it or a tab list no longer has it, and forgets every tab when
+the extension connects again (after a browser restart, which reuses tab ids, or an
+extension reload). The record lives in the bridge process only: after a bridge restart,
+the tabs opened before it have no owner. `owned` (above) is the extension's and says
+whether the agent, any client, opened a tab.
 
 In the tab list of Kitsune's `browser_tabs` list and `browser_tab_list` (`GET /api/tabs`),
-tabs whose owner is the requesting client's add `mine: true`; other clients' tabs do not,
+tabs whose owner is the requesting client's add `mine: true` when they are also `owned`,
+so a tab the extension gave back to the user is never `mine`. Other clients' tabs do not,
 and the core `browser_tabs` list is unchanged. `POST /api/tabs` with `{"mine": true}` lists
 only those tabs, the most recently opened first; the MCP server uses it for
 [`state.ownTabs`](#no-current-tab).

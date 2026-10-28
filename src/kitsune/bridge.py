@@ -190,7 +190,9 @@ _CLIENT_ID = _re.compile(CLIENT_ID_PATTERN)
 # The calling MCP client's owner id (OWNER_HEADER, #325), validated like the client id.
 _owner_id = contextvars.ContextVar("kitsune_owner_id", default=None)
 # tab id -> {"owner", "opened" (time.monotonic())} of open tabs that a request with an owner id
-# opened (#325). Only this process holds it: a restarted bridge knows no tab's owner.
+# opened (#325). Only this process holds it: a restarted bridge knows no tab's owner. A new extension
+# connection clears it, since a browser restart reuses tab ids and an extension reload gives the
+# agent's tabs to the user.
 _tab_openers = {}
 # Tabs a batch or workflow call's newTab steps opened and did not close, oldest first (#303).
 _container_new_tabs = contextvars.ContextVar("kitsune_container_new_tabs", default=None)
@@ -1935,6 +1937,7 @@ async def ws_handler(websocket):
     extension_ws_generation += 1
     my_generation = extension_ws_generation
     extension_ws = websocket
+    _tab_openers.clear()
 
     if old_ws is not None and old_ws is not websocket:
         _log("↻ New extension connection replacing existing one")
@@ -2197,21 +2200,22 @@ def _note_tab_openers(action, params, result):
 def _with_own_tabs(result, own_only):
     """A getTabs result whose tabs the calling client opened carry mine: true (#325).
 
-    own_only keeps only those, most recently opened first. Without an owner id no tab is mine.
+    own_only keeps only those, most recently opened first. Without an owner id no tab is mine, and
+    neither is a tab the extension no longer counts as the agent's (owned), such as one the user
+    took back. It runs in the HTTP thread, so it reads a copy of _tab_openers.
     """
     tabs = result.get("tabs") if isinstance(result, dict) else None
     if not isinstance(tabs, list):
         return result
     owner = _owner_id.get()
-
-    def opener(tab):
-        return _tab_openers.get(tab.get("id")) if isinstance(tab, dict) else None
+    openers = dict(_tab_openers)
 
     def mine(tab):
-        return owner is not None and (opener(tab) or {}).get("owner") == owner
+        return (owner is not None and isinstance(tab, dict) and tab.get("owned") is True
+                and (openers.get(tab.get("id")) or {}).get("owner") == owner)
 
     if own_only:
-        tabs = sorted(filter(mine, tabs), key=lambda tab: opener(tab)["opened"], reverse=True)
+        tabs = sorted(filter(mine, tabs), key=lambda tab: openers[tab["id"]]["opened"], reverse=True)
     return {**result, "tabs": [{**tab, "mine": True} if mine(tab) else tab for tab in tabs]}
 
 

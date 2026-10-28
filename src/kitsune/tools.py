@@ -171,8 +171,7 @@ def _offering_own_tabs(refusal: dict) -> dict:
         return refusal
     tab_id = own[0]["tabId"]
     hint = (f"{refusal['hint']} Tab {tab_id} is the tab this MCP client opened most recently (state.ownTabs), "
-            f"maybe in an earlier conversation: to keep working in it, pass tab_id={tab_id} or select it "
-            "with browser_tabs action=select at its index in browser_tabs action=list.")
+            f"maybe in an earlier conversation: to keep working in it, pass tab_id={tab_id}.")
     return {**refusal, "hint": hint, "state": {**refusal["state"], "ownTabs": own[:OWN_TABS_OFFERED]}}
 
 
@@ -388,10 +387,10 @@ def browser_tabs(
     and returns its tabId.
 
     list is always a fresh read; owned=true marks tabs the agent opened, mine=true those this
-    MCP client opened (also before a restart); windowId/index only
-    with several windows or window_fields. close refuses a tab the agent did not open
-    (user_tab) unless the user approves (confirm_token). select switches the user's view:
-    only when the user asks. Options of other actions are ignored.
+    MCP client opened (also before a restart); windowId/index only with several windows or
+    window_fields. close refuses a tab the agent did not open (user_tab) unless the user
+    approves (confirm_token). select switches the user's view: only when the user asks.
+    Options of other actions are ignored.
     """
     if action == "list":
         result = _tab_list(_get("/api/tabs"), window_fields)
