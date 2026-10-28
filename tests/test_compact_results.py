@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 from mcp.server.fastmcp import FastMCP
 from mcp.shared.memory import create_connected_server_and_client_session
 
-from kitsune import bridge_client, server, tools
+from kitsune import bridge_client, playwright_tools, server, tools
 
 SNAPSHOT = {
     "snapshot": "\n".join([
@@ -68,7 +68,11 @@ class CompactResultTests(unittest.TestCase):
             async with create_connected_server_and_client_session(mcp._mcp_server) as session:
                 return await session.call_tool(name, arguments)
 
-        with patch.object(bridge_client.httpx, "request", return_value=Mock(json=Mock(return_value=reply))):
+        # A click needs the agent's current tab, else it is refused before any request (#303); the
+        # browser_tabs list would mark it current.
+        current = None if name == "browser_tabs" else 5
+        with patch.object(bridge_client.httpx, "request", return_value=Mock(json=Mock(return_value=reply))), \
+                patch.object(playwright_tools, "_current_tab", current):
             return asyncio.run(run())
 
     def text(self, result) -> str:

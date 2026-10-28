@@ -76,21 +76,101 @@ class Image:
     format: str  # "png" or "jpeg"
 
 
-def _on_current_tab(function):
-    """Run an omitted optional tab_id on the core tools' current tab (#232).
+# Published tools that write the page or tab they run on (#303): the bridge's write actions that
+# act on a tab (bridge.WRITE_ACTIONS, focus and blur). Without a tab they would write the user's
+# active tab, so with no current tab they are refused; reads still default to the active tab.
+TAB_WRITE_TOOLS = frozenset({
+    # core
+    "browser_click", "browser_drag", "browser_drop", "browser_evaluate", "browser_file_upload",
+    "browser_fill_form", "browser_handle_dialog", "browser_hover", "browser_navigate",
+    "browser_navigate_back", "browser_press_key", "browser_resize", "browser_select_option", "browser_type",
+    # Kitsune's own
+    "browser_blur", "browser_check", "browser_click_and_wait_navigation", "browser_duplicate_tab",
+    "browser_focus", "browser_forward", "browser_highlight", "browser_mute_tab", "browser_pin_tab",
+    "browser_reload_tab", "browser_scroll", "browser_set_zoom", "browser_submit_form", "browser_trusted_click",
+})
+# Container steps that write their tab, by the action names steps use: the bridge's tab-claiming
+# actions (bridge._claims_tab) that are not tabless; an if/while condition is JavaScript on its tab.
+TAB_WRITE_STEPS = frozenset({
+    "blurElement", "checkBox", "click", "clickAndWaitNavigation", "closeTab", "detachTab", "doubleClick",
+    "drag", "duplicateTab", "executeJS", "fill", "focusElement", "formFill", "goBack", "goForward",
+    "highlight", "hover", "if", "js", "keypress", "media", "moveTab", "muteTab", "navigate", "pinTab",
+    "reloadTabBrowser", "resizeWindow", "scroll", "selectOption", "setEditableContent", "setZoom",
+    "storageOp", "submitForm", "switchTab", "trustedClick", "type", "wakeTab", "while",
+})
+# Page storage ops that only read (the bridge's read-only mode permits them too).
+_STORAGE_READS = frozenset({"get", "list", "snapshot"})
+# Steps nested in a container step, by block; parallel sequences already name their tabs (tab_required).
+_STEP_BLOCKS = {"sequence": ("do",), "while": ("do",), "try": ("do", "catch"), "if": ("then", "else")}
 
-    The current tab is the one browser_tabs last opened or selected, else the user's active tab,
-    so a tool the agent calls without tab_id acts on the tab its core tools work in, not on the
-    tab the user is looking at.
+
+def _tabless_step_write(step) -> str | None:
+    """The action of the first step in step, or nested in it, that writes a tab and names none."""
+    if not isinstance(step, dict):
+        return None
+    action = step.get("action")
+    if step.get("tabId") is None and action in TAB_WRITE_STEPS and not (
+            action == "storageOp" and step.get("op") in _STORAGE_READS):
+        return action
+    nested = [step.get("command")] if action == "retry" else [
+        command for block in _STEP_BLOCKS.get(action, ()) for command in step.get(block) or []]
+    return next(filter(None, map(_tabless_step_write, nested)), None)
+
+
+def _no_current_tab(name: str, arguments: dict) -> dict | None:
+    """The refusal of a published tool call that would write the user's active tab (#303), else None.
+
+    Called when the call names no tab and there is no current tab.
     """
+    hint = ("Nothing was dispatched. Pass tab_id (browser_navigate and browser_navigate_back accept it too), "
+            "open a background tab with browser_tabs action=new or browser_tab_list new_tab, or make one "
+            "current with browser_tabs action=select.")
+    if name == "browser_workflow":
+        return {"error": "browser_workflow names no tab_id and there is no current tab; its steps cannot be "
+                          "inspected before they run, so it needs a tab even if it only reads",
+                "code": "no_current_tab", "retryable": False, "hint": hint, "state": {"tool": name}}
+    if name == "browser_batch":
+        action = next(filter(None, map(_tabless_step_write, arguments.get("commands") or [])), None)
+    elif name == "browser_retry":
+        action = _tabless_step_write(arguments.get("command"))
+    elif name == "browser_storage":
+        action = None if arguments.get("op") in _STORAGE_READS else "storageOp"
+    else:
+        action = None
+    if action is None and name not in TAB_WRITE_TOOLS:
+        return None
+    what = f'{name} step "{action}"' if name in ("browser_batch", "browser_retry") else name
+    return {"error": f"{what} writes a tab but names none, and there is no current tab, so it was not sent "
+                      "to the tab the user is viewing",
+            "code": "no_current_tab", "retryable": False, "hint": hint,
+            "state": {"tool": name, **({"action": action} if action else {})}}
+
+
+def _on_current_tab(function):
+    """Run an omitted optional tab_id on the core tools' current tab (#232), and refuse a tab write
+    that has no tab (#303).
+
+    The current tab is the one browser_tabs last opened or selected, so a tool the agent calls
+    without tab_id acts on the tab its core tools work in, not on the tab the user is looking at.
+    Without a current tab, reads go to the user's active tab, while a write or navigation that
+    names no tab returns no_current_tab: after an MCP server restart the agent has no current
+    tab even though it worked in one. Only the MCP registration applies this; Python callers name
+    their tabs, so kitsune.tools and kitsune.browser keep the active-tab default.
+    """
+    name = function.__name__
     parameter = inspect.signature(function).parameters.get("tab_id")
-    if parameter is None or parameter.default is not None:
+    fills_tab = parameter is not None and parameter.default is None
+    if not fills_tab and name not in TAB_WRITE_TOOLS:
         return function
 
     @functools.wraps(function)
     def call(*args, **kwargs):
-        if kwargs.get("tab_id") is None:
+        if fills_tab and kwargs.get("tab_id") is None:
             kwargs["tab_id"] = playwright_tools._current_tab
+        if kwargs.get("tab_id") is None and playwright_tools._current_tab is None:
+            refusal = _no_current_tab(name, kwargs)
+            if refusal:
+                return refusal
         return function(*args, **kwargs)
 
     return call
@@ -166,7 +246,7 @@ def _read_page(endpoint: str, tab_id: int | None, selector: str | None = None, r
 # first paragraph, which keeps the repeated text small (#88).
 #
 # An omitted tab_id is the current tab: the one browser_tabs last opened or selected, else
-# the active tab (#232, _on_current_tab).
+# the active tab for reads; MCP writes without one are refused (#232, #303, _on_current_tab).
 TabId = Annotated[int | None, Field(description="Default: current tab.")]
 # A container's default tab: the bridge runs its commands that name no tabId there.
 DefaultTabId = Annotated[int | None, Field(description="Tab for commands that name no tabId. Default: current tab.")]
@@ -181,9 +261,10 @@ def _default_tab(body: dict, tab_id: int | None) -> dict:
 # ════════════════════════════════════════════════════════════════════
 #
 # Every tab-aware tool below accepts an optional `tab_id`. If omitted, it
-# targets the current tab (the one browser_tabs last opened or selected, else
-# the active tab). Pass `tab_id` to drive a specific tab without stealing
-# focus — that's the foundation for parallel multi-tab work.
+# targets the current tab (the one browser_tabs last opened or selected; with
+# none, reads use the active tab and MCP writes are refused). Pass `tab_id` to
+# drive a specific tab without stealing focus — that's the foundation for
+# parallel multi-tab work.
 #
 # Recipe for reliable parallel agentic work:
 #

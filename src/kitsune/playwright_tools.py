@@ -7,9 +7,11 @@ here maps its arguments onto the Kitsune bridge and returns Kitsune's JSON resul
 Kitsune drives the user's own browser through an extension, not a Playwright page, so
 browser_emulate_media and browser_run_code_unsafe answer not_supported.
 
-Tools act on the current tab: the user's active tab until browser_tabs new or select makes
-another tab current. select does not switch the user's view. Kitsune's own tools that are called
-without tab_id act on it too (kitsune.tools._on_current_tab).
+Tools act on the current tab, which browser_tabs new or select sets; select does not switch the
+user's view. Kitsune's own tools that are called without tab_id act on it too. Until there is
+one, reads act on the user's active tab and the MCP server refuses writes and navigations
+(no_current_tab, kitsune.tools._on_current_tab). browser_navigate and browser_navigate_back
+also take a tab_id that playwright_tools.json does not publish, like confirm_token.
 
 Relative file names resolve against KITSUNE_OUTPUT_DIR, else the MCP client's first file root,
 else the MCP server's working directory.
@@ -321,13 +323,14 @@ def browser_type(target: str, text: str, element: str | None = None, submit: boo
 
 
 @_core
-def browser_navigate(url: str, confirm_token: str | None = None) -> dict:
-    return k.browser_navigate(url=url, tab_id=_current_tab, confirm_token=confirm_token)
+def browser_navigate(url: str, confirm_token: str | None = None, tab_id: int | None = None) -> dict:
+    return k.browser_navigate(url=url, tab_id=_current_tab if tab_id is None else tab_id,
+                              confirm_token=confirm_token)
 
 
 @_core
-def browser_navigate_back() -> dict:
-    return k.browser_back(tab_id=_current_tab)
+def browser_navigate_back(tab_id: int | None = None) -> dict:
+    return k.browser_back(tab_id=_current_tab if tab_id is None else tab_id)
 
 
 def _successful_static(entry: dict) -> bool:

@@ -208,11 +208,13 @@ mcp._mcp_server.instructions = (
     "Kitsune controls the user's own Firefox-family browser while the user keeps using it. "
     + ("browser_tabs `new` opens a tab in the background, and `select` makes a tab your current "
        "tab without switching the user's view, so you can read, fill and screenshot background "
-       "tabs without interrupting the user. Until you open or select a tab, tools act on the tab "
-       "the user is viewing."
+       "tabs without interrupting the user. Until you open or select a tab, reads act on the tab "
+       "the user is viewing, and writes and navigations that pass no tab_id fail with "
+       "no_current_tab. A restarted MCP server has no current tab: open or select one again."
        if permits_tool(MODE, "browser_tabs") else
-       "Tools act on the tab the user is viewing until browser_tab_list new_tab opens a background "
-       "tab of your own; later tools act on that tab without switching the user's view."))
+       "Until browser_tab_list new_tab opens a background tab of your own, reads act on the tab the "
+       "user is viewing, and navigations and writes that pass no tab_id fail with no_current_tab; "
+       "later tools act on your tab without switching the user's view."))
 # The tool browser_tools_call is running; its bridge requests name it for the audit log.
 _gateway_call: ContextVar[str | None] = ContextVar("kitsune_gateway_call", default=None)
 
@@ -303,8 +305,9 @@ def _register(spec: tools.ToolSpec, function=None) -> None:
     """Register a tool of kitsune.tools only when its startup capability and mode permit it.
 
     `all` enables every group except NAMED_ONLY_GROUPS; modes narrow every group.
-    Only the MCP registration marks failures as errors and runs an omitted tab_id on the current
-    tab; Python callers of kitsune.tools get the plain function. function replaces the tool's own
+    Only the MCP registration marks failures as errors, runs an omitted tab_id on the current
+    tab and refuses tab writes without one (no_current_tab); Python callers of kitsune.tools get
+    the plain function. function replaces the tool's own
     (browser_status adds this server's tool surface).
     Tools left out go to UNPUBLISHED_TOOLS with the settings that would publish them.
     A registered tool outside PUBLISHED_CAPS is left out of tools/list, not of calls.

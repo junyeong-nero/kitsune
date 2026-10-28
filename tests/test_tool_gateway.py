@@ -173,12 +173,12 @@ class GatewayTests(unittest.TestCase):
     def test_discover_then_invoke_in_one_connection(self):
         result = sessions(self.env, [
             call("browser_tools_search", {"query": "scroll the page"}),
-            via("browser_scroll", {"direction": "down"}),
-            call("browser_scroll", {"direction": "down"}),
+            via("browser_scroll", {"direction": "down", "tab_id": 3}),
+            call("browser_scroll", {"direction": "down", "tab_id": 3}),
             via("browser_take_screenshot"),
             call("browser_take_screenshot"),
-            via("browser_submit_form", {"selector": "form", "confirm_token": "token-1"}),
-            call("browser_submit_form", {"selector": "form", "confirm_token": "token-1"}),
+            via("browser_submit_form", {"selector": "form", "tab_id": 3, "confirm_token": "token-1"}),
+            call("browser_submit_form", {"selector": "form", "tab_id": 3, "confirm_token": "token-1"}),
             via("browser_scroll", {"amount": "far"}),
             call("browser_scroll", {"amount": "far"}),
             via("browser_snapshot", {"filename": "page.md"}),
@@ -250,7 +250,7 @@ class GatewayTests(unittest.TestCase):
             call("browser_tools_publish", {"names": ["browser_nope"]}),
             call("browser_tools_search", {"query": "scroll"}),
             call("browser_tools_search", {"query": "scroll"}, session="b"),
-            call("browser_scroll", {"direction": "down"}, session="b"),
+            call("browser_scroll", {"direction": "down", "tab_id": 3}, session="b"),
         ])
         published, listed_a, listed_b, again, storage, unknown, search_a, search_b, direct_b = result["results"]
         added = payload(published)
@@ -283,7 +283,7 @@ class GatewayModeTests(unittest.TestCase):
             via("browser_click", {"target": "e1"}), call("browser_click", {"target": "e1"}),
             via("browser_scroll", {"direction": "down", "confirm_token": "x"}),
             call("browser_scroll", {"direction": "down", "confirm_token": "x"}),
-            via("browser_scroll", {"direction": "down"}),
+            via("browser_scroll", {"direction": "down", "tab_id": 3}),
         ])
         search, gateway_click, direct_click, gateway_token, direct_token, scroll = result["results"]
         names = {tool["name"] for tool in payload(search)["tools"]}
