@@ -68,9 +68,10 @@ def _cards(snapshot):
     cards, current = {}, None
     for line in snapshot.split("\n"):
         number = re.search(r"(?:DESK-|desk-|Variant |Price |Discount |New |Oak |White )(\d+)", line)
-        if not number:
+        # A shortened URL (#310) belongs to the card it follows.
+        if not number and line.strip() != '- /url: "…"':
             continue
-        i = int(number[1])
+        i = int(number[1]) if number else current
         if f'heading "DESK-{i} desk"' in line:
             current = i
         if i != current:
@@ -96,9 +97,9 @@ class RealBrowserBoundedSnapshotTests(harness.RealBrowserTestCase):
         self.assertFalse(result.isError, result.content)
         return json.loads(result.content[0].text)
 
-    def assert_whole_card(self, lines, i, url=True):
+    def assert_whole_card(self, lines, i, url=None):
         # Same-origin link URLs are paths (#310).
-        expected = [f'heading "DESK-{i} desk"', f'link "DESK-{i} desk"', *([f'/url: "/p/desk-{i}"'] if url else []),
+        expected = [f'heading "DESK-{i} desk"', f'link "DESK-{i} desk"', url or f'/url: "/p/desk-{i}"',
                     f'text "Variant {i}:', f'text "Price {i}: ₩{129 + i},000' + (f' Discount {i}:' if i % 2 else '"'),
                     *([f'text "New {i}"'] if i % 3 == 0 else []),
                     *([f'button "Oak {i}"', f'button "White {i}"'] if i % 4 == 0 else []),
@@ -125,9 +126,9 @@ class RealBrowserBoundedSnapshotTests(harness.RealBrowserTestCase):
         cards = _cards(snapshot)
         self.assertEqual(list(cards), list(range(len(cards))))
         self.assertGreater(len(cards), 10)
-        # The last card before the cut can lack its /url line (#310).
+        # The URL of the last card before the cut can be shortened to "…" (#310).
         for i, lines in cards.items():
-            self.assert_whole_card(lines, i, url=i != len(cards) - 1 or any("/url:" in line for line in lines))
+            self.assert_whole_card(lines, i, url='/url: "…"' if i == len(cards) - 1 and '- /url: "…"' in lines else None)
 
         # A card past the cut: find it, read its card by the heading's container, act on it.
         found = self.core("browser_find", text="DESK-55 desk")
@@ -161,8 +162,8 @@ class RealBrowserBoundedSnapshotTests(harness.RealBrowserTestCase):
         self.assertIs(bounded["truncated"], True)
         self.assertIn('- /url: "/wiki/topic-0-0"', snapshot)
         # The cut falls after a whole paragraph: its text, link and URL, though the URL of the
-        # last paragraph can be left out (#310).
-        self.assertRegex(snapshot.split("\n")[-2], r'- (/url: "/wiki/topic-\d+-\d+"|link "topic \d+\.\d+" \[ref=e\d+\])$')
+        # last paragraph can be shortened to "…" (#310).
+        self.assertRegex(snapshot.split("\n")[-2], r'- /url: "(/wiki/topic-\d+-\d+|…)"$')
         shown = [(int(s), int(p)) for s, p in re.findall(r'text "Section (\d+) paragraph (\d+):', snapshot)]
         self.assertEqual(shown, [(s, p) for s in range(SECTIONS) for p in range(5)][:len(shown)])
         self.assertGreater(len(shown), 10)

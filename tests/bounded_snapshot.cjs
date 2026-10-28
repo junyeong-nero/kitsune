@@ -20,6 +20,11 @@ class Element {
   matches() { return false; }
   closest() { return null; }
   getBoundingClientRect() { return { x: 0, y: 0, width: 100, height: 30 }; }
+  scrollIntoView() {}
+  addEventListener() {}
+  removeEventListener() {}
+  dispatchEvent() { return true; }
+  click() {}
 }
 const h = (tagName, attrs, ...nodes) => new Element(tagName, attrs, nodes);
 
@@ -34,23 +39,24 @@ function card(i) {
 }
 
 // Every listed card has its name, URL, variant, price and discount, in order, and no line of
-// another card in between. In a cut snapshot the last card can lack its /url line (#310).
+// another card in between. In a cut snapshot the last card's URL can be shortened to "…" (#310).
 function assertWholeCards(snapshot, label, cut = false) {
   const lines = snapshot.split('\n').filter(line => !line.includes('truncated'));
   let current = null;
   const seen = new Map();
   for (const line of lines) {
     const number = line.match(/(?:desk[- ]|variant |price |discount )(\d+)/i);
-    if (!number) continue;
-    const i = Number(number[1]);
+    // A shortened URL belongs to the card it follows.
+    if (!number && line.trim() !== '- /url: "…"') continue;
+    const i = number ? Number(number[1]) : current;
     if (line.includes(`heading "Desk ${i}"`)) current = i;
     assert.equal(i, current, `${label}: a line of card ${i} under card ${current}\n${snapshot}`);
     seen.set(i, [...(seen.get(i) || []), line.trim()]);
   }
   const last = [...seen.keys()].at(-1);
   for (const [i, got] of seen) {
-    const url = !(cut && i === last) || got.some(line => line.startsWith('- /url:'));
-    const expected = [`heading "Desk ${i}"`, `link "Desk ${i}"`, ...(url ? [`/url: "/p/desk-${i}"`] : []),
+    const url = cut && i === last && got.includes('- /url: "…"') ? '/url: "…"' : `/url: "/p/desk-${i}"`;
+    const expected = [`heading "Desk ${i}"`, `link "Desk ${i}"`, url,
       `text "Variant ${i}:`, `text "Price ${i}:`, ...(i % 2 ? [`text "Discount ${i}:`] : []),
       ...(i % 3 === 0 ? [`button "Add desk ${i} to cart"`] : [])];
     assert.equal(got.length, expected.length, `${label}: card ${i} is incomplete\n${got.join('\n')}`);
@@ -65,6 +71,8 @@ function assertWholeCards(snapshot, label, cut = false) {
   const context = vm.createContext({
     console, URL, crypto: webcrypto, CSS: { escape: x => x }, setTimeout,
     Event: class { constructor(type, options) { Object.assign(this, { type }, options); } },
+    MouseEvent: class { constructor(type, options) { Object.assign(this, { type }, options); } },
+    navigator: { platform: 'Linux' },
     HTMLInputElement: class {}, HTMLTextAreaElement: class {},
     location: { href: 'https://shop.test/search?q=desk' },
     window: { getComputedStyle: () => ({ display: 'block', visibility: 'visible', getPropertyValue: () => '' }) },
@@ -230,10 +238,40 @@ function assertWholeCards(snapshot, label, cut = false) {
   assert.deepEqual(delta.map(line => line.replace(/ \[ref=.*/, '')), ['- banner ""', '  - navigation "사이트 메뉴"',
     '    - link "메뉴 항목 0"', '      - /url: "/t/component-gallery/crowded/index?layout=crowded&variant=0"',
     '    - link "메뉴 항목 마흔"']);
-  // ... and in the bridge's recut, which leaves it out when that link does not fit.
-  const repeat = bridge.boundPublicSnapshot({ truncated: true, cuts: [0, 1, 3, 4, 5], snapshot: [
-    '- navigation "Menu" [ref=e1]', `  - link "${'A'.repeat(60)}" [ref=e2]`, `    - /url: "/${'a'.repeat(60)}"`,
-    '  - link "B" [ref=e3]', '- button "Next" [ref=e4]'].join('\n') }, { maxChars: 140 });
+  // ... and after an action on a link: a delta lists the target with its own /url line ...
+  crowded(60, 40);
+  const cardLink = context.document.body.children[1].children[1].children[5].children[0].children[0];
+  const listing = (await send({ action: 'getSnapshot' })).snapshot;
+  const cardRef = listing.match(/link "Desk 5" \[ref=(s\d+e\d+)\]/)[1];
+  assert.equal(cardLink.textContent, 'Desk 5');
+  assert.equal((await send({ action: 'click', selector: cardRef, deltaBaseline: true })).ok, true);
+  const clicked = await send({ action: 'getSnapshot', delta: true, focusLastAction: true, observation: 'browser_click' });
+  assert.deepEqual(clicked.snapshot.split('\n').map(line => line.replace(/ \[ref=.*/, '')),
+    ['- main ""', '  - heading "Desk 5"', '    - link "Desk 5"', '      - /url: "/p/desk-5"']);
+  // ... a targeted repeated link keeps its own, and a targeted cut defers no landmark.
+  const menuRef = listing.match(/link "메뉴 항목 40" \[ref=(s\d+e\d+)\]/)[1];
+  assert.equal((await send({ action: 'click', selector: menuRef })).ok, true);
+  const aimed = await send({ action: 'getSnapshot', maxChars: 6000, focusLastAction: true });
+  assert.equal(aimed.target_ref, menuRef);
+  assert.match(aimed.snapshot, new RegExp(`link "메뉴 항목 40" \\[ref=${menuRef}\\]\n      - /url: "/t/`));
+  assert.doesNotMatch(aimed.snapshot, /not shown/);
+  // Without main nothing is deferred: the banner comes first, as before.
+  setBody(...context.document.body.children.filter(child => child.tagName !== 'MAIN'),
+    h('DIV', {}, h('UL', {}, ...Array.from({ length: 60 }, (_, i) => card(i)))));
+  const noMain = await send({ action: 'getSnapshot', maxChars: 12000 });
+  assert.equal(noMain.truncated, true);
+  assert.doesNotMatch(noMain.snapshot, /not shown/);
+  assert.equal(noMain.snapshot.split('\n').filter(line => line.startsWith('    - link "메뉴 항목')).length, 68);
+
+  // In the bridge's recut a span that does not fit whole is kept with shortened URLs, and a
+  // repeated link is left out when the link it repeats does not fit.
+  const long = ['- navigation "Menu" [ref=e1]', `  - link "${'A'.repeat(60)}" [ref=e2]`, `    - /url: "/${'a'.repeat(60)}"`,
+    '  - link "B" [ref=e3]', '- button "Next" [ref=e4]'].join('\n');
+  const shortened = bridge.boundPublicSnapshot({ truncated: true, cuts: [0, 1, 4, 5], snapshot: long }, { maxChars: 230 });
+  assert.equal(shortened.snapshot, ['- navigation "Menu" [ref=e1]', `  - link "${'A'.repeat(60)}" [ref=e2]`,
+    '    - /url: "…"', '  - link "B" [ref=e3]', '- button "Next" [ref=e4]',
+    '- … truncated; scope with selector, ref or max_depth'].join('\n'));
+  const repeat = bridge.boundPublicSnapshot({ truncated: true, cuts: [0, 1, 3, 4, 5], snapshot: long }, { maxChars: 140 });
   assert.equal(repeat.snapshot, ['- navigation "Menu" [ref=e1]', '- button "Next" [ref=e4]',
     '- … truncated; scope with selector, ref or max_depth'].join('\n'));
 

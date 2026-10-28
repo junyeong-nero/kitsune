@@ -883,6 +883,7 @@
             entry.href = url.href;
             // A link repeating the URL of the link line right before it at its level, or (as a
             // first child) the page's own URL, gets no /url line; the acted-on target keeps it.
+            // Selection keeps a link with its own /url entry (urlIndex) or the one it repeats.
             if (el !== target && (previous ? previous.href === url.href : url.href === page?.href)) {
               // The /url entry a bounded snapshot keeps with this link (none for the page's URL).
               entry.urlFrom = previous && (previous.urlIndex ?? previous.urlFrom);
@@ -891,7 +892,8 @@
               const shown = url.origin === page?.origin && !url.pathname.startsWith('//')
                 ? url.pathname + url.search + url.hash : url.href;
               const signature = `/url: ${JSON.stringify(shown)}`;
-              append({ line: `${'  '.repeat(Math.min(depth + 1, 12))}- ${signature}`,
+              const indent = `${'  '.repeat(Math.min(depth + 1, 12))}- `;
+              append({ line: indent + signature, shortLine: `${indent}/url: "…"`,
                 parent, interactive: false, source: el, signature, url: true });
             }
           }
@@ -995,33 +997,41 @@
     let selected = entries;
     const kept = new Set();
     let used = 0;
-    // Keeps the entries, each with its ancestors and, for a link without a /url line, the /url
-    // entry whose URL it repeats, plus extra characters (a marker): all of them or none.
-    function add(indices, withAncestors = true, extra = 0) {
+    // Keeps the entries, each with its ancestors and the /url entry of a link (its own, or the
+    // one whose URL it repeats), plus extra characters (a marker): all of them or none. With
+    // shortUrls, /url entries not kept yet are shortened to `- /url: "…"` (#310), so a link
+    // keeps its name and ref and is never read as having another link's URL.
+    function add(indices, withAncestors = true, extra = 0, shortUrls = false) {
       const pending = new Set();
       const gather = (index, ancestors) => {
         for (let i = index; i >= 0 && !kept.has(i) && !pending.has(i); i = ancestors ? entries[i].parent : -1) {
           pending.add(i);
           if (entries[i].urlFrom != null) gather(entries[i].urlFrom, true);
+          if (entries[i].urlIndex != null) gather(entries[i].urlIndex, false);
         }
       };
       for (const index of [].concat(indices)) gather(index, withAncestors);
+      const lineOf = i => shortUrls && entries[i].url ? entries[i].shortLine : entries[i].line;
       let cost = extra;
-      for (const i of pending) cost += entries[i].line.length + 1;
+      for (const i of pending) cost += lineOf(i).length + 1;
       if (used + cost > limit + 1) return false;
-      for (const i of pending) kept.add(i);
+      for (const i of pending) {
+        entries[i].line = lineOf(i);
+        kept.add(i);
+      }
       used += cost;
       return true;
     }
+    const keep = index => add(index) || add(index, true, 0, true);
     // The spans between cuts, in document order, of the entries pick accepts until one does
-    // not fit. That span still keeps its lines without their /url lines if they fit (#310), and
-    // ends the fill. Returns whether every span fit.
+    // not fit. That span is still kept with shortened /url lines if it fits then, and ends the
+    // fill. Returns whether every span fit.
     function fill(pick) {
       for (let c = 1; c < cuts.length; c++) {
         const span = [];
         for (let i = cuts[c - 1]; i < cuts[c]; i++) if (pick(i)) span.push(i);
         if (!span.length || add(span)) continue;
-        add(span.filter(i => !entries[i].url));
+        add(span, true, 0, true);
         return false;
       }
       return true;
@@ -1033,6 +1043,8 @@
       const ancestors = [];
       for (let i = entries[targetIndex].parent; i >= 0; i = entries[i].parent) ancestors.push(i);
       for (const i of ancestors.reverse()) add(i, false);
+      const { urlIndex } = entries[targetIndex];
+      if (urlIndex != null) add(urlIndex, false) || add(urlIndex, false, 0, true);
     }
     if (baseline) {
       // The target, then lines the baseline lacks (new or newly shown elements, changed names,
@@ -1043,7 +1055,7 @@
         const el = entry.el || entry.source;
         if (el && !baseline.signatures.get(el)?.has(entry.signature)) changed.push(i);
       });
-      for (const i of changed) add(i);
+      for (const i of changed) keep(i);
       // A collapse marker follows the listed items of its run.
       entries.forEach((entry, i) => {
         if (entry.run === undefined || kept.has(i)) return;
@@ -1070,13 +1082,13 @@
             let count = 0;
             for (let i = targetIndex + direction; i >= 0 && i < entries.length; i += direction) {
               if (predicate(entries[i])) {
-                add(i);
+                keep(i);
                 if (++count === 2) break;
               }
             }
           }
         }
-        for (let i = 0; i < entries.length; i++) add(i);
+        for (let i = 0; i < entries.length; i++) keep(i);
         selected = entries.filter((_, i) => kept.has(i));
       } else {
         // With no surviving target this is the longest document-order prefix ending at a cut.
@@ -1106,7 +1118,7 @@
           return `${indent}- … ${hidden.length} lines (${links} links) not shown; snapshot ${entries[l].ref} to list all`;
         };
         const reserved = deferred.filter(l => add(l, true, markerLine(l, inside(l)).length + 1));
-        if (fill(i => !deferred.some(l => i > l && i < after[l]))) {
+        if (fill(i => !reserved.some(l => i > l && i < after[l]))) {
           const partial = reserved.filter(l => !add(inside(l)));
           for (const l of partial) if (!fill(i => i > l && i < after[l])) break;
         }

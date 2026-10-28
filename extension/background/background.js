@@ -1522,30 +1522,36 @@ function boundPublicSnapshot({ cuts, ...response }, params) {
   const showMarker = marker.length <= budget;
   const available = showMarker ? budget - marker.length : budget + 1;
   let used = 0;
-  // The lines, each with its ancestors and the /url line it repeats: all of them or none.
-  const add = indices => {
+  // The lines, each with its ancestors and a link's /url line (its own or the one it repeats):
+  // all of them or none. With shortUrls, /url lines not kept yet become `- /url: "…"` (#310).
+  const add = (indices, shortUrls = false) => {
     const block = new Set();
     const gather = index => {
       for (let i = index; i != null && !kept.has(i) && !block.has(i); i = parents[i]) {
         block.add(i);
         if (urlFrom[i] != null) gather(urlFrom[i]);
+        if (isLink(i) && hasUrl(i)) gather(i + 1);
       }
     };
     indices.forEach(gather);
-    const cost = [...block].reduce((sum, i) => sum + lines[i].length + 1, 0);
+    const lineOf = i => shortUrls && isUrl(i) ? lines[i].replace(/- \/url: .*$/, '- /url: "…"') : lines[i];
+    const cost = [...block].reduce((sum, i) => sum + lineOf(i).length + 1, 0);
     if (used + cost > available) return false;
-    for (const i of block) kept.add(i);
+    for (const i of block) {
+      lines[i] = lineOf(i);
+      kept.add(i);
+    }
     used += cost;
     return true;
   };
   const target = response.target_ref ? lines.findIndex(line => snapshotLineRef(line) === response.target_ref) : -1;
-  if (target >= 0) add([target]);
+  if (target >= 0) add([target]) || add([target], true);
   const ends = target < 0 && cuts ? cuts : lines.map((_, i) => i + 1);
   let from = 0;
   for (const to of ends) {
-    // A span that does not fit whole keeps its lines without their /url lines if they fit (#310).
+    // A span that does not fit whole is kept with shortened /url lines if it fits then (#310).
     const span = Array.from({ length: Math.max(0, to - from) }, (_, k) => from + k);
-    if (!add(span)) add(span.filter(i => !isUrl(i)));
+    if (!add(span)) add(span, true);
     from = to;
   }
   const selected = lines.filter((_, i) => kept.has(i));
