@@ -504,17 +504,22 @@ the success result adds a warning. With `stopOnWarning`, a batch stops there.
 
 The hint depends on why the target may be unrendered (#328):
 
-- A hidden form control, such as the native checkbox behind a custom widget: the hint
-  says to prefer its label or visible control from a new snapshot. `state` has only
-  `reason`.
 - A target in a hidden tab (`document.visibilityState` is `hidden`: a background tab or
-  a minimized window) adds `state.hiddenTab: true`. A target inside an open popup adds
-  `state.inPopup: true`. A popup is an element with role `menu`, `listbox` or `dialog`
-  that is rendered, a `<dialog open>`, or an open popover (`:popover-open`). The hint
-  says the tab is in the background and the page may not paint the element until the
-  tab is shown, or that the popup is open but not painted. Events dispatched to the
-  element work normally, so if it belongs to the control the agent meant, the agent can
-  act on it and check the effect instead of looking for another element.
+  a minimized window) adds `state.hiddenTab: true`. Tabs the agent opens are in the
+  background by default, so their warnings usually carry it.
+- A hidden form control (`input`, `select` or `textarea`), such as the native checkbox
+  behind a custom widget, keeps the hint to prefer its label or visible control from a
+  new snapshot, inside a popup or in a hidden tab too: CSS hides it whether or not the
+  page paints.
+- Any other target inside an open popup adds `state.inPopup: true`. A popup is an
+  element with role `menu`, `listbox` or `dialog` that is rendered, a `<dialog open>`,
+  or an open popover (`:popover-open`).
+- For any other target in a hidden tab or an open popup, the hint says the tab is in the
+  background and the page may not paint the element until the tab is shown, or that the
+  popup is open but not painted. Events dispatched to the element work normally, so if
+  it belongs to the control the agent meant, the agent can act on it and check the
+  effect instead of looking for another element. Other targets keep the label hint, and
+  `state` has only `reason`.
 
 ```json
 { "ok": true, "tag": "div", "visibilityState": "hidden", "warning": { "code": "hidden_or_covered",
@@ -1981,15 +1986,19 @@ prose out. A tab showing an HTTP error response without a document fails with
 When the document's `document.visibilityState` is `hidden` (the tab is in the background,
 or its window is minimized), every snapshot (readable, compact and post-action) and the
 result of every page action adds `visibilityState: "hidden"` (#328). Visible tabs omit
-the field. The page actions are click, double click, hover, drag, type, fill, set
+the field. Tabs the agent opens are in the background by default, so their results
+usually carry it. The page actions are click, double click, hover, drag, type, fill, set
 editable content, select, check, keypress, submit, form fill, scroll, focus and blur,
-including the failures the page reports (such as `not_found`); `browser_navigate` carries it
-from its post-action snapshot. Some pages render lazily, or do not paint menus and popups, while their tab is
-hidden (#259, #260), so an empty snapshot or an unrendered target there may only mean the
-page has not painted yet. Kitsune does not show the tab on its own. Kitsune's
-`browser_tabs` select with `tab_id` (`/api/switch-tab`) shows it, and the user sees their
-view switch (see [Never taking focus](#never-taking-focus)); the core `browser_tabs`
-select only makes a tab current.
+including the failures the page reports (such as `not_found`). A result with a
+post-action snapshot, including `browser_navigate`'s, takes the field from that
+snapshot; a warning's `state.hiddenTab` describes the moment of the action. Some pages
+render lazily, or do not paint menus and popups, while their tab is hidden (#259, #260),
+so an empty snapshot or an unrendered target there may only mean the page has not
+painted yet. Kitsune does not show the tab on its own. Kitsune's `browser_tabs` select
+with `tab_id` (`/api/switch-tab`) shows it and switches the user's view, so ask the
+user first; it is refused with `user_active` while they use the tab they would leave
+(see [Never taking focus](#never-taking-focus)). The core `browser_tabs` select only
+makes a tab current.
 
 #### Frames
 

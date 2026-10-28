@@ -116,14 +116,24 @@ async function testNotRenderedHints() {
   popover.popoverOpen = true;
   const shut = Object.assign(new Element('BUTTON', 'shut'), { rects: 0 });
   new Element('DIV', 'shut-popover', { popover: 'auto' }, [shut], { display: 'none' });
-  const { send, document } = contentScript({
-    '#field': field, '#menu-item': menuItem, '#closed-item': closedItem, '#dialog-item': dialogItem,
-    '#popover-item': popoverItem, '#shut': shut,
-  }, new Element('BODY', 'body'));
+  // A hidden native checkbox in a rendered modal still has a label to act on.
+  const modalField = new Element('INPUT', 'modal-field', {}, [], { display: 'none' });
+  new Element('DIV', 'modal', { role: 'dialog' }, [new Element('LABEL', 'remember', {}, [modalField])]);
+  // The popup walk goes up through shadow roots and slots.
+  const shadowItem = new Element('DIV', 'shadow-item', { role: 'menuitem' }, [], { display: 'none' });
+  shadowItem.parentNode = { host: new Element('DIV', 'shadow-menu', { role: 'menu' }) };
+  const slottedItem = new Element('DIV', 'slotted-item', { role: 'option' }, [], { display: 'none' });
+  new Element('DIV', 'slot-host', {}, [slottedItem]);
+  slottedItem.assignedSlot = new Element('SLOT', 'slot');
+  new Element('DIV', 'slot-listbox', { role: 'listbox' }, [slottedItem.assignedSlot]);
+  const elements = { field, 'menu-item': menuItem, 'closed-item': closedItem, 'dialog-item': dialogItem,
+    'popover-item': popoverItem, shut, 'modal-field': modalField, 'shadow-item': shadowItem,
+    'slotted-item': slottedItem };
+  const { send, document } = contentScript(
+    Object.fromEntries(Object.entries(elements).map(([id, el]) => [`#${id}`, el])), new Element('BODY', 'body'));
 
   const warningFor = async (id, action = 'click') => {
-    const el = { field, 'menu-item': menuItem, 'closed-item': closedItem, 'dialog-item': dialogItem,
-      'popover-item': popoverItem, shut }[id];
+    const el = elements[id];
     el.events = [];
     const result = await send({ action, selector: `#${id}` });
     assert.equal(result.ok, true, `${action} still succeeds on #${id}`);
@@ -133,13 +143,13 @@ async function testNotRenderedHints() {
   };
 
   // A hidden form control, or an item of a closed popup, in a shown tab: act on the label instead.
-  for (const id of ['field', 'closed-item', 'shut']) {
+  for (const id of ['field', 'closed-item', 'shut', 'modal-field']) {
     const warning = await warningFor(id);
     assert.deepEqual(warning.state, { reason: 'not_rendered' }, id);
     assert.match(warning.hint, /prefer its label or visible control/);
   }
   // An item of an open popup: dispatching works, so keep acting on it.
-  for (const id of ['menu-item', 'dialog-item', 'popover-item']) {
+  for (const id of ['menu-item', 'dialog-item', 'popover-item', 'shadow-item', 'slotted-item']) {
     for (const action of ['click', 'doubleClick', 'hover']) {
       const warning = await warningFor(id, action);
       assert.deepEqual(warning.state, { reason: 'not_rendered', inPopup: true }, `${action} #${id}`);
@@ -150,10 +160,16 @@ async function testNotRenderedHints() {
     }
   }
 
-  // In a hidden tab every unrendered target gets the background-tab hint.
+  // In a hidden tab every unrendered target is flagged. A form control keeps the label hint: CSS hides
+  // it whether or not the page paints.
   document.visibilityState = 'hidden';
+  for (const id of ['field', 'modal-field']) {
+    const warning = await warningFor(id);
+    assert.deepEqual(warning.state, { reason: 'not_rendered', hiddenTab: true }, id);
+    assert.match(warning.hint, /prefer its label or visible control/);
+  }
+  // Other targets get the background-tab hint.
   for (const [id, state] of [
-    ['field', { reason: 'not_rendered', hiddenTab: true }],
     ['closed-item', { reason: 'not_rendered', hiddenTab: true }],
     ['menu-item', { reason: 'not_rendered', hiddenTab: true, inPopup: true }],
   ]) {
@@ -173,17 +189,24 @@ async function testBackgroundCopiesVisibility() {
     userActiveError: async () => null, guardedTabId: async () => null, touchStart() {}, touchEnd() {},
     protectedTabError: async () => null,
     getOpenedTabs: async () => ({ opened_tabs: [] }),
-    // navigate is the background's own: its result does not come from the page.
-    dispatchCommand: async () => ({ ok: true, url: 'https://example.test/' }),
+    // navigate is the background's own: its result does not come from the page. The click ran while
+    // the tab was hidden.
+    dispatchCommand: async params => params.action === 'click'
+      ? { ok: true, tag: 'button', visibilityState: 'hidden' } : { ok: true, url: 'https://example.test/' },
     forwardToContent: async () => ({ snapshot: 'tree', ...(hidden ? { visibilityState: 'hidden' } : {}) }),
   });
   vm.runInContext(source.slice(source.indexOf('const POST_SNAPSHOT_ACTIONS'), source.indexOf('async function dispatchCommand')), context);
   const navigated = await context.handleCommand({ action: 'navigate', url: 'https://example.test/' });
   assert.equal(navigated.snapshot, 'tree');
   assert.equal(navigated.visibilityState, 'hidden');
+  assert.equal((await context.handleCommand({ action: 'click', selector: '#go' })).visibilityState, 'hidden');
   hidden = false;
   assert.equal((await context.handleCommand({ action: 'navigate', url: 'https://example.test/' })).visibilityState,
     undefined);
+  // The user showed the tab before the post-action snapshot: the result describes that snapshot.
+  const clicked = await context.handleCommand({ action: 'click', selector: '#go' });
+  assert.equal(clicked.snapshot, 'tree');
+  assert.equal(clicked.visibilityState, undefined);
 }
 
 (async () => {

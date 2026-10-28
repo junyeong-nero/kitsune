@@ -209,19 +209,21 @@
   }
 
   // Synthetic events still reach an unrendered target, so pointer actions report it instead of refusing.
-  // A hidden form control has a label to act on instead; an item of an open popup, or any target in a
-  // hidden tab, is usually the intended one that the page has not painted (#328).
+  // A hidden form control has a label to act on instead, in a popup or a hidden tab too: CSS hides it
+  // whether or not the page paints. Another item of an open popup, or any other target in a hidden
+  // tab, is usually the intended one that the page has not painted (#328).
   function notRenderedWarning(el) {
     if (isRendered(el)) return {};
     const hiddenTab = tabHidden();
-    const inPopup = inOpenPopup(el);
-    if (!hiddenTab && !inPopup) {
-      return { warning: { code: 'hidden_or_covered', state: { reason: 'not_rendered' },
+    const formControl = ['INPUT', 'SELECT', 'TEXTAREA'].includes(el.tagName);
+    const inPopup = !formControl && inOpenPopup(el);
+    const state = { reason: 'not_rendered', ...(hiddenTab ? { hiddenTab: true } : {}),
+      ...(inPopup ? { inPopup: true } : {}) };
+    if (formControl || (!hiddenTab && !inPopup)) {
+      return { warning: { code: 'hidden_or_covered', state,
         hint: 'Events were dispatched to a hidden element a user could not click; ' +
           'prefer its label or visible control from a new browser_snapshot.' } };
     }
-    const state = { reason: 'not_rendered', ...(hiddenTab ? { hiddenTab: true } : {}),
-      ...(inPopup ? { inPopup: true } : {}) };
     const cause = hiddenTab
       ? 'The tab is in the background, and the page may not paint this element until the tab is shown. '
       : 'The element is in an open menu, listbox, dialog or popover that the page has not painted. ';
