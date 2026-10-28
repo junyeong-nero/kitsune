@@ -2483,12 +2483,14 @@ A `selector` is scrolled into view first. The hover dispatches, in this order,
 (`composed: true`). `pointerenter` and `mouseenter` do not bubble; each goes to every
 newly entered element from the outermost ancestor to the target, so a row that shows
 its controls on enter sees the hover of a child. The ancestor chain crosses shadow
-roots to their hosts and stays within the target's document. An ancestor that also
-contains the element the previous hover or click pointed at counts as already entered
-and gets no enter events, so hovering the same element again sends none; the first
-hover enters every ancestor up to the root element. Pointer events carry
-`pointerType: "mouse"`, `pointerId: 1` and `isPrimary`, and every event carries `view`
-and the point.
+roots to their hosts and stays within the target's document (in a frame, the `<iframe>`
+element is not entered). An ancestor that also contains the element the previous hover
+pointed at counts as already entered and gets no enter events; the first hover enters
+every ancestor up to the root element, and so does hovering the same element again, so
+a retry can reveal what was hidden meanwhile. Kitsune remembers only its own hovers in
+this document: clicks, the real pointer and `browser_trusted_click` do not change it,
+and navigation or reinjection starts over. Pointer events carry `pointerType: "mouse"`,
+`pointerId: 1` and `isPrimary`, and every event carries `view` and the point.
 
 Limits: every event has `isTrusted: false`, and no `pointerout`, `pointerleave`,
 `mouseout` or `mouseleave` is sent to the element pointed at before. CSS `:hover`

@@ -672,7 +672,8 @@ def browser_hover(
 ) -> dict:
     """Hover over an element on the page. ok=true means dispatched; verify with expect
     (see browser_check). Synthetic events cannot trigger CSS :hover; for that, use
-    browser_trusted_click with restore_pointer=False, or ask the user (#327)."""
+    browser_trusted_click with restore_pointer=False on a target where a click is harmless,
+    or ask the user (#327)."""
     return _post_action("/api/hover", _request_body({"selector": selector}, tab_id, ref, element, first=first),
                         wait, timeout, expect)
 

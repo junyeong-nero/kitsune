@@ -121,8 +121,9 @@
   const removedRefs = new Set();
   let refCounter = 0;
   let lastActedElement = null;
-  // The element the last hover or click pointed at. A real pointer would still be inside its
-  // ancestors, so the next hover sends them no enter events (#327).
+  // The element the last hover pointed at. A real pointer would still be inside its ancestors,
+  // so the next hover sends them no enter events (#327). Click sends no mouseenter, so it does
+  // not count.
   let lastPointedElement = null;
   // The field type, fill, form_fill, select_option or check last wrote, or focus last
   // focused; a submit without a target submits its form.
@@ -1374,7 +1375,7 @@
       el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
     }
 
-    lastActedElement = lastPointedElement = el;
+    lastActedElement = el;
     const rect = el.getBoundingClientRect();
     // Events carry the point in the viewport of the target's own (frame) document.
     const point = coords ? elementAtPoint(coords.x, coords.y) : null;
@@ -1778,7 +1779,10 @@
   // chain crosses shadow roots to their hosts and ends at el's documentElement. Ancestors that
   // also contain previous were entered already; with no connected previous, all of them are new.
   function enteredElements(el, previous) {
-    const parent = node => node.parentElement || node.parentNode?.host || null;
+    // Only a shadow root (a document fragment, nodeType 11) has a host to cross to: a page's
+    // <form name="host"> makes document.host an element, which would loop back to the root.
+    const parent = node => node.parentElement
+      || (node.parentNode?.nodeType === 11 ? node.parentNode.host : null);
     const inside = new Set();
     for (let node = previous?.isConnected ? previous : null; node; node = parent(node)) inside.add(node);
     const entered = [];
@@ -1800,7 +1804,9 @@
 
     // Like a real pointer's events, over and move bubble out of shadow roots, while enter events
     // do not bubble and go to each newly entered ancestor, outermost first (#327).
-    const entered = enteredElements(el, lastPointedElement);
+    // Without leave events Kitsune cannot tell whether the pointer left meanwhile, so hovering
+    // the same element again enters its whole chain, letting a retry reveal what was hidden.
+    const entered = enteredElements(el, lastPointedElement === el ? null : lastPointedElement);
     lastPointedElement = el;
     const point = { view: el.ownerDocument?.defaultView || window, clientX: x, clientY: y };
     const passing = { ...point, bubbles: true, cancelable: true, composed: true };

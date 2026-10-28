@@ -19,7 +19,8 @@ class PointerEvent extends MouseEvent {}
 // A tree with DOM event propagation: capture down the path, the target, then bubbling up. At a
 // shadow root the path continues to its host only for a composed event.
 class Node {
-  constructor(parentNode) {
+  constructor(nodeType, parentNode) {
+    this.nodeType = nodeType;
     this.parentNode = parentNode || null;
     this.listeners = [];
   }
@@ -27,7 +28,7 @@ class Node {
   addEventListener(type, listener, capture = false) { this.listeners.push({ type, listener, capture }); }
   dispatchEvent(event) {
     const path = [];
-    for (let node = this; node; node = node.host ? (event.composed ? node.host : null) : node.parentNode) {
+    for (let node = this; node; node = node.nodeType === 11 ? (event.composed ? node.host : null) : node.parentNode) {
       path.push(node);
     }
     Object.defineProperty(event, 'target', { value: this });
@@ -45,7 +46,7 @@ class Node {
 
 class Element extends Node {
   constructor(tagName, id, parentNode) {
-    super(parentNode);
+    super(1, parentNode);
     Object.assign(this, { tagName, id, textContent: id, hidden: false });
   }
   get parentElement() { return this.parentNode instanceof Element ? this.parentNode : null; }
@@ -60,7 +61,7 @@ class Element extends Node {
 
 class ShadowRoot extends Node {
   constructor(host) {
-    super(null);
+    super(11, null);
     this.host = host;
   }
   get isConnected() { return this.host.isConnected; }
@@ -70,9 +71,10 @@ const HOVER_TYPES = ['pointerover', 'pointerenter', 'mouseover', 'mouseenter', '
 const ENTER_TYPES = new Set(['pointerenter', 'mouseenter']);
 
 // html > body > ul#list > (li#row1 > span#title1, button#menu1), (li#row2 > span#title2),
-// x-card#card with a shadow root > div#inner > span#label.
+// x-card#card with a shadow root > div#inner > span#label; and a same-origin frame's document,
+// html#frameHtml > body#frameBody > span#framed, whose elements the selectors also reach.
 function page() {
-  const document = new Node(null);
+  const document = new Node(9, null);
   const html = new Element('HTML', 'html', document);
   const body = new Element('BODY', 'body', html);
   const list = new Element('UL', 'list', body);
@@ -85,7 +87,12 @@ function page() {
   const shadow = new ShadowRoot(card);
   const inner = new Element('DIV', 'inner', shadow);
   const label = new Element('SPAN', 'label', inner);
-  const elements = { html, body, list, row1, title1, menu1, row2, title2, card, inner, label };
+  const frameDocument = new Node(9, null);
+  const frameHtml = new Element('HTML', 'frameHtml', frameDocument);
+  const frameBody = new Element('BODY', 'frameBody', frameHtml);
+  const framed = new Element('SPAN', 'framed', frameBody);
+  const elements = { html, body, list, row1, title1, menu1, row2, title2, card, inner, label,
+    frameHtml, frameBody, framed };
 
   // Every event any element sees, by the element listening: [listener, type, target].
   const log = [];
@@ -118,7 +125,7 @@ function page() {
   // Set after loading, so the script skips installing its page-world functions.
   document.documentElement = html;
   const send = msg => new Promise(resolve => listener(msg, {}, result => resolve(JSON.parse(JSON.stringify(result)))));
-  return { send, log, window, elements };
+  return { send, log, window, document, elements };
 }
 
 // The enter events of one hover, as [element, type], in dispatch order.
@@ -172,10 +179,12 @@ const enters = log => log.filter(([, type]) => ENTER_TYPES.has(type)).map(([id, 
     assert.deepEqual(enters(log), [
       ['row2', 'pointerenter'], ['title2', 'pointerenter'], ['row2', 'mouseenter'], ['title2', 'mouseenter']]);
 
-    // Hovering the same element again enters nothing new.
+    // Hovering the same element again enters its whole chain: the pointer may have left
+    // meanwhile, and a retry must be able to reveal the controls again.
     log.length = 0;
     await send({ action: 'hover', selector: '#title2' });
-    assert.deepEqual(enters(log), []);
+    assert.deepEqual(enters(log).filter(([, type]) => type === 'mouseenter').map(([id]) => id),
+      ['html', 'body', 'list', 'row2', 'title2']);
     assert.equal(log.filter(([id, type]) => id === 'title2' && type === 'mousemove').length, 1);
 
     // A removed previous element no longer holds the pointer inside its ancestors.
@@ -185,14 +194,51 @@ const enters = log => log.filter(([, type]) => ENTER_TYPES.has(type)).map(([id, 
     assert.deepEqual(enters(log).filter(([, type]) => type === 'pointerenter').map(([id]) => id), chain);
   }
 
-  // A click points at its target too: a hover after it enters only what the click did not.
+  // A click sends no mouseenter, so a hover after it still enters the row the click was in: a
+  // row that listens only for mouseenter reveals its controls.
   {
     const { send, log, elements } = page();
     elements.menu1.click = () => {};
+    let rowEntered = 0;
+    elements.row1.addEventListener('mouseenter', () => { rowEntered++; });
     assert.equal((await send({ action: 'click', selector: '#menu1' })).ok, true);
+    assert.equal(rowEntered, 0, 'the click sent the row no mouseenter');
     log.length = 0;
     await send({ action: 'hover', selector: '#title1' });
-    assert.deepEqual(enters(log), [['title1', 'pointerenter'], ['title1', 'mouseenter']]);
+    assert.equal(rowEntered, 1, 'the hover after the click entered the row');
+    assert.deepEqual(enters(log).filter(([, type]) => type === 'mouseenter').map(([id]) => id),
+      ['html', 'body', 'list', 'row1', 'title1']);
+  }
+
+  // A page element named "host" (<form name="host">) becomes document.host. The ancestor walk
+  // crosses only shadow roots to their hosts, so it ends at the root element.
+  {
+    const { send, log, document, elements } = page();
+    const form = new Element('FORM', 'search', elements.body);
+    let hostReads = 0;
+    Object.defineProperty(document, 'host', { get() {
+      if (++hostReads > 50) throw new Error('the ancestor walk looped through document.host');
+      return form;
+    } });
+    assert.equal((await send({ action: 'hover', selector: '#title1' })).ok, true);
+    assert.deepEqual(enters(log).filter(([, type]) => type === 'pointerenter').map(([id]) => id),
+      ['html', 'body', 'list', 'row1', 'title1']);
+  }
+
+  // The chain stays within the target's document. Moving into a same-origin frame enters the
+  // frame document's chain, and moving back enters the top document's chain again: the two
+  // documents share no ancestors.
+  {
+    const { send, log } = page();
+    await send({ action: 'hover', selector: '#title1' });
+    log.length = 0;
+    assert.equal((await send({ action: 'hover', selector: '#framed' })).ok, true);
+    assert.deepEqual(enters(log).filter(([, type]) => type === 'pointerenter').map(([id]) => id),
+      ['frameHtml', 'frameBody', 'framed']);
+    log.length = 0;
+    await send({ action: 'hover', selector: '#title1' });
+    assert.deepEqual(enters(log).filter(([, type]) => type === 'pointerenter').map(([id]) => id),
+      ['html', 'body', 'list', 'row1', 'title1']);
   }
 
   // Inside a shadow root: listeners there and outside it see the composed over and move events,
