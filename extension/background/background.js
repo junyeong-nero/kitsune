@@ -611,6 +611,9 @@ async function runCommand(params, { withSnapshot, deltaSnapshot, textSnapshot, t
   // A click or hover the content script watched for a popup it opens (#329).
   const popupWatch = result?.popupWatch;
   if (popupWatch) delete result.popupWatch;
+  // A click during which a page script's window.open was refused (#304).
+  const scriptPopup = result?.scriptPopup;
+  if (scriptPopup) delete result.scriptPopup;
   if (textSnapshot && result && !result.error) result.tabId = params.tabId;
   // Taken before the snapshot, which then lists the popup even when it is not rendered.
   if (popupWatch && params.tabId != null) {
@@ -653,7 +656,10 @@ async function runCommand(params, { withSnapshot, deltaSnapshot, textSnapshot, t
   if (tracksOpenedTabs && params.tabId != null && result && typeof result === 'object') {
     const opened = await getOpenedTabs(params.tabId, OPENED_TAB_URL_WAIT_MS);
     if (opened.opened_tabs.length) result.opened_tabs = opened.opened_tabs;
-    else if (newTabLink) noNewTab(result, newTabLink);
+    else {
+      if (newTabLink) noNewTab(result, newTabLink);
+      if (scriptPopup) scriptPopupBlocked(result, scriptPopup);
+    }
   }
   return result;
 }
@@ -668,6 +674,20 @@ async function takeOpenedPopup(tabId) {
   } catch {
     return null;
   }
+}
+
+// A click during which a page script's window.open returned null (#304): the popup blocker
+// refused the popup, because a synthetic click has no user activation. Kitsune neither retries
+// it nor clicks again; an earlier warning stays. The URL comes from a page script, so it is
+// redacted like snapshot URLs.
+function scriptPopupBlocked(result, popup) {
+  const url = typeof popup.url === 'string' && popup.url ? redactHistoryUrl(popup.url) : null;
+  const state = { ...(url ? { url } : {}), reason: 'script_popup' };
+  result.warning ??= { code: 'popup_blocked', state,
+    hint: 'A page script tried to open a popup (window.open), which Firefox blocks without user activation, ' +
+      'so none opened. If this click should open that popup (a sign-in at state.url, for example), ask the ' +
+      'user to click it, then continue in the new tab by tab_id (find it with browser_tabs), or use ' +
+      'browser_trusted_click; if not (an ad, for example), ignore this warning.' };
 }
 
 // A click meant to open its link in a new tab says so when none opened (#223).

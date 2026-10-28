@@ -696,7 +696,7 @@ URL. Details are in the [API reference](api-reference.md#protected-user-tabs).
 | A click returns `dispatched: true` but the page does not react (`outcome_not_observed`, target still visible) | Some pages accept only trusted input and ignore Kitsune's synthetic events. Check the page with `browser_snapshot` first, then try one [`browser_trusted_click`](api-reference.md#browser_trusted_clickselector-x0-y0-coordinate_spaceviewport-focusfalse-tab_idnone-firstfalse-restore_pointertrue-buttonleft-click_count1-modifiersnone) on the same target and verify it with a read. It needs the `browse` capability, moves your real cursor for the click (then back, unless `restore_pointer=False` for a hover menu that closes when the pointer leaves) and, on macOS, needs pyobjc Quartz or `cliclick` plus Accessibility permission; on Linux, needs `xdotool` in an X11 session (not Wayland), and HiDPI X11 scaling is not compensated, so the click may land off by the scale factor. Page zoom is compensated, and a target covered by another element (an overlay or banner) returns `target_not_at_point` without clicking. Kitsune never switches to it on its own |
 | A hover returns `ok: true` but the menu or row controls it should reveal stay hidden | `browser_hover` sends pointer and mouse events, including `pointerenter`/`mouseenter` to each entered ancestor, but it cannot trigger CSS `:hover`, which follows only the real pointer. Use [`browser_trusted_click`](api-reference.md#browser_trusted_clickselector-x0-y0-coordinate_spaceviewport-focusfalse-tab_idnone-firstfalse-restore_pointertrue-buttonleft-click_count1-modifiersnone) with `restore_pointer=False` on an element where a click is harmless, which leaves your real pointer there, or ask the user to point at it. See [POST /api/hover](api-reference.md#post-apihover) |
 | A background tab's snapshot is empty, or a menu item a click just opened returns `hidden_or_covered` with `state.hiddenTab` or `state.inPopup` | Results from a hidden tab carry `visibilityState: "hidden"`; tabs the agent opens are in the background by default, so their results usually carry it. Some pages render lazily, or do not paint menus and popups, while their tab is hidden (#259, #260). Events dispatched to an unpainted item still work, so act on it if it belongs to the control you meant and check the effect. If content never appears, Kitsune's `browser_tabs` select with `tab_id` shows the tab and switches the user's own view, so ask the user first; it is refused with `user_active` while they use the tab they would leave. The core `browser_tabs` select only makes a tab current. See [Snapshot readiness](api-reference.md#snapshot-readiness) |
-| "Continue with Google" or another sign-in button opens no popup, or the site says "Something went wrong" | With Firefox's default popup blocker, synthetic clicks cannot open OAuth/SSO popups; ask the user to click, or use a trusted click. See [Sign-in popups (OAuth/SSO)](#sign-in-popups-oauthsso) |
+| "Continue with Google" or another sign-in button opens no popup, or the site says "Something went wrong" | With Firefox's default popup blocker, synthetic clicks cannot open OAuth/SSO popups (the click result may have a `popup_blocked` warning with `state.reason: "script_popup"`); ask the user to click, or use a trusted click. See [Sign-in popups (OAuth/SSO)](#sign-in-popups-oauthsso) |
 | `stale ref, call browser_snapshot again` | Take a fresh snapshot of the same `tab_id` and use its new refs |
 | Bridge updated but browser behavior is unchanged | Reload the extension, then reload affected pages so their content scripts update too |
 | Restart the daemon | Run `kitsune-bridge stop` with the same source as your clients (`uvx --from git+…` or `uv run` in a checkout); the next tool call starts it again. This briefly affects all clients sharing it |
@@ -714,9 +714,13 @@ synthetic DOM events without user activation, so the popup is blocked or the sit
 sign-in script fails: no window opens, or the page shows an error such as "Something
 went wrong. Please try again." Ordinary buttons on the same page still work. Kitsune
 reopens only blocked `target="_blank"` links (see
-[Popup-blocked links](api-reference.md#popup-blocked-links)); popups that page scripts
-open get no `popup_blocked` warning, so the click can still look successful or end in
-`outcome_not_observed`.
+[Popup-blocked links](api-reference.md#popup-blocked-links)). When the button's script
+calls `window.open` during the click and the popup blocker refuses it, the click result
+has a `popup_blocked` warning with `state.reason: "script_popup"` (see
+[Script-opened popups](api-reference.md#script-opened-popups)). A script that fails
+before calling `window.open`, opens the popup later, or runs on a page whose Content
+Security Policy blocks Kitsune's wrapper gives no warning, so the click can still look
+successful or end in `outcome_not_observed`.
 
 There are two ways through:
 

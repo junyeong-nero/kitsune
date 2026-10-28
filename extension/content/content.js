@@ -95,7 +95,12 @@
   }
 
   const pageWindow = window.wrappedJSObject || window;
-  injectPageScript('(' + installDialogs.toString() + ')(window, f => f);');
+  const WINDOW_OPEN_CALL_LIMIT = 20;
+  const WINDOW_OPEN_URL_LIMIT = 2048;
+  // Both page-world installs share one <script>, so a strict CSP blocks (and reports) one script,
+  // not two; a failed window.open watch still leaves the dialogs installed.
+  injectPageScript('try { (' + installWindowOpenWatch.toString() + ')(window, ' + WINDOW_OPEN_CALL_LIMIT + ', ' +
+    WINDOW_OPEN_URL_LIMIT + '); } catch {}\n(' + installDialogs.toString() + ')(window, f => f);');
   if (!pageWindow.__kitsuneDialogSnapshot && typeof exportFunction === 'function') {
     installDialogs(pageWindow, fn => exportFunction(fn, pageWindow));
   }
@@ -108,6 +113,68 @@
     pageWindow.__kitsuneDialogPolicy(JSON.stringify({ accept: accept ?? null, prompt_text: accept == null ? null : promptText ?? null }));
     return { ok: true, ...dialogInfo() };
   }
+  // Records the page's window.open calls so a synthetic click can report a popup that the popup
+  // blocker refused (#304). The wrapper calls the original with the same this and arguments and
+  // returns its result or exception unchanged. It is page code, not an exportFunction export,
+  // which would throw "dead object" once the extension reloads; so under a CSP that blocks the
+  // injected script there is no wrapper, and no warning. It runs in the page, so the limits
+  // arrive as arguments.
+  function installWindowOpenWatch(W, callLimit, urlLimit) {
+    if (W.__kitsuneWindowOpenCalls || typeof W.open !== 'function') return;
+    const nativeOpen = W.open;
+    const calls = [];
+    let seq = 0;
+    W.open = function open(...args) {
+      const opened = nativeOpen.apply(this, args);
+      try {
+        // With noopener (or noreferrer), window.open returns null for a popup that opened.
+        // Only a refused call keeps its URL, so the page holds no other window.open URLs.
+        const noopener = typeof args[2] === 'string' && /\bno(opener|referrer)\b/i.test(args[2]);
+        const blocked = opened === null && !noopener;
+        calls.push({ seq: ++seq, blocked,
+          url: blocked && typeof args[0] === 'string' ? args[0].slice(0, urlLimit) : null });
+        if (calls.length > callLimit) calls.shift();
+      } catch {}
+      return opened;
+    };
+    W.__kitsuneWindowOpenCalls = () => JSON.stringify(calls);
+  }
+
+  // The record is page data a page can replace, so this reads a bounded, type-checked copy.
+  function readWindowOpenCalls() {
+    try {
+      const read = pageWindow.__kitsuneWindowOpenCalls;
+      const json = typeof read === 'function' ? read() : null;
+      if (typeof json !== 'string' || json.length > 100000) return null;
+      const calls = JSON.parse(json);
+      if (!Array.isArray(calls)) return null;
+      return calls.slice(-WINDOW_OPEN_CALL_LIMIT).filter(call => Number.isSafeInteger(call?.seq))
+        .map(call => ({ seq: call.seq, blocked: call.blocked === true,
+          url: typeof call.url === 'string' ? call.url.slice(0, WINDOW_OPEN_URL_LIMIT) : null }));
+    } catch { return null; }
+  }
+
+  // The URL as window.open resolves it, like a link's absolute href; a URL that does not parse
+  // stays as given.
+  function absoluteWindowOpenUrl(url) {
+    try { url = new URL(url, document.baseURI).href; } catch {}
+    return url.slice(0, WINDOW_OPEN_URL_LIMIT);
+  }
+
+  // A click during which the page called window.open and got null adds scriptPopup, which the
+  // background turns into a popup_blocked warning when no tab opened (#304).
+  function withScriptPopupCheck(act) {
+    const before = readWindowOpenCalls();
+    const result = act();
+    if (!before) return result;
+    const since = before.length ? before[before.length - 1].seq : 0;
+    const blocked = (readWindowOpenCalls() || []).find(call => call.seq > since && call.blocked);
+    if (!blocked) return result;
+    const scriptPopup = blocked.url ? { url: absoluteWindowOpenUrl(blocked.url) } : {};
+    const attach = r => (r && typeof r === 'object' && !r.error ? { ...r, scriptPopup } : r);
+    return typeof result?.then === 'function' ? result.then(attach) : attach(result);
+  }
+
   // Restore the tab policy after navigation; native dialogs apply until this reply arrives.
   browser.runtime.sendMessage({ action: 'getDialogPolicy' }).then(policy => {
     if (policy) handleDialog(policy.accept, policy.prompt_text);
@@ -383,7 +450,8 @@
                                      msg.observation, msg.delta ? 'delta' : 'full', !!msg.boxes, msg.collapse !== false),
       'getAccessibilityTree':  () => getAccessibilityTree(msg.depth ?? 6, msg.ref || msg.selector),
       'getFormFields':         () => getFormFields(),
-      'click':                 () => withPopupWatch(clickElement(msg.selector, msg.coords, msg.first, msg.button, msg.modifiers),
+      'click':                 () => withPopupWatch(withScriptPopupCheck(() =>
+                                     clickElement(msg.selector, msg.coords, msg.first, msg.button, msg.modifiers)),
                                      msg.reportPopup !== false),
       'type':                  () => typeText(msg.selector, msg.text, msg.clear, msg.first),
       'setEditableContent':    () => setEditableContent(msg.selector, msg.value, msg.format || 'text', msg.clear !== false,
