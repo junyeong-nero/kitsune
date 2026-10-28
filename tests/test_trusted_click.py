@@ -571,7 +571,7 @@ class TrustedClickTests(unittest.TestCase):
                  patch.object(bridge, "_native_click_screen",
                               return_value={"ok": True, "backend": "quartz"}) as click:
                 result = asyncio.run(bridge.trusted_click({"selector": "#go"}))
-            click.assert_called_once_with(point["screenX"], point["screenY"], True)
+            click.assert_called_once_with(point["screenX"], point["screenY"], True, "left", 1, ())
             self.assertEqual(result["zoom"], zoom)
 
     def test_target_not_at_point_clicks_nothing(self):
