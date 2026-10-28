@@ -65,8 +65,9 @@ class RealBrowserObservationTests(harness.RealBrowserTestCase):
         self.assertIn('text "주문일: 2027-05-12"', snapshot)
         self.assertIn('text "배송 예정일: 2027-05-20"', snapshot)
         self.assertIn('text "See order detail for details."', snapshot)
-        self.assertIn(f'- /url: "{self.page.origin}/order/2"', snapshot)
-        self.assertIn(f'- /url: "{self.page.origin}/?token=[redacted]#dates"', snapshot)
+        # Same-origin link URLs are paths, redacted like absolute ones (#310).
+        self.assertIn('- /url: "/order/2"', snapshot)
+        self.assertIn('- /url: "/?token=[redacted]#dates"', snapshot)
         self.assertIn('- /url: "https://example.invalid/order/2?token=[redacted]#password=[redacted]"', snapshot)
         for secret in ("SECRET", "HASH", "PAYLOAD", "LOCALPATH", "user:password"):
             self.assertNotIn(secret, snapshot)

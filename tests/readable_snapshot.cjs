@@ -101,7 +101,7 @@ const field = (tagName, attrs, props) => new Element(tagName, attrs, [], props);
   assert.ok(lines.includes('  - text "Cancel free until Oct 30."'), read.snapshot);
   assert.ok(lines.includes('    - text "Card ending is on file."'), 'fields never join text lines');
   assert.ok(lines.includes('  - text "See terms for details."'), 'inline links stay in the sentence');
-  assert.match(read.snapshot, /- \/url: "https:\/\/example\.test\/terms"/);
+  assert.match(read.snapshot, /- \/url: "\/terms"$/m);
   assert.match(read.snapshot, /heading "Booking details" \[ref=s\d+e\d+\] \[level=1\]/);
   assert.match(read.snapshot, /textbox "Email" \[ref=s\d+e\d+\] \[value="user@example.test"\]/);
   assert.match(read.snapshot, /textbox "Password" \[ref=s\d+e\d+\]$/m);
@@ -175,7 +175,7 @@ const field = (tagName, attrs, props) => new Element(tagName, attrs, [], props);
     new Element('A', {}, [`Destination ${i}`], { href }));
   const links = await send({ action: 'getSnapshot' });
   assert.equal((links.snapshot.match(/- \/url:/g) || []).length, 2);
-  assert.match(links.snapshot, /https:\/\/example\.test\/order\/2/);
+  assert.match(links.snapshot, /- \/url: "\/order\/2"$/m);
   assert.match(links.snapshot, /booking#details/);
   assert.doesNotMatch(links.snapshot, /javascript:|data:|blob:|file:|mailto:|tel:|secret/);
 

@@ -68,9 +68,10 @@ def _cards(snapshot):
     cards, current = {}, None
     for line in snapshot.split("\n"):
         number = re.search(r"(?:DESK-|desk-|Variant |Price |Discount |New |Oak |White )(\d+)", line)
-        if not number:
+        # A shortened URL (#310) belongs to the card it follows.
+        if not number and line.strip() != '- /url: "…"':
             continue
-        i = int(number[1])
+        i = int(number[1]) if number else current
         if f'heading "DESK-{i} desk"' in line:
             current = i
         if i != current:
@@ -96,8 +97,9 @@ class RealBrowserBoundedSnapshotTests(harness.RealBrowserTestCase):
         self.assertFalse(result.isError, result.content)
         return json.loads(result.content[0].text)
 
-    def assert_whole_card(self, lines, i):
-        expected = [f'heading "DESK-{i} desk"', f'link "DESK-{i} desk"', f'/url: "{self.site.origin}/p/desk-{i}"',
+    def assert_whole_card(self, lines, i, url=None):
+        # Same-origin link URLs are paths (#310).
+        expected = [f'heading "DESK-{i} desk"', f'link "DESK-{i} desk"', url or f'/url: "/p/desk-{i}"',
                     f'text "Variant {i}:', f'text "Price {i}: ₩{129 + i},000' + (f' Discount {i}:' if i % 2 else '"'),
                     *([f'text "New {i}"'] if i % 3 == 0 else []),
                     *([f'button "Oak {i}"', f'button "White {i}"'] if i % 4 == 0 else []),
@@ -124,8 +126,9 @@ class RealBrowserBoundedSnapshotTests(harness.RealBrowserTestCase):
         cards = _cards(snapshot)
         self.assertEqual(list(cards), list(range(len(cards))))
         self.assertGreater(len(cards), 10)
+        # The URL of the last card before the cut can be shortened to "…" (#310).
         for i, lines in cards.items():
-            self.assert_whole_card(lines, i)
+            self.assert_whole_card(lines, i, url='/url: "…"' if i == len(cards) - 1 and '- /url: "…"' in lines else None)
 
         # A card past the cut: find it, read its card by the heading's container, act on it.
         found = self.core("browser_find", text="DESK-55 desk")
@@ -157,15 +160,17 @@ class RealBrowserBoundedSnapshotTests(harness.RealBrowserTestCase):
         snapshot = bounded["snapshot"]
         self.assertLessEqual(len(snapshot), playwright_tools.SNAPSHOT_LIMIT)
         self.assertIs(bounded["truncated"], True)
-        self.assertIn(f'- /url: "{self.site.origin}/wiki/topic-0-0"', snapshot)
-        # The cut falls after a whole paragraph: its text, link and URL.
-        self.assertRegex(snapshot.split("\n")[-2], rf'- /url: "{self.site.origin}/wiki/topic-\d+-\d+"')
+        self.assertIn('- /url: "/wiki/topic-0-0"', snapshot)
+        # The cut falls after a whole paragraph: its text, link and URL, though the URL of the
+        # last paragraph can be shortened to "…" (#310).
+        self.assertRegex(snapshot.split("\n")[-2], r'- /url: "(/wiki/topic-\d+-\d+|…)"$')
         shown = [(int(s), int(p)) for s, p in re.findall(r'text "Section (\d+) paragraph (\d+):', snapshot)]
         self.assertEqual(shown, [(s, p) for s in range(SECTIONS) for p in range(5)][:len(shown)])
         self.assertGreater(len(shown), 10)
-        for s, p in shown:
+        for s, p in shown[:-1]:
             self.assertIn(f'link "topic {s}.{p}"', snapshot)
-            self.assertIn(f'- /url: "{self.site.origin}/wiki/topic-{s}-{p}"', snapshot)
+            self.assertIn(f'- /url: "/wiki/topic-{s}-{p}"', snapshot)
+        self.assertIn('link "topic {}.{}"'.format(*shown[-1]), snapshot)
 
         # A paragraph past the cut: browser_find returns it with its link and URL.
         found = self.core("browser_find", text="Section 20 paragraph")
@@ -174,7 +179,7 @@ class RealBrowserBoundedSnapshotTests(harness.RealBrowserTestCase):
             self.assertTrue(match["match"].startswith(f'- text "Section 20 paragraph {p}: the city topic 20.{p} grew'))
             context = "\n".join(match["lines"])
             self.assertIn(f'link "topic 20.{p}"', context)
-            self.assertIn(f'- /url: "{self.site.origin}/wiki/topic-20-{p}"', context)
+            self.assertIn(f'- /url: "/wiki/topic-20-{p}"', context)
         heading = self.core("browser_find", text="History part 20")["matches"][0]["match"]
         self.assertRegex(heading, r'^- heading "History part 20" \[ref=e\d+\] \[level=2\]$')
 

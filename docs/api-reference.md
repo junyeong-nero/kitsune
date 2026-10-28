@@ -1773,7 +1773,36 @@ cards, each whole) and that of a 24-section article from about 44,600 to 10,800
 characters (the first 29 paragraphs, each with its links and URLs). The cap counts
 lines before refs are shortened to their public `e12` form, so a snapshot can stop
 well below it. Cards and paragraphs past the cut stay reachable through
-`browser_find` and a scoped `target`.
+`browser_find` and a scoped `target`. (These figures predate the link URL and landmark
+rules below, #310.)
+
+A link to an HTTP(S) URL has a `- /url: "<url>"` child line (#218). Since #310 a URL on the
+page's own origin is shown as its path, query and fragment (`/t/notes?tab=2#top`); a URL
+on another origin stays absolute. A link has no `/url` line when the sibling line right
+before it (under the same parent line) is a link with the same URL, or, when no sibling
+line comes before it, when its URL is the page's own. So a link without a `/url` line has
+the URL of the link right before it, or of the page if it comes first under its parent,
+unless it links to another scheme (`javascript:`, `mailto:`, `data:`, …): such links have
+no `/url` line either, as before, and nothing marks them. Every snapshot, bounded or a
+delta, lists a link with its own `/url` line or, for a link without one, with the link and
+`/url` line it repeats; a bounded snapshot that cannot fit a URL shows `- /url: "…"`
+instead of leaving the line out. The acted-on target of a post-action snapshot always has
+its own `/url` line. Path URLs are redacted like absolute ones. The core `browser_find`
+searches the same lines: it matches a same-origin link by its path, not its absolute URL,
+and a repeated link's match context has no `/url` line of its own. Pass `browser_navigate`
+an absolute URL, resolving a path against the snapshot's `url`.
+
+Without an acted-on target, a cut snapshot of a page with a `main` landmark defers each
+`navigation`, `banner` or `contentinfo` landmark outside `main` whose lines exceed a small
+block (2,000 characters or a quarter of the budget). The landmark keeps its line, in
+document order, followed by a marker such as
+`- … 71 lines (69 links) not shown; snapshot e2 to list all`; the rest of the page,
+`main` included, fills the budget first. Budget left after that lists deferred landmarks
+whole, or the first that does not fit as far as it does, with the marker counting the
+lines still left out. A snapshot scoped to the marker's ref lists the landmark. On the
+crowded gallery fixture of `tests/bounded_snapshot.cjs` (a banner whose navigation has 68
+links before 60 product cards) the core snapshot keeps about 11,800 characters of `main`
+instead of 1,430.
 
 - `selector` scopes the snapshot to the subtree of its first match, including its root; it
   takes the [target selector](#target-selectors) forms.
@@ -1829,9 +1858,11 @@ snapshot is a document-order prefix that never ends inside a block: the lines of
 element below the snapshot root (a product card's name, URL, variant, price and
 discount; a paragraph with its links) that total at most 2,000 characters or a quarter
 of the budget are kept or left out whole, so a card is never split or joined to its
-neighbor. When URL redaction or ref aliases lengthen the snapshot past its budget, the
+neighbor. The block at the cut is still kept with its `/url` lines shortened to
+`- /url: "…"` when that fits (#310); a scoped snapshot or `browser_find` shows the URLs.
+When URL redaction or ref aliases lengthen the snapshot past its budget, the
 bridge cuts again only at those boundaries; it can leave out a whole block that no
-longer fits and keep a later one. Truncation sets `truncated: true`,
+longer fits, or keep it with shortened `/url` lines, and keep a later one. Truncation sets `truncated: true`,
 includes a scope hint, and normally ends the snapshot with
 `- … truncated; scope with selector, ref or max_depth`.
 For budgets too small for the marker, the snapshot may be empty but the flag and hint

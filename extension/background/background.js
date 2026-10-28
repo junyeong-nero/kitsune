@@ -1512,35 +1512,59 @@ function boundPublicSnapshot({ cuts, ...response }, params) {
   if (!response.truncated && response.snapshot.length <= budget) return response;
   const marker = '- … truncated; scope with selector, ref or max_depth';
   const lines = response.snapshot.split('\n').filter(line => line && line !== marker);
-  const parents = [], stack = [];
+  const isUrl = i => /^ *- \/url: /.test(lines[i]);
+  const isLink = i => /^ *- link "/.test(lines[i]);
+  // A link line without a /url line repeats the URL of the link line before it at its level
+  // (#310); urlFrom is the /url line it then needs.
+  const parents = [], urlFrom = [], stack = [], lastChild = new Map();
   for (let i = 0; i < lines.length; i++) {
     const indent = lines[i].length - lines[i].trimStart().length;
     while (stack.length && stack.at(-1).indent >= indent) stack.pop();
     parents[i] = stack.at(-1)?.index;
     stack.push({ indent, index: i });
   }
+  const hasUrl = i => i + 1 < lines.length && isUrl(i + 1) && parents[i + 1] === i;
+  for (let i = 0; i < lines.length; i++) {
+    const previous = lastChild.get(parents[i]);
+    lastChild.set(parents[i], i);
+    if (isLink(i) && !hasUrl(i) && previous != null && isLink(previous)) {
+      urlFrom[i] = hasUrl(previous) ? previous + 1 : urlFrom[previous];
+    }
+  }
   const kept = new Set();
   const showMarker = marker.length <= budget;
   const available = showMarker ? budget - marker.length : budget + 1;
   let used = 0;
-  // Lines from..to-1, each with its ancestors.
-  const add = (from, to = from + 1) => {
+  // The lines, each with its ancestors and a link's /url line (its own or the one it repeats):
+  // all of them or none. With shortUrls, /url lines not kept yet become `- /url: "…"` (#310).
+  const add = (indices, shortUrls = false) => {
     const block = new Set();
-    for (let index = from; index < to; index++) {
-      for (let i = index; i != null && !kept.has(i) && !block.has(i); i = parents[i]) block.add(i);
-    }
-    const cost = [...block].reduce((sum, i) => sum + lines[i].length + 1, 0);
+    const gather = index => {
+      for (let i = index; i != null && !kept.has(i) && !block.has(i); i = parents[i]) {
+        block.add(i);
+        if (urlFrom[i] != null) gather(urlFrom[i]);
+        if (isLink(i) && hasUrl(i)) gather(i + 1);
+      }
+    };
+    indices.forEach(gather);
+    const lineOf = i => shortUrls && isUrl(i) ? lines[i].replace(/- \/url: .*$/, '- /url: "…"') : lines[i];
+    const cost = [...block].reduce((sum, i) => sum + lineOf(i).length + 1, 0);
     if (used + cost > available) return false;
-    for (const i of block) kept.add(i);
+    for (const i of block) {
+      lines[i] = lineOf(i);
+      kept.add(i);
+    }
     used += cost;
     return true;
   };
   const target = response.target_ref ? lines.findIndex(line => snapshotLineRef(line) === response.target_ref) : -1;
-  if (target >= 0) add(target);
+  if (target >= 0) add([target]) || add([target], true);
   const ends = target < 0 && cuts ? cuts : lines.map((_, i) => i + 1);
   let from = 0;
   for (const to of ends) {
-    add(from, to);
+    // A span that does not fit whole is kept with shortened /url lines if it fits then (#310).
+    const span = Array.from({ length: Math.max(0, to - from) }, (_, k) => from + k);
+    if (!add(span)) add(span, true);
     from = to;
   }
   const selected = lines.filter((_, i) => kept.has(i));
@@ -1552,6 +1576,13 @@ function boundPublicSnapshot({ cuts, ...response }, params) {
     result.hint += ' The target and its ancestor context did not fit; take a scoped snapshot.';
   }
   return result;
+}
+
+// A same-origin link URL is a path (#310); it is redacted as a URL on a placeholder origin.
+function redactSnapshotUrl(value) {
+  if (!value.startsWith('/')) return redactHistoryUrl(value);
+  const origin = 'https://kitsune.invalid';
+  return redactHistoryUrl(origin + value).slice(origin.length);
 }
 
 function compactContentRefs(action, response, tabId, params) {
@@ -1567,10 +1598,10 @@ function compactContentRefs(action, response, tabId, params) {
       }
       if (key === 'snapshot' && typeof item === 'string') {
         const snapshot = item.replace(/^( *- \/url: )("(?:[^"\\\r\n]|\\.)*")$/gm,
-          (_, prefix, encoded) => prefix + JSON.stringify(redactHistoryUrl(JSON.parse(encoded))));
+          (_, prefix, encoded) => prefix + JSON.stringify(redactSnapshotUrl(JSON.parse(encoded))));
         return [key, snapshot.replace(/\[ref=(s\d+e\d+)\]/g, (_, ref) => `[ref=${convert(ref)}]`)
-          // A collapse marker names its container's ref.
-          .replace(/^( *- … \d+ more similar items; snapshot )(s\d+e\d+)( to list all)$/gm,
+          // A collapse marker names its container's ref, a landmark marker its landmark's.
+          .replace(/^( *- … (?:\d+ more similar items|\d+ lines \(\d+ links\) not shown); snapshot )(s\d+e\d+)( to list all)$/gm,
             (_, head, ref, tail) => head + convert(ref) + tail)];
       }
       if (['ref', 'target_ref', 'currentRef'].includes(key) && typeof item === 'string' && /^s\d+e\d+$/.test(item)) {

@@ -200,6 +200,14 @@ async function main() {
   const redacted = (await restarted.send('getSnapshot')).snapshot.split('\n');
   assert.equal(redacted[0], pageText);
   assert.equal(redacted[1], '  - /url: "https://example.test/order/2?token=[redacted]&view=summary#/route?password=[redacted]"');
+  // #310: a same-origin URL is a path, redacted the same way; a landmark marker names its ref.
+  documents[1] = { send: async () => ({ snapshot: [
+    '- banner "Site" [ref=s9e1]', '  - … 3 lines (2 links) not shown; snapshot s9e1 to list all',
+    '- link "Order" [ref=s9e2]', '  - /url: "/order/2?token=SECRET&view=summary#password=HASH"'].join('\n') }) };
+  const paths = (await restarted.send('getSnapshot')).snapshot.split('\n');
+  const bannerRef = paths[0].match(/\[ref=(e\d+)\]/)[1];
+  assert.equal(paths[1], `  - … 3 lines (2 links) not shown; snapshot ${bannerRef} to list all`);
+  assert.equal(paths[3], '  - /url: "/order/2?token=[redacted]&view=summary#password=[redacted]"');
   for (const url of ['file:///private/path', 'data:text/plain,secret', 'about:blank']) {
     documents[1] = { send: async () => ({ snapshot: '', url }) };
     assert.equal((await restarted.send('getSnapshot')).url, undefined);

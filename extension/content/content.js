@@ -819,8 +819,15 @@
         (el.type === 'image' ? el.alt : '') ||
         (['button', 'submit', 'reset'].includes(el.type) && !isSensitiveField(el) ? el.value : '') || fallback);
     }
+    // A same-origin link URL is printed as its path (#310).
+    const page = (() => {
+      try { return new URL(window.location?.href ?? globalThis.location?.href); } catch { return null; }
+    })();
+    // The last entry under each parent entry, for a link's previous sibling line.
+    const lastChild = new Map();
     function append(entry) {
       size += entry.line.length + (entries.length ? 1 : 0);
+      lastChild.set(entry.parent, entries.length);
       entries.push(entry);
     }
     // named: an ancestor control or heading already shows this text as its name.
@@ -866,17 +873,32 @@
         const stateTail = `]${states.length ? ' [' + states.join(' ') + ']' : ''}`;
         // Boxes stay out of the signature, so repeated siblings still group.
         const tail = stateTail + (boxes ? ` [box=${boxOf(el)}]` : '');
-        append({ el, ref, line: head + (ref ?? pendingRef) + tail, parent, interactive,
-          head, tail, label, signature: label + stateTail });
+        const previous = entries[lastChild.get(parent)];
+        const entry = { el, ref, line: head + (ref ?? pendingRef) + tail, parent, interactive,
+          head, tail, label, role, signature: label + stateTail };
+        append(entry);
         parent = entries.length - 1;
         // Only web links are exposed: other schemes can hold executable code or local data.
         if (role === 'link' && el.href) {
           let url;
           try { url = new URL(el.href); } catch {}
           if (url && ['http:', 'https:'].includes(url.protocol)) {
-            const signature = `/url: ${JSON.stringify(url.href)}`;
-            append({ line: `${'  '.repeat(Math.min(depth + 1, 12))}- ${signature}`,
-              parent, interactive: false, source: el, signature });
+            entry.href = url.href;
+            // A link repeating the URL of the link line right before it at its level, or (as a
+            // first child) the page's own URL, gets no /url line; the acted-on target keeps it.
+            // Selection keeps a link with its own /url entry (urlIndex) or the one it repeats.
+            if (el !== target && (previous ? previous.href === url.href : url.href === page?.href)) {
+              // The /url entry a bounded snapshot keeps with this link (none for the page's URL).
+              entry.urlFrom = previous && (previous.urlIndex ?? previous.urlFrom);
+            } else {
+              entry.urlIndex = entries.length;
+              const shown = url.origin === page?.origin && !url.pathname.startsWith('//')
+                ? url.pathname + url.search + url.hash : url.href;
+              const signature = `/url: ${JSON.stringify(shown)}`;
+              const indent = `${'  '.repeat(Math.min(depth + 1, 12))}- `;
+              append({ line: indent + signature, shortLine: `${indent}/url: "…"`,
+                parent, interactive: false, source: el, signature, url: true });
+            }
           }
         }
       }
@@ -957,9 +979,9 @@
     const targetIndex = entries.findIndex(entry => entry.el === target);
     // Where a bounded snapshot without a target may end: before entry i unless a small block
     // (SMALL_BLOCK_LIMIT) has lines on both sides of it.
+    const blockLimit = Math.min(SMALL_BLOCK_LIMIT, limit / 4);
     let cuts = null;
     if (!baseline && targetIndex < 0 && Number.isFinite(limit)) {
-      const blockLimit = Math.min(SMALL_BLOCK_LIMIT, limit / 4);
       const blocks = new Map();
       entries.forEach((entry, i) => {
         const cost = entry.line.length + 1;
@@ -978,15 +1000,44 @@
     let selected = entries;
     const kept = new Set();
     let used = 0;
-    function add(index, withAncestors = true) {
-      const pending = [];
-      for (let i = index; i >= 0 && !kept.has(i); i = withAncestors ? entries[i].parent : -1) {
-        pending.push(i);
+    // Keeps the entries, each with its ancestors and the /url entry of a link (its own, or the
+    // one whose URL it repeats), plus extra characters (a marker): all of them or none. With
+    // shortUrls, /url entries not kept yet are shortened to `- /url: "…"` (#310), so a link
+    // keeps its name and ref and is never read as having another link's URL.
+    function add(indices, withAncestors = true, extra = 0, shortUrls = false) {
+      const pending = new Set();
+      const gather = (index, ancestors) => {
+        for (let i = index; i >= 0 && !kept.has(i) && !pending.has(i); i = ancestors ? entries[i].parent : -1) {
+          pending.add(i);
+          if (entries[i].urlFrom != null) gather(entries[i].urlFrom, true);
+          if (entries[i].urlIndex != null) gather(entries[i].urlIndex, false);
+        }
+      };
+      for (const index of [].concat(indices)) gather(index, withAncestors);
+      const lineOf = i => shortUrls && entries[i].url ? entries[i].shortLine : entries[i].line;
+      let cost = extra;
+      for (const i of pending) cost += lineOf(i).length + 1;
+      if (used + cost > limit + 1) return false;
+      for (const i of pending) {
+        entries[i].line = lineOf(i);
+        kept.add(i);
       }
-      const cost = pending.reduce((sum, i) => sum + entries[i].line.length + 1, 0);
-      if (used + cost > limit + 1) return;
-      for (const i of pending) kept.add(i);
       used += cost;
+      return true;
+    }
+    const keep = index => add(index) || add(index, true, 0, true);
+    // The spans between cuts, in document order, of the entries pick accepts until one does
+    // not fit. That span is still kept with shortened /url lines if it fits then, and ends the
+    // fill. Returns whether every span fit.
+    function fill(pick) {
+      for (let c = 1; c < cuts.length; c++) {
+        const span = [];
+        for (let i = cuts[c - 1]; i < cuts[c]; i++) if (pick(i)) span.push(i);
+        if (!span.length || add(span)) continue;
+        add(span, true, 0, true);
+        return false;
+      }
+      return true;
     }
     function keepTarget() {
       // The target's complete line wins even if an unusually small cap cannot fit it.
@@ -995,6 +1046,8 @@
       const ancestors = [];
       for (let i = entries[targetIndex].parent; i >= 0; i = entries[i].parent) ancestors.push(i);
       for (const i of ancestors.reverse()) add(i, false);
+      const { urlIndex } = entries[targetIndex];
+      if (urlIndex != null) add(urlIndex, false) || add(urlIndex, false, 0, true);
     }
     if (baseline) {
       // The target, then lines the baseline lacks (new or newly shown elements, changed names,
@@ -1005,7 +1058,7 @@
         const el = entry.el || entry.source;
         if (el && !baseline.signatures.get(el)?.has(entry.signature)) changed.push(i);
       });
-      for (const i of changed) add(i);
+      for (const i of changed) keep(i);
       // A collapse marker follows the listed items of its run.
       entries.forEach((entry, i) => {
         if (entry.run === undefined || kept.has(i)) return;
@@ -1032,25 +1085,76 @@
             let count = 0;
             for (let i = targetIndex + direction; i >= 0 && i < entries.length; i += direction) {
               if (predicate(entries[i])) {
-                add(i);
+                keep(i);
                 if (++count === 2) break;
               }
             }
           }
         }
-        for (let i = 0; i < entries.length; i++) add(i);
+        for (let i = 0; i < entries.length; i++) keep(i);
+        selected = entries.filter((_, i) => kept.has(i));
       } else {
         // With no surviving target this is the longest document-order prefix ending at a cut.
-        for (let i = 0, c = 0; c < cuts.length; c++) {
-          let cost = used;
-          for (let j = i; j < cuts[c]; j++) cost += entries[j].line.length + 1;
-          if (cost > limit + 1) break;
-          for (; i < cuts[c]; i++) kept.add(i);
-          used = cost;
+        // On a page with a main landmark, a navigation, banner or contentinfo landmark outside
+        // main that is larger than a small block waits (#310): it is reserved as its line and a
+        // marker, and listed after the rest, whole or as far as it fits.
+        const after = entries.map((_, i) => i + 1);
+        for (let i = entries.length - 1; i >= 0; i--) {
+          const parent = entries[i].parent;
+          if (parent >= 0) after[parent] = Math.max(after[parent], after[i]);
         }
+        const within = (i, ancestor) => ancestor <= i && i < after[ancestor];
+        const inside = l => Array.from({ length: after[l] - l - 1 }, (_, k) => l + 1 + k);
+        const main = entries.findIndex(entry => entry.role === 'main');
+        const deferred = [];
+        if (main >= 0) {
+          entries.forEach((entry, i) => {
+            if (!['navigation', 'banner', 'contentinfo'].includes(entry.role) || within(main, i) ||
+                within(i, main) || deferred.some(l => within(i, l))) return;
+            const cost = [i, ...inside(i)].reduce((sum, j) => sum + entries[j].line.length + 1, 0);
+            if (cost > blockLimit) deferred.push(i);
+          });
+        }
+        const markerLine = (l, hidden) => {
+          const indent = '  '.repeat(Math.min(entries[l].line.search(/\S/) / 2 + 1, 12));
+          const links = hidden.filter(i => entries[i].role === 'link').length;
+          return `${indent}- … ${hidden.length} lines (${links} links) not shown; snapshot ${entries[l].ref} to list all`;
+        };
+        const reserved = deferred.filter(l => add(l, true, markerLine(l, inside(l)).length + 1));
+        if (fill(i => !reserved.some(l => i > l && i < after[l]))) {
+          const partial = reserved.filter(l => !add(inside(l)));
+          for (const l of partial) if (!fill(i => i > l && i < after[l])) break;
+        }
+        // Kept lines in document order, a marker after a landmark's last kept line, and the
+        // entry index each one stands at, so the cuts carry over to them.
+        const markers = new Map();
+        for (const l of reserved) {
+          const hidden = [];
+          let last = l;
+          for (let i = l + 1; i < after[l]; i++) {
+            if (kept.has(i)) last = i;
+            else hidden.push(i);
+          }
+          if (hidden.length) markers.set(last, { line: markerLine(l, hidden) });
+        }
+        const at = [];
+        selected = [];
+        entries.forEach((entry, i) => {
+          if (kept.has(i)) {
+            selected.push(entry);
+            at.push(i);
+          }
+          if (markers.has(i)) {
+            selected.push(markers.get(i));
+            at.push(i);
+          }
+        });
+        // A cut lies between two kept lines when one lies between their entries.
+        const isCut = new Set(cuts), cutsUpTo = [];
+        for (let i = 0, count = 0; i <= entries.length; i++) cutsUpTo[i] = count += isCut.has(i) ? 1 : 0;
+        cuts = [0, ...at.flatMap((i, p) => p && cutsUpTo[i] > cutsUpTo[at[p - 1]] ? [p] : []), selected.length];
       }
-      selected = entries.filter((_, i) => kept.has(i));
-      truncated = selected.length < entries.length;
+      truncated = kept.size < entries.length;
     }
     for (const entry of selected) {
       if (entry.ref) {
