@@ -594,7 +594,11 @@ def browser_click(
     (delta or full, see there); target_ref is the acted-on element's ref.
     opened_tabs lists tabs the action opened (target=_blank links, window.open) as
     [{tabId, url}]; act on them with tab_id. via="link_fallback" marks a popup-blocked link
-    Kitsune opened itself. With expect, the result adds dispatched=true and outcome
+    Kitsune opened itself. opened_popup reports a menu, listbox or dialog the click (or a
+    hover or double-click) opened, as {ref, role, name, opened_by, rendered, items: [{ref,
+    role, name}]}, also when the page did not paint it (rendered=false, a background tab);
+    item refs act on it, and snapshots list it marked [not_rendered] while it stays open.
+    With expect, the result adds dispatched=true and outcome
     {expected, observed, met}, plus the current tab state when unmet; new_tab is met once the
     action opens a tab, and value_changed compares with the value before dispatch.
     user_active: the user is using the tab (state.reason); nothing ran. Retry in a few seconds.
@@ -707,7 +711,10 @@ def browser_hover(
     """Hover over an element on the page. ok=true means dispatched; verify with expect
     (see browser_check). Synthetic events cannot trigger CSS :hover; for that, use
     browser_trusted_click with restore_pointer=False on a target where a click is harmless,
-    or ask the user (#327)."""
+    or ask the user (#327).
+
+    A menu, listbox or dialog the hover opened comes back in opened_popup (see browser_click).
+    """
     return _post_action("/api/hover", _request_body({"selector": selector}, tab_id, ref, element, first=first),
                         wait, timeout, expect)
 
@@ -1112,7 +1119,9 @@ def browser_check(
     confirm_token and first work as here (the core browser_* tools follow Playwright MCP
     instead). A successful action returns a snapshot (delta or full); target_ref is the
     acted-on element's ref. opened_tabs lists tabs the action opened as [{tabId, url}]; act
-    on them with tab_id. With expect, the result adds dispatched=true and outcome
+    on them with tab_id. A click or hover that opens a menu, listbox or dialog returns
+    opened_popup {ref, role, name, opened_by, rendered, items}, also when it is not painted;
+    item refs act on it. With expect, the result adds dispatched=true and outcome
     {expected, observed, met}, plus the current tab state when unmet; new_tab is met once the
     action opens a tab, and value_changed compares with the value before dispatch.
     user_active: the user is using the tab (state.reason); nothing ran. Retry in a few seconds.
@@ -1192,6 +1201,8 @@ def browser_double_click(
 ) -> dict:
     """Dispatch a synthetic double-click on the matched element. ok=true means dispatched;
     verify with expect (see browser_check).
+
+    A menu, listbox or dialog it opened comes back in opened_popup (see browser_click).
     """
     return _post_action("/api/double-click", _request_body({"selector": selector}, tab_id, ref, element, confirm_token, first),
                         wait, timeout, expect)

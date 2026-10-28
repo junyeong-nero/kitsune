@@ -320,6 +320,7 @@ one document/content injection, not a snapshot.
 |---|---|
 | `browser_snapshot` (also scoped), `browser_dom`, `browser_find`, `browser_forms`, `browser_wait_for(selector/ref)` | Reuse attached-node refs and add identities for newly observed nodes; earlier attached refs stay valid |
 | Full or delta post-action snapshots | Reuse attached-node refs; a full observation does not invalidate earlier refs. An `expect` failure can still carry the action's snapshot and target_ref |
+| A click, double-click or hover that returns [`opened_popup`](#opened-popups) | Reuses or adds refs for the popup, its items and the acted-on element; earlier refs stay valid |
 | Node detachment/replacement or a frame's document navigation/removal | The issued node ref fails as `stale_ref`/`element_removed`, including after detached entries have been pruned. A replacement node gets a different ref |
 | Navigation, reload, back/forward to another document or content reinjection | Old refs fail as `stale_ref`/`other_document`; aliases unknown after an extension restart report `not_in_snapshot` |
 | Other reads/actions or failed observations | No identity change unless the page itself detaches nodes or changes document |
@@ -374,7 +375,8 @@ A successful `browser_click`, `browser_type` (`type`/`fill`), `browser_select_op
 ancestors. Right before acting, the content script records the page's snapshot lines;
 afterwards the delta lists the acted-on target and every line that record lacks: new or
 newly shown elements (an opened menu's options, a toast, autocomplete suggestions) and
-elements whose name, value or state changed. Unchanged parts of the page, such as a
+elements whose name, value or state changed. A popup the action opened is listed even when
+it is not rendered, marked `[not_rendered]` (see [Opened popups](#opened-popups)). Unchanged parts of the page, such as a
 header above the target, are left out; removed elements are not listed. A delta is
 capped at 4,000 characters like a full snapshot (`snapshot_truncated`); when truncated,
 `snapshot_hint` gives scope guidance, including when the target/context did not fit
@@ -528,6 +530,8 @@ The hint depends on why the target may be unrendered (#328):
 ```
 
 Zero-size and transparent targets count as rendered. Covering overlays are not detected.
+Items of a popup that a click or hover opened but the page did not paint get this warning
+too; [`opened_popup`](#opened-popups) says which control opened that popup.
 
 ### Actionability wait
 
@@ -865,6 +869,63 @@ With `expect`, an unmet outcome then uses that hint. Popups that page scripts op
 activation, so the popup blocker lets its tab open. It needs a visible, focused browser
 window and OS permission (macOS: Accessibility), and its result does not list `opened_tabs`;
 the tab it opens is not agent-owned.
+
+### Opened popups
+
+A click, double-click or hover can open a menu, listbox or dialog instead of a tab, often in
+a shared container at the end of `<body>` that says nothing about which control opened it.
+The result then has `opened_popup` (#329):
+
+```json
+{ "ok": true, "snapshot_delta": true, "target_ref": "e41",
+  "opened_popup": { "ref": "e90", "role": "menu", "name": "Video actions", "opened_by": "e41",
+    "rendered": false, "items": [
+      { "ref": "e91", "role": "menuitem", "name": "Add to queue" },
+      { "ref": "e92", "role": "menuitem", "name": "Save to Watch later" } ] } }
+```
+
+- `opened_by` is the ref of the acted-on element, so an item can be matched to the row
+  whose control opened the popup.
+- The popup is found in this order: when the aria-expanded of the acted-on element, or of
+  its nearest ancestor that has one, turned `"true"`, the element its `aria-controls` or
+  `aria-owns` names; else the last `role=menu`, `listbox` or `dialog` element, open
+  `<dialog>` or open `[popover]` that opened or was added during the action; else, when
+  aria-expanded turned `"true"`, the open menu, listbox or dialog that items were added to.
+  A popup that contains the acted-on element is not reported. The action's own document
+  and shadow root are searched, not other frames. Results without a popup have no
+  `opened_popup` field.
+- `role` is the popup's `role` (`dialog` for `<dialog>`, `generic` when it has none) and
+  `name` its `aria-labelledby`, `aria-label` or `title`.
+- `rendered` is `false` when the popup is hidden or has no layout box, for example when a
+  background tab never painted it.
+- `items` lists up to 20 descendants with role `menuitem`, `menuitemcheckbox`,
+  `menuitemradio`, `option`, `button` or `link` (explicit or native), not those inside
+  another item. Hidden items of a rendered popup are left out; an unpainted popup lists
+  all of them. Each ref acts like a snapshot ref. A pointer action on an item of an
+  unpainted popup dispatches normally and returns the
+  [`hidden_or_covered`](#action-errors) warning.
+
+The popup is looked up when the action returns, before its post-action snapshot (see
+[Post-action snapshots](#post-action-snapshots)); a popup that opens later is not reported.
+
+While a reported popup stays open, every snapshot of its document lists it even when it is
+not rendered, with `[not_rendered]` on its line:
+
+```
+- menu "Video actions" [ref=e90] [not_rendered]
+  - menuitem "Add to queue" [ref=e91]
+  - menuitem "Save to Watch later" [ref=e92]
+```
+
+A popup found through aria-expanded stays listed while it is attached and that element
+still has `aria-expanded="true"`. Any other popup stays listed while it is attached and
+open (an open `<dialog>` or `[popover]`; a menu, listbox or dialog that is not hidden
+itself) and the `hidden`, `class`, `style`, `aria-hidden` and `open` attributes of it and
+its ancestors below `<body>` are unchanged. Once it closes it is not listed again until an
+action reports it again. Below a hidden ancestor, only the path to the popup is walked, so
+other hidden content in a shared container, such as a menu opened earlier, stays out.
+Strict role and name selectors still skip unrendered elements (see
+[Strict selectors](#strict-selectors)); act on these items by ref.
 
 ### Shared browser
 
@@ -1905,6 +1966,10 @@ instead of 1,430.
   element children, and `None` traverses all depths. Non-semantic containers still
   count toward DOM depth, even when they produce no snapshot line.
 
+Hidden elements (`hidden`, `display: none`, `visibility: hidden`, `aria-hidden="true"`) and
+their subtrees are left out, except a popup that an action reported and that is still open:
+it is listed with `[not_rendered]` on its line (see [Opened popups](#opened-popups)).
+
 Successful snapshots, including scoped reads, preserve earlier attached-node refs.
 Only emitted elements receive new usable refs; repeated observations reuse them.
 Generic clickable wrappers with any native interactive descendant or at least two interactive descendants are not
@@ -2579,7 +2644,8 @@ keeps the value setter.
 
 ### POST /api/hover
 `{ "selector": "a.link" }`
-Returns `{ "ok": true, "tag": "a" }`
+Returns `{ "ok": true, "tag": "a" }`, plus [`opened_popup`](#opened-popups) when the hover
+opened a menu, listbox or dialog.
 
 A `selector` is scrolled into view first. The hover dispatches, in this order,
 `pointerover`, `pointerenter`, `mouseover`, `mouseenter`, `pointermove` and

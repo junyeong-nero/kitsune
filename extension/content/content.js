@@ -383,12 +383,13 @@
                                      msg.observation, msg.delta ? 'delta' : 'full', !!msg.boxes, msg.collapse !== false),
       'getAccessibilityTree':  () => getAccessibilityTree(msg.depth ?? 6, msg.ref || msg.selector),
       'getFormFields':         () => getFormFields(),
-      'click':                 () => clickElement(msg.selector, msg.coords, msg.first, msg.button, msg.modifiers),
+      'click':                 () => withPopupWatch(clickElement(msg.selector, msg.coords, msg.first, msg.button, msg.modifiers)),
       'type':                  () => typeText(msg.selector, msg.text, msg.clear, msg.first),
       'setEditableContent':    () => setEditableContent(msg.selector, msg.value, msg.format || 'text', msg.clear !== false,
                                      msg.first),
       'scroll':                () => scrollPage(msg.direction, msg.amount, msg.selector, msg.first),
-      'hover':                 () => hoverElement(msg.selector, msg.coords, msg.first),
+      'hover':                 () => withPopupWatch(hoverElement(msg.selector, msg.coords, msg.first)),
+      'openedPopup':           () => takeOpenedPopup(),
       'fill':                  () => fillFieldSafe(msg.selector, msg.value, msg.first),
       'find':                  () => findElements(msg.query),
       // @kitsune-dev-only:start
@@ -426,7 +427,7 @@
       'focusElement':          () => focusEl(msg.selector, msg.first),
       'blurElement':           () => blurEl(msg.selector, msg.first),
       'keypress':              () => pressKey(msg.selector, msg.key, msg.modifiers, msg.text, msg.first, msg.repeat),
-      'doubleClick':           () => doubleClick(msg.selector, msg.first, msg.modifiers),
+      'doubleClick':           () => withPopupWatch(doubleClick(msg.selector, msg.first, msg.modifiers)),
       'submitForm':            () => submitForm(msg.selector, msg.first),
       'describeTarget':        () => describeTarget(msg.selector, msg.coords, msg.key, msg.first, msg.fieldKeys, msg.draftFill),
       'formFill':              () => formFill(msg.fields, msg.first),
@@ -772,9 +773,30 @@
     const signatures = new Map();
     const targetAncestors = new Set();
     for (let el = target; el; el = parentAcrossFrames(el)) targetAncestors.add(el);
+    // A popup an action reported that is open but not rendered is listed anyway, marked
+    // [not_rendered] (#329). Below a hidden ancestor only the path to it is walked.
+    const shownPopups = new Set();
+    const popupPath = new Set();
+    const unhidden = new Set();
+    let rootInPopup = false;
+    for (const popup of unrenderedPopups()) {
+      const path = [];
+      let el = popup;
+      for (; el && el !== root; el = parentAcrossFrames(el)) path.push(el);
+      if (el === root) {
+        shownPopups.add(popup);
+        [...path, root].forEach(node => popupPath.add(node));
+        continue;
+      }
+      for (el = root; el && el !== popup; el = parentAcrossFrames(el));
+      if (el) {
+        shownPopups.add(popup);
+        rootInPopup = true;
+      }
+    }
+    const hiddenElement = el => isHidden(el) || el.getAttribute('aria-hidden') === 'true';
     function ignored(el) {
-      return !el || el.nodeType !== 1 || isHidden(el) ||
-        el.getAttribute('aria-hidden') === 'true' ||
+      return !el || el.nodeType !== 1 || (!unhidden.has(el) && hiddenElement(el)) ||
         ['SCRIPT', 'STYLE', 'NOSCRIPT', 'SVG'].includes(el.tagName);
     }
     const hasOwnText = el => flatChildNodes(el).some(node => node.nodeType === 3 && node.textContent.trim());
@@ -803,12 +825,15 @@
       return [all, plain];
     }
     // Bottom-up metadata avoids repeatedly scanning large clickable ancestor trees.
-    function measure(el, domDepth = 0) {
+    function measure(el, domDepth = 0, pathOnly = false, inPopup = false) {
+      inPopup ||= shownPopups.has(el);
+      if (inPopup || popupPath.has(el)) unhidden.add(el);
       if (ignored(el)) return null;
+      pathOnly = !inPopup && (pathOnly || (popupPath.has(el) && hiddenElement(el)));
       // A media element's children are sources, tracks and fallback content, not page structure.
       const media = MEDIA_TAGS.has(el.tagName);
-      const children = media ? [] :
-        childrenAcrossFrames(el).map(child => measure(child, domDepth + 1)).filter(Boolean);
+      const children = media ? [] : childrenAcrossFrames(el).filter(child => !pathOnly || popupPath.has(child))
+        .map(child => measure(child, domDepth + 1, pathOnly, inPopup)).filter(Boolean);
       const shape = JSON.stringify([el.tagName, el.getAttribute('role'), el.type || '',
         children.map(child => child.signature)]);
       if (!signatures.has(shape)) signatures.set(shape, signatures.size);
@@ -828,16 +853,17 @@
         (/^H[1-6]$/.test(el.tagName) ? 'heading' : inferRole(el));
       data.image = !interactive && isImage(el) && !!nameOf(el, false);
       // Rendered frames are listed even when their content is unavailable (cross-origin).
+      data.pathOnly = pathOnly;
       data.useful = (maxDepth == null || domDepth <= maxDepth) &&
         (children.some(child => child.useful) || (interactive && !data.wrapper) || media || data.image ||
           semanticRoles.has(role) || el === target || (withText && hasOwnText(el)) ||
-          (FRAME_TAGS.has(el.tagName) && hasArea(el)));
+          (FRAME_TAGS.has(el.tagName) && hasArea(el)) || shownPopups.has(el));
       data.interactive += interactive ? 1 : 0;
       data.native += nativeTags.has(el.tagName) ? 1 : 0;
       metadata.set(el, data);
       return data;
     }
-    measure(root);
+    measure(root, 0, false, rootInPopup);
     function nameOf(el, interactive) {
       const labelledBy = el.getAttribute('aria-labelledby');
       if (labelledBy) {
@@ -887,11 +913,13 @@
       if (!metadata.has(el) || (maxDepth != null && domDepth > maxDepth)) return;
       const frame = FRAME_TAGS.has(el.tagName);
       const image = metadata.get(el).image;
+      const shownPopup = shownPopups.has(el);
       let role = el.getAttribute('role') || landmarks[el.tagName] ||
-        (/^H[1-6]$/.test(el.tagName) ? 'heading' : inferRole(el)) || (frame ? 'iframe' : '') || (image ? 'img' : '');
+        (/^H[1-6]$/.test(el.tagName) ? 'heading' : inferRole(el)) || (frame ? 'iframe' : '') || (image ? 'img' : '') ||
+        (shownPopup ? popupRole(el) : '');
       const media = MEDIA_TAGS.has(el.tagName);
       const interactive = (isSnapshotControl(el) && !metadata.get(el).wrapper) || media;
-      const include = interactive || semanticRoles.has(role) || el === target || frame || image;
+      const include = interactive || semanticRoles.has(role) || el === target || frame || image || shownPopup;
       let ref = null;
       if (include) {
         if (!role) {
@@ -920,9 +948,9 @@
           states.push(`src=${JSON.stringify(src)}`, `duration=${duration}`, `currentTime=${currentTime}`,
             `paused=${paused}`, `muted=${muted}`, `controls=${controls}`);
         }
-        const label = `${role} ${JSON.stringify(nameOf(el, interactive || el === target))}`;
+        const label = `${role} ${JSON.stringify(shownPopup ? popupName(el) : nameOf(el, interactive || el === target))}`;
         const head = `${'  '.repeat(Math.min(depth, 12))}- ${label} [ref=`;
-        const stateTail = `]${states.length ? ' [' + states.join(' ') + ']' : ''}`;
+        const stateTail = `]${states.length ? ' [' + states.join(' ') + ']' : ''}${shownPopup ? ' [not_rendered]' : ''}`;
         // Boxes stay out of the signature, so repeated siblings still group.
         const tail = stateTail + (boxes ? ` [box=${boxOf(el)}]` : '');
         const previous = entries[lastChild.get(parent)];
@@ -956,7 +984,8 @@
       }
       const childDepth = depth + (include ? 1 : 0);
       named ||= interactive || role === 'heading';
-      if (withText && !named && (el === root || !INLINE_TAGS.has(el.tagName)) &&
+      // A hidden container on the way to a popup has other hidden content.
+      if (withText && !named && !metadata.get(el).pathOnly && (el === root || !INLINE_TAGS.has(el.tagName)) &&
           !FIELD_TAGS.has(el.tagName) && !isSensitiveField(el)) {
         const [all, plain] = inlineText(el);
         const text = normalize(all);
@@ -1379,6 +1408,163 @@
     return { score: Math.round(score * 100) / 100, matched, textLength: text.length };
   }
 
+  // ── Opened popups (#329) ──
+  // A click or hover can open a menu, listbox or dialog in a shared container at the end of
+  // <body>, which a background tab may never paint (#320). The action reports it as opened_popup,
+  // with the acted-on control and its items' refs, and snapshots keep it while it stays open.
+  const POPUP_ROLE_SELECTOR = '[role=menu], [role=listbox], [role=dialog]';
+  const POPUP_ROLES = new Set(['menu', 'listbox', 'dialog']);
+  const POPUP_ITEM_ROLES = new Set(['menuitem', 'menuitemcheckbox', 'menuitemradio', 'option', 'button', 'link']);
+  const POPUP_ITEM_LIMIT = 20;
+  // The last click or hover's watch, until the background takes its popup (openedPopup).
+  let popupWatch = null;
+  // Reported popups: { opener } keeps one while the opener's aria-expanded stays "true";
+  // { signature } keeps one until it closes or a class/style/hidden attribute on it or an
+  // ancestor changes.
+  const keptPopups = new Map();
+
+  function popupOpen(el) {
+    if (el.tagName === 'DIALOG') return el.hasAttribute('open');
+    if (el.hasAttribute('popover')) return !!el.matches?.(':popover-open');
+    return POPUP_ROLES.has(el.getAttribute('role')) && !isHidden(el) && el.getAttribute('aria-hidden') !== 'true';
+  }
+
+  function popupRole(el) {
+    return el.getAttribute('role') || (el.tagName === 'DIALOG' ? 'dialog' : inferRole(el) || 'generic');
+  }
+
+  // Its label only: a popup's text is its items'.
+  function popupName(el) {
+    return String(labelledByText(el) || el.getAttribute('aria-label') || el.getAttribute('title') || '')
+      .replace(/\s+/g, ' ').trim().slice(0, 80);
+  }
+
+  // The attributes a page closes a popup with, on it and its ancestors below <body>.
+  function popupSignature(popup) {
+    const parts = [];
+    for (let el = popup; el && el !== docOf(popup).body; el = flatParent(el)) {
+      parts.push(['hidden', 'class', 'style', 'aria-hidden', 'open'].map(name => el.getAttribute?.(name)).join('\u0000'));
+    }
+    return parts.join('\u0001');
+  }
+
+  // Up to POPUP_ITEM_LIMIT items, not those inside another item. An unpainted popup lists all.
+  function popupItems(popup) {
+    const rendered = isRendered(popup);
+    const items = [];
+    (function walk(el) {
+      for (const child of flatChildren(el)) {
+        if (items.length >= POPUP_ITEM_LIMIT) return;
+        if (rendered && isHidden(child)) continue;
+        if (POPUP_ITEM_ROLES.has(child.getAttribute('role') || inferRole(child))) items.push(child);
+        else walk(child);
+      }
+    })(popup);
+    return items;
+  }
+
+  // The trees a popup is looked for in: the target's document and its shadow root.
+  function popupRoots(el) {
+    const doc = docOf(el);
+    const root = el.getRootNode?.();
+    return root && root !== doc && root.querySelectorAll ? [doc, root] : [doc];
+  }
+
+  function openPopups(roots) {
+    return new Set(roots.flatMap(root => Array.from(root.querySelectorAll(POPUP_SELECTOR))).filter(popupOpen));
+  }
+
+  // Right before a click or hover dispatches: the aria-expanded of the target or its nearest
+  // ancestor that has one, and the popups already open. Openness is compared directly, since
+  // showPopover() changes no attribute; the observer finds a menu that is only filled in.
+  function watchPopups(el) {
+    popupWatch?.observer?.disconnect();
+    popupWatch = null;
+    // The action dispatches even when the watch cannot start.
+    try {
+      popupWatch = startPopupWatch(el);
+    } catch {}
+  }
+
+  function startPopupWatch(el) {
+    let opener = null;
+    for (let node = el; node && node !== docOf(el).body; node = flatParent(node)) {
+      if (node.hasAttribute?.('aria-expanded')) {
+        opener = node;
+        break;
+      }
+    }
+    const roots = popupRoots(el);
+    const watch = { target: el, opener, expanded: opener?.getAttribute('aria-expanded'), roots,
+      before: openPopups(roots), filled: new Set() };
+    watch.note = records => {
+      for (const record of records) {
+        const popup = record.addedNodes.length ? record.target.closest?.(POPUP_ROLE_SELECTOR) : null;
+        if (!popup) continue;
+        watch.filled.delete(popup);
+        watch.filled.add(popup);
+      }
+    };
+    // Absent in vm test harnesses.
+    if (typeof MutationObserver === 'function') {
+      watch.observer = new MutationObserver(watch.note);
+      for (const root of roots) watch.observer.observe(root, { childList: true, subtree: true });
+    }
+    return watch;
+  }
+
+  // The popup the watched action opened: the element the opener's aria-controls/aria-owns names
+  // once its aria-expanded turned "true", else the popup that opened last, else (aria-expanded
+  // turned "true") the open menu, listbox or dialog that items were added to.
+  function takeOpenedPopup() {
+    const watch = popupWatch;
+    popupWatch = null;
+    if (!watch) return {};
+    if (watch.observer) {
+      watch.note(watch.observer.takeRecords());
+      watch.observer.disconnect();
+    }
+    const { target, opener } = watch;
+    if (!target.isConnected) return {};
+    const expanded = !!opener?.isConnected && watch.expanded !== 'true' &&
+      opener.getAttribute('aria-expanded') === 'true';
+    const outside = popup => popup?.isConnected && !popup.contains(target);
+    let popup = null;
+    if (expanded) {
+      const ids = `${opener.getAttribute('aria-controls') || ''} ${opener.getAttribute('aria-owns') || ''}`;
+      popup = ids.split(/\s+/).filter(Boolean).map(id => elementByIdNear(opener, id)).find(outside) || null;
+    }
+    popup ||= [...openPopups(watch.roots)].filter(p => !watch.before.has(p) && outside(p)).at(-1) ||
+      (expanded ? [...watch.filled].filter(p => outside(p) && popupOpen(p)).at(-1) : null);
+    if (!popup) return {};
+    keptPopups.set(popup, expanded ? { opener } : { signature: popupSignature(popup) });
+    return { opened_popup: { ref: issueRef(popup), role: popupRole(popup), name: popupName(popup),
+      opened_by: issueRef(target), rendered: isRendered(popup), items: popupItems(popup).map(targetSummary) } };
+  }
+
+  // Marks a successful click or hover that watched for a popup, so the background takes it.
+  function withPopupWatch(result) {
+    const mark = r => popupWatch && r?.ok ? { ...r, popupWatch: true } : r;
+    return typeof result?.then === 'function' ? result.then(mark) : mark(result);
+  }
+
+  // Reported popups that are still open but not rendered; closed ones are forgotten.
+  function unrenderedPopups() {
+    const popups = [];
+    for (const [popup, { opener, signature }] of keptPopups) {
+      let open = false;
+      // Firefox revokes wrappers from a destroyed frame ("can't access dead object").
+      try {
+        open = refAttached(popup) && (opener
+          ? refAttached(opener) && opener.getAttribute('aria-expanded') === 'true'
+          : popupOpen(popup) && popupSignature(popup) === signature);
+      } catch {}
+      if (!open) keptPopups.delete(popup);
+      else if (!isRendered(popup)) popups.push(popup);
+    }
+    return popups;
+  }
+
   // ── Click ──
   const DISABLED_CONTROLS = 'button:disabled, input:disabled, select:disabled, textarea:disabled';
 
@@ -1424,6 +1610,7 @@
     }
 
     lastActedElement = el;
+    watchPopups(el);
     const rect = el.getBoundingClientRect();
     // Events carry the point in the viewport of the target's own (frame) document.
     const point = coords ? elementAtPoint(coords.x, coords.y) : null;
@@ -1850,6 +2037,7 @@
     const x = rect.x + rect.width / 2;
     const y = rect.y + rect.height / 2;
 
+    watchPopups(el);
     // Like a real pointer's events, over and move bubble out of shadow roots, while enter events
     // do not bubble and go to each newly entered ancestor, outermost first (#327).
     // Without leave events Kitsune cannot tell whether the pointer left meanwhile, so hovering
@@ -4342,6 +4530,7 @@
     const r = el.getBoundingClientRect();
     const init = { bubbles: true, cancelable: true, composed: true, view: el.ownerDocument?.defaultView || window,
       clientX: r.x + r.width/2, clientY: r.y + r.height/2, button: 0, ...modifierFlags(modifiers) };
+    watchPopups(el);
     for (const type of ['mousedown', 'mouseup', 'click', 'mousedown', 'mouseup', 'click']) {
       el.dispatchEvent(new MouseEvent(type, init));
     }

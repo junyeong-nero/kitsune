@@ -15,6 +15,9 @@ one, reads act on the user's active tab and the MCP server refuses writes and na
 also take a tab_id that playwright_tools.json does not publish, like confirm_token, and
 browser_press_key a repeat count (1-100) that the extension presses within one request.
 
+browser_click and browser_hover add opened_popup to their result when they open a menu, listbox
+or dialog, also one a background tab did not paint, with its items' refs (#329).
+
 browser_fill_form type slider and browser_type fill set an ARIA slider or spinbutton (no native
 input) by pressing arrow keys in the extension until aria-valuenow is the value (#311).
 

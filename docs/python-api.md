@@ -162,7 +162,9 @@ To check what happened, pass `expect`, for example `expect={"url_changed": True}
 `outcome_not_observed` ([Action outcomes](api-reference.md#action-outcomes)). Pointer
 and typing actions also take `wait=True` to wait up to `timeout` ms for their target
 first ([Actionability wait](api-reference.md#actionability-wait)). Tabs an action opened
-are in its `opened_tabs`; open them with `browser.tab(id)`.
+are in its `opened_tabs`; open them with `browser.tab(id)`. A menu, listbox or dialog that
+`click`, `double_click` or `hover` opened is in its `opened_popup`
+([Opened popups](api-reference.md#opened-popups)).
 
 ## Waiting
 

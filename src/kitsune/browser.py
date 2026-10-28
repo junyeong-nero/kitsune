@@ -785,7 +785,8 @@ class Tab:
     def click(self, target: str, *, button: str | None = None, modifiers: list[str] | None = None,
               wait: bool = False, timeout: int = 10000, expect: dict | None = None, first: bool = False,
               confirm: str | None = None) -> dict:
-        """Click an element with synthetic events; tabs the click opens come back in opened_tabs."""
+        """Click an element with synthetic events; tabs the click opens come back in opened_tabs,
+        and a menu, listbox or dialog it opens in opened_popup."""
         body = _action_target(target)
         if button is not None:
             body["button"] = button
