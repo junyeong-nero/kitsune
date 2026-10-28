@@ -510,6 +510,18 @@ class BrowserFocusTests(unittest.TestCase):
         self.assertEqual(run.call_args.args[0],
                          ["osascript", "-e", bridge._MAC_FOCUS_SCRIPT, "zen", "firefox", "librewolf"])
 
+    def test_macos_focus_counts_only_a_process_that_became_frontmost(self):
+        # A browser in full screen on another Space may never come to the front (#322).
+        self.assertIn("set frontmost of process procName to true\n"
+                      "        -- Coming to the front can take a moment, and a browser in full screen on another\n"
+                      "        -- Space may never do so (#322); only a process that did counts as focused.\n"
+                      "        repeat 20 times\n"
+                      "          if frontmost of process procName then return procName\n"
+                      "          delay 0.05\n"
+                      "        end repeat\n"
+                      "        return \"\"\n"
+                      "      end if", bridge._MAC_FOCUS_SCRIPT)
+
     def test_macos_process_from_env_or_request(self):
         os.environ["KITSUNE_BROWSER_PROCESS"] = "Firefox Nightly"
         done = subprocess.CompletedProcess([], 0, "x\n", "")
@@ -584,6 +596,22 @@ class BrowserAtPointTests(unittest.TestCase):
             self.assertEqual(bridge._browser_not_at_point(1, 2, wait=1.0)["state"]["reason"], "other_window")
         self.assertEqual(window.call_count, 2)
 
+    def test_rechecks_ask_ps_once_per_process(self):
+        with patch.object(bridge, "_mac_window_at", return_value=(4515, "Ghostty")), \
+             patch.object(bridge, "_mac_process_name", return_value="ghostty") as name, \
+             patch.object(bridge.time, "monotonic", side_effect=[0, 0.1, 0.2, 1.0]):
+            self.assertEqual(bridge._browser_not_at_point(1, 2, wait=1.0)["code"], "browser_not_at_point")
+        name.assert_called_once_with(4515)
+
+    def test_a_window_list_that_cannot_be_read_refuses(self):
+        for focused in (None, True):
+            with self.subTest(focused=focused), \
+                 patch.object(bridge, "_mac_window_at", side_effect=ValueError("no window server")):
+                refused = bridge._browser_not_at_point(1, 2, focused=focused, wait=1.0)
+            self.assertEqual((refused["code"], refused["retryable"]), ("browser_not_at_point", True))
+            self.assertEqual(refused["state"], {"screenX": 1, "screenY": 2, "reason": "unknown",
+                                                "detail": "no window server"})
+
     def test_without_quartz_only_a_failed_focus_refuses(self):
         with patch.object(bridge, "_mac_window_at", return_value=None):
             self.assertIsNone(bridge._browser_not_at_point(1, 2))
@@ -598,6 +626,9 @@ class BrowserAtPointTests(unittest.TestCase):
 
     def test_window_at_is_the_front_visible_window_containing_the_point(self):
         windows = [
+            # The pointer, drawn around its hotspot at the cursor window level.
+            {"kCGWindowBounds": {"X": 755, "Y": 599, "Width": 28, "Height": 40}, "kCGWindowAlpha": 1,
+             "kCGWindowLayer": 2147483630, "kCGWindowOwnerPID": 433, "kCGWindowOwnerName": "Window Server"},
             {"kCGWindowBounds": {"X": 0, "Y": 0, "Width": 100, "Height": 100}, "kCGWindowAlpha": 1,
              "kCGWindowOwnerPID": 1, "kCGWindowOwnerName": "Elsewhere"},
             {"kCGWindowBounds": {"X": 0, "Y": 0, "Width": 1920, "Height": 1080}, "kCGWindowAlpha": 0,
@@ -608,14 +639,18 @@ class BrowserAtPointTests(unittest.TestCase):
              "kCGWindowOwnerPID": 42, "kCGWindowOwnerName": "Zen"},
         ]
         quartz = SimpleNamespace(kCGWindowListOptionOnScreenOnly=1, kCGWindowListExcludeDesktopElements=16,
-                                 kCGNullWindowID=0, CGWindowListCopyWindowInfo=Mock(return_value=windows))
+                                 kCGNullWindowID=0, CGWindowListCopyWindowInfo=Mock(return_value=windows),
+                                 kCGCursorWindowLevelKey=19,
+                                 CGWindowLevelForKey=Mock(side_effect={19: 2147483630}.get))
         with patch.dict("sys.modules", {"Quartz": quartz}):
             self.assertEqual(bridge._mac_window_at(760, 604), (4515, "Ghostty"))
             self.assertEqual(bridge._mac_window_at(50, 50), (1, "Elsewhere"))
             self.assertEqual(bridge._mac_window_at(3000, 50), (0, ""))
             quartz.CGWindowListCopyWindowInfo.assert_called_with(17, 0)
+            # The caller refuses on this (test_a_window_list_that_cannot_be_read_refuses).
             quartz.CGWindowListCopyWindowInfo.side_effect = ValueError("no window server")
-            self.assertIsNone(bridge._mac_window_at(760, 604))
+            with self.assertRaises(ValueError):
+                bridge._mac_window_at(760, 604)
         with patch.dict("sys.modules", {"Quartz": None}):
             self.assertIsNone(bridge._mac_window_at(760, 604))
 

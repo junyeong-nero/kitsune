@@ -324,21 +324,21 @@ def _focus_browser_window(title="", process=""):
 
 def _mac_window_at(x, y):
     """(owner pid, owner name) of the front on-screen window at desktop point (x, y), (0, "")
-    when none is there (the desktop), or None when Quartz is not available."""
+    when none is there (the desktop), or None when Quartz is not available. Raises when the
+    window list cannot be read."""
     try:
         import Quartz
     except ImportError:
         return None
-    try:
-        # Front to back. Bounds and owners need no Screen Recording permission; titles would.
-        windows = Quartz.CGWindowListCopyWindowInfo(
-            Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements,
-            Quartz.kCGNullWindowID) or []
-    except Exception:  # pyobjc raises its own error types
-        return None
+    # Front to back. Bounds and owners need no Screen Recording permission; titles would.
+    windows = Quartz.CGWindowListCopyWindowInfo(
+        Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements,
+        Quartz.kCGNullWindowID) or []
+    # The pointer is drawn as a small window above everything; it never takes the click.
+    cursor_level = Quartz.CGWindowLevelForKey(Quartz.kCGCursorWindowLevelKey)
     for window in windows:
         bounds = window.get("kCGWindowBounds") or {}
-        if not window.get("kCGWindowAlpha", 1):
+        if not window.get("kCGWindowAlpha", 1) or window.get("kCGWindowLayer") == cursor_level:
             continue
         left, top = bounds.get("X", 0), bounds.get("Y", 0)
         if left <= x < left + bounds.get("Width", 0) and top <= y < top + bounds.get("Height", 0):
@@ -368,14 +368,22 @@ def _browser_not_at_point(x, y, process="", focused=None, wait=0.0):
     on another Space or under another window would send it to that app (#322).
 
     With Quartz the window at the point is checked, for up to `wait` seconds while a Space switch
-    finishes. Without it (cliclick) only a requested focus that failed (focused False; None when
-    no focus was requested) is known to be unsafe."""
+    finishes; a window list that cannot be read refuses. Without Quartz (cliclick) only a
+    requested focus that failed (focused False; None when no focus was requested) is known to
+    be unsafe."""
     if sys.platform != "darwin":
         return None
     names = {name.lower() for name in _browser_processes(process)}
+    process_names = {}
     deadline = time.monotonic() + wait
     while True:
-        window = _mac_window_at(x, y)
+        try:
+            window = _mac_window_at(x, y)
+        except Exception as exc:  # pyobjc raises its own error types
+            return {"error": "The window at the click point could not be checked; the trusted click was not made",
+                    "code": "browser_not_at_point", "retryable": True,
+                    "hint": "Nothing was clicked. The macOS window list (Quartz) could not be read; retry.",
+                    "state": {"screenX": x, "screenY": y, "reason": "unknown", "detail": str(exc)}}
         if window is None:
             if focused is not False:
                 return None
@@ -383,7 +391,9 @@ def _browser_not_at_point(x, y, process="", focused=None, wait=0.0):
                     "code": "browser_not_at_point", "retryable": True, "hint": _BROWSER_NOT_AT_POINT_HINT,
                     "state": {"screenX": x, "screenY": y, "reason": "not_frontmost"}}
         pid, owner = window
-        if pid and (owner.lower() in names or _mac_process_name(pid).lower() in names):
+        if pid and owner.lower() not in names and pid not in process_names:
+            process_names[pid] = _mac_process_name(pid).lower()
+        if pid and (owner.lower() in names or process_names[pid] in names):
             return None
         if time.monotonic() >= deadline:
             return {"error": "Another app's window, not the browser's, is at the click point; "
@@ -991,8 +1001,9 @@ async def trusted_click(params):
 
     try:
         focused = _focus_browser_window(title or point.get("title", ""), process) if focus else None
-        refusal = _browser_not_at_point(point["screenX"], point["screenY"], process, focused,
-                                        BROWSER_AT_POINT_WAIT if focus else 0.0)
+        # Off the event loop: the recheck can poll for up to BROWSER_AT_POINT_WAIT.
+        refusal = await asyncio.to_thread(_browser_not_at_point, point["screenX"], point["screenY"], process,
+                                          focused, BROWSER_AT_POINT_WAIT if focus else 0.0)
         clicked = refusal or _native_click_screen(point["screenX"], point["screenY"], restore_pointer,
                                                   button, click_count, modifiers)
     finally:

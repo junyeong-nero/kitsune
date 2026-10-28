@@ -434,7 +434,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `value_not_reached` | `fill` on an ARIA slider or spinbutton did not make `aria-valuenow` the value (see [`/api/fill`](#post-apifill)). `state` has `role`, `value` (where it stopped), `target`, `min`, `max`, `keys` and `reason`: `out_of_range` (the value is outside `aria-valuemin`/`aria-valuemax`; nothing was pressed), `stepped_past` (its steps skip the value), `stuck` (it stopped moving: at an end, disabled, ignoring synthetic keys, or rendering only on an animation frame), `moved_away` (its arrow keys moved it away from the value and the other arrow keys did not move it), `key_limit` (1,000 keys) or `time_limit` (20 s) | true for `out_of_range`, else false |
 | `ambiguous_target` | The command names no single target, so nothing was dispatched: a write action's selector matches several actionable elements (`state.selector`, `state.matches`; see [Strict selectors](#strict-selectors)), a `browser_form_fill` label or placeholder key matches several actionable fields (`state.field`, `state.matches`), or `browser_submit_form` without a target found several forms and no filled field naming one (`state.forms`). `state.candidates` lists up to 5 of them with a `ref` to target one | false |
 | `target_not_at_point` | `browser_trusted_click` found another element (`state.hit`, `null` for none) at its target's center (`state.viewportX`, `state.viewportY`), such as an overlay; no OS click was made | true |
-| `browser_not_at_point` | On macOS, a viewport `browser_trusted_click` would land outside the browser: another app's window (`state.app`, `null` for the desktop) is at the desktop point (`state.screenX`, `state.screenY`; `state.reason: "other_window"`), or, without Quartz, `focus=True` could not bring the browser to the front (`"not_frontmost"`). Typically the browser is in full screen on another Space; no OS click was made | true |
+| `browser_not_at_point` | On macOS, a viewport `browser_trusted_click` would land outside the browser: another app's window (`state.app`, `null` for the desktop) is at the desktop point (`state.screenX`, `state.screenY`; `state.reason: "other_window"`), the macOS window list could not be read (`"unknown"`, `state.detail`), or, without Quartz, `focus=True` could not bring the browser to the front (`"not_frontmost"`). Typically the browser is in full screen on another Space; no OS click was made | true |
 | `not_actionable` | An [actionability wait](#actionability-wait) timed out on a target that exists but never rendered (`state.reason: "not_rendered"`, `timeoutMs`, `elapsed`); nothing was dispatched | true |
 | `unsupported_selector` | The shared target resolver rejected unsupported/invalid syntax (see [Target selectors](#target-selectors)) before dispatch; `state.selector` echoes the selector and `hint` lists accepted forms. Applies to actions, scoped snapshots and element screenshots | false |
 | `stale_ref` | The ref is no longer valid; `state.reason` is `element_removed`, `not_in_snapshot` (unknown/unissued ref), or `other_document` (the tab navigated, or the ref came from another tab) | true |
@@ -2447,11 +2447,13 @@ The bridge endpoint also accepts `title` and `process` to override these per cal
 An OS click goes to whatever window macOS shows at the point, whether or not it is the
 browser's. So before a viewport click on macOS, with Quartz, the bridge checks the
 front on-screen window at the desktop point (`CGWindowListCopyWindowInfo`; windows
-with alpha 0 are skipped, and no Screen Recording permission is needed). Unless that
+with alpha 0 and the pointer's own window are skipped, and no Screen Recording
+permission is needed). Unless that
 window belongs to the browser process (`KITSUNE_BROWSER_PROCESS`, or `process`), it
 returns `browser_not_at_point` with `state.app` (the owning app's name, `null` for the
 desktop) and makes no click; the tab shown for the click is shown again as usual. With
-`focus=True` it rechecks for up to 1 s while a Space switch finishes. This is how a
+`focus=True` it rechecks for up to 1 s while a Space switch finishes. If the window
+list cannot be read, it refuses the same way with `state.reason: "unknown"`. This is how a
 browser in full screen on another Space, or behind another app, is caught: the click
 would otherwise land in the app in front, such as the terminal running the agent. Ask
 the user to show the browser there (switch to its Space, or leave full screen), then
