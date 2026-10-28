@@ -275,8 +275,9 @@
   // The user shares the browser with the agent, so agent writes back off from a page the user is
   // using. Only trusted input counts: Kitsune's own DOM events are synthetic (isTrusted false),
   // and the trusted OS click of browser_trusted_click follows its screenPoint, which opens a
-  // window for its pointer events and for key presses of the modifiers it holds. Typing counts while the field the user typed into keeps focus
-  // in a focused document and is not empty. Values are never read out.
+  // window for its pointer events and for key presses of the modifiers it holds. Typing counts
+  // while the field the user typed into keeps focus in a focused document and is not empty.
+  // Values are never read out.
   const USER_INPUT_EVENTS = ['keydown', 'mousedown', 'pointerdown', 'touchstart', 'wheel', 'paste'];
   const USER_INPUT_WINDOW_MS = 3000;
   const AGENT_TRUSTED_CLICK_MS = 2000;

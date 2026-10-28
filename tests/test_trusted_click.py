@@ -327,11 +327,14 @@ class NativeClickTests(unittest.TestCase):
             run.assert_not_called()
 
     def test_cliclick_failure_releases_held_modifiers(self):
-        with self.cliclick(completed(returncode=1, stderr="boom\n"), completed()) as run:
-            result = bridge._native_click_screen(5, 20, True, "left", 1, ("Shift", "Meta"))
-        self.assertEqual(result, {"error": "cliclick failed: boom"})
-        self.assertEqual(run.call_args.args[0], ["/opt/homebrew/bin/cliclick", "ku:shift,cmd"])
-        self.assertEqual(run.call_count, 2)
+        for failure, error in ((completed(returncode=1, stderr="boom\n"), "cliclick failed: boom"),
+                               (subprocess.TimeoutExpired("cliclick", 10), "cliclick failed: ")):
+            with self.subTest(error=error), self.cliclick(failure, completed()) as run:
+                result = bridge._native_click_screen(5, 20, True, "left", 1, ("Shift", "Meta"))
+            self.assertEqual(set(result), {"error"})
+            self.assertTrue(result["error"].startswith(error), result)
+            self.assertEqual(run.call_args.args[0], ["/opt/homebrew/bin/cliclick", "ku:shift,cmd"])
+            self.assertEqual(run.call_count, 2)
 
     def test_macos_reports_cliclick_failure(self):
         platform, trusted = self.mac()
@@ -415,16 +418,19 @@ class NativeClickTests(unittest.TestCase):
 
     def test_xdotool_failure_releases_held_modifiers(self):
         platform, env = self.linux()
-        with platform, env, patch.object(bridge.shutil, "which", return_value="/usr/bin/xdotool"), \
-             patch.object(bridge.subprocess, "run",
-                          side_effect=[completed(returncode=1, stderr="BadWindow\n"), completed()]) as run:
-            result = bridge._native_click_screen(10, 20, False, "left", 1, ("Control",))
-        self.assertEqual(result, {"error": "xdotool failed: BadWindow"})
-        self.assertEqual([c.args[0] for c in run.call_args_list], [
-            ["/usr/bin/xdotool", "mousemove", "--sync", "10", "20", "keydown", "ctrl", "click", "1",
-             "keyup", "ctrl"],
-            ["/usr/bin/xdotool", "keyup", "ctrl"],
-        ])
+        for failure, error in ((completed(returncode=1, stderr="BadWindow\n"), "xdotool failed: BadWindow"),
+                               (subprocess.TimeoutExpired("xdotool", 10), "xdotool failed: ")):
+            with self.subTest(error=error), platform, env, \
+                 patch.object(bridge.shutil, "which", return_value="/usr/bin/xdotool"), \
+                 patch.object(bridge.subprocess, "run", side_effect=[failure, completed()]) as run:
+                result = bridge._native_click_screen(10, 20, False, "left", 1, ("Control",))
+            self.assertEqual(set(result), {"error"})
+            self.assertTrue(result["error"].startswith(error), result)
+            self.assertEqual([c.args[0] for c in run.call_args_list], [
+                ["/usr/bin/xdotool", "mousemove", "--sync", "10", "20", "keydown", "ctrl", "click", "1",
+                 "keyup", "ctrl"],
+                ["/usr/bin/xdotool", "keyup", "ctrl"],
+            ])
 
     def test_linux_without_xdotool_explains_install(self):
         platform, env = self.linux()
@@ -573,8 +579,9 @@ class TrustedClickTests(unittest.TestCase):
 
     def test_click_options_are_validated_and_passed_to_the_backend(self):
         point = {"screenX": 110, "screenY": 220, "viewportX": 10, "viewportY": 20}
-        with patch.object(bridge, "send_to_extension", new_callable=AsyncMock, return_value=point) as send, \
-             patch.object(bridge, "_native_click_screen", return_value={"ok": True, "backend": "quartz"}) as click:
+        with patch.object(bridge.sys, "platform", "linux"), \
+             patch.object(bridge, "send_to_extension", new_callable=AsyncMock, return_value=point) as send, \
+             patch.object(bridge, "_native_click_screen", return_value={"ok": True, "backend": "xdotool"}) as click:
             result = asyncio.run(bridge.trusted_click({"selector": "#go", "tabId": 7, "button": "right",
                                                        "clickCount": 2, "modifiers": ["Meta", "Shift", "Meta"]}))
         self.assertTrue(result["ok"])
@@ -587,6 +594,8 @@ class TrustedClickTests(unittest.TestCase):
             ({"button": "back"}, "trustedClick button must be left, right or middle, not 'back'"),
             ({"clickCount": 3}, "trustedClick clickCount must be 1 or 2, not 3"),
             ({"clickCount": True}, "trustedClick clickCount must be 1 or 2, not True"),
+            # 2.0 == 2, but the backends count presses with range() and would fail mid-click.
+            ({"clickCount": 2.0}, "trustedClick clickCount must be 1 or 2, not 2.0"),
             ({"modifiers": ["Control", "Cmd"]},
              "trustedClick modifiers must be a list of Shift, Control, Alt and Meta, not ['Control', 'Cmd']"),
             ({"modifiers": "Shift"},
@@ -603,12 +612,39 @@ class TrustedClickTests(unittest.TestCase):
     def test_backend_refusal_shows_the_users_tab_again(self):
         point = {"screenX": 110, "screenY": 220, "viewportX": 10, "viewportY": 20, "tabId": 7, "previousTabId": 3}
         refused = {"error": "trustedClick cannot middle-click with cliclick; ..."}
-        with patch.object(bridge, "send_to_extension", new_callable=AsyncMock, return_value=point) as send, \
+        with patch.object(bridge.sys, "platform", "linux"), \
+             patch.object(bridge, "send_to_extension", new_callable=AsyncMock, return_value=point) as send, \
              patch.object(bridge.asyncio, "sleep", new_callable=AsyncMock), \
              patch.object(bridge, "_native_click_screen", return_value=refused):
             result = asyncio.run(bridge.trusted_click({"selector": "#go", "tabId": 7, "button": "middle"}))
         self.assertEqual(result, refused)
         self.assertEqual(send.call_args_list[-1].args, ("restoreActiveTab", {"tabId": 3, "from": 7}))
+
+    def test_cliclick_refuses_before_the_tab_is_shown(self):
+        for target in ({"selector": "#go", "tabId": 7}, {"coords": {"x": 1, "y": 2}, "coordinateSpace": "screen"}):
+            with self.subTest(target=target), patch.object(bridge.sys, "platform", "darwin"), \
+                 patch.dict("sys.modules", {"Quartz": None}), \
+                 patch.object(bridge.shutil, "which", return_value="/opt/homebrew/bin/cliclick"), \
+                 patch.object(bridge, "send_to_extension", new_callable=AsyncMock) as send, \
+                 patch.object(bridge, "_focus_browser_window") as focus, \
+                 patch.object(bridge, "_native_click_screen") as click:
+                result = asyncio.run(bridge.trusted_click({**target, "focus": True, "button": "middle"}))
+            self.assertIn("cannot middle-click with cliclick", result["error"])
+            send.assert_not_called()
+            focus.assert_not_called()
+            click.assert_not_called()
+
+    def test_only_backends_that_press_keys_excuse_them_in_the_page(self):
+        point = {"screenX": 110, "screenY": 220, "viewportX": 10, "viewportY": 20}
+        for quartz, sent in ((SimpleNamespace(), None), (None, ["Alt"])):
+            with self.subTest(quartz=quartz), patch.object(bridge.sys, "platform", "darwin"), \
+                 patch.dict("sys.modules", {"Quartz": quartz}), \
+                 patch.object(bridge.shutil, "which", return_value="/opt/homebrew/bin/cliclick"), \
+                 patch.object(bridge, "send_to_extension", new_callable=AsyncMock, return_value=point) as send, \
+                 patch.object(bridge, "_native_click_screen", return_value={"ok": True}):
+                asyncio.run(bridge.trusted_click({"selector": "#go", "modifiers": ["Alt"]}))
+            # Quartz sets event flags and presses no keys, so the user's Alt still counts.
+            self.assertEqual(send.call_args_list[0].args[1].get("modifiers"), sent)
 
     def test_linux_screen_click_reports_xdotool_backend(self):
         with patch.object(bridge.sys, "platform", "linux"), \

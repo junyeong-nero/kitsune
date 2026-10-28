@@ -609,7 +609,8 @@ def _trusted_click_options(params):
     modifiers = params.get("modifiers") or []
     if button not in TRUSTED_CLICK_BUTTONS:
         return {"error": f"trustedClick button must be left, right or middle, not {button!r}"}
-    if isinstance(click_count, bool) or click_count not in (1, 2):
+    # 2.0 == 2, but the backends count presses with range(); True == 1 too.
+    if type(click_count) is not int or click_count not in (1, 2):
         return {"error": f"trustedClick clickCount must be 1 or 2, not {click_count!r}"}
     if not isinstance(modifiers, list) or any(m not in TRUSTED_CLICK_MODIFIERS for m in modifiers):
         return {"error": f"trustedClick modifiers must be a list of Shift, Control, Alt and Meta, not {modifiers!r}"}
@@ -626,6 +627,24 @@ _QUARTZ_MODIFIER_FLAGS = {"Shift": "kCGEventFlagMaskShift", "Control": "kCGEvent
                           "Alt": "kCGEventFlagMaskAlternate", "Meta": "kCGEventFlagMaskCommand"}
 _CLICLICK_KEYS = {"Shift": "shift", "Control": "ctrl", "Alt": "alt", "Meta": "cmd"}
 _CLICLICK_COMMANDS = {("left", 1): "c", ("left", 2): "dc", ("right", 1): "rc"}
+
+
+def _mac_click_backend():
+    """The backend _mac_click_screen uses: "quartz", "cliclick", or None when neither is there."""
+    try:
+        import Quartz  # noqa: F401
+    except ImportError:
+        return "cliclick" if shutil.which("cliclick") else None
+    return "quartz"
+
+
+def _cliclick_refusal(button, click_count):
+    """The {error} for a click cliclick cannot send, else None."""
+    if (button, click_count) in _CLICLICK_COMMANDS:
+        return None
+    what = "middle-click" if button == "middle" else "double-click with the right button"
+    return {"error": f"trustedClick cannot {what} with cliclick; install pyobjc Quartz "
+                     "(uvx --from 'kitsune-browser-mcp[macos]' kitsune), which can"}
 
 
 def _mac_click_screen(x, y, restore_pointer=True, button="left", click_count=1, modifiers=()):
@@ -681,11 +700,10 @@ def _mac_click_screen(x, y, restore_pointer=True, button="left", click_count=1, 
 
     cliclick = shutil.which("cliclick")
     if cliclick:
-        command = _CLICLICK_COMMANDS.get((button, click_count))
-        if command is None:
-            what = "middle-click" if button == "middle" else "double-click with the right button"
-            return {"error": f"trustedClick cannot {what} with cliclick; install pyobjc Quartz "
-                              "(uvx --from 'kitsune-browser-mcp[macos]' kitsune), which can"}
+        refusal = _cliclick_refusal(button, click_count)
+        if refusal:
+            return refusal
+        command = _CLICLICK_COMMANDS[(button, click_count)]
         keys = ",".join(_CLICLICK_KEYS[m] for m in modifiers)
         # "p" prints the pointer position as "x,y" before the click in the same run.
         args = [cliclick] + (["p"] if restore_pointer else []) + ([f"kd:{keys}"] if keys else [])
@@ -837,6 +855,11 @@ async def trusted_click(params):
     process = params.get("process") or ""
     restore_pointer = params.get("restorePointer", True) is not False
 
+    mac_backend = _mac_click_backend() if sys.platform == "darwin" else None
+    # Refuse before focusing the browser or showing the tab for a click that cannot be sent.
+    if mac_backend == "cliclick" and (refusal := _cliclick_refusal(button, click_count)):
+        return refusal
+
     if coordinate_space == "screen":
         focused = _focus_browser_window(title, process) if focus else False
         clicked = _native_click_screen(x, y, restore_pointer, button, click_count, modifiers)
@@ -859,8 +882,9 @@ async def trusted_click(params):
         point_params["first"] = True
     if params.get("tabId") is not None:
         point_params["tabId"] = params.get("tabId")
-    if modifiers:
+    if modifiers and mac_backend != "quartz":
         # Their key presses (cliclick, xdotool, Windows) are the agent's, not the user's typing.
+        # Quartz sets event flags and presses no keys, so the user's own keys still count.
         point_params["modifiers"] = list(modifiers)
     # The extension shows a target tab that is not shown for the click (previousTabId) and
     # refuses with user_active when the user is using either tab.

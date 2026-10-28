@@ -1028,7 +1028,8 @@ How it tells the user from the agent: Kitsune's own DOM events are synthetic, so
 listeners are on the window in the capture phase, so a page that stops propagation does
 not hide input from them. The OS click of `browser_trusted_click` is trusted, so
 pointer events within 2 s of its `screenPoint` are not counted, nor are `keydown` events
-of the modifiers it holds (cliclick, xdotool and Windows press real keys for them). `mousemove`, scrolling
+of the modifiers it holds when cliclick, xdotool or Windows press real keys for them
+(Quartz sets event flags instead, so the user's keys still count). `mousemove`, scrolling
 by itself and `input` events are not counted either, which keeps autofill, the agent's
 own editing and a mouse resting over the page from counting as use. A navigation counts
 as the agent's when an agent command on the tab was running, or ended at most 2 s
@@ -2074,9 +2075,11 @@ before scrolling the element or invoking the OS; `first=True` opts into the firs
 `modifiers` (any of `Shift`, `Control`, `Alt`, `Meta`, held during the click) choose the
 click (request fields `button`, `clickCount`, `modifiers`). Any other value returns
 `{error}` before anything is clicked, and so does a variant the backend cannot send: it
-never falls back to a left click. The desktop may still give some combinations its own
-meaning, for example Control+click as a right click on macOS or Alt+click as a window
-drag in some Linux window managers.
+never falls back to a left click. cliclick's refusals come before the tab is shown or the
+browser focused. The desktop may still give some combinations its own meaning, for
+example Control+click as a right click on macOS, Alt+click as a window drag in some
+Linux window managers, or the Start menu opening when Windows sees `Meta` (the Windows
+key) released.
 
 | Platform | Button | Double click | Modifiers |
 |---|---|---|---|
