@@ -300,20 +300,27 @@ def browser_find(text: str | None = None, regex: str | None = None, filename: st
             # A /url line is shown only as the URL of a matched link (or itself matched).
             if lines[j] and (not _URL_LINE.match(lines[j]) or j in hit or (j - 1) in hit):
                 block["shown"].add(j)
-    out, used, listed = [], 0, set()
+    # Blocks in document order, line by line, until the next line would pass FIND_LIMIT (always at least one).
+    out, used, listed, full = [], 0, set(), False
     for path, block in sorted(blocks.items(), key=lambda item: item[1]["first"]):
-        shown, rows = sorted(block["shown"]), []
+        shown = sorted(block["shown"])
+        entry = {"path": list(path), "lines": []}
+        cost = len(json.dumps(entry, ensure_ascii=False))
         for n, j in enumerate(shown):
-            if n and j != shown[n - 1] + 1:
-                rows.append("  …")
-            rows.append(("> " if j in hit else "  ") + lines[j])
-        entry = {"path": list(path), "lines": rows}
-        size = len(json.dumps(entry, ensure_ascii=False))
-        if out and used + size > FIND_LIMIT:
+            rows = (["  …"] if n and j != shown[n - 1] + 1 else []) + [("> " if j in hit else "  ") + lines[j]]
+            row_cost = sum(len(json.dumps(row, ensure_ascii=False)) + 2 for row in rows)
+            if used + cost + row_cost > FIND_LIMIT and (out or entry["lines"]):
+                full = True
+                break
+            entry["lines"] += rows
+            cost += row_cost
+            if j in hit:
+                listed.add(j)
+        if entry["lines"]:
+            out.append(entry)
+            used += cost
+        if full:
             break
-        out.append(entry)
-        used += size
-        listed.update(j for j in shown if j in hit)
     response = {"count": len(hits), "blocks": out}
     if len(listed) < len(hits):
         response.update(truncated=True, shown=len(listed),
