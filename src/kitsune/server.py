@@ -211,7 +211,7 @@ mcp._mcp_server.instructions = (
        "tabs without interrupting the user. Until you open or select a tab, reads act on the tab "
        "the user is viewing, and writes and navigations that pass no tab_id fail with "
        "no_current_tab. A restarted MCP server has no current tab: open or select one again. A tab "
-       "that a batch or workflow newTab opens, or that a click on your current tab opens, becomes "
+       "that a batch or workflow newTab opens, or that an action on your current tab opens, becomes "
        "your current tab; the result names it in current_tab."
        if permits_tool(MODE, "browser_tabs") else
        "Until browser_tab_list new_tab opens a background tab of your own, reads act on the tab the "

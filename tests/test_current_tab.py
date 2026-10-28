@@ -367,6 +367,14 @@ class NewTabsBridgeTests(ResumeTests):
         self.assertEqual(payload["status"], "ok", payload)
         self.assertEqual(payload["newTabs"], [50, 52])
 
+    def test_a_tab_closed_by_its_substituted_id_is_not_reported(self):
+        payload = self.batch(
+            {"action": "sequence", "do": [{"action": "newTab"}, {"action": "closeTab", "tabId": "${$0.tabId}"}]},
+            {"action": "newTab"}, {"action": "closeTab", "tabId": "51"})
+        self.assertEqual(payload["status"], "ok", payload)
+        self.assertEqual([params.get("tabId") for action, params in self.sent if action == "closeTab"], [50, 51])
+        self.assertNotIn("newTabs", payload)
+
     def test_failed_new_tabs_and_other_containers_report_none(self):
         self.replies["newTab"] = [{"error": "Invalid URL"}]
         payload = self.batch({"action": "newTab", "url": "x"}, {"action": "scroll", "tabId": 3})

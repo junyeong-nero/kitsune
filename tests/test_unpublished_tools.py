@@ -76,7 +76,8 @@ class UnpublishedToolTests(unittest.TestCase):
             "browser_bookmarks_search", "browser_clear_browsing_data", "browser_clipboard", "browser_cookies",
             "browser_delete_session", "browser_history_search", "browser_history_visits",
             "browser_list_sessions", "browser_load_session", "browser_save_session", "browser_storage"])
-        self.assertEqual({**result["mcp_tools"], "client": None}, {"caps": ["all"], "unpublished": 11, "client": None})
+        self.assertRegex(result["mcp_tools"].pop("client"), r"^\d+-[0-9a-f]{6}$")
+        self.assertEqual(result["mcp_tools"], {"caps": ["all"], "unpublished": 11})
 
 
 if __name__ == "__main__":

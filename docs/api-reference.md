@@ -1042,7 +1042,7 @@ count as user input on the tab it hits for 3 s.
 #### No current tab
 
 The MCP server's current tab is the one `browser_tabs` new or select (or
-`browser_tab_list` new_tab) last made current. It lives in the MCP server process, so a
+`browser_tab_list` new_tab) last made current, or a tab it adopted (below). It lives in the MCP server process, so a
 restarted or reconnected server starts without one (#303). Until it has one, a write or
 navigation that names no tab is refused before anything is sent, instead of going to the
 tab the user is viewing:
@@ -1087,7 +1087,7 @@ Tabs the agent gets in other ways become current too, and the result then adds
   action ran on the current tab. An action on another tab the agent names leaves the
   current tab where it is.
 
-Tabs that commands inside a batch open by clicking, and tabs opened by
+Tabs that commands inside a batch or workflow open by clicking, and tabs opened by
 `browser_parallel`, `browser_broadcast`, `browser_retry` or `browser_resume`, do not
 change the current tab.
 

@@ -3305,8 +3305,11 @@ def _note_container_tab(cmd, result):
     action = _effective_action(cmd)
     if action == "newTab" and isinstance(result.get("tabId"), int):
         new_tabs.append(result["tabId"])
-    elif action == "closeTab" and result.get("ok") and cmd.get("tabId") in new_tabs:
-        new_tabs.remove(cmd["tabId"])
+    elif action == "closeTab" and result.get("ok"):
+        # A sequence's ${$N.tabId} reaches the step as digits.
+        closed = _explicit_tab_id(cmd.get("tabId"))
+        if closed in new_tabs:
+            new_tabs.remove(closed)
 
 
 async def _run_batch(commands, stop_on_warning, call, results):
