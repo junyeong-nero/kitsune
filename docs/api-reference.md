@@ -886,15 +886,19 @@ called `window.open` and got `null` returns a `popup_blocked` warning with
 ```
 
 - `state.url` is the URL the script passed, resolved against the page's base URL like a
-  link's `href` (a URL that does not parse stays as given), and cut at 2,048
-  characters. It is left out when the script passed no URL or a non-string, such as a
-  `URL` object or an empty string for a window it navigates later.
+  link's `href` (a URL that does not parse stays as given), cut at 2,048 characters,
+  and redacted like snapshot URLs (see [History URL redaction](#history-url-redaction)),
+  so a `nonce` or `access_token` value reads `[redacted]`. It is left out when the
+  script passed no URL or a non-string, such as a `URL` object or an empty string for a
+  window it navigates later.
 - The dispatch is the click's pointer, mouse and click events. A `window.open` the page
   calls later, after a `fetch` or a timer, is not counted.
 - Any refused `window.open` during the dispatch counts, wherever its listener is: an ad
   script that listens for clicks on the whole page and opens a popunder also triggers
-  the warning. The hint asks the agent to involve the user only when `state.url` is the
-  popup the click should open, and to ignore the warning otherwise.
+  the warning. When several calls were refused, `state.url` is the first one's, so an ad
+  listener that runs before the button's own `click` handler names the ad's URL. The hint
+  asks the agent to involve the user only when `state.url` is the popup the click should
+  open, and to ignore the warning otherwise.
 - A call that returned a window, or whose features include `noopener` or `noreferrer`
   (which make `window.open` return `null` even when the popup opened), gives no
   warning. Neither does a click that reports a tab in `opened_tabs`.
@@ -911,12 +915,13 @@ it. It calls the original `window.open` with the same `this` and arguments, and 
 its result, or throws its exception, unchanged. It is not an `exportFunction` export,
 which would throw "can't access dead object" in open tabs once the extension updates or
 reloads. A page whose Content Security Policy blocks inline scripts therefore gets no
-wrapper and no warning. The record is page data, so a page can alter it; Kitsune reads
-at most 20 calls and uses them only for this warning. Not covered: `browser_press_key`,
-`browser_double_click`, `browser_click_and_wait_navigation` (it builds its own result,
-so an OAuth button waits for the navigation timeout and reports `navigation.timedOut`
-without this warning), and clicks on an element inside a same-origin frame, whose
-`window.open` is the frame's own and is not wrapped.
+wrapper and no warning. The record is page data, so a page can alter it; it keeps the
+URL of a refused call only, and Kitsune reads at most 20 calls and uses them only for
+this warning. Not covered: `browser_press_key`, `browser_double_click`,
+`browser_click_and_wait_navigation` (it builds its own result, so an OAuth button waits
+for the navigation timeout and reports `navigation.timedOut` without this warning), and
+clicks on an element inside a same-origin frame, whose `window.open` is the frame's own
+and is not wrapped.
 
 ### Opened popups
 

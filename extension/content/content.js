@@ -128,9 +128,11 @@
       const opened = nativeOpen.apply(this, args);
       try {
         // With noopener (or noreferrer), window.open returns null for a popup that opened.
+        // Only a refused call keeps its URL, so the page holds no other window.open URLs.
         const noopener = typeof args[2] === 'string' && /\bno(opener|referrer)\b/i.test(args[2]);
-        calls.push({ seq: ++seq, blocked: opened === null && !noopener,
-          url: typeof args[0] === 'string' ? args[0].slice(0, urlLimit) : null });
+        const blocked = opened === null && !noopener;
+        calls.push({ seq: ++seq, blocked,
+          url: blocked && typeof args[0] === 'string' ? args[0].slice(0, urlLimit) : null });
         if (calls.length > callLimit) calls.shift();
       } catch {}
       return opened;

@@ -83,6 +83,7 @@ function harness(onClick = () => {}) {
       sendMessage: async (id, msg) => {
         if (msg.action === 'ping') return { ok: true, version: Infinity };
         if (msg.action === 'click') return (await onClick(h, msg)) || { ok: true };
+        if (msg.action === 'openedPopup') return h.openedPopup ? { opened_popup: h.openedPopup } : {};
         return { ok: true };
       },
       executeScript: async () => {},
@@ -99,6 +100,7 @@ function harness(onClick = () => {}) {
     clearInterval: id => timers.delete(id),
   });
   vm.runInContext(fs.readFileSync('extension/background/background.js', 'utf8'), context);
+  vm.runInContext(fs.readFileSync('extension/background/history.js', 'utf8'), context);
   listenersAtStart.updated = onUpdated.listeners.size;
   listenersAtStart.removed = onRemoved.listeners.size;
   return h;
@@ -294,6 +296,11 @@ async function main() {
   assert.match(refusedResult.warning.hint, /browser_trusted_click/);
   assert.equal('scriptPopup' in refusedResult, false, 'the content-script field stays internal');
   refused.assertClean();
+  // The URL comes from a page script, so it is redacted like snapshot URLs.
+  const secret = harness(() => ({ ok: true,
+    scriptPopup: { url: 'https://accounts.example/auth?client_id=1&nonce=abc123&state=s1#access_token=ya29.a0Secret' } }));
+  assert.equal((await secret.send({ action: 'click', tabId: 1, selector: '#google' })).warning.state.url,
+    'https://accounts.example/auth?client_id=1&nonce=[redacted]&state=s1#access_token=[redacted]');
   const unnamed = harness(() => ({ ok: true, scriptPopup: {} }));
   assert.deepEqual((await unnamed.send({ action: 'click', tabId: 1, selector: '#google' })).warning.state,
     { reason: 'script_popup' });
@@ -304,6 +311,13 @@ async function main() {
   const covered = harness(() => ({ ok: true, warning: { code: 'hidden_or_covered' }, scriptPopup: { url: oauth } }));
   assert.deepEqual(await covered.send({ action: 'click', tabId: 1, selector: '#google' }),
     { ok: true, warning: { code: 'hidden_or_covered' } });
+  // A click can open an in-page popup (#329) and have its window.open refused: both are reported.
+  const both = harness(() => ({ ok: true, popupWatch: true, scriptPopup: { url: oauth } }));
+  both.openedPopup = { role: 'dialog', name: 'Sign in', rendered: true, items: [] };
+  const bothResult = await both.send({ action: 'click', tabId: 1, selector: '#google' });
+  assert.deepEqual(bothResult.opened_popup, both.openedPopup);
+  assert.deepEqual(bothResult.warning.state, { url: oauth, reason: 'script_popup' });
+  assert.equal('popupWatch' in bothResult || 'scriptPopup' in bothResult, false);
 
   console.log('Opened tab checks passed');
   finished = true;

@@ -678,9 +678,11 @@ async function takeOpenedPopup(tabId) {
 
 // A click during which a page script's window.open returned null (#304): the popup blocker
 // refused the popup, because a synthetic click has no user activation. Kitsune neither retries
-// it nor clicks again; an earlier warning stays.
+// it nor clicks again; an earlier warning stays. The URL comes from a page script, so it is
+// redacted like snapshot URLs.
 function scriptPopupBlocked(result, popup) {
-  const state = { ...(typeof popup.url === 'string' && popup.url ? { url: popup.url } : {}), reason: 'script_popup' };
+  const url = typeof popup.url === 'string' && popup.url ? redactHistoryUrl(popup.url) : null;
+  const state = { ...(url ? { url } : {}), reason: 'script_popup' };
   result.warning ??= { code: 'popup_blocked', state,
     hint: 'A page script tried to open a popup (window.open), which Firefox blocks without user activation, ' +
       'so none opened. If this click should open that popup (a sign-in at state.url, for example), ask the ' +

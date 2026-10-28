@@ -119,6 +119,10 @@ async function main() {
   assert.equal('scriptPopup' in (await h.click()), false);
   features = 'width=500,NoReferrer';
   assert.equal('scriptPopup' in (await h.click()), false);
+  // The page's record keeps the URL of a refused call only.
+  const record = JSON.parse(h.window.__kitsuneWindowOpenCalls());
+  assert.deepEqual(record.slice(-4).map(call => [call.blocked, call.url]),
+    [[true, url], [false, null], [false, null], [false, null]]);
 
   // A relative URL is resolved against the page's base URL; one that does not parse stays as given.
   const relative = load();
