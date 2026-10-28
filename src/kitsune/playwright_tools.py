@@ -249,6 +249,23 @@ def _search(text: str | None, regex: str | None):
     return lambda line: compiled.search(line) is not None
 
 
+# Inline browser_find results are compact (#323): matches under one path share a block, the matched lines
+# are marked with ">", /url lines are searched only for URL-like queries and shown only under a matched
+# link, and the result is cut at FIND_LIMIT characters between blocks. filename keeps every match.
+FIND_LIMIT = 8000
+_URL_LINE = re.compile(r"^\s*- /url: ")
+
+
+def _url_query(text: str | None, regex: str | None) -> bool:
+    """A query that looks for a URL (a path, http(s) or www.) also searches /url lines."""
+    if text is not None:
+        query = text.strip()
+    else:
+        wrapped = re.fullmatch(r"/(.*)/([a-z]*)", regex, re.S)
+        query = (wrapped[1] if wrapped else regex).lstrip("^")
+    return re.match(r"(/|https?:|www\.)", query, re.I) is not None
+
+
 @_core
 def browser_find(text: str | None = None, regex: str | None = None, filename: str | None = None) -> dict:
     matches = _search(text, regex)
@@ -260,20 +277,49 @@ def browser_find(text: str | None = None, regex: str | None = None, filename: st
         return result
     lines = (result.get("snapshot") or "").split("\n")
     indent = [len(line) - len(line.lstrip(" ")) for line in lines]
-    found = []
-    for i, line in enumerate(lines):
-        if not line or not matches(line):
-            continue
+    urls = _url_query(text, regex)
+
+    def path_of(i):
         path, depth = [], indent[i]
         for j in range(i - 1, -1, -1):
             if indent[j] < depth:
                 path.insert(0, lines[j].strip())
                 depth = indent[j]
-        found.append({"path": path, "lines": lines[max(0, i - 2):i + 3], "match": line.strip()})
+        return path
+
+    hits = [i for i, line in enumerate(lines) if line and (urls or not _URL_LINE.match(line)) and matches(line)]
     if filename:
+        found = [{"path": path_of(i), "lines": lines[max(0, i - 2):i + 3]} for i in hits]
         text_out = "\n\n".join("\n".join([" > ".join(m["path"]) or "(root)", *m["lines"]]) for m in found)
         return {**_saved(filename, text_out), "count": len(found)}
-    return {"count": len(found), "matches": found}
+    hit = set(hits)
+    blocks: dict[tuple, dict] = {}
+    for i in hits:
+        block = blocks.setdefault(tuple(path_of(i)), {"first": i, "shown": set()})
+        for j in range(max(0, i - 2), min(len(lines), i + 3)):
+            # A /url line is shown only as the URL of a matched link (or itself matched).
+            if lines[j] and (not _URL_LINE.match(lines[j]) or j in hit or (j - 1) in hit):
+                block["shown"].add(j)
+    out, used, listed = [], 0, set()
+    for path, block in sorted(blocks.items(), key=lambda item: item[1]["first"]):
+        shown, rows = sorted(block["shown"]), []
+        for n, j in enumerate(shown):
+            if n and j != shown[n - 1] + 1:
+                rows.append("  …")
+            rows.append(("> " if j in hit else "  ") + lines[j])
+        entry = {"path": list(path), "lines": rows}
+        size = len(json.dumps(entry, ensure_ascii=False))
+        if out and used + size > FIND_LIMIT:
+            break
+        out.append(entry)
+        used += size
+        listed.update(j for j in shown if j in hit)
+    response = {"count": len(hits), "blocks": out}
+    if len(listed) < len(hits):
+        response.update(truncated=True, shown=len(listed),
+                        hint=f"Showing {len(listed)} of {len(hits)} matches. Narrow text or regex, snapshot a block's "
+                             "path ref as target, or set filename to save every match.")
+    return response
 
 
 @_core

@@ -132,7 +132,8 @@ class RealBrowserBoundedSnapshotTests(harness.RealBrowserTestCase):
 
         # A card past the cut: find it, read its card by the heading's container, act on it.
         found = self.core("browser_find", text="DESK-55 desk")
-        heading = next(m["match"] for m in found["matches"] if m["match"].startswith("- heading"))
+        # Matched lines are marked with ">" in their block (#323).
+        heading = next(line for line in (r[2:].strip() for b in found["blocks"] for r in b["lines"] if r.startswith(">")) if line.startswith("- heading"))
         ref = re.search(r"\[ref=(e\d+)\]", heading)[1]
         card = self.core("browser_snapshot", target=f"{ref} >> ..")
         self.assertNotIn("truncated", card)
@@ -172,15 +173,21 @@ class RealBrowserBoundedSnapshotTests(harness.RealBrowserTestCase):
             self.assertIn(f'- /url: "/wiki/topic-{s}-{p}"', snapshot)
         self.assertIn('link "topic {}.{}"'.format(*shown[-1]), snapshot)
 
-        # A paragraph past the cut: browser_find returns it with its link and URL.
+        # A paragraph past the cut: browser_find returns it with its link, in one block (#323); a link's URL is
+        # shown when the link itself matches.
         found = self.core("browser_find", text="Section 20 paragraph")
         self.assertEqual(found["count"], 5)
-        for p, match in enumerate(found["matches"]):
-            self.assertTrue(match["match"].startswith(f'- text "Section 20 paragraph {p}: the city topic 20.{p} grew'))
-            context = "\n".join(match["lines"])
+        self.assertEqual(len(found["blocks"]), 1)
+        context = "\n".join(found["blocks"][0]["lines"])
+        matched = [r[2:].strip() for r in found["blocks"][0]["lines"] if r.startswith(">")]
+        for p in range(5):
+            self.assertTrue(matched[p].startswith(f'- text "Section 20 paragraph {p}: the city topic 20.{p} grew'))
             self.assertIn(f'link "topic 20.{p}"', context)
-            self.assertIn(f'- /url: "/wiki/topic-20-{p}"', context)
-        heading = self.core("browser_find", text="History part 20")["matches"][0]["match"]
+        self.assertNotIn("/url:", context)
+        linked = self.core("browser_find", text="topic 20.1")
+        self.assertIn('- /url: "/wiki/topic-20-1"', "\n".join(linked["blocks"][0]["lines"]))
+        found = self.core("browser_find", text="History part 20")
+        heading = next(iter(r[2:].strip() for b in found["blocks"] for r in b["lines"] if r.startswith(">")))
         self.assertRegex(heading, r'^- heading "History part 20" \[ref=e\d+\] \[level=2\]$')
 
 
