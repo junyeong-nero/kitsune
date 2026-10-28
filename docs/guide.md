@@ -293,8 +293,8 @@ A tool left out by `KITSUNE_CAPS` is absent from `tools/list`, and clients usual
 nothing about it. Calling it anyway returns an MCP error with
 `code: "tool_not_published"` whose `hint` names the setting that publishes it, for
 example `KITSUNE_CAPS=browse,core` for `browser_scroll`. `browser_status` (`admin`)
-reports this server's `mcp_tools`: the enabled `caps`, and how many known tools are
-`unpublished`.
+reports this server's `mcp_tools`: the enabled `caps`, how many known tools are
+`unpublished`, and its audit `client` and tab `owner` ids.
 
 The bridge enforces the groups too. The MCP server sends its enabled groups with every
 request, and the bridge refuses a route or a container step (of `browser_batch`,
@@ -378,7 +378,13 @@ Kitsune's compact JSON results, not Playwright's Markdown. Where the two differ:
   act on the current tab too. Until there is one, reads act on the active tab, and writes
   and navigations that name no tab return `no_current_tab` without sending anything
   ([No current tab](api-reference.md#no-current-tab)). An MCP server that restarts starts
-  without a current tab. A tab a batch or workflow `newTab` opens, or an action on the
+  without a current tab; its `no_current_tab` then lists the open tabs its MCP client
+  opened before, the most recent first, in `state.ownTabs`, and the hint names that tab,
+  so the agent can pass it as `tab_id`. The server does not pick one itself:
+  the tab may belong to an earlier conversation. The bridge knows a tab's MCP client
+  until the bridge, the browser or the extension restarts
+  ([Tab owners](api-reference.md#tab-owners)). A tab a batch or
+  workflow `newTab` opens, or an action on the
   current tab opens (a click on a `target=_blank` link, for example), becomes current,
   and the result names it in `current_tab`.
   `browser_navigate` and `browser_navigate_back` also accept a `tab_id` that Playwright
@@ -511,6 +517,7 @@ kitsune-benchmark; character-size guards in this repo are not token measurements
 | `KITSUNE_NO_BRIDGE_RESTART` | Unset | Set to `1` in the MCP server environment to skip automatic replacement of an outdated bridge |
 | `KITSUNE_BRIDGE_IDLE_TIMEOUT` | `0` (never) | Seconds without client activity before the bridge exits; see [Idle shutdown](#idle-shutdown-opt-in) |
 | `KITSUNE_OUTPUT_DIR` | Unset | Directory, in the MCP server environment, for relative `filename` arguments of the `core` tools; unset, they resolve against the client's first root, else the server's working directory (see [Core tools](#core-tools)) |
+| `KITSUNE_OWNER_ID` | The MCP client's process | Tab owner id of the MCP client, in the MCP server environment: the bridge records the tabs it opens as this client's and offers them after a server restart. Up to 64 letters, digits, `.`, `_`, `:` or `-`. Set it when the server runs through a launcher other than `uv` or `uvx`, such as a shell script or a Python wrapper. Give each MCP client its own value: clients with the same value share their tabs. See [Tab owners](api-reference.md#tab-owners) |
 | `KITSUNE_PROTECT_USER_TABS` | Unset | Set to `1` in an MCP server environment to refuse that client's navigate, back and forward on tabs the agent did not open; see [Protecting your tabs](#protecting-your-tabs) |
 | `KITSUNE_ASK_BEFORE_ACT` | Unset | Set to `1` in the MCP server environment to start the bridge with [ask-before-act](#ask-before-act) locked on; the lock then persists in `ask-before-act-locked` under `KITSUNE_HOME` |
 | `KITSUNE_HISTORY_ALLOW_DOMAINS` | Unset (every domain) | Bridge: comma-separated domains (with subdomains) the `history` tools may return; see [History and bookmarks](api-reference.md#history-and-bookmarks) |

@@ -7,6 +7,11 @@ PROTECT_USER_TABS_HEADER = "X-Kitsune-Protect-User-Tabs"
 GATEWAY_TOOL_HEADER = "X-Kitsune-Gateway-Tool"
 # The id of the client that sent a request (BridgeClient.client_id, #303): audit entries record it.
 CLIENT_HEADER = "X-Kitsune-Client"
+# The id of the MCP client a request comes from (BridgeClient.owner_id, #325): unlike CLIENT_HEADER it
+# survives an MCP server restart, so the bridge records the tabs it opens as that client's.
+OWNER_HEADER = "X-Kitsune-Owner"
+# The characters and length the bridge accepts in CLIENT_HEADER and OWNER_HEADER.
+CLIENT_ID_PATTERN = r"[A-Za-z0-9._:-]{1,64}"
 
 
 def task_mode(value: str | None) -> str:

@@ -48,8 +48,9 @@ settings that publish it; restart the MCP client after changing them:
 ```
 
 `browser_status` adds `mcp_tools` to the bridge status: this MCP server's enabled
-`caps`, the count of known tools it leaves `unpublished` and its audit `client` id, for
-example `{"caps": ["core"], "unpublished": 79, "client": "48213-9f2c1a"}`. With the [tool gateway](#tool-gateway) it also
+`caps`, the count of known tools it leaves `unpublished`, its audit `client` id and
+its tab `owner` id ([Tab owners](#tab-owners)), for example
+`{"caps": ["core"], "unpublished": 79, "client": "48213-9f2c1a", "owner": "claude-48190"}`. With the [tool gateway](#tool-gateway) it also
 has the `publish` groups and how many enabled tools are `unlisted` when a session
 starts. The bridge is shared by every MCP server, so `GET /api/status` does not have it.
 MCP tool names and parameters are separate from HTTP endpoint names and JSON
@@ -454,7 +455,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `user_tab` | `browser_tabs` close on a tab the agent did not open, or `browser_close_window` on a window with one; it stays open. With [protected user tabs](#protected-user-tabs), also navigate, back or forward on such a tab; it stays where it is. A direct call's `state.confirmToken` closes or navigates it once the user approves (see [Agent-owned tabs](#agent-owned-tabs)) | false |
 | `user_active` | The user is using the tab (`state.reason`: `input`, `typing`, `navigating`); the write or navigation did not run (see [User activity](#user-activity)) | true |
 | `outcome_not_observed` | The action was dispatched, but the outcome given in `expect` did not happen in time (see [Action outcomes](#action-outcomes)) | false for writes |
-| `no_current_tab` | From the MCP server: a write or navigation names no tab and the agent has no current tab (`state.tool`, `state.action` for a container step); nothing was sent (see [No current tab](#no-current-tab)) | false |
+| `no_current_tab` | From the MCP server: a write or navigation names no tab and the agent has no current tab (`state.tool`, `state.action` for a container step; `state.ownTabs`: the open tabs this MCP client opened, when there are any); nothing was sent (see [No current tab](#no-current-tab)) | false |
 | `tab_required` | A `parallel` step that acts on a tab has no `tabId` (`state.sequence`, `state.index`); nothing was dispatched (see [Container progress](#container-progress)) | true |
 | `tab_owned` | Two `parallel` sequences write the same tab (`state.tabId`, `state.owner`); nothing was dispatched | true |
 | `invalid_tab_id` | A batch, workflow or parallel step names a `tabId` that is not a tab id (`0`, `""`, an unresolved `${$N.tabId}`); it was not sent to the active tab instead | true |
@@ -1087,6 +1088,25 @@ the bridge and cannot be inspected first, so even a workflow that only reads nee
 Reads (snapshots, screenshots, page text, tab lists, console and network reads, waits)
 still act on the active tab, and `browser_tabs` close keeps its own rule (above).
 
+When this MCP client has open tabs of its own ([Tab owners](#tab-owners)), for example
+the tab it worked in before its MCP server restarted, the refusal adds
+`state.ownTabs`: up to 5 `{tabId, url, title}`, the most recently opened first, and the
+hint names the first one (#325):
+
+```json
+{ "error": "browser_navigate writes a tab but names none, and there is no current tab, so it was not sent to the tab the user is viewing",
+  "code": "no_current_tab", "retryable": false,
+  "hint": "Nothing was dispatched. ... Tab 812 is the tab this MCP client opened most recently (state.ownTabs), maybe in an earlier conversation: to keep working in it, pass tab_id=812.",
+  "state": { "tool": "browser_navigate",
+             "ownTabs": [{ "tabId": 812, "url": "https://example.com/report", "title": "Report" }] } }
+```
+
+None of them becomes current: the MCP client may have opened it for an earlier
+conversation, so the agent decides. The MCP server asks only a bridge that already runs,
+with a 3 s timeout: it does not start a bridge or wait for the extension for this list.
+When it cannot get the list (no bridge runs, the extension is unavailable, or a bridge of
+an older version answers), or there is no such tab, the refusal is the one above.
+
 The core `browser_navigate` and `browser_navigate_back` take an optional `tab_id`,
 accepted like `confirm_token` but not listed in their schemas, which are Playwright
 MCP's; omitted, it is the current tab. `browser_press_key` takes an unlisted `repeat`
@@ -1110,6 +1130,44 @@ change the current tab.
 Only the MCP server refuses these calls. HTTP requests to the bridge, the Python API
 (`kitsune.browser`, whose tabs are always named) and `kitsune.tools` called directly keep
 the active-tab default.
+
+#### Tab owners
+
+Every bridge request from an MCP server or a Python API `connect()` carries
+`X-Kitsune-Owner`, an id of the client it works for that survives an MCP server restart
+(#325). It is `KITSUNE_OWNER_ID` from the process environment when that is 1 to 64
+letters, digits, `.`, `_`, `:` or `-` (the characters `X-Kitsune-Client` allows; another
+value is ignored). Otherwise it is `<name>-<pid>` of the nearest process above the MCP
+server that is not `uv` or `uvx` (at most 4 levels, read with `ps`), such as
+`claude-48190`: an MCP client that reconnects starts a new server process but keeps
+running itself. Any other process is the MCP client, a Python one too, such as a client
+built on the MCP Python SDK. When `ps` cannot tell, and on Windows, it is
+`ppid-<parent pid>`. A server whose parent is pid 1 (started by launchd or systemd, or
+orphaned) or pid 0 gets `pid-<its own pid>`, which no other server shares, so it is offered
+no tabs after a restart. Set `KITSUNE_OWNER_ID` when the MCP client runs its server through
+another launcher, such as a shell script or a Python wrapper, or to keep the id across MCP
+client restarts. Give each MCP client its own value: clients with the same value share
+their tabs.
+`browser_status` shows it as `mcp_tools.owner`, and a Python `Browser` has it as
+`browser.client.owner_id`. It is not the audit `client` id (`X-Kitsune-Client`), which
+changes with every MCP server process.
+
+The bridge records the owner of each tab a request with this header opens: `newTab`
+(direct, batch and workflow steps, pool and session tabs) and the tabs in an action's
+`opened_tabs` (`link_fallback` included). A tab keeps its first owner. The bridge forgets a
+tab when `closeTab` closes it or a tab list no longer has it, and forgets every tab when
+the extension connects again (after a browser restart, which reuses tab ids, or an
+extension reload). The record lives in the bridge process only: after a bridge restart,
+the tabs opened before it have no owner. `owned` (above) is the extension's and says
+whether the agent, any client, opened a tab.
+
+In the tab list of Kitsune's `browser_tabs` list and `browser_tab_list` (`GET /api/tabs`),
+tabs whose owner is the requesting client's add `mine: true` when they are also `owned`,
+so a tab the extension gave back to the user is never `mine`. Neither is a tab pool tab
+(`browser_tab_pool`, `browser_pool_acquire`), which any client may acquire. Other
+clients' tabs do not, and the core `browser_tabs` list is unchanged. `POST /api/tabs` with
+`{"mine": true}` lists only those tabs, the most recently opened first; the MCP server
+uses it for [`state.ownTabs`](#no-current-tab).
 
 ### Ask-before-act
 
@@ -1489,7 +1547,8 @@ The bridge is shared by every client, so entries add `client`: the id the client
 process id and a random suffix (`"48213-9f2c1a"`), which matches it with that process's
 logs. `browser_status` shows the MCP server's own as `mcp_tools.client`, and a Python
 `Browser` has it as `browser.client.client_id`. Requests without
-the header, such as other HTTP callers, have no `client`.
+the header, such as other HTTP callers, have no `client`. Entries also add `owner`, the
+`X-Kitsune-Owner` id ([Tab owners](#tab-owners)), which a restarted MCP server keeps.
 
 Each command run inside `browser_batch`, `browser_parallel`, `browser_broadcast`,
 `browser_retry`, a workflow, or a batch `sequence`/`if`/`while`/`try` gets its own
@@ -1719,7 +1778,8 @@ Replaces `browser_new_tab`, `browser_close_tab`, and `browser_switch_tab`.
 new uses POST `/api/new-tab` (default URL `about:blank`), close uses
 `/api/close-tab`, and select uses `/api/switch-tab`. Close and select require
 `tab_id`. `force` disarms beforeunload for close; `raw` bypasses the image URL
-viewer for new tabs. List is never cached and marks agent-owned tabs `owned: true`;
+viewer for new tabs. List is never cached and marks agent-owned tabs `owned: true`, and
+the tabs this MCP client opened `mine: true` (see [Tab owners](#tab-owners));
 it drops each tab's `windowId` and `index` unless the tabs span more than one window
 or `window_fields=True`, and keeps every other field. With `include_active=True`, list
 also returns `active_page`: the active tab's `browser_snapshot(text=True)` (text lines,
@@ -2262,8 +2322,11 @@ All visible text on the page.
 ### GET /api/tabs
 All open browser tabs.
 ```json
-{ "tabs": [{ "id": 1, "url": "...", "title": "...", "active": true, "windowId": 1, "index": 0 }] }
+{ "tabs": [{ "id": 1, "url": "...", "title": "...", "active": true, "windowId": 1, "index": 0, "owned": true, "mine": true }] }
 ```
+`mine: true` marks the tabs the request's `X-Kitsune-Owner` opened. POST with
+`{ "mine": true }` returns only those, the most recently opened first (see
+[Tab owners](#tab-owners)).
 
 ### GET /api/dom
 Accessibility tree (depth=6). POST accepts `tabId`, `selector`, `ref` and

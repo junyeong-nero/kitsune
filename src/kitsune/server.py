@@ -210,7 +210,8 @@ mcp._mcp_server.instructions = (
        "tab without switching the user's view, so you can read, fill and screenshot background "
        "tabs without interrupting the user. Until you open or select a tab, reads act on the tab "
        "the user is viewing, and writes and navigations that pass no tab_id fail with "
-       "no_current_tab. A restarted MCP server has no current tab: open or select one again. A tab "
+       "no_current_tab. A restarted MCP server has no current tab: open or select one again; "
+       "no_current_tab lists the open tabs this MCP client opened before in state.ownTabs. A tab "
        "that a batch or workflow newTab opens, or that an action on your current tab opens, becomes "
        "your current tab; the result names it in current_tab."
        if permits_tool(MODE, "browser_tabs") else
@@ -336,7 +337,7 @@ def _gateway_headers() -> dict:
     return {GATEWAY_TOOL_HEADER: name} if name else {}
 
 
-# Every tool's bridge request carries this server's client id, caps, mode and user-tab protection.
+# Every tool's bridge request carries this server's client and owner ids, caps, mode and user-tab protection.
 _client = tools.client = BridgeClient(caps=enabled_groups(ENABLED_CAPS), mode=MODE,
                                       protect_user_tabs=PROTECT_USER_TABS, extra_headers=_gateway_headers)
 
@@ -346,7 +347,7 @@ def browser_status() -> dict:
     result = tools.browser_status()
     # This server's tool surface (#171).
     result["mcp_tools"] = {"caps": sorted(ENABLED_CAPS), "unpublished": len(UNPUBLISHED_TOOLS),
-                           "client": _client.client_id,
+                           "client": _client.client_id, "owner": _client.owner_id,
                            **({"publish": sorted(PUBLISHED_CAPS), "unlisted": len(_unlisted_tools())}
                               if GATEWAY else {}),
                            **({"mode": MODE} if MODE != "act" else {})}

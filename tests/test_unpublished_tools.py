@@ -34,7 +34,7 @@ print(json.dumps({"calls": {name: call(name) for name in sys.argv[1:]}, "mcp_too
 
 
 def unpublished(caps, *names) -> dict:
-    env = {**os.environ, "KITSUNE_CAPS": caps}
+    env = {**os.environ, "KITSUNE_CAPS": caps, "KITSUNE_OWNER_ID": "owner-171"}
     result = subprocess.run([sys.executable, "-c", UNPUBLISHED_SCRIPT, *names],
                             env=env, capture_output=True, text=True, check=True)
     return json.loads(result.stdout)
@@ -61,6 +61,7 @@ class UnpublishedToolTests(unittest.TestCase):
         self.assertFalse(published & set(result["unpublished"]))
         self.assertEqual(published | set(result["unpublished"]), everything)
         self.assertRegex(result["mcp_tools"].pop("client"), r"^\d+-[0-9a-f]{6}$")
+        self.assertEqual(result["mcp_tools"].pop("owner"), "owner-171")  # #325
         self.assertEqual(result["mcp_tools"], {"caps": ["core"], "unpublished": len(everything) - 25})
 
     def test_core_tool_outside_caps_names_core(self):
@@ -77,6 +78,7 @@ class UnpublishedToolTests(unittest.TestCase):
             "browser_delete_session", "browser_history_search", "browser_history_visits",
             "browser_list_sessions", "browser_load_session", "browser_save_session", "browser_storage"])
         self.assertRegex(result["mcp_tools"].pop("client"), r"^\d+-[0-9a-f]{6}$")
+        self.assertEqual(result["mcp_tools"].pop("owner"), "owner-171")  # #325
         self.assertEqual(result["mcp_tools"], {"caps": ["all"], "unpublished": 11})
 
 
