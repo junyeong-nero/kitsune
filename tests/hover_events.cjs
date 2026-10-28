@@ -138,7 +138,8 @@ const enters = log => log.filter(([, type]) => ENTER_TYPES.has(type)).map(([id, 
     const events = [];
     for (const type of HOVER_TYPES) elements.title1.addEventListener(type, event => events.push(event));
     const result = await send({ action: 'hover', selector: '#title1' });
-    assert.deepEqual(result, { ok: true, tag: 'span' });
+    // popupWatch asks the background to take a popup the hover opened; it removes the field (#329).
+    assert.deepEqual(result, { ok: true, tag: 'span', popupWatch: true });
     assert.equal(elements.menu1.hidden, false, 'the row saw pointerenter and revealed its button');
 
     // The order of a pointer arriving: each enter type right after its over type.

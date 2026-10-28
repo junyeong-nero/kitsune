@@ -608,7 +608,15 @@ async function runCommand(params, { withSnapshot, deltaSnapshot, textSnapshot, t
   if (blankLink) delete result.targetBlankLink;
   const newTabLink = result?.newTabLink;
   if (newTabLink) delete result.newTabLink;
+  // A click or hover the content script watched for a popup it opens (#329).
+  const popupWatch = result?.popupWatch;
+  if (popupWatch) delete result.popupWatch;
   if (textSnapshot && result && !result.error) result.tabId = params.tabId;
+  // Taken before the snapshot, which then lists the popup even when it is not rendered.
+  if (popupWatch && params.tabId != null) {
+    const popup = await takeOpenedPopup(params.tabId);
+    if (popup) result.opened_popup = popup;
+  }
   if (withSnapshot && result && !result.error && result.ok !== false) {
     try {
       const snapshot = await forwardToContent('getSnapshot', {
@@ -648,6 +656,18 @@ async function runCommand(params, { withSnapshot, deltaSnapshot, textSnapshot, t
     else if (newTabLink) noNewTab(result, newTabLink);
   }
   return result;
+}
+
+// The popup a click or hover opened, with public refs (#329). A page that navigated away has
+// none, so this skips ensureContentScript and any wait for a new document.
+async function takeOpenedPopup(tabId) {
+  try {
+    const response = await browser.tabs.sendMessage(tabId, { action: 'openedPopup' });
+    if (!response?.opened_popup) return null;
+    return (await compactContentRefs('openedPopup', response, tabId, {})).opened_popup;
+  } catch {
+    return null;
+  }
 }
 
 // A click meant to open its link in a new tab says so when none opened (#223).
@@ -1455,7 +1475,7 @@ function leadingShortRef(value) {
 }
 const REF_RESULT_ACTIONS = new Set([
   'getSnapshot', 'getAccessibilityTree', 'getFormFields', 'find', 'waitForElement',
-  'waitForText', 'getIframes', 'submitForm',
+  'waitForText', 'getIframes', 'submitForm', 'openedPopup',
 ]);
 let nextShortRef = null;
 let shortRefEnd = 0n;
@@ -1608,7 +1628,7 @@ function compactContentRefs(action, response, tabId, params) {
           .replace(/^( *- … (?:\d+ more similar items|\d+ lines \(\d+ links\) not shown); snapshot )(s\d+e\d+)( to list all)$/gm,
             (_, head, ref, tail) => head + convert(ref) + tail)];
       }
-      if (['ref', 'target_ref', 'currentRef'].includes(key) && typeof item === 'string' && /^s\d+e\d+$/.test(item)) {
+      if (['ref', 'target_ref', 'currentRef', 'opened_by'].includes(key) && typeof item === 'string' && /^s\d+e\d+$/.test(item)) {
         // An error echoes the caller's ref, including legacy refs, verbatim.
         if (response.code && value === response.state && key === 'ref') {
           const original = REF_PARAMS.map(k => leadingShortRef(params[k])?.ref)
@@ -2212,7 +2232,8 @@ async function clickAndWaitNavigation(tabId, selector, timeout, first) {
       };
       browser.tabs.onUpdated.addListener(listener);
     });
-    const click = await forwardToContent('click', { tabId: id, selector, first });
+    // Nothing reports a popup this click opens, so the content script does not keep watching.
+    const click = await forwardToContent('click', { tabId: id, selector, first, reportPopup: false });
     if (click.error) return { ...click, clicked: false };
     const nav = await navPromise;
     return { ok: true, clicked: true, navigation: nav };
