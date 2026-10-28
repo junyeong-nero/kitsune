@@ -121,6 +121,9 @@
   const removedRefs = new Set();
   let refCounter = 0;
   let lastActedElement = null;
+  // The element the last hover or click pointed at. A real pointer would still be inside its
+  // ancestors, so the next hover sends them no enter events (#327).
+  let lastPointedElement = null;
   // The field type, fill, form_fill, select_option or check last wrote, or focus last
   // focused; a submit without a target submits its form.
   let lastFilledField = null;
@@ -1371,7 +1374,7 @@
       el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
     }
 
-    lastActedElement = el;
+    lastActedElement = lastPointedElement = el;
     const rect = el.getBoundingClientRect();
     // Events carry the point in the viewport of the target's own (frame) document.
     const point = coords ? elementAtPoint(coords.x, coords.y) : null;
@@ -1771,6 +1774,18 @@
   }
 
   // ── Hover ──
+  // The ancestors a pointer enters on its way from previous to el, outermost first, el last. The
+  // chain crosses shadow roots to their hosts and ends at el's documentElement. Ancestors that
+  // also contain previous were entered already; with no connected previous, all of them are new.
+  function enteredElements(el, previous) {
+    const parent = node => node.parentElement || node.parentNode?.host || null;
+    const inside = new Set();
+    for (let node = previous?.isConnected ? previous : null; node; node = parent(node)) inside.add(node);
+    const entered = [];
+    for (let node = el; node && !inside.has(node); node = parent(node)) entered.unshift(node);
+    return entered;
+  }
+
   function hoverElement(selector, coords, first) {
     const el = resolveTarget(selector, coords, { first, pointer: true });
     if (!el) return notFound();
@@ -1783,9 +1798,17 @@
     const x = rect.x + rect.width / 2;
     const y = rect.y + rect.height / 2;
 
-    for (const type of ['mouseenter', 'mouseover', 'mousemove']) {
-      el.dispatchEvent(new MouseEvent(type, { bubbles: true, clientX: x, clientY: y }));
+    // Like a real pointer's events, over and move bubble out of shadow roots, while enter events
+    // do not bubble and go to each newly entered ancestor, outermost first (#327).
+    const entered = enteredElements(el, lastPointedElement);
+    lastPointedElement = el;
+    const point = { view: el.ownerDocument?.defaultView || window, clientX: x, clientY: y };
+    const passing = { ...point, bubbles: true, cancelable: true, composed: true };
+    for (const [over, enter] of [['pointerover', 'pointerenter'], ['mouseover', 'mouseenter']]) {
+      dispatchPointerOrMouse(el, over, passing);
+      for (const target of entered) dispatchPointerOrMouse(target, enter, point);
     }
+    for (const type of ['pointermove', 'mousemove']) dispatchPointerOrMouse(el, type, passing);
 
     return { ok: true, tag: el.tagName.toLowerCase(), ...(selector ? notRenderedWarning(el) : {}) };
   }

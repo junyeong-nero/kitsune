@@ -62,7 +62,7 @@ function load(elements, point) {
   assert.equal(result.ok, true, JSON.stringify(result));
   assert.deepEqual(item.scrolls, [{ behavior: 'instant', block: 'center', inline: 'center' }],
     'scrolled into view once, instantly, before dispatching');
-  assert.deepEqual(item.events, [['mouseenter', 120, 300], ['mouseover', 120, 300], ['mousemove', 120, 300]],
+  assert.deepEqual(item.events, [['mouseover', 120, 300], ['mouseenter', 120, 300], ['mousemove', 120, 300]],
     'the point is the centre of the rect measured after the scroll');
 
   // Coordinates name a point in the viewport, so a hover there does not scroll.
