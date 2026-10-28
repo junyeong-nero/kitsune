@@ -275,7 +275,7 @@
   // The user shares the browser with the agent, so agent writes back off from a page the user is
   // using. Only trusted input counts: Kitsune's own DOM events are synthetic (isTrusted false),
   // and the trusted OS click of browser_trusted_click follows its screenPoint, which opens a
-  // window for its pointer events. Typing counts while the field the user typed into keeps focus
+  // window for its pointer events and for key presses of the modifiers it holds. Typing counts while the field the user typed into keeps focus
   // in a focused document and is not empty. Values are never read out.
   const USER_INPUT_EVENTS = ['keydown', 'mousedown', 'pointerdown', 'touchstart', 'wheel', 'paste'];
   const USER_INPUT_WINDOW_MS = 3000;
@@ -283,11 +283,13 @@
   let lastUserInput = null;   // { at, type }
   let userTypedField = null;  // the editable element (as the document sees it) the user last typed into
   let agentTrustedClickUntil = 0;
+  let agentTrustedClickKeys = new Set();  // modifier key names ("Shift", "Meta") the trusted click holds
 
   function noteUserInput(event) {
     if (!event.isTrusted) return;
     const now = Date.now();
-    if (/^(mouse|pointer|touch)/.test(event.type) && now < agentTrustedClickUntil) return;
+    if (now < agentTrustedClickUntil && (/^(mouse|pointer|touch)/.test(event.type) ||
+        (event.type === 'keydown' && agentTrustedClickKeys.has(event.key)))) return;
     lastUserInput = { at: now, type: event.type };
     if ((event.type === 'keydown' || event.type === 'paste') && isTypingTarget(event.target)) {
       userTypedField = event.target;
@@ -347,7 +349,7 @@
       // Fixed operations the bridge and background used to send as code strings.
       'keepAlive':             () => ({ ok: true }),
       'neuterUnload':          () => neuterUnload(),
-      'screenPoint':           () => screenPoint(msg.selector, msg.x, msg.y, msg.click, msg.first),
+      'screenPoint':           () => screenPoint(msg.selector, msg.x, msg.y, msg.click, msg.first, msg.modifiers),
       'userActivity':          () => userActivity(),
       'captureMeasure':        () => captureMeasure(msg.selector),
       'captureScrollIntoView': () => captureScrollIntoView(msg.selector, msg.block),
@@ -2039,7 +2041,7 @@
     }
   }
 
-  function screenPoint(selector, x, y, click, first) {
+  function screenPoint(selector, x, y, click, first, modifiers) {
     // Viewport point (element centre or x/y) plus its desktop position for OS-level clicks.
     if (selector) {
       const el = click ? resolveTarget(selector, null, { first, pointer: true }) : resolveElement(selector);
@@ -2050,7 +2052,10 @@
       y = rect.top + rect.height / 2;
     }
     if (x == null || y == null) return { error: 'No target point' };
-    if (click) agentTrustedClickUntil = Date.now() + AGENT_TRUSTED_CLICK_MS;
+    if (click) {
+      agentTrustedClickUntil = Date.now() + AGENT_TRUSTED_CLICK_MS;
+      agentTrustedClickKeys = new Set(Array.isArray(modifiers) ? modifiers : []);
+    }
     const viewportLeft = Number.isFinite(window.mozInnerScreenX)
       ? window.mozInnerScreenX
       : window.screenX + Math.max(0, (window.outerWidth - window.innerWidth) / 2);

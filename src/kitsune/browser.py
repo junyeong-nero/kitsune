@@ -912,11 +912,14 @@ class Tab:
 
     def trusted_click(self, target: str | None = None, *, x: int = 0, y: int = 0,
                       coordinate_space: str = "viewport", focus: bool = False, first: bool = False,
-                      restore_pointer: bool = True, confirm: str | None = None) -> dict:
+                      restore_pointer: bool = True, button: str = "left", click_count: int = 1,
+                      modifiers: list[str] | None = None, confirm: str | None = None) -> dict:
         """Click with the real OS pointer, for pages that ignore synthetic clicks: target's center,
         else x, y in "viewport" or "screen" coordinates. It moves the user's cursor for the click,
         then back unless restore_pointer=False (for hover menus that close when the pointer leaves),
-        and may show the tab for the click; focus=True brings the browser forward first."""
+        and may show the tab for the click; focus=True brings the browser forward first. button is
+        "left", "right" or "middle", click_count=2 double-clicks, and modifiers ("Shift", "Control",
+        "Alt", "Meta") are held during the click."""
         if target:
             body = {"selector": target, "focus": focus}
         else:
@@ -925,6 +928,12 @@ class Tab:
             body["first"] = True
         if not restore_pointer:
             body["restorePointer"] = False
+        if button != "left":
+            body["button"] = button
+        if click_count != 1:
+            body["clickCount"] = click_count
+        if modifiers:
+            body["modifiers"] = list(modifiers)
         return self._request("/api/trusted-click", _with_confirm(body, confirm))
 
     # -- Waiting ---------------------------------------------------
