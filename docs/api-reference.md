@@ -2007,9 +2007,19 @@ delta, lists a link with its own `/url` line or, for a link without one, with th
 `/url` line it repeats; a bounded snapshot that cannot fit a URL shows `- /url: "…"`
 instead of leaving the line out. The acted-on target of a post-action snapshot always has
 its own `/url` line. Path URLs are redacted like absolute ones. The core `browser_find`
-searches the same lines: it matches a same-origin link by its path, not its absolute URL,
-and a repeated link's match context has no `/url` line of its own. Pass `browser_navigate`
-an absolute URL, resolving a path against the snapshot's `url`.
+searches the same lines, but matches `/url` lines only for a URL-like query: `text`, or a
+`regex` pattern, starting with `/`, `http(s):` or `www.`. It then matches a same-origin link
+by its path, not its absolute URL. Pass `browser_navigate` an absolute URL, resolving a path
+against the snapshot's `url`.
+
+The core `browser_find` returns `{"count": N, "blocks": [...]}` (#323). Each block holds the
+matches under one `path` (the ancestor lines): the union of a ±2-line window around each
+match, in document order, with `  …` between windows that do not touch and each matched line
+prefixed `> `. In a window, a `/url` line is shown only as the URL of a matched link (or
+when it matches itself). Inline results are cut line by line at 8,000 characters
+(`FIND_LIMIT`): they then carry `truncated: true`, `shown` (matches listed) and a `hint` to
+narrow the query, scope a snapshot, or set `filename`. `count` is always the total. With
+`filename` every match is saved with its own window and path, as before.
 
 Without an acted-on target, a cut snapshot of a page with a `main` landmark defers each
 `navigation`, `banner` or `contentinfo` landmark outside `main` whose lines exceed a small
@@ -2082,7 +2092,8 @@ element below the snapshot root (a product card's name, URL, variant, price and
 discount; a paragraph with its links) that total at most 2,000 characters or a quarter
 of the budget are kept or left out whole, so a card is never split or joined to its
 neighbor. The block at the cut is still kept with its `/url` lines shortened to
-`- /url: "…"` when that fits (#310); a scoped snapshot or `browser_find` shows the URLs.
+`- /url: "…"` when that fits (#310); a scoped snapshot shows the URLs, and `browser_find`
+shows a matched link's URL.
 When URL redaction or ref aliases lengthen the snapshot past its budget, the
 bridge cuts again only at those boundaries; it can leave out a whole block that no
 longer fits, or keep it with shortened `/url` lines, and keep a later one. Truncation sets `truncated: true`,

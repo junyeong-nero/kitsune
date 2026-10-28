@@ -175,12 +175,42 @@ class AdapterTests(unittest.TestCase):
         # Items a snapshot collapses into "… N more similar items" are searched too (#237).
         self.assertEqual(self.posted(), [("/api/snapshot", {"collapse": False})])
         self.assertEqual(found["count"], 1)
-        self.assertEqual(found["matches"][0]["path"], ["- main [ref=e1]", "- list [ref=e2]"])
-        self.assertEqual(found["matches"][0]["match"], '- link "Error log" [ref=e3]')
+        self.assertEqual(found["blocks"][0]["path"], ["- main [ref=e1]", "- list [ref=e2]"])
+        self.assertIn('>     - link "Error log" [ref=e3]', found["blocks"][0]["lines"])
         self.assertEqual(playwright_tools.browser_find(regex="Error")["count"], 1)
         self.assertEqual(playwright_tools.browser_find(regex="/error|retry/i")["count"], 2)
         self.assertIn("error", playwright_tools.browser_find(text="a", regex="b"))
         self.assertIn("error", playwright_tools.browser_find(regex="(unclosed"))
+
+    def test_find_merges_blocks_marks_matches_and_skips_urls(self):
+        # #323: one block per path, matched lines marked, /url lines searched only for URL queries.
+        self.post.return_value = {"snapshot": "\n".join([
+            "- main [ref=e1]", '  - link "Release notes" [ref=e2]', '    - /url: "/notes/releases"',
+            '  - link "Docs" [ref=e3]', '    - /url: "/docs/releases"', '  - text "Release 2"',
+            '  - text "other"', '  - text "other 2"', '  - text "other 3"', '  - text "Release 3"'])}
+        found = playwright_tools.browser_find(regex="/release/i")
+        self.assertEqual(found["count"], 3)
+        self.assertEqual(len(found["blocks"]), 1)
+        rows = found["blocks"][0]["lines"]
+        self.assertEqual([r for r in rows if r.startswith(">")],
+                         ['>   - link "Release notes" [ref=e2]', '>   - text "Release 2"', '>   - text "Release 3"'])
+        self.assertIn('      - /url: "/notes/releases"', rows, "a matched link keeps its own URL")
+        self.assertNotIn('      - /url: "/docs/releases"', rows, "other links' URLs are left out")
+        self.assertIn("  …", rows)
+        self.assertNotIn("truncated", found)
+        self.assertEqual(playwright_tools.browser_find(text="/docs/")["count"], 1, "a URL query searches /url lines")
+        self.assertEqual(playwright_tools._url_query(None, "/Initial release|Release/"), False)
+        self.assertEqual(playwright_tools._url_query("https://a.example", None), True)
+
+    def test_find_is_cut_between_blocks_and_says_so(self):
+        self.post.return_value = {"snapshot": "\n".join(
+            line for n in range(300) for line in (f"- region {n} [ref=r{n}]", f'  - text "item {n} {"x" * 60}"'))}
+        found = playwright_tools.browser_find(text="item")
+        self.assertEqual(found["count"], 300)
+        self.assertIs(found["truncated"], True)
+        self.assertLess(found["shown"], 300)
+        self.assertLessEqual(len(json.dumps(found["blocks"], ensure_ascii=False)), playwright_tools.FIND_LIMIT + 200)
+        self.assertIn("filename", found["hint"])
 
     def test_evaluate_calls_the_function_and_parses_its_json(self):
         self.post.return_value = {"result": '{"title":"Example"}'}

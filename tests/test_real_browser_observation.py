@@ -106,7 +106,8 @@ class RealBrowserObservationTests(harness.RealBrowserTestCase):
             self.assertIn('text "Readable static fact"', default["snapshot"])
             self.assertNotIn("Deep target 71", default["snapshot"])
             found = playwright_tools.browser_find(text="Deep target 71")
-            match = next(m["match"] for m in found["matches"] if 'button "Deep target 71"' in m["match"])
+            match = next(line for line in (r[2:].strip() for b in found["blocks"] for r in b["lines"]
+                                           if r.startswith(">")) if 'button "Deep target 71"' in line)
             deep = re.search(r"\[ref=(e\d+)\]", match)[1]
             scoped = playwright_tools.browser_snapshot(target=deep)
             self.assertIn(f'- button "Deep target 71" [ref={deep}]', scoped["snapshot"])
