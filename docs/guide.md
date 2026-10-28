@@ -396,8 +396,11 @@ Kitsune's compact JSON results, not Playwright's Markdown. Where the two differ:
   use the same resolver and capture the exact selected node, including inside shadow roots. Refs
   survive newer observations while their nodes remain attached in the same document; navigation or replacement nodes require new refs.
 - **Snapshots.** Default core snapshots include redacted static text and resolved HTTP(S) link
-  URLs. Returned inline they are capped at 12,000 characters, cut between blocks so a
-  product card or paragraph is never split, with `truncated: true` and a hint toward
+  URLs (same-origin ones as paths; a URL repeated by the next link or equal to the page's
+  is left out). Returned inline they are capped at 12,000 characters, cut between blocks so a
+  product card or paragraph is never split (a long navigation, banner or footer outside
+  `main` is shown as its line and a `… not shown` marker until `main` is listed), with
+  `truncated: true` and a hint toward
   `browser_find`, a scoped `target` or `filename` (which saves the whole snapshot; see
   [`browser_snapshot`](api-reference.md#browser_snapshottab_idnone-selectornone-refnone-max_depthnone-textfalse)).
   Existing line clipping, structural

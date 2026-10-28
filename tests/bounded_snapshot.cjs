@@ -34,8 +34,8 @@ function card(i) {
 }
 
 // Every listed card has its name, URL, variant, price and discount, in order, and no line of
-// another card in between.
-function assertWholeCards(snapshot, label) {
+// another card in between. In a cut snapshot the last card can lack its /url line (#310).
+function assertWholeCards(snapshot, label, cut = false) {
   const lines = snapshot.split('\n').filter(line => !line.includes('truncated'));
   let current = null;
   const seen = new Map();
@@ -47,8 +47,10 @@ function assertWholeCards(snapshot, label) {
     assert.equal(i, current, `${label}: a line of card ${i} under card ${current}\n${snapshot}`);
     seen.set(i, [...(seen.get(i) || []), line.trim()]);
   }
+  const last = [...seen.keys()].at(-1);
   for (const [i, got] of seen) {
-    const expected = [`heading "Desk ${i}"`, `link "Desk ${i}"`, `/url: "https://shop.test/p/desk-${i}"`,
+    const url = !(cut && i === last) || got.some(line => line.startsWith('- /url:'));
+    const expected = [`heading "Desk ${i}"`, `link "Desk ${i}"`, ...(url ? [`/url: "/p/desk-${i}"`] : []),
       `text "Variant ${i}:`, `text "Price ${i}:`, ...(i % 2 ? [`text "Discount ${i}:`] : []),
       ...(i % 3 === 0 ? [`button "Add desk ${i} to cart"`] : [])];
     assert.equal(got.length, expected.length, `${label}: card ${i} is incomplete\n${got.join('\n')}`);
@@ -96,7 +98,7 @@ function assertWholeCards(snapshot, label) {
     assert.equal(bounded.truncated, true, label);
     assert.ok(bounded.snapshot.length <= maxChars, label);
     assert.equal(bounded.snapshot.split('\n').at(-1), '- … truncated; scope with selector, ref or max_depth');
-    const cards = assertWholeCards(bounded.snapshot, label);
+    const cards = assertWholeCards(bounded.snapshot, label, true);
     assert.ok(cards.length > 0 && cards.every((n, j) => n === j), `${label}: a document-order prefix of cards`);
     // A card is about 300 characters: the cut leaves at most one card's worth unused.
     assert.ok(bounded.snapshot.length > maxChars - 400, `${label}: ${bounded.snapshot.length}`);
@@ -110,7 +112,7 @@ function assertWholeCards(snapshot, label) {
     assert.ok(recut.snapshot.length <= tighter, `${label}: recut to ${tighter}`);
     assert.equal(recut.cuts, undefined, 'cut points stay inside the bridge');
     assert.equal(recut.truncated, true);
-    assertWholeCards(recut.snapshot, `${label} recut to ${tighter}`);
+    assertWholeCards(recut.snapshot, `${label} recut to ${tighter}`, true);
   }
   // The bridge drops the cut points of a snapshot that fits too.
   const fits = await send({ action: 'getSnapshot', maxChars: 100000 });
@@ -136,6 +138,104 @@ function assertWholeCards(snapshot, label) {
   const essay = await send({ action: 'getSnapshot', maxChars: 12000 });
   assert.equal(essay.truncated, true);
   assert.ok(essay.snapshot.length > 12000 - 300, `a long section is cut between paragraphs: ${essay.snapshot.length}`);
+
+  // #310: the gallery's crowded layout, a banner with a 68-link navigation (every link to one
+  // long URL) before main. Same-origin URLs are paths and a repeated one is left out; a cut
+  // snapshot lists main before the banner and a long footer, which wait as markers.
+  context.location.href = 'https://shop.test/t/component-gallery/crowded/ui-sortable';
+  const menuUrl = 'https://shop.test/t/component-gallery/crowded/index?layout=crowded&variant=0';
+  const link = (name, href) => new Element('A', {}, [name], { href });
+  const crowded = (cards, footerLinks = 3) => setBody(
+    h('HEADER', {}, link('Component gallery', context.location.href),
+      h('NAV', { 'aria-label': '사이트 메뉴' },
+        h('UL', {}, ...Array.from({ length: 68 }, (_, i) => h('LI', {}, link(`메뉴 항목 ${i}`, menuUrl)))))),
+    h('MAIN', {}, h('H1', {}, 'Sortable list'), h('UL', {}, ...Array.from({ length: cards }, (_, i) => card(i)))),
+    h('FOOTER', {}, ...Array.from({ length: footerLinks }, (_, i) => link(`Help ${i}`, `https://help.example/gallery/${i}`))));
+  // The characters of main's lines: its line and every deeper line after it.
+  const mainChars = snapshot => {
+    const lines = snapshot.split('\n');
+    const start = lines.findIndex(line => line.startsWith('- main '));
+    if (start < 0) return 0;
+    let end = start + 1;
+    while (end < lines.length && lines[end].startsWith('  ')) end++;
+    return lines.slice(start, end).join('\n').length;
+  };
+  crowded(60, 40);
+  const page = (await send({ action: 'getSnapshot' })).snapshot;
+  const pageLines = page.split('\n');
+  assert.match(pageLines[1], /^  - link "Component gallery" \[ref=s\d+e\d+\]$/);
+  assert.match(pageLines[2], /^  - navigation "사이트 메뉴" /, 'a link to the page itself has no /url line');
+  const navUrls = pageLines.filter(line => line.includes('/url: "/t/'));
+  assert.deepEqual(navUrls, ['      - /url: "/t/component-gallery/crowded/index?layout=crowded&variant=0"'],
+    'only the first of the links to one URL has its /url line');
+  assert.equal(pageLines.filter(line => line.startsWith('    - link "메뉴 항목')).length, 68);
+  assert.match(page, /- link "Help 0" \[ref=s\d+e\d+\]\n    - \/url: "https:\/\/help\.example\/gallery\/0"/,
+    'a cross-origin URL stays absolute');
+  assert.equal(assertWholeCards(page, 'crowded unbounded').length, 60);
+
+  const bounded = await send({ action: 'getSnapshot', maxChars: 12000 });
+  const core = bridge.boundPublicSnapshot(bounded, { maxChars: 12000 });
+  const coreLines = core.snapshot.split('\n');
+  assert.equal(core.truncated, true);
+  assert.ok(core.snapshot.length <= 12000);
+  const bannerRef = coreLines[0].match(/^- banner "" \[ref=(s\d+e\d+)\]$/)[1];
+  assert.equal(coreLines[1], `  - … 71 lines (69 links) not shown; snapshot ${bannerRef} to list all`);
+  assert.match(coreLines[2], /^- main "" \[ref=/, 'main follows the banner in document order');
+  const footerRef = coreLines.at(-3).match(/^- contentinfo "" \[ref=(s\d+e\d+)\]$/)[1];
+  assert.equal(coreLines.at(-2), `  - … 80 lines (40 links) not shown; snapshot ${footerRef} to list all`);
+  assert.equal(coreLines.at(-1), '- … truncated; scope with selector, ref or max_depth');
+  const kept = assertWholeCards(core.snapshot, 'crowded core', true);
+  assert.ok(kept.length > 30 && kept.every((n, j) => n === j), `main is a prefix of its cards: ${kept.length}`);
+  assert.ok(mainChars(core.snapshot) > 11000, `main keeps ${mainChars(core.snapshot)} characters`);
+  // The bridge's recut keeps the markers with their landmarks and the cards whole.
+  const recut = bridge.boundPublicSnapshot(bounded, { maxChars: 7000 });
+  assert.ok(recut.snapshot.length <= 7000);
+  assert.deepEqual(recut.snapshot.split('\n').slice(0, 3), coreLines.slice(0, 3));
+  assertWholeCards(recut.snapshot, 'crowded recut', true);
+  // The marker's ref lists the navigation.
+  const banner = (await send({ action: 'getSnapshot', selector: bannerRef })).snapshot;
+  assert.equal((banner.match(/- link "메뉴 항목/g) || []).length, 68);
+
+  // With a short main the rest of the budget lists the banner as far as it fits, and its
+  // marker counts what is still left out. A short footer is listed in place.
+  crowded(3);
+  const short = await send({ action: 'getSnapshot', maxChars: 2500 });
+  const shortLines = short.snapshot.split('\n');
+  assert.ok(short.snapshot.length <= 2500);
+  assert.equal(assertWholeCards(short.snapshot, 'short main').length, 3);
+  assert.match(short.snapshot, /- contentinfo "" \[ref=s\d+e\d+\]\n  - link "Help 0"/, 'the footer is listed whole');
+  const listed = shortLines.filter(line => line.startsWith('    - link "메뉴 항목')).length;
+  assert.ok(listed > 10 && listed < 68, `${listed} navigation links listed`);
+  const marker = shortLines.findIndex(line => line.startsWith('  - … '));
+  assert.equal(shortLines[marker], `  - … ${68 - listed} lines (${68 - listed} links) not shown; snapshot ${
+    shortLines[0].match(/\[ref=(s\d+e\d+)\]/)[1]} to list all`);
+  assert.match(shortLines[marker - 1], /^    - link "메뉴 항목/);
+  assert.match(shortLines[marker + 1], /^- main /);
+  // A short navigation keeps its place before main.
+  setBody(h('NAV', {}, link('Home', 'https://shop.test/'), link('Cart', 'https://shop.test/cart')),
+    h('MAIN', {}, h('UL', {}, ...Array.from({ length: 60 }, (_, i) => card(i)))));
+  assert.deepEqual((await send({ action: 'getSnapshot', maxChars: 5000 })).snapshot.split('\n').slice(0, 4)
+    .map(line => line.replace(/ \[ref=.*/, '')), ['- navigation ""', '  - link "Home"', '    - /url: "/"', '  - link "Cart"']);
+  crowded(3);
+  // A budget that fits everything collapses nothing.
+  const roomy = await send({ action: 'getSnapshot', maxChars: 100000 });
+  assert.equal(roomy.truncated, undefined);
+  assert.doesNotMatch(roomy.snapshot, /not shown/);
+
+  // A link whose /url line is left out is listed with the link it repeats: in a delta ...
+  await send({ action: 'ping', deltaBaseline: true, snapshotText: true });
+  const renamed = context.document.body.children[0].children[1].children[0].children[40].children[0];
+  renamed.childNodes[0].textContent = '메뉴 항목 마흔';
+  const delta = (await send({ action: 'getSnapshot', delta: true, text: true })).snapshot.split('\n');
+  assert.deepEqual(delta.map(line => line.replace(/ \[ref=.*/, '')), ['- banner ""', '  - navigation "사이트 메뉴"',
+    '    - link "메뉴 항목 0"', '      - /url: "/t/component-gallery/crowded/index?layout=crowded&variant=0"',
+    '    - link "메뉴 항목 마흔"']);
+  // ... and in the bridge's recut, which leaves it out when that link does not fit.
+  const repeat = bridge.boundPublicSnapshot({ truncated: true, cuts: [0, 1, 3, 4, 5], snapshot: [
+    '- navigation "Menu" [ref=e1]', `  - link "${'A'.repeat(60)}" [ref=e2]`, `    - /url: "/${'a'.repeat(60)}"`,
+    '  - link "B" [ref=e3]', '- button "Next" [ref=e4]'].join('\n') }, { maxChars: 140 });
+  assert.equal(repeat.snapshot, ['- navigation "Menu" [ref=e1]', '- button "Next" [ref=e4]',
+    '- … truncated; scope with selector, ref or max_depth'].join('\n'));
 
   console.log('Bounded snapshot checks passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });
