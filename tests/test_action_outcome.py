@@ -88,7 +88,7 @@ class OutcomeNotObservedTests(unittest.TestCase):
             waitForElement={"ok": False, "found": False, "error": "Timed out after 50ms"},
         )
         result = run_expect(extension, "click", {"tabId": 7, "selector": "#open"},
-                            {"selector": "#menu", "timeout": 50})
+                            {"selector": "#menu", "timeout": 150})
         self.assert_not_observed(result)
         self.assertEqual(result["tag"], "button")
         self.assertEqual(result["outcome"]["observed"], {"source": "page", "visible": False})
@@ -101,7 +101,7 @@ class OutcomeNotObservedTests(unittest.TestCase):
         extension = FakeExtension(getTabs={"tabs": [TAB]}, click={"ok": True},
                                   waitForElement={"ok": True, "found": True})
         result = run_expect(extension, "click", {"tabId": 7, "selector": "#close"},
-                            {"selector": ".modal", "gone": True, "timeout": 30})
+                            {"selector": ".modal", "gone": True, "timeout": 150})
         self.assert_not_observed(result)
         self.assertEqual(result["outcome"]["observed"], {"source": "page", "visible": True})
         self.assertGreater(extension.actions().count("waitForElement"), 1)
@@ -137,10 +137,10 @@ class OutcomeNotObservedTests(unittest.TestCase):
         extension = FakeExtension(getTabs={"tabs": [TAB]}, click={"ok": True},
                                   query={"count": 1, "items": [{"tag": "input", "value": "1"}]})
         result = run_expect(extension, "click", {"tabId": 7, "selector": "#inc"},
-                            {"selector": "#qty", "value_changed": True, "timeout": 30})
+                            {"selector": "#qty", "value_changed": True, "timeout": 150})
         self.assert_not_observed(result)
         self.assertEqual(result["outcome"]["expected"],
-                         {"selector": "#qty", "value_changed": True, "timeout": 30})
+                         {"selector": "#qty", "value_changed": True, "timeout": 150})
         self.assertEqual(result["outcome"]["observed"],
                          {"source": "page", "found": True, "value": "1", "before": "1"})
         # The value is read before dispatch, then polled until the deadline.
@@ -509,7 +509,7 @@ class OpenedTabTests(unittest.TestCase):
         extension = FakeExtension(getTabs={"tabs": [TAB]}, click={"ok": True},
                                   getOpenedTabs={"opened_tabs": []})
         result = run_expect(extension, "click", {"tabId": 7, "selector": "#noop"},
-                            {"new_tab": True, "timeout": 30})
+                            {"new_tab": True, "timeout": 150})
         self.assertEqual((result["ok"], result["code"]), (False, "outcome_not_observed"))
         self.assertEqual(result["outcome"]["observed"], {"source": "tabs", "opened_tabs": []})
         self.assertNotIn("opened_tabs", result)
@@ -576,7 +576,7 @@ class TrustedClickHintTests(unittest.TestCase):
         self.assertIn("may", result["hint"])
         self.assertIn("browser_trusted_click", result["hint"])
         self.assertIn("the browse capability", result["hint"])
-        self.assertIn(("waitForElement", {"tabId": 7, "selector": "e9", "timeout": 1, "pollInterval": 100}),
+        self.assertIn(("waitForElement", {"tabId": 7, "selector": "e9", "timeout": 0}),
                       extension.calls)
         # No retry and no OS click: the click ran once.
         self.assertEqual(extension.actions().count("click"), 1)

@@ -657,10 +657,22 @@ To check, pass an optional `expect` object. After dispatch, the bridge waits up 
 without `tab_id` sends the current tab (the one `browser_tabs` last opened or selected);
 a request with no tab at all is resolved to the active tab first and sent to that tab, so
 the action and the check cannot target different tabs after a focus change.
-Page conditions (`selector`, `value`, `text`) are single reads that the bridge repeats
-until the deadline, with a last read at the deadline. They do not depend on the page's
-timers, which browsers throttle in background tabs. The check therefore ends near
-`expect.timeout`, though one read of a very large page can add to `elapsed`.
+Page conditions (`selector`, `value`, `text`) and `new_tab` are single reads that the
+bridge repeats until the deadline. They do not depend on the page's timers, which
+browsers throttle in background tabs. A `url` or `url_changed` check waits in the
+extension, on tab events, until the last check. Either way, each check must answer
+before `expect.timeout`, including its wait behind other commands on the tab, and no
+check starts after it. The last check starts 100 ms before the deadline (at once for a
+shorter `expect.timeout`), so that is how long it has to answer. The check therefore ends
+near `expect.timeout` (`elapsed` is measured, not clamped).
+
+`expect.timeout` bounds only that observation, which starts when the action's reply
+arrives. Before it come two steps with their own limits: resolving a missing tab, plus
+the one read that `url_changed` or `value_changed` takes before dispatch, and then the
+dispatch, which the action's own timeout bounds. After an unmet observation, the reads
+for the failure's `state`, `opened_tabs` and click hint share a 2 s allowance, and none
+starts once it is used up. An action with `expect` therefore takes its dispatch time
+plus at most `expect.timeout`, and 2 s more when the outcome is not met.
 
 `expect` takes exactly one condition:
 
@@ -719,7 +731,17 @@ and the current tab state:
 action does not repeat it either. Inspect the page before acting again. If the check
 itself could not read the page, `observed` has its `error` and `code`. A tab that is
 navigating is checked again until the deadline. If the tab closed, `state.closed` is
-`true`. For `browser_click`, when the clicked element (the result's `target_ref`, or
+`true`.
+
+A check that does not answer before `expect.timeout` is not an observation; its late
+reply, met or an error, is ignored. If the check in progress at the deadline does not
+answer, `outcome.observationIncomplete` is `true`, `observed` is the last completed
+check, and the error adds that the check in progress did not finish. If no check
+answered at all, `observed` has `code: "timeout"` and the error says whether the
+outcome happened is unknown. Neither case means the action failed or is safe to
+repeat: it was dispatched, and `retryable` stays `false`. A `state` with only `tabId`
+means the tab could not be read within the allowance. A hint that needs a read the
+allowance had no time for (an opened tab, a click target still visible) is left out. For `browser_click`, when the clicked element (the result's `target_ref`, or
 the request's ref or selector if no post-action snapshot was taken) is still visible
 after the wait, the hint adds that the page may accept only trusted input and that
 `browser_trusted_click` (in the `browse` capability) is the alternative. That is a
