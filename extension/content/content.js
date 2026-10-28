@@ -2727,7 +2727,7 @@
         const el = matches.at(part.index);
         matches = el ? [el] : [];
       } else if (part.kind === 'parent') {
-        matches = [...new Set((matches || [document.documentElement]).map(el => el.parentElement).filter(Boolean))];
+        matches = [...new Set((matches || [document.documentElement]).map(flatParent).filter(Boolean))];
       } else {
         const found = new Set();
         for (const scope of matches || [null]) {

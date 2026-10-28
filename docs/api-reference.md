@@ -184,7 +184,7 @@ trees), and this subset of Playwright's selectors; it is not Playwright's engine
 | `a, b` | A CSS list, with or without the pseudo-classes above: the union of its alternatives |
 | `a >> b` | Chains: `b` searched inside each match of `a`. A chain may start with a ref (`e12 >> xpath=..`, `e12 >> text=Save`) |
 | `nth=N` | The Nth match so far (0-based; `-1` is the last); not first in a chain |
-| `xpath=..`, `..` | The parent element |
+| `xpath=..`, `..` | The parent element as rendered: a slotted element's slot, else its parent, else (at the top of a shadow root) the shadow host |
 | `xpath=//h2[text()='Stock']/..`, `//…`, `..…` | General XPath (`document.evaluate`), elements only; after `>>`, a leading `/` is relative to the earlier match, which may be inside a shadow root or same-origin frame. It does not cross into shadow roots or frames. Because XPath reads text and the `value` attribute unredacted, it is refused (`unsupported_selector`) when a document it would run in, including that document's shadow roots, holds a sensitive field with a `value` attribute or masked text |
 
 Images, `<area>` and `<svg>` graphics are named as snapshots name images: by
