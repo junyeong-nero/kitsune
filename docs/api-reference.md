@@ -420,6 +420,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `not_found` | No element matches the selector (also `No target`, `from/to element not found`; a scoped `browser_snapshot`/`browser_dom` reports `Selector not found: …` with `state.selector`); after an [actionability wait](#actionability-wait), `state` has `timeoutMs` and `elapsed` | true |
 | `not_fillable` | `browser_type` (`type`/`fill` modes) or a `browser_form_fill` key found no field to write. The target is not a field (`fill` and `browser_form_fill`: input, textarea or select; `type`: input, textarea or `contenteditable` region) and has none in its open or closed shadow roots, searched through nested hosts up to 8 roots deep (`fill` and `browser_form_fill` also look in its light DOM). Nothing was written. `state.tag` is the target's tag; `state.reason` is `no_field`, or `shadow_depth` when its shadow roots nest deeper than 8 | true |
 | `ambiguous_target` | The command names no single target, so nothing was dispatched: a write action's selector matches several actionable elements (`state.selector`, `state.matches`; see [Strict selectors](#strict-selectors)), a `browser_form_fill` label or placeholder key matches several actionable fields (`state.field`, `state.matches`), or `browser_submit_form` without a target found several forms and no filled field naming one (`state.forms`). `state.candidates` lists up to 5 of them with a `ref` to target one | false |
+| `target_not_at_point` | `browser_trusted_click` found another element (`state.hit`, `null` for none) at its target's center (`state.viewportX`, `state.viewportY`), such as an overlay; no OS click was made | true |
 | `not_actionable` | An [actionability wait](#actionability-wait) timed out on a target that exists but never rendered (`state.reason: "not_rendered"`, `timeoutMs`, `elapsed`); nothing was dispatched | true |
 | `unsupported_selector` | The shared target resolver rejected unsupported/invalid syntax (see [Target selectors](#target-selectors)) before dispatch; `state.selector` echoes the selector and `hint` lists accepted forms. Applies to actions, scoped snapshots and element screenshots | false |
 | `stale_ref` | The ref is no longer valid; `state.reason` is `element_removed`, `not_in_snapshot` (unknown/unissued ref), or `other_document` (the tab navigated, or the ref came from another tab) | true |
@@ -531,8 +532,9 @@ custom widget keeps its native checkbox or select `display: none`, and refusing
 by CSS heuristics would break actions that work today. Callers that want refusal
 pass `wait=True`, which fails a pointer target that never renders with
 `not_actionable` before dispatching anything. Overlay detection with an
-`elementFromPoint` hit test is deliberately not done, as a failure or as a wait
-condition. Cookie banners and sticky headers often cover a target's center after
+`elementFromPoint` hit test is deliberately not done for synthetic actions, as a failure
+or as a wait condition (`browser_trusted_click` does hit-test, because its OS click lands
+on whatever is at the point). Cookie banners and sticky headers often cover a target's center after
 it scrolls into view while the synthetic event still reaches the target, so
 refusing there would fail working actions. Hit tests also stop at closed shadow
 roots and cross-origin frames, and a single sample is unreliable under
@@ -2069,6 +2071,17 @@ user's tab is shown again 300 ms after it (see [Shared browser](#shared-browser)
 viewport click returns `user_active` without clicking while the user is using the
 target tab or the tab it would hide. Ambiguous selectors return `ambiguous_target`
 before scrolling the element or invoking the OS; `first=True` opts into the first match.
+
+A viewport point is converted to desktop coordinates with the tab's page zoom
+(`browser.tabs.getZoom`): Firefox measures the element and the viewport's screen origin
+in the page's CSS pixels, which zoom scales, so their sum is multiplied by the zoom.
+Viewport-click results report it as `zoom` (`1` at 100%). Before a selector click, the
+element at the point (`elementFromPoint`, through same-origin frames and shadow roots)
+must be the target, inside it, or inside one of its `<label>`s (a custom checkbox whose
+input sits under its label); otherwise nothing is clicked and the call returns
+`target_not_at_point` with `state.viewportX`, `state.viewportY` and `state.hit` (the
+covering element's `ref`, `role` and `name`, or `null` when nothing is there). The
+"Zoom text only" setting and OS display scaling are not compensated.
 
 | Platform | Click backend | Pointer restore |
 |---|---|---|

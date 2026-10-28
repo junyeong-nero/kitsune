@@ -386,6 +386,34 @@ class TrustedClickTests(unittest.TestCase):
         click.assert_called_once_with(110, 220, True)
         self.assertEqual(result["clickBackend"], "cliclick")
 
+    def test_viewport_click_reports_the_page_zoom_it_used(self):
+        # The extension already converted the point with the zoom; the bridge clicks it as is.
+        for point, zoom in (
+            ({"screenX": 285, "screenY": 585, "viewportX": 90, "viewportY": 310, "zoom": 1.5}, 1.5),
+            ({"screenX": 152, "screenY": 312, "viewportX": 90, "viewportY": 310, "zoom": 0.8}, 0.8),
+            # An extension older than #307 sends no zoom.
+            ({"screenX": 190, "screenY": 390, "viewportX": 90, "viewportY": 310}, 1),
+        ):
+            with self.subTest(zoom=zoom), \
+                 patch.object(bridge, "send_to_extension", new_callable=AsyncMock, return_value=point), \
+                 patch.object(bridge, "_native_click_screen",
+                              return_value={"ok": True, "backend": "quartz"}) as click:
+                result = asyncio.run(bridge.trusted_click({"selector": "#go"}))
+            click.assert_called_once_with(point["screenX"], point["screenY"], True)
+            self.assertEqual(result["zoom"], zoom)
+
+    def test_target_not_at_point_clicks_nothing(self):
+        refused = {"error": "The element at the target's center is not the target; the trusted click was not made",
+                   "code": "target_not_at_point", "retryable": True,
+                   "state": {"viewportX": 90, "viewportY": 310, "hit": None}}
+        with patch.object(bridge, "send_to_extension", new_callable=AsyncMock, return_value=refused), \
+             patch.object(bridge, "_focus_browser_window") as focus, \
+             patch.object(bridge, "_native_click_screen") as click:
+            result = asyncio.run(bridge.trusted_click({"selector": "#go", "focus": True}))
+        self.assertEqual(result, refused)
+        focus.assert_not_called()
+        click.assert_not_called()
+
     def test_restore_pointer_is_passed_to_the_backend_and_reported(self):
         point = {"screenX": 110, "screenY": 220, "viewportX": 10, "viewportY": 20}
         failed = {"ok": True, "backend": "quartz", "pointerRestored": False,

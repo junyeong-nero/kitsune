@@ -564,6 +564,8 @@ def browser_trusted_click(
     counts). Works on Windows, macOS and Linux (X11); macOS needs pyobjc Quartz or cliclick
     plus Accessibility permission for the bridge, and Linux needs xdotool (Wayland is not
     supported).
+    target_not_at_point: another element covers the target's center (state.hit); nothing
+    was clicked.
     """
     if selector:
         body = {"selector": selector, "focus": focus}

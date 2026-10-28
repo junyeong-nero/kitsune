@@ -798,6 +798,8 @@ async def trusted_click(params):
         "screenY": point["screenY"],
         "viewportX": point["viewportX"],
         "viewportY": point["viewportY"],
+        # The page zoom the extension converted the viewport point with (#307).
+        "zoom": point.get("zoom", 1),
         "title": point.get("title", ""),
         "focused": focused,
         "focusRequested": bool(focus),

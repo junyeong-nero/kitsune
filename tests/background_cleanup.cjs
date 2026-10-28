@@ -38,6 +38,7 @@ function harness() {
         }
         return { ...tabs[id] };
       },
+      getZoom: async () => 1,
     },
     storage: { local: {
       get: async () => ({ ...stored }),
