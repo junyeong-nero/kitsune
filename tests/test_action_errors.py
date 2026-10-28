@@ -170,7 +170,10 @@ class McpErrorResultTests(unittest.TestCase):
         logger = logging.getLogger("mcp.server.lowlevel.server")
         self.addCleanup(logger.setLevel, logger.level)
         logger.setLevel(logging.WARNING)
-        playwright_tools._current_tab = None
+        # The agent's tab: without one, MCP writes are refused before any request (#303).
+        current = patch.object(playwright_tools, "_current_tab", 7)
+        current.start()
+        self.addCleanup(current.stop)
 
     def call(self, name, arguments, reply=None, mcp=server.mcp, **request):
         if reply is not None:

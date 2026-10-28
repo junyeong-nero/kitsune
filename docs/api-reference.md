@@ -22,7 +22,8 @@ See [Tools and capabilities](guide.md#tools) for the complete tool list per grou
 `browser_click`, `browser_drag`, `browser_hover`, `browser_select_option`,
 `browser_tabs`, `browser_wait_for`. Their arguments are Playwright's (`target` is a
 snapshot ref such as `e12`, a CSS selector or one of the
-[Playwright selector forms](#target-selectors) Kitsune resolves), they act on the current tab, and
+[Playwright selector forms](#target-selectors) Kitsune resolves), they act on the current tab (writes
+without one fail, see [No current tab](#no-current-tab)), and
 `browser_emulate_media` and `browser_run_code_unsafe` answer `not_supported`; see
 [Core tools](guide.md#core-tools) for how each maps onto the extension. The tool
 sections below describe the Kitsune-owned tools and the bridge commands the core tools
@@ -442,6 +443,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `user_tab` | `browser_tabs` close on a tab the agent did not open, or `browser_close_window` on a window with one; it stays open. With [protected user tabs](#protected-user-tabs), also navigate, back or forward on such a tab; it stays where it is. A direct call's `state.confirmToken` closes or navigates it once the user approves (see [Agent-owned tabs](#agent-owned-tabs)) | false |
 | `user_active` | The user is using the tab (`state.reason`: `input`, `typing`, `navigating`); the write or navigation did not run (see [User activity](#user-activity)) | true |
 | `outcome_not_observed` | The action was dispatched, but the outcome given in `expect` did not happen in time (see [Action outcomes](#action-outcomes)) | false for writes |
+| `no_current_tab` | From the MCP server: a write or navigation names no tab and the agent has no current tab (`state.tool`, `state.action` for a container step); nothing was sent (see [No current tab](#no-current-tab)) | false |
 | `tab_required` | A `parallel` step that acts on a tab has no `tabId` (`state.sequence`, `state.index`); nothing was dispatched (see [Container progress](#container-progress)) | true |
 | `tab_owned` | Two `parallel` sequences write the same tab (`state.tabId`, `state.owner`); nothing was dispatched | true |
 | `invalid_tab_id` | A batch, workflow or parallel step names a `tabId` that is not a tab id (`0`, `""`, an unresolved `${$N.tabId}`); it was not sent to the active tab instead | true |
@@ -654,9 +656,10 @@ dispatched: the click, keypress or submit reached the page. It does not prove th
 task succeeded, because a submit can be blocked by validation or a click can do nothing.
 To check, pass an optional `expect` object. After dispatch, the bridge waits up to
 `expect.timeout` ms (default 5000) for that outcome in the same tab. An MCP tool called
-without `tab_id` sends the current tab (the one `browser_tabs` last opened or selected);
-a request with no tab at all is resolved to the active tab first and sent to that tab, so
-the action and the check cannot target different tabs after a focus change.
+without `tab_id` sends the current tab (the one `browser_tabs` last opened or selected),
+and without one it is refused ([No current tab](#no-current-tab)); an HTTP request with
+no tab at all is resolved to the active tab first and sent to that tab, so the action and
+the check cannot target different tabs after a focus change.
 Page conditions (`selector`, `value`, `text`) and `new_tab` are single reads that the
 bridge repeats until the deadline. They do not depend on the page's timers, which
 browsers throttle in background tabs. A `url` or `url_changed` check waits in the
@@ -1034,6 +1037,47 @@ Limits: input in iframes is not seen (the content script runs in the top documen
 nor input outside the page (address bar typing counts once the load starts). A
 screen-coordinate trusted click has no tab and is not checked, and its own click may
 count as user input on the tab it hits for 3 s.
+
+#### No current tab
+
+The MCP server's current tab is the one `browser_tabs` new or select (or
+`browser_tab_list` new_tab) last made current. It lives in the MCP server process, so a
+restarted or reconnected server starts without one (#303). Until it has one, a write or
+navigation that names no tab is refused before anything is sent, instead of going to the
+tab the user is viewing:
+
+```json
+{ "error": "browser_navigate writes a tab but names none, and there is no current tab, so it was not sent to the tab the user is viewing",
+  "code": "no_current_tab", "retryable": false,
+  "hint": "Nothing was dispatched. Pass tab_id (browser_navigate and browser_navigate_back accept it too), open a background tab with browser_tabs action=new or browser_tab_list new_tab, or make one current with browser_tabs action=select.",
+  "state": { "tool": "browser_navigate" } }
+```
+
+Writes are the bridge's write actions that act on a tab, plus focus and blur (see
+[Action errors](#action-errors)): the core `browser_click`, `browser_type`,
+`browser_press_key`, `browser_select_option`, `browser_fill_form`, `browser_hover`,
+`browser_drag`, `browser_drop`, `browser_file_upload`, `browser_evaluate`,
+`browser_handle_dialog`, `browser_resize`, `browser_navigate` and
+`browser_navigate_back`, and Kitsune's `browser_scroll`, `browser_check`,
+`browser_focus`, `browser_blur`, `browser_submit_form`,
+`browser_click_and_wait_navigation`, `browser_trusted_click`, `browser_forward`,
+`browser_reload_tab`, `browser_highlight`, `browser_pin_tab`, `browser_mute_tab`,
+`browser_duplicate_tab`, `browser_set_zoom` and `browser_storage` except `get`, `list`
+and `snapshot`. `browser_batch` and `browser_retry` are refused when one of their
+commands, or a command nested in `sequence`, `if`, `while`, `try` or `retry`, writes a
+tab without a `tabId` (`state.action`; an `if` or `while` condition is JavaScript on its
+tab). A `browser_workflow` without `tab_id` is always refused: its steps live in a file on
+the bridge and cannot be inspected first, so even a workflow that only reads needs a tab.
+Reads (snapshots, screenshots, page text, tab lists, console and network reads, waits)
+still act on the active tab, and `browser_tabs` close keeps its own rule (above).
+
+The core `browser_navigate` and `browser_navigate_back` take an optional `tab_id`,
+accepted like `confirm_token` but not listed in their schemas, which are Playwright
+MCP's; omitted, it is the current tab.
+
+Only the MCP server refuses these calls. HTTP requests to the bridge, the Python API
+(`kitsune.browser`, whose tabs are always named) and `kitsune.tools` called directly keep
+the active-tab default.
 
 ### Ask-before-act
 
@@ -1622,7 +1666,8 @@ falling back to the active tab, and a numeric string such as `"12"` is sent as `
 A step that acts on a tab and names no `tabId` runs on the call's default tab: the
 top-level `tabId` of `/api/batch`, `/api/retry` or `/api/workflow`, which
 `browser_batch`, `browser_retry` and `browser_workflow` set to their `tab_id`, by default
-the current tab. Without one it goes to the active tab. Parallel sequences still name
+the current tab. Without one it goes to the active tab, which the MCP tools refuse for
+writes ([No current tab](#no-current-tab)). Parallel sequences still name
 their tabs, tabless actions (`newTab`, `tabs`, `cookies`, ...) get none, and a resumed
 call keeps its original default tab. A default `tabId` that is not a tab id is refused
 with `invalid_tab_id` before anything runs.

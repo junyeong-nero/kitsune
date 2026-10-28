@@ -32,8 +32,9 @@ the agent gets fewer, sharper tools. See [Philosophy](https://github.com/junyeon
 ## Why Kitsune?
 
 - Tabs the agent creates open in the background. Kitsune holds writes to a tab
-  you are actively using, and closing one of your own tabs takes a separate
-  confirmation step. This reduces interference, but OS-level clicks and popups
+  while you are typing or clicking in it, refuses writes that name no tab until
+  the agent has opened or selected one, and closing one of your own tabs takes a
+  separate confirmation step. This reduces interference, but OS-level clicks and popups
   opened by sites still have [focus and input limitations](https://github.com/junyeong-nero/kitsune/blob/main/docs/api-reference.md#shared-browser).
 - You decide how much to delegate. `KITSUNE_MODE=read`, `draft`, or `act` limits
   both the tools the agent sees and the requests the bridge accepts. Draft mode
@@ -238,7 +239,8 @@ claude mcp add --scope user kitsune -e KITSUNE_CAPS=all -e KITSUNE_PUBLISH=core 
 In the JSON configurations above, add `"env": {"KITSUNE_CAPS": "all", "KITSUNE_PUBLISH": "core"}`
 next to `"args"`. The bridge checks the groups on every request, including batch
 steps. A tool called without a tab acts on the agent's current tab, not the one
-you are looking at.
+you are looking at; until the agent has one, writes and navigations without a tab
+fail with `no_current_tab`.
 
 If you are upgrading from 0.3: the `devtools`, `parallel`, `windows` and `session`
 groups were replaced by the groups above, and `all` no longer includes `storage`.

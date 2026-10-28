@@ -181,8 +181,9 @@ browser_snapshot()
 browser_take_screenshot(filename="/tmp/kitsune-example.png")
 ```
 
-Open a dedicated tab first (`browser_tabs` `new`) so the tools act on it rather than
-on an unrelated active tab. You and the agent share the browser: the agent's tabs open
+Open a dedicated tab first (`browser_tabs` `new`) so the tools act on it. Until there is
+one, reads act on the active tab, and writes and navigations that name no tab fail with
+`no_current_tab` instead of acting on it. You and the agent share the browser: the agent's tabs open
 in the background, it closes only tabs it opened unless you approve, and it backs off
 from a tab you are using (see
 [Shared browser](api-reference.md#shared-browser)). Ask the agent to confirm before submitting forms,
@@ -371,10 +372,14 @@ The `core` tools are Playwright MCP's, published verbatim from
 MCP works unchanged. They drive your own browser through the Kitsune extension and return
 Kitsune's compact JSON results, not Playwright's Markdown. Where the two differ:
 
-- **Current tab.** Tools act on the active tab until `browser_tabs` `new` or `select`
-  makes another tab current; `select` does not switch your view. Kitsune's own tools
-  called without `tab_id`, and `browser_batch`, `browser_retry` and `browser_workflow`
-  commands that name no `tabId`, act on the current tab too. `index` is the position
+- **Current tab.** Tools act on the tab `browser_tabs` `new` or `select` made current;
+  `select` does not switch your view. Kitsune's own tools called without `tab_id`, and
+  `browser_batch`, `browser_retry` and `browser_workflow` commands that name no `tabId`,
+  act on the current tab too. Until there is one, reads act on the active tab, and writes
+  and navigations that name no tab return `no_current_tab` without sending anything
+  ([No current tab](api-reference.md#no-current-tab)). An MCP server that restarts starts
+  without a current tab. `browser_navigate` and `browser_navigate_back` also accept a
+  `tab_id` that Playwright MCP's schema does not list. `index` is the position
   in `browser_tabs` `list`, which also marks `active` and agent-`owned` tabs. `new`,
   `select` and `close` return the tabs after the change in the same form; `new` returns
   the new tab's `index`.
@@ -621,7 +626,10 @@ The agent closes only the tabs it opened unless you approve. Navigating one of y
 tabs is a separate permission, and it is allowed by default, because sometimes you
 want the agent to work in your tab. If your tabs must stay where they are, tell
 the agent to open its material in new tabs (`browser_tabs` new) and pass their
-`tab_id`. Without `tab_id`, a call acts on the tab you see.
+`tab_id`. Without `tab_id`, a call acts on the agent's current tab. Before the agent
+has opened or selected one, a write or navigation without `tab_id` fails with
+`no_current_tab` instead of acting on the tab you see, but the agent can still name
+your tab or select it.
 
 To enforce this, set `KITSUNE_PROTECT_USER_TABS=1` in the MCP server environment
 and restart the client. It applies to that client only. Then `browser_navigate`,

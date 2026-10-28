@@ -303,9 +303,23 @@ class AdapterTests(unittest.TestCase):
         self.post.assert_not_called()
 
     def test_mcp_calls_take_playwright_arguments(self):
+        playwright_tools._current_tab = 4
         result = asyncio.run(server.mcp.call_tool("browser_click", {"target": "e1", "button": "middle"}))
         self.assertFalse(result.isError)
-        self.assertEqual(self.posted(), [("/api/click", {"selector": "", "button": "middle", "ref": "e1"})])
+        self.assertEqual(self.posted(), [("/api/click", {"selector": "", "button": "middle", "ref": "e1",
+                                                         "tabId": 4})])
+
+    def test_navigate_and_back_take_an_unpublished_tab_id(self):
+        # Like confirm_token, tab_id is accepted but not in Playwright's published schema (#303).
+        playwright_tools._current_tab = 4
+        playwright_tools.browser_navigate(url="https://a.test/")
+        playwright_tools.browser_navigate(url="https://a.test/", tab_id=9)
+        playwright_tools.browser_navigate_back()
+        playwright_tools.browser_navigate_back(tab_id=9)
+        self.assertEqual([(endpoint, body.get("tabId")) for endpoint, body in self.posted()],
+                         [("/api/navigate", 4), ("/api/navigate", 9), ("/api/back", 4), ("/api/back", 9)])
+        for name in ("browser_navigate", "browser_navigate_back"):
+            self.assertNotIn("tab_id", playwright_tools.SCHEMAS[name]["inputSchema"]["properties"])
 
 
 class BridgeDropTests(unittest.TestCase):

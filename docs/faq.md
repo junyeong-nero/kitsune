@@ -35,9 +35,10 @@ OpenCode, Claude Desktop and Cursor: [MCP setup](https://github.com/junyeong-ner
 ## Will the agent take over the tab I'm using?
 
 Tabs it opens with `browser_tabs` `new` stay in the background, and selecting a tab changes only
-the agent's current tab, not what you see. Until the agent opens or selects a tab, its tools act
-on the tab you are viewing, so ask it to work in new tabs, or set `KITSUNE_PROTECT_USER_TABS=1` to
-refuse its navigations on tabs it did not open. OS-level clicks and popups that sites open can
+the agent's current tab, not what you see. Until the agent opens or selects a tab, its reads act
+on the tab you are viewing, and its writes and navigations that name no tab fail with
+`no_current_tab`. It can still name or select your tab, so ask it to work in new tabs, or set
+`KITSUNE_PROTECT_USER_TABS=1` to refuse its navigations on tabs it did not open. OS-level clicks and popups that sites open can
 still take focus. See [Shared browser](api-reference.md#shared-browser) and
 [Protecting your tabs](guide.md#protecting-your-tabs).
 
