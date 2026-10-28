@@ -642,6 +642,9 @@ def browser_trusted_click(
     send returns an error without clicking.
     target_not_at_point: another element covers the target's center (state.hit); nothing
     was clicked.
+    browser_not_at_point (macOS): another app's window (state.app) is where the click would
+    land, usually a full-screen browser on another Space; nothing was clicked. Ask the user
+    to show the browser, then retry.
     """
     if selector:
         body = {"selector": selector, "focus": focus}

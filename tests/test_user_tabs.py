@@ -131,6 +131,7 @@ class TrustedClickRestoreTests(unittest.TestCase):
                          (point if action == "screenPoint" else {"ok": True, "restored": True}))
         with patch.object(bridge, "send_to_extension", send), \
                 patch.object(bridge, "TRUSTED_CLICK_RESTORE_DELAY", 0), \
+                patch.object(bridge, "_browser_not_at_point", return_value=None), \
                 patch.object(bridge, "_native_click_screen", side_effect=lambda x, y, *options: order.append("click") or
                              {"ok": True, "backend": "test"}):
             result = asyncio.run(bridge.trusted_click({"selector": "#go", "tabId": 3}))

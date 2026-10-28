@@ -510,6 +510,18 @@ class BrowserFocusTests(unittest.TestCase):
         self.assertEqual(run.call_args.args[0],
                          ["osascript", "-e", bridge._MAC_FOCUS_SCRIPT, "zen", "firefox", "librewolf"])
 
+    def test_macos_focus_counts_only_a_process_that_became_frontmost(self):
+        # A browser in full screen on another Space may never come to the front (#322).
+        self.assertIn("set frontmost of process procName to true\n"
+                      "        -- Coming to the front can take a moment, and a browser in full screen on another\n"
+                      "        -- Space may never do so (#322); only a process that did counts as focused.\n"
+                      "        repeat 20 times\n"
+                      "          if frontmost of process procName then return procName\n"
+                      "          delay 0.05\n"
+                      "        end repeat\n"
+                      "        return \"\"\n"
+                      "      end if", bridge._MAC_FOCUS_SCRIPT)
+
     def test_macos_process_from_env_or_request(self):
         os.environ["KITSUNE_BROWSER_PROCESS"] = "Firefox Nightly"
         done = subprocess.CompletedProcess([], 0, "x\n", "")
@@ -535,7 +547,121 @@ class BrowserFocusTests(unittest.TestCase):
         run.assert_not_called()
 
 
+class BrowserAtPointTests(unittest.TestCase):
+    def setUp(self):
+        for target in (patch.object(bridge.sys, "platform", "darwin"), patch.object(bridge.time, "sleep"),
+                       patch.dict(os.environ)):
+            target.start()
+            self.addCleanup(target.stop)
+        os.environ.pop("KITSUNE_BROWSER_PROCESS", None)
+
+    def test_the_browsers_window_at_the_point_allows_the_click(self):
+        with patch.object(bridge, "_mac_window_at", return_value=(42, "Zen")), \
+             patch.object(bridge, "_mac_process_name") as name:
+            self.assertIsNone(bridge._browser_not_at_point(760, 604))
+        name.assert_not_called()
+        # The owner name can be the app's display name; its executable is the process name.
+        with patch.object(bridge, "_mac_window_at", return_value=(42, "Firefox Nightly")), \
+             patch.object(bridge.subprocess, "run", return_value=subprocess.CompletedProcess(
+                 [], 0, "/Applications/Firefox Nightly.app/Contents/MacOS/firefox\n", "")) as run:
+            self.assertIsNone(bridge._browser_not_at_point(760, 604))
+        self.assertEqual(run.call_args.args[0], ["ps", "-o", "comm=", "-p", "42"])
+
+    def test_another_apps_window_or_the_desktop_refuses(self):
+        for window, app in (((4515, "Ghostty"), "Ghostty"), ((0, ""), None)):
+            with self.subTest(app=app), patch.object(bridge, "_mac_window_at", return_value=window), \
+                 patch.object(bridge, "_mac_process_name", return_value="ghostty"):
+                refused = bridge._browser_not_at_point(760, 604, focused=True)
+            self.assertEqual((refused["code"], refused["retryable"]), ("browser_not_at_point", True))
+            self.assertEqual(refused["state"], {"screenX": 760, "screenY": 604, "reason": "other_window", "app": app})
+            self.assertIn("Space", refused["hint"])
+
+    def test_a_requested_process_is_the_only_browser(self):
+        with patch.object(bridge, "_mac_window_at", return_value=(42, "Zen")), \
+             patch.object(bridge, "_mac_process_name", return_value="zen"):
+            self.assertEqual(bridge._browser_not_at_point(1, 2, process="librewolf")["code"], "browser_not_at_point")
+        os.environ["KITSUNE_BROWSER_PROCESS"] = "Floorp"
+        with patch.object(bridge, "_mac_window_at", return_value=(43, "Floorp")):
+            self.assertIsNone(bridge._browser_not_at_point(1, 2))
+
+    def test_waits_for_a_space_switch_to_show_the_browser(self):
+        windows = [(4515, "Ghostty"), (4515, "Ghostty"), (42, "Zen")]
+        with patch.object(bridge, "_mac_window_at", side_effect=windows), \
+             patch.object(bridge, "_mac_process_name", return_value="ghostty"), \
+             patch.object(bridge.time, "monotonic", side_effect=[0, 0.1, 0.2]):
+            self.assertIsNone(bridge._browser_not_at_point(1, 2, focused=True, wait=1.0))
+        with patch.object(bridge, "_mac_window_at", return_value=(4515, "Ghostty")) as window, \
+             patch.object(bridge, "_mac_process_name", return_value="ghostty"), \
+             patch.object(bridge.time, "monotonic", side_effect=[0, 0.5, 1.0]):
+            self.assertEqual(bridge._browser_not_at_point(1, 2, wait=1.0)["state"]["reason"], "other_window")
+        self.assertEqual(window.call_count, 2)
+
+    def test_rechecks_ask_ps_once_per_process(self):
+        with patch.object(bridge, "_mac_window_at", return_value=(4515, "Ghostty")), \
+             patch.object(bridge, "_mac_process_name", return_value="ghostty") as name, \
+             patch.object(bridge.time, "monotonic", side_effect=[0, 0.1, 0.2, 1.0]):
+            self.assertEqual(bridge._browser_not_at_point(1, 2, wait=1.0)["code"], "browser_not_at_point")
+        name.assert_called_once_with(4515)
+
+    def test_a_window_list_that_cannot_be_read_refuses(self):
+        for focused in (None, True):
+            with self.subTest(focused=focused), \
+                 patch.object(bridge, "_mac_window_at", side_effect=ValueError("no window server")):
+                refused = bridge._browser_not_at_point(1, 2, focused=focused, wait=1.0)
+            self.assertEqual((refused["code"], refused["retryable"]), ("browser_not_at_point", True))
+            self.assertEqual(refused["state"], {"screenX": 1, "screenY": 2, "reason": "unknown",
+                                                "detail": "no window server"})
+
+    def test_without_quartz_only_a_failed_focus_refuses(self):
+        with patch.object(bridge, "_mac_window_at", return_value=None):
+            self.assertIsNone(bridge._browser_not_at_point(1, 2))
+            self.assertIsNone(bridge._browser_not_at_point(1, 2, focused=True))
+            refused = bridge._browser_not_at_point(1, 2, focused=False, wait=1.0)
+        self.assertEqual((refused["code"], refused["state"]["reason"]), ("browser_not_at_point", "not_frontmost"))
+
+    def test_other_platforms_are_not_checked(self):
+        with patch.object(bridge.sys, "platform", "win32"), patch.object(bridge, "_mac_window_at") as window:
+            self.assertIsNone(bridge._browser_not_at_point(1, 2, focused=False))
+        window.assert_not_called()
+
+    def test_window_at_is_the_front_visible_window_containing_the_point(self):
+        windows = [
+            # The pointer, drawn around its hotspot at the cursor window level.
+            {"kCGWindowBounds": {"X": 755, "Y": 599, "Width": 28, "Height": 40}, "kCGWindowAlpha": 1,
+             "kCGWindowLayer": 2147483630, "kCGWindowOwnerPID": 433, "kCGWindowOwnerName": "Window Server"},
+            {"kCGWindowBounds": {"X": 0, "Y": 0, "Width": 100, "Height": 100}, "kCGWindowAlpha": 1,
+             "kCGWindowOwnerPID": 1, "kCGWindowOwnerName": "Elsewhere"},
+            {"kCGWindowBounds": {"X": 0, "Y": 0, "Width": 1920, "Height": 1080}, "kCGWindowAlpha": 0,
+             "kCGWindowOwnerPID": 2, "kCGWindowOwnerName": "Invisible overlay"},
+            {"kCGWindowBounds": {"X": 0, "Y": 0, "Width": 1920, "Height": 1080}, "kCGWindowAlpha": 1,
+             "kCGWindowOwnerPID": 4515, "kCGWindowOwnerName": "Ghostty"},
+            {"kCGWindowBounds": {"X": 0, "Y": 0, "Width": 1920, "Height": 1080}, "kCGWindowAlpha": 1,
+             "kCGWindowOwnerPID": 42, "kCGWindowOwnerName": "Zen"},
+        ]
+        quartz = SimpleNamespace(kCGWindowListOptionOnScreenOnly=1, kCGWindowListExcludeDesktopElements=16,
+                                 kCGNullWindowID=0, CGWindowListCopyWindowInfo=Mock(return_value=windows),
+                                 kCGCursorWindowLevelKey=19,
+                                 CGWindowLevelForKey=Mock(side_effect={19: 2147483630}.get))
+        with patch.dict("sys.modules", {"Quartz": quartz}):
+            self.assertEqual(bridge._mac_window_at(760, 604), (4515, "Ghostty"))
+            self.assertEqual(bridge._mac_window_at(50, 50), (1, "Elsewhere"))
+            self.assertEqual(bridge._mac_window_at(3000, 50), (0, ""))
+            quartz.CGWindowListCopyWindowInfo.assert_called_with(17, 0)
+            # The caller refuses on this (test_a_window_list_that_cannot_be_read_refuses).
+            quartz.CGWindowListCopyWindowInfo.side_effect = ValueError("no window server")
+            with self.assertRaises(ValueError):
+                bridge._mac_window_at(760, 604)
+        with patch.dict("sys.modules", {"Quartz": None}):
+            self.assertIsNone(bridge._mac_window_at(760, 604))
+
+
 class TrustedClickTests(unittest.TestCase):
+    def setUp(self):
+        # The window at the point is checked only on macOS (BrowserAtPointTests).
+        check = patch.object(bridge, "_browser_not_at_point", return_value=None)
+        check.start()
+        self.addCleanup(check.stop)
+
     def test_screen_click_focus_is_browser_neutral(self):
         with patch.object(bridge, "_focus_browser_window", return_value=True) as focus, \
              patch.object(bridge, "_native_click_screen",
@@ -585,6 +711,32 @@ class TrustedClickTests(unittest.TestCase):
         self.assertEqual(result, refused)
         focus.assert_not_called()
         click.assert_not_called()
+
+    def test_another_window_at_the_point_clicks_nothing_and_shows_the_users_tab_again(self):
+        point = {"screenX": 760, "screenY": 604, "viewportX": 700, "viewportY": 562, "tabId": 396,
+                 "previousTabId": 324}
+        refused = {"error": "Another app's window, not the browser's, is at the click point; ...",
+                   "code": "browser_not_at_point", "retryable": True,
+                   "state": {"screenX": 760, "screenY": 604, "reason": "other_window", "app": "Ghostty"}}
+        for focus, focused, wait in ((True, True, bridge.BROWSER_AT_POINT_WAIT), (False, None, 0.0)):
+            with self.subTest(focus=focus), \
+                 patch.object(bridge, "send_to_extension", new_callable=AsyncMock, return_value=point) as send, \
+                 patch.object(bridge.asyncio, "sleep", new_callable=AsyncMock), \
+                 patch.object(bridge, "_focus_browser_window", return_value=True), \
+                 patch.object(bridge, "_browser_not_at_point", return_value=refused) as check, \
+                 patch.object(bridge, "_native_click_screen") as click:
+                result = asyncio.run(bridge.trusted_click({"x": 700, "y": 562, "tabId": 396, "focus": focus}))
+            self.assertEqual(result, refused)
+            check.assert_called_once_with(760, 604, "", focused, wait)
+            click.assert_not_called()
+            self.assertEqual(send.call_args_list[-1].args, ("restoreActiveTab", {"tabId": 324, "from": 396}))
+
+    def test_screen_clicks_are_not_checked(self):
+        with patch.object(bridge, "_browser_not_at_point") as check, \
+             patch.object(bridge, "_native_click_screen", return_value={"ok": True, "backend": "quartz"}):
+            result = asyncio.run(bridge.trusted_click({"coords": {"x": 5, "y": 6}, "coordinateSpace": "screen"}))
+        self.assertTrue(result["ok"])
+        check.assert_not_called()
 
     def test_restore_pointer_is_passed_to_the_backend_and_reported(self):
         point = {"screenX": 110, "screenY": 220, "viewportX": 10, "viewportY": 20}
