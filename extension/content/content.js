@@ -2727,7 +2727,10 @@
         const el = matches.at(part.index);
         matches = el ? [el] : [];
       } else if (part.kind === 'parent') {
-        matches = [...new Set((matches || [document.documentElement]).map(flatParent).filter(Boolean))];
+        // The light-DOM parent, not flatParent's slot: later steps search inside it, and a
+        // slot has neither the slotted siblings as descendants nor a box to point at.
+        const parent = el => el.parentElement || el.parentNode?.host || null;
+        matches = [...new Set((matches || [document.documentElement]).map(parent).filter(Boolean))];
       } else {
         const found = new Set();
         for (const scope of matches || [null]) {

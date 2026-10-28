@@ -231,6 +231,17 @@ function newsletterShadowPage(mode) {
   return { html: h('html', {}, body), body, host, xpaths: [] };
 }
 
+// A card whose light-DOM title and button are assigned to a slot in its shadow root.
+function slottedCardPage() {
+  const slot = h('slot', { id: 'card-slot' });
+  const host = h('product-card', { id: 'card' }, h('h3', { id: 'card-title' }, 'Kettle'),
+    h('button', { id: 'buy' }, 'Buy'));
+  new ShadowRoot(host, [h('div', { id: 'card-frame' }, slot)]);
+  for (const child of host.children) child.assignedSlot = slot;
+  const body = h('body', {}, host);
+  return { html: h('html', {}, body), body, host, xpaths: [] };
+}
+
 // The real-browser screenshot fixture: "capture" is in two buttons in nested shadow roots and
 // in the inline script and style; the heading says "Capture formats".
 function captureShadowPage() {
@@ -607,6 +618,13 @@ async function testParentStepLeavesShadowRoot() {
     assert.match(container.snapshot, /- form "Newsletter"/, mode);
     assert.match(container.snapshot, /- textbox "Email"/, mode);
   }
+
+  // A slotted element's .. stays its light-DOM parent, not its slot, so a later step still
+  // finds the slotted siblings.
+  const dom = slottedCardPage();
+  const send = load(dom);
+  assert.equal(await readTarget(send, dom, '#card-title >> ..'), 'card');
+  assert.equal(await readTarget(send, dom, 'text=Kettle >> .. >> button'), 'buy');
 }
 
 async function testRegexValuesAndQuotesInChains() {
