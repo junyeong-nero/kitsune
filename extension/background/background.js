@@ -628,6 +628,8 @@ async function runCommand(params, { withSnapshot, deltaSnapshot, textSnapshot, t
         }
         if (snapshot.truncated) result.snapshot_truncated = true;
         if (snapshot.hint) result.snapshot_hint = snapshot.hint;
+        // A navigation's own result does not come from the page (#328).
+        if (snapshot.visibilityState) result.visibilityState = snapshot.visibilityState;
         if (snapshot.target_ref) result.target_ref = snapshot.target_ref;
       }
     } catch (e) { result.snapshot_error = e.message; }
