@@ -2202,17 +2202,19 @@ def _with_own_tabs(result, own_only):
 
     own_only keeps only those, most recently opened first. Without an owner id no tab is mine, and
     neither is a tab the extension no longer counts as the agent's (owned), such as one the user
-    took back. It runs in the HTTP thread, so it reads a copy of _tab_openers.
+    took back, nor a tab pool tab, which any client may acquire. It runs in the HTTP thread, so it
+    reads copies of _tab_openers and the pool.
     """
     tabs = result.get("tabs") if isinstance(result, dict) else None
     if not isinstance(tabs, list):
         return result
     owner = _owner_id.get()
     openers = dict(_tab_openers)
+    pool = set(_tab_pool["available"]) | set(_tab_pool["in_use"])
 
     def mine(tab):
         return (owner is not None and isinstance(tab, dict) and tab.get("owned") is True
-                and (openers.get(tab.get("id")) or {}).get("owner") == owner)
+                and tab.get("id") not in pool and (openers.get(tab.get("id")) or {}).get("owner") == owner)
 
     if own_only:
         tabs = sorted(filter(mine, tabs), key=lambda tab: openers[tab["id"]]["opened"], reverse=True)

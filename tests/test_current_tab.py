@@ -22,7 +22,7 @@ from unittest.mock import patch
 from kitsune import playwright_tools, server, tools
 sent = []
 
-def post(endpoint, body, timeout=15):
+def post(endpoint, body, timeout=15, start_bridge=True):
     sent.append([endpoint, body.get("tabId")])
     return {"ok": True, "tabId": 42} if endpoint == "/api/new-tab" else {"ok": True}
 

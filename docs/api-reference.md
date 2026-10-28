@@ -1102,9 +1102,10 @@ hint names the first one (#325):
 ```
 
 None of them becomes current: the MCP client may have opened it for an earlier
-conversation, so the agent decides. When the MCP server cannot get the list (the bridge
-or extension is unavailable, or a bridge of an older version), or there is no such tab,
-the refusal is the one above.
+conversation, so the agent decides. The MCP server asks only a bridge that already runs,
+with a 3 s timeout: it does not start a bridge or wait for the extension for this list.
+When it cannot get the list (no bridge runs, the extension is unavailable, or a bridge of
+an older version answers), or there is no such tab, the refusal is the one above.
 
 The core `browser_navigate` and `browser_navigate_back` take an optional `tab_id`,
 accepted like `confirm_token` but not listed in their schemas, which are Playwright
@@ -1137,13 +1138,16 @@ Every bridge request from an MCP server or a Python API `connect()` carries
 (#325). It is `KITSUNE_OWNER_ID` from the process environment when that is 1 to 64
 letters, digits, `.`, `_`, `:` or `-` (the characters `X-Kitsune-Client` allows; another
 value is ignored). Otherwise it is `<name>-<pid>` of the nearest process above the MCP
-server that is not `uv`, `uvx` or a Python interpreter below them (at most 4 levels, read
-with `ps`), such as `claude-48190`: an MCP client that reconnects starts a new server
-process but keeps running itself. A Python process above `uv` is the MCP client, such as
-one built on the MCP Python SDK. When `ps` cannot tell, and on Windows, it is
-`ppid-<parent pid>`. Set `KITSUNE_OWNER_ID` when the MCP client runs its server through
-another launcher, such as a shell script, or to keep the id across MCP client restarts.
-Give each MCP client its own value: clients with the same value share their tabs.
+server that is not `uv` or `uvx` (at most 4 levels, read with `ps`), such as
+`claude-48190`: an MCP client that reconnects starts a new server process but keeps
+running itself. Any other process is the MCP client, a Python one too, such as a client
+built on the MCP Python SDK. When `ps` cannot tell, and on Windows, it is
+`ppid-<parent pid>`. A server whose parent is pid 1 (started by launchd or systemd, or
+orphaned) or pid 0 gets `pid-<its own pid>`, which no other server shares, so it is offered
+no tabs after a restart. Set `KITSUNE_OWNER_ID` when the MCP client runs its server through
+another launcher, such as a shell script or a Python wrapper, or to keep the id across MCP
+client restarts. Give each MCP client its own value: clients with the same value share
+their tabs.
 `browser_status` shows it as `mcp_tools.owner`, and a Python `Browser` has it as
 `browser.client.owner_id`. It is not the audit `client` id (`X-Kitsune-Client`), which
 changes with every MCP server process.
@@ -1159,10 +1163,11 @@ whether the agent, any client, opened a tab.
 
 In the tab list of Kitsune's `browser_tabs` list and `browser_tab_list` (`GET /api/tabs`),
 tabs whose owner is the requesting client's add `mine: true` when they are also `owned`,
-so a tab the extension gave back to the user is never `mine`. Other clients' tabs do not,
-and the core `browser_tabs` list is unchanged. `POST /api/tabs` with `{"mine": true}` lists
-only those tabs, the most recently opened first; the MCP server uses it for
-[`state.ownTabs`](#no-current-tab).
+so a tab the extension gave back to the user is never `mine`. Neither is a tab pool tab
+(`browser_tab_pool`, `browser_pool_acquire`), which any client may acquire. Other
+clients' tabs do not, and the core `browser_tabs` list is unchanged. `POST /api/tabs` with
+`{"mine": true}` lists only those tabs, the most recently opened first; the MCP server
+uses it for [`state.ownTabs`](#no-current-tab).
 
 ### Ask-before-act
 

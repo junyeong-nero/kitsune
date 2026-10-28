@@ -37,10 +37,10 @@ def _bridge_matches(status: dict) -> bool:
     return status.get("build") == BRIDGE_BUILD or os.environ.get("KITSUNE_NO_BRIDGE_RESTART") == "1"
 
 
-# The owner id (#325) skips the processes that start an MCP server for its client: uv run, uvx
-# (which runs as uv) and, below them, the Python interpreter, at most OWNER_ANCESTOR_LEVELS of them.
+# The owner id (#325) skips the processes that start an MCP server for its client: uv run and uvx
+# (which runs as uv), at most OWNER_ANCESTOR_LEVELS of them. Any other process, Python included, is
+# the client: uv runs the server's Python itself, with no Python process in between.
 _UV = re.compile(r"uvx?(\.exe)?", re.IGNORECASE)
-_PYTHON = re.compile(r"python[0-9.]*w?(\.exe)?", re.IGNORECASE)
 OWNER_ANCESTOR_LEVELS = 4
 
 
@@ -51,24 +51,22 @@ def owner_id() -> str:
     KITSUNE_OWNER_ID if it is a valid id (CLIENT_ID_PATTERN), else `<name>-<pid>` of the nearest
     ancestor process that is not a launcher, else `ppid-<parent pid>`. An MCP client such as
     Claude Code starts a new server process when it reconnects, but it keeps running itself, so
-    its id stays the same.
+    its id stays the same. A process whose parent is init or launchd, which adopt every orphan,
+    gets `pid-<pid>`, an id no other process shares.
     """
     configured = os.environ.get("KITSUNE_OWNER_ID", "")
     if re.fullmatch(CLIENT_ID_PATTERN, configured):
         return configured
+    if os.getppid() <= 1:
+        return f"pid-{os.getpid()}"
     return _ancestor_owner(os.getppid()) or f"ppid-{os.getppid()}"
 
 
 @functools.lru_cache(maxsize=1)
 def _ancestor_owner(pid: int) -> str | None:
-    """`<name>-<pid>` of pid or its nearest ancestor that is not a launcher; None if ps cannot tell.
-
-    A Python process above uv is the MCP client itself (an MCP Python SDK client, for example), not
-    a launcher, so Python clients started from the same shell get ids of their own.
-    """
+    """`<name>-<pid>` of pid or its nearest ancestor that is not a launcher; None if ps cannot tell."""
     if sys.platform == "win32":
         return None
-    below_uv = True
     for _ in range(OWNER_ANCESTOR_LEVELS):
         if pid <= 1:  # init or launchd adopts the processes of every exited client
             return None
@@ -81,9 +79,7 @@ def _ancestor_owner(pid: int) -> str | None:
         if len(fields) != 2 or not fields[0].isdigit():
             return None
         parent, name = int(fields[0]), os.path.basename(fields[1].strip())
-        if _UV.fullmatch(name):
-            below_uv = False
-        elif not (below_uv and _PYTHON.fullmatch(name)):
+        if not _UV.fullmatch(name):
             pid_text = f"-{pid}"
             return re.sub(r"[^A-Za-z0-9._:-]", "_", name)[:64 - len(pid_text)] + pid_text
         pid = parent
@@ -315,9 +311,11 @@ class BridgeClient:
             time.sleep(0.3)
         self._extension_wait_until = 0.0
 
-    def request(self, method: str, endpoint: str, **kwargs) -> dict:
+    def request(self, method: str, endpoint: str, start_bridge: bool = True, **kwargs) -> dict:
+        """start_bridge=False sends only to a bridge that already runs: it neither starts one nor
+        waits for the extension to reach a bridge this client started."""
         for attempt in range(2):
-            if endpoint != "/api/status":  # browser_status reports the extension as it is
+            if endpoint != "/api/status" and start_bridge:  # browser_status reports the extension as it is
                 self.await_extension()
             try:
                 headers = {**_headers(), CLIENT_HEADER: self.client_id, OWNER_HEADER: self.owner_id}
@@ -344,7 +342,7 @@ class BridgeClient:
                     return {"error": f"Kitsune bridge returned HTTP {r.status_code} without a JSON body",
                             "state": {"httpStatus": r.status_code, "body": r.text[:200]}}
             except httpx.ConnectError:
-                if attempt:
+                if attempt or not start_bridge:
                     break
                 error = self.ensure_bridge()
                 if error:
@@ -365,6 +363,6 @@ class BridgeClient:
         """GET request to bridge."""
         return self.request("GET", endpoint, timeout=15)
 
-    def post(self, endpoint: str, data: dict, timeout: float = 15) -> dict:
+    def post(self, endpoint: str, data: dict, timeout: float = 15, start_bridge: bool = True) -> dict:
         """POST request to bridge."""
-        return self.request("POST", endpoint, json=data, timeout=timeout)
+        return self.request("POST", endpoint, start_bridge=start_bridge, json=data, timeout=timeout)

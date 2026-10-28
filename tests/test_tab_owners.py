@@ -6,7 +6,10 @@ open tabs in state.ownTabs without making one current.
 """
 import asyncio
 import json
+import os
+import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
@@ -18,6 +21,16 @@ from test_container_progress import ContainerTests
 from test_tab_inventory_bridge import ScriptedExtension, tab
 
 OWNER, OTHER = "claude-300", "claude-301"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# A client process that starts stand-ins for its MCP server, directly and through uv run when uv is
+# installed, and prints its pid and the owner id each of them derives.
+SERVERS_OF_ONE_CLIENT = r'''import json, os, shutil, subprocess, sys
+code = "from kitsune import bridge_client; print(bridge_client.owner_id())"
+starts = [[sys.executable], [sys.executable]] + ([["uv", "run", "--no-sync", "python"]] if shutil.which("uv") else [])
+owners = [subprocess.run(start + ["-c", code], capture_output=True, text=True, check=True).stdout.strip()
+          for start in starts]
+print(json.dumps({"pid": os.getpid(), "owners": owners}))
+'''
 
 
 def ps_replies(chain):
@@ -55,16 +68,17 @@ class OwnerIdTests(unittest.TestCase):
                 self.assertEqual(self.owner({100: (50, "claude")})[0], "claude-100")
 
     def test_the_nearest_ancestor_that_is_not_a_launcher(self):
-        # uv run: the server's parent is uv; uvx runs as uv too; a macOS framework Python re-execs.
-        chain = {100: (200, "/opt/homebrew/bin/python3.13"), 200: (300, "/Users/me/.local/bin/uv"),
-                 300: (1, "/Applications/Claude.app/Contents/MacOS/claude")}
+        # uv run: the server's parent is uv; uvx runs as uv too.
+        chain = {100: (300, "/Users/me/.local/bin/uv"), 300: (1, "/Applications/Claude.app/Contents/MacOS/claude")}
         owner, run = self.owner(chain)
         self.assertEqual(owner, "claude-300")
         self.assertEqual(run.call_args_list[0].args[0], ["ps", "-o", "ppid=,comm=", "-p", "100"])
-        # Above uv, a Python process is the MCP client (an MCP Python SDK client), not a launcher.
+        # A Python process is the MCP client (an MCP Python SDK client), with or without uv between.
         self.assertEqual(self.owner({100: (200, "uv"), 200: (300, "python3.12"), 300: (1, "zsh")})[0],
                          "python3.12-200")
-        self.assertEqual(self.owner({100: (1, "Python")})[0], "ppid-100", "Python alone leads to launchd")
+        self.assertEqual(self.owner({100: (300, "/opt/homebrew/bin/python3.13"), 300: (1, "zsh")})[0],
+                         "python3.13-100", "a Python client that starts the server without uv")
+        self.assertEqual(self.owner({100: (1, "Python")})[0], "Python-100")
         self.assertEqual(self.owner({100: (300, "uvx"), 300: (1, "Code Helper (Plugin)")})[0],
                          "Code_Helper__Plugin_-300")
         long_name = self.owner({100: (1, "n" * 80)})[0]
@@ -72,7 +86,7 @@ class OwnerIdTests(unittest.TestCase):
         self.assertTrue(bridge._CLIENT_ID.fullmatch(long_name))
 
     def test_falls_back_to_the_parent_pid(self):
-        launchers = {100: (101, "python"), 101: (102, "python3"), 102: (103, "uv"), 103: (104, "uvx"),
+        launchers = {100: (101, "uv"), 101: (102, "uvx"), 102: (103, "uv"), 103: (104, "uvx"),
                      104: (1, "claude")}
         self.assertEqual(self.owner(launchers)[0], "ppid-100", "only a few levels are walked")
         self.assertEqual(self.owner({})[0], "ppid-100", "ps does not know the process")
@@ -87,10 +101,32 @@ class OwnerIdTests(unittest.TestCase):
         self.assertEqual(owner, "ppid-100")
         run.assert_not_called()
 
+    def test_an_orphan_gets_an_id_no_other_process_shares(self):
+        # Started by launchd or systemd, or as a container's first process.
+        for ppid in (1, 0):
+            with self.subTest(ppid=ppid), patch.object(bridge_client.os, "getppid", return_value=ppid), \
+                    patch.object(bridge_client.os, "getpid", return_value=4242):
+                owner, run = self.owner({ppid: (0, "launchd")})
+                self.assertEqual(owner, "pid-4242")
+                run.assert_not_called()
+
     def test_this_machine_gives_a_valid_owner(self):
         bridge_client._ancestor_owner.cache_clear()
         with patch.object(bridge_client.os, "getppid", wraps=bridge_client.os.getpid):
             self.assertTrue(bridge._CLIENT_ID.fullmatch(bridge_client.owner_id()))
+
+    @unittest.skipIf(sys.platform == "win32" or not shutil.which("ps"), "the owner walk needs ps")
+    def test_servers_of_one_client_share_its_owner_and_sibling_clients_do_not(self):
+        # Real processes: two sibling clients, each starting servers directly and through uv run.
+        env = {k: v for k, v in os.environ.items() if k != "KITSUNE_OWNER_ID"}
+        clients = [json.loads(subprocess.run([sys.executable, "-c", SERVERS_OF_ONE_CLIENT], env=env, cwd=ROOT,
+                                             check=True, capture_output=True, text=True, timeout=60).stdout)
+                   for _ in range(2)]
+        for client in clients:
+            with self.subTest(client=client):
+                self.assertEqual(len(set(client["owners"])), 1, client)
+                self.assertTrue(client["owners"][0].endswith(f"-{client['pid']}"), client)
+        self.assertNotEqual(clients[0]["owners"][0], clients[1]["owners"][0])
 
     def test_each_request_sends_the_owner_next_to_the_client(self):
         bridge_client.os.environ["KITSUNE_OWNER_ID"] = OWNER
@@ -104,6 +140,16 @@ class OwnerIdTests(unittest.TestCase):
         headers = request.call_args.kwargs["headers"]
         self.assertEqual((headers[task_modes.OWNER_HEADER], headers[task_modes.CLIENT_HEADER]),
                          (OWNER, first.client_id))
+
+    def test_a_request_that_must_not_start_a_bridge_neither_starts_nor_waits_for_one(self):
+        client = BridgeClient(caps=None)
+        with patch("kitsune.bridge_client.httpx.request", side_effect=bridge_client.httpx.ConnectError("refused")), \
+                patch.object(BridgeClient, "ensure_bridge") as ensure, \
+                patch.object(BridgeClient, "await_extension") as wait:
+            result = client.post("/api/tabs", {"mine": True}, 3, start_bridge=False)
+        self.assertEqual(result["code"], "bridge_unavailable")
+        ensure.assert_not_called()
+        wait.assert_not_called()
 
 
 class OwnerHeaderTests(ContainerTests):
@@ -141,6 +187,9 @@ class TabOpenersTests(ContainerTests):
         openers = patch.object(bridge, "_tab_openers", {})
         self.openers = openers.start()
         self.addCleanup(openers.stop)
+        pool = patch.dict(bridge._tab_pool, {"size": 0, "available": [], "in_use": set(), "url": "about:blank"})
+        pool.start()
+        self.addCleanup(pool.stop)
         self.next_tab = iter(range(50, 70))
         self.open_tabs = [1, 2]
         self.user_tabs = {1, 2}  # the extension's owned: false
@@ -186,8 +235,7 @@ class TabOpenersTests(ContainerTests):
         self.replies["click"] = [{"ok": True, "opened_tabs": [{"tabId": 63, "url": "https://b.test/"}]}]
         self.as_owner(OTHER, lambda h: h.handle_batch(), {"commands": [{"action": "click", "selector": "a",
                                                                          "tabId": 1}]})
-        with patch.dict(bridge._tab_pool, {"size": 0, "available": [], "in_use": set(), "url": "about:blank"}):
-            self.as_owner(OTHER, lambda h: h.handle_tab_pool(), {"size": 1})
+        self.as_owner(OTHER, lambda h: h.handle_tab_pool(), {"size": 1})
         self.assertEqual(self.owners(), {50: OWNER, 51: OWNER, 63: OTHER, 52: OTHER})
 
     def test_a_session_temp_tab_is_recorded_until_it_closes(self):
@@ -262,6 +310,14 @@ class TabOpenersTests(ContainerTests):
         self.assertEqual([tab.get("mine") for tab in self.tabs(OWNER)], [None, None, None])
         self.assertEqual(self.tabs(OWNER, mine=True), [])
         self.assertEqual(self.owners(), {50: OWNER}, "the tab is still open, so its record stays")
+
+    def test_tab_pool_tabs_are_never_mine(self):
+        # Any client may acquire a pool tab: OWNER grew the pool, OTHER drives tab 50, 51 waits.
+        self.as_owner(OWNER, lambda h: h.handle_tab_pool(), {"size": 2})
+        acquired = self.as_owner(OTHER, lambda h: h.handle_pool_acquire(), {})
+        self.assertEqual((acquired["tabId"], self.owners()), (50, {50: OWNER, 51: OWNER}))
+        self.assertEqual(self.tabs(OWNER, mine=True), [])
+        self.assertEqual([tab.get("mine") for tab in self.tabs(OWNER)], [None] * 4)
 
     def test_a_new_extension_connection_forgets_every_owner(self):
         self.openers.update({50: {"owner": OWNER, "opened": 1.0}})
@@ -354,15 +410,16 @@ class OwnTabsRefusalTests(unittest.TestCase):
     def refuse(self, listed):
         posts = []
 
-        def post(endpoint, body, timeout=15):
-            posts.append((endpoint, body))
+        def post(endpoint, body, timeout=15, start_bridge=True):
+            posts.append((endpoint, body, timeout, start_bridge))
             if isinstance(listed, Exception):
                 raise listed
             return listed
         with patch.object(tools, "_post", side_effect=post):
             result = self.scroll()
         self.assertEqual(self.sent, [], "nothing is dispatched")
-        self.assertEqual(posts, [("/api/tabs", {"mine": True})])
+        self.assertEqual(posts, [("/api/tabs", {"mine": True}, tools.OWN_TABS_TIMEOUT, False)],
+                         "a quick lookup that starts no bridge")
         self.assertIsNone(playwright_tools._current_tab, "no tab is adopted")
         return result
 

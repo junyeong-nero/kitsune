@@ -148,6 +148,8 @@ def _no_current_tab(name: str, arguments: dict) -> dict | None:
 
 # At most this many of the client's own tabs are offered in a no_current_tab refusal (#325).
 OWN_TABS_OFFERED = 5
+# Seconds each request of that lookup may take, so the refusal stays quick.
+OWN_TABS_TIMEOUT = 3
 
 
 def _offering_own_tabs(refusal: dict) -> dict:
@@ -157,10 +159,11 @@ def _offering_own_tabs(refusal: dict) -> dict:
     restart (BridgeClient.owner_id), so a restarted server can offer the tab its client worked
     in: state.ownTabs lists them, most recently opened first, and the hint names the first. It
     is not made current, since the tab may belong to an earlier conversation of that client. A
-    failed lookup leaves the refusal as it was.
+    failed lookup leaves the refusal as it was. It asks only a bridge that already runs: one it
+    would start knows no tab's owner yet.
     """
     try:
-        listed = _post("/api/tabs", {"mine": True})
+        listed = _post("/api/tabs", {"mine": True}, timeout=OWN_TABS_TIMEOUT, start_bridge=False)
     except Exception:
         return refusal
     tabs = listed.get("tabs") if isinstance(listed, dict) and not _failed(listed) else None
@@ -248,9 +251,9 @@ def _get(endpoint: str) -> dict:
     return client.get(endpoint)
 
 
-def _post(endpoint: str, data: dict, timeout: float = 15) -> dict:
+def _post(endpoint: str, data: dict, timeout: float = 15, start_bridge: bool = True) -> dict:
     """POST request to bridge."""
-    return client.post(endpoint, data, timeout)
+    return client.post(endpoint, data, timeout, start_bridge=start_bridge)
 
 
 def _request_body(body: dict, tab_id: int | None = None, ref: str | None = None,
