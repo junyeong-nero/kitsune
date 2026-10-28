@@ -59,12 +59,13 @@ function slider({ role = 'slider', min = 0, max = 100, step = 1, value = 50, han
   return el;
 }
 
-function page(elements) {
+// clock, if given, is the page's Date (its now() for fill's time limit).
+function page(elements, clock = Date) {
   let listener;
   document.body = new Element('BODY');
   document.activeElement = document.body;
   const context = vm.createContext({
-    console, crypto: webcrypto, Event, KeyboardEvent, MessageChannel, CSS: { escape: x => x },
+    console, crypto: webcrypto, Event, KeyboardEvent, MessageChannel, CSS: { escape: x => x }, Date: clock,
     HTMLInputElement: class {}, HTMLTextAreaElement: class {},
     window: { getComputedStyle: () => ({ display: 'block', visibility: 'visible' }) },
     document: Object.assign(document, {
@@ -88,8 +89,8 @@ const nextTask = () => new Promise(resolve => {
   channel.port2.postMessage(null);
 });
 
-async function fill(widget, value) {
-  const send = page({ '#slider': widget });
+async function fill(widget, value, clock) {
+  const send = page({ '#slider': widget }, clock);
   return send({ action: 'fill', selector: '#slider', value });
 }
 
@@ -100,6 +101,10 @@ async function testFillReachesTheValue() {
   assert.equal(widget.attrs['aria-valuenow'], '15');
   assert.equal(widget.focused, 1, 'focused first, as a user would');
   assert.deepEqual(new Set(widget.keys), new Set(['ArrowLeft']));
+
+  // 0.1 + 0.2 renders as 0.30000000000000004, which counts as 0.3.
+  const tenths = slider({ min: 0, max: 1, step: 0.1, value: 0.1 });
+  assert.deepEqual([(await fill(tenths, '0.3')).value, tenths.keys], [0.30000000000000004, ['ArrowRight', 'ArrowRight']]);
 
   const up = slider({ min: 0, max: 1, step: 0.25, value: 0.5 });
   assert.equal((await fill(up, 0.75)).value, 0.75);
@@ -163,16 +168,40 @@ async function testValueNotReached() {
   assert.deepEqual(stuck.keys, ['ArrowLeft', 'ArrowDown']);
   assert.match(ignored.hint, /stopped moving/);
 
-  // Past its end it stops moving at the end.
-  const end = slider({ value: 95 });
-  const beyond = await fill(end, '150');
-  assert.deepEqual([beyond.code, beyond.state.value, beyond.state.reason], ['value_not_reached', 100, 'stuck']);
+  // A value outside aria-valuemin/max fails before any key, so it may be retried.
+  for (const target of ['150', '-1']) {
+    const end = slider({ value: 95 });
+    const beyond = await fill(end, target);
+    assert.equal(beyond.code, 'value_not_reached');
+    assert.equal(beyond.retryable, true, 'nothing was pressed');
+    assert.equal(beyond.error, `${target} is outside the slider's range, 0 to 100`);
+    assert.deepEqual(beyond.state, { role: 'slider', value: 95, target: Number(target), min: 0, max: 100, keys: 0,
+      reason: 'out_of_range' });
+    assert.match(beyond.hint, /^Nothing was pressed/);
+    assert.deepEqual([end.keys, end.focused], [[], 0]);
+  }
+
+  // Right moves it away and Up/Down do nothing: it says so, not that it never moved.
+  const away = slider({ handles: { ArrowRight: -1, ArrowLeft: 1 } });
+  const movedAway = await fill(away, '52');
+  assert.deepEqual([movedAway.state.value, movedAway.state.keys, movedAway.state.reason], [49, 2, 'moved_away']);
+  assert.deepEqual(away.keys, ['ArrowRight', 'ArrowUp']);
+  assert.match(movedAway.hint, /moved it away from the value/);
 
   // A long way stops at the key limit; filling again continues from there.
   const long = slider({ max: 5000, value: 0 });
   const limited = await fill(long, '4000');
   assert.deepEqual([limited.code, limited.state.value, limited.state.keys, limited.state.reason],
     ['value_not_reached', 1000, 1000, 'key_limit']);
+
+  // A slow page stops at the time limit, before the bridge's request times out: each read of
+  // the clock here is 100 ms later, so 20 s run out after about 200 keys.
+  let ms = 0;
+  const clock = class extends Date { static now() { return ms += 100; } };
+  const slow = await fill(slider({ max: 5000, value: 0 }), '4000', clock);
+  assert.deepEqual([slow.code, slow.state.reason], ['value_not_reached', 'time_limit']);
+  assert.ok(slow.state.keys > 150 && slow.state.keys < 250, `${slow.state.keys} keys`);
+  assert.match(slow.hint, /more than 20 s/);
 }
 
 async function testWhatFillRefuses() {
@@ -213,6 +242,15 @@ async function testNativeRangeKeepsItsValueSetter() {
   assert.equal(range.value, '15');
   assert.deepEqual(range.events, ['input', 'change']);
   assert.deepEqual(range.keys, []);
+
+  // A role=slider wrapper around a native range fills the range, not by keys.
+  const inner = Object.assign(new Element('INPUT'), { type: 'range', value: '50', events: [] });
+  const wrapper = new Element('DIV', { role: 'slider', 'aria-valuenow': '50' });
+  wrapper.querySelector = selector => selector === 'input, textarea, select' ? inner : null;
+  const wrapped = await page({ '#wrapper': wrapper })({ action: 'fill', selector: '#wrapper', value: '15' });
+  assert.deepEqual(wrapped, { ok: true, pierced: true, tag: 'input' });
+  assert.equal(inner.value, '15');
+  assert.deepEqual(wrapper.keys, []);
 }
 
 async function testKeypressRepeat() {

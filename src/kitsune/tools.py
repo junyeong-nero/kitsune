@@ -1091,8 +1091,16 @@ def browser_keypress(
     if modifiers: body["modifiers"] = modifiers
     if text is not None: body["text"] = text
     if repeat != 1: body["repeat"] = repeat
-    return _post_action("/api/keypress", _request_body(body, tab_id, ref, element, confirm_token, first),
-                        wait, timeout, expect)
+    result = _post_action("/api/keypress", _request_body(body, tab_id, ref, element, confirm_token, first),
+                          wait, timeout, expect)
+    if repeat != 1 and not _failed(result) and "repeat" not in result:
+        # An extension older than repeat presses the key once and answers as for one press.
+        return {"error": "The extension pressed the key once and ignored repeat; it is older than this "
+                         "MCP server", "code": "extension_version_mismatch", "retryable": False,
+                "hint": "Update and reload the Kitsune extension. The key was pressed once; check the page "
+                        "before pressing again.",
+                "state": {"reason": "repeat_unsupported", "pressed": 1}}
+    return result
 
 
 def browser_double_click(

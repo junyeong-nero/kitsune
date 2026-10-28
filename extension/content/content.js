@@ -1780,14 +1780,22 @@
   // A role=slider or spinbutton without a native input has no value to assign, so fill sets it as
   // a user does: it focuses it and presses arrow keys (Home/End for an end), dispatched as
   // keypress dispatches them, until aria-valuenow is the value. A task passes between keys so the
-  // page's framework renders each step before the next is read.
+  // page's framework renders each step before the next is read. A widget that renders only on an
+  // animation frame (throttled in background tabs) is not waited for: it looks stuck, and may
+  // still move after the result.
   const ARIA_RANGE_ROLES = new Set(['slider', 'spinbutton']);
   const ARIA_RANGE_MAX_KEYS = 1000;
+  // Well inside the bridge's 35 s for /api/fill, so the page stops pressing before it times out.
+  const ARIA_RANGE_MAX_MS = 20000;
   const ARIA_RANGE_HINTS = {
     stepped_past: 'Its steps skip the value; fill a value its steps reach (state.value is one).',
     stuck: 'It stopped moving: it is at an end (state.min, state.max), disabled, or ignores synthetic ' +
-      'keys; a value outside its range cannot be reached.',
+      'keys, or renders only on an animation frame.',
+    moved_away: 'Its arrow keys moved it away from the value and the other arrow keys did not move it ' +
+      'back; state.value is where it was left.',
     key_limit: `It took more than ${ARIA_RANGE_MAX_KEYS} keys; fill again to continue from state.value, ` +
+      'or press PageUp/PageDown with browser_press_key for larger steps.',
+    time_limit: `It took more than ${ARIA_RANGE_MAX_MS / 1000} s; fill again to continue from state.value, ` +
       'or press PageUp/PageDown with browser_press_key for larger steps.',
   };
 
@@ -1799,6 +1807,11 @@
   function ariaNumber(el, name) {
     const raw = String(el.getAttribute?.(name) ?? '').trim();
     return raw && Number.isFinite(Number(raw)) ? Number(raw) : null;
+  }
+
+  // Equal up to float rounding: a widget may publish 0.30000000000000004 for a step to 0.3.
+  function sameRangeValue(a, b) {
+    return a != null && b != null && Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(b));
   }
 
   // Presses key on el and returns aria-valuenow once the page rendered it: after one task, or
@@ -1813,20 +1826,29 @@
     return ariaNumber(el, 'aria-valuenow');
   }
 
-  // value: the number to reach. Fails with value_not_reached when a key moved past it, stopped
-  // moving the value, or ARIA_RANGE_MAX_KEYS ran out; state.value is where it stopped.
+  // value: the number to reach. A value outside aria-valuemin/max fails before any key; otherwise
+  // value_not_reached means keys were pressed and it did not get there: a key moved past it,
+  // stopped moving the value, or moved it away, or the key or time limit ran out. state.value is
+  // where it stopped.
   async function fillAriaRange(el, role, value) {
     const text = String(value ?? '').trim();
     const wanted = text && Number.isFinite(Number(text)) ? Number(text) : null;
     if (wanted == null) return { error: `An ARIA ${role} takes a number, not ${JSON.stringify(value)}` };
     const min = ariaNumber(el, 'aria-valuemin');
     const max = ariaNumber(el, 'aria-valuemax');
+    let now = ariaNumber(el, 'aria-valuenow');
+    if ((min != null && wanted < min && !sameRangeValue(wanted, min)) ||
+        (max != null && wanted > max && !sameRangeValue(wanted, max))) {
+      return actionError(`${wanted} is outside the ${role}'s range, ${min ?? '-∞'} to ${max ?? '∞'}`,
+        'value_not_reached', 'Nothing was pressed. Fill a value from state.min to state.max.',
+        { role, value: now, target: wanted, min, max, keys: 0, reason: 'out_of_range' });
+    }
     lastActedElement = el;
     el.focus({ preventScroll: true });
-    let now = ariaNumber(el, 'aria-valuenow');
+    const start = Date.now();
     let keys = 0;
-    if (now !== wanted && (wanted === min || wanted === max)) {
-      now = await pressAriaRangeKey(el, wanted === min ? 'Home' : 'End');
+    if (!sameRangeValue(now, wanted) && (sameRangeValue(wanted, min) || sameRangeValue(wanted, max))) {
+      now = await pressAriaRangeKey(el, sameRangeValue(wanted, min) ? 'Home' : 'End');
       keys++;
     }
     // Increase and decrease keys, the usual pair first: Right/Left on a horizontal slider, Up/Down
@@ -1835,21 +1857,23 @@
     const vertical = role === 'spinbutton' || el.getAttribute('aria-orientation') === 'vertical';
     const pairs = vertical ? [['ArrowUp', 'ArrowDown'], ['ArrowRight', 'ArrowLeft']]
       : [['ArrowRight', 'ArrowLeft'], ['ArrowUp', 'ArrowDown']];
-    let pair = 0, moved = false, reason = null;
-    while (now !== wanted) {
+    let pair = 0, moved = false, away = false, reason = null;
+    while (!sameRangeValue(now, wanted)) {
       if (now == null) { reason = 'stuck'; break; }
       if (keys >= ARIA_RANGE_MAX_KEYS) { reason = 'key_limit'; break; }
+      if (Date.now() - start >= ARIA_RANGE_MAX_MS) { reason = 'time_limit'; break; }
       const up = wanted > now;
       const before = now;
       now = await pressAriaRangeKey(el, pairs[pair][up ? 0 : 1]);
       keys++;
       if (now != null && (up ? now > before : now < before)) {
         moved = true;
-        if (up ? now > wanted : now < wanted) { reason = 'stepped_past'; break; }
+        if (!sameRangeValue(now, wanted) && (up ? now > wanted : now < wanted)) { reason = 'stepped_past'; break; }
       } else if (!moved && pair === 0 && now != null) {
+        away = now !== before;
         pair = 1;
       } else {
-        reason = 'stuck';
+        reason = away && !moved ? 'moved_away' : 'stuck';
         break;
       }
     }

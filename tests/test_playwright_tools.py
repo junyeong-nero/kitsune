@@ -340,12 +340,24 @@ class AdapterTests(unittest.TestCase):
                                  {"error": "repeat must be an integer from 1 to 100"})
         self.post.assert_not_called()
         self.assertNotIn("repeat", playwright_tools.SCHEMAS["browser_press_key"]["inputSchema"]["properties"])
+        self.post.return_value = {"ok": True, "key": "ArrowDown", "repeat": 3}
         result = asyncio.run(server.mcp.call_tool("browser_press_key", {"key": "ArrowDown", "repeat": 3}))
         self.assertFalse(result.isError)
         self.assertEqual(self.posted(), [("/api/keypress", {"key": "ArrowDown", "repeat": 3, "tabId": 4})])
 
+    def test_press_key_repeat_on_an_older_extension_is_an_error(self):
+        # An extension older than repeat presses once and answers without repeat.
+        playwright_tools._current_tab = 4
+        self.post.return_value = {"ok": True, "key": "ArrowLeft", "effect": None}
+        result = playwright_tools.browser_press_key(key="ArrowLeft", repeat=7)
+        self.assertEqual((result["code"], result["retryable"], result["state"]),
+                         ("extension_version_mismatch", False, {"reason": "repeat_unsupported", "pressed": 1}))
+        self.assertEqual(playwright_tools.browser_press_key(key="ArrowLeft"), self.post.return_value)
+        self.post.return_value = {"error": "No target", "code": "not_found"}
+        self.assertEqual(playwright_tools.browser_press_key(key="ArrowLeft", repeat=7)["code"], "not_found")
+
     def test_fill_form_slider_and_type_fill_the_same_way(self):
-        # The extension steps an ARIA slider with keys on /api/fill (#311).
+        # Routing guard: both reach /api/fill, where the extension steps an ARIA slider with keys (#311).
         playwright_tools.browser_fill_form(fields=[{"target": "e4", "name": "Volume", "type": "slider",
                                                     "value": 15}])
         playwright_tools.browser_type(target="e4", text="15")
