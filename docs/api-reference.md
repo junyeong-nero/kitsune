@@ -2476,6 +2476,29 @@ keeps the value setter.
 `{ "selector": "a.link" }`
 Returns `{ "ok": true, "tag": "a" }`
 
+A `selector` is scrolled into view first. The hover dispatches, in this order,
+`pointerover`, `pointerenter`, `mouseover`, `mouseenter`, `pointermove` and
+`mousemove` at the target's center, as a pointer arriving there would. `pointerover`,
+`mouseover` and the move events go to the target and bubble, across shadow roots
+(`composed: true`). `pointerenter` and `mouseenter` do not bubble; each goes to every
+newly entered element from the outermost ancestor to the target, so a row that shows
+its controls on enter sees the hover of a child. The ancestor chain crosses shadow
+roots to their hosts and stays within the target's document (in a frame, the `<iframe>`
+element is not entered). An ancestor that also contains the element the previous hover
+pointed at counts as already entered and gets no enter events; the first hover enters
+every ancestor up to the root element, and so does hovering the same element again, so
+a retry can reveal what was hidden meanwhile. Kitsune remembers only its own hovers in
+this document: clicks, the real pointer and `browser_trusted_click` do not change it,
+and navigation or reinjection starts over. Pointer events carry `pointerType: "mouse"`,
+`pointerId: 1` and `isPrimary`, and every event carries `view` and the point.
+
+Limits: every event has `isTrusted: false`, and no `pointerout`, `pointerleave`,
+`mouseout` or `mouseleave` is sent to the element pointed at before. CSS `:hover`
+rules follow only the real pointer, so a control that only a `:hover` style reveals
+stays hidden. For it, use `browser_trusted_click` with `restore_pointer=False`, which
+clicks the target with the real pointer and leaves the pointer there, on a target where
+a click is harmless; or ask the user to point at it.
+
 ### POST /api/drag
 `{ "from": "#card", "to": "#done" }` — or `ref` and `toRef`.
 Returns `{ "ok": true, "from": "#card", "to": "#done", "via": "html5" }`.
