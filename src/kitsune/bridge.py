@@ -274,7 +274,13 @@ _MAC_FOCUS_SCRIPT = """on run argv
       set procName to procName as text
       if exists process procName then
         set frontmost of process procName to true
-        return procName
+        -- Coming to the front can take a moment, and a browser in full screen on another
+        -- Space may never do so (#322); only a process that did counts as focused.
+        repeat 20 times
+          if frontmost of process procName then return procName
+          delay 0.05
+        end repeat
+        return ""
       end if
     end repeat
   end tell
@@ -301,15 +307,90 @@ def _focus_mac_process(names):
     return True
 
 
+def _browser_processes(process=""):
+    return [process] if process else _env_names("KITSUNE_BROWSER_PROCESS", _DEFAULT_BROWSER_PROCESSES)
+
+
 def _focus_browser_window(title="", process=""):
-    """Best-effort browser focus: window title on Windows, process name on macOS."""
+    """Best-effort browser focus: window title on Windows, process name on macOS.
+    True only when the browser then is in the foreground."""
     if sys.platform.startswith("win"):
         titles = [title] if title else _env_names("KITSUNE_BROWSER_WINDOW_TITLE", _DEFAULT_BROWSER_WINDOW_TITLES)
         return any(_focus_window_by_title(t) for t in titles)
     if sys.platform == "darwin":
-        processes = [process] if process else _env_names("KITSUNE_BROWSER_PROCESS", _DEFAULT_BROWSER_PROCESSES)
-        return _focus_mac_process(processes)
+        return _focus_mac_process(_browser_processes(process))
     return False
+
+
+def _mac_window_at(x, y):
+    """(owner pid, owner name) of the front on-screen window at desktop point (x, y), (0, "")
+    when none is there (the desktop), or None when Quartz is not available."""
+    try:
+        import Quartz
+    except ImportError:
+        return None
+    try:
+        # Front to back. Bounds and owners need no Screen Recording permission; titles would.
+        windows = Quartz.CGWindowListCopyWindowInfo(
+            Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements,
+            Quartz.kCGNullWindowID) or []
+    except Exception:  # pyobjc raises its own error types
+        return None
+    for window in windows:
+        bounds = window.get("kCGWindowBounds") or {}
+        if not window.get("kCGWindowAlpha", 1):
+            continue
+        left, top = bounds.get("X", 0), bounds.get("Y", 0)
+        if left <= x < left + bounds.get("Width", 0) and top <= y < top + bounds.get("Height", 0):
+            return int(window.get("kCGWindowOwnerPID") or 0), str(window.get("kCGWindowOwnerName") or "")
+    return 0, ""
+
+
+def _mac_process_name(pid):
+    """The executable name of a process ("zen"), as System Events names it, or ""."""
+    try:
+        result = subprocess.run(["ps", "-o", "comm=", "-p", str(pid)], capture_output=True, text=True, timeout=2)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return os.path.basename(result.stdout.strip())
+
+
+BROWSER_AT_POINT_WAIT = 1.0
+_BROWSER_NOT_AT_POINT_HINT = (
+    "Nothing was clicked. Ask the user to show the browser window there, then retry: a browser in "
+    "full screen on another Space needs the user to switch to that Space (or leave full screen); "
+    "focus=true may not bring it there.")
+
+
+def _browser_not_at_point(x, y, process="", focused=None, wait=0.0):
+    """The {error} when macOS shows another app's window (or the desktop) at the desktop point a
+    viewport click would land on, else None. The OS click goes to whatever is there, so a browser
+    on another Space or under another window would send it to that app (#322).
+
+    With Quartz the window at the point is checked, for up to `wait` seconds while a Space switch
+    finishes. Without it (cliclick) only a requested focus that failed (focused False; None when
+    no focus was requested) is known to be unsafe."""
+    if sys.platform != "darwin":
+        return None
+    names = {name.lower() for name in _browser_processes(process)}
+    deadline = time.monotonic() + wait
+    while True:
+        window = _mac_window_at(x, y)
+        if window is None:
+            if focused is not False:
+                return None
+            return {"error": "The browser did not come to the front; the trusted click was not made",
+                    "code": "browser_not_at_point", "retryable": True, "hint": _BROWSER_NOT_AT_POINT_HINT,
+                    "state": {"screenX": x, "screenY": y, "reason": "not_frontmost"}}
+        pid, owner = window
+        if pid and (owner.lower() in names or _mac_process_name(pid).lower() in names):
+            return None
+        if time.monotonic() >= deadline:
+            return {"error": "Another app's window, not the browser's, is at the click point; "
+                              "the trusted click was not made",
+                    "code": "browser_not_at_point", "retryable": True, "hint": _BROWSER_NOT_AT_POINT_HINT,
+                    "state": {"screenX": x, "screenY": y, "reason": "other_window", "app": owner or None}}
+        time.sleep(0.1)
 
 
 _NO_SCHEDULE_ACTIONS = {"ping", "getTabs", "getWindows"}
@@ -909,9 +990,11 @@ async def trusted_click(params):
         return point
 
     try:
-        focused = _focus_browser_window(title or point.get("title", ""), process) if focus else False
-        clicked = _native_click_screen(point["screenX"], point["screenY"], restore_pointer,
-                                       button, click_count, modifiers)
+        focused = _focus_browser_window(title or point.get("title", ""), process) if focus else None
+        refusal = _browser_not_at_point(point["screenX"], point["screenY"], process, focused,
+                                        BROWSER_AT_POINT_WAIT if focus else 0.0)
+        clicked = refusal or _native_click_screen(point["screenX"], point["screenY"], restore_pointer,
+                                                  button, click_count, modifiers)
     finally:
         if point.get("previousTabId") is not None:
             # The OS delivers the click asynchronously; let it land before showing the user's tab again.
@@ -930,7 +1013,7 @@ async def trusted_click(params):
         # The page zoom the extension converted the viewport point with (#307).
         "zoom": point.get("zoom", 1),
         "title": point.get("title", ""),
-        "focused": focused,
+        "focused": bool(focused),
         "focusRequested": bool(focus),
         "clickBackend": clicked.get("backend"),
         **_pointer_restore_fields(clicked),
