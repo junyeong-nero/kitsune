@@ -1,9 +1,11 @@
-"""Issues #87, #94 and #223 in a real browser: a click reports the tab it opened.
+"""Issues #87, #94, #223 and #304 in a real browser: a click reports the tab it opened.
 
 Opt-in and built on tests/real_browser_harness.py, which documents how to run it. The
 first class allows popups, as the benchmark profiles do; the default-prefs class keeps
 the browser's own popup blocker (#94). A middle or Ctrl/Cmd click on a link (#223) never
-opens a tab by itself, being synthetic, so the extension opens it in both.
+opens a tab by itself, being synthetic, so the extension opens it in both. A button whose
+script calls window.open (#304) opens its popup only with popups allowed, and otherwise
+gets a popup_blocked warning.
 """
 from http.server import BaseHTTPRequestHandler
 import time
@@ -21,7 +23,8 @@ PAGES = {
            'cancelled link</a>'
            '<a id="scripted" href="/ok2" onauxclick="event.preventDefault(); window.open(\'/ok2?script\')"'
            ' onclick="if (event.ctrlKey || event.metaKey) { event.preventDefault(); window.open(\'/ok2?script\') }">'
-           'scripted link</a>',
+           'scripted link</a>'
+           '<button id="popup" onclick="window.open(\'/ok2?popup\', \'p\', \'width=400\')">popup</button>',
     "/ok2": "<title>ok2</title><h1>second</h1>",
 }
 
@@ -131,6 +134,28 @@ class RealBrowserOpenedTabTests(harness.RealBrowserTestCase):
                     self.assertEqual(result["opened_tabs"], [], result)
                     self.assertEqual(result["warning"]["code"], "no_tab_opened")
                     self.assertEqual(new, set())
+
+    def test_script_popup_opens_or_warns(self):
+        before = set(self.tab_urls())
+        result = self.click_on_new_page("#popup")
+        self.assertIs(result["ok"], True, result)
+        time.sleep(1)
+        new = set(self.tab_urls()) - before - {self.clicked_tab}
+        for tab_id in new:
+            self.addCleanup(self.call, "/api/close-tab", {"tabId": tab_id})
+        if self.script_tabs_open:
+            # The popup opens in its own window, whose tab has no openerTabId, so opened_tabs (#87)
+            # does not list it; browser_tabs does.
+            urls = self.tab_urls()
+            self.assertNotIn("warning", result)
+            self.assertEqual([urls[tab_id] for tab_id in new], [self.page_url + "/ok2?popup"])
+        else:
+            self.assertNotIn("opened_tabs", result)
+            self.assertEqual(result["warning"]["code"], "popup_blocked", result)
+            self.assertEqual(result["warning"]["state"],
+                             {"url": self.page_url + "/ok2?popup", "reason": "script_popup"})
+            self.assertIn("ask the user to click it", result["warning"]["hint"])
+            self.assertEqual(new, set(), "Kitsune opens nothing in the popup's place")
 
     def test_no_op_click_opens_no_tab(self):
         result = self.click_on_new_page("#noop", {"url_changed": True, "timeout": 500})

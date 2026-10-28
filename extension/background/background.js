@@ -683,8 +683,9 @@ function scriptPopupBlocked(result, popup) {
   const state = { ...(typeof popup.url === 'string' && popup.url ? { url: popup.url } : {}), reason: 'script_popup' };
   result.warning ??= { code: 'popup_blocked', state,
     hint: 'A page script tried to open a popup (window.open), which Firefox blocks without user activation, ' +
-      'so none opened. Ask the user to click it, then continue in the new tab by tab_id (find it with ' +
-      'browser_tabs), or use browser_trusted_click.' };
+      'so none opened. If this click should open that popup (a sign-in at state.url, for example), ask the ' +
+      'user to click it, then continue in the new tab by tab_id (find it with browser_tabs), or use ' +
+      'browser_trusted_click; if not (an ad, for example), ignore this warning.' };
 }
 
 // A click meant to open its link in a new tab says so when none opened (#223).

@@ -95,7 +95,12 @@
   }
 
   const pageWindow = window.wrappedJSObject || window;
-  injectPageScript('(' + installDialogs.toString() + ')(window, f => f);');
+  const WINDOW_OPEN_CALL_LIMIT = 20;
+  const WINDOW_OPEN_URL_LIMIT = 2048;
+  // Both page-world installs share one <script>, so a strict CSP blocks (and reports) one script,
+  // not two; a failed window.open watch still leaves the dialogs installed.
+  injectPageScript('try { (' + installWindowOpenWatch.toString() + ')(window, ' + WINDOW_OPEN_CALL_LIMIT + ', ' +
+    WINDOW_OPEN_URL_LIMIT + '); } catch {}\n(' + installDialogs.toString() + ')(window, f => f);');
   if (!pageWindow.__kitsuneDialogSnapshot && typeof exportFunction === 'function') {
     installDialogs(pageWindow, fn => exportFunction(fn, pageWindow));
   }
@@ -112,8 +117,9 @@
   // blocker refused (#304). The wrapper calls the original with the same this and arguments and
   // returns its result or exception unchanged. It is page code, not an exportFunction export,
   // which would throw "dead object" once the extension reloads; so under a CSP that blocks the
-  // injected script there is no wrapper, and no warning.
-  function installWindowOpenWatch(W) {
+  // injected script there is no wrapper, and no warning. It runs in the page, so the limits
+  // arrive as arguments.
+  function installWindowOpenWatch(W, callLimit, urlLimit) {
     if (W.__kitsuneWindowOpenCalls || typeof W.open !== 'function') return;
     const nativeOpen = W.open;
     const calls = [];
@@ -123,19 +129,16 @@
       try {
         // With noopener (or noreferrer), window.open returns null for a popup that opened.
         const noopener = typeof args[2] === 'string' && /\bno(opener|referrer)\b/i.test(args[2]);
-        calls.push({ seq: ++seq, time: Date.now(), blocked: opened === null && !noopener,
-          url: typeof args[0] === 'string' ? args[0].slice(0, 2048) : null });
-        if (calls.length > 20) calls.shift();
+        calls.push({ seq: ++seq, blocked: opened === null && !noopener,
+          url: typeof args[0] === 'string' ? args[0].slice(0, urlLimit) : null });
+        if (calls.length > callLimit) calls.shift();
       } catch {}
       return opened;
     };
     W.__kitsuneWindowOpenCalls = () => JSON.stringify(calls);
   }
-  injectPageScript('(' + installWindowOpenWatch.toString() + ')(window);');
 
   // The record is page data a page can replace, so this reads a bounded, type-checked copy.
-  const WINDOW_OPEN_CALL_LIMIT = 20;
-  const WINDOW_OPEN_URL_LIMIT = 2048;
   function readWindowOpenCalls() {
     try {
       const read = pageWindow.__kitsuneWindowOpenCalls;
@@ -149,6 +152,13 @@
     } catch { return null; }
   }
 
+  // The URL as window.open resolves it, like a link's absolute href; a URL that does not parse
+  // stays as given.
+  function absoluteWindowOpenUrl(url) {
+    try { url = new URL(url, document.baseURI).href; } catch {}
+    return url.slice(0, WINDOW_OPEN_URL_LIMIT);
+  }
+
   // A click during which the page called window.open and got null adds scriptPopup, which the
   // background turns into a popup_blocked warning when no tab opened (#304).
   function withScriptPopupCheck(act) {
@@ -158,7 +168,7 @@
     const since = before.length ? before[before.length - 1].seq : 0;
     const blocked = (readWindowOpenCalls() || []).find(call => call.seq > since && call.blocked);
     if (!blocked) return result;
-    const scriptPopup = blocked.url ? { url: blocked.url } : {};
+    const scriptPopup = blocked.url ? { url: absoluteWindowOpenUrl(blocked.url) } : {};
     const attach = r => (r && typeof r === 'object' && !r.error ? { ...r, scriptPopup } : r);
     return typeof result?.then === 'function' ? result.then(attach) : attach(result);
   }

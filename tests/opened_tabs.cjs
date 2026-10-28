@@ -289,7 +289,8 @@ async function main() {
   assert.equal(refusedResult.warning.code, 'popup_blocked');
   assert.deepEqual(refusedResult.warning.state, { url: oauth, reason: 'script_popup' });
   assert.match(refusedResult.warning.hint, /user activation/);
-  assert.match(refusedResult.warning.hint, /Ask the user to click it/);
+  assert.match(refusedResult.warning.hint, /If this click should open that popup .*ask the user to click it/);
+  assert.match(refusedResult.warning.hint, /if not \(an ad, for example\), ignore this warning/);
   assert.match(refusedResult.warning.hint, /browser_trusted_click/);
   assert.equal('scriptPopup' in refusedResult, false, 'the content-script field stays internal');
   refused.assertClean();

@@ -29,35 +29,39 @@ class Element extends EventTarget {
 }
 
 // The content script's page-world scripts run in the page; injected marks whether they can (CSP).
-function load({ injected = true } = {}) {
+// openThrows makes reading the page's window.open throw, so the injected watch fails.
+function load({ injected = true, openThrows = false } = {}) {
   const popup = { closed: false };
   const button = new Element('BUTTON', 'google');
   const elements = { '#google': button };
   // The page's own window.open; next decides what it returns (null: the popup blocker refused it).
-  const page = { next: () => null, calls: [] };
+  const page = { next: () => null, calls: [], scripts: 0 };
   const window = {
     PointerEvent: MouseEvent,
     getComputedStyle: () => ({ display: 'block', visibility: 'visible' }),
+    addEventListener() {},
     open(...args) {
       page.calls.push({ self: this, args });
       return page.next(...args);
     },
   };
+  if (openThrows) Object.defineProperty(window, 'open', { get() { throw new Error('page'); } });
   let listener;
   const context = vm.createContext({
-    console, crypto: webcrypto, Event, MouseEvent, PointerEvent: MouseEvent,
+    console, crypto: webcrypto, Event, MouseEvent, PointerEvent: MouseEvent, URL,
     CSS: { escape: x => x }, navigator: { platform: 'Linux x86_64' }, window,
     document: {
+      baseURI: 'https://site.example/login/',
       body: {},
       querySelector: selector => elements[selector] || null,
       querySelectorAll: selector => elements[selector] ? [elements[selector]] : [],
       elementFromPoint: () => button,
       createElement: () => ({ remove() {} }),
-      // Only the window.open watch runs; a strict CSP blocks it like any injected script.
+      // A strict CSP blocks any injected script; an injected script's exception stays in the page.
       documentElement: { appendChild(script) {
-        if (injected && script.textContent.includes('installWindowOpenWatch')) {
-          vm.runInContext(script.textContent, context);
-        }
+        page.scripts++;
+        if (!injected) return;
+        try { vm.runInContext(script.textContent, context); } catch {}
       } },
     },
     browser: { runtime: {
@@ -65,7 +69,7 @@ function load({ injected = true } = {}) {
       sendMessage: () => Promise.resolve(null),
     } },
   });
-  const nativeOpen = window.open;
+  const nativeOpen = openThrows ? null : window.open;
   vm.runInContext(fs.readFileSync('extension/content/content.js', 'utf8'), context);
   const send = msg => new Promise(resolve => listener(msg, {}, resolve))
     .then(result => JSON.parse(JSON.stringify(result)));  // copy out of the vm realm
@@ -76,6 +80,8 @@ function load({ injected = true } = {}) {
 async function main() {
   // The wrapper passes this, arguments, the return value and exceptions through unchanged.
   const h = load();
+  assert.equal(h.page.scripts, 1, 'the dialogs and the window.open watch share one injected script');
+  assert.equal(typeof h.window.__kitsuneDialogSnapshot, 'function');
   assert.notEqual(h.window.open, h.nativeOpen, 'window.open is wrapped');
   assert.equal(h.window.open.name, 'open');
   h.page.next = () => h.popup;
@@ -113,6 +119,14 @@ async function main() {
   assert.equal('scriptPopup' in (await h.click()), false);
   features = 'width=500,NoReferrer';
   assert.equal('scriptPopup' in (await h.click()), false);
+
+  // A relative URL is resolved against the page's base URL; one that does not parse stays as given.
+  const relative = load();
+  relative.button.addEventListener('click', () => relative.window.open('/ok2?popup'));
+  assert.deepEqual((await relative.click()).scriptPopup, { url: 'https://site.example/ok2?popup' });
+  const unparsable = load();
+  unparsable.button.addEventListener('click', () => unparsable.window.open('http://['));
+  assert.deepEqual((await unparsable.click()).scriptPopup, { url: 'http://[' });
 
   // A URL that is not a string is not reported; a long one is cut.
   const urlObject = load();
@@ -156,6 +170,12 @@ async function main() {
   assert.equal(unwatched.ok, true);
   assert.equal('scriptPopup' in unwatched, false);
   assert.equal(csp.page.calls.length, 1);
+
+  // A window.open watch that fails in the page still leaves the dialogs installed.
+  const failed = load({ openThrows: true });
+  assert.equal(typeof failed.window.__kitsuneDialogSnapshot, 'function');
+  assert.equal('__kitsuneWindowOpenCalls' in failed.window, false);
+  assert.equal((await failed.click()).ok, true);
 
   console.log('Script popup checks passed');
 }

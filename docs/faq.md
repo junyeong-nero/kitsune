@@ -85,8 +85,8 @@ Kitsune's clicks are synthetic DOM events without user activation, and with its 
 blocker Firefox opens OAuth/SSO popups only from a real click, so the popup is blocked or the
 site shows an error. When the site's script calls `window.open` during the click and the popup
 is refused, the click result has a `popup_blocked` warning with `state.reason: "script_popup"`;
-other failures give no warning. The recommended fallback is to have the agent ask you to click the button,
-then continue in the popup or tab that opens; this keeps your pointer and focus yours.
+other failures give no warning. The recommended fallback is to have the agent ask you to click
+the button, then continue in the popup or tab that opens; this keeps your pointer and focus yours.
 `browser_trusted_click` sends a real OS click instead. On macOS it needs
 `uvx --from 'kitsune-browser-mcp[macos]' kitsune` or `brew install cliclick`, Accessibility
 permission for the app running the bridge, and `kitsune-bridge stop` so the next start picks the change up.
