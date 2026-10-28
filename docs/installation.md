@@ -43,6 +43,10 @@ takes a few seconds. Later starts reuse the cached version until you upgrade
 `kitsune-browser-mcp`; `kitsune-mcp` is an unrelated project, so do not install
 that name.
 
+On macOS, `browser_trusted_click` (needed for example to open "Continue with Google"
+popups) needs `uvx --from 'kitsune-browser-mcp[macos]' kitsune` or `brew install cliclick`,
+plus Accessibility permission; see [Sign-in popups](guide.md#sign-in-popups-oauthsso).
+
 Optionally, warm the cache and check the install before you register it:
 
 ```bash

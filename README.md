@@ -133,6 +133,10 @@ Every client launches the same local stdio server:
 Several clients can share one bridge; keep them on the same Kitsune version and
 install source.
 
+On macOS, OS-level trusted clicks (for example to open "Continue with Google" popups) need
+`uvx --from 'kitsune-browser-mcp[macos]' kitsune` or `brew install cliclick`, plus Accessibility
+permission; see [Sign-in popups](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#sign-in-popups-oauthsso).
+
 ### CLI registration: Claude Code, Codex, and Pi
 
 **Claude Code**, available in every project with `--scope user`:

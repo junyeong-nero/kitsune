@@ -214,7 +214,8 @@ class NativeClickTests(unittest.TestCase):
         with platform, trusted, patch.dict("sys.modules", {"Quartz": None}), \
              patch.object(bridge.shutil, "which", return_value=None):
             result = bridge._native_click_screen(1, 2)
-        for text in ("kitsune-browser-mcp[macos]", "cliclick", "Accessibility"):
+        for text in ("kitsune-browser-mcp[macos]", "cliclick", "Accessibility",
+                     "kitsune-bridge stop", "MCP server that started it"):
             self.assertIn(text, result["error"])
 
     def test_macos_without_accessibility_does_not_click(self):

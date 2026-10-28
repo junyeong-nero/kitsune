@@ -668,7 +668,9 @@ def _mac_click_screen(x, y, restore_pointer=True):
         "error": (
             "trustedClick on macOS needs pyobjc Quartz (run Kitsune with "
             "uvx --from 'kitsune-browser-mcp[macos]' kitsune) or cliclick on PATH "
-            f"(brew install cliclick); also {_MAC_ACCESSIBILITY_HELP}"
+            "(brew install cliclick). The bridge keeps the Python and PATH of the MCP server "
+            "that started it: after adding either, run kitsune-bridge stop so that the next tool "
+            f"call from that client restarts it with them; also {_MAC_ACCESSIBILITY_HELP}"
         )
     }
 
