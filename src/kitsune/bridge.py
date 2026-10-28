@@ -61,7 +61,8 @@ except ImportError:
 from . import bridge_control
 from .capabilities import ACTION_GROUPS, CAPS_HEADER, OPEN_ROUTES, ROUTE_GROUPS, caps_refusal, header_caps
 from .task_modes import (
-    GATEWAY_TOOL_HEADER, MODE_HEADER, PROTECT_USER_TABS_HEADER, permits_action, permits_route, task_mode,
+    CLIENT_HEADER, GATEWAY_TOOL_HEADER, MODE_HEADER, PROTECT_USER_TABS_HEADER, permits_action, permits_route,
+    task_mode,
 )
 from .version import BRIDGE_BUILD, PACKAGE_VERSION, SOURCE_ROOT, extension_manifest_hash, extension_source_hash
 from .waits import (
@@ -183,6 +184,11 @@ _client_caps = contextvars.ContextVar("kitsune_client_caps", default=None)
 # The tool a client's browser_tools_call runs (#227), which audit entries record.
 _gateway_tool = contextvars.ContextVar("kitsune_gateway_tool", default=None)
 _TOOL_NAME = _re.compile(r"browser_[a-z0-9_]{1,64}")
+# The calling client's id (CLIENT_HEADER, #303), which audit entries record.
+_client_id = contextvars.ContextVar("kitsune_client_id", default=None)
+_CLIENT_ID = _re.compile(r"[A-Za-z0-9._:-]{1,64}")
+# Tabs a batch or workflow call's newTab steps opened and did not close, oldest first (#303).
+_container_new_tabs = contextvars.ContextVar("kitsune_container_new_tabs", default=None)
 _PROTECTED_NAVIGATIONS = {"navigate", "goBack", "goForward"}
 
 
@@ -734,7 +740,9 @@ def _mac_click_screen(x, y, restore_pointer=True, button="left", click_count=1, 
         "error": (
             "trustedClick on macOS needs pyobjc Quartz (run Kitsune with "
             "uvx --from 'kitsune-browser-mcp[macos]' kitsune) or cliclick on PATH "
-            f"(brew install cliclick); also {_MAC_ACCESSIBILITY_HELP}"
+            "(brew install cliclick). The bridge keeps the Python and PATH of the MCP server "
+            "that started it: after adding either, run kitsune-bridge stop so that the next tool "
+            f"call from that client restarts it with them; also {_MAC_ACCESSIBILITY_HELP}"
         )
     }
 
@@ -912,6 +920,8 @@ async def trusted_click(params):
         "screenY": point["screenY"],
         "viewportX": point["viewportX"],
         "viewportY": point["viewportY"],
+        # The page zoom the extension converted the viewport point with (#307).
+        "zoom": point.get("zoom", 1),
         "title": point.get("title", ""),
         "focused": focused,
         "focusRequested": bool(focus),
@@ -1011,6 +1021,8 @@ def _audit(action, params, ok, error, ms, **fields):
         entry["parent"] = parent
     if _gateway_tool.get():
         entry["via"] = {"gateway": "browser_tools_call", "tool": _gateway_tool.get()}
+    if _client_id.get():
+        entry["client"] = _client_id.get()
     _audit_log.append(entry)
     if len(_audit_log) > _AUDIT_MAX:
         del _audit_log[: len(_audit_log) - _AUDIT_MAX]
@@ -3405,6 +3417,7 @@ async def _run_step(cmd, call, **frame):
             if resume is not None and resume.decision == "resume":
                 nested.extend(_resumed_records(resume.children, _audit_parent.get()))
             result = await run_command(cmd)
+            _note_container_tab(cmd, result)
         return result
     finally:
         _running_step.reset(step_token)
@@ -3412,6 +3425,21 @@ async def _run_step(cmd, call, **frame):
         _container_steps.reset(steps_token)
         _audit_parent.reset(token)
         _finish_step(step, cmd, result, nested)
+
+
+def _note_container_tab(cmd, result):
+    """Record a tab a newTab step opened, or forget one a closeTab step closed, for newTabs."""
+    new_tabs = _container_new_tabs.get()
+    if new_tabs is None or not isinstance(result, dict) or result.get("error"):
+        return
+    action = _effective_action(cmd)
+    if action == "newTab" and isinstance(result.get("tabId"), int):
+        new_tabs.append(result["tabId"])
+    elif action == "closeTab" and result.get("ok"):
+        # A sequence's ${$N.tabId} reaches the step as digits.
+        closed = _explicit_tab_id(cmd.get("tabId"))
+        if closed in new_tabs:
+            new_tabs.remove(closed)
 
 
 async def _run_batch(commands, stop_on_warning, call, results):
@@ -3791,6 +3819,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
         protect = _protect_user_tabs.set(self.headers.get(PROTECT_USER_TABS_HEADER) == "1")
         called = self.headers.get(GATEWAY_TOOL_HEADER) or ""
         gateway = _gateway_tool.set(called if _TOOL_NAME.fullmatch(called) else None)
+        client = self.headers.get(CLIENT_HEADER) or ""
+        client_token = _client_id.set(client if _CLIENT_ID.fullmatch(client) else None)
         try:
             if not permits_route(mode, path):
                 self.refuse(403, _mode_error(path))
@@ -3806,6 +3836,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             else:
                 self.refuse(404, {"error": "Not found"})
         finally:
+            _client_id.reset(client_token)
             _gateway_tool.reset(gateway)
             _protect_user_tabs.reset(protect)
             _client_caps.reset(caps_token)
@@ -4549,11 +4580,12 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return
         commands = body.get('commands', [])
         stop_on_warning = body.get('stopOnWarning', False)
-        results, steps = [], []
+        results, steps, new_tabs = [], [], []
         call = _audit_call()
 
         async def run_all():
             _container_steps.set(steps)
+            _container_new_tabs.set(new_tabs)
             _default_tab.set(default_tab)
             await _run_batch(commands, stop_on_warning, call, results)
 
@@ -4561,6 +4593,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
         deadline = batch_deadline_seconds(commands)
         timed_out = self.run_async(_within_deadline(run_all(), deadline), timeout=container_settle_seconds(deadline))
         response = {'results': results, **_container_progress(commands, steps)}
+        if new_tabs:
+            response['newTabs'] = list(new_tabs)
         if timed_out:
             response.update(_container_timeout_error('Batch', deadline))
         response['summary'] = _container_summary(response['progress'], deadline if timed_out else None)
@@ -4621,11 +4655,12 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self.send_json(400, {"error": err})
             return
 
-        results, steps = [], []
+        results, steps, new_tabs = [], [], []
         call = _audit_call()
 
         async def run_workflow():
             _container_steps.set(steps)
+            _container_new_tabs.set(new_tabs)
             _default_tab.set(default_tab)
             await _run_workflow(name, commands, call, results)
 
@@ -4633,6 +4668,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
         timed_out = self.run_async(_within_deadline(run_workflow(), deadline), timeout=container_settle_seconds(deadline))
         response = {"workflow": name, "steps": len(commands), "results": results,
                     **_container_progress(commands, steps)}
+        if new_tabs:
+            response["newTabs"] = list(new_tabs)
         if timed_out:
             response.update(_container_timeout_error('Workflow', deadline))
         response["summary"] = _container_summary(response["progress"], deadline if timed_out else None)

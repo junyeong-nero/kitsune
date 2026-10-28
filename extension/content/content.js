@@ -350,7 +350,7 @@
       // Fixed operations the bridge and background used to send as code strings.
       'keepAlive':             () => ({ ok: true }),
       'neuterUnload':          () => neuterUnload(),
-      'screenPoint':           () => screenPoint(msg.selector, msg.x, msg.y, msg.click, msg.first, msg.modifiers),
+      'screenPoint':           () => screenPoint(msg.selector, msg.x, msg.y, msg.click, msg.first, msg.zoom, msg.modifiers),
       'userActivity':          () => userActivity(),
       'captureMeasure':        () => captureMeasure(msg.selector),
       'captureScrollIntoView': () => captureScrollIntoView(msg.selector, msg.block),
@@ -2042,10 +2042,17 @@
     }
   }
 
-  function screenPoint(selector, x, y, click, first, modifiers) {
+  // Firefox gives getBoundingClientRect, mozInnerScreenX/Y, and the fallback's screenX/Y and
+  // outer/inner sizes all in the page's CSS pixels, and full page zoom scales those (#307): at
+  // 150% one CSS pixel spans 1.5 unzoomed ones, so the viewport origin and the point inside it
+  // both shrink by the zoom. Their sum times the tab's zoom (browser.tabs.getZoom, from the
+  // background) is the desktop point at 100% zoom, which the OS backends take. OS display
+  // scaling is a separate step that this does not cover.
+  function screenPoint(selector, x, y, click, first, zoom, modifiers) {
     // Viewport point (element centre or x/y) plus its desktop position for OS-level clicks.
+    let el = null;
     if (selector) {
-      const el = click ? resolveTarget(selector, null, { first, pointer: true }) : resolveElement(selector);
+      el = click ? resolveTarget(selector, null, { first, pointer: true }) : resolveElement(selector);
       if (!el) return notFound();
       el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
       const rect = viewportRect(el);
@@ -2053,10 +2060,15 @@
       y = rect.top + rect.height / 2;
     }
     if (x == null || y == null) return { error: 'No target point' };
+    if (click && el) {
+      const elsewhere = targetNotAtPoint(el, x, y);
+      if (elsewhere) return elsewhere;
+    }
     if (click) {
       agentTrustedClickUntil = Date.now() + AGENT_TRUSTED_CLICK_MS;
       agentTrustedClickKeys = new Set(Array.isArray(modifiers) ? modifiers : []);
     }
+    const scale = Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
     const viewportLeft = Number.isFinite(window.mozInnerScreenX)
       ? window.mozInnerScreenX
       : window.screenX + Math.max(0, (window.outerWidth - window.innerWidth) / 2);
@@ -2067,10 +2079,25 @@
       title: document.title,
       viewportX: x,
       viewportY: y,
-      screenX: viewportLeft + x,
-      screenY: viewportTop + y,
+      screenX: (viewportLeft + x) * scale,
+      screenY: (viewportTop + y) * scale,
+      zoom: scale,
       devicePixelRatio: window.devicePixelRatio || 1,
     };
+  }
+
+  // An OS click lands on whatever is at the point, so a trusted click refuses when that is
+  // neither the target nor inside it (an overlay, a sticky header, a point off the page).
+  // A hit in one of the target's labels counts: the browser sends that click to the control,
+  // as with a custom checkbox whose input sits under its label.
+  function targetNotAtPoint(el, x, y) {
+    const hit = elementAtPoint(x, y).el;
+    const accepted = new Set([el, ...(el.labels || [])]);
+    for (let node = hit; node; node = parentAcrossFrames(node)) if (accepted.has(node)) return null;
+    return actionError('The element at the target\'s center is not the target; the trusted click was not made',
+      'target_not_at_point',
+      'Close or scroll away what covers the target (state.hit), or pass x/y on a visible part of it.',
+      { viewportX: x, viewportY: y, hit: hit ? targetSummary(hit) : null });
   }
 
   // Markers resolve to the exact connected ref target, including inside closed shadow roots.
@@ -2733,7 +2760,10 @@
         const el = matches.at(part.index);
         matches = el ? [el] : [];
       } else if (part.kind === 'parent') {
-        matches = [...new Set((matches || [document.documentElement]).map(el => el.parentElement).filter(Boolean))];
+        // The light-DOM parent, not flatParent's slot: later steps search inside it, and a
+        // slot has neither the slotted siblings as descendants nor a box to point at.
+        const parent = el => el.parentElement || el.parentNode?.host || null;
+        matches = [...new Set((matches || [document.documentElement]).map(parent).filter(Boolean))];
       } else {
         const found = new Set();
         for (const scope of matches || [null]) {

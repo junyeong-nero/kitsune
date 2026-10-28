@@ -8,7 +8,8 @@ Kitsune drives the user's own browser through an extension, not a Playwright pag
 browser_emulate_media and browser_run_code_unsafe answer not_supported.
 
 Tools act on the current tab, which browser_tabs new or select sets; select does not switch the
-user's view. Kitsune's own tools that are called without tab_id act on it too. Until there is
+user's view, and tabs the agent opens otherwise can become current (kitsune.tools._adopted_tab).
+Kitsune's own tools that are called without tab_id act on it too. Until there is
 one, reads act on the user's active tab and the MCP server refuses writes and navigations
 (no_current_tab, kitsune.tools._on_current_tab). browser_navigate and browser_navigate_back
 also take a tab_id that playwright_tools.json does not publish, like confirm_token.

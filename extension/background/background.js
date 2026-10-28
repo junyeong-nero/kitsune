@@ -719,7 +719,7 @@ async function dispatchCommand(command) {
     case 'newTab':       return await createTab(params.url, params);
     case 'closeTab':     return await closeTab(params.tabId, params);
     case 'restoreActiveTab': return await restoreActiveTab(params.tabId, params.from);
-    case 'screenPoint':  return params.click ? await screenPointForClick(params) : await forwardToContent(action, params);
+    case 'screenPoint':  return params.click ? await screenPointForClick(params) : await zoomedScreenPoint(params);
     case 'wakeTab':      return await wakeTab(params.tabId);
     case 'reloadExtension': return reloadExtensionAction();
     case 'getPageTextFromTab': return await getPageText(params);
@@ -1103,7 +1103,7 @@ async function screenPointForClick(params) {
   }
   let point;
   try {
-    point = await forwardToContent('screenPoint', params);
+    point = await zoomedScreenPoint(params);
     if (previousTabId == null || point.error) return point;
     return { ...point, tabId: params.tabId, previousTabId };
   } finally {
@@ -1111,6 +1111,19 @@ async function screenPointForClick(params) {
       await restoreActiveTab(previousTabId, params.tabId);
     }
   }
+}
+
+// Content measures in the page's zoomed CSS pixels; screenPoint converts with the tab's zoom (#307).
+async function zoomedScreenPoint(params) {
+  const tabId = params.tabId || await getActiveTabId();
+  if (!tabId) return noActiveTab('No active tab found');
+  let zoom;
+  try {
+    zoom = await browser.tabs.getZoom(tabId);
+  } catch (e) {
+    return await tabApiError(tabId, e);
+  }
+  return await forwardToContent('screenPoint', { ...params, tabId, zoom });
 }
 
 // Shows the user's tab again after a trusted click, unless the user already moved elsewhere.

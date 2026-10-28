@@ -60,6 +60,7 @@ class UnpublishedToolTests(unittest.TestCase):
         everything = set(list_tools("all,storage,history"))
         self.assertFalse(published & set(result["unpublished"]))
         self.assertEqual(published | set(result["unpublished"]), everything)
+        self.assertRegex(result["mcp_tools"].pop("client"), r"^\d+-[0-9a-f]{6}$")
         self.assertEqual(result["mcp_tools"], {"caps": ["core"], "unpublished": len(everything) - 25})
 
     def test_core_tool_outside_caps_names_core(self):
@@ -75,6 +76,7 @@ class UnpublishedToolTests(unittest.TestCase):
             "browser_bookmarks_search", "browser_clear_browsing_data", "browser_clipboard", "browser_cookies",
             "browser_delete_session", "browser_history_search", "browser_history_visits",
             "browser_list_sessions", "browser_load_session", "browser_save_session", "browser_storage"])
+        self.assertRegex(result["mcp_tools"].pop("client"), r"^\d+-[0-9a-f]{6}$")
         self.assertEqual(result["mcp_tools"], {"caps": ["all"], "unpublished": 11})
 
 

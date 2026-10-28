@@ -125,12 +125,14 @@ class Element extends EventTarget {
 
 const h = (tag, attrs, ...children) => new Element(tag, attrs, children);
 
-// A shadow root attached to host; its children have no parent element.
+// A shadow root attached to host; its children have no parent element. Page code sees only
+// open roots; Firefox content scripts see closed ones too.
 class ShadowRoot {
-  constructor(host, children) {
+  constructor(host, children, mode = 'open') {
     Object.assign(this, { nodeType: 11, host, childNodes: children });
     for (const child of children) Object.assign(child, { parentElement: null, parentNode: this });
-    host.shadowRoot = this;
+    if (mode === 'open') host.shadowRoot = this;
+    host.openOrClosedShadowRoot = this;
   }
   get children() { return this.childNodes.filter(node => node.nodeType === 1); }
   descendants() { return this.children.flatMap(child => [child, ...child.descendants()]); }
@@ -218,6 +220,26 @@ function shadowPage(...fields) {
   new ShadowRoot(host, [h('form', { class: 'in-shadow' }, ...fields)]);
   const body = h('body', {}, h('h2', { id: 'title' }, 'Sign in'), host);
   return { html: h('html', {}, body), body, xpaths: [] };
+}
+
+// #312: the ui-shadow newsletter form, at the top level of an open or closed shadow root.
+function newsletterShadowPage(mode) {
+  const host = h('newsletter-signup', { id: 'host' });
+  new ShadowRoot(host, [h('form', { id: 'newsletter', 'aria-label': 'Newsletter' },
+    h('input', { type: 'email', id: 'email', 'aria-label': 'Email' }), h('button', {}, 'Subscribe'))], mode);
+  const body = h('body', {}, h('h2', { id: 'title' }, 'News'), host);
+  return { html: h('html', {}, body), body, host, xpaths: [] };
+}
+
+// A card whose light-DOM title and button are assigned to a slot in its shadow root.
+function slottedCardPage() {
+  const slot = h('slot', { id: 'card-slot' });
+  const host = h('product-card', { id: 'card' }, h('h3', { id: 'card-title' }, 'Kettle'),
+    h('button', { id: 'buy' }, 'Buy'));
+  new ShadowRoot(host, [h('div', { id: 'card-frame' }, slot)]);
+  for (const child of host.children) child.assignedSlot = slot;
+  const body = h('body', {}, host);
+  return { html: h('html', {}, body), body, host, xpaths: [] };
 }
 
 // The real-browser screenshot fixture: "capture" is in two buttons in nested shadow roots and
@@ -576,6 +598,35 @@ async function testRefStartsChain() {
   assert.equal(removed.state.ref, button);
 }
 
+async function testParentStepLeavesShadowRoot() {
+  // #312: .. from a direct child of a shadow root is the shadow host, for a ref, CSS and a
+  // scoped snapshot alike.
+  for (const mode of ['open', 'closed']) {
+    const dom = newsletterShadowPage(mode);
+    const send = load(dom);
+    const snapshot = (await send({ action: 'getSnapshot' })).snapshot;
+    const form = /- form "Newsletter" \[ref=(s\d+e\d+)\]/.exec(snapshot)?.[1];
+    assert.ok(form, `${mode}: ${snapshot}`);
+    assert.equal(await readTarget(send, dom, `${form} >> ..`), 'host', mode);
+    assert.equal(await readTarget(send, dom, '#newsletter >> ..'), 'host', mode);
+    assert.equal(await readTarget(send, dom, `${form} >> .. >> ..`), 'body', mode);
+    const hovered = await send({ action: 'hover', selector: `${form} >> ..` });
+    assert.equal(hovered.ok, true, `${mode}: ${JSON.stringify(hovered)}`);
+    assert.deepEqual(dom.host.events, ['mouseover'], mode);
+    const container = await send({ action: 'getSnapshot', selector: `${form} >> ..` });
+    assert.ok(!container.error, `${mode}: ${JSON.stringify(container)}`);
+    assert.match(container.snapshot, /- form "Newsletter"/, mode);
+    assert.match(container.snapshot, /- textbox "Email"/, mode);
+  }
+
+  // A slotted element's .. stays its light-DOM parent, not its slot, so a later step still
+  // finds the slotted siblings.
+  const dom = slottedCardPage();
+  const send = load(dom);
+  assert.equal(await readTarget(send, dom, '#card-title >> ..'), 'card');
+  assert.equal(await readTarget(send, dom, 'text=Kettle >> .. >> button'), 'buy');
+}
+
 async function testRegexValuesAndQuotesInChains() {
   // A /…/ value is a regex only when flags (or nothing) follow its last /; otherwise text= is
   // lax text, as in Playwright.
@@ -717,6 +768,7 @@ async function testPlainCssIsUnchanged() {
   await testImagesMatchByAlternativeName();
   await testRemainingPlaywrightForms();
   await testRefStartsChain();
+  await testParentStepLeavesShadowRoot();
   await testSelectorListsAndScopedMisses();
   await testRegexValuesAndQuotesInChains();
   await testXPathGuardCoversShadowRootsAndFrames();

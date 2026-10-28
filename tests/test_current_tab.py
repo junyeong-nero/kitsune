@@ -1,6 +1,7 @@
 """#232: tools and container commands that name no tab act on the current tab, not the user's.
 
 #303: without a current tab, writes that name no tab are refused instead of writing the active tab.
+Tabs the agent opens in a batch or workflow, or by an action on its current tab, become current.
 """
 import asyncio
 import json
@@ -169,6 +170,104 @@ class CurrentTabToolTests(unittest.TestCase):
                          "Tab for commands that name no tabId. Default: current tab.")
 
 
+# MCP calls whose results open tabs (#303): the bridge reply per endpoint is set before each call.
+ADOPT_CALLS = r'''import asyncio, json
+from unittest.mock import patch
+from kitsune import playwright_tools, server, tools
+sent, reply = [], {}
+
+def post(endpoint, body, timeout=15):
+    sent.append([endpoint, body.get("tabId")])
+    return reply.get(endpoint, {"ok": True})
+
+async def main():
+    steps, results, current = {}, {}, {}
+    async def step(label, name, arguments, replies=None):
+        reply.clear()
+        reply.update(replies or {})
+        start = len(sent)
+        result = await server.mcp.call_tool(name, arguments)
+        steps[label] = sent[start:]
+        results[label] = json.loads(result.content[0].text)
+        current[label] = playwright_tools._current_tab
+    def opened(*tabs):
+        result = {"ok": True, "opened_tabs": [{"tabId": tab, "url": "https://o.test/"} for tab in tabs]}
+        return {"/api/click": result, "/api/check": result}
+    with patch.object(tools, "_post", side_effect=post), patch.object(tools, "_get", return_value={"tabs": []}):
+        # Without a current tab, the last tab a batch or workflow opened and kept becomes current.
+        await step("batch_new", "browser_batch", {"commands": [{"action": "newTab"}, {"action": "newTab"}]},
+                   {"/api/batch": {"results": [{"ok": True, "tabId": 50}, {"ok": True, "tabId": 51}],
+                                   "newTabs": [50, 51]}})
+        await step("scroll_new", "browser_scroll", {"direction": "down"})
+        # With one, a batch's new tab still becomes current, even when the batch runs on another tab.
+        await step("batch_other", "browser_batch", {"commands": [{"action": "newTab"}], "tab_id": 7},
+                   {"/api/batch": {"results": [{"ok": True, "tabId": 52}], "newTabs": [52]}})
+        await step("batch_none", "browser_batch", {"commands": [{"action": "scroll"}]})
+        await step("workflow_new", "browser_workflow", {"name": "w"},
+                   {"/api/workflow": {"workflow": "w", "results": [], "newTabs": [53]}})
+        # An action on the current tab: a core click and Kitsune's own check, a link_fallback tab included.
+        await step("core_click", "browser_click", {"target": "e1"}, opened(60))
+        await step("click_current", "browser_check", {"selector": "#a", "checked": True, "tab_id": 60},
+                   {"/api/check": {"ok": True, "opened_tabs": [
+                       {"tabId": 61, "url": "https://o.test/"},
+                       {"tabId": 62, "url": "https://o.test/", "via": "link_fallback"}]}})
+        await step("click_default", "browser_check", {"selector": "#a", "checked": True}, opened(63))
+        # A click on another tab the agent names leaves the current tab alone.
+        await step("click_other", "browser_check", {"selector": "#a", "checked": True, "tab_id": 7}, opened(64))
+        await step("click_no_tab", "browser_check", {"selector": "#a", "checked": True},
+                   {"/api/check": {"ok": True, "opened_tabs": []}})
+        await step("scroll_after", "browser_scroll", {"direction": "down"})
+        # Without a current tab, a click on a named tab hands over the tab it opened.
+        playwright_tools._current_tab = None
+        await step("click_restarted", "browser_check", {"selector": "#a", "checked": True, "tab_id": 7}, opened(65))
+    print(json.dumps({"steps": steps, "results": results, "current": current}))
+
+asyncio.run(main())
+'''
+
+
+class AdoptedTabToolTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        env = {**os.environ, "KITSUNE_CAPS": "all", "KITSUNE_PUBLISH": "core"}
+        result = subprocess.run([sys.executable, "-c", ADOPT_CALLS], env=env, capture_output=True, text=True)
+        if result.returncode:
+            raise AssertionError(result.stderr[-3000:])
+        output = json.loads(result.stdout.splitlines()[-1])
+        cls.steps, cls.results, cls.current = output["steps"], output["results"], output["current"]
+
+    def test_a_tab_a_batch_or_workflow_opens_becomes_current(self):
+        self.assertEqual(self.steps["batch_new"], [["/api/batch", None]])
+        self.assertEqual((self.current["batch_new"], self.results["batch_new"]["current_tab"]), (51, 51))
+        self.assertEqual(self.steps["scroll_new"], [["/api/scroll", 51]])
+        self.assertEqual(self.steps["batch_other"], [["/api/batch", 7]])
+        self.assertEqual((self.current["batch_other"], self.results["batch_other"]["current_tab"]), (52, 52))
+        self.assertEqual(self.current["batch_none"], 52)
+        self.assertNotIn("current_tab", self.results["batch_none"])
+        self.assertEqual(self.steps["workflow_new"], [["/api/workflow", 52]])
+        self.assertEqual((self.current["workflow_new"], self.results["workflow_new"]["current_tab"]), (53, 53))
+
+    def test_a_tab_a_click_on_the_current_tab_opens_becomes_current(self):
+        self.assertEqual(self.steps["core_click"], [["/api/click", 53]])
+        self.assertEqual((self.current["core_click"], self.results["core_click"]["current_tab"]), (60, 60))
+        # The last tab it opened; a link_fallback tab counts like any other.
+        self.assertEqual((self.current["click_current"], self.results["click_current"]["current_tab"]), (62, 62))
+        self.assertEqual(self.steps["click_default"], [["/api/check", 62]])
+        self.assertEqual(self.current["click_default"], 63)
+
+    def test_a_click_on_another_named_tab_keeps_the_current_tab(self):
+        self.assertEqual(self.steps["click_other"], [["/api/check", 7]])
+        self.assertEqual(self.current["click_other"], 63)
+        self.assertNotIn("current_tab", self.results["click_other"])
+        self.assertEqual(self.results["click_other"]["opened_tabs"][0]["tabId"], 64)
+        self.assertEqual(self.current["click_no_tab"], 63)
+        self.assertEqual(self.steps["scroll_after"], [["/api/scroll", 63]])
+
+    def test_without_a_current_tab_a_click_on_a_named_tab_hands_over_its_new_tab(self):
+        self.assertEqual(self.steps["click_restarted"], [["/api/check", 7]])
+        self.assertEqual((self.current["click_restarted"], self.results["click_restarted"]["current_tab"]), (65, 65))
+
+
 class TabWriteClassificationTests(unittest.TestCase):
     def test_steps_that_write_a_tab_are_the_bridges(self):
         # Every name a container step may use, by the action it runs.
@@ -248,6 +347,47 @@ class DefaultTabBridgeTests(ResumeTests):
         self.assertEqual(resumed["status"], "ok", resumed)
         self.assertEqual(self.tab_of("fill", mark), [5])
         self.assertEqual(self.tab_of("scroll", mark), [], "the ok step is not sent again")
+
+
+class NewTabsBridgeTests(ResumeTests):
+    def setUp(self):
+        super().setUp()
+        self.next_tab = iter(range(50, 60))
+
+        async def new_tab(params):
+            return {"ok": True, "tabId": next(self.next_tab)}
+        self.replies["newTab"] = new_tab
+
+    def test_batch_reports_the_tabs_its_new_tab_steps_opened_and_kept(self):
+        payload = self.batch(
+            {"action": "newTab", "url": "https://a.test"},
+            {"action": "sequence", "do": [{"action": "newTab"}, {"action": "newTab"}]},
+            {"action": "closeTab", "tabId": 51},
+            {"action": "closeTab", "tabId": 3})
+        self.assertEqual(payload["status"], "ok", payload)
+        self.assertEqual(payload["newTabs"], [50, 52])
+
+    def test_a_tab_closed_by_its_substituted_id_is_not_reported(self):
+        payload = self.batch(
+            {"action": "sequence", "do": [{"action": "newTab"}, {"action": "closeTab", "tabId": "${$0.tabId}"}]},
+            {"action": "newTab"}, {"action": "closeTab", "tabId": "51"})
+        self.assertEqual(payload["status"], "ok", payload)
+        self.assertEqual([params.get("tabId") for action, params in self.sent if action == "closeTab"], [50, 51])
+        self.assertNotIn("newTabs", payload)
+
+    def test_failed_new_tabs_and_other_containers_report_none(self):
+        self.replies["newTab"] = [{"error": "Invalid URL"}]
+        payload = self.batch({"action": "newTab", "url": "x"}, {"action": "scroll", "tabId": 3})
+        self.assertNotIn("newTabs", payload)
+        status, result = self.respond(lambda h: h.handle_retry(), {"command": {"action": "newTab"}})
+        self.assertEqual(status, 200, result)
+        self.assertNotIn("newTabs", result)
+
+    def test_workflow_reports_its_new_tabs(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(bridge, "WORKFLOW_DIR", tmp):
+            payload = self.workflow(tmp, "w", [{"action": "newTab"}, {"action": "scroll"}])
+        self.assertEqual(payload["status"], "ok", payload)
+        self.assertEqual(payload["newTabs"], [50])
 
 
 if __name__ == "__main__":

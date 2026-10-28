@@ -98,6 +98,8 @@ function load(dom) {
       getElementById: id => dom.body.querySelector('#' + id),
       querySelector: selector => dom.body.querySelector(selector),
       querySelectorAll: selector => dom.body.querySelectorAll(selector),
+      // The element last scrolled into view is the one shown at its centre.
+      elementFromPoint: () => dom.body.descendants().findLast(el => el.events.includes('scrollIntoView')) || null,
       execCommand() {},
     },
     browser: { runtime: {

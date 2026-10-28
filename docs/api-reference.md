@@ -48,8 +48,8 @@ settings that publish it; restart the MCP client after changing them:
 ```
 
 `browser_status` adds `mcp_tools` to the bridge status: this MCP server's enabled
-`caps` and the count of known tools it leaves `unpublished`, for example
-`{"caps": ["core"], "unpublished": 79}`. With the [tool gateway](#tool-gateway) it also
+`caps`, the count of known tools it leaves `unpublished` and its audit `client` id, for
+example `{"caps": ["core"], "unpublished": 79, "client": "48213-9f2c1a"}`. With the [tool gateway](#tool-gateway) it also
 has the `publish` groups and how many enabled tools are `unlisted` when a session
 starts. The bridge is shared by every MCP server, so `GET /api/status` does not have it.
 MCP tool names and parameters are separate from HTTP endpoint names and JSON
@@ -184,7 +184,7 @@ trees), and this subset of Playwright's selectors; it is not Playwright's engine
 | `a, b` | A CSS list, with or without the pseudo-classes above: the union of its alternatives |
 | `a >> b` | Chains: `b` searched inside each match of `a`. A chain may start with a ref (`e12 >> xpath=..`, `e12 >> text=Save`) |
 | `nth=N` | The Nth match so far (0-based; `-1` is the last); not first in a chain |
-| `xpath=..`, `..` | The parent element |
+| `xpath=..`, `..` | The parent element; at the top of a shadow root, the shadow host. Only a bare `..` step leaves a shadow root: write `.. >> ..`, not `xpath=../..` |
 | `xpath=//h2[text()='Stock']/..`, `//…`, `..…` | General XPath (`document.evaluate`), elements only; after `>>`, a leading `/` is relative to the earlier match, which may be inside a shadow root or same-origin frame. It does not cross into shadow roots or frames. Because XPath reads text and the `value` attribute unredacted, it is refused (`unsupported_selector`) when a document it would run in, including that document's shadow roots, holds a sensitive field with a `value` attribute or masked text |
 
 Images, `<area>` and `<svg>` graphics are named as snapshots name images: by
@@ -420,6 +420,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `not_found` | No element matches the selector (also `No target`, `from/to element not found`; a scoped `browser_snapshot`/`browser_dom` reports `Selector not found: …` with `state.selector`); after an [actionability wait](#actionability-wait), `state` has `timeoutMs` and `elapsed` | true |
 | `not_fillable` | `browser_type` (`type`/`fill` modes) or a `browser_form_fill` key found no field to write. The target is not a field (`fill` and `browser_form_fill`: input, textarea or select; `type`: input, textarea or `contenteditable` region) and has none in its open or closed shadow roots, searched through nested hosts up to 8 roots deep (`fill` and `browser_form_fill` also look in its light DOM). Nothing was written. `state.tag` is the target's tag; `state.reason` is `no_field`, or `shadow_depth` when its shadow roots nest deeper than 8 | true |
 | `ambiguous_target` | The command names no single target, so nothing was dispatched: a write action's selector matches several actionable elements (`state.selector`, `state.matches`; see [Strict selectors](#strict-selectors)), a `browser_form_fill` label or placeholder key matches several actionable fields (`state.field`, `state.matches`), or `browser_submit_form` without a target found several forms and no filled field naming one (`state.forms`). `state.candidates` lists up to 5 of them with a `ref` to target one | false |
+| `target_not_at_point` | `browser_trusted_click` found another element (`state.hit`, `null` for none) at its target's center (`state.viewportX`, `state.viewportY`), such as an overlay; no OS click was made | true |
 | `not_actionable` | An [actionability wait](#actionability-wait) timed out on a target that exists but never rendered (`state.reason: "not_rendered"`, `timeoutMs`, `elapsed`); nothing was dispatched | true |
 | `unsupported_selector` | The shared target resolver rejected unsupported/invalid syntax (see [Target selectors](#target-selectors)) before dispatch; `state.selector` echoes the selector and `hint` lists accepted forms. Applies to actions, scoped snapshots and element screenshots | false |
 | `stale_ref` | The ref is no longer valid; `state.reason` is `element_removed`, `not_in_snapshot` (unknown/unissued ref), or `other_document` (the tab navigated, or the ref came from another tab) | true |
@@ -531,8 +532,9 @@ custom widget keeps its native checkbox or select `display: none`, and refusing
 by CSS heuristics would break actions that work today. Callers that want refusal
 pass `wait=True`, which fails a pointer target that never renders with
 `not_actionable` before dispatching anything. Overlay detection with an
-`elementFromPoint` hit test is deliberately not done, as a failure or as a wait
-condition. Cookie banners and sticky headers often cover a target's center after
+`elementFromPoint` hit test is deliberately not done for synthetic actions, as a failure
+or as a wait condition (`browser_trusted_click` does hit-test, because its OS click lands
+on whatever is at the point). Cookie banners and sticky headers often cover a target's center after
 it scrolls into view while the synthetic event still reaches the target, so
 refusing there would fail working actions. Hit tests also stop at closed shadow
 roots and cross-origin frames, and a single sample is unreliable under
@@ -822,7 +824,8 @@ If such a link, or a failed `tabs.create`, leaves no tab, the click result has a
 ```
 
 With `expect`, an unmet outcome then uses that hint. Popups that page scripts open with
-`window.open` are never reopened. A `browser_trusted_click` is a real OS click with user
+`window.open`, such as OAuth/SSO sign-in popups, are never reopened and get no warning
+(see [Sign-in popups](guide.md#sign-in-popups-oauthsso)). A `browser_trusted_click` is a real OS click with user
 activation, so the popup blocker lets its tab open. It needs a visible, focused browser
 window and OS permission (macOS: Accessibility), and its result does not list `opened_tabs`;
 the tab it opens is not agent-owned.
@@ -1044,7 +1047,7 @@ count as user input on the tab it hits for 3 s.
 #### No current tab
 
 The MCP server's current tab is the one `browser_tabs` new or select (or
-`browser_tab_list` new_tab) last made current. It lives in the MCP server process, so a
+`browser_tab_list` new_tab) last made current, or a tab it adopted (below). It lives in the MCP server process, so a
 restarted or reconnected server starts without one (#303). Until it has one, a write or
 navigation that names no tab is refused before anything is sent, instead of going to the
 tab the user is viewing:
@@ -1077,6 +1080,21 @@ still act on the active tab, and `browser_tabs` close keeps its own rule (above)
 The core `browser_navigate` and `browser_navigate_back` take an optional `tab_id`,
 accepted like `confirm_token` but not listed in their schemas, which are Playwright
 MCP's; omitted, it is the current tab.
+
+Tabs the agent gets in other ways become current too, and the result then adds
+`current_tab` with the tab's id:
+
+- The last tab that `newTab` steps of a `browser_batch` or `browser_workflow` opened and
+  did not close (the bridge's `newTabs`, see [POST /api/batch](#post-apibatch)) always
+  does, like `browser_tabs` new: the agent opened it on purpose.
+- The last tab an action opened (`opened_tabs`: a `target=_blank` link, `window.open`,
+  or a `link_fallback` tab) does only when the MCP server had no current tab or the
+  action ran on the current tab. An action on another tab the agent names leaves the
+  current tab where it is.
+
+Tabs that commands inside a batch or workflow open by clicking, and tabs opened by
+`browser_parallel`, `browser_broadcast`, `browser_retry` or `browser_resume`, do not
+change the current tab.
 
 Only the MCP server refuses these calls. HTTP requests to the bridge, the Python API
 (`kitsune.browser`, whose tabs are always named) and `kitsune.tools` called directly keep
@@ -1424,7 +1442,7 @@ as a separate, unrestricted trust boundary.
 ### Audit log
 
 `browser_audit` (`/api/audit`) returns recent write-action entries:
-`{ts, action, params, ok, error, ms}`. `params` never contains JavaScript bodies
+`{ts, action, params, ok, error, ms[, client]}`. `params` never contains JavaScript bodies
 (`code`, the `condition` of `if`/`while`, the `predicate` of `syncBarrier`),
 typed text or stored secrets. These values are replaced with
 `"[redacted]"`:
@@ -1454,6 +1472,13 @@ unredacted value. Only the audit copy is scrubbed.
 Entries of commands a [`browser_tools_call`](#tool-gateway) ran add
 `via: {"gateway": "browser_tools_call", "tool": "<tool name>"}`. Direct calls have no
 `via`; entries never name the MCP tool otherwise.
+
+The bridge is shared by every client, so entries add `client`: the id the client sent in
+`X-Kitsune-Client`. Each MCP server and each Python API `connect()` sends its own, its
+process id and a random suffix (`"48213-9f2c1a"`), which matches it with that process's
+logs. `browser_status` shows the MCP server's own as `mcp_tools.client`, and a Python
+`Browser` has it as `browser.client.client_id`. Requests without
+the header, such as other HTTP callers, have no `client`.
 
 Each command run inside `browser_batch`, `browser_parallel`, `browser_broadcast`,
 `browser_retry`, a workflow, or a batch `sequence`/`if`/`while`/`try` gets its own
@@ -2071,6 +2096,17 @@ viewport click returns `user_active` without clicking while the user is using th
 target tab or the tab it would hide. Ambiguous selectors return `ambiguous_target`
 before scrolling the element or invoking the OS; `first=True` opts into the first match.
 
+A viewport point is converted to desktop coordinates with the tab's page zoom
+(`browser.tabs.getZoom`): Firefox measures the element and the viewport's screen origin
+in the page's CSS pixels, which zoom scales, so their sum is multiplied by the zoom.
+Viewport-click results report it as `zoom` (`1` at 100%). Before a selector click, the
+element at the point (`elementFromPoint`, through same-origin frames and shadow roots)
+must be the target, inside it, or inside one of its `<label>`s (a custom checkbox whose
+input sits under its label); otherwise nothing is clicked and the call returns
+`target_not_at_point` with `state.viewportX`, `state.viewportY` and `state.hit` (the
+covering element's `ref`, `role` and `name`, or `null` when nothing is there). The
+"Zoom text only" setting and OS display scaling are not compensated.
+
 `button` (`left`, `right` or `middle`), `click_count` (`2` double-clicks) and
 `modifiers` (any of `Shift`, `Control`, `Alt`, `Meta`, held during the click) choose the
 click (request fields `button`, `clickCount`, `modifiers`). Any other value returns
@@ -2100,8 +2136,11 @@ once more so no key stays pressed.
 On macOS, the app running the bridge (your terminal or MCP client) needs
 Accessibility permission (System Settings > Privacy & Security > Accessibility);
 without it, or without either backend, the call returns `{error}` explaining what
-is missing instead of clicking. On Linux, a missing `xdotool`, a failed `xdotool`
-run or a Wayland session also returns `{error}` without clicking. Results include
+is missing instead of clicking. The click runs in the bridge, which keeps the Python
+and `PATH` of the MCP server that started it, so after adding the `[macos]` extra or
+`cliclick`, run `kitsune-bridge stop` and let a client that has it start the bridge
+again. On Linux, a missing `xdotool`, a failed `xdotool` run or a Wayland session also
+returns `{error}` without clicking. Results include
 `clickBackend` (`win32`, `quartz`, `cliclick`, or `xdotool`) and `pointerRestored`:
 `true` once the cursor is back, `false` with `restore_pointer=False` or when it could not
 be read or moved back. A failed restore adds `pointerRestoreError` and still returns
@@ -2463,7 +2502,7 @@ Execute multiple commands sequentially or in parallel.
 ```
 Note: every command that acts on a tab inside parallel sequences **must** have an explicit `tabId`, and two sequences may not write the same tab (see [Container progress](#container-progress)).
 
-Returns `{ "results": [...], "progress": [...], "status": "ok", "summary": "..." }`; `progress`, `status` and `summary` are described in [Container progress](#container-progress).
+Returns `{ "results": [...], "progress": [...], "status": "ok", "summary": "..." }`; `progress`, `status` and `summary` are described in [Container progress](#container-progress). When `newTab` commands, nested ones included, opened tabs that a later `closeTab` command did not close, `newTabs` lists their ids, oldest first; the MCP server makes the last one its current tab ([No current tab](#no-current-tab)).
 
 A response whose `status` is not `ok` adds `call` and `resume_token` for
 [POST /api/resume](#post-apiresume).
@@ -2492,7 +2531,7 @@ Execute a named workflow from the workflows directory.
 ```
 `tabId` (optional) is the tab for steps that name none.
 Workflows are `.md` files with JSON code blocks. Variables use `{{name}}` syntax.
-Returns `{ "workflow": "test", "steps": 4, "results": [...], "progress": [...], "status": "ok", "summary": "..." }`. A workflow stops at its first failed step; `progress` marks the rest `skipped` (see [Container progress](#container-progress)). A workflow that did not finish `ok` adds `call` and `resume_token` for [POST /api/resume](#post-apiresume); resuming is refused if the workflow file changed.
+Returns `{ "workflow": "test", "steps": 4, "results": [...], "progress": [...], "status": "ok", "summary": "..." }`, plus `newTabs` as for [POST /api/batch](#post-apibatch). A workflow stops at its first failed step; `progress` marks the rest `skipped` (see [Container progress](#container-progress)). A workflow that did not finish `ok` adds `call` and `resume_token` for [POST /api/resume](#post-apiresume); resuming is refused if the workflow file changed.
 
 ## History and bookmarks (POST)
 

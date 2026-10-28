@@ -101,6 +101,7 @@ function harness({ onClick = () => {}, activity = {}, focusOnCreate = null, sync
         .filter(t => (query.active == null || t.active === query.active)
           && (query.windowId == null || t.windowId === query.windowId)).map(t => ({ ...t })),
       get: async id => { if (!tabs[id]) throw missing(id); return { ...tabs[id] }; },
+      getZoom: async id => { if (!tabs[id]) throw missing(id); return 1; },
       create: async props => { h.calls.push(['tabs.create', copy(props)]); return created(props); },
       duplicate: async (id, props) => {
         h.calls.push(['tabs.duplicate', id, copy(props)]);

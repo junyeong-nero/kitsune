@@ -79,6 +79,18 @@ restart. See [Installation](installation.md#2-install-the-browser-extension).
 macOS and Linux. Windows has not been tested since the fork. OS-level trusted clicks work on
 macOS, Windows and Linux under X11, not Wayland. See [Requirements](guide.md#requirements).
 
+## Why can't the agent open "Continue with Google" and other sign-in popups?
+
+Kitsune's clicks are synthetic DOM events without user activation, and with its default popup
+blocker Firefox opens OAuth/SSO popups only from a real click, so the popup is blocked or the
+site shows an error. The recommended fallback is to have the agent ask you to click the button,
+then continue in the popup or tab that opens; this keeps your pointer and focus yours.
+`browser_trusted_click` sends a real OS click instead. On macOS it needs
+`uvx --from 'kitsune-browser-mcp[macos]' kitsune` or `brew install cliclick`, Accessibility
+permission for the app running the bridge, and `kitsune-bridge stop` so the next start picks the change up.
+The bridge runs with the Python and `PATH` of whichever MCP server started it first. See
+[Sign-in popups (OAuth/SSO)](guide.md#sign-in-popups-oauthsso).
+
 ## Is this the same project as kitsune-mcp?
 
 No. `kitsune-mcp` on PyPI and `kaiser-data/kitsune-mcp` are unrelated projects. This one is
