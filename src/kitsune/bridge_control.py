@@ -2,11 +2,13 @@
 
 from contextlib import contextmanager
 import fcntl
+import functools
 import os
 from pathlib import Path
 import shlex
 import signal
 import socket
+import ssl
 import subprocess
 import time
 
@@ -23,6 +25,17 @@ LOG_FILE = os.path.join(DATA_DIR, "bridge.log")
 STOP_TIMEOUT = 5
 
 
+@functools.cache
+def tls_context() -> ssl.SSLContext:
+    """The TLS context every bridge request passes to httpx, built once.
+
+    The bridge speaks plain HTTP, so it is never used. Without it httpx's top-level functions
+    build a client per call, and with it a context that loads the CA bundle: about 10 ms of CPU
+    per request, most of the MCP server's time per tool call under concurrent load (#298).
+    """
+    return ssl.create_default_context()
+
+
 def headers() -> dict:
     """Read each time so a newly created token is picked up."""
     token = os.environ.get("KITSUNE_TOKEN")
@@ -36,7 +49,7 @@ def headers() -> dict:
 
 def status(timeout: float = 2) -> dict | None:
     try:
-        response = httpx.get(f"{BRIDGE}/api/status", headers=headers(), timeout=timeout)
+        response = httpx.get(f"{BRIDGE}/api/status", headers=headers(), timeout=timeout, verify=tls_context())
     except httpx.ConnectError:
         return None
     response.raise_for_status()
@@ -148,7 +161,7 @@ def stop() -> str | None:
             return None
         if running is not None:
             try:
-                response = httpx.post(f"{BRIDGE}/api/shutdown", headers=headers(), timeout=2)
+                response = httpx.post(f"{BRIDGE}/api/shutdown", headers=headers(), timeout=2, verify=tls_context())
                 if response.status_code == 200 and _wait_stopped():
                     return None
             except httpx.HTTPError:

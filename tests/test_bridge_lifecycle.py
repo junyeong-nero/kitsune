@@ -100,7 +100,8 @@ class BridgeControlTests(unittest.TestCase):
                 patch.object(control, "_wait_stopped", return_value=True), \
                 patch.object(control, "_terminate_daemon") as terminate:
             self.assertIsNone(control.stop())
-            post.assert_called_once_with(control.BRIDGE + "/api/shutdown", headers={"Authorization": "Bearer secret"}, timeout=2)
+            post.assert_called_once_with(control.BRIDGE + "/api/shutdown", headers={"Authorization": "Bearer secret"}, timeout=2,
+                                         verify=control.tls_context())
             terminate.assert_not_called()
 
     def test_missing_shutdown_endpoint_falls_back_to_verified_pid(self):

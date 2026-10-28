@@ -8,6 +8,7 @@ KITSUNE_MODE. Starts the shared bridge daemon on demand.
 import functools
 import inspect
 import json
+import logging
 import math
 import os
 import re
@@ -530,8 +531,15 @@ if GATEWAY:
     PUBLISHED_TOOLS |= GATEWAY_TOOLS
 
 
+# FastMCP logs at INFO through Rich, so every tool call printed a line from the MCP server and
+# one from httpx: about 0.6 ms of CPU together (#298). Their warnings and errors still show.
+PER_CALL_LOGGERS = ("mcp.server.lowlevel.server", "httpx")
+
+
 def main():
     """Entry point for the Kitsune MCP server."""
+    for name in PER_CALL_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING)
     error = _client.ensure_bridge()  # warm start; tools retry if this fails
     if error:
         print(error, file=sys.stderr)
