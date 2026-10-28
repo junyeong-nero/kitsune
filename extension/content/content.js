@@ -371,7 +371,7 @@
       'checkBox':              () => checkBox(msg.selector, msg.checked, msg.first),
       'focusElement':          () => focusEl(msg.selector, msg.first),
       'blurElement':           () => blurEl(msg.selector, msg.first),
-      'keypress':              () => keypress(msg.selector, msg.key, msg.modifiers, msg.text, msg.first),
+      'keypress':              () => pressKey(msg.selector, msg.key, msg.modifiers, msg.text, msg.first, msg.repeat),
       'doubleClick':           () => doubleClick(msg.selector, msg.first, msg.modifiers),
       'submitForm':            () => submitForm(msg.selector, msg.first),
       'describeTarget':        () => describeTarget(msg.selector, msg.coords, msg.key, msg.first, msg.fieldKeys, msg.draftFill),
@@ -1697,11 +1697,22 @@
     const reason = tooDeep
       ? `no ${fields} within ${SHADOW_FIELD_DEPTH} nested shadow roots, and its shadow roots nest deeper`
       : `no ${fields} in it or in its open or closed shadow roots`;
+    const role = ariaRangeRole(el);
     return actionError(`Element is not a fillable field: ${reason}`,
-      'not_fillable', 'Target the field or its web-component host from a new browser_snapshot. ' +
+      'not_fillable', role ? ariaRangeHint(el, role) : 'Target the field or its web-component host from a new browser_snapshot. ' +
         (tooDeep ? 'A field nested deeper is not reached; use browser_evaluate for it. ' : '') +
         'A contenteditable editor is filled through its textbox ref.',
-      { tag: el.tagName.toLowerCase(), reason: tooDeep ? 'shadow_depth' : 'no_field' });
+      { tag: el.tagName.toLowerCase(), reason: tooDeep ? 'shadow_depth' : 'no_field', ...(role ? { role } : {}) });
+  }
+
+  // The keyboard alternative for an ARIA slider or spinbutton that a fill cannot set (#311).
+  function ariaRangeHint(el, role) {
+    return (ariaNumber(el, 'aria-valuenow') == null
+      ? `It is an ARIA ${role} without a numeric aria-valuenow for fill to step toward: click`
+      : `It is an ARIA ${role}: fill (browser_fill_form type slider, browser_type without slowly or in fill mode) ` +
+        'steps it with arrow keys. Or click') +
+      ' it to focus it, then press arrow keys with browser_press_key; repeat presses a key up to 100 times ' +
+      'in one call.';
   }
 
   function fillField(selector, value, first) {
@@ -1711,6 +1722,8 @@
     const target = fillDestination(el);
     if (!FILL_TAGS.includes(target.tagName)) {
       if (isEditableRegion(target)) return fillEditable(target, value, target !== el);
+      const role = ariaRangeRole(el);
+      if (role && ariaNumber(el, 'aria-valuenow') != null) return fillAriaRange(el, role, value);
       return notFillable(el, 'input, textarea, select or editor');
     }
     lastActedElement = lastFilledField = target;
@@ -1761,6 +1774,92 @@
       : editOutcome(runEditCommand(host, 'delete'), 'deleteContentBackward');
     return { ok: true, pierced, tag: host.tagName.toLowerCase(), contentEditable: true,
       ...(edit.prevented ? { prevented: true } : {}) };
+  }
+
+  // ── ARIA sliders (#311) ──
+  // A role=slider or spinbutton without a native input has no value to assign, so fill sets it as
+  // a user does: it focuses it and presses arrow keys (Home/End for an end), dispatched as
+  // keypress dispatches them, until aria-valuenow is the value. A task passes between keys so the
+  // page's framework renders each step before the next is read.
+  const ARIA_RANGE_ROLES = new Set(['slider', 'spinbutton']);
+  const ARIA_RANGE_MAX_KEYS = 1000;
+  const ARIA_RANGE_HINTS = {
+    stepped_past: 'Its steps skip the value; fill a value its steps reach (state.value is one).',
+    stuck: 'It stopped moving: it is at an end (state.min, state.max), disabled, or ignores synthetic ' +
+      'keys; a value outside its range cannot be reached.',
+    key_limit: `It took more than ${ARIA_RANGE_MAX_KEYS} keys; fill again to continue from state.value, ` +
+      'or press PageUp/PageDown with browser_press_key for larger steps.',
+  };
+
+  function ariaRangeRole(el) {
+    const role = String(el.getAttribute?.('role') || '').trim().split(/\s+/)[0];
+    return ARIA_RANGE_ROLES.has(role) ? role : null;
+  }
+
+  function ariaNumber(el, name) {
+    const raw = String(el.getAttribute?.(name) ?? '').trim();
+    return raw && Number.isFinite(Number(raw)) ? Number(raw) : null;
+  }
+
+  // Presses key on el and returns aria-valuenow once the page rendered it: after one task, or
+  // two when the first left it unchanged.
+  async function pressAriaRangeKey(el, key) {
+    const before = ariaNumber(el, 'aria-valuenow');
+    const init = keyEventInit(key, {});
+    el.dispatchEvent(new KeyboardEvent('keydown', init));
+    el.dispatchEvent(new KeyboardEvent('keyup', init));
+    await nextTask();
+    if (ariaNumber(el, 'aria-valuenow') === before) await nextTask();
+    return ariaNumber(el, 'aria-valuenow');
+  }
+
+  // value: the number to reach. Fails with value_not_reached when a key moved past it, stopped
+  // moving the value, or ARIA_RANGE_MAX_KEYS ran out; state.value is where it stopped.
+  async function fillAriaRange(el, role, value) {
+    const text = String(value ?? '').trim();
+    const wanted = text && Number.isFinite(Number(text)) ? Number(text) : null;
+    if (wanted == null) return { error: `An ARIA ${role} takes a number, not ${JSON.stringify(value)}` };
+    const min = ariaNumber(el, 'aria-valuemin');
+    const max = ariaNumber(el, 'aria-valuemax');
+    lastActedElement = el;
+    el.focus({ preventScroll: true });
+    let now = ariaNumber(el, 'aria-valuenow');
+    let keys = 0;
+    if (now !== wanted && (wanted === min || wanted === max)) {
+      now = await pressAriaRangeKey(el, wanted === min ? 'Home' : 'End');
+      keys++;
+    }
+    // Increase and decrease keys, the usual pair first: Right/Left on a horizontal slider, Up/Down
+    // on a vertical one or a spinbutton. The other pair is tried when the first does not move
+    // the value toward the target (a widget that handles only one pair, or a right-to-left one).
+    const vertical = role === 'spinbutton' || el.getAttribute('aria-orientation') === 'vertical';
+    const pairs = vertical ? [['ArrowUp', 'ArrowDown'], ['ArrowRight', 'ArrowLeft']]
+      : [['ArrowRight', 'ArrowLeft'], ['ArrowUp', 'ArrowDown']];
+    let pair = 0, moved = false, reason = null;
+    while (now !== wanted) {
+      if (now == null) { reason = 'stuck'; break; }
+      if (keys >= ARIA_RANGE_MAX_KEYS) { reason = 'key_limit'; break; }
+      const up = wanted > now;
+      const before = now;
+      now = await pressAriaRangeKey(el, pairs[pair][up ? 0 : 1]);
+      keys++;
+      if (now != null && (up ? now > before : now < before)) {
+        moved = true;
+        if (up ? now > wanted : now < wanted) { reason = 'stepped_past'; break; }
+      } else if (!moved && pair === 0 && now != null) {
+        pair = 1;
+      } else {
+        reason = 'stuck';
+        break;
+      }
+    }
+    const state = { role, value: now, target: wanted, min, max, keys };
+    if (reason) {
+      return { ...actionError(`The ${role} stopped at ${now}, not ${wanted}`, 'value_not_reached',
+        `Keys were pressed, so the ${role} may have changed. ${ARIA_RANGE_HINTS[reason]}`,
+        { ...state, reason }), retryable: false };
+    }
+    return { ok: true, tag: el.tagName.toLowerCase(), ...state };
   }
 
   // Shadow roots searched for a host's field: its own, and those of hosts nested in it.
@@ -3941,17 +4040,7 @@
     if (!target) return notFound('No target');
     lastActedElement = selector || target !== docOf(target).body ? target : null;
     const mods = modifiers || {};
-    const options = keyboardKeyOptions(key);
-    const opts = {
-      ...options,
-      bubbles: true,
-      cancelable: true,
-      composed: true,
-      ctrlKey: !!mods.ctrl,
-      shiftKey: !!mods.shift,
-      altKey: !!mods.alt,
-      metaKey: !!mods.meta,
-    };
+    const opts = keyEventInit(key, mods);
     const field = keyField(target);
     // As for a user's key, the field has focus, and an editor a caret: where it was if inside
     // the target, else at the target's end.
@@ -3961,19 +4050,48 @@
     } else if (field && activeElement() !== field) {
       field.focus({ preventScroll: true });
     }
-    const typed = text ?? typedText(options.key, mods);
-    const plainEnter = options.key === 'Enter' && !mods.ctrl && !mods.alt && !mods.meta;
+    const typed = text ?? typedText(opts.key, mods);
+    const plainEnter = opts.key === 'Enter' && !mods.ctrl && !mods.alt && !mods.meta;
     const result = { ok: true, key: keyCombination(key, mods), target: target.tagName?.toLowerCase(), effect: null };
     let applies = target.dispatchEvent(new KeyboardEvent('keydown', opts));
     if (applies && (typed != null || plainEnter)) applies = target.dispatchEvent(new KeyboardEvent('keypress', opts));
     if (!applies) result.prevented = true;
-    else if (field) Object.assign(result, isEditableRegion(field) ? editorKey(field, options.key, mods, typed)
-      : fieldKey(field, options.key, mods, typed));
-    const note = !applies || result.effect ? null : keyNote(target, field, options.key, mods);
+    else if (field) Object.assign(result, isEditableRegion(field) ? editorKey(field, opts.key, mods, typed)
+      : fieldKey(field, opts.key, mods, typed));
+    const note = !applies || result.effect ? null : keyNote(target, field, opts.key, mods);
     if (note) result.note = note;
     target.dispatchEvent(new KeyboardEvent('keyup', opts));
     if (result.effect && result.effect !== 'implicitSubmit') lastFilledField = field;
     return result;
+  }
+
+  // keydown/keyup init for key with modifiers ({ctrl, shift, alt, meta}).
+  function keyEventInit(key, mods) {
+    return { ...keyboardKeyOptions(key), bubbles: true, cancelable: true, composed: true,
+      ctrlKey: !!mods.ctrl, shiftKey: !!mods.shift, altKey: !!mods.alt, metaKey: !!mods.meta };
+  }
+
+  // repeat presses the key up to KEYPRESS_MAX_REPEAT times in one command (#311), a task apart
+  // so the page renders between presses as between a user's. Each press resolves its target
+  // again; the result is the last press's with repeat, or the first failure with pressed.
+  const KEYPRESS_MAX_REPEAT = 100;
+
+  async function keypressRepeated(selector, key, modifiers, text, first, repeat) {
+    let result;
+    for (let pressed = 0; pressed < repeat; pressed++) {
+      if (pressed) await nextTask();
+      result = keypress(selector, key, modifiers, text, first);
+      if (result.error) return pressed ? { ...result, pressed } : result;
+    }
+    return { ...result, repeat };
+  }
+
+  function pressKey(selector, key, modifiers, text, first, repeat) {
+    if (repeat == null || repeat === 1) return keypress(selector, key, modifiers, text, first);
+    if (!Number.isInteger(repeat) || repeat < 1 || repeat > KEYPRESS_MAX_REPEAT) {
+      return { error: `repeat must be an integer from 1 to ${KEYPRESS_MAX_REPEAT}` };
+    }
+    return keypressRepeated(selector, key, modifiers, text, first, repeat);
   }
 
   function doubleClick(selector, first, modifiers) {

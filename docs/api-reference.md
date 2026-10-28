@@ -246,7 +246,7 @@ These tools also accept refs (all new parameters are optional):
 
 | MCP tool | Parameters |
 |---|---|
-| `browser_keypress` | `key, selector=None, modifiers=None, text=None, tab_id=None, ref=None, element=None, wait=False, timeout=10000` |
+| `browser_keypress` | `key, selector=None, modifiers=None, text=None, tab_id=None, ref=None, element=None, wait=False, timeout=10000, repeat=1` |
 | `browser_submit_form` | `selector=None, tab_id=None, ref=None, element=None` |
 | `browser_scroll` | `direction="down", amount=500, tab_id=None, selector=None, ref=None, element=None, first=False` |
 | `browser_blur` | `selector=None, tab_id=None, ref=None, element=None, first=False` |
@@ -256,6 +256,13 @@ These tools also accept refs (all new parameters are optional):
 | `browser_markdown` | `selector=None, tab_id=None, ref=None, element=None` |
 
 `browser_keypress` accepts characters, Space/Spacebar, Enter/Return, Escape/Esc, ArrowUp/Down/Left/Right (or Up/Down/Left/Right), Tab and Backspace; `text` explicitly inserts text.
+
+`repeat` (1–100, also a `keypress` step's `repeat`) presses the key that many times in one
+request, a task apart so the page renders between presses as it does between a user's;
+each press resolves its target again (#311). The result is the last press's with
+`repeat`; a press that fails returns its error with `pressed`, the presses before it. The
+core `browser_press_key` accepts `repeat` too, not listed in its schema (Playwright MCP's).
+Anything else returns `repeat must be an integer from 1 to 100` and presses nothing.
 
 Synthetic key events have no browser default, so in an input, textarea or editor
 keypress applies the key's default edit itself (#267), unless the page cancels
@@ -418,7 +425,8 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `code` | Meaning | `retryable` |
 |---|---|---|
 | `not_found` | No element matches the selector (also `No target`, `from/to element not found`; a scoped `browser_snapshot`/`browser_dom` reports `Selector not found: …` with `state.selector`); after an [actionability wait](#actionability-wait), `state` has `timeoutMs` and `elapsed` | true |
-| `not_fillable` | `browser_type` (`type`/`fill` modes) or a `browser_form_fill` key found no field to write. The target is not a field (`fill` and `browser_form_fill`: input, textarea or select; `type`: input, textarea or `contenteditable` region) and has none in its open or closed shadow roots, searched through nested hosts up to 8 roots deep (`fill` and `browser_form_fill` also look in its light DOM). Nothing was written. `state.tag` is the target's tag; `state.reason` is `no_field`, or `shadow_depth` when its shadow roots nest deeper than 8 | true |
+| `not_fillable` | `browser_type` (`type`/`fill` modes) or a `browser_form_fill` key found no field to write. The target is not a field (`fill` and `browser_form_fill`: input, textarea or select; `type`: input, textarea or `contenteditable` region) and has none in its open or closed shadow roots, searched through nested hosts up to 8 roots deep (`fill` and `browser_form_fill` also look in its light DOM). Nothing was written. `state.tag` is the target's tag; `state.reason` is `no_field`, or `shadow_depth` when its shadow roots nest deeper than 8. On an ARIA slider or spinbutton (`state.role`) that `fill` cannot step (no numeric `aria-valuenow`) or that a `browser_form_fill` key names, the hint names the keyboard alternative (click it to focus it, then arrow keys with `browser_press_key` `repeat`), and for `browser_form_fill` also `fill` | true |
+| `value_not_reached` | `fill` on an ARIA slider or spinbutton pressed keys but `aria-valuenow` did not become the value (see [`/api/fill`](#post-apifill)). `state` has `role`, `value` (where it stopped), `target`, `min`, `max`, `keys` and `reason`: `stepped_past` (its steps skip the value), `stuck` (it stopped moving: at an end, disabled or ignoring synthetic keys) or `key_limit` (1,000 keys) | false |
 | `ambiguous_target` | The command names no single target, so nothing was dispatched: a write action's selector matches several actionable elements (`state.selector`, `state.matches`; see [Strict selectors](#strict-selectors)), a `browser_form_fill` label or placeholder key matches several actionable fields (`state.field`, `state.matches`), or `browser_submit_form` without a target found several forms and no filled field naming one (`state.forms`). `state.candidates` lists up to 5 of them with a `ref` to target one | false |
 | `not_actionable` | An [actionability wait](#actionability-wait) timed out on a target that exists but never rendered (`state.reason: "not_rendered"`, `timeoutMs`, `elapsed`); nothing was dispatched | true |
 | `unsupported_selector` | The shared target resolver rejected unsupported/invalid syntax (see [Target selectors](#target-selectors)) before dispatch; `state.selector` echoes the selector and `hint` lists accepted forms. Applies to actions, scoped snapshots and element screenshots | false |
@@ -1074,7 +1082,8 @@ still act on the active tab, and `browser_tabs` close keeps its own rule (above)
 
 The core `browser_navigate` and `browser_navigate_back` take an optional `tab_id`,
 accepted like `confirm_token` but not listed in their schemas, which are Playwright
-MCP's; omitted, it is the current tab.
+MCP's; omitted, it is the current tab. `browser_press_key` takes an unlisted `repeat`
+the same way (see [Element targets](#element-targets)).
 
 Only the MCP server refuses these calls. HTTP requests to the bridge, the Python API
 (`kitsune.browser`, whose tabs are always named) and `kitsune.tools` called directly keep
@@ -2346,6 +2355,19 @@ roots of hosts nested inside it, up to 8 roots deep (closed roots through Firefo
 `/api/form-fill` use the same lookup. When `/api/fill`, `/api/type` or a
 `/api/form-fill` key cannot reach a field, the result is a `not_fillable`
 [action error](#action-errors).
+
+An ARIA slider or spinbutton (`role=slider`/`spinbutton` with a numeric `aria-valuenow` and
+no native field) has no value to assign, so `/api/fill` sets it with keys, in the page, in
+one request (#311): it focuses the target and presses `Home` or `End` when the value is
+`aria-valuemin` or `aria-valuemax`, then arrow keys toward the value (`ArrowRight`/`ArrowLeft`
+on a horizontal slider, `ArrowUp`/`ArrowDown` on a vertical one or a spinbutton; the other
+pair when the first does not move it toward the value). Keys are `keydown`/`keyup` on the
+target as `/api/keypress` dispatches them, a task apart so the page renders each step. The
+value must be a number. It stops at the value:
+`{ "ok": true, "tag": "div", "role": "slider", "value": 15, "target": 15, "min": 0, "max": 100, "keys": 35 }`.
+When a key steps past the value, a key stops moving it, or 1,000 keys run out, the result
+is a `value_not_reached` [action error](#action-errors) with the same `state`. A native
+`<input type=range>` keeps the value setter.
 
 ### POST /api/scroll
 `{ "direction": "down", "amount": 500 }` — optional container `selector` or `ref`;

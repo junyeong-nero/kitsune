@@ -1059,6 +1059,10 @@ def browser_blur(
     return _post("/api/blur", _request_body(body, tab_id, ref, element, first=first))
 
 
+# The extension presses a repeated key a task apart, within one request (#311).
+KEYPRESS_MAX_REPEAT = 100
+
+
 def browser_keypress(
     key: Annotated[str, Field(
         description="Characters, Space/Spacebar, Enter/Return, Escape/Esc, ArrowUp/Down/Left/Right "
@@ -1072,6 +1076,7 @@ def browser_keypress(
     wait: bool = False,
     timeout: int = 10000,
     expect: dict | None = None, confirm_token: str | None = None, first: bool = False,
+    repeat: Annotated[int, Field(description="Press it this many times (1-100) in one call.")] = 1,
 ) -> dict:
     """Press a key on the ref/selector target (wait needs one), else the focused element (or
     body). In an input, textarea or editor the key applies its default edit unless the page
@@ -1079,10 +1084,13 @@ def browser_keypress(
     (Shift selects), Enter adds a line or submits a text input's form. effect names what
     changed (null: nothing); verify outcomes with expect (see browser_check).
     """
+    if type(repeat) is not int or not 1 <= repeat <= KEYPRESS_MAX_REPEAT:
+        return {"error": f"repeat must be an integer from 1 to {KEYPRESS_MAX_REPEAT}"}
     body = {"key": key}
     if selector: body["selector"] = selector
     if modifiers: body["modifiers"] = modifiers
     if text is not None: body["text"] = text
+    if repeat != 1: body["repeat"] = repeat
     return _post_action("/api/keypress", _request_body(body, tab_id, ref, element, confirm_token, first),
                         wait, timeout, expect)
 

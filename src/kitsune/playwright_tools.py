@@ -11,7 +11,11 @@ Tools act on the current tab, which browser_tabs new or select sets; select does
 user's view. Kitsune's own tools that are called without tab_id act on it too. Until there is
 one, reads act on the user's active tab and the MCP server refuses writes and navigations
 (no_current_tab, kitsune.tools._on_current_tab). browser_navigate and browser_navigate_back
-also take a tab_id that playwright_tools.json does not publish, like confirm_token.
+also take a tab_id that playwright_tools.json does not publish, like confirm_token, and
+browser_press_key a repeat count (1-100) that the extension presses within one request.
+
+browser_fill_form type slider and browser_type fill set an ARIA slider or spinbutton (no native
+input) by pressing arrow keys in the extension until aria-valuenow is the value (#311).
 
 Relative file names resolve against KITSUNE_OUTPUT_DIR, else the MCP client's first file root,
 else the MCP server's working directory.
@@ -306,9 +310,10 @@ def _key(key: str) -> tuple[str, dict | None]:
 
 
 @_core
-def browser_press_key(key: str, confirm_token: str | None = None) -> dict:
+def browser_press_key(key: str, confirm_token: str | None = None, repeat: int = 1) -> dict:
     name, modifiers = _key(key)
-    return k.browser_keypress(key=name, modifiers=modifiers, tab_id=_current_tab, confirm_token=confirm_token)
+    return k.browser_keypress(key=name, modifiers=modifiers, tab_id=_current_tab, confirm_token=confirm_token,
+                              repeat=repeat)
 
 
 @_core
