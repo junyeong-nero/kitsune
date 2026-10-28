@@ -33,6 +33,8 @@ function matches(el, selector) {
 const observers = new Set();
 // A <dialog> without open is display: none, as in the UA stylesheet.
 const displayOf = el => (el.tagName === 'DIALOG' && !el.hasAttribute('open') ? 'none' : el.display);
+// visibility is inherited unless an element sets its own.
+const visibilityOf = el => el.visibility || (el.parentElement ? visibilityOf(el.parentElement) : 'visible');
 // A background tab does not run animation frames.
 const frames = [];
 const requestAnimationFrame = callback => frames.push(callback);
@@ -167,14 +169,19 @@ share.addEventListener('click', () => {
     h('DIV', { role: 'menuitem' }, 'Copy link'), h('DIV', { role: 'menuitem' }, 'Embed')));
   requestAnimationFrame(() => { shareDropdown.display = 'block'; });
 });
-// A row whose double-click opens a rename <dialog> in an unpainted layer. The dialog holds a
-// hidden input and items hidden themselves, which stay out of the snapshot and items.
+// A row whose double-click opens a rename <dialog> in an unpainted layer (display: none and
+// visibility: hidden, which its items inherit). The dialog holds a hidden input, items hidden
+// themselves and a field hidden with its own visibility: hidden, which stay out of the snapshot
+// and items.
 const renameDialog = h('DIALOG', { 'aria-label': 'Rename' },
   new Element('INPUT', { type: 'hidden', name: 'csrf' }, [], { type: 'hidden', name: 'csrf', value: 'csrf-token' }),
-  h('BUTTON', {}, 'Save'), h('BUTTON', { hidden: '' }, 'Delete'), h('BUTTON', {}, 'Archive'));
+  h('BUTTON', {}, 'Save'), h('BUTTON', { hidden: '' }, 'Delete'), h('BUTTON', {}, 'Archive'),
+  new Element('DIV', {}, [new Element('TEXTAREA', { name: 'notes' }, [], { name: 'notes', value: 'api-token-123',
+    visibility: 'hidden' })], { visibility: 'visible' }));
 renameDialog.children[3].display = 'none';
 const dialogLayer = h('DIV', {}, renameDialog);
 dialogLayer.display = 'none';
+dialogLayer.visibility = 'hidden';
 const rename = h('BUTTON', { id: 'rename' }, 'Rename Fox video');
 rename.addEventListener('dblclick', () => renameDialog.setAttribute('open', ''));
 const like = h('BUTTON', { id: 'like' }, 'Like');
@@ -197,9 +204,49 @@ card.addEventListener('mouseover', () => {
     hoverLayer.appendChild(h('DIV', { role: 'menu', 'aria-label': 'Card menu' }, h('A', { href: '#' }, 'Open')));
   }
 });
+// A "Show more" that mounts comments with a closed sort dropdown: its listbox has no hidden
+// attribute, but sits in its own new display: none host, and nothing signals a popup.
+const commentSection = h('DIV', {});
+const showMore = h('BUTTON', { id: 'show-more' }, 'Show more');
+showMore.addEventListener('click', () => {
+  const host = h('DIV', { class: 'dropdown' }, h('DIV', { role: 'listbox', 'aria-label': 'Sort comments' },
+    h('DIV', { role: 'option' }, 'Top comments'), h('DIV', { role: 'option' }, 'Newest first')));
+  host.display = 'none';
+  commentSection.appendChild(h('DIV', {}, h('P', {}, 'More comments'), host));
+});
+// Openers that mount their menu, the first time, in its own new display: none host at the end
+// of <body>: one with aria-haspopup, one whose aria-expanded turns "true" (no aria-controls).
+const mountMenu = (label, item) => {
+  const host = h('DIV', {}, h('DIV', { role: 'menu', 'aria-label': label }, h('DIV', { role: 'menuitem' }, item)));
+  host.display = 'none';
+  document.body.appendChild(host);
+};
+const playlist = h('BUTTON', { id: 'playlist', 'aria-haspopup': 'true' }, 'Playlist');
+playlist.addEventListener('click', () => mountMenu('Playlist actions', 'Shuffle'));
+const speed = h('BUTTON', { id: 'speed', 'aria-expanded': 'false' }, 'Speed');
+speed.addEventListener('click', () => {
+  speed.setAttribute('aria-expanded', 'true');
+  mountMenu('Playback speed', 'Normal');
+});
+// An account control whose menu (aria-controls) waits, open, in a display: none layer. The page
+// later hides it with hidden but leaves aria-expanded="true".
+const accountMenu = h('DIV', { id: 'account-menu', role: 'menu', 'aria-label': 'Account options' },
+  h('DIV', { role: 'menuitem' }, 'Delete account'));
+const accountLayer = h('DIV', {}, accountMenu);
+accountLayer.display = 'none';
+const account = h('BUTTON', { id: 'account', 'aria-expanded': 'false', 'aria-controls': 'account-menu' }, 'Account');
+account.addEventListener('click', () => account.setAttribute('aria-expanded', 'true'));
+// A notifications control whose panel (aria-controls) stays aria-hidden after it expands.
+const notifyPanel = h('DIV', { id: 'notify-panel', role: 'menu', 'aria-label': 'Notifications panel', 'aria-hidden': 'true' },
+  h('DIV', { role: 'menuitem' }, 'Mark all read'));
+const notifyLayer = h('DIV', {}, notifyPanel);
+notifyLayer.display = 'none';
+const notify = h('BUTTON', { id: 'notify', 'aria-expanded': 'false', 'aria-controls': 'notify-panel' }, 'Notify');
+notify.addEventListener('click', () => notify.setAttribute('aria-expanded', 'true'));
 const main = h('MAIN', {}, h('H1', {}, 'Videos'), h('DIV', {}, 'Fox video', more), h('DIV', {}, 'Owl video', more2),
-  sort, sortLayer, lang, share, rename, like, filter, card);
-const document = { body: h('BODY', {}, main, filterLayer, hoverLayer, dialogLayer, shareDropdown, popupLayer), title: 'Videos',
+  sort, sortLayer, lang, share, rename, like, filter, card, showMore, commentSection, playlist, speed, account, notify);
+const document = { body: h('BODY', {}, main, filterLayer, hoverLayer, dialogLayer, shareDropdown, accountLayer, notifyLayer,
+  popupLayer), title: 'Videos',
   getElementById: id => document.body.querySelector(`#${id}`),
   querySelector: selector => document.body.querySelector(selector),
   querySelectorAll: selector => document.body.querySelectorAll(selector),
@@ -211,7 +258,7 @@ const content = vm.createContext({
   Event, MouseEvent, MutationObserver: FakeMutationObserver, navigator: { platform: 'Linux x86_64' },
   HTMLInputElement: class {}, HTMLTextAreaElement: class {},
   location: { href: 'https://videos.test/results' },
-  window: { getComputedStyle: el => ({ display: displayOf(el), visibility: 'visible', getPropertyValue: () => '' }) },
+  window: { getComputedStyle: el => ({ display: displayOf(el), visibility: visibilityOf(el), getPropertyValue: () => '' }) },
   document,
   browser: { runtime: { onMessage: { addListener: fn => { listener = fn; } },
     sendMessage: () => Promise.resolve(null) } },
@@ -339,8 +386,9 @@ const refOf = (snapshot, label) => {
   assert.match(painted, /- menuitem "Copy link" \[ref=e\d+\]/);
   assert.doesNotMatch(painted, /Share options/, 'once painted, it is listed as usual');
 
-  // 11. A double-click opens an unpainted <dialog>: its hidden input and the items hidden
-  // themselves stay out of items and the snapshot.
+  // 11. A double-click opens an unpainted <dialog>: its hidden input, the items hidden
+  // themselves and the field with its own visibility: hidden stay out of items and the
+  // snapshot; items that only inherit visibility: hidden stay in.
   const renameRef = refOf((await send('getSnapshot')).snapshot, 'button "Rename Fox video"');
   const renamed = await command({ action: 'doubleClick', selector: renameRef });
   assert.equal(renamed.ok, true);
@@ -350,7 +398,7 @@ const refOf = (snapshot, label) => {
   });
   const dialogSnapshot = (await send('getSnapshot', { ref: renamed.opened_popup.ref })).snapshot;
   assert.match(dialogSnapshot, /^- dialog "Rename" \[ref=e\d+\] \[not_rendered\]\n {2}- button "Save" \[ref=e\d+\]$/);
-  assert.doesNotMatch((await send('getSnapshot')).snapshot, /csrf-token|textbox|Delete|Archive/);
+  assert.doesNotMatch((await send('getSnapshot')).snapshot, /csrf-token|api-token|textbox|Delete|Archive/);
   renameDialog.removeAttribute('open');
   assert.doesNotMatch((await send('getSnapshot')).snapshot, /dialog "Rename"|Save/);
 
@@ -368,7 +416,39 @@ const refOf = (snapshot, label) => {
   hoverLayer.setAttribute('class', 'layer');
   assert.doesNotMatch((await send('getSnapshot')).snapshot, /Card menu/, 'a closed popup is not kept again');
 
-  // 13. A click whose popup nobody takes (click-and-wait-navigation) stops watching at once.
+  // 13. A click that mounts a closed dropdown in its own new display: none host, with no
+  // aria-expanded or aria-haspopup, reports nothing and adds nothing to snapshots.
+  const more3 = await command({ action: 'click', selector: '#show-more' });
+  assert.equal(more3.ok, true);
+  assert.equal('opened_popup' in more3, false);
+  assert.doesNotMatch((await send('getSnapshot')).snapshot, /Sort comments|Top comments|Newest first/);
+
+  // 14. A first-time menu in its own new hidden host is reported when the opener has
+  // aria-haspopup, or when its aria-expanded turns "true".
+  const listed = await command({ action: 'click', selector: '#playlist' });
+  assert.deepEqual([listed.opened_popup?.name, listed.opened_popup?.rendered, listed.opened_popup?.items.map(o => o.name)],
+    ['Playlist actions', false, ['Shuffle']]);
+  const sped = await command({ action: 'click', selector: '#speed' });
+  assert.deepEqual([sped.opened_popup?.name, sped.opened_popup?.rendered, sped.opened_popup?.items.map(o => o.name)],
+    ['Playback speed', false, ['Normal']]);
+  assert.match((await send('getSnapshot')).snapshot, /- menu "Playback speed" \[ref=e\d+\] \[not_rendered\]/);
+
+  // 15. A popup found through aria-controls leaves snapshots once the page hides it with an
+  // attribute, even while its opener keeps aria-expanded="true".
+  const accounted = await command({ action: 'click', selector: '#account' });
+  assert.equal(accounted.opened_popup?.name, 'Account options');
+  assert.match((await send('getSnapshot')).snapshot, /- menu "Account options" \[ref=e\d+\] \[not_rendered\]/);
+  accountMenu.setAttribute('hidden', '');
+  assert.equal(account.getAttribute('aria-expanded'), 'true');
+  assert.doesNotMatch((await send('getSnapshot')).snapshot, /Account options|Delete account/);
+
+  // 16. An aria-controls panel that stays aria-hidden after its opener expands is not reported.
+  const notified = await command({ action: 'click', selector: '#notify' });
+  assert.equal(notified.ok, true);
+  assert.equal('opened_popup' in notified, false);
+  assert.doesNotMatch((await send('getSnapshot')).snapshot, /Notifications panel|Mark all read/);
+
+  // 17. A click whose popup nobody takes (click-and-wait-navigation) stops watching at once.
   const unwatched = await send('click', { selector: '#more', reportPopup: false });
   assert.deepEqual([unwatched.ok, 'popupWatch' in unwatched, observers.size], [true, false, 0]);
 

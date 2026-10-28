@@ -1424,27 +1424,37 @@
   const POPUP_ITEM_LIMIT = 20;
   // The last click or hover's watch, until the background takes its popup (openedPopup).
   let popupWatch = null;
-  // Reported popups: { opener } keeps one while the opener's aria-expanded stays "true";
+  // Reported popups: { opener } keeps one while the opener's aria-expanded stays "true" and it
+  // is not hidden by an attribute;
   // { signature } keeps one until it closes or its popupSignature changes.
   const keptPopups = new Map();
 
-  // A role popup is open unless it or an ancestor below <body> is hidden by an attribute; a
-  // display:none ancestor alone may only be waiting for a paint.
+  // It or an ancestor below <body> has hidden or aria-hidden="true", which pages set at once
+  // when they close a popup or mount a closed one.
+  function hiddenByAttribute(el) {
+    for (let node = el; node && node !== docOf(el).body; node = flatParent(node)) {
+      if (node.hasAttribute?.('hidden') || node.getAttribute?.('aria-hidden') === 'true') return true;
+    }
+    return false;
+  }
+
+  // A role popup is open unless it is hidden itself or hidden by an attribute; a display:none
+  // ancestor alone may only be waiting for a paint.
   function popupOpen(el) {
     if (el.tagName === 'DIALOG') return el.hasAttribute('open');
     if (el.hasAttribute('popover')) return !!el.matches?.(':popover-open');
-    if (!POPUP_ROLES.has(el.getAttribute('role')) || isHidden(el)) return false;
-    for (let node = el; node && node !== docOf(el).body; node = flatParent(node)) {
-      if (node.hasAttribute?.('hidden') || node.getAttribute?.('aria-hidden') === 'true') return false;
-    }
-    return true;
+    return POPUP_ROLES.has(el.getAttribute('role')) && !isHidden(el) && !hiddenByAttribute(el);
   }
 
   // Inside an unpainted popup, an element hidden by itself rather than by an ancestor:
-  // display is not inherited, visibility is, so only visibility:hidden is ignored.
+  // display is not inherited; visibility is, so visibility:hidden counts only when its parent's
+  // visibility is not hidden.
   function hiddenInPopup(el) {
-    return el.hidden || el.getAttribute('aria-hidden') === 'true' || (el.tagName === 'INPUT' && el.type === 'hidden') ||
-      styleOf(el).display === 'none';
+    if (el.hidden || el.getAttribute('aria-hidden') === 'true' || (el.tagName === 'INPUT' && el.type === 'hidden')) return true;
+    const style = styleOf(el);
+    if (style.display === 'none') return true;
+    const parent = flatParent(el);
+    return style.visibility === 'hidden' && !(parent?.nodeType === 1 && styleOf(parent).visibility === 'hidden');
   }
 
   function popupRole(el) {
@@ -1525,9 +1535,11 @@
     const hasPopup = nearestWithAttribute(el, 'aria-haspopup')?.getAttribute('aria-haspopup');
     const roots = popupRoots(el);
     const watch = { target: el, opener, expanded: opener?.getAttribute('aria-expanded'),
-      hasPopup: hasPopup != null && hasPopup !== 'false', roots, before: openPopups(roots), filled: new Set() };
+      hasPopup: hasPopup != null && hasPopup !== 'false', roots, before: openPopups(roots), filled: new Set(),
+      added: new Set() };
     watch.note = records => {
       for (const record of records) {
+        for (const node of record.addedNodes) watch.added.add(node);
         const popup = record.addedNodes.length ? record.target.closest?.(POPUP_ROLE_SELECTOR) : null;
         if (!popup) continue;
         watch.filled.delete(popup);
@@ -1542,10 +1554,21 @@
     return watch;
   }
 
+  // A new unrendered role popup without an opener signal counts only when its nearest
+  // display:none ancestor was there before the action (a shared layer). A closed dropdown the
+  // action mounted in its own display:none host does not.
+  function inEarlierHiddenLayer(popup, added) {
+    let layer = flatParent(popup);
+    while (layer?.nodeType === 1 && styleOf(layer).display !== 'none') layer = flatParent(layer);
+    if (layer?.nodeType !== 1) return false;
+    for (let node = layer; node; node = flatParent(node)) if (added.has(node)) return false;
+    return true;
+  }
+
   // The popup the watched action opened: the element the opener's aria-controls/aria-owns names
-  // once its aria-expanded turned "true", else the popup that opened last, else (aria-expanded
-  // turned "true", or the target has aria-haspopup) the open menu, listbox or dialog that items
-  // were added to.
+  // once its aria-expanded turned "true" (unless hidden by an attribute), else the popup that
+  // opened last, else (aria-expanded turned "true", or the target has aria-haspopup) the open
+  // menu, listbox or dialog that items were added to.
   function takeOpenedPopup() {
     const watch = popupWatch;
     if (!watch) return {};
@@ -1556,13 +1579,17 @@
     const expanded = !!opener?.isConnected && watch.expanded !== 'true' &&
       opener.getAttribute('aria-expanded') === 'true';
     const outside = popup => popup?.isConnected && !popup.contains(target);
+    const signalled = expanded || watch.hasPopup;
+    const opened = p => signalled || p.tagName === 'DIALOG' || p.hasAttribute('popover') || isRendered(p) ||
+      inEarlierHiddenLayer(p, watch.added);
     let popup = null;
     if (expanded) {
       const ids = `${opener.getAttribute('aria-controls') || ''} ${opener.getAttribute('aria-owns') || ''}`;
-      popup = ids.split(/\s+/).filter(Boolean).map(id => elementByIdNear(opener, id)).find(outside) || null;
+      popup = ids.split(/\s+/).filter(Boolean).map(id => elementByIdNear(opener, id))
+        .find(p => outside(p) && !hiddenByAttribute(p)) || null;
     }
-    popup ||= [...openPopups(watch.roots)].filter(p => !watch.before.has(p) && outside(p)).at(-1) ||
-      (expanded || watch.hasPopup ? [...watch.filled].filter(p => outside(p) && popupOpen(p)).at(-1) : null);
+    popup ||= [...openPopups(watch.roots)].filter(p => !watch.before.has(p) && outside(p) && opened(p)).at(-1) ||
+      (signalled ? [...watch.filled].filter(p => outside(p) && popupOpen(p)).at(-1) : null);
     if (!popup) return {};
     keptPopups.set(popup, expanded ? { opener } : { signature: popupSignature(popup) });
     return { opened_popup: { ref: issueRef(popup), role: popupRole(popup), name: popupName(popup),
@@ -1588,7 +1615,7 @@
       // Firefox revokes wrappers from a destroyed frame ("can't access dead object").
       try {
         open = refAttached(popup) && (opener
-          ? refAttached(opener) && opener.getAttribute('aria-expanded') === 'true'
+          ? refAttached(opener) && opener.getAttribute('aria-expanded') === 'true' && !hiddenByAttribute(popup)
           : popupOpen(popup) && popupSignature(popup) === signature);
       } catch {}
       if (!open) keptPopups.delete(popup);

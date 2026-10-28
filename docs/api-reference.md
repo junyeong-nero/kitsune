@@ -888,17 +888,24 @@ The result then has `opened_popup` (#329):
   whose control opened the popup.
 - The popup is found in this order: when the aria-expanded of the acted-on element, or of
   its nearest ancestor that has one, turned `"true"`, the element its `aria-controls` or
-  `aria-owns` names; else the last `role=menu`, `listbox` or `dialog` element, open
+  `aria-owns` names, unless it or an ancestor below `<body>` has `hidden` or
+  `aria-hidden="true"`; else the last `role=menu`, `listbox` or `dialog` element, open
   `<dialog>` or open `[popover]` that opened or was added during the action; else, when
   aria-expanded turned `"true"` or the acted-on element (or its nearest ancestor with the
-  attribute) has `aria-haspopup`, the open menu, listbox or dialog that items were added to,
-  such as one shared menu that each row refills. A menu, listbox or dialog counts as open
-  unless it is hidden itself or it or an ancestor below `<body>` has `hidden` or
-  `aria-hidden="true"`; a `display: none` ancestor alone does not close it, because a
-  background tab may not have shown it yet.
+  attribute) has `aria-haspopup` (other than `"false"`), the open menu, listbox or dialog
+  that items were added to, such as one shared menu that each row refills. A menu, listbox
+  or dialog counts as open unless it is hidden itself or it or an ancestor below `<body>` has
+  `hidden` or `aria-hidden="true"`; a `display: none` ancestor alone does not close it,
+  because a background tab may not have shown it yet.
   A popup that contains the acted-on element is not reported. The action's own document
   and shadow root are searched, not other frames. Results without a popup have no
   `opened_popup` field.
+- A menu, listbox or dialog that opened or was added but is not rendered is reported only
+  when aria-expanded turned `"true"`, the acted-on element (or its nearest ancestor with the
+  attribute) has `aria-haspopup`, or the popup's nearest `display: none` ancestor was already in the page before the action (a shared
+  layer). A closed dropdown that the action mounted in its own `display: none` host, such as
+  one inside a "Show more" section, is not reported. Rendered popups, open `<dialog>`s and
+  open `[popover]`s are reported without these conditions.
 - `role` is the popup's `role` (`dialog` for `<dialog>`, `generic` when it has none) and
   `name` its `aria-labelledby`, `aria-label` or `title`.
 - `rendered` is `false` when the popup is hidden or has no layout box, for example when a
@@ -907,8 +914,9 @@ The result then has `opened_popup` (#329):
   `menuitemradio`, `option`, `button` or `link` (explicit or native), not those inside
   another item. Hidden items of a rendered popup are left out. In an unpainted popup an
   item is left out when it is hidden itself (`hidden`, its own `display: none`,
-  `aria-hidden="true"`); `visibility: hidden` is not checked there, since it is inherited
-  from the unpainted container. Each ref acts like a snapshot ref. A pointer action on an item of an
+  `aria-hidden="true"`, or `visibility: hidden` set on it while its parent's visibility is
+  not hidden); `visibility: hidden` inherited from the unpainted container does not count.
+  Each ref acts like a snapshot ref. A pointer action on an item of an
   unpainted popup dispatches normally and returns the
   [`hidden_or_covered`](#action-errors) warning.
 
@@ -924,8 +932,9 @@ not rendered, with `[not_rendered]` on its line:
   - menuitem "Save to Watch later" [ref=e92]
 ```
 
-A popup found through aria-expanded stays listed while it is attached and that element
-still has `aria-expanded="true"`. Any other popup stays listed while it is attached and
+A popup found through aria-expanded stays listed while it is attached, that element still
+has `aria-expanded="true"`, and neither the popup nor an ancestor below `<body>` has `hidden`
+or `aria-hidden="true"`. Any other popup stays listed while it is attached and
 open (an open `<dialog>` or `[popover]`; a menu, listbox or dialog that is open as described
 above) and the `hidden`, `class`, `aria-hidden` and `open` attributes and the inline
 `display` and `visibility` of it and its ancestors below `<body>` are unchanged; other inline
