@@ -411,6 +411,18 @@ Kitsune's compact JSON results, not Playwright's Markdown. Where the two differ:
   and `text=True` enables explicitly bounded readable output (12,000 final public chars).
   Explicit HTTP `maxChars` and post-action limits also apply after URL redaction; scoped
   snapshots remain useful for large pages.
+- **Sliders and repeated keys.** `browser_fill_form` `type: "slider"` and `browser_type` (without
+  `slowly`) set a native `<input type=range>` directly. An ARIA slider or spinbutton (`role=slider`
+  or `spinbutton` with a numeric `aria-valuenow` and no native input, the usual custom widget)
+  is set as a user would: the extension focuses it and presses arrow keys (`Home`/`End` for an
+  end) until its `aria-valuenow` is the value, all in one call, and returns the final `value`.
+  If the value
+  is outside `aria-valuemin`/`aria-valuemax`, the call fails with `value_not_reached` before
+  any key; if it is not reached (the steps skip it, the widget stops moving, or 1,000 keys
+  or 20 s run out) it fails the same way with `state.value`
+  ([Action errors](api-reference.md#action-errors)). `browser_press_key` also accepts a
+  `repeat` count (1–100) that Playwright MCP's schema does not list; the extension presses
+  the key that many times in one call, a task apart.
 - **Dialogs.** `browser_handle_dialog` sets how the current tab answers its next dialogs
   (Firefox answers dialogs synchronously, so one already open cannot be answered).
 - **Uploads and drops.** A synthetic click opens no file chooser, so `browser_file_upload`

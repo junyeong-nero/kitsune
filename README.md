@@ -54,8 +54,8 @@ the agent gets fewer, sharper tools. See [Philosophy](https://github.com/junyeon
 In your browser, the agent can:
 
 - Search the web, read pages, and summarize what it finds with links.
-- Click, type, select options, and fill forms, including on sites where you are
-  already signed in.
+- Click, type, select options, set sliders, and fill forms, including on sites where
+  you are already signed in.
 - Take screenshots or turn page content into text and Markdown.
 - Keep research and tasks in separate tabs without replacing the page you are
   using.

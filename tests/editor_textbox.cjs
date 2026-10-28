@@ -252,14 +252,20 @@ const refOf = (snapshot, el, label) => {
   assert.deepEqual(name.events, ['input', 'change']);
 
   // 8. A target that is neither field nor editor is not fillable, and the hint names no
-  //    parameter the core browser_type lacks (mode=).
+  //    parameter the core browser_type lacks (mode=). A slider without aria-valuenow cannot
+  //    be stepped by fill, so its hint names the keyboard instead (#311).
   reset();
   const refused = await send({ action: 'fill', selector: '#slider', value: '50' });
   assert.equal(refused.code, 'not_fillable');
-  assert.deepEqual(refused.state, { tag: 'div', reason: 'no_field' });
+  assert.deepEqual(refused.state, { tag: 'div', reason: 'no_field', role: 'slider' });
   assert.match(refused.error, /input, textarea, select or editor/);
   assert.doesNotMatch(refused.hint, /mode=/);
-  assert.match(refused.hint, /contenteditable editor is filled through its textbox ref/);
+  assert.match(refused.hint, /without a numeric aria-valuenow for fill to step toward: click it to focus it, /);
+  assert.match(refused.hint, /browser_press_key; repeat/);
+  const plain = await send({ action: 'fill', selector: '#output', value: '50' });
+  assert.equal(plain.code, 'not_fillable');
+  assert.deepEqual(plain.state, { tag: 'div', reason: 'no_field' });
+  assert.match(plain.hint, /contenteditable editor is filled through its textbox ref/);
 
   console.log('Editor textbox and fill checks passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });
