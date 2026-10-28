@@ -532,8 +532,9 @@ custom widget keeps its native checkbox or select `display: none`, and refusing
 by CSS heuristics would break actions that work today. Callers that want refusal
 pass `wait=True`, which fails a pointer target that never renders with
 `not_actionable` before dispatching anything. Overlay detection with an
-`elementFromPoint` hit test is deliberately not done, as a failure or as a wait
-condition. Cookie banners and sticky headers often cover a target's center after
+`elementFromPoint` hit test is deliberately not done for synthetic actions, as a failure
+or as a wait condition (`browser_trusted_click` does hit-test, because its OS click lands
+on whatever is at the point). Cookie banners and sticky headers often cover a target's center after
 it scrolls into view while the synthetic event still reaches the target, so
 refusing there would fail working actions. Hit tests also stop at closed shadow
 roots and cross-origin frames, and a single sample is unreliable under
@@ -2073,9 +2074,10 @@ before scrolling the element or invoking the OS; `first=True` opts into the firs
 A viewport point is converted to desktop coordinates with the tab's page zoom
 (`browser.tabs.getZoom`): Firefox measures the element and the viewport's screen origin
 in the page's CSS pixels, which zoom scales, so their sum is multiplied by the zoom.
-Results report it as `zoom` (`1` at 100%). Before a selector click, the element at the
-point (`elementFromPoint`, through same-origin frames and shadow roots) must be the
-target or inside it; otherwise nothing is clicked and the call returns
+Viewport-click results report it as `zoom` (`1` at 100%). Before a selector click, the
+element at the point (`elementFromPoint`, through same-origin frames and shadow roots)
+must be the target, inside it, or inside one of its `<label>`s (a custom checkbox whose
+input sits under its label); otherwise nothing is clicked and the call returns
 `target_not_at_point` with `state.viewportX`, `state.viewportY` and `state.hit` (the
 covering element's `ref`, `role` and `name`, or `null` when nothing is there). The
 "Zoom text only" setting and OS display scaling are not compensated.

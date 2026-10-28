@@ -34,7 +34,8 @@ class Element {
   scrollIntoView() { this.scrolled++; }
 }
 
-// The target #go holds a <span>; #cover is an overlay; #host has a shadow root with a <b>.
+// The target #go holds a <span>; #cover is an overlay; #host has a shadow root with a <b>;
+// #check is a custom checkbox input under its <label for=check>, which holds a <span>.
 function page() {
   const label = new Element('SPAN', {}, [], 'Go');
   const go = new Element('BUTTON', { id: 'go' }, [label]);
@@ -49,8 +50,12 @@ function page() {
   };
   inner.parentNode = shadow;
   host.openOrClosedShadowRoot = shadow;
-  const body = new Element('BODY', {}, [go, cover, host]);
-  return { body, go, label, cover, host, inner };
+  const check = new Element('INPUT', { id: 'check', type: 'checkbox' });
+  const box = new Element('SPAN', {}, [], 'Remember me');
+  const checkLabel = new Element('LABEL', { for: 'check' }, [box]);
+  check.labels = [checkLabel];
+  const body = new Element('BODY', {}, [go, cover, host, check, checkLabel]);
+  return { body, go, label, cover, host, inner, check, checkLabel, box };
 }
 
 function load(dom, { at, screen = { mozInnerScreenX: 100, mozInnerScreenY: 80 } } = {}) {
@@ -145,6 +150,14 @@ async function testDescendantsOfTheTargetCount() {
   const shadow = page();
   const inShadow = await load(shadow, { at: shadow.host }).send({ action: 'screenPoint', selector: '#host', click: true });
   assert.equal(inShadow.error, undefined, JSON.stringify(inShadow));
+  // A custom checkbox's input sits under its label; the browser sends the label's click to it.
+  const custom = page();
+  const labelled = await load(custom, { at: custom.box }).send({ action: 'screenPoint', selector: '#check', click: true });
+  assert.equal(labelled.error, undefined, JSON.stringify(labelled));
+  // Another control's label is not the target's.
+  const other = page();
+  const notLabel = await load(other, { at: other.box }).send({ action: 'screenPoint', selector: '#go', click: true });
+  assert.equal(notLabel.code, 'target_not_at_point');
   // The target's parent is not the target.
   const parent = page();
   const outside = await load(parent, { at: parent.body }).send({ action: 'screenPoint', selector: '#go', click: true });

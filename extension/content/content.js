@@ -2082,9 +2082,12 @@
 
   // An OS click lands on whatever is at the point, so a trusted click refuses when that is
   // neither the target nor inside it (an overlay, a sticky header, a point off the page).
+  // A hit in one of the target's labels counts: the browser sends that click to the control,
+  // as with a custom checkbox whose input sits under its label.
   function targetNotAtPoint(el, x, y) {
     const hit = elementAtPoint(x, y).el;
-    for (let node = hit; node; node = parentAcrossFrames(node)) if (node === el) return null;
+    const accepted = new Set([el, ...(el.labels || [])]);
+    for (let node = hit; node; node = parentAcrossFrames(node)) if (accepted.has(node)) return null;
     return actionError('The element at the target\'s center is not the target; the trusted click was not made',
       'target_not_at_point',
       'Close or scroll away what covers the target (state.hit), or pass x/y on a visible part of it.',
