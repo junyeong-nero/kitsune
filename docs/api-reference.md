@@ -184,7 +184,7 @@ trees), and this subset of Playwright's selectors; it is not Playwright's engine
 | `a, b` | A CSS list, with or without the pseudo-classes above: the union of its alternatives |
 | `a >> b` | Chains: `b` searched inside each match of `a`. A chain may start with a ref (`e12 >> xpath=..`, `e12 >> text=Save`) |
 | `nth=N` | The Nth match so far (0-based; `-1` is the last); not first in a chain |
-| `xpath=..`, `..` | The parent element |
+| `xpath=..`, `..` | The parent element; at the top of a shadow root, the shadow host. Only a bare `..` step leaves a shadow root: write `.. >> ..`, not `xpath=../..` |
 | `xpath=//h2[text()='Stock']/..`, `//…`, `..…` | General XPath (`document.evaluate`), elements only; after `>>`, a leading `/` is relative to the earlier match, which may be inside a shadow root or same-origin frame. It does not cross into shadow roots or frames. Because XPath reads text and the `value` attribute unredacted, it is refused (`unsupported_selector`) when a document it would run in, including that document's shadow roots, holds a sensitive field with a `value` attribute or masked text |
 
 Images, `<area>` and `<svg>` graphics are named as snapshots name images: by
@@ -824,7 +824,8 @@ If such a link, or a failed `tabs.create`, leaves no tab, the click result has a
 ```
 
 With `expect`, an unmet outcome then uses that hint. Popups that page scripts open with
-`window.open` are never reopened. A `browser_trusted_click` is a real OS click with user
+`window.open`, such as OAuth/SSO sign-in popups, are never reopened and get no warning
+(see [Sign-in popups](guide.md#sign-in-popups-oauthsso)). A `browser_trusted_click` is a real OS click with user
 activation, so the popup blocker lets its tab open. It needs a visible, focused browser
 window and OS permission (macOS: Accessibility), and its result does not list `opened_tabs`;
 the tab it opens is not agent-owned.
@@ -2091,8 +2092,11 @@ covering element's `ref`, `role` and `name`, or `null` when nothing is there). T
 On macOS, the app running the bridge (your terminal or MCP client) needs
 Accessibility permission (System Settings > Privacy & Security > Accessibility);
 without it, or without either backend, the call returns `{error}` explaining what
-is missing instead of clicking. On Linux, a missing `xdotool`, a failed `xdotool`
-run or a Wayland session also returns `{error}` without clicking. Results include
+is missing instead of clicking. The click runs in the bridge, which keeps the Python
+and `PATH` of the MCP server that started it, so after adding the `[macos]` extra or
+`cliclick`, run `kitsune-bridge stop` and let a client that has it start the bridge
+again. On Linux, a missing `xdotool`, a failed `xdotool` run or a Wayland session also
+returns `{error}` without clicking. Results include
 `clickBackend` (`win32`, `quartz`, `cliclick`, or `xdotool`) and `pointerRestored`:
 `true` once the cursor is back, `false` with `restore_pointer=False` or when it could not
 be read or moved back. A failed restore adds `pointerRestoreError` and still returns
