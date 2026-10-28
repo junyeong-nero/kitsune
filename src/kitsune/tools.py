@@ -551,19 +551,26 @@ def browser_trusted_click(
                     "shown is shown for the click, then the user's tab is shown again.")] = None,
     confirm_token: str | None = None,
     first: bool = False,
+    restore_pointer: Annotated[bool, Field(
+        description="Move the pointer back to where it was after the click. False leaves it on "
+                    "the target, for hover menus that close when the pointer leaves.")] = True,
 ) -> dict:
     """Click using the real OS mouse pointer, for pages that ignore synthetic clicks;
     confirm_token and first work as in browser_check.
 
-    This is slower and moves the user's cursor, so prefer browser_click unless a page
-    specifically ignores synthetic clicks. Works on Windows, macOS and Linux (X11);
-    macOS needs pyobjc Quartz or cliclick plus Accessibility permission for the bridge,
-    and Linux needs xdotool (Wayland is not supported).
+    This is slower and moves the user's cursor for the click, so prefer browser_click unless
+    a page specifically ignores synthetic clicks. The pointer is moved back afterwards;
+    pointerRestored reports it, with pointerRestoreError when that failed (the click still
+    counts). Works on Windows, macOS and Linux (X11); macOS needs pyobjc Quartz or cliclick
+    plus Accessibility permission for the bridge, and Linux needs xdotool (Wayland is not
+    supported).
     """
     if selector:
         body = {"selector": selector, "focus": focus}
     else:
         body = {"coords": {"x": x, "y": y}, "coordinateSpace": coordinate_space, "focus": focus}
+    if not restore_pointer:
+        body["restorePointer"] = False
     return _post("/api/trusted-click", _request_body(body, tab_id, confirm_token=confirm_token, first=first))
 
 

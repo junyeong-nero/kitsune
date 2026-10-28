@@ -573,7 +573,30 @@ def _cliclick_coord(value):
     return f"={value}" if value < 0 else str(value)
 
 
-def _mac_click_screen(x, y):
+# Posted clicks reach the window server asynchronously; moving the pointer back sooner could let
+# a queued button event land at the restored position.
+POINTER_RESTORE_DELAY = 0.1
+
+
+def _with_pointer_restore(clicked, restore_pointer, read_error, restore):
+    """Add pointerRestored to a successful click result, moving the pointer back with restore().
+
+    A pointer that could not be read (read_error) or moved back (restore() raised) is reported
+    in pointerRestoreError; the click itself has already succeeded.
+    """
+    if not restore_pointer:
+        return {**clicked, "pointerRestored": False}
+    if read_error:
+        return {**clicked, "pointerRestored": False, "pointerRestoreError": read_error}
+    time.sleep(POINTER_RESTORE_DELAY)
+    try:
+        restore()
+    except Exception as e:  # any backend failure; the click must still be reported as done
+        return {**clicked, "pointerRestored": False, "pointerRestoreError": f"could not move the pointer back: {e}"}
+    return {**clicked, "pointerRestored": True}
+
+
+def _mac_click_screen(x, y, restore_pointer=True):
     # macOS drops posted mouse events from untrusted processes without an error.
     if _mac_accessibility_trusted() is False:
         return {"error": f"trustedClick needs macOS Accessibility permission: {_MAC_ACCESSIBILITY_HELP}"}
@@ -583,6 +606,16 @@ def _mac_click_screen(x, y):
     except ImportError:
         Quartz = None
     if Quartz is not None:
+        saved = read_error = None
+        if restore_pointer:
+            try:
+                current = Quartz.CGEventCreate(None)
+                if current is None:
+                    read_error = "could not read the pointer position: CGEventCreate returned no event"
+                else:
+                    saved = Quartz.CGEventGetLocation(current)
+            except Exception as e:  # pyobjc raises its own error types
+                read_error = f"could not read the pointer position: {e}"
         point = (float(x), float(y))
         for event_type, pause in (
             (Quartz.kCGEventMouseMoved, 0.05),
@@ -593,13 +626,24 @@ def _mac_click_screen(x, y):
             Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
             if pause:
                 time.sleep(pause)
-        return {"ok": True, "backend": "quartz"}
+
+        def restore():
+            # A warp posts no mouse event, but macOS then ignores the user's mouse for about
+            # 0.25 s; associating the mouse with the cursor again ends that pause at once.
+            error = Quartz.CGWarpMouseCursorPosition(saved)
+            if error:
+                raise RuntimeError(f"CGWarpMouseCursorPosition returned {error}")
+            Quartz.CGAssociateMouseAndMouseCursorPosition(True)
+
+        return _with_pointer_restore({"ok": True, "backend": "quartz"}, restore_pointer, read_error, restore)
 
     cliclick = shutil.which("cliclick")
     if cliclick:
+        click = f"c:{_cliclick_coord(x)},{_cliclick_coord(y)}"
         try:
+            # "p" prints the pointer position as "x,y" before the click in the same run.
             result = subprocess.run(
-                [cliclick, f"c:{_cliclick_coord(x)},{_cliclick_coord(y)}"],
+                [cliclick, "p", click] if restore_pointer else [cliclick, click],
                 capture_output=True, text=True, timeout=10,
             )
         except (OSError, subprocess.SubprocessError) as e:
@@ -607,7 +651,18 @@ def _mac_click_screen(x, y):
         if result.returncode != 0:
             detail = (result.stderr or result.stdout or "").strip() or f"exit code {result.returncode}"
             return {"error": f"cliclick failed: {detail}"}
-        return {"ok": True, "backend": "cliclick"}
+        saved = _re.match(r"\s*(-?\d+),(-?\d+)\s*(?:\n|$)", result.stdout or "") if restore_pointer else None
+        read_error = None
+        if restore_pointer and saved is None:
+            read_error = f"could not read the pointer position from cliclick output {(result.stdout or '').strip()!r}"
+
+        def restore():
+            move = f"m:{_cliclick_coord(int(saved.group(1)))},{_cliclick_coord(int(saved.group(2)))}"
+            moved = subprocess.run([cliclick, move], capture_output=True, text=True, timeout=10)
+            if moved.returncode != 0:
+                raise RuntimeError((moved.stderr or moved.stdout or "").strip() or f"exit code {moved.returncode}")
+
+        return _with_pointer_restore({"ok": True, "backend": "cliclick"}, restore_pointer, read_error, restore)
 
     return {
         "error": (
@@ -618,7 +673,7 @@ def _mac_click_screen(x, y):
     }
 
 
-def _linux_click_screen(x, y):
+def _linux_click_screen(x, y, restore_pointer=True):
     # xdotool cannot move the pointer in a native Wayland session; refuse rather than misclick.
     if os.environ.get("XDG_SESSION_TYPE") == "wayland" or not os.environ.get("DISPLAY"):
         return {"error": "trustedClick on Linux needs an X11 session (DISPLAY set); Wayland is not supported"}
@@ -626,34 +681,53 @@ def _linux_click_screen(x, y):
     xdotool = shutil.which("xdotool")
     if not xdotool:
         return {"error": "trustedClick on Linux needs xdotool on PATH (for example sudo apt install xdotool)"}
+    command = [xdotool, "mousemove", "--sync", str(int(round(x))), str(int(round(y))), "click", "1"]
+    if restore_pointer:
+        # The X server handles the click before this move back to where the first mousemove started.
+        command += ["mousemove", "restore"]
     try:
-        result = subprocess.run(
-            [xdotool, "mousemove", "--sync", str(int(round(x))), str(int(round(y))), "click", "1"],
-            capture_output=True, text=True, timeout=10,
-        )
+        result = subprocess.run(command, capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.SubprocessError) as e:
         return {"error": f"xdotool failed: {e}"}
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip() or f"exit code {result.returncode}"
         return {"error": f"xdotool failed: {detail}"}
-    return {"ok": True, "backend": "xdotool"}
+    return {"ok": True, "backend": "xdotool", "pointerRestored": restore_pointer}
 
 
-def _native_click_screen(x, y):
-    if sys.platform == "darwin":
-        return _mac_click_screen(x, y)
-    if sys.platform.startswith("linux"):
-        return _linux_click_screen(x, y)
-    if not sys.platform.startswith("win"):
-        return {"error": "trustedClick is only implemented on Windows, macOS and Linux (X11)"}
+def _windows_click_screen(x, y, restore_pointer=True):
+    from ctypes import wintypes
 
     user32 = ctypes.windll.user32
+    saved = wintypes.POINT()
+    read_error = None
+    if restore_pointer and not user32.GetCursorPos(ctypes.byref(saved)):
+        read_error = "could not read the pointer position: GetCursorPos failed"
     user32.SetCursorPos(int(round(x)), int(round(y)))
     time.sleep(0.05)
     user32.mouse_event(0x0002, 0, 0, 0, 0)  # LEFTDOWN
     time.sleep(0.03)
     user32.mouse_event(0x0004, 0, 0, 0, 0)  # LEFTUP
-    return {"ok": True, "backend": "win32"}
+
+    def restore():
+        if not user32.SetCursorPos(saved.x, saved.y):
+            raise OSError("SetCursorPos failed")
+
+    return _with_pointer_restore({"ok": True, "backend": "win32"}, restore_pointer, read_error, restore)
+
+
+def _native_click_screen(x, y, restore_pointer=True):
+    if sys.platform == "darwin":
+        return _mac_click_screen(x, y, restore_pointer)
+    if sys.platform.startswith("linux"):
+        return _linux_click_screen(x, y, restore_pointer)
+    if sys.platform.startswith("win"):
+        return _windows_click_screen(x, y, restore_pointer)
+    return {"error": "trustedClick is only implemented on Windows, macOS and Linux (X11)"}
+
+
+def _pointer_restore_fields(clicked):
+    return {key: clicked[key] for key in ("pointerRestored", "pointerRestoreError") if key in clicked}
 
 
 TRUSTED_CLICK_RESTORE_DELAY = 0.3
@@ -673,10 +747,11 @@ async def trusted_click(params):
 
     title = params.get("title") or ""
     process = params.get("process") or ""
+    restore_pointer = params.get("restorePointer", True) is not False
 
     if coordinate_space == "screen":
         focused = _focus_browser_window(title, process) if focus else False
-        clicked = _native_click_screen(x, y)
+        clicked = _native_click_screen(x, y, restore_pointer)
         if "error" in clicked:
             return clicked
         return {
@@ -688,6 +763,7 @@ async def trusted_click(params):
             "focused": focused,
             "focusRequested": bool(focus),
             "clickBackend": clicked.get("backend"),
+            **_pointer_restore_fields(clicked),
         }
 
     point_params = {"selector": selector, "x": x, "y": y, "click": True}
@@ -704,7 +780,7 @@ async def trusted_click(params):
 
     try:
         focused = _focus_browser_window(title or point.get("title", ""), process) if focus else False
-        clicked = _native_click_screen(point["screenX"], point["screenY"])
+        clicked = _native_click_screen(point["screenX"], point["screenY"], restore_pointer)
     finally:
         if point.get("previousTabId") is not None:
             # The OS delivers the click asynchronously; let it land before showing the user's tab again.
@@ -724,6 +800,7 @@ async def trusted_click(params):
         "focused": focused,
         "focusRequested": bool(focus),
         "clickBackend": clicked.get("backend"),
+        **_pointer_restore_fields(clicked),
     }
 
 
