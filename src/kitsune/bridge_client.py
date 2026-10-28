@@ -8,6 +8,7 @@ no MCP code.
 
 import os
 import re
+import secrets
 import subprocess
 import sys
 import time
@@ -17,7 +18,7 @@ import httpx
 from . import bridge_control
 from .bridge_control import BRIDGE, HTTP_PORT, LOG_FILE, TOKEN_FILE, WS_PORT, headers as _headers
 from .capabilities import CAPS_HEADER
-from .task_modes import MODE_HEADER, PROTECT_USER_TABS_HEADER
+from .task_modes import CLIENT_HEADER, MODE_HEADER, PROTECT_USER_TABS_HEADER
 from .version import BRIDGE_BUILD
 
 BRIDGE_START_TIMEOUT = 15
@@ -138,6 +139,8 @@ class BridgeClient:
     has no default, so each caller chooses. extra_headers, if set, returns headers to add to each
     request, such as the tool a gateway call runs. ensure_bridge replaces a running bridge of
     another build unless replace_bridge is False; then it reports bridge_version_mismatch.
+    client_id, sent in CLIENT_HEADER, tells this client's commands apart in the bridge's audit
+    log: its process id and a random suffix, so it can be matched with this process's logs.
     """
 
     def __init__(self, *, caps, mode: str = "act", protect_user_tabs: bool = False, extra_headers=None,
@@ -147,6 +150,7 @@ class BridgeClient:
         self.protect_user_tabs = protect_user_tabs
         self.extra_headers = extra_headers
         self.replace_bridge = replace_bridge
+        self.client_id = f"{os.getpid()}-{secrets.token_hex(3)}"
         self._extension_wait_until = 0.0  # set when this client starts a bridge; see await_extension
 
     def ensure_bridge(self) -> dict | None:
@@ -259,7 +263,7 @@ class BridgeClient:
             if endpoint != "/api/status":  # browser_status reports the extension as it is
                 self.await_extension()
             try:
-                headers = _headers()
+                headers = {**_headers(), CLIENT_HEADER: self.client_id}
                 if self.caps is not None:
                     headers[CAPS_HEADER] = self.caps
                 if self.mode != "act":

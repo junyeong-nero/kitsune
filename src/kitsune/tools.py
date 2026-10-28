@@ -146,16 +146,41 @@ def _no_current_tab(name: str, arguments: dict) -> dict | None:
             "state": {"tool": name, **({"action": action} if action else {})}}
 
 
+def _adopted_tab(name: str, result, tab_id: int | None, current: int | None) -> int | None:
+    """The tab a call's result makes current (#303), else None; tab_id is the tab the call ran on
+    and current the current tab before it.
+
+    The last tab a browser_batch or browser_workflow newTab step opened and kept (the bridge's
+    newTabs) always does: the agent opened it on purpose, like browser_tabs new. The last tab an
+    action opened (opened_tabs: target=_blank links, window.open, link_fallback) does only when
+    there was no current tab or the action ran on it, so a click in another tab the agent names
+    never moves its current tab.
+    """
+    if not isinstance(result, dict):
+        return None
+    if name in ("browser_batch", "browser_workflow"):
+        new_tabs = result.get("newTabs")
+        return new_tabs[-1] if isinstance(new_tabs, list) and new_tabs and isinstance(new_tabs[-1], int) else None
+    opened = result.get("opened_tabs")
+    if not isinstance(opened, list) or not opened or not isinstance(opened[-1], dict):
+        return None
+    if current is not None and tab_id != current:
+        return None
+    return opened[-1].get("tabId") if isinstance(opened[-1].get("tabId"), int) else None
+
+
 def _on_current_tab(function):
-    """Run an omitted optional tab_id on the core tools' current tab (#232), and refuse a tab write
-    that has no tab (#303).
+    """Run an omitted optional tab_id on the core tools' current tab (#232), refuse a tab write
+    that has no tab, and make tabs the agent gets current (#303).
 
     The current tab is the one browser_tabs last opened or selected, so a tool the agent calls
     without tab_id acts on the tab its core tools work in, not on the tab the user is looking at.
     Without a current tab, reads go to the user's active tab, while a write or navigation that
     names no tab returns no_current_tab: after an MCP server restart the agent has no current
-    tab even though it worked in one. Only the MCP registration applies this; Python callers name
-    their tabs, so kitsune.tools and kitsune.browser keep the active-tab default.
+    tab even though it worked in one. A tab that a batch or workflow opened, or that an action
+    opened from the current tab (_adopted_tab), becomes current, and the result says so in
+    current_tab. Only the MCP registration applies this; Python callers name their tabs, so
+    kitsune.tools and kitsune.browser keep the active-tab default.
     """
     name = function.__name__
     parameter = inspect.signature(function).parameters.get("tab_id")
@@ -165,13 +190,21 @@ def _on_current_tab(function):
 
     @functools.wraps(function)
     def call(*args, **kwargs):
+        current = playwright_tools._current_tab
         if fills_tab and kwargs.get("tab_id") is None:
-            kwargs["tab_id"] = playwright_tools._current_tab
-        if kwargs.get("tab_id") is None and playwright_tools._current_tab is None:
+            kwargs["tab_id"] = current
+        if kwargs.get("tab_id") is None and current is None:
             refusal = _no_current_tab(name, kwargs)
             if refusal:
                 return refusal
-        return function(*args, **kwargs)
+        result = function(*args, **kwargs)
+        # Core tools without tab_id run on the current tab.
+        adopted = _adopted_tab(name, result, kwargs.get("tab_id", current), current)
+        if adopted is not None:
+            playwright_tools._current_tab = adopted
+            if adopted != current:
+                result = {**result, "current_tab": adopted}
+        return result
 
     return call
 

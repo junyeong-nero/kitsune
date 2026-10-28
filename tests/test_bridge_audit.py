@@ -6,7 +6,8 @@ import tempfile
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
-from kitsune import bridge
+from kitsune import bridge, task_modes
+from kitsune.bridge_client import BridgeClient
 
 TYPED = "fixture-typed-value-0000"
 REDACTED = bridge.AUDIT_REDACTED
@@ -188,6 +189,45 @@ class AuditEndpointTests(unittest.TestCase):
         [entry] = payload["entries"]
         self.assertEqual((entry["action"], entry["ok"], entry["params"]),
                          ("formFill", True, {"fields": {"#email": REDACTED}, "tabId": 9}))
+
+
+class AuditClientTests(unittest.TestCase):
+    """#303: entries name the client that sent the command, so a shared bridge's log tells clients apart."""
+
+    def dispatch(self, path, route, body, headers):
+        handler = bridge.BridgeHandler.__new__(bridge.BridgeHandler)
+        handler.path = path
+        handler.headers = headers
+        handler.read_body = Mock(return_value=body)
+        handler.send_json = Mock()
+        handler.run_async = Mock(side_effect=lambda coro, **kwargs: asyncio.run(coro))
+        handler._dispatch({path: lambda: route(handler)})
+        self.assertEqual(handler.send_json.call_args.args[0], 200, handler.send_json.call_args)
+
+    def test_entries_record_the_client_header(self):
+        for header, expected in (("4242-a1b2c3", "4242-a1b2c3"), ("not an id\n", None), ("x" * 65, None),
+                                 (None, None)):
+            with self.subTest(header=header), patch.object(bridge, "_audit_log", []) as log, \
+                    patch.object(bridge, "_check_policy", return_value=None), \
+                    patch.object(bridge, "send_to_extension", new_callable=AsyncMock, return_value={"ok": True}):
+                headers = {task_modes.CLIENT_HEADER: header} if header else {}
+                self.dispatch("/api/scroll", lambda h: h._forward("scroll"), {"tabId": 1}, headers)
+                self.dispatch("/api/batch", lambda h: h.handle_batch(),
+                              {"commands": [{"action": "scroll", "tabId": 1}]}, headers)
+                self.assertEqual([entry.get("client") for entry in log], [expected, expected])
+                self.assertIn("parent", log[-1], "a container's steps carry it too")
+                self.assertIsNone(bridge._client_id.get())
+
+    def test_each_bridge_client_sends_its_own_id(self):
+        first, second = BridgeClient(caps=None), BridgeClient(caps=None)
+        self.assertRegex(first.client_id, rf"^{os.getpid()}-[0-9a-f]{{6}}$")
+        self.assertNotEqual(first.client_id, second.client_id)
+        response = Mock(status_code=200, json=Mock(return_value={"ok": True}))
+        with patch("kitsune.bridge_client.httpx.request", return_value=response) as request, \
+                patch.object(BridgeClient, "await_extension"):
+            first.post("/api/scroll", {}, 5)
+        self.assertEqual(request.call_args.kwargs["headers"][task_modes.CLIENT_HEADER], first.client_id)
+        self.assertTrue(bridge._CLIENT_ID.fullmatch(first.client_id))
 
 
 class ContainerAuditTests(unittest.TestCase):
