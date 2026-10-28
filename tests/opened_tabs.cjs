@@ -280,6 +280,30 @@ async function main() {
   assert.deepEqual(goneResult.opened_tabs, []);
   assert.equal(goneResult.warning.code, 'popup_blocked');
 
+  // #304: a page script's window.open that the popup blocker refused during the click warns,
+  // naming the URL it tried; nothing is opened in its place.
+  const oauth = 'https://accounts.example/o/oauth2/auth?client_id=1';
+  const refused = harness(() => ({ ok: true, scriptPopup: { url: oauth } }));
+  const refusedResult = await refused.send({ action: 'click', tabId: 1, selector: '#google' });
+  assert.deepEqual(refused.created, []);
+  assert.equal(refusedResult.warning.code, 'popup_blocked');
+  assert.deepEqual(refusedResult.warning.state, { url: oauth, reason: 'script_popup' });
+  assert.match(refusedResult.warning.hint, /user activation/);
+  assert.match(refusedResult.warning.hint, /Ask the user to click it/);
+  assert.match(refusedResult.warning.hint, /browser_trusted_click/);
+  assert.equal('scriptPopup' in refusedResult, false, 'the content-script field stays internal');
+  refused.assertClean();
+  const unnamed = harness(() => ({ ok: true, scriptPopup: {} }));
+  assert.deepEqual((await unnamed.send({ action: 'click', tabId: 1, selector: '#google' })).warning.state,
+    { reason: 'script_popup' });
+  // A tab that did open is reported instead, and an earlier warning stays.
+  const popupOpened = harness(h => { h.open(4, 1, oauth); return { ok: true, scriptPopup: { url: oauth } }; });
+  assert.deepEqual(await popupOpened.send({ action: 'click', tabId: 1, selector: '#google' }),
+    { ok: true, opened_tabs: [{ tabId: 4, url: oauth }] });
+  const covered = harness(() => ({ ok: true, warning: { code: 'hidden_or_covered' }, scriptPopup: { url: oauth } }));
+  assert.deepEqual(await covered.send({ action: 'click', tabId: 1, selector: '#google' }),
+    { ok: true, warning: { code: 'hidden_or_covered' } });
+
   console.log('Opened tab checks passed');
   finished = true;
 }

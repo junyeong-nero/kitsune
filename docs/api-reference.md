@@ -863,12 +863,52 @@ If such a link, or a failed `tabs.create`, leaves no tab, the click result has a
   "hint": "The link opens in a new tab, but no tab opened; the popup blocker likely dropped this synthetic click. ..." } }
 ```
 
-With `expect`, an unmet outcome then uses that hint. Popups that page scripts open with
-`window.open`, such as OAuth/SSO sign-in popups, are never reopened and get no warning
-(see [Sign-in popups](guide.md#sign-in-popups-oauthsso)). A `browser_trusted_click` is a real OS click with user
+With `expect`, an unmet outcome then uses that hint. A `browser_trusted_click` is a real OS click with user
 activation, so the popup blocker lets its tab open. It needs a visible, focused browser
 window and OS permission (macOS: Accessibility), and its result does not list `opened_tabs`;
 the tab it opens is not agent-owned.
+
+#### Script-opened popups
+
+Popups that page scripts open with `window.open`, such as OAuth/SSO sign-in popups
+(see [Sign-in popups](guide.md#sign-in-popups-oauthsso)), are never reopened, because
+the script keeps using the window it opened. The popup blocker refuses them after a
+synthetic click as it refuses a link's tab, and `window.open` then returns `null`. So
+the content script wraps the page's `window.open` once per document, and a
+`browser_click` (Kitsune or core; the `click` action) during whose dispatch a page script called
+`window.open` and got `null` returns a `popup_blocked` warning with
+`state.reason: "script_popup"`, when no tab opened for the click:
+
+```json
+{ "ok": true, "warning": { "code": "popup_blocked",
+  "state": { "url": "https://accounts.example/o/oauth2/auth?client_id=1", "reason": "script_popup" },
+  "hint": "A page script tried to open a popup (window.open), which Firefox blocks without user activation, so none opened. Ask the user to click it, then continue in the new tab by tab_id (find it with browser_tabs), or use browser_trusted_click." } }
+```
+
+- `state.url` is the URL the script passed, as given (it may be relative), cut at 2,048
+  characters. It is left out when the script passed no URL or a non-string, such as a
+  `URL` object or an empty string for a window it navigates later.
+- The dispatch is the click's pointer, mouse and click events. A `window.open` the page
+  calls later, after a `fetch` or a timer, is not counted.
+- A call that returned a window, or whose features include `noopener` or `noreferrer`
+  (which make `window.open` return `null` even when the popup opened), gives no
+  warning. Neither does a click that reports a tab in `opened_tabs`.
+- Only one `warning` is returned: an earlier one, such as `hidden_or_covered` or a link's
+  `popup_blocked`, is kept.
+
+This is a likely cause, not a diagnosis, and Kitsune does not retry the popup or switch
+to an OS click on its own. With `expect`, an unmet outcome uses the warning's hint.
+
+The wrapper is page code that the content script injects with a `<script>` element
+before page scripts run (in a page open before Kitsune first reached it, later, so a
+script that kept the original `window.open` bypasses it). It calls the original `window.open` with the same `this` and
+arguments, and returns its result, or throws its exception, unchanged. It is not an
+`exportFunction` export, which would throw "can't access dead object" in open tabs once
+the extension updates or reloads. A page whose Content Security Policy blocks inline
+scripts therefore gets no wrapper and no warning. The record is page data, so a page can
+alter it; Kitsune reads at most 20 calls and uses them only for this warning. Not covered:
+`browser_press_key`, `browser_double_click`, and clicks on an element inside a
+same-origin frame, whose `window.open` is the frame's own and is not wrapped.
 
 ### Opened popups
 

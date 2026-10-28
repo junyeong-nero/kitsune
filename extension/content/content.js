@@ -108,6 +108,61 @@
     pageWindow.__kitsuneDialogPolicy(JSON.stringify({ accept: accept ?? null, prompt_text: accept == null ? null : promptText ?? null }));
     return { ok: true, ...dialogInfo() };
   }
+  // Records the page's window.open calls so a synthetic click can report a popup that the popup
+  // blocker refused (#304). The wrapper calls the original with the same this and arguments and
+  // returns its result or exception unchanged. It is page code, not an exportFunction export,
+  // which would throw "dead object" once the extension reloads; so under a CSP that blocks the
+  // injected script there is no wrapper, and no warning.
+  function installWindowOpenWatch(W) {
+    if (W.__kitsuneWindowOpenCalls || typeof W.open !== 'function') return;
+    const nativeOpen = W.open;
+    const calls = [];
+    let seq = 0;
+    W.open = function open(...args) {
+      const opened = nativeOpen.apply(this, args);
+      try {
+        // With noopener (or noreferrer), window.open returns null for a popup that opened.
+        const noopener = typeof args[2] === 'string' && /\bno(opener|referrer)\b/i.test(args[2]);
+        calls.push({ seq: ++seq, time: Date.now(), blocked: opened === null && !noopener,
+          url: typeof args[0] === 'string' ? args[0].slice(0, 2048) : null });
+        if (calls.length > 20) calls.shift();
+      } catch {}
+      return opened;
+    };
+    W.__kitsuneWindowOpenCalls = () => JSON.stringify(calls);
+  }
+  injectPageScript('(' + installWindowOpenWatch.toString() + ')(window);');
+
+  // The record is page data a page can replace, so this reads a bounded, type-checked copy.
+  const WINDOW_OPEN_CALL_LIMIT = 20;
+  const WINDOW_OPEN_URL_LIMIT = 2048;
+  function readWindowOpenCalls() {
+    try {
+      const read = pageWindow.__kitsuneWindowOpenCalls;
+      const json = typeof read === 'function' ? read() : null;
+      if (typeof json !== 'string' || json.length > 100000) return null;
+      const calls = JSON.parse(json);
+      if (!Array.isArray(calls)) return null;
+      return calls.slice(-WINDOW_OPEN_CALL_LIMIT).filter(call => Number.isSafeInteger(call?.seq))
+        .map(call => ({ seq: call.seq, blocked: call.blocked === true,
+          url: typeof call.url === 'string' ? call.url.slice(0, WINDOW_OPEN_URL_LIMIT) : null }));
+    } catch { return null; }
+  }
+
+  // A click during which the page called window.open and got null adds scriptPopup, which the
+  // background turns into a popup_blocked warning when no tab opened (#304).
+  function withScriptPopupCheck(act) {
+    const before = readWindowOpenCalls();
+    const result = act();
+    if (!before) return result;
+    const since = before.length ? before[before.length - 1].seq : 0;
+    const blocked = (readWindowOpenCalls() || []).find(call => call.seq > since && call.blocked);
+    if (!blocked) return result;
+    const scriptPopup = blocked.url ? { url: blocked.url } : {};
+    const attach = r => (r && typeof r === 'object' && !r.error ? { ...r, scriptPopup } : r);
+    return typeof result?.then === 'function' ? result.then(attach) : attach(result);
+  }
+
   // Restore the tab policy after navigation; native dialogs apply until this reply arrives.
   browser.runtime.sendMessage({ action: 'getDialogPolicy' }).then(policy => {
     if (policy) handleDialog(policy.accept, policy.prompt_text);
@@ -383,7 +438,8 @@
                                      msg.observation, msg.delta ? 'delta' : 'full', !!msg.boxes, msg.collapse !== false),
       'getAccessibilityTree':  () => getAccessibilityTree(msg.depth ?? 6, msg.ref || msg.selector),
       'getFormFields':         () => getFormFields(),
-      'click':                 () => withPopupWatch(clickElement(msg.selector, msg.coords, msg.first, msg.button, msg.modifiers),
+      'click':                 () => withPopupWatch(withScriptPopupCheck(() =>
+                                     clickElement(msg.selector, msg.coords, msg.first, msg.button, msg.modifiers)),
                                      msg.reportPopup !== false),
       'type':                  () => typeText(msg.selector, msg.text, msg.clear, msg.first),
       'setEditableContent':    () => setEditableContent(msg.selector, msg.value, msg.format || 'text', msg.clear !== false,
