@@ -100,6 +100,25 @@ async function main() {
   clicked.tick(2000);  // the trusted-click window is over
   clicked.input('mousedown', clicked.button);
   assert.equal((await clicked.send({ action: 'userActivity' })).state.input, 'mousedown');
+  // Issue #306: the trusted click's own modifier key presses are the agent's, other keys are not.
+  const modified = content();
+  await modified.send({ action: 'screenPoint', x: 5, y: 5, click: true, modifiers: ['Shift', 'Meta'] });
+  for (const key of ['Shift', 'Meta']) modified.listeners.keydown({ type: 'keydown', key, target: modified.button, isTrusted: true });
+  modified.input('mousedown', modified.button);
+  assert.deepEqual(await modified.send({ action: 'userActivity' }), { active: false });
+  modified.listeners.keydown({ type: 'keydown', key: 'Control', target: modified.button, isTrusted: true });
+  assert.equal((await modified.send({ action: 'userActivity' })).state.input, 'keydown');
+  const later = content();
+  await later.send({ action: 'screenPoint', x: 5, y: 5, click: true, modifiers: ['Shift'] });
+  later.tick(2000);
+  later.listeners.keydown({ type: 'keydown', key: 'Shift', target: later.button, isTrusted: true });
+  assert.equal((await later.send({ action: 'userActivity' })).state.input, 'keydown');
+  // A later click without modifiers no longer excuses the earlier click's keys.
+  const plain = content();
+  await plain.send({ action: 'screenPoint', x: 5, y: 5, click: true, modifiers: ['Shift'] });
+  await plain.send({ action: 'screenPoint', x: 5, y: 5, click: true });
+  plain.listeners.keydown({ type: 'keydown', key: 'Shift', target: plain.button, isTrusted: true });
+  assert.equal((await plain.send({ action: 'userActivity' })).state.input, 'keydown');
   // A plain screenPoint read opens no window.
   const read = content();
   await read.send({ action: 'screenPoint', x: 5, y: 5 });

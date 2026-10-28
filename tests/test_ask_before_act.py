@@ -302,6 +302,21 @@ class SensitiveActionTests(AskBeforeActTestCase):
         self.assertEqual(self.forward("click", {"ref": "s1e11"}), (200, {"ok": True}))
         self.assertEqual(self.extension.actions(), ["click"])
 
+    def test_trusted_click_variants_are_held_and_bound_to_their_token(self):
+        # Issue #306: a held trusted click says which click it is, and its token confirms only that one.
+        self.extension.target = {"ok": True, "tag": "button", "submits": True, "text": "Place order"}
+        body = {"selector": "#buy", "tabId": 7, "button": "right", "clickCount": 2, "modifiers": ["Shift"]}
+        held = self.held(lambda h: h.handle_trusted_click(), body)
+        self.assertEqual(held["state"]["reason"], "submit_control")
+        self.assertIn("Shift+right-double-clicks a submit control (Place order)", held["error"])
+        token = held["state"]["confirmToken"]
+        result = self.held(lambda h: h.handle_trusted_click(), {**body, "button": "left", "confirmToken": token})
+        self.assertEqual(result["state"]["tokenRejected"], "mismatch")
+        held = self.held(lambda h: h.handle_trusted_click(),
+                         {"coords": {"x": 1, "y": 2}, "coordinateSpace": "screen", "button": "middle"})
+        self.assertIn("middle-clicks screen coordinates", held["error"])
+        self.assertEqual(self.extension.actions(), [])
+
     def test_enter_in_form_field_is_held(self):
         self.extension.target = {"ok": True, "tag": "input", "type": "text", "submits": True}
         for key in ("Enter", "Return"):

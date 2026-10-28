@@ -602,7 +602,58 @@ def _with_pointer_restore(clicked, restore_pointer, read_error, restore):
     return {**clicked, "pointerRestored": True}
 
 
-def _mac_click_screen(x, y, restore_pointer=True):
+TRUSTED_CLICK_BUTTONS = ("left", "right", "middle")
+TRUSTED_CLICK_MODIFIERS = ("Shift", "Control", "Alt", "Meta")
+# A double click's second press follows the first well within any system double-click time.
+DOUBLE_CLICK_GAP = 0.05
+
+
+def _trusted_click_options(params):
+    """Return (button, click_count, modifiers) of a trustedClick request, or an {error} dict."""
+    button = params.get("button") or "left"
+    click_count = params.get("clickCount", 1)
+    modifiers = params.get("modifiers") or []
+    if button not in TRUSTED_CLICK_BUTTONS:
+        return {"error": f"trustedClick button must be left, right or middle, not {button!r}"}
+    # 2.0 == 2, but the backends count presses with range(); True == 1 too.
+    if type(click_count) is not int or click_count not in (1, 2):
+        return {"error": f"trustedClick clickCount must be 1 or 2, not {click_count!r}"}
+    if not isinstance(modifiers, list) or any(m not in TRUSTED_CLICK_MODIFIERS for m in modifiers):
+        return {"error": f"trustedClick modifiers must be a list of Shift, Control, Alt and Meta, not {modifiers!r}"}
+    # One press per key, in a fixed order.
+    return button, click_count, tuple(m for m in TRUSTED_CLICK_MODIFIERS if m in modifiers)
+
+
+_QUARTZ_BUTTONS = {
+    "left": ("kCGEventLeftMouseDown", "kCGEventLeftMouseUp", "kCGMouseButtonLeft"),
+    "right": ("kCGEventRightMouseDown", "kCGEventRightMouseUp", "kCGMouseButtonRight"),
+    "middle": ("kCGEventOtherMouseDown", "kCGEventOtherMouseUp", "kCGMouseButtonCenter"),
+}
+_QUARTZ_MODIFIER_FLAGS = {"Shift": "kCGEventFlagMaskShift", "Control": "kCGEventFlagMaskControl",
+                          "Alt": "kCGEventFlagMaskAlternate", "Meta": "kCGEventFlagMaskCommand"}
+_CLICLICK_KEYS = {"Shift": "shift", "Control": "ctrl", "Alt": "alt", "Meta": "cmd"}
+_CLICLICK_COMMANDS = {("left", 1): "c", ("left", 2): "dc", ("right", 1): "rc"}
+
+
+def _mac_click_backend():
+    """The backend _mac_click_screen uses: "quartz", "cliclick", or None when neither is there."""
+    try:
+        import Quartz  # noqa: F401
+    except ImportError:
+        return "cliclick" if shutil.which("cliclick") else None
+    return "quartz"
+
+
+def _cliclick_refusal(button, click_count):
+    """The {error} for a click cliclick cannot send, else None."""
+    if (button, click_count) in _CLICLICK_COMMANDS:
+        return None
+    what = "middle-click" if button == "middle" else "double-click with the right button"
+    return {"error": f"trustedClick cannot {what} with cliclick; install pyobjc Quartz "
+                     "(uvx --from 'kitsune-browser-mcp[macos]' kitsune), which can"}
+
+
+def _mac_click_screen(x, y, restore_pointer=True, button="left", click_count=1, modifiers=()):
     # macOS drops posted mouse events from untrusted processes without an error.
     if _mac_accessibility_trusted() is False:
         return {"error": f"trustedClick needs macOS Accessibility permission: {_MAC_ACCESSIBILITY_HELP}"}
@@ -623,15 +674,25 @@ def _mac_click_screen(x, y, restore_pointer=True):
             except Exception as e:  # pyobjc raises its own error types
                 read_error = f"could not read the pointer position: {e}"
         point = (float(x), float(y))
-        for event_type, pause in (
-            (Quartz.kCGEventMouseMoved, 0.05),
-            (Quartz.kCGEventLeftMouseDown, 0.03),
-            (Quartz.kCGEventLeftMouseUp, 0),
-        ):
-            event = Quartz.CGEventCreateMouseEvent(None, event_type, point, Quartz.kCGMouseButtonLeft)
-            Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
-            if pause:
-                time.sleep(pause)
+        down, up, mouse_button = (getattr(Quartz, name) for name in _QUARTZ_BUTTONS[button])
+        flags = 0
+        for modifier in modifiers:
+            flags |= getattr(Quartz, _QUARTZ_MODIFIER_FLAGS[modifier])
+        Quartz.CGEventPost(Quartz.kCGHIDEventTap, Quartz.CGEventCreateMouseEvent(
+            None, Quartz.kCGEventMouseMoved, point, mouse_button))
+        time.sleep(0.05)
+        # The page reads a double click from the second press's click state, 2.
+        for click_state in range(1, click_count + 1):
+            if click_state > 1:
+                time.sleep(DOUBLE_CLICK_GAP)
+            for event_type, pause in ((down, 0.03), (up, 0)):
+                event = Quartz.CGEventCreateMouseEvent(None, event_type, point, mouse_button)
+                Quartz.CGEventSetIntegerValueField(event, Quartz.kCGMouseEventClickState, click_state)
+                if flags:
+                    Quartz.CGEventSetFlags(event, flags)
+                Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
+                if pause:
+                    time.sleep(pause)
 
         def restore():
             # A warp posts no mouse event, but macOS then ignores the user's mouse for about
@@ -645,16 +706,21 @@ def _mac_click_screen(x, y, restore_pointer=True):
 
     cliclick = shutil.which("cliclick")
     if cliclick:
-        click = f"c:{_cliclick_coord(x)},{_cliclick_coord(y)}"
+        refusal = _cliclick_refusal(button, click_count)
+        if refusal:
+            return refusal
+        command = _CLICLICK_COMMANDS[(button, click_count)]
+        keys = ",".join(_CLICLICK_KEYS[m] for m in modifiers)
+        # "p" prints the pointer position as "x,y" before the click in the same run.
+        args = [cliclick] + (["p"] if restore_pointer else []) + ([f"kd:{keys}"] if keys else [])
+        args += [f"{command}:{_cliclick_coord(x)},{_cliclick_coord(y)}"] + ([f"ku:{keys}"] if keys else [])
         try:
-            # "p" prints the pointer position as "x,y" before the click in the same run.
-            result = subprocess.run(
-                [cliclick, "p", click] if restore_pointer else [cliclick, click],
-                capture_output=True, text=True, timeout=10,
-            )
+            result = subprocess.run(args, capture_output=True, text=True, timeout=10)
         except (OSError, subprocess.SubprocessError) as e:
+            _release_keys([cliclick, f"ku:{keys}"] if keys else None)
             return {"error": f"cliclick failed: {e}"}
         if result.returncode != 0:
+            _release_keys([cliclick, f"ku:{keys}"] if keys else None)
             detail = (result.stderr or result.stdout or "").strip() or f"exit code {result.returncode}"
             return {"error": f"cliclick failed: {detail}"}
         saved = _re.match(r"\s*(-?\d+),(-?\d+)\s*(?:\n|$)", result.stdout or "") if restore_pointer else None
@@ -681,7 +747,21 @@ def _mac_click_screen(x, y, restore_pointer=True):
     }
 
 
-def _linux_click_screen(x, y, restore_pointer=True):
+def _release_keys(command):
+    """Best effort: release modifier keys a failed click command may have left pressed."""
+    if not command:
+        return
+    try:
+        subprocess.run(command, capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+_XDOTOOL_BUTTONS = {"left": "1", "middle": "2", "right": "3"}
+_XDOTOOL_KEYS = {"Shift": "shift", "Control": "ctrl", "Alt": "alt", "Meta": "super"}
+
+
+def _linux_click_screen(x, y, restore_pointer=True, button="left", click_count=1, modifiers=()):
     # xdotool cannot move the pointer in a native Wayland session; refuse rather than misclick.
     if os.environ.get("XDG_SESSION_TYPE") == "wayland" or not os.environ.get("DISPLAY"):
         return {"error": "trustedClick on Linux needs an X11 session (DISPLAY set); Wayland is not supported"}
@@ -689,21 +769,32 @@ def _linux_click_screen(x, y, restore_pointer=True):
     xdotool = shutil.which("xdotool")
     if not xdotool:
         return {"error": "trustedClick on Linux needs xdotool on PATH (for example sudo apt install xdotool)"}
-    command = [xdotool, "mousemove", "--sync", str(int(round(x))), str(int(round(y))), "click", "1"]
+    keys = "+".join(_XDOTOOL_KEYS[m] for m in modifiers)
+    command = [xdotool, "mousemove", "--sync", str(int(round(x))), str(int(round(y)))]
+    command += ["keydown", keys] if keys else []
+    command += ["click"] + (["--repeat", "2"] if click_count == 2 else []) + [_XDOTOOL_BUTTONS[button]]
+    command += ["keyup", keys] if keys else []
     if restore_pointer:
         # The X server handles the click before this move back to where the first mousemove started.
         command += ["mousemove", "restore"]
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.SubprocessError) as e:
+        _release_keys([xdotool, "keyup", keys] if keys else None)
         return {"error": f"xdotool failed: {e}"}
     if result.returncode != 0:
+        _release_keys([xdotool, "keyup", keys] if keys else None)
         detail = (result.stderr or result.stdout or "").strip() or f"exit code {result.returncode}"
         return {"error": f"xdotool failed: {detail}"}
     return {"ok": True, "backend": "xdotool", "pointerRestored": restore_pointer}
 
 
-def _windows_click_screen(x, y, restore_pointer=True):
+_WIN32_BUTTONS = {"left": (0x0002, 0x0004), "right": (0x0008, 0x0010), "middle": (0x0020, 0x0040)}  # DOWN, UP
+_WIN32_KEYS = {"Shift": 0x10, "Control": 0x11, "Alt": 0x12, "Meta": 0x5B}  # VK_SHIFT, VK_CONTROL, VK_MENU, VK_LWIN
+KEYEVENTF_KEYUP = 0x0002
+
+
+def _windows_click_screen(x, y, restore_pointer=True, button="left", click_count=1, modifiers=()):
     from ctypes import wintypes
 
     user32 = ctypes.windll.user32
@@ -713,9 +804,20 @@ def _windows_click_screen(x, y, restore_pointer=True):
         read_error = "could not read the pointer position: GetCursorPos failed"
     user32.SetCursorPos(int(round(x)), int(round(y)))
     time.sleep(0.05)
-    user32.mouse_event(0x0002, 0, 0, 0, 0)  # LEFTDOWN
-    time.sleep(0.03)
-    user32.mouse_event(0x0004, 0, 0, 0, 0)  # LEFTUP
+    down, up = _WIN32_BUTTONS[button]
+    for modifier in modifiers:
+        user32.keybd_event(_WIN32_KEYS[modifier], 0, 0, 0)
+    try:
+        # A double click is two down/up pairs within the system double-click time.
+        for press in range(click_count):
+            if press:
+                time.sleep(DOUBLE_CLICK_GAP)
+            user32.mouse_event(down, 0, 0, 0, 0)
+            time.sleep(0.03)
+            user32.mouse_event(up, 0, 0, 0, 0)
+    finally:
+        for modifier in reversed(modifiers):
+            user32.keybd_event(_WIN32_KEYS[modifier], 0, KEYEVENTF_KEYUP, 0)
 
     def restore():
         if not user32.SetCursorPos(saved.x, saved.y):
@@ -724,13 +826,13 @@ def _windows_click_screen(x, y, restore_pointer=True):
     return _with_pointer_restore({"ok": True, "backend": "win32"}, restore_pointer, read_error, restore)
 
 
-def _native_click_screen(x, y, restore_pointer=True):
+def _native_click_screen(x, y, restore_pointer=True, button="left", click_count=1, modifiers=()):
     if sys.platform == "darwin":
-        return _mac_click_screen(x, y, restore_pointer)
+        return _mac_click_screen(x, y, restore_pointer, button, click_count, modifiers)
     if sys.platform.startswith("linux"):
-        return _linux_click_screen(x, y, restore_pointer)
+        return _linux_click_screen(x, y, restore_pointer, button, click_count, modifiers)
     if sys.platform.startswith("win"):
-        return _windows_click_screen(x, y, restore_pointer)
+        return _windows_click_screen(x, y, restore_pointer, button, click_count, modifiers)
     return {"error": "trustedClick is only implemented on Windows, macOS and Linux (X11)"}
 
 
@@ -752,14 +854,23 @@ async def trusted_click(params):
 
     if not selector and (x is None or y is None):
         return {"error": "trustedClick requires selector or x/y coordinates"}
+    options = _trusted_click_options(params)
+    if isinstance(options, dict):
+        return options
+    button, click_count, modifiers = options
 
     title = params.get("title") or ""
     process = params.get("process") or ""
     restore_pointer = params.get("restorePointer", True) is not False
 
+    mac_backend = _mac_click_backend() if sys.platform == "darwin" else None
+    # Refuse before focusing the browser or showing the tab for a click that cannot be sent.
+    if mac_backend == "cliclick" and (refusal := _cliclick_refusal(button, click_count)):
+        return refusal
+
     if coordinate_space == "screen":
         focused = _focus_browser_window(title, process) if focus else False
-        clicked = _native_click_screen(x, y, restore_pointer)
+        clicked = _native_click_screen(x, y, restore_pointer, button, click_count, modifiers)
         if "error" in clicked:
             return clicked
         return {
@@ -779,6 +890,10 @@ async def trusted_click(params):
         point_params["first"] = True
     if params.get("tabId") is not None:
         point_params["tabId"] = params.get("tabId")
+    if modifiers and mac_backend != "quartz":
+        # Their key presses (cliclick, xdotool, Windows) are the agent's, not the user's typing.
+        # Quartz sets event flags and presses no keys, so the user's own keys still count.
+        point_params["modifiers"] = list(modifiers)
     # The extension shows a target tab that is not shown for the click (previousTabId) and
     # refuses with user_active when the user is using either tab.
     point = await send_to_extension("screenPoint", point_params)
@@ -788,7 +903,8 @@ async def trusted_click(params):
 
     try:
         focused = _focus_browser_window(title or point.get("title", ""), process) if focus else False
-        clicked = _native_click_screen(point["screenX"], point["screenY"], restore_pointer)
+        clicked = _native_click_screen(point["screenX"], point["screenY"], restore_pointer,
+                                       button, click_count, modifiers)
     finally:
         if point.get("previousTabId") is not None:
             # The OS delivers the click asynchronously; let it land before showing the user's tab again.
@@ -1246,6 +1362,16 @@ async def _describe_target(params, inspect):
     return await send_to_extension("describeTarget", {**target, "inspect": inspect}, timeout=10)
 
 
+def _click_verb(action, params):
+    """How a held click reads, naming a trusted click's variant: "clicks", "Shift+right-clicks"."""
+    options = _trusted_click_options(params) if action == "trustedClick" else None
+    if not isinstance(options, tuple):
+        return "clicks"
+    button, click_count, modifiers = options
+    verb = "double-clicks" if click_count == 2 else "clicks"
+    return "+".join([*modifiers, verb if button == "left" else f"{button}-{verb}"])
+
+
 async def _held_reason(action, params):
     """Return a hold tuple, an ambiguity error, or None when ask mode permits the action."""
     reason = description = None
@@ -1286,13 +1412,13 @@ async def _held_reason(action, params):
         if draft_fill and target.get("sensitive"):
             reason, description = "sensitive_field", "fills a sensitive field"
         if reason is None:
-            verb = "presses Enter on" if submit_key else "clicks"
+            verb = "presses Enter on" if submit_key else _click_verb(action, params)
             if action in _ASK_PAGE_ACTIONS and (pattern := _ask_url_match(url_now)):
                 reason, description = "payment_page", f"acts on a payment-like page ({pattern})"
             elif screen:
-                reason, description = "uninspectable_target", "clicks screen coordinates that cannot be inspected"
+                reason, description = "uninspectable_target", f"{verb} screen coordinates that cannot be inspected"
             elif target.get("submits"):
-                what = "presses Enter in a form field" if submit_key else "clicks a submit control"
+                what = "presses Enter in a form field" if submit_key else f"{verb} a submit control"
                 label = target.get("text") or target.get("tag") or ""
                 reason, description = "submit_control", f"{what} ({label})" if label else what
             elif target.get("submitLabel"):

@@ -587,6 +587,10 @@ def browser_trusted_click(
     restore_pointer: Annotated[bool, Field(
         description="Move the pointer back to where it was after the click. False leaves it on "
                     "the target, for hover menus that close when the pointer leaves.")] = True,
+    button: Literal["left", "right", "middle"] = "left",
+    click_count: Annotated[Literal[1, 2], Field(description="2 double-clicks.")] = 1,
+    modifiers: Annotated[list[Literal["Shift", "Control", "Alt", "Meta"]] | None, Field(
+        description="Keys held during the click.")] = None,
 ) -> dict:
     """Click using the real OS mouse pointer, for pages that ignore synthetic clicks;
     confirm_token and first work as in browser_check.
@@ -595,8 +599,9 @@ def browser_trusted_click(
     a page specifically ignores synthetic clicks. The pointer is moved back afterwards;
     pointerRestored reports it, with pointerRestoreError when that failed (the click still
     counts). Works on Windows, macOS and Linux (X11); macOS needs pyobjc Quartz or cliclick
-    plus Accessibility permission for the bridge, and Linux needs xdotool (Wayland is not
-    supported).
+    (which cannot middle-click or right-double-click) plus Accessibility permission for the
+    bridge, and Linux needs xdotool (Wayland is not supported). An option the backend cannot
+    send returns an error without clicking.
     target_not_at_point: another element covers the target's center (state.hit); nothing
     was clicked.
     """
@@ -606,6 +611,12 @@ def browser_trusted_click(
         body = {"coords": {"x": x, "y": y}, "coordinateSpace": coordinate_space, "focus": focus}
     if not restore_pointer:
         body["restorePointer"] = False
+    if button != "left":
+        body["button"] = button
+    if click_count != 1:
+        body["clickCount"] = click_count
+    if modifiers:
+        body["modifiers"] = modifiers
     return _post("/api/trusted-click", _request_body(body, tab_id, confirm_token=confirm_token, first=first))
 
 

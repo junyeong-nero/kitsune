@@ -275,19 +275,22 @@
   // The user shares the browser with the agent, so agent writes back off from a page the user is
   // using. Only trusted input counts: Kitsune's own DOM events are synthetic (isTrusted false),
   // and the trusted OS click of browser_trusted_click follows its screenPoint, which opens a
-  // window for its pointer events. Typing counts while the field the user typed into keeps focus
-  // in a focused document and is not empty. Values are never read out.
+  // window for its pointer events and for key presses of the modifiers it holds. Typing counts
+  // while the field the user typed into keeps focus in a focused document and is not empty.
+  // Values are never read out.
   const USER_INPUT_EVENTS = ['keydown', 'mousedown', 'pointerdown', 'touchstart', 'wheel', 'paste'];
   const USER_INPUT_WINDOW_MS = 3000;
   const AGENT_TRUSTED_CLICK_MS = 2000;
   let lastUserInput = null;   // { at, type }
   let userTypedField = null;  // the editable element (as the document sees it) the user last typed into
   let agentTrustedClickUntil = 0;
+  let agentTrustedClickKeys = new Set();  // modifier key names ("Shift", "Meta") the trusted click holds
 
   function noteUserInput(event) {
     if (!event.isTrusted) return;
     const now = Date.now();
-    if (/^(mouse|pointer|touch)/.test(event.type) && now < agentTrustedClickUntil) return;
+    if (now < agentTrustedClickUntil && (/^(mouse|pointer|touch)/.test(event.type) ||
+        (event.type === 'keydown' && agentTrustedClickKeys.has(event.key)))) return;
     lastUserInput = { at: now, type: event.type };
     if ((event.type === 'keydown' || event.type === 'paste') && isTypingTarget(event.target)) {
       userTypedField = event.target;
@@ -347,7 +350,7 @@
       // Fixed operations the bridge and background used to send as code strings.
       'keepAlive':             () => ({ ok: true }),
       'neuterUnload':          () => neuterUnload(),
-      'screenPoint':           () => screenPoint(msg.selector, msg.x, msg.y, msg.click, msg.first, msg.zoom),
+      'screenPoint':           () => screenPoint(msg.selector, msg.x, msg.y, msg.click, msg.first, msg.zoom, msg.modifiers),
       'userActivity':          () => userActivity(),
       'captureMeasure':        () => captureMeasure(msg.selector),
       'captureScrollIntoView': () => captureScrollIntoView(msg.selector, msg.block),
@@ -2045,7 +2048,7 @@
   // both shrink by the zoom. Their sum times the tab's zoom (browser.tabs.getZoom, from the
   // background) is the desktop point at 100% zoom, which the OS backends take. OS display
   // scaling is a separate step that this does not cover.
-  function screenPoint(selector, x, y, click, first, zoom) {
+  function screenPoint(selector, x, y, click, first, zoom, modifiers) {
     // Viewport point (element centre or x/y) plus its desktop position for OS-level clicks.
     let el = null;
     if (selector) {
@@ -2061,7 +2064,10 @@
       const elsewhere = targetNotAtPoint(el, x, y);
       if (elsewhere) return elsewhere;
     }
-    if (click) agentTrustedClickUntil = Date.now() + AGENT_TRUSTED_CLICK_MS;
+    if (click) {
+      agentTrustedClickUntil = Date.now() + AGENT_TRUSTED_CLICK_MS;
+      agentTrustedClickKeys = new Set(Array.isArray(modifiers) ? modifiers : []);
+    }
     const scale = Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
     const viewportLeft = Number.isFinite(window.mozInnerScreenX)
       ? window.mozInnerScreenX

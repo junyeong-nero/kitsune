@@ -14,16 +14,32 @@ USER_POINTER = (300.5, -40.0)
 
 
 def fake_quartz():
+    def set_field(event, field, value):
+        assert field == 1, "only kCGMouseEventClickState is set"
+        event["clickState"] = value
+
     return SimpleNamespace(
         kCGEventMouseMoved=5, kCGEventLeftMouseDown=1, kCGEventLeftMouseUp=2,
-        kCGMouseButtonLeft=0, kCGHIDEventTap=0,
+        kCGEventRightMouseDown=3, kCGEventRightMouseUp=4, kCGEventOtherMouseDown=25, kCGEventOtherMouseUp=26,
+        kCGMouseButtonLeft=0, kCGMouseButtonRight=1, kCGMouseButtonCenter=2, kCGHIDEventTap=0,
+        kCGMouseEventClickState=1,
+        kCGEventFlagMaskShift=0x20000, kCGEventFlagMaskControl=0x40000,
+        kCGEventFlagMaskAlternate=0x80000, kCGEventFlagMaskCommand=0x100000,
         CGEventCreate=Mock(return_value="current"),
         CGEventGetLocation=Mock(return_value=USER_POINTER),
-        CGEventCreateMouseEvent=Mock(side_effect=lambda src, kind, point, button: ("event", kind)),
+        CGEventCreateMouseEvent=Mock(side_effect=lambda src, kind, point, button: {"kind": kind}),
+        CGEventSetIntegerValueField=Mock(side_effect=set_field),
+        CGEventSetFlags=Mock(side_effect=lambda event, flags: event.update(flags=flags)),
         CGEventPost=Mock(),
         CGWarpMouseCursorPosition=Mock(return_value=0),
         CGAssociateMouseAndMouseCursorPosition=Mock(),
     )
+
+
+def posted(quartz):
+    """The Quartz events the click posted, in order, with the fields it set on them."""
+    assert all(c.args[0] == quartz.kCGHIDEventTap for c in quartz.CGEventPost.call_args_list)
+    return [c.args[1] for c in quartz.CGEventPost.call_args_list]
 
 
 def windows_user32(cursor=(3, 4), read_ok=1):
@@ -93,6 +109,49 @@ class NativeClickTests(unittest.TestCase):
         self.assertEqual(result, {"ok": True, "backend": "win32", "pointerRestored": False,
                                   "pointerRestoreError": "could not move the pointer back: SetCursorPos failed"})
 
+    def test_windows_buttons_double_click_and_modifiers(self):
+        # Issue #306: the button's DOWN/UP flags, two pairs for a double click, modifier keys
+        # pressed around the click and released in reverse order; the pointer still goes back.
+        cases = (
+            ("right", 1, (), [call.mouse_event(0x0008, 0, 0, 0, 0), call.sleep(0.03),
+                              call.mouse_event(0x0010, 0, 0, 0, 0)]),
+            ("middle", 1, (), [call.mouse_event(0x0020, 0, 0, 0, 0), call.sleep(0.03),
+                               call.mouse_event(0x0040, 0, 0, 0, 0)]),
+            ("left", 2, (), [call.mouse_event(0x0002, 0, 0, 0, 0), call.sleep(0.03),
+                             call.mouse_event(0x0004, 0, 0, 0, 0), call.sleep(bridge.DOUBLE_CLICK_GAP),
+                             call.mouse_event(0x0002, 0, 0, 0, 0), call.sleep(0.03),
+                             call.mouse_event(0x0004, 0, 0, 0, 0)]),
+            ("left", 1, ("Shift", "Meta"), [
+                call.keybd_event(0x10, 0, 0, 0), call.keybd_event(0x5B, 0, 0, 0),
+                call.mouse_event(0x0002, 0, 0, 0, 0), call.sleep(0.03), call.mouse_event(0x0004, 0, 0, 0, 0),
+                call.keybd_event(0x5B, 0, 0x0002, 0), call.keybd_event(0x10, 0, 0x0002, 0)]),
+            ("right", 2, ("Control", "Alt"), [
+                call.keybd_event(0x11, 0, 0, 0), call.keybd_event(0x12, 0, 0, 0),
+                call.mouse_event(0x0008, 0, 0, 0, 0), call.sleep(0.03), call.mouse_event(0x0010, 0, 0, 0, 0),
+                call.sleep(bridge.DOUBLE_CLICK_GAP),
+                call.mouse_event(0x0008, 0, 0, 0, 0), call.sleep(0.03), call.mouse_event(0x0010, 0, 0, 0, 0),
+                call.keybd_event(0x12, 0, 0x0002, 0), call.keybd_event(0x11, 0, 0x0002, 0)]),
+        )
+        for button, count, modifiers, clicked in cases:
+            with self.subTest(button=button, count=count, modifiers=modifiers):
+                self.sleep.reset_mock()
+                user32 = windows_user32(cursor=(-30, 4))
+                user32.attach_mock(self.sleep, "sleep")
+                platform, windll = self.windows(user32)
+                with platform, windll:
+                    result = bridge._native_click_screen(10, 20, True, button, count, modifiers)
+                self.assertEqual(result, {"ok": True, "backend": "win32", "pointerRestored": True})
+                self.assertEqual(user32.mock_calls[2:], [
+                    call.sleep(0.05), *clicked, call.sleep(bridge.POINTER_RESTORE_DELAY), call.SetCursorPos(-30, 4)])
+
+    def test_windows_releases_modifiers_when_the_click_fails(self):
+        user32 = windows_user32()
+        user32.mouse_event.side_effect = OSError("blocked")
+        platform, windll = self.windows(user32)
+        with platform, windll, self.assertRaises(OSError):
+            bridge._native_click_screen(10, 20, True, "left", 1, ("Shift",))
+        self.assertEqual(user32.keybd_event.call_args_list, [call(0x10, 0, 0, 0), call(0x10, 0, 0x0002, 0)])
+
     def test_macos_prefers_quartz_events(self):
         quartz = fake_quartz()
         platform, trusted = self.mac()
@@ -103,8 +162,7 @@ class NativeClickTests(unittest.TestCase):
         self.assertEqual(result, {"ok": True, "backend": "quartz", "pointerRestored": True})
         self.assertEqual(quartz.CGEventCreateMouseEvent.call_args_list,
                          [call(None, kind, (10.0, 20.5), 0) for kind in (5, 1, 2)])
-        self.assertEqual(quartz.CGEventPost.call_args_list,
-                         [call(0, ("event", kind)) for kind in (5, 1, 2)])
+        self.assertEqual(posted(quartz), [{"kind": 5}, {"kind": 1, "clickState": 1}, {"kind": 2, "clickState": 1}])
         which.assert_not_called()
         run.assert_not_called()
 
@@ -157,6 +215,43 @@ class NativeClickTests(unittest.TestCase):
                 self.assertEqual(len(quartz.CGEventPost.call_args_list), 3)
                 quartz.CGAssociateMouseAndMouseCursorPosition.assert_not_called()
 
+    def test_quartz_buttons_double_click_and_modifiers(self):
+        # Issue #306: right/other mouse event types and buttons, click state 1 then 2 for a
+        # double click, and the modifiers as event flags (no key events are posted).
+        shift_cmd = 0x20000 | 0x100000
+        cases = (
+            ("right", 1, (), 1, [{"kind": 3, "clickState": 1}, {"kind": 4, "clickState": 1}]),
+            ("middle", 1, (), 2, [{"kind": 25, "clickState": 1}, {"kind": 26, "clickState": 1}]),
+            ("left", 2, (), 0, [{"kind": 1, "clickState": 1}, {"kind": 2, "clickState": 1},
+                                {"kind": 1, "clickState": 2}, {"kind": 2, "clickState": 2}]),
+            ("left", 1, ("Shift", "Meta"), 0, [{"kind": 1, "clickState": 1, "flags": shift_cmd},
+                                               {"kind": 2, "clickState": 1, "flags": shift_cmd}]),
+            ("right", 2, ("Control", "Alt"), 1, [
+                {"kind": kind, "clickState": state, "flags": 0x40000 | 0x80000}
+                for state in (1, 2) for kind in (3, 4)]),
+        )
+        for button, count, modifiers, mouse_button, events in cases:
+            with self.subTest(button=button, count=count, modifiers=modifiers):
+                quartz = fake_quartz()
+                order = Mock()
+                for name in ("CGEventPost", "CGWarpMouseCursorPosition"):
+                    order.attach_mock(getattr(quartz, name), name)
+                order.attach_mock(self.sleep, "sleep")
+                platform, trusted = self.mac()
+                with platform, trusted, patch.dict("sys.modules", {"Quartz": quartz}):
+                    result = bridge._native_click_screen(10, 20, True, button, count, modifiers)
+                self.assertEqual(result, {"ok": True, "backend": "quartz", "pointerRestored": True})
+                self.assertEqual(posted(quartz), [{"kind": 5}, *events])
+                self.assertEqual({c.args[3] for c in quartz.CGEventCreateMouseEvent.call_args_list}, {mouse_button})
+                sleeps = [c for c in order.mock_calls if c[0] == "sleep"]
+                expected = [call.sleep(0.05), call.sleep(0.03)]
+                if count == 2:
+                    expected += [call.sleep(bridge.DOUBLE_CLICK_GAP), call.sleep(0.03)]
+                self.assertEqual(sleeps, expected + [call.sleep(bridge.POINTER_RESTORE_DELAY)])
+                self.assertEqual(order.mock_calls[-1][0], "CGWarpMouseCursorPosition")
+                if not modifiers:
+                    quartz.CGEventSetFlags.assert_not_called()
+
     @contextmanager
     def cliclick(self, *results):
         platform, trusted = self.mac()
@@ -199,6 +294,47 @@ class NativeClickTests(unittest.TestCase):
                 self.assertEqual((result["ok"], result["pointerRestored"]), (True, False))
                 self.assertIn("could not move the pointer back: ", result["pointerRestoreError"])
                 self.assertIn(error, result["pointerRestoreError"])
+
+    def test_cliclick_buttons_double_click_and_modifiers(self):
+        # Issue #306: rc: and dc:, and kd:/ku: around the click; "p" still comes first.
+        for button, count, modifiers, commands in (
+            ("right", 1, (), ["rc:5,20"]),
+            ("left", 2, (), ["dc:5,20"]),
+            ("left", 1, ("Shift", "Control", "Alt", "Meta"),
+             ["kd:shift,ctrl,alt,cmd", "c:5,20", "ku:shift,ctrl,alt,cmd"]),
+        ):
+            with self.subTest(button=button, count=count, modifiers=modifiers):
+                with self.cliclick(completed("-1440,25\n"), completed()) as run:
+                    result = bridge._native_click_screen(5, 20, True, button, count, modifiers)
+                self.assertEqual(result, {"ok": True, "backend": "cliclick", "pointerRestored": True})
+                self.assertEqual([c.args[0] for c in run.call_args_list], [
+                    ["/opt/homebrew/bin/cliclick", "p", *commands],
+                    ["/opt/homebrew/bin/cliclick", "m:=-1440,25"],
+                ])
+        with self.cliclick(completed()) as run:
+            bridge._native_click_screen(5, 20, False, "right", 1, ("Meta",))
+        self.assertEqual(run.call_args.args[0], ["/opt/homebrew/bin/cliclick", "kd:cmd", "rc:5,20", "ku:cmd"])
+
+    def test_cliclick_refuses_what_it_cannot_click(self):
+        # Never a left click instead: middle and right double clicks need Quartz.
+        for button, count, what in (("middle", 1, "middle-click"), ("middle", 2, "middle-click"),
+                                    ("right", 2, "double-click with the right button")):
+            with self.subTest(button=button, count=count), self.cliclick() as run:
+                result = bridge._native_click_screen(5, 20, True, button, count, ("Shift",))
+            self.assertEqual(set(result), {"error"})
+            self.assertIn(f"cannot {what} with cliclick", result["error"])
+            self.assertIn("kitsune-browser-mcp[macos]", result["error"])
+            run.assert_not_called()
+
+    def test_cliclick_failure_releases_held_modifiers(self):
+        for failure, error in ((completed(returncode=1, stderr="boom\n"), "cliclick failed: boom"),
+                               (subprocess.TimeoutExpired("cliclick", 10), "cliclick failed: ")):
+            with self.subTest(error=error), self.cliclick(failure, completed()) as run:
+                result = bridge._native_click_screen(5, 20, True, "left", 1, ("Shift", "Meta"))
+            self.assertEqual(set(result), {"error"})
+            self.assertTrue(result["error"].startswith(error), result)
+            self.assertEqual(run.call_args.args[0], ["/opt/homebrew/bin/cliclick", "ku:shift,cmd"])
+            self.assertEqual(run.call_count, 2)
 
     def test_macos_reports_cliclick_failure(self):
         platform, trusted = self.mac()
@@ -260,6 +396,42 @@ class NativeClickTests(unittest.TestCase):
         self.assertEqual(result, {"ok": True, "backend": "xdotool", "pointerRestored": False})
         self.assertEqual(run.call_args.args[0],
                          ["/usr/bin/xdotool", "mousemove", "--sync", "10", "20", "click", "1"])
+
+    def test_linux_buttons_double_click_and_modifiers(self):
+        # Issue #306: click 3/2, --repeat 2, keydown/keyup around the click, all in one command
+        # that still ends with the move back.
+        platform, env = self.linux()
+        for button, count, modifiers, clicked in (
+            ("right", 1, (), ["click", "3"]),
+            ("middle", 1, (), ["click", "2"]),
+            ("left", 2, (), ["click", "--repeat", "2", "1"]),
+            ("right", 2, ("Shift", "Control", "Alt", "Meta"),
+             ["keydown", "shift+ctrl+alt+super", "click", "--repeat", "2", "3", "keyup", "shift+ctrl+alt+super"]),
+        ):
+            with self.subTest(button=button, count=count, modifiers=modifiers), platform, env, \
+                 patch.object(bridge.shutil, "which", return_value="/usr/bin/xdotool"), \
+                 patch.object(bridge.subprocess, "run", return_value=completed()) as run:
+                result = bridge._native_click_screen(10, 20, True, button, count, modifiers)
+            self.assertEqual(result, {"ok": True, "backend": "xdotool", "pointerRestored": True})
+            run.assert_called_once()
+            self.assertEqual(run.call_args.args[0], ["/usr/bin/xdotool", "mousemove", "--sync", "10", "20",
+                                                     *clicked, "mousemove", "restore"])
+
+    def test_xdotool_failure_releases_held_modifiers(self):
+        platform, env = self.linux()
+        for failure, error in ((completed(returncode=1, stderr="BadWindow\n"), "xdotool failed: BadWindow"),
+                               (subprocess.TimeoutExpired("xdotool", 10), "xdotool failed: ")):
+            with self.subTest(error=error), platform, env, \
+                 patch.object(bridge.shutil, "which", return_value="/usr/bin/xdotool"), \
+                 patch.object(bridge.subprocess, "run", side_effect=[failure, completed()]) as run:
+                result = bridge._native_click_screen(10, 20, False, "left", 1, ("Control",))
+            self.assertEqual(set(result), {"error"})
+            self.assertTrue(result["error"].startswith(error), result)
+            self.assertEqual([c.args[0] for c in run.call_args_list], [
+                ["/usr/bin/xdotool", "mousemove", "--sync", "10", "20", "keydown", "ctrl", "click", "1",
+                 "keyup", "ctrl"],
+                ["/usr/bin/xdotool", "keyup", "ctrl"],
+            ])
 
     def test_linux_without_xdotool_explains_install(self):
         platform, env = self.linux()
@@ -371,7 +543,7 @@ class TrustedClickTests(unittest.TestCase):
             result = asyncio.run(bridge.trusted_click(
                 {"coords": {"x": 5, "y": 6}, "coordinateSpace": "screen", "focus": True}))
         focus.assert_called_once_with("", "")
-        click.assert_called_once_with(5, 6, True)
+        click.assert_called_once_with(5, 6, True, "left", 1, ())
         self.assertEqual((result["focused"], result["clickBackend"]), (True, "quartz"))
 
     def test_viewport_click_focuses_page_title_and_process(self):
@@ -383,7 +555,7 @@ class TrustedClickTests(unittest.TestCase):
             result = asyncio.run(bridge.trusted_click(
                 {"selector": "#go", "focus": True, "process": "firefox"}))
         focus.assert_called_once_with("Docs", "firefox")
-        click.assert_called_once_with(110, 220, True)
+        click.assert_called_once_with(110, 220, True, "left", 1, ())
         self.assertEqual(result["clickBackend"], "cliclick")
 
     def test_viewport_click_reports_the_page_zoom_it_used(self):
@@ -399,7 +571,7 @@ class TrustedClickTests(unittest.TestCase):
                  patch.object(bridge, "_native_click_screen",
                               return_value={"ok": True, "backend": "quartz"}) as click:
                 result = asyncio.run(bridge.trusted_click({"selector": "#go"}))
-            click.assert_called_once_with(point["screenX"], point["screenY"], True)
+            click.assert_called_once_with(point["screenX"], point["screenY"], True, "left", 1, ())
             self.assertEqual(result["zoom"], zoom)
 
     def test_target_not_at_point_clicks_nothing(self):
@@ -434,6 +606,75 @@ class TrustedClickTests(unittest.TestCase):
             self.assertEqual({k: result[k] for k in result if k.startswith("pointer")},
                              {k: clicked[k] for k in clicked if k.startswith("pointer")})
 
+    def test_click_options_are_validated_and_passed_to_the_backend(self):
+        point = {"screenX": 110, "screenY": 220, "viewportX": 10, "viewportY": 20}
+        with patch.object(bridge.sys, "platform", "linux"), \
+             patch.object(bridge, "send_to_extension", new_callable=AsyncMock, return_value=point) as send, \
+             patch.object(bridge, "_native_click_screen", return_value={"ok": True, "backend": "xdotool"}) as click:
+            result = asyncio.run(bridge.trusted_click({"selector": "#go", "tabId": 7, "button": "right",
+                                                       "clickCount": 2, "modifiers": ["Meta", "Shift", "Meta"]}))
+        self.assertTrue(result["ok"])
+        # One press per key, in a fixed order; the content script learns which key presses are the agent's.
+        click.assert_called_once_with(110, 220, True, "right", 2, ("Shift", "Meta"))
+        self.assertEqual(send.call_args_list[0].args, ("screenPoint", {
+            "selector": "#go", "x": None, "y": None, "click": True, "tabId": 7, "modifiers": ["Shift", "Meta"]}))
+
+        for params, error in (
+            ({"button": "back"}, "trustedClick button must be left, right or middle, not 'back'"),
+            ({"clickCount": 3}, "trustedClick clickCount must be 1 or 2, not 3"),
+            ({"clickCount": True}, "trustedClick clickCount must be 1 or 2, not True"),
+            # 2.0 == 2, but the backends count presses with range() and would fail mid-click.
+            ({"clickCount": 2.0}, "trustedClick clickCount must be 1 or 2, not 2.0"),
+            ({"modifiers": ["Control", "Cmd"]},
+             "trustedClick modifiers must be a list of Shift, Control, Alt and Meta, not ['Control', 'Cmd']"),
+            ({"modifiers": "Shift"},
+             "trustedClick modifiers must be a list of Shift, Control, Alt and Meta, not 'Shift'"),
+        ):
+            for target in ({"selector": "#go"}, {"coords": {"x": 1, "y": 2}, "coordinateSpace": "screen"}):
+                with self.subTest(params=params, target=target), \
+                     patch.object(bridge, "send_to_extension", new_callable=AsyncMock) as send, \
+                     patch.object(bridge, "_native_click_screen") as click:
+                    self.assertEqual(asyncio.run(bridge.trusted_click({**target, **params})), {"error": error})
+                send.assert_not_called()
+                click.assert_not_called()
+
+    def test_backend_refusal_shows_the_users_tab_again(self):
+        point = {"screenX": 110, "screenY": 220, "viewportX": 10, "viewportY": 20, "tabId": 7, "previousTabId": 3}
+        refused = {"error": "trustedClick cannot middle-click with cliclick; ..."}
+        with patch.object(bridge.sys, "platform", "linux"), \
+             patch.object(bridge, "send_to_extension", new_callable=AsyncMock, return_value=point) as send, \
+             patch.object(bridge.asyncio, "sleep", new_callable=AsyncMock), \
+             patch.object(bridge, "_native_click_screen", return_value=refused):
+            result = asyncio.run(bridge.trusted_click({"selector": "#go", "tabId": 7, "button": "middle"}))
+        self.assertEqual(result, refused)
+        self.assertEqual(send.call_args_list[-1].args, ("restoreActiveTab", {"tabId": 3, "from": 7}))
+
+    def test_cliclick_refuses_before_the_tab_is_shown(self):
+        for target in ({"selector": "#go", "tabId": 7}, {"coords": {"x": 1, "y": 2}, "coordinateSpace": "screen"}):
+            with self.subTest(target=target), patch.object(bridge.sys, "platform", "darwin"), \
+                 patch.dict("sys.modules", {"Quartz": None}), \
+                 patch.object(bridge.shutil, "which", return_value="/opt/homebrew/bin/cliclick"), \
+                 patch.object(bridge, "send_to_extension", new_callable=AsyncMock) as send, \
+                 patch.object(bridge, "_focus_browser_window") as focus, \
+                 patch.object(bridge, "_native_click_screen") as click:
+                result = asyncio.run(bridge.trusted_click({**target, "focus": True, "button": "middle"}))
+            self.assertIn("cannot middle-click with cliclick", result["error"])
+            send.assert_not_called()
+            focus.assert_not_called()
+            click.assert_not_called()
+
+    def test_only_backends_that_press_keys_excuse_them_in_the_page(self):
+        point = {"screenX": 110, "screenY": 220, "viewportX": 10, "viewportY": 20}
+        for quartz, sent in ((SimpleNamespace(), None), (None, ["Alt"])):
+            with self.subTest(quartz=quartz), patch.object(bridge.sys, "platform", "darwin"), \
+                 patch.dict("sys.modules", {"Quartz": quartz}), \
+                 patch.object(bridge.shutil, "which", return_value="/opt/homebrew/bin/cliclick"), \
+                 patch.object(bridge, "send_to_extension", new_callable=AsyncMock, return_value=point) as send, \
+                 patch.object(bridge, "_native_click_screen", return_value={"ok": True}):
+                asyncio.run(bridge.trusted_click({"selector": "#go", "modifiers": ["Alt"]}))
+            # Quartz sets event flags and presses no keys, so the user's Alt still counts.
+            self.assertEqual(send.call_args_list[0].args[1].get("modifiers"), sent)
+
     def test_linux_screen_click_reports_xdotool_backend(self):
         with patch.object(bridge.sys, "platform", "linux"), \
              patch.dict(os.environ, {"XDG_SESSION_TYPE": "x11", "DISPLAY": ":0"}), \
@@ -461,6 +702,14 @@ class TrustedClickTests(unittest.TestCase):
             tools.browser_trusted_click(selector="#menu", restore_pointer=False)
         self.assertNotIn("restorePointer", post.call_args_list[0].args[1])
         self.assertIs(post.call_args_list[1].args[1]["restorePointer"], False)
+
+    def test_tool_sends_click_options_only_when_they_are_not_the_default(self):
+        with patch.object(tools, "_post", return_value={"ok": True}) as post:
+            tools.browser_trusted_click(selector="#go")
+            tools.browser_trusted_click(selector="#go", button="right", click_count=2, modifiers=["Shift"])
+        self.assertFalse({"button", "clickCount", "modifiers"} & set(post.call_args_list[0].args[1]))
+        body = post.call_args_list[1].args[1]
+        self.assertEqual((body["button"], body["clickCount"], body["modifiers"]), ("right", 2, ["Shift"]))
 
 
 if __name__ == "__main__":

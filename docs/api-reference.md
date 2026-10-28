@@ -1030,7 +1030,9 @@ How it tells the user from the agent: Kitsune's own DOM events are synthetic, so
 `isTrusted` is `false`, and the content script only counts trusted events. Its
 listeners are on the window in the capture phase, so a page that stops propagation does
 not hide input from them. The OS click of `browser_trusted_click` is trusted, so
-pointer events within 2 s of its `screenPoint` are not counted. `mousemove`, scrolling
+pointer events within 2 s of its `screenPoint` are not counted, nor are `keydown` events
+of the modifiers it holds when cliclick, xdotool or Windows press real keys for them
+(Quartz sets event flags instead, so the user's keys still count). `mousemove`, scrolling
 by itself and `input` events are not counted either, which keeps autofill, the agent's
 own editing and a mouse resting over the page from counting as use. A navigation counts
 as the agent's when an agent command on the tab was running, or ended at most 2 s
@@ -2079,7 +2081,7 @@ overrides the file destination; `data_url=True` additionally returns `dataUrl`.
 The former element tool's `scale` option remains available through the bridge
 endpoint; the merged MCP tool uses its default scale of 1.
 
-### `browser_trusted_click(selector="", x=0, y=0, coordinate_space="viewport", focus=False, tab_id=None, first=False, restore_pointer=True)`
+### `browser_trusted_click(selector="", x=0, y=0, coordinate_space="viewport", focus=False, tab_id=None, first=False, restore_pointer=True, button="left", click_count=1, modifiers=None)`
 
 Clicks with the real OS mouse pointer via POST `/api/trusted-click`, for pages
 that ignore synthetic DOM clicks. It moves the user's cursor for the click, so prefer
@@ -2104,6 +2106,26 @@ input sits under its label); otherwise nothing is clicked and the call returns
 `target_not_at_point` with `state.viewportX`, `state.viewportY` and `state.hit` (the
 covering element's `ref`, `role` and `name`, or `null` when nothing is there). The
 "Zoom text only" setting and OS display scaling are not compensated.
+
+`button` (`left`, `right` or `middle`), `click_count` (`2` double-clicks) and
+`modifiers` (any of `Shift`, `Control`, `Alt`, `Meta`, held during the click) choose the
+click (request fields `button`, `clickCount`, `modifiers`). Any other value returns
+`{error}` before anything is clicked, and so does a variant the backend cannot send: it
+never falls back to a left click. cliclick's refusals come before the tab is shown or the
+browser focused. The desktop may still give some combinations its own meaning, for
+example Control+click as a right click on macOS, Alt+click as a window drag in some
+Linux window managers, or the Start menu opening when Windows sees `Meta` (the Windows
+key) released.
+
+| Platform | Button | Double click | Modifiers |
+|---|---|---|---|
+| Windows | `mouse_event` `LEFTDOWN`/`LEFTUP`, `RIGHTDOWN`/`RIGHTUP`, `MIDDLEDOWN`/`MIDDLEUP` | two down/up pairs 50 ms apart | `keybd_event` key down before the click and up after it (`VK_SHIFT`, `VK_CONTROL`, `VK_MENU`, `VK_LWIN`) |
+| macOS Quartz | `kCGEventLeftMouseDown`/`Up`, `kCGEventRightMouseDown`/`Up`, `kCGEventOtherMouseDown`/`Up` with `kCGMouseButtonCenter` | two down/up pairs 50 ms apart, `kCGMouseEventClickState` 1 then 2 | event flags on the button events (`kCGEventFlagMaskShift`, `Control`, `Alternate`, `Command`); no key events |
+| macOS cliclick | `c:` or `rc:`; middle returns `{error}` | `dc:`; with the right button returns `{error}` | `kd:` before the click and `ku:` after it (`shift`, `ctrl`, `alt`, `cmd`) |
+| Linux (X11) | `xdotool click 1`, `3` or `2` | `click --repeat 2` | `keydown` before the click and `keyup` after it, in the same command (`shift`, `ctrl`, `alt`, `super`) |
+
+When a cliclick or xdotool run that held modifiers fails, the bridge sends their key-up
+once more so no key stays pressed.
 
 | Platform | Click backend | Pointer restore |
 |---|---|---|
@@ -2368,8 +2390,9 @@ Add `"wait": true, "timeout": 10000` to wait for the target first (see
 ### POST /api/trusted-click
 `{ "selector": "button.submit", "focus": true }` or
 `{ "coords": { "x": 640, "y": 400 }, "coordinateSpace": "screen" }` — optional
-`tabId`, `title`, `process`. OS-level click on Windows, macOS and Linux (X11); see
-[`browser_trusted_click`](#browser_trusted_clickselector-x0-y0-coordinate_spaceviewport-focusfalse-tab_idnone-firstfalse-restore_pointertrue).
+`tabId`, `title`, `process`, `restorePointer`, `button` (`left`/`right`/`middle`),
+`clickCount` (1 or 2), `modifiers` (`["Shift", "Control", "Alt", "Meta"]`). OS-level click on Windows, macOS and Linux (X11); see
+[`browser_trusted_click`](#browser_trusted_clickselector-x0-y0-coordinate_spaceviewport-focusfalse-tab_idnone-firstfalse-restore_pointertrue-buttonleft-click_count1-modifiersnone).
 A click that does not finish within 35 s returns a `timeout` [action error](#action-errors)
 with `retryable: false`.
 
