@@ -383,7 +383,8 @@
                                      msg.observation, msg.delta ? 'delta' : 'full', !!msg.boxes, msg.collapse !== false),
       'getAccessibilityTree':  () => getAccessibilityTree(msg.depth ?? 6, msg.ref || msg.selector),
       'getFormFields':         () => getFormFields(),
-      'click':                 () => withPopupWatch(clickElement(msg.selector, msg.coords, msg.first, msg.button, msg.modifiers)),
+      'click':                 () => withPopupWatch(clickElement(msg.selector, msg.coords, msg.first, msg.button, msg.modifiers),
+                                     msg.reportPopup !== false),
       'type':                  () => typeText(msg.selector, msg.text, msg.clear, msg.first),
       'setEditableContent':    () => setEditableContent(msg.selector, msg.value, msg.format || 'text', msg.clear !== false,
                                      msg.first),
@@ -774,7 +775,8 @@
     const targetAncestors = new Set();
     for (let el = target; el; el = parentAcrossFrames(el)) targetAncestors.add(el);
     // A popup an action reported that is open but not rendered is listed anyway, marked
-    // [not_rendered] (#329). Below a hidden ancestor only the path to it is walked.
+    // [not_rendered] (#329). Below a hidden ancestor only the path to it is walked; inside it,
+    // elements hidden themselves (hiddenInPopup) stay out.
     const shownPopups = new Set();
     const popupPath = new Set();
     const unhidden = new Set();
@@ -827,7 +829,11 @@
     // Bottom-up metadata avoids repeatedly scanning large clickable ancestor trees.
     function measure(el, domDepth = 0, pathOnly = false, inPopup = false) {
       inPopup ||= shownPopups.has(el);
-      if (inPopup || popupPath.has(el)) unhidden.add(el);
+      if (shownPopups.has(el) || popupPath.has(el)) unhidden.add(el);
+      else if (inPopup && el?.nodeType === 1) {
+        if (hiddenInPopup(el)) return null;
+        unhidden.add(el);
+      }
       if (ignored(el)) return null;
       pathOnly = !inPopup && (pathOnly || (popupPath.has(el) && hiddenElement(el)));
       // A media element's children are sources, tracks and fallback content, not page structure.
@@ -1419,14 +1425,26 @@
   // The last click or hover's watch, until the background takes its popup (openedPopup).
   let popupWatch = null;
   // Reported popups: { opener } keeps one while the opener's aria-expanded stays "true";
-  // { signature } keeps one until it closes or a class/style/hidden attribute on it or an
-  // ancestor changes.
+  // { signature } keeps one until it closes or its popupSignature changes.
   const keptPopups = new Map();
 
+  // A role popup is open unless it or an ancestor below <body> is hidden by an attribute; a
+  // display:none ancestor alone may only be waiting for a paint.
   function popupOpen(el) {
     if (el.tagName === 'DIALOG') return el.hasAttribute('open');
     if (el.hasAttribute('popover')) return !!el.matches?.(':popover-open');
-    return POPUP_ROLES.has(el.getAttribute('role')) && !isHidden(el) && el.getAttribute('aria-hidden') !== 'true';
+    if (!POPUP_ROLES.has(el.getAttribute('role')) || isHidden(el)) return false;
+    for (let node = el; node && node !== docOf(el).body; node = flatParent(node)) {
+      if (node.hasAttribute?.('hidden') || node.getAttribute?.('aria-hidden') === 'true') return false;
+    }
+    return true;
+  }
+
+  // Inside an unpainted popup, an element hidden by itself rather than by an ancestor:
+  // display is not inherited, visibility is, so only visibility:hidden is ignored.
+  function hiddenInPopup(el) {
+    return el.hidden || el.getAttribute('aria-hidden') === 'true' || (el.tagName === 'INPUT' && el.type === 'hidden') ||
+      styleOf(el).display === 'none';
   }
 
   function popupRole(el) {
@@ -1439,23 +1457,27 @@
       .replace(/\s+/g, ' ').trim().slice(0, 80);
   }
 
-  // The attributes a page closes a popup with, on it and its ancestors below <body>.
+  // What a page closes a popup with, on it and its ancestors below <body>: the hidden, class,
+  // aria-hidden and open attributes and the inline display and visibility. Other inline style
+  // (position, size) can change while it stays open.
   function popupSignature(popup) {
     const parts = [];
     for (let el = popup; el && el !== docOf(popup).body; el = flatParent(el)) {
-      parts.push(['hidden', 'class', 'style', 'aria-hidden', 'open'].map(name => el.getAttribute?.(name)).join('\u0000'));
+      parts.push([...['hidden', 'class', 'aria-hidden', 'open'].map(name => el.getAttribute?.(name)),
+        el.style?.display, el.style?.visibility]);
     }
-    return parts.join('\u0001');
+    return JSON.stringify(parts);
   }
 
-  // Up to POPUP_ITEM_LIMIT items, not those inside another item. An unpainted popup lists all.
+  // Up to POPUP_ITEM_LIMIT items, not those inside another item. Items of an unpainted popup
+  // are skipped only when they are hidden themselves.
   function popupItems(popup) {
-    const rendered = isRendered(popup);
+    const hidden = isRendered(popup) ? isHidden : hiddenInPopup;
     const items = [];
     (function walk(el) {
       for (const child of flatChildren(el)) {
         if (items.length >= POPUP_ITEM_LIMIT) return;
-        if (rendered && isHidden(child)) continue;
+        if (hidden(child)) continue;
         if (POPUP_ITEM_ROLES.has(child.getAttribute('role') || inferRole(child))) items.push(child);
         else walk(child);
       }
@@ -1478,25 +1500,32 @@
   // ancestor that has one, and the popups already open. Openness is compared directly, since
   // showPopover() changes no attribute; the observer finds a menu that is only filled in.
   function watchPopups(el) {
-    popupWatch?.observer?.disconnect();
-    popupWatch = null;
+    stopPopupWatch();
     // The action dispatches even when the watch cannot start.
     try {
       popupWatch = startPopupWatch(el);
     } catch {}
   }
 
-  function startPopupWatch(el) {
-    let opener = null;
+  function stopPopupWatch() {
+    popupWatch?.observer?.disconnect();
+    popupWatch = null;
+  }
+
+  // el or its nearest ancestor below <body> that has the attribute.
+  function nearestWithAttribute(el, name) {
     for (let node = el; node && node !== docOf(el).body; node = flatParent(node)) {
-      if (node.hasAttribute?.('aria-expanded')) {
-        opener = node;
-        break;
-      }
+      if (node.hasAttribute?.(name)) return node;
     }
+    return null;
+  }
+
+  function startPopupWatch(el) {
+    const opener = nearestWithAttribute(el, 'aria-expanded');
+    const hasPopup = nearestWithAttribute(el, 'aria-haspopup')?.getAttribute('aria-haspopup');
     const roots = popupRoots(el);
-    const watch = { target: el, opener, expanded: opener?.getAttribute('aria-expanded'), roots,
-      before: openPopups(roots), filled: new Set() };
+    const watch = { target: el, opener, expanded: opener?.getAttribute('aria-expanded'),
+      hasPopup: hasPopup != null && hasPopup !== 'false', roots, before: openPopups(roots), filled: new Set() };
     watch.note = records => {
       for (const record of records) {
         const popup = record.addedNodes.length ? record.target.closest?.(POPUP_ROLE_SELECTOR) : null;
@@ -1515,15 +1544,13 @@
 
   // The popup the watched action opened: the element the opener's aria-controls/aria-owns names
   // once its aria-expanded turned "true", else the popup that opened last, else (aria-expanded
-  // turned "true") the open menu, listbox or dialog that items were added to.
+  // turned "true", or the target has aria-haspopup) the open menu, listbox or dialog that items
+  // were added to.
   function takeOpenedPopup() {
     const watch = popupWatch;
-    popupWatch = null;
     if (!watch) return {};
-    if (watch.observer) {
-      watch.note(watch.observer.takeRecords());
-      watch.observer.disconnect();
-    }
+    if (watch.observer) watch.note(watch.observer.takeRecords());
+    stopPopupWatch();
     const { target, opener } = watch;
     if (!target.isConnected) return {};
     const expanded = !!opener?.isConnected && watch.expanded !== 'true' &&
@@ -1535,7 +1562,7 @@
       popup = ids.split(/\s+/).filter(Boolean).map(id => elementByIdNear(opener, id)).find(outside) || null;
     }
     popup ||= [...openPopups(watch.roots)].filter(p => !watch.before.has(p) && outside(p)).at(-1) ||
-      (expanded ? [...watch.filled].filter(p => outside(p) && popupOpen(p)).at(-1) : null);
+      (expanded || watch.hasPopup ? [...watch.filled].filter(p => outside(p) && popupOpen(p)).at(-1) : null);
     if (!popup) return {};
     keptPopups.set(popup, expanded ? { opener } : { signature: popupSignature(popup) });
     return { opened_popup: { ref: issueRef(popup), role: popupRole(popup), name: popupName(popup),
@@ -1543,8 +1570,13 @@
   }
 
   // Marks a successful click or hover that watched for a popup, so the background takes it.
-  function withPopupWatch(result) {
-    const mark = r => popupWatch && r?.ok ? { ...r, popupWatch: true } : r;
+  // Otherwise (an error, or a click whose popup nobody takes) the watch stops here.
+  function withPopupWatch(result, report = true) {
+    const mark = r => {
+      if (popupWatch && r?.ok && report) return { ...r, popupWatch: true };
+      stopPopupWatch();
+      return r;
+    };
     return typeof result?.then === 'function' ? result.then(mark) : mark(result);
   }
 

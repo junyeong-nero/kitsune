@@ -2232,7 +2232,8 @@ async function clickAndWaitNavigation(tabId, selector, timeout, first) {
       };
       browser.tabs.onUpdated.addListener(listener);
     });
-    const click = await forwardToContent('click', { tabId: id, selector, first });
+    // Nothing reports a popup this click opens, so the content script does not keep watching.
+    const click = await forwardToContent('click', { tabId: id, selector, first, reportPopup: false });
     if (click.error) return { ...click, clicked: false };
     const nav = await navPromise;
     return { ok: true, clicked: true, navigation: nav };

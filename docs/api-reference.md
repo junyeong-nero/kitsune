@@ -890,7 +890,12 @@ The result then has `opened_popup` (#329):
   its nearest ancestor that has one, turned `"true"`, the element its `aria-controls` or
   `aria-owns` names; else the last `role=menu`, `listbox` or `dialog` element, open
   `<dialog>` or open `[popover]` that opened or was added during the action; else, when
-  aria-expanded turned `"true"`, the open menu, listbox or dialog that items were added to.
+  aria-expanded turned `"true"` or the acted-on element (or its nearest ancestor with the
+  attribute) has `aria-haspopup`, the open menu, listbox or dialog that items were added to,
+  such as one shared menu that each row refills. A menu, listbox or dialog counts as open
+  unless it is hidden itself or it or an ancestor below `<body>` has `hidden` or
+  `aria-hidden="true"`; a `display: none` ancestor alone does not close it, because a
+  background tab may not have shown it yet.
   A popup that contains the acted-on element is not reported. The action's own document
   and shadow root are searched, not other frames. Results without a popup have no
   `opened_popup` field.
@@ -900,8 +905,10 @@ The result then has `opened_popup` (#329):
   background tab never painted it.
 - `items` lists up to 20 descendants with role `menuitem`, `menuitemcheckbox`,
   `menuitemradio`, `option`, `button` or `link` (explicit or native), not those inside
-  another item. Hidden items of a rendered popup are left out; an unpainted popup lists
-  all of them. Each ref acts like a snapshot ref. A pointer action on an item of an
+  another item. Hidden items of a rendered popup are left out. In an unpainted popup an
+  item is left out when it is hidden itself (`hidden`, its own `display: none`,
+  `aria-hidden="true"`); `visibility: hidden` is not checked there, since it is inherited
+  from the unpainted container. Each ref acts like a snapshot ref. A pointer action on an item of an
   unpainted popup dispatches normally and returns the
   [`hidden_or_covered`](#action-errors) warning.
 
@@ -919,11 +926,14 @@ not rendered, with `[not_rendered]` on its line:
 
 A popup found through aria-expanded stays listed while it is attached and that element
 still has `aria-expanded="true"`. Any other popup stays listed while it is attached and
-open (an open `<dialog>` or `[popover]`; a menu, listbox or dialog that is not hidden
-itself) and the `hidden`, `class`, `style`, `aria-hidden` and `open` attributes of it and
-its ancestors below `<body>` are unchanged. Once it closes it is not listed again until an
+open (an open `<dialog>` or `[popover]`; a menu, listbox or dialog that is open as described
+above) and the `hidden`, `class`, `aria-hidden` and `open` attributes and the inline
+`display` and `visibility` of it and its ancestors below `<body>` are unchanged; other inline
+style, such as its position, may change. Once it closes it is not listed again until an
 action reports it again. Below a hidden ancestor, only the path to the popup is walked, so
 other hidden content in a shared container, such as a menu opened earlier, stays out.
+Inside the popup, elements hidden themselves, such as `<input type="hidden">`, are left out
+as in `items`.
 Strict role and name selectors still skip unrendered elements (see
 [Strict selectors](#strict-selectors)); act on these items by ref.
 
