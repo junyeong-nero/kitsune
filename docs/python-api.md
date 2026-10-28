@@ -154,7 +154,7 @@ acts on the first match ([Strict selectors](api-reference.md#strict-selectors)).
 | `drag(source, destination)` | HTML5 drag events, else pointer events (`via` says which) |
 | `insert(target, text, html=False, clear=False)` | Insert text into an editor, input or textarea, appending unless `clear`; `html=True` (developer build) inserts HTML into an editor |
 | `upload_files(paths, target=None)`, `drop(target, paths=None, data=None)` | Put local files into a file input, or drop files and data on an element |
-| `trusted_click(target=None, x=0, y=0, coordinate_space="viewport")` | A click with the real OS pointer, for pages that ignore synthetic clicks. It moves your cursor and may show the tab for the click ([`browser_trusted_click`](api-reference.md#browser_trusted_clickselector-x0-y0-coordinate_spaceviewport-focusfalse-tab_idnone-firstfalse)) |
+| `trusted_click(target=None, x=0, y=0, coordinate_space="viewport", restore_pointer=True)` | A click with the real OS pointer, for pages that ignore synthetic clicks. It moves your cursor for the click, then back unless `restore_pointer=False`, and may show the tab for the click ([`browser_trusted_click`](api-reference.md#browser_trusted_clickselector-x0-y0-coordinate_spaceviewport-focusfalse-tab_idnone-firstfalse-restore_pointertrue)) |
 
 Actions return the bridge's result. `ok: True` only means the action was dispatched.
 To check what happened, pass `expect`, for example `expect={"url_changed": True}` or

@@ -567,6 +567,8 @@ class McpParityTests(BridgeTestCase):
              lambda: tab.trusted_click("#go", first=True)),
             (lambda: tools.browser_trusted_click(x=5, y=6, coordinate_space="screen", tab_id=7),
              lambda: tab.trusted_click(x=5, y=6, coordinate_space="screen")),
+            (lambda: tools.browser_trusted_click(selector="#menu", tab_id=7, restore_pointer=False),
+             lambda: tab.trusted_click("#menu", restore_pointer=False)),
             (lambda: tools.browser_capture_network(op="start", tab_id=7), lambda: tab.network.start()),
             (lambda: tools.browser_capture_network(since=10, tab_id=7), lambda: tab.network.requests(since=10)),
             (lambda: tools.browser_storage("local", "get", key="k", tab_id=7), lambda: tab.local_storage.get("k")),

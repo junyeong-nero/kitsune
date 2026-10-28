@@ -857,8 +857,9 @@ Every place that could show a tab or focus a window:
 | `browser_focus_window`, batch `focusWindow` (`windows.update({focused: true})`) | focused the window | unchanged, but only for an explicit request; refused with `user_active` while the user is using the focused window's tab |
 | `wakeTab`, `navigate`, reload, back/forward | | never showed a tab; unchanged |
 
-The OS click of `browser_trusted_click` still moves the real cursor and focuses the
-window it lands in; the bridge cannot give OS focus back to another application.
+The OS click of `browser_trusted_click` still moves the real cursor for the click
+(it goes back afterwards unless `restore_pointer=False`) and focuses the window it lands
+in; the bridge cannot give OS focus back to another application.
 
 **Changed behavior:** `browser_tabs` new (`POST /api/new-tab`, batch `newTab`) no longer
 shows the new tab. Pass its `tabId` as `tab_id` to act on it. A caller that relied on
@@ -2008,31 +2009,37 @@ overrides the file destination; `data_url=True` additionally returns `dataUrl`.
 The former element tool's `scale` option remains available through the bridge
 endpoint; the merged MCP tool uses its default scale of 1.
 
-### `browser_trusted_click(selector="", x=0, y=0, coordinate_space="viewport", focus=False, tab_id=None, first=False)`
+### `browser_trusted_click(selector="", x=0, y=0, coordinate_space="viewport", focus=False, tab_id=None, first=False, restore_pointer=True)`
 
 Clicks with the real OS mouse pointer via POST `/api/trusted-click`, for pages
-that ignore synthetic DOM clicks. It moves the user's cursor, so prefer
-`browser_click`. A `selector` is scrolled into view and clicked at its center;
-otherwise `x`/`y` are viewport coordinates, or desktop coordinates with
-`coordinate_space="screen"`. The OS click lands on whatever the screen shows, so a
+that ignore synthetic DOM clicks. It moves the user's cursor for the click, so prefer
+`browser_click`. Afterwards the cursor goes back to where it was;
+`restore_pointer=False` (request field `restorePointer: false`) leaves it on the
+target, for hover menus that close when the pointer leaves. A `selector` is scrolled
+into view and clicked at its center; otherwise `x`/`y` are viewport coordinates, or
+desktop coordinates with `coordinate_space="screen"`. The OS click lands on whatever the screen shows, so a
 `tab_id` that is not the shown tab of its window is shown for the click, and the
 user's tab is shown again 300 ms after it (see [Shared browser](#shared-browser)). A
 viewport click returns `user_active` without clicking while the user is using the
 target tab or the tab it would hide. Ambiguous selectors return `ambiguous_target`
 before scrolling the element or invoking the OS; `first=True` opts into the first match.
 
-| Platform | Click backend |
-|---|---|
-| Windows | `user32` `SetCursorPos` + `mouse_event` |
-| macOS | Quartz `CGEventCreateMouseEvent` when pyobjc is importable (`uvx --from 'kitsune-browser-mcp[macos]' kitsune`), else [`cliclick`](https://github.com/BlueM/cliclick) on `PATH` |
-| Linux (X11) | [`xdotool`](https://github.com/jordansissel/xdotool) on `PATH` (`sudo apt install xdotool`). Wayland sessions (`XDG_SESSION_TYPE=wayland`, or no `DISPLAY`) are not supported and return `{error}`. Coordinates are not scaled for HiDPI X11 (`GDK_SCALE`, `layout.css.devPixelsPerPx`), so clicks there may land off by the scale factor |
+| Platform | Click backend | Pointer restore |
+|---|---|---|
+| Windows | `user32` `SetCursorPos` + `mouse_event` | `GetCursorPos` before the click, `SetCursorPos` 100 ms after it |
+| macOS | Quartz `CGEventCreateMouseEvent` when pyobjc is importable (`uvx --from 'kitsune-browser-mcp[macos]' kitsune`), else [`cliclick`](https://github.com/BlueM/cliclick) on `PATH` | Quartz: `CGEventGetLocation` before the click, `CGWarpMouseCursorPosition` 100 ms after it (no mouse event is posted), then `CGAssociateMouseAndMouseCursorPosition` so the user's mouse does not freeze for the 0.25 s macOS applies after a warp. cliclick: `cliclick p c:x,y` prints the position in the same run as the click, then `cliclick m:x,y` 100 ms later |
+| Linux (X11) | [`xdotool`](https://github.com/jordansissel/xdotool) on `PATH` (`sudo apt install xdotool`). Wayland sessions (`XDG_SESSION_TYPE=wayland`, or no `DISPLAY`) are not supported and return `{error}`. Coordinates are not scaled for HiDPI X11 (`GDK_SCALE`, `layout.css.devPixelsPerPx`), so clicks there may land off by the scale factor | `mousemove restore` at the end of the same `xdotool` command, after the click |
 
 On macOS, the app running the bridge (your terminal or MCP client) needs
 Accessibility permission (System Settings > Privacy & Security > Accessibility);
 without it, or without either backend, the call returns `{error}` explaining what
 is missing instead of clicking. On Linux, a missing `xdotool`, a failed `xdotool`
 run or a Wayland session also returns `{error}` without clicking. Results include
-`clickBackend` (`win32`, `quartz`, `cliclick`, or `xdotool`).
+`clickBackend` (`win32`, `quartz`, `cliclick`, or `xdotool`) and `pointerRestored`:
+`true` once the cursor is back, `false` with `restore_pointer=False` or when it could not
+be read or moved back. A failed restore adds `pointerRestoreError` and still returns
+`ok: true`, since the click already happened. On Linux the move back is part of the click
+command, so a failure there fails the whole call.
 
 `focus=True` tries to foreground the browser first and reports `focused`:
 
@@ -2278,7 +2285,7 @@ Add `"wait": true, "timeout": 10000` to wait for the target first (see
 `{ "selector": "button.submit", "focus": true }` or
 `{ "coords": { "x": 640, "y": 400 }, "coordinateSpace": "screen" }` — optional
 `tabId`, `title`, `process`. OS-level click on Windows, macOS and Linux (X11); see
-[`browser_trusted_click`](#browser_trusted_clickselector-x0-y0-coordinate_spaceviewport-focusfalse-tab_idnone-firstfalse).
+[`browser_trusted_click`](#browser_trusted_clickselector-x0-y0-coordinate_spaceviewport-focusfalse-tab_idnone-firstfalse-restore_pointertrue).
 A click that does not finish within 35 s returns a `timeout` [action error](#action-errors)
 with `retryable: false`.
 
