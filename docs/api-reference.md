@@ -48,8 +48,8 @@ settings that publish it; restart the MCP client after changing them:
 ```
 
 `browser_status` adds `mcp_tools` to the bridge status: this MCP server's enabled
-`caps` and the count of known tools it leaves `unpublished`, for example
-`{"caps": ["core"], "unpublished": 79}`. With the [tool gateway](#tool-gateway) it also
+`caps`, the count of known tools it leaves `unpublished` and its audit `client` id, for
+example `{"caps": ["core"], "unpublished": 79, "client": "48213-9f2c1a"}`. With the [tool gateway](#tool-gateway) it also
 has the `publish` groups and how many enabled tools are `unlisted` when a session
 starts. The bridge is shared by every MCP server, so `GET /api/status` does not have it.
 MCP tool names and parameters are separate from HTTP endpoint names and JSON
@@ -1076,6 +1076,21 @@ The core `browser_navigate` and `browser_navigate_back` take an optional `tab_id
 accepted like `confirm_token` but not listed in their schemas, which are Playwright
 MCP's; omitted, it is the current tab.
 
+Tabs the agent gets in other ways become current too, and the result then adds
+`current_tab` with the tab's id:
+
+- The last tab that `newTab` steps of a `browser_batch` or `browser_workflow` opened and
+  did not close (the bridge's `newTabs`, see [POST /api/batch](#post-apibatch)) always
+  does, like `browser_tabs` new: the agent opened it on purpose.
+- The last tab an action opened (`opened_tabs`: a `target=_blank` link, `window.open`,
+  or a `link_fallback` tab) does only when the MCP server had no current tab or the
+  action ran on the current tab. An action on another tab the agent names leaves the
+  current tab where it is.
+
+Tabs that commands inside a batch open by clicking, and tabs opened by
+`browser_parallel`, `browser_broadcast`, `browser_retry` or `browser_resume`, do not
+change the current tab.
+
 Only the MCP server refuses these calls. HTTP requests to the bridge, the Python API
 (`kitsune.browser`, whose tabs are always named) and `kitsune.tools` called directly keep
 the active-tab default.
@@ -1422,7 +1437,7 @@ as a separate, unrestricted trust boundary.
 ### Audit log
 
 `browser_audit` (`/api/audit`) returns recent write-action entries:
-`{ts, action, params, ok, error, ms}`. `params` never contains JavaScript bodies
+`{ts, action, params, ok, error, ms[, client]}`. `params` never contains JavaScript bodies
 (`code`, the `condition` of `if`/`while`, the `predicate` of `syncBarrier`),
 typed text or stored secrets. These values are replaced with
 `"[redacted]"`:
@@ -1452,6 +1467,13 @@ unredacted value. Only the audit copy is scrubbed.
 Entries of commands a [`browser_tools_call`](#tool-gateway) ran add
 `via: {"gateway": "browser_tools_call", "tool": "<tool name>"}`. Direct calls have no
 `via`; entries never name the MCP tool otherwise.
+
+The bridge is shared by every client, so entries add `client`: the id the client sent in
+`X-Kitsune-Client`. Each MCP server and each Python API `connect()` sends its own, its
+process id and a random suffix (`"48213-9f2c1a"`), which matches it with that process's
+logs. `browser_status` shows the MCP server's own as `mcp_tools.client`, and a Python
+`Browser` has it as `browser.client.client_id`. Requests without
+the header, such as other HTTP callers, have no `client`.
 
 Each command run inside `browser_batch`, `browser_parallel`, `browser_broadcast`,
 `browser_retry`, a workflow, or a batch `sequence`/`if`/`while`/`try` gets its own
@@ -2440,7 +2462,7 @@ Execute multiple commands sequentially or in parallel.
 ```
 Note: every command that acts on a tab inside parallel sequences **must** have an explicit `tabId`, and two sequences may not write the same tab (see [Container progress](#container-progress)).
 
-Returns `{ "results": [...], "progress": [...], "status": "ok", "summary": "..." }`; `progress`, `status` and `summary` are described in [Container progress](#container-progress).
+Returns `{ "results": [...], "progress": [...], "status": "ok", "summary": "..." }`; `progress`, `status` and `summary` are described in [Container progress](#container-progress). When `newTab` commands, nested ones included, opened tabs that a later `closeTab` command did not close, `newTabs` lists their ids, oldest first; the MCP server makes the last one its current tab ([No current tab](#no-current-tab)).
 
 A response whose `status` is not `ok` adds `call` and `resume_token` for
 [POST /api/resume](#post-apiresume).
@@ -2469,7 +2491,7 @@ Execute a named workflow from the workflows directory.
 ```
 `tabId` (optional) is the tab for steps that name none.
 Workflows are `.md` files with JSON code blocks. Variables use `{{name}}` syntax.
-Returns `{ "workflow": "test", "steps": 4, "results": [...], "progress": [...], "status": "ok", "summary": "..." }`. A workflow stops at its first failed step; `progress` marks the rest `skipped` (see [Container progress](#container-progress)). A workflow that did not finish `ok` adds `call` and `resume_token` for [POST /api/resume](#post-apiresume); resuming is refused if the workflow file changed.
+Returns `{ "workflow": "test", "steps": 4, "results": [...], "progress": [...], "status": "ok", "summary": "..." }`, plus `newTabs` as for [POST /api/batch](#post-apibatch). A workflow stops at its first failed step; `progress` marks the rest `skipped` (see [Container progress](#container-progress)). A workflow that did not finish `ok` adds `call` and `resume_token` for [POST /api/resume](#post-apiresume); resuming is refused if the workflow file changed.
 
 ## History and bookmarks (POST)
 

@@ -25,6 +25,8 @@ class ServerInstructionsTests(unittest.TestCase):
         # #303: without a current tab, writes are refused instead of acting on the user's tab.
         self.assertIn("reads act on the tab the user is viewing", text)
         self.assertIn("no_current_tab", text)
+        # Tabs the agent opens in a batch or from its current tab become current.
+        self.assertIn("becomes your current tab; the result names it in current_tab", text)
 
     def test_restricted_modes_name_no_tab_tools(self):
         # read and draft publish browser_tab_list instead of browser_tabs.

@@ -378,8 +378,10 @@ Kitsune's compact JSON results, not Playwright's Markdown. Where the two differ:
   act on the current tab too. Until there is one, reads act on the active tab, and writes
   and navigations that name no tab return `no_current_tab` without sending anything
   ([No current tab](api-reference.md#no-current-tab)). An MCP server that restarts starts
-  without a current tab. `browser_navigate` and `browser_navigate_back` also accept a
-  `tab_id` that Playwright MCP's schema does not list. `index` is the position
+  without a current tab. A tab a batch or workflow `newTab` opens, or a click on the
+  current tab opens, becomes current, and the result names it in `current_tab`.
+  `browser_navigate` and `browser_navigate_back` also accept a `tab_id` that Playwright
+  MCP's schema does not list. `index` is the position
   in `browser_tabs` `list`, which also marks `active` and agent-`owned` tabs. `new`,
   `select` and `close` return the tabs after the change in the same form; `new` returns
   the new tab's `index`.

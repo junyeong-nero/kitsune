@@ -262,7 +262,8 @@ class RealBrowserConnectionDiagnosisTests(_DiagnosisTestCase):
         self.assertTrue(status["extension_connected"], status)
         self.assertEqual(status["diagnosis"], {"code": "connected"}, status)
         # 104 known tools (93 in `all` plus the named-only storage and history); core and admin publish 33.
-        self.assertEqual(status["mcp_tools"], {"caps": ["admin", "core"], "unpublished": 104 - len(names)})
+        self.assertEqual({**status["mcp_tools"], "client": None},
+                         {"caps": ["admin", "core"], "unpublished": 104 - len(names), "client": None})
 
         self.assertTrue(cookies.isError, cookies)
         cookies = json.loads(cookies.content[0].text)
