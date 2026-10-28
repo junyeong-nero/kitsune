@@ -641,6 +641,9 @@
   // a product card or a short section) of at most this many characters or a quarter of its
   // budget (#262): the block is kept or left out whole.
   const SMALL_BLOCK_LIMIT = 2000;
+  // A budget-truncated snapshot fills `main` first and drops link URLs (#310).
+  const MAIN_LINE = /^ *- main\b/;
+  const isUrlEntry = entry => !entry.el && typeof entry.signature === 'string' && entry.signature.startsWith('/url: ');
   // Inline content joins its block's text line; other elements start their own.
   const INLINE_TAGS = new Set(['A', 'ABBR', 'B', 'BDI', 'BDO', 'CITE', 'CODE', 'DATA', 'DFN', 'EM',
     'I', 'KBD', 'LABEL', 'MARK', 'Q', 'S', 'SAMP', 'SMALL', 'SPAN', 'STRONG', 'SUB', 'SUP',
@@ -706,6 +709,7 @@
     if (withText && Number.isFinite(limit)) limit = Math.max(0, limit - TEXT_TRUNCATED_LINE.length - 1);
     let size = 0;
     let truncated = false;
+    let urlsOmitted = false;
     const landmarks = { MAIN: 'main', NAV: 'navigation', HEADER: 'banner',
       FOOTER: 'contentinfo', ASIDE: 'complementary', FORM: 'form' };
     const semanticRoles = new Set(['heading', 'main', 'navigation', 'banner',
@@ -1037,17 +1041,45 @@
         }
         for (let i = 0; i < entries.length; i++) add(i);
       } else {
-        // With no surviving target this is the longest document-order prefix ending at a cut.
-        for (let i = 0, c = 0; c < cuts.length; c++) {
-          let cost = used;
-          for (let j = i; j < cuts[c]; j++) cost += entries[j].line.length + 1;
-          if (cost > limit + 1) break;
-          for (; i < cuts[c]; i++) kept.add(i);
+        // With no surviving target (#310): link URLs are dropped (a whole, scoped or saved snapshot keeps
+        // them), then `main` with its ancestors, then the rest. Each is the longest document-order prefix
+        // ending at a cut, so a long banner or navigation cannot crowd out the content.
+        urlsOmitted = entries.some(isUrlEntry);
+        const cutSet = new Set(cuts);
+        const fill = segment => {
+          let pending = [], cost = used;
+          for (let k = 0; k < segment.length; k++) {
+            if (k && cutSet.has(segment[k])) {
+              if (cost > limit + 1) return false;
+              for (const i of pending) kept.add(i);
+              used = cost;
+              pending = [];
+            }
+            pending.push(segment[k]);
+            cost += entries[segment[k]].line.length + 1;
+          }
+          if (cost > limit + 1) return false;
+          for (const i of pending) kept.add(i);
           used = cost;
+          return true;
+        };
+        const main = entries.findIndex(entry => MAIN_LINE.test(entry.line));
+        const first = new Set();
+        if (main >= 0) {
+          for (let i = main; i >= 0; i = entries[i].parent) first.add(i);
+          for (let i = main + 1; i < entries.length; i++) if (first.has(entries[i].parent)) first.add(i);
         }
+        const order = entries.map((_, i) => i).filter(i => !isUrlEntry(entries[i]));
+        if (fill(order.filter(i => first.has(i)))) fill(order.filter(i => !first.has(i)));
       }
       selected = entries.filter((_, i) => kept.has(i));
       truncated = selected.length < entries.length;
+      // Cuts are positions in the returned lines (boundPublicSnapshot may cut again after aliases).
+      if (cuts) {
+        const indices = entries.map((_, i) => i).filter(i => kept.has(i));
+        const allowed = new Set(cuts);
+        cuts = [...indices.flatMap((i, p) => allowed.has(i) ? [p] : []), indices.length];
+      }
     }
     for (const entry of selected) {
       if (entry.ref) {
@@ -1063,6 +1095,7 @@
     return {
       snapshot,
       ...(truncated ? { truncated: true } : {}),
+      ...(urlsOmitted ? { urls_omitted: true } : {}),
       ...(targetIndex >= 0 ? { target_ref: entries[targetIndex].ref } : {}),
       // For boundPublicSnapshot, which can cut again after aliases and URL redaction.
       ...(cuts ? { cuts: cuts.filter(cut => cut <= selected.length) } : {}),

@@ -35,7 +35,7 @@ function card(i) {
 
 // Every listed card has its name, URL, variant, price and discount, in order, and no line of
 // another card in between.
-function assertWholeCards(snapshot, label) {
+function assertWholeCards(snapshot, label, urls = true) {
   const lines = snapshot.split('\n').filter(line => !line.includes('truncated'));
   let current = null;
   const seen = new Map();
@@ -48,7 +48,8 @@ function assertWholeCards(snapshot, label) {
     seen.set(i, [...(seen.get(i) || []), line.trim()]);
   }
   for (const [i, got] of seen) {
-    const expected = [`heading "Desk ${i}"`, `link "Desk ${i}"`, `/url: "https://shop.test/p/desk-${i}"`,
+    // A budget-truncated snapshot leaves link URLs out (#310).
+    const expected = [`heading "Desk ${i}"`, `link "Desk ${i}"`, ...(urls ? [`/url: "https://shop.test/p/desk-${i}"`] : []),
       `text "Variant ${i}:`, `text "Price ${i}:`, ...(i % 2 ? [`text "Discount ${i}:`] : []),
       ...(i % 3 === 0 ? [`button "Add desk ${i} to cart"`] : [])];
     assert.equal(got.length, expected.length, `${label}: card ${i} is incomplete\n${got.join('\n')}`);
@@ -96,7 +97,8 @@ function assertWholeCards(snapshot, label) {
     assert.equal(bounded.truncated, true, label);
     assert.ok(bounded.snapshot.length <= maxChars, label);
     assert.equal(bounded.snapshot.split('\n').at(-1), '- … truncated; scope with selector, ref or max_depth');
-    const cards = assertWholeCards(bounded.snapshot, label);
+    const cards = assertWholeCards(bounded.snapshot, label, false);
+    assert.equal(bounded.urls_omitted, true, label);
     assert.ok(cards.length > 0 && cards.every((n, j) => n === j), `${label}: a document-order prefix of cards`);
     // A card is about 300 characters: the cut leaves at most one card's worth unused.
     assert.ok(bounded.snapshot.length > maxChars - 400, `${label}: ${bounded.snapshot.length}`);
@@ -110,7 +112,7 @@ function assertWholeCards(snapshot, label) {
     assert.ok(recut.snapshot.length <= tighter, `${label}: recut to ${tighter}`);
     assert.equal(recut.cuts, undefined, 'cut points stay inside the bridge');
     assert.equal(recut.truncated, true);
-    assertWholeCards(recut.snapshot, `${label} recut to ${tighter}`);
+    assertWholeCards(recut.snapshot, `${label} recut to ${tighter}`, false);
   }
   // The bridge drops the cut points of a snapshot that fits too.
   const fits = await send({ action: 'getSnapshot', maxChars: 100000 });

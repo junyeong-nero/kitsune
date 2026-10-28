@@ -194,7 +194,9 @@ async function testContent() {
   // A full snapshot does not inherit action focus, and consumes any remembered target.
   const ordinary = await send({ action: 'getSnapshot', maxChars: 4000 });
   assert.equal(ordinary.target_ref, undefined);
-  assert.doesNotMatch(ordinary.snapshot, /Deep search/);
+  // Without a target the budget fills `main` first (#310), so the search is shown, but not as a target.
+  assert.match(ordinary.snapshot, /- main ""/);
+  assert.doesNotMatch(ordinary.snapshot, /Trailing control/);
   assert.equal((await send({ action: 'getSnapshot', maxChars: 4000, focusLastAction: true })).target_ref, undefined);
 
   const deepCheck = Object.assign(new Element('INPUT', '', { 'aria-label': 'Deep checkbox' }), { type: 'checkbox', checked: false, value: 'on' });
@@ -250,7 +252,9 @@ async function testContent() {
   search.isConnected = false;
   const removed = await send({ action: 'getSnapshot', maxChars: 4000, focusLastAction: true });
   assert.equal(removed.target_ref, undefined);
-  assert.doesNotMatch(removed.snapshot, /Deep search/);
+  // The fake element still renders: with `main` first (#310) it is ordinary content, not a resurrected target.
+  assert.equal(removed.snapshot.replace(/s\d+e\d+/g, 'REF'),
+    (await send({ action: 'getSnapshot', maxChars: 4000 })).snapshot.replace(/s\d+e\d+/g, 'REF'));
   search.isConnected = true;
   await send({ action: 'type', selector: '#search', text: 'hidden', clear: true });
   search.hidden = true;
