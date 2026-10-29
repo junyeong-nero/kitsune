@@ -2,6 +2,7 @@
 import asyncio
 import os
 import subprocess
+import time
 import unittest
 from contextlib import contextmanager
 from types import SimpleNamespace
@@ -576,6 +577,31 @@ class BrowserAtPointTests(unittest.TestCase):
             self.assertEqual(refused["state"], {"screenX": 760, "screenY": 604, "reason": "other_window", "app": app})
             self.assertIn("Space", refused["hint"])
 
+    def test_the_browser_window_at_the_point_must_be_the_tabs_window(self):
+        # #336: with the tab's window bounds, another window of the same browser (or a panel of it
+        # covering the page) is not the target, though its process is a browser's.
+        target = (0, 0, 1920, 1080)
+        with patch.object(bridge, "_mac_window_at", return_value=(42, "Zen", (0.0, 0.0, 1920.0, 1080.0))):
+            self.assertIsNone(bridge._browser_not_at_point(760, 604, target_window=target))
+        # Within WINDOW_BOUNDS_TOLERANCE points.
+        with patch.object(bridge, "_mac_window_at", return_value=(42, "Zen", (2, 0, 1918, 1081))):
+            self.assertIsNone(bridge._browser_not_at_point(760, 604, target_window=target))
+        for window in ((42, "Zen", (1920, 124, 1470, 833)), (42, "Zen", (0, 0, 1920, 30)), (42, "Zen", None)):
+            with self.subTest(window=window), patch.object(bridge, "_mac_window_at", return_value=window):
+                refused = bridge._browser_not_at_point(760, 10, target_window=target)
+            self.assertEqual((refused["code"], refused["retryable"]), ("browser_not_at_point", True))
+            self.assertEqual(refused["state"], {"screenX": 760, "screenY": 10, "reason": "other_browser_window",
+                                                "app": "Zen", "window": list(window[2]) if window[2] else None,
+                                                "targetWindow": [0, 0, 1920, 1080]})
+        # Another app keeps its own reason; a Space switch that shows the tab's window passes.
+        with patch.object(bridge, "_mac_window_at", return_value=(4515, "Ghostty", target)), \
+             patch.object(bridge, "_mac_process_name", return_value="ghostty"):
+            self.assertEqual(bridge._browser_not_at_point(1, 2, target_window=target)["state"]["reason"], "other_window")
+        windows = [(42, "Zen", (1920, 124, 1470, 833)), (42, "Zen", target)]
+        with patch.object(bridge, "_mac_window_at", side_effect=windows), \
+             patch.object(bridge.time, "monotonic", side_effect=[0, 0.1]):
+            self.assertIsNone(bridge._browser_not_at_point(1, 2, wait=1.0, target_window=target))
+
     def test_a_requested_process_is_the_only_browser(self):
         with patch.object(bridge, "_mac_window_at", return_value=(42, "Zen")), \
              patch.object(bridge, "_mac_process_name", return_value="zen"):
@@ -643,9 +669,9 @@ class BrowserAtPointTests(unittest.TestCase):
                                  kCGCursorWindowLevelKey=19,
                                  CGWindowLevelForKey=Mock(side_effect={19: 2147483630}.get))
         with patch.dict("sys.modules", {"Quartz": quartz}):
-            self.assertEqual(bridge._mac_window_at(760, 604), (4515, "Ghostty"))
-            self.assertEqual(bridge._mac_window_at(50, 50), (1, "Elsewhere"))
-            self.assertEqual(bridge._mac_window_at(3000, 50), (0, ""))
+            self.assertEqual(bridge._mac_window_at(760, 604), (4515, "Ghostty", (0, 0, 1920, 1080)))
+            self.assertEqual(bridge._mac_window_at(50, 50), (1, "Elsewhere", (0, 0, 100, 100)))
+            self.assertEqual(bridge._mac_window_at(3000, 50), (0, "", None))
             quartz.CGWindowListCopyWindowInfo.assert_called_with(17, 0)
             # The caller refuses on this (test_a_window_list_that_cannot_be_read_refuses).
             quartz.CGWindowListCopyWindowInfo.side_effect = ValueError("no window server")
@@ -727,9 +753,49 @@ class TrustedClickTests(unittest.TestCase):
                  patch.object(bridge, "_native_click_screen") as click:
                 result = asyncio.run(bridge.trusted_click({"x": 700, "y": 562, "tabId": 396, "focus": focus}))
             self.assertEqual(result, refused)
-            check.assert_called_once_with(760, 604, "", focused, wait)
+            check.assert_called_once_with(760, 604, "", focused, wait, None)
             click.assert_not_called()
             self.assertEqual(send.call_args_list[-1].args, ("restoreActiveTab", {"tabId": 324, "from": 396}))
+
+    def test_the_tabs_window_bounds_reach_the_check(self):
+        point = {"screenX": 760, "screenY": 604, "viewportX": 700, "viewportY": 562,
+                 "window": {"left": 0, "top": 0, "width": 1920, "height": 1080}}
+        with patch.object(bridge, "send_to_extension", new_callable=AsyncMock, return_value=point), \
+             patch.object(bridge, "_browser_not_at_point", return_value=None) as check, \
+             patch.object(bridge, "_native_click_screen", return_value={"ok": True, "backend": "quartz"}):
+            result = asyncio.run(bridge.trusted_click({"x": 700, "y": 562}))
+        self.assertTrue(result["ok"])
+        check.assert_called_once_with(760, 604, "", None, 0.0, (0, 0, 1920, 1080))
+        self.assertNotIn("window", result)
+
+    def test_focus_check_and_click_leave_the_event_loop_free(self):
+        # #336: other bridge requests are served while a trusted click waits for focus.
+        def slow_focus(*args):
+            time.sleep(0.3)
+            return True
+
+        async def click_with_other_requests(params):
+            ticks = []
+
+            async def other_request():
+                for _ in range(5):
+                    ticks.append(time.monotonic())
+                    await asyncio.sleep(0.04)
+
+            started = time.monotonic()
+            result, _ = await asyncio.gather(bridge.trusted_click(params), other_request())
+            return result, [tick - started for tick in ticks]
+
+        point = {"screenX": 760, "screenY": 604, "viewportX": 700, "viewportY": 562}
+        for params in ({"x": 700, "y": 562, "focus": True},
+                       {"coords": {"x": 5, "y": 6}, "coordinateSpace": "screen", "focus": True}):
+            with self.subTest(space=params.get("coordinateSpace", "viewport")), \
+                 patch.object(bridge, "send_to_extension", new_callable=AsyncMock, return_value=point), \
+                 patch.object(bridge, "_focus_browser_window", side_effect=slow_focus), \
+                 patch.object(bridge, "_native_click_screen", return_value={"ok": True, "backend": "quartz"}):
+                result, ticks = asyncio.run(click_with_other_requests(params))
+            self.assertTrue(result["ok"])
+            self.assertLess(ticks[-1], 0.3, "the loop ran while focus was waited for")
 
     def test_screen_clicks_are_not_checked(self):
         with patch.object(bridge, "_browser_not_at_point") as check, \
