@@ -189,7 +189,7 @@ async function testBackgroundCopiesVisibility() {
   let hidden = true;
   const context = vm.createContext({
     getActiveTabId: async () => 42,
-    tabsCreated: 0, openedTabs: [], actionStarts: new Map(),
+    tabsCreated: 0, openedTabs: [], actionStarts: new Map(), tabLoads: new Map(), mainFrameStatus: new Map(),
     userActiveError: async () => null, guardedTabId: async () => null, touchStart() {}, touchEnd() {},
     protectedTabError: async () => null,
     getOpenedTabs: async () => ({ opened_tabs: [] }),

@@ -16,13 +16,17 @@ const REQUEST_CAP = constant('SETTLE_REQUEST_CAP_MS');
 
 // A page whose last change is given by mutatesUntil (ms after the action, Infinity: never quiet),
 // and a request the action starts that ends after requestMs.
-function harness({ mutatesUntil = 0, requestMs = null, watching = true, unchanged = false, hidden = false } = {}) {
+// navigation: { loadMs } the action loads another document that completes after loadMs;
+// { requestOnly: true } it starts a main-frame request that loads nothing (a download).
+function harness({ mutatesUntil = 0, requestMs = null, watching = true, unchanged = false, hidden = false,
+  navigation = null } = {}) {
   let actionAt = null;
   const sent = [];
+  const tab = { id: 7, status: 'complete', url: 'https://shop.test/list', title: 'List' };
   const context = vm.createContext({
     setTimeout, clearTimeout,
     getActiveTabId: async () => 7,
-    tabsCreated: 0, openedTabs: [], actionStarts: new Map(),
+    tabsCreated: 0, openedTabs: [], actionStarts: new Map(), tabLoads: new Map(), mainFrameStatus: new Map(),
     userActiveError: async () => null, guardedTabId: async () => null, touchStart() {}, touchEnd() {},
     protectedTabError: async () => null,
     getOpenedTabs: async () => ({ opened_tabs: [] }),
@@ -32,6 +36,14 @@ function harness({ mutatesUntil = 0, requestMs = null, watching = true, unchange
     dispatchCommand: async params => {
       sent.push({ action: params.action, deltaBaseline: params.deltaBaseline, settleWatch: params.settleWatch });
       actionAt = Date.now();
+      if (navigation?.requestOnly) context.mainFrameStatus.set(7, { requestId: 'nav', at: Date.now() });
+      else if (navigation) {
+        const load = { at: Date.now(), complete: false };
+        context.tabLoads.set(7, load);
+        Object.assign(tab, { status: 'loading', url: 'https://shop.test/item/1', title: '' });
+        setTimeout(() => { load.complete = true; Object.assign(tab, { status: 'complete', title: 'Item 1' }); },
+          navigation.loadMs);
+      }
       if (requestMs != null) {
         context.settleRequests.get(7)?.add('r1');
         setTimeout(() => context.settleRequests.get(7)?.delete('r1'), requestMs);
@@ -40,15 +52,19 @@ function harness({ mutatesUntil = 0, requestMs = null, watching = true, unchange
     },
     forwardToContent: async (action, params) => {
       sent.push({ action, at: Date.now() - actionAt, delta: params.delta });
+      if (!params.delta) return { snapshot: '- heading "Item 1" [ref=s2e1]' };
       return { snapshot: '- button "Go" [ref=s1e1]', delta: true, ...(unchanged ? { unchanged: true } : {}) };
     },
     browser: {
       tabs: {
+        get: async () => ({ ...tab }),
         sendMessage: async (tabId, msg, options) => {
           assert.equal(msg.action, 'settleState');
           assert.equal(options.frameId, 0);
           sent.push({ action: 'settleState' });
-          if (!watching) return { watching: false };
+          // The old document is gone once another one loads; a 204 keeps it.
+          if (!watching || (navigation && !navigation.requestOnly && !navigation.keepsDocument)) return { watching: false };
+          if (navigation?.keepsDocument && context.tabLoads.get(7)?.complete) return { watching: true, elapsedMs: 9999, quietMs: 9999 };
           const elapsedMs = Date.now() - actionAt;
           const last = Math.min(elapsedMs, mutatesUntil);
           return { watching: true, elapsedMs, quietMs: elapsedMs - last, mutations: 1, hidden };
@@ -124,6 +140,28 @@ async function testNoVisibleChangeAndKeepBaseline() {
   assert.deepEqual([h.sent[0].deltaBaseline, h.sent[0].settleWatch], [undefined, true]);
 }
 
+async function testANavigatingClickReportsTheNewPage() {
+  // #349: a link click waits for the new page and returns it whole, not a delta of the old one.
+  const h = harness({ navigation: { loadMs: 700 } });
+  const result = await h.context.handleCommand({ action: 'click', selector: 'a', tabId: 7 });
+  assert.equal(JSON.stringify(result.navigated), JSON.stringify({ url: 'https://shop.test/item/1', title: 'Item 1' }));
+  assert.equal(result.navigation_pending, undefined);
+  assert.equal(result.snapshot, '- heading "Item 1" [ref=s2e1]');
+  assert.equal(result.snapshot_delta, undefined);
+  within(h.snapshotAt(), 700, 900, 'after the load');
+  // A main-frame request that loads nothing is not a navigation; it is given up after a second.
+  const download = harness({ navigation: { requestOnly: true } });
+  const plain = await download.context.handleCommand({ action: 'click', selector: 'a', tabId: 7 });
+  assert.equal(plain.navigated, undefined);
+  assert.equal(plain.snapshot_delta, true);
+  within(download.snapshotAt(), MIN + 1000, MIN + 1000 + 200, 'settle, then no load');
+  // A load that keeps the document (a 204) is not a navigation either.
+  const kept = harness({ navigation: { loadMs: 300, keepsDocument: true } });
+  const same = await kept.context.handleCommand({ action: 'click', selector: 'a', tabId: 7 });
+  assert.equal(same.navigated, undefined);
+  assert.equal(same.snapshot_delta, true);
+}
+
 (async () => {
   await testQuietPageWaitsTheMinimum();
   await testHiddenTabsWaitForThrottledTimers();
@@ -132,5 +170,6 @@ async function testNoVisibleChangeAndKeepBaseline() {
   await testCaps();
   await testNoWatchOrNoSnapshotDoesNotWait();
   await testNoVisibleChangeAndKeepBaseline();
+  await testANavigatingClickReportsTheNewPage();
   console.log('action_settle: ok');
 })().catch(e => { console.error(e); process.exit(1); });

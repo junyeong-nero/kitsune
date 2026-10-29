@@ -145,8 +145,19 @@ class ToolSurfaceTests(unittest.TestCase):
                 self.assertIn("error", tools.browser_wait_for(**args))
             post.assert_not_called()
             sleep.assert_not_called()
-            self.assertEqual(tools.browser_wait_for(time=0), {"ok": True, "slept": 0})
+            # After the sleep, what changed since the agent last looked (#350).
+            post.return_value = {"snapshot": '- text "Item 71"', "delta": True}
+            self.assertEqual(tools.browser_wait_for(time=0, tab_id=9),
+                             {"ok": True, "slept": 0, "snapshot": '- text "Item 71"', "snapshot_delta": True})
             sleep.assert_called_once_with(0)
+            post.assert_called_once_with("/api/snapshot", {"sinceObservation": True, "maxChars": 4000, "tabId": 9})
+            post.return_value = {"snapshot": "", "delta": True, "unchanged": True}
+            self.assertEqual(tools.browser_wait_for(time=0)["no_visible_change"], True)
+            # A page that cannot say (or snapshots turned off: {"ok": true}) leaves the sleep's result alone.
+            for reply in ({"ok": True}, {"error": "No tab", "code": "no_tab"}):
+                post.return_value = reply
+                self.assertEqual(tools.browser_wait_for(time=0), {"ok": True, "slept": 0})
+            post.reset_mock()
             self.assertIn("error", tools.browser_wait_for(text=""))
             post.assert_not_called()
 

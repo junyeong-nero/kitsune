@@ -540,7 +540,7 @@ function isRestrictedUrl(url) {
 const POST_SNAPSHOT_ACTIONS = new Map([
   ['click', 'browser_click'], ['type', 'browser_type'], ['fill', 'browser_type'],
   ['selectOption', 'browser_select_option'], ['checkBox', 'browser_check'], ['keypress', 'browser_press_key'],
-  ['submitForm', 'browser_submit_form'], ['navigate', 'browser_navigate'],
+  ['submitForm', 'browser_submit_form'], ['navigate', 'browser_navigate'], ['hover', 'browser_hover'],
 ]);
 // These usually load another document, so their snapshot is full. The others return a delta
 // (see getSnapshot) unless the command passes snapshot: 'full'.
@@ -564,6 +564,8 @@ const BLOCKED_LINK_WAIT_MS = 500;
 
 async function handleCommand(command) {
   const params = { ...command };
+  // browser_wait_for(time)'s delta (#350) is a post-action snapshot: KITSUNE_POST_ACTION_SNAPSHOT=0 turns it off.
+  if (params.action === 'getSnapshot' && params.sinceObservation && params.includeSnapshot === false) return { ok: true };
   // Descriptions are audit metadata only; never use them to locate elements.
   if (params.ref) params.selector = params.ref;
   if (params.action === 'drag') {
@@ -639,12 +641,17 @@ const SETTLE_POLL_MS = 40;
 const settleRequests = new Map();
 
 // Never fails: when the page cannot say, the snapshot is taken right away.
+// The document an action ran in: a cross-origin frame's own when its ref is there (#343). A
+// message without a frameId would reach every frame.
+function actionFrame(tabId, params) {
+  const expanded = expandShortRefs(params, tabId);
+  return { frameId: expanded.params ? targetFrame(tabId, expanded.params) : 0 };
+}
+
 async function settleAfterAction(tabId, pending, params) {
   const start = Date.now();
   try {
-    // The document the action ran in: a cross-origin frame's own when its ref is there (#343).
-    const expanded = expandShortRefs(params, tabId);
-    const frame = { frameId: expanded.params ? targetFrame(tabId, expanded.params) : 0 };
+    const frame = actionFrame(tabId, params);
     while (true) {
       let timer;
       const state = await Promise.race([
@@ -663,21 +670,72 @@ async function settleAfterAction(tabId, pending, params) {
   } catch {}
 }
 
-async function runCommand(params, options) {
-  const settles = options.deltaSnapshot && params.tabId != null && params.settle !== false;
-  if (!settles) return await runCommandSettled(params, options, null);
-  const pending = new Set();
-  settleRequests.set(params.tabId, pending);
+// ── Actions that navigate (#349) ──
+// An action with a delta snapshot that started loading another document in its tab (a link, a
+// form, a script setting location) waits for that load like browser_navigate, at most this long,
+// and returns navigated {url, title} with a full snapshot of the new page instead of a delta of
+// the old one; navigation_pending when it has not finished loading by then.
+const ACTION_NAVIGATION_WAIT_MS = 10000;
+// A main-frame request that loads nothing (a download, a 204) is given up after this long.
+const ACTION_NAVIGATION_START_MS = 1000;
+
+// Whether the tab started another load or main-frame request since the action began.
+function navigationStarted(tabId, watch) {
+  const request = mainFrameStatus.get(tabId);
+  return tabLoads.get(tabId) !== watch.loadBefore ||
+    (request != null && request.requestId !== watch.requestBefore && request.at >= watch.start);
+}
+
+// Resolves to 'loaded', 'pending' (still loading at the deadline) or null (nothing loaded). A
+// load that kept the document (a 204, a download) is not a navigation: the document that
+// acted still answers with its settle watch.
+async function waitForActionNavigation(tabId, watch, params) {
+  const start = Date.now();
   try {
-    return await runCommandSettled(params, options, pending);
-  } finally {
-    if (settleRequests.get(params.tabId) === pending) settleRequests.delete(params.tabId);
+    while (true) {
+      const load = tabLoads.get(tabId);
+      const tab = await browser.tabs.get(tabId);
+      if (load !== watch.loadBefore && load?.complete && tab.status === 'complete') {
+        const kept = await browser.tabs.sendMessage(tabId, { action: 'settleState' }, actionFrame(tabId, params))
+          .catch(() => null);
+        return kept?.watching ? null : 'loaded';
+      }
+      if (load === watch.loadBefore && Date.now() - start >= ACTION_NAVIGATION_START_MS) return null;
+      if (Date.now() - start >= ACTION_NAVIGATION_WAIT_MS) return load !== watch.loadBefore ? 'pending' : null;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  } catch {
+    return null;
   }
 }
 
-async function runCommandSettled(params, { withSnapshot, deltaSnapshot, textSnapshot, tracksOpenedTabs }, pending) {
+async function runCommand(params, options) {
+  const settles = options.deltaSnapshot && params.tabId != null && params.settle !== false;
+  if (!settles) return await runCommandSettled(params, options, null);
+  const watch = { pending: new Set(), start: Date.now(), loadBefore: tabLoads.get(params.tabId),
+    requestBefore: mainFrameStatus.get(params.tabId)?.requestId };
+  settleRequests.set(params.tabId, watch.pending);
+  try {
+    return await runCommandSettled(params, options, watch);
+  } finally {
+    if (settleRequests.get(params.tabId) === watch.pending) settleRequests.delete(params.tabId);
+  }
+}
+
+async function runCommandSettled(params, { withSnapshot, deltaSnapshot, textSnapshot, tracksOpenedTabs }, watch) {
   const result = await dispatchCommand(params);
-  if (pending && result && !result.error && result.ok !== false) await settleAfterAction(params.tabId, pending, params);
+  let navigation = null;
+  if (watch && result && !result.error && result.ok !== false) {
+    await settleAfterAction(params.tabId, watch.pending, params);
+    if (navigationStarted(params.tabId, watch)) {
+      navigation = await waitForActionNavigation(params.tabId, watch, params);
+      if (navigation) {
+        const tab = await browser.tabs.get(params.tabId).catch(() => null);
+        result.navigated = { url: tab?.url, title: tab?.title };
+        if (navigation === 'pending') result.navigation_pending = true;
+      }
+    }
+  }
   const blankLink = result?.targetBlankLink;
   if (blankLink) delete result.targetBlankLink;
   const newTabLink = result?.newTabLink;
@@ -700,7 +758,7 @@ async function runCommandSettled(params, { withSnapshot, deltaSnapshot, textSnap
         tabId: params.tabId, maxChars: 4000, focusLastAction: params.action !== 'navigate',
         observation: POST_SNAPSHOT_ACTIONS.get(params.action),
         ...(params.snapshotText ? { text: true } : {}),
-        ...(deltaSnapshot ? { delta: true } : {}),
+        ...(deltaSnapshot && !navigation ? { delta: true } : {}),
       });
       if (snapshot.error) result.snapshot_error = snapshot.error;
       else {
