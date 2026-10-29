@@ -1514,6 +1514,16 @@ async def _held_reason(action, params):
             return "uninspectable_target", "fills a target without sensitive-field inspection", tab_id, url_now
         if draft_fill and target.get("sensitive"):
             reason, description = "sensitive_field", "fills a sensitive field"
+        # A target inside a cross-origin frame (#343) is another site's page: an embedded
+        # payment form, sign-in widget or chat. Draft fills keep the draft rules above.
+        frame = described.get("frame")
+        if reason is None and isinstance(frame, dict) and not draft_fill:
+            frame_url = frame.get("url") if isinstance(frame.get("url"), str) else ""
+            if pattern := _ask_url_match(frame_url):
+                reason, description = "payment_frame", f"acts inside a payment-like frame ({pattern}): {frame_url}"
+            else:
+                reason, description = ("cross_origin_frame",
+                                       f"acts inside a frame from another site ({frame_url or 'origin unknown'})")
         if reason is None:
             verb = "presses Enter on" if submit_key else _click_verb(action, params)
             if action in _ASK_PAGE_ACTIONS and (pattern := _ask_url_match(url_now)):

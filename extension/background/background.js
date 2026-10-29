@@ -3,7 +3,7 @@
 
 'use strict';
 
-const EXPECTED_CONTENT_VERSION = 43;
+const EXPECTED_CONTENT_VERSION = 44;
 const WS_URL = 'ws://127.0.0.1:47652';
 // scripts/build_extension.py sets 'signed' for the AMO build (see content.js).
 const KITSUNE_BUILD = 'dev';
@@ -288,7 +288,7 @@ async function userActivity(tabId) {
     return { tabId, url: tab.url, reason: 'navigating', sinceMs: sinceLoad };
   }
   if (tab.discarded || isRestrictedUrl(tab.url)) return null;
-  const page = await browser.tabs.sendMessage(tabId, { action: 'userActivity' }).catch(() => null);
+  const page = await browser.tabs.sendMessage(tabId, { action: 'userActivity' }, TOP_FRAME).catch(() => null);
   return page?.active ? { tabId, url: tab.url, ...page.state } : null;
 }
 
@@ -668,7 +668,7 @@ async function runCommand(params, { withSnapshot, deltaSnapshot, textSnapshot, t
 // none, so this skips ensureContentScript and any wait for a new document.
 async function takeOpenedPopup(tabId) {
   try {
-    const response = await browser.tabs.sendMessage(tabId, { action: 'openedPopup' });
+    const response = await browser.tabs.sendMessage(tabId, { action: 'openedPopup' }, TOP_FRAME);
     if (!response?.opened_popup) return null;
     return (await compactContentRefs('openedPopup', response, tabId, {})).opened_popup;
   } catch {
@@ -1438,9 +1438,9 @@ const CONTENT_CONFIRM_POLL_MS = 50;
 
 // Whether the tab's current document answers a ping from the current content script, within
 // budgetMs (Infinity waits for the answer). Inactive documents never answer.
-async function pingContent(tabId, budgetMs) {
+async function pingContent(tabId, budgetMs, frameId = 0) {
   if (!(budgetMs > 0)) return false;
-  const ping = browser.tabs.sendMessage(tabId, { action: 'ping' }).catch(() => null);
+  const ping = browser.tabs.sendMessage(tabId, { action: 'ping' }, { frameId }).catch(() => null);
   let timer;
   const reply = budgetMs === Infinity ? await ping
     : await Promise.race([ping, new Promise(resolve => { timer = setTimeout(() => resolve(null), budgetMs); })]);
@@ -1452,15 +1452,15 @@ async function pingContent(tabId, budgetMs) {
 // Throws the injection's error if the page refuses it, or NoContentReceiver if nothing answers.
 // With a deadline, every ping ends by it; the injection is one browser call it cannot cut short.
 // Without one, the first ping waits for its answer, as a busy page answers late.
-async function ensureContentScript(tabId, deadline = Infinity) {
+async function ensureContentScript(tabId, deadline = Infinity, frameId = 0) {
   const firstBudget = deadline === Infinity ? Infinity : Math.min(CONTENT_PING_TIMEOUT_MS, deadline - Date.now());
-  if (await pingContent(tabId, firstBudget)) return;
-  await browser.tabs.executeScript(tabId, { file: '/content/content.js' });
+  if (await pingContent(tabId, firstBudget, frameId)) return;
+  await browser.tabs.executeScript(tabId, { file: '/content/content.js', frameId });
   const confirmBy = Math.min(Date.now() + CONTENT_CONFIRM_MS, deadline);
   let pings = 0;
   while (Date.now() < confirmBy) {
     pings++;
-    if (await pingContent(tabId, confirmBy - Date.now())) return;
+    if (await pingContent(tabId, confirmBy - Date.now(), frameId)) return;
     if (confirmBy - Date.now() <= CONTENT_CONFIRM_POLL_MS) break;
     await new Promise(r => setTimeout(r, CONTENT_CONFIRM_POLL_MS));
   }
@@ -1468,6 +1468,130 @@ async function ensureContentScript(tabId, deadline = Infinity) {
 }
 
 const MISSING_CONTENT_RECEIVER = 'Could not establish connection. Receiving end does not exist.';
+
+// With the content script in every frame (all_frames), a message without a frameId reaches
+// all of them and the first answer wins; page-level messages go to the top frame.
+const TOP_FRAME = { frameId: 0 };
+
+// ── Cross-origin frames (#343) ──
+// A cross-origin frame's content is read by the content script running in that frame. Every
+// document seeds its own ref generation (s<generation>e<n>), so the frame a ref belongs to is
+// known from its generation: tabId -> Map(generation -> frameId). Unknown ones are top-frame.
+const frameGenerations = new Map();
+// tabId -> Map(frameId -> { parent: frameId, ref }): the frame showing a cross-origin frame
+// and the ref of its frame element there, for screen points (screenPoint).
+const frameParents = new Map();
+// Frames read inside frames, at most this many cross-origin frames deep.
+const CROSS_ORIGIN_FRAME_DEPTH = 3;
+// How long a snapshot waits for the frames it reads, together; a frame that has not answered
+// by then stays opaque.
+const FRAME_READ_TIMEOUT_MS = 1500;
+// Cross-origin frames one snapshot reads, in document order (ads and widgets can be many).
+const CROSS_ORIGIN_FRAME_READS = 6;
+
+function noteFrameRefs(tabId, snapshot, frameId) {
+  const generations = new Set([...snapshot.matchAll(/\bs(\d+)e\d+\b/g)].map(m => m[1]));
+  if (!generations.size) return;
+  if (!frameGenerations.has(tabId)) frameGenerations.set(tabId, new Map());
+  for (const generation of generations) frameGenerations.get(tabId).set(generation, frameId);
+}
+
+// The frame the (expanded) refs of params point into; 0 (top) without one.
+function targetFrame(tabId, params) {
+  for (const key of REF_PARAMS) {
+    const generation = typeof params[key] === 'string' && /^\s*s(\d+)e\d+/.exec(params[key])?.[1];
+    const frameId = generation && frameGenerations.get(tabId)?.get(generation);
+    if (frameId) return frameId;
+  }
+  return 0;
+}
+
+// A screen point in a cross-origin frame: its point in the frame's viewport, converted by the
+// frame showing it, up to the top frame. Errors (a covered frame) come from that frame.
+async function frameScreenPoint(tabId, frameId, point, params) {
+  for (let depth = 0; frameId && depth < CROSS_ORIGIN_FRAME_DEPTH; depth++) {
+    const link = frameParents.get(tabId)?.get(frameId);
+    if (!link) {
+      return { error: 'The frame holding the target is no longer known; take a new browser_snapshot',
+        code: 'stale_ref', retryable: true, hint: 'Take a new browser_snapshot and use its refs.' };
+    }
+    point = await browser.tabs.sendMessage(tabId, { action: 'screenPoint', frame: link.ref,
+      x: point.viewportX, y: point.viewportY, click: params.click, zoom: params.zoom,
+      modifiers: params.modifiers }, { frameId: link.parent });
+    if (!point || point.error) return point;
+    frameId = link.parent;
+  }
+  return point;
+}
+
+// One frame's own snapshot, injecting the content script into it first: frames get it only
+// when a snapshot reads them. null when it does not answer by deadline.
+async function readFrameSnapshot(tabId, frameId, params, deadline) {
+  let timer;
+  const read = (async () => {
+    await ensureContentScript(tabId, deadline, frameId);
+    return await browser.tabs.sendMessage(tabId, {
+      action: 'getSnapshot', maxChars: params.maxChars, text: params.text, observation: params.observation,
+      boxes: params.boxes, collapse: params.collapse, absoluteUrls: true,
+    }, { frameId });
+  })().catch(() => null);
+  const child = await Promise.race([read, new Promise(resolve => {
+    timer = setTimeout(() => resolve(null), Math.max(0, deadline - Date.now()));
+  })]);
+  clearTimeout(timer);
+  return child && !child.error && typeof child.snapshot === 'string' ? child : null;
+}
+
+// Lists each cross-origin frame's own snapshot under the frame's line, indented one level
+// deeper. Its line then reads [frame=cross_origin src=…] instead of [content=cross_origin …].
+// Frames are read in parallel, at most CROSS_ORIGIN_FRAME_READS per snapshot in document
+// order and each by one deadline; the others, and frames that do not answer, stay as they were.
+async function withFrameSnapshots(tabId, response, params, depth = 0, parent = 0,
+    budget = { reads: CROSS_ORIGIN_FRAME_READS, deadline: Date.now() + FRAME_READ_TIMEOUT_MS }) {
+  const { frames, ...result } = response;
+  if (!frames?.length || typeof result.snapshot !== 'string') return result;
+  const lines = result.snapshot.split('\n');
+  let cuts = result.cuts;
+  const listed = frames.map(frame => ({ ...frame, at: lines.findIndex(line => line.includes(`[ref=${frame.ref}]`)) }))
+    .filter(frame => frame.at >= 0);
+  if (depth >= CROSS_ORIGIN_FRAME_DEPTH) {
+    for (const { at } of listed) lines[at] = lines[at].replace('[content=cross_origin', '[content=too_deep');
+    return { ...result, snapshot: lines.join('\n') };
+  }
+  const reading = listed.slice(0, Math.max(0, budget.reads));
+  budget.reads -= reading.length;
+  const unread = listed.length - reading.length;
+  const children = await Promise.all(reading.map(async frame => {
+    const child = await readFrameSnapshot(tabId, frame.frameId, params, budget.deadline);
+    if (!child) return null;
+    noteFrameRefs(tabId, child.snapshot, frame.frameId);
+    if (!frameParents.has(tabId)) frameParents.set(tabId, new Map());
+    frameParents.get(tabId).set(frame.frameId, { parent, ref: frame.ref });
+    return withFrameSnapshots(tabId, child, params, depth + 1, frame.frameId, budget);
+  }));
+  // Bottom up, so the line numbers of frames above stay valid.
+  const placed = reading.map((frame, i) => ({ ...frame, child: children[i] }))
+    .filter(frame => frame.child).sort((a, b) => b.at - a.at);
+  for (const { at, child } of placed) {
+    const indent = ' '.repeat(lines[at].search(/\S/) + 2);
+    const inserted = child.snapshot.split('\n')
+      .filter(line => line && line !== '- … truncated; scope with selector, ref or max_depth')
+      .map(line => indent + line);
+    lines[at] = lines[at].replace('[content=cross_origin', '[frame=cross_origin');
+    lines.splice(at + 1, 0, ...inserted);
+    if (cuts) {
+      const childCuts = (child.cuts || []).filter(cut => cut > 0 && cut < inserted.length);
+      cuts = [...cuts.map(cut => cut > at ? cut + inserted.length : cut),
+        ...childCuts.map(cut => cut + at + 1)].sort((a, b) => a - b);
+    }
+    if (child.truncated) result.truncated = true;
+  }
+  if (unread && !result.hint) {
+    result.hint = `${unread} more cross-origin frame${unread > 1 ? 's were' : ' was'} not read; ` +
+      'snapshot a frame\'s ref to read it.';
+  }
+  return { ...result, snapshot: lines.join('\n'), ...(cuts ? { cuts } : {}) };
+}
 
 // Public refs never reuse an index. Keep the generation-qualified ref private so the
 // content script can still reject refs from another document or an earlier injection.
@@ -1478,6 +1602,8 @@ const retiredShortRefs = new Set();
 const RETIRED_SHORT_REFS_MAX = 4096;
 // Retire aliases with their document/tab, without resetting the persisted monotonic counter.
 function pruneShortRefs(tabId) {
+  frameGenerations.delete(tabId);
+  frameParents.delete(tabId);
   for (const [short, entry] of shortRefs) {
     if (entry.tabId !== tabId) continue;
     shortRefs.delete(short);
@@ -1700,8 +1826,11 @@ async function forwardToContent(action, params) {
       return tabError(`Cannot access browser internal page: ${state.url.split('?')[0]}`, 'restricted_page', state);
     }
 
+    const expanded = expandShortRefs(params, tabId);
+    if (expanded.error) return await withTabState(tabId, expanded.error);
+    const frameId = targetFrame(tabId, expanded.params);
     try {
-      await ensureContentScript(tabId);
+      await ensureContentScript(tabId, Infinity, frameId);
     } catch (e) {
       if (!(e instanceof NoContentReceiver)) return await injectionFailure(tabId, e);
       // Nothing was sent; the tab's state explains the silence where it can.
@@ -1710,11 +1839,9 @@ async function forwardToContent(action, params) {
       return failure;
     }
 
-    const expanded = expandShortRefs(params, tabId);
-    if (expanded.error) return await withTabState(tabId, expanded.error);
     let response;
     try {
-      response = await browser.tabs.sendMessage(tabId, { action, ...expanded.params });
+      response = await browser.tabs.sendMessage(tabId, { action, ...expanded.params }, { frameId });
     } catch (e) {
       const missingReceiver = e.message === MISSING_CONTENT_RECEIVER;
       // A wake's receiver can disappear after the ping. Only this error proves nothing
@@ -1727,6 +1854,16 @@ async function forwardToContent(action, params) {
     }
     if (!response) return await tabFailure(tabId, 'No response from content script', true);
     if (response.code) response = await withTabState(tabId, response);
+    if (typeof response.snapshot === 'string') {
+      if (frameId) noteFrameRefs(tabId, response.snapshot, frameId);
+      if (action === 'getSnapshot') response = await withFrameSnapshots(tabId, response, params, 0, frameId);
+    }
+    if (action === 'screenPoint' && frameId && !response.error) {
+      response = await frameScreenPoint(tabId, frameId, response, expanded.params);
+      if (!response) return await tabFailure(tabId, 'No response from content script', true);
+      if (response.code) response = await withTabState(tabId, response);
+    }
+    if (response.frames) delete response.frames;
     const result = await compactContentRefs(action, response, tabId, params);
     // Waits and drags echo their targets; keep their public spelling too.
     for (const key of REF_PARAMS) {
@@ -2229,9 +2366,25 @@ async function describeTarget(params) {
   if (tabId == null) return noActiveTab('No active tab found');
   const state = await tabState(tabId);
   if (!state) return tabError(`Tab ${tabId} no longer exists`, 'tab_closed', { tabId });
-  if (!params.inspect) return { tabId, url: state.url };
+  const frame = await targetFrameInfo(tabId, params);
+  if (!params.inspect) return { tabId, url: state.url, ...frame };
   const target = await forwardToContent('describeTarget', { ...params, tabId });
-  return target.error ? target : { tabId, url: state.url, target };
+  return target.error ? target : { tabId, url: state.url, ...frame, target };
+}
+
+// { frame: { url } } when the command's ref points into a cross-origin frame (#343): url is
+// the frame document's origin and path, null when the frame does not answer within a second.
+async function targetFrameInfo(tabId, params) {
+  const expanded = expandShortRefs(params, tabId);
+  const frameId = expanded.params ? targetFrame(tabId, expanded.params) : 0;
+  if (!frameId) return {};
+  let timer;
+  const ping = await Promise.race([
+    browser.tabs.sendMessage(tabId, { action: 'ping' }, { frameId }).catch(() => null),
+    new Promise(resolve => { timer = setTimeout(() => resolve(null), 1000); }),
+  ]);
+  clearTimeout(timer);
+  return { frame: { url: typeof ping?.frameUrl === 'string' ? ping.frameUrl : null } };
 }
 
 // ── Click and wait for navigation ──
