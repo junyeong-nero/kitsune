@@ -213,7 +213,7 @@ replaces the signed one; after a browser restart the signed build is back.
 Pin a released version with `==`:
 
 ```bash
-claude mcp add --scope user kitsune -- uvx --from kitsune-browser-mcp==0.7.0 kitsune
+claude mcp add --scope user kitsune -- uvx --from kitsune-browser-mcp==0.7.1 kitsune
 ```
 
 Releases are listed on [PyPI](https://pypi.org/project/kitsune-browser-mcp/#history)
