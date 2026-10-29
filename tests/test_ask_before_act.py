@@ -21,6 +21,8 @@ class FakeExtension:
     def __init__(self, tab=7, url=PAGE, target=None, reply=None):
         self.tab, self.url, self.target = tab, url, target or {"ok": True, "tag": "a", "submits": False}
         self.reply = reply or {"ok": True}
+        # What describeTarget reports for a target inside a cross-origin frame (#343), else None.
+        self.frame = None
         self.sent = []
 
     async def __call__(self, action, params=None, timeout=30):
@@ -30,6 +32,8 @@ class FakeExtension:
             if isinstance(self.target, dict) and self.target.get("error") and params.get("inspect"):
                 return self.target
             result = {"tabId": params.get("tabId", self.tab), "url": self.url}
+            if self.frame is not None:
+                result["frame"] = self.frame
             if params.get("inspect"):
                 result["target"] = self.target
             return result
@@ -394,6 +398,52 @@ class SensitiveActionTests(AskBeforeActTestCase):
         self.assertIs(result["retryable"], False)
         held = self.held(lambda h: h._forward("click"), body)
         self.assertEqual(held["state"]["reason"], "unknown_outcome")
+
+
+class CrossOriginFrameTests(AskBeforeActTestCase):
+    """#343: writes on targets inside another site's frame are held like a payment page."""
+
+    def test_writes_inside_a_cross_origin_frame_are_held_until_confirmed(self):
+        self.extension.frame = {"url": "https://widget.example/chat"}
+        for route, body, action in [
+            (lambda h: h.handle_click(), {"ref": "s1e5"}, "click"),
+            (lambda h: h.handle_fill(), {"ref": "s1e6", "value": "hi"}, "fill"),
+            (lambda h: h.handle_type(), {"ref": "s1e6", "text": "hi"}, "type"),
+        ]:
+            with self.subTest(action=action):
+                held = self.held(route, body)
+                self.assertEqual(held["state"]["reason"], "cross_origin_frame")
+                self.assertIn("https://widget.example/chat", held["error"])
+        self.assertEqual(self.extension.actions(), [])
+        token = self.held(lambda h: h.handle_click(), {"ref": "s1e5"})["state"]["confirmToken"]
+        self.assertEqual(self.forward("click", {"ref": "s1e5", "confirmToken": token}), (200, {"ok": True}))
+        self.assertEqual(self.extension.actions(), ["click"])
+
+    def test_payment_like_frames_and_unknown_frames(self):
+        self.extension.frame = {"url": "https://js.pay.example/payment/card"}
+        held = self.held(lambda h: h.handle_click(), {"ref": "s1e5"})
+        self.assertEqual(held["state"]["reason"], "payment_frame")
+        # A frame that did not say where it is is still another site's frame.
+        self.extension.frame = {"url": None}
+        held = self.held(lambda h: h.handle_click(), {"ref": "s1e5"})
+        self.assertEqual(held["state"]["reason"], "cross_origin_frame")
+        self.assertIn("origin unknown", held["error"])
+        self.extension.frame = None
+        self.assertEqual(self.forward("click", {"ref": "s1e5"}), (200, {"ok": True}))
+
+    def test_draft_mode_keeps_its_fill_rules_inside_frames(self):
+        self.extension.frame = {"url": "https://widget.example/chat"}
+        token = bridge._task_mode.set("draft")
+        try:
+            self.extension.target = {"ok": True, "tag": "input", "sensitive": True}
+            status, result = self.forward("fill", {"ref": "s1e6", "value": "4111"})
+            self.assertEqual((status, result["code"], result["state"]["reason"]),
+                             (403, "mode_restricted", "sensitive_field"))
+            self.extension.target = {"ok": True, "tag": "input", "sensitive": False}
+            self.assertEqual(self.forward("fill", {"ref": "s1e6", "value": "hi"}), (200, {"ok": True}))
+        finally:
+            bridge._task_mode.reset(token)
+        self.assertEqual(self.extension.actions(), ["fill"])
 
 
 class NoAutoConfirmTests(AskBeforeActTestCase):

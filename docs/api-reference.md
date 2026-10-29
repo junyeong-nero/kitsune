@@ -1357,6 +1357,8 @@ In ask mode the bridge holds:
 | `downloads` | `browser_downloads` (every op: `download`, `list`, `cancel`) |
 | `payment_url` | Navigation, new tabs, or new windows whose URL matches an `askUrls` pattern |
 | `payment_page` | Page actions (click, type/fill, form fill, select, check, keypress, drag, submit, upload, dialog policy, JavaScript) on a tab whose current URL matches `askUrls` |
+| `cross_origin_frame` | Page actions (as for `payment_page`) whose target ref is inside a cross-origin frame ([Frames](#frames)): another site's page, such as an embedded payment form, sign-in widget or chat. The description names the frame's origin and path, or `origin unknown` when the frame does not answer. It takes precedence over the other target reasons. In draft mode, typing keeps the draft rules (`sensitive_field`) |
+| `payment_frame` | The same, when the frame's origin and path match an `askUrls` pattern |
 | `unknown_outcome` | Repeating a write whose identical previous attempt ended `retryable: false` (a timeout or disconnect after sending, see [Action errors](#action-errors)) |
 | `uninspectable_target` | A click or Enter whose target the bridge could not inspect (for example, an extension older than this bridge, or a screen-coordinate trusted click). Inspection fails closed |
 
@@ -2178,6 +2180,29 @@ A frame whose content is unavailable is still listed, with
 `browser_forms` lists such frames in `unavailableFrames`. Fields inside a frame carry
 `frame` (its title, name or src) in `browser_forms`, and bounds are in the top
 viewport.
+
+**Cross-origin frames in `browser_snapshot`.** A cross-origin frame's content is read by a
+content script Kitsune injects into that frame when a snapshot first reads it, never on page
+load. Its content follows the frame's line one level deeper, and the line reads
+`[frame=cross_origin src="…"]` instead:
+
+```
+- iframe "Payment form" [ref=e12] [frame=cross_origin src="https://pay.example/widget"]
+  - textbox "Card number" [ref=e13]
+  - button "Pay" [ref=e14]
+```
+
+Its refs work in every ref-taking action, including `browser_trusted_click` (the frame's
+point is converted to the screen by the page that shows it) and `browser_snapshot(ref=…)`.
+Sensitive fields inside are redacted as on the page, and its link URLs are absolute. Frames
+inside it are read the same way, up to three cross-origin frames deep (`content=too_deep`
+below). One snapshot reads at most six cross-origin frames, in document order, all within
+1.5 seconds. Frames smaller than 24×24 CSS pixels are not read. Frames past the limit, and
+frames that do not answer in time, keep `content=cross_origin`. When the limit leaves frames
+out, the result's `hint` says how many; a snapshot scoped to a frame's ref reads that frame.
+Post-action delta snapshots, `browser_dom`, `browser_find` and `browser_forms` do not read
+cross-origin frames yet. In [ask mode](#ask-before-act) writes inside them are held
+(`cross_origin_frame`, `payment_frame`).
 
 #### Images
 

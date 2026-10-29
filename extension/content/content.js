@@ -3,7 +3,7 @@
 
 (function() {
   'use strict';
-  const CONTENT_VERSION = 43;
+  const CONTENT_VERSION = 44;
   if (window.__claudeBridgeVersion >= CONTENT_VERSION) return;
   window.__claudeBridgeVersion = CONTENT_VERSION;
 
@@ -438,13 +438,16 @@
 
   browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const handlers = {
-      'ping':                  () => ({ ok: true, version: CONTENT_VERSION }),
+      // A frame's ping names its document (origin and path) for ask-before-act (#343).
+      'ping':                  () => ({ ok: true, version: CONTENT_VERSION,
+                                     ...(window !== window.top ? { frameUrl: location.origin + location.pathname } : {}) }),
       'getPageInfo':           () => getPageInfo(),
       'handleDialog':          () => handleDialog(msg.accept, msg.prompt_text),
       'waitForText':           () => waitForText(msg.text, msg.text_gone, msg.timeout, msg.diagnose === true),
       'getPageText':           () => getPageText(msg.selector),
       'getSnapshot':           () => getSnapshot(msg.maxChars, msg.focusLastAction, msg.ref || msg.selector, msg.maxDepth, msg.text ?? (msg.observation ? false : undefined),
-                                     msg.observation, msg.delta ? 'delta' : 'full', !!msg.boxes, msg.collapse !== false),
+                                     msg.observation, msg.delta ? 'delta' : 'full', !!msg.boxes, msg.collapse !== false,
+                                     !!msg.absoluteUrls),
       'getAccessibilityTree':  () => getAccessibilityTree(msg.depth ?? 6, msg.ref || msg.selector),
       'getFormFields':         () => getFormFields(),
       'click':                 () => withPopupWatch(withScriptPopupCheck(() =>
@@ -468,7 +471,8 @@
       // Fixed operations the bridge and background used to send as code strings.
       'keepAlive':             () => ({ ok: true }),
       'neuterUnload':          () => neuterUnload(),
-      'screenPoint':           () => screenPoint(msg.selector, msg.x, msg.y, msg.click, msg.first, msg.zoom, msg.modifiers),
+      'screenPoint':           () => screenPoint(msg.selector, msg.x, msg.y, msg.click, msg.first, msg.zoom, msg.modifiers,
+                                     msg.frame),
       'userActivity':          () => userActivity(),
       'captureMeasure':        () => captureMeasure(msg.selector),
       'captureScrollIntoView': () => captureScrollIntoView(msg.selector, msg.block),
@@ -797,7 +801,7 @@
   }
 
   function getSnapshot(maxChars, focusLastAction, selector, maxDepth, textMode,
-      observation = 'browser_snapshot', mode = 'full', boxes = false, collapse = true) {
+      observation = 'browser_snapshot', mode = 'full', boxes = false, collapse = true, absoluteUrls = false) {
     const withText = textMode !== false;
     if (maxChars != null && (!Number.isFinite(maxChars) || maxChars < 0)) {
       return { error: 'maxChars must be a finite non-negative number' };
@@ -838,6 +842,9 @@
     const clean = value => normalize(value).slice(0, 160);
     const nativeTags = new Set(['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'DETAILS', 'SUMMARY']);
     const metadata = new WeakMap();
+    // Cross-origin frames listed with a ref: the background reads each through its own
+    // content script (#343) and lists that frame's snapshot under the frame's line.
+    const crossOriginFrames = [];
     const signatures = new Map();
     const targetAncestors = new Set();
     for (let el = target; el; el = parentAcrossFrames(el)) targetAncestors.add(el);
@@ -1022,6 +1029,13 @@
           if (el.hasAttribute(`aria-${state}`)) states.push(`${state}=${el.getAttribute(`aria-${state}`)}`);
         }
         const frameReason = frame && frameAccess(el).reason;
+        // Frames too small to show content (tracking pixels, hidden helpers) are not read.
+        const frameRect = frameReason === 'cross_origin' && el.getBoundingClientRect();
+        if (frameRect && ref && frameRect.width >= 24 && frameRect.height >= 24) {
+          let frameId = -1;
+          try { frameId = browser.runtime.getFrameId(el); } catch {}
+          if (frameId > 0) crossOriginFrames.push({ ref, frameId });
+        }
         if (frameReason) {
           const src = clean(frameSource(el));
           states.push(`content=${frameReason}`, ...(src ? [`src=${JSON.stringify(src)}`] : []));
@@ -1055,7 +1069,7 @@
               entry.urlFrom = previous && (previous.urlIndex ?? previous.urlFrom);
             } else {
               entry.urlIndex = entries.length;
-              const shown = url.origin === page?.origin && !url.pathname.startsWith('//')
+              const shown = !absoluteUrls && url.origin === page?.origin && !url.pathname.startsWith('//')
                 ? url.pathname + url.search + url.hash : url.href;
               const signature = `/url: ${JSON.stringify(shown)}`;
               const indent = `${'  '.repeat(Math.min(depth + 1, 12))}- `;
@@ -1338,6 +1352,7 @@
       ...(targetIndex >= 0 ? { target_ref: entries[targetIndex].ref } : {}),
       // For boundPublicSnapshot, which can cut again after aliases and URL redaction.
       ...(cuts ? { cuts: cuts.filter(cut => cut <= selected.length) } : {}),
+      ...(!baseline && crossOriginFrames.length ? { frames: crossOriginFrames } : {}),
       ...(withText && !baseline ? { url: window.location?.href ?? globalThis.location?.href, title: document.title } : {}),
       ...(explicit ? { readyState: document.readyState } : {}),
       ...(explicit && !snapshot && !truncated ? { empty: true, hint: EMPTY_SNAPSHOT_HINT } : {}),
@@ -2682,10 +2697,19 @@
   // both shrink by the zoom. Their sum times the tab's zoom (browser.tabs.getZoom, from the
   // background) is the desktop point at 100% zoom, which the OS backends take. OS display
   // scaling is a separate step that this does not cover.
-  function screenPoint(selector, x, y, click, first, zoom, modifiers) {
+  // frame: the ref of a cross-origin frame in this document, x/y a point in that frame's
+  // viewport (#343). Such a frame's own mozInnerScreenX/Y are 0, so the background converts
+  // its point here, in the document that shows the frame.
+  function screenPoint(selector, x, y, click, first, zoom, modifiers, frame) {
     // Viewport point (element centre or x/y) plus its desktop position for OS-level clicks.
     let el = null;
-    if (selector) {
+    if (frame) {
+      el = resolveElement(frame);
+      if (!el || !FRAME_TAGS.has(el.tagName)) return notFound();
+      const rect = viewportRect(el);
+      x += rect.left + (el.clientLeft || 0) + (parseFloat(styleOf(el).paddingLeft) || 0);
+      y += rect.top + (el.clientTop || 0) + (parseFloat(styleOf(el).paddingTop) || 0);
+    } else if (selector) {
       el = click ? resolveTarget(selector, null, { first, pointer: true }) : resolveElement(selector);
       if (!el) return notFound();
       el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
