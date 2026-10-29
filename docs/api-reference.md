@@ -404,7 +404,9 @@ not right after dispatch. The bridge waits:
 It waits at most 1.5 s, or 4 s while such requests are pending. This covers confirmations,
 status lines and autocomplete lists that render a moment later, including debounced ones. A
 delta also lists text the action made appear anywhere on the page as `text` lines (for
-example `- text "Saved."`), also when the snapshot is otherwise compact. When the delta found
+example `- text "Saved."`), also when the snapshot is otherwise compact. In a run of similar
+items, up to 20 items that are new since the delta's baseline are listed even past the first
+five that a snapshot shows, so the next batch of an infinite list is named, not only counted. When the delta found
 no new or changed line and the URL and title are the same, the result adds
 `no_visible_change: true`. A change that comes after the wait is not seen: use `expect` or
 `browser_wait_for`. Actions without a post-action snapshot (`includeSnapshot: false`,
