@@ -4,8 +4,11 @@ Opt-in twice: besides KITSUNE_E2E_BROWSER (see tests/real_browser_harness.py), i
 macOS with KITSUNE_E2E_TRUSTED_INPUT=1, because it sends real key events and clicks with the
 real pointer. Run it while nobody uses the machine, with Quartz and Accessibility permission:
 
-    KITSUNE_E2E_BROWSER=/Applications/Zen.app/Contents/MacOS/zen KITSUNE_E2E_TRUSTED_INPUT=1 \\
+    KITSUNE_E2E_BROWSER=/path/to/Firefox.app/Contents/MacOS/firefox KITSUNE_E2E_TRUSTED_INPUT=1 \\
         uv run --extra macos python -m unittest discover -s tests -p test_real_browser_trusted_keys.py -v
+
+Use Firefox (or LibreWolf): headed Zen on a fresh profile reports background tabs as about:blank
+and does not lay out the tab it activates, so its commands stop before any input (#360).
 
 The suite's browser runs headed on a temporary profile. Before each command the test brings that
 browser process (by pid, not by name, so another browser of the same name is left alone) to the
