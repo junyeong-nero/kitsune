@@ -120,8 +120,12 @@ class TrustedTypeTests(TrustedKeysTestCase):
         for platform, code in (("linux", "unsupported_platform"), ("win32", "unsupported_platform")):
             with self.subTest(platform=platform), patch.object(bridge.sys, "platform", platform):
                 self.assertEqual(KEYBOARD_UNAVAILABLE()["code"], code)
-        with patch.object(bridge, "_mac_accessibility_trusted", return_value=False):
+        # pyobjc is there (faked: the check only imports it), the permission is not.
+        with patch.dict("sys.modules", {"AppKit": object(), "Quartz": object()}), \
+             patch.object(bridge, "_mac_accessibility_trusted", return_value=False):
             refused = KEYBOARD_UNAVAILABLE()
+        with patch.dict("sys.modules", {"AppKit": None}):
+            self.assertEqual(KEYBOARD_UNAVAILABLE()["code"], "unsupported_platform")
         self.assertEqual((refused["code"], refused["retryable"]), ("permission_required", False))
 
     def test_the_text_is_kept_out_of_the_audit_log(self):
