@@ -129,7 +129,7 @@ class RealBrowserPlaywrightToolTests(harness.RealBrowserTestCase):
         boxed = self.tool("browser_snapshot", {"boxes": True})["snapshot"]
         self.assertRegex(boxed, r'(?m)button "Go" \[ref=e\d+\]( \[[^\]]*\])? \[box=\d+,\d+,\d+,\d+\]$')
         found = self.tool("browser_find", {"text": "go"})
-        self.assertTrue(any('button "Go"' in match["match"] for match in found["matches"]), found)
+        self.assertTrue(any(r.startswith(">") and 'button "Go"' in r for b in found["blocks"] for r in b["lines"]), found)
 
         self.tool("browser_navigate", {"url": self.site.origin + "/second"})
         self.assertEqual(self.tool("browser_evaluate", {"function": "() => document.title"})["result"], "second")
