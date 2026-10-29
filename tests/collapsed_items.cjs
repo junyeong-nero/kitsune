@@ -168,12 +168,14 @@ const rowLines = snapshot => snapshot.split('\n').filter(line => line.includes('
   const unchanged = await command({ action: 'keypress', ref: two, key: 'Escape' });
   assert.equal(unchanged.snapshot_delta, true);
   assert.doesNotMatch(unchanged.snapshot, /more similar items/);
-  // A delta that changes only the run's hidden count lists the new marker without any row.
+  // A row added past the collapse is new since the delta's baseline: the delta lists it (#350),
+  // and the run's marker, whose hidden count is unchanged, stays out.
   const add = page.snapshot.match(/- button "행 추가" \[ref=(e\d+)\]/)[1];
   const added = await command({ action: 'keypress', ref: add, key: 'Enter' });
   assert.equal(added.snapshot_delta, true);
-  assert.deepEqual(added.snapshot.match(MARKER).slice(1), ['4', scopeRef]);
-  assert.deepEqual(rowLines(added.snapshot), []);
+  assert.equal(rowLines(added.snapshot).length, 1);
+  assert.match(rowLines(added.snapshot)[0], /checkbox "추가 상품 선택" \[ref=e\d+\]/);
+  assert.doesNotMatch(added.snapshot, /more similar items/);
 
   // A scoped snapshot lists at most SCOPED_ITEM_LIMIT (100) items of its own; browser_find
   // (collapse: false) still reaches the rest.

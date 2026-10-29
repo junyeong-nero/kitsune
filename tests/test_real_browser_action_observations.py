@@ -36,6 +36,15 @@ document.getElementById('sentinel').addEventListener('mouseenter', () => {
   next += 2;
 });
 </script>""",
+    # ui-infinite crowded: rows a snapshot collapses after five; the sentinel loads ten more.
+    "/rows": """<!doctype html><title>Rows</title><ul id=rows></ul><p id=more>불러오는 중…</p><script>
+const row = i => `<li><span>계약서 #${i}</span> <button>계약서 #${i} 저장</button></li>`;
+let next = 1;
+const load = n => { document.getElementById('rows').insertAdjacentHTML('beforeend',
+  Array.from({length: n}, () => row(next++)).join('')); };
+load(8);
+document.getElementById('more').addEventListener('mouseenter', () => setTimeout(() => load(10), 100));
+</script>""",
 }
 
 
@@ -118,6 +127,15 @@ class RealBrowserActionObservationTests(harness.RealBrowserTestCase):
         self.assertIn('text "Item 2"', loaded["snapshot"])
         self.assertIn('text "Item 3"', loaded["snapshot"])
         self.assertNotIn('text "Item 1"', loaded["snapshot"], "only what changed")
+
+    def test_a_hover_delta_names_the_rows_it_loaded_past_the_collapse(self):
+        tab = self.open_tab(f"{self.site.origin}/rows")
+        first = self.call("/api/snapshot", {"tabId": tab})["snapshot"]
+        self.assertIn("more similar items", first)
+        loaded = self.assert_ok(self.call("/api/hover", {"tabId": tab, "selector": "#more"}))
+        for i in range(9, 19):
+            self.assertIn(f'button "계약서 #{i} 저장"', loaded["snapshot"])
+        self.assertNotIn('button "계약서 #1 저장"', loaded["snapshot"], "only what changed")
 
     def test_wait_for_time_returns_what_changed_since_the_agent_last_looked(self):
         tab = self.open_tab(f"{self.site.origin}/infinite")

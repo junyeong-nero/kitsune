@@ -784,6 +784,7 @@
   // A run of similar siblings shows its first COLLAPSED_ITEM_LIMIT items. A snapshot scoped to
   // their container shows up to SCOPED_ITEM_LIMIT of its own; browser_find searches the rest.
   const COLLAPSED_ITEM_LIMIT = 5;
+  const NEW_ITEM_LIMIT = 20;
   const SCOPED_ITEM_LIMIT = 100;
 
   // What a delta snapshot is diffed against: the page's snapshot lines (without refs) per
@@ -1049,6 +1050,8 @@
       lastChild.set(entry.parent, entries.length);
       entries.push(entry);
     }
+    // Every child the walk considered for a run of similar items, listed or collapsed.
+    const runItems = new Set();
     // named: an ancestor control or heading already shows this text as its name.
     function visit(el, depth, parent = -1, domDepth = 0, named = false) {
       if (!metadata.has(el) || (maxDepth != null && domDepth > maxDepth)) return;
@@ -1185,8 +1188,15 @@
             ref, head, tail, run, signature });
           omitted = 0;
         }
+        // A delta lists up to NEW_ITEM_LIMIT items that are new since its baseline past the
+        // collapse (#350): an infinite list's next batch is what the action loaded.
+        let newItems = 0;
         for (let i = start; i < end; i++) {
-          if (i - start < shown || targetAncestors.has(children[i])) {
+          runItems.add(children[i]);
+          const listNew = i - start >= shown && !!baseline?.items && !baseline.items.has(children[i]) &&
+            newItems < NEW_ITEM_LIMIT;
+          if (listNew) newItems++;
+          if (i - start < shown || targetAncestors.has(children[i]) || listNew) {
             flushOmitted();
             visit(children[i], childDepth, parent, domDepth + 1, named);
           } else omitted++;
@@ -1205,7 +1215,7 @@
         if (!signatures.has(el)) signatures.set(el, new Set());
         signatures.get(el).add(entry.signature);
       }
-      return { signatures, url: window.location?.href, title: document.title, withText };
+      return { signatures, items: runItems, url: window.location?.href, title: document.title, withText };
     };
     if (mode === 'baseline') {
       actionBaseline = record();
