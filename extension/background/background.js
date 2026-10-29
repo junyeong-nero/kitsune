@@ -3,7 +3,7 @@
 
 'use strict';
 
-const EXPECTED_CONTENT_VERSION = 42;
+const EXPECTED_CONTENT_VERSION = 43;
 const WS_URL = 'ws://127.0.0.1:47652';
 // scripts/build_extension.py sets 'signed' for the AMO build (see content.js).
 const KITSUNE_BUILD = 'dev';
@@ -682,10 +682,13 @@ async function takeOpenedPopup(tabId) {
 // redacted like snapshot URLs.
 function scriptPopupBlocked(result, popup) {
   const url = typeof popup.url === 'string' && popup.url ? redactHistoryUrl(popup.url) : null;
-  const state = { ...(url ? { url } : {}), reason: 'script_popup' };
+  const urls = (Array.isArray(popup.urls) ? popup.urls : (popup.url ? [popup.url] : []))
+    .filter(value => typeof value === 'string' && value).slice(0, 20).map(redactHistoryUrl);
+  const state = { ...(url ? { url } : {}), urls, reason: 'script_popup' };
   result.warning ??= { code: 'popup_blocked', state,
     hint: 'A page script tried to open a popup (window.open), which Firefox blocks without user activation, ' +
-      'so none opened. If this click should open that popup (a sign-in at state.url, for example), ask the ' +
+      'so none opened. Check state.urls for all refused URLs. If this click should open that popup ' +
+      '(a sign-in at state.url, for example), ask the ' +
       'user to click it, then continue in the new tab by tab_id (find it with browser_tabs), or use ' +
       'browser_trusted_click; if not (an ad, for example), ignore this warning.' };
 }
@@ -743,7 +746,7 @@ async function openBlockedLink(tabId, link, result) {
       return;
     } catch {}
   }
-  result.warning ??= { code: 'popup_blocked', state: { url: link.url },
+  result.warning ??= { code: 'popup_blocked', state: { url: redactHistoryUrl(link.url) },
     hint: 'The link opens in a new tab, but no tab opened; the popup blocker likely dropped this ' +
       'synthetic click. Open state.url with browser_tabs action=new, or click with browser_trusted_click.' };
 }

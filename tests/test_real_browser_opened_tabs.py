@@ -153,7 +153,8 @@ class RealBrowserOpenedTabTests(harness.RealBrowserTestCase):
             self.assertNotIn("opened_tabs", result)
             self.assertEqual(result["warning"]["code"], "popup_blocked", result)
             self.assertEqual(result["warning"]["state"],
-                             {"url": self.page_url + "/ok2?popup", "reason": "script_popup"})
+                             {"url": self.page_url + "/ok2?popup", "urls": [self.page_url + "/ok2?popup"],
+                              "reason": "script_popup"})
             self.assertIn("ask the user to click it", result["warning"]["hint"])
             self.assertEqual(new, set(), "Kitsune opens nothing in the popup's place")
 

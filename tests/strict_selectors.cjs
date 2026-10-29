@@ -138,17 +138,17 @@ async function testSelectorMatchingThreeButtons() {
 
   // A candidate's ref acts on exactly that element.
   assert.equal((await send({ action: 'click', selector: ambiguous.state.candidates[1].ref })).ok, true);
-  assert.deepEqual(events(dom.deletes), [0, 1, 0]);
+  assert.deepEqual(events(dom.deletes), [0, 2, 0]);
 
   // first: true acts on the first match, exactly once.
   const first = await send({ action: 'click', selector: '.item', first: true });
   assert.equal(first.ok, true, JSON.stringify(first));
-  assert.deepEqual(events([dom.hiddenButton, ...dom.deletes]), [1, 0, 1, 0]);
+  assert.deepEqual(events([dom.hiddenButton, ...dom.deletes]), [2, 0, 2, 0]);
 
   // An actionability wait fails at once instead of waiting.
   const waited = await send({ action: 'click', selector: '.item', wait: true, timeout: 5000 });
   assert.equal(waited.code, 'ambiguous_target');
-  assert.deepEqual(events([dom.hiddenButton, ...dom.deletes]), [1, 0, 1, 0]);
+  assert.deepEqual(events([dom.hiddenButton, ...dom.deletes]), [2, 0, 2, 0]);
 }
 
 async function testEveryWriteActionIsStrict() {
@@ -249,7 +249,7 @@ async function testOneActionableMatchAndReadsKeepFirstMatch() {
   const send = load(dom);
   // .one matches an enabled button, a disabled one and an <input type=hidden>.
   assert.equal((await send({ action: 'click', selector: '.one' })).ok, true);
-  assert.deepEqual(events([dom.single, dom.disabled]), [1, 0]);
+  assert.deepEqual(events([dom.single, dom.disabled]), [2, 0]);
   // Reads keep first-match semantics.
   assert.equal((await send({ action: 'getBounds', selector: '.item' })).width, 100);
   assert.equal((await send({ action: 'screenPoint', selector: '.item' })).viewportX, 50);

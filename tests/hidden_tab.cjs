@@ -121,12 +121,16 @@ async function testNotRenderedHints() {
   new Element('DIV', 'modal', { role: 'dialog' }, [new Element('LABEL', 'remember', {}, [modalField])]);
   // The popup walk goes up through shadow roots and slots.
   const shadowItem = new Element('DIV', 'shadow-item', { role: 'menuitem' }, [], { display: 'none' });
-  shadowItem.parentNode = { host: new Element('DIV', 'shadow-menu', { role: 'menu' }) };
+  shadowItem.parentNode = { nodeType: 11, host: new Element('DIV', 'shadow-menu', { role: 'menu' }) };
   const slottedItem = new Element('DIV', 'slotted-item', { role: 'option' }, [], { display: 'none' });
   new Element('DIV', 'slot-host', {}, [slottedItem]);
   slottedItem.assignedSlot = new Element('SLOT', 'slot');
   new Element('DIV', 'slot-listbox', { role: 'listbox' }, [slottedItem.assignedSlot]);
-  const elements = { field, 'menu-item': menuItem, 'closed-item': closedItem, 'dialog-item': dialogItem,
+  // A role popup beneath an unpainted shared layer is still open (#338).
+  const unpaintedItem = new Element('DIV', 'unpainted-item', { role: 'menuitem' }, [], { display: 'none' });
+  new Element('DIV', 'layer', {}, [new Element('DIV', 'unpainted', { role: 'menu' }, [unpaintedItem])],
+    { display: 'none' });
+  const elements = { 'unpainted-item': unpaintedItem, field, 'menu-item': menuItem, 'closed-item': closedItem, 'dialog-item': dialogItem,
     'popover-item': popoverItem, shut, 'modal-field': modalField, 'shadow-item': shadowItem,
     'slotted-item': slottedItem };
   const { send, document } = contentScript(
@@ -149,7 +153,7 @@ async function testNotRenderedHints() {
     assert.match(warning.hint, /prefer its label or visible control/);
   }
   // An item of an open popup: dispatching works, so keep acting on it.
-  for (const id of ['menu-item', 'dialog-item', 'popover-item', 'shadow-item', 'slotted-item']) {
+  for (const id of ['unpainted-item', 'menu-item', 'dialog-item', 'popover-item', 'shadow-item', 'slotted-item']) {
     for (const action of ['click', 'doubleClick', 'hover']) {
       const warning = await warningFor(id, action);
       assert.deepEqual(warning.state, { reason: 'not_rendered', inPopup: true }, `${action} #${id}`);

@@ -107,7 +107,7 @@ async function testImmediateModeIsUnchanged() {
   const result = await warned.result;
   assert.equal(result.ok, true);
   assert.equal(result.warning.code, 'hidden_or_covered');
-  assert.deepEqual(hidden.events, ['mousedown', 'click']);
+  assert.deepEqual(hidden.events, ['mouseover', 'mousedown', 'click']);
 }
 
 // The same delayed content and dynamic form without wait: each action resolves its target once.
@@ -189,7 +189,7 @@ async function testDelayedContent() {
   const result = await clicking.result;
   assert.equal(result.ok, true);
   assert.equal(result.warning, undefined, 'a rendered target has no warning');
-  assert.deepEqual(go.events, ['mousedown', 'click'], 'clicked once');
+  assert.deepEqual(go.events, ['mouseover', 'mousedown', 'click'], 'clicked once');
 
   // A target inside a display:none ancestor has no client rects until the ancestor shows.
   const menu = p.add('#item', new Element('A', 'item', { rects: 0 }));
@@ -336,7 +336,7 @@ async function testRefsAndTargetlessActions() {
   const active = p.start({ action: 'keypress', key: 'Escape', wait: true });
   await p.tick(0);
   assert.equal((await atPoint.result).ok, true);
-  assert.deepEqual(target.events, ['mousedown', 'click']);
+  assert.deepEqual(target.events, ['mouseover', 'mousedown', 'click']);
   assert.deepEqual(await active.result, { ok: true, key: 'Escape', target: 'body', effect: null });
   assert.deepEqual(p.body.events, ['keydown']);
 

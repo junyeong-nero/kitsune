@@ -93,7 +93,7 @@ async function testPointerCaptureSortableReorders() {
   assert.ok(ys.length > 2);
   assert.ok(ys.every((y, i) => i === 0 || y > ys[i - 1]));
   assert.equal(ys.at(-1), 95);
-  assert.deepEqual(a.events.filter(type => type.startsWith('pointer')).slice(0, 2), ['pointerdown', 'pointermove']);
+  assert.deepEqual(a.events.filter(type => type.startsWith('pointer')).slice(0, 2), ['pointermove', 'pointerdown']);
   assert.equal(a.events.at(-1), 'pointerup');
   assert.deepEqual(c.events.filter(type => type.startsWith('mouse')), ['mouseup']);
 }
@@ -108,8 +108,9 @@ async function testHtml5DropStaysHtml5() {
   assert.deepEqual(await send({ action: 'drag', from: '#from', to: '#to' }),
     { ok: true, from: '#from', to: '#to', via: 'html5' });
   assert.equal(dropped, true);
-  assert.deepEqual(from.moves, [], 'an accepted HTML5 drop needs no pointer moves');
-  assert.deepEqual(from.events, ['pointerdown', 'mousedown', 'dragstart', 'dragend']);
+  assert.equal(from.moves.length, 1, 'move to the source before pressing, even for HTML5');
+  assert.equal(from.moves[0].buttons, 0);
+  assert.deepEqual(from.events, ['pointermove', 'mousemove', 'pointerdown', 'mousedown', 'dragstart', 'dragend']);
 }
 
 // Pointer libraries cancel dragstart on draggable items; a page-wide dragover handler
