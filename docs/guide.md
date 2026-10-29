@@ -265,7 +265,7 @@ default capabilities, with the same names, descriptions, input schemas and annot
 its `core` capability group (see [Core tools](#core-tools)). Kitsune's own tools are in
 the other groups. Set `KITSUNE_CAPS` in the MCP server environment before starting it;
 restart the MCP client after changing it. The comma-separated list selects exactly those
-groups (include `core` to retain the default tools). `all` enables all 93 tools in every
+groups (include `core` to retain the default tools). `all` enables all 94 tools in every
 group except `storage` and `history`, which read personal data and must be named
 (`KITSUNE_CAPS=all,storage,history`). Whitespace and case are ignored; unknown group names
 fail at startup.

@@ -257,7 +257,7 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(set(added["published"]), {
             "browser_scroll", "browser_forward", "browser_check", "browser_focus", "browser_blur",
             "browser_submit_form", "browser_click_and_wait_navigation", "browser_trusted_click",
-            "browser_page_text"})
+            "browser_trusted_type", "browser_page_text"})
         self.assertTrue(added["notified"])
         self.assertEqual(result["notes"], {"a": ["ToolListChangedNotification"], "b": []})
         self.assertTrue(set(added["published"]) <= set(listed_a))

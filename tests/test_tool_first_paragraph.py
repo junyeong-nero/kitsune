@@ -37,7 +37,7 @@ class FirstParagraphTests(unittest.TestCase):
                      for name, definition in cls.full.items()}
 
     def test_every_tool_is_checked(self):
-        self.assertEqual(len(self.full), 79)
+        self.assertEqual(len(self.full), 80)
 
     def test_check_documents_the_shared_contract_in_its_schema(self):
         click = properties(self.full["browser_check"])
