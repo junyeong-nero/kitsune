@@ -7,7 +7,7 @@ build-backend = "hatchling.build"
 # version: the MCP server only uses a bridge of its own build.
 [project]
 name = "kitsune-browser-mcp"
-version = "0.7.0"
+version = "0.7.1"
 description = "MCP server that lets AI agents use your Firefox, Zen, or LibreWolf browser."
 readme = "README.md"
 license = "MIT"
@@ -25,11 +25,11 @@ classifiers = [
     "Topic :: Internet :: WWW/HTTP :: Browsers",
     "Topic :: Software Development :: Testing",
 ]
-dependencies = ["kitsune-browser[mcp]==0.7.0"]
+dependencies = ["kitsune-browser[mcp]==0.7.1"]
 
 [project.optional-dependencies]
 # Native trusted clicks on macOS (browser_trusted_click); cliclick on PATH also works.
-macos = ["kitsune-browser[macos]==0.7.0"]
+macos = ["kitsune-browser[macos]==0.7.1"]
 
 [project.urls]
 Homepage = "https://github.com/junyeong-nero/kitsune"

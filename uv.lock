@@ -361,7 +361,7 @@ wheels = [
 
 [[package]]
 name = "kitsune-browser"
-version = "0.7.0"
+version = "0.7.1"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },
@@ -398,7 +398,7 @@ dev = [{ name = "kitsune-browser-mcp", editable = "packages/kitsune-browser-mcp"
 
 [[package]]
 name = "kitsune-browser-mcp"
-version = "0.7.0"
+version = "0.7.1"
 source = { editable = "packages/kitsune-browser-mcp" }
 dependencies = [
     { name = "kitsune-browser", extra = ["mcp"] },

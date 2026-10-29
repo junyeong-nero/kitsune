@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 # server. kitsune-browser-mcp (packages/kitsune-browser-mcp) installs that server's commands.
 [project]
 name = "kitsune-browser"
-version = "0.7.0"
+version = "0.7.1"
 description = "Drive the Firefox, Zen, or LibreWolf browser you already have open from Python or an AI agent."
 readme = "README.md"
 license = "MIT"
