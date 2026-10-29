@@ -214,17 +214,22 @@ const field = (tagName, attrs, props) => new Element(tagName, attrs, [], props);
   }
 
   // Repeated cards still collapse; prose siblings with inline links and text lists do not.
-  const cards = Array.from({ length: 10 }, (_, i) => h('ARTICLE', {}, h('H2', {}, `Product ${i}`), h('BUTTON', {}, `Buy ${i}`)));
+  const cards = Array.from({ length: 16 }, (_, i) => h('ARTICLE', {}, h('H2', {}, `Product ${i}`), h('BUTTON', {}, `Buy ${i}`)));
   const prose = Array.from({ length: 8 }, (_, i) => h('P', {}, `Fact ${i} with `, h('A', {}, `link ${i}`)));
   const items = Array.from({ length: 8 }, (_, i) => h('LI', {}, `Item ${i}`));
-  body.childNodes = body.children = [h('SECTION', {}, ...cards), h('DIV', {}, ...prose), h('UL', {}, ...items)];
+  // A run that would hide at most five items is listed in full.
+  const offers = Array.from({ length: 10 }, (_, i) => h('ARTICLE', {}, h('H2', {}, `Offer ${i}`), h('BUTTON', {}, `Take ${i}`)));
+  body.childNodes = body.children = [h('SECTION', {}, ...cards), h('DIV', {}, ...prose), h('UL', {}, ...items),
+    h('SECTION', {}, ...offers)];
   body.children.forEach(child => { child.parentElement = body; });
   const repetitive = await send({ action: 'getSnapshot', text: true });
-  assert.match(repetitive.snapshot, /- … 5 more similar items/);
-  assert.doesNotMatch(repetitive.snapshot, /Product [5-9]/);
+  assert.match(repetitive.snapshot, /- … 11 more similar items/);
+  assert.doesNotMatch(repetitive.snapshot, /Product ([5-9]|1\d)/);
   assert.match(repetitive.snapshot, /- text "Fact 7 with link 7"/);
   assert.match(repetitive.snapshot, /link "link 7" \[ref=/);
   assert.match(repetitive.snapshot, /- text "Item 7"/);
+  for (let i = 0; i < 10; i++) assert.match(repetitive.snapshot, new RegExp(`Offer ${i}[\\s\\S]*Take ${i}`));
+  assert.equal(repetitive.snapshot.match(/more similar items/g).length, 1, 'only the 16 cards collapse');
   assert.equal(repetitive.truncated, undefined);
 
   console.log('Readable snapshot checks passed');

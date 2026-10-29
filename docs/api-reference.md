@@ -2076,7 +2076,8 @@ text; subtree text is used only when at most 80 characters and five elements lon
 
 Consecutive composite siblings (children containing elements, or list items) with
 identical tag/role/input-type structure show the first five items, followed by
-`- … N more similar items; snapshot e14 to list all`. Names, IDs and classes do not
+`- … N more similar items; snapshot e14 to list all`. A run of at most ten items, which
+would hide five or fewer, is listed in full. Names, IDs and classes do not
 affect the signature. Leaf controls such as toolbar buttons are not collapsed. Hidden
 items are excluded from grouping; collapsed items get no new refs from this snapshot. The
 marker's ref (`e14`) names the items' container (a `tbody`, list or grid, which may have no

@@ -374,7 +374,7 @@ async function testContent() {
   }
   assert.doesNotMatch(names, /Hidden in the control name|Direct name/);
 
-  const cards = Array.from({ length: 10 }, (_, i) => new Element('ARTICLE', '', {}, [
+  const cards = Array.from({ length: 16 }, (_, i) => new Element('ARTICLE', '', {}, [
     new Element('H2', `Product ${i}`), new Element('BUTTON', `Buy ${i}`),
   ]));
   const catalog = new Element('MAIN', '', {}, [new Element('H1', 'Catalog'), new Element('SECTION', '', {}, cards)]);
@@ -383,18 +383,18 @@ async function testContent() {
   for (const child of body.children) child.parentElement = body;
   context.document.querySelector = selector => ({ '#catalog': catalog, '#card-8': cards[8], '#buy-8': cards[8].children[1] })[selector] || null;
   const collapsed = await send({ action: 'getSnapshot' });
-  assert.match(collapsed.snapshot, /- … 5 more similar items/);
+  assert.match(collapsed.snapshot, /- … 11 more similar items/);
   for (let i = 0; i < 5; i++) assert.match(collapsed.snapshot, new RegExp(`Product ${i}`));
-  assert.doesNotMatch(collapsed.snapshot, /Product [5-9]|Buy [5-9]/);
+  assert.doesNotMatch(collapsed.snapshot, /Product ([5-9]|1\d)|Buy ([5-9]|1\d)/);
   // The marker's ref names the section that holds the cards.
   const visibleRefs = [...collapsed.snapshot.matchAll(/(?:ref=|; snapshot )(s\d+e(\d+))/g)];
   assert.deepEqual(visibleRefs.map(match => Number(match[2])), visibleRefs.map((_, i) => Number(visibleRefs[0][2]) + i), 'collapsed items allocate no refs');
   const generation = visibleRefs[0][1].match(/^s\d+e/)[0];
   assert.equal((await send({ action: 'focusElement', selector: generation + (Number(visibleRefs.at(-1)[2]) + 1) })).error,
     'stale ref, call browser_snapshot again', 'no hidden item is registered in refMap');
-  const sectionRef = collapsed.snapshot.match(/- … 5 more similar items; snapshot (s\d+e\d+) to list all/)[1];
+  const sectionRef = collapsed.snapshot.match(/- … 11 more similar items; snapshot (s\d+e\d+) to list all/)[1];
   const section = await send({ action: 'getSnapshot', ref: sectionRef });
-  for (let i = 0; i < 10; i++) assert.match(section.snapshot, new RegExp(`Product ${i}[\\s\\S]*Buy ${i}`));
+  for (let i = 0; i < 16; i++) assert.match(section.snapshot, new RegExp(`Product ${i}[\\s\\S]*Buy ${i}`));
   assert.doesNotMatch(section.snapshot, /more similar|Catalog|Outside/, 'a scope lists all of its own items');
 
   await send({ action: 'keypress', selector: '#buy-8', key: 'Enter' });
@@ -402,8 +402,8 @@ async function testContent() {
   assert.ok(focusedCard.snapshot.includes(`button "Buy 8" [ref=${focusedCard.target_ref}]`));
   assert.match(focusedCard.snapshot, /Product 8/);
   assert.match(focusedCard.snapshot, /- … 3 more similar items/);
-  assert.match(focusedCard.snapshot, /- … 1 more similar items/);
-  assert.doesNotMatch(focusedCard.snapshot, /Product [5-79]|Buy [5-79]/);
+  assert.match(focusedCard.snapshot, /- … 7 more similar items/);
+  assert.doesNotMatch(focusedCard.snapshot, /Product ([5-79]|1\d)|Buy ([5-79]|1\d)/);
   await send({ action: 'keypress', selector: '#buy-8', key: 'Enter' });
   const tinyTarget = await send({ action: 'getSnapshot', focusLastAction: true, maxChars: 100 });
   assert.ok(tinyTarget.snapshot.includes(`button "Buy 8" [ref=${tinyTarget.target_ref}]`));

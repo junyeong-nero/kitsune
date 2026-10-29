@@ -770,7 +770,10 @@
   const FIELD_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT', 'OPTION']);
   // A run of similar siblings shows its first COLLAPSED_ITEM_LIMIT items. A snapshot scoped to
   // their container shows up to SCOPED_ITEM_LIMIT of its own; browser_find searches the rest.
+  // A run that would hide at most LISTED_REMAINDER_LIMIT items is listed in full: expanding a
+  // short collapsed run cost a separate model round (benchmark H18).
   const COLLAPSED_ITEM_LIMIT = 5;
+  const LISTED_REMAINDER_LIMIT = 5;
   const SCOPED_ITEM_LIMIT = 100;
 
   // What a delta snapshot is diffed against: the page's snapshot lines (without refs) per
@@ -1089,7 +1092,6 @@
         child.getAttribute('role') === 'listitem') &&
         !(withText && flatChildren(child).every(c => INLINE_TAGS.has(c.tagName)));
       const scopedRoot = selector && el === root;
-      const shown = scopedRoot ? SCOPED_ITEM_LIMIT : COLLAPSED_ITEM_LIMIT;
       for (let start = 0; start < children.length;) {
         let end = start + 1;
         // Entries from here on belong to this run; a delta keeps its marker with them.
@@ -1098,6 +1100,8 @@
           while (end < children.length &&
               metadata.get(children[end]).signature === metadata.get(children[start]).signature) end++;
         }
+        const shown = scopedRoot ? SCOPED_ITEM_LIMIT
+          : end - start - COLLAPSED_ITEM_LIMIT <= LISTED_REMAINDER_LIMIT ? end - start : COLLAPSED_ITEM_LIMIT;
         let omitted = 0;
         function flushOmitted() {
           if (!omitted) return;

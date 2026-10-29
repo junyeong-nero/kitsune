@@ -29,7 +29,7 @@ const img = attrs => h('IMG', { src: '/puzzle.png', ...attrs });
 (async () => {
   const dataUrl = 'data:image/png;base64,' + 'A'.repeat(5000);
   const longAlt = 'Chart '.repeat(60);
-  const cards = Array.from({ length: 8 }, (_, i) =>
+  const cards = Array.from({ length: 14 }, (_, i) =>
     h('LI', {}, img({ alt: `Product ${i}` }), h('A', { href: `/p/${i}` }, `Product ${i}`)));
   const main = h('MAIN', {},
     h('H2', {}, 'Image puzzle'),
@@ -108,8 +108,8 @@ const img = attrs => h('IMG', { src: '/puzzle.png', ...attrs });
     const link = lines.findIndex(line => /^ {2}- link "" \[ref=/.test(line));
     assert.ok(link >= 0 && /^ {4}- img "Home" \[ref=s\d+e\d+\]$/.test(lines[link + 1]), snapshot);
     // Repeated cards with images still collapse after five.
-    assert.equal(lines.filter(line => /img "Product \d"/.test(line)).length, 5, snapshot);
-    assert.match(snapshot, /- … 3 more similar items/);
+    assert.equal(lines.filter(line => /img "Product \d+"/.test(line)).length, 5, snapshot);
+    assert.match(snapshot, /- … 9 more similar items/);
     // The surrounding content is unchanged.
     assert.match(snapshot, /heading "Image puzzle" \[ref=s\d+e\d+\] \[level=2\]/);
     assert.match(snapshot, /textbox "Characters" \[ref=s\d+e\d+\]/);
@@ -128,7 +128,7 @@ const img = attrs => h('IMG', { src: '/puzzle.png', ...attrs });
   assert.match(boxed, /heading "Image puzzle" \[ref=s\d+e\d+\] \[level=2\] \[box=0,0,100,30\]$/m, boxed);
   assert.ok(boxed.split('\n').filter(line => !line.includes('more similar items') && !line.includes('- text '))
     .every(line => line.endsWith('[box=0,0,100,30]')), boxed);
-  assert.match(boxed, /- … 3 more similar items/);
+  assert.match(boxed, /- … 9 more similar items/);
   assert.doesNotMatch((await send({ action: 'getSnapshot' })).snapshot, /box=/);
 
   console.log('snapshot_images: ok');
