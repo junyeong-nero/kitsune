@@ -1,4 +1,4 @@
-"""Trusted keyboard input (#346): browser_trusted_type.
+"""Trusted keyboard input (#346, #347): browser_trusted_type and browser_trusted_press_key.
 
 The OS layer (focus, the window check and click, the frontmost app, posted key events) is
 mocked; tests/test_real_browser_trusted_keys.py sends real keys to an isolated browser.
@@ -141,6 +141,29 @@ class TrustedTypeTests(TrustedKeysTestCase):
 KEYBOARD_UNAVAILABLE = bridge._mac_keyboard_unavailable
 
 
+class TrustedPressKeyTests(TrustedKeysTestCase):
+    def test_presses_the_chord_once_the_target_is_focused(self):
+        result = asyncio.run(bridge.trusted_press_key({"selector": "#otp", "keys": "Meta+V"}))
+        self.assertEqual((result["ok"], result["keys"], result["keysSent"]), (True, "Meta+v", 1))
+        self.assertEqual(self.posted(), [("chord", "Meta+v")])
+        self.assertEqual(self.actions(), ["screenPoint", "agentInput", "focusState", "restoreActiveTab"])
+
+    def test_chords_that_close_quit_or_leave_the_browser_are_refused_in_any_order(self):
+        for keys in ("Meta+Q", "Meta+W", "Shift+Meta+W", "Meta+Shift+w", "Alt+Meta+Escape", "Meta+Tab",
+                     "Control+W", "Alt+F4", "Meta+Space"):
+            with self.subTest(keys=keys):
+                refused = asyncio.run(bridge.trusted_press_key({"selector": "#otp", "keys": keys}))
+                self.assertEqual((refused["code"], refused["retryable"]), ("key_denied", False))
+        self.assertEqual(self.timeline, [])
+
+    def test_chord_parsing(self):
+        self.assertEqual(bridge._parse_trusted_chord("Control+Shift+T"), (("Shift", "Control"), "t", "Shift+Control+t"))
+        self.assertEqual(bridge._parse_trusted_chord("Enter"), ((), "Enter", "Enter"))
+        for keys in ("", "Hyper+x", "Meta+Meta+v", "Meta+NotAKey", None):
+            with self.subTest(keys=keys):
+                self.assertIn("error", bridge._parse_trusted_chord(keys))
+
+
 class AskBeforeActTests(unittest.TestCase):
     def held(self, action, params):
         async def describe(params, inspect):
@@ -149,9 +172,11 @@ class AskBeforeActTests(unittest.TestCase):
         with patch.object(bridge, "_describe_target", new=describe):
             return asyncio.run(bridge._held_reason(action, params))
 
-    def test_submit_is_held_typing_follows_the_page(self):
+    def test_submit_and_outside_page_chords_are_held_others_follow_the_page(self):
         self.assertEqual(self.held("trustedType", {"selector": "#q", "text": "1", "submit": True})[0], "submit")
+        self.assertEqual(self.held("trustedPressKey", {"selector": "#q", "keys": "Meta+S"})[0], "outside_page_keys")
         self.assertIsNone(self.held("trustedType", {"selector": "#q", "text": "1"}))
+        self.assertIsNone(self.held("trustedPressKey", {"selector": "#q", "keys": "Meta+V"}))
 
 
 if __name__ == "__main__":

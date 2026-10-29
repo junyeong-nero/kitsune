@@ -88,7 +88,7 @@ TAB_WRITE_TOOLS = frozenset({
     "browser_blur", "browser_check", "browser_click_and_wait_navigation", "browser_duplicate_tab",
     "browser_focus", "browser_forward", "browser_highlight", "browser_mute_tab", "browser_pin_tab",
     "browser_reload_tab", "browser_scroll", "browser_set_zoom", "browser_submit_form", "browser_trusted_click",
-    "browser_trusted_type",
+    "browser_trusted_press_key", "browser_trusted_type",
 })
 # Container steps that write their tab, by the action names steps use: the bridge's tab-claiming
 # actions (bridge._claims_tab) that are not tabless; an if/while condition is JavaScript on its tab.
@@ -686,6 +686,30 @@ def browser_trusted_type(
     body = {"selector": selector, "text": text, "clear": clear, "submit": submit, "delayMs": delay_ms}
     return _post("/api/trusted-type", _request_body(body, tab_id, confirm_token=confirm_token, first=first),
                  timeout=40 + len(text or "") * (max(delay_ms, 0) + 150) / 1000)
+
+
+@tool("browse", annotations=dict(title="Trusted press key", **ACT))
+def browser_trusted_press_key(
+    keys: Annotated[str, Field(description='One chord, e.g. "Meta+V" (paste on macOS), "Meta+C", "Meta+F".')],
+    selector: Annotated[str, Field(description="CSS selector or ref of the element to focus first.")],
+    tab_id: TabId = None,
+    confirm_token: str | None = None,
+    first: bool = False,
+) -> dict:
+    """Press a key chord with the real OS keyboard, for browser commands only a real keyboard
+    runs (paste, copy, cut, find, undo); confirm_token and first work as in browser_check.
+    Chords that close, quit or leave the browser (Meta+Q, Meta+W, Meta+Tab, ...) are refused
+    with key_denied; with ask-before-act, save/open/print chords need confirmation.
+    Only on macOS (pyobjc Quartz and Accessibility permission for the bridge); elsewhere it
+    returns unsupported_platform without typing. Kitsune clicks the target with the OS pointer
+    (as browser_trusted_click, showing a tab that is not shown and then the user's tab again)
+    and sends each key only while the browser is frontmost and the target has the page's focus:
+    keyboard_focus_lost (state.reason, state.keysSent) means it stopped before a key could land
+    elsewhere. It takes the user's keyboard and pointer for its duration; prefer the synthetic
+    tools unless the page ignores them."""
+    return _post("/api/trusted-press-key", _request_body({"selector": selector, "keys": keys}, tab_id,
+                                                          confirm_token=confirm_token, first=first))
+
 
 
 

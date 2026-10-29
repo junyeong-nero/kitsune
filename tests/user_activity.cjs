@@ -119,7 +119,7 @@ async function main() {
   await plain.send({ action: 'screenPoint', x: 5, y: 5, click: true });
   plain.listeners.keydown({ type: 'keydown', key: 'Shift', target: plain.button, isTrusted: true });
   assert.equal((await plain.send({ action: 'userActivity' })).state.input, 'keydown');
-  // #346: during the window the bridge announces with agentInput, trusted keys and pastes
+  // #346/#347: during the window the bridge announces with agentInput, trusted keys and pastes
   // are its OS keyboard, not the user's; a mouse press is still the user's, and after the window
   // keys are the user's again.
   const typed = content();
