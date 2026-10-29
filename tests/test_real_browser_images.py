@@ -89,6 +89,19 @@ class RealBrowserImageTests(harness.RealBrowserTestCase):
             self.assertTrue(result.get("ok"), result)
         self.assertNotIn('text "Preview tile"', snapshot)
 
+    def test_named_svg_ref_dispatches_exactly_one_click(self):
+        tab = self.open_tab(f"{self.site.origin}/puzzle")
+        self.call("/api/js", {"tabId": tab, "code": """
+            window.svgClicks = 0;
+            document.querySelector('svg').addEventListener('click', () => window.svgClicks++);
+        """})
+        snapshot = self.call("/api/snapshot", {"tabId": tab})["snapshot"]
+        ref = re.search(r'img "Vector icon" \[ref=(\S+)\]', snapshot)[1]
+        result = self.call("/api/click", {"tabId": tab, "ref": ref, "includeSnapshot": False})
+        self.assertTrue(result.get("ok"), result)
+        state = self.call("/api/js", {"tabId": tab, "code": "window.svgClicks"})
+        self.assertEqual(state["result"], "1", state)
+
     def test_element_screenshot_takes_the_image_ref(self):
         tab = self.open_tab(f"{self.site.origin}/puzzle")
         ref = IMAGE_LINE.search(self.call("/api/snapshot", {"tabId": tab})["snapshot"])[1]

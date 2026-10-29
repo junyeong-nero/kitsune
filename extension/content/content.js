@@ -1791,7 +1791,8 @@
     if (link || media) el.addEventListener('click', onClick);
     // A dispatched click runs native activation exactly once, as el.click() does, and also
     // carries the point. Like el.click(), it skips disabled form controls.
-    if (typeof el.click === 'function' && !el.matches?.(DISABLED_CONTROLS)) {
+    // SVG has no HTMLElement.click(), but still accepts dispatched click events.
+    if (!el.matches?.(DISABLED_CONTROLS)) {
       dispatchPointerOrMouse(el, 'click', { ...released, detail: 1 });
     }
     if (link || media) el.removeEventListener('click', onClick);

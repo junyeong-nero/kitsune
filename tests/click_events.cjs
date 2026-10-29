@@ -109,6 +109,12 @@ async function testClickEvents(pointerEvents) {
   assert.equal((await send({ action: 'click', selector: '#option' })).ok, true);
   assert.equal(selected, true);
 
+  const svg = new Element('svg', 'icon');
+  svg.click = undefined; // SVG supports dispatchEvent, not HTMLElement.click().
+  elements['#icon'] = svg;
+  assert.equal((await send({ action: 'click', selector: '#icon' })).ok, true);
+  assert.equal(svg.events.filter(type => type === 'click').length, 1);
+
   const disabled = new Element('BUTTON', 'off', 'button');
   disabled.matches = selector => selector.includes('button:disabled');
   elements['#off'] = disabled;

@@ -748,7 +748,8 @@ async function openBlockedLink(tabId, link, result) {
   }
   result.warning ??= { code: 'popup_blocked', state: { url: redactHistoryUrl(link.url) },
     hint: 'The link opens in a new tab, but no tab opened; the popup blocker likely dropped this ' +
-      'synthetic click. Open state.url with browser_tabs action=new, or click with browser_trusted_click.' };
+      'synthetic click. Use browser_trusted_click on the original page control, or ask the user to click it; ' +
+      'state.url may contain redacted values and must not be used as a navigation URL.' };
 }
 
 async function dispatchCommand(command) {

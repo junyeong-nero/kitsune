@@ -312,7 +312,11 @@ async function main() {
   const linkSecret = harness(() => ({ ok: true, targetBlankLink: { url: tokenUrl, opener: true } }));
   const secretClick = start(linkSecret, { action: 'click', tabId: 1, selector: '#link' });
   await linkSecret.tick(500);
-  assert.equal((await secretClick.result).warning.state.url, redactedUrl);
+  const secretWarning = (await secretClick.result).warning;
+  assert.equal(secretWarning.state.url, redactedUrl);
+  assert.match(secretWarning.hint, /original page control/);
+  assert.match(secretWarning.hint, /must not be used as a navigation URL/);
+  assert.doesNotMatch(secretWarning.hint, /Open state.url/);
   const linkFallback = harness(() => ({ ok: true, targetBlankLink: { url: tokenUrl, opener: false } }));
   const fallbackClick = start(linkFallback, { action: 'click', tabId: 1, selector: '#link' });
   await linkFallback.tick(500);
