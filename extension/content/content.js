@@ -388,7 +388,7 @@
   let userTypedField = null;  // the editable element (as the document sees it) the user last typed into
   let agentTrustedClickUntil = 0;
   let agentTrustedClickKeys = new Set();  // modifier key names ("Shift", "Meta") the trusted click holds
-  // Until then, trusted keyboard and paste input is the agent's OS keyboard (#346).
+  // Until then, trusted keyboard and paste input is the agent's OS keyboard (#346, #347).
   let agentTrustedKeysUntil = 0;
 
   function noteUserInput(event) {
@@ -4382,7 +4382,7 @@
     return { ok: true, checked: el.checked };
   }
 
-  // ── Trusted keyboard (#346) ──
+  // ── Trusted keyboard (#346, #347) ──
   // Whether the field a trusted keyboard command types into has the page's focus: the bridge
   // asks before every key and stops when it does not. sensitive tells it to keep the text out
   // of everything it reports.

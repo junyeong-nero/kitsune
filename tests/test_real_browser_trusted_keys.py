@@ -1,4 +1,4 @@
-"""Real OS keyboard input into an isolated, visible browser (issue #346).
+"""Real OS keyboard input into an isolated, visible browser (issues #346 and #347).
 
 Opt-in twice: besides KITSUNE_E2E_BROWSER (see tests/real_browser_harness.py), it runs only on
 macOS with KITSUNE_E2E_TRUSTED_INPUT=1, because it sends real key events and clicks with the
@@ -12,7 +12,8 @@ and does not lay out the tab it activates, so its commands stop before any input
 
 The suite's browser runs headed on a temporary profile. Before each command the test brings that
 browser process (by pid, not by name, so another browser of the same name is left alone) to the
-front, and the requests pass focus=false.
+front, and the requests pass focus=false. The paste test saves the clipboard's text and puts it
+back; other clipboard content (an image) is not kept.
 """
 from http.server import BaseHTTPRequestHandler
 import json
@@ -26,6 +27,7 @@ import real_browser_harness as harness
 from test_bridge_security import _request
 
 OTP = "482193"
+PASTED = "KITSUNE_FAKE_PASTE_314159"
 
 PAGES = {
     # Rejects synthetic input like the #346 sign-in field: an untrusted key or input event clears it.
@@ -43,6 +45,11 @@ for (const type of ['keydown', 'beforeinput', 'input']) otp.addEventListener(typ
 <script>
 const field = document.getElementById('field');
 field.addEventListener('input', () => { if (field.value.length >= 2) document.getElementById('other').focus(); });
+</script>""",
+    "/paste": """<!doctype html><title>paste</title><textarea id=box></textarea>
+<script>
+window.pastes = [];
+document.getElementById('box').addEventListener('paste', e => window.pastes.push(e.isTrusted));
 </script>""",
     # The user's tab: records every key it receives.
     "/user": """<!doctype html><title>user</title><p>The user's page</p>
@@ -151,6 +158,25 @@ class RealBrowserTrustedKeysTests(harness.RealBrowserTestCase):
         self.assertEqual(result["state"], {"reason": "target_not_focused", "keysSent": 2})
         self.assertEqual(self.js(agent, "document.getElementById('field').value"), "ab")
 
+    def test_pastes_with_a_real_key_chord(self):
+        saved = subprocess.run(["pbpaste"], capture_output=True, text=True).stdout
+        self.addCleanup(lambda: subprocess.run(["pbcopy"], input=saved, text=True))
+        subprocess.run(["pbcopy"], input=PASTED, text=True, check=True)
+        _, agent = self.user_and_agent_tabs("/paste")
+        status, result = self.post("/api/trusted-press-key", {"tabId": agent, "selector": "#box", "keys": "Meta+V",
+                                                              "focus": False})
+        self.assertTrue(result.get("ok"), result)
+        self.assertEqual(self.js(agent, "document.getElementById('box').value"), PASTED)
+        self.assertEqual(self.js(agent, "page.pastes"), [True])
+
+    def test_a_denied_chord_presses_nothing(self):
+        user, agent = self.user_and_agent_tabs("/paste")
+        status, result = self.post("/api/trusted-press-key", {"tabId": agent, "selector": "#box", "keys": "Meta+W",
+                                                              "focus": False})
+        self.assertEqual(result.get("code"), "key_denied", result)
+        tabs = {tab["id"] for tab in self.call("/api/tabs")["tabs"]}
+        self.assertIn(agent, tabs, "the tab is still open")
+        self.assertEqual(self.js(user, "page.keys"), [])
 
 
 if __name__ == "__main__":

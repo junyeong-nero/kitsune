@@ -431,6 +431,7 @@ def _browser_not_at_point(x, y, process="", focused=None, wait=0.0, target_windo
 _NO_SCHEDULE_ACTIONS = {"ping", "getTabs", "getWindows"}
 _GLOBAL_SCOPE_ACTIONS = {
     "screenshot", "switchTab", "restoreActiveTab", "newTab", "closeTab", "trustedClick", "trustedType",
+    "trustedPressKey",
     "reloadExtension", "createWindow", "closeWindow", "focusWindow", "resizeWindow",
     "moveTab", "detachTab", "elementScreenshot", "fullPageScreenshot",
     "cookies", "clipboard", "downloads", "clearBrowsingData", "intercept",
@@ -444,6 +445,7 @@ _API_ALIASES = {
     "/api/executeJS": "/api/js",
     "/api/trustedClick": "/api/trusted-click",
     "/api/trustedType": "/api/trusted-type",
+    "/api/trustedPressKey": "/api/trusted-press-key",
     "/api/setEditableContent": "/api/set-editable-content",
     "/api/clearHighlight": "/api/clear-highlight",
     "/api/closeTab": "/api/close-tab",
@@ -1076,9 +1078,9 @@ async def trusted_click(params):
     }
 
 
-# ── Trusted keyboard (#346) ──
-# Real OS key events, for pages that ignore synthetic input (one-time-code fields). macOS only,
-# through Quartz: OS keys go
+# ── Trusted keyboard (#346, #347) ──
+# Real OS key events, for pages that ignore synthetic input (one-time-code fields) and for
+# commands only a real keyboard runs (paste, copy, find). macOS only, through Quartz: OS keys go
 # to the frontmost app, so every key is sent only while the browser is frontmost and the target
 # field has the page's focus; the first key that would land elsewhere stops the command.
 
@@ -1097,6 +1099,29 @@ _MAC_KEY_CODES = {
     "ArrowUp": 126, "F1": 122, "F2": 120, "F3": 99, "F4": 118, "F5": 96, "F6": 97, "F7": 98, "F8": 100,
     "F9": 101, "F10": 109, "F11": 103, "F12": 111,
 }
+def _parse_trusted_chord(keys):
+    """(modifiers, key, canonical name) of a Playwright-style chord ("Meta+V"), or an {error}."""
+    if not isinstance(keys, str) or not keys.strip():
+        return {"error": "keys must be a chord such as Meta+V"}
+    *mods, key = keys.split("+") if len(keys) > 1 and not keys.endswith("+") else [keys]
+    if any(mod not in TRUSTED_CLICK_MODIFIERS for mod in mods) or len(set(mods)) != len(mods):
+        return {"error": f"keys modifiers must be Shift, Control, Alt and Meta, not {keys!r}"}
+    key = key.lower() if len(key) == 1 else key
+    if key not in _MAC_KEY_CODES:
+        return {"error": f"keys names an unknown key: {key!r}"}
+    modifiers = tuple(m for m in TRUSTED_CLICK_MODIFIERS if m in mods)
+    return modifiers, key, "+".join((*modifiers, key))
+
+
+# Chords that close or quit the browser, or leave it for another app, are never sent.
+_TRUSTED_KEY_DENIED = frozenset(_parse_trusted_chord(c)[2] for c in (
+    "Meta+Q", "Meta+W", "Meta+Shift+W", "Meta+Alt+W", "Meta+Alt+Escape", "Meta+H", "Meta+Alt+H", "Meta+M",
+    "Meta+Tab", "Meta+Space", "Control+Space", "Control+Q", "Control+W", "Control+Shift+W", "Alt+F4"))
+# Chords that act outside the page (save and open dialogs, printing): held in ask mode.
+TRUSTED_KEY_OUTSIDE_PAGE = frozenset(_parse_trusted_chord(c)[2] for c in (
+    "Meta+S", "Meta+Shift+S", "Meta+P", "Meta+O", "Control+S", "Control+Shift+S", "Control+P", "Control+O"))
+
+
 def _mac_keyboard_unavailable():
     """The {error} when this process cannot send OS keys, else None."""
     if sys.platform != "darwin":
@@ -1150,6 +1175,11 @@ def _mac_post_char(char):
         _mac_post_key(_MAC_KEY_CODES["Tab"])
     else:
         _mac_post_key(0, 0, char)
+
+
+def _trusted_chord_name(keys):
+    chord = _parse_trusted_chord(keys)
+    return None if isinstance(chord, dict) else chord[2]
 
 
 def _trusted_keys_timeout(body):
@@ -1246,6 +1276,20 @@ async def trusted_type(params):
         result["typed"] = sum(1 for kind, _ in units if kind == "char")
     return result
 
+
+async def trusted_press_key(params):
+    """Press one chord with the OS keyboard after focusing its target (#347)."""
+    chord = _parse_trusted_chord(params.get("keys"))
+    if isinstance(chord, dict):
+        return chord
+    modifiers, key, name = chord
+    if name in _TRUSTED_KEY_DENIED:
+        return {"error": f"{name} closes, quits or leaves the browser; trusted keys never send it",
+                "code": "key_denied", "retryable": False}
+    result = await _trusted_keys(params, [chord], lambda unit: _mac_post_chord(unit[0], unit[1]))
+    if result.get("ok"):
+        result["keys"] = name
+    return result
 
 
 def _log(msg):
@@ -1351,7 +1395,7 @@ def _audit(action, params, ok, error, ms, **fields):
 
 WRITE_ACTIONS = {
     "click", "type", "setEditableContent", "scroll", "hover", "fill",
-    "navigate", "newTab", "closeTab", "switchTab", "executeJS", "trustedClick", "trustedType",
+    "navigate", "newTab", "closeTab", "switchTab", "executeJS", "trustedClick", "trustedType", "trustedPressKey",
     "selectOption", "checkBox", "keypress", "doubleClick", "submitForm",
     "formFill", "drag", "cookies", "clipboard", "downloads",
     "clearBrowsingData", "intercept", "clickAndWaitNavigation",
@@ -1609,7 +1653,7 @@ _ASK_CLICK_ACTIONS = {"click", "doubleClick", "trustedClick", "clickAndWaitNavig
 _ASK_PAGE_ACTIONS = _ASK_CLICK_ACTIONS | {
     "keypress", "type", "setEditableContent", "fill", "formFill", "selectOption", "checkBox",
     "drag", "submitForm", "uploadFile", "handleDialog", "storageOp", "executeJS", "waitForResult",
-    "trustedType",
+    "trustedType", "trustedPressKey",
 }
 _ASK_TAB_ACTIONS = _ASK_PAGE_ACTIONS | {"navigate"}
 _confirm_tokens = {}     # token -> {"binding", "expires", "used"}
@@ -1708,6 +1752,9 @@ async def _held_reason(action, params):
         reason, description = "submit", "submits a form"
     elif action == "trustedType" and params.get("submit"):
         reason, description = "submit", "types with the OS keyboard and presses Enter"
+    elif action == "trustedPressKey" and _trusted_chord_name(params.get("keys")) in TRUSTED_KEY_OUTSIDE_PAGE:
+        reason, description = ("outside_page_keys", f"presses {_trusted_chord_name(params.get('keys'))} with the "
+                               "OS keyboard, a browser command that acts outside the page (save, open, print)")
     elif pattern := _ask_url_match(url):
         reason, description = "payment_url", f"opens a payment-like URL ({pattern}): {url}"
     elif _outcome_key(action, params) in _unknown_outcomes:
@@ -4273,6 +4320,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "/api/click": self.handle_click,
             "/api/trusted-click": self.handle_trusted_click,
             "/api/trusted-type": self.handle_trusted_type,
+            "/api/trusted-press-key": self.handle_trusted_press_key,
             "/api/type": self.handle_type,
             "/api/set-editable-content": self.handle_set_editable_content,
             "/api/scroll": self.handle_scroll,
@@ -4623,6 +4671,11 @@ class BridgeHandler(BaseHTTPRequestHandler):
         body = self.read_body()
         if self._admitted("trustedType", body):
             self._run_admitted("trustedType", body, trusted_type(body), timeout=_trusted_keys_timeout(body))
+
+    def handle_trusted_press_key(self):
+        body = self.read_body()
+        if self._admitted("trustedPressKey", body):
+            self._run_admitted("trustedPressKey", body, trusted_press_key(body))
     
     def handle_type(self):
         self._send_extension_action("type", self.read_body())

@@ -5,7 +5,7 @@ Base URL: `http://127.0.0.1:47651`
 ## MCP tool surface
 
 `KITSUNE_CAPS=core` is the default; `KITSUNE_CAPS=all` registers
-94 tools. The groups are `core`, `browse`, `read`, `inspect`, `tabs`, `automation`,
+95 tools. The groups are `core`, `browse`, `read`, `inspect`, `tabs`, `automation`,
 `network`, `admin`, `storage`, and `history`. A comma list selects those groups only.
 `all` enables every group except `storage` and `history`, which read personal data and
 must be named (`KITSUNE_CAPS=all,storage,history`); see
@@ -471,7 +471,8 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `ambiguous_target` | The command names no single target, so nothing was dispatched: a write action's selector matches several actionable elements (`state.selector`, `state.matches`; see [Strict selectors](#strict-selectors)), a `browser_form_fill` label or placeholder key matches several actionable fields (`state.field`, `state.matches`), or `browser_submit_form` without a target found several forms and no filled field naming one (`state.forms`). `state.candidates` lists up to 5 of them with a `ref` to target one | false |
 | `target_not_at_point` | `browser_trusted_click` found another element (`state.hit`, `null` for none) at its target's center (`state.viewportX`, `state.viewportY`), such as an overlay; no OS click was made | true |
 | `browser_not_at_point` | On macOS, a viewport `browser_trusted_click` would land outside the browser: another app's window (`state.app`, `null` for the desktop) is at the desktop point (`state.screenX`, `state.screenY`; `state.reason: "other_window"`), another window or panel of the browser is there instead of the tab's window (`"other_browser_window"`, `state.window`, `state.targetWindow`), the macOS window list could not be read (`"unknown"`, `state.detail`), or, without Quartz, `focus=True` could not bring the browser to the front (`"not_frontmost"`). Typically the browser is in full screen on another Space; no OS click was made | true |
-| `keyboard_focus_lost` | `browser_trusted_type` stopped before a key: another app came to the front (`state.reason: "not_frontmost"`) or the target lost the page's focus (`"target_not_focused"`); `state.keysSent` keys were sent. No key reached anything but the target | true |
+| `keyboard_focus_lost` | `browser_trusted_type` or `browser_trusted_press_key` stopped before a key: another app came to the front (`state.reason: "not_frontmost"`) or the target lost the page's focus (`"target_not_focused"`); `state.keysSent` keys were sent. No key reached anything but the target | true |
+| `key_denied` | `browser_trusted_press_key` was asked for a chord that closes, quits or leaves the browser (`Meta+Q`, `Meta+W`, `Meta+Tab`, ...); nothing was pressed | false |
 | `not_actionable` | An [actionability wait](#actionability-wait) timed out on a target that exists but never rendered (`state.reason: "not_rendered"`, `timeoutMs`, `elapsed`); nothing was dispatched | true |
 | `unsupported_selector` | The shared target resolver rejected unsupported/invalid syntax (see [Target selectors](#target-selectors)) before dispatch; `state.selector` echoes the selector and `hint` lists accepted forms. Applies to actions, scoped snapshots and element screenshots | false |
 | `stale_ref` | The ref is no longer valid; `state.reason` is `element_removed`, `not_in_snapshot` (unknown/unissued ref), or `other_document` (the tab navigated, or the ref came from another tab) | true |
@@ -2581,12 +2582,14 @@ An extension older than this bridge sends no bounds, so any browser window passe
 Focusing the browser, the window check and the click run off the bridge's event loop, so other
 clients' requests are served while a trusted click waits for focus.
 
-### `browser_trusted_type(selector, text, tab_id=None, clear=False, submit=False, delay_ms=30, first=False)`
+### `browser_trusted_type(selector, text, tab_id=None, clear=False, submit=False, delay_ms=30, first=False)` and `browser_trusted_press_key(keys, selector, tab_id=None, first=False)`
 
-`browse` group. Types with the real OS keyboard (#346), via POST `/api/trusted-type`, into fields
-that reject synthetic input, such as one-time-code sign-in fields. It is implemented on macOS
-only, with pyobjc Quartz and Accessibility permission for the bridge. Elsewhere, or without
-them, it returns `unsupported_platform` or `permission_required` and types nothing.
+`browse` group. These type with the real OS keyboard (#346, #347), via POST `/api/trusted-type` and
+`/api/trusted-press-key`. Use them for fields that reject synthetic input, such as one-time-code
+sign-in fields, and for browser commands that only a real keyboard runs: paste (`Meta+V`), copy,
+cut, find and undo. They are implemented on macOS only, with pyobjc Quartz and Accessibility
+permission for the bridge. Elsewhere, or without them, they return `unsupported_platform` or
+`permission_required` and type nothing.
 
 Each call:
 1. Clicks the target (`selector` or a ref, required) with the OS pointer, as
@@ -2604,15 +2607,22 @@ land elsewhere. `state.reason` is `not_frontmost` (another app came to the front
 keys were sent. During the call, the page counts the trusted keys and pastes as the agent's, not
 as the user's input (see `user_active`).
 
-It types `text`, at most 1,000 characters (`\n` presses Enter, `\t` Tab), each as a key press
-carrying the character as Unicode text, so the keyboard layout does not matter. `clear` selects
-all and deletes first, `submit` presses Enter after the text, and `delay_ms` (0-1000) pauses
-between keys. The result reports `keysSent` and `typed` but never the text, and the audit log
-redacts it. In [ask mode](#ask-before-act), `submit=True` is held as `submit`, and typing follows
-the page rules, such as `payment_page`.
+`browser_trusted_type` types `text`, at most 1,000 characters (`\n` presses Enter, `\t` Tab), each
+as a key press carrying the character as Unicode text, so the keyboard layout does not matter.
+`clear` selects all and deletes first, `submit` presses Enter after the text, and `delay_ms`
+(0-1000) pauses between keys. The result reports `keysSent` and `typed` but never the text, and the
+audit log redacts it.
 
-It takes the user's keyboard and pointer for its duration (about `delay_ms` plus 50 ms per key),
-so prefer `browser_type` unless the page ignores it.
+`browser_trusted_press_key` presses one chord in Playwright form (`Meta+V`, `Control+Shift+T`,
+`Enter`). Chords that close, quit or leave the browser are refused with `key_denied` and press
+nothing: `Meta+Q`, `Meta+W`, `Meta+Shift+W`, `Meta+H`, `Meta+M`, `Meta+Tab`, `Meta+Space`,
+`Control+W`, `Alt+F4` and similar. In [ask mode](#ask-before-act), save, open and print chords
+(`Meta+S`, `Meta+O`, `Meta+P`, and the `Control` forms) are held as `outside_page_keys`, and
+`browser_trusted_type(submit=True)` is held as `submit`. Both tools also follow the page rules,
+such as `payment_page`.
+
+They take the user's keyboard and pointer for their duration (about `delay_ms` plus 50 ms per
+key), so prefer `browser_type` and `browser_press_key` unless the page ignores them.
 
 ### `browser_resume(call, resume_token, observed=None)`
 
