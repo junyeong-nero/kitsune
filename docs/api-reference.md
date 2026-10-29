@@ -370,7 +370,7 @@ content injection. Unobserved detach-and-reinsert of the same node is not tracke
 #### Post-action snapshots
 
 A successful `browser_click`, `browser_type` (`type`/`fill`), `browser_select_option`,
-`browser_check` or `browser_keypress` returns a delta: `snapshot_delta: true` and a
+`browser_check`, `browser_keypress` or `browser_hover` returns a delta: `snapshot_delta: true` and a
 `snapshot` with only the lines the action changed, in document order under their
 ancestors. Right before acting, the content script records the page's snapshot lines;
 afterwards the delta lists the acted-on target and every line that record lacks: new or
@@ -409,6 +409,19 @@ no new or changed line and the URL and title are the same, the result adds
 `no_visible_change: true`. A change that comes after the wait is not seen: use `expect` or
 `browser_wait_for`. Actions without a post-action snapshot (`includeSnapshot: false`,
 `KITSUNE_POST_ACTION_SNAPSHOT=0`) and full post-action snapshots do not wait.
+
+**An action that loads another page (#349).** A link, a form, or a script that sets `location`
+may start loading another document in the tab during the wait above. The action then waits for
+that load, like `browser_navigate`, for up to 10 s. It returns
+`navigated: {"url": …, "title": …}` with a full snapshot of the new page instead of a delta of
+the old one, and adds `navigation_pending: true` when the page has not finished loading by then.
+A main-frame request that keeps the document (a 204, a download) is not a navigation: the
+action returns its delta, after up to 1 s more.
+
+```json
+{ "ok": true, "tag": "a", "navigated": { "url": "https://store.example/app/1030300/", "title": "Hollow Knight Silksong" },
+  "snapshot": "- heading \"Hollow Knight Silksong\" [ref=e91] [level=1]\n…" }
+```
 
 `browser_fill_form` returns one delta for all its fields: the first field records the page's
 lines, and the last waits and lists every field's change under the refs the agent already has.
@@ -2405,7 +2418,15 @@ Invalid combinations return an error before contacting the bridge.
 | `js` | Expression returns a non-empty result, poll every 500 ms | `/api/wait-for-result` |
 | `url`, `title` | JavaScript regex pattern matches | `/api/wait-for-url`, `/api/wait-for-title` |
 | `network_idle=True` | No new network resources for 500 ms | `/api/wait-for-network-idle` |
-| `time` | Sleep a finite, non-negative number of seconds in the MCP server | None |
+| `time` | Sleep a finite, non-negative number of seconds in the MCP server, then return what changed since the last snapshot or action result of the page (see below) | `/api/snapshot` (`sinceObservation`) |
+
+After a `time` sleep (#350), the result adds the changes since the page last returned a
+whole-page snapshot or an action's result, as a post-action delta does: `snapshot`,
+`snapshot_delta: true`, and `no_visible_change: true` when nothing changed. Changes that land
+between that result and the sleep count too, such as an infinite list's batch arriving while
+the agent decides what to do. Without an earlier observation of the document, the snapshot is
+full. `KITSUNE_POST_ACTION_SNAPSHOT=0` turns it off, and a page that cannot be read leaves the
+result as `{"ok": true, "slept": …}`.
 
 `timeout` is in milliseconds and does not limit an explicit sleep. JS retains
 bridge non-empty-result semantics: `false` and `0` count as results; return
