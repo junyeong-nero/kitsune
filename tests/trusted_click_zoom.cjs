@@ -43,7 +43,7 @@ function page() {
   const inner = new Element('B', {}, [], 'Shadow');
   const host = new Element('MY-BUTTON', { id: 'host' });
   const shadow = {
-    host, children: [inner],
+    nodeType: 11, host, children: [inner],
     querySelectorAll: selector => [inner].filter(el => el.matches(selector)),
     querySelector: selector => [inner].find(el => el.matches(selector)) || null,
     elementFromPoint: () => inner,

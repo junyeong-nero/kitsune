@@ -3,7 +3,7 @@
 
 (function() {
   'use strict';
-  const CONTENT_VERSION = 42;
+  const CONTENT_VERSION = 43;
   if (window.__claudeBridgeVersion >= CONTENT_VERSION) return;
   window.__claudeBridgeVersion = CONTENT_VERSION;
 
@@ -168,9 +168,10 @@
     const result = act();
     if (!before) return result;
     const since = before.length ? before[before.length - 1].seq : 0;
-    const blocked = (readWindowOpenCalls() || []).find(call => call.seq > since && call.blocked);
-    if (!blocked) return result;
-    const scriptPopup = blocked.url ? { url: absoluteWindowOpenUrl(blocked.url) } : {};
+    const blocked = (readWindowOpenCalls() || []).filter(call => call.seq > since && call.blocked);
+    if (!blocked.length) return result;
+    const urls = blocked.filter(call => call.url).map(call => absoluteWindowOpenUrl(call.url));
+    const scriptPopup = { ...(urls.length ? { url: urls[0] } : {}), urls };
     const attach = r => (r && typeof r === 'object' && !r.error ? { ...r, scriptPopup } : r);
     return typeof result?.then === 'function' ? result.then(attach) : attach(result);
   }
@@ -260,17 +261,13 @@
   // a menu a click just opened can stay unpainted until the tab is shown (#328).
   const tabHidden = () => document.visibilityState === 'hidden';
 
-  // What a click usually just opened. A role popup has no open state of its own, so it counts as
-  // open while it renders; dialogs and popovers say so themselves.
+  // Share the snapshot's open-state rules, including popups awaiting a paint.
   const POPUP_SELECTOR = '[role=menu], [role=listbox], [role=dialog], dialog[open], [popover]';
 
   function inOpenPopup(el) {
     for (let node = flatParent(el); node; node = flatParent(node)) {
       if (!node.matches?.(POPUP_SELECTOR)) continue;
-      if (node.matches('dialog[open]') || isRendered(node)) return true;
-      try {
-        if (node.matches(':popover-open')) return true;
-      } catch {}
+      if (popupOpen(node)) return true;
     }
     return false;
   }
@@ -835,6 +832,8 @@
       FOOTER: 'contentinfo', ASIDE: 'complementary', FORM: 'form' };
     const semanticRoles = new Set(['heading', 'main', 'navigation', 'banner',
       'contentinfo', 'complementary', 'region', 'form', 'search']);
+    const targetRoles = new Set(['group', 'article', 'figure', 'listitem', 'row', 'cell',
+      'tabpanel', 'dialog', 'application']);
     const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
     const clean = value => normalize(value).slice(0, 160);
     const nativeTags = new Set(['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'DETAILS', 'SUMMARY']);
@@ -867,12 +866,16 @@
     const hiddenElement = el => isHidden(el) || el.getAttribute('aria-hidden') === 'true';
     function ignored(el) {
       return !el || el.nodeType !== 1 || (!unhidden.has(el) && hiddenElement(el)) ||
-        ['SCRIPT', 'STYLE', 'NOSCRIPT', 'SVG'].includes(el.tagName);
+        ['SCRIPT', 'STYLE', 'NOSCRIPT'].includes(el.tagName) ||
+        (el.tagName.toUpperCase() === 'SVG' && !isImage(el));
     }
     const hasOwnText = el => flatChildNodes(el).some(node => node.nodeType === 3 && node.textContent.trim());
     // An <img> is content unless role=presentation/none marks it decorative; one without a
     // name (alt="", no alt) is left out too. Its src is never listed.
-    const isImage = el => el.tagName === 'IMG' && !['presentation', 'none'].includes(el.getAttribute('role'));
+    const isImage = el => !['presentation', 'none'].includes(el.getAttribute('role')) &&
+      (el.tagName === 'IMG' || ['img', 'graphics-document', 'graphics-symbol'].includes(el.getAttribute('role')));
+    const isCanvas = el => el.tagName === 'CANVAS' && !el.getAttribute('role') &&
+      el.getBoundingClientRect().width >= 24 && el.getBoundingClientRect().height >= 24;
     // [all, plain] text of el's inline content; plain omits controls and labels, which
     // already appear as control names. Form fields and sensitive elements never contribute.
     function inlineText(el) {
@@ -926,10 +929,13 @@
       const role = el.getAttribute('role') || landmarks[el.tagName] ||
         (/^H[1-6]$/.test(el.tagName) ? 'heading' : inferRole(el));
       data.image = !interactive && isImage(el) && !!nameOf(el, false);
+      data.canvas = !interactive && isCanvas(el);
+      data.namedTarget = targetRoles.has(el.getAttribute('role')) && !!nameOf(el, false);
       // Rendered frames are listed even when their content is unavailable (cross-origin).
       data.pathOnly = pathOnly;
       data.useful = (maxDepth == null || domDepth <= maxDepth) &&
         (children.some(child => child.useful) || (interactive && !data.wrapper) || media || data.image ||
+          data.canvas || data.namedTarget ||
           semanticRoles.has(role) || el === target || (withText && hasOwnText(el)) ||
           (FRAME_TAGS.has(el.tagName) && hasArea(el)) || shownPopups.has(el));
       data.interactive += interactive ? 1 : 0;
@@ -987,13 +993,16 @@
       if (!metadata.has(el) || (maxDepth != null && domDepth > maxDepth)) return;
       const frame = FRAME_TAGS.has(el.tagName);
       const image = metadata.get(el).image;
+      const canvas = metadata.get(el).canvas;
+      const namedTarget = metadata.get(el).namedTarget;
       const shownPopup = shownPopups.has(el);
       let role = el.getAttribute('role') || landmarks[el.tagName] ||
         (/^H[1-6]$/.test(el.tagName) ? 'heading' : inferRole(el)) || (frame ? 'iframe' : '') || (image ? 'img' : '') ||
-        (shownPopup ? popupRole(el) : '');
+        (canvas ? 'canvas' : '') || (shownPopup ? popupRole(el) : '');
       const media = MEDIA_TAGS.has(el.tagName);
       const interactive = (isSnapshotControl(el) && !metadata.get(el).wrapper) || media;
-      const include = interactive || semanticRoles.has(role) || el === target || frame || image || shownPopup;
+      const include = interactive || semanticRoles.has(role) || el === target || frame || image ||
+        canvas || namedTarget || shownPopup;
       let ref = null;
       if (include) {
         if (!role) {
@@ -1057,7 +1066,8 @@
         }
       }
       const childDepth = depth + (include ? 1 : 0);
-      named ||= interactive || role === 'heading';
+      named ||= interactive || role === 'heading' || image ||
+        (namedTarget && nameOf(el, false) === normalize(redactedText(el)));
       // A hidden container on the way to a popup has other hidden content.
       if (withText && !named && !metadata.get(el).pathOnly && (el === root || !INLINE_TAGS.has(el.tagName)) &&
           !FIELD_TAGS.has(el.tagName) && !isSensitiveField(el)) {
@@ -1757,7 +1767,8 @@
     // No button is held once it is released.
     const released = { ...eventInit, buttons: 0 };
 
-    for (const type of ['pointerover', 'pointerenter', 'pointerdown', 'mousedown', 'pointerup', 'mouseup']) {
+    movePointerTo(el, { ...released, button: 0 });
+    for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup']) {
       const proceed = dispatchPointerOrMouse(el, type, type.endsWith('up') ? released : eventInit);
       // As a real mousedown does, unless the page cancelled it. The background has already
       // refused a tab the user is using (user_active), so this never takes focus from them.
@@ -1780,7 +1791,8 @@
     if (link || media) el.addEventListener('click', onClick);
     // A dispatched click runs native activation exactly once, as el.click() does, and also
     // carries the point. Like el.click(), it skips disabled form controls.
-    if (typeof el.click === 'function' && !el.matches?.(DISABLED_CONTROLS)) {
+    // SVG has no HTMLElement.click(), but still accepts dispatched click events.
+    if (!el.matches?.(DISABLED_CONTROLS)) {
       dispatchPointerOrMouse(el, 'click', { ...released, detail: 1 });
     }
     if (link || media) el.removeEventListener('click', onClick);
@@ -2165,21 +2177,24 @@
     const y = rect.y + rect.height / 2;
 
     watchPopups(el);
+    movePointerTo(el, { view: el.ownerDocument?.defaultView || window, clientX: x, clientY: y });
+    return { ok: true, tag: el.tagName.toLowerCase(), ...(selector ? notRenderedWarning(el) : {}) };
+  }
+
+  function movePointerTo(el, init) {
     // Like a real pointer's events, over and move bubble out of shadow roots, while enter events
     // do not bubble and go to each newly entered ancestor, outermost first (#327).
     // Without leave events Kitsune cannot tell whether the pointer left meanwhile, so hovering
     // the same element again enters its whole chain, letting a retry reveal what was hidden.
     const entered = enteredElements(el, lastPointedElement === el ? null : lastPointedElement);
     lastPointedElement = el;
-    const point = { view: el.ownerDocument?.defaultView || window, clientX: x, clientY: y };
+    const point = { ...init, bubbles: false, cancelable: false, composed: false, buttons: 0 };
     const passing = { ...point, bubbles: true, cancelable: true, composed: true };
     for (const [over, enter] of [['pointerover', 'pointerenter'], ['mouseover', 'mouseenter']]) {
       dispatchPointerOrMouse(el, over, passing);
       for (const target of entered) dispatchPointerOrMouse(target, enter, point);
     }
     for (const type of ['pointermove', 'mousemove']) dispatchPointerOrMouse(el, type, passing);
-
-    return { ok: true, tag: el.tagName.toLowerCase(), ...(selector ? notRenderedWarning(el) : {}) };
   }
 
   // ── Fill Form ──
@@ -3002,7 +3017,8 @@
   }
 
   function flatParent(el) {
-    return el.openOrClosedAssignedSlot || el.assignedSlot || el.parentElement || el.parentNode?.host || null;
+    return el.openOrClosedAssignedSlot || el.assignedSlot || el.parentElement ||
+      (el.parentNode?.nodeType === 11 ? el.parentNode.host : null);
   }
 
   // IDs are scoped to their tree: a field in a shadow root names labels in that root.
@@ -3381,7 +3397,7 @@
       } else if (part.kind === 'parent') {
         // The light-DOM parent, not flatParent's slot: later steps search inside it, and a
         // slot has neither the slotted siblings as descendants nor a box to point at.
-        const parent = el => el.parentElement || el.parentNode?.host || null;
+        const parent = el => el.parentElement || (el.parentNode?.nodeType === 11 ? el.parentNode.host : null);
         matches = [...new Set((matches || [document.documentElement]).map(parent).filter(Boolean))];
       } else {
         const found = new Set();
@@ -5037,6 +5053,7 @@
         clientX: x, clientY: y, button: 0, buttons: type.endsWith('up') ? 0 : 1,
       });
     };
+    movePointerTo(from, { view: from.ownerDocument?.defaultView || window, clientX: fx, clientY: fy });
     press(from, 'pointerdown', fx, fy);
     press(from, 'mousedown', fx, fy);
     // As natively, an HTML5 drag needs a draggable source whose dragstart the page let

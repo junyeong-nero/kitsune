@@ -17,7 +17,7 @@ class Element extends EventTarget {
     super();
     Object.assign(this, { tagName, id, type, textContent: id, isConnected: true,
       checked: false, nativeClicks: 0, events: [], dispatched: [] });
-    for (const type of ['pointerover', 'pointerenter', 'pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click', 'dblclick', 'input', 'change']) {
+    for (const type of ['pointerover', 'pointerenter', 'mouseover', 'mouseenter', 'pointermove', 'mousemove', 'pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click', 'dblclick', 'input', 'change']) {
       this.addEventListener(type, event => { this.events.push(event.type); this.dispatched.push(event); });
     }
   }
@@ -81,7 +81,8 @@ async function testClickEvents(pointerEvents) {
   vm.runInContext(fs.readFileSync('extension/content/content.js', 'utf8'), context);
   const send = msg => new Promise(resolve => listener(msg, {}, resolve));
   const ref = (await send({ action: 'find', query: '#go' })).results[0].ref;
-  const clickSequence = ['pointerover', 'pointerenter', 'pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
+  const clickSequence = ['pointerover', 'pointerenter', 'mouseover', 'mouseenter', 'pointermove', 'mousemove',
+    'pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
   for (const target of [{ selector: '#go' }, { selector: ref }, { coords: { x: 20, y: 10 } }]) {
     button.events = [];
     const nativeClicks = button.nativeClicks;
@@ -92,12 +93,27 @@ async function testClickEvents(pointerEvents) {
     // #201: released buttons read 0, and the click carries the point and a click count.
     const x = target.coords ? 20 : 50, y = target.coords ? 10 : 15;
     assert.deepEqual(button.dispatched.map(event => [event.clientX, event.clientY, event.button, event.buttons]),
-      clickSequence.map(type => [x, y, 0, ['pointerup', 'mouseup', 'click'].includes(type) ? 0 : 1]));
+      clickSequence.map(type => [x, y, 0, ['pointerdown', 'mousedown'].includes(type) ? 1 : 0]));
     const click = button.dispatched.at(-1);
     assert.equal(click.detail, 1);
     assert.equal(click.pointerType, 'mouse');
     button.dispatched = [];
   }
+
+  // A newly opened listbox ignores an option's release until the pointer has moved (#340).
+  let moved = false, selected = false;
+  const option = new Element('DIV', 'option');
+  elements['#option'] = option;
+  option.addEventListener('pointermove', () => { moved = true; });
+  option.addEventListener('pointerup', () => { if (moved) selected = true; });
+  assert.equal((await send({ action: 'click', selector: '#option' })).ok, true);
+  assert.equal(selected, true);
+
+  const svg = new Element('svg', 'icon');
+  svg.click = undefined; // SVG supports dispatchEvent, not HTMLElement.click().
+  elements['#icon'] = svg;
+  assert.equal((await send({ action: 'click', selector: '#icon' })).ok, true);
+  assert.equal(svg.events.filter(type => type === 'click').length, 1);
 
   const disabled = new Element('BUTTON', 'off', 'button');
   disabled.matches = selector => selector.includes('button:disabled');

@@ -108,7 +108,7 @@ async function main() {
   const url = 'https://accounts.example/o/oauth2/auth?client_id=1';
   let features = 'popup,width=500';
   h.button.addEventListener('click', () => h.window.open(url, 'g_auth', features));
-  assert.deepEqual((await h.click()).scriptPopup, { url });
+  assert.deepEqual((await h.click()).scriptPopup, { url, urls: [url] });
 
   // A popup that opened is no warning.
   h.page.next = () => h.popup;
@@ -127,21 +127,30 @@ async function main() {
   // A relative URL is resolved against the page's base URL; one that does not parse stays as given.
   const relative = load();
   relative.button.addEventListener('click', () => relative.window.open('/ok2?popup'));
-  assert.deepEqual((await relative.click()).scriptPopup, { url: 'https://site.example/ok2?popup' });
+  assert.deepEqual((await relative.click()).scriptPopup, { url: 'https://site.example/ok2?popup', urls: ['https://site.example/ok2?popup'] });
   const unparsable = load();
   unparsable.button.addEventListener('click', () => unparsable.window.open('http://['));
-  assert.deepEqual((await unparsable.click()).scriptPopup, { url: 'http://[' });
+  assert.deepEqual((await unparsable.click()).scriptPopup, { url: 'http://[', urls: ['http://['] });
 
   // A URL that is not a string is not reported; a long one is cut.
   const urlObject = load();
   urlObject.button.addEventListener('click', () => urlObject.window.open({ href: 'https://a.example/' }));
-  assert.deepEqual((await urlObject.click()).scriptPopup, {});
+  assert.deepEqual((await urlObject.click()).scriptPopup, { urls: [] });
   const blank = load();
   blank.button.addEventListener('click', () => blank.window.open());
-  assert.deepEqual((await blank.click()).scriptPopup, {});
+  assert.deepEqual((await blank.click()).scriptPopup, { urls: [] });
   const long = load();
   long.button.addEventListener('click', () => long.window.open(`https://a.example/${'x'.repeat(5000)}`));
   assert.equal((await long.click()).scriptPopup.url.length, 2048);
+
+  // Every refused URL is retained in call order, bounded by the existing 20-call record (#337).
+  const multiple = load();
+  multiple.button.addEventListener('click', () => {
+    for (let i = 0; i < 25; i++) multiple.window.open(`/popup/${i}`);
+  });
+  const reported = (await multiple.click()).scriptPopup;
+  assert.deepEqual(reported.urls, Array.from({ length: 20 }, (_, i) => `https://site.example/popup/${i + 5}`));
+  assert.equal(reported.url, reported.urls[0]);
 
   // A click that failed before dispatch reports nothing.
   assert.equal('scriptPopup' in (await h.send({ action: 'click', selector: '#missing' })), false);

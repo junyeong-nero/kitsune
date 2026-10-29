@@ -864,6 +864,10 @@ If such a link, or a failed `tabs.create`, leaves no tab, the click result has a
   "hint": "The link opens in a new tab, but no tab opened; the popup blocker likely dropped this synthetic click. ..." } }
 ```
 
+The warning's `state.url` uses [History URL redaction](#history-url-redaction), so tokens
+and OAuth secrets read `[redacted]`. The fallback itself still opens the original URL.
+Do not navigate to a redacted placeholder URL; use the original page control instead.
+
 With `expect`, an unmet outcome then uses that hint. A `browser_trusted_click` is a real OS click with user
 activation, so the popup blocker lets its tab open. It needs a visible, focused browser
 window and OS permission (macOS: Accessibility), and its result does not list `opened_tabs`;
@@ -882,8 +886,8 @@ called `window.open` and got `null` returns a `popup_blocked` warning with
 
 ```json
 { "ok": true, "warning": { "code": "popup_blocked",
-  "state": { "url": "https://accounts.example/o/oauth2/auth?client_id=1", "reason": "script_popup" },
-  "hint": "A page script tried to open a popup (window.open), which Firefox blocks without user activation, so none opened. If this click should open that popup (a sign-in at state.url, for example), ask the user to click it, then continue in the new tab by tab_id (find it with browser_tabs), or use browser_trusted_click; if not (an ad, for example), ignore this warning." } }
+  "state": { "url": "https://accounts.example/o/oauth2/auth?client_id=1", "urls": ["https://accounts.example/o/oauth2/auth?client_id=1"], "reason": "script_popup" },
+  "hint": "A page script tried to open a popup (window.open), which Firefox blocks without user activation, so none opened. Check state.urls for all refused URLs. If this click should open that popup (a sign-in at state.url, for example), ask the user to click it, then continue in the new tab by tab_id (find it with browser_tabs), or use browser_trusted_click; if not (an ad, for example), ignore this warning." } }
 ```
 
 - `state.url` is the URL the script passed, resolved against the page's base URL like a
@@ -896,10 +900,12 @@ called `window.open` and got `null` returns a `popup_blocked` warning with
   calls later, after a `fetch` or a timer, is not counted.
 - Any refused `window.open` during the dispatch counts, wherever its listener is: an ad
   script that listens for clicks on the whole page and opens a popunder also triggers
-  the warning. When several calls were refused, `state.url` is the first one's, so an ad
-  listener that runs before the button's own `click` handler names the ad's URL. The hint
-  asks the agent to involve the user only when `state.url` is the popup the click should
-  open, and to ignore the warning otherwise.
+  the warning. `state.urls` lists every refused non-empty string URL in call order,
+  resolved, clipped and redacted the same way as `state.url`. The record keeps at most
+  the latest 20 calls; `state.url` is the first URL in that retained list for compatibility.
+  `state.urls` is empty if no refused call supplied a URL. Check the whole list: an ad
+  listener can run before the button's own handler. Involve the user only for the popup
+  the click should open, and ignore unrelated popups.
 - A call that returned a window, or whose features include `noopener` or `noreferrer`
   (which make `window.open` return `null` even when the popup opened), gives no
   warning. Neither does a click that reports a tab in `opened_tabs`.
@@ -2185,6 +2191,18 @@ pixels: pass its ref to `browser_screenshot` to see it. An image that is a contr
 (`onclick`, `tabindex`, `role="button"`) is listed as a control instead, and an image
 inside a link is listed below the link.
 
+Named elements with explicit `role="img"`, `graphics-document` or `graphics-symbol`
+also receive refs, including canvas, span and SVG graphics. An unroled `<canvas>` at
+least 24×24 CSS pixels receives a `canvas` line and ref even without a name; use
+`boxes: true` for its bounds or screenshot its ref to inspect the drawn controls.
+
+#### Named containers
+
+Named elements with explicit roles `group`, `article`, `figure`, `listitem`, `row`,
+`cell`, `tabpanel`, `dialog` or `application` receive refs for hover, drag and other
+targeted actions. An unnamed generic container remains omitted. A container whose
+name already equals its text does not duplicate that text as a separate text line.
+
 #### Media
 
 Rendered `<video>` and `<audio>` elements appear as `video`/`audio` lines with a ref
@@ -2699,14 +2717,17 @@ one browser call whose own duration the deadline cannot cut short.
 ### POST /api/click
 `{ "selector": "button.submit" }` — also accepts `ref`, `position`.
 
-The click dispatches `pointerover`, `pointerenter`, `pointerdown`, `mousedown`,
-`pointerup`, `mouseup` and `click` on the target, at its center or at the given point,
-as a primary-button press: `button: 0`, with `buttons: 1` until the release and `0`
-from `pointerup` on. `click` is a `PointerEvent` with `detail: 1` and
+The click moves to the target before pressing: `pointerover`/`mouseover`, non-bubbling
+`pointerenter`/`mouseenter` on newly entered ancestors and the target, then
+`pointermove`/`mousemove`, sharing `browser_hover`'s pointer tracking. A drag also
+moves to its source before pressing. The click then dispatches `pointerdown`,
+`mousedown`, `pointerup`, `mouseup` and `click` at the target's center or the given
+point. For a primary-button press, `button: 0`; `buttons` is `0` during approach,
+`1` at the press and `0` from `pointerup` on. `click` is a `PointerEvent` with `detail: 1` and
 `pointerType: "mouse"`, and it runs the element's native activation once, as
 `el.click()` does; a disabled form control gets no `click`. Limits: every event has
-`isTrusted: false` and grants no user activation, and no `pointermove`, `mousemove`,
-`pointerout` or `pointerleave` is sent. For pages that need trusted input, use
+`isTrusted: false` and grants no user activation, and no `pointerout` or
+`pointerleave` is sent. For pages that need trusted input, use
 `browser_trusted_click`; an unmet `expect` whose target is still visible says so in its
 `hint` (see [Action outcomes](#action-outcomes)).
 Add `"wait": true, "timeout": 10000` to wait for the target first (see

@@ -195,20 +195,20 @@ const enters = log => log.filter(([, type]) => ENTER_TYPES.has(type)).map(([id, 
     assert.deepEqual(enters(log).filter(([, type]) => type === 'pointerenter').map(([id]) => id), chain);
   }
 
-  // A click sends no mouseenter, so a hover after it still enters the row the click was in: a
-  // row that listens only for mouseenter reveals its controls.
+  // Click and hover share pointer tracking: the click enters the row, then a sibling hover
+  // enters only the sibling, not their shared ancestors.
   {
     const { send, log, elements } = page();
     elements.menu1.click = () => {};
     let rowEntered = 0;
     elements.row1.addEventListener('mouseenter', () => { rowEntered++; });
     assert.equal((await send({ action: 'click', selector: '#menu1' })).ok, true);
-    assert.equal(rowEntered, 0, 'the click sent the row no mouseenter');
+    assert.equal(rowEntered, 1, 'the click enters the row before pressing');
     log.length = 0;
     await send({ action: 'hover', selector: '#title1' });
-    assert.equal(rowEntered, 1, 'the hover after the click entered the row');
+    assert.equal(rowEntered, 1, 'the sibling hover does not re-enter the row');
     assert.deepEqual(enters(log).filter(([, type]) => type === 'mouseenter').map(([id]) => id),
-      ['html', 'body', 'list', 'row1', 'title1']);
+      ['title1']);
   }
 
   // A page element named "host" (<form name="host">) becomes document.host. The ancestor walk
@@ -224,6 +224,12 @@ const enters = log => log.filter(([, type]) => ENTER_TYPES.has(type)).map(([id, 
     assert.equal((await send({ action: 'hover', selector: '#title1' })).ok, true);
     assert.deepEqual(enters(log).filter(([, type]) => type === 'pointerenter').map(([id]) => id),
       ['html', 'body', 'list', 'row1', 'title1']);
+    // Exercise flatParent's warning walk and the selector parent step as well (#339).
+    elements.title1.getClientRects = () => [];
+    assert.equal((await send({ action: 'hover', selector: '#title1' })).ok, true);
+    const parent = await send({ action: 'hover', selector: '#html >> ..' });
+    assert.equal(parent.code, 'not_found');
+    assert.equal(hostReads, 0, 'Document.host is never a shadow boundary');
   }
 
   // The chain stays within the target's document. Moving into a same-origin frame enters the

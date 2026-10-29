@@ -289,7 +289,7 @@ async function main() {
   const refusedResult = await refused.send({ action: 'click', tabId: 1, selector: '#google' });
   assert.deepEqual(refused.created, []);
   assert.equal(refusedResult.warning.code, 'popup_blocked');
-  assert.deepEqual(refusedResult.warning.state, { url: oauth, reason: 'script_popup' });
+  assert.deepEqual(refusedResult.warning.state, { url: oauth, urls: [oauth], reason: 'script_popup' });
   assert.match(refusedResult.warning.hint, /user activation/);
   assert.match(refusedResult.warning.hint, /If this click should open that popup .*ask the user to click it/);
   assert.match(refusedResult.warning.hint, /if not \(an ad, for example\), ignore this warning/);
@@ -303,7 +303,29 @@ async function main() {
     'https://accounts.example/auth?client_id=1&nonce=[redacted]&state=s1#access_token=[redacted]');
   const unnamed = harness(() => ({ ok: true, scriptPopup: {} }));
   assert.deepEqual((await unnamed.send({ action: 'click', tabId: 1, selector: '#google' })).warning.state,
-    { reason: 'script_popup' });
+    { urls: [], reason: 'script_popup' });
+  const tokenUrl = 'https://example.com/auth?access_token=secret&nonce=private';
+  const redactedUrl = 'https://example.com/auth?access_token=[redacted]&nonce=[redacted]';
+  const multiple = harness(() => ({ ok: true, scriptPopup: { url: oauth, urls: [oauth, tokenUrl] } }));
+  assert.deepEqual((await multiple.send({ action: 'click', tabId: 1, selector: '#google' })).warning.state.urls,
+    [oauth, redactedUrl]);
+  const linkSecret = harness(() => ({ ok: true, targetBlankLink: { url: tokenUrl, opener: true } }));
+  const secretClick = start(linkSecret, { action: 'click', tabId: 1, selector: '#link' });
+  await linkSecret.tick(500);
+  const secretWarning = (await secretClick.result).warning;
+  assert.equal(secretWarning.state.url, redactedUrl);
+  assert.match(secretWarning.hint, /original page control/);
+  assert.match(secretWarning.hint, /must not be used as a navigation URL/);
+  assert.doesNotMatch(secretWarning.hint, /Open state.url/);
+  const linkFallback = harness(() => ({ ok: true, targetBlankLink: { url: tokenUrl, opener: false } }));
+  const fallbackClick = start(linkFallback, { action: 'click', tabId: 1, selector: '#link' });
+  await linkFallback.tick(500);
+  linkFallback.commit(20, tokenUrl);
+  await linkFallback.tick(0);
+  assert.equal(fallbackClick.settled, true);
+  await fallbackClick.result;
+  assert.equal(linkFallback.created[0].url, tokenUrl, 'fallback navigates to the original URL');
+
   // A tab that did open is reported instead, and an earlier warning stays.
   const popupOpened = harness(h => { h.open(4, 1, oauth); return { ok: true, scriptPopup: { url: oauth } }; });
   assert.deepEqual(await popupOpened.send({ action: 'click', tabId: 1, selector: '#google' }),
@@ -316,7 +338,7 @@ async function main() {
   both.openedPopup = { role: 'dialog', name: 'Sign in', rendered: true, items: [] };
   const bothResult = await both.send({ action: 'click', tabId: 1, selector: '#google' });
   assert.deepEqual(bothResult.opened_popup, both.openedPopup);
-  assert.deepEqual(bothResult.warning.state, { url: oauth, reason: 'script_popup' });
+  assert.deepEqual(bothResult.warning.state, { url: oauth, urls: [oauth], reason: 'script_popup' });
   assert.equal('popupWatch' in bothResult || 'scriptPopup' in bothResult, false);
 
   console.log('Opened tab checks passed');

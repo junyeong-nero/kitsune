@@ -33,6 +33,15 @@ const img = attrs => h('IMG', { src: '/puzzle.png', ...attrs });
     h('LI', {}, img({ alt: `Product ${i}` }), h('A', { href: `/p/${i}` }, `Product ${i}`)));
   const main = h('MAIN', {},
     h('H2', {}, 'Image puzzle'),
+    h('CANVAS', { role: 'img', 'aria-label': 'Video player' }),
+    h('SPAN', { role: 'img', 'aria-label': '80% mark' }),
+    h('svg', { role: 'img', 'aria-label': 'Vector icon' }),
+    h('SVG', { role: 'graphics-symbol', 'aria-label': 'Chart symbol' }),
+    h('CANVAS', { id: 'canvas' }),
+    h('CANVAS', { role: 'none', 'aria-label': 'Decorative canvas' }),
+    ...['group', 'article', 'figure', 'listitem', 'row', 'cell', 'tabpanel', 'dialog', 'application']
+      .map(role => h('DIV', { role, 'aria-label': `Named ${role}` }, `Named ${role}`)),
+    h('DIV', { role: 'group' }),
     h('P', {}, 'Type the six characters shown in the image.'),
     img({ id: 'puzzle', alt: '왜곡된 문자 퍼즐', width: '420', height: '140' }),
     img({ alt: '' }),
@@ -72,6 +81,16 @@ const img = attrs => h('IMG', { src: '/puzzle.png', ...attrs });
   for (const text of [false, true]) {
     const { snapshot } = await send({ action: 'getSnapshot', text });
     const lines = snapshot.split('\n');
+    for (const name of ['Video player', '80% mark', 'Vector icon']) {
+      assert.match(snapshot, new RegExp(`- img "${name}" \\[ref=s\\d+e\\d+\\]`), snapshot);
+    }
+    assert.match(snapshot, /- graphics-symbol "Chart symbol" \[ref=s\d+e\d+\]/);
+    assert.match(snapshot, /- canvas "" \[ref=s\d+e\d+\]/);
+    assert.doesNotMatch(snapshot, /Decorative canvas|- group ""/);
+    for (const role of ['group', 'article', 'figure', 'listitem', 'row', 'cell', 'tabpanel', 'dialog', 'application']) {
+      assert.match(snapshot, new RegExp(`- ${role} "Named ${role}" \\[ref=s\\d+e\\d+\\]`), snapshot);
+      assert.ok(!snapshot.includes(`text "Named ${role}"`), 'container name is not duplicated');
+    }
     // A named image is an `img` line with a ref and no state; src is never listed.
     assert.match(snapshot, /^ {2}- img "왜곡된 문자 퍼즐" \[ref=s\d+e\d+\]$/m, snapshot);
     assert.doesNotMatch(snapshot, /puzzle\.png|data:|src=/, 'image sources are not listed');

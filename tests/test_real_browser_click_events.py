@@ -26,7 +26,8 @@ PAGE = """<!doctype html><title>click events</title>
 <script>
   const props = ['type', 'isTrusted', 'clientX', 'clientY', 'button', 'buttons', 'detail',
                  'pointerId', 'pointerType'];
-  for (const type of ['pointerover', 'pointerenter', 'pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+  for (const type of ['pointerover', 'pointerenter', 'mouseover', 'mouseenter', 'pointermove', 'mousemove',
+                      'pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
     document.addEventListener(type, event => {
       const entry = Object.fromEntries(props.map(name => [name, name in event ? event[name] : null]));
       entry.target = event.target.id;
@@ -45,7 +46,8 @@ NOTICE = """<!doctype html><title>notice</title>
   vanish.addEventListener('click', () => vanish.remove());
 </script>"""
 
-EVENTS = ["pointerover", "pointerenter", "pointerdown", "mousedown", "pointerup", "mouseup", "click"]
+EVENTS = ["pointerover", "pointerenter", "mouseover", "mouseenter", "pointermove", "mousemove",
+          "pointerdown", "mousedown", "pointerup", "mouseup", "click"]
 STATE = """JSON.stringify({events: (document.getElementById('log')?.textContent || '').trim().split('\\n')
     .filter(Boolean).map(line => JSON.parse(line)), clicks: Number(sessionStorage.clicks || 0),
     box: document.getElementById('box')?.checked, labelled: document.getElementById('labelled')?.checked,
@@ -124,10 +126,15 @@ class RealBrowserClickEventTests(harness.RealBrowserTestCase):
             with self.subTest(name):
                 self.call("/api/js", {"tabId": tab, "code": "document.getElementById('log').textContent = ''"})
                 self.click(tab, target)
-                events = self.state(tab)["events"]
+                recorded = self.state(tab)["events"]
+                # Non-bubbling enters are dispatched to html/body too (seen in capture).
+                ancestors = [event for event in recorded if event["target"] != "go"]
+                self.assertEqual([event["type"] for event in ancestors],
+                                 ["pointerenter", "pointerenter", "mouseenter", "mouseenter"])
+                events = [event for event in recorded if event["target"] == "go"]
                 self.assertEqual([event["type"] for event in events], EVENTS)
                 for event in events:
-                    pressed = event["type"] in ("pointerover", "pointerenter", "pointerdown", "mousedown")
+                    pressed = event["type"] in ("pointerdown", "mousedown")
                     self.assertEqual(event["target"], "go", event)
                     self.assertIs(event["isTrusted"], False, event)
                     self.assertEqual((event["clientX"], event["clientY"]), point, event)
