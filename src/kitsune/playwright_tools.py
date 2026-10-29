@@ -360,17 +360,24 @@ def browser_fill_form(fields: list[dict], confirm_token: str | None = None) -> d
         if field.get("type") not in _FIELD_TYPES:
             return {"error": f"Unknown field type: {field.get('type')}", "field": field.get("name"), "filled": []}
     filled, last = [], {}
-    for field in fields:
+    for i, field in enumerate(fields):
         target, kind, value = field["target"], field["type"], field.get("value")
         element = field.get("element") or field.get("name")
+        selector, ref = _selector(target)
+        # One delta for all fields (#348): the first field records the baseline, and only the
+        # last one waits for the page and snapshots it.
+        snapshot = {} if len(fields) == 1 else (
+            {"includeSnapshot": False, "deltaBaseline": True} if i == 0
+            else {"includeSnapshot": False} if i < len(fields) - 1 else {"keepBaseline": True})
         if kind in ("textbox", "slider"):
-            last = k.browser_type(text=str(value), mode="fill", tab_id=_current_tab, element=element,
-                                  confirm_token=confirm_token, **_target(target))
+            last = k._post_action("/api/fill", k._request_body(
+                {"selector": selector, "value": str(value), **snapshot}, _current_tab, ref, element, confirm_token))
         elif kind in ("checkbox", "radio"):
-            last = k.browser_check(checked=str(value).lower() == "true", tab_id=_current_tab, element=element,
-                                   confirm_token=confirm_token, **_target(target))
+            last = k._post_action("/api/check", k._request_body(
+                {"selector": selector, "checked": str(value).lower() == "true", **snapshot},
+                _current_tab, ref, element, confirm_token))
         else:
-            last = _select(target, [str(value)], element, confirm_token)
+            last = _select(target, [str(value)], element, confirm_token, snapshot)
         if k._failed(last):
             return {**last, "field": field.get("name"), "filled": filled}
         filled.append(field.get("name"))
@@ -546,10 +553,11 @@ def browser_hover(target: str, element: str | None = None) -> dict:
     return k.browser_hover(tab_id=_current_tab, element=element, **_target(target))
 
 
-def _select(target: str, values: list[str], element: str | None, confirm_token: str | None) -> dict:
+def _select(target: str, values: list[str], element: str | None, confirm_token: str | None,
+            snapshot: dict | None = None) -> dict:
     selector, ref = _selector(target)
     return k._post_action("/api/select-option", k._request_body(
-        {"selector": selector, "values": values}, _current_tab, ref, element, confirm_token))
+        {"selector": selector, "values": values, **(snapshot or {})}, _current_tab, ref, element, confirm_token))
 
 
 @_core

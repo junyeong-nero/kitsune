@@ -270,11 +270,11 @@ async function testBackgroundErrors() {
     assert.deepEqual([closed.error, closed.code, closed.state], ['Invalid tab ID: 9', 'tab_closed', { tabId: 9 }], action);
   }
 
-  // Existing v43 content must be reinjected for the integrated protocol, current v44 need not.
-  h.setContentVersion(43);
+  // Existing v44 content must be reinjected for the integrated protocol, current v45 need not.
+  h.setContentVersion(44);
   assert.deepEqual(await h.send({ action: 'click', tabId: 2, selector: '#go' }), { ok: true });
   assert.deepEqual(h.injected, [2]);
-  h.setContentVersion(44);
+  h.setContentVersion(45);
   assert.deepEqual(await h.send({ action: 'click', tabId: 2, selector: '#go' }), { ok: true });
   assert.deepEqual(h.injected, [2]);
 
@@ -636,7 +636,8 @@ async function testFocusChangeKeepsTarget() {
   });
   const result = await h.send({ action: 'click', selector: '#go', includeSnapshot: true });
   assert.equal(result.snapshot, 'tab 1');
-  assert.deepEqual(h.sent.map(msg => [msg.action, msg.tabId]), [['click', 1], ['getSnapshot', 1]]);
+  // The settle wait (#348) asks the target tab too.
+  assert.deepEqual(h.sent.map(msg => [msg.action, msg.tabId]), [['click', 1], ['settleState', 1], ['getSnapshot', 1]]);
 }
 
 // A command that never settles leaves node with nothing to run, and it would exit cleanly.
