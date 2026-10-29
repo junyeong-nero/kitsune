@@ -3,7 +3,7 @@
 
 'use strict';
 
-const EXPECTED_CONTENT_VERSION = 44;
+const EXPECTED_CONTENT_VERSION = 45;
 const WS_URL = 'ws://127.0.0.1:47652';
 // scripts/build_extension.py sets 'signed' for the AMO build (see content.js).
 const KITSUNE_BUILD = 'dev';
@@ -64,6 +64,16 @@ const mainFrameRequest = (tabId, requestId) => {
 browser.webRequest?.onBeforeRequest.addListener(({ tabId, requestId, url }) => {
   if (tabId >= 0) mainFrameRequest(tabId, requestId).url = url;
 }, MAIN_FRAME);
+// Requests that keep an action's delta waiting (settleAfterAction, #348).
+const SETTLE_REQUEST_FILTER = { urls: ['<all_urls>'], types: ['xmlhttprequest', 'script', 'sub_frame'] };
+browser.webRequest?.onBeforeRequest.addListener(({ tabId, requestId }) => {
+  settleRequests.get(tabId)?.add(requestId);
+}, SETTLE_REQUEST_FILTER);
+for (const event of ['onCompleted', 'onErrorOccurred']) {
+  browser.webRequest?.[event]?.addListener(({ tabId, requestId }) => {
+    settleRequests.get(tabId)?.delete(requestId);
+  }, SETTLE_REQUEST_FILTER);
+}
 browser.webRequest?.onHeadersReceived.addListener(
   ({ tabId, requestId, url, statusCode }) => {
     if (tabId < 0) return;
@@ -562,8 +572,13 @@ async function handleCommand(command) {
   }
   const withSnapshot = POST_SNAPSHOT_ACTIONS.has(params.action) && params.includeSnapshot !== false;
   const deltaSnapshot = withSnapshot && params.snapshot !== 'full' && !FULL_SNAPSHOT_ACTIONS.has(params.action);
-  // The content script records the delta's baseline right before it acts.
-  if (deltaSnapshot) params.deltaBaseline = true;
+  // The content script records the delta's baseline right before it acts. keepBaseline: diff
+  // against the baseline an earlier action recorded (deltaBaseline without a snapshot), as
+  // browser_fill_form does for its fields (#348); this action only starts the settle watch.
+  if (deltaSnapshot) {
+    if (params.keepBaseline) params.settleWatch = true;
+    else params.deltaBaseline = true;
+  }
   // Text snapshots report which tab they read.
   const textSnapshot = params.action === 'getSnapshot' && !!params.text;
   const tracksOpenedTabs = OPENER_ACTIONS.has(params.action);
@@ -602,8 +617,67 @@ async function protectedTabError(params) {
       'or ask the user and repeat a direct call with tab_id and the confirm_token it returns.' };
 }
 
-async function runCommand(params, { withSnapshot, deltaSnapshot, textSnapshot, tracksOpenedTabs }) {
+// ── Settling after an action (#348) ──
+// Before its delta snapshot, an action waits for the page's reaction:
+// - at least SETTLE_MIN_MS after it started;
+// - until the page has made no change for SETTLE_QUIET_MS (see settleState in the content script);
+// - until the XHR/fetch, script and frame requests the tab started since then are done.
+// It waits at most SETTLE_CAP_MS, or SETTLE_REQUEST_CAP_MS while such requests are pending.
+// For comparison, Playwright MCP waits a fixed 500 ms, then for the requests the action started.
+// The minimum also covers debounced reactions, which change nothing until they fire (jQuery UI
+// autocomplete waits 300 ms). In a hidden tab Firefox delays page timers to at least 1 s
+// (dom.min_background_timeout_value), so a 250 ms timer fires after about 1000 ms there; the
+// minimum is then SETTLE_HIDDEN_MIN_MS.
+const SETTLE_MIN_MS = 400;
+const SETTLE_HIDDEN_MIN_MS = 1100;
+const SETTLE_QUIET_MS = 150;
+const SETTLE_CAP_MS = 1500;
+const SETTLE_REQUEST_CAP_MS = 4000;
+const SETTLE_POLL_MS = 40;
+// tabId -> ids of the requests the tab started while an action on it settles (filled by the
+// webRequest listeners at the top of this file).
+const settleRequests = new Map();
+
+// Never fails: when the page cannot say, the snapshot is taken right away.
+async function settleAfterAction(tabId, pending, params) {
+  const start = Date.now();
+  try {
+    // The document the action ran in: a cross-origin frame's own when its ref is there (#343).
+    const expanded = expandShortRefs(params, tabId);
+    const frame = { frameId: expanded.params ? targetFrame(tabId, expanded.params) : 0 };
+    while (true) {
+      let timer;
+      const state = await Promise.race([
+        browser.tabs.sendMessage(tabId, { action: 'settleState' }, frame).catch(() => null),
+        new Promise(resolve => { timer = setTimeout(() => resolve(null), SETTLE_CAP_MS); }),
+      ]);
+      clearTimeout(timer);
+      // A page that navigated away or does not answer has nothing to wait for here.
+      if (!state?.watching) return;
+      const busy = pending.size > 0;
+      const min = state.hidden ? SETTLE_HIDDEN_MIN_MS : SETTLE_MIN_MS;
+      if (!busy && state.elapsedMs >= min && state.quietMs >= SETTLE_QUIET_MS) return;
+      if (Date.now() - start >= (busy ? SETTLE_REQUEST_CAP_MS : SETTLE_CAP_MS)) return;
+      await new Promise(resolve => setTimeout(resolve, SETTLE_POLL_MS));
+    }
+  } catch {}
+}
+
+async function runCommand(params, options) {
+  const settles = options.deltaSnapshot && params.tabId != null && params.settle !== false;
+  if (!settles) return await runCommandSettled(params, options, null);
+  const pending = new Set();
+  settleRequests.set(params.tabId, pending);
+  try {
+    return await runCommandSettled(params, options, pending);
+  } finally {
+    if (settleRequests.get(params.tabId) === pending) settleRequests.delete(params.tabId);
+  }
+}
+
+async function runCommandSettled(params, { withSnapshot, deltaSnapshot, textSnapshot, tracksOpenedTabs }, pending) {
   const result = await dispatchCommand(params);
+  if (pending && result && !result.error && result.ok !== false) await settleAfterAction(params.tabId, pending, params);
   const blankLink = result?.targetBlankLink;
   if (blankLink) delete result.targetBlankLink;
   const newTabLink = result?.newTabLink;
@@ -633,6 +707,7 @@ async function runCommand(params, { withSnapshot, deltaSnapshot, textSnapshot, t
         result.snapshot = snapshot.snapshot;
         if (snapshot.delta) {
           result.snapshot_delta = true;
+          if (snapshot.unchanged) result.no_visible_change = true;
           // A same-document url or title change (history.pushState) is part of the delta.
           if (snapshot.url !== undefined) result.url = snapshot.url;
           if (snapshot.title !== undefined) result.title = snapshot.title;

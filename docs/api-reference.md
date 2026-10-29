@@ -392,6 +392,27 @@ adds `url` or `title`:
 An empty delta means nothing visible changed apart from removals. Use `expect` to
 verify an outcome, or `browser_snapshot` for the whole page.
 
+**Waiting for the page (#348).** A delta is taken once the page has reacted to the action,
+not right after dispatch. The bridge waits:
+
+- at least 400 ms after the action (1.1 s in a hidden tab, where Firefox delays page timers to
+  at least 1 s);
+- until the page has made no DOM change for 150 ms, counting changes in same-origin frames and
+  shadow roots;
+- until the XHR/fetch, script and frame requests the tab started after the action are done.
+
+It waits at most 1.5 s, or 4 s while such requests are pending. This covers confirmations,
+status lines and autocomplete lists that render a moment later, including debounced ones. A
+delta also lists text the action made appear anywhere on the page as `text` lines (for
+example `- text "Saved."`), also when the snapshot is otherwise compact. When the delta found
+no new or changed line and the URL and title are the same, the result adds
+`no_visible_change: true`. A change that comes after the wait is not seen: use `expect` or
+`browser_wait_for`. Actions without a post-action snapshot (`includeSnapshot: false`,
+`KITSUNE_POST_ACTION_SNAPSHOT=0`) and full post-action snapshots do not wait.
+
+`browser_fill_form` returns one delta for all its fields: the first field records the page's
+lines, and the last waits and lists every field's change under the refs the agent already has.
+
 The snapshot is full (no `snapshot_delta`; existing attached refs stay valid) for
 `browser_submit_form` and `browser_navigate`, which usually load another document,
 when the action loaded another document before the snapshot was taken (it has no
@@ -799,8 +820,9 @@ as not met with `observed.redacted: true`, and the expected value is not echoed.
 `value_changed` reads the value once before dispatch (`observed.before` reports it). If
 that read fails, or the field is sensitive, the action is not dispatched and the result
 is an `error`.
-The post-action snapshot is taken right after dispatch; after a delayed outcome,
-take a new `browser_snapshot` to see the updated page. Without `expect`, results are unchanged.
+The post-action snapshot is taken once the page has settled (see
+[Post-action snapshots](#post-action-snapshots)); after an outcome that comes later, take a
+new `browser_snapshot` to see the updated page. Without `expect`, results are unchanged.
 
 `wait` and `expect` can be combined: `wait` runs before dispatch and `expect` after it. A batch's timeout also covers each command's `expect.timeout`.
 
@@ -980,8 +1002,9 @@ The result then has `opened_popup` (#329):
   unpainted popup dispatches normally and returns the
   [`hidden_or_covered`](#action-errors) warning.
 
-The popup is looked up when the action returns, before its post-action snapshot (see
-[Post-action snapshots](#post-action-snapshots)); a popup that opens later is not reported.
+The popup is looked up when the action returns, before its post-action snapshot. With a delta
+snapshot, that is after the page has settled (see
+[Post-action snapshots](#post-action-snapshots)). A popup that opens later is not reported.
 
 While a reported popup stays open, every snapshot of its document lists it even when it is
 not rendered, with `[not_rendered]` on its line:

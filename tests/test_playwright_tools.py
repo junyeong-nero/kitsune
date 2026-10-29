@@ -319,6 +319,18 @@ class AdapterTests(unittest.TestCase):
         failed = playwright_tools.browser_fill_form(fields=fields)
         self.assertEqual((failed["field"], failed["filled"]), ("Email", []))
 
+    def test_fill_form_returns_one_delta_for_all_fields(self):
+        # #348: the first field records the delta's baseline, the middle ones take no snapshot,
+        # and only the last one waits for the page and returns the delta of every field.
+        fields = [{"target": "e1", "name": "Email", "type": "textbox", "value": "a@b"},
+                  {"target": "e2", "name": "Agree", "type": "checkbox", "value": "true"},
+                  {"target": "#plan", "name": "Plan", "type": "combobox", "value": "Pro"}]
+        playwright_tools.browser_fill_form(fields=fields)
+        flags = [{key: body[key] for key in ("includeSnapshot", "deltaBaseline", "keepBaseline") if key in body}
+                 for _, body in self.posted()]
+        self.assertEqual(flags, [{"includeSnapshot": False, "deltaBaseline": True}, {"includeSnapshot": False},
+                                 {"keepBaseline": True}])
+
     def test_fill_form_checks_every_field_before_filling_any(self):
         schema = playwright_tools.SCHEMAS["browser_fill_form"]["inputSchema"]["properties"]["fields"]["items"]
         self.assertEqual(playwright_tools._FIELD_TYPES, set(schema["properties"]["type"]["enum"]))

@@ -3,7 +3,7 @@
 
 (function() {
   'use strict';
-  const CONTENT_VERSION = 44;
+  const CONTENT_VERSION = 45;
   if (window.__claudeBridgeVersion >= CONTENT_VERSION) return;
   window.__claudeBridgeVersion = CONTENT_VERSION;
 
@@ -441,6 +441,7 @@
       // A frame's ping names its document (origin and path) for ask-before-act (#343).
       'ping':                  () => ({ ok: true, version: CONTENT_VERSION,
                                      ...(window !== window.top ? { frameUrl: location.origin + location.pathname } : {}) }),
+      'settleState':           () => settleState(),
       'getPageInfo':           () => getPageInfo(),
       'handleDialog':          () => handleDialog(msg.accept, msg.prompt_text),
       'waitForText':           () => waitForText(msg.text, msg.text_gone, msg.timeout, msg.diagnose === true),
@@ -540,7 +541,10 @@
         return false;
       }
       // A delta post-action snapshot is diffed against the page right before the action runs.
-      const run = msg.deltaBaseline ? () => { takeActionBaseline(!!msg.snapshotText); return handler(); } : handler;
+      // The baseline always records text lines: a delta lists text the action made appear (#348).
+      const run = msg.deltaBaseline
+        ? () => { takeActionBaseline(true); startSettleWatch(); return handler(); }
+        : msg.settleWatch ? () => { startSettleWatch(); return handler(); } : handler;
       if (msg.wait && (POINTER_WAIT_ACTIONS.has(msg.action) || VALUE_WAIT_ACTIONS.has(msg.action))) {
         waitForActionable(msg).then(failure => failure || run())
           .then(respond).catch(e => respond(errorResult(e)));
@@ -781,6 +785,45 @@
   // element, url and title, recorded right before an action (takeActionBaseline).
   let actionBaseline = null;
 
+  // ── Settling after an action (#348) ──
+  // A post-action delta waits for the page's reaction to the action. The background polls
+  // settleState (page timers are throttled in background tabs, messages are not): how long ago
+  // the action started and the page last changed, counting mutations in every document Kitsune
+  // reads and in their shadow roots since right before the action dispatched.
+  let settleWatch = null;
+
+  function startSettleWatch() {
+    stopSettleWatch();
+    const watch = { start: Date.now(), last: Date.now(), mutations: 0 };
+    // Absent in vm test harnesses.
+    if (typeof MutationObserver === 'function') {
+      watch.observer = new MutationObserver(records => {
+        watch.mutations += records.length;
+        watch.last = Date.now();
+      });
+      for (const doc of searchedDocuments()) {
+        for (const root of [doc, ...shadowRootsIn(doc)]) {
+          try {
+            watch.observer.observe(root, { childList: true, subtree: true, characterData: true, attributes: true });
+          } catch {}
+        }
+      }
+    }
+    settleWatch = watch;
+  }
+
+  function stopSettleWatch() {
+    settleWatch?.observer?.disconnect();
+    settleWatch = null;
+  }
+
+  function settleState() {
+    if (!settleWatch) return { watching: false };
+    const now = Date.now();
+    return { watching: true, elapsedMs: now - settleWatch.start, quietMs: now - settleWatch.last,
+      mutations: settleWatch.mutations, hidden: !!document.hidden };
+  }
+
   function takeActionBaseline(withText) {
     actionBaseline = null;
     try {
@@ -802,7 +845,8 @@
 
   function getSnapshot(maxChars, focusLastAction, selector, maxDepth, textMode,
       observation = 'browser_snapshot', mode = 'full', boxes = false, collapse = true, absoluteUrls = false) {
-    const withText = textMode !== false;
+    // A delta diffed against a baseline with text lines lists text too (#348).
+    const withText = textMode !== false || (mode === 'delta' && actionBaseline?.withText === true);
     if (maxChars != null && (!Number.isFinite(maxChars) || maxChars < 0)) {
       return { error: 'maxChars must be a finite non-negative number' };
     }
@@ -817,6 +861,7 @@
     let target = null;
     if (mode !== 'baseline') {
       actionBaseline = null;
+      stopSettleWatch();
       // Remember the actual node even when this snapshot omits it.
       target = focusLastAction && lastActedElement?.isConnected ? lastActedElement : null;
       lastActedElement = null;
@@ -1151,7 +1196,7 @@
         if (!signatures.has(el)) signatures.set(el, new Set());
         signatures.get(el).add(entry.signature);
       }
-      actionBaseline = { signatures, url: window.location?.href, title: document.title };
+      actionBaseline = { signatures, url: window.location?.href, title: document.title, withText };
       return { ok: true };
     }
 
@@ -1177,6 +1222,8 @@
       cuts = inside.flatMap((split, i) => split ? [] : [i]);
     }
     let selected = entries;
+    // A delta that found no new or changed line (#348).
+    let unchanged = false;
     const kept = new Set();
     let used = 0;
     // Keeps the entries, each with its ancestors and the /url entry of a link (its own, or the
@@ -1238,6 +1285,7 @@
         if (el && !baseline.signatures.get(el)?.has(entry.signature)) changed.push(i);
       });
       for (const i of changed) keep(i);
+      unchanged = !changed.length;
       // A collapse marker follows the listed items of its run.
       entries.forEach((entry, i) => {
         if (entry.run === undefined || kept.has(i)) return;
@@ -1360,6 +1408,8 @@
         delta: true,
         ...(window.location?.href !== baseline.url ? { url: window.location?.href } : {}),
         ...(document.title !== baseline.title ? { title: document.title } : {}),
+        ...(unchanged && window.location?.href === baseline.url && document.title === baseline.title
+          ? { unchanged: true } : {}),
       } : {}),
     };
   }
