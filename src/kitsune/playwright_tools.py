@@ -622,7 +622,7 @@ def browser_wait_for(time: float | None = None, text: str | None = None, textGon
         return {"error": "Either time, text or textGone must be provided"}
     result = {"ok": True}
     if time is not None:
-        result = k.browser_wait_for(time=min(time, 30))
+        result = k.browser_wait_for(time=min(time, 30), tab_id=_current_tab)
         if k._failed(result):
             return result
     if textGone is not None:

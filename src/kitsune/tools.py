@@ -751,6 +751,24 @@ def browser_js(
     return _post("/api/js", _request_body(body, tab_id))
 
 
+
+def _changes_since_observation(tab_id: int | None) -> dict:
+    """What changed on the page since the last snapshot or action result it returned (#350), as
+    snapshot/snapshot_delta/no_visible_change; {} when the page cannot say or snapshots are off."""
+    body = {"sinceObservation": True, "maxChars": 4000, **({"tabId": tab_id} if tab_id is not None else {})}
+    changes = _post("/api/snapshot", body)
+    if not isinstance(changes, dict) or not isinstance(changes.get("snapshot"), str):
+        return {}
+    result = {"snapshot": changes["snapshot"]}
+    if changes.get("delta"):
+        result["snapshot_delta"] = True
+    if changes.get("unchanged"):
+        result["no_visible_change"] = True
+    if changes.get("truncated"):
+        result["snapshot_truncated"] = True
+    return result
+
+
 @tool("inspect", annotations=dict(title="Highlight", **ACT))
 def browser_highlight(selector: str = "", tab_id: TabId = None, ref: str | None = None, element: str | None = None) -> dict:
     """Highlight an element (ref/selector, see browser_check) with a visual overlay."""
@@ -811,7 +829,7 @@ def browser_wait_for(
         if not math.isfinite(time) or time < 0:
             return {"error": "time must be a finite non-negative number of seconds"}
         _sleep(time)
-        return {"ok": True, "slept": time}
+        return {"ok": True, "slept": time, **_changes_since_observation(tab_id)}
     body = {"timeout": timeout}
     if element_condition:
         endpoint = "/api/wait-for-element"

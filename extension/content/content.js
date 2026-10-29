@@ -446,9 +446,14 @@
       'handleDialog':          () => handleDialog(msg.accept, msg.prompt_text),
       'waitForText':           () => waitForText(msg.text, msg.text_gone, msg.timeout, msg.diagnose === true),
       'getPageText':           () => getPageText(msg.selector),
-      'getSnapshot':           () => getSnapshot(msg.maxChars, msg.focusLastAction, msg.ref || msg.selector, msg.maxDepth, msg.text ?? (msg.observation ? false : undefined),
-                                     msg.observation, msg.delta ? 'delta' : 'full', !!msg.boxes, msg.collapse !== false,
-                                     !!msg.absoluteUrls),
+      'getSnapshot':           () => {
+                                     // sinceObservation (#350): the delta against the page the agent last saw.
+                                     if (msg.sinceObservation) actionBaseline = lastObservation;
+                                     return getSnapshot(msg.maxChars, msg.focusLastAction, msg.ref || msg.selector, msg.maxDepth,
+                                       msg.text ?? (msg.observation ? false : undefined), msg.observation,
+                                       msg.delta || msg.sinceObservation ? 'delta' : 'full', !!msg.boxes, msg.collapse !== false,
+                                       !!msg.absoluteUrls);
+                                   },
       'getAccessibilityTree':  () => getAccessibilityTree(msg.depth ?? 6, msg.ref || msg.selector),
       'getFormFields':         () => getFormFields(),
       'click':                 () => withPopupWatch(withScriptPopupCheck(() =>
@@ -784,6 +789,10 @@
   // What a delta snapshot is diffed against: the page's snapshot lines (without refs) per
   // element, url and title, recorded right before an action (takeActionBaseline).
   let actionBaseline = null;
+
+  // The page as of the last whole-page snapshot or delta this document returned, recorded like
+  // an action baseline: what browser_wait_for(time) diffs against (#350).
+  let lastObservation = null;
 
   // ── Settling after an action (#348) ──
   // A post-action delta waits for the page's reaction to the action. The background polls
@@ -1188,7 +1197,7 @@
     }
     visit(root, 0);
 
-    if (mode === 'baseline') {
+    const record = () => {
       const signatures = new Map();
       for (const entry of entries) {
         const el = entry.el || entry.source;
@@ -1196,9 +1205,14 @@
         if (!signatures.has(el)) signatures.set(el, new Set());
         signatures.get(el).add(entry.signature);
       }
-      actionBaseline = { signatures, url: window.location?.href, title: document.title, withText };
+      return { signatures, url: window.location?.href, title: document.title, withText };
+    };
+    if (mode === 'baseline') {
+      actionBaseline = record();
       return { ok: true };
     }
+    // Only a whole-page read is what the agent saw of the page.
+    if (!selector && maxDepth == null) lastObservation = record();
 
     const targetIndex = entries.findIndex(entry => entry.el === target);
     // Where a bounded snapshot without a target may end: before entry i unless a small block

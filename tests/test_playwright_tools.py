@@ -303,8 +303,8 @@ class AdapterTests(unittest.TestCase):
             self.post.return_value = {"ok": True}
             playwright_tools.browser_wait_for(time=60, text="Done", textGone="Loading")
         sleep.assert_called_once_with(30)
-        self.assertEqual([body.get("text_gone") or body.get("text") for _, body in self.posted()],
-                         ["Loading", "Done"])
+        self.assertEqual([body.get("text_gone") or body.get("text") or endpoint for endpoint, body in self.posted()],
+                         ["/api/snapshot", "Loading", "Done"])
         self.assertIn("error", playwright_tools.browser_wait_for())
 
     def test_fill_form_dispatches_by_field_type(self):

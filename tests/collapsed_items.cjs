@@ -103,7 +103,7 @@ const background = vm.createContext({
   tabState: async tabId => ({ tabId, status: 'complete', url: 'https://gallery.test/ui-table' }),
   isRestrictedUrl: () => false, ensureContentScript: async () => {},
   withTabState: async (tabId, response) => ({ ...response, state: { ...response.state, tabId } }),
-  tabsCreated: 0, openedTabs: [], actionStarts: new Map(),
+  tabsCreated: 0, openedTabs: [], actionStarts: new Map(), tabLoads: new Map(), mainFrameStatus: new Map(),
   userActiveError: async () => null, guardedTabId: async () => null, touchStart() {}, touchEnd() {},
 });
 vm.runInContext(fs.readFileSync('extension/background/history.js', 'utf8'), background);
