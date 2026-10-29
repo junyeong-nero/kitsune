@@ -639,13 +639,16 @@ const SETTLE_POLL_MS = 40;
 const settleRequests = new Map();
 
 // Never fails: when the page cannot say, the snapshot is taken right away.
-async function settleAfterAction(tabId, pending) {
+async function settleAfterAction(tabId, pending, params) {
   const start = Date.now();
   try {
+    // The document the action ran in: a cross-origin frame's own when its ref is there (#343).
+    const expanded = expandShortRefs(params, tabId);
+    const frame = { frameId: expanded.params ? targetFrame(tabId, expanded.params) : 0 };
     while (true) {
       let timer;
       const state = await Promise.race([
-        browser.tabs.sendMessage(tabId, { action: 'settleState' }).catch(() => null),
+        browser.tabs.sendMessage(tabId, { action: 'settleState' }, frame).catch(() => null),
         new Promise(resolve => { timer = setTimeout(() => resolve(null), SETTLE_CAP_MS); }),
       ]);
       clearTimeout(timer);
@@ -674,7 +677,7 @@ async function runCommand(params, options) {
 
 async function runCommandSettled(params, { withSnapshot, deltaSnapshot, textSnapshot, tracksOpenedTabs }, pending) {
   const result = await dispatchCommand(params);
-  if (pending && result && !result.error && result.ok !== false) await settleAfterAction(params.tabId, pending);
+  if (pending && result && !result.error && result.ok !== false) await settleAfterAction(params.tabId, pending, params);
   const blankLink = result?.targetBlankLink;
   if (blankLink) delete result.targetBlankLink;
   const newTabLink = result?.newTabLink;

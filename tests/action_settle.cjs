@@ -27,6 +27,8 @@ function harness({ mutatesUntil = 0, requestMs = null, watching = true, unchange
     protectedTabError: async () => null,
     getOpenedTabs: async () => ({ opened_tabs: [] }),
     takeOpenedPopup: async () => null,
+    // The top frame (#343): no ref here belongs to a cross-origin frame.
+    expandShortRefs: params => ({ params }), targetFrame: () => 0,
     dispatchCommand: async params => {
       sent.push({ action: params.action, deltaBaseline: params.deltaBaseline, settleWatch: params.settleWatch });
       actionAt = Date.now();
@@ -42,8 +44,9 @@ function harness({ mutatesUntil = 0, requestMs = null, watching = true, unchange
     },
     browser: {
       tabs: {
-        sendMessage: async (tabId, msg) => {
+        sendMessage: async (tabId, msg, options) => {
           assert.equal(msg.action, 'settleState');
+          assert.equal(options.frameId, 0);
           sent.push({ action: 'settleState' });
           if (!watching) return { watching: false };
           const elapsedMs = Date.now() - actionAt;
