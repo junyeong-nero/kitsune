@@ -2007,19 +2007,27 @@ delta, lists a link with its own `/url` line or, for a link without one, with th
 `/url` line it repeats; a bounded snapshot that cannot fit a URL shows `- /url: "…"`
 instead of leaving the line out. The acted-on target of a post-action snapshot always has
 its own `/url` line. Path URLs are redacted like absolute ones. The core `browser_find`
-searches the same lines, but matches `/url` lines only for a URL-like query: `text`, or a
-`regex` pattern, starting with `/`, `http(s):` or `www.`. It then matches a same-origin link
-by its path, not its absolute URL. Pass `browser_navigate` an absolute URL, resolving a path
-against the snapshot's `url`.
+searches the same lines, but its inline result matches `/url` lines only for a URL-like
+query: `text`, or a `regex` pattern, that starts with `/`, `http(s):`, `www.` or a domain
+such as `github.com`, or that contains `://`. For a `regex`, a leading `^` or inline flags
+such as `(?i)` and escapes such as `\/` and `\.` are ignored, so `https?://` and
+`\/wiki\/` are URL-like. It then matches a same-origin link by its path, not its absolute
+URL. Pass `browser_navigate` an absolute URL, resolving a path against the snapshot's `url`.
 
 The core `browser_find` returns `{"count": N, "blocks": [...]}` (#323). Each block holds the
 matches under one `path` (the ancestor lines): the union of a ±2-line window around each
-match, in document order, with `  …` between windows that do not touch and each matched line
-prefixed `> `. In a window, a `/url` line is shown only as the URL of a matched link (or
-when it matches itself). Inline results are cut line by line at 8,000 characters
-(`FIND_LIMIT`): they then carry `truncated: true`, `shown` (matches listed) and a `hint` to
+match, in document order, with each matched line prefixed `> ` and `  …` where lines are left
+out (between windows that do not touch, or a hidden `/url` line). A window stays inside the
+match's container, but can show a matched child under another `path`; a line already shown in
+an earlier block, and context only for matches shown there, is left out. In a window, a `/url`
+line is shown only as the URL of a matched link (or when it matches itself). Blocks are
+ordered by their first match, so a cut can list a block's later matches and leave out a
+later block's earlier ones. Inline results are cut line by line at about 8,000 characters
+(`FIND_LIMIT`). A cut result still lists at least one match, ends after the last listed
+match's own context, and carries `truncated: true`, `shown` (matches listed) and a `hint` to
 narrow the query, scope a snapshot, or set `filename`. `count` is always the total. With
-`filename` every match is saved with its own window and path, as before.
+`filename` every match, including a matched `/url` line for any query, is saved with its own
+window and path, as before, so its `count` can be higher than the inline one.
 
 Without an acted-on target, a cut snapshot of a page with a `main` landmark defers each
 `navigation`, `banner` or `contentinfo` landmark outside `main` whose lines exceed a small

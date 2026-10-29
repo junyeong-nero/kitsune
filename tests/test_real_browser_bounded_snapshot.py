@@ -133,7 +133,8 @@ class RealBrowserBoundedSnapshotTests(harness.RealBrowserTestCase):
         # A card past the cut: find it, read its card by the heading's container, act on it.
         found = self.core("browser_find", text="DESK-55 desk")
         # Matched lines are marked with ">" in their block (#323).
-        heading = next(line for line in (r[2:].strip() for b in found["blocks"] for r in b["lines"] if r.startswith(">")) if line.startswith("- heading"))
+        matched = (r[2:].strip() for b in found["blocks"] for r in b["lines"] if r.startswith(">"))
+        heading = next(line for line in matched if line.startswith("- heading"))
         ref = re.search(r"\[ref=(e\d+)\]", heading)[1]
         card = self.core("browser_snapshot", target=f"{ref} >> ..")
         self.assertNotIn("truncated", card)

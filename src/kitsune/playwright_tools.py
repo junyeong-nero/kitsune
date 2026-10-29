@@ -254,19 +254,21 @@ def _search(text: str | None, regex: str | None):
 
 # Inline browser_find results are compact (#323): matches under one path share a block, the matched lines
 # are marked with ">", /url lines are searched only for URL-like queries and shown only under a matched
-# link, and the result is cut at FIND_LIMIT characters between blocks. filename keeps every match.
+# link, and the result is cut at FIND_LIMIT characters line by line. filename saves every match, as before.
 FIND_LIMIT = 8000
 _URL_LINE = re.compile(r"^\s*- /url: ")
+_URL_LIKE = re.compile(r"/|https?\??:|www\.|[\w-]+(\.[\w-]+)*\.[a-z]{2,}(/|$)", re.IGNORECASE)
 
 
 def _url_query(text: str | None, regex: str | None) -> bool:
-    """A query that looks for a URL (a path, http(s) or www.) also searches /url lines."""
+    """A query that looks for a URL (a path, http(s), www. or a domain) also searches /url lines."""
     if text is not None:
         query = text.strip()
     else:
-        wrapped = re.fullmatch(r"/(.*)/([a-z]*)", regex, re.S)
-        query = (wrapped[1] if wrapped else regex).lstrip("^")
-    return re.match(r"(/|https?:|www\.)", query, re.I) is not None
+        wrapped = re.fullmatch(r"/(.*)/([a-z]*)", regex, re.DOTALL)
+        query = re.sub(r"^(\^|\(\?[a-zA-Z]+\))+", "", wrapped[1] if wrapped else regex)
+        query = re.sub(r"\\([/.:])", r"\1", query)
+    return "://" in query or _URL_LIKE.match(query) is not None
 
 
 @_core
@@ -280,45 +282,62 @@ def browser_find(text: str | None = None, regex: str | None = None, filename: st
         return result
     lines = (result.get("snapshot") or "").split("\n")
     indent = [len(line) - len(line.lstrip(" ")) for line in lines]
-    urls = _url_query(text, regex)
 
-    def path_of(i):
+    def ancestors(i):
         path, depth = [], indent[i]
         for j in range(i - 1, -1, -1):
             if indent[j] < depth:
-                path.insert(0, lines[j].strip())
+                path.insert(0, j)
                 depth = indent[j]
         return path
 
-    hits = [i for i, line in enumerate(lines) if line and (urls or not _URL_LINE.match(line)) and matches(line)]
     if filename:
-        found = [{"path": path_of(i), "lines": lines[max(0, i - 2):i + 3]} for i in hits]
+        found = [{"path": [lines[j].strip() for j in ancestors(i)], "lines": lines[max(0, i - 2):i + 3]}
+                 for i, line in enumerate(lines) if line and matches(line)]
         text_out = "\n\n".join("\n".join([" > ".join(m["path"]) or "(root)", *m["lines"]]) for m in found)
         return {**_saved(filename, text_out), "count": len(found)}
+    urls = _url_query(text, regex)
+    hits = [i for i, line in enumerate(lines) if line and (urls or not _URL_LINE.match(line)) and matches(line)]
     hit = set(hits)
     blocks: dict[tuple, dict] = {}
     for i in hits:
-        block = blocks.setdefault(tuple(path_of(i)), {"first": i, "shown": set()})
-        for j in range(max(0, i - 2), min(len(lines), i + 3)):
+        path = ancestors(i)
+        block = blocks.setdefault(tuple(lines[j].strip() for j in path), {"first": i, "shown": {}})
+        # The window stays inside the match's container, so it does not repeat a neighbor block's lines.
+        top = indent[path[-1]] if path else -1
+        start = end = i
+        while start > max(0, i - 2) and indent[start - 1] > top:
+            start -= 1
+        while end < min(len(lines) - 1, i + 2) and indent[end + 1] > top:
+            end += 1
+        for j in range(start, end + 1):
             # A /url line is shown only as the URL of a matched link (or itself matched).
             if lines[j] and (not _URL_LINE.match(lines[j]) or j in hit or (j - 1) in hit):
-                block["shown"].add(j)
-    # Blocks in document order, line by line, until the next line would pass FIND_LIMIT (always at least one).
-    out, used, listed, full = [], 0, set(), False
+                block["shown"].setdefault(j, set()).add(i)
+    # Blocks by first match, line by line, until the next line would pass FIND_LIMIT once a match is listed.
+    # A line already shown in an earlier block is not repeated, nor is context only for matches shown there.
+    out, used, listed, emitted, full = [], 0, set(), set(), False
     for path, block in sorted(blocks.items(), key=lambda item: item[1]["first"]):
-        shown = sorted(block["shown"])
+        shown = sorted(j for j, by in block["shown"].items() if j not in emitted and not by <= emitted)
         entry = {"path": list(path), "lines": []}
         cost = len(json.dumps(entry, ensure_ascii=False))
+        last_hit, keep = None, 0
         for n, j in enumerate(shown):
             rows = (["  …"] if n and j != shown[n - 1] + 1 else []) + [("> " if j in hit else "  ") + lines[j]]
             row_cost = sum(len(json.dumps(row, ensure_ascii=False)) + 2 for row in rows)
-            if used + cost + row_cost > FIND_LIMIT and (out or entry["lines"]):
+            if used + cost + row_cost > FIND_LIMIT and listed:
+                # Cut after the last listed match's own context, not before an unlisted one.
+                entry["lines"] = entry["lines"][:keep]
                 full = True
                 break
             entry["lines"] += rows
             cost += row_cost
+            emitted.add(j)
             if j in hit:
                 listed.add(j)
+                last_hit = j
+            if last_hit is not None and j <= last_hit + 2:
+                keep = len(entry["lines"])
         if entry["lines"]:
             out.append(entry)
             used += cost
