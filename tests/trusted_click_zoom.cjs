@@ -186,6 +186,7 @@ function background(zoomOf) {
       },
       getZoom: async id => zoomOf(id),
     },
+    windows: { get: async id => ({ id, left: 0, top: 25, width: 1440, height: 875 }) },
     storage: { local: { get: async () => ({}), set: async () => {} } },
     runtime: { onMessage: noop, onStartup: noop, onInstalled: noop },
   };
@@ -209,6 +210,8 @@ async function testBackgroundPassesTheTabZoom() {
   const point = copy(await h.context.screenPointForClick({ tabId: 2, selector: '#go', click: true }));
   assert.deepEqual(h.sent, [['screenPoint', { tabId: 2, selector: '#go', click: true, zoom: 1.5 }]]);
   assert.deepEqual([point.zoom, point.tabId, point.previousTabId], [1.5, 2, 1]);
+  // The tab's window, which the bridge requires at the click point (#336).
+  assert.deepEqual(point.window, { left: 0, top: 25, width: 1440, height: 875 });
 
   // A read uses the zoom of the tab it resolves to.
   await h.context.dispatchCommand({ action: 'screenPoint', selector: '#go' });

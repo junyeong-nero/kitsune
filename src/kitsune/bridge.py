@@ -323,9 +323,9 @@ def _focus_browser_window(title="", process=""):
 
 
 def _mac_window_at(x, y):
-    """(owner pid, owner name) of the front on-screen window at desktop point (x, y), (0, "")
-    when none is there (the desktop), or None when Quartz is not available. Raises when the
-    window list cannot be read."""
+    """(owner pid, owner name, (left, top, width, height)) of the front on-screen window at
+    desktop point (x, y), (0, "", None) when none is there (the desktop), or None when Quartz is
+    not available. Raises when the window list cannot be read."""
     try:
         import Quartz
     except ImportError:
@@ -341,9 +341,11 @@ def _mac_window_at(x, y):
         if not window.get("kCGWindowAlpha", 1) or window.get("kCGWindowLayer") == cursor_level:
             continue
         left, top = bounds.get("X", 0), bounds.get("Y", 0)
-        if left <= x < left + bounds.get("Width", 0) and top <= y < top + bounds.get("Height", 0):
-            return int(window.get("kCGWindowOwnerPID") or 0), str(window.get("kCGWindowOwnerName") or "")
-    return 0, ""
+        width, height = bounds.get("Width", 0), bounds.get("Height", 0)
+        if left <= x < left + width and top <= y < top + height:
+            return (int(window.get("kCGWindowOwnerPID") or 0), str(window.get("kCGWindowOwnerName") or ""),
+                    (left, top, width, height))
+    return 0, "", None
 
 
 def _mac_process_name(pid):
@@ -362,10 +364,23 @@ _BROWSER_NOT_AT_POINT_HINT = (
     "focus=true may not bring it there.")
 
 
-def _browser_not_at_point(x, y, process="", focused=None, wait=0.0):
+# How far (in points) the window at the point may be from the target window's bounds that the
+# extension reports (browser.windows.get) and still be that window (#336).
+WINDOW_BOUNDS_TOLERANCE = 4
+
+
+def _same_window(bounds, target):
+    return bounds is not None and all(abs(a - b) <= WINDOW_BOUNDS_TOLERANCE for a, b in zip(bounds, target))
+
+
+def _browser_not_at_point(x, y, process="", focused=None, wait=0.0, target_window=None):
     """The {error} when macOS shows another app's window (or the desktop) at the desktop point a
     viewport click would land on, else None. The OS click goes to whatever is there, so a browser
     on another Space or under another window would send it to that app (#322).
+
+    With target_window (the tab's window as (left, top, width, height)), the browser's window at
+    the point must also be that window (#336). Another window of the same browser, or a panel of
+    it covering the page, refuses with reason other_browser_window.
 
     With Quartz the window at the point is checked, for up to `wait` seconds while a Space switch
     finishes; a window list that cannot be read refuses. Without Quartz (cliclick) only a
@@ -390,12 +405,22 @@ def _browser_not_at_point(x, y, process="", focused=None, wait=0.0):
             return {"error": "The browser did not come to the front; the trusted click was not made",
                     "code": "browser_not_at_point", "retryable": True, "hint": _BROWSER_NOT_AT_POINT_HINT,
                     "state": {"screenX": x, "screenY": y, "reason": "not_frontmost"}}
-        pid, owner = window
+        pid, owner = window[:2]
+        bounds = window[2] if len(window) > 2 else None
         if pid and owner.lower() not in names and pid not in process_names:
             process_names[pid] = _mac_process_name(pid).lower()
-        if pid and (owner.lower() in names or process_names[pid] in names):
+        browser = pid and (owner.lower() in names or process_names[pid] in names)
+        if browser and (target_window is None or _same_window(bounds, target_window)):
             return None
         if time.monotonic() >= deadline:
+            if browser:
+                return {"error": "Another browser window or panel, not the tab's window, is at the click point; "
+                                 "the trusted click was not made",
+                        "code": "browser_not_at_point", "retryable": True,
+                        "hint": "Nothing was clicked. Ask the user to bring the tab's browser window to the front "
+                                "there, or close the menu or panel covering it, then retry.",
+                        "state": {"screenX": x, "screenY": y, "reason": "other_browser_window", "app": owner or None,
+                                  "window": list(bounds) if bounds else None, "targetWindow": list(target_window)}}
             return {"error": "Another app's window, not the browser's, is at the click point; "
                               "the trusted click was not made",
                     "code": "browser_not_at_point", "retryable": True, "hint": _BROWSER_NOT_AT_POINT_HINT,
@@ -967,8 +992,11 @@ async def trusted_click(params):
         return refusal
 
     if coordinate_space == "screen":
-        focused = _focus_browser_window(title, process) if focus else False
-        clicked = _native_click_screen(x, y, restore_pointer, button, click_count, modifiers)
+        # Focus and the click wait and sleep: off the event loop, which serves every client (#336).
+        def focus_and_click():
+            return (_focus_browser_window(title, process) if focus else False,
+                    _native_click_screen(x, y, restore_pointer, button, click_count, modifiers))
+        focused, clicked = await asyncio.to_thread(focus_and_click)
         if "error" in clicked:
             return clicked
         return {
@@ -999,13 +1027,22 @@ async def trusted_click(params):
     if "error" in point:
         return point
 
-    try:
+    window = point.get("window")
+    target_window = (tuple(window[key] for key in ("left", "top", "width", "height"))
+                     if isinstance(window, dict) and all(isinstance(window.get(key), (int, float))
+                                                         for key in ("left", "top", "width", "height")) else None)
+
+    # Focus (up to about 1 s of frontmost polling), the window check (up to BROWSER_AT_POINT_WAIT)
+    # and the click's own sleeps all run off the event loop, which serves every client (#336).
+    def focus_check_click():
         focused = _focus_browser_window(title or point.get("title", ""), process) if focus else None
-        # Off the event loop: the recheck can poll for up to BROWSER_AT_POINT_WAIT.
-        refusal = await asyncio.to_thread(_browser_not_at_point, point["screenX"], point["screenY"], process,
-                                          focused, BROWSER_AT_POINT_WAIT if focus else 0.0)
-        clicked = refusal or _native_click_screen(point["screenX"], point["screenY"], restore_pointer,
-                                                  button, click_count, modifiers)
+        refusal = _browser_not_at_point(point["screenX"], point["screenY"], process, focused,
+                                        BROWSER_AT_POINT_WAIT if focus else 0.0, target_window)
+        return focused, refusal or _native_click_screen(point["screenX"], point["screenY"], restore_pointer,
+                                                        button, click_count, modifiers)
+
+    try:
+        focused, clicked = await asyncio.to_thread(focus_check_click)
     finally:
         if point.get("previousTabId") is not None:
             # The OS delivers the click asynchronously; let it land before showing the user's tab again.

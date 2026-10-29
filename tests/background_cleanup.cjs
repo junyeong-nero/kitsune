@@ -40,6 +40,7 @@ function harness() {
       },
       getZoom: async () => 1,
     },
+    windows: { get: async id => ({ id, left: 0, top: 0, width: 1440, height: 900 }) },
     storage: { local: {
       get: async () => ({ ...stored }),
       set: async value => { Object.assign(stored, value); },
@@ -137,7 +138,8 @@ async function screenPointForClickRestoration() {
     await h.tick(150);
     if (outcome === 'throws') await result;
     else assert.deepEqual(copy(await result), outcome === 'error'
-      ? { error: 'No target' } : { x: 12, y: 34, tabId: 2, previousTabId: 1 });
+      ? { error: 'No target' }
+      : { x: 12, y: 34, window: { left: 0, top: 0, width: 1440, height: 900 }, tabId: 2, previousTabId: 1 });
     assert.deepEqual(h.activations, outcome === 'success' ? [2] : [2, 1]);
     assert.equal(h.tabs[1].active, outcome !== 'success', 'only success leaves restoration to the bridge');
     assert.equal(h.timers.size, 0);

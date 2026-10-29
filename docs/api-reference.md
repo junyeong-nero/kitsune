@@ -470,7 +470,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `value_not_reached` | `fill` on an ARIA slider or spinbutton did not make `aria-valuenow` the value (see [`/api/fill`](#post-apifill)). `state` has `role`, `value` (where it stopped), `target`, `min`, `max`, `keys` and `reason`: `out_of_range` (the value is outside `aria-valuemin`/`aria-valuemax`; nothing was pressed), `stepped_past` (its steps skip the value), `stuck` (it stopped moving: at an end, disabled, ignoring synthetic keys, or rendering only on an animation frame), `moved_away` (its arrow keys moved it away from the value and the other arrow keys did not move it), `key_limit` (1,000 keys) or `time_limit` (20 s) | true for `out_of_range`, else false |
 | `ambiguous_target` | The command names no single target, so nothing was dispatched: a write action's selector matches several actionable elements (`state.selector`, `state.matches`; see [Strict selectors](#strict-selectors)), a `browser_form_fill` label or placeholder key matches several actionable fields (`state.field`, `state.matches`), or `browser_submit_form` without a target found several forms and no filled field naming one (`state.forms`). `state.candidates` lists up to 5 of them with a `ref` to target one | false |
 | `target_not_at_point` | `browser_trusted_click` found another element (`state.hit`, `null` for none) at its target's center (`state.viewportX`, `state.viewportY`), such as an overlay; no OS click was made | true |
-| `browser_not_at_point` | On macOS, a viewport `browser_trusted_click` would land outside the browser: another app's window (`state.app`, `null` for the desktop) is at the desktop point (`state.screenX`, `state.screenY`; `state.reason: "other_window"`), the macOS window list could not be read (`"unknown"`, `state.detail`), or, without Quartz, `focus=True` could not bring the browser to the front (`"not_frontmost"`). Typically the browser is in full screen on another Space; no OS click was made | true |
+| `browser_not_at_point` | On macOS, a viewport `browser_trusted_click` would land outside the browser: another app's window (`state.app`, `null` for the desktop) is at the desktop point (`state.screenX`, `state.screenY`; `state.reason: "other_window"`), another window or panel of the browser is there instead of the tab's window (`"other_browser_window"`, `state.window`, `state.targetWindow`), the macOS window list could not be read (`"unknown"`, `state.detail`), or, without Quartz, `focus=True` could not bring the browser to the front (`"not_frontmost"`). Typically the browser is in full screen on another Space; no OS click was made | true |
 | `not_actionable` | An [actionability wait](#actionability-wait) timed out on a target that exists but never rendered (`state.reason: "not_rendered"`, `timeoutMs`, `elapsed`); nothing was dispatched | true |
 | `unsupported_selector` | The shared target resolver rejected unsupported/invalid syntax (see [Target selectors](#target-selectors)) before dispatch; `state.selector` echoes the selector and `hint` lists accepted forms. Applies to actions, scoped snapshots and element screenshots | false |
 | `stale_ref` | The ref is no longer valid; `state.reason` is `element_removed`, `not_in_snapshot` (unknown/unissued ref), or `other_document` (the tab navigated, or the ref came from another tab) | true |
@@ -2567,8 +2567,18 @@ would otherwise land in the app in front, such as the terminal running the agent
 the user to show the browser there (switch to its Space, or leave full screen), then
 retry. With only cliclick the point cannot be checked, so a viewport click refuses only
 when `focus=True` was asked and the browser did not come to the front
-(`state.reason: "not_frontmost"`). The check does not tell two browser windows apart,
-and `coordinate_space="screen"` clicks are not checked.
+(`state.reason: "not_frontmost"`). `coordinate_space="screen"` clicks are not checked.
+
+The browser's window at the point must also be the tab's own window (#336). The extension
+reports that window's bounds (`browser.windows.get`), and the bridge compares them with the
+window at the point, within 4 points. Another window of the same browser (for example the
+user's second Zen window, or a Firefox window in front of the Zen window Kitsune drives) or a
+browser panel or menu covering the page refuses with `state.reason: "other_browser_window"`,
+`state.window` (the window at the point, `[left, top, width, height]`) and `state.targetWindow`.
+An extension older than this bridge sends no bounds, so any browser window passes, as before.
+
+Focusing the browser, the window check and the click run off the bridge's event loop, so other
+clients' requests are served while a trusted click waits for focus.
 
 ### `browser_resume(call, resume_token, observed=None)`
 

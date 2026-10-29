@@ -1269,8 +1269,9 @@ async function closeTab(tabId, { force = false, userTabApproved = false } = {}) 
 const TRUSTED_CLICK_PAINT_MS = 150;
 async function screenPointForClick(params) {
   let previousTabId = null;
+  let tab;
   try {
-    const tab = await browser.tabs.get(params.tabId);
+    tab = await browser.tabs.get(params.tabId);
     if (!tab.active) {
       const [shown] = await browser.tabs.query({ windowId: tab.windowId, active: true });
       const busy = shown && await userActiveError(shown.id);
@@ -1285,7 +1286,11 @@ async function screenPointForClick(params) {
   let point;
   try {
     point = await zoomedScreenPoint(params);
-    if (previousTabId == null || point.error) return point;
+    if (point.error) return point;
+    // The bridge checks that this window is the one at the click point (#336).
+    const win = await browser.windows.get(tab.windowId).catch(() => null);
+    if (win) point = { ...point, window: { left: win.left, top: win.top, width: win.width, height: win.height } };
+    if (previousTabId == null) return point;
     return { ...point, tabId: params.tabId, previousTabId };
   } finally {
     if (previousTabId != null && (!point || point.error)) {
