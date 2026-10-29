@@ -5,7 +5,7 @@ Current tools defined in [tools.py](../src/kitsune/tools.py) and
 [server.py](../src/kitsune/server.py), grouped by capability. The
 default `KITSUNE_CAPS=core` exposes the 25 `core` tools, which are
 [Playwright MCP](https://github.com/microsoft/playwright-mcp)'s core tools with the same
-definitions ([Core tools](guide.md#core-tools)). `KITSUNE_CAPS=all` exposes all 93. Set a
+definitions ([Core tools](guide.md#core-tools)). `KITSUNE_CAPS=all` exposes all 94. Set a
 comma-separated list to enable selected groups, for example
 `KITSUNE_CAPS=core,browse,read`. The `storage` and `history` groups are not part of `all`:
 they read personal data and must be named, as in `KITSUNE_CAPS=all,storage,history`.
@@ -98,7 +98,7 @@ container call ([Checkpoint and resume](checkpoint-resume.md)).
 - `browser_workflow`
 - `browser_workflows`
 
-## browse — 8
+## browse — 9
 
 Everyday page actions beyond the core tools: scrolling, forward navigation, checkboxes, focus,
 form submits and trusted OS clicks.
@@ -111,6 +111,7 @@ form submits and trusted OS clicks.
 - `browser_scroll`
 - `browser_submit_form`
 - `browser_trusted_click`
+- `browser_trusted_type`
 
 ## gateway — 3 (only with a narrower KITSUNE_PUBLISH)
 

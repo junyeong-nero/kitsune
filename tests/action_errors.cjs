@@ -270,11 +270,11 @@ async function testBackgroundErrors() {
     assert.deepEqual([closed.error, closed.code, closed.state], ['Invalid tab ID: 9', 'tab_closed', { tabId: 9 }], action);
   }
 
-  // Existing v44 content must be reinjected for the integrated protocol, current v45 need not.
-  h.setContentVersion(44);
+  // Existing v45 content must be reinjected for the integrated protocol, current v46 need not.
+  h.setContentVersion(45);
   assert.deepEqual(await h.send({ action: 'click', tabId: 2, selector: '#go' }), { ok: true });
   assert.deepEqual(h.injected, [2]);
-  h.setContentVersion(45);
+  h.setContentVersion(46);
   assert.deepEqual(await h.send({ action: 'click', tabId: 2, selector: '#go' }), { ok: true });
   assert.deepEqual(h.injected, [2]);
 

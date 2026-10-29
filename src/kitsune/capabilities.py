@@ -44,7 +44,7 @@ ROUTE_GROUPS = _by_group({
     ),
     "browse": (
         "/api/blur", "/api/check", "/api/click-and-wait-navigation", "/api/focus", "/api/forward", "/api/scroll",
-        "/api/submit-form", "/api/trusted-click",
+        "/api/submit-form", "/api/trusted-click", "/api/trusted-type",
     ),
     "read": (
         "/api/dom", "/api/forms", "/api/html", "/api/iframes", "/api/images", "/api/links", "/api/markdown",

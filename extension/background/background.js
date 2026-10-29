@@ -3,7 +3,7 @@
 
 'use strict';
 
-const EXPECTED_CONTENT_VERSION = 45;
+const EXPECTED_CONTENT_VERSION = 46;
 const WS_URL = 'ws://127.0.0.1:47652';
 // scripts/build_extension.py sets 'signed' for the AMO build (see content.js).
 const KITSUNE_BUILD = 'dev';
@@ -962,6 +962,8 @@ async function dispatchCommand(command) {
     case 'highlight':
     case 'clearHighlight':
     case 'waitForElement':
+    case 'focusState':
+    case 'agentInput':
     case 'waitForResult':
     // 1.4.0 forwarded actions
     case 'query':

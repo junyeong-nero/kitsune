@@ -88,6 +88,7 @@ TAB_WRITE_TOOLS = frozenset({
     "browser_blur", "browser_check", "browser_click_and_wait_navigation", "browser_duplicate_tab",
     "browser_focus", "browser_forward", "browser_highlight", "browser_mute_tab", "browser_pin_tab",
     "browser_reload_tab", "browser_scroll", "browser_set_zoom", "browser_submit_form", "browser_trusted_click",
+    "browser_trusted_type",
 })
 # Container steps that write their tab, by the action names steps use: the bridge's tab-claiming
 # actions (bridge._claims_tab) that are not tabless; an if/while condition is JavaScript on its tab.
@@ -659,6 +660,33 @@ def browser_trusted_click(
     if modifiers:
         body["modifiers"] = modifiers
     return _post("/api/trusted-click", _request_body(body, tab_id, confirm_token=confirm_token, first=first))
+
+
+@tool("browse", annotations=dict(title="Trusted type", **ACT))
+def browser_trusted_type(
+    selector: Annotated[str, Field(description="CSS selector or ref of the field to type into.")],
+    text: Annotated[str, Field(description="Text to type, at most 1000 characters; never reported back.")],
+    tab_id: TabId = None,
+    clear: Annotated[bool, Field(description="Select all and delete first.")] = False,
+    submit: Annotated[bool, Field(description="Press Enter after the text.")] = False,
+    delay_ms: Annotated[int, Field(description="Pause between keys, 0-1000 ms.")] = 30,
+    confirm_token: str | None = None,
+    first: bool = False,
+) -> dict:
+    """Type into a field with the real OS keyboard, for fields that reject synthetic input
+    (one-time-code sign-in fields); confirm_token and first work as in browser_check. The
+    result counts keysSent and typed characters but never contains the text.
+    Only on macOS (pyobjc Quartz and Accessibility permission for the bridge); elsewhere it
+    returns unsupported_platform without typing. Kitsune clicks the target with the OS pointer
+    (as browser_trusted_click, showing a tab that is not shown and then the user's tab again)
+    and sends each key only while the browser is frontmost and the target has the page's focus:
+    keyboard_focus_lost (state.reason, state.keysSent) means it stopped before a key could land
+    elsewhere. It takes the user's keyboard and pointer for its duration; prefer the synthetic
+    tools unless the page ignores them."""
+    body = {"selector": selector, "text": text, "clear": clear, "submit": submit, "delayMs": delay_ms}
+    return _post("/api/trusted-type", _request_body(body, tab_id, confirm_token=confirm_token, first=first),
+                 timeout=40 + len(text or "") * (max(delay_ms, 0) + 150) / 1000)
+
 
 
 def browser_type(

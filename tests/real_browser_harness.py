@@ -22,6 +22,8 @@ API, kept small so suites can rely on it:
                            turns the blocker off.
     extension_scripts()    {file name: source} added to the copy as background scripts
                            after background.js; override it to drive the browser from a test.
+    HEADED                 True launches a visible browser window (no --headless), for suites
+                           that send real OS input to it; False (default) stays headless.
   Helpers: call(path, body=None) for bridge requests (GET without a body),
   wait_for_extension(after_generation=0), open_tab(url), assert_ok(result) and
   assert_error(result, code, retryable).
@@ -210,9 +212,11 @@ def check_extension_copy(extension, ws_port):
 
 
 class RealBrowser:
-    """A headless browser on a temporary profile, running the extension against one bridge."""
+    """A headless (or, with headed, a visible) browser on a temporary profile, running the
+    extension against one bridge."""
 
-    def __init__(self, binary, root, ws_port, prefs, scripts):
+    def __init__(self, binary, root, ws_port, prefs, scripts, headed=False):
+        self.headed = headed
         self.binary = binary
         self.root = Path(root)
         self.ws_port = ws_port
@@ -244,13 +248,14 @@ class RealBrowser:
         check_extension_copy(self.extension, self.ws_port)
         self.rdp_port = _free_port()
         env = {k: v for k, v in os.environ.items() if not k.startswith(("KITSUNE_", "MOZ_"))}
-        env.update(HOME=str(self.home), MOZ_NO_REMOTE="1", MOZ_HEADLESS="1")
+        env.update(HOME=str(self.home), MOZ_NO_REMOTE="1", **({} if self.headed else {"MOZ_HEADLESS": "1"}))
         # Also covers runs that are interrupted before the class cleanups.
         atexit.register(self.stop)
         with open(self.log_path, "ab") as log:
             # Its own session, so stop() can kill the browser with all of its child processes.
             self.process = subprocess.Popen(
-                [self.binary, "--headless", "-no-remote", "-new-instance", "-profile", str(self.profile),
+                [self.binary, *([] if self.headed else ["--headless"]), "-no-remote", "-new-instance",
+                 "-profile", str(self.profile),
                  "-start-debugger-server", str(self.rdp_port), "about:blank"],
                 env=env, cwd=self.root, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                 start_new_session=True,
@@ -283,6 +288,8 @@ class RealBrowserTestCase(unittest.TestCase):
     """One owned bridge and headless browser per test class; see the module docstring."""
 
     PROFILE_PREFS = {}
+    # A visible browser window, for suites that send real OS input to it.
+    HEADED = False
     failure_artifacts = None
 
     @classmethod
@@ -308,7 +315,7 @@ class RealBrowserTestCase(unittest.TestCase):
             artifacts.watch_bridge(cls.bridge)
         cls.bridge.start()
         cls.browser = RealBrowser(BROWSER, temp.name, cls.bridge.ws_port, cls.PROFILE_PREFS,
-                                  cls.extension_scripts())
+                                  cls.extension_scripts(), headed=cls.HEADED)
         cls.addClassCleanup(cls.browser.stop)
         if artifacts:
             artifacts.watch_browser(cls.browser)

@@ -247,7 +247,7 @@ class _FakeBrowser:
     fail_start = False
     instances = []
 
-    def __init__(self, binary, root, ws_port, prefs, scripts):
+    def __init__(self, binary, root, ws_port, prefs, scripts, headed=False):
         self.root = Path(root)
         self.log_path = self.root / "browser.log"
         self.log_path.write_text("x" * (artifacts.MAX_LOG_BYTES + 10) + "\nbrowser tail line\n")

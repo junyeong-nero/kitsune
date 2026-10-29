@@ -29,7 +29,7 @@ class ToolSurfaceTests(unittest.TestCase):
         # The core group is exactly Playwright MCP's core tools.
         self.assertEqual(core, set(playwright_tools.SCHEMAS))
         self.assertEqual(len(core), 25)
-        self.assertEqual(len(all_tools), 93)
+        self.assertEqual(len(all_tools), 94)
         removed = {
             "browser_page_text_by_tab_id", "browser_fill", "browser_set_editable_content",
             "browser_new_tab", "browser_close_tab", "browser_switch_tab",

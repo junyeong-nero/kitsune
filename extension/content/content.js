@@ -3,7 +3,7 @@
 
 (function() {
   'use strict';
-  const CONTENT_VERSION = 45;
+  const CONTENT_VERSION = 46;
   if (window.__claudeBridgeVersion >= CONTENT_VERSION) return;
   window.__claudeBridgeVersion = CONTENT_VERSION;
 
@@ -388,12 +388,15 @@
   let userTypedField = null;  // the editable element (as the document sees it) the user last typed into
   let agentTrustedClickUntil = 0;
   let agentTrustedClickKeys = new Set();  // modifier key names ("Shift", "Meta") the trusted click holds
+  // Until then, trusted keyboard and paste input is the agent's OS keyboard (#346).
+  let agentTrustedKeysUntil = 0;
 
   function noteUserInput(event) {
     if (!event.isTrusted) return;
     const now = Date.now();
     if (now < agentTrustedClickUntil && (/^(mouse|pointer|touch)/.test(event.type) ||
         (event.type === 'keydown' && agentTrustedClickKeys.has(event.key)))) return;
+    if (now < agentTrustedKeysUntil && /^(key|paste|input|beforeinput|composition)/.test(event.type)) return;
     lastUserInput = { at: now, type: event.type };
     if ((event.type === 'keydown' || event.type === 'paste') && isTypingTarget(event.target)) {
       userTypedField = event.target;
@@ -479,6 +482,8 @@
       'neuterUnload':          () => neuterUnload(),
       'screenPoint':           () => screenPoint(msg.selector, msg.x, msg.y, msg.click, msg.first, msg.zoom, msg.modifiers,
                                      msg.frame),
+      'focusState':            () => focusState(msg.selector, msg.first),
+      'agentInput':            () => agentInput(msg.ms),
       'userActivity':          () => userActivity(),
       'captureMeasure':        () => captureMeasure(msg.selector),
       'captureScrollIntoView': () => captureScrollIntoView(msg.selector, msg.block),
@@ -4375,6 +4380,26 @@
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
     return { ok: true, checked: el.checked };
+  }
+
+  // ── Trusted keyboard (#346) ──
+  // Whether the field a trusted keyboard command types into has the page's focus: the bridge
+  // asks before every key and stops when it does not. sensitive tells it to keep the text out
+  // of everything it reports.
+  function focusState(selector, first) {
+    const el = resolveTarget(selector, null, { first });
+    if (!el) return notFound();
+    const destination = fillDestination(el);
+    const active = activeElement();
+    const focused = !!active && (active === el || active === destination || el.contains?.(active) ||
+      destination.contains?.(active));
+    return { ok: true, focused, hidden: !!document.hidden, sensitive: isSensitiveField(destination) };
+  }
+
+  // The bridge is about to send OS keys for ms milliseconds: they are not the user's input.
+  function agentInput(ms) {
+    agentTrustedKeysUntil = Date.now() + Math.min(Math.max(Number(ms) || 0, 0), 60000);
+    return { ok: true };
   }
 
   function focusEl(selector, first) {

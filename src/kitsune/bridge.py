@@ -430,7 +430,7 @@ def _browser_not_at_point(x, y, process="", focused=None, wait=0.0, target_windo
 
 _NO_SCHEDULE_ACTIONS = {"ping", "getTabs", "getWindows"}
 _GLOBAL_SCOPE_ACTIONS = {
-    "screenshot", "switchTab", "restoreActiveTab", "newTab", "closeTab", "trustedClick",
+    "screenshot", "switchTab", "restoreActiveTab", "newTab", "closeTab", "trustedClick", "trustedType",
     "reloadExtension", "createWindow", "closeWindow", "focusWindow", "resizeWindow",
     "moveTab", "detachTab", "elementScreenshot", "fullPageScreenshot",
     "cookies", "clipboard", "downloads", "clearBrowsingData", "intercept",
@@ -443,6 +443,7 @@ _API_ALIASES = {
     "/api/pageTextByTabId": "/api/page-text-by-tab-id",
     "/api/executeJS": "/api/js",
     "/api/trustedClick": "/api/trusted-click",
+    "/api/trustedType": "/api/trusted-type",
     "/api/setEditableContent": "/api/set-editable-content",
     "/api/clearHighlight": "/api/clear-highlight",
     "/api/closeTab": "/api/close-tab",
@@ -966,6 +967,24 @@ def _pointer_restore_fields(clicked):
 TRUSTED_CLICK_RESTORE_DELAY = 0.3
 
 
+def _target_window(point):
+    """The tab's window as (left, top, width, height) from a screenPoint result, or None."""
+    window = point.get("window")
+    keys = ("left", "top", "width", "height")
+    if isinstance(window, dict) and all(isinstance(window.get(key), (int, float)) for key in keys):
+        return tuple(window[key] for key in keys)
+    return None
+
+
+def _focus_check_click(point, focus, title, process, restore_pointer, button="left", click_count=1, modifiers=()):
+    """(focused, click result or refusal) for an OS click at a screenPoint result; blocking."""
+    focused = _focus_browser_window(title or point.get("title", ""), process) if focus else None
+    refusal = _browser_not_at_point(point["screenX"], point["screenY"], process, focused,
+                                    BROWSER_AT_POINT_WAIT if focus else 0.0, _target_window(point))
+    return focused, refusal or _native_click_screen(point["screenX"], point["screenY"], restore_pointer,
+                                                    button, click_count, modifiers)
+
+
 async def trusted_click(params):
     """Use a real OS-level mouse click at a browser viewport coordinate."""
     selector = params.get("selector") or ""
@@ -1027,22 +1046,11 @@ async def trusted_click(params):
     if "error" in point:
         return point
 
-    window = point.get("window")
-    target_window = (tuple(window[key] for key in ("left", "top", "width", "height"))
-                     if isinstance(window, dict) and all(isinstance(window.get(key), (int, float))
-                                                         for key in ("left", "top", "width", "height")) else None)
-
     # Focus (up to about 1 s of frontmost polling), the window check (up to BROWSER_AT_POINT_WAIT)
     # and the click's own sleeps all run off the event loop, which serves every client (#336).
-    def focus_check_click():
-        focused = _focus_browser_window(title or point.get("title", ""), process) if focus else None
-        refusal = _browser_not_at_point(point["screenX"], point["screenY"], process, focused,
-                                        BROWSER_AT_POINT_WAIT if focus else 0.0, target_window)
-        return focused, refusal or _native_click_screen(point["screenX"], point["screenY"], restore_pointer,
-                                                        button, click_count, modifiers)
-
     try:
-        focused, clicked = await asyncio.to_thread(focus_check_click)
+        focused, clicked = await asyncio.to_thread(_focus_check_click, point, focus, title, process,
+                                                   restore_pointer, button, click_count, modifiers)
     finally:
         if point.get("previousTabId") is not None:
             # The OS delivers the click asynchronously; let it land before showing the user's tab again.
@@ -1066,6 +1074,178 @@ async def trusted_click(params):
         "clickBackend": clicked.get("backend"),
         **_pointer_restore_fields(clicked),
     }
+
+
+# ── Trusted keyboard (#346) ──
+# Real OS key events, for pages that ignore synthetic input (one-time-code fields). macOS only,
+# through Quartz: OS keys go
+# to the frontmost app, so every key is sent only while the browser is frontmost and the target
+# field has the page's focus; the first key that would land elsewhere stops the command.
+
+TRUSTED_TYPE_MAX_CHARS = 1000
+TRUSTED_KEY_DEFAULT_DELAY_MS = 30
+TRUSTED_KEY_MAX_DELAY_MS = 1000
+# macOS virtual key codes (US ANSI positions; layouts move characters, not these keys).
+_MAC_KEY_CODES = {
+    **{c: code for c, code in zip("asdfhgzxcv", (0, 1, 2, 3, 4, 5, 6, 7, 8, 9))},
+    "b": 11, "q": 12, "w": 13, "e": 14, "r": 15, "y": 16, "t": 17, "1": 18, "2": 19, "3": 20, "4": 21,
+    "6": 22, "5": 23, "=": 24, "9": 25, "7": 26, "-": 27, "8": 28, "0": 29, "]": 30, "o": 31, "u": 32,
+    "[": 33, "i": 34, "p": 35, "l": 37, "j": 38, "'": 39, "k": 40, ";": 41, "\\": 42, ",": 43, "/": 44,
+    "n": 45, "m": 46, ".": 47, "`": 50,
+    "Enter": 36, "Tab": 48, "Space": 49, "Backspace": 51, "Escape": 53, "Delete": 117, "Home": 115,
+    "End": 119, "PageUp": 116, "PageDown": 121, "ArrowLeft": 123, "ArrowRight": 124, "ArrowDown": 125,
+    "ArrowUp": 126, "F1": 122, "F2": 120, "F3": 99, "F4": 118, "F5": 96, "F6": 97, "F7": 98, "F8": 100,
+    "F9": 101, "F10": 109, "F11": 103, "F12": 111,
+}
+def _mac_keyboard_unavailable():
+    """The {error} when this process cannot send OS keys, else None."""
+    if sys.platform != "darwin":
+        return {"error": "Trusted keyboard input is only implemented on macOS; nothing was typed",
+                "code": "unsupported_platform", "retryable": False}
+    try:
+        import AppKit  # noqa: F401
+        import Quartz  # noqa: F401
+    except ImportError:
+        return {"error": "Trusted keyboard input on macOS needs pyobjc Quartz (run Kitsune with "
+                         "uvx --from 'kitsune-browser-mcp[macos]' kitsune); nothing was typed",
+                "code": "unsupported_platform", "retryable": False}
+    # macOS drops posted events from untrusted processes without an error.
+    if _mac_accessibility_trusted() is False:
+        return {"error": f"Trusted keyboard input needs macOS Accessibility permission: {_MAC_ACCESSIBILITY_HELP}",
+                "code": "permission_required", "retryable": False}
+    return None
+
+
+def _mac_frontmost_pid():
+    """The pid of the frontmost app, which receives OS key events; 0 when unknown."""
+    import AppKit
+    app = AppKit.NSWorkspace.sharedWorkspace().frontmostApplication()
+    return int(app.processIdentifier()) if app is not None else 0
+
+
+def _mac_post_key(code, flags=0, text=None):
+    """One key press (down and up). text: the characters it types, whatever the layout."""
+    import Quartz
+    for down in (True, False):
+        event = Quartz.CGEventCreateKeyboardEvent(None, code, down)
+        if text is not None:
+            Quartz.CGEventKeyboardSetUnicodeString(event, len(text.encode("utf-16-le")) // 2, text)
+        Quartz.CGEventSetFlags(event, flags)
+        Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
+
+
+def _mac_post_chord(modifiers, key):
+    import Quartz
+    flags = 0
+    for modifier in modifiers:
+        flags |= getattr(Quartz, _QUARTZ_MODIFIER_FLAGS[modifier])
+    _mac_post_key(_MAC_KEY_CODES[key], flags)
+
+
+def _mac_post_char(char):
+    """A character as a key press carrying it as Unicode text; Enter and Tab as their keys."""
+    if char == "\n":
+        _mac_post_key(_MAC_KEY_CODES["Enter"])
+    elif char == "\t":
+        _mac_post_key(_MAC_KEY_CODES["Tab"])
+    else:
+        _mac_post_key(0, 0, char)
+
+
+def _trusted_keys_timeout(body):
+    """A direct trustedType's request timeout: the click, then each key with its checks and delay."""
+    text, delay = body.get("text"), body.get("delayMs", TRUSTED_KEY_DEFAULT_DELAY_MS)
+    keys = len(text) if isinstance(text, str) else 0
+    per_key = (delay if type(delay) in (int, float) and delay >= 0 else TRUSTED_KEY_DEFAULT_DELAY_MS) + 150
+    return 35 + min(keys, TRUSTED_TYPE_MAX_CHARS) * per_key / 1000
+
+
+def _trusted_key_stopped(reason, sent, hint):
+    return {"error": "The trusted keyboard command stopped before a key could land outside its target",
+            "code": "keyboard_focus_lost", "retryable": True, "hint": hint,
+            "state": {"reason": reason, "keysSent": sent}}
+
+
+async def _trusted_keys(params, units, post_unit):
+    """Shows the target's tab, clicks the target with the OS pointer to focus it, then sends
+    each unit with post_unit (blocking, off the event loop) while the browser stays frontmost
+    and the target keeps the page's focus. The user's tab is shown again after the last key."""
+    selector = params.get("selector") or ""
+    if not selector:
+        return {"error": "Trusted keyboard input needs selector or ref: the field it focuses and types into"}
+    if refusal := _mac_keyboard_unavailable():
+        return refusal
+    delay = params.get("delayMs", TRUSTED_KEY_DEFAULT_DELAY_MS)
+    if type(delay) not in (int, float) or not 0 <= delay <= TRUSTED_KEY_MAX_DELAY_MS:
+        return {"error": f"delayMs must be between 0 and {TRUSTED_KEY_MAX_DELAY_MS}"}
+    target = {"selector": selector, **({"first": True} if params.get("first") else {})}
+    point_params = {**target, "click": True}
+    if params.get("tabId") is not None:
+        point_params["tabId"] = target["tabId"] = params["tabId"]
+    process = params.get("process") or ""
+    point = await send_to_extension("screenPoint", point_params)
+    if "error" in point:
+        return point
+    target.setdefault("tabId", point.get("tabId"))
+    if target["tabId"] is None:
+        target.pop("tabId")
+    sent = 0
+    try:
+        # The click that focuses the field also proves the tab's window is at its point (#336).
+        # focus=false (bridge callers only) leaves bringing the browser to the front to the caller.
+        focused, clicked = await asyncio.to_thread(_focus_check_click, point, params.get("focus", True) is not False,
+                                                   "", process, True)
+        if "error" in clicked:
+            return clicked
+        window = await asyncio.to_thread(_mac_window_at, point["screenX"], point["screenY"])
+        browser_pid = window[0] if window else 0
+        await send_to_extension("agentInput", {**target, "ms": 2000 + len(units) * (delay + 200)})
+        for unit in units:
+            if not browser_pid or await asyncio.to_thread(_mac_frontmost_pid) != browser_pid:
+                return _trusted_key_stopped("not_frontmost", sent, "Another app came to the front; nothing more "
+                                            "was typed. Ask the user to leave the browser in front, then retry.")
+            state = await send_to_extension("focusState", target)
+            if "error" in state:
+                return {**state, "state": {**(state.get("state") or {}), "keysSent": sent}}
+            if not state.get("focused"):
+                return _trusted_key_stopped("target_not_focused", sent, "The target lost the page's focus (the "
+                                            "user or the page moved it); nothing more was typed.")
+            await asyncio.to_thread(post_unit, unit)
+            sent += 1
+            if delay:
+                await asyncio.sleep(delay / 1000)
+    finally:
+        if point.get("previousTabId") is not None:
+            await asyncio.sleep(TRUSTED_CLICK_RESTORE_DELAY)
+            await send_to_extension("restoreActiveTab", {"tabId": point["previousTabId"], "from": point.get("tabId")})
+    return {"ok": True, "trusted": True, "keysSent": sent, "focused": bool(focused),
+            "clickBackend": clicked.get("backend")}
+
+
+async def trusted_type(params):
+    """Type text into a field with the OS keyboard (#346). The text is never reported."""
+    text = params.get("text")
+    if not isinstance(text, str) or not text:
+        return {"error": "trustedType needs non-empty text"}
+    if len(text) > TRUSTED_TYPE_MAX_CHARS:
+        return {"error": f"trustedType text is limited to {TRUSTED_TYPE_MAX_CHARS} characters"}
+    clear = [("select_all", None), ("key", "Backspace")] if params.get("clear") else []
+    units = clear + [("char", c) for c in text] + ([("key", "Enter")] if params.get("submit") else [])
+
+    def post(unit):
+        kind, value = unit
+        if kind == "char":
+            _mac_post_char(value)
+        elif kind == "select_all":
+            _mac_post_chord(("Meta",), "a")
+        else:
+            _mac_post_key(_MAC_KEY_CODES[value])
+
+    result = await _trusted_keys(params, units, post)
+    if result.get("ok"):
+        result["typed"] = sum(1 for kind, _ in units if kind == "char")
+    return result
+
 
 
 def _log(msg):
@@ -1093,6 +1273,7 @@ _AUDIT_SECRET_PARAMS = {
     "cookies": ("value",),
     "storageOp": ("value",),
     "clipboard": ("text",),
+    "trustedType": ("text",),
     "uploadFile": ("data",),
 }
 
@@ -1170,7 +1351,7 @@ def _audit(action, params, ok, error, ms, **fields):
 
 WRITE_ACTIONS = {
     "click", "type", "setEditableContent", "scroll", "hover", "fill",
-    "navigate", "newTab", "closeTab", "switchTab", "executeJS", "trustedClick",
+    "navigate", "newTab", "closeTab", "switchTab", "executeJS", "trustedClick", "trustedType",
     "selectOption", "checkBox", "keypress", "doubleClick", "submitForm",
     "formFill", "drag", "cookies", "clipboard", "downloads",
     "clearBrowsingData", "intercept", "clickAndWaitNavigation",
@@ -1428,6 +1609,7 @@ _ASK_CLICK_ACTIONS = {"click", "doubleClick", "trustedClick", "clickAndWaitNavig
 _ASK_PAGE_ACTIONS = _ASK_CLICK_ACTIONS | {
     "keypress", "type", "setEditableContent", "fill", "formFill", "selectOption", "checkBox",
     "drag", "submitForm", "uploadFile", "handleDialog", "storageOp", "executeJS", "waitForResult",
+    "trustedType",
 }
 _ASK_TAB_ACTIONS = _ASK_PAGE_ACTIONS | {"navigate"}
 _confirm_tokens = {}     # token -> {"binding", "expires", "used"}
@@ -1524,6 +1706,8 @@ async def _held_reason(action, params):
         reason, description = _ASK_DATA_ACTIONS[action]
     elif action == "submitForm":
         reason, description = "submit", "submits a form"
+    elif action == "trustedType" and params.get("submit"):
+        reason, description = "submit", "types with the OS keyboard and presses Enter"
     elif pattern := _ask_url_match(url):
         reason, description = "payment_url", f"opens a payment-like URL ({pattern}): {url}"
     elif _outcome_key(action, params) in _unknown_outcomes:
@@ -4088,6 +4272,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "/api/shutdown": self.handle_shutdown,
             "/api/click": self.handle_click,
             "/api/trusted-click": self.handle_trusted_click,
+            "/api/trusted-type": self.handle_trusted_type,
             "/api/type": self.handle_type,
             "/api/set-editable-content": self.handle_set_editable_content,
             "/api/scroll": self.handle_scroll,
@@ -4433,6 +4618,11 @@ class BridgeHandler(BaseHTTPRequestHandler):
         body = self.read_body()
         if self._admitted("trustedClick", body):
             self._run_admitted("trustedClick", body, trusted_click(body))
+
+    def handle_trusted_type(self):
+        body = self.read_body()
+        if self._admitted("trustedType", body):
+            self._run_admitted("trustedType", body, trusted_type(body), timeout=_trusted_keys_timeout(body))
     
     def handle_type(self):
         self._send_extension_action("type", self.read_body())
