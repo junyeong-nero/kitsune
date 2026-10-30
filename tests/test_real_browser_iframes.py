@@ -178,8 +178,12 @@ class RealBrowserIframeTests(harness.RealBrowserTestCase):
         holder_ref, _ = self.ref(tab, 'textbox "카드 소유자"')
         self.assert_ok(self.call("/api/fill", {"tabId": tab, "ref": holder_ref, "value": HOLDER}))
         pay_ref, _ = self.ref(tab, 'button "결제"')
-        self.assert_ok(self.call("/api/click", {"tabId": tab, "ref": pay_ref}))
+        paid = self.assert_ok(self.call("/api/click", {"tabId": tab, "ref": pay_ref}))
         self.assertEqual(self.site.wait_for_save(), [("/pay", {"card": CARD, "holder": HOLDER})])
+        # #354: the frame loaded the reply page; the delta lists it under the frame's line, with its text.
+        self.assertNotIn("no_visible_change", paid)
+        self.assertRegex(paid.get("snapshot", ""), r'iframe "결제 위젯" \[ref=e\d+\] \[frame=cross_origin[^\n]*\n +- text "저장되었습니다"',
+                         paid)
 
     def test_cross_origin_frame_screen_point_is_converted_by_the_page_showing_the_frame(self):
         # browser_trusted_click clicks at screenPoint's screenX/Y. A cross-origin frame's own
@@ -274,6 +278,28 @@ class RealBrowserIframeTests(harness.RealBrowserTestCase):
         self.assert_ok(self.call("/api/fill", {"tabId": tab, "ref": fields["holder"]["ref"], "value": HOLDER}))
         self.assert_ok(self.call("/api/click", {"tabId": tab, "ref": pay["ref"]}))
         self.assertEqual(self.site.wait_for_save(), [("/pay", {"card": CARD, "holder": HOLDER})])
+
+    def test_ask_before_act_holds_writes_through_refs_from_find_and_forms(self):
+        # #354: refs from browser_find and browser_forms name the frame they are in, as snapshot refs do.
+        with self.site.lock:
+            self.site.saved.clear()
+        # Opened first: a checkout URL is itself held in ask mode (payment_url).
+        tab = self.open_tab(f"{self.site.origin}/checkout")
+        self.assert_ok(self.call("/api/set-policy", {"ask": True}))
+        self.addCleanup(self.call, "/api/set-policy", {"ask": False})
+        holder = next(f for f in self.call("/api/forms", {"tabId": tab})["fields"] if f["name"] == "holder")
+        pay = next(r for r in self.call("/api/find", {"tabId": tab, "query": "결제"})["results"]
+                   if (r["tag"], r["text"]) == ("button", "결제"))
+        headers = {**self.bridge.auth(), "Content-Type": "application/json"}
+        for path, body in [("/api/fill", {"ref": holder["ref"], "value": HOLDER}), ("/api/click", {"ref": pay["ref"]})]:
+            with self.subTest(path=path):
+                status, _, text = harness._request(self.bridge.http_port, "POST", path, headers, self.bridge.host,
+                                                   json.dumps({"tabId": tab, **body}))
+                held = json.loads(text)
+                self.assertEqual((status, held.get("code")), (403, "confirmation_required"), held)
+                self.assertEqual(held["state"]["reason"], "cross_origin_frame")
+                self.assertRegex(held["error"], r"http://localhost:\d+/widget")
+        self.assertEqual(self.site.wait_for_save(timeout=1), [])
 
     def test_action_deltas_list_what_changed_inside_the_cross_origin_frame(self):
         tab = self.open_tab(f"{self.site.origin}/checkout")

@@ -452,8 +452,11 @@
       'getSnapshot':           () => {
                                      // sinceObservation (#350): the delta against the page the agent last saw.
                                      if (msg.sinceObservation) actionBaseline = lastObservation;
+                                     // textWhenFull (#354): a frame's delta with nothing to diff against (a
+                                     // document an action loaded) lists text, as a delta lists text an action shows.
+                                     const full = (msg.delta || msg.sinceObservation) && !actionBaseline && msg.textWhenFull;
                                      return getSnapshot(msg.maxChars, msg.focusLastAction, msg.ref || msg.selector, msg.maxDepth,
-                                       msg.text ?? (msg.observation ? false : undefined), msg.observation,
+                                       full ? true : msg.text ?? (msg.observation ? false : undefined), msg.observation,
                                        msg.delta || msg.sinceObservation ? 'delta' : 'full', !!msg.boxes, msg.collapse !== false,
                                        !!msg.absoluteUrls, Array.isArray(msg.keepRefs) ? msg.keepRefs : []);
                                    },

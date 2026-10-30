@@ -6,6 +6,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 
+const FRAME_READ_TIMEOUT_MS = Number(/const FRAME_READ_TIMEOUT_MS = (\d+);/
+  .exec(fs.readFileSync('extension/background/background.js', 'utf8'))[1]);
+
 // documents: frameId -> msg => response. Every message is recorded with its frame id. A document
 // that throws (a failed assert) does not answer, as a frame that fails is left unread.
 function background(documents) {
@@ -23,6 +26,7 @@ function background(documents) {
     getActiveTabId: async () => 1,
     tabState: async tabId => ({ tabId, status: 'complete', url: 'https://shop.example/checkout' }),
     isRestrictedUrl: () => false, ensureContentScript: async () => {},
+    NoContentReceiver: class NoContentReceiver extends Error {},
     withTabState: async (tabId, response) => ({ ...response, state: { ...response.state, tabId } }),
   });
   const source = fs.readFileSync('extension/background/background.js', 'utf8');
@@ -125,6 +129,47 @@ async function testDomAttachesFrameTreesWithinTheCap() {
   assert.ok(JSON.stringify(dom.tree).length <= 20000);
 }
 
+async function testDomFrameWithoutRoomIsTruncated() {
+  // The page's tree leaves no room for the frame's root node.
+  const h = background({
+    0: () => ({ tree: { ref: 's1e0', tag: 'body', text: 'x'.repeat(19990), children: [{ ref: 's1e5', tag: 'iframe',
+      content: 'cross_origin' }] }, refs: 2, frames: [{ ...WIDGET, depth: 1 }] }),
+    7: () => ({ tree: null, refs: 0, truncated: true, hint: 'Tree cut' }),
+  });
+  const dom = await h.send('getAccessibilityTree', { depth: 6 });
+  assert.equal(dom.truncated, true);
+  assert.match(dom.hint, /^Tree cut at 20,000 chars/);
+  assert.equal(dom.tree.children[0].content, 'cross_origin');
+}
+
+async function testFrameLinksAreRedactedAndTiesPreferShorterText() {
+  const h = background({
+    0: msg => msg.action === 'find'
+      ? { results: [{ ref: 's1e1', tag: 'div', text: 'Pay with card or bank', bounds: [0, 0, 1, 1], score: 4 }], frames: [WIDGET] }
+      : { tree: { ref: 's1e0', tag: 'body', children: [{ ref: 's1e5', tag: 'iframe', content: 'cross_origin' }] }, refs: 2,
+        frames: [{ ...WIDGET, depth: 1 }] },
+    7: msg => msg.action === 'find'
+      ? { results: [{ ref: 's2e1', tag: 'button', text: 'Pay', bounds: [0, 0, 1, 1], score: 4 }] }
+      : { tree: { ref: 's2e0', tag: 'a', href: 'https://pay.example/done?token=KITSUNE_FAKE_SECRET' }, refs: 1 },
+  });
+  assert.deepEqual((await h.send('find', { query: 'pay' })).results.map(r => r.text), ['Pay', 'Pay with card or bank']);
+  const link = (await h.send('getAccessibilityTree', { depth: 6 })).tree.children[0].children[0];
+  assert.doesNotMatch(link.href, /KITSUNE_FAKE_SECRET/);
+  assert.match(link.href, /^https:\/\/pay\.example\/done\?token=/);
+}
+
+// The background merges frame results under the content script's own caps.
+function testBackgroundCapsMatchTheContentScript() {
+  const background = fs.readFileSync('extension/background/background.js', 'utf8');
+  const content = fs.readFileSync('extension/content/content.js', 'utf8');
+  for (const name of ['FIND_LIMIT', 'DOM_TREE_LIMIT']) {
+    const value = source => new RegExp(`const ${name} = (\\d+);`).exec(source)?.[1];
+    assert.equal(value(background), value(content), name);
+  }
+  const hint = source => /const DOM_TRUNCATED_HINT = ([^;]+);/.exec(source)[1].replace(/'\s*\+\s*'/g, '');
+  assert.equal(hint(background), hint(content), 'DOM_TRUNCATED_HINT');
+}
+
 // A page whose widget (frame 7) was read by a snapshot, then a delta.
 function deltaPage({ widgetDelta, pageDelta }) {
   const frameLine = '- iframe "Payment" [ref=s1e5] [content=cross_origin src="https://pay.example/widget"]';
@@ -168,15 +213,67 @@ async function testActionInsideTheFrameNamesItsTarget() {
   assert.match(delta.snapshot, /\n {2}- button "Pay"/);
 }
 
-async function testUnchangedFramesAndFramesNeverSeenAreNotListed() {
+async function testAFrameOnlyFindReadIsNotAChangeButANewDocumentIs() {
+  // browser_find read the widget, so no snapshot showed it: its full answer is not a change.
+  const findOnly = background({
+    0: msg => msg.action === 'find' ? { results: [], frames: [WIDGET] }
+      : (assert.deepEqual([...msg.keepRefs], []), { snapshot: '', delta: true, unchanged: true }),
+    7: msg => msg.action === 'find' ? { results: [{ ref: 's2e1', tag: 'button', text: 'Pay', bounds: [0, 0, 1, 1], score: 9 }] }
+      : (assert.equal(msg.textWhenFull, true), { snapshot: '- button "Pay" [ref=s2e1]' }),
+  });
+  await findOnly.send('find', { query: 'pay' });
+  const quiet = await findOnly.send('getSnapshot', { sinceObservation: true });
+  assert.deepEqual([quiet.snapshot, quiet.unchanged], ['', true]);
+
+  // The widget now holds another document (its refs are of a new generation): listed in full.
+  const replaced = deltaPage({
+    widgetDelta: () => ({ snapshot: '- button "Pay again" [ref=s3e1]' }),
+    pageDelta: (msg, frameLine) => (assert.deepEqual([...msg.keepRefs], ['s1e5']),
+      { snapshot: frameLine, delta: true, unchanged: true, frames: [{ ref: 's1e5', frameId: 7 }] }),
+  });
+  await replaced.send('getSnapshot');
+  const delta = await replaced.send('getSnapshot', { sinceObservation: true });
+  assert.match(delta.snapshot, /\n {2}- button "Pay again"/);
+  assert.equal(delta.unchanged, undefined);
+}
+
+async function testAnActionThatLoadsAnotherDocumentInItsFrameIsAChange() {
+  // Pay submitted the widget's form: its new page has no baseline, no target and no refs.
   const h = deltaPage({
-    // No snapshot showed the widget since its document loaded: a full answer is no change.
-    widgetDelta: () => ({ snapshot: '- button "Pay" [ref=s3e1]' }),
-    pageDelta: msg => (assert.deepEqual([...msg.keepRefs], []), { snapshot: '', delta: true, unchanged: true }),
+    widgetDelta: msg => (assert.deepEqual([msg.delta, msg.textWhenFull], [true, true]), { snapshot: '- text "Paid."' }),
+    pageDelta: (msg, frameLine) => (assert.deepEqual([...msg.keepRefs], ['s1e5']),
+      { snapshot: frameLine, delta: true, unchanged: true, frames: [{ ref: 's1e5', frameId: 7 }] }),
   });
   await h.send('getSnapshot');
-  const delta = await h.send('getSnapshot', { sinceObservation: true });
-  assert.deepEqual([delta.snapshot, delta.unchanged], ['', true]);
+  const delta = await h.send('getSnapshot', { delta: true, actionFrame: 7, focusLastAction: true });
+  assert.match(delta.snapshot, /\[frame=cross_origin [^\n]+\n {2}- text "Paid\."$/);
+  assert.equal(delta.unchanged, undefined);
+}
+
+async function testAnActionFrameThatDoesNotAnswerIsNotUnchanged() {
+  const h = deltaPage({
+    widgetDelta: () => new Promise(() => {}),
+    pageDelta: () => ({ snapshot: '', delta: true, unchanged: true }),
+  });
+  await h.send('getSnapshot');
+  const started = Date.now();
+  const delta = await h.send('getSnapshot', { delta: true, actionFrame: 7, focusLastAction: true });
+  assert.ok(Date.now() - started < FRAME_READ_TIMEOUT_MS + 500);
+  assert.deepEqual([delta.snapshot, delta.unchanged], ['', undefined]);
+}
+
+async function testAFrameTheBrowserNoLongerFindsIsForgotten() {
+  let widgetGone = false;
+  const h = deltaPage({
+    widgetDelta: () => { if (widgetGone) throw new Error('Frame not found'); return { snapshot: '', delta: true, unchanged: true }; },
+    pageDelta: () => ({ snapshot: '', delta: true, unchanged: true }),
+  });
+  await h.send('getSnapshot');
+  widgetGone = true;
+  await h.send('getSnapshot', { sinceObservation: true });
+  h.sent.length = 0;
+  await h.send('getSnapshot', { sinceObservation: true });
+  assert.deepEqual(h.sent.map(m => m.frameId), [0]);
 }
 
 (async () => {
@@ -185,9 +282,15 @@ async function testUnchangedFramesAndFramesNeverSeenAreNotListed() {
   await testFindSelectorMatchesWinAndTheFrameBudgetIsShared();
   await testFormsListFrameFieldsAndDropTheFrameFromUnavailable();
   await testDomAttachesFrameTreesWithinTheCap();
+  await testFrameLinksAreRedactedAndTiesPreferShorterText();
   await testPageActionDeltaListsWhatChangedInTheFrame();
   await testActionInsideTheFrameNamesItsTarget();
-  await testUnchangedFramesAndFramesNeverSeenAreNotListed();
+  await testAFrameOnlyFindReadIsNotAChangeButANewDocumentIs();
+  await testAnActionThatLoadsAnotherDocumentInItsFrameIsAChange();
+  await testAnActionFrameThatDoesNotAnswerIsNotUnchanged();
+  await testAFrameTheBrowserNoLongerFindsIsForgotten();
+  await testDomFrameWithoutRoomIsTruncated();
+  testBackgroundCapsMatchTheContentScript();
   console.log('cross_origin_frame_reads: ok');
 })().catch(error => {
   console.error(error);
