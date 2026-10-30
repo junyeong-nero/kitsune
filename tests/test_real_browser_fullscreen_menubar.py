@@ -151,7 +151,8 @@ class RealBrowserFullScreenMenuBarTests(harness.RealBrowserTestCase):
         print(f"\n#336 window {list(target)} state {window['state']}, page top at y={content_top}, "
               f"pointer at {pointer_location()}, browser pid {self.browser.process.pid}", flush=True)
         x = round(window["left"] + window["width"] / 2)
-        self.probe("top y=10", x, window["top"] + 10, target)
+        # A point in the window's top strip, above the page: a viewport click may not reach it.
+        self.probe("window top y=10 (above the page)", x, window["top"] + 10, target)
         self.probe("just below the toolbar", x, round(content_top) + 10, target)
         self.probe("middle (control)", x, round(window["top"] + window["height"] / 2), target)
 
