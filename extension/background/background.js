@@ -389,6 +389,7 @@ function connect() {
       ws.send(JSON.stringify({ type: 'hello', version: browser.runtime.getManifest().version, build: KITSUNE_BUILD,
         sourceHash, manifestHash }));
       sendBrowserState();
+      sendBrowserInfo(socket);
       startHeartbeat();
       injectAllTabs(); // Inject content scripts into all existing tabs
     };
@@ -431,6 +432,17 @@ function connect() {
     cleanup();
     scheduleReconnect();
   }
+}
+
+// Optional metadata for browser_status(diagnostics=true). It must not delay hello, heartbeat,
+// or page commands, and a late reply must never describe a replacement connection.
+async function sendBrowserInfo(socket) {
+  try {
+    const info = await browser.runtime.getBrowserInfo();
+    if (ws !== socket || socket.readyState !== WebSocket.OPEN) return;
+    const { name, vendor, version, buildID } = info;
+    socket.send(JSON.stringify({ type: 'browser_info', info: { name, vendor, version, buildID } }));
+  } catch { /* older/unsupported runtimes leave the diagnostic explicitly unknown */ }
 }
 
 // For the bridge's browser_status diagnosis (docs/api-reference.md#connection-diagnosis): the normal
@@ -1272,6 +1284,7 @@ async function createTab(url, { wait = false, timeout = 15000 } = {}) {
         code: 'new_tab_stalled', retryable: false,
         hint: 'The tab was created, but is still about:blank after the load timeout. '
           + 'Do not repeat new-tab creation blindly; inspect or close the created tab. '
+          + 'Check browser_status(diagnostics=true) for a runtime/installed build mismatch. '
           + 'If the browser was recently updated, ask the user to save their work and restart it, '
           + 'then check browser_status and list tabs again before retrying. '
           + 'A browser update is one possible cause, not a confirmed diagnosis.',

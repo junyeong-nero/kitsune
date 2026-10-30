@@ -237,6 +237,7 @@ class BridgeDiagnosisTests(unittest.TestCase):
 
     def test_status_reports_the_diagnosis(self):
         handler = bridge.BridgeHandler.__new__(bridge.BridgeHandler)
+        handler.path = "/api/status"
         handler.send_json = Mock()
         handler.handle_status()
         self.assertEqual(handler.send_json.call_args.args[1]["diagnosis"]["code"], "extension_disconnected")
@@ -293,6 +294,21 @@ class ExtensionStateTests(unittest.IsolatedAsyncioTestCase):
             result = await bridge._send_to_extension_raw("getSnapshot", timeout=5)
             await responder
             return result
+
+    async def test_browser_runtime_info_is_sanitized_and_reset_on_reconnection(self):
+        async with connect(self.uri, origin=EXTENSION_ORIGIN, open_timeout=5) as client:
+            await client.send(json.dumps({"type": "hello", "version": bridge.BRIDGE_VERSION, "build": "dev"}))
+            await client.send(json.dumps({"type": "browser_info", "info": {
+                "name": "Zen", "version": "1.24b", "buildID": "20261029123729", "private": "not retained"}}))
+            await self.wait_until(lambda: "runtime" in bridge.extension_info)
+            self.assertEqual(bridge.extension_info["runtime"], {
+                "name": "Zen", "version": "1.24b", "buildID": "20261029123729"})
+            generation = bridge.extension_ws_generation
+            async with connect(self.uri, origin=EXTENSION_ORIGIN, open_timeout=5):
+                await self.wait_until(lambda: bridge.extension_ws_generation > generation)
+                self.assertEqual(bridge.extension_info, {}, "new connection must not inherit old runtime metadata")
+        await self.wait_until(lambda: bridge.extension_ws is None)
+        self.assertEqual(bridge.extension_info, {})
 
     async def test_state_message_and_unknown_action_of_an_older_extension(self):
         result = await self.unknown_action("0.0.1")

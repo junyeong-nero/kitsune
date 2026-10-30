@@ -352,9 +352,9 @@ def _default_tab(body: dict, tab_id: int | None) -> dict:
 # -- Read Operations ----------------------------------------------
 
 @tool("admin", annotations=dict(title="Check browser status", **READ))
-def browser_status() -> dict:
-    """Check bridge/extension connection; diagnosis explains failures."""
-    result = _get("/api/status")
+def browser_status(diagnostics: bool = False) -> dict:
+    """Check connection; diagnostics adds read-only runtime/installed browser build checks (macOS)."""
+    result = _get("/api/status?diagnostics=true" if diagnostics else "/api/status")
     if result.get("code") and "diagnosis" not in result:  # the bridge was not reached
         result["diagnosis"] = {key: result[key] for key in ("code", "hint", "state") if key in result}
     return result

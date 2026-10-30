@@ -15,7 +15,7 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
 
 // The extension's files as fetch serves them: { manifest, 'path': text }, manifest being what
 // getManifest() returns. Without them fetch fails.
-function background({ tabs = {}, windows = 1, granted = () => true, files = null } = {}) {
+function background({ tabs = {}, windows = 1, granted = () => true, files = null, browserInfo = null } = {}) {
   const sockets = [];
   const sent = [];
   const contains = [];
@@ -55,6 +55,7 @@ function background({ tabs = {}, windows = 1, granted = () => true, files = null
       onMessage: event(), onStartup: event(), onInstalled: event(),
       getManifest: () => ({ version: '0.2.1', ...files?.manifest }),
       getURL: path => `moz-extension://kitsune/${path}`,
+      ...(browserInfo ? { getBrowserInfo: browserInfo } : {}),
     },
     webRequest: { onBeforeRequest: event(), onHeadersReceived: event() },
   };
@@ -72,6 +73,7 @@ function background({ tabs = {}, windows = 1, granted = () => true, files = null
   return {
     browser, sent, contains, state,
     socket: () => sockets[sockets.length - 1],
+    reconnect: () => context.connect(),
     send: command => context.handleCommand({ includeSnapshot: false, ...command })
       .then(result => JSON.parse(JSON.stringify(result))),
   };
@@ -145,6 +147,32 @@ async function testHelloCarriesTheSourceAndManifestHashes() {
   }
 }
 
+async function testRuntimeInfoIsReadOnlyAndConnectionScoped() {
+  const info = { name: 'Zen', vendor: 'Mozilla', version: '1.24b', buildID: '20261029123729' };
+  const h = background({ browserInfo: async () => ({ ...info, privateField: 'not sent' }) });
+  await h.socket().onopen();
+  await flush();
+  assert.deepEqual(h.socket().messages.find(m => m.type === 'browser_info'), { type: 'browser_info', info });
+  assert.deepEqual(h.sent, [], 'runtime metadata needs no page command');
+
+  const failed = background({ browserInfo: async () => { throw new Error('unsupported'); } });
+  await failed.socket().onopen();
+  await flush();
+  assert.deepEqual(failed.socket().messages.map(m => m.type), ['hello', 'state']);
+
+  let resolve;
+  const delayed = background({ browserInfo: () => new Promise(r => { resolve = r; }) });
+  const old = delayed.socket();
+  await old.onopen();
+  await flush();
+  assert.deepEqual(old.messages.map(m => m.type), ['hello', 'state'], 'info must not block startup');
+  delayed.reconnect();
+  resolve(info);
+  await flush();
+  assert.equal(old.messages.some(m => m.type === 'browser_info'), false);
+  assert.deepEqual(delayed.socket().messages, [], 'late info must not reach the replacement socket');
+}
+
 async function testNoActiveTabIsAnUnavailableWindow() {
   const h = background({ tabs: {}, windows: 0 });
   for (const [command, error] of [
@@ -204,6 +232,7 @@ async function testQuarantinedDomainIsAnErrorPage() {
 (async () => {
   await testBrowserStateReachesTheBridge();
   await testHelloCarriesTheSourceAndManifestHashes();
+  await testRuntimeInfoIsReadOnlyAndConnectionScoped();
   await testNoActiveTabIsAnUnavailableWindow();
   await testHostPermissionIsToldApartFromErrorPages();
   await testQuarantinedDomainIsAnErrorPage();

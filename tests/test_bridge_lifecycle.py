@@ -265,6 +265,7 @@ class BridgeCliAndStatusTests(unittest.TestCase):
 
     def test_status_and_browser_status_report_shared_build(self):
         handler = bridge.BridgeHandler.__new__(bridge.BridgeHandler)
+        handler.path = "/api/status"
         handler.send_json = Mock()
         handler.handle_status()
         data = handler.send_json.call_args.args[1]

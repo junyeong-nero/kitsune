@@ -44,6 +44,7 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from threading import Lock, Thread
 from datetime import datetime, timezone
+from urllib.parse import parse_qs, urlsplit
 
 import hashlib
 import hmac
@@ -58,7 +59,7 @@ try:
 except ImportError:
     sys.exit("websockets is not installed. Reinstall kitsune with its dependencies.")
 
-from . import bridge_control
+from . import bridge_control, browser_diagnostics
 from .capabilities import ACTION_GROUPS, CAPS_HEADER, OPEN_ROUTES, ROUTE_GROUPS, caps_refusal, header_caps
 from .task_modes import (
     CLIENT_HEADER, CLIENT_ID_PATTERN, GATEWAY_TOOL_HEADER, MODE_HEADER, OWNER_HEADER, PROTECT_USER_TABS_HEADER,
@@ -2309,6 +2310,7 @@ async def ws_handler(websocket):
     extension_ws_generation += 1
     my_generation = extension_ws_generation
     extension_ws = websocket
+    extension_info = {}
     _tab_openers.clear()
 
     if old_ws is not None and old_ws is not websocket:
@@ -2343,6 +2345,10 @@ async def ws_handler(websocket):
             if data.get("type") == "state":
                 if extension_ws is websocket:
                     extension_info["browser"] = {"windows": data.get("windows"), "allSites": data.get("allSites")}
+                continue
+            if data.get("type") == "browser_info":
+                if extension_ws is websocket:
+                    extension_info["runtime"] = browser_diagnostics.browser_info(data.get("info"))
                 continue
 
             if cmd_id and cmd_id in pending_commands:
@@ -4443,7 +4449,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
     # ── GET Handlers ──
     
     def handle_status(self):
-        self.send_json(200, {
+        result = {
             "status": "running",
             "extension_connected": extension_ws is not None,
             "extension_version": extension_info.get("version"),
@@ -4457,7 +4463,20 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "scheduler": _scheduler_snapshot(),
             "keep_alive_tabs": _active_keep_alive_tabs(),
             "diagnosis": _connection_diagnosis(),
-        })
+        }
+        if parse_qs(urlsplit(self.path).query).get("diagnostics") == ["true"]:
+            socket, generation, info = extension_ws, extension_ws_generation, extension_info
+            runtime = info.get("runtime")
+            if socket is None:
+                diagnostic = browser_diagnostics.unknown("extension_disconnected")
+            else:
+                diagnostic = browser_diagnostics.diagnose(
+                    runtime, getattr(socket, "local_address", None), getattr(socket, "remote_address", None))
+                if (socket is not extension_ws or generation != extension_ws_generation
+                        or info is not extension_info or runtime is not extension_info.get("runtime")):
+                    diagnostic = browser_diagnostics.unknown("connection_changed")
+            result["browser_diagnostics"] = diagnostic
+        self.send_json(200, result)
     
     def handle_shutdown(self):
         assert loop is not None and shutdown_event is not None

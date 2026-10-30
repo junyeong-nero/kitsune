@@ -138,9 +138,9 @@ class Browser:
             return self.client.request("GET", route, timeout=timeout)
         return self.client.request("POST", route, json=body, timeout=timeout)
 
-    def status(self) -> dict:
-        """The bridge's state; diagnosis explains a connection problem (docs/api-reference.md#connection-diagnosis)."""
-        return self.request("/api/status")
+    def status(self, *, diagnostics: bool = False) -> dict:
+        """Connection state; diagnostics adds read-only browser build comparison (macOS)."""
+        return self.request("/api/status?diagnostics=true" if diagnostics else "/api/status")
 
     def tabs(self) -> list[dict]:
         """Every open tab: id, url, title, active, windowId, index, and owned for a tab a client opened."""
