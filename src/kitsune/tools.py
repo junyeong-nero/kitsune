@@ -722,8 +722,9 @@ def browser_trusted_drag(
     must be in view without scrolling), presses, moves in steps, releases, then moves the
     pointer back and shows the user's tab again. It takes the user's pointer for its duration;
     prefer browser_drag unless the page ignores it."""
+    # The bridge allows a trusted drag 35 s: focusing the browser, both window checks and the drag.
     return _post("/api/trusted-drag", _request_body({"selector": selector, "to": to_selector, "steps": steps}, tab_id,
-                                                     confirm_token=confirm_token, first=first))
+                                                     confirm_token=confirm_token, first=first), timeout=40)
 
 
 @tool("browse", annotations=dict(title="Trusted type", **ACT))

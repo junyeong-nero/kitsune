@@ -832,14 +832,19 @@ def _mac_click_screen(x, y, restore_pointer=True, button="left", click_count=1, 
         for click_state in range(1, click_count + 1):
             if click_state > 1:
                 time.sleep(DOUBLE_CLICK_GAP)
-            for event_type, pause in ((down, hold or CLICK_PRESS), (up, 0)):
+            pressed, released = [], []
+            for event_type, events in ((down, pressed), (up, released)):
                 event = Quartz.CGEventCreateMouseEvent(None, event_type, point, mouse_button)
                 Quartz.CGEventSetIntegerValueField(event, Quartz.kCGMouseEventClickState, click_state)
                 if flags:
                     Quartz.CGEventSetFlags(event, flags)
-                Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
-                if pause:
-                    time.sleep(pause)
+                events.append(event)
+            Quartz.CGEventPost(Quartz.kCGHIDEventTap, pressed[0])
+            # A held press (#351) lasts up to 10 s; the button is released whatever happens meanwhile.
+            try:
+                time.sleep(hold or CLICK_PRESS)
+            finally:
+                Quartz.CGEventPost(Quartz.kCGHIDEventTap, released[0])
 
         return _with_pointer_restore({"ok": True, "backend": "quartz"}, restore_pointer, read_error,
                                      lambda: _quartz_warp(Quartz, saved))
@@ -888,7 +893,7 @@ def _mac_click_screen(x, y, restore_pointer=True, button="left", click_count=1, 
 
 
 def _release_keys(command):
-    """Best effort: release modifier keys a failed click command may have left pressed."""
+    """Best effort: release modifier keys (and a held button) a failed click command may have left pressed."""
     if not command:
         return
     try:
@@ -920,13 +925,15 @@ def _linux_click_screen(x, y, restore_pointer=True, button="left", click_count=1
     if restore_pointer:
         # The X server handles the click before this move back to where the first mousemove started.
         command += ["mousemove", "restore"]
+    # A failed run may have stopped after a key or the held button went down; release them.
+    release = (["mouseup", _XDOTOOL_BUTTONS[button]] if hold else []) + (["keyup", keys] if keys else [])
     try:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=10)
+        result = subprocess.run(command, capture_output=True, text=True, timeout=10 + hold)
     except (OSError, subprocess.SubprocessError) as e:
-        _release_keys([xdotool, "keyup", keys] if keys else None)
+        _release_keys([xdotool, *release] if release else None)
         return {"error": f"xdotool failed: {e}"}
     if result.returncode != 0:
-        _release_keys([xdotool, "keyup", keys] if keys else None)
+        _release_keys([xdotool, *release] if release else None)
         detail = (result.stderr or result.stdout or "").strip() or f"exit code {result.returncode}"
         return {"error": f"xdotool failed: {detail}"}
     return {"ok": True, "backend": "xdotool", "pointerRestored": restore_pointer}
@@ -956,8 +963,10 @@ def _windows_click_screen(x, y, restore_pointer=True, button="left", click_count
             if press:
                 time.sleep(DOUBLE_CLICK_GAP)
             user32.mouse_event(down, 0, 0, 0, 0)
-            time.sleep(hold or CLICK_PRESS)
-            user32.mouse_event(up, 0, 0, 0, 0)
+            try:
+                time.sleep(hold or CLICK_PRESS)
+            finally:
+                user32.mouse_event(up, 0, 0, 0, 0)
     finally:
         for modifier in reversed(modifiers):
             user32.keybd_event(_WIN32_KEYS[modifier], 0, KEYEVENTF_KEYUP, 0)
@@ -1140,23 +1149,32 @@ def _mac_drag_screen(start, end, steps):
             Quartz.CGEventSetIntegerValueField(event, Quartz.kCGMouseEventClickState, 1)
         Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
 
-    post(Quartz.kCGEventMouseMoved, start)
-    time.sleep(0.05)
-    post(Quartz.kCGEventLeftMouseDown, start)
-    released = False
+    held_at = None  # where the button is down; None while it is up
     try:
+        post(Quartz.kCGEventMouseMoved, start)
+        time.sleep(0.05)
+        post(Quartz.kCGEventLeftMouseDown, start)
+        held_at = start
         time.sleep(TRUSTED_DRAG_PRESS_DELAY)
         for step in range(1, steps + 1):
-            post(Quartz.kCGEventLeftMouseDragged, tuple(a + (b - a) * step / steps for a, b in zip(start, end)))
+            point = tuple(a + (b - a) * step / steps for a, b in zip(start, end))
+            post(Quartz.kCGEventLeftMouseDragged, point)
+            held_at = point
             time.sleep(TRUSTED_DRAG_STEP_DELAY)
         post(Quartz.kCGEventLeftMouseUp, end)
-        released = True
+        held_at = None
+        result = {"ok": True, "backend": "quartz"}
+    except Exception as e:  # pyobjc raises its own error types
+        result = {"error": f"The trusted drag stopped partway: {e}", "code": "drag_interrupted",
+                  "retryable": False,
+                  "hint": "The button was released where the drag stopped, so the page may have seen part of "
+                          "the drag or a drop there. Check the page before dragging again.",
+                  "backend": "quartz"}
     finally:
-        if not released:
-            # Never leave the user's button held down.
-            post(Quartz.kCGEventLeftMouseUp, end)
-    return _with_pointer_restore({"ok": True, "backend": "quartz"}, True, read_error,
-                                 lambda: _quartz_warp(Quartz, saved))
+        if held_at is not None:
+            # Never leave the user's button held down; release where the pointer is, not at the end.
+            post(Quartz.kCGEventLeftMouseUp, held_at)
+    return _with_pointer_restore(result, True, read_error, lambda: _quartz_warp(Quartz, saved))
 
 
 def _focus_check_drag(start, end, focus, process, steps):
@@ -1190,6 +1208,7 @@ async def trusted_drag(params):
     start = await send_to_extension("screenPoint", {**target, "selector": selector})
     if "error" in start:
         return start
+    end = {}
     try:
         end = await send_to_extension("screenPoint", {**target, "selector": to, "scroll": False})
         if "error" in end:
@@ -1200,9 +1219,14 @@ async def trusted_drag(params):
                                                    params.get("focus", True) is not False,
                                                    params.get("process") or "", steps)
     finally:
-        if start.get("previousTabId") is not None:
+        # The destination's screenPoint showed the tab again if the user had switched tabs meanwhile;
+        # the tab they switched to comes back first, and the earlier one only if the agent's tab is
+        # still shown then (restoreActiveTab checks).
+        shown = [point for point in (end, start) if point.get("previousTabId") is not None]
+        if shown:
             await asyncio.sleep(TRUSTED_CLICK_RESTORE_DELAY)
-            await send_to_extension("restoreActiveTab", {"tabId": start["previousTabId"], "from": start.get("tabId")})
+        for point in shown:
+            await send_to_extension("restoreActiveTab", {"tabId": point["previousTabId"], "from": point.get("tabId")})
     if "error" in dragged:
         return dragged
     return {"ok": True, "trusted": True, "steps": steps, "focused": bool(focused),
@@ -1867,9 +1891,10 @@ def _click_verb(action, params):
     options = _trusted_click_options(params) if action == "trustedClick" else None
     if not isinstance(options, tuple):
         return "clicks"
-    button, click_count, modifiers, _ = options
+    button, click_count, modifiers, hold = options
     verb = "double-clicks" if click_count == 2 else "clicks"
-    return "+".join([*modifiers, verb if button == "left" else f"{button}-{verb}"])
+    verb = "+".join([*modifiers, verb if button == "left" else f"{button}-{verb}"])
+    return f"{verb} and holds" if hold else verb
 
 
 async def _held_reason(action, params):

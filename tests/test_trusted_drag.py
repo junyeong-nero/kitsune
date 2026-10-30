@@ -74,12 +74,26 @@ class MacDragTests(unittest.TestCase):
             call.warp(USER_POINTER)])
         self.quartz.CGAssociateMouseAndMouseCursorPosition.assert_called_once_with(True)
 
-    def test_a_failure_mid_drag_still_releases_the_button(self):
+    def test_a_failure_mid_drag_releases_where_it_stopped_and_restores_the_pointer(self):
+        # The fourth post (the second move) fails: the button comes up at the last point it reached,
+        # not at the destination, the pointer goes back, and the error says the drag may have acted.
         self.quartz.CGEventPost.side_effect = [None, None, None, RuntimeError("tap disabled"), None]
-        with self.assertRaises(RuntimeError):
-            bridge._mac_drag_screen((100, 200), (200, 240), 4)
+        result = bridge._mac_drag_screen((100, 200), (200, 240), 4)
+        self.assertEqual(result, {
+            "error": "The trusted drag stopped partway: tap disabled", "code": "drag_interrupted",
+            "retryable": False, "hint": result["hint"], "backend": "quartz", "pointerRestored": True})
+        self.assertIn("Check the page", result["hint"])
         self.assertEqual([event["kind"] for event in self.posted()], [5, 1, 6, 6, 2])
-        self.assertEqual(self.posted()[-1]["at"], (200.0, 240.0))
+        self.assertEqual(self.posted()[-1], {"kind": 2, "at": (125.0, 210.0), "clickState": 1})
+        self.quartz.CGWarpMouseCursorPosition.assert_called_once_with(USER_POINTER)
+
+        # A failure before the press releases nothing; the pointer still goes back.
+        self.quartz = fake_quartz()
+        self.quartz.CGEventPost.side_effect = RuntimeError("no session")
+        with patch.dict("sys.modules", {"Quartz": self.quartz}):
+            result = bridge._mac_drag_screen((100, 200), (200, 240), 4)
+        self.assertEqual((result["code"], result["pointerRestored"]), ("drag_interrupted", True))
+        self.assertEqual([event["kind"] for event in self.posted()], [5])
 
     def test_an_unreadable_pointer_still_drags(self):
         self.quartz.CGEventCreate.return_value = None
@@ -156,6 +170,26 @@ class TrustedDragTests(unittest.TestCase):
         self.assertEqual(asyncio.run(bridge.trusted_drag({"selector": "#knob", "to": "#mark"}))["code"], "not_found")
         self.assertEqual([action for action, _ in self.extension.sent], ["screenPoint"])
 
+    def test_an_interrupted_drag_still_shows_the_users_tab_again(self):
+        interrupted = {"error": "The trusted drag stopped partway: tap disabled", "code": "drag_interrupted",
+                       "retryable": False, "hint": "...", "backend": "quartz", "pointerRestored": True}
+        with patch.object(bridge, "_mac_drag_screen", return_value=interrupted):
+            self.assertEqual(asyncio.run(bridge.trusted_drag({"selector": "#knob", "to": "#mark"})), interrupted)
+        self.assertEqual(self.extension.sent[-1], ("restoreActiveTab", {"tabId": 324, "from": 396}))
+
+    def test_a_tab_the_destination_point_showed_again_is_restored(self):
+        # The user switched to tab 500 between the two screenPoints, so the second one showed the
+        # agent's tab again: tab 500 comes back first, then (if the agent's tab is still shown) 324.
+        self.extension = Extension(end={**END, "tabId": 396, "previousTabId": 500})
+        self.assertTrue(asyncio.run(bridge.trusted_drag({"selector": "#knob", "to": "#mark"}))["ok"])
+        self.assertEqual(self.extension.sent[2:], [("restoreActiveTab", {"tabId": 500, "from": 396}),
+                                                   ("restoreActiveTab", {"tabId": 324, "from": 396})])
+        # Without a previousTabId at the source, only the destination's is restored.
+        self.extension = Extension(start={k: v for k, v in START.items() if k != "previousTabId"},
+                                   end={**END, "tabId": 396, "previousTabId": 500})
+        asyncio.run(bridge.trusted_drag({"selector": "#knob", "to": "#mark"}))
+        self.assertEqual(self.extension.sent[2:], [("restoreActiveTab", {"tabId": 500, "from": 396})])
+
     def test_focus_false_leaves_the_browser_where_it_is(self):
         result = asyncio.run(bridge.trusted_drag({"selector": "#knob", "to": "#mark", "focus": False, "first": True}))
         self.assertIs(result["focused"], False)
@@ -228,7 +262,8 @@ class SurfaceTests(unittest.TestCase):
     def test_the_tool_posts_to_the_browse_route(self):
         with patch.object(tools, "_post", return_value={"ok": True}) as post:
             tools.browser_trusted_drag(selector="e4", to_selector="e9", tab_id=3)
-        post.assert_called_once_with("/api/trusted-drag", {"selector": "e4", "to": "e9", "steps": 10, "tabId": 3})
+        post.assert_called_once_with("/api/trusted-drag", {"selector": "e4", "to": "e9", "steps": 10, "tabId": 3},
+                                     timeout=40)
         self.assertEqual(tools.TOOLS["browser_trusted_drag"].group, "browse")
         self.assertIn("browser_trusted_drag", tools.TAB_WRITE_TOOLS)
         self.assertEqual(capabilities.ROUTE_GROUPS["/api/trusted-drag"], frozenset({"browse"}))

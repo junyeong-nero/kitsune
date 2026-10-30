@@ -508,6 +508,46 @@ class NativeClickTests(unittest.TestCase):
             "/usr/bin/xdotool", "mousemove", "--sync", "10", "20", "keydown", "ctrl",
             "mousedown", "1", "sleep", "0.6", "mouseup", "1", "keyup", "ctrl", "mousemove", "restore"])
 
+        # Anything that interrupts the hold still releases the button.
+        for backend in ("quartz", "win32"):
+            with self.subTest(backend=backend):
+                self.sleep.reset_mock()
+                self.sleep.side_effect = lambda seconds: (_ for _ in ()).throw(KeyboardInterrupt) \
+                    if seconds == 0.6 else None
+                if backend == "quartz":
+                    quartz = fake_quartz()
+                    platform, trusted = self.mac()
+                    with platform, trusted, patch.dict("sys.modules", {"Quartz": quartz}), \
+                         self.assertRaises(KeyboardInterrupt):
+                        bridge._native_click_screen(10, 20, False, "left", 1, (), 0.6)
+                    self.assertEqual([event["kind"] for event in posted(quartz)], [5, 1, 2])
+                else:
+                    user32 = windows_user32()
+                    platform, windll = self.windows(user32)
+                    with platform, windll, self.assertRaises(KeyboardInterrupt):
+                        bridge._native_click_screen(10, 20, False, "left", 1, (), 0.6)
+                    self.assertEqual(user32.mouse_event.call_args_list,
+                                     [call(0x0002, 0, 0, 0, 0), call(0x0004, 0, 0, 0, 0)])
+        self.sleep.side_effect = None
+
+        # xdotool waits for the whole hold; a run that fails or times out still releases the button.
+        platform, env = self.linux()
+        with platform, env, patch.object(bridge.shutil, "which", return_value="/usr/bin/xdotool"), \
+             patch.object(bridge.subprocess, "run", return_value=completed()) as run:
+            bridge._native_click_screen(10, 20, True, "left", 1, (), 10.0)
+        self.assertEqual(run.call_args.kwargs["timeout"], 20.0)
+        for failure in (completed(returncode=1, stderr="BadWindow\n"), subprocess.TimeoutExpired("xdotool", 20)):
+            with self.subTest(failure=failure), platform, env, \
+                 patch.object(bridge.shutil, "which", return_value="/usr/bin/xdotool"), \
+                 patch.object(bridge.subprocess, "run", side_effect=[failure, completed()]) as run:
+                result = bridge._native_click_screen(10, 20, False, "right", 1, ("Shift",), 9.5)
+            self.assertIn("xdotool failed", result["error"])
+            self.assertEqual(run.call_args_list[1].args[0], ["/usr/bin/xdotool", "mouseup", "3", "keyup", "shift"])
+            with platform, env, patch.object(bridge.shutil, "which", return_value="/usr/bin/xdotool"), \
+                 patch.object(bridge.subprocess, "run", side_effect=[failure, completed()]) as run:
+                bridge._native_click_screen(10, 20, False, "left", 1, (), 9.5)
+            self.assertEqual(run.call_args_list[1].args[0], ["/usr/bin/xdotool", "mouseup", "1"])
+
         # cliclick has no hold; it refuses rather than clicking at once.
         platform, trusted = self.mac()
         with platform, trusted, patch.dict("sys.modules", {"Quartz": None}), \
@@ -922,6 +962,11 @@ class TrustedClickTests(unittest.TestCase):
                 self.assertEqual(asyncio.run(bridge.trusted_click({"selector": "#go", **params})), {"error": error})
             send.assert_not_called()
             click.assert_not_called()
+
+        # Ask mode names the hold when it holds a trusted click.
+        self.assertEqual(bridge._click_verb("trustedClick", {"holdMs": 600, "button": "right", "modifiers": ["Shift"]}),
+                         "Shift+right-clicks and holds")
+        self.assertEqual(bridge._click_verb("trustedClick", {}), "clicks")
 
         # cliclick cannot hold: refused before the tab is shown or the browser focused.
         with patch.object(bridge.sys, "platform", "darwin"), patch.dict("sys.modules", {"Quartz": None}), \
