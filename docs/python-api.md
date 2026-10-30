@@ -45,6 +45,7 @@ is not connected. It returns a `Browser`.
 | --- | --- | --- |
 | `mode` | `"act"` | `"read"` or `"draft"` restricts requests as [`KITSUNE_MODE`](api-reference.md#task-modes) does for MCP |
 | `protect_user_tabs` | `False` | `True` refuses navigation in tabs no client opened, as [`KITSUNE_PROTECT_USER_TABS`](api-reference.md#protected-user-tabs) |
+| `hold_viewed_tab` | `True` | `False` writes and navigates the tab the user is viewing without approval, as [`KITSUNE_HOLD_VIEWED_TAB=0`](api-reference.md#viewed-tab) |
 | `confirm` | `None` | A function that decides on actions ask-before-act holds; see [Ask-before-act](#ask-before-act) |
 | `replace_bridge` | `False` | `True` replaces a running bridge of another build |
 
@@ -140,7 +141,7 @@ acts on the first match ([Strict selectors](api-reference.md#strict-selectors)).
 | `Tab` method | Does |
 | --- | --- |
 | `navigate(url)`, `back()`, `forward()`, `reload(bypass_cache=False)` | Navigate the tab |
-| `click(target, button=None, modifiers=None)`, `double_click(target)`, `hover(target)` | Pointer events (synthetic) on the target |
+| `click(target, button=None, modifiers=None, hold_ms=0)`, `double_click(target)`, `hover(target, duration_ms=0, steps=None)` | Pointer events (synthetic) on the target; `hold_ms` (0-10000) holds a click's press for long-press controls, and `duration_ms` (0-10000) or `steps` (1-50) keep a hover moving across the target for hover-intent controls ([POST /api/click](api-reference.md#post-apiclick), [POST /api/hover](api-reference.md#post-apihover)) |
 | `fill(target, value)` | Replace a field's or editor's value |
 | `type(target, text, clear=False)` | Type with key events |
 | `fill_form(fields)` | Fill several fields; each key is a CSS selector, name, label or placeholder |
@@ -154,7 +155,7 @@ acts on the first match ([Strict selectors](api-reference.md#strict-selectors)).
 | `drag(source, destination)` | HTML5 drag events, else pointer events (`via` says which) |
 | `insert(target, text, html=False, clear=False)` | Insert text into an editor, input or textarea, appending unless `clear`; `html=True` (developer build) inserts HTML into an editor |
 | `upload_files(paths, target=None)`, `drop(target, paths=None, data=None)` | Put local files into a file input, or drop files and data on an element |
-| `trusted_click(target=None, x=0, y=0, coordinate_space="viewport", restore_pointer=True, button="left", click_count=1, modifiers=None)` | A click with the real OS pointer, for pages that ignore synthetic clicks; `button="right"`/`"middle"`, `click_count=2` and `modifiers=["Shift", ...]` choose the click. It moves your cursor for the click, then back unless `restore_pointer=False`, and may show the tab for the click ([`browser_trusted_click`](api-reference.md#browser_trusted_clickselector-x0-y0-coordinate_spaceviewport-focusfalse-tab_idnone-firstfalse-restore_pointertrue-buttonleft-click_count1-modifiersnone)) |
+| `trusted_click(target=None, x=0, y=0, coordinate_space="viewport", restore_pointer=True, button="left", click_count=1, modifiers=None, hold_ms=0)` | A click with the real OS pointer, for pages that ignore synthetic clicks; `button="right"`/`"middle"`, `click_count=2`, `modifiers=["Shift", ...]` and `hold_ms` (a long press) choose the click. It moves your cursor for the click, then back unless `restore_pointer=False`, and may show the tab for the click ([`browser_trusted_click`](api-reference.md#browser_trusted_clickselector-x0-y0-coordinate_spaceviewport-focusfalse-tab_idnone-firstfalse-restore_pointertrue-buttonleft-click_count1-modifiersnone-hold_ms0)) |
 
 Actions return the bridge's result. `ok: True` only means the action was dispatched.
 To check what happened, pass `expect`, for example `expect={"url_changed": True}` or
@@ -228,7 +229,7 @@ already have taken effect: check the page before repeating it.
 
 | Exception | Raised for |
 | --- | --- |
-| `ConfirmationRequired` | An action that needs your approval, with `token` and `expires_in`: `confirmation_required` (ask-before-act) or `user_tab` |
+| `ConfirmationRequired` | An action that needs your approval, with `token` and `expires_in`: `confirmation_required` (ask-before-act), `user_tab` or `user_viewing` |
 | `ConnectionFailed` (also a `ConnectionError`) | The bridge or extension was not reached or dropped the request: the [connection codes](api-reference.md#connection-diagnosis), `bridge_disconnected` and `bridge_version_mismatch` |
 | `TimedOut` (also a `TimeoutError`) | `timeout`, a page load that timed out, and a wait that ran out |
 | `KitsuneError` | Every other failure, such as `stale_ref`, `ambiguous_target` or `outcome_not_observed` |
@@ -241,7 +242,9 @@ Some actions need your approval, and nothing runs until you give it: with
 [ask-before-act](api-reference.md#ask-before-act) on, the bridge holds submits, payment
 pages, JavaScript and cookie access (`confirmation_required`), and it never closes one of
 your own tabs, or with `protect_user_tabs` navigates it, without approval (`user_tab`,
-[Agent-owned tabs](api-reference.md#agent-owned-tabs)). These raise
+[Agent-owned tabs](api-reference.md#agent-owned-tabs)). Nor does it write or navigate the
+tab you are viewing (`user_viewing`, [Viewed tab](api-reference.md#viewed-tab)) unless
+`hold_viewed_tab=False`. These raise
 `ConfirmationRequired`. Repeat the call with `confirm=error.token` within
 `error.expires_in` seconds, or let `connect(confirm=...)` decide: the function gets the
 error, and when it returns `True` the action is sent once more with its token. In a

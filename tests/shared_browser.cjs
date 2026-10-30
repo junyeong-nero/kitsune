@@ -22,7 +22,9 @@ const copy = value => JSON.parse(JSON.stringify(value));
 // opens when foreground is set, like Firefox does for target=_blank links.
 // focusOnCreate: windows.create focuses the new window despite focused: false, 'before' it resolves
 // or 'after'. sync: Zen's window sync, see windows.create and tabs.remove below.
-function harness({ onClick = () => {}, activity = {}, focusOnCreate = null, sync = false } = {}) {
+// holdViewedTab: commands are held on the tab the user views (#326, testViewedTabIsHeld); the other
+// checks act on the user's shown tab 1 for other rules, so they send holdViewedTab: false.
+function harness({ onClick = () => {}, activity = {}, focusOnCreate = null, sync = false, holdViewedTab = false } = {}) {
   let now = 1000, nextId = 0, nextTab = 20;
   const timers = new Map();
   const schedule = (fn, delay) => { const id = ++nextId; timers.set(id, { fn, at: now + delay }); return id; };
@@ -34,7 +36,8 @@ function harness({ onClick = () => {}, activity = {}, focusOnCreate = null, sync
   };
   const h = {
     tabs, activity, calls: [], sent: [], focusedWindow: 1,
-    send: command => context.handleCommand({ includeSnapshot: false, ...command }).then(copy),
+    send: command => context.handleCommand({ includeSnapshot: false, ...(holdViewedTab ? {} : { holdViewedTab: false }),
+      ...command }).then(copy),
     activate(id) {
       const tab = tabs[id];
       const previous = Object.values(tabs).find(t => t.windowId === tab.windowId && t.active);
@@ -411,6 +414,102 @@ async function testTrustedClickShowsTheTabOnlyForTheClick() {
   assert.deepEqual(h.shown(), [1]);
 }
 
+// #326: viewing counts as using. Writes and navigations on the tab shown in the browser window the
+// user last focused are held without recent input, also while another app has the focus.
+async function testViewedTabIsHeld() {
+  const h = harness({ holdViewedTab: true });
+  for (const command of [
+    { action: 'click', selector: '#go' },  // no tabId: the shown tab
+    { action: 'type', tabId: 1, selector: '#q', text: 'x' },
+    { action: 'keypress', tabId: 1, key: 'Enter' },
+    { action: 'formFill', tabId: 1, fields: { q: 'x' } },
+    { action: 'scroll', tabId: 1, direction: 'down' },
+    { action: 'hover', tabId: 1, selector: '#go' },
+    { action: 'executeJS', tabId: 1, code: '1' },
+    { action: 'navigate', tabId: 1, url: 'https://agent.example/' },
+    { action: 'goBack', tabId: 1 },
+    { action: 'reloadTabBrowser', tabId: 1 },
+    { action: 'screenPoint', tabId: 1, selector: '#go', click: true },
+  ]) {
+    h.sent.length = 0;
+    const result = await h.send(command);
+    assert.deepEqual([result.code, result.retryable], ['user_viewing', false], command.action);
+    assert.deepEqual(result.state, { tabId: 1, url: 'https://user.example/one', windowId: 1, reason: 'viewing',
+      browserFocused: true });
+    assert.match(result.hint, /confirm_token/);
+    assert.deepEqual(h.sent, [['userActivity', 1]], `${command.action} never reached the page`);
+  }
+  assert.equal(h.tabs[1].url, 'https://user.example/one', 'the user page was not replaced');
+  assert.deepEqual(h.activations(), []);
+
+  // The user switched to another app (the agent's terminal): their window still shows the tab.
+  h.focusWindow(-1);
+  const away = await h.send({ action: 'click', tabId: 1, selector: '#go' });
+  assert.deepEqual([away.code, away.state.browserFocused], ['user_viewing', false]);
+  h.focusWindow(1);
+
+  // Reads, captures and tabs the user does not see go on.
+  assert.equal((await h.send({ action: 'getSnapshot', tabId: 1 })).code, undefined);
+  assert.ok((await h.send({ action: 'screenshot', tabId: 1 })).dataUrl);
+  assert.equal((await h.send({ action: 'click', tabId: 2, selector: '#go' })).ok, true, 'a background user tab');
+  const elsewhere = h.add({ windowId: 3, active: true, url: 'https://user.example/three' });
+  assert.equal((await h.send({ action: 'click', tabId: elsewhere, selector: '#go' })).ok, true,
+    'the shown tab of a window the user did not focus last');
+  // Closing a user tab asks for approval as before (user_tab), whether or not it is shown.
+  assert.equal((await h.send({ action: 'closeTab', tabId: 1 })).code, 'user_tab');
+
+  // A tab the agent opened is not held, even once the user shows it.
+  const agentTab = (await h.send({ action: 'newTab', url: 'https://agent.example/a' })).tabId;
+  h.activate(agentTab);
+  assert.equal((await h.send({ action: 'click', tabId: agentTab, selector: '#go' })).ok, true);
+  h.activate(1);
+
+  // Only the bridge releases the hold: the call was approved (its token, or the user_tab approval
+  // of the same navigation), or the client set KITSUNE_HOLD_VIEWED_TAB=0.
+  for (const release of [{ viewedTabApproved: true }, { holdViewedTab: false }]) {
+    assert.equal((await h.send({ action: 'click', tabId: 1, selector: '#go', ...release })).ok, true,
+      JSON.stringify(release));
+  }
+  // userTabApproved only approves a navigation: the bridge strips a caller's own only on those routes.
+  assert.equal((await h.send({ action: 'click', tabId: 1, selector: '#go', userTabApproved: true })).code,
+    'user_viewing');
+  await run(h, { action: 'navigate', tabId: 1, url: 'https://agent.example/approved', userTabApproved: true }, 16000);
+  assert.equal(h.tabs[1].url, 'https://agent.example/approved', 'an approved navigation of the viewed tab runs');
+
+  // A trusted drag on a background user tab (#351): its source's screenPoint shows the tab, and its
+  // destination's on that tab, now shown by the agent, is not held. Once the user's tab is shown
+  // again, the tab is held when the user shows it.
+  const source = await run(h, { action: 'screenPoint', tabId: 2, selector: '#from', click: true }, 200);
+  assert.deepEqual([source.tabId, source.previousTabId], [2, 1]);
+  const destination = await run(h, { action: 'screenPoint', tabId: 2, selector: '#to', click: true, scroll: false }, 200);
+  assert.equal(destination.code, undefined, JSON.stringify(destination));
+  assert.equal(destination.screenX, 10);
+  // Only another trusted measurement passes there: other writes on the shown tab are still held.
+  assert.equal((await h.send({ action: 'click', tabId: 2, selector: '#go' })).code, 'user_viewing');
+  assert.deepEqual(await h.send({ action: 'restoreActiveTab', tabId: 1, from: 2 }), { ok: true, restored: true });
+  assert.deepEqual(h.shown(), [1]);
+  h.activate(2);
+  assert.equal((await run(h, { action: 'screenPoint', tabId: 2, selector: '#from', click: true }, 200)).code,
+    'user_viewing', 'the user showed it');
+  h.activate(1);
+  // Another tab shown in that window ends it too, also without restoreActiveTab.
+  await run(h, { action: 'screenPoint', tabId: 2, selector: '#from', click: true }, 200);
+  h.activate(1);
+  h.activate(2);
+  assert.equal((await h.send({ action: 'click', tabId: 2, selector: '#go' })).code, 'user_viewing');
+  h.activate(1);
+
+  // An explicit switch away is not held; the trusted click's brief showing of a background tab is
+  // not either: only the user's input on the tab it hides stops it.
+  const point = await run(h, { action: 'screenPoint', tabId: agentTab, selector: '#go', click: true }, 200);
+  assert.deepEqual([point.tabId, point.previousTabId], [agentTab, 1]);
+  assert.deepEqual(await h.send({ action: 'restoreActiveTab', tabId: 1, from: agentTab }), { ok: true, restored: true });
+  assert.deepEqual(await h.send({ action: 'switchTab', tabId: 2 }), { ok: true });
+  assert.deepEqual(h.shown(), [2]);
+  assert.equal((await h.send({ action: 'click', tabId: 1, selector: '#go' })).ok, true, 'tab 1 is not shown now');
+  assert.equal((await h.send({ action: 'click', tabId: 2, selector: '#go' })).code, 'user_viewing');
+}
+
 // Zen focuses a new window despite focused: false; the user's window gets the focus back.
 async function testAgentWindowsGiveFocusBack() {
   const focusCalls = h => h.calls.filter(([name]) => name === 'windows.update');
@@ -539,6 +638,7 @@ async function testNeverAdoptUserTabs() {
   await testUserActivityBlocksAgentWrites();
   await testUserNavigationBlocksAgentWrites();
   await testTrustedClickShowsTheTabOnlyForTheClick();
+  await testViewedTabIsHeld();
   await testAgentWindowsGiveFocusBack();
   await testZenSyncCopies();
   await testNeverAdoptUserTabs();

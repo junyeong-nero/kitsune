@@ -122,9 +122,11 @@ def via(name, arguments=None, session="a"):
     return call("browser_tools_call", {"name": name, "arguments": arguments or {}}, session)
 
 
-def without_gateway_header(result):
+def without_gateway_header(result, call_ids=False):
+    """result without the gateway header; call_ids: also without the random tool call id (#326)."""
+    dropped = {task_modes.GATEWAY_TOOL_HEADER, *([task_modes.TOOL_CALL_HEADER] if call_ids else [])}
     requests = [{**request, "headers": {key: value for key, value in request["headers"].items()
-                                        if key != task_modes.GATEWAY_TOOL_HEADER}}
+                                        if key not in dropped}}
                 for request in result["requests"]]
     return {**result, "requests": requests}
 
@@ -195,7 +197,10 @@ class GatewayTests(unittest.TestCase):
         for gateway, direct in zip(pairs[::2], pairs[1::2]):
             with self.subTest(direct=direct["content"][0]):
                 # Same content, error status and bridge requests (protect-user-tabs header included).
-                self.assertEqual(without_gateway_header(gateway), direct)
+                self.assertEqual(without_gateway_header(gateway, call_ids=True),
+                                 without_gateway_header(direct, call_ids=True))
+                for request in gateway["requests"] + direct["requests"]:
+                    self.assertRegex(request["headers"][task_modes.TOOL_CALL_HEADER], r"^[0-9a-f]{16}$")
                 for request in gateway["requests"]:
                     self.assertTrue(request["headers"][task_modes.GATEWAY_TOOL_HEADER].startswith("browser_"))
                     self.assertEqual(request["headers"][task_modes.PROTECT_USER_TABS_HEADER], "1")
@@ -257,7 +262,7 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(set(added["published"]), {
             "browser_scroll", "browser_forward", "browser_check", "browser_focus", "browser_blur",
             "browser_submit_form", "browser_click_and_wait_navigation", "browser_trusted_click",
-            "browser_trusted_type", "browser_trusted_press_key", "browser_page_text"})
+            "browser_trusted_drag", "browser_trusted_type", "browser_trusted_press_key", "browser_page_text"})
         self.assertTrue(added["notified"])
         self.assertEqual(result["notes"], {"a": ["ToolListChangedNotification"], "b": []})
         self.assertTrue(set(added["published"]) <= set(listed_a))

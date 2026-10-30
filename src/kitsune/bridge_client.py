@@ -19,7 +19,8 @@ import httpx
 from . import bridge_control
 from .bridge_control import BRIDGE, HTTP_PORT, LOG_FILE, TOKEN_FILE, WS_PORT, headers as _headers
 from .capabilities import CAPS_HEADER
-from .task_modes import CLIENT_HEADER, CLIENT_ID_PATTERN, MODE_HEADER, OWNER_HEADER, PROTECT_USER_TABS_HEADER
+from .task_modes import (CLIENT_HEADER, CLIENT_ID_PATTERN, HOLD_VIEWED_TAB_HEADER, MODE_HEADER, OWNER_HEADER,
+                         PROTECT_USER_TABS_HEADER)
 from .version import BRIDGE_BUILD
 
 BRIDGE_START_TIMEOUT = 15
@@ -184,6 +185,9 @@ def _port_conflict(port: int, reason: str, message: str) -> dict:
 class BridgeClient:
     """Bridge requests that carry one caller's capability groups, task mode and user-tab protection.
 
+    hold_viewed_tab=False (KITSUNE_HOLD_VIEWED_TAB=0) lets these requests act on the tab the user is
+    viewing without the confirm step of a user_viewing refusal (#326).
+
     caps are the groups the bridge lets these requests use: it refuses routes and container steps
     of other groups (#230). caps=None sends no caps header, so the bridge refuses no group; caps
     has no default, so each caller chooses. extra_headers, if set, returns headers to add to each
@@ -195,11 +199,12 @@ class BridgeClient:
     records the tabs these requests open as its own (#325).
     """
 
-    def __init__(self, *, caps, mode: str = "act", protect_user_tabs: bool = False, extra_headers=None,
-                 replace_bridge: bool = True):
+    def __init__(self, *, caps, mode: str = "act", protect_user_tabs: bool = False, hold_viewed_tab: bool = True,
+                 extra_headers=None, replace_bridge: bool = True):
         self.caps = None if caps is None else ",".join(sorted(caps))
         self.mode = mode
         self.protect_user_tabs = protect_user_tabs
+        self.hold_viewed_tab = hold_viewed_tab
         self.extra_headers = extra_headers
         self.replace_bridge = replace_bridge
         self.client_id = f"{os.getpid()}-{secrets.token_hex(3)}"
@@ -325,6 +330,8 @@ class BridgeClient:
                     headers[MODE_HEADER] = self.mode
                 if self.protect_user_tabs:
                     headers[PROTECT_USER_TABS_HEADER] = "1"
+                if not self.hold_viewed_tab:
+                    headers[HOLD_VIEWED_TAB_HEADER] = "0"
                 if self.extra_headers:
                     headers.update(self.extra_headers())
                 r = httpx.request(method, f"{BRIDGE}{endpoint}", headers=headers,

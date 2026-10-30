@@ -12,6 +12,7 @@ import logging
 import math
 import os
 import re
+import secrets
 import sys
 import weakref
 from contextvars import ContextVar
@@ -31,7 +32,7 @@ from . import playwright_tools, tools
 from .capabilities import CAPABILITY_GROUPS, NAMED_ONLY_GROUPS, enabled_groups
 from .bridge_client import BridgeClient
 from .errors import failed as _failed  # whether a tool's own result reports failure
-from .task_modes import GATEWAY_TOOL_HEADER, permits_tool, task_mode
+from .task_modes import GATEWAY_TOOL_HEADER, TOOL_CALL_HEADER, permits_tool, task_mode
 from .tools import DESTRUCTIVE, _on_current_tab
 
 
@@ -201,6 +202,8 @@ if _unauthorized_caps:
 
 MODE = task_mode(os.environ.get("KITSUNE_MODE"))
 PROTECT_USER_TABS = os.environ.get("KITSUNE_PROTECT_USER_TABS", "").lower() in {"1", "true", "yes", "on"}
+# On unless set to 0: writes on the tab the user is viewing need a confirm step (#326).
+HOLD_VIEWED_TAB = os.environ.get("KITSUNE_HOLD_VIEWED_TAB", "").lower() not in {"0", "false", "no", "off"}
 # Sent once at initialize. The core tools keep Playwright MCP's descriptions, which cannot say
 # that the browser is shared with its user; without this, agents avoid `select` to spare the
 # user's view and work around background tabs instead of reading them.
@@ -217,9 +220,17 @@ mcp._mcp_server.instructions = (
        if permits_tool(MODE, "browser_tabs") else
        "Until browser_tab_list new_tab opens a background tab of your own, reads act on the tab the "
        "user is viewing, and navigations and writes that pass no tab_id fail with no_current_tab; "
-       "later tools act on your tab without switching the user's view."))
+       "later tools act on your tab without switching the user's view.")
+    # #326: the tab the user is viewing is held for writes unless this client set KITSUNE_HOLD_VIEWED_TAB=0.
+    + ((" Writes and navigations on the tab the user is viewing fail with user_viewing unless you opened "
+        "that tab: work in your own tabs, or ask the user before repeating the call with its confirm_token."
+        if permits_tool(MODE, "browser_tabs") else
+        " Writes and navigations on the tab the user is viewing fail with user_viewing; work in your own tab.")
+       if HOLD_VIEWED_TAB else ""))
 # The tool browser_tools_call is running; its bridge requests name it for the audit log.
 _gateway_call: ContextVar[str | None] = ContextVar("kitsune_gateway_call", default=None)
+# The id of the tool call running (_mcp_errors), which its bridge requests carry.
+_tool_call: ContextVar[str | None] = ContextVar("kitsune_tool_call", default=None)
 
 # Every known tool (core and Kitsune-owned) -> its capability group.
 TOOL_GROUPS: dict[str, str] = {}
@@ -260,7 +271,12 @@ def _mcp_errors(function):
     """
     @functools.wraps(function)
     def call(*args, **kwargs):
-        result = function(*args, **kwargs)
+        # Its bridge requests share one tool call id: a viewed-tab approval covers all of them (#326).
+        call_id = _tool_call.set(secrets.token_hex(8))
+        try:
+            result = function(*args, **kwargs)
+        finally:
+            _tool_call.reset(call_id)
         if isinstance(result, list):
             return [_compact_json(item) if isinstance(item, dict)
                     else McpImage(data=item.data, format=item.format) if isinstance(item, tools.Image)
@@ -332,14 +348,15 @@ def _register(spec: tools.ToolSpec, function=None) -> None:
 
 
 def _gateway_headers() -> dict:
-    """Name the tool browser_tools_call runs on its bridge requests, for the audit log."""
-    name = _gateway_call.get()
-    return {GATEWAY_TOOL_HEADER: name} if name else {}
+    """Name the tool browser_tools_call runs on its bridge requests, for the audit log, and the tool call."""
+    name, call_id = _gateway_call.get(), _tool_call.get()
+    return {**({GATEWAY_TOOL_HEADER: name} if name else {}), **({TOOL_CALL_HEADER: call_id} if call_id else {})}
 
 
 # Every tool's bridge request carries this server's client and owner ids, caps, mode and user-tab protection.
 _client = tools.client = BridgeClient(caps=enabled_groups(ENABLED_CAPS), mode=MODE,
-                                      protect_user_tabs=PROTECT_USER_TABS, extra_headers=_gateway_headers)
+                                      protect_user_tabs=PROTECT_USER_TABS, hold_viewed_tab=HOLD_VIEWED_TAB,
+                                      extra_headers=_gateway_headers)
 
 
 @functools.wraps(tools.browser_status)

@@ -266,7 +266,7 @@ default capabilities, with the same names, descriptions, input schemas and annot
 its `core` capability group (see [Core tools](#core-tools)). Kitsune's own tools are in
 the other groups. Set `KITSUNE_CAPS` in the MCP server environment before starting it;
 restart the MCP client after changing it. The comma-separated list selects exactly those
-groups (include `core` to retain the default tools). `all` enables all 95 tools in every
+groups (include `core` to retain the default tools). `all` enables all 96 tools in every
 group except `storage` and `history`, which read personal data and must be named
 (`KITSUNE_CAPS=all,storage,history`). Whitespace and case are ignored; unknown group names
 fail at startup.
@@ -281,7 +281,7 @@ KITSUNE_CAPS = "core,browse,read"
 | `core` (25, Playwright MCP's) | `browser_close`, `browser_resize`, `browser_console_messages`, `browser_handle_dialog`, `browser_emulate_media`, `browser_evaluate`, `browser_file_upload`, `browser_drop`, `browser_find`, `browser_fill_form`, `browser_press_key`, `browser_type`, `browser_navigate`, `browser_navigate_back`, `browser_network_requests`, `browser_network_request`, `browser_run_code_unsafe`, `browser_take_screenshot`, `browser_snapshot`, `browser_click`, `browser_drag`, `browser_hover`, `browser_select_option`, `browser_tabs`, `browser_wait_for` |
 | `admin` (8) | `browser_status`, `browser_cache`, `browser_reload_extension`, `browser_health`, `browser_logs`, `browser_audit`, `browser_set_policy`, `browser_get_policy` |
 | `automation` (12) | `browser_workflows`, `browser_workflow`, `browser_parallel`, `browser_broadcast`, `browser_sync_barrier`, `browser_tab_pool`, `browser_pool_acquire`, `browser_pool_release`, `browser_scheduler`, `browser_retry`, `browser_batch`, `browser_resume` |
-| `browse` (8) | `browser_trusted_click`, `browser_scroll`, `browser_check`, `browser_focus`, `browser_blur`, `browser_submit_form`, `browser_click_and_wait_navigation`, `browser_forward` |
+| `browse` (11) | `browser_trusted_click`, `browser_trusted_drag`, `browser_trusted_type`, `browser_trusted_press_key`, `browser_scroll`, `browser_check`, `browser_focus`, `browser_blur`, `browser_submit_form`, `browser_click_and_wait_navigation`, `browser_forward` |
 | `inspect` (5) | `browser_highlight`, `browser_bounds`, `browser_computed_style`, `browser_explain_selector`, `browser_full_page_metrics` |
 | `network` (3) | `browser_downloads`, `browser_intercept`, `browser_capture_network` |
 | `read` (13) | `browser_page_info`, `browser_page_text`, `browser_forms`, `browser_dom`, `browser_query`, `browser_html`, `browser_links`, `browser_images`, `browser_meta`, `browser_structured_data`, `browser_readability`, `browser_markdown`, `browser_iframes` |
@@ -525,6 +525,7 @@ kitsune-benchmark; character-size guards in this repo are not token measurements
 | `KITSUNE_OUTPUT_DIR` | Unset | Directory, in the MCP server environment, for relative `filename` arguments of the `core` tools; unset, they resolve against the client's first root, else the server's working directory (see [Core tools](#core-tools)) |
 | `KITSUNE_OWNER_ID` | The MCP client's process | Tab owner id of the MCP client, in the MCP server environment: the bridge records the tabs it opens as this client's and offers them after a server restart. Up to 64 letters, digits, `.`, `_`, `:` or `-`. Set it when the server runs through a launcher other than `uv` or `uvx`, such as a shell script or a Python wrapper. Give each MCP client its own value: clients with the same value share their tabs. See [Tab owners](api-reference.md#tab-owners) |
 | `KITSUNE_PROTECT_USER_TABS` | Unset | Set to `1` in an MCP server environment to refuse that client's navigate, back and forward on tabs the agent did not open; see [Protecting your tabs](#protecting-your-tabs) |
+| `KITSUNE_HOLD_VIEWED_TAB` | On | Set to `0` in an MCP server environment to let that client write and navigate the tab you are viewing without a confirm step; see [Protecting your tabs](#protecting-your-tabs) |
 | `KITSUNE_ASK_BEFORE_ACT` | Unset | Set to `1` in the MCP server environment to start the bridge with [ask-before-act](#ask-before-act) locked on; the lock then persists in `ask-before-act-locked` under `KITSUNE_HOME` |
 | `KITSUNE_HISTORY_ALLOW_DOMAINS` | Unset (every domain) | Bridge: comma-separated domains (with subdomains) the `history` tools may return; see [History and bookmarks](api-reference.md#history-and-bookmarks) |
 | `KITSUNE_HISTORY_DENY_DOMAINS` | Unset (none) | Bridge: comma-separated domains (with subdomains) the `history` tools never return; wins over the allow list |
@@ -654,8 +655,21 @@ calls, or at least before calls that carry `confirm_token`.
 ### Protecting your tabs
 
 The agent closes only the tabs it opened unless you approve. Navigating one of your
-tabs is a separate permission, and it is allowed by default, because sometimes you
-want the agent to work in your tab. If your tabs must stay where they are, tell
+tabs is a separate permission, and it is allowed by default for tabs you are not
+viewing, because sometimes you want the agent to work in your tab.
+
+The tab you are viewing is held. It is the tab shown in the browser window you
+focused last, also after you switch to the agent's terminal. The agent's clicks,
+typing, key presses, form fills, scrolling, JavaScript, navigations and reloads there
+return a `user_viewing` error instead of acting. Reads and screenshots go on. Tabs the
+agent opened itself are never held, even when you look at them. On a direct call the
+error carries a `confirm_token`: the agent should ask you, then repeat the call with it.
+The token works once. When the agent switches your view to another tab (it should do
+so only when you ask), the hold moves with it. To let the agent work in the tab you
+watch without asking, set `KITSUNE_HOLD_VIEWED_TAB=0` in its MCP server environment. Details are in the
+[API reference](api-reference.md#viewed-tab).
+
+If your tabs must stay where they are, tell
 the agent to open its material in new tabs (`browser_tabs` new) and pass their
 `tab_id`. Without `tab_id`, a call acts on the agent's current tab. Before the agent
 has opened or selected one, a write or navigation without `tab_id` fails with
@@ -677,9 +691,9 @@ agent can still reach any page without touching yours.
 KITSUNE_PROTECT_USER_TABS = "1"
 ```
 
-Limits: only those three calls are guarded. Clicked links, form submits, agent
-JavaScript, redirects and navigations the page starts can still change your tab's
-URL. Details are in the [API reference](api-reference.md#protected-user-tabs).
+Limits: only those three calls are guarded on tabs you are not viewing. Clicked
+links, form submits, agent JavaScript, redirects and navigations the page starts can
+still change such a tab's URL. Details are in the [API reference](api-reference.md#protected-user-tabs).
 
 ## Troubleshooting
 
@@ -696,11 +710,12 @@ URL. Details are in the [API reference](api-reference.md#protected-user-tabs).
 | `port_conflict` | `state.port` is held by another program (`lsof -nP -iTCP:47651 -sTCP:LISTEN`), or `KITSUNE_WS_PORT` differs from the extension's `WS_URL` |
 | `token_mismatch` (`401 Missing or invalid token`) | `KITSUNE_TOKEN` or `KITSUNE_HOME` set in one client but not in the daemon (or the other way round) |
 | `Cannot access browser internal page` | `about:` pages are off-limits to extensions; switch to a normal tab |
-| A click returns `dispatched: true` but the page does not react (`outcome_not_observed`, target still visible) | Some pages accept only trusted input and ignore Kitsune's synthetic events. Check the page with `browser_snapshot` first, then try one [`browser_trusted_click`](api-reference.md#browser_trusted_clickselector-x0-y0-coordinate_spaceviewport-focusfalse-tab_idnone-firstfalse-restore_pointertrue-buttonleft-click_count1-modifiersnone) on the same target and verify it with a read. It needs the `browse` capability, moves your real cursor for the click (then back, unless `restore_pointer=False` for a hover menu that closes when the pointer leaves) and, on macOS, needs pyobjc Quartz or `cliclick` plus Accessibility permission; on Linux, needs `xdotool` in an X11 session (not Wayland), and HiDPI X11 scaling is not compensated, so the click may land off by the scale factor. Page zoom is compensated, and a target covered by another element (an overlay or banner) returns `target_not_at_point` without clicking. Kitsune never switches to it on its own |
-| A hover returns `ok: true` but the menu or row controls it should reveal stay hidden | `browser_hover` sends pointer and mouse events, including `pointerenter`/`mouseenter` to each entered ancestor, but it cannot trigger CSS `:hover`, which follows only the real pointer. Use [`browser_trusted_click`](api-reference.md#browser_trusted_clickselector-x0-y0-coordinate_spaceviewport-focusfalse-tab_idnone-firstfalse-restore_pointertrue-buttonleft-click_count1-modifiersnone) with `restore_pointer=False` on an element where a click is harmless, which leaves your real pointer there, or ask the user to point at it. See [POST /api/hover](api-reference.md#post-apihover) |
+| A click returns `dispatched: true` but the page does not react (`outcome_not_observed`, target still visible) | Some pages accept only trusted input and ignore Kitsune's synthetic events. Check the page with `browser_snapshot` first, then try one [`browser_trusted_click`](api-reference.md#browser_trusted_clickselector-x0-y0-coordinate_spaceviewport-focusfalse-tab_idnone-firstfalse-restore_pointertrue-buttonleft-click_count1-modifiersnone-hold_ms0) on the same target and verify it with a read. It needs the `browse` capability, moves your real cursor for the click (then back, unless `restore_pointer=False` for a hover menu that closes when the pointer leaves) and, on macOS, needs pyobjc Quartz or `cliclick` plus Accessibility permission; on Linux, needs `xdotool` in an X11 session (not Wayland), and HiDPI X11 scaling is not compensated, so the click may land off by the scale factor. Page zoom is compensated, and a target covered by another element (an overlay or banner) returns `target_not_at_point` without clicking. Kitsune never switches to it on its own |
+| A hover returns `ok: true` but the menu or row controls it should reveal stay hidden | `browser_hover` sends pointer and mouse events, including `pointerenter`/`mouseenter` to each entered ancestor, but it cannot trigger CSS `:hover`, which follows only the real pointer. Use [`browser_trusted_click`](api-reference.md#browser_trusted_clickselector-x0-y0-coordinate_spaceviewport-focusfalse-tab_idnone-firstfalse-restore_pointertrue-buttonleft-click_count1-modifiersnone-hold_ms0) with `restore_pointer=False` on an element where a click is harmless, which leaves your real pointer there, or ask the user to point at it. See [POST /api/hover](api-reference.md#post-apihover) |
+| A press-and-hold button, a tile that reveals controls after a moment of hovering, or a custom slider or drag handle does not react | Long-press controls need `hold_ms` on `browser_click` (or `browser_trusted_click`), and hover-intent controls need `duration_ms` (and `steps`) on `browser_hover`; the core tools accept both without listing them. A handle that captures the pointer (`setPointerCapture`) rejects synthetic pointers: on macOS, [`browser_trusted_drag`](api-reference.md#browser_trusted_dragselector-to_selector-tab_idnone-steps10-firstfalse) (`browse` capability) drags it with your real pointer |
 | A background tab's snapshot is empty, or a menu item a click just opened returns `hidden_or_covered` with `state.hiddenTab` or `state.inPopup` | Results from a hidden tab carry `visibilityState: "hidden"`; tabs the agent opens are in the background by default, so their results usually carry it. Some pages render lazily, or do not paint menus and popups, while their tab is hidden (#259, #260). Events dispatched to an unpainted item still work, so act on it if it belongs to the control you meant and check the effect. If content never appears, Kitsune's `browser_tabs` select with `tab_id` shows the tab and switches the user's own view, so ask the user first; it is refused with `user_active` while they use the tab they would leave. The core `browser_tabs` select only makes a tab current. See [Snapshot readiness](api-reference.md#snapshot-readiness) |
-| `browser_trusted_click` returns `browser_not_at_point` (macOS) | Another app's window, not the browser's, is at the click point, typically because the browser is in full screen on another Space; nothing was clicked. Switch to the browser's Space or leave full screen, then retry. See [`browser_trusted_click`](api-reference.md#browser_trusted_clickselector-x0-y0-coordinate_spaceviewport-focusfalse-tab_idnone-firstfalse-restore_pointertrue-buttonleft-click_count1-modifiersnone) |
-| A trusted click, type or key press returns `tab_not_shown`, or `browser_tabs` lists loaded tabs as `about:blank` (Zen) | The browser window shows no page: on a brand-new Zen profile, its first-run welcome screen hides the tab area until it is finished (#360). Nothing was clicked. Finish or close the welcome screen, then retry; tabs loaded while it was open keep reporting `about:blank` until they navigate again |
+| `browser_trusted_click` returns `browser_not_at_point` (macOS) | Another app's window, not the browser's, is at the click point, typically because the browser is in full screen on another Space; nothing was clicked. Switch to the browser's Space or leave full screen, then retry. See [`browser_trusted_click`](api-reference.md#browser_trusted_clickselector-x0-y0-coordinate_spaceviewport-focusfalse-tab_idnone-firstfalse-restore_pointertrue-buttonleft-click_count1-modifiersnone-hold_ms0) |
+| A trusted click, type, key press or drag returns `tab_not_shown`, or `browser_tabs` lists loaded tabs as `about:blank` (Zen) | The browser window shows no page: on a brand-new Zen profile, its first-run welcome screen hides the tab area until it is finished (#360). Nothing was clicked. Finish or close the welcome screen, then retry; tabs loaded while it was open keep reporting `about:blank` until they navigate again |
 | "Continue with Google" or another sign-in button opens no popup, or the site says "Something went wrong" | With Firefox's default popup blocker, synthetic clicks cannot open OAuth/SSO popups (the click result may have a `popup_blocked` warning with `state.reason: "script_popup"`); ask the user to click, or use a trusted click. See [Sign-in popups (OAuth/SSO)](#sign-in-popups-oauthsso) |
 | `stale ref, call browser_snapshot again` | Take a fresh snapshot of the same `tab_id` and use its new refs |
 | Bridge updated but browser behavior is unchanged | Reload the extension, then reload affected pages so their content scripts update too |
@@ -735,7 +750,7 @@ There are two ways through:
    the provider's sign-in (account chooser, password, two-factor). This is the
    default to prefer because the browser is shared (#139): a trusted click moves your
    real pointer, may show the target tab and can take focus.
-2. **[`browser_trusted_click`](api-reference.md#browser_trusted_clickselector-x0-y0-coordinate_spaceviewport-focusfalse-tab_idnone-firstfalse-restore_pointertrue-buttonleft-click_count1-modifiersnone).**
+2. **[`browser_trusted_click`](api-reference.md#browser_trusted_clickselector-x0-y0-coordinate_spaceviewport-focusfalse-tab_idnone-firstfalse-restore_pointertrue-buttonleft-click_count1-modifiersnone-hold_ms0).**
    A real OS click has user activation, so the popup opens. It needs the `browse`
    capability and a visible browser window. On macOS a browser in full screen on another
    Space is not visible from the agent's Space, and `focus=True` may not switch to it:

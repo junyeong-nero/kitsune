@@ -88,6 +88,8 @@ function harness(onClick = () => {}) {
       },
       executeScript: async () => {},
     },
+    // The user last focused another browser window, so no tab here is held for being viewed (#326).
+    windows: { getLastFocused: async () => ({ id: 99, focused: true }) },
     runtime: { onMessage: event(), onStartup: event(), onInstalled: event() },
   };
   const context = vm.createContext({

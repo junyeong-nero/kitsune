@@ -16,7 +16,9 @@ also take a tab_id that playwright_tools.json does not publish, like confirm_tok
 browser_press_key a repeat count (1-100) that the extension presses within one request.
 
 browser_click and browser_hover add opened_popup to their result when they open a menu, listbox
-or dialog, also one a background tab did not paint, with its items' refs (#329).
+or dialog, also one a background tab did not paint, with its items' refs (#329). Like repeat,
+browser_click's hold_ms (0-10000 ms, a long press) and browser_hover's duration_ms and steps
+(moves across the target, for hover intent) are accepted but not published (#351).
 
 browser_fill_form type slider and browser_type fill set an ARIA slider or spinbutton (no native
 input) by pressing arrow keys in the extension until aria-valuenow is the value (#311).
@@ -402,8 +404,11 @@ def browser_press_key(key: str, confirm_token: str | None = None, repeat: int = 
 @_core
 def browser_type(target: str, text: str, element: str | None = None, submit: bool | None = None,
                  slowly: bool | None = None, confirm_token: str | None = None) -> dict:
+    # The token reaches both requests: a user_viewing token approves the text, and with it the Enter of
+    # the same tool call (#326). An ask-before-act token for the Enter passes the text request unless
+    # ask-before-act holds the text too (a payment-like page), which then rejects it as a mismatch.
     result = k.browser_type(text=text, mode="type" if slowly else "fill", tab_id=_current_tab, element=element,
-                            confirm_token=None if submit else confirm_token, **_target(target))
+                            confirm_token=confirm_token, **_target(target))
     if not submit or k._failed(result):
         return result
     return k.browser_keypress(key="Enter", tab_id=_current_tab, element=element, confirm_token=confirm_token,
@@ -417,8 +422,8 @@ def browser_navigate(url: str, confirm_token: str | None = None, tab_id: int | N
 
 
 @_core
-def browser_navigate_back(tab_id: int | None = None) -> dict:
-    return k.browser_back(tab_id=_current_tab if tab_id is None else tab_id)
+def browser_navigate_back(tab_id: int | None = None, confirm_token: str | None = None) -> dict:
+    return k.browser_back(tab_id=_current_tab if tab_id is None else tab_id, confirm_token=confirm_token)
 
 
 def _successful_static(entry: dict) -> bool:
@@ -525,7 +530,9 @@ def browser_snapshot(target: str | None = None, filename: str | None = None, dep
 @_core
 def browser_click(target: str, element: str | None = None, doubleClick: bool | None = None,
                   button: str | None = None, modifiers: list[str] | None = None,
-                  confirm_token: str | None = None) -> dict:
+                  confirm_token: str | None = None, hold_ms: int = 0) -> dict:
+    if problem := k._pointer_ms_error("hold_ms", hold_ms):
+        return problem
     _clicked[_current_tab] = target
     selector, ref = _selector(target)
     body = {"selector": selector}
@@ -534,10 +541,15 @@ def browser_click(target: str, element: str | None = None, doubleClick: bool | N
     if doubleClick:
         if button not in (None, "left"):
             return {"error": "doubleClick supports only the left button"}
+        if hold_ms:
+            return {"error": "hold_ms cannot be used with doubleClick"}
         return k._post_action("/api/double-click", k._request_body(body, _current_tab, ref, element, confirm_token))
     if button is not None:
         body["button"] = button
-    return k._post_action("/api/click", k._request_body(body, _current_tab, ref, element, confirm_token))
+    if hold_ms:
+        body["holdMs"] = hold_ms
+    return k._held_click(k._post_action("/api/click", k._request_body(body, _current_tab, ref, element, confirm_token),
+                                        pointer_ms=hold_ms), hold_ms)
 
 
 @_core
@@ -549,8 +561,10 @@ def browser_drag(startTarget: str, endTarget: str, startElement: str | None = No
 
 
 @_core
-def browser_hover(target: str, element: str | None = None) -> dict:
-    return k.browser_hover(tab_id=_current_tab, element=element, **_target(target))
+def browser_hover(target: str, element: str | None = None, duration_ms: int = 0, steps: int | None = None,
+                  confirm_token: str | None = None) -> dict:
+    return k.browser_hover(tab_id=_current_tab, element=element, duration_ms=duration_ms, steps=steps,
+                           confirm_token=confirm_token, **_target(target))
 
 
 def _select(target: str, values: list[str], element: str | None, confirm_token: str | None,

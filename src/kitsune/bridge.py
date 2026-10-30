@@ -62,8 +62,8 @@ except ImportError:
 from . import bridge_control, browser_diagnostics
 from .capabilities import ACTION_GROUPS, CAPS_HEADER, OPEN_ROUTES, ROUTE_GROUPS, caps_refusal, header_caps
 from .task_modes import (
-    CLIENT_HEADER, CLIENT_ID_PATTERN, GATEWAY_TOOL_HEADER, MODE_HEADER, OWNER_HEADER, PROTECT_USER_TABS_HEADER,
-    permits_action, permits_route, task_mode,
+    CLIENT_HEADER, CLIENT_ID_PATTERN, GATEWAY_TOOL_HEADER, HOLD_VIEWED_TAB_HEADER, MODE_HEADER, OWNER_HEADER,
+    PROTECT_USER_TABS_HEADER, TOOL_CALL_HEADER, permits_action, permits_route, task_mode,
 )
 from .version import BRIDGE_BUILD, PACKAGE_VERSION, SOURCE_ROOT, extension_manifest_hash, extension_source_hash
 from .waits import (
@@ -177,6 +177,17 @@ DEFAULT_ASK_URLS = [r"checkout", r"payment", r"billing", r"/pay\b", r"purchase",
 _task_mode = contextvars.ContextVar("kitsune_task_mode", default="act")
 # The calling client's KITSUNE_PROTECT_USER_TABS (#199): its navigations leave user tabs alone.
 _protect_user_tabs = contextvars.ContextVar("kitsune_protect_user_tabs", default=False)
+# The calling client's KITSUNE_HOLD_VIEWED_TAB (#326): False lifts the hold on the tab the user views.
+_hold_viewed_tab = contextvars.ContextVar("kitsune_hold_viewed_tab", default=True)
+# A direct call's {"approved", "rejected"} for the viewed-tab hold (_take_viewed_tab_approval); a
+# dict, so the request's tasks and its handler share it.
+_viewed_tab_approval = contextvars.ContextVar("kitsune_viewed_tab_approval", default=None)
+# The MCP tool call a request belongs to (TOOL_CALL_HEADER), validated like the client id.
+_tool_call = contextvars.ContextVar("kitsune_tool_call", default=None)
+# (client id, tool call id) -> {"tabId", "token", "binding", "expires"}: a viewed-tab approval covers
+# the other requests of the MCP tool call it was given in (_take_viewed_tab_approval). binding is the
+# user_viewing binding of the request that was approved.
+_viewed_tab_calls = {}
 # A container call's default tab (#232): its steps that name no tabId run there instead of the
 # extension's active tab.
 _default_tab = contextvars.ContextVar("kitsune_default_tab", default=None)
@@ -432,7 +443,7 @@ def _browser_not_at_point(x, y, process="", focused=None, wait=0.0, target_windo
 _NO_SCHEDULE_ACTIONS = {"ping", "getTabs", "getWindows"}
 _GLOBAL_SCOPE_ACTIONS = {
     "screenshot", "switchTab", "restoreActiveTab", "newTab", "closeTab", "trustedClick", "trustedType",
-    "trustedPressKey",
+    "trustedPressKey", "trustedDrag",
     "reloadExtension", "createWindow", "closeWindow", "focusWindow", "resizeWindow",
     "moveTab", "detachTab", "elementScreenshot", "fullPageScreenshot",
     "cookies", "clipboard", "downloads", "clearBrowsingData", "intercept",
@@ -447,6 +458,7 @@ _API_ALIASES = {
     "/api/trustedClick": "/api/trusted-click",
     "/api/trustedType": "/api/trusted-type",
     "/api/trustedPressKey": "/api/trusted-press-key",
+    "/api/trustedDrag": "/api/trusted-drag",
     "/api/setEditableContent": "/api/set-editable-content",
     "/api/clearHighlight": "/api/clear-highlight",
     "/api/closeTab": "/api/close-tab",
@@ -733,13 +745,17 @@ TRUSTED_CLICK_BUTTONS = ("left", "right", "middle")
 TRUSTED_CLICK_MODIFIERS = ("Shift", "Control", "Alt", "Meta")
 # A double click's second press follows the first well within any system double-click time.
 DOUBLE_CLICK_GAP = 0.05
+# How long a click holds its button down; holdMs (#351) holds it longer, at most TRUSTED_HOLD_MAX_MS.
+CLICK_PRESS = 0.03
+TRUSTED_HOLD_MAX_MS = 10000
 
 
 def _trusted_click_options(params):
-    """Return (button, click_count, modifiers) of a trustedClick request, or an {error} dict."""
+    """Return (button, click_count, modifiers, hold seconds) of a trustedClick request, or an {error} dict."""
     button = params.get("button") or "left"
     click_count = params.get("clickCount", 1)
     modifiers = params.get("modifiers") or []
+    hold_ms = params.get("holdMs", 0)
     if button not in TRUSTED_CLICK_BUTTONS:
         return {"error": f"trustedClick button must be left, right or middle, not {button!r}"}
     # 2.0 == 2, but the backends count presses with range(); True == 1 too.
@@ -747,8 +763,12 @@ def _trusted_click_options(params):
         return {"error": f"trustedClick clickCount must be 1 or 2, not {click_count!r}"}
     if not isinstance(modifiers, list) or any(m not in TRUSTED_CLICK_MODIFIERS for m in modifiers):
         return {"error": f"trustedClick modifiers must be a list of Shift, Control, Alt and Meta, not {modifiers!r}"}
+    if type(hold_ms) is not int or not 0 <= hold_ms <= TRUSTED_HOLD_MAX_MS:
+        return {"error": f"trustedClick holdMs must be an integer from 0 to {TRUSTED_HOLD_MAX_MS}, not {hold_ms!r}"}
+    if hold_ms and click_count != 1:
+        return {"error": "trustedClick holdMs needs clickCount 1"}
     # One press per key, in a fixed order.
-    return button, click_count, tuple(m for m in TRUSTED_CLICK_MODIFIERS if m in modifiers)
+    return button, click_count, tuple(m for m in TRUSTED_CLICK_MODIFIERS if m in modifiers), hold_ms / 1000
 
 
 _QUARTZ_BUTTONS = {
@@ -771,16 +791,37 @@ def _mac_click_backend():
     return "quartz"
 
 
-def _cliclick_refusal(button, click_count):
+def _cliclick_refusal(button, click_count, hold=0.0):
     """The {error} for a click cliclick cannot send, else None."""
-    if (button, click_count) in _CLICLICK_COMMANDS:
+    if (button, click_count) in _CLICLICK_COMMANDS and not hold:
         return None
-    what = "middle-click" if button == "middle" else "double-click with the right button"
+    what = ("hold the button" if hold else "middle-click" if button == "middle"
+            else "double-click with the right button")
     return {"error": f"trustedClick cannot {what} with cliclick; install pyobjc Quartz "
                      "(uvx --from 'kitsune-browser-mcp[macos]' kitsune), which can"}
 
 
-def _mac_click_screen(x, y, restore_pointer=True, button="left", click_count=1, modifiers=()):
+def _quartz_pointer(Quartz):
+    """(position, None) of the pointer, or (None, why it could not be read)."""
+    try:
+        current = Quartz.CGEventCreate(None)
+        if current is None:
+            return None, "could not read the pointer position: CGEventCreate returned no event"
+        return Quartz.CGEventGetLocation(current), None
+    except Exception as e:  # pyobjc raises its own error types
+        return None, f"could not read the pointer position: {e}"
+
+
+def _quartz_warp(Quartz, position):
+    # A warp posts no mouse event, but macOS then ignores the user's mouse for about
+    # 0.25 s; associating the mouse with the cursor again ends that pause at once.
+    error = Quartz.CGWarpMouseCursorPosition(position)
+    if error:
+        raise RuntimeError(f"CGWarpMouseCursorPosition returned {error}")
+    Quartz.CGAssociateMouseAndMouseCursorPosition(True)
+
+
+def _mac_click_screen(x, y, restore_pointer=True, button="left", click_count=1, modifiers=(), hold=0.0):
     # macOS drops posted mouse events from untrusted processes without an error.
     if _mac_accessibility_trusted() is False:
         return {"error": f"trustedClick needs macOS Accessibility permission: {_MAC_ACCESSIBILITY_HELP}"}
@@ -790,16 +831,7 @@ def _mac_click_screen(x, y, restore_pointer=True, button="left", click_count=1, 
     except ImportError:
         Quartz = None
     if Quartz is not None:
-        saved = read_error = None
-        if restore_pointer:
-            try:
-                current = Quartz.CGEventCreate(None)
-                if current is None:
-                    read_error = "could not read the pointer position: CGEventCreate returned no event"
-                else:
-                    saved = Quartz.CGEventGetLocation(current)
-            except Exception as e:  # pyobjc raises its own error types
-                read_error = f"could not read the pointer position: {e}"
+        saved, read_error = _quartz_pointer(Quartz) if restore_pointer else (None, None)
         point = (float(x), float(y))
         down, up, mouse_button = (getattr(Quartz, name) for name in _QUARTZ_BUTTONS[button])
         flags = 0
@@ -812,28 +844,26 @@ def _mac_click_screen(x, y, restore_pointer=True, button="left", click_count=1, 
         for click_state in range(1, click_count + 1):
             if click_state > 1:
                 time.sleep(DOUBLE_CLICK_GAP)
-            for event_type, pause in ((down, 0.03), (up, 0)):
+            pressed, released = [], []
+            for event_type, events in ((down, pressed), (up, released)):
                 event = Quartz.CGEventCreateMouseEvent(None, event_type, point, mouse_button)
                 Quartz.CGEventSetIntegerValueField(event, Quartz.kCGMouseEventClickState, click_state)
                 if flags:
                     Quartz.CGEventSetFlags(event, flags)
-                Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
-                if pause:
-                    time.sleep(pause)
+                events.append(event)
+            Quartz.CGEventPost(Quartz.kCGHIDEventTap, pressed[0])
+            # A held press (#351) lasts up to 10 s; the button is released whatever happens meanwhile.
+            try:
+                time.sleep(hold or CLICK_PRESS)
+            finally:
+                Quartz.CGEventPost(Quartz.kCGHIDEventTap, released[0])
 
-        def restore():
-            # A warp posts no mouse event, but macOS then ignores the user's mouse for about
-            # 0.25 s; associating the mouse with the cursor again ends that pause at once.
-            error = Quartz.CGWarpMouseCursorPosition(saved)
-            if error:
-                raise RuntimeError(f"CGWarpMouseCursorPosition returned {error}")
-            Quartz.CGAssociateMouseAndMouseCursorPosition(True)
-
-        return _with_pointer_restore({"ok": True, "backend": "quartz"}, restore_pointer, read_error, restore)
+        return _with_pointer_restore({"ok": True, "backend": "quartz"}, restore_pointer, read_error,
+                                     lambda: _quartz_warp(Quartz, saved))
 
     cliclick = shutil.which("cliclick")
     if cliclick:
-        refusal = _cliclick_refusal(button, click_count)
+        refusal = _cliclick_refusal(button, click_count, hold)
         if refusal:
             return refusal
         command = _CLICLICK_COMMANDS[(button, click_count)]
@@ -875,7 +905,7 @@ def _mac_click_screen(x, y, restore_pointer=True, button="left", click_count=1, 
 
 
 def _release_keys(command):
-    """Best effort: release modifier keys a failed click command may have left pressed."""
+    """Best effort: release modifier keys (and a held button) a failed click command may have left pressed."""
     if not command:
         return
     try:
@@ -888,7 +918,7 @@ _XDOTOOL_BUTTONS = {"left": "1", "middle": "2", "right": "3"}
 _XDOTOOL_KEYS = {"Shift": "shift", "Control": "ctrl", "Alt": "alt", "Meta": "super"}
 
 
-def _linux_click_screen(x, y, restore_pointer=True, button="left", click_count=1, modifiers=()):
+def _linux_click_screen(x, y, restore_pointer=True, button="left", click_count=1, modifiers=(), hold=0.0):
     # xdotool cannot move the pointer in a native Wayland session; refuse rather than misclick.
     if os.environ.get("XDG_SESSION_TYPE") == "wayland" or not os.environ.get("DISPLAY"):
         return {"error": "trustedClick on Linux needs an X11 session (DISPLAY set); Wayland is not supported"}
@@ -899,18 +929,23 @@ def _linux_click_screen(x, y, restore_pointer=True, button="left", click_count=1
     keys = "+".join(_XDOTOOL_KEYS[m] for m in modifiers)
     command = [xdotool, "mousemove", "--sync", str(int(round(x))), str(int(round(y)))]
     command += ["keydown", keys] if keys else []
-    command += ["click"] + (["--repeat", "2"] if click_count == 2 else []) + [_XDOTOOL_BUTTONS[button]]
+    if hold:
+        command += ["mousedown", _XDOTOOL_BUTTONS[button], "sleep", f"{hold:g}", "mouseup", _XDOTOOL_BUTTONS[button]]
+    else:
+        command += ["click"] + (["--repeat", "2"] if click_count == 2 else []) + [_XDOTOOL_BUTTONS[button]]
     command += ["keyup", keys] if keys else []
     if restore_pointer:
         # The X server handles the click before this move back to where the first mousemove started.
         command += ["mousemove", "restore"]
+    # A failed run may have stopped after a key or the held button went down; release them.
+    release = (["mouseup", _XDOTOOL_BUTTONS[button]] if hold else []) + (["keyup", keys] if keys else [])
     try:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=10)
+        result = subprocess.run(command, capture_output=True, text=True, timeout=10 + hold)
     except (OSError, subprocess.SubprocessError) as e:
-        _release_keys([xdotool, "keyup", keys] if keys else None)
+        _release_keys([xdotool, *release] if release else None)
         return {"error": f"xdotool failed: {e}"}
     if result.returncode != 0:
-        _release_keys([xdotool, "keyup", keys] if keys else None)
+        _release_keys([xdotool, *release] if release else None)
         detail = (result.stderr or result.stdout or "").strip() or f"exit code {result.returncode}"
         return {"error": f"xdotool failed: {detail}"}
     return {"ok": True, "backend": "xdotool", "pointerRestored": restore_pointer}
@@ -921,7 +956,7 @@ _WIN32_KEYS = {"Shift": 0x10, "Control": 0x11, "Alt": 0x12, "Meta": 0x5B}  # VK_
 KEYEVENTF_KEYUP = 0x0002
 
 
-def _windows_click_screen(x, y, restore_pointer=True, button="left", click_count=1, modifiers=()):
+def _windows_click_screen(x, y, restore_pointer=True, button="left", click_count=1, modifiers=(), hold=0.0):
     from ctypes import wintypes
 
     user32 = ctypes.windll.user32
@@ -940,8 +975,10 @@ def _windows_click_screen(x, y, restore_pointer=True, button="left", click_count
             if press:
                 time.sleep(DOUBLE_CLICK_GAP)
             user32.mouse_event(down, 0, 0, 0, 0)
-            time.sleep(0.03)
-            user32.mouse_event(up, 0, 0, 0, 0)
+            try:
+                time.sleep(hold or CLICK_PRESS)
+            finally:
+                user32.mouse_event(up, 0, 0, 0, 0)
     finally:
         for modifier in reversed(modifiers):
             user32.keybd_event(_WIN32_KEYS[modifier], 0, KEYEVENTF_KEYUP, 0)
@@ -953,13 +990,13 @@ def _windows_click_screen(x, y, restore_pointer=True, button="left", click_count
     return _with_pointer_restore({"ok": True, "backend": "win32"}, restore_pointer, read_error, restore)
 
 
-def _native_click_screen(x, y, restore_pointer=True, button="left", click_count=1, modifiers=()):
+def _native_click_screen(x, y, restore_pointer=True, button="left", click_count=1, modifiers=(), hold=0.0):
     if sys.platform == "darwin":
-        return _mac_click_screen(x, y, restore_pointer, button, click_count, modifiers)
+        return _mac_click_screen(x, y, restore_pointer, button, click_count, modifiers, hold)
     if sys.platform.startswith("linux"):
-        return _linux_click_screen(x, y, restore_pointer, button, click_count, modifiers)
+        return _linux_click_screen(x, y, restore_pointer, button, click_count, modifiers, hold)
     if sys.platform.startswith("win"):
-        return _windows_click_screen(x, y, restore_pointer, button, click_count, modifiers)
+        return _windows_click_screen(x, y, restore_pointer, button, click_count, modifiers, hold)
     return {"error": "trustedClick is only implemented on Windows, macOS and Linux (X11)"}
 
 
@@ -979,13 +1016,14 @@ def _target_window(point):
     return None
 
 
-def _focus_check_click(point, focus, title, process, restore_pointer, button="left", click_count=1, modifiers=()):
+def _focus_check_click(point, focus, title, process, restore_pointer, button="left", click_count=1, modifiers=(),
+                       hold=0.0):
     """(focused, click result or refusal) for an OS click at a screenPoint result; blocking."""
     focused = _focus_browser_window(title or point.get("title", ""), process) if focus else None
     refusal = _browser_not_at_point(point["screenX"], point["screenY"], process, focused,
                                     BROWSER_AT_POINT_WAIT if focus else 0.0, _target_window(point))
     return focused, refusal or _native_click_screen(point["screenX"], point["screenY"], restore_pointer,
-                                                    button, click_count, modifiers)
+                                                    button, click_count, modifiers, hold)
 
 
 async def trusted_click(params):
@@ -1002,7 +1040,7 @@ async def trusted_click(params):
     options = _trusted_click_options(params)
     if isinstance(options, dict):
         return options
-    button, click_count, modifiers = options
+    button, click_count, modifiers, hold = options
 
     title = params.get("title") or ""
     process = params.get("process") or ""
@@ -1010,14 +1048,14 @@ async def trusted_click(params):
 
     mac_backend = _mac_click_backend() if sys.platform == "darwin" else None
     # Refuse before focusing the browser or showing the tab for a click that cannot be sent.
-    if mac_backend == "cliclick" and (refusal := _cliclick_refusal(button, click_count)):
+    if mac_backend == "cliclick" and (refusal := _cliclick_refusal(button, click_count, hold)):
         return refusal
 
     if coordinate_space == "screen":
         # Focus and the click wait and sleep: off the event loop, which serves every client (#336).
         def focus_and_click():
             return (_focus_browser_window(title, process) if focus else False,
-                    _native_click_screen(x, y, restore_pointer, button, click_count, modifiers))
+                    _native_click_screen(x, y, restore_pointer, button, click_count, modifiers, hold))
         focused, clicked = await asyncio.to_thread(focus_and_click)
         if "error" in clicked:
             return clicked
@@ -1053,7 +1091,7 @@ async def trusted_click(params):
     # and the click's own sleeps all run off the event loop, which serves every client (#336).
     try:
         focused, clicked = await asyncio.to_thread(_focus_check_click, point, focus, title, process,
-                                                   restore_pointer, button, click_count, modifiers)
+                                                   restore_pointer, button, click_count, modifiers, hold)
     finally:
         if point.get("previousTabId") is not None:
             # The OS delivers the click asynchronously; let it land before showing the user's tab again.
@@ -1077,6 +1115,136 @@ async def trusted_click(params):
         "clickBackend": clicked.get("backend"),
         **_pointer_restore_fields(clicked),
     }
+
+
+# ── Trusted drag (#351) ──
+# A page's setPointerCapture accepts only a pointer the browser tracks, which no synthetic event
+# creates, so pointer-capture handles (custom sliders, resizers) need a real OS drag. macOS only,
+# through Quartz: the press, the moves and the release go to the window under the pointer, so
+# both ends must be in the tab's own window.
+
+TRUSTED_DRAG_DEFAULT_STEPS = 10
+TRUSTED_DRAG_MAX_STEPS = 50
+# Between moves, about as often as a real pointer reports them.
+TRUSTED_DRAG_STEP_DELAY = 0.016
+# After the press, so the page's pointerdown handler captures the pointer before it moves.
+TRUSTED_DRAG_PRESS_DELAY = 0.05
+
+
+def _mac_drag_unavailable():
+    """The {error} when this process cannot send an OS drag, else None."""
+    if sys.platform != "darwin":
+        return {"error": "Trusted drag is only implemented on macOS; nothing was dragged",
+                "code": "unsupported_platform", "retryable": False}
+    try:
+        import Quartz  # noqa: F401
+    except ImportError:
+        return {"error": "Trusted drag on macOS needs pyobjc Quartz (run Kitsune with "
+                         "uvx --from 'kitsune-browser-mcp[macos]' kitsune); nothing was dragged",
+                "code": "unsupported_platform", "retryable": False}
+    if _mac_accessibility_trusted() is False:
+        return {"error": f"Trusted drag needs macOS Accessibility permission: {_MAC_ACCESSIBILITY_HELP}",
+                "code": "permission_required", "retryable": False}
+    return None
+
+
+def _mac_drag_screen(start, end, steps):
+    """Press the left button at desktop point start, move to end in steps and release there, then
+    move the pointer back; blocking."""
+    import Quartz
+    saved, read_error = _quartz_pointer(Quartz)
+    button = Quartz.kCGMouseButtonLeft
+
+    def post(kind, point):
+        event = Quartz.CGEventCreateMouseEvent(None, kind, (float(point[0]), float(point[1])), button)
+        if kind in (Quartz.kCGEventLeftMouseDown, Quartz.kCGEventLeftMouseUp):
+            Quartz.CGEventSetIntegerValueField(event, Quartz.kCGMouseEventClickState, 1)
+        Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
+
+    held_at = None  # where the button is down; None while it is up
+    try:
+        post(Quartz.kCGEventMouseMoved, start)
+        time.sleep(0.05)
+        post(Quartz.kCGEventLeftMouseDown, start)
+        held_at = start
+        time.sleep(TRUSTED_DRAG_PRESS_DELAY)
+        for step in range(1, steps + 1):
+            point = tuple(a + (b - a) * step / steps for a, b in zip(start, end))
+            post(Quartz.kCGEventLeftMouseDragged, point)
+            held_at = point
+            time.sleep(TRUSTED_DRAG_STEP_DELAY)
+        post(Quartz.kCGEventLeftMouseUp, end)
+        held_at = None
+        result = {"ok": True, "backend": "quartz"}
+    except Exception as e:  # pyobjc raises its own error types
+        result = {"error": f"The trusted drag stopped partway: {e}", "code": "drag_interrupted",
+                  "retryable": False,
+                  "hint": "The button was released where the drag stopped, so the page may have seen part of "
+                          "the drag or a drop there. Check the page before dragging again.",
+                  "backend": "quartz"}
+    finally:
+        if held_at is not None:
+            # Never leave the user's button held down; release where the pointer is, not at the end.
+            post(Quartz.kCGEventLeftMouseUp, held_at)
+    return _with_pointer_restore(result, True, read_error, lambda: _quartz_warp(Quartz, saved))
+
+
+def _focus_check_drag(start, end, focus, process, steps):
+    """(focused, drag result or refusal) for an OS drag between two screenPoint results; blocking."""
+    focused = _focus_browser_window(start.get("title", ""), process) if focus else None
+    window = _target_window(start)
+    for point, wait in ((start, BROWSER_AT_POINT_WAIT if focus else 0.0), (end, 0.0)):
+        refusal = _browser_not_at_point(point["screenX"], point["screenY"], process, focused, wait, window)
+        if refusal:
+            return focused, refusal
+    return focused, _mac_drag_screen((start["screenX"], start["screenY"]), (end["screenX"], end["screenY"]), steps)
+
+
+async def trusted_drag(params):
+    """Drag with the OS pointer from the selector's element to the `to` element (#351)."""
+    selector, to = params.get("selector") or "", params.get("to") or ""
+    if not selector or not to:
+        return {"error": "trustedDrag needs selector and to (CSS selectors or refs): the element to press "
+                         "and the element to release over"}
+    steps = params.get("steps", TRUSTED_DRAG_DEFAULT_STEPS)
+    if type(steps) is not int or not 1 <= steps <= TRUSTED_DRAG_MAX_STEPS:
+        return {"error": f"trustedDrag steps must be an integer from 1 to {TRUSTED_DRAG_MAX_STEPS}"}
+    if refusal := _mac_drag_unavailable():
+        return refusal
+    target = {"click": True, **({"first": True} if params.get("first") else {})}
+    if params.get("tabId") is not None:
+        target["tabId"] = params["tabId"]
+    # The extension shows a target tab that is not shown (previousTabId) and refuses with
+    # user_active when the user is using it. The source is scrolled into view; the destination is
+    # measured without scrolling, so the source's point stays valid.
+    start = await send_to_extension("screenPoint", {**target, "selector": selector})
+    if "error" in start:
+        return start
+    end = {}
+    try:
+        end = await send_to_extension("screenPoint", {**target, "selector": to, "scroll": False})
+        if "error" in end:
+            return end
+        # Focus, the window checks and the drag's sleeps run off the event loop (#336).
+        # focus=false (bridge callers only) leaves bringing the browser to the front to the caller.
+        focused, dragged = await asyncio.to_thread(_focus_check_drag, start, end,
+                                                   params.get("focus", True) is not False,
+                                                   params.get("process") or "", steps)
+    finally:
+        # The destination's screenPoint showed the tab again if the user had switched tabs meanwhile;
+        # the tab they switched to comes back first, and the earlier one only if the agent's tab is
+        # still shown then (restoreActiveTab checks).
+        shown = [point for point in (end, start) if point.get("previousTabId") is not None]
+        if shown:
+            await asyncio.sleep(TRUSTED_CLICK_RESTORE_DELAY)
+        for point in shown:
+            await send_to_extension("restoreActiveTab", {"tabId": point["previousTabId"], "from": point.get("tabId")})
+    if "error" in dragged:
+        return dragged
+    return {"ok": True, "trusted": True, "steps": steps, "focused": bool(focused),
+            "from": {key: start[key] for key in ("screenX", "screenY", "viewportX", "viewportY")},
+            "to": {key: end[key] for key in ("screenX", "screenY", "viewportX", "viewportY")},
+            "zoom": start.get("zoom", 1), "clickBackend": dragged.get("backend"), **_pointer_restore_fields(dragged)}
 
 
 # ── Trusted keyboard (#346, #347) ──
@@ -1397,6 +1565,7 @@ def _audit(action, params, ok, error, ms, **fields):
 WRITE_ACTIONS = {
     "click", "type", "setEditableContent", "scroll", "hover", "fill",
     "navigate", "newTab", "closeTab", "switchTab", "executeJS", "trustedClick", "trustedType", "trustedPressKey",
+    "trustedDrag",
     "selectOption", "checkBox", "keypress", "doubleClick", "submitForm",
     "formFill", "drag", "cookies", "clipboard", "downloads",
     "clearBrowsingData", "intercept", "clickAndWaitNavigation",
@@ -1413,12 +1582,13 @@ _REPEAT_UNSAFE_ACTIONS = WRITE_ACTIONS | {"uploadCommit", "focusElement", "blurE
 # Nothing reached the page, but repeating cannot succeed: until the tab navigates (error_page),
 # because the command names several targets (ambiguous_target) or its target selector failed
 # to parse or validate before anything was dispatched (unsupported_selector), until the user
-# approves closing their tab (user_tab), until the user grants a browser permission
-# (permission_required), or until the client's KITSUNE_CAPS or KITSUNE_MODE permits it or the
-# container step names a batch action (capability_restricted, mode_restricted, unknown_action).
+# approves closing their tab (user_tab) or acting on the tab they view (user_viewing), until the
+# user grants a browser permission (permission_required), or until the client's KITSUNE_CAPS or
+# KITSUNE_MODE permits it or the container step names a batch action (capability_restricted,
+# mode_restricted, unknown_action).
 _PERSISTENT_FAILURE_CODES = {"error_page", "ambiguous_target", "unsupported_selector", "user_tab",
-                             "permission_required", "capability_restricted", "mode_restricted",
-                             "unknown_action"}
+                             "user_viewing", "permission_required", "capability_restricted",
+                             "mode_restricted", "unknown_action"}
 
 
 def _url_matches(pattern, url, flags=0):
@@ -1654,7 +1824,7 @@ _ASK_CLICK_ACTIONS = {"click", "doubleClick", "trustedClick", "clickAndWaitNavig
 _ASK_PAGE_ACTIONS = _ASK_CLICK_ACTIONS | {
     "keypress", "type", "setEditableContent", "fill", "formFill", "selectOption", "checkBox",
     "drag", "submitForm", "uploadFile", "handleDialog", "storageOp", "executeJS", "waitForResult",
-    "trustedType", "trustedPressKey",
+    "trustedType", "trustedPressKey", "trustedDrag",
 }
 _ASK_TAB_ACTIONS = _ASK_PAGE_ACTIONS | {"navigate"}
 _confirm_tokens = {}     # token -> {"binding", "expires", "used"}
@@ -1734,9 +1904,10 @@ def _click_verb(action, params):
     options = _trusted_click_options(params) if action == "trustedClick" else None
     if not isinstance(options, tuple):
         return "clicks"
-    button, click_count, modifiers = options
+    button, click_count, modifiers, hold = options
     verb = "double-clicks" if click_count == 2 else "clicks"
-    return "+".join([*modifiers, verb if button == "left" else f"{button}-{verb}"])
+    verb = "+".join([*modifiers, verb if button == "left" else f"{button}-{verb}"])
+    return f"{verb} and holds" if hold else verb
 
 
 async def _held_reason(action, params):
@@ -1841,9 +2012,20 @@ async def _ask_before_act(action, params, *, direct):
         if rejected is None:
             _unknown_outcomes.pop(_outcome_key(action, params), None)
             _audit(action, {**params, "confirmation": "accepted", "reason": reason}, True, None, 0)
+            # The user approved this exact call on this tab, so it needs no viewed-tab token too.
+            if _viewed_tab_approval.get() is not None:
+                _grant_viewed_tab(tab_id, token, _user_tab_binding(action, params, "user_viewing"))
             return None
     _audit(action, {**params, "confirmation": "required", "reason": reason}, False, "confirmation_required", 0)
-    state = {"confirmToken": _issue_confirm_token(binding), "expiresInSeconds": CONFIRM_TOKEN_TTL,
+    issued = _issue_confirm_token(binding)
+    approval = _viewed_tab_approval.get()
+    if (approval is not None and approval.get("approved") and tab_id is not None and approval.get("tabId") == tab_id
+            and approval.get("binding") is not None):
+        # Held after an earlier request of this tool call was approved for the viewed tab (browser_type's
+        # Enter after its text): the repeated tool call carries that approval with this token, but only
+        # to the request that was approved (_take_viewed_tab_approval).
+        _confirm_tokens[issued]["viewedBinding"] = approval["binding"]
+    state = {"confirmToken": issued, "expiresInSeconds": CONFIRM_TOKEN_TTL,
              "action": action, "reason": reason, "description": description,
              "tabId": tab_id, "url": url, "params": dict(params)}
     if rejected:
@@ -1863,9 +2045,9 @@ async def _ask_before_act(action, params, *, direct):
 # a client's protectUserTabs navigates only those (navigate, goBack, goForward). Its user_tab
 # refusal of a direct call carries a confirm token, issued and spent like ask-before-act's; the
 # identical direct call with it sends userTabApproved, which callers can never set themselves.
-def _user_tab_binding(action, params):
+def _user_tab_binding(action, params, code="user_tab"):
     return _confirmation_binding(
-        action, {k: v for k, v in params.items() if k not in ("confirmToken", "userTabApproved")}, "user_tab")
+        action, {k: v for k, v in params.items() if k not in ("confirmToken", "userTabApproved")}, code)
 
 
 def _take_user_tab_approval(action, params):
@@ -1911,6 +2093,97 @@ def _offer_user_tab_approval(action, params, result, rejected=None):
     if rejected:
         state["tokenRejected"] = rejected
     result["hint"] = hint
+    return result
+
+
+# ── Viewed tab (docs/api-reference.md#viewed-tab) ──
+# The extension holds writes and navigations on the tab shown in the browser window the user last
+# focused (user_viewing, #326). Its refusal of a direct call carries a confirm token like
+# user_tab's, bound to the refused tab; the identical direct call with it, or with an accepted
+# ask-before-act token, sends viewedTabApproved on this request's extension commands, so a
+# trusted click's screenPoint is approved too. Callers can never set it themselves.
+# The approval also covers the later requests of the same MCP tool call on that tab (TOOL_CALL_HEADER):
+# browser_fill_form writes each field with its own request, and browser_type(submit) presses Enter
+# with a second one. Without it, each request would be refused with a token of its own.
+def _grant_viewed_tab(tab_id, token, binding):
+    """Approve the viewed tab for this request and the rest of its tool call.
+
+    token: the one spent; binding: the approved request's user_viewing binding.
+    """
+    _viewed_tab_approval.get().update(approved=True, tabId=tab_id, binding=binding)
+    call = _tool_call.get()
+    if call is None or tab_id is None:
+        return
+    # A raw HTTP or Python caller chooses its own call id; keyed by client, it cannot reach another's grant.
+    call = (_client_id.get(), call)
+    now_s = time.monotonic()
+    for key in [key for key, grant in _viewed_tab_calls.items() if grant["expires"] < now_s]:
+        del _viewed_tab_calls[key]
+    while len(_viewed_tab_calls) >= 100:
+        del _viewed_tab_calls[next(iter(_viewed_tab_calls))]
+    _viewed_tab_calls[call] = {"tabId": tab_id, "token": token, "binding": binding,
+                               "expires": now_s + CONFIRM_TOKEN_TTL}
+
+
+def _take_viewed_tab_approval(action, params):
+    """Spend a user_viewing confirm token for this exact call, recording the outcome in the request.
+
+    An earlier approval in the same tool call approves the request too. A token issued for
+    anything else stays in params for ask-before-act.
+    """
+    approval = _viewed_tab_approval.get()
+    if approval is None:
+        return
+    token = params.get("confirmToken")
+    entry = _confirm_tokens.get(token) if isinstance(token, str) else None
+    tab_id = _coerce_tab_id(params.get("tabId"))
+    call = _tool_call.get()
+    grant = _viewed_tab_calls.get((_client_id.get(), call)) if call is not None else None
+    if grant is not None and grant["tabId"] == tab_id and grant["expires"] >= time.monotonic():
+        if token is not None and token == grant["token"]:
+            del params["confirmToken"]  # spent by this tool call's earlier request
+        approval.update(approved=True, tabId=tab_id, binding=grant["binding"])
+        return
+    if entry is None:
+        return
+    binding = _user_tab_binding(action, params, "user_viewing")
+    if entry["binding"] == binding:
+        del params["confirmToken"]
+        approval["rejected"] = _spend_confirm_token(token, binding)
+        if approval["rejected"] is None:
+            _grant_viewed_tab(tab_id, token, binding)
+            _audit(action, {**params, "confirmation": "accepted", "reason": "user_viewing"}, True, None, 0)
+    elif (tab_id is not None and entry.get("viewedBinding") == binding and not entry["used"]
+          and entry["expires"] >= time.monotonic()):
+        # See _ask_before_act: once per token, only to the request that was approved for the viewed tab,
+        # and the token stays for the request it was issued for.
+        del entry["viewedBinding"]
+        _grant_viewed_tab(tab_id, None, binding)
+
+
+def _offer_viewed_tab_approval(action, params, result):
+    """Add a confirm token to a user_viewing refusal of a direct call."""
+    approval = _viewed_tab_approval.get()
+    if approval is None or not isinstance(result, dict) or result.get("code") != "user_viewing":
+        return result
+    state = result.setdefault("state", {})
+    # read and draft cannot confirm; send_to_extension gave them RESTRICTED_VIEWED_TAB_HINT.
+    if _task_mode.get() != "act" or state.get("tabId") is None:
+        return result
+    # Bound to the refused tab, so a call without tabId cannot carry it to whatever tab is shown then.
+    # A call that names its tabs in tabIds (sync barrier) is bound to them already.
+    names_tabs = "tabIds" in params
+    if not names_tabs:
+        params = {**params, "tabId": state["tabId"]}
+    state.update(confirmToken=_issue_confirm_token(_user_tab_binding(action, params, "user_viewing")),
+                 expiresInSeconds=CONFIRM_TOKEN_TTL)
+    if approval.get("rejected"):
+        state["tokenRejected"] = approval["rejected"]
+    named = "" if names_tabs else f" (with tab_id={state['tabId']} if it named no tab)"
+    result["hint"] = ("Nothing was done: the user is viewing this tab. Work in a tab you opened (browser_tabs "
+                      "action=new, then pass its tabId as tab_id), or ask the user to approve acting in this tab, "
+                      f"then repeat the identical call{named} with confirmToken (MCP: confirm_token) "
+                      f"within {CONFIRM_TOKEN_TTL}s. The token works once and only for this call.")
     return result
 
 
@@ -1998,7 +2271,8 @@ async def _sync_barrier_async(tab_ids, predicate, timeout=30000, poll_interval=3
         all_pass = True
         for tid in tab_ids:
             r = await send_to_extension("executeJS", {"tabId": tid, "code": predicate}, timeout=10)
-            if isinstance(r, dict) and r.get("devBuildRequired"):
+            # Polling again cannot pass the viewed-tab hold (#326): it needs the user's approval.
+            if isinstance(r, dict) and (r.get("devBuildRequired") or r.get("code") == "user_viewing"):
                 return {"ok": False, **r}
             last[tid] = r
             val = (r or {}).get("result")
@@ -2521,6 +2795,24 @@ def _disconnected_error(message, action, sent=True):
 
 RESTRICTED_USER_TAB_HINT = ("Nothing navigated. Open the page in a tab of your own with browser_tab_list "
                             "new_tab, or leave this tab to the user.")
+RESTRICTED_VIEWED_TAB_HINT = ("Nothing was done: the user is viewing this tab. Open the page in a tab of your own "
+                              "with browser_tab_list new_tab, or leave this tab to the user.")
+# Only the bridge sets these on extension commands (send_to_extension).
+_VIEWED_TAB_FIELDS = ("viewedTabApproved", "holdViewedTab")
+
+
+def _with_viewed_tab_fields(params):
+    """params as sent to the extension: the viewed-tab hold follows this request, not the caller's fields."""
+    approval = _viewed_tab_approval.get()
+    approved = approval is not None and approval.get("approved")
+    if not (approved or not _hold_viewed_tab.get() or any(key in (params or {}) for key in _VIEWED_TAB_FIELDS)):
+        return params
+    params = {k: v for k, v in (params or {}).items() if k not in _VIEWED_TAB_FIELDS}
+    if approved:
+        params["viewedTabApproved"] = True
+    if not _hold_viewed_tab.get():
+        params["holdViewedTab"] = False
+    return params
 
 
 async def send_to_extension(action, params=None, timeout=30):
@@ -2530,16 +2822,19 @@ async def send_to_extension(action, params=None, timeout=30):
         params = {k: v for k, v in (params or {}).items() if k != "protectUserTabs"}
         if _protect_user_tabs.get():
             params["protectUserTabs"] = True
+    # Sent with the bridge's viewed-tab fields; outcomes are remembered by the caller's params.
+    sent = _with_viewed_tab_fields(params)
     result = await _run_in_command_scope(
         action,
         params,
-        lambda: _send_to_extension_raw(action, params=params, timeout=timeout),
+        lambda: _send_to_extension_raw(action, params=sent, timeout=timeout),
     )
     _remember_outcome(action, params, result)
     _note_tab_openers(action, params, result)
-    if _task_mode.get() != "act" and isinstance(result, dict) and result.get("code") == "user_tab":
+    if _task_mode.get() != "act" and isinstance(result, dict) and result.get("code") in ("user_tab", "user_viewing"):
         # The extension's hint names browser_tabs and confirm_token, which read and draft lack (#270).
-        result = {**result, "hint": RESTRICTED_USER_TAB_HINT}
+        result = {**result, "hint": RESTRICTED_USER_TAB_HINT if result["code"] == "user_tab"
+                  else RESTRICTED_VIEWED_TAB_HINT}
     return result
 
 
@@ -4262,6 +4557,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
         token = _task_mode.set(mode)
         caps_token = _client_caps.set(caps)
         protect = _protect_user_tabs.set(self.headers.get(PROTECT_USER_TABS_HEADER) == "1")
+        hold = _hold_viewed_tab.set(self.headers.get(HOLD_VIEWED_TAB_HEADER) != "0")
+        viewed = _viewed_tab_approval.set({"approved": False, "rejected": None})
+        tool_call = self.headers.get(TOOL_CALL_HEADER) or ""
+        call_token = _tool_call.set(tool_call if _CLIENT_ID.fullmatch(tool_call) else None)
         called = self.headers.get(GATEWAY_TOOL_HEADER) or ""
         gateway = _gateway_tool.set(called if _TOOL_NAME.fullmatch(called) else None)
         client = self.headers.get(CLIENT_HEADER) or ""
@@ -4286,6 +4585,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
             _owner_id.reset(owner_token)
             _client_id.reset(client_token)
             _gateway_tool.reset(gateway)
+            _tool_call.reset(call_token)
+            _viewed_tab_approval.reset(viewed)
+            _hold_viewed_tab.reset(hold)
             _protect_user_tabs.reset(protect)
             _client_caps.reset(caps_token)
             _task_mode.reset(token)
@@ -4327,6 +4629,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "/api/trusted-click": self.handle_trusted_click,
             "/api/trusted-type": self.handle_trusted_type,
             "/api/trusted-press-key": self.handle_trusted_press_key,
+            "/api/trusted-drag": self.handle_trusted_drag,
             "/api/type": self.handle_type,
             "/api/set-editable-content": self.handle_set_editable_content,
             "/api/scroll": self.handle_scroll,
@@ -4610,6 +4913,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         if policy_err:
             self.send_json(403, policy_err)
             return False
+        _take_viewed_tab_approval(action, body)
         if self._held(action, body):
             return False
         _invalidate_cache_for_action(action)
@@ -4624,6 +4928,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             result = _timeout_error(action, timeout)
         except Exception as e:
             result = {"error": str(e)}
+        result = _offer_viewed_tab_approval(action, body, result)
         error = result.get("error") if isinstance(result, dict) else None
         _audit(action, body, isinstance(result, dict) and not error, error, (time.time() - t0) * 1000)
         self.send_json(200, result)
@@ -4639,6 +4944,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             if problem:
                 self.send_json(200, {"error": problem})
                 return
+        _take_viewed_tab_approval(action, body)
         if self._held(action, body):
             return
         _invalidate_cache_for_action(action)
@@ -4654,6 +4960,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                                         timeout=timeout + _outcome_budget_seconds(spec))
         except Exception as e:
             result = {"error": str(e)}
+        result = _offer_viewed_tab_approval(action, body, result)
         if on_result is not None:
             result = on_result(result)
         _audit(
@@ -4674,6 +4981,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             result = self.run_async(_upload_files_async(body), timeout=float(body.get("timeout", 300)))
         except Exception as e:
             result = {"error": str(e)}
+        result = _offer_viewed_tab_approval("uploadFile", body, result)
         ok = isinstance(result, dict) and not result.get("error")
         _audit("uploadFile", body, ok, None if ok else (result or {}).get("error"), (time.time() - t0) * 1000)
         self.send_json(200, result)
@@ -4695,6 +5003,11 @@ class BridgeHandler(BaseHTTPRequestHandler):
         body = self.read_body()
         if self._admitted("trustedPressKey", body):
             self._run_admitted("trustedPressKey", body, trusted_press_key(body))
+
+    def handle_trusted_drag(self):
+        body = self.read_body()
+        if self._admitted("trustedDrag", body):
+            self._run_admitted("trustedDrag", body, trusted_drag(body))
     
     def handle_type(self):
         self._send_extension_action("type", self.read_body())
