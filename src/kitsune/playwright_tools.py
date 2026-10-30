@@ -419,8 +419,8 @@ def browser_navigate(url: str, confirm_token: str | None = None, tab_id: int | N
 
 
 @_core
-def browser_navigate_back(tab_id: int | None = None) -> dict:
-    return k.browser_back(tab_id=_current_tab if tab_id is None else tab_id)
+def browser_navigate_back(tab_id: int | None = None, confirm_token: str | None = None) -> dict:
+    return k.browser_back(tab_id=_current_tab if tab_id is None else tab_id, confirm_token=confirm_token)
 
 
 def _successful_static(entry: dict) -> bool:
@@ -558,9 +558,10 @@ def browser_drag(startTarget: str, endTarget: str, startElement: str | None = No
 
 
 @_core
-def browser_hover(target: str, element: str | None = None, duration_ms: int = 0, steps: int | None = None) -> dict:
+def browser_hover(target: str, element: str | None = None, duration_ms: int = 0, steps: int | None = None,
+                  confirm_token: str | None = None) -> dict:
     return k.browser_hover(tab_id=_current_tab, element=element, duration_ms=duration_ms, steps=steps,
-                           **_target(target))
+                           confirm_token=confirm_token, **_target(target))
 
 
 def _select(target: str, values: list[str], element: str | None, confirm_token: str | None,

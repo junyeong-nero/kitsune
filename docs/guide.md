@@ -525,6 +525,7 @@ kitsune-benchmark; character-size guards in this repo are not token measurements
 | `KITSUNE_OUTPUT_DIR` | Unset | Directory, in the MCP server environment, for relative `filename` arguments of the `core` tools; unset, they resolve against the client's first root, else the server's working directory (see [Core tools](#core-tools)) |
 | `KITSUNE_OWNER_ID` | The MCP client's process | Tab owner id of the MCP client, in the MCP server environment: the bridge records the tabs it opens as this client's and offers them after a server restart. Up to 64 letters, digits, `.`, `_`, `:` or `-`. Set it when the server runs through a launcher other than `uv` or `uvx`, such as a shell script or a Python wrapper. Give each MCP client its own value: clients with the same value share their tabs. See [Tab owners](api-reference.md#tab-owners) |
 | `KITSUNE_PROTECT_USER_TABS` | Unset | Set to `1` in an MCP server environment to refuse that client's navigate, back and forward on tabs the agent did not open; see [Protecting your tabs](#protecting-your-tabs) |
+| `KITSUNE_HOLD_VIEWED_TAB` | On | Set to `0` in an MCP server environment to let that client write and navigate the tab you are viewing without a confirm step; see [Protecting your tabs](#protecting-your-tabs) |
 | `KITSUNE_ASK_BEFORE_ACT` | Unset | Set to `1` in the MCP server environment to start the bridge with [ask-before-act](#ask-before-act) locked on; the lock then persists in `ask-before-act-locked` under `KITSUNE_HOME` |
 | `KITSUNE_HISTORY_ALLOW_DOMAINS` | Unset (every domain) | Bridge: comma-separated domains (with subdomains) the `history` tools may return; see [History and bookmarks](api-reference.md#history-and-bookmarks) |
 | `KITSUNE_HISTORY_DENY_DOMAINS` | Unset (none) | Bridge: comma-separated domains (with subdomains) the `history` tools never return; wins over the allow list |
@@ -654,8 +655,20 @@ calls, or at least before calls that carry `confirm_token`.
 ### Protecting your tabs
 
 The agent closes only the tabs it opened unless you approve. Navigating one of your
-tabs is a separate permission, and it is allowed by default, because sometimes you
-want the agent to work in your tab. If your tabs must stay where they are, tell
+tabs is a separate permission, and it is allowed by default for tabs you are not
+viewing, because sometimes you want the agent to work in your tab.
+
+The tab you are viewing is held. It is the tab shown in the browser window you
+focused last, also after you switch to the agent's terminal. The agent's clicks,
+typing, key presses, form fills, scrolling, JavaScript, navigations and reloads there
+return a `user_viewing` error instead of acting. Reads and screenshots go on. Tabs the
+agent opened itself are never held, even when you look at them. On a direct call the
+error carries a `confirm_token`: the agent should ask you, then repeat the call with it.
+The token works once. To let the agent work in the tab you watch without asking, set
+`KITSUNE_HOLD_VIEWED_TAB=0` in its MCP server environment. Details are in the
+[API reference](api-reference.md#viewed-tab).
+
+If your tabs must stay where they are, tell
 the agent to open its material in new tabs (`browser_tabs` new) and pass their
 `tab_id`. Without `tab_id`, a call acts on the agent's current tab. Before the agent
 has opened or selected one, a write or navigation without `tab_id` fails with
@@ -677,9 +690,9 @@ agent can still reach any page without touching yours.
 KITSUNE_PROTECT_USER_TABS = "1"
 ```
 
-Limits: only those three calls are guarded. Clicked links, form submits, agent
-JavaScript, redirects and navigations the page starts can still change your tab's
-URL. Details are in the [API reference](api-reference.md#protected-user-tabs).
+Limits: only those three calls are guarded on tabs you are not viewing. Clicked
+links, form submits, agent JavaScript, redirects and navigations the page starts can
+still change such a tab's URL. Details are in the [API reference](api-reference.md#protected-user-tabs).
 
 ## Troubleshooting
 

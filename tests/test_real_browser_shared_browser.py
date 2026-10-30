@@ -16,7 +16,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from kitsune import server, tools
+from kitsune import server, task_modes, tools
 import real_browser_harness as harness
 
 PAGES = {
@@ -229,8 +229,53 @@ class RealBrowserSharedBrowserTests(harness.RealBrowserTestCase):
         self.assertIn("user page", self.call("/api/page-text", {"tabId": user_tab})["text"])
 
         time.sleep(3.2)  # the user-input window is 3 s
-        self.assert_ok(self.call("/api/click", {"selector": "#act", "tabId": user_tab}))
+        # The user still views the tab (#326): the click needs their approval.
+        held = self.call("/api/click", {"selector": "#act", "tabId": user_tab})
+        self.assert_error(held, "user_viewing", False)
+        self.assert_ok(self.call("/api/click", {"selector": "#act", "tabId": user_tab,
+                                                "confirmToken": held["state"]["confirmToken"]}))
         self.wait_for(lambda: self.tabs()[user_tab]["title"] == "acted", "the click after the window did not act")
+
+    def call_without_hold(self, path, body):
+        """POST as a client with KITSUNE_HOLD_VIEWED_TAB=0."""
+        headers = {**self.bridge.auth(), "Content-Type": "application/json", task_modes.HOLD_VIEWED_TAB_HEADER: "0"}
+        status, _, text = harness._request(self.bridge.http_port, "POST", path, headers, self.bridge.host,
+                                           json.dumps(body), timeout=90)
+        self.assertEqual(status, 200, text)
+        return json.loads(text)
+
+    def test_the_tab_the_user_views_is_held_until_the_user_approves(self):
+        # #326: viewing counts as using. The user gives no input; their tab is just shown.
+        user_tab = self.user_page()
+        window = self.tabs()[user_tab]["windowId"]
+        for path, body in (("/api/click", {"selector": "#act"}), ("/api/type", {"selector": "#draft", "text": "x"}),
+                           ("/api/scroll", {"direction": "down"}), ("/api/navigate", {"url": self.page.origin + "/agent"}),
+                           ("/api/reload-tab", {})):
+            result = self.call(path, {**body, "tabId": user_tab})
+            self.assert_error(result, "user_viewing", False)
+            self.assertEqual((result["state"]["tabId"], result["state"]["windowId"], result["state"]["reason"]),
+                             (user_tab, window, "viewing"), result)
+            self.assertIsInstance(result["state"]["browserFocused"], bool)
+            self.assertIn("confirmToken", result["state"])
+        tab = self.tabs()[user_tab]
+        self.assertEqual((tab["url"], tab["title"], tab["active"]), (self.page.origin + "/user", "user", True),
+                         "nothing acted")
+        # Reads go on, and the agent's own background tab is not held.
+        self.assertIn("user page", self.call("/api/page-text", {"tabId": user_tab})["text"])
+        agent = self.open_tab(self.page.origin + "/agent")
+        self.assert_ok(self.call("/api/navigate", {"url": self.page.origin + "/second", "tabId": agent}))
+
+        # The user approves one click: its token acts once.
+        held = self.call("/api/click", {"selector": "#act", "tabId": user_tab})
+        approved = {"selector": "#act", "tabId": user_tab, "confirmToken": held["state"]["confirmToken"]}
+        self.assert_ok(self.call("/api/click", approved))
+        self.wait_for(lambda: self.tabs()[user_tab]["title"] == "acted", "the approved click did not act")
+        self.assertEqual(self.call("/api/click", approved)["state"]["tokenRejected"], "used")
+
+        # A client with KITSUNE_HOLD_VIEWED_TAB=0 acts without a confirm step.
+        self.assert_ok(self.call_without_hold("/api/navigate", {"url": self.page.origin + "/second", "tabId": user_tab}))
+        self.wait_for(lambda: self.tabs()[user_tab]["title"] == "second", "the opted-out navigation did not load")
+        self.assertEqual(self.user_view()["shown"], [user_tab], "the user's tab stayed shown")
 
     def test_tab_list_with_include_active_reads_the_shown_tab_in_one_call(self):
         # #138: the MCP tool composes the inventory and the active page; route it to this bridge.

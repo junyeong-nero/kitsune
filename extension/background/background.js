@@ -324,6 +324,27 @@ async function userActiveError(tabId) {
   const state = tabId != null && await userActivity(tabId);
   return state ? tabError(`The user is using tab ${tabId}; nothing was done`, 'user_active', state) : null;
 }
+
+// Viewing counts as using (#326, docs/api-reference.md#viewed-tab): a guarded write or navigation
+// on the tab shown in the browser window the user last focused returns user_viewing even without
+// recent input. That window keeps the hold while another app (the agent's terminal) has the
+// focus. Closing a tab, view switches and screenshots are not held, nor are tabs the agent opened.
+// Only the bridge sets viewedTabApproved (a confirmed direct call; userTabApproved counts too)
+// and holdViewedTab: false (the client's KITSUNE_HOLD_VIEWED_TAB=0).
+const VIEWED_TAB_EXEMPT_ACTIONS = new Set(['closeTab', 'switchTab', 'focusWindow', 'elementScreenshot', 'fullPageScreenshot']);
+async function viewedTabError(params) {
+  const tabId = params.tabId;
+  if (params.holdViewedTab === false || params.viewedTabApproved || params.userTabApproved ||
+      VIEWED_TAB_EXEMPT_ACTIONS.has(params.action) || tabId == null || agentTabs.has(tabId)) return null;
+  const tab = await browser.tabs.get(tabId).catch(() => null);
+  if (!tab?.active) return null;
+  const focused = await browser.windows.getLastFocused().catch(() => null);
+  if (focused?.id !== tab.windowId) return null;
+  return tabError(`The user is viewing tab ${tabId}; nothing was done`, 'user_viewing',
+    { tabId, url: tab.url, title: tab.title, windowId: tab.windowId, reason: 'viewing',
+      browserFocused: !!focused.focused }, false);
+}
+
 // The longest pause a held click or a sustained hover asks for (content.js POINTER_MAX_MS).
 const POINTER_PAUSE_MAX_MS = 10000;
 
@@ -599,7 +620,7 @@ async function handleCommand(command) {
   const unprotected = await protectedTabError(params);
   if (unprotected) return unprotected;
   if (guarded) {
-    const busy = await userActiveError(await guardedTabId(params.action, params));
+    const busy = await userActiveError(await guardedTabId(params.action, params)) || await viewedTabError(params);
     if (busy) return busy;
   }
   if (tracksOpenedTabs && params.tabId != null) actionStarts.set(params.tabId, tabsCreated);
@@ -1304,6 +1325,8 @@ async function closeTab(tabId, { force = false, userTabApproved = false } = {}) 
 
 // A trusted OS click lands on whatever the screen shows, so a target tab that is not shown is
 // activated for the click; the bridge restores previousTabId right after it (restoreActiveTab).
+// The tab it hides for that moment is checked for the user's input, not held for being viewed
+// (viewedTabError holds only the click's own tab).
 const TRUSTED_CLICK_PAINT_MS = 150;
 // How long a shown tab may take to get a size on screen, polling this often.
 const TRUSTED_CLICK_LAYOUT_WAIT_MS = 1000;
@@ -1473,6 +1496,9 @@ const TAB_FAILURE_HINTS = {
     'work in a tab you opened, or ask the user.',
   tab_not_shown: 'The browser shows no page in this tab\'s window. Ask the user to finish or close whatever ' +
     'hides the page (for example, Zen\'s first-run welcome screen), then retry.',
+  user_viewing: 'The user is viewing this tab (shown in the browser window they last focused); nothing was done. ' +
+    'Work in a tab you opened (browser_tabs action=new), or ask the user and repeat a direct call with tab_id and ' +
+    'the confirm_token that call returns.',
   // Matches the bridge's browser_window_unavailable diagnosis hint.
   browser_window_unavailable: 'Open a normal browser window in the profile where Kitsune is installed (private windows need Run in Private Windows in about:addons), or pass tab_id.',
 };

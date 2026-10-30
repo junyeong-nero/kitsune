@@ -3,6 +3,8 @@
 MODE_HEADER = "X-Kitsune-Mode"
 # KITSUNE_PROTECT_USER_TABS=1: this client's navigations leave user tabs alone (#199).
 PROTECT_USER_TABS_HEADER = "X-Kitsune-Protect-User-Tabs"
+# KITSUNE_HOLD_VIEWED_TAB=0 sends "0": the tab the user is viewing is not held for this client (#326).
+HOLD_VIEWED_TAB_HEADER = "X-Kitsune-Hold-Viewed-Tab"
 # The tool a browser_tools_call runs (#227): the audit log records the call came through it.
 GATEWAY_TOOL_HEADER = "X-Kitsune-Gateway-Tool"
 # The id of the client that sent a request (BridgeClient.client_id, #303): audit entries record it.

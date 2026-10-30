@@ -7,7 +7,9 @@ const vm = require('node:vm');
 const event = () => ({ addListener() {}, removeListener() {} });
 const copy = value => JSON.parse(JSON.stringify(value));
 
-function harness() {
+// focusedWindow: the browser window the user last focused. By default another one, so tab 1 is not
+// held for being viewed (#326, see shared_browser.cjs).
+function harness({ focusedWindow = 2 } = {}) {
   const tabs = {
     1: { id: 1, windowId: 1, active: true, url: 'https://example.com/start', title: 'Start' },
     2: { id: 2, windowId: 1, active: false, url: 'https://example.com/helper', title: 'Helper' },
@@ -22,6 +24,7 @@ function harness() {
       goForward: async id => { moved.push(['goForward', id]); },
       reload: async id => { moved.push(['reload', id]); },
     },
+    windows: { getLastFocused: async () => ({ id: focusedWindow, focused: true }) },
     storage: { local: { get: async () => ({}), set: async () => {} } },
     runtime: { onMessage: event(), onStartup: event(), onInstalled: event() },
   };
@@ -79,9 +82,23 @@ async function authorizedNavigationRuns() {
   assert.deepEqual(h.moved, [['navigate', 1], ['navigate', 1], ['goForward', 1], ['reload', 1]]);
 }
 
+// The user's approval of navigating their tab also covers it while they view it (#326).
+async function approvedNavigationOfTheViewedTabRuns() {
+  const h = harness({ focusedWindow: 1 });
+  const held = await h.run({ action: 'navigate', url: 'https://example.com/x', tabId: 1 });
+  assert.equal(held.code, 'user_viewing', JSON.stringify(held));
+  assert.equal((await h.run({ action: 'navigate', url: 'https://example.com/x', tabId: 1, protectUserTabs: true })).code,
+    'user_tab', 'a protected tab asks for one approval: user_tab');
+  const approved = await h.run({ action: 'navigate', url: 'https://example.com/x', tabId: 1,
+    protectUserTabs: true, userTabApproved: true });
+  assert.equal(approved.ok, true);
+  assert.deepEqual(h.moved, [['navigate', 1]]);
+}
+
 (async () => {
   await protectedInitialTabIsRefused();
   await ownedHelperTabNavigates();
   await authorizedNavigationRuns();
+  await approvedNavigationOfTheViewedTabRuns();
   console.log('protected_tabs: ok');
 })().catch(e => { console.error(e); process.exit(1); });

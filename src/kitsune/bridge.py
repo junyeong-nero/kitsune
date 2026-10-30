@@ -61,8 +61,8 @@ except ImportError:
 from . import bridge_control
 from .capabilities import ACTION_GROUPS, CAPS_HEADER, OPEN_ROUTES, ROUTE_GROUPS, caps_refusal, header_caps
 from .task_modes import (
-    CLIENT_HEADER, CLIENT_ID_PATTERN, GATEWAY_TOOL_HEADER, MODE_HEADER, OWNER_HEADER, PROTECT_USER_TABS_HEADER,
-    permits_action, permits_route, task_mode,
+    CLIENT_HEADER, CLIENT_ID_PATTERN, GATEWAY_TOOL_HEADER, HOLD_VIEWED_TAB_HEADER, MODE_HEADER, OWNER_HEADER,
+    PROTECT_USER_TABS_HEADER, permits_action, permits_route, task_mode,
 )
 from .version import BRIDGE_BUILD, PACKAGE_VERSION, SOURCE_ROOT, extension_manifest_hash, extension_source_hash
 from .waits import (
@@ -176,6 +176,11 @@ DEFAULT_ASK_URLS = [r"checkout", r"payment", r"billing", r"/pay\b", r"purchase",
 _task_mode = contextvars.ContextVar("kitsune_task_mode", default="act")
 # The calling client's KITSUNE_PROTECT_USER_TABS (#199): its navigations leave user tabs alone.
 _protect_user_tabs = contextvars.ContextVar("kitsune_protect_user_tabs", default=False)
+# The calling client's KITSUNE_HOLD_VIEWED_TAB (#326): False lifts the hold on the tab the user views.
+_hold_viewed_tab = contextvars.ContextVar("kitsune_hold_viewed_tab", default=True)
+# A direct call's {"approved", "rejected"} for the viewed-tab hold (_take_viewed_tab_approval); a
+# dict, so the request's tasks and its handler share it.
+_viewed_tab_approval = contextvars.ContextVar("kitsune_viewed_tab_approval", default=None)
 # A container call's default tab (#232): its steps that name no tabId run there instead of the
 # extension's active tab.
 _default_tab = contextvars.ContextVar("kitsune_default_tab", default=None)
@@ -1570,12 +1575,13 @@ _REPEAT_UNSAFE_ACTIONS = WRITE_ACTIONS | {"uploadCommit", "focusElement", "blurE
 # Nothing reached the page, but repeating cannot succeed: until the tab navigates (error_page),
 # because the command names several targets (ambiguous_target) or its target selector failed
 # to parse or validate before anything was dispatched (unsupported_selector), until the user
-# approves closing their tab (user_tab), until the user grants a browser permission
-# (permission_required), or until the client's KITSUNE_CAPS or KITSUNE_MODE permits it or the
-# container step names a batch action (capability_restricted, mode_restricted, unknown_action).
+# approves closing their tab (user_tab) or acting on the tab they view (user_viewing), until the
+# user grants a browser permission (permission_required), or until the client's KITSUNE_CAPS or
+# KITSUNE_MODE permits it or the container step names a batch action (capability_restricted,
+# mode_restricted, unknown_action).
 _PERSISTENT_FAILURE_CODES = {"error_page", "ambiguous_target", "unsupported_selector", "user_tab",
-                             "permission_required", "capability_restricted", "mode_restricted",
-                             "unknown_action"}
+                             "user_viewing", "permission_required", "capability_restricted",
+                             "mode_restricted", "unknown_action"}
 
 
 def _url_matches(pattern, url, flags=0):
@@ -1999,6 +2005,9 @@ async def _ask_before_act(action, params, *, direct):
         if rejected is None:
             _unknown_outcomes.pop(_outcome_key(action, params), None)
             _audit(action, {**params, "confirmation": "accepted", "reason": reason}, True, None, 0)
+            # The user approved this exact call on this tab, so it needs no viewed-tab token too.
+            if (approval := _viewed_tab_approval.get()) is not None:
+                approval["approved"] = True
             return None
     _audit(action, {**params, "confirmation": "required", "reason": reason}, False, "confirmation_required", 0)
     state = {"confirmToken": _issue_confirm_token(binding), "expiresInSeconds": CONFIRM_TOKEN_TTL,
@@ -2021,9 +2030,9 @@ async def _ask_before_act(action, params, *, direct):
 # a client's protectUserTabs navigates only those (navigate, goBack, goForward). Its user_tab
 # refusal of a direct call carries a confirm token, issued and spent like ask-before-act's; the
 # identical direct call with it sends userTabApproved, which callers can never set themselves.
-def _user_tab_binding(action, params):
+def _user_tab_binding(action, params, code="user_tab"):
     return _confirmation_binding(
-        action, {k: v for k, v in params.items() if k not in ("confirmToken", "userTabApproved")}, "user_tab")
+        action, {k: v for k, v in params.items() if k not in ("confirmToken", "userTabApproved")}, code)
 
 
 def _take_user_tab_approval(action, params):
@@ -2069,6 +2078,52 @@ def _offer_user_tab_approval(action, params, result, rejected=None):
     if rejected:
         state["tokenRejected"] = rejected
     result["hint"] = hint
+    return result
+
+
+# ── Viewed tab (docs/api-reference.md#viewed-tab) ──
+# The extension holds writes and navigations on the tab shown in the browser window the user last
+# focused (user_viewing, #326). Its refusal of a direct call carries a confirm token like
+# user_tab's, bound to the refused tab; the identical direct call with it, or with an accepted
+# ask-before-act token, sends viewedTabApproved on this request's extension commands, so a
+# trusted click's screenPoint is approved too. Callers can never set it themselves.
+def _take_viewed_tab_approval(action, params):
+    """Spend a user_viewing confirm token for this exact call, recording the outcome in the request.
+
+    A token issued for anything else stays in params for ask-before-act.
+    """
+    approval = _viewed_tab_approval.get()
+    token = params.get("confirmToken")
+    entry = _confirm_tokens.get(token) if isinstance(token, str) else None
+    binding = _user_tab_binding(action, params, "user_viewing")
+    if approval is None or entry is None or entry["binding"] != binding:
+        return
+    del params["confirmToken"]
+    approval["rejected"] = _spend_confirm_token(token, binding)
+    if approval["rejected"] is None:
+        approval["approved"] = True
+        _audit(action, {**params, "confirmation": "accepted", "reason": "user_viewing"}, True, None, 0)
+
+
+def _offer_viewed_tab_approval(action, params, result):
+    """Add a confirm token to a user_viewing refusal of a direct call."""
+    approval = _viewed_tab_approval.get()
+    if approval is None or not isinstance(result, dict) or result.get("code") != "user_viewing":
+        return result
+    state = result.setdefault("state", {})
+    # read and draft cannot confirm; send_to_extension gave them RESTRICTED_VIEWED_TAB_HINT.
+    if _task_mode.get() != "act" or state.get("tabId") is None:
+        return result
+    # Bound to the refused tab, so a call without tabId cannot carry it to whatever tab is shown then.
+    params = {**params, "tabId": state["tabId"]}
+    state.update(confirmToken=_issue_confirm_token(_user_tab_binding(action, params, "user_viewing")),
+                 expiresInSeconds=CONFIRM_TOKEN_TTL)
+    if approval.get("rejected"):
+        state["tokenRejected"] = approval["rejected"]
+    result["hint"] = ("Nothing was done: the user is viewing this tab. Work in a tab you opened (browser_tabs "
+                      "action=new, then pass its tabId as tab_id), or ask the user to approve acting in this tab, "
+                      f"then repeat the call with tab_id={state['tabId']} and confirmToken (MCP: confirm_token) "
+                      f"within {CONFIRM_TOKEN_TTL}s. The token works once and only for this call.")
     return result
 
 
@@ -2674,6 +2729,24 @@ def _disconnected_error(message, action, sent=True):
 
 RESTRICTED_USER_TAB_HINT = ("Nothing navigated. Open the page in a tab of your own with browser_tab_list "
                             "new_tab, or leave this tab to the user.")
+RESTRICTED_VIEWED_TAB_HINT = ("Nothing was done: the user is viewing this tab. Open the page in a tab of your own "
+                              "with browser_tab_list new_tab, or leave this tab to the user.")
+# Only the bridge sets these on extension commands (send_to_extension).
+_VIEWED_TAB_FIELDS = ("viewedTabApproved", "holdViewedTab")
+
+
+def _with_viewed_tab_fields(params):
+    """params as sent to the extension: the viewed-tab hold follows this request, not the caller's fields."""
+    approval = _viewed_tab_approval.get()
+    approved = approval is not None and approval.get("approved")
+    if not (approved or not _hold_viewed_tab.get() or any(key in (params or {}) for key in _VIEWED_TAB_FIELDS)):
+        return params
+    params = {k: v for k, v in (params or {}).items() if k not in _VIEWED_TAB_FIELDS}
+    if approved:
+        params["viewedTabApproved"] = True
+    if not _hold_viewed_tab.get():
+        params["holdViewedTab"] = False
+    return params
 
 
 async def send_to_extension(action, params=None, timeout=30):
@@ -2683,16 +2756,19 @@ async def send_to_extension(action, params=None, timeout=30):
         params = {k: v for k, v in (params or {}).items() if k != "protectUserTabs"}
         if _protect_user_tabs.get():
             params["protectUserTabs"] = True
+    # Sent with the bridge's viewed-tab fields; outcomes are remembered by the caller's params.
+    sent = _with_viewed_tab_fields(params)
     result = await _run_in_command_scope(
         action,
         params,
-        lambda: _send_to_extension_raw(action, params=params, timeout=timeout),
+        lambda: _send_to_extension_raw(action, params=sent, timeout=timeout),
     )
     _remember_outcome(action, params, result)
     _note_tab_openers(action, params, result)
-    if _task_mode.get() != "act" and isinstance(result, dict) and result.get("code") == "user_tab":
+    if _task_mode.get() != "act" and isinstance(result, dict) and result.get("code") in ("user_tab", "user_viewing"):
         # The extension's hint names browser_tabs and confirm_token, which read and draft lack (#270).
-        result = {**result, "hint": RESTRICTED_USER_TAB_HINT}
+        result = {**result, "hint": RESTRICTED_USER_TAB_HINT if result["code"] == "user_tab"
+                  else RESTRICTED_VIEWED_TAB_HINT}
     return result
 
 
@@ -4415,6 +4491,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
         token = _task_mode.set(mode)
         caps_token = _client_caps.set(caps)
         protect = _protect_user_tabs.set(self.headers.get(PROTECT_USER_TABS_HEADER) == "1")
+        hold = _hold_viewed_tab.set(self.headers.get(HOLD_VIEWED_TAB_HEADER) != "0")
+        viewed = _viewed_tab_approval.set({"approved": False, "rejected": None})
         called = self.headers.get(GATEWAY_TOOL_HEADER) or ""
         gateway = _gateway_tool.set(called if _TOOL_NAME.fullmatch(called) else None)
         client = self.headers.get(CLIENT_HEADER) or ""
@@ -4439,6 +4517,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
             _owner_id.reset(owner_token)
             _client_id.reset(client_token)
             _gateway_tool.reset(gateway)
+            _viewed_tab_approval.reset(viewed)
+            _hold_viewed_tab.reset(hold)
             _protect_user_tabs.reset(protect)
             _client_caps.reset(caps_token)
             _task_mode.reset(token)
@@ -4751,6 +4831,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         if policy_err:
             self.send_json(403, policy_err)
             return False
+        _take_viewed_tab_approval(action, body)
         if self._held(action, body):
             return False
         _invalidate_cache_for_action(action)
@@ -4765,6 +4846,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             result = _timeout_error(action, timeout)
         except Exception as e:
             result = {"error": str(e)}
+        result = _offer_viewed_tab_approval(action, body, result)
         error = result.get("error") if isinstance(result, dict) else None
         _audit(action, body, isinstance(result, dict) and not error, error, (time.time() - t0) * 1000)
         self.send_json(200, result)
@@ -4780,6 +4862,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             if problem:
                 self.send_json(200, {"error": problem})
                 return
+        _take_viewed_tab_approval(action, body)
         if self._held(action, body):
             return
         _invalidate_cache_for_action(action)
@@ -4795,6 +4878,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                                         timeout=timeout + _outcome_budget_seconds(spec))
         except Exception as e:
             result = {"error": str(e)}
+        result = _offer_viewed_tab_approval(action, body, result)
         if on_result is not None:
             result = on_result(result)
         _audit(
@@ -4815,6 +4899,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             result = self.run_async(_upload_files_async(body), timeout=float(body.get("timeout", 300)))
         except Exception as e:
             result = {"error": str(e)}
+        result = _offer_viewed_tab_approval("uploadFile", body, result)
         ok = isinstance(result, dict) and not result.get("error")
         _audit("uploadFile", body, ok, None if ok else (result or {}).get("error"), (time.time() - t0) * 1000)
         self.send_json(200, result)

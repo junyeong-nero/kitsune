@@ -201,6 +201,8 @@ if _unauthorized_caps:
 
 MODE = task_mode(os.environ.get("KITSUNE_MODE"))
 PROTECT_USER_TABS = os.environ.get("KITSUNE_PROTECT_USER_TABS", "").lower() in {"1", "true", "yes", "on"}
+# On unless set to 0: writes on the tab the user is viewing need a confirm step (#326).
+HOLD_VIEWED_TAB = os.environ.get("KITSUNE_HOLD_VIEWED_TAB", "").lower() not in {"0", "false", "no", "off"}
 # Sent once at initialize. The core tools keep Playwright MCP's descriptions, which cannot say
 # that the browser is shared with its user; without this, agents avoid `select` to spare the
 # user's view and work around background tabs instead of reading them.
@@ -339,7 +341,8 @@ def _gateway_headers() -> dict:
 
 # Every tool's bridge request carries this server's client and owner ids, caps, mode and user-tab protection.
 _client = tools.client = BridgeClient(caps=enabled_groups(ENABLED_CAPS), mode=MODE,
-                                      protect_user_tabs=PROTECT_USER_TABS, extra_headers=_gateway_headers)
+                                      protect_user_tabs=PROTECT_USER_TABS, hold_viewed_tab=HOLD_VIEWED_TAB,
+                                      extra_headers=_gateway_headers)
 
 
 @functools.wraps(tools.browser_status)

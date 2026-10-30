@@ -72,12 +72,13 @@ def _cut(result: dict, what: str) -> dict:
     return result
 
 
-def connect(*, mode: str = "act", protect_user_tabs: bool = False, confirm=None,
+def connect(*, mode: str = "act", protect_user_tabs: bool = False, hold_viewed_tab: bool = True, confirm=None,
             replace_bridge: bool = False) -> "Browser":
     """Connect to the shared bridge, starting it if none runs, and check that the extension is connected.
 
     mode ("read", "draft" or "act") and protect_user_tabs limit what the bridge accepts, as
-    KITSUNE_MODE and KITSUNE_PROTECT_USER_TABS do for the MCP server. confirm, if set, is called
+    KITSUNE_MODE and KITSUNE_PROTECT_USER_TABS do for the MCP server; hold_viewed_tab=False lifts the
+    hold on the tab the user is viewing, as KITSUNE_HOLD_VIEWED_TAB=0 does. confirm, if set, is called
     with the ConfirmationRequired error of an action that needs the user's approval; when it
     returns True, the action is repeated once with its token, so a person can approve it (for
     example with input()). A running bridge of another build raises ConnectionFailed
@@ -86,7 +87,8 @@ def connect(*, mode: str = "act", protect_user_tabs: bool = False, confirm=None,
     """
     if mode not in MODES:
         raise ValueError(f"mode must be read, draft or act, not {mode!r}")
-    client = BridgeClient(caps=None, mode=mode, protect_user_tabs=protect_user_tabs, replace_bridge=replace_bridge)
+    client = BridgeClient(caps=None, mode=mode, protect_user_tabs=protect_user_tabs, hold_viewed_tab=hold_viewed_tab,
+                          replace_bridge=replace_bridge)
     error = client.ensure_bridge()
     if error:
         raise_for(error)

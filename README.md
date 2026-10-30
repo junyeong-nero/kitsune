@@ -32,7 +32,8 @@ the agent gets fewer, sharper tools. See [Philosophy](https://github.com/junyeon
 ## Why Kitsune?
 
 - Tabs the agent creates open in the background. Kitsune holds writes to a tab
-  while you are typing or clicking in it, refuses writes that name no tab until
+  while you are typing or clicking in it, and to the tab you are viewing until you
+  approve (unless the agent opened it). It refuses writes that name no tab until
   the agent has opened or selected one, and closing one of your own tabs takes a
   separate confirmation step. This reduces interference, but OS-level clicks and popups
   opened by sites still have [focus and input limitations](https://github.com/junyeong-nero/kitsune/blob/main/docs/api-reference.md#shared-browser).

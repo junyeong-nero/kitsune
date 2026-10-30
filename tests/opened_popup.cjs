@@ -276,7 +276,7 @@ const background = vm.createContext({
   isRestrictedUrl: () => false, ensureContentScript: async () => {},
   withTabState: async (tabId, response) => ({ ...response, state: { ...response.state, tabId } }),
   tabsCreated: 0, openedTabs: [], actionStarts: new Map(), tabLoads: new Map(), mainFrameStatus: new Map(),
-  userActiveError: async () => null, guardedTabId: async () => null, touchStart() {}, touchEnd() {},
+  userActiveError: async () => null, viewedTabError: async () => null, guardedTabId: async () => null, touchStart() {}, touchEnd() {},
 });
 vm.runInContext(fs.readFileSync('extension/background/history.js', 'utf8'), background);
 vm.runInContext(source.slice(source.indexOf('const POST_SNAPSHOT_ACTIONS'), source.indexOf('async function dispatchCommand')), background);
