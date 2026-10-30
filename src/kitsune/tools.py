@@ -434,7 +434,7 @@ def browser_tab_list(
     """
     # read and draft publish this instead of browser_tabs. A tab of its own lets a restricted
     # agent read any page without navigating the user's tabs, which KITSUNE_PROTECT_USER_TABS
-    # refuses (#270).
+    # refuses by default (#270, #326).
     if new_tab is None:
         return _tab_list(_get("/api/tabs"), False)
     opened = browser_tabs("new", url=new_tab, wait=True)
@@ -555,7 +555,9 @@ def browser_navigate(
                     "page (image = #zlimg).")] = False,
     expect: dict | None = None, confirm_token: str | None = None,
 ) -> dict:
-    """Navigate a tab to a URL. ok=true means dispatched; verify with expect (see browser_check)."""
+    """Navigate a tab to a URL. ok=true means dispatched; verify with expect (see browser_check).
+    By default a tab the agent did not open is refused (code user_tab) unless the user approves
+    (confirm_token)."""
     body = {"url": url}
     if raw:
         body["raw"] = True
@@ -1540,13 +1542,16 @@ def browser_reload_tab(bypass_cache: bool = False, tab_id: TabId = None, expect:
 
 def browser_back(tab_id: TabId = None, expect: dict | None = None, confirm_token: str | None = None) -> dict:
     """Go back in history (browser back button). ok=true means dispatched; verify with
-    expect (see browser_check)."""
+    expect (see browser_check). By default a tab the agent did not open is refused (code user_tab)
+    unless the user approves (confirm_token)."""
     return _post_action("/api/back", _request_body({}, tab_id, confirm_token=confirm_token), expect=expect)
 
 
 @tool("browse", annotations=dict(title="Forward", **ACT))
 def browser_forward(tab_id: TabId = None, expect: dict | None = None, confirm_token: str | None = None) -> dict:
-    """Go forward in history. ok=true means dispatched; verify with expect (see browser_check)."""
+    """Go forward in history. ok=true means dispatched; verify with expect (see browser_check).
+    By default a tab the agent did not open is refused (code user_tab) unless the user approves
+    (confirm_token)."""
     return _post_action("/api/forward", _request_body({}, tab_id, confirm_token=confirm_token), expect=expect)
 
 

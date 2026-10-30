@@ -175,8 +175,8 @@ _LOG_MAX = 5000
 # Ask-before-act is opt-in. askUrls are payment-like URL patterns it guards (case-insensitive).
 DEFAULT_ASK_URLS = [r"checkout", r"payment", r"billing", r"/pay\b", r"purchase", r"/order"]
 _task_mode = contextvars.ContextVar("kitsune_task_mode", default="act")
-# The calling client's KITSUNE_PROTECT_USER_TABS (#199): its navigations leave user tabs alone.
-_protect_user_tabs = contextvars.ContextVar("kitsune_protect_user_tabs", default=False)
+# The calling client's KITSUNE_PROTECT_USER_TABS (#199): unless False, its navigations leave user tabs alone (#326).
+_protect_user_tabs = contextvars.ContextVar("kitsune_protect_user_tabs", default=True)
 # The calling client's KITSUNE_HOLD_VIEWED_TAB (#326): False lifts the hold on the tab the user views.
 _hold_viewed_tab = contextvars.ContextVar("kitsune_hold_viewed_tab", default=True)
 # A direct call's {"approved", "rejected"} for the viewed-tab hold (_take_viewed_tab_approval); a
@@ -4556,7 +4556,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return
         token = _task_mode.set(mode)
         caps_token = _client_caps.set(caps)
-        protect = _protect_user_tabs.set(self.headers.get(PROTECT_USER_TABS_HEADER) == "1")
+        protect = _protect_user_tabs.set(self.headers.get(PROTECT_USER_TABS_HEADER) != "0")
         hold = _hold_viewed_tab.set(self.headers.get(HOLD_VIEWED_TAB_HEADER) != "0")
         viewed = _viewed_tab_approval.set({"approved": False, "rejected": None})
         tool_call = self.headers.get(TOOL_CALL_HEADER) or ""

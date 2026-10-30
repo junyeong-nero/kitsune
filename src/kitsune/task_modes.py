@@ -1,7 +1,7 @@
 """Startup tool surfaces and per-request bridge limits (#141)."""
 
 MODE_HEADER = "X-Kitsune-Mode"
-# KITSUNE_PROTECT_USER_TABS=1: this client's navigations leave user tabs alone (#199).
+# KITSUNE_PROTECT_USER_TABS=0 sends "0": this client's navigations may move user tabs (#199, #326).
 PROTECT_USER_TABS_HEADER = "X-Kitsune-Protect-User-Tabs"
 # KITSUNE_HOLD_VIEWED_TAB=0 sends "0": the tab the user is viewing is not held for this client (#326).
 HOLD_VIEWED_TAB_HEADER = "X-Kitsune-Hold-Viewed-Tab"

@@ -1,8 +1,8 @@
-"""Issue #199: a session can protect user tabs from server-mediated navigation (KITSUNE_PROTECT_USER_TABS).
+"""Issue #199: a session protects user tabs from server-mediated navigation (KITSUNE_PROTECT_USER_TABS).
 
 Ownership, permission to close and permission to navigate are separate: an owned helper tab
 closes and navigates freely, a protected user tab navigates only with the user's approval, and
-without protection navigation is unchanged.
+without protection navigation is unchanged. Protection is on unless the client sends "0" (#326).
 """
 import asyncio
 import unittest
@@ -56,10 +56,10 @@ class ProtectedTabTests(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-    def call(self, path, body, protect=True, mode=None):
+    def call(self, path, body, protect_header=None, mode=None):
         handler = bridge.BridgeHandler.__new__(bridge.BridgeHandler)
         handler.path = path
-        handler.headers = {task_modes.PROTECT_USER_TABS_HEADER: "1"} if protect else {}
+        handler.headers = {} if protect_header is None else {task_modes.PROTECT_USER_TABS_HEADER: protect_header}
         if mode:
             handler.headers[task_modes.MODE_HEADER] = mode
         handler.read_body = Mock(return_value=dict(body))
@@ -141,15 +141,23 @@ class ProtectedTabTests(unittest.TestCase):
         body = {"url": "https://a.example/", "tabId": ACTIVE_TAB, "confirmToken": token}
         self.assertEqual(self.call("/api/navigate", body), {"ok": True})
 
+    def test_protection_is_on_unless_the_client_sends_0(self):
+        # #326: a request without the header, such as a direct HTTP call, is protected; "1" still is.
+        for header in (None, "1", "yes"):
+            with self.subTest(header=header):
+                result = self.call("/api/navigate", {"url": "https://a.example/", "tabId": 4}, protect_header=header)
+                self.assertEqual(result["code"], "user_tab")
+                self.assertIs(self.extension.last("navigate")["protectUserTabs"], True)
+
     def test_callers_cannot_approve_themselves(self):
         self.refuse("/api/navigate", {"url": "https://a.example/", "tabId": 4, "userTabApproved": True})
         self.assertNotIn("userTabApproved", self.extension.last("navigate"))
 
     def test_without_protection_user_tab_navigation_is_unchanged(self):
         body = {"url": "https://a.example/", "tabId": 4, "protectUserTabs": True}
-        self.assertEqual(self.call("/api/navigate", body, protect=False), {"ok": True})
+        self.assertEqual(self.call("/api/navigate", body, protect_header="0"), {"ok": True})
         self.assertNotIn("protectUserTabs", self.extension.last("navigate"))
-        self.assertEqual(self.call("/api/back", {"tabId": 4}, protect=False), {"ok": True})
+        self.assertEqual(self.call("/api/back", {"tabId": 4}, protect_header="0"), {"ok": True})
 
 
 class ServerProtectUserTabsTests(unittest.TestCase):
@@ -161,7 +169,7 @@ class ServerProtectUserTabsTests(unittest.TestCase):
                 request.return_value.json.return_value = {"ok": True}
                 tools._post("/api/navigate", {"url": "https://example.com"})
             headers = request.call_args.kwargs["headers"]
-            self.assertEqual(headers.get(task_modes.PROTECT_USER_TABS_HEADER), "1" if protect else None)
+            self.assertEqual(headers.get(task_modes.PROTECT_USER_TABS_HEADER), None if protect else "0")
 
 
 if __name__ == "__main__":

@@ -42,8 +42,8 @@ class KitsuneError(Exception):
 
 class ConfirmationRequired(KitsuneError):
     """The action needs the user's approval and nothing ran: ask-before-act held it
-    (confirmation_required), it closes or, with protect_user_tabs, navigates a tab no client
-    opened (user_tab), or it acts on the tab the user is viewing (user_viewing). Once the user
+    (confirmation_required), it closes or, unless protect_user_tabs is off, navigates a tab no
+    client opened (user_tab), or it acts on the tab the user is viewing (user_viewing). Once the user
     approves, repeat it with confirm=token within expires_in seconds; a token works once."""
 
     @property

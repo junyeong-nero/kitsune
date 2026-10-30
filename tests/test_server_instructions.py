@@ -12,7 +12,8 @@ print(json.dumps(server.mcp._mcp_server.create_initialization_options().instruct
 
 
 def instructions(mode, **settings):
-    env = {**{k: v for k, v in os.environ.items() if k != "KITSUNE_HOLD_VIEWED_TAB"}, "KITSUNE_MODE": mode, **settings}
+    env = {**{k: v for k, v in os.environ.items() if k not in ("KITSUNE_HOLD_VIEWED_TAB", "KITSUNE_PROTECT_USER_TABS")},
+           "KITSUNE_MODE": mode, **settings}
     result = subprocess.run([sys.executable, "-c", SCRIPT], env=env, text=True, capture_output=True, check=True)
     return json.loads(result.stdout)
 
@@ -32,6 +33,9 @@ class ServerInstructionsTests(unittest.TestCase):
         self.assertIn("tab the user is viewing fail with user_viewing unless you opened that tab", text)
         self.assertIn("confirm_token", text)
         self.assertNotIn("user_viewing", instructions("act", KITSUNE_HOLD_VIEWED_TAB="0"))
+        # #326: navigations on user tabs are refused, unless this client turned the protection off.
+        self.assertIn("forward on a tab no client opened fail with user_tab: open a tab of your own", text)
+        self.assertNotIn("user_tab", instructions("act", KITSUNE_PROTECT_USER_TABS="0"))
 
     def test_restricted_modes_name_no_tab_tools(self):
         # read and draft publish browser_tab_list instead of browser_tabs.
@@ -43,6 +47,7 @@ class ServerInstructionsTests(unittest.TestCase):
                 self.assertIn("browser_tab_list new_tab opens a background tab", text)
                 self.assertIn("no_current_tab", text)
                 self.assertIn("fail with user_viewing; work in your own tab", text)
+                self.assertIn("no client opened fail with user_tab; work in your own tab", text)
                 self.assertNotIn("confirm_token", text)
 
 

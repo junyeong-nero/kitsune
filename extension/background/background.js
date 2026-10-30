@@ -654,7 +654,8 @@ async function handleCommand(command) {
 }
 
 // Under a session's protectUserTabs (#199), only the bridge's userTabApproved navigates a tab the
-// agent did not open. Clicks, forms, reloads and page-initiated loads are not covered.
+// agent did not open. The bridge sets it unless the client opted out (#326). Clicks, forms,
+// reloads and page-initiated loads are not covered.
 const PROTECTED_NAVIGATIONS = new Set(['navigate', 'goBack', 'goForward']);
 async function protectedTabError(params) {
   const tabId = params.tabId;

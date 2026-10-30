@@ -219,7 +219,8 @@ class RealBrowserSharedBrowserTests(harness.RealBrowserTestCase):
 
         for path, body in (("/api/click", {"selector": "#act"}), ("/api/type", {"selector": "#draft", "text": "x"}),
                            ("/api/navigate", {"url": self.page.origin + "/agent"})):
-            result = self.call(path, {**body, "tabId": user_tab})
+            # Unprotected, so the navigation reaches the user-input check instead of user_tab (#326).
+            result = self.call_opted_out(path, {**body, "tabId": user_tab}, hold=True)
             self.assert_error(result, "user_active", True)
             self.assertEqual(result["state"]["reason"], "input", result)
             self.assertIn(result["state"]["input"], ("pointerdown", "mousedown"), result)
@@ -236,9 +237,11 @@ class RealBrowserSharedBrowserTests(harness.RealBrowserTestCase):
                                                 "confirmToken": held["state"]["confirmToken"]}))
         self.wait_for(lambda: self.tabs()[user_tab]["title"] == "acted", "the click after the window did not act")
 
-    def call_without_hold(self, path, body):
-        """POST as a client with KITSUNE_HOLD_VIEWED_TAB=0."""
-        headers = {**self.bridge.auth(), "Content-Type": "application/json", task_modes.HOLD_VIEWED_TAB_HEADER: "0"}
+    def call_opted_out(self, path, body, hold=False):
+        """POST as a client with KITSUNE_PROTECT_USER_TABS=0 and, unless hold, KITSUNE_HOLD_VIEWED_TAB=0."""
+        headers = {**self.bridge.auth(), "Content-Type": "application/json", task_modes.PROTECT_USER_TABS_HEADER: "0"}
+        if not hold:
+            headers[task_modes.HOLD_VIEWED_TAB_HEADER] = "0"
         status, _, text = harness._request(self.bridge.http_port, "POST", path, headers, self.bridge.host,
                                            json.dumps(body), timeout=90)
         self.assertEqual(status, 200, text)
@@ -251,7 +254,8 @@ class RealBrowserSharedBrowserTests(harness.RealBrowserTestCase):
         for path, body in (("/api/click", {"selector": "#act"}), ("/api/type", {"selector": "#draft", "text": "x"}),
                            ("/api/scroll", {"direction": "down"}), ("/api/navigate", {"url": self.page.origin + "/agent"}),
                            ("/api/reload-tab", {})):
-            result = self.call(path, {**body, "tabId": user_tab})
+            # Unprotected, so the navigation reaches the viewed-tab hold instead of user_tab.
+            result = self.call_opted_out(path, {**body, "tabId": user_tab}, hold=True)
             self.assert_error(result, "user_viewing", False)
             self.assertEqual((result["state"]["tabId"], result["state"]["windowId"], result["state"]["reason"]),
                              (user_tab, window, "viewing"), result)
@@ -272,8 +276,8 @@ class RealBrowserSharedBrowserTests(harness.RealBrowserTestCase):
         self.wait_for(lambda: self.tabs()[user_tab]["title"] == "acted", "the approved click did not act")
         self.assertEqual(self.call("/api/click", approved)["state"]["tokenRejected"], "used")
 
-        # A client with KITSUNE_HOLD_VIEWED_TAB=0 acts without a confirm step.
-        self.assert_ok(self.call_without_hold("/api/navigate", {"url": self.page.origin + "/second", "tabId": user_tab}))
+        # A client with KITSUNE_HOLD_VIEWED_TAB=0 (and KITSUNE_PROTECT_USER_TABS=0) acts without a confirm step.
+        self.assert_ok(self.call_opted_out("/api/navigate", {"url": self.page.origin + "/second", "tabId": user_tab}))
         self.wait_for(lambda: self.tabs()[user_tab]["title"] == "second", "the opted-out navigation did not load")
         self.assertEqual(self.user_view()["shown"], [user_tab], "the user's tab stayed shown")
 

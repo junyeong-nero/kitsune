@@ -186,7 +186,9 @@ class BridgeClient:
     """Bridge requests that carry one caller's capability groups, task mode and user-tab protection.
 
     hold_viewed_tab=False (KITSUNE_HOLD_VIEWED_TAB=0) lets these requests act on the tab the user is
-    viewing without the confirm step of a user_viewing refusal (#326).
+    viewing without the confirm step of a user_viewing refusal (#326). protect_user_tabs=False
+    (KITSUNE_PROTECT_USER_TABS=0) lets them navigate tabs no client opened without the confirm step
+    of a user_tab refusal (#199, #326).
 
     caps are the groups the bridge lets these requests use: it refuses routes and container steps
     of other groups (#230). caps=None sends no caps header, so the bridge refuses no group; caps
@@ -199,7 +201,7 @@ class BridgeClient:
     records the tabs these requests open as its own (#325).
     """
 
-    def __init__(self, *, caps, mode: str = "act", protect_user_tabs: bool = False, hold_viewed_tab: bool = True,
+    def __init__(self, *, caps, mode: str = "act", protect_user_tabs: bool = True, hold_viewed_tab: bool = True,
                  extra_headers=None, replace_bridge: bool = True):
         self.caps = None if caps is None else ",".join(sorted(caps))
         self.mode = mode
@@ -328,8 +330,8 @@ class BridgeClient:
                     headers[CAPS_HEADER] = self.caps
                 if self.mode != "act":
                     headers[MODE_HEADER] = self.mode
-                if self.protect_user_tabs:
-                    headers[PROTECT_USER_TABS_HEADER] = "1"
+                if not self.protect_user_tabs:
+                    headers[PROTECT_USER_TABS_HEADER] = "0"
                 if not self.hold_viewed_tab:
                     headers[HOLD_VIEWED_TAB_HEADER] = "0"
                 if self.extra_headers:

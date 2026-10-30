@@ -132,8 +132,8 @@ groups, including the named-only storage and history groups.
 - Neither restricted mode permits click, submit, keypress, dialog confirmation,
   agent JavaScript, policy changes, container calls or resume. No confirmation tokens
   are issued or accepted. Navigate and new tabs permit HTTP(S) or `about:blank`, not
-  script, data or local-file URLs. Under `KITSUNE_PROTECT_USER_TABS`, a refused
-  navigation of a user tab carries no token; its hint points to
+  script, data or local-file URLs. A refused navigation of a user tab
+  ([protected user tabs](#protected-user-tabs)) carries no token; its hint points to
   `browser_tab_list(new_tab=...)`. So does a write or navigation refused on the
   [tab the user is viewing](#viewed-tab) (`user_viewing`). Existing global URL/readonly/ask policy can tighten this.
 
@@ -531,7 +531,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `host_permission_denied` | Firefox does not let Kitsune script the tab's site (`state.reason`: `not_granted`, `restricted_domain`) | true |
 | `permission_required` | A [history or bookmark lookup](#history-and-bookmarks) needs an optional browser permission the user has not granted (`state.permission`: `history` or `bookmarks`). Only the user can grant it, on Kitsune's options page; the agent cannot. Also returned, with a reload hint, when the permission is granted but the running extension has not picked it up. `browser_trusted_type`, `browser_trusted_press_key` and `browser_trusted_drag` return it when the bridge lacks macOS Accessibility permission; nothing was sent | false |
 | `confirmation_required` | [Ask-before-act](#ask-before-act) held a sensitive action; nothing ran (`state.confirmToken`, `state.reason`) | true |
-| `user_tab` | `browser_tabs` close on a tab the agent did not open, or `browser_close_window` on a window with one; it stays open. With [protected user tabs](#protected-user-tabs), also navigate, back or forward on such a tab; it stays where it is. A direct call's `state.confirmToken` closes or navigates it once the user approves (see [Agent-owned tabs](#agent-owned-tabs)) | false |
+| `user_tab` | `browser_tabs` close on a tab the agent did not open, or `browser_close_window` on a window with one; it stays open. Unless the client turned off [protected user tabs](#protected-user-tabs), also navigate, back or forward on such a tab; it stays where it is. A direct call's `state.confirmToken` closes or navigates it once the user approves (see [Agent-owned tabs](#agent-owned-tabs)) | false |
 | `user_active` | The user is using the tab (`state.reason`: `input`, `typing`, `navigating`); the write or navigation did not run (see [User activity](#user-activity)) | true |
 | `user_viewing` | The tab is shown in the browser window the user last focused, and the agent did not open it (`state.reason: "viewing"`, `state.windowId`, `state.browserFocused`); the write or navigation did not run. A direct call's `state.confirmToken` runs it once the user approves (see [Viewed tab](#viewed-tab)) | false |
 | `outcome_not_observed` | The action was dispatched, but the outcome given in `expect` did not happen in time (see [Action outcomes](#action-outcomes)) | false for writes |
@@ -1174,24 +1174,16 @@ same tab within 2 s of that action; such a tab counts as the agent's.
 
 Ownership, permission to close and permission to navigate are three different things.
 Ownership (`owned`) only records who opened a tab. Closing a user tab always needs the
-user's approval (above). Navigating a user tab in the background is allowed by default:
-an agent the user asked to work in their tab may do so. The user tab they are viewing is
-[held](#viewed-tab) for navigations and writes until they approve.
-
-A task that must keep the user's tabs where they are, for example "preserve every
-starting tab's URL", should open extra material with `browser_tabs` new and pass the
+user's approval (above). Navigating a user tab needs it too, by default (#326): an agent
+works in tabs it opened. Open extra material with `browser_tabs` new and pass the
 returned `tabId` as `tab_id` to every later call. A call without `tab_id` acts on the
 tab the user sees, which is usually a starting tab. Do not reuse a starting tab
 just because it is active.
 
-To enforce this for one MCP client, set `KITSUNE_PROTECT_USER_TABS=1` in its MCP
-server environment (opt-in, off by default). The MCP server sends it with every bridge
-request (`X-Kitsune-Protect-User-Tabs: 1`), so it covers that client's session only.
-Other clients sharing the bridge keep their own setting. Then `browser_navigate`,
-`browser_back` and `browser_forward` (`POST /api/navigate`, `/api/back`,
-`/api/forward`, and batch, workflow and parallel `navigate`, `goBack`, `goForward`)
-on a tab the agent did not open, including the active tab when `tab_id` is omitted,
-return `user_tab` (`retryable: false`) without navigating:
+`browser_navigate`, `browser_back` and `browser_forward` (`POST /api/navigate`,
+`/api/back`, `/api/forward`, and batch, workflow and parallel `navigate`, `goBack`,
+`goForward`) on a tab the agent did not open, including the active tab when `tab_id` is
+omitted, return `user_tab` (`retryable: false`) without navigating:
 
 ```json
 { "error": "Tab 12 was not opened by the agent and this session protects user tabs, so it was not navigated",
@@ -1211,11 +1203,21 @@ agent, so it proves an explicit second step, not that the user approved: an agen
 repeat the call with it without asking. For real approval, have the MCP client prompt
 before calls that carry `confirm_token`.
 
+To let an agent the user asked to work in their tabs navigate them without approval, set
+`KITSUNE_PROTECT_USER_TABS=0` in its MCP server environment. The MCP server then sends
+`X-Kitsune-Protect-User-Tabs: 0` with every bridge request, so it covers that client's
+session only; other clients sharing the bridge keep their own setting. A request without
+the header, such as a direct HTTP call, is protected. The Python API's
+`connect(protect_user_tabs=False)` is the same opt-out. The tab the user is viewing is
+still [held](#viewed-tab) unless `KITSUNE_HOLD_VIEWED_TAB=0` is set as well.
+
 Limits: only these server-mediated navigations are guarded. The approval of a navigation
 also covers the [viewed tab](#viewed-tab) hold, so a protected tab the user is viewing needs
 one approval, not two. A user tab's URL can still change through link clicks (`browser_click`, `clickAndWaitNavigation`), form submits,
 Enter in a field, agent JavaScript, redirects, and navigation the page starts itself.
 Reload keeps the URL and is not guarded. This is not comprehensive URL preservation.
+View switches (`browser_tabs` select, `browser_focus_window`) and screenshots change no URL
+and are not guarded either.
 Ownership is the extension's, as above: after an extension reload or a browser restart,
 the tabs the agent opened before count as user tabs and are protected too.
 
@@ -3049,8 +3051,8 @@ zero timeout performs one immediate check.
 `{ "url": "https://example.com", "tabId": 1, "expectTitle": "Example" }`
 - `tabId` optional (defaults to active tab)
 - `expectTitle` optional — warns if title doesn't match (catches silent redirects)
-- With `X-Kitsune-Protect-User-Tabs: 1`, a tab the agent did not open returns `user_tab`;
-  `confirmToken` is its token after the user approved (see
+- A tab the agent did not open returns `user_tab`; `confirmToken` is its token after the user
+  approved, and `X-Kitsune-Protect-User-Tabs: 0` lets the request navigate it (see
   [Protected user tabs](#protected-user-tabs)). The same holds for `/api/back` and `/api/forward`.
 - The tab the user is viewing returns `user_viewing`, as do the other page writes;
   `confirmToken` is its token after the user approved, and `X-Kitsune-Hold-Viewed-Tab: 0`
