@@ -276,6 +276,46 @@ class ViewedTabToolCallTests(BridgeCase):
         self.assertEqual(self.tool(playwright_tools.browser_type, **arguments,
                                    confirm_token=held["state"]["confirmToken"])["code"], "user_viewing")
 
+    def test_a_carrying_ask_token_on_another_request_is_held(self):
+        # The ask token carries the viewed-tab approval only to the request that viewed-tab token approved.
+        bridge._policy["ask"] = True
+        self.extension.target = {"submits": True, "tag": "input"}
+        arguments = {"target": "#q", "text": "hi", "submit": True}
+        viewed = self.tool(playwright_tools.browser_type, **arguments)
+        held = self.tool(playwright_tools.browser_type, **arguments, confirm_token=viewed["state"]["confirmToken"])
+        token = held["state"]["confirmToken"]
+        self.extension.target = {}  # a click ask-before-act does not hold
+        clicked = self.tool(playwright_tools.browser_click, target="#other", confirm_token=token)
+        self.assertEqual(clicked.get("code"), "user_viewing", clicked)
+        self.assertNotIn("viewedTabApproved", self.extension.last("click"))
+        # The token still finishes the call it was issued for.
+        self.extension.target = {"submits": True, "tag": "input"}
+        typed = self.tool(playwright_tools.browser_type, **arguments, confirm_token=token)
+        self.assertIs(typed.get("ok"), True, typed)
+
+    def test_the_tool_call_grant_expires_after_the_token_ttl(self):
+        call = {task_modes.TOOL_CALL_HEADER: "c1"}
+        body = {"selector": "#a", "tabId": VIEWED_TAB}
+        token = self.refuse("/api/click", body, call)["state"]["confirmToken"]
+        now = time.monotonic()
+        with patch.object(bridge.time, "monotonic", return_value=now):
+            self.assert_ok(self.call("/api/click", {**body, "confirmToken": token}, call))
+        fill = {"selector": "#b", "value": "x", "tabId": VIEWED_TAB}
+        with patch.object(bridge.time, "monotonic", return_value=now + bridge.CONFIRM_TOKEN_TTL - 1):
+            self.assert_ok(self.call("/api/fill", fill, call))
+        with patch.object(bridge.time, "monotonic", return_value=now + bridge.CONFIRM_TOKEN_TTL + 1):
+            self.refuse("/api/fill", fill, call)
+
+    def test_a_grant_belongs_to_its_client(self):
+        mine = {task_modes.TOOL_CALL_HEADER: "c1", task_modes.CLIENT_HEADER: "1-aaaaaa"}
+        other = {**mine, task_modes.CLIENT_HEADER: "2-bbbbbb"}
+        body = {"selector": "#a", "tabId": VIEWED_TAB}
+        token = self.refuse("/api/click", body, mine)["state"]["confirmToken"]
+        self.assert_ok(self.call("/api/click", {**body, "confirmToken": token}, mine))
+        fill = {"selector": "#b", "value": "x", "tabId": VIEWED_TAB}
+        self.refuse("/api/fill", fill, other)  # the same call id from another client
+        self.assert_ok(self.call("/api/fill", fill, mine))
+
     def test_approval_covers_only_its_tool_call_and_tab(self):
         call = lambda name: {task_modes.TOOL_CALL_HEADER: name}
         token = self.refuse("/api/click", {"selector": "#a", "tabId": VIEWED_TAB}, call("c1"))["state"]["confirmToken"]

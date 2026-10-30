@@ -1314,7 +1314,7 @@ another browser window.
 
 ```json
 { "error": "The user is viewing tab 12; nothing was done", "code": "user_viewing", "retryable": false,
-  "hint": "Nothing was done: the user is viewing this tab. Work in a tab you opened (browser_tabs action=new, then pass its tabId as tab_id), or ask the user to approve acting in this tab, then repeat the call with tab_id=12 and confirmToken ...",
+  "hint": "Nothing was done: the user is viewing this tab. Work in a tab you opened (browser_tabs action=new, then pass its tabId as tab_id), or ask the user to approve acting in this tab, then repeat the identical call (with tab_id=12 if it named no tab) with confirmToken ...",
   "state": { "tabId": 12, "url": "https://mail.example/", "title": "Inbox", "windowId": 3,
              "reason": "viewing", "browserFocused": false, "confirmToken": "…", "expiresInSeconds": 120 } }
 ```
@@ -1354,12 +1354,17 @@ steps get no token and are refused.
 
 The approval covers the whole MCP tool call on that tab. The MCP server sends a random
 `X-Kitsune-Tool-Call` id with each bridge request of a tool call, and the bridge approves
-that call's later requests on the same tab, for at most 120 s. So the core
-`browser_fill_form`, which writes each field with its own request, and
-`browser_type(submit=true)`, which presses Enter with a second one, need one approval. When
-ask-before-act then holds a later request of that call (the Enter in a field that submits),
-its token carries the viewed-tab approval once to the repeated tool call, so the user approves
-each hold once. An accepted ask-before-act token for the same call, and the `user_tab`
+every later request of that call on the same tab, whatever it does, for at most 120 s; the
+token itself is bound only to the request it was issued for. So the core
+`browser_fill_form`, which writes each field with its own request (the fields after the first
+are approved with it), and `browser_type(submit=true)`, which presses Enter with a second one,
+need one approval. When ask-before-act then holds a later request of that call (the Enter in a
+field that submits), its token carries the viewed-tab approval once to the repeated tool call,
+and only to the request the viewed-tab token approved (the text), so the user approves each
+hold once. The grant is kept per client (`X-Kitsune-Client`) and call id. The call id is
+asserted by the caller: an MCP agent cannot choose it, but a raw HTTP or Python caller that
+sends one id on several requests gets one approval covering its requests on that tab for
+120 s. Such a caller can turn the hold off with its own header anyway. An accepted ask-before-act token for the same call, and the `user_tab`
 approval of a [protected](#protected-user-tabs) navigation, approve the hold too, so one
 approval is enough. In read and draft modes the refusal carries no token, and its hint
 points to `browser_tab_list` new_tab. As with `user_tab`, the token goes back to the

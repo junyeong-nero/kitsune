@@ -183,8 +183,9 @@ _hold_viewed_tab = contextvars.ContextVar("kitsune_hold_viewed_tab", default=Tru
 _viewed_tab_approval = contextvars.ContextVar("kitsune_viewed_tab_approval", default=None)
 # The MCP tool call a request belongs to (TOOL_CALL_HEADER), validated like the client id.
 _tool_call = contextvars.ContextVar("kitsune_tool_call", default=None)
-# tool call id -> {"tabId", "token", "expires"}: a viewed-tab approval covers the other requests of
-# the MCP tool call it was given in (_take_viewed_tab_approval).
+# (client id, tool call id) -> {"tabId", "token", "binding", "expires"}: a viewed-tab approval covers
+# the other requests of the MCP tool call it was given in (_take_viewed_tab_approval). binding is the
+# user_viewing binding of the request that was approved.
 _viewed_tab_calls = {}
 # A container call's default tab (#232): its steps that name no tabId run there instead of the
 # extension's active tab.
@@ -2012,15 +2013,17 @@ async def _ask_before_act(action, params, *, direct):
             _audit(action, {**params, "confirmation": "accepted", "reason": reason}, True, None, 0)
             # The user approved this exact call on this tab, so it needs no viewed-tab token too.
             if _viewed_tab_approval.get() is not None:
-                _grant_viewed_tab(tab_id, token)
+                _grant_viewed_tab(tab_id, token, _user_tab_binding(action, params, "user_viewing"))
             return None
     _audit(action, {**params, "confirmation": "required", "reason": reason}, False, "confirmation_required", 0)
     issued = _issue_confirm_token(binding)
     approval = _viewed_tab_approval.get()
-    if approval is not None and approval.get("approved") and tab_id is not None and approval.get("tabId") == tab_id:
+    if (approval is not None and approval.get("approved") and tab_id is not None and approval.get("tabId") == tab_id
+            and approval.get("binding") is not None):
         # Held after an earlier request of this tool call was approved for the viewed tab (browser_type's
-        # Enter after its text): the repeated tool call carries that approval with this token.
-        _confirm_tokens[issued]["viewedTabId"] = tab_id
+        # Enter after its text): the repeated tool call carries that approval with this token, but only
+        # to the request that was approved (_take_viewed_tab_approval).
+        _confirm_tokens[issued]["viewedBinding"] = approval["binding"]
     state = {"confirmToken": issued, "expiresInSeconds": CONFIRM_TOKEN_TTL,
              "action": action, "reason": reason, "description": description,
              "tabId": tab_id, "url": url, "params": dict(params)}
@@ -2101,18 +2104,24 @@ def _offer_user_tab_approval(action, params, result, rejected=None):
 # The approval also covers the later requests of the same MCP tool call on that tab (TOOL_CALL_HEADER):
 # browser_fill_form writes each field with its own request, and browser_type(submit) presses Enter
 # with a second one. Without it, each request would be refused with a token of its own.
-def _grant_viewed_tab(tab_id, token):
-    """Approve the viewed tab for this request and the rest of its tool call; token: the one spent."""
-    _viewed_tab_approval.get().update(approved=True, tabId=tab_id)
+def _grant_viewed_tab(tab_id, token, binding):
+    """Approve the viewed tab for this request and the rest of its tool call.
+
+    token: the one spent; binding: the approved request's user_viewing binding.
+    """
+    _viewed_tab_approval.get().update(approved=True, tabId=tab_id, binding=binding)
     call = _tool_call.get()
     if call is None or tab_id is None:
         return
+    # A raw HTTP or Python caller chooses its own call id; keyed by client, it cannot reach another's grant.
+    call = (_client_id.get(), call)
     now_s = time.monotonic()
     for key in [key for key, grant in _viewed_tab_calls.items() if grant["expires"] < now_s]:
         del _viewed_tab_calls[key]
     while len(_viewed_tab_calls) >= 100:
         del _viewed_tab_calls[next(iter(_viewed_tab_calls))]
-    _viewed_tab_calls[call] = {"tabId": tab_id, "token": token, "expires": now_s + CONFIRM_TOKEN_TTL}
+    _viewed_tab_calls[call] = {"tabId": tab_id, "token": token, "binding": binding,
+                               "expires": now_s + CONFIRM_TOKEN_TTL}
 
 
 def _take_viewed_tab_approval(action, params):
@@ -2127,11 +2136,12 @@ def _take_viewed_tab_approval(action, params):
     token = params.get("confirmToken")
     entry = _confirm_tokens.get(token) if isinstance(token, str) else None
     tab_id = _coerce_tab_id(params.get("tabId"))
-    grant = _viewed_tab_calls.get(_tool_call.get())
+    call = _tool_call.get()
+    grant = _viewed_tab_calls.get((_client_id.get(), call)) if call is not None else None
     if grant is not None and grant["tabId"] == tab_id and grant["expires"] >= time.monotonic():
         if token is not None and token == grant["token"]:
             del params["confirmToken"]  # spent by this tool call's earlier request
-        approval.update(approved=True, tabId=tab_id)
+        approval.update(approved=True, tabId=tab_id, binding=grant["binding"])
         return
     if entry is None:
         return
@@ -2140,13 +2150,14 @@ def _take_viewed_tab_approval(action, params):
         del params["confirmToken"]
         approval["rejected"] = _spend_confirm_token(token, binding)
         if approval["rejected"] is None:
-            _grant_viewed_tab(tab_id, token)
+            _grant_viewed_tab(tab_id, token, binding)
             _audit(action, {**params, "confirmation": "accepted", "reason": "user_viewing"}, True, None, 0)
-    elif (tab_id is not None and entry.get("viewedTabId") == tab_id and not entry["used"]
+    elif (tab_id is not None and entry.get("viewedBinding") == binding and not entry["used"]
           and entry["expires"] >= time.monotonic()):
-        # See _ask_before_act: once per token, and the token stays for the request it was issued for.
-        del entry["viewedTabId"]
-        _grant_viewed_tab(tab_id, None)
+        # See _ask_before_act: once per token, only to the request that was approved for the viewed tab,
+        # and the token stays for the request it was issued for.
+        del entry["viewedBinding"]
+        _grant_viewed_tab(tab_id, None, binding)
 
 
 def _offer_viewed_tab_approval(action, params, result):

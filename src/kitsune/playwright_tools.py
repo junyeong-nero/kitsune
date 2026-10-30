@@ -405,8 +405,8 @@ def browser_press_key(key: str, confirm_token: str | None = None, repeat: int = 
 def browser_type(target: str, text: str, element: str | None = None, submit: bool | None = None,
                  slowly: bool | None = None, confirm_token: str | None = None) -> dict:
     # The token reaches both requests: a user_viewing token approves the text, and with it the Enter of
-    # the same tool call (#326). Ask-before-act spends a token only on a request it holds, so its token
-    # for the Enter passes the text request.
+    # the same tool call (#326). An ask-before-act token for the Enter passes the text request unless
+    # ask-before-act holds the text too (a payment-like page), which then rejects it as a mismatch.
     result = k.browser_type(text=text, mode="type" if slowly else "fill", tab_id=_current_tab, element=element,
                             confirm_token=confirm_token, **_target(target))
     if not submit or k._failed(result):
