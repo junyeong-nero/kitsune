@@ -88,7 +88,7 @@ TAB_WRITE_TOOLS = frozenset({
     "browser_blur", "browser_check", "browser_click_and_wait_navigation", "browser_duplicate_tab",
     "browser_focus", "browser_forward", "browser_highlight", "browser_mute_tab", "browser_pin_tab",
     "browser_reload_tab", "browser_scroll", "browser_set_zoom", "browser_submit_form", "browser_trusted_click",
-    "browser_trusted_press_key", "browser_trusted_type",
+    "browser_trusted_drag", "browser_trusted_press_key", "browser_trusted_type",
 })
 # Container steps that write their tab, by the action names steps use: the bridge's tab-claiming
 # actions (bridge._claims_tab) that are not tabless; an if/while condition is JavaScript on its tab.
@@ -269,11 +269,12 @@ def _request_body(body: dict, tab_id: int | None = None, ref: str | None = None,
 
 
 def _post_action(endpoint: str, body: dict, wait: bool = False, timeout: int = 10000,
-                 expect: dict | None = None) -> dict:
+                 expect: dict | None = None, pointer_ms: int = 0) -> dict:
     """POST a page action.
 
     wait=True lets the page wait up to timeout ms for the target before dispatch;
     expect makes the bridge check the outcome after dispatch, within expect.timeout.
+    pointer_ms is how long the action itself holds or moves the pointer.
     """
     if wait:
         if timeout <= 0:
@@ -281,7 +282,7 @@ def _post_action(endpoint: str, body: dict, wait: bool = False, timeout: int = 1
         body = {**body, "wait": True, "timeout": timeout}
     if expect is not None:
         body = {**body, "expect": expect}
-    request_timeout = action_request_seconds(wait, timeout, expect)
+    request_timeout = action_request_seconds(wait, timeout, expect) + pointer_ms / 1000
     if request_timeout == 15:
         return _post(endpoint, body)
     return _post(endpoint, body, timeout=request_timeout)
@@ -563,6 +564,29 @@ def browser_navigate(
 
 # -- Interaction --------------------------------------------------
 
+# A held click or a sustained hover lasts at most this long (#351; content.js POINTER_MAX_MS).
+POINTER_MAX_MS = 10000
+HOVER_MAX_STEPS = 50
+
+
+def _pointer_ms_error(name: str, value) -> dict | None:
+    """The error for a hold or hover duration that is not an integer from 0 to POINTER_MAX_MS."""
+    if type(value) is not int or not 0 <= value <= POINTER_MAX_MS:
+        return {"error": f"{name} must be an integer from 0 to {POINTER_MAX_MS}"}
+    return None
+
+
+def _held_click(result: dict, hold_ms: int) -> dict:
+    """A held click's result; an extension older than hold_ms clicks at once and says nothing of it."""
+    if hold_ms and not _failed(result) and "held_ms" not in result:
+        return {"error": "The extension clicked without holding the button; it is older than this MCP server",
+                "code": "extension_version_mismatch", "retryable": False,
+                "hint": "Update and reload the Kitsune extension. The click already happened; check the page "
+                        "before clicking again.",
+                "state": {"reason": "hold_unsupported"}}
+    return result
+
+
 def browser_click(
     selector: Annotated[str, Field(description='e.g. "#submit", ".btn-primary".')] = "",
     x: Annotated[int, Field(description="X coordinate, used without selector/ref.")] = 0,
@@ -585,6 +609,9 @@ def browser_click(
     first: Annotated[bool, Field(
         description="A write tool's selector matching several elements fails with ambiguous_target "
                     "unless true; true acts on the first match.")] = False,
+    hold_ms: Annotated[int, Field(
+        description="Keep the button pressed this long (0-10000 ms) before releasing, for long-press "
+                    "controls; the result reports held_ms.")] = 0,
 ) -> dict:
     """Click an element by ref, CSS selector or coordinates; video/audio toggles play/pause.
     ok=true only means dispatched: verify with expect; tabs the click opens come back in
@@ -604,9 +631,13 @@ def browser_click(
     action opens a tab, and value_changed compares with the value before dispatch.
     user_active: the user is using the tab (state.reason); nothing ran. Retry in a few seconds.
     """
+    if problem := _pointer_ms_error("hold_ms", hold_ms):
+        return problem
     body: dict = {"selector": selector} if selector or ref else {"coords": {"x": x, "y": y}}
-    return _post_action("/api/click", _request_body(body, tab_id, ref, element, confirm_token, first),
-                        wait, timeout, expect)
+    if hold_ms:
+        body["holdMs"] = hold_ms
+    return _held_click(_post_action("/api/click", _request_body(body, tab_id, ref, element, confirm_token, first),
+                                    wait, timeout, expect, hold_ms), hold_ms)
 
 
 @tool("browse", annotations=dict(title="Trusted click", **ACT))
@@ -630,6 +661,9 @@ def browser_trusted_click(
     click_count: Annotated[Literal[1, 2], Field(description="2 double-clicks.")] = 1,
     modifiers: Annotated[list[Literal["Shift", "Control", "Alt", "Meta"]] | None, Field(
         description="Keys held during the click.")] = None,
+    hold_ms: Annotated[int, Field(
+        description="Keep the button pressed this long (0-10000 ms), for long-press controls; "
+                    "single clicks only.")] = 0,
 ) -> dict:
     """Click using the real OS mouse pointer, for pages that ignore synthetic clicks;
     confirm_token and first work as in browser_check.
@@ -638,7 +672,7 @@ def browser_trusted_click(
     a page specifically ignores synthetic clicks. The pointer is moved back afterwards;
     pointerRestored reports it, with pointerRestoreError when that failed (the click still
     counts). Works on Windows, macOS and Linux (X11); macOS needs pyobjc Quartz or cliclick
-    (which cannot middle-click or right-double-click) plus Accessibility permission for the
+    (which cannot middle-click, right-double-click or hold) plus Accessibility permission for the
     bridge, and Linux needs xdotool (Wayland is not supported). An option the backend cannot
     send returns an error without clicking.
     target_not_at_point: another element covers the target's center (state.hit); nothing
@@ -661,7 +695,35 @@ def browser_trusted_click(
         body["clickCount"] = click_count
     if modifiers:
         body["modifiers"] = modifiers
-    return _post("/api/trusted-click", _request_body(body, tab_id, confirm_token=confirm_token, first=first))
+    body = _request_body(body, tab_id, confirm_token=confirm_token, first=first)
+    if not hold_ms:
+        return _post("/api/trusted-click", body)
+    if problem := _pointer_ms_error("hold_ms", hold_ms):
+        return problem
+    return _post("/api/trusted-click", {**body, "holdMs": hold_ms}, timeout=15 + hold_ms / 1000)
+
+
+@tool("browse", annotations=dict(title="Trusted drag", **ACT))
+def browser_trusted_drag(
+    selector: Annotated[str, Field(description="CSS selector or ref of the element to press, such as a slider knob.")],
+    to_selector: Annotated[str, Field(description="CSS selector or ref of the element to release over.")],
+    tab_id: TabId = None,
+    steps: Annotated[int, Field(description="Pointer moves between the press and the release, 1-50.")] = 10,
+    confirm_token: str | None = None,
+    first: bool = False,
+) -> dict:
+    """Drag with the real OS mouse pointer from one element's center to another's, for
+    pointer-capture handles (custom sliders, resizers, canvases) that browser_drag cannot move:
+    a page's setPointerCapture rejects synthetic pointers. confirm_token and first work as in
+    browser_check. Only on macOS (pyobjc Quartz and Accessibility permission for the bridge);
+    elsewhere it returns unsupported_platform without dragging. Kitsune shows a tab that is not
+    shown, brings the browser to the front, requires the tab's own window at both points
+    (browser_not_at_point, target_not_at_point as in browser_trusted_click; the destination
+    must be in view without scrolling), presses, moves in steps, releases, then moves the
+    pointer back and shows the user's tab again. It takes the user's pointer for its duration;
+    prefer browser_drag unless the page ignores it."""
+    return _post("/api/trusted-drag", _request_body({"selector": selector, "to": to_selector, "steps": steps}, tab_id,
+                                                     confirm_token=confirm_token, first=first))
 
 
 @tool("browse", annotations=dict(title="Trusted type", **ACT))
@@ -766,6 +828,10 @@ def browser_scroll(
 def browser_hover(
     selector: str = "", tab_id: TabId = None, ref: str | None = None, element: str | None = None,
     wait: bool = False, timeout: int = 10000, expect: dict | None = None, first: bool = False,
+    duration_ms: Annotated[int, Field(
+        description="Keep moving over the target this long (0-10000 ms), for hover-intent controls.")] = 0,
+    steps: Annotated[int | None, Field(
+        description="Moves across the target after arriving (1-50; default 5 with duration_ms).")] = None,
 ) -> dict:
     """Hover over an element on the page. ok=true means dispatched; verify with expect
     (see browser_check). Synthetic events cannot trigger CSS :hover; for that, use
@@ -773,9 +839,27 @@ def browser_hover(
     or ask the user (#327).
 
     A menu, listbox or dialog the hover opened comes back in opened_popup (see browser_click).
+    With duration_ms or steps the pointer keeps moving across the target after arriving, and
+    the result reports moves and hovered_ms (#351).
     """
-    return _post_action("/api/hover", _request_body({"selector": selector}, tab_id, ref, element, first=first),
-                        wait, timeout, expect)
+    if problem := _pointer_ms_error("duration_ms", duration_ms):
+        return problem
+    if steps is not None and (type(steps) is not int or not 1 <= steps <= HOVER_MAX_STEPS):
+        return {"error": f"steps must be an integer from 1 to {HOVER_MAX_STEPS}"}
+    body: dict = {"selector": selector}
+    if duration_ms:
+        body["durationMs"] = duration_ms
+    if steps is not None:
+        body["steps"] = steps
+    result = _post_action("/api/hover", _request_body(body, tab_id, ref, element, first=first),
+                          wait, timeout, expect, duration_ms)
+    if (duration_ms or steps) and not _failed(result) and "moves" not in result:
+        # An extension older than duration_ms and steps hovers once and answers as for one move.
+        return {"error": "The extension hovered with one move and ignored duration_ms and steps; it is older "
+                          "than this MCP server", "code": "extension_version_mismatch", "retryable": False,
+                "hint": "Update and reload the Kitsune extension.",
+                "state": {"reason": "sustained_hover_unsupported", "moves": 1}}
+    return result
 
 
 # -- Smart Queries ------------------------------------------------

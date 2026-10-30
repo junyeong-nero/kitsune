@@ -5,7 +5,7 @@ Base URL: `http://127.0.0.1:47651`
 ## MCP tool surface
 
 `KITSUNE_CAPS=core` is the default; `KITSUNE_CAPS=all` registers
-95 tools. The groups are `core`, `browse`, `read`, `inspect`, `tabs`, `automation`,
+96 tools. The groups are `core`, `browse`, `read`, `inspect`, `tabs`, `automation`,
 `network`, `admin`, `storage`, and `history`. A comma list selects those groups only.
 `all` enables every group except `storage` and `history`, which read personal data and
 must be named (`KITSUNE_CAPS=all,storage,history`); see
@@ -267,6 +267,11 @@ Anything else returns `repeat must be an integer from 1 to 100` and presses noth
 extension older than `repeat` presses once and answers without it, which the MCP tool
 reports as `extension_version_mismatch` (`state.reason: "repeat_unsupported"`).
 
+In the same way, the core `browser_click` accepts `hold_ms` and the core `browser_hover`
+accepts `duration_ms` and `steps`, for long-press and hover-intent controls (#351). They are
+not listed in the schemas either, and Kitsune's Python `browser_click` and `browser_hover` take
+them too; see [POST /api/click](#post-apiclick) and [POST /api/hover](#post-apihover).
+
 Synthetic key events have no browser default, so in an input, textarea or editor
 keypress applies the key's default edit itself (#267), unless the page cancels
 `keydown`, `keypress` (fired for a typed character and Enter) or `beforeinput`: a
@@ -497,8 +502,8 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `not_fillable` | `browser_type` (`type`/`fill` modes) or a `browser_form_fill` key found no field to write. The target is not a field (`fill` and `browser_form_fill`: input, textarea or select; `type`: input, textarea or `contenteditable` region) and has none in its open or closed shadow roots, searched through nested hosts up to 8 roots deep (`fill` and `browser_form_fill` also look in its light DOM). Nothing was written. `state.tag` is the target's tag; `state.reason` is `no_field`, or `shadow_depth` when its shadow roots nest deeper than 8. On an ARIA slider or spinbutton (`state.role`) that `fill` cannot step (no numeric `aria-valuenow`), that `type` mode targets, or that a `browser_form_fill` key names, the hint names the keyboard alternative (click it to focus it, then arrow keys with `browser_press_key` `repeat`), and for `type` and `browser_form_fill` on a slider with `aria-valuenow` also `fill` | true |
 | `value_not_reached` | `fill` on an ARIA slider or spinbutton did not make `aria-valuenow` the value (see [`/api/fill`](#post-apifill)). `state` has `role`, `value` (where it stopped), `target`, `min`, `max`, `keys` and `reason`: `out_of_range` (the value is outside `aria-valuemin`/`aria-valuemax`; nothing was pressed), `stepped_past` (its steps skip the value), `stuck` (it stopped moving: at an end, disabled, ignoring synthetic keys, or rendering only on an animation frame), `moved_away` (its arrow keys moved it away from the value and the other arrow keys did not move it), `key_limit` (1,000 keys) or `time_limit` (20 s) | true for `out_of_range`, else false |
 | `ambiguous_target` | The command names no single target, so nothing was dispatched: a write action's selector matches several actionable elements (`state.selector`, `state.matches`; see [Strict selectors](#strict-selectors)), a `browser_form_fill` label or placeholder key matches several actionable fields (`state.field`, `state.matches`), or `browser_submit_form` without a target found several forms and no filled field naming one (`state.forms`). `state.candidates` lists up to 5 of them with a `ref` to target one | false |
-| `target_not_at_point` | `browser_trusted_click` found another element (`state.hit`, `null` for none) at its target's center (`state.viewportX`, `state.viewportY`), such as an overlay; no OS click was made | true |
-| `browser_not_at_point` | On macOS, a viewport `browser_trusted_click` would land outside the browser: another app's window (`state.app`, `null` for the desktop) is at the desktop point (`state.screenX`, `state.screenY`; `state.reason: "other_window"`), another window or panel of the browser is there instead of the tab's window (`"other_browser_window"`, `state.window`, `state.targetWindow`), the macOS window list could not be read (`"unknown"`, `state.detail`), or, without Quartz, `focus=True` could not bring the browser to the front (`"not_frontmost"`). Typically the browser is in full screen on another Space; no OS click was made | true |
+| `target_not_at_point` | `browser_trusted_click` found another element (`state.hit`, `null` for none) at its target's center (`state.viewportX`, `state.viewportY`), such as an overlay; no OS click was made. `browser_trusted_drag` checks both ends the same way, and a destination out of view has nothing at its point; nothing was dragged | true |
+| `browser_not_at_point` | On macOS, a viewport `browser_trusted_click` would land outside the browser: another app's window (`state.app`, `null` for the desktop) is at the desktop point (`state.screenX`, `state.screenY`; `state.reason: "other_window"`), another window or panel of the browser is there instead of the tab's window (`"other_browser_window"`, `state.window`, `state.targetWindow`), the macOS window list could not be read (`"unknown"`, `state.detail`), or, without Quartz, `focus=True` could not bring the browser to the front (`"not_frontmost"`). Typically the browser is in full screen on another Space; no OS click was made. `browser_trusted_drag` checks both of its points the same way and drags nothing | true |
 | `keyboard_focus_lost` | `browser_trusted_type` or `browser_trusted_press_key` stopped before a key: another app came to the front (`state.reason: "not_frontmost"`) or the target lost the page's focus (`"target_not_focused"`); `state.keysSent` keys were sent. No key reached anything but the target | true |
 | `tab_not_shown` | A trusted click, type or key press found its tab with no size on screen, even after showing it and waiting up to 1 s: the window shows no page, as during Zen's first-run welcome screen (#360). `state` adds `width` and `height`. No OS input was sent and the user's tab is shown again; ask the user to finish or close what hides the page | true |
 | `key_denied` | `browser_trusted_press_key` was asked for a chord that closes, quits or leaves the browser (`Meta+Q`, `Meta+W`, `Meta+Tab`, ...); nothing was pressed | false |
@@ -517,7 +522,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `bridge_disconnected` | From the MCP server: the bridge closed the connection before its reply. `state.requestSent` is `false` when the request could not be sent in full, so the command did not run | true if not sent; false for writes (MCP: POST) after |
 | `token_mismatch` | The bridge rejected the MCP server's token (`state.port`, `state.tokenSource`) | true |
 | `port_conflict` | A port is held by another program, answers but not as a Kitsune bridge, or differs from the extension's (`state.port`, `state.reason`) | true |
-| `extension_version_mismatch` | The extension does not know the command, and its version differs from the bridge's (`state.extensionVersion`, `state.bridgeVersion`) or it is a developer build edited but not reloaded (`state.reason: "stale_developer_build"`). Also `browser_press_key` with `repeat` on an extension older than `repeat`: it pressed the key once and ignored the count (`state.reason: "repeat_unsupported"`, `state.pressed: 1`, `retryable: false`) | true, except `repeat_unsupported` |
+| `extension_version_mismatch` | The extension does not know the command, and its version differs from the bridge's (`state.extensionVersion`, `state.bridgeVersion`) or it is a developer build edited but not reloaded (`state.reason: "stale_developer_build"`). Also `browser_press_key` with `repeat` on an extension older than `repeat`: it pressed the key once and ignored the count (`state.reason: "repeat_unsupported"`, `state.pressed: 1`, `retryable: false`). Likewise `browser_click` with `hold_ms` clicked without holding (`"hold_unsupported"`, `retryable: false`), and `browser_hover` with `duration_ms` or `steps` moved once (`"sustained_hover_unsupported"`, `state.moves: 1`, `retryable: false`) | true, except `repeat_unsupported`, `hold_unsupported` and `sustained_hover_unsupported` |
 | `browser_window_unavailable` | No active tab: the extension sees no normal window it can use | true |
 | `host_permission_denied` | Firefox does not let Kitsune script the tab's site (`state.reason`: `not_granted`, `restricted_domain`) | true |
 | `permission_required` | A [history or bookmark lookup](#history-and-bookmarks) needs an optional browser permission the user has not granted (`state.permission`: `history` or `bookmarks`). Only the user can grant it, on Kitsune's options page; the agent cannot. Also returned, with a reload hint, when the permission is granted but the running extension has not picked it up | false |
@@ -2520,7 +2525,7 @@ overrides the file destination; `data_url=True` additionally returns `dataUrl`.
 The former element tool's `scale` option remains available through the bridge
 endpoint; the merged MCP tool uses its default scale of 1.
 
-### `browser_trusted_click(selector="", x=0, y=0, coordinate_space="viewport", focus=False, tab_id=None, first=False, restore_pointer=True, button="left", click_count=1, modifiers=None)`
+### `browser_trusted_click(selector="", x=0, y=0, coordinate_space="viewport", focus=False, tab_id=None, first=False, restore_pointer=True, button="left", click_count=1, modifiers=None, hold_ms=0)`
 
 Clicks with the real OS mouse pointer via POST `/api/trusted-click`, for pages
 that ignore synthetic DOM clicks. It moves the user's cursor for the click, so prefer
@@ -2558,11 +2563,17 @@ example Control+click as a right click on macOS, Alt+click as a window drag in s
 Linux window managers, or the Start menu opening when Windows sees `Meta` (the Windows
 key) released.
 
+`hold_ms` (request field `holdMs`, 0-10000) keeps the button pressed that long between its
+down and up events, for long-press controls (#351); otherwise the press lasts 30 ms. Quartz
+and Windows sleep between the two events, and xdotool runs `mousedown`, `sleep` and `mouseup`
+in its one command. It needs `click_count=1`, and cliclick, which has no hold, refuses it
+before the tab is shown.
+
 | Platform | Button | Double click | Modifiers |
 |---|---|---|---|
 | Windows | `mouse_event` `LEFTDOWN`/`LEFTUP`, `RIGHTDOWN`/`RIGHTUP`, `MIDDLEDOWN`/`MIDDLEUP` | two down/up pairs 50 ms apart | `keybd_event` key down before the click and up after it (`VK_SHIFT`, `VK_CONTROL`, `VK_MENU`, `VK_LWIN`) |
 | macOS Quartz | `kCGEventLeftMouseDown`/`Up`, `kCGEventRightMouseDown`/`Up`, `kCGEventOtherMouseDown`/`Up` with `kCGMouseButtonCenter` | two down/up pairs 50 ms apart, `kCGMouseEventClickState` 1 then 2 | event flags on the button events (`kCGEventFlagMaskShift`, `Control`, `Alternate`, `Command`); no key events |
-| macOS cliclick | `c:` or `rc:`; middle returns `{error}` | `dc:`; with the right button returns `{error}` | `kd:` before the click and `ku:` after it (`shift`, `ctrl`, `alt`, `cmd`) |
+| macOS cliclick | `c:` or `rc:`; middle and `hold_ms` return `{error}` | `dc:`; with the right button returns `{error}` | `kd:` before the click and `ku:` after it (`shift`, `ctrl`, `alt`, `cmd`) |
 | Linux (X11) | `xdotool click 1`, `3` or `2` | `click --repeat 2` | `keydown` before the click and `keyup` after it, in the same command (`shift`, `ctrl`, `alt`, `super`) |
 
 When a cliclick or xdotool run that held modifiers fails, the bridge sends their key-up
@@ -2673,6 +2684,36 @@ such as `payment_page`.
 
 They take the user's keyboard and pointer for their duration (about `delay_ms` plus 50 ms per
 key), so prefer `browser_type` and `browser_press_key` unless the page ignores them.
+
+### `browser_trusted_drag(selector, to_selector, tab_id=None, steps=10, first=False)`
+
+`browse` group. Drags with the real OS mouse pointer (#351), via POST `/api/trusted-drag`, for
+pointer-capture handles such as custom sliders, resizers and canvases. Such a handle calls
+`setPointerCapture` on `pointerdown`, which accepts only a pointer the browser tracks: for
+`browser_drag`'s synthetic pointer, Firefox throws `NotFoundError` ("Invalid pointer id"), and the
+handle never moves. It is implemented on macOS only, with pyobjc Quartz and Accessibility
+permission for the bridge. Elsewhere, or without them, it returns `unsupported_platform` or
+`permission_required` and drags nothing.
+
+Each call:
+1. Measures the source (`selector` or a ref) as `browser_trusted_click` does: scrolled into view
+   and hit-tested (`target_not_at_point`). A `tab_id` that is not shown is shown for the call.
+2. Measures the destination (`to_selector`) in the same tab without scrolling, so the source
+   point stays valid. It is hit-tested too, so a destination out of view returns
+   `target_not_at_point`.
+3. Brings the browser to the front, as `browser_trusted_type` does, and requires the tab's own
+   window at both points ([`browser_not_at_point`](#action-errors)).
+4. Presses the left button at the source's center (`kCGEventLeftMouseDown`), waits 50 ms so the
+   page's `pointerdown` handler captures the pointer, moves to the destination's center in
+   `steps` (1-50) `kCGEventLeftMouseDragged` events 16 ms apart, and releases there. If posting
+   fails midway, the button is still released.
+5. Moves the pointer back as a trusted click does (`pointerRestored`, `pointerRestoreError`), and
+   shows the user's tab again 300 ms later.
+
+The result reports `from` and `to` (`screenX`, `screenY`, `viewportX`, `viewportY`), `steps`,
+`zoom`, `focused` and `clickBackend: "quartz"`. In [ask mode](#ask-before-act) it follows the page
+rules, like `browser_drag`. It takes the user's pointer for its duration (about 0.2 s plus 16 ms
+per step), so prefer `browser_drag` unless the page ignores it.
 
 ### `browser_resume(call, resume_token, observed=None)`
 
@@ -2907,6 +2948,13 @@ point. For a primary-button press, `button: 0`; `buttons` is `0` during approach
 `pointerleave` is sent. For pages that need trusted input, use
 `browser_trusted_click`; an unmet `expect` whose target is still visible says so in its
 `hint` (see [Action outcomes](#action-outcomes)).
+
+`"holdMs": 600` (0-10000; MCP `hold_ms`) holds the press for long-press controls (#351):
+`pointerup`, `mouseup` and `click` (or `contextmenu`/`auxclick`) follow that long after
+`pointerdown` and `mousedown`, and the result adds `held_ms`, the measured hold. The
+background times the hold, because a hidden tab's page timers fire after 1 s at the earliest;
+measured in a background tab, a 700 ms hold lasted 729 ms. Any other value returns
+`holdMs must be an integer from 0 to 10000` and dispatches nothing.
 Add `"wait": true, "timeout": 10000` to wait for the target first (see
 [Actionability wait](#actionability-wait)); the other action endpoints accept the same keys.
 
@@ -2915,9 +2963,16 @@ Add `"wait": true, "timeout": 10000` to wait for the target first (see
 `{ "coords": { "x": 640, "y": 400 }, "coordinateSpace": "screen" }` — optional
 `tabId`, `title`, `process`, `restorePointer`, `button` (`left`/`right`/`middle`),
 `clickCount` (1 or 2), `modifiers` (`["Shift", "Control", "Alt", "Meta"]`). OS-level click on Windows, macOS and Linux (X11); see
-[`browser_trusted_click`](#browser_trusted_clickselector-x0-y0-coordinate_spaceviewport-focusfalse-tab_idnone-firstfalse-restore_pointertrue-buttonleft-click_count1-modifiersnone).
-A click that does not finish within 35 s returns a `timeout` [action error](#action-errors)
-with `retryable: false`.
+[`browser_trusted_click`](#browser_trusted_clickselector-x0-y0-coordinate_spaceviewport-focusfalse-tab_idnone-firstfalse-restore_pointertrue-buttonleft-click_count1-modifiersnone-hold_ms0).
+`holdMs` (0-10000) holds a single click's press. A click that does not finish within 35 s
+returns a `timeout` [action error](#action-errors) with `retryable: false`.
+
+### POST /api/trusted-drag
+`{ "selector": "#knob", "to": "#mark", "steps": 10 }` — refs work for both, plus optional
+`tabId`, `first`, `process` and `focus` (`false` leaves bringing the browser to the front to the
+caller). OS-level drag on macOS; see
+[`browser_trusted_drag`](#browser_trusted_dragselector-to_selector-tab_idnone-steps10-firstfalse).
+A drag that does not finish within 35 s returns a `timeout` [action error](#action-errors).
 
 ### POST /api/type
 `{ "text": "hello", "selector": "input" }`
@@ -2980,6 +3035,15 @@ rules follow only the real pointer, so a control that only a `:hover` style reve
 stays hidden. For it, use `browser_trusted_click` with `restore_pointer=False`, which
 clicks the target with the real pointer and leaves the pointer there, on a target where
 a click is harmless; or ask the user to point at it.
+
+`"durationMs": 400` (0-10000; MCP `duration_ms`) and `"steps": 5` (1-50) keep the pointer
+moving, for hover-intent controls that wait for several moves over some time (#351). After the
+hover above, which then arrives at a quarter of the target's width, `steps` more
+`pointermove`/`mousemove` pairs cross the middle half of the target from left to right at its
+vertical center, spread evenly over `durationMs` (5 steps when only `durationMs` is given), or a
+task apart without it. The result adds `moves` (`steps + 1`) and `hovered_ms`. As for a held
+click, the background times the pauses: in a background tab, a 500 ms hover with 5 steps took
+579 ms. Values out of range return an error and move nothing.
 
 ### POST /api/drag
 `{ "from": "#card", "to": "#done" }` — or `ref` and `toRef`.

@@ -163,16 +163,18 @@
 
   // A click during which the page called window.open and got null adds scriptPopup, which the
   // background turns into a popup_blocked warning when no tab opened (#304).
+  // A held click (#351) clicks after a pause, so the calls are read once its result is in.
   function withScriptPopupCheck(act) {
     const before = readWindowOpenCalls();
     const result = act();
     if (!before) return result;
     const since = before.length ? before[before.length - 1].seq : 0;
-    const blocked = (readWindowOpenCalls() || []).filter(call => call.seq > since && call.blocked);
-    if (!blocked.length) return result;
-    const urls = blocked.filter(call => call.url).map(call => absoluteWindowOpenUrl(call.url));
-    const scriptPopup = { ...(urls.length ? { url: urls[0] } : {}), urls };
-    const attach = r => (r && typeof r === 'object' && !r.error ? { ...r, scriptPopup } : r);
+    const attach = r => {
+      const blocked = (readWindowOpenCalls() || []).filter(call => call.seq > since && call.blocked);
+      if (!blocked.length || !r || typeof r !== 'object' || r.error) return r;
+      const urls = blocked.filter(call => call.url).map(call => absoluteWindowOpenUrl(call.url));
+      return { ...r, scriptPopup: { ...(urls.length ? { url: urls[0] } : {}), urls } };
+    };
     return typeof result?.then === 'function' ? result.then(attach) : attach(result);
   }
 
@@ -464,13 +466,15 @@
                                      Number.isFinite(msg.limit) ? msg.limit : DOM_TREE_LIMIT),
       'getFormFields':         () => getFormFields(),
       'click':                 () => withPopupWatch(withScriptPopupCheck(() =>
-                                     clickElement(msg.selector, msg.coords, msg.first, msg.button, msg.modifiers)),
+                                     clickElement(msg.selector, msg.coords, msg.first, msg.button, msg.modifiers,
+                                       msg.holdMs)),
                                      msg.reportPopup !== false),
       'type':                  () => typeText(msg.selector, msg.text, msg.clear, msg.first),
       'setEditableContent':    () => setEditableContent(msg.selector, msg.value, msg.format || 'text', msg.clear !== false,
                                      msg.first),
       'scroll':                () => scrollPage(msg.direction, msg.amount, msg.selector, msg.first),
-      'hover':                 () => withPopupWatch(hoverElement(msg.selector, msg.coords, msg.first)),
+      'hover':                 () => withPopupWatch(hoverElement(msg.selector, msg.coords, msg.first, msg.durationMs,
+                                     msg.steps)),
       'openedPopup':           () => takeOpenedPopup(),
       'fill':                  () => fillFieldSafe(msg.selector, msg.value, msg.first),
       'find':                  () => findElements(msg.query),
@@ -485,7 +489,7 @@
       'keepAlive':             () => ({ ok: true }),
       'neuterUnload':          () => neuterUnload(),
       'screenPoint':           () => screenPoint(msg.selector, msg.x, msg.y, msg.click, msg.first, msg.zoom, msg.modifiers,
-                                     msg.frame),
+                                     msg.frame, msg.scroll !== false),
       'focusState':            () => focusState(msg.selector, msg.first),
       'agentInput':            () => agentInput(msg.ms),
       'userActivity':          () => userActivity(),
@@ -1821,6 +1825,25 @@
   // ── Click ──
   const DISABLED_CONTROLS = 'button:disabled, input:disabled, select:disabled, textarea:disabled';
 
+  // A held press or a sustained hover lasts at most this long (#351).
+  const POINTER_MAX_MS = 10000;
+
+  // { ms } of a hold or hover duration (0 when absent), else { error }.
+  function pointerMs(name, value) {
+    if (value == null) return { ms: 0 };
+    if (!Number.isInteger(value) || value < 0 || value > POINTER_MAX_MS) {
+      return { error: `${name} must be an integer from 0 to ${POINTER_MAX_MS}` };
+    }
+    return { ms: value };
+  }
+
+  // Page timers in a hidden tab fire after 1 s at the earliest, so the background, whose timers
+  // are not throttled, times the pause (#351). Without its answer a page timer does.
+  function pointerPause(ms) {
+    return Promise.resolve(browser.runtime.sendMessage({ action: 'pointerPause', ms })).catch(() => null)
+      .then(reply => reply?.ok ? null : new Promise(resolve => setTimeout(resolve, ms)));
+  }
+
   function dispatchPointerOrMouse(target, type, init) {
     // Browsers dispatch a mouse click as a PointerEvent where they support one.
     const pointer = type.startsWith('pointer') || type === 'click';
@@ -1841,11 +1864,15 @@
     return { altKey: names.has('Alt'), ctrlKey: ctrl, metaKey: meta, shiftKey: names.has('Shift') };
   }
 
-  function clickElement(selector, coords, first, button, modifiers) {
+  // holdMs (#351) keeps the button pressed that long between pointerdown/mousedown and
+  // pointerup/mouseup, for long-press controls; the result reports held_ms.
+  async function clickElement(selector, coords, first, button, modifiers, holdMs) {
     button ??= 'left';
     if (!Object.prototype.hasOwnProperty.call(MOUSE_BUTTONS, button)) {
       return { error: 'button must be left, middle or right' };
     }
+    const hold = pointerMs('holdMs', holdMs);
+    if (hold.error) return hold;
     const [buttonIndex, buttonBit] = MOUSE_BUTTONS[button];
     const flags = modifierFlags(modifiers);
     // A user's middle or Ctrl/Cmd click opens a link in a new tab; a synthetic one never does,
@@ -1884,7 +1911,13 @@
     const released = { ...eventInit, buttons: 0 };
 
     movePointerTo(el, { ...released, button: 0 });
+    let held = {};
     for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup']) {
+      if (type === 'pointerup' && hold.ms) {
+        const pressed = performance.now();
+        await pointerPause(hold.ms);
+        held = { held_ms: Math.round(performance.now() - pressed) };
+      }
       const proceed = dispatchPointerOrMouse(el, type, type.endsWith('up') ? released : eventInit);
       // As a real mousedown does, unless the page cancelled it. The background has already
       // refused a tab the user is using (user_active), so this never takes focus from them.
@@ -1896,7 +1929,7 @@
         { ...released, detail: 1 });
       const link = newTab ? followedLink(el) : null;
       return { ok: true, tag: el.tagName.toLowerCase(), text: redactedText(el).trim().slice(0, 60), button,
-        ...warning, ...(link ? { newTabLink: { url: link.href, prevented: !proceed } } : {}) };
+        ...warning, ...(link ? { newTabLink: { url: link.href, prevented: !proceed } } : {}), ...held };
     }
 
     const link = newTab ? followedLink(el) : blankTargetLink(el);
@@ -1922,7 +1955,7 @@
 
     // A media element's text is its fallback content, which the browser does not show.
     const result = { ok: true, tag: el.tagName.toLowerCase(),
-      text: media ? '' : redactedText(el).trim().slice(0, 60), ...warning, ...linkTab };
+      text: media ? '' : redactedText(el).trim().slice(0, 60), ...warning, ...linkTab, ...held };
     // Synthetic clicks cannot press the browser's native media controls (they only answer
     // trusted input), so a click the page neither cancelled nor handled toggles playback.
     if (media && clickEvent && !clickEvent.defaultPrevented && media.paused === wasPaused) {
@@ -2280,7 +2313,20 @@
     return entered;
   }
 
-  function hoverElement(selector, coords, first) {
+  const HOVER_DEFAULT_STEPS = 5;
+  const HOVER_MAX_STEPS = 50;
+
+  // durationMs and steps (#351) keep the pointer moving over the target, for hover-intent
+  // controls that wait for several moves over some time: after arriving, `steps` more
+  // pointermove/mousemove pairs cross the target, spread over durationMs (default 5 steps), or a
+  // task apart without it. The result then reports moves and hovered_ms.
+  function hoverElement(selector, coords, first, durationMs, steps) {
+    const duration = pointerMs('durationMs', durationMs);
+    if (duration.error) return duration;
+    if (steps != null && (!Number.isInteger(steps) || steps < 1 || steps > HOVER_MAX_STEPS)) {
+      return { error: `steps must be an integer from 1 to ${HOVER_MAX_STEPS}` };
+    }
+    steps ??= duration.ms ? HOVER_DEFAULT_STEPS : 0;
     const el = resolveTarget(selector, coords, { first, pointer: true });
     if (!el) return notFound();
 
@@ -2289,12 +2335,23 @@
     // the point is read after the scroll.
     if (!coords) el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
     const rect = el.getBoundingClientRect();
-    const x = rect.x + rect.width / 2;
     const y = rect.y + rect.height / 2;
+    // A sustained hover crosses the middle half of the target, left to right.
+    const xAt = step => rect.x + rect.width * (steps ? 0.25 + 0.5 * step / steps : 0.5);
+    const init = { view: el.ownerDocument?.defaultView || window, clientY: y };
 
     watchPopups(el);
-    movePointerTo(el, { view: el.ownerDocument?.defaultView || window, clientX: x, clientY: y });
-    return { ok: true, tag: el.tagName.toLowerCase(), ...(selector ? notRenderedWarning(el) : {}) };
+    movePointerTo(el, { ...init, clientX: xAt(0) });
+    const result = { ok: true, tag: el.tagName.toLowerCase(), ...(selector ? notRenderedWarning(el) : {}) };
+    if (!steps) return result;
+    const start = performance.now();
+    return (async () => {
+      for (let step = 1; step <= steps; step++) {
+        await (duration.ms ? pointerPause(duration.ms / steps) : nextTask());
+        movePointerWithin(el, { ...init, clientX: xAt(step) });
+      }
+      return { ...result, moves: steps + 1, hovered_ms: Math.round(performance.now() - start) };
+    })();
   }
 
   function movePointerTo(el, init) {
@@ -2310,6 +2367,12 @@
       dispatchPointerOrMouse(el, over, passing);
       for (const target of entered) dispatchPointerOrMouse(target, enter, point);
     }
+    movePointerWithin(el, init);
+  }
+
+  // A move of a pointer already over el; it bubbles out of shadow roots.
+  function movePointerWithin(el, init) {
+    const passing = { ...init, bubbles: true, cancelable: true, composed: true, buttons: 0 };
     for (const type of ['pointermove', 'mousemove']) dispatchPointerOrMouse(el, type, passing);
   }
 
@@ -2804,7 +2867,9 @@
   // frame: the ref of a cross-origin frame in this document, x/y a point in that frame's
   // viewport (#343). Such a frame's own mozInnerScreenX/Y are 0, so the background converts
   // its point here, in the document that shows the frame.
-  function screenPoint(selector, x, y, click, first, zoom, modifiers, frame) {
+  // scroll=false (a trusted drag's destination, #351) measures the target where it is, so the
+  // source point taken before stays valid; a target out of view then fails the hit test.
+  function screenPoint(selector, x, y, click, first, zoom, modifiers, frame, scroll = true) {
     // Viewport point (element centre or x/y) plus its desktop position for OS-level clicks.
     let el = null;
     if (frame) {
@@ -2816,7 +2881,7 @@
     } else if (selector) {
       el = click ? resolveTarget(selector, null, { first, pointer: true }) : resolveElement(selector);
       if (!el) return notFound();
-      el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
+      if (scroll) el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
       const rect = viewportRect(el);
       x = rect.left + rect.width / 2;
       y = rect.top + rect.height / 2;

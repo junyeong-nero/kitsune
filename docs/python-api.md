@@ -140,7 +140,7 @@ acts on the first match ([Strict selectors](api-reference.md#strict-selectors)).
 | `Tab` method | Does |
 | --- | --- |
 | `navigate(url)`, `back()`, `forward()`, `reload(bypass_cache=False)` | Navigate the tab |
-| `click(target, button=None, modifiers=None)`, `double_click(target)`, `hover(target)` | Pointer events (synthetic) on the target |
+| `click(target, button=None, modifiers=None, hold_ms=0)`, `double_click(target)`, `hover(target, duration_ms=0, steps=None)` | Pointer events (synthetic) on the target; `hold_ms` (0-10000) holds a click's press for long-press controls, and `duration_ms` (0-10000) or `steps` (1-50) keep a hover moving across the target for hover-intent controls ([POST /api/click](api-reference.md#post-apiclick), [POST /api/hover](api-reference.md#post-apihover)) |
 | `fill(target, value)` | Replace a field's or editor's value |
 | `type(target, text, clear=False)` | Type with key events |
 | `fill_form(fields)` | Fill several fields; each key is a CSS selector, name, label or placeholder |
@@ -154,7 +154,7 @@ acts on the first match ([Strict selectors](api-reference.md#strict-selectors)).
 | `drag(source, destination)` | HTML5 drag events, else pointer events (`via` says which) |
 | `insert(target, text, html=False, clear=False)` | Insert text into an editor, input or textarea, appending unless `clear`; `html=True` (developer build) inserts HTML into an editor |
 | `upload_files(paths, target=None)`, `drop(target, paths=None, data=None)` | Put local files into a file input, or drop files and data on an element |
-| `trusted_click(target=None, x=0, y=0, coordinate_space="viewport", restore_pointer=True, button="left", click_count=1, modifiers=None)` | A click with the real OS pointer, for pages that ignore synthetic clicks; `button="right"`/`"middle"`, `click_count=2` and `modifiers=["Shift", ...]` choose the click. It moves your cursor for the click, then back unless `restore_pointer=False`, and may show the tab for the click ([`browser_trusted_click`](api-reference.md#browser_trusted_clickselector-x0-y0-coordinate_spaceviewport-focusfalse-tab_idnone-firstfalse-restore_pointertrue-buttonleft-click_count1-modifiersnone)) |
+| `trusted_click(target=None, x=0, y=0, coordinate_space="viewport", restore_pointer=True, button="left", click_count=1, modifiers=None, hold_ms=0)` | A click with the real OS pointer, for pages that ignore synthetic clicks; `button="right"`/`"middle"`, `click_count=2`, `modifiers=["Shift", ...]` and `hold_ms` (a long press) choose the click. It moves your cursor for the click, then back unless `restore_pointer=False`, and may show the tab for the click ([`browser_trusted_click`](api-reference.md#browser_trusted_clickselector-x0-y0-coordinate_spaceviewport-focusfalse-tab_idnone-firstfalse-restore_pointertrue-buttonleft-click_count1-modifiersnone-hold_ms0)) |
 
 Actions return the bridge's result. `ok: True` only means the action was dispatched.
 To check what happened, pass `expect`, for example `expect={"url_changed": True}` or
