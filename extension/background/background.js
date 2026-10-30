@@ -1231,6 +1231,17 @@ async function navigateTab(url, tabId, expectTitle) {
 
     // Check if page title matches expectation (catches silent redirects)
     const result = loaded ? { ok: true, url } : { ok: false, timedOut: true, url };
+    // #366: the inert blank tab of new_tab_stalled also ignores a later navigation.
+    if (!loaded && !url.startsWith('about:')) {
+      const tab = await browser.tabs.get(targetTabId);
+      if (tab.url === 'about:blank' && tab.status === 'complete' && !await loadedPageUrl(targetTabId)) {
+        Object.assign(result, {
+          code: 'navigation_stalled', retryable: false,
+          hint: 'The tab is still about:blank after the load timeout. '
+            + 'Repeating the navigation or opening another tab is unlikely to help. ' + STALLED_TAB_HINT,
+        });
+      }
+    }
     if (expectTitle) {
       const tab = await browser.tabs.get(targetTabId);
       const title = tab.title || '';
@@ -1256,6 +1267,12 @@ async function switchTab(tabId) {
     return await tabApiError(tabId, e);
   }
 }
+
+// The recovery advice of new_tab_stalled and navigation_stalled (#366).
+const STALLED_TAB_HINT = 'Check browser_status(diagnostics=true) for a runtime/installed build mismatch. '
+  + 'If the browser was recently updated, ask the user to save their work and restart it, '
+  + 'then check browser_status and list tabs again before retrying. '
+  + 'A browser update is one possible cause, not a confirmed diagnosis.';
 
 // Opens an agent-owned tab in the background. Immediate by default. With wait, resolves once the
 // tab loads (or the timeout passes, leaving the tab open) and reports the actual URL, so
@@ -1283,11 +1300,7 @@ async function createTab(url, { wait = false, timeout = 15000 } = {}) {
       Object.assign(result, {
         code: 'new_tab_stalled', retryable: false,
         hint: 'The tab was created, but is still about:blank after the load timeout. '
-          + 'Do not repeat new-tab creation blindly; inspect or close the created tab. '
-          + 'Check browser_status(diagnostics=true) for a runtime/installed build mismatch. '
-          + 'If the browser was recently updated, ask the user to save their work and restart it, '
-          + 'then check browser_status and list tabs again before retrying. '
-          + 'A browser update is one possible cause, not a confirmed diagnosis.',
+          + 'Do not repeat new-tab creation blindly; inspect or close the created tab. ' + STALLED_TAB_HINT,
       });
     }
     return result;

@@ -2902,6 +2902,10 @@ zero timeout performs one immediate check.
 - With `X-Kitsune-Protect-User-Tabs: 1`, a tab the agent did not open returns `user_tab`;
   `confirmToken` is its token after the user approved (see
   [Protected user tabs](#protected-user-tabs)). The same holds for `/api/back` and `/api/forward`.
+- A load that does not finish in 15 s returns `{ "ok": false, "timedOut": true, "url": "..." }`.
+  If the tab is still `about:blank` / `complete` and the page cannot confirm a loaded destination,
+  it also carries `code: "navigation_stalled"`, `retryable: false`, and the recovery `hint` of
+  [`new_tab_stalled`](#post-apinew-tab) (#366). A requested `about:` URL never gets this code.
 
 ### POST /api/new-tab
 `{ "url": "https://example.com" }` — url optional, defaults to about:blank.
