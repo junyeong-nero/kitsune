@@ -164,6 +164,24 @@ async function testDescendantsOfTheTargetCount() {
   assert.equal(outside.code, 'target_not_at_point');
 }
 
+// #351: a trusted drag measures its destination with scroll=false, so the source point it took
+// first stays where it was; the destination is still hit-tested.
+async function testDragDestinationIsMeasuredWithoutScrolling() {
+  const dom = page();
+  const { send, points } = load(dom, { at: dom.go });
+  const point = await send({ action: 'screenPoint', selector: '#go', click: true, scroll: false });
+  assert.equal(point.error, undefined, JSON.stringify(point));
+  assert.deepEqual([point.viewportX, point.viewportY], [90, 310]);
+  assert.equal(dom.go.scrolled, 0);
+  assert.deepEqual(points, [[90, 310]]);
+  await send({ action: 'screenPoint', selector: '#go', click: true });
+  assert.equal(dom.go.scrolled, 1, 'a click point still scrolls its target into view');
+  // Out of view, nothing of the target is at its point: refused, nothing to drag to.
+  const away = await load(page(), { at: null }).send({ action: 'screenPoint', selector: '#go', click: true,
+    scroll: false });
+  assert.equal(away.code, 'target_not_at_point');
+}
+
 // The background reads the tab's zoom and hands it to the content script with the point request.
 function background(zoomOf) {
   const sent = [], activations = [];
@@ -259,6 +277,7 @@ async function testATabWithNoSizeIsNotClicked() {
   await testZoomScalesTheDesktopPoint();
   await testClickRefusesWhenTheTargetIsNotAtThePoint();
   await testDescendantsOfTheTargetCount();
+  await testDragDestinationIsMeasuredWithoutScrolling();
   await testBackgroundPassesTheTabZoom();
   await testATabWithNoSizeIsNotClicked();
 })().then(() => console.log('Trusted click zoom checks passed'))

@@ -431,7 +431,7 @@ def _browser_not_at_point(x, y, process="", focused=None, wait=0.0, target_windo
 _NO_SCHEDULE_ACTIONS = {"ping", "getTabs", "getWindows"}
 _GLOBAL_SCOPE_ACTIONS = {
     "screenshot", "switchTab", "restoreActiveTab", "newTab", "closeTab", "trustedClick", "trustedType",
-    "trustedPressKey",
+    "trustedPressKey", "trustedDrag",
     "reloadExtension", "createWindow", "closeWindow", "focusWindow", "resizeWindow",
     "moveTab", "detachTab", "elementScreenshot", "fullPageScreenshot",
     "cookies", "clipboard", "downloads", "clearBrowsingData", "intercept",
@@ -446,6 +446,7 @@ _API_ALIASES = {
     "/api/trustedClick": "/api/trusted-click",
     "/api/trustedType": "/api/trusted-type",
     "/api/trustedPressKey": "/api/trusted-press-key",
+    "/api/trustedDrag": "/api/trusted-drag",
     "/api/setEditableContent": "/api/set-editable-content",
     "/api/clearHighlight": "/api/clear-highlight",
     "/api/closeTab": "/api/close-tab",
@@ -732,13 +733,17 @@ TRUSTED_CLICK_BUTTONS = ("left", "right", "middle")
 TRUSTED_CLICK_MODIFIERS = ("Shift", "Control", "Alt", "Meta")
 # A double click's second press follows the first well within any system double-click time.
 DOUBLE_CLICK_GAP = 0.05
+# How long a click holds its button down; holdMs (#351) holds it longer, at most TRUSTED_HOLD_MAX_MS.
+CLICK_PRESS = 0.03
+TRUSTED_HOLD_MAX_MS = 10000
 
 
 def _trusted_click_options(params):
-    """Return (button, click_count, modifiers) of a trustedClick request, or an {error} dict."""
+    """Return (button, click_count, modifiers, hold seconds) of a trustedClick request, or an {error} dict."""
     button = params.get("button") or "left"
     click_count = params.get("clickCount", 1)
     modifiers = params.get("modifiers") or []
+    hold_ms = params.get("holdMs", 0)
     if button not in TRUSTED_CLICK_BUTTONS:
         return {"error": f"trustedClick button must be left, right or middle, not {button!r}"}
     # 2.0 == 2, but the backends count presses with range(); True == 1 too.
@@ -746,8 +751,12 @@ def _trusted_click_options(params):
         return {"error": f"trustedClick clickCount must be 1 or 2, not {click_count!r}"}
     if not isinstance(modifiers, list) or any(m not in TRUSTED_CLICK_MODIFIERS for m in modifiers):
         return {"error": f"trustedClick modifiers must be a list of Shift, Control, Alt and Meta, not {modifiers!r}"}
+    if type(hold_ms) is not int or not 0 <= hold_ms <= TRUSTED_HOLD_MAX_MS:
+        return {"error": f"trustedClick holdMs must be an integer from 0 to {TRUSTED_HOLD_MAX_MS}, not {hold_ms!r}"}
+    if hold_ms and click_count != 1:
+        return {"error": "trustedClick holdMs needs clickCount 1"}
     # One press per key, in a fixed order.
-    return button, click_count, tuple(m for m in TRUSTED_CLICK_MODIFIERS if m in modifiers)
+    return button, click_count, tuple(m for m in TRUSTED_CLICK_MODIFIERS if m in modifiers), hold_ms / 1000
 
 
 _QUARTZ_BUTTONS = {
@@ -770,16 +779,37 @@ def _mac_click_backend():
     return "quartz"
 
 
-def _cliclick_refusal(button, click_count):
+def _cliclick_refusal(button, click_count, hold=0.0):
     """The {error} for a click cliclick cannot send, else None."""
-    if (button, click_count) in _CLICLICK_COMMANDS:
+    if (button, click_count) in _CLICLICK_COMMANDS and not hold:
         return None
-    what = "middle-click" if button == "middle" else "double-click with the right button"
+    what = ("hold the button" if hold else "middle-click" if button == "middle"
+            else "double-click with the right button")
     return {"error": f"trustedClick cannot {what} with cliclick; install pyobjc Quartz "
                      "(uvx --from 'kitsune-browser-mcp[macos]' kitsune), which can"}
 
 
-def _mac_click_screen(x, y, restore_pointer=True, button="left", click_count=1, modifiers=()):
+def _quartz_pointer(Quartz):
+    """(position, None) of the pointer, or (None, why it could not be read)."""
+    try:
+        current = Quartz.CGEventCreate(None)
+        if current is None:
+            return None, "could not read the pointer position: CGEventCreate returned no event"
+        return Quartz.CGEventGetLocation(current), None
+    except Exception as e:  # pyobjc raises its own error types
+        return None, f"could not read the pointer position: {e}"
+
+
+def _quartz_warp(Quartz, position):
+    # A warp posts no mouse event, but macOS then ignores the user's mouse for about
+    # 0.25 s; associating the mouse with the cursor again ends that pause at once.
+    error = Quartz.CGWarpMouseCursorPosition(position)
+    if error:
+        raise RuntimeError(f"CGWarpMouseCursorPosition returned {error}")
+    Quartz.CGAssociateMouseAndMouseCursorPosition(True)
+
+
+def _mac_click_screen(x, y, restore_pointer=True, button="left", click_count=1, modifiers=(), hold=0.0):
     # macOS drops posted mouse events from untrusted processes without an error.
     if _mac_accessibility_trusted() is False:
         return {"error": f"trustedClick needs macOS Accessibility permission: {_MAC_ACCESSIBILITY_HELP}"}
@@ -789,16 +819,7 @@ def _mac_click_screen(x, y, restore_pointer=True, button="left", click_count=1, 
     except ImportError:
         Quartz = None
     if Quartz is not None:
-        saved = read_error = None
-        if restore_pointer:
-            try:
-                current = Quartz.CGEventCreate(None)
-                if current is None:
-                    read_error = "could not read the pointer position: CGEventCreate returned no event"
-                else:
-                    saved = Quartz.CGEventGetLocation(current)
-            except Exception as e:  # pyobjc raises its own error types
-                read_error = f"could not read the pointer position: {e}"
+        saved, read_error = _quartz_pointer(Quartz) if restore_pointer else (None, None)
         point = (float(x), float(y))
         down, up, mouse_button = (getattr(Quartz, name) for name in _QUARTZ_BUTTONS[button])
         flags = 0
@@ -811,28 +832,26 @@ def _mac_click_screen(x, y, restore_pointer=True, button="left", click_count=1, 
         for click_state in range(1, click_count + 1):
             if click_state > 1:
                 time.sleep(DOUBLE_CLICK_GAP)
-            for event_type, pause in ((down, 0.03), (up, 0)):
+            pressed, released = [], []
+            for event_type, events in ((down, pressed), (up, released)):
                 event = Quartz.CGEventCreateMouseEvent(None, event_type, point, mouse_button)
                 Quartz.CGEventSetIntegerValueField(event, Quartz.kCGMouseEventClickState, click_state)
                 if flags:
                     Quartz.CGEventSetFlags(event, flags)
-                Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
-                if pause:
-                    time.sleep(pause)
+                events.append(event)
+            Quartz.CGEventPost(Quartz.kCGHIDEventTap, pressed[0])
+            # A held press (#351) lasts up to 10 s; the button is released whatever happens meanwhile.
+            try:
+                time.sleep(hold or CLICK_PRESS)
+            finally:
+                Quartz.CGEventPost(Quartz.kCGHIDEventTap, released[0])
 
-        def restore():
-            # A warp posts no mouse event, but macOS then ignores the user's mouse for about
-            # 0.25 s; associating the mouse with the cursor again ends that pause at once.
-            error = Quartz.CGWarpMouseCursorPosition(saved)
-            if error:
-                raise RuntimeError(f"CGWarpMouseCursorPosition returned {error}")
-            Quartz.CGAssociateMouseAndMouseCursorPosition(True)
-
-        return _with_pointer_restore({"ok": True, "backend": "quartz"}, restore_pointer, read_error, restore)
+        return _with_pointer_restore({"ok": True, "backend": "quartz"}, restore_pointer, read_error,
+                                     lambda: _quartz_warp(Quartz, saved))
 
     cliclick = shutil.which("cliclick")
     if cliclick:
-        refusal = _cliclick_refusal(button, click_count)
+        refusal = _cliclick_refusal(button, click_count, hold)
         if refusal:
             return refusal
         command = _CLICLICK_COMMANDS[(button, click_count)]
@@ -874,7 +893,7 @@ def _mac_click_screen(x, y, restore_pointer=True, button="left", click_count=1, 
 
 
 def _release_keys(command):
-    """Best effort: release modifier keys a failed click command may have left pressed."""
+    """Best effort: release modifier keys (and a held button) a failed click command may have left pressed."""
     if not command:
         return
     try:
@@ -887,7 +906,7 @@ _XDOTOOL_BUTTONS = {"left": "1", "middle": "2", "right": "3"}
 _XDOTOOL_KEYS = {"Shift": "shift", "Control": "ctrl", "Alt": "alt", "Meta": "super"}
 
 
-def _linux_click_screen(x, y, restore_pointer=True, button="left", click_count=1, modifiers=()):
+def _linux_click_screen(x, y, restore_pointer=True, button="left", click_count=1, modifiers=(), hold=0.0):
     # xdotool cannot move the pointer in a native Wayland session; refuse rather than misclick.
     if os.environ.get("XDG_SESSION_TYPE") == "wayland" or not os.environ.get("DISPLAY"):
         return {"error": "trustedClick on Linux needs an X11 session (DISPLAY set); Wayland is not supported"}
@@ -898,18 +917,23 @@ def _linux_click_screen(x, y, restore_pointer=True, button="left", click_count=1
     keys = "+".join(_XDOTOOL_KEYS[m] for m in modifiers)
     command = [xdotool, "mousemove", "--sync", str(int(round(x))), str(int(round(y)))]
     command += ["keydown", keys] if keys else []
-    command += ["click"] + (["--repeat", "2"] if click_count == 2 else []) + [_XDOTOOL_BUTTONS[button]]
+    if hold:
+        command += ["mousedown", _XDOTOOL_BUTTONS[button], "sleep", f"{hold:g}", "mouseup", _XDOTOOL_BUTTONS[button]]
+    else:
+        command += ["click"] + (["--repeat", "2"] if click_count == 2 else []) + [_XDOTOOL_BUTTONS[button]]
     command += ["keyup", keys] if keys else []
     if restore_pointer:
         # The X server handles the click before this move back to where the first mousemove started.
         command += ["mousemove", "restore"]
+    # A failed run may have stopped after a key or the held button went down; release them.
+    release = (["mouseup", _XDOTOOL_BUTTONS[button]] if hold else []) + (["keyup", keys] if keys else [])
     try:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=10)
+        result = subprocess.run(command, capture_output=True, text=True, timeout=10 + hold)
     except (OSError, subprocess.SubprocessError) as e:
-        _release_keys([xdotool, "keyup", keys] if keys else None)
+        _release_keys([xdotool, *release] if release else None)
         return {"error": f"xdotool failed: {e}"}
     if result.returncode != 0:
-        _release_keys([xdotool, "keyup", keys] if keys else None)
+        _release_keys([xdotool, *release] if release else None)
         detail = (result.stderr or result.stdout or "").strip() or f"exit code {result.returncode}"
         return {"error": f"xdotool failed: {detail}"}
     return {"ok": True, "backend": "xdotool", "pointerRestored": restore_pointer}
@@ -920,7 +944,7 @@ _WIN32_KEYS = {"Shift": 0x10, "Control": 0x11, "Alt": 0x12, "Meta": 0x5B}  # VK_
 KEYEVENTF_KEYUP = 0x0002
 
 
-def _windows_click_screen(x, y, restore_pointer=True, button="left", click_count=1, modifiers=()):
+def _windows_click_screen(x, y, restore_pointer=True, button="left", click_count=1, modifiers=(), hold=0.0):
     from ctypes import wintypes
 
     user32 = ctypes.windll.user32
@@ -939,8 +963,10 @@ def _windows_click_screen(x, y, restore_pointer=True, button="left", click_count
             if press:
                 time.sleep(DOUBLE_CLICK_GAP)
             user32.mouse_event(down, 0, 0, 0, 0)
-            time.sleep(0.03)
-            user32.mouse_event(up, 0, 0, 0, 0)
+            try:
+                time.sleep(hold or CLICK_PRESS)
+            finally:
+                user32.mouse_event(up, 0, 0, 0, 0)
     finally:
         for modifier in reversed(modifiers):
             user32.keybd_event(_WIN32_KEYS[modifier], 0, KEYEVENTF_KEYUP, 0)
@@ -952,13 +978,13 @@ def _windows_click_screen(x, y, restore_pointer=True, button="left", click_count
     return _with_pointer_restore({"ok": True, "backend": "win32"}, restore_pointer, read_error, restore)
 
 
-def _native_click_screen(x, y, restore_pointer=True, button="left", click_count=1, modifiers=()):
+def _native_click_screen(x, y, restore_pointer=True, button="left", click_count=1, modifiers=(), hold=0.0):
     if sys.platform == "darwin":
-        return _mac_click_screen(x, y, restore_pointer, button, click_count, modifiers)
+        return _mac_click_screen(x, y, restore_pointer, button, click_count, modifiers, hold)
     if sys.platform.startswith("linux"):
-        return _linux_click_screen(x, y, restore_pointer, button, click_count, modifiers)
+        return _linux_click_screen(x, y, restore_pointer, button, click_count, modifiers, hold)
     if sys.platform.startswith("win"):
-        return _windows_click_screen(x, y, restore_pointer, button, click_count, modifiers)
+        return _windows_click_screen(x, y, restore_pointer, button, click_count, modifiers, hold)
     return {"error": "trustedClick is only implemented on Windows, macOS and Linux (X11)"}
 
 
@@ -978,13 +1004,14 @@ def _target_window(point):
     return None
 
 
-def _focus_check_click(point, focus, title, process, restore_pointer, button="left", click_count=1, modifiers=()):
+def _focus_check_click(point, focus, title, process, restore_pointer, button="left", click_count=1, modifiers=(),
+                       hold=0.0):
     """(focused, click result or refusal) for an OS click at a screenPoint result; blocking."""
     focused = _focus_browser_window(title or point.get("title", ""), process) if focus else None
     refusal = _browser_not_at_point(point["screenX"], point["screenY"], process, focused,
                                     BROWSER_AT_POINT_WAIT if focus else 0.0, _target_window(point))
     return focused, refusal or _native_click_screen(point["screenX"], point["screenY"], restore_pointer,
-                                                    button, click_count, modifiers)
+                                                    button, click_count, modifiers, hold)
 
 
 async def trusted_click(params):
@@ -1001,7 +1028,7 @@ async def trusted_click(params):
     options = _trusted_click_options(params)
     if isinstance(options, dict):
         return options
-    button, click_count, modifiers = options
+    button, click_count, modifiers, hold = options
 
     title = params.get("title") or ""
     process = params.get("process") or ""
@@ -1009,14 +1036,14 @@ async def trusted_click(params):
 
     mac_backend = _mac_click_backend() if sys.platform == "darwin" else None
     # Refuse before focusing the browser or showing the tab for a click that cannot be sent.
-    if mac_backend == "cliclick" and (refusal := _cliclick_refusal(button, click_count)):
+    if mac_backend == "cliclick" and (refusal := _cliclick_refusal(button, click_count, hold)):
         return refusal
 
     if coordinate_space == "screen":
         # Focus and the click wait and sleep: off the event loop, which serves every client (#336).
         def focus_and_click():
             return (_focus_browser_window(title, process) if focus else False,
-                    _native_click_screen(x, y, restore_pointer, button, click_count, modifiers))
+                    _native_click_screen(x, y, restore_pointer, button, click_count, modifiers, hold))
         focused, clicked = await asyncio.to_thread(focus_and_click)
         if "error" in clicked:
             return clicked
@@ -1052,7 +1079,7 @@ async def trusted_click(params):
     # and the click's own sleeps all run off the event loop, which serves every client (#336).
     try:
         focused, clicked = await asyncio.to_thread(_focus_check_click, point, focus, title, process,
-                                                   restore_pointer, button, click_count, modifiers)
+                                                   restore_pointer, button, click_count, modifiers, hold)
     finally:
         if point.get("previousTabId") is not None:
             # The OS delivers the click asynchronously; let it land before showing the user's tab again.
@@ -1076,6 +1103,136 @@ async def trusted_click(params):
         "clickBackend": clicked.get("backend"),
         **_pointer_restore_fields(clicked),
     }
+
+
+# ── Trusted drag (#351) ──
+# A page's setPointerCapture accepts only a pointer the browser tracks, which no synthetic event
+# creates, so pointer-capture handles (custom sliders, resizers) need a real OS drag. macOS only,
+# through Quartz: the press, the moves and the release go to the window under the pointer, so
+# both ends must be in the tab's own window.
+
+TRUSTED_DRAG_DEFAULT_STEPS = 10
+TRUSTED_DRAG_MAX_STEPS = 50
+# Between moves, about as often as a real pointer reports them.
+TRUSTED_DRAG_STEP_DELAY = 0.016
+# After the press, so the page's pointerdown handler captures the pointer before it moves.
+TRUSTED_DRAG_PRESS_DELAY = 0.05
+
+
+def _mac_drag_unavailable():
+    """The {error} when this process cannot send an OS drag, else None."""
+    if sys.platform != "darwin":
+        return {"error": "Trusted drag is only implemented on macOS; nothing was dragged",
+                "code": "unsupported_platform", "retryable": False}
+    try:
+        import Quartz  # noqa: F401
+    except ImportError:
+        return {"error": "Trusted drag on macOS needs pyobjc Quartz (run Kitsune with "
+                         "uvx --from 'kitsune-browser-mcp[macos]' kitsune); nothing was dragged",
+                "code": "unsupported_platform", "retryable": False}
+    if _mac_accessibility_trusted() is False:
+        return {"error": f"Trusted drag needs macOS Accessibility permission: {_MAC_ACCESSIBILITY_HELP}",
+                "code": "permission_required", "retryable": False}
+    return None
+
+
+def _mac_drag_screen(start, end, steps):
+    """Press the left button at desktop point start, move to end in steps and release there, then
+    move the pointer back; blocking."""
+    import Quartz
+    saved, read_error = _quartz_pointer(Quartz)
+    button = Quartz.kCGMouseButtonLeft
+
+    def post(kind, point):
+        event = Quartz.CGEventCreateMouseEvent(None, kind, (float(point[0]), float(point[1])), button)
+        if kind in (Quartz.kCGEventLeftMouseDown, Quartz.kCGEventLeftMouseUp):
+            Quartz.CGEventSetIntegerValueField(event, Quartz.kCGMouseEventClickState, 1)
+        Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
+
+    held_at = None  # where the button is down; None while it is up
+    try:
+        post(Quartz.kCGEventMouseMoved, start)
+        time.sleep(0.05)
+        post(Quartz.kCGEventLeftMouseDown, start)
+        held_at = start
+        time.sleep(TRUSTED_DRAG_PRESS_DELAY)
+        for step in range(1, steps + 1):
+            point = tuple(a + (b - a) * step / steps for a, b in zip(start, end))
+            post(Quartz.kCGEventLeftMouseDragged, point)
+            held_at = point
+            time.sleep(TRUSTED_DRAG_STEP_DELAY)
+        post(Quartz.kCGEventLeftMouseUp, end)
+        held_at = None
+        result = {"ok": True, "backend": "quartz"}
+    except Exception as e:  # pyobjc raises its own error types
+        result = {"error": f"The trusted drag stopped partway: {e}", "code": "drag_interrupted",
+                  "retryable": False,
+                  "hint": "The button was released where the drag stopped, so the page may have seen part of "
+                          "the drag or a drop there. Check the page before dragging again.",
+                  "backend": "quartz"}
+    finally:
+        if held_at is not None:
+            # Never leave the user's button held down; release where the pointer is, not at the end.
+            post(Quartz.kCGEventLeftMouseUp, held_at)
+    return _with_pointer_restore(result, True, read_error, lambda: _quartz_warp(Quartz, saved))
+
+
+def _focus_check_drag(start, end, focus, process, steps):
+    """(focused, drag result or refusal) for an OS drag between two screenPoint results; blocking."""
+    focused = _focus_browser_window(start.get("title", ""), process) if focus else None
+    window = _target_window(start)
+    for point, wait in ((start, BROWSER_AT_POINT_WAIT if focus else 0.0), (end, 0.0)):
+        refusal = _browser_not_at_point(point["screenX"], point["screenY"], process, focused, wait, window)
+        if refusal:
+            return focused, refusal
+    return focused, _mac_drag_screen((start["screenX"], start["screenY"]), (end["screenX"], end["screenY"]), steps)
+
+
+async def trusted_drag(params):
+    """Drag with the OS pointer from the selector's element to the `to` element (#351)."""
+    selector, to = params.get("selector") or "", params.get("to") or ""
+    if not selector or not to:
+        return {"error": "trustedDrag needs selector and to (CSS selectors or refs): the element to press "
+                         "and the element to release over"}
+    steps = params.get("steps", TRUSTED_DRAG_DEFAULT_STEPS)
+    if type(steps) is not int or not 1 <= steps <= TRUSTED_DRAG_MAX_STEPS:
+        return {"error": f"trustedDrag steps must be an integer from 1 to {TRUSTED_DRAG_MAX_STEPS}"}
+    if refusal := _mac_drag_unavailable():
+        return refusal
+    target = {"click": True, **({"first": True} if params.get("first") else {})}
+    if params.get("tabId") is not None:
+        target["tabId"] = params["tabId"]
+    # The extension shows a target tab that is not shown (previousTabId) and refuses with
+    # user_active when the user is using it. The source is scrolled into view; the destination is
+    # measured without scrolling, so the source's point stays valid.
+    start = await send_to_extension("screenPoint", {**target, "selector": selector})
+    if "error" in start:
+        return start
+    end = {}
+    try:
+        end = await send_to_extension("screenPoint", {**target, "selector": to, "scroll": False})
+        if "error" in end:
+            return end
+        # Focus, the window checks and the drag's sleeps run off the event loop (#336).
+        # focus=false (bridge callers only) leaves bringing the browser to the front to the caller.
+        focused, dragged = await asyncio.to_thread(_focus_check_drag, start, end,
+                                                   params.get("focus", True) is not False,
+                                                   params.get("process") or "", steps)
+    finally:
+        # The destination's screenPoint showed the tab again if the user had switched tabs meanwhile;
+        # the tab they switched to comes back first, and the earlier one only if the agent's tab is
+        # still shown then (restoreActiveTab checks).
+        shown = [point for point in (end, start) if point.get("previousTabId") is not None]
+        if shown:
+            await asyncio.sleep(TRUSTED_CLICK_RESTORE_DELAY)
+        for point in shown:
+            await send_to_extension("restoreActiveTab", {"tabId": point["previousTabId"], "from": point.get("tabId")})
+    if "error" in dragged:
+        return dragged
+    return {"ok": True, "trusted": True, "steps": steps, "focused": bool(focused),
+            "from": {key: start[key] for key in ("screenX", "screenY", "viewportX", "viewportY")},
+            "to": {key: end[key] for key in ("screenX", "screenY", "viewportX", "viewportY")},
+            "zoom": start.get("zoom", 1), "clickBackend": dragged.get("backend"), **_pointer_restore_fields(dragged)}
 
 
 # ── Trusted keyboard (#346, #347) ──
@@ -1396,6 +1553,7 @@ def _audit(action, params, ok, error, ms, **fields):
 WRITE_ACTIONS = {
     "click", "type", "setEditableContent", "scroll", "hover", "fill",
     "navigate", "newTab", "closeTab", "switchTab", "executeJS", "trustedClick", "trustedType", "trustedPressKey",
+    "trustedDrag",
     "selectOption", "checkBox", "keypress", "doubleClick", "submitForm",
     "formFill", "drag", "cookies", "clipboard", "downloads",
     "clearBrowsingData", "intercept", "clickAndWaitNavigation",
@@ -1653,7 +1811,7 @@ _ASK_CLICK_ACTIONS = {"click", "doubleClick", "trustedClick", "clickAndWaitNavig
 _ASK_PAGE_ACTIONS = _ASK_CLICK_ACTIONS | {
     "keypress", "type", "setEditableContent", "fill", "formFill", "selectOption", "checkBox",
     "drag", "submitForm", "uploadFile", "handleDialog", "storageOp", "executeJS", "waitForResult",
-    "trustedType", "trustedPressKey",
+    "trustedType", "trustedPressKey", "trustedDrag",
 }
 _ASK_TAB_ACTIONS = _ASK_PAGE_ACTIONS | {"navigate"}
 _confirm_tokens = {}     # token -> {"binding", "expires", "used"}
@@ -1733,9 +1891,10 @@ def _click_verb(action, params):
     options = _trusted_click_options(params) if action == "trustedClick" else None
     if not isinstance(options, tuple):
         return "clicks"
-    button, click_count, modifiers = options
+    button, click_count, modifiers, hold = options
     verb = "double-clicks" if click_count == 2 else "clicks"
-    return "+".join([*modifiers, verb if button == "left" else f"{button}-{verb}"])
+    verb = "+".join([*modifiers, verb if button == "left" else f"{button}-{verb}"])
+    return f"{verb} and holds" if hold else verb
 
 
 async def _held_reason(action, params):
@@ -4321,6 +4480,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "/api/trusted-click": self.handle_trusted_click,
             "/api/trusted-type": self.handle_trusted_type,
             "/api/trusted-press-key": self.handle_trusted_press_key,
+            "/api/trusted-drag": self.handle_trusted_drag,
             "/api/type": self.handle_type,
             "/api/set-editable-content": self.handle_set_editable_content,
             "/api/scroll": self.handle_scroll,
@@ -4676,6 +4836,11 @@ class BridgeHandler(BaseHTTPRequestHandler):
         body = self.read_body()
         if self._admitted("trustedPressKey", body):
             self._run_admitted("trustedPressKey", body, trusted_press_key(body))
+
+    def handle_trusted_drag(self):
+        body = self.read_body()
+        if self._admitted("trustedDrag", body):
+            self._run_admitted("trustedDrag", body, trusted_drag(body))
     
     def handle_type(self):
         self._send_extension_action("type", self.read_body())

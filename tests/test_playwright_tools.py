@@ -469,6 +469,80 @@ class AdapterTests(unittest.TestCase):
         self.post.return_value = {"error": "No target", "code": "not_found"}
         self.assertEqual(playwright_tools.browser_press_key(key="ArrowLeft", repeat=7)["code"], "not_found")
 
+    def test_click_takes_an_unpublished_hold_ms(self):
+        # Like repeat, hold_ms is accepted but not in Playwright's published schema (#351); the
+        # extension holds the button that long, and the request waits for it.
+        playwright_tools._current_tab = 4
+        self.post.return_value = {"ok": True, "held_ms": 600}
+        with patch.object(tools, "_post_action", wraps=tools._post_action) as action:
+            self.assertEqual(playwright_tools.browser_click(target="e2", hold_ms=600), self.post.return_value)
+            playwright_tools.browser_click(target="#b", button="right", hold_ms=10000)
+            playwright_tools.browser_click(target="#b", hold_ms=0)
+        self.assertEqual(self.posted(), [
+            ("/api/click", {"selector": "", "holdMs": 600, "ref": "e2", "tabId": 4}),
+            ("/api/click", {"selector": "#b", "button": "right", "holdMs": 10000, "tabId": 4}),
+            ("/api/click", {"selector": "#b", "tabId": 4}),
+        ])
+        self.assertEqual([call.kwargs.get("pointer_ms") for call in action.call_args_list], [600, 10000, 0])
+        self.assertEqual(self.post.call_args_list[0].kwargs, {"timeout": 15.6})
+        self.post.reset_mock()
+        for hold_ms in (-1, 10001, True, 2.5, "600"):
+            with self.subTest(hold_ms=hold_ms):
+                self.assertEqual(playwright_tools.browser_click(target="e2", hold_ms=hold_ms),
+                                 {"error": "hold_ms must be an integer from 0 to 10000"})
+        self.assertEqual(playwright_tools.browser_click(target="e2", doubleClick=True, hold_ms=600),
+                         {"error": "hold_ms cannot be used with doubleClick"})
+        self.post.assert_not_called()
+        self.assertNotIn("hold_ms", playwright_tools.SCHEMAS["browser_click"]["inputSchema"]["properties"])
+        self.post.return_value = {"ok": True, "held_ms": 700}
+        result = asyncio.run(server.mcp.call_tool("browser_click", {"target": "e1", "hold_ms": 700}))
+        self.assertFalse(result.isError)
+        self.assertEqual(self.posted(), [("/api/click", {"selector": "", "holdMs": 700, "ref": "e1", "tabId": 4})])
+
+    def test_click_hold_on_an_older_extension_is_an_error(self):
+        # An extension older than hold_ms clicks at once and answers without held_ms.
+        playwright_tools._current_tab = 4
+        self.post.return_value = {"ok": True, "tag": "button"}
+        result = playwright_tools.browser_click(target="e2", hold_ms=600)
+        self.assertEqual((result["code"], result["retryable"], result["state"]),
+                         ("extension_version_mismatch", False, {"reason": "hold_unsupported"}))
+        self.assertEqual(playwright_tools.browser_click(target="e2"), self.post.return_value)
+        self.post.return_value = {"error": "No target", "code": "not_found"}
+        self.assertEqual(playwright_tools.browser_click(target="e2", hold_ms=600)["code"], "not_found")
+
+    def test_hover_takes_unpublished_duration_ms_and_steps(self):
+        # The extension keeps moving across the target for hover-intent controls (#351).
+        playwright_tools._current_tab = 4
+        self.post.return_value = {"ok": True, "moves": 6, "hovered_ms": 400}
+        self.assertEqual(playwright_tools.browser_hover(target="e5", duration_ms=400), self.post.return_value)
+        playwright_tools.browser_hover(target="#tile", steps=3)
+        playwright_tools.browser_hover(target="#tile", duration_ms=500, steps=10)
+        self.assertEqual(self.posted(), [
+            ("/api/hover", {"selector": "", "durationMs": 400, "ref": "e5", "tabId": 4}),
+            ("/api/hover", {"selector": "#tile", "steps": 3, "tabId": 4}),
+            ("/api/hover", {"selector": "#tile", "durationMs": 500, "steps": 10, "tabId": 4}),
+        ])
+        self.assertEqual(self.post.call_args_list[0].kwargs, {"timeout": 15.4})
+        self.post.reset_mock()
+        for arguments, error in (({"duration_ms": 10001}, "duration_ms must be an integer from 0 to 10000"),
+                                 ({"duration_ms": -1}, "duration_ms must be an integer from 0 to 10000"),
+                                 ({"steps": 0}, "steps must be an integer from 1 to 50"),
+                                 ({"steps": 51}, "steps must be an integer from 1 to 50"),
+                                 ({"steps": True}, "steps must be an integer from 1 to 50")):
+            with self.subTest(arguments=arguments):
+                self.assertEqual(playwright_tools.browser_hover(target="e5", **arguments), {"error": error})
+        self.post.assert_not_called()
+        for name in ("duration_ms", "steps"):
+            self.assertNotIn(name, playwright_tools.SCHEMAS["browser_hover"]["inputSchema"]["properties"])
+        result = asyncio.run(server.mcp.call_tool("browser_hover", {"target": "e5", "duration_ms": 400}))
+        self.assertFalse(result.isError)
+        # An extension older than duration_ms hovers once and answers without moves.
+        self.post.return_value = {"ok": True, "tag": "div"}
+        result = playwright_tools.browser_hover(target="e5", duration_ms=400)
+        self.assertEqual((result["code"], result["state"]),
+                         ("extension_version_mismatch", {"reason": "sustained_hover_unsupported", "moves": 1}))
+        self.assertEqual(playwright_tools.browser_hover(target="e5"), self.post.return_value)
+
     def test_fill_form_slider_and_type_fill_the_same_way(self):
         # Routing guard: both reach /api/fill, where the extension steps an ARIA slider with keys (#311).
         playwright_tools.browser_fill_form(fields=[{"target": "e4", "name": "Volume", "type": "slider",

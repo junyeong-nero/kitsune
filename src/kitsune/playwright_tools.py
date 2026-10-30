@@ -16,7 +16,9 @@ also take a tab_id that playwright_tools.json does not publish, like confirm_tok
 browser_press_key a repeat count (1-100) that the extension presses within one request.
 
 browser_click and browser_hover add opened_popup to their result when they open a menu, listbox
-or dialog, also one a background tab did not paint, with its items' refs (#329).
+or dialog, also one a background tab did not paint, with its items' refs (#329). Like repeat,
+browser_click's hold_ms (0-10000 ms, a long press) and browser_hover's duration_ms and steps
+(moves across the target, for hover intent) are accepted but not published (#351).
 
 browser_fill_form type slider and browser_type fill set an ARIA slider or spinbutton (no native
 input) by pressing arrow keys in the extension until aria-valuenow is the value (#311).
@@ -525,7 +527,9 @@ def browser_snapshot(target: str | None = None, filename: str | None = None, dep
 @_core
 def browser_click(target: str, element: str | None = None, doubleClick: bool | None = None,
                   button: str | None = None, modifiers: list[str] | None = None,
-                  confirm_token: str | None = None) -> dict:
+                  confirm_token: str | None = None, hold_ms: int = 0) -> dict:
+    if problem := k._pointer_ms_error("hold_ms", hold_ms):
+        return problem
     _clicked[_current_tab] = target
     selector, ref = _selector(target)
     body = {"selector": selector}
@@ -534,10 +538,15 @@ def browser_click(target: str, element: str | None = None, doubleClick: bool | N
     if doubleClick:
         if button not in (None, "left"):
             return {"error": "doubleClick supports only the left button"}
+        if hold_ms:
+            return {"error": "hold_ms cannot be used with doubleClick"}
         return k._post_action("/api/double-click", k._request_body(body, _current_tab, ref, element, confirm_token))
     if button is not None:
         body["button"] = button
-    return k._post_action("/api/click", k._request_body(body, _current_tab, ref, element, confirm_token))
+    if hold_ms:
+        body["holdMs"] = hold_ms
+    return k._held_click(k._post_action("/api/click", k._request_body(body, _current_tab, ref, element, confirm_token),
+                                        pointer_ms=hold_ms), hold_ms)
 
 
 @_core
@@ -549,8 +558,9 @@ def browser_drag(startTarget: str, endTarget: str, startElement: str | None = No
 
 
 @_core
-def browser_hover(target: str, element: str | None = None) -> dict:
-    return k.browser_hover(tab_id=_current_tab, element=element, **_target(target))
+def browser_hover(target: str, element: str | None = None, duration_ms: int = 0, steps: int | None = None) -> dict:
+    return k.browser_hover(tab_id=_current_tab, element=element, duration_ms=duration_ms, steps=steps,
+                           **_target(target))
 
 
 def _select(target: str, values: list[str], element: str | None, confirm_token: str | None,

@@ -324,9 +324,17 @@ async function userActiveError(tabId) {
   const state = tabId != null && await userActivity(tabId);
   return state ? tabError(`The user is using tab ${tabId}; nothing was done`, 'user_active', state) : null;
 }
+// The longest pause a held click or a sustained hover asks for (content.js POINTER_MAX_MS).
+const POINTER_PAUSE_MAX_MS = 10000;
+
 browser.runtime.onMessage.addListener((msg, sender) => {
   if (msg.action === 'getDialogPolicy') {
     return Promise.resolve(dialogPolicies.get(sender.tab?.id) || null);
+  }
+  // A hidden tab's timers are throttled to 1 s, the background's are not (#351).
+  if (msg.action === 'pointerPause') {
+    const ms = Math.min(Math.max(Number(msg.ms) || 0, 0), POINTER_PAUSE_MAX_MS);
+    return new Promise(resolve => setTimeout(resolve, ms, { ok: true }));
   }
 });
 

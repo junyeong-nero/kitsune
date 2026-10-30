@@ -539,7 +539,8 @@ class Tab:
         return self.browser.request(route, {**(body or {}), "tabId": self.id}, timeout=timeout)
 
     def _action(self, route: str, body: dict, *, wait: bool = False, timeout: int = 10000,
-                expect: dict | None = None, first: bool = False, confirm: str | None = None) -> dict:
+                expect: dict | None = None, first: bool = False, confirm: str | None = None,
+                pointer_ms: int = 0) -> dict:
         if wait:
             if timeout <= 0:
                 raise ValueError("timeout must be positive")
@@ -550,7 +551,7 @@ class Tab:
             body = {**body, "first": True}
         if confirm is not None:
             body = {**body, "confirmToken": confirm}
-        return self._request(route, body, timeout=action_request_seconds(wait, timeout, expect))
+        return self._request(route, body, timeout=action_request_seconds(wait, timeout, expect) + pointer_ms / 1000)
 
     # -- Reading ---------------------------------------------------
 
@@ -784,16 +785,19 @@ class Tab:
 
     def click(self, target: str, *, button: str | None = None, modifiers: list[str] | None = None,
               wait: bool = False, timeout: int = 10000, expect: dict | None = None, first: bool = False,
-              confirm: str | None = None) -> dict:
+              confirm: str | None = None, hold_ms: int = 0) -> dict:
         """Click an element with synthetic events; tabs the click opens come back in opened_tabs,
-        and a menu, listbox or dialog it opens in opened_popup."""
+        and a menu, listbox or dialog it opens in opened_popup. hold_ms (0-10000) keeps the button
+        pressed that long, for long-press controls."""
         body = _action_target(target)
         if button is not None:
             body["button"] = button
         if modifiers:
             body["modifiers"] = modifiers
+        if hold_ms:
+            body["holdMs"] = hold_ms
         return self._action("/api/click", body, wait=wait, timeout=timeout, expect=expect, first=first,
-                            confirm=confirm)
+                            confirm=confirm, pointer_ms=hold_ms)
 
     def double_click(self, target: str, *, wait: bool = False, timeout: int = 10000, expect: dict | None = None,
                      first: bool = False, confirm: str | None = None) -> dict:
@@ -801,9 +805,16 @@ class Tab:
                             expect=expect, first=first, confirm=confirm)
 
     def hover(self, target: str, *, wait: bool = False, timeout: int = 10000, expect: dict | None = None,
-              first: bool = False) -> dict:
-        return self._action("/api/hover", _action_target(target), wait=wait, timeout=timeout, expect=expect,
-                            first=first)
+              first: bool = False, duration_ms: int = 0, steps: int | None = None) -> dict:
+        """Move the pointer onto target; with duration_ms (0-10000) or steps (1-50, default 5 with
+        duration_ms) it keeps moving across target, for hover-intent controls."""
+        body = _action_target(target)
+        if duration_ms:
+            body["durationMs"] = duration_ms
+        if steps is not None:
+            body["steps"] = steps
+        return self._action("/api/hover", body, wait=wait, timeout=timeout, expect=expect, first=first,
+                            pointer_ms=duration_ms)
 
     def type(self, target: str, text: str, *, clear: bool = False, wait: bool = False, timeout: int = 10000,
              expect: dict | None = None, first: bool = False, confirm: str | None = None) -> dict:
@@ -914,13 +925,14 @@ class Tab:
     def trusted_click(self, target: str | None = None, *, x: int = 0, y: int = 0,
                       coordinate_space: str = "viewport", focus: bool = False, first: bool = False,
                       restore_pointer: bool = True, button: str = "left", click_count: int = 1,
-                      modifiers: list[str] | None = None, confirm: str | None = None) -> dict:
+                      modifiers: list[str] | None = None, confirm: str | None = None, hold_ms: int = 0) -> dict:
         """Click with the real OS pointer, for pages that ignore synthetic clicks: target's center,
         else x, y in "viewport" or "screen" coordinates. It moves the user's cursor for the click,
         then back unless restore_pointer=False (for hover menus that close when the pointer leaves),
         and may show the tab for the click; focus=True brings the browser forward first. button is
-        "left", "right" or "middle", click_count=2 double-clicks, and modifiers ("Shift", "Control",
-        "Alt", "Meta") are held during the click."""
+        "left", "right" or "middle", click_count=2 double-clicks, modifiers ("Shift", "Control",
+        "Alt", "Meta") are held during the click, and hold_ms (0-10000) keeps a single click's button
+        pressed that long."""
         if target:
             body = {"selector": target, "focus": focus}
         else:
@@ -935,7 +947,9 @@ class Tab:
             body["clickCount"] = click_count
         if modifiers:
             body["modifiers"] = list(modifiers)
-        return self._request("/api/trusted-click", _with_confirm(body, confirm))
+        if hold_ms:
+            body["holdMs"] = hold_ms
+        return self._request("/api/trusted-click", _with_confirm(body, confirm), timeout=15 + hold_ms / 1000)
 
     # -- Waiting ---------------------------------------------------
 

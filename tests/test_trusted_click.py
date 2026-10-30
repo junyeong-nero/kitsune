@@ -475,6 +475,88 @@ class NativeClickTests(unittest.TestCase):
             result = bridge._native_click_screen(1, 2)
         self.assertEqual(result, {"error": "trustedClick is only implemented on Windows, macOS and Linux (X11)"})
 
+    def test_a_held_click_keeps_the_button_down_for_the_hold(self):
+        # #351: each backend waits the hold between the button's down and up events.
+        quartz = fake_quartz()
+        order = Mock()
+        order.attach_mock(quartz.CGEventPost, "CGEventPost")
+        order.attach_mock(self.sleep, "sleep")
+        platform, trusted = self.mac()
+        with platform, trusted, patch.dict("sys.modules", {"Quartz": quartz}):
+            result = bridge._native_click_screen(10, 20, True, "left", 1, ("Shift",), 0.6)
+        self.assertEqual(result, {"ok": True, "backend": "quartz", "pointerRestored": True})
+        self.assertEqual([c[0] if c[0] == "CGEventPost" else c for c in order.mock_calls], [
+            "CGEventPost", call.sleep(0.05), "CGEventPost", call.sleep(0.6), "CGEventPost",
+            call.sleep(bridge.POINTER_RESTORE_DELAY)])
+        self.assertEqual(posted(quartz)[1:], [{"kind": 1, "clickState": 1, "flags": 0x20000},
+                                              {"kind": 2, "clickState": 1, "flags": 0x20000}])
+
+        self.sleep.reset_mock()
+        user32 = windows_user32()
+        user32.attach_mock(self.sleep, "sleep")
+        platform, windll = self.windows(user32)
+        with platform, windll:
+            bridge._native_click_screen(10, 20, False, "right", 1, (), 1.25)
+        self.assertEqual(user32.mock_calls[1:], [call.sleep(0.05), call.mouse_event(0x0008, 0, 0, 0, 0),
+                                                 call.sleep(1.25), call.mouse_event(0x0010, 0, 0, 0, 0)])
+
+        platform, env = self.linux()
+        with platform, env, patch.object(bridge.shutil, "which", return_value="/usr/bin/xdotool"), \
+             patch.object(bridge.subprocess, "run", return_value=completed()) as run:
+            bridge._native_click_screen(10, 20, True, "left", 1, ("Control",), 0.6)
+        self.assertEqual(run.call_args.args[0], [
+            "/usr/bin/xdotool", "mousemove", "--sync", "10", "20", "keydown", "ctrl",
+            "mousedown", "1", "sleep", "0.6", "mouseup", "1", "keyup", "ctrl", "mousemove", "restore"])
+
+        # Anything that interrupts the hold still releases the button.
+        for backend in ("quartz", "win32"):
+            with self.subTest(backend=backend):
+                self.sleep.reset_mock()
+                self.sleep.side_effect = lambda seconds: (_ for _ in ()).throw(KeyboardInterrupt) \
+                    if seconds == 0.6 else None
+                if backend == "quartz":
+                    quartz = fake_quartz()
+                    platform, trusted = self.mac()
+                    with platform, trusted, patch.dict("sys.modules", {"Quartz": quartz}), \
+                         self.assertRaises(KeyboardInterrupt):
+                        bridge._native_click_screen(10, 20, False, "left", 1, (), 0.6)
+                    self.assertEqual([event["kind"] for event in posted(quartz)], [5, 1, 2])
+                else:
+                    user32 = windows_user32()
+                    platform, windll = self.windows(user32)
+                    with platform, windll, self.assertRaises(KeyboardInterrupt):
+                        bridge._native_click_screen(10, 20, False, "left", 1, (), 0.6)
+                    self.assertEqual(user32.mouse_event.call_args_list,
+                                     [call(0x0002, 0, 0, 0, 0), call(0x0004, 0, 0, 0, 0)])
+        self.sleep.side_effect = None
+
+        # xdotool waits for the whole hold; a run that fails or times out still releases the button.
+        platform, env = self.linux()
+        with platform, env, patch.object(bridge.shutil, "which", return_value="/usr/bin/xdotool"), \
+             patch.object(bridge.subprocess, "run", return_value=completed()) as run:
+            bridge._native_click_screen(10, 20, True, "left", 1, (), 10.0)
+        self.assertEqual(run.call_args.kwargs["timeout"], 20.0)
+        for failure in (completed(returncode=1, stderr="BadWindow\n"), subprocess.TimeoutExpired("xdotool", 20)):
+            with self.subTest(failure=failure), platform, env, \
+                 patch.object(bridge.shutil, "which", return_value="/usr/bin/xdotool"), \
+                 patch.object(bridge.subprocess, "run", side_effect=[failure, completed()]) as run:
+                result = bridge._native_click_screen(10, 20, False, "right", 1, ("Shift",), 9.5)
+            self.assertIn("xdotool failed", result["error"])
+            self.assertEqual(run.call_args_list[1].args[0], ["/usr/bin/xdotool", "mouseup", "3", "keyup", "shift"])
+            with platform, env, patch.object(bridge.shutil, "which", return_value="/usr/bin/xdotool"), \
+                 patch.object(bridge.subprocess, "run", side_effect=[failure, completed()]) as run:
+                bridge._native_click_screen(10, 20, False, "left", 1, (), 9.5)
+            self.assertEqual(run.call_args_list[1].args[0], ["/usr/bin/xdotool", "mouseup", "1"])
+
+        # cliclick has no hold; it refuses rather than clicking at once.
+        platform, trusted = self.mac()
+        with platform, trusted, patch.dict("sys.modules", {"Quartz": None}), \
+             patch.object(bridge.shutil, "which", return_value="/opt/homebrew/bin/cliclick"), \
+             patch.object(bridge.subprocess, "run") as run:
+            result = bridge._native_click_screen(10, 20, True, "left", 1, (), 0.6)
+        self.assertIn("cannot hold the button with cliclick", result["error"])
+        run.assert_not_called()
+
 
 class BrowserFocusTests(unittest.TestCase):
     def setUp(self):
@@ -695,7 +777,7 @@ class TrustedClickTests(unittest.TestCase):
             result = asyncio.run(bridge.trusted_click(
                 {"coords": {"x": 5, "y": 6}, "coordinateSpace": "screen", "focus": True}))
         focus.assert_called_once_with("", "")
-        click.assert_called_once_with(5, 6, True, "left", 1, ())
+        click.assert_called_once_with(5, 6, True, "left", 1, (), 0.0)
         self.assertEqual((result["focused"], result["clickBackend"]), (True, "quartz"))
 
     def test_viewport_click_focuses_page_title_and_process(self):
@@ -707,7 +789,7 @@ class TrustedClickTests(unittest.TestCase):
             result = asyncio.run(bridge.trusted_click(
                 {"selector": "#go", "focus": True, "process": "firefox"}))
         focus.assert_called_once_with("Docs", "firefox")
-        click.assert_called_once_with(110, 220, True, "left", 1, ())
+        click.assert_called_once_with(110, 220, True, "left", 1, (), 0.0)
         self.assertEqual(result["clickBackend"], "cliclick")
 
     def test_viewport_click_reports_the_page_zoom_it_used(self):
@@ -723,7 +805,7 @@ class TrustedClickTests(unittest.TestCase):
                  patch.object(bridge, "_native_click_screen",
                               return_value={"ok": True, "backend": "quartz"}) as click:
                 result = asyncio.run(bridge.trusted_click({"selector": "#go"}))
-            click.assert_called_once_with(point["screenX"], point["screenY"], True, "left", 1, ())
+            click.assert_called_once_with(point["screenX"], point["screenY"], True, "left", 1, (), 0.0)
             self.assertEqual(result["zoom"], zoom)
 
     def test_target_not_at_point_clicks_nothing(self):
@@ -833,7 +915,7 @@ class TrustedClickTests(unittest.TestCase):
                                                        "clickCount": 2, "modifiers": ["Meta", "Shift", "Meta"]}))
         self.assertTrue(result["ok"])
         # One press per key, in a fixed order; the content script learns which key presses are the agent's.
-        click.assert_called_once_with(110, 220, True, "right", 2, ("Shift", "Meta"))
+        click.assert_called_once_with(110, 220, True, "right", 2, ("Shift", "Meta"), 0.0)
         self.assertEqual(send.call_args_list[0].args, ("screenPoint", {
             "selector": "#go", "x": None, "y": None, "click": True, "tabId": 7, "modifiers": ["Shift", "Meta"]}))
 
@@ -855,6 +937,57 @@ class TrustedClickTests(unittest.TestCase):
                     self.assertEqual(asyncio.run(bridge.trusted_click({**target, **params})), {"error": error})
                 send.assert_not_called()
                 click.assert_not_called()
+
+    def test_hold_ms_holds_a_single_click(self):
+        # #351: holdMs reaches the backend as seconds, for viewport and screen clicks alike.
+        point = {"screenX": 110, "screenY": 220, "viewportX": 10, "viewportY": 20}
+        for target, at in (({"selector": "#go"}, (110, 220)),
+                           ({"coords": {"x": 5, "y": 6}, "coordinateSpace": "screen"}, (5, 6))):
+            with self.subTest(target=target), patch.object(bridge.sys, "platform", "linux"), \
+                 patch.object(bridge, "send_to_extension", new_callable=AsyncMock, return_value=point), \
+                 patch.object(bridge, "_native_click_screen", return_value={"ok": True, "backend": "xdotool"}) as click:
+                self.assertTrue(asyncio.run(bridge.trusted_click({**target, "holdMs": 600}))["ok"])
+            click.assert_called_once_with(*at, True, "left", 1, (), 0.6)
+
+        for params, error in (
+            ({"holdMs": -1}, "trustedClick holdMs must be an integer from 0 to 10000, not -1"),
+            ({"holdMs": 10001}, "trustedClick holdMs must be an integer from 0 to 10000, not 10001"),
+            ({"holdMs": 600.0}, "trustedClick holdMs must be an integer from 0 to 10000, not 600.0"),
+            ({"holdMs": True}, "trustedClick holdMs must be an integer from 0 to 10000, not True"),
+            ({"holdMs": 600, "clickCount": 2}, "trustedClick holdMs needs clickCount 1"),
+        ):
+            with self.subTest(params=params), \
+                 patch.object(bridge, "send_to_extension", new_callable=AsyncMock) as send, \
+                 patch.object(bridge, "_native_click_screen") as click:
+                self.assertEqual(asyncio.run(bridge.trusted_click({"selector": "#go", **params})), {"error": error})
+            send.assert_not_called()
+            click.assert_not_called()
+
+        # Ask mode names the hold when it holds a trusted click.
+        self.assertEqual(bridge._click_verb("trustedClick", {"holdMs": 600, "button": "right", "modifiers": ["Shift"]}),
+                         "Shift+right-clicks and holds")
+        self.assertEqual(bridge._click_verb("trustedClick", {}), "clicks")
+
+        # cliclick cannot hold: refused before the tab is shown or the browser focused.
+        with patch.object(bridge.sys, "platform", "darwin"), patch.dict("sys.modules", {"Quartz": None}), \
+             patch.object(bridge.shutil, "which", return_value="/opt/homebrew/bin/cliclick"), \
+             patch.object(bridge, "send_to_extension", new_callable=AsyncMock) as send, \
+             patch.object(bridge, "_native_click_screen") as click:
+            result = asyncio.run(bridge.trusted_click({"selector": "#go", "tabId": 7, "holdMs": 600}))
+        self.assertIn("cannot hold the button with cliclick", result["error"])
+        send.assert_not_called()
+        click.assert_not_called()
+
+    def test_trusted_click_tool_sends_hold_ms_and_waits_for_it(self):
+        with patch.object(tools, "_post", return_value={"ok": True}) as post:
+            tools.browser_trusted_click(selector="#go", hold_ms=2000)
+            tools.browser_trusted_click(selector="#go")
+            self.assertEqual(tools.browser_trusted_click(selector="#go", hold_ms=10001),
+                             {"error": "hold_ms must be an integer from 0 to 10000"})
+        self.assertEqual(post.call_args_list, [
+            call("/api/trusted-click", {"selector": "#go", "focus": False, "holdMs": 2000}, timeout=17.0),
+            call("/api/trusted-click", {"selector": "#go", "focus": False}),
+        ])
 
     def test_backend_refusal_shows_the_users_tab_again(self):
         point = {"screenX": 110, "screenY": 220, "viewportX": 10, "viewportY": 20, "tabId": 7, "previousTabId": 3}
