@@ -472,6 +472,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `target_not_at_point` | `browser_trusted_click` found another element (`state.hit`, `null` for none) at its target's center (`state.viewportX`, `state.viewportY`), such as an overlay; no OS click was made | true |
 | `browser_not_at_point` | On macOS, a viewport `browser_trusted_click` would land outside the browser: another app's window (`state.app`, `null` for the desktop) is at the desktop point (`state.screenX`, `state.screenY`; `state.reason: "other_window"`), another window or panel of the browser is there instead of the tab's window (`"other_browser_window"`, `state.window`, `state.targetWindow`), the macOS window list could not be read (`"unknown"`, `state.detail`), or, without Quartz, `focus=True` could not bring the browser to the front (`"not_frontmost"`). Typically the browser is in full screen on another Space; no OS click was made | true |
 | `keyboard_focus_lost` | `browser_trusted_type` or `browser_trusted_press_key` stopped before a key: another app came to the front (`state.reason: "not_frontmost"`) or the target lost the page's focus (`"target_not_focused"`); `state.keysSent` keys were sent. No key reached anything but the target | true |
+| `tab_not_shown` | A trusted click, type or key press found its tab with no size on screen, even after showing it and waiting up to 1 s: the window shows no page, as during Zen's first-run welcome screen (#360). `state` adds `width` and `height`. No OS input was sent and the user's tab is shown again; ask the user to finish or close what hides the page | true |
 | `key_denied` | `browser_trusted_press_key` was asked for a chord that closes, quits or leaves the browser (`Meta+Q`, `Meta+W`, `Meta+Tab`, ...); nothing was pressed | false |
 | `not_actionable` | An [actionability wait](#actionability-wait) timed out on a target that exists but never rendered (`state.reason: "not_rendered"`, `timeoutMs`, `elapsed`); nothing was dispatched | true |
 | `unsupported_selector` | The shared target resolver rejected unsupported/invalid syntax (see [Target selectors](#target-selectors)) before dispatch; `state.selector` echoes the selector and `hint` lists accepted forms. Applies to actions, scoped snapshots and element screenshots | false |
@@ -2496,7 +2497,9 @@ element at the point (`elementFromPoint`, through same-origin frames and shadow 
 must be the target, inside it, or inside one of its `<label>`s (a custom checkbox whose
 input sits under its label); otherwise nothing is clicked and the call returns
 `target_not_at_point` with `state.viewportX`, `state.viewportY` and `state.hit` (the
-covering element's `ref`, `role` and `name`, or `null` when nothing is there). The
+covering element's `ref`, `role` and `name`, or `null` when nothing is there). A tab that
+still has no size on screen 1 s after it is shown returns `tab_not_shown` without clicking:
+its window shows no page, as during Zen's first-run welcome screen (#360). The
 "Zoom text only" setting and OS display scaling are not compensated.
 
 `button` (`left`, `right` or `middle`), `click_count` (`2` double-clicks) and
@@ -2593,7 +2596,8 @@ permission for the bridge. Elsewhere, or without them, they return `unsupported_
 
 Each call:
 1. Clicks the target (`selector` or a ref, required) with the OS pointer, as
-   `browser_trusted_click` does. A `tab_id` that is not shown is shown for the call.
+   `browser_trusted_click` does. A `tab_id` that is not shown is shown for the call
+   ([`tab_not_shown`](#action-errors) when the window shows no page).
 2. Requires the window at the click point to be the tab's own window
    ([`browser_not_at_point`](#action-errors), #336).
 3. Sends each key only while the browser that owns that window is the frontmost app and the
@@ -2806,6 +2810,8 @@ Opens an agent-owned tab in the background (it is not shown; see
 `{ "ok": true, "tabId": 123, "url": "https://example.com/after-redirect", "status": "complete" }`.
 On timeout the tab stays open and the result is
 `{ "ok": false, "timedOut": true, "tabId": 123, "url": "...", "status": "loading" }`.
+While Zen's first-run welcome screen is open, the browser keeps reporting a loaded tab's URL as
+`about:blank` (#360); the wait then asks the page, and `url` is the page's own URL.
 
 ### POST /api/switch-tab
 `{ "tabId": 123 }` shows the tab. It switches the user's view, so send it only on the

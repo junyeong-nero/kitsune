@@ -1133,10 +1133,27 @@ function urlWithoutFragment(url) {
   try { return new URL(url).href.split('#')[0]; } catch { return null; }
 }
 
+// The URL of the tab's top document once it has loaded, from its content script; null while it
+// loads, for an about: page, or when nothing answers within PAGE_URL_TIMEOUT_MS. While Zen's
+// first-run welcome screen hides the tab area, Gecko keeps a loaded tab's url at about:blank and
+// executeScript never returns there (#360), but the content script answers.
+const PAGE_URL_TIMEOUT_MS = 500;
+async function loadedPageUrl(tabId) {
+  let timer;
+  const info = await Promise.race([
+    browser.tabs.sendMessage(tabId, { action: 'getPageInfo' }, TOP_FRAME).catch(() => null),
+    new Promise(resolve => { timer = setTimeout(() => resolve(null), PAGE_URL_TIMEOUT_MS); }),
+  ]);
+  clearTimeout(timer);
+  const href = typeof info?.url === 'string' ? info.url : '';
+  return info?.readyState === 'complete' && href && !href.startsWith('about:') ? href : null;
+}
+
 // Runs startNavigation and resolves true once the tab finishes loading, false on timeout.
 // Subscribes first so a fast 'complete' is not missed. Gecko may never emit a fresh
 // 'complete' (e.g. reloading a page with iframes in headed Zen), so tab.status is also
-// polled: a reload accepts any 'complete', other loads only one seen after 'loading'.
+// polled: a reload accepts any 'complete', other loads only one seen after 'loading'. A
+// complete tab still at about: counts when its page reports a loaded web URL (loadedPageUrl).
 function waitForTabLoad(tabId, startNavigation, { reload = false, timeout = 15000 } = {}) {
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -1163,6 +1180,8 @@ function waitForTabLoad(tabId, startNavigation, { reload = false, timeout = 1500
         if (settled) return;
         if (tab.status === 'loading') sawLoading = true;
         else if ((sawLoading || reload) && isLoaded(tab)) finish(true);
+        else if ((sawLoading || reload) && tab.status === 'complete' && tab.url?.startsWith('about:')
+          && await loadedPageUrl(tabId)) finish(true);
       } catch (e) {
         finish(false, e);
       }
@@ -1232,9 +1251,11 @@ async function createTab(url, { wait = false, timeout = 15000 } = {}) {
     const loaded = target.startsWith('about:')
       || await waitForTabLoad(tab.id, () => {}, { reload: true, timeout });
     const current = await browser.tabs.get(tab.id);
+    const shownUrl = current.url.startsWith('about:') && !target.startsWith('about:')
+      && await loadedPageUrl(tab.id) || current.url;
     return {
       ok: loaded, ...(loaded ? {} : { timedOut: true }),
-      tabId: tab.id, url: current.url, status: current.status,
+      tabId: tab.id, url: shownUrl, status: current.status,
     };
   } catch (e) {
     return { error: e.message };
@@ -1269,6 +1290,9 @@ async function closeTab(tabId, { force = false, userTabApproved = false } = {}) 
 // A trusted OS click lands on whatever the screen shows, so a target tab that is not shown is
 // activated for the click; the bridge restores previousTabId right after it (restoreActiveTab).
 const TRUSTED_CLICK_PAINT_MS = 150;
+// How long a shown tab may take to get a size on screen, polling this often.
+const TRUSTED_CLICK_LAYOUT_WAIT_MS = 1000;
+const TRUSTED_CLICK_LAYOUT_POLL_MS = 50;
 async function screenPointForClick(params) {
   let previousTabId = null;
   let tab;
@@ -1287,7 +1311,7 @@ async function screenPointForClick(params) {
   }
   let point;
   try {
-    point = await zoomedScreenPoint(params);
+    point = await tabNotShownError(tab.id) || await zoomedScreenPoint(params);
     if (point.error) return point;
     // The bridge checks that this window is the one at the click point (#336).
     const win = await browser.windows.get(tab.windowId).catch(() => null);
@@ -1298,6 +1322,25 @@ async function screenPointForClick(params) {
     if (previousTabId != null && (!point || point.error)) {
       await restoreActiveTab(previousTabId, params.tabId);
     }
+  }
+}
+
+// tab_not_shown while the tab reports no size on screen: its window shows no page, as during
+// Zen's first-run welcome screen (#360), so the page has no box to click. null once it has one.
+async function tabNotShownError(tabId) {
+  const deadline = Date.now() + TRUSTED_CLICK_LAYOUT_WAIT_MS;
+  try {
+    while (true) {
+      const { width, height } = await browser.tabs.get(tabId);
+      if (width !== 0 && height !== 0) return null;
+      if (Date.now() >= deadline) {
+        return tabError(`Tab ${tabId} has no size on screen; no OS input was sent`, 'tab_not_shown',
+          { ...await tabState(tabId), width, height });
+      }
+      await new Promise(resolve => setTimeout(resolve, TRUSTED_CLICK_LAYOUT_POLL_MS));
+    }
+  } catch (e) {
+    return await tabApiError(tabId, e);
   }
 }
 
@@ -1413,6 +1456,8 @@ const TAB_FAILURE_HINTS = {
     'or ask the user and repeat a direct browser_tabs close with the confirm_token that call returns.',
   user_active: 'The user is using this tab (state.reason); nothing was done. Retry in a few seconds, ' +
     'work in a tab you opened, or ask the user.',
+  tab_not_shown: 'The browser shows no page in this tab\'s window (for example, Zen\'s first-run welcome ' +
+    'screen). Ask the user to finish or close it, then retry.',
   // Matches the bridge's browser_window_unavailable diagnosis hint.
   browser_window_unavailable: 'Open a normal browser window in the profile where Kitsune is installed (private windows need Run in Private Windows in about:addons), or pass tab_id.',
 };
