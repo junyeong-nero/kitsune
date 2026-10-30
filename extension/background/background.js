@@ -101,6 +101,7 @@ browser.tabs.onRemoved.addListener(tabId => {
   agentTabs.delete(tabId);
   agentTouches.delete(tabId);
   revertActivation.delete(tabId);
+  trustedShownTabs.delete(tabId);
   for (const record of agentWindows) {
     record.windowCopies?.delete(tabId);
     record.syncedCopies.delete(tabId);
@@ -331,14 +332,17 @@ async function userActiveError(tabId) {
 // focus. Closing a tab, view switches and screenshots are not held, nor are tabs the agent opened.
 // Only the bridge sets viewedTabApproved (a confirmed direct call; the userTabApproved of a
 // protected navigation counts too) and holdViewedTab: false (the client's KITSUNE_HOLD_VIEWED_TAB=0).
-// Showing another tab (switchTab, focusWindow, a trusted click's tab) moves the hold with the view.
+// Showing another tab (switchTab, focusWindow) moves the hold with the view. A tab a trusted
+// command showed for its OS input (trustedShownTabs) is the agent's view, not the user's, until
+// the user's tab is shown again: a trusted drag measures its destination there after its source.
 const VIEWED_TAB_EXEMPT_ACTIONS = new Set(['closeTab', 'switchTab', 'focusWindow', 'elementScreenshot', 'fullPageScreenshot']);
 async function viewedTabError(params) {
   const tabId = params.tabId;
   // The bridge strips a caller's userTabApproved only on the routes that approve it.
   const navigationApproved = params.userTabApproved && PROTECTED_NAVIGATIONS.has(params.action);
   if (params.holdViewedTab === false || params.viewedTabApproved || navigationApproved ||
-      VIEWED_TAB_EXEMPT_ACTIONS.has(params.action) || tabId == null || agentTabs.has(tabId)) return null;
+      VIEWED_TAB_EXEMPT_ACTIONS.has(params.action) || tabId == null || agentTabs.has(tabId) ||
+      trustedShownTabs.get(tabId)?.until > Date.now()) return null;
   const tab = await browser.tabs.get(tabId).catch(() => null);
   if (!tab?.active) return null;
   const focused = await browser.windows.getLastFocused().catch(() => null);
@@ -1329,8 +1333,17 @@ async function closeTab(tabId, { force = false, userTabApproved = false } = {}) 
 // A trusted OS click lands on whatever the screen shows, so a target tab that is not shown is
 // activated for the click; the bridge restores previousTabId right after it (restoreActiveTab).
 // The tab it hides for that moment is checked for the user's input, not held for being viewed
-// (viewedTabError holds only the click's own tab).
+// (viewedTabError holds only the click's own tab, before it is shown).
 const TRUSTED_CLICK_PAINT_MS = 150;
+// tabId -> { windowId, until }: tabs screenPointForClick showed, until restoreActiveTab, another
+// tab of their window is shown, or TRUSTED_SHOWN_MAX_MS (a bridge that never restored them).
+const trustedShownTabs = new Map();
+const TRUSTED_SHOWN_MAX_MS = 60000;
+browser.tabs.onActivated?.addListener(({ tabId, windowId }) => {
+  for (const [shown, entry] of trustedShownTabs) {
+    if (entry.windowId === windowId && shown !== tabId) trustedShownTabs.delete(shown);
+  }
+});
 // How long a shown tab may take to get a size on screen, polling this often.
 const TRUSTED_CLICK_LAYOUT_WAIT_MS = 1000;
 const TRUSTED_CLICK_LAYOUT_POLL_MS = 50;
@@ -1345,6 +1358,7 @@ async function screenPointForClick(params) {
       if (busy) return busy;
       previousTabId = shown?.id ?? null;
       await browser.tabs.update(tab.id, { active: true });
+      trustedShownTabs.set(tab.id, { windowId: tab.windowId, until: Date.now() + TRUSTED_SHOWN_MAX_MS });
       await new Promise(resolve => setTimeout(resolve, TRUSTED_CLICK_PAINT_MS));
     }
   } catch (e) {
@@ -1400,6 +1414,7 @@ async function zoomedScreenPoint(params) {
 
 // Shows the user's tab again after a trusted click, unless the user already moved elsewhere.
 async function restoreActiveTab(tabId, from) {
+  trustedShownTabs.delete(from);
   try {
     const shown = await browser.tabs.get(from);
     if (!shown.active) return { ok: true, restored: false };

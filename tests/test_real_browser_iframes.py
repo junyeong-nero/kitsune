@@ -15,6 +15,7 @@ import unittest
 from urllib.parse import parse_qs, urlparse
 
 import real_browser_harness as harness
+from kitsune.task_modes import HOLD_VIEWED_TAB_HEADER
 
 ZIP = "06236"
 DETAIL = "KITSUNE_FAKE_DETAIL_157"
@@ -300,6 +301,33 @@ class RealBrowserIframeTests(harness.RealBrowserTestCase):
                 self.assertEqual(held["state"]["reason"], "cross_origin_frame")
                 self.assertRegex(held["error"], r"http://localhost:\d+/widget")
         self.assertEqual(self.site.wait_for_save(timeout=1), [])
+
+    def test_refs_into_a_cross_origin_frame_of_the_viewed_tab_are_held(self):
+        # #326 with #354: a ref routes the action into the frame, but the tab is the one the user views.
+        with self.site.lock:
+            self.site.saved.clear()
+        user = next(t for t in self.call("/api/tabs")["tabs"] if not t["owned"])
+        self.assertIs(user["active"], True)
+        headers = {**self.bridge.auth(), "Content-Type": "application/json", HOLD_VIEWED_TAB_HEADER: "0"}
+        status, _, text = harness._request(self.bridge.http_port, "POST", "/api/navigate", headers, self.bridge.host,
+                                           json.dumps({"tabId": user["id"], "url": f"{self.site.origin}/checkout"}),
+                                           timeout=60)
+        self.assert_ok(json.loads(text))  # the user loads the page themselves
+        holder = next(f for f in self.call("/api/forms", {"tabId": user["id"]})["fields"] if f["name"] == "holder")
+        pay = next(r for r in self.call("/api/find", {"tabId": user["id"], "query": "결제"})["results"]
+                   if (r["tag"], r["text"]) == ("button", "결제"))
+        tokens = {}
+        for path, body in [("/api/fill", {"ref": holder["ref"], "value": HOLDER}), ("/api/click", {"ref": pay["ref"]})]:
+            with self.subTest(path=path):
+                held = self.call(path, {"tabId": user["id"], **body})
+                self.assert_error(held, "user_viewing", False)
+                tokens[path] = held["state"]["confirmToken"]
+        self.assertEqual(self.site.wait_for_save(timeout=1), [], "nothing reached the frame")
+        self.assert_ok(self.call("/api/fill", {"tabId": user["id"], "ref": holder["ref"], "value": HOLDER,
+                                               "confirmToken": tokens["/api/fill"]}))
+        self.assert_ok(self.call("/api/click", {"tabId": user["id"], "ref": pay["ref"],
+                                                "confirmToken": tokens["/api/click"]}))
+        self.assertEqual(self.site.wait_for_save(), [("/pay", {"card": CARD, "holder": HOLDER})])
 
     def test_action_deltas_list_what_changed_inside_the_cross_origin_frame(self):
         tab = self.open_tab(f"{self.site.origin}/checkout")

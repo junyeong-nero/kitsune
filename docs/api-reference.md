@@ -1332,13 +1332,22 @@ another browser window.
 - **Held:** the writes [User activity](#user-activity) checks on their own tab. These are
   click, double-click, type/fill/editable, select, check, keypress, submit, form fill, hover,
   scroll, drag, focus, blur, JavaScript, media, upload, navigate, back, forward, reload,
-  click-and-wait-navigation, and `browser_trusted_click`, `browser_trusted_type` and
-  `browser_trusted_press_key` on the shown tab. Batch, workflow, parallel, broadcast and
+  click-and-wait-navigation, and `browser_trusted_click`, `browser_trusted_type`,
+  `browser_trusted_press_key` and `browser_trusted_drag` on the shown tab. A ref that routes
+  the action into a frame, also a cross-origin one, is held with its tab. `hold_ms` and
+  `duration_ms` are part of the call the token is bound to. Batch, workflow, parallel, broadcast and
   retry steps are held the same way. `browser_sync_barrier` returns the refusal at once
   instead of polling until its timeout.
-- **Trusted input on another tab.** A trusted click or key command on a tab that is not
+- **Trusted input on another tab.** A trusted click, drag or key command on a tab that is not
   shown still shows that tab for the click and then shows the user's tab again. Only the
-  user's [activity](#user-activity) on the tab it hides stops it, not the hold.
+  user's [activity](#user-activity) on the tab it hides stops it, not the hold. While the
+  agent shows a tab this way it is not held either, so `browser_trusted_drag` measures its
+  destination there after its source. That ends when the user's tab is shown again, another
+  tab of the window is shown, or after 60 s.
+- **Order.** The hold refuses before anything is shown or sent: after `user_active`, and
+  before a trusted command shows a tab, `tab_not_shown` or any OS input, so `drag_interrupted`
+  can only follow an approved call. Where no OS input can run at all (`unsupported_platform`,
+  `permission_required` for Accessibility), those come first, as there is nothing to approve.
 - **Switching the view moves the hold.** `browser_tabs` select (Kitsune's, which shows the
   tab) and `browser_focus_window` are not held, so the tab they show becomes the held one,
   and the tab the user saw before is a background tab that is no longer held. These calls
@@ -1380,8 +1389,8 @@ own: the bridge drops them and sets them itself.
 
 Limits: the extension does not know whether the browser window is visible on screen (for
 example behind another window or on another Space), only that it was focused last. For the
-moment a trusted command shows another tab, that tab is the shown one, so writes on the
-user's tab are not held then. A screen-coordinate trusted click has no tab and is not
+moment a trusted command shows another tab, neither that tab nor the user's tab, then in the
+background, is held. A screen-coordinate trusted click has no tab and is not
 checked. Pin, mute, duplicate, zoom, highlight, dialog handling and storage writes are not
 held, as they are not checked for user activity.
 
@@ -2794,6 +2803,8 @@ permission for the bridge. Elsewhere, or without them, it returns `unsupported_p
 Each call:
 1. Measures the source (`selector` or a ref) as `browser_trusted_click` does: scrolled into view
    and hit-tested (`target_not_at_point`). A `tab_id` that is not shown is shown for the call.
+   The tab the user is [viewing](#viewed-tab) returns `user_viewing` here, before anything is
+   shown or measured; `confirm_token` approves both measurements and the drag.
 2. Measures the destination (`to_selector`) in the same tab without scrolling, so the source
    point stays valid. It is hit-tested too, so a destination out of view returns
    `target_not_at_point`.

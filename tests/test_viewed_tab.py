@@ -19,7 +19,7 @@ from kitsune.browser import Browser, Tab
 
 VIEWED_TAB = 4
 HELD_ACTIONS = {"click", "fill", "type", "checkBox", "selectOption", "keypress", "navigate", "goBack", "scroll",
-                "executeJS"}
+                "executeJS", "hover"}
 
 
 class FakeExtension:
@@ -201,6 +201,62 @@ class ViewedTabBridgeTests(BridgeCase):
         clicked.assert_called_once()
 
 
+    def test_a_held_trusted_click_keeps_its_hold_ms_through_the_confirm_retry(self):
+        # hold_ms (#351) is part of the call, so the token is bound to it.
+        clicked = Mock(return_value=(False, {"backend": "test"}))
+        with patch.object(bridge, "_focus_check_click", clicked), \
+                patch.object(bridge, "_mac_click_backend", return_value=None), \
+                patch.object(bridge, "_native_click_screen", side_effect=AssertionError("OS click")), \
+                patch.object(bridge, "_focus_browser_window", side_effect=AssertionError("OS focus")):
+            body = {"selector": "#go", "tabId": VIEWED_TAB, "holdMs": 800}
+            token = self.refuse("/api/trusted-click", body)["state"]["confirmToken"]
+            self.refuse("/api/trusted-click", {**body, "holdMs": 500, "confirmToken": token})
+            clicked.assert_not_called()
+            self.assertIs(self.call("/api/trusted-click", {**body, "confirmToken": token})["ok"], True)
+        self.assertEqual(clicked.call_args.args[-1], 0.8, "the approved click holds for its hold_ms")
+
+    def trusted_drag(self, body, dragged=None, unavailable=None):
+        """POST /api/trusted-drag with the OS drag mocked: (result, the drag mock)."""
+        drag = Mock(return_value=(True, dragged or {"ok": True, "backend": "test"}))
+        with patch.object(bridge, "_mac_drag_unavailable", return_value=unavailable), \
+                patch.object(bridge, "_focus_check_drag", drag), \
+                patch.object(bridge, "_mac_drag_screen", side_effect=AssertionError("OS drag")), \
+                patch.object(bridge, "_focus_browser_window", side_effect=AssertionError("OS focus")):
+            return self.call("/api/trusted-drag", body), drag
+
+    def test_a_trusted_drag_on_the_viewed_tab_needs_one_approval(self):
+        body = {"selector": "#knob", "to": "#end", "tabId": VIEWED_TAB, "steps": 20}
+        refused, drag = self.trusted_drag(body)
+        self.assertEqual((refused["code"], refused["retryable"]), ("user_viewing", False), refused)
+        drag.assert_not_called()
+        # Refused at the source, before the destination was measured or any tab shown.
+        self.assertEqual([action for action, _ in self.extension.sent], ["screenPoint"])
+        token = refused["state"]["confirmToken"]
+        self.assertEqual(self.trusted_drag({**body, "steps": 5, "confirmToken": token})[0]["code"], "user_viewing")
+        dragged, drag = self.trusted_drag({**body, "confirmToken": token})
+        self.assertIs(dragged.get("ok"), True, dragged)
+        self.assertEqual(dragged["steps"], 20)
+        drag.assert_called_once()
+        points = [params for action, params in self.extension.sent if action == "screenPoint"][-2:]
+        self.assertEqual([(p["selector"], p.get("viewedTabApproved")) for p in points], [("#knob", True), ("#end", True)])
+
+    def test_a_trusted_drag_refusals_come_in_order(self):
+        body = {"selector": "#knob", "to": "#end", "tabId": VIEWED_TAB}
+        # Where no OS drag can run, nothing needs approval: unsupported_platform before the hold.
+        unsupported = {"error": "Trusted drag is only implemented on macOS", "code": "unsupported_platform",
+                       "retryable": False}
+        result, _ = self.trusted_drag(body, unavailable=unsupported)
+        self.assertEqual(result["code"], "unsupported_platform")
+        self.assertEqual(self.extension.sent, [])
+        # A drag that stops partway reports drag_interrupted after the approval, which is spent.
+        token = self.trusted_drag(body)[0]["state"]["confirmToken"]
+        interrupted = {"error": "The trusted drag stopped partway", "code": "drag_interrupted", "retryable": False}
+        result, _ = self.trusted_drag({**body, "confirmToken": token}, dragged=interrupted)
+        self.assertEqual(result["code"], "drag_interrupted", result)
+        again, drag = self.trusted_drag({**body, "confirmToken": token})
+        self.assertEqual((again["code"], again["state"]["tokenRejected"]), ("user_viewing", "used"), again)
+        drag.assert_not_called()
+
     def test_sync_barrier_returns_the_refusal_at_once(self):
         body = {"tabIds": [VIEWED_TAB], "predicate": "1", "timeout": 5000}
         started = time.monotonic()
@@ -374,9 +430,12 @@ class ViewedTabClientTests(unittest.TestCase):
             tools.browser_reload_tab(tab_id=4, confirm_token="t")
             tools.browser_back(tab_id=4, confirm_token="t")
             tools.browser_forward(tab_id=4, confirm_token="t")
+            tools.browser_hover(selector="#go", tab_id=4, duration_ms=400, confirm_token="t")
+            tools.browser_trusted_drag(selector="#a", to_selector="#b", tab_id=4, confirm_token="t")
             playwright_tools.browser_hover(target="e1", confirm_token="t")
             playwright_tools.browser_navigate_back(tab_id=4, confirm_token="t")
-        self.assertEqual([call.args[1].get("confirmToken") for call in post.call_args_list], ["t"] * 9)
+        self.assertEqual([call.args[1].get("confirmToken") for call in post.call_args_list], ["t"] * 11)
+        self.assertEqual(post.call_args_list[7].args[1]["durationMs"], 400)
         for name in ("browser_hover", "browser_navigate_back"):
             self.assertNotIn("confirm_token", playwright_tools.SCHEMAS[name]["inputSchema"]["properties"])
 

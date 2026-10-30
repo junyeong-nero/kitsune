@@ -476,6 +476,27 @@ async function testViewedTabIsHeld() {
   await run(h, { action: 'navigate', tabId: 1, url: 'https://agent.example/approved', userTabApproved: true }, 16000);
   assert.equal(h.tabs[1].url, 'https://agent.example/approved', 'an approved navigation of the viewed tab runs');
 
+  // A trusted drag on a background user tab (#351): its source's screenPoint shows the tab, and its
+  // destination's on that tab, now shown by the agent, is not held. Once the user's tab is shown
+  // again, the tab is held when the user shows it.
+  const source = await run(h, { action: 'screenPoint', tabId: 2, selector: '#from', click: true }, 200);
+  assert.deepEqual([source.tabId, source.previousTabId], [2, 1]);
+  const destination = await run(h, { action: 'screenPoint', tabId: 2, selector: '#to', click: true, scroll: false }, 200);
+  assert.equal(destination.code, undefined, JSON.stringify(destination));
+  assert.equal(destination.screenX, 10);
+  assert.deepEqual(await h.send({ action: 'restoreActiveTab', tabId: 1, from: 2 }), { ok: true, restored: true });
+  assert.deepEqual(h.shown(), [1]);
+  h.activate(2);
+  assert.equal((await run(h, { action: 'screenPoint', tabId: 2, selector: '#from', click: true }, 200)).code,
+    'user_viewing', 'the user showed it');
+  h.activate(1);
+  // Another tab shown in that window ends it too, also without restoreActiveTab.
+  await run(h, { action: 'screenPoint', tabId: 2, selector: '#from', click: true }, 200);
+  h.activate(1);
+  h.activate(2);
+  assert.equal((await h.send({ action: 'click', tabId: 2, selector: '#go' })).code, 'user_viewing');
+  h.activate(1);
+
   // An explicit switch away is not held; the trusted click's brief showing of a background tab is
   // not either: only the user's input on the tab it hides stops it.
   const point = await run(h, { action: 'screenPoint', tabId: agentTab, selector: '#go', click: true }, 200);
