@@ -114,7 +114,9 @@ function assertStalled(result, url) {
   assert.equal(retryable, false);
   assert.match(hint, /about:blank/);
   assert.match(hint, /browser_status\(diagnostics=true\)/);
-  assert.match(hint, /save their work and restart/);
+  assert.match(hint, /Retrying will not fix this/);
+  assert.match(hint, /update, a restart or another fix/);
+  assert.match(hint, /save their work and restart or update/);
   assert.match(hint, /not a confirmed diagnosis/);
 }
 

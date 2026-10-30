@@ -114,6 +114,8 @@ function assertStalled(result) {
   assert.match(hint, /restart/i);
   assert.match(hint, /updat/i);
   assert.match(hint, /save/i);
+  assert.match(hint, /Retrying will not fix this/);
+  assert.doesNotMatch(hint, /before retrying/);
 }
 
 async function main() {

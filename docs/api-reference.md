@@ -2922,11 +2922,12 @@ While Zen's first-run welcome screen is open, the browser keeps reporting a load
 
 If the wait times out with the tab still `about:blank` / `complete`, and the page cannot confirm
 a loaded destination, the result also carries `code: "new_tab_stalled"`, `retryable: false`, and
-an actionable `hint` (#366). The tab already exists: `tabId` is retained (the core
-`browser_tabs` returns its `index` and tab list instead). Do not blindly repeat creation.
-A browser left running after an on-disk update is one possible cause; check
-[`browser_status(diagnostics=true)`](#browser-build-diagnostics) for build mismatch evidence. Ask the
-user to save work and restart it if recently updated, then check status and list tabs again before retrying.
+a `hint` saying that retrying will not fix it (#366). The tab already exists: `tabId` is retained (the core
+`browser_tabs` returns its `index` and tab list instead). Do not repeat creation or navigation:
+the browser needs an update, a restart or another fix first. A browser left running after an
+on-disk update is one possible cause; check
+[`browser_status(diagnostics=true)`](#browser-build-diagnostics) for build mismatch evidence. Tell the
+user, ask them to save work and restart or update the browser (or fix it another way), and retry only after they say it is fixed.
 The code describes the observed blank-tab timeout, not a confirmed update mismatch. Kitsune does
 not restart the browser, activate the tab, or create a replacement automatically. A blank tab
 requested intentionally still succeeds; a tab still loading retains the ordinary timeout result.
