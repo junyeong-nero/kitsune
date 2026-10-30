@@ -2003,7 +2003,9 @@ async def _ask_before_act(action, params, *, direct):
         return {**_mode_error(description), "state": {"mode": _task_mode.get(), "reason": reason},
                 "hint": "Nothing ran. Leave this sensitive action to the user, or restart with KITSUNE_MODE=act "
                         "and follow the ask-before-act policy."}
-    binding = _confirmation_binding(action, params, tab_id)
+    # A user_tab approval (_take_user_tab_approval) is not part of the call the user approves here,
+    # so a token issued before it still confirms the call after it.
+    binding = _confirmation_binding(action, {k: v for k, v in params.items() if k != "userTabApproved"}, tab_id)
     rejected = None
     if token is not None:
         rejected = _spend_confirm_token(token, binding)
@@ -2012,9 +2014,13 @@ async def _ask_before_act(action, params, *, direct):
         if rejected is None:
             _unknown_outcomes.pop(_outcome_key(action, params), None)
             _audit(action, {**params, "confirmation": "accepted", "reason": reason}, True, None, 0)
-            # The user approved this exact call on this tab, so it needs no viewed-tab token too.
+            # The user approved this exact call on this tab, so it needs no viewed-tab or user_tab token too.
             if _viewed_tab_approval.get() is not None:
                 _grant_viewed_tab(tab_id, token, _user_tab_binding(action, params, "user_viewing"))
+            if action in _PROTECTED_NAVIGATIONS and tab_id is not None:
+                # Pinned to the approved tab, so the approval cannot reach whatever tab is active at dispatch.
+                params["tabId"] = tab_id
+                params["userTabApproved"] = True
             return None
     _audit(action, {**params, "confirmation": "required", "reason": reason}, False, "confirmation_required", 0)
     issued = _issue_confirm_token(binding)
@@ -2027,7 +2033,7 @@ async def _ask_before_act(action, params, *, direct):
         _confirm_tokens[issued]["viewedBinding"] = approval["binding"]
     state = {"confirmToken": issued, "expiresInSeconds": CONFIRM_TOKEN_TTL,
              "action": action, "reason": reason, "description": description,
-             "tabId": tab_id, "url": url, "params": dict(params)}
+             "tabId": tab_id, "url": url, "params": {k: v for k, v in params.items() if k != "userTabApproved"}}
     if rejected:
         state["tokenRejected"] = rejected
     return _action_error(
@@ -2044,7 +2050,8 @@ async def _ask_before_act(action, params, *, direct):
 # The extension closes only tabs (closeTab) and windows (closeWindow) the agent opened, and under
 # a client's protectUserTabs navigates only those (navigate, goBack, goForward). Its user_tab
 # refusal of a direct call carries a confirm token, issued and spent like ask-before-act's; the
-# identical direct call with it sends userTabApproved, which callers can never set themselves.
+# identical direct call with it, or with an accepted ask-before-act token for the same navigation,
+# sends userTabApproved, which callers can never set themselves.
 def _user_tab_binding(action, params, code="user_tab"):
     return _confirmation_binding(
         action, {k: v for k, v in params.items() if k not in ("confirmToken", "userTabApproved")}, code)

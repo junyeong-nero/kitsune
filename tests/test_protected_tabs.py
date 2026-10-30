@@ -24,6 +24,8 @@ class FakeExtension:
         params = dict(params or {})
         self.sent.append((action, params))
         tab_id = params.get("tabId") or ACTIVE_TAB
+        if action == "describeTarget":
+            return {"tabId": tab_id, "url": "https://user.example/"}
         if (action in {"navigate", "goBack", "goForward"} and params.get("protectUserTabs")
                 and tab_id not in self.owned and not params.get("userTabApproved")):
             return {"error": f"Tab {tab_id} was not opened by the agent, so it was not navigated",
@@ -140,6 +142,48 @@ class ProtectedTabTests(unittest.TestCase):
         self.assertIn(f"tab_id={ACTIVE_TAB}", result["hint"])
         body = {"url": "https://a.example/", "tabId": ACTIVE_TAB, "confirmToken": token}
         self.assertEqual(self.call("/api/navigate", body), {"ok": True})
+
+    def approve_until_done(self, body, approvals=3):
+        """Repeat a direct navigation with each token it returns; return the result and the tokens used."""
+        tokens = []
+        for _ in range(approvals + 1):
+            handler = bridge.BridgeHandler.__new__(bridge.BridgeHandler)
+            handler.path = "/api/navigate"
+            handler.headers = {}
+            handler.read_body = Mock(return_value=dict(body))
+            handler.send_json = Mock()
+            handler.run_async = Mock(side_effect=lambda coro, **kwargs: asyncio.run(coro))
+            handler.authorized = Mock(return_value=True)
+            handler.do_POST()
+            result = handler.send_json.call_args.args[1]
+            token = (result.get("state") or {}).get("confirmToken")
+            if token is None:
+                return result, tokens
+            tokens.append(result["code"])
+            # As the hints say: ask-before-act repeats the identical call, user_tab names the refused tab.
+            body = {**body, "confirmToken": token}
+            if result["code"] == "user_tab":
+                body["tabId"] = result["state"]["tabId"]
+        self.fail(f"still refused after {approvals} approvals: {tokens}")
+
+    def test_one_ask_before_act_approval_covers_a_protected_payment_navigation(self):
+        # The ask token approves this navigation on this tab, so the user_tab refusal does not follow.
+        bridge._policy["ask"] = True
+        for body in ({"url": "https://shop.example/checkout", "tabId": 4}, {"url": "https://shop.example/checkout"}):
+            with self.subTest(body=body):
+                result, tokens = self.approve_until_done(body)
+                self.assertEqual((result, tokens), ({"ok": True}, ["confirmation_required"]))
+                sent = self.extension.last("navigate")
+                self.assertEqual((sent["tabId"], sent["userTabApproved"]), (ACTIVE_TAB, True))
+
+    def test_ask_token_issued_after_a_user_tab_approval_is_accepted(self):
+        # A user_tab token from before ask mode was turned on, then the ask hold: two approvals, no loop.
+        body = {"url": "https://shop.example/checkout", "tabId": 4}
+        token = self.refuse("/api/navigate", body)["state"]["confirmToken"]
+        bridge._policy["ask"] = True
+        result, tokens = self.approve_until_done({**body, "confirmToken": token})
+        self.assertEqual((result, tokens), ({"ok": True}, ["confirmation_required"]))
+        self.assertIs(self.extension.last("navigate")["userTabApproved"], True)
 
     def test_protection_is_on_unless_the_client_sends_0(self):
         # #326: a request without the header, such as a direct HTTP call, is protected; "1" still is.

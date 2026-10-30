@@ -1213,7 +1213,10 @@ still [held](#viewed-tab) unless `KITSUNE_HOLD_VIEWED_TAB=0` is set as well.
 
 Limits: only these server-mediated navigations are guarded. The approval of a navigation
 also covers the [viewed tab](#viewed-tab) hold, so a protected tab the user is viewing needs
-one approval, not two. A user tab's URL can still change through link clicks (`browser_click`, `clickAndWaitNavigation`), form submits,
+one approval, not two. Under [ask-before-act](#ask-before-act), a navigation that ask mode
+holds (a `payment_url`) needs one approval as well: its accepted token also approves the
+protected tab it was held on, and a token issued after a `user_tab` approval still confirms
+the repeated call. A user tab's URL can still change through link clicks (`browser_click`, `clickAndWaitNavigation`), form submits,
 Enter in a field, agent JavaScript, redirects, and navigation the page starts itself.
 Reload keeps the URL and is not guarded. This is not comprehensive URL preservation.
 View switches (`browser_tabs` select, `browser_focus_window`) and screenshots change no URL
@@ -1576,6 +1579,10 @@ with the token: MCP tools take `confirm_token`, and HTTP and batch bodies take
   `browser_retry`, `browser_broadcast`, `browser_resume`, workflows, and batch `sequence`/`if`/`while`,
   a token is spent and the step stays held. Batch `if`/`while` can therefore not run
   in ask mode.
+
+An accepted token for a navigation also approves navigating that tab when it is a
+[protected user tab](#protected-user-tabs), and the [viewed tab](#viewed-tab) hold, so the
+user approves a held navigation once.
 
 A rejected token returns a fresh `confirmation_required` error with
 `state.tokenRejected` set to `unknown`, `used`, `expired`, `mismatch`, or `not_direct`.
