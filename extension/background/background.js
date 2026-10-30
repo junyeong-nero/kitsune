@@ -1260,10 +1260,24 @@ async function createTab(url, { wait = false, timeout = 15000 } = {}) {
     const current = await browser.tabs.get(tab.id);
     const shownUrl = current.url.startsWith('about:') && !target.startsWith('about:')
       && await loadedPageUrl(tab.id) || current.url;
-    return {
+    const result = {
       ok: loaded, ...(loaded ? {} : { timedOut: true }),
       tabId: tab.id, url: shownUrl, status: current.status,
     };
+    // #366: an old browser process after an on-disk update can create inert blank tabs.
+    // This is an observed symptom, not proof of an update mismatch. Keep the created id
+    // (including for batch newTabs), do not retry creation or steal focus to wake it.
+    if (!loaded && shownUrl === 'about:blank' && current.status === 'complete') {
+      Object.assign(result, {
+        code: 'new_tab_stalled', retryable: false,
+        hint: 'The tab was created, but is still about:blank after the load timeout. '
+          + 'Do not repeat new-tab creation blindly; inspect or close the created tab. '
+          + 'If the browser was recently updated, ask the user to save their work and restart it, '
+          + 'then check browser_status and list tabs again before retrying. '
+          + 'A browser update is one possible cause, not a confirmed diagnosis.',
+      });
+    }
+    return result;
   } catch (e) {
     return { error: e.message };
   }

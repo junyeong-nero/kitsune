@@ -2859,6 +2859,16 @@ On timeout the tab stays open and the result is
 While Zen's first-run welcome screen is open, the browser keeps reporting a loaded tab's URL as
 `about:blank` (#360); the wait then asks the page, and `url` is the page's own URL.
 
+If the wait times out with the tab still `about:blank` / `complete`, and the page cannot confirm
+a loaded destination, the result also carries `code: "new_tab_stalled"`, `retryable: false`, and
+an actionable `hint` (#366). The tab already exists: `tabId` is retained (the core
+`browser_tabs` returns its `index` and tab list instead). Do not blindly repeat creation.
+A browser left running after an on-disk update is one possible cause; ask the user to save work
+and restart it if recently updated, then check `browser_status` and list tabs again before retrying.
+The code describes the observed blank-tab timeout, not a confirmed update mismatch. Kitsune does
+not restart the browser, activate the tab, or create a replacement automatically. A blank tab
+requested intentionally still succeeds; a tab still loading retains the ordinary timeout result.
+
 ### POST /api/switch-tab
 `{ "tabId": 123 }` shows the tab. It switches the user's view, so send it only on the
 user's request; while the user is using the tab it would hide, it returns `user_active`.
