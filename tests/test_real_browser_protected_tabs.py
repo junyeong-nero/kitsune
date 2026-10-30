@@ -1,4 +1,5 @@
-"""Issue #199 in a real browser: KITSUNE_PROTECT_USER_TABS keeps navigation off the user's tabs.
+"""Issue #199 in a real browser: KITSUNE_PROTECT_USER_TABS keeps navigation off the user's tabs,
+by default (#326).
 
 Opt-in and built on tests/real_browser_harness.py, which documents how to run it. The
 browser's startup tab stands in for the user's starting tab: the agent did not open it.
@@ -41,13 +42,18 @@ class RealBrowserProtectedTabTests(harness.RealBrowserTestCase):
         self.assertEqual(status, 200, text)
         return json.loads(text)
 
-    def unheld(self, path, body):
-        """POST as a client without user-tab protection and with KITSUNE_HOLD_VIEWED_TAB=0."""
-        headers = {**self.bridge.auth(), "Content-Type": "application/json", HOLD_VIEWED_TAB_HEADER: "0"}
+    def unprotected(self, path, body, hold=True):
+        """POST as a client with KITSUNE_PROTECT_USER_TABS=0 and, unless hold, KITSUNE_HOLD_VIEWED_TAB=0."""
+        headers = {**self.bridge.auth(), "Content-Type": "application/json", PROTECT_USER_TABS_HEADER: "0"}
+        if not hold:
+            headers[HOLD_VIEWED_TAB_HEADER] = "0"
         status, _, text = harness._request(self.bridge.http_port, "POST", path, headers, self.bridge.host,
                                            json.dumps(body), timeout=90)
         self.assertEqual(status, 200, text)
         return json.loads(text)
+
+    def unheld(self, path, body):
+        return self.unprotected(path, body, hold=False)
 
     def tab_url(self, tab_id):
         return {t["id"]: t["url"] for t in self.call("/api/tabs")["tabs"]}[tab_id]
@@ -72,6 +78,9 @@ class RealBrowserProtectedTabTests(harness.RealBrowserTestCase):
             self.assertEqual(result["state"]["tabId"], tab)
             self.assertIn("browser_tabs", result["hint"])
         self.assert_error(self.protected("/api/back", {"tabId": tab}), "user_tab", False)
+        # On by default (#326): a client that sends no header is protected too.
+        self.assert_error(self.call("/api/navigate", {"url": self.page.origin + "/other", "tabId": tab}), "user_tab",
+                          False)
         batch = self.protected("/api/batch", {"commands": [
             {"action": "navigate", "url": self.page.origin + "/other", "tabId": tab}]})
         self.assertEqual(batch["results"][0]["code"], "user_tab", batch)
@@ -86,7 +95,7 @@ class RealBrowserProtectedTabTests(harness.RealBrowserTestCase):
         self.assertEqual(self.tab_url(tab), self.page.origin + "/approved")
         # Without protection the user tab is still the one the user views (#326): user_viewing, not user_tab.
         free = {"url": self.page.origin + "/free", "tabId": tab}
-        self.assert_error(self.call("/api/navigate", free), "user_viewing", False)
+        self.assert_error(self.unprotected("/api/navigate", free), "user_viewing", False)
         self.assertEqual(self.tab_url(tab), self.page.origin + "/approved")
         self.assert_ok(self.unheld("/api/navigate", free))
         self.assertEqual(self.tab_url(tab), self.page.origin + "/free")

@@ -162,7 +162,7 @@ class GatewayTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.env = environment("core,browse,read,admin", "core", KITSUNE_PROTECT_USER_TABS="1")
+        cls.env = environment("core,browse,read,admin", "core", KITSUNE_PROTECT_USER_TABS="0")
         cls.capability = run(CAPABILITY, cls.env)
 
     def test_capability_and_initial_list(self):
@@ -203,7 +203,7 @@ class GatewayTests(unittest.TestCase):
                     self.assertRegex(request["headers"][task_modes.TOOL_CALL_HEADER], r"^[0-9a-f]{16}$")
                 for request in gateway["requests"]:
                     self.assertTrue(request["headers"][task_modes.GATEWAY_TOOL_HEADER].startswith("browser_"))
-                    self.assertEqual(request["headers"][task_modes.PROTECT_USER_TABS_HEADER], "1")
+                    self.assertEqual(request["headers"][task_modes.PROTECT_USER_TABS_HEADER], "0")
                 for request in direct["requests"]:
                     self.assertNotIn(task_modes.GATEWAY_TOOL_HEADER, request["headers"])
         scrolled, screenshot, submit, invalid, snapshot = pairs[::2]

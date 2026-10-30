@@ -201,7 +201,8 @@ if _unauthorized_caps:
                      f"{', '.join(sorted(_unauthorized_caps))}")
 
 MODE = task_mode(os.environ.get("KITSUNE_MODE"))
-PROTECT_USER_TABS = os.environ.get("KITSUNE_PROTECT_USER_TABS", "").lower() in {"1", "true", "yes", "on"}
+# On unless set to 0: navigations on tabs no client opened need a confirm step (#326).
+PROTECT_USER_TABS = os.environ.get("KITSUNE_PROTECT_USER_TABS", "").lower() not in {"0", "false", "no", "off"}
 # On unless set to 0: writes on the tab the user is viewing need a confirm step (#326).
 HOLD_VIEWED_TAB = os.environ.get("KITSUNE_HOLD_VIEWED_TAB", "").lower() not in {"0", "false", "no", "off"}
 # Sent once at initialize. The core tools keep Playwright MCP's descriptions, which cannot say
@@ -226,7 +227,13 @@ mcp._mcp_server.instructions = (
         "that tab: work in your own tabs, or ask the user before repeating the call with its confirm_token."
         if permits_tool(MODE, "browser_tabs") else
         " Writes and navigations on the tab the user is viewing fail with user_viewing; work in your own tab.")
-       if HOLD_VIEWED_TAB else ""))
+       if HOLD_VIEWED_TAB else "")
+    # #326: navigations on user tabs are refused unless this client set KITSUNE_PROTECT_USER_TABS=0.
+    + ((" Navigate, back and forward on a tab no client opened fail with user_tab: open a tab of your own, "
+        "or ask the user before repeating the call with its confirm_token."
+        if permits_tool(MODE, "browser_tabs") else
+        " Navigate, back and forward on a tab no client opened fail with user_tab; work in your own tab.")
+       if PROTECT_USER_TABS else ""))
 # The tool browser_tools_call is running; its bridge requests name it for the audit log.
 _gateway_call: ContextVar[str | None] = ContextVar("kitsune_gateway_call", default=None)
 # The id of the tool call running (_mcp_errors), which its bridge requests carry.

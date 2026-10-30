@@ -33,8 +33,8 @@ the agent gets fewer, sharper tools. See [Philosophy](https://github.com/junyeon
 
 - Tabs the agent creates open in the background. Kitsune holds writes to a tab
   while you are typing or clicking in it. Writes to the tab you are viewing, unless
-  the agent opened it, and closing one of your own tabs each take a separate
-  confirmation step. Writes that name no tab are refused until the agent has opened
+  the agent opened it, and closing or navigating one of your own tabs each take a
+  separate confirmation step. Writes that name no tab are refused until the agent has opened
   or selected one. This reduces interference, but OS-level clicks and popups
   opened by sites still have [focus and input limitations](https://github.com/junyeong-nero/kitsune/blob/main/docs/api-reference.md#shared-browser).
 - You decide how much to delegate. `KITSUNE_MODE=read`, `draft`, or `act` limits
@@ -274,7 +274,7 @@ tab.close()
 
 The MCP server limits what an agent sees; the Python API does not, but the bridge's
 shared-browser rules hold for both: tabs open in the background, your own tabs close
-only with your approval, and sensitive fields stay redacted. `kitsune.connect(confirm=...)`
+or navigate only with your approval, and sensitive fields stay redacted. `kitsune.connect(confirm=...)`
 lets a person approve each action that needs it. See [Python API](https://github.com/junyeong-nero/kitsune/blob/main/docs/python-api.md).
 
 Until 0.6.0 the code was part of `kitsune-browser-mcp`. If you upgrade a pip install

@@ -15,7 +15,7 @@ import unittest
 from urllib.parse import parse_qs, urlparse
 
 import real_browser_harness as harness
-from kitsune.task_modes import HOLD_VIEWED_TAB_HEADER
+from kitsune.task_modes import HOLD_VIEWED_TAB_HEADER, PROTECT_USER_TABS_HEADER
 
 ZIP = "06236"
 DETAIL = "KITSUNE_FAKE_DETAIL_157"
@@ -308,7 +308,8 @@ class RealBrowserIframeTests(harness.RealBrowserTestCase):
             self.site.saved.clear()
         user = next(t for t in self.call("/api/tabs")["tabs"] if not t["owned"])
         self.assertIs(user["active"], True)
-        headers = {**self.bridge.auth(), "Content-Type": "application/json", HOLD_VIEWED_TAB_HEADER: "0"}
+        headers = {**self.bridge.auth(), "Content-Type": "application/json", HOLD_VIEWED_TAB_HEADER: "0",
+                   PROTECT_USER_TABS_HEADER: "0"}
         status, _, text = harness._request(self.bridge.http_port, "POST", "/api/navigate", headers, self.bridge.host,
                                            json.dumps({"tabId": user["id"], "url": f"{self.site.origin}/checkout"}),
                                            timeout=60)

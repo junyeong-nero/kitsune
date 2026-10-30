@@ -2,10 +2,10 @@
 
 connect() returns a Browser and starts the bridge if none runs. Unlike the MCP server, its
 requests carry no caps header, so every capability group is available, storage and history
-included; mode and protect_user_tabs restrict them as KITSUNE_MODE and KITSUNE_PROTECT_USER_TABS
-do for the MCP server. The bridge's shared-browser rules hold for every client
-(docs/api-reference.md#shared-browser): tabs open in the background, writes wait while the user
-is using a tab, the user's tabs close only with approval, and sensitive fields are redacted.
+included; mode restricts them as KITSUNE_MODE does for the MCP server. The bridge's
+shared-browser rules hold for every client (docs/api-reference.md#shared-browser): tabs open in
+the background, writes wait while the user is using a tab, the user's tabs close or navigate
+only with approval, and sensitive fields are redacted.
 
 Failed results raise KitsuneError (kitsune.errors). Actions and waits return the bridge's
 result; reads return what they read, with a warning when the bridge cut it at its size cap.
@@ -72,13 +72,14 @@ def _cut(result: dict, what: str) -> dict:
     return result
 
 
-def connect(*, mode: str = "act", protect_user_tabs: bool = False, hold_viewed_tab: bool = True, confirm=None,
+def connect(*, mode: str = "act", protect_user_tabs: bool = True, hold_viewed_tab: bool = True, confirm=None,
             replace_bridge: bool = False) -> "Browser":
     """Connect to the shared bridge, starting it if none runs, and check that the extension is connected.
 
-    mode ("read", "draft" or "act") and protect_user_tabs limit what the bridge accepts, as
-    KITSUNE_MODE and KITSUNE_PROTECT_USER_TABS do for the MCP server; hold_viewed_tab=False lifts the
-    hold on the tab the user is viewing, as KITSUNE_HOLD_VIEWED_TAB=0 does. confirm, if set, is called
+    mode ("read", "draft" or "act") limits what the bridge accepts, as KITSUNE_MODE does for the
+    MCP server; protect_user_tabs=False lets navigations move tabs no client opened without approval,
+    as KITSUNE_PROTECT_USER_TABS=0 does, and hold_viewed_tab=False lifts the hold on the tab the user
+    is viewing, as KITSUNE_HOLD_VIEWED_TAB=0 does. confirm, if set, is called
     with the ConfirmationRequired error of an action that needs the user's approval; when it
     returns True, the action is repeated once with its token, so a person can approve it (for
     example with input()). A running bridge of another build raises ConnectionFailed

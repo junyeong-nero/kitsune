@@ -44,7 +44,7 @@ is not connected. It returns a `Browser`.
 | Argument | Default | Effect |
 | --- | --- | --- |
 | `mode` | `"act"` | `"read"` or `"draft"` restricts requests as [`KITSUNE_MODE`](api-reference.md#task-modes) does for MCP |
-| `protect_user_tabs` | `False` | `True` refuses navigation in tabs no client opened, as [`KITSUNE_PROTECT_USER_TABS`](api-reference.md#protected-user-tabs) |
+| `protect_user_tabs` | `True` | `False` navigates tabs no client opened without approval, as [`KITSUNE_PROTECT_USER_TABS=0`](api-reference.md#protected-user-tabs) |
 | `hold_viewed_tab` | `True` | `False` writes and navigates the tab the user is viewing without approval, as [`KITSUNE_HOLD_VIEWED_TAB=0`](api-reference.md#viewed-tab) |
 | `confirm` | `None` | A function that decides on actions ask-before-act holds; see [Ask-before-act](#ask-before-act) |
 | `replace_bridge` | `False` | `True` replaces a running bridge of another build |
@@ -241,7 +241,7 @@ Warnings that accompany a success (`warning`) do not raise.
 Some actions need your approval, and nothing runs until you give it: with
 [ask-before-act](api-reference.md#ask-before-act) on, the bridge holds submits, payment
 pages, JavaScript and cookie access (`confirmation_required`), and it never closes one of
-your own tabs, or with `protect_user_tabs` navigates it, without approval (`user_tab`,
+your own tabs, or navigates it unless `protect_user_tabs=False`, without approval (`user_tab`,
 [Agent-owned tabs](api-reference.md#agent-owned-tabs)). Nor does it write or navigate the
 tab you are viewing (`user_viewing`, [Viewed tab](api-reference.md#viewed-tab)) unless
 `hold_viewed_tab=False`. These raise

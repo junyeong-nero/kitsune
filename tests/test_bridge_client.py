@@ -35,9 +35,11 @@ class BridgeClientTests(unittest.TestCase):
     def test_mcp_server_client_takes_the_server_settings(self):
         code = ("import json; from kitsune import server; client = server._client; "
                 "print(json.dumps([client.caps, client.mode, client.protect_user_tabs]))")
-        for env, settings in (({}, ["core", "act", False]),
+        # User tabs are protected unless KITSUNE_PROTECT_USER_TABS=0 (#326).
+        for env, settings in (({}, ["core", "act", True]),
+                              ({"KITSUNE_PROTECT_USER_TABS": "1"}, ["core", "act", True]),
                               ({"KITSUNE_CAPS": "core,tabs", "KITSUNE_MODE": "draft",
-                                "KITSUNE_PROTECT_USER_TABS": "1"}, ["core,tabs", "draft", True])):
+                                "KITSUNE_PROTECT_USER_TABS": "0"}, ["core,tabs", "draft", False])):
             with self.subTest(env=env):
                 self.assertEqual(json.loads(_run(code, env)), settings)
 

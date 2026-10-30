@@ -524,7 +524,7 @@ kitsune-benchmark; character-size guards in this repo are not token measurements
 | `KITSUNE_BRIDGE_IDLE_TIMEOUT` | `0` (never) | Seconds without client activity before the bridge exits; see [Idle shutdown](#idle-shutdown-opt-in) |
 | `KITSUNE_OUTPUT_DIR` | Unset | Directory, in the MCP server environment, for relative `filename` arguments of the `core` tools; unset, they resolve against the client's first root, else the server's working directory (see [Core tools](#core-tools)) |
 | `KITSUNE_OWNER_ID` | The MCP client's process | Tab owner id of the MCP client, in the MCP server environment: the bridge records the tabs it opens as this client's and offers them after a server restart. Up to 64 letters, digits, `.`, `_`, `:` or `-`. Set it when the server runs through a launcher other than `uv` or `uvx`, such as a shell script or a Python wrapper. Give each MCP client its own value: clients with the same value share their tabs. See [Tab owners](api-reference.md#tab-owners) |
-| `KITSUNE_PROTECT_USER_TABS` | Unset | Set to `1` in an MCP server environment to refuse that client's navigate, back and forward on tabs the agent did not open; see [Protecting your tabs](#protecting-your-tabs) |
+| `KITSUNE_PROTECT_USER_TABS` | On | Set to `0` in an MCP server environment to let that client navigate, go back and go forward on tabs the agent did not open without a confirm step; see [Protecting your tabs](#protecting-your-tabs) |
 | `KITSUNE_HOLD_VIEWED_TAB` | On | Set to `0` in an MCP server environment to let that client write and navigate the tab you are viewing without a confirm step; see [Protecting your tabs](#protecting-your-tabs) |
 | `KITSUNE_ASK_BEFORE_ACT` | Unset | Set to `1` in the MCP server environment to start the bridge with [ask-before-act](#ask-before-act) locked on; the lock then persists in `ask-before-act-locked` under `KITSUNE_HOME` |
 | `KITSUNE_HISTORY_ALLOW_DOMAINS` | Unset (every domain) | Bridge: comma-separated domains (with subdomains) the `history` tools may return; see [History and bookmarks](api-reference.md#history-and-bookmarks) |
@@ -654,9 +654,7 @@ calls, or at least before calls that carry `confirm_token`.
 
 ### Protecting your tabs
 
-The agent closes only the tabs it opened unless you approve. Navigating one of your
-tabs is a separate permission, and it is allowed by default for tabs you are not
-viewing, because sometimes you want the agent to work in your tab.
+The agent closes and navigates only the tabs it opened unless you approve.
 
 The tab you are viewing is held. It is the tab shown in the browser window you
 focused last, also after you switch to the agent's terminal. The agent's clicks,
@@ -669,31 +667,33 @@ so only when you ask), the hold moves with it. To let the agent work in the tab 
 watch without asking, set `KITSUNE_HOLD_VIEWED_TAB=0` in its MCP server environment. Details are in the
 [API reference](api-reference.md#viewed-tab).
 
-If your tabs must stay where they are, tell
-the agent to open its material in new tabs (`browser_tabs` new) and pass their
-`tab_id`. Without `tab_id`, a call acts on the agent's current tab. Before the agent
-has opened or selected one, a write or navigation without `tab_id` fails with
-`no_current_tab` instead of acting on the tab you see, but the agent can still name
-your tab or select it.
+Your other tabs are protected from navigation. The agent should open its material in
+new tabs (`browser_tabs` new) and pass their `tab_id`. Without `tab_id`, a call acts on
+the agent's current tab. Before the agent has opened or selected one, a write or
+navigation without `tab_id` fails with `no_current_tab` instead of acting on the tab you
+see. `browser_navigate`, `browser_navigate_back` and `browser_forward` on a tab the agent
+did not open return a `user_tab` error instead of navigating, also inside batches. That
+error tells the agent to use its own tab, and on a direct call it carries a
+`confirm_token`. As with ask-before-act, the token proves an explicit second step, not
+that you approved. In `read` and `draft` modes, which cannot confirm, the error carries
+no token; the agent opens its own tab with `browser_tab_list(new_tab=...)` instead, so a
+read-only agent can still reach any page without touching yours.
 
-To enforce this, set `KITSUNE_PROTECT_USER_TABS=1` in the MCP server environment
-and restart the client. It applies to that client only. Then `browser_navigate`,
-`browser_navigate_back` and `browser_forward` on a tab the agent did not open return a
-`user_tab` error instead of navigating, also inside batches. That error tells the
-agent to use its own tab, and on a direct call it carries a `confirm_token`. As with
-ask-before-act, the token proves an explicit second step, not that you approved.
-In `read` and `draft` modes, which cannot confirm, the error carries no token; the
-agent opens its own tab with `browser_tab_list(new_tab=...)` instead, so a read-only
-agent can still reach any page without touching yours.
+When you want the agent to work in your tabs without asking, set
+`KITSUNE_PROTECT_USER_TABS=0` in its MCP server environment and restart the client. It
+applies to that client only. The tab you are viewing stays held unless you also set
+`KITSUNE_HOLD_VIEWED_TAB=0`.
 
 ```toml
 [mcp_servers.kitsune.env]
-KITSUNE_PROTECT_USER_TABS = "1"
+KITSUNE_PROTECT_USER_TABS = "0"
 ```
 
 Limits: only those three calls are guarded on tabs you are not viewing. Clicked
 links, form submits, agent JavaScript, redirects and navigations the page starts can
-still change such a tab's URL. Details are in the [API reference](api-reference.md#protected-user-tabs).
+still change such a tab's URL. Switching your view (`browser_tabs` select,
+`browser_focus_window`) and screenshots are not held. Details are in the
+[API reference](api-reference.md#protected-user-tabs).
 
 ## Troubleshooting
 

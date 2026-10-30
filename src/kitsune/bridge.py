@@ -175,8 +175,8 @@ _LOG_MAX = 5000
 # Ask-before-act is opt-in. askUrls are payment-like URL patterns it guards (case-insensitive).
 DEFAULT_ASK_URLS = [r"checkout", r"payment", r"billing", r"/pay\b", r"purchase", r"/order"]
 _task_mode = contextvars.ContextVar("kitsune_task_mode", default="act")
-# The calling client's KITSUNE_PROTECT_USER_TABS (#199): its navigations leave user tabs alone.
-_protect_user_tabs = contextvars.ContextVar("kitsune_protect_user_tabs", default=False)
+# The calling client's KITSUNE_PROTECT_USER_TABS (#199): unless False, its navigations leave user tabs alone (#326).
+_protect_user_tabs = contextvars.ContextVar("kitsune_protect_user_tabs", default=True)
 # The calling client's KITSUNE_HOLD_VIEWED_TAB (#326): False lifts the hold on the tab the user views.
 _hold_viewed_tab = contextvars.ContextVar("kitsune_hold_viewed_tab", default=True)
 # A direct call's {"approved", "rejected"} for the viewed-tab hold (_take_viewed_tab_approval); a
@@ -2003,7 +2003,9 @@ async def _ask_before_act(action, params, *, direct):
         return {**_mode_error(description), "state": {"mode": _task_mode.get(), "reason": reason},
                 "hint": "Nothing ran. Leave this sensitive action to the user, or restart with KITSUNE_MODE=act "
                         "and follow the ask-before-act policy."}
-    binding = _confirmation_binding(action, params, tab_id)
+    # A user_tab approval (_take_user_tab_approval) is not part of the call the user approves here,
+    # so a token issued before it still confirms the call after it.
+    binding = _confirmation_binding(action, {k: v for k, v in params.items() if k != "userTabApproved"}, tab_id)
     rejected = None
     if token is not None:
         rejected = _spend_confirm_token(token, binding)
@@ -2012,9 +2014,13 @@ async def _ask_before_act(action, params, *, direct):
         if rejected is None:
             _unknown_outcomes.pop(_outcome_key(action, params), None)
             _audit(action, {**params, "confirmation": "accepted", "reason": reason}, True, None, 0)
-            # The user approved this exact call on this tab, so it needs no viewed-tab token too.
+            # The user approved this exact call on this tab, so it needs no viewed-tab or user_tab token too.
             if _viewed_tab_approval.get() is not None:
                 _grant_viewed_tab(tab_id, token, _user_tab_binding(action, params, "user_viewing"))
+            if action in _PROTECTED_NAVIGATIONS and tab_id is not None:
+                # Pinned to the approved tab, so the approval cannot reach whatever tab is active at dispatch.
+                params["tabId"] = tab_id
+                params["userTabApproved"] = True
             return None
     _audit(action, {**params, "confirmation": "required", "reason": reason}, False, "confirmation_required", 0)
     issued = _issue_confirm_token(binding)
@@ -2027,7 +2033,7 @@ async def _ask_before_act(action, params, *, direct):
         _confirm_tokens[issued]["viewedBinding"] = approval["binding"]
     state = {"confirmToken": issued, "expiresInSeconds": CONFIRM_TOKEN_TTL,
              "action": action, "reason": reason, "description": description,
-             "tabId": tab_id, "url": url, "params": dict(params)}
+             "tabId": tab_id, "url": url, "params": {k: v for k, v in params.items() if k != "userTabApproved"}}
     if rejected:
         state["tokenRejected"] = rejected
     return _action_error(
@@ -2044,7 +2050,8 @@ async def _ask_before_act(action, params, *, direct):
 # The extension closes only tabs (closeTab) and windows (closeWindow) the agent opened, and under
 # a client's protectUserTabs navigates only those (navigate, goBack, goForward). Its user_tab
 # refusal of a direct call carries a confirm token, issued and spent like ask-before-act's; the
-# identical direct call with it sends userTabApproved, which callers can never set themselves.
+# identical direct call with it, or with an accepted ask-before-act token for the same navigation,
+# sends userTabApproved, which callers can never set themselves.
 def _user_tab_binding(action, params, code="user_tab"):
     return _confirmation_binding(
         action, {k: v for k, v in params.items() if k not in ("confirmToken", "userTabApproved")}, code)
@@ -2079,8 +2086,8 @@ def _offer_user_tab_approval(action, params, result, rejected=None):
     if action in _PROTECTED_NAVIGATIONS and state.get("tabId") is not None:
         # Bound to the refused tab, so a call without tabId cannot carry it to whatever tab is active then.
         params = {**params, "tabId": state["tabId"]}
-        hint = ("Nothing navigated: this session protects tabs the agent did not open. Open extra material "
-                "with browser_tabs action=new and pass its tabId as tab_id, or ask the user to approve "
+        hint = ("Nothing navigated: this session protects tabs the agent did not open. Open a tab of your own "
+                "(browser_tabs action=new) and work there, or ask the user to approve "
                 f"navigating this tab, then repeat the call with tab_id={state['tabId']} and confirmToken "
                 f"(MCP: confirm_token) within {CONFIRM_TOKEN_TTL}s. The token works once and only for this "
                 "navigation.")
@@ -2180,8 +2187,8 @@ def _offer_viewed_tab_approval(action, params, result):
     if approval.get("rejected"):
         state["tokenRejected"] = approval["rejected"]
     named = "" if names_tabs else f" (with tab_id={state['tabId']} if it named no tab)"
-    result["hint"] = ("Nothing was done: the user is viewing this tab. Work in a tab you opened (browser_tabs "
-                      "action=new, then pass its tabId as tab_id), or ask the user to approve acting in this tab, "
+    result["hint"] = ("Nothing was done: the user is viewing this tab. Open a tab of your own (browser_tabs "
+                      "action=new) and work there, or ask the user to approve acting in this tab, "
                       f"then repeat the identical call{named} with confirmToken (MCP: confirm_token) "
                       f"within {CONFIRM_TOKEN_TTL}s. The token works once and only for this call.")
     return result
@@ -4556,7 +4563,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return
         token = _task_mode.set(mode)
         caps_token = _client_caps.set(caps)
-        protect = _protect_user_tabs.set(self.headers.get(PROTECT_USER_TABS_HEADER) == "1")
+        protect = _protect_user_tabs.set(self.headers.get(PROTECT_USER_TABS_HEADER) != "0")
         hold = _hold_viewed_tab.set(self.headers.get(HOLD_VIEWED_TAB_HEADER) != "0")
         viewed = _viewed_tab_approval.set({"approved": False, "rejected": None})
         tool_call = self.headers.get(TOOL_CALL_HEADER) or ""
