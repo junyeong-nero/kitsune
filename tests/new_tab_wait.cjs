@@ -228,6 +228,23 @@ async function main() {
   assertStalled(await blankWait.result);
   blankPage.assertClean();
 
+  // A page that reports its loaded URL only after the wait timed out (a late #360 answer) is
+  // where the tab is: a timeout with the page's URL, not the inert-tab code.
+  let late = ['about:blank', 'complete'];
+  const latePage = harness(h => h.update({ status: 'loading' }), () => late);
+  const lateWait = start(latePage, { action: 'newTab', url: 'https://example.com/late', wait: true, timeout: 1000 });
+  await latePage.tick(0);
+  latePage.update({ status: 'complete' });
+  await latePage.tick(999);
+  assert.equal(lateWait.settled, false);
+  late = ['https://example.com/late', 'complete'];
+  await latePage.tick(1);
+  assert.equal(lateWait.settled, true);
+  assert.deepEqual(await lateWait.result, {
+    ok: false, timedOut: true, tabId: 9, url: 'https://example.com/late', status: 'complete',
+  });
+  latePage.assertClean();
+
   // #366: after an on-disk browser update, an old process can create an inert tab:
   // complete/about:blank forever, with no content-script receiver and no loading event.
   // Report the created tab and recovery advice, not success or an automatic second tab.
