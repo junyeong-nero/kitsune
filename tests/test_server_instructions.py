@@ -36,6 +36,9 @@ class ServerInstructionsTests(unittest.TestCase):
         # #326: navigations on user tabs are refused, unless this client turned the protection off.
         self.assertIn("forward on a tab no client opened fail with user_tab: open a tab of your own", text)
         self.assertNotIn("user_tab", instructions("act", KITSUNE_PROTECT_USER_TABS="0"))
+        # #352: prefer the page's own hand-off control to asking the user in chat.
+        self.assertIn("When a page offers its own control for handing a step to the user, use that "
+                      "control rather than asking in chat.", text)
 
     def test_restricted_modes_name_no_tab_tools(self):
         # read and draft publish browser_tab_list instead of browser_tabs.
@@ -49,6 +52,8 @@ class ServerInstructionsTests(unittest.TestCase):
                 self.assertIn("fail with user_viewing; work in your own tab", text)
                 self.assertIn("no client opened fail with user_tab; work in your own tab", text)
                 self.assertNotIn("confirm_token", text)
+                # Only act mode can click a page's hand-off control.
+                self.assertNotIn("handing a step to the user", text)
 
 
 if __name__ == "__main__":
