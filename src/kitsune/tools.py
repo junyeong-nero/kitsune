@@ -124,8 +124,9 @@ def _no_current_tab(name: str, arguments: dict) -> dict | None:
     Called when the call names no tab and there is no current tab.
     """
     hint = ("Nothing was dispatched. Pass tab_id (browser_navigate and browser_navigate_back accept it too), "
-            "open a background tab with browser_tabs action=new or browser_tab_list new_tab, or make one "
-            "current with browser_tabs action=select.")
+            "or open a tab of your own with browser_tabs action=new or browser_tab_list new_tab and work there. "
+            "browser_tabs action=select makes a tab current too, but navigating a tab the agent did not open "
+            "is then refused (user_tab) unless the user approves.")
     if name == "browser_workflow":
         return {"error": "browser_workflow names no tab_id and there is no current tab; its steps cannot be "
                           "inspected before they run, so it needs a tab even if it only reads",

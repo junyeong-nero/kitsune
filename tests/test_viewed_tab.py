@@ -105,7 +105,7 @@ class ViewedTabBridgeTests(BridgeCase):
         token = refused["state"]["confirmToken"]
         self.assertEqual(refused["state"]["expiresInSeconds"], bridge.CONFIRM_TOKEN_TTL)
         self.assertIn(f"tab_id={VIEWED_TAB}", refused["hint"])
-        self.assertIn("browser_tabs", refused["hint"])
+        self.assertIn("(browser_tabs action=new) and work there", refused["hint"])
         self.assertNotIn("viewedTabApproved", self.extension.last("click"))
 
         self.assertEqual(self.call("/api/click", {**body, "confirmToken": token}), {"ok": True})

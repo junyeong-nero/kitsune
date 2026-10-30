@@ -78,6 +78,8 @@ class ProtectedTabTests(unittest.TestCase):
         self.assertEqual((result["code"], result["retryable"]), ("user_tab", False), result)
         self.assertIn("browser_tabs", result["hint"])
         self.assertIn("tab_id", result["hint"])
+        # Core browser_tabs new returns an index and makes the tab current, not a tabId.
+        self.assertIn("(browser_tabs action=new) and work there", result["hint"])
         return result
 
     # (a) Owned helper tabs: navigation and cleanup are unchanged under protection.

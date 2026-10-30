@@ -2086,8 +2086,8 @@ def _offer_user_tab_approval(action, params, result, rejected=None):
     if action in _PROTECTED_NAVIGATIONS and state.get("tabId") is not None:
         # Bound to the refused tab, so a call without tabId cannot carry it to whatever tab is active then.
         params = {**params, "tabId": state["tabId"]}
-        hint = ("Nothing navigated: this session protects tabs the agent did not open. Open extra material "
-                "with browser_tabs action=new and pass its tabId as tab_id, or ask the user to approve "
+        hint = ("Nothing navigated: this session protects tabs the agent did not open. Open a tab of your own "
+                "(browser_tabs action=new) and work there, or ask the user to approve "
                 f"navigating this tab, then repeat the call with tab_id={state['tabId']} and confirmToken "
                 f"(MCP: confirm_token) within {CONFIRM_TOKEN_TTL}s. The token works once and only for this "
                 "navigation.")
@@ -2187,8 +2187,8 @@ def _offer_viewed_tab_approval(action, params, result):
     if approval.get("rejected"):
         state["tokenRejected"] = approval["rejected"]
     named = "" if names_tabs else f" (with tab_id={state['tabId']} if it named no tab)"
-    result["hint"] = ("Nothing was done: the user is viewing this tab. Work in a tab you opened (browser_tabs "
-                      "action=new, then pass its tabId as tab_id), or ask the user to approve acting in this tab, "
+    result["hint"] = ("Nothing was done: the user is viewing this tab. Open a tab of your own (browser_tabs "
+                      "action=new) and work there, or ask the user to approve acting in this tab, "
                       f"then repeat the identical call{named} with confirmToken (MCP: confirm_token) "
                       f"within {CONFIRM_TOKEN_TTL}s. The token works once and only for this call.")
     return result

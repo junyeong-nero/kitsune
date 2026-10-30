@@ -196,8 +196,8 @@ class TaskModePolicyTests(AskBeforeActTestCase):
     def test_a_protected_user_tab_points_restricted_modes_to_a_tab_of_their_own(self):
         refused = {"error": "Tab 3 was not opened by the agent and this session protects user tabs, so it was "
                             "not navigated", "code": "user_tab", "retryable": False,
-                   "hint": "Nothing navigated. Open extra material with browser_tabs action=new and pass its "
-                           "tabId as tab_id, or ask the user and repeat a direct call with tab_id and the "
+                   "hint": "Nothing navigated. Open a tab of your own (browser_tabs action=new) and work there, "
+                           "or ask the user and repeat a direct call with tab_id and the "
                            "confirm_token it returns."}
         self.extension.reply = refused
         for mode in ("read", "draft", "act"):

@@ -665,7 +665,7 @@ async function protectedTabError(params) {
   if (!tab) return null;
   return { ...tabError(`Tab ${tabId} was not opened by the agent and this session protects user tabs, so it was ` +
     'not navigated', 'user_tab', { tabId, url: tab.url, title: tab.title }, false),
-    hint: 'Nothing navigated. Open extra material with browser_tabs action=new and pass its tabId as tab_id, ' +
+    hint: 'Nothing navigated. Open a tab of your own (browser_tabs action=new) and work there, ' +
       'or ask the user and repeat a direct call with tab_id and the confirm_token it returns.' };
 }
 
@@ -1559,7 +1559,7 @@ const TAB_FAILURE_HINTS = {
   tab_not_shown: 'The browser shows no page in this tab\'s window. Ask the user to finish or close whatever ' +
     'hides the page (for example, Zen\'s first-run welcome screen), then retry.',
   user_viewing: 'The user is viewing this tab (shown in the browser window they last focused); nothing was done. ' +
-    'Work in a tab you opened (browser_tabs action=new), or ask the user and repeat a direct call with tab_id and ' +
+    'Open a tab of your own (browser_tabs action=new) and work there, or ask the user and repeat a direct call with tab_id and ' +
     'the confirm_token that call returns.',
   // Matches the bridge's browser_window_unavailable diagnosis hint.
   browser_window_unavailable: 'Open a normal browser window in the profile where Kitsune is installed (private windows need Run in Private Windows in about:addons), or pass tab_id.',

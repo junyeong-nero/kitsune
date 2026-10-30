@@ -1175,8 +1175,9 @@ same tab within 2 s of that action; such a tab counts as the agent's.
 Ownership, permission to close and permission to navigate are three different things.
 Ownership (`owned`) only records who opened a tab. Closing a user tab always needs the
 user's approval (above). Navigating a user tab needs it too, by default (#326): an agent
-works in tabs it opened. Open extra material with `browser_tabs` new and pass the
-returned `tabId` as `tab_id` to every later call. A call without `tab_id` acts on the
+works in tabs it opened. Open extra material in a tab of its own (`browser_tabs` new) and
+work there: the tab becomes the [current tab](#no-current-tab), and Kitsune's `browser_tabs`
+also returns its `tabId` to pass as `tab_id`. A call without `tab_id` acts on the
 tab the user sees, which is usually a starting tab. Do not reuse a starting tab
 just because it is active.
 
@@ -1188,7 +1189,7 @@ omitted, return `user_tab` (`retryable: false`) without navigating:
 ```json
 { "error": "Tab 12 was not opened by the agent and this session protects user tabs, so it was not navigated",
   "code": "user_tab", "retryable": false,
-  "hint": "Nothing navigated: this session protects tabs the agent did not open. Open extra material with browser_tabs action=new and pass its tabId as tab_id, ...",
+  "hint": "Nothing navigated: this session protects tabs the agent did not open. Open a tab of your own (browser_tabs action=new) and work there, ...",
   "state": { "tabId": 12, "url": "https://mail.example/", "title": "Inbox",
              "confirmToken": "…", "expiresInSeconds": 120 } }
 ```
@@ -1319,7 +1320,7 @@ another browser window.
 
 ```json
 { "error": "The user is viewing tab 12; nothing was done", "code": "user_viewing", "retryable": false,
-  "hint": "Nothing was done: the user is viewing this tab. Work in a tab you opened (browser_tabs action=new, then pass its tabId as tab_id), or ask the user to approve acting in this tab, then repeat the identical call (with tab_id=12 if it named no tab) with confirmToken ...",
+  "hint": "Nothing was done: the user is viewing this tab. Open a tab of your own (browser_tabs action=new) and work there, or ask the user to approve acting in this tab, then repeat the identical call (with tab_id=12 if it named no tab) with confirmToken ...",
   "state": { "tabId": 12, "url": "https://mail.example/", "title": "Inbox", "windowId": 3,
              "reason": "viewing", "browserFocused": false, "confirmToken": "…", "expiresInSeconds": 120 } }
 ```
@@ -1410,7 +1411,7 @@ tab the user is viewing:
 ```json
 { "error": "browser_navigate writes a tab but names none, and there is no current tab, so it was not sent to the tab the user is viewing",
   "code": "no_current_tab", "retryable": false,
-  "hint": "Nothing was dispatched. Pass tab_id (browser_navigate and browser_navigate_back accept it too), open a background tab with browser_tabs action=new or browser_tab_list new_tab, or make one current with browser_tabs action=select.",
+  "hint": "Nothing was dispatched. Pass tab_id (browser_navigate and browser_navigate_back accept it too), or open a tab of your own with browser_tabs action=new or browser_tab_list new_tab and work there. browser_tabs action=select makes a tab current too, but navigating a tab the agent did not open is then refused (user_tab) unless the user approves.",
   "state": { "tool": "browser_navigate" } }
 ```
 
