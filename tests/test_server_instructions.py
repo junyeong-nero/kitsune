@@ -28,6 +28,9 @@ class ServerInstructionsTests(unittest.TestCase):
         # Tabs the agent opens in a batch or from its current tab become current.
         self.assertIn("an action on your current tab opens", text)
         self.assertIn("becomes your current tab; the result names it in current_tab", text)
+        # #352: prefer the page's own hand-off control to asking the user in chat.
+        self.assertIn("When a page offers its own control for handing a step to the user, use that "
+                      "control rather than asking in chat.", text)
 
     def test_restricted_modes_name_no_tab_tools(self):
         # read and draft publish browser_tab_list instead of browser_tabs.
@@ -38,6 +41,8 @@ class ServerInstructionsTests(unittest.TestCase):
                 self.assertIn("act on the tab the user is viewing", text)
                 self.assertIn("browser_tab_list new_tab opens a background tab", text)
                 self.assertIn("no_current_tab", text)
+                # Only act mode can click a page's hand-off control.
+                self.assertNotIn("handing a step to the user", text)
 
 
 if __name__ == "__main__":
