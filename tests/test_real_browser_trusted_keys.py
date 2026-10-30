@@ -1,4 +1,4 @@
-"""Real OS keyboard input into an isolated, visible browser (issues #346 and #347).
+"""Real OS keyboard and pointer input into an isolated, visible browser (issues #346, #347, #351).
 
 Opt-in twice: besides KITSUNE_E2E_BROWSER (see tests/real_browser_harness.py), it runs only on
 macOS with KITSUNE_E2E_TRUSTED_INPUT=1, because it sends real key events and clicks with the
@@ -8,8 +8,8 @@ real pointer. Run it while nobody uses the machine, with Quartz and Accessibilit
         uv run --extra macos python -m unittest discover -s tests -p test_real_browser_trusted_keys.py -v
 
 On a fresh headed profile, Zen's first-run welcome screen hides every page, so tabs report
-about:blank and have no size (#360). The harness now sets zen.welcome-screen.seen, so Zen should
-work, but this suite has not been verified on Zen yet; it is verified on Firefox.
+about:blank and have no size (#360). The harness sets zen.welcome-screen.seen; the suite passes on
+Zen 1.23.4b and on Firefox.
 
 The suite's browser runs headed on a temporary profile. Before each command the test brings that
 browser process (by pid, not by name, so another browser of the same name is left alone) to the
@@ -31,6 +31,32 @@ OTP = "482193"
 PASTED = "KITSUNE_FAKE_PASTE_314159"
 
 PAGES = {
+    # A slider whose knob captures the pointer like the benchmark's pointer-capture-drag (#351): a
+    # synthetic pointer has no id the browser tracks, so setPointerCapture throws and the knob stays.
+    "/capture": """<!doctype html><title>capture</title>
+<style>body{margin:40px} #track{position:relative;width:400px;height:40px;background:#ddd}
+#knob{position:absolute;left:0;top:0;width:40px;height:40px;background:#36c;touch-action:none}
+#mark{position:absolute;left:320px;top:0;width:40px;height:40px;outline:2px dashed #c33}</style>
+<div id=track><div id=mark aria-label="80% mark"></div><div id=knob></div></div>
+<script>
+window.errors = []; window.dropped = null; window.captured = false;
+const knob = document.getElementById('knob'), track = document.getElementById('track');
+let dragging = false;
+knob.addEventListener('pointerdown', e => {
+  try { knob.setPointerCapture(e.pointerId); window.captured = true; dragging = true; }
+  catch (err) { window.errors.push(String(err.message || err)); }
+});
+knob.addEventListener('pointermove', e => {
+  if (!dragging || !knob.hasPointerCapture(e.pointerId)) return;
+  const x = Math.max(0, Math.min(360, e.clientX - track.getBoundingClientRect().left - 20));
+  knob.style.left = x + 'px';
+});
+knob.addEventListener('pointerup', e => {
+  if (!dragging) return;
+  dragging = false;
+  window.dropped = Math.round(parseFloat(knob.style.left || '0') / 360 * 100);
+});
+</script>""",
     # Rejects synthetic input like the #346 sign-in field: an untrusted key or input event clears it.
     "/otp": """<!doctype html><title>otp</title><input id=otp autocomplete=one-time-code>
 <script>
@@ -165,6 +191,25 @@ class RealBrowserTrustedKeysTests(harness.RealBrowserTestCase):
         self.assertIn(agent, tabs, "the tab is still open")
         self.assertEqual(self.js(user, "page.keys"), [])
 
+    def test_drags_a_pointer_capture_knob_with_the_os_pointer(self):
+        user, agent = self.user_and_agent_tabs("/capture")
+        # The control: Kitsune's synthetic drag cannot capture the pointer, so the knob stays.
+        self.call("/api/drag", {"tabId": agent, "from": "#knob", "to": "#mark"})
+        self.assertEqual(self.js(agent, "[page.captured, page.dropped]"), [False, None])
+        self.js(agent, "page.errors.length = 0")
+
+        self.front()
+        status, result = self.post("/api/trusted-drag", {"tabId": agent, "selector": "#knob", "to": "#mark",
+                                                         "focus": False})
+        self.assertEqual(status, 200, result)
+        self.assertTrue(result.get("ok"), result)
+        self.assertEqual(self.js(agent, "page.errors"), [])
+        self.assertTrue(self.js(agent, "page.captured"))
+        self.assertGreaterEqual(self.js(agent, "page.dropped"), 75)
+        # The user's tab was shown again.
+        time.sleep(0.5)
+        tabs = {tab["id"]: tab for tab in self.call("/api/tabs")["tabs"]}
+        self.assertTrue(tabs[user]["active"], tabs[user])
 
 if __name__ == "__main__":
     unittest.main()
