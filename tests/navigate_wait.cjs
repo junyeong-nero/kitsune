@@ -235,7 +235,16 @@ async function main() {
   assert.equal(silentNav.settled, false);
   assert.equal(silent.pageInfoRequests, 2, 'polls at 200 and 800 ms; the first waits 500 ms for its answer');
   await silent.tick(14000);
-  assert.deepEqual(await silentNav.result, { ok: false, timedOut: true, url: 'https://example.com/user' });
+  // The timeout asks the page once more, bounded like the polls; a page still on about:blank
+  // gets the stayed_blank hint (#366).
+  await silent.tick(PAGE_URL_TIMEOUT_MS);
+  assert.equal(silentNav.settled, true);
+  const { hint, ...silentResult } = await silentNav.result;
+  assert.match(hint, /never left about:blank/);
+  assert.deepEqual(silentResult, {
+    ok: false, timedOut: true, url: 'https://example.com/user',
+    state: { reason: 'stayed_blank', url: 'about:blank', status: 'complete' },
+  });
   await silent.tick(PAGE_URL_TIMEOUT_MS); // the last unanswered request's own bound
   silent.assertClean();
 

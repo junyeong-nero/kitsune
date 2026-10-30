@@ -3011,6 +3011,12 @@ On timeout the tab stays open and the result is
 `{ "ok": false, "timedOut": true, "tabId": 123, "url": "...", "status": "loading" }`.
 While Zen's first-run welcome screen is open, the browser keeps reporting a loaded tab's URL as
 `about:blank` (#360); the wait then asks the page, and `url` is the page's own URL.
+A tab that never left `about:blank` (its page reports no loaded URL either) times out with
+`state: { "reason": "stayed_blank", "url": "about:blank", "status": "complete" }` and a `hint`:
+retry once in a new tab, and if tabs keep staying blank, ask the user to restart the browser.
+A Zen that kept running after its app was updated on disk did this until it restarted (#366);
+that is one cause, not the only one, and Kitsune never restarts the browser itself.
+`POST /api/navigate` adds the same `state` and `hint` when its load times out on `about:blank`.
 
 ### POST /api/switch-tab
 `{ "tabId": 123 }` shows the tab. It switches the user's view, so send it only on the

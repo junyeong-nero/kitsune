@@ -101,6 +101,12 @@ function start(h, command) {
   return pending;
 }
 
+// Checks the hint is the stayed_blank one and returns the result without it.
+function withoutHint({ hint, ...rest }) {
+  assert.match(hint, /never left about:blank/);
+  return rest;
+}
+
 async function main() {
   // Immediate mode (the default) returns the id without waiting for the load.
   const immediate = harness((h, url) => h.update({ status: 'loading', url }));
@@ -201,17 +207,34 @@ async function main() {
   });
   stale.assertClean();
 
-  // A tab that really shows about:blank still times out and reports about:blank.
+  // A tab that really shows about:blank still times out, reports about:blank and gets the
+  // stayed_blank hint (#366).
   const blankPage = harness(h => h.update({ status: 'loading' }), () => ['about:blank', 'complete']);
   const blankWait = start(blankPage, { action: 'newTab', url: 'https://example.com/none', wait: true, timeout: 1000 });
   await blankPage.tick(0);
   blankPage.update({ status: 'complete' });
   await blankPage.tick(1000);
   assert.equal(blankWait.settled, true);
-  assert.deepEqual(await blankWait.result, {
+  assert.deepEqual(withoutHint(await blankWait.result), {
     ok: false, timedOut: true, tabId: 9, url: 'about:blank', status: 'complete',
+    state: { reason: 'stayed_blank', url: 'about:blank', status: 'complete' },
   });
   blankPage.assertClean();
+
+  // #366: the tab is created but never starts loading and no content script answers; the timeout
+  // says so instead of leaving an unexplained blank tab.
+  const inert = harness();
+  const inertWait = start(inert, { action: 'newTab', url: 'https://example.com/inert', wait: true, timeout: 1000 });
+  await inert.tick(1000);
+  assert.equal(inertWait.settled, true);
+  assert.deepEqual(withoutHint(await inertWait.result), {
+    ok: false, timedOut: true, tabId: 9, url: 'about:blank', status: 'complete',
+    state: { reason: 'stayed_blank', url: 'about:blank', status: 'complete' },
+  });
+  inert.assertClean();
+
+  // A load that timed out on a web URL is not blank, so it gets no hint.
+  assert.equal((await hanging.result).hint, undefined);
 
   console.log('new_tab_wait: all tests passed');
 }

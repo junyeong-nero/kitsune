@@ -1255,7 +1255,12 @@ async function navigateTab(url, tabId, expectTitle) {
     }
 
     // Check if page title matches expectation (catches silent redirects)
-    const result = loaded ? { ok: true, url } : { ok: false, timedOut: true, url };
+    const result = loaded ? { ok: true, url }
+      : { ok: false, timedOut: true, url };
+    if (!loaded) {
+      const tab = await browser.tabs.get(targetTabId);
+      if (!await loadedPageUrl(targetTabId)) Object.assign(result, stayedBlank(tab, url));
+    }
     if (expectTitle) {
       const tab = await browser.tabs.get(targetTabId);
       const title = tab.title || '';
@@ -1282,6 +1287,19 @@ async function switchTab(tabId) {
   }
 }
 
+// A load that timed out with the tab still on about: never started (#366): seen in a Zen that
+// kept running after its app was updated on disk, until the browser restarted. That is one cause,
+// not proof of it, so the hint offers a restart as the user's choice, after a retry.
+const STAYED_BLANK_HINT = 'The tab never left about:blank, so the page did not start loading. Retry once in a new ' +
+  'tab (close this one with browser_tabs close). If tabs keep staying blank, the browser may need a restart ' +
+  '(for example, it kept running after an update was installed): ask the user to save their work and restart it.';
+
+// The fields a timed-out load to url adds when tab, whose page reported no loaded URL, is on about:.
+function stayedBlank(tab, url) {
+  if (url.startsWith('about:') || !tab.url.startsWith('about:')) return {};
+  return { hint: STAYED_BLANK_HINT, state: { reason: 'stayed_blank', url: tab.url, status: tab.status } };
+}
+
 // Opens an agent-owned tab in the background. Immediate by default. With wait, resolves once the
 // tab loads (or the timeout passes, leaving the tab open) and reports the actual URL, so
 // redirects are visible.
@@ -1300,6 +1318,7 @@ async function createTab(url, { wait = false, timeout = 15000 } = {}) {
     return {
       ok: loaded, ...(loaded ? {} : { timedOut: true }),
       tabId: tab.id, url: shownUrl, status: current.status,
+      ...(loaded || shownUrl !== current.url ? {} : stayedBlank(current, target)),
     };
   } catch (e) {
     return { error: e.message };
