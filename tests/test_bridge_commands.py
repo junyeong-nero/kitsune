@@ -118,6 +118,7 @@ class SignedBuildTransportTests(unittest.TestCase):
 
     def test_status_includes_extension_build(self):
         handler = bridge.BridgeHandler.__new__(bridge.BridgeHandler)
+        handler.path = "/api/status"
         handler.send_json = Mock()
         with patch.object(bridge, "extension_info", {"version": "0.2.0", "build": "signed"}):
             handler.handle_status()

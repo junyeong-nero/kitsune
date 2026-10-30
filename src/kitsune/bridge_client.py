@@ -320,7 +320,7 @@ class BridgeClient:
         """start_bridge=False sends only to a bridge that already runs: it neither starts one nor
         waits for the extension to reach a bridge this client started."""
         for attempt in range(2):
-            if endpoint != "/api/status" and start_bridge:  # browser_status reports the extension as it is
+            if endpoint.split("?", 1)[0] != "/api/status" and start_bridge:  # report the extension as it is
                 self.await_extension()
             try:
                 headers = {**_headers(), CLIENT_HEADER: self.client_id, OWNER_HEADER: self.owner_id}

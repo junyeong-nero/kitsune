@@ -360,8 +360,8 @@ _client = tools.client = BridgeClient(caps=enabled_groups(ENABLED_CAPS), mode=MO
 
 
 @functools.wraps(tools.browser_status)
-def browser_status() -> dict:
-    result = tools.browser_status()
+def browser_status(diagnostics: bool = False) -> dict:
+    result = tools.browser_status(diagnostics=diagnostics)
     # This server's tool surface (#171).
     result["mcp_tools"] = {"caps": sorted(ENABLED_CAPS), "unpublished": len(UNPUBLISHED_TOOLS),
                            "client": _client.client_id, "owner": _client.owner_id,

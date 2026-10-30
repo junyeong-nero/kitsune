@@ -75,6 +75,26 @@ class TabResultTests(unittest.TestCase):
         self.assertEqual((result["ok"], result["timedOut"], result["index"]), (False, True, 2))
         self.assertNotIn("tabId", result)
 
+    def test_a_stalled_new_tab_keeps_its_index_and_recovery_guidance(self):
+        self.post.side_effect = None
+        self.open.append({"id": 11, "title": "example.com", "url": "about:blank", "owned": True})
+        self.post.return_value = {
+            "ok": False, "timedOut": True, "tabId": 11, "url": "about:blank", "status": "complete",
+            "code": "new_tab_stalled", "retryable": False,
+            "hint": "The tab was created; save work and restart if the browser was updated.",
+        }
+        result = playwright_tools.browser_tabs("new", url="https://example.com")
+        self.assertEqual(result["code"], "new_tab_stalled")
+        self.assertFalse(result["retryable"])
+        self.assertEqual(result["hint"], self.post.return_value["hint"])
+        self.assertEqual(result["index"], 2)
+        self.assertEqual(playwright_tools._current_tab, 11)
+        self.assertEqual(result["tabs"][2], {
+            "index": 2, "title": "example.com", "url": "about:blank", "owned": True, "current": True,
+        })
+        self.assertNotIn("tabId", result)
+        self.post.assert_called_once()
+
     def test_a_failed_listing_keeps_the_action_result(self):
         playwright_tools.browser_tabs("select", index=1)
         self.get.side_effect = None

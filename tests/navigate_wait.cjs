@@ -107,6 +107,19 @@ function start(h, command) {
 
 const PAGE_URL_TIMEOUT_MS = 500;
 
+function assertStalled(result, url) {
+  const { code, retryable, hint, ...state } = result;
+  assert.deepEqual(state, { ok: false, timedOut: true, url });
+  assert.equal(code, 'navigation_stalled');
+  assert.equal(retryable, false);
+  assert.match(hint, /about:blank/);
+  assert.match(hint, /browser_status\(diagnostics=true\)/);
+  assert.match(hint, /Retrying will not fix this/);
+  assert.match(hint, /update, a restart or another fix/);
+  assert.match(hint, /save their work and restart or update/);
+  assert.match(hint, /not a confirmed diagnosis/);
+}
+
 async function main() {
   // Hash-only and identical-with-fragment targets are same-document: no load to wait for.
   for (const [from, to] of [
@@ -235,9 +248,24 @@ async function main() {
   assert.equal(silentNav.settled, false);
   assert.equal(silent.pageInfoRequests, 2, 'polls at 200 and 800 ms; the first waits 500 ms for its answer');
   await silent.tick(14000);
-  assert.deepEqual(await silentNav.result, { ok: false, timedOut: true, url: 'https://example.com/user' });
-  await silent.tick(PAGE_URL_TIMEOUT_MS); // the last unanswered request's own bound
+  assert.equal(silentNav.settled, false, 'the timeout asks the page once more');
+  await silent.tick(PAGE_URL_TIMEOUT_MS); // that request's and the last poll's own bound
+  assert.equal(silentNav.settled, true);
+  assertStalled(await silentNav.result, 'https://example.com/user');
   silent.assertClean();
+
+  // #366: after an on-disk browser update, an old process's blank tab ignores navigation too:
+  // complete/about:blank, no loading event, no content-script receiver.
+  const inert = harness('about:blank');
+  const inertNav = start(inert, { action: 'navigate', url: 'https://example.com/inert' });
+  await inert.tick(14999);
+  assert.equal(inertNav.settled, false, 'allow the load time before diagnosing');
+  await inert.tick(1);
+  assert.equal(inertNav.settled, true);
+  assertStalled(await inertNav.result, 'https://example.com/inert');
+  assert.deepEqual(inert.calls, [{ method: 'update', id: 7, url: 'https://example.com/inert' }],
+    'navigated once, no retry');
+  inert.assertClean();
 
   console.log('navigate_wait: all tests passed');
 }

@@ -28,6 +28,7 @@ function harness(onCreate = () => {}, page = null) {
   const onUpdated = event(), onRemoved = event();
   let tab = null;
   const h = {
+    creates: [],
     send: command => context.handleCommand({ includeSnapshot: false, ...command })
       .then(result => JSON.parse(JSON.stringify(result))),
     update: changes => {
@@ -62,9 +63,10 @@ function harness(onCreate = () => {}, page = null) {
     tabs: {
       onCreated: event(), onUpdated, onRemoved,
       query: async () => tab ? [{ ...tab }] : [],
-      create: async ({ url }) => {
+      create: async ({ url, active }) => {
+        h.creates.push({ url, active });
         // Gecko creates the tab on about:blank and navigates it afterwards.
-        tab = { id: 9, url: 'about:blank', title: '', status: 'complete', active: true, windowId: 1, index: 0 };
+        tab = { id: 9, url: 'about:blank', title: '', status: 'complete', active, windowId: 1, index: 0 };
         await onCreate(h, url);
         return { ...tab };
       },
@@ -99,6 +101,21 @@ function start(h, command) {
   const pending = { settled: false };
   pending.result = h.send(command).then(result => { pending.settled = true; return result; });
   return pending;
+}
+
+function assertStalled(result) {
+  const { code, retryable, hint, ...state } = result;
+  assert.deepEqual(state, {
+    ok: false, timedOut: true, tabId: 9, url: 'about:blank', status: 'complete',
+  });
+  assert.equal(code, 'new_tab_stalled');
+  assert.equal(retryable, false, 'creation already happened; do not blindly retry');
+  assert.match(hint, /created/i);
+  assert.match(hint, /restart/i);
+  assert.match(hint, /updat/i);
+  assert.match(hint, /save/i);
+  assert.match(hint, /Retrying will not fix this/);
+  assert.doesNotMatch(hint, /before retrying/);
 }
 
 async function main() {
@@ -208,10 +225,34 @@ async function main() {
   blankPage.update({ status: 'complete' });
   await blankPage.tick(1000);
   assert.equal(blankWait.settled, true);
-  assert.deepEqual(await blankWait.result, {
-    ok: false, timedOut: true, tabId: 9, url: 'about:blank', status: 'complete',
-  });
+  assertStalled(await blankWait.result);
   blankPage.assertClean();
+
+  // #366: after an on-disk browser update, an old process can create an inert tab:
+  // complete/about:blank forever, with no content-script receiver and no loading event.
+  // Report the created tab and recovery advice, not success or an automatic second tab.
+  const inert = harness();
+  const inertOpen = start(inert, {
+    action: 'newTab', url: 'https://example.com/inert', wait: true, timeout: 1000,
+  });
+  await inert.tick(999);
+  assert.equal(inertOpen.settled, false, 'allow the requested load time before diagnosing');
+  await inert.tick(1);
+  assert.equal(inertOpen.settled, true);
+  assertStalled(await inertOpen.result);
+  assert.deepEqual(inert.creates, [{ url: 'https://example.com/inert', active: false }]);
+  inert.assertClean();
+
+  // A loading blank placeholder is not the complete, inert-tab symptom.
+  const loadingBlank = harness(h => h.update({ status: 'loading' }));
+  const loadingOpen = start(loadingBlank, {
+    action: 'newTab', url: 'https://example.com/loading', wait: true, timeout: 1000,
+  });
+  await loadingBlank.tick(1000);
+  assert.deepEqual(await loadingOpen.result, {
+    ok: false, timedOut: true, tabId: 9, url: 'about:blank', status: 'loading',
+  });
+  loadingBlank.assertClean();
 
   console.log('new_tab_wait: all tests passed');
 }

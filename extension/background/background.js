@@ -426,6 +426,7 @@ function connect() {
       ws.send(JSON.stringify({ type: 'hello', version: browser.runtime.getManifest().version, build: KITSUNE_BUILD,
         sourceHash, manifestHash }));
       sendBrowserState();
+      sendBrowserInfo(socket);
       startHeartbeat();
       injectAllTabs(); // Inject content scripts into all existing tabs
     };
@@ -468,6 +469,17 @@ function connect() {
     cleanup();
     scheduleReconnect();
   }
+}
+
+// Optional metadata for browser_status(diagnostics=true). It must not delay hello, heartbeat,
+// or page commands, and a late reply must never describe a replacement connection.
+async function sendBrowserInfo(socket) {
+  try {
+    const info = await browser.runtime.getBrowserInfo();
+    if (ws !== socket || socket.readyState !== WebSocket.OPEN) return;
+    const { name, vendor, version, buildID } = info;
+    socket.send(JSON.stringify({ type: 'browser_info', info: { name, vendor, version, buildID } }));
+  } catch { /* older/unsupported runtimes leave the diagnostic explicitly unknown */ }
 }
 
 // For the bridge's browser_status diagnosis (docs/api-reference.md#connection-diagnosis): the normal
@@ -1256,6 +1268,17 @@ async function navigateTab(url, tabId, expectTitle) {
 
     // Check if page title matches expectation (catches silent redirects)
     const result = loaded ? { ok: true, url } : { ok: false, timedOut: true, url };
+    // #366: the inert blank tab of new_tab_stalled also ignores a later navigation.
+    if (!loaded && !url.startsWith('about:')) {
+      const tab = await browser.tabs.get(targetTabId);
+      if (tab.url === 'about:blank' && tab.status === 'complete' && !await loadedPageUrl(targetTabId)) {
+        Object.assign(result, {
+          code: 'navigation_stalled', retryable: false,
+          hint: 'The tab is still about:blank after the load timeout. '
+            + 'Do not repeat the navigation or open another tab. ' + STALLED_TAB_HINT,
+        });
+      }
+    }
     if (expectTitle) {
       const tab = await browser.tabs.get(targetTabId);
       const title = tab.title || '';
@@ -1282,6 +1305,14 @@ async function switchTab(tabId) {
   }
 }
 
+// The recovery advice of new_tab_stalled and navigation_stalled (#366).
+// Retrying cannot help: the browser itself has to be fixed first.
+const STALLED_TAB_HINT = 'Retrying will not fix this: the browser needs an update, a restart or another fix first. '
+  + 'Check browser_status(diagnostics=true) for a runtime/installed build mismatch, then tell the user '
+  + 'that the browser cannot load new pages and ask them to save their work and restart or update it, '
+  + 'or fix it another way. Do not retry until they say it is fixed. '
+  + 'A pending browser update is one possible cause, not a confirmed diagnosis.';
+
 // Opens an agent-owned tab in the background. Immediate by default. With wait, resolves once the
 // tab loads (or the timeout passes, leaving the tab open) and reports the actual URL, so
 // redirects are visible.
@@ -1297,10 +1328,21 @@ async function createTab(url, { wait = false, timeout = 15000 } = {}) {
     const current = await browser.tabs.get(tab.id);
     const shownUrl = current.url.startsWith('about:') && !target.startsWith('about:')
       && await loadedPageUrl(tab.id) || current.url;
-    return {
+    const result = {
       ok: loaded, ...(loaded ? {} : { timedOut: true }),
       tabId: tab.id, url: shownUrl, status: current.status,
     };
+    // #366: an old browser process after an on-disk update can create inert blank tabs.
+    // This is an observed symptom, not proof of an update mismatch. Keep the created id
+    // (including for batch newTabs), do not retry creation or steal focus to wake it.
+    if (!loaded && shownUrl === 'about:blank' && current.status === 'complete') {
+      Object.assign(result, {
+        code: 'new_tab_stalled', retryable: false,
+        hint: 'The tab was created, but is still about:blank after the load timeout. '
+          + 'Do not open another tab; inspect or close the created one. ' + STALLED_TAB_HINT,
+      });
+    }
+    return result;
   } catch (e) {
     return { error: e.message };
   }

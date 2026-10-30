@@ -2859,6 +2859,63 @@ Connection status and config; `diagnosis` is described under [Connection diagnos
   "diagnosis": { "code": "connected" } }
 ```
 
+#### Browser build diagnostics
+
+`browser_status(diagnostics=true)`, Python `browser.status(diagnostics=True)`, or authenticated
+`GET /api/status?diagnostics=true` adds `browser_diagnostics`. The default status stays lightweight:
+no process inspection, app metadata reads, or wait for extension reconnection. The existing
+connection `diagnosis` is unchanged; a connected extension can coexist with a browser build mismatch.
+
+```json
+{
+  "browser_diagnostics": {
+    "status": "mismatch",
+    "comparison": "gecko_build_id",
+    "runtime": {
+      "name": "Zen", "vendor": "Mozilla", "version": "1.23.4b", "buildID": "20261020090730",
+      "source": "browser.runtime.getBrowserInfo"
+    },
+    "installed": {
+      "name": "Zen", "vendor": "Mozilla", "version": "1.24b", "buildID": "20261029123729",
+      "source": "application.ini [App]"
+    },
+    "process": { "source": "websocket_peer", "mapped_bundle": "backup" },
+    "restart_recommended": true,
+    "hint": "The connected browser's runtime and installed build differ. Ask the user to save work and restart the browser ..."
+  }
+}
+```
+
+- `status: "match"`: runtime and installed Gecko app **build IDs** agree; `restart_recommended: false`.
+  It does not prove that page loading is healthy. Product/engine version strings are displayed, never
+  compared against each other; missing or invalid build IDs produce `unknown` instead.
+- `status: "mismatch"`: those build IDs differ; `restart_recommended: true` and `hint` suggest asking
+  the user to save work and restart, then check status and list tabs again. This is evidence of a
+  pending browser restart, **not proof of the cause of a page failure**.
+- `status: "unknown"`: `restart_recommended: null` and a `reason`; not a healthy/matching result.
+
+Runtime metadata is sent by the extension on each connection, not read from page content or a user
+agent string. Installed-build inspection is currently **macOS only**. The bridge matches the exact
+reverse TCP connection of its active extension WebSocket to one PID using `lsof`, verifies the main
+executable against its bundle's `Info.plist`, and reads the current bundle's `application.ini`.
+`mapped_bundle` says `current` (`Contents`) or `backup` (`Contents.bak`); a backup path alone is not
+a build mismatch. It never picks a browser by name from the process list or reads a user profile.
+Each of at most three `lsof` calls has a one-second timeout, and metadata files are capped at 64 KiB.
+The peer is rechecked after inspection; a replaced/disconnected extension invalidates the result.
+The diagnostic returns no paths, PIDs, socket addresses, tokens, or raw subprocess errors.
+
+Unknown reasons include `extension_disconnected`, `runtime_info_unavailable` (older extension or
+runtime metadata not yet received), `unsupported_platform` (installed-build inspection unavailable),
+`connection_address_unavailable`, `browser_process_unavailable`, `ambiguous_browser_process`,
+`process_lookup_unavailable` (missing helper or access denied), `process_lookup_failed`,
+`process_lookup_timeout`, `browser_bundle_unavailable`, `installed_metadata_unavailable`,
+`build_id_unavailable`, and `connection_changed`. A remote/forwarded WebSocket that cannot be tied
+to a local browser is also unknown, not guessed.
+
+This is read-only: no tabs are opened, navigated, activated or closed; no settings change, extension
+reload, or browser restart is performed. A bridge predating this option may ignore the query:
+absence of `browser_diagnostics` is not a successful build comparison.
+
 ### GET /api/version
 Bridge and extension version info.
 ```json
@@ -2998,6 +3055,10 @@ zero timeout performs one immediate check.
 - The tab the user is viewing returns `user_viewing`, as do the other page writes;
   `confirmToken` is its token after the user approved, and `X-Kitsune-Hold-Viewed-Tab: 0`
   lifts the hold for the request (see [Viewed tab](#viewed-tab)).
+- A load that does not finish in 15 s returns `{ "ok": false, "timedOut": true, "url": "..." }`.
+  If the tab is still `about:blank` / `complete` and the page cannot confirm a loaded destination,
+  it also carries `code: "navigation_stalled"`, `retryable: false`, and the recovery `hint` of
+  [`new_tab_stalled`](#post-apinew-tab) (#366). A requested `about:` URL never gets this code.
 
 ### POST /api/new-tab
 `{ "url": "https://example.com" }` — url optional, defaults to about:blank.
@@ -3011,6 +3072,18 @@ On timeout the tab stays open and the result is
 `{ "ok": false, "timedOut": true, "tabId": 123, "url": "...", "status": "loading" }`.
 While Zen's first-run welcome screen is open, the browser keeps reporting a loaded tab's URL as
 `about:blank` (#360); the wait then asks the page, and `url` is the page's own URL.
+
+If the wait times out with the tab still `about:blank` / `complete`, and the page cannot confirm
+a loaded destination, the result also carries `code: "new_tab_stalled"`, `retryable: false`, and
+a `hint` saying that retrying will not fix it (#366). The tab already exists: `tabId` is retained (the core
+`browser_tabs` returns its `index` and tab list instead). Do not repeat creation or navigation:
+the browser needs an update, a restart or another fix first. A browser left running after an
+on-disk update is one possible cause; check
+[`browser_status(diagnostics=true)`](#browser-build-diagnostics) for build mismatch evidence. Tell the
+user, ask them to save work and restart or update the browser (or fix it another way), and retry only after they say it is fixed.
+The code describes the observed blank-tab timeout, not a confirmed update mismatch. Kitsune does
+not restart the browser, activate the tab, or create a replacement automatically. A blank tab
+requested intentionally still succeeds; a tab still loading retains the ordinary timeout result.
 
 ### POST /api/switch-tab
 `{ "tabId": 123 }` shows the tab. It switches the user's view, so send it only on the
