@@ -101,6 +101,9 @@ BASE_PREFS = {
     "app.update.auto": False,
     "app.update.enabled": False,
     "extensions.update.enabled": False,
+    # Zen's first-run welcome screen hides the tab area of a headed window, so pages there have no
+    # size and keep reporting about:blank (#360). Headless Zen sets this pref itself.
+    "zen.welcome-screen.seen": True,
 }
 # The popup blocker drops a tab opened by a synthetic click; benchmark profiles allow popups.
 POPUPS_ALLOWED = {"dom.disable_open_during_load": False}

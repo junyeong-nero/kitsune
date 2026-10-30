@@ -190,9 +190,12 @@ function background(zoomOf) {
     storage: { local: { get: async () => ({}), set: async () => {} } },
     runtime: { onMessage: noop, onStartup: noop, onInstalled: noop },
   };
+  // Timers run at once and advance the clock by their delay.
+  let now = 0;
   const context = vm.createContext({
     browser, console: { log() {}, error() {} }, WebSocket: class { close() {} },
-    setTimeout: fn => { fn(); return 0; }, clearTimeout() {},
+    Date: class extends Date { static now() { return now; } },
+    setTimeout: (fn, delay = 0) => { now += delay; fn(); return 0; }, clearTimeout() {},
     setInterval: () => 0, clearInterval() {},
   });
   vm.runInContext(fs.readFileSync('extension/background/background.js', 'utf8'), context);
@@ -225,10 +228,38 @@ async function testBackgroundPassesTheTabZoom() {
   assert.deepEqual(failing.activations, [2, 1]);
 }
 
+// #360: a tab that reports no size on screen (Zen's first-run welcome screen hides every page)
+// has no box to click; the shown tab gets up to a second to get one.
+async function testATabWithNoSizeIsNotClicked() {
+  const hidden = background(() => 1);
+  Object.assign(hidden.tabs[2], { status: 'complete', width: 0, height: 0 });
+  const refused = copy(await hidden.context.screenPointForClick({ tabId: 2, selector: '#go', click: true }));
+  assert.equal(refused.code, 'tab_not_shown', JSON.stringify(refused));
+  assert.equal(refused.retryable, true);
+  assert.match(refused.hint, /Ask the user to finish or close whatever hides the page/);
+  assert.deepEqual(refused.state, { tabId: 2, url: 'https://example.com/agent', status: 'complete', width: 0, height: 0 });
+  assert.deepEqual(hidden.sent, [], 'nothing is measured');
+  assert.deepEqual(hidden.activations, [2, 1], "the user's tab is shown again");
+
+  // A tab that gets its size within the wait is measured.
+  const late = background(() => 1);
+  Object.assign(late.tabs[2], { width: 0, height: 0 });
+  const get = late.context.browser.tabs.get;
+  let reads = 0;
+  late.context.browser.tabs.get = async id => {
+    if (id === 2 && ++reads === 4) Object.assign(late.tabs[2], { width: 1042, height: 929 });
+    return get(id);
+  };
+  const point = copy(await late.context.screenPointForClick({ tabId: 2, selector: '#go', click: true }));
+  assert.equal(point.screenX, 1, JSON.stringify(point));
+  assert.deepEqual(late.activations, [2]);
+}
+
 (async () => {
   await testZoomScalesTheDesktopPoint();
   await testClickRefusesWhenTheTargetIsNotAtThePoint();
   await testDescendantsOfTheTargetCount();
   await testBackgroundPassesTheTabZoom();
+  await testATabWithNoSizeIsNotClicked();
 })().then(() => console.log('Trusted click zoom checks passed'))
   .catch(error => { console.error(error); process.exitCode = 1; });

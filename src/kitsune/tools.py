@@ -643,6 +643,8 @@ def browser_trusted_click(
     send returns an error without clicking.
     target_not_at_point: another element covers the target's center (state.hit); nothing
     was clicked.
+    tab_not_shown: the tab's window shows no page (e.g. Zen's first-run welcome screen); nothing
+    was clicked. Ask the user to finish or close what hides the page, then retry.
     browser_not_at_point (macOS): another app's window (state.app) is where the click would
     land, usually a full-screen browser on another Space; nothing was clicked. Ask the user
     to show the browser, then retry.
@@ -681,8 +683,9 @@ def browser_trusted_type(
     (as browser_trusted_click, showing a tab that is not shown and then the user's tab again)
     and sends each key only while the browser is frontmost and the target has the page's focus:
     keyboard_focus_lost (state.reason, state.keysSent) means it stopped before a key could land
-    elsewhere. It takes the user's keyboard and pointer for its duration; prefer the synthetic
-    tools unless the page ignores them."""
+    elsewhere; tab_not_shown, before the click, that the tab's window shows no page. It takes
+    the user's keyboard and pointer for its duration; prefer the synthetic tools unless the page
+    ignores them."""
     body = {"selector": selector, "text": text, "clear": clear, "submit": submit, "delayMs": delay_ms}
     return _post("/api/trusted-type", _request_body(body, tab_id, confirm_token=confirm_token, first=first),
                  timeout=40 + len(text or "") * (max(delay_ms, 0) + 150) / 1000)
@@ -705,8 +708,9 @@ def browser_trusted_press_key(
     (as browser_trusted_click, showing a tab that is not shown and then the user's tab again)
     and sends each key only while the browser is frontmost and the target has the page's focus:
     keyboard_focus_lost (state.reason, state.keysSent) means it stopped before a key could land
-    elsewhere. It takes the user's keyboard and pointer for its duration; prefer the synthetic
-    tools unless the page ignores them."""
+    elsewhere; tab_not_shown, before the click, that the tab's window shows no page. It takes
+    the user's keyboard and pointer for its duration; prefer the synthetic tools unless the page
+    ignores them."""
     return _post("/api/trusted-press-key", _request_body({"selector": selector, "keys": keys}, tab_id,
                                                           confirm_token=confirm_token, first=first))
 

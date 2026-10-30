@@ -7,8 +7,9 @@ real pointer. Run it while nobody uses the machine, with Quartz and Accessibilit
     KITSUNE_E2E_BROWSER=/path/to/Firefox.app/Contents/MacOS/firefox KITSUNE_E2E_TRUSTED_INPUT=1 \\
         uv run --extra macos python -m unittest discover -s tests -p test_real_browser_trusted_keys.py -v
 
-Use Firefox (or LibreWolf): headed Zen on a fresh profile reports background tabs as about:blank
-and does not lay out the tab it activates, so its commands stop before any input (#360).
+On a fresh headed profile, Zen's first-run welcome screen hides every page, so tabs report
+about:blank and have no size (#360). The harness now sets zen.welcome-screen.seen, so Zen should
+work, but this suite has not been verified on Zen yet; it is verified on Firefox.
 
 The suite's browser runs headed on a temporary profile. Before each command the test brings that
 browser process (by pid, not by name, so another browser of the same name is left alone) to the
@@ -106,24 +107,10 @@ class RealBrowserTrustedKeysTests(harness.RealBrowserTestCase):
         self.assertIn("result", reply, reply)
         return json.loads(reply["result"])
 
-    def open_page(self, path):
-        """open_tab for the headed browser: headed Zen reports a background tab's url as
-        about:blank after it loads, so the page itself is asked when it has loaded."""
-        # Its load wait times out on the stale about:blank, but by then the page has loaded.
-        tab = self.call("/api/new-tab", {"url": f"{self.site.origin}{path}", "wait": True, "timeout": 3000})["tabId"]
-        self.addCleanup(self.call, "/api/close-tab", {"tabId": tab})
-        deadline = time.monotonic() + 15
-        while time.monotonic() < deadline:
-            status, page = self.post("/api/js", {"tabId": tab, "code": "location.pathname + ' ' + document.readyState"})
-            if page.get("result") == f"{path} complete":
-                return tab
-            time.sleep(0.2)
-        self.fail(f"{path} did not load: {page}")
-
     def user_and_agent_tabs(self, agent_path):
-        user = self.open_page("/user")
+        user = self.open_tab(f"{self.site.origin}/user")
         self.assert_ok(self.call("/api/switch-tab", {"tabId": user}))
-        agent = self.open_page(agent_path)
+        agent = self.open_tab(f"{self.site.origin}{agent_path}")
         self.front()
         return user, agent
 

@@ -15,8 +15,9 @@ function event() {
 
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
-// onCreate(h, url) runs inside tabs.create, before the API call resolves.
-function harness(onCreate = () => {}) {
+// onCreate(h, url) runs inside tabs.create, before the API call resolves. page(), when given,
+// is what the content script reports to getPageInfo: [location.href, document.readyState].
+function harness(onCreate = () => {}, page = null) {
   let now = 0, nextId = 0;
   const timers = new Map();
   const schedule = (fn, delay, interval = false) => {
@@ -71,7 +72,11 @@ function harness(onCreate = () => {}) {
         if (!tab || id !== tab.id) throw new Error(`Invalid tab ID: ${id}`);
         return { ...tab };
       },
-      sendMessage: async () => { throw new Error('Unexpected content message'); },
+      sendMessage: async (id, message) => {
+        if (!page || message.action !== 'getPageInfo') throw new Error('Unexpected content message');
+        const [url, readyState] = page();
+        return { url, readyState, title: tab.title };
+      },
       executeScript: async () => { throw new Error('Unexpected content injection'); },
     },
     runtime: { onMessage: event(), onStartup: event(), onInstalled: event() },
@@ -176,6 +181,37 @@ async function main() {
   assert.equal(closed.settled, true);
   assert.deepEqual(await closed.result, { error: 'Invalid tab ID: 9' });
   closing.assertClean();
+
+  // #360: while Zen's first-run welcome screen hides the tab area, a loaded tab keeps reporting
+  // about:blank (its title is the page's); the page itself reports where it is.
+  let shown = ['about:blank', 'complete'];
+  const stale = harness(h => h.update({ status: 'loading' }), () => shown);
+  const staleOpen = start(stale, { action: 'newTab', url: 'https://example.com/user', wait: true, timeout: 3000 });
+  await stale.tick(200);
+  shown = ['https://example.com/user', 'loading'];
+  stale.update({ title: 'user' });
+  await stale.tick(200);
+  assert.equal(staleOpen.settled, false, 'a page still loading is not loaded');
+  shown = ['https://example.com/user', 'complete'];
+  stale.update({ status: 'complete' });
+  await stale.tick(200);
+  assert.equal(staleOpen.settled, true);
+  assert.deepEqual(await staleOpen.result, {
+    ok: true, tabId: 9, url: 'https://example.com/user', status: 'complete',
+  });
+  stale.assertClean();
+
+  // A tab that really shows about:blank still times out and reports about:blank.
+  const blankPage = harness(h => h.update({ status: 'loading' }), () => ['about:blank', 'complete']);
+  const blankWait = start(blankPage, { action: 'newTab', url: 'https://example.com/none', wait: true, timeout: 1000 });
+  await blankPage.tick(0);
+  blankPage.update({ status: 'complete' });
+  await blankPage.tick(1000);
+  assert.equal(blankWait.settled, true);
+  assert.deepEqual(await blankWait.result, {
+    ok: false, timedOut: true, tabId: 9, url: 'about:blank', status: 'complete',
+  });
+  blankPage.assertClean();
 
   console.log('new_tab_wait: all tests passed');
 }
