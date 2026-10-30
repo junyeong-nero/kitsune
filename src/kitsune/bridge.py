@@ -203,8 +203,9 @@ _CLIENT_ID = _re.compile(CLIENT_ID_PATTERN)
 _owner_id = contextvars.ContextVar("kitsune_owner_id", default=None)
 # tab id -> {"owner", "opened" (time.monotonic())} of open tabs that a request with an owner id
 # opened (#325). Only this process holds it: a restarted bridge knows no tab's owner. A new extension
-# connection clears it, since a browser restart reuses tab ids and an extension reload gives the
-# agent's tabs to the user.
+# connection clears it, since a browser restart reuses tab ids. The extension's `owned` survives an
+# extension reload or a restored browser restart (#376); this record does not, so no tab is `mine`
+# after one.
 _tab_openers = {}
 # Tabs a batch or workflow call's newTab steps opened and did not close, oldest first (#303).
 _container_new_tabs = contextvars.ContextVar("kitsune_container_new_tabs", default=None)

@@ -18,7 +18,8 @@
     "downloads",
     "clipboardRead",
     "clipboardWrite",
-    "browsingData"
+    "browsingData",
+    "sessions"
   ],
   "optional_permissions": [
     "history",

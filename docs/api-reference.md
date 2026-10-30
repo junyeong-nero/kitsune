@@ -1165,8 +1165,27 @@ The browser's copies of other windows' tabs in a `createWindow` window do not co
 [Agent windows](#agent-windows)).
 
 Ownership lives in the extension's background page. A bridge restart or reconnect
-keeps it. An extension reload or update, or a browser restart, forgets it; the tabs
-the agent opened before then count as user tabs, so closing them needs approval.
+keeps it. The extension also stores it on each owned tab as a session tab value
+(`browser.sessions`, the `sessions` permission, #376), so an extension reload or update,
+and a browser restart that restores the tabs, keep it too: when the extension starts, it
+reads the values back before it runs a command. Pages cannot read or write these values.
+A tab that goes back to the user loses its value. Limits:
+
+- A tab the user duplicates from an agent tab, and an agent tab the user closed and
+  reopens (Undo Close Tab, a reopened window), are the user's: Firefox copies or restores
+  the value with the tab, and the extension removes it when the tab opens or starts loading.
+  The agent's own `duplicateTab` copy stays the agent's.
+- A browser restart keeps only the tabs the session restore brings back. If the extension
+  starts before the browser restored a tab and reads no value for it, that tab counts as
+  a user tab, as it did before #376.
+- A restart that does not restore the tabs, a new profile, or a browser without
+  `browser.sessions` loses ownership: the tabs count as user tabs, so closing them needs
+  approval.
+- What else the extension knew about these tabs does not persist: the 2 s window in which
+  a tab an agent action opened counts as the agent's, and the
+  [agent window](#agent-windows) records. The bridge's [tab owners](#tab-owners) (`mine`)
+  are cleared too.
+
 The extension also cannot tell an agent action's tab from one the user opened from the
 same tab within 2 s of that action; such a tab counts as the agent's.
 
@@ -1222,8 +1241,9 @@ Enter in a field, agent JavaScript, redirects, and navigation the page starts it
 Reload keeps the URL and is not guarded. This is not comprehensive URL preservation.
 View switches (`browser_tabs` select, `browser_focus_window`) and screenshots change no URL
 and are not guarded either.
-Ownership is the extension's, as above: after an extension reload or a browser restart,
-the tabs the agent opened before count as user tabs and are protected too.
+Ownership is the extension's, as above: it survives an extension reload and a browser
+restart that restores the tabs. Tabs whose ownership was lost (see its limits) count as
+user tabs and are protected too.
 
 #### Agent windows
 
@@ -1269,7 +1289,11 @@ Limits: this is a heuristic. A lazy background tab that something other than the
 opens in those 1.5 s at about:blank counts as the agent's, for example one opened by
 another extension. If the user closes the agent window, its adopted copies stay open,
 agent-owned, and show the agent's page; `browser_tabs` close closes them. In a `browser_detach_tab` window, the browser's copies count as user tabs, so
-`browser_close_window` on it needs the user's approval.
+`browser_close_window` on it needs the user's approval. The extension keeps its records of
+an agent window in memory only: after an extension reload or a browser restart, adopted copies stay owned but no
+longer go back to the user when shown, `browser_close_window` no longer closes them after
+the window, and the browser's copies in a `createWindow` window count as user tabs, so
+closing that window needs approval.
 
 #### User activity
 
@@ -1331,8 +1355,9 @@ another browser window.
   terminal, and the page is still on their screen. `state.browserFocused` is `false` then.
   The active tabs of the user's other windows, and their background tabs, are not held.
 - **Not held:** tabs the agent opened (`owned: true` in `browser_tabs` list), even once the
-  user shows one, and reads. After an extension reload or a browser restart those tabs count
-  as the user's (see [Agent-owned tabs](#agent-owned-tabs)), so one the user is viewing is held. Viewport, element and full-page screenshots are not held either,
+  user shows one, also after an extension reload or a browser restart that restores them,
+  and reads. A tab whose ownership was lost (see [Agent-owned tabs](#agent-owned-tabs))
+  counts as the user's, so it is held while the user views it. Viewport, element and full-page screenshots are not held either,
   nor are close (a user tab needs the [user_tab](#agent-owned-tabs) approval anyway),
   `browser_tabs` select and `browser_focus_window`.
 - **Held:** the writes [User activity](#user-activity) checks on their own tab. These are
@@ -1504,7 +1529,8 @@ tab when `closeTab` closes it or a tab list no longer has it, and forgets every 
 the extension connects again (after a browser restart, which reuses tab ids, or an
 extension reload). The record lives in the bridge process only: after a bridge restart,
 the tabs opened before it have no owner. `owned` (above) is the extension's and says
-whether the agent, any client, opened a tab.
+whether the agent, any client, opened a tab. It survives an extension reload or a browser
+restart; tab owners do not, so the agent's tabs are `owned` but no client's `mine` after one.
 
 In the tab list of Kitsune's `browser_tabs` list and `browser_tab_list` (`GET /api/tabs`),
 tabs whose owner is the requesting client's add `mine: true` when they are also `owned`,
