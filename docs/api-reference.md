@@ -428,6 +428,17 @@ action returns its delta, after up to 1 s more.
 `browser_fill_form` returns one delta for all its fields: the first field records the page's
 lines, and the last waits and lists every field's change under the refs the agent already has.
 
+**Cross-origin frames (#354).** A delta also lists what changed inside cross-origin frames
+([Frames](#frames)), under the frame's line, which reads `[frame=cross_origin …]`. The
+document the action ran in (the page, or the frame holding its target) is compared with its
+record from right before the action, as above. Every other document (the page, or another
+frame) is compared with the last whole-page snapshot or delta that showed it, so what the last
+result already listed is not repeated. A frame that no snapshot has shown yet is listed only when its line is
+in the delta (a frame the action added, for example), with its full content. An action inside
+a frame names its target there as `target_ref`, and `no_visible_change` covers the frames too.
+The wait above watches the document the action ran in, so a frame that changes later than it
+is not seen. `browser_wait_for(time)` lists frame changes the same way.
+
 The snapshot is full (no `snapshot_delta`; existing attached refs stay valid) for
 `browser_submit_form` and `browser_navigate`, which usually load another document,
 when the action loaded another document before the snapshot was taken (it has no
@@ -2240,9 +2251,25 @@ below). One snapshot reads at most six cross-origin frames, in document order, a
 1.5 seconds. Frames smaller than 24×24 CSS pixels are not read. Frames past the limit, and
 frames that do not answer in time, keep `content=cross_origin`. When the limit leaves frames
 out, the result's `hint` says how many; a snapshot scoped to a frame's ref reads that frame.
-Post-action delta snapshots, `browser_dom`, `browser_find` and `browser_forms` do not read
-cross-origin frames yet. In [ask mode](#ask-before-act) writes inside them are held
-(`cross_origin_frame`, `payment_frame`).
+In [ask mode](#ask-before-act) writes inside them are held (`cross_origin_frame`,
+`payment_frame`).
+
+**Cross-origin frames in other reads (#354).** `browser_find`, `browser_forms`, `browser_dom`
+and post-action deltas read the same frames, with the same limits per call, and the refs they
+return act inside the frame:
+
+- `browser_find` searches each frame with the same query. Its matches join the page's, best
+  score first, at most 20 in all. When the query matches as a CSS selector in any document,
+  only such matches are returned, as on a page without frames.
+- `browser_forms` lists a frame's fields after the page's, with `frame` set to the frame's title
+  or src. A frame that was read is no longer in `unavailableFrames`.
+- `browser_dom` puts a frame's tree under the frame's node, which then has
+  `frame: "cross_origin"` instead of `content`, within `max_depth` and the 20,000-character
+  cap. A frame's tree that no longer fits is left out, and the tree is `truncated`.
+- Bounds from a frame are in the top viewport, as for same-origin frames. Results from a frame
+  have no CSS `selector`, because a selector would match in the page; use the ref.
+- A delta lists a frame's changes under the frame's line, as described in
+  [Post-action snapshots](#post-action-snapshots).
 
 #### Images
 

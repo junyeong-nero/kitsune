@@ -3,7 +3,7 @@
 
 (function() {
   'use strict';
-  const CONTENT_VERSION = 46;
+  const CONTENT_VERSION = 47;
   if (window.__claudeBridgeVersion >= CONTENT_VERSION) return;
   window.__claudeBridgeVersion = CONTENT_VERSION;
 
@@ -455,9 +455,10 @@
                                      return getSnapshot(msg.maxChars, msg.focusLastAction, msg.ref || msg.selector, msg.maxDepth,
                                        msg.text ?? (msg.observation ? false : undefined), msg.observation,
                                        msg.delta || msg.sinceObservation ? 'delta' : 'full', !!msg.boxes, msg.collapse !== false,
-                                       !!msg.absoluteUrls);
+                                       !!msg.absoluteUrls, Array.isArray(msg.keepRefs) ? msg.keepRefs : []);
                                    },
-      'getAccessibilityTree':  () => getAccessibilityTree(msg.depth ?? 6, msg.ref || msg.selector),
+      'getAccessibilityTree':  () => getAccessibilityTree(msg.depth ?? 6, msg.ref || msg.selector,
+                                     Number.isFinite(msg.limit) ? msg.limit : DOM_TREE_LIMIT),
       'getFormFields':         () => getFormFields(),
       'click':                 () => withPopupWatch(withScriptPopupCheck(() =>
                                      clickElement(msg.selector, msg.coords, msg.first, msg.button, msg.modifiers)),
@@ -687,7 +688,8 @@
   const DOM_TRUNCATED_HINT = 'Tree cut at 20,000 chars; scope it with selector, ref or max_depth, ' +
     'or use browser_snapshot.';
 
-  function getAccessibilityTree(maxDepth, selector) {
+  // limit: the cap; a cross-origin frame's tree is read with what its page's tree left (#354).
+  function getAccessibilityTree(maxDepth, selector, limit = DOM_TREE_LIMIT) {
     // Resolve the scope before pruning detached refs.
     const root = selector ? resolveElement(selector) : document.body;
     if (!root) return selectorNotFound(selector);
@@ -695,6 +697,8 @@
     let refs = 0;
     let size = 0;
     let truncated = false;
+    // Cross-origin frame nodes the background reads through each frame's own content script.
+    const frames = [];
 
     function buildNode(el, depth) {
       if (truncated || depth > maxDepth || !el || el.nodeType !== 1) return null;
@@ -746,10 +750,12 @@
       // Upper bound of the node's share of the JSON: itself, a comma and its children array.
       // The first node past the cap ends the read, so the tree is a document-order prefix.
       const cost = JSON.stringify(node).length + ',"children":[],'.length;
-      if (size + cost > DOM_TREE_LIMIT) { truncated = true; return null; }
+      if (size + cost > limit) { truncated = true; return null; }
       size += cost;
       issueRef(el);
       refs++;
+      const frameId = frame ? readableFrameId(el) : -1;
+      if (frameId > 0) frames.push({ ref, frameId, depth, offset: frameTopOffset(el) });
 
       // Recurse children, and the body of a same-origin frame
       const children = [];
@@ -764,7 +770,8 @@
     }
 
     const tree = buildNode(root, 0);
-    return { tree, refs, ...(truncated && { truncated: true, hint: DOM_TRUNCATED_HINT }) };
+    return { tree, refs, ...(truncated && { truncated: true, hint: DOM_TRUNCATED_HINT }),
+      ...(frames.length ? { frames } : {}) };
   }
 
   // Explicit text=true is the bounded text mode. Omitted text is readable but has no
@@ -858,8 +865,11 @@
     return [rect.x, rect.y, rect.width, rect.height].map(Math.round).join(',');
   }
 
+  // keepRefs: in a delta, cross-origin frames whose own delta lists changes (#354); their lines
+  // are kept like changed lines, so the background can list that delta under them.
   function getSnapshot(maxChars, focusLastAction, selector, maxDepth, textMode,
-      observation = 'browser_snapshot', mode = 'full', boxes = false, collapse = true, absoluteUrls = false) {
+      observation = 'browser_snapshot', mode = 'full', boxes = false, collapse = true, absoluteUrls = false,
+      keepRefs = []) {
     // A delta diffed against a baseline with text lines lists text too (#348).
     const withText = textMode !== false || (mode === 'delta' && actionBaseline?.withText === true);
     if (maxChars != null && (!Number.isFinite(maxChars) || maxChars < 0)) {
@@ -902,9 +912,6 @@
     const clean = value => normalize(value).slice(0, 160);
     const nativeTags = new Set(['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'DETAILS', 'SUMMARY']);
     const metadata = new WeakMap();
-    // Cross-origin frames listed with a ref: the background reads each through its own
-    // content script (#343) and lists that frame's snapshot under the frame's line.
-    const crossOriginFrames = [];
     const signatures = new Map();
     const targetAncestors = new Set();
     for (let el = target; el; el = parentAcrossFrames(el)) targetAncestors.add(el);
@@ -1091,13 +1098,6 @@
           if (el.hasAttribute(`aria-${state}`)) states.push(`${state}=${el.getAttribute(`aria-${state}`)}`);
         }
         const frameReason = frame && frameAccess(el).reason;
-        // Frames too small to show content (tracking pixels, hidden helpers) are not read.
-        const frameRect = frameReason === 'cross_origin' && el.getBoundingClientRect();
-        if (frameRect && ref && frameRect.width >= 24 && frameRect.height >= 24) {
-          let frameId = -1;
-          try { frameId = browser.runtime.getFrameId(el); } catch {}
-          if (frameId > 0) crossOriginFrames.push({ ref, frameId });
-        }
         if (frameReason) {
           const src = clean(frameSource(el));
           states.push(`content=${frameReason}`, ...(src ? [`src=${JSON.stringify(src)}`] : []));
@@ -1115,6 +1115,10 @@
         const previous = entries[lastChild.get(parent)];
         const entry = { el, ref, line: head + (ref ?? pendingRef) + tail, parent, interactive,
           head, tail, label, role, signature: label + stateTail };
+        // A listed cross-origin frame: the background reads it through its own content script
+        // (#343) and lists that frame's snapshot under the frame's line.
+        const frameId = frame ? readableFrameId(el) : -1;
+        if (frameId > 0) entry.frameId = frameId;
         append(entry);
         parent = entries.length - 1;
         // Only web links are exposed: other schemes can hold executable code or local data.
@@ -1308,12 +1312,18 @@
       // The target, then lines the baseline lacks (new or newly shown elements, changed names,
       // states or text) in document order, each under its ancestors. Removals are not listed.
       if (targetIndex >= 0) keepTarget();
+      const changedFrames = new Set(keepRefs.map(ref => Object.hasOwn(refMap, ref) ? refMap[ref] : null));
       const changed = [];
+      // Lines of frames whose own delta lists changes (keepRefs); the background lists them
+      // below and says whether those changed.
+      const frameLines = [];
       entries.forEach((entry, i) => {
         const el = entry.el || entry.source;
         if (el && !baseline.signatures.get(el)?.has(entry.signature)) changed.push(i);
+        else if (entry.frameId && changedFrames.has(el)) frameLines.push(i);
       });
-      for (const i of changed) keep(i);
+      const listed = [...changed, ...frameLines].sort((a, b) => a - b);
+      for (const i of listed) keep(i);
       unchanged = !changed.length;
       // A collapse marker follows the listed items of its run.
       entries.forEach((entry, i) => {
@@ -1321,7 +1331,7 @@
         for (let j = entry.run; j < i; j++) if (kept.has(j)) return add(i);
       });
       selected = entries.filter((_, i) => kept.has(i));
-      truncated = changed.some(i => !kept.has(i));
+      truncated = listed.some(i => !kept.has(i));
       // Refs add to the current generation; an element that already has one keeps it.
       // A collapse marker's ref names its container (source).
       for (const entry of selected) {
@@ -1423,13 +1433,14 @@
     // An explicit readable snapshot reports readiness; a compact one omits prose, so its
     // emptiness says nothing about content.
     const explicit = withText && !baseline && observation === 'browser_snapshot';
+    const frames = selected.filter(entry => entry.frameId).map(entry => ({ ref: entry.ref, frameId: entry.frameId }));
     return {
       snapshot,
       ...(truncated ? { truncated: true } : {}),
       ...(targetIndex >= 0 ? { target_ref: entries[targetIndex].ref } : {}),
       // For boundPublicSnapshot, which can cut again after aliases and URL redaction.
       ...(cuts ? { cuts: cuts.filter(cut => cut <= selected.length) } : {}),
-      ...(!baseline && crossOriginFrames.length ? { frames: crossOriginFrames } : {}),
+      ...(frames.length ? { frames } : {}),
       ...(withText && !baseline ? { url: window.location?.href ?? globalThis.location?.href, title: document.title } : {}),
       ...(explicit ? { readyState: document.readyState } : {}),
       ...(explicit && !snapshot && !truncated ? { empty: true, hint: EMPTY_SNAPSHOT_HINT } : {}),
@@ -1488,6 +1499,14 @@
   }
 
   function findElements(query) {
+    const found = findInDocuments(query);
+    // Cross-origin frames are searched by their own content scripts (#354).
+    const frames = readableFrames();
+    return frames.length ? { ...found, frames } : found;
+  }
+
+  // The top document and its same-origin frames.
+  function findInDocuments(query) {
     pruneRefMap();
     const results = [];
 
@@ -2575,7 +2594,10 @@
       });
     });
     const frames = unavailableFrames();
-    return { fields, ...(frames.length ? { unavailableFrames: frames } : {}) };
+    // The background reads the fields of cross-origin frames through their own content scripts (#354).
+    const readable = readableFrames();
+    return { fields, ...(frames.length ? { unavailableFrames: frames } : {}),
+      ...(readable.length ? { frames: readable } : {}) };
   }
 
   // ── Execute JS ──
@@ -3051,6 +3073,42 @@
         if (!reason || isHidden(frame) || !hasArea(frame)) continue;
         out.push({ ref: issueRef(frame), title: frame.title || frame.getAttribute('name') || '',
           src: frameSource(frame), content: reason });
+      }
+    }
+    return out;
+  }
+
+  // The frame id of a cross-origin frame the background reads through its own content script
+  // (#343), else -1. Frames under 24×24 CSS pixels (tracking pixels, hidden helpers) show no
+  // content and are not read.
+  function readableFrameId(el) {
+    if (!FRAME_TAGS.has(el.tagName) || frameAccess(el).reason !== 'cross_origin') return -1;
+    const rect = el.getBoundingClientRect();
+    if (rect.width < 24 || rect.height < 24) return -1;
+    let frameId = -1;
+    try { frameId = browser.runtime.getFrameId(el); } catch {}
+    return frameId > 0 ? frameId : -1;
+  }
+
+  // Where a frame's viewport starts in the top viewport, as [x, y]. The background shifts the
+  // bounds a cross-origin frame reports by it (#354).
+  function frameTopOffset(frame) {
+    const rect = viewportRect(frame);
+    const style = styleOf(frame);
+    return [rect.left + (frame.clientLeft || 0) + (parseFloat(style.paddingLeft) || 0),
+      rect.top + (frame.clientTop || 0) + (parseFloat(style.paddingTop) || 0)];
+  }
+
+  // The rendered cross-origin frames browser_find and browser_forms read (#354), in the order
+  // of searchedDocuments.
+  function readableFrames() {
+    const out = [];
+    for (const doc of searchedDocuments()) {
+      let frames = [];
+      try { frames = queryTreeSelectorAll('iframe, frame', doc); } catch {}
+      for (const frame of frames) {
+        const frameId = isHidden(frame) ? -1 : readableFrameId(frame);
+        if (frameId > 0) out.push({ ref: issueRef(frame), frameId, offset: frameTopOffset(frame) });
       }
     }
     return out;

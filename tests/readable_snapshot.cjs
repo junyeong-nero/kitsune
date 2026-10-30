@@ -134,6 +134,8 @@ const field = (tagName, attrs, props) => new Element(tagName, attrs, [], props);
     getActiveTabId: async () => 42,
     tabsCreated: 0, openedTabs: [], actionStarts: new Map(), tabLoads: new Map(), mainFrameStatus: new Map(),
     userActiveError: async () => null, guardedTabId: async () => null, touchStart() {}, touchEnd() {},
+    // The top frame (#343): no ref here belongs to a cross-origin frame.
+    expandShortRefs: params => ({ params }), targetFrame: () => 0,
     dispatchCommand: send,
     forwardToContent: (action, params) => { calls.push({ action, ...params }); return send({ action, ...params }); },
   });

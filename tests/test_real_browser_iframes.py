@@ -35,7 +35,11 @@ class AddressSite:
                     "/checkout": "<!doctype html><title>checkout</title><h1>주문서</h1>"
                                  '<iframe title="배송지 편집" src="/address-editor" width="500" height="250"></iframe>'
                                  f'<iframe title="결제 위젯" src="http://localhost:{port}/widget?session=KITSUNE_FAKE_TOKEN"'
-                                 ' width="300" height="100"></iframe>',
+                                 ' width="300" height="160" style="border: 5px solid; padding: 7px"></iframe>'
+                                 # A page control that changes the widget's content (#354).
+                                 '<button type="button" id="coupon">쿠폰 적용</button><script>'
+                                 "document.getElementById('coupon').onclick = () => document.querySelector("
+                                 "'iframe[title=\"결제 위젯\"]').contentWindow.postMessage('coupon', '*');</script>",
                     "/address-editor": "<!doctype html><title>address</title>"
                                        '<form method="post" action="/address">'
                                        '<label>우편번호 <input name="zip" value="04524"></label>'
@@ -44,7 +48,12 @@ class AddressSite:
                     "/widget": '<!doctype html><title>widget</title><form method="post" action="/pay">'
                                f'<label>카드 번호 <input name="card" autocomplete="cc-number" value="{CARD}"></label>'
                                '<label>카드 소유자 <input name="holder"></label>'
-                               "<button>결제</button></form>",
+                               '<button>결제</button><button type="button" id="check">카드 확인</button></form>'
+                               # Controls the widget adds: after its own button, and on the page's message.
+                               "<script>const add = name => { const b = document.createElement('button');"
+                               " b.type = 'button'; b.textContent = name; document.body.append(b); };"
+                               " document.getElementById('check').onclick = () => add('확인 취소');"
+                               " addEventListener('message', e => { if (e.data === 'coupon') add('쿠폰 해제'); });</script>",
                 }
                 page = pages.get(urlparse(self.path).path)
                 if page is None:
@@ -135,9 +144,9 @@ class RealBrowserIframeTests(harness.RealBrowserTestCase):
         self.assertEqual(fields["zip"]["frame"], "배송지 편집", forms)
         self.assertEqual((fields["zip"]["label"], fields["zip"]["value"]), ("우편번호", "04524"))
         self.assertEqual(fields["detail"]["frame"], "배송지 편집", forms)
-        self.assertNotIn("card", fields)
-        self.assertEqual([(f["title"], f["content"]) for f in forms["unavailableFrames"]],
-                         [("결제 위젯", "cross_origin")])
+        # The cross-origin widget's fields are read too (#354), so it is not unavailable.
+        self.assertEqual(fields["card"]["frame"], "결제 위젯", forms)
+        self.assertNotIn("unavailableFrames", forms)
 
         zip_ref, _ = self.ref(tab, 'textbox "우편번호"')
         self.assert_ok(self.call("/api/fill", {"tabId": tab, "ref": zip_ref, "value": ZIP}))
@@ -196,6 +205,118 @@ class RealBrowserIframeTests(harness.RealBrowserTestCase):
         self.assertGreater(origin[0], 0)
         self.assertAlmostEqual(point["screenX"], origin[0] + local[0], delta=1)
         self.assertAlmostEqual(point["screenY"], origin[1] + local[1], delta=1)
+
+    def widget_origin(self, tab):
+        """Where the widget's viewport starts in the page's viewport: inside its border and padding."""
+        return json.loads(self.call("/api/js", {"tabId": tab, "code":
+            "(() => { const f = document.querySelector('iframe[title=\"결제 위젯\"]');"
+            " const r = f.getBoundingClientRect(); const s = getComputedStyle(f);"
+            " return JSON.stringify([r.left + f.clientLeft + parseFloat(s.paddingLeft),"
+            " r.top + f.clientTop + parseFloat(s.paddingTop)]); })()"})["result"])
+
+    def frame_position(self, tab, ref):
+        """The element's top left corner in its own frame's viewport."""
+        return json.loads(self.call("/api/js", {"tabId": tab, "selector": ref, "code":
+            "(r => JSON.stringify([r.left, r.top]))(__kitsuneElement.getBoundingClientRect())"})["result"])
+
+    def assert_page_bounds(self, tab, result, origin):
+        local = self.frame_position(tab, result["ref"])
+        self.assertAlmostEqual(result["bounds"][0], origin[0] + local[0], delta=1, msg=result)
+        self.assertAlmostEqual(result["bounds"][1], origin[1] + local[1], delta=1, msg=result)
+
+    def test_find_forms_and_dom_read_the_cross_origin_frame_and_their_refs_act_there(self):
+        # #354: as browser_snapshot does since #343. Bounds are in the page's viewport, and
+        # results from the frame carry no CSS selector, which would run in the page.
+        with self.site.lock:
+            self.site.saved.clear()
+        tab = self.open_tab(f"{self.site.origin}/checkout")
+        origin = self.widget_origin(tab)
+
+        found = self.call("/api/find", {"tabId": tab, "query": "결제"})
+        pay = next((r for r in found["results"] if (r["tag"], r["text"]) == ("button", "결제")), None)
+        self.assertIsNotNone(pay, found)
+        self.assertRegex(pay["ref"], r"^e\d+$")
+        self.assertNotIn("selector", pay)
+        self.assertNotIn("hint", found)
+        self.assert_page_bounds(tab, pay, origin)
+
+        forms = self.call("/api/forms", {"tabId": tab})
+        self.assertNotIn(CARD, json.dumps(forms))
+        fields = {f["name"]: f for f in forms["fields"]}
+        self.assertEqual([fields[name]["frame"] for name in ("zip", "card", "holder")],
+                         ["배송지 편집", "결제 위젯", "결제 위젯"], forms)
+        self.assertEqual(fields["holder"]["label"], "카드 소유자")
+        self.assertEqual((fields["card"].get("redacted"), fields["card"].get("hasValue")), (True, True), forms)
+        self.assertNotIn("selector", fields["holder"])
+        self.assertIn("selector", fields["zip"])
+        self.assertNotIn("unavailableFrames", forms)
+        self.assert_page_bounds(tab, fields["holder"], origin)
+
+        dom = self.call("/api/dom", {"tabId": tab})
+        self.assertNotIn(CARD, json.dumps(dom))
+
+        def nodes(node):
+            yield node
+            for child in node.get("children", []):
+                yield from nodes(child)
+
+        frame = next((n for n in nodes(dom["tree"]) if n.get("title") == "결제 위젯"), None)
+        self.assertIsNotNone(frame, dom)
+        self.assertEqual(frame.get("frame"), "cross_origin", frame)
+        self.assertNotIn("content", frame)
+        inner = list(nodes(frame))[1:]
+        self.assertIn("holder", [n.get("name") for n in inner])
+        button = next((n for n in inner if (n["tag"], n.get("text")) == ("button", "결제")), None)
+        self.assertIsNotNone(button, frame)
+        self.assert_page_bounds(tab, button, origin)
+
+        # Refs from these reads act inside the frame.
+        self.assert_ok(self.call("/api/fill", {"tabId": tab, "ref": fields["holder"]["ref"], "value": HOLDER}))
+        self.assert_ok(self.call("/api/click", {"tabId": tab, "ref": pay["ref"]}))
+        self.assertEqual(self.site.wait_for_save(), [("/pay", {"card": CARD, "holder": HOLDER})])
+
+    def test_action_deltas_list_what_changed_inside_the_cross_origin_frame(self):
+        tab = self.open_tab(f"{self.site.origin}/checkout")
+        check_ref, snapshot = self.ref(tab, 'button "카드 확인"')
+        coupon_ref = re.search(r'button "쿠폰 적용" \[ref=(e\d+)\]', snapshot).group(1)
+
+        def in_widget(result):
+            """The lines below the widget's line, which reads frame=cross_origin."""
+            self.assertTrue(result.get("snapshot_delta"), result)
+            self.assertNotIn(CARD, result["snapshot"])
+            lines = result["snapshot"].splitlines()
+            frame = next((i for i, line in enumerate(lines) if 'iframe "결제 위젯"' in line), None)
+            self.assertIsNotNone(frame, result["snapshot"])
+            self.assertIn("[frame=cross_origin", lines[frame])
+            indent = len(lines[frame]) - len(lines[frame].lstrip())
+            inner = []
+            for line in lines[frame + 1:]:
+                if len(line) - len(line.lstrip()) <= indent:
+                    break
+                inner.append(line.strip())
+            return inner
+
+        # An action inside the frame: what it changed there, with its target.
+        checked = self.assert_ok(self.call("/api/click", {"tabId": tab, "ref": check_ref}))
+        inner = in_widget(checked)
+        self.assertTrue(any(line.startswith('- button "확인 취소"') for line in inner), checked["snapshot"])
+        self.assertEqual(checked.get("target_ref"), check_ref)
+        self.assertNotIn("no_visible_change", checked)
+        for unchanged in ('heading "주문서"', 'textbox "우편번호"', 'button "쿠폰 적용"', 'textbox "카드 소유자"'):
+            self.assertNotIn(unchanged, checked["snapshot"])
+
+        # An action on the page that changes the frame; what the last delta showed is not repeated.
+        applied = self.assert_ok(self.call("/api/click", {"tabId": tab, "ref": coupon_ref}))
+        inner = in_widget(applied)
+        self.assertTrue(any(line.startswith('- button "쿠폰 해제"') for line in inner), applied["snapshot"])
+        self.assertEqual(applied.get("target_ref"), coupon_ref)
+        self.assertNotIn("확인 취소", applied["snapshot"])
+
+        # The new control's ref acts in the frame; it changes nothing, and the delta says so.
+        release = re.search(r'button "쿠폰 해제" \[ref=(e\d+)\]', applied["snapshot"]).group(1)
+        released = self.assert_ok(self.call("/api/click", {"tabId": tab, "ref": release}))
+        self.assertEqual(released.get("target_ref"), release, released)
+        self.assertTrue(released.get("no_visible_change"), released)
 
 
 class FrameSite:
@@ -326,6 +447,29 @@ class RealBrowserCrossOriginFrameTests(harness.RealBrowserTestCase):
 
         self.assert_ok(self.call("/api/click", {"tabId": tab, "ref": button.group(1)}))
         self.assertEqual(self.site.wait_for_save(), [("/inner-click", {"from": "inner"})])
+
+    def test_find_shares_the_frame_budget_and_places_nested_frames_on_the_page(self):
+        # #354: six frames per read, as for snapshots; tiny frames are not read.
+        tab = self.open_tab(f"{self.site.origin}/many")
+        found = self.call("/api/find", {"tabId": tab, "query": "위젯 버튼"})
+        self.assertEqual(sorted(r["text"] for r in found["results"] if r["tag"] == "button"),
+                         [f"위젯 버튼 {i}" for i in range(6)], found)
+        self.assertIn("2 more cross-origin frames were not read", found.get("hint", ""), found)
+
+        tab = self.open_tab(f"{self.site.origin}/nested")
+        inner_frame = re.search(r'iframe "안쪽" \[ref=(e\d+)\]', self.snapshot(tab)["snapshot"]).group(1)
+        found = self.call("/api/find", {"tabId": tab, "query": "안쪽 버튼"})
+        button = next((r for r in found["results"] if r["tag"] == "button"), None)
+        self.assertIsNotNone(button, found)
+        content_box = ("(f => { const r = f.getBoundingClientRect(); const s = getComputedStyle(f);"
+                       " return JSON.stringify([r.left + f.clientLeft + parseFloat(s.paddingLeft),"
+                       " r.top + f.clientTop + parseFloat(s.paddingTop)]); })")
+        outer = self.js(tab, content_box + "(document.querySelector('iframe'))")
+        inner = self.js(tab, content_box + "(__kitsuneElement)", inner_frame)
+        local = self.js(tab, "(r => JSON.stringify([r.left, r.top]))(__kitsuneElement.getBoundingClientRect())",
+                        button["ref"])
+        self.assertAlmostEqual(button["bounds"][0], outer[0] + inner[0] + local[0], delta=1)
+        self.assertAlmostEqual(button["bounds"][1], outer[1] + inner[1] + local[1], delta=1)
 
     def test_ask_before_act_holds_a_click_inside_a_cross_origin_frame(self):
         with self.site.lock:

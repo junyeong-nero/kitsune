@@ -192,6 +192,8 @@ async function testBackgroundCopiesVisibility() {
     tabsCreated: 0, openedTabs: [], actionStarts: new Map(), tabLoads: new Map(), mainFrameStatus: new Map(),
     userActiveError: async () => null, guardedTabId: async () => null, touchStart() {}, touchEnd() {},
     protectedTabError: async () => null,
+    // The top frame (#343): no ref here belongs to a cross-origin frame.
+    expandShortRefs: params => ({ params }), targetFrame: () => 0,
     getOpenedTabs: async () => ({ opened_tabs: [] }),
     // navigate is the background's own: its result does not come from the page. The click ran while
     // the tab was hidden.
