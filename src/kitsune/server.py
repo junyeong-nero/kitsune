@@ -207,7 +207,8 @@ PROTECT_USER_TABS = os.environ.get("KITSUNE_PROTECT_USER_TABS", "").lower() not 
 HOLD_VIEWED_TAB = os.environ.get("KITSUNE_HOLD_VIEWED_TAB", "").lower() not in {"0", "false", "no", "off"}
 # Sent once at initialize. The core tools keep Playwright MCP's descriptions, which cannot say
 # that the browser is shared with its user; without this, agents avoid `select` to spare the
-# user's view and work around background tabs instead of reading them.
+# user's view and work around background tabs instead of reading them. Without the hand-off
+# sentence, agents asked in chat instead of clicking a page's own hand-off control (#352).
 mcp._mcp_server.instructions = (
     "Kitsune controls the user's own Firefox-family browser while the user keeps using it. "
     + ("browser_tabs `new` opens a tab in the background, and `select` makes a tab your current "
@@ -217,7 +218,8 @@ mcp._mcp_server.instructions = (
        "no_current_tab. A restarted MCP server has no current tab: open or select one again; "
        "no_current_tab lists the open tabs this MCP client opened before in state.ownTabs. A tab "
        "that a batch or workflow newTab opens, or that an action on your current tab opens, becomes "
-       "your current tab; the result names it in current_tab."
+       "your current tab; the result names it in current_tab. When a page offers its own control "
+       "for handing a step to the user, use that control rather than asking in chat."
        if permits_tool(MODE, "browser_tabs") else
        "Until browser_tab_list new_tab opens a background tab of your own, reads act on the tab the "
        "user is viewing, and navigations and writes that pass no tab_id fail with no_current_tab; "
