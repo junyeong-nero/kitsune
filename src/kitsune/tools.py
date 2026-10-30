@@ -605,7 +605,7 @@ def browser_click(
                     '5000). Unmet: ok=false, code="outcome_not_observed"; the action already ran, so do not '
                     'blindly repeat it.')] = None,
     confirm_token: Annotated[str | None, Field(
-        description="From a confirmation_required error, after the user approved this action.")] = None,
+        description="From a confirmation_required or user_viewing error, after the user approved this action.")] = None,
     first: Annotated[bool, Field(
         description="A write tool's selector matching several elements fails with ambiguous_target "
                     "unless true; true acts on the first match.")] = False,
@@ -630,6 +630,8 @@ def browser_click(
     {expected, observed, met}, plus the current tab state when unmet; new_tab is met once the
     action opens a tab, and value_changed compares with the value before dispatch.
     user_active: the user is using the tab (state.reason); nothing ran. Retry in a few seconds.
+    user_viewing: the tab is shown in the user's last focused window; nothing ran. Use a tab you
+    opened, or ask the user, then repeat with tab_id and state.confirmToken as confirm_token.
     """
     if problem := _pointer_ms_error("hold_ms", hold_ms):
         return problem
@@ -812,7 +814,7 @@ def browser_scroll(
     amount: Annotated[int, Field(description="Pixels (ignored for top/bottom).")] = 500,
     tab_id: TabId = None,
     selector: str | None = None, ref: str | None = None, element: str | None = None,
-    expect: dict | None = None, first: bool = False,
+    expect: dict | None = None, confirm_token: str | None = None, first: bool = False,
 ) -> dict:
     """Scroll the selector/ref container instantly, else the window (viewport-center fallback).
     ok means handled, not moved: check scrolled_by (signed pixels actually moved; 0 is a
@@ -823,12 +825,13 @@ def browser_scroll(
     """
     body = {"direction": direction, "amount": amount}
     if selector: body["selector"] = selector
-    return _post_action("/api/scroll", _request_body(body, tab_id, ref, element, first=first), expect=expect)
+    return _post_action("/api/scroll", _request_body(body, tab_id, ref, element, confirm_token, first), expect=expect)
 
 
 def browser_hover(
     selector: str = "", tab_id: TabId = None, ref: str | None = None, element: str | None = None,
-    wait: bool = False, timeout: int = 10000, expect: dict | None = None, first: bool = False,
+    wait: bool = False, timeout: int = 10000, expect: dict | None = None, confirm_token: str | None = None,
+    first: bool = False,
     duration_ms: Annotated[int, Field(
         description="Keep moving over the target this long (0-10000 ms), for hover-intent controls.")] = 0,
     steps: Annotated[int | None, Field(
@@ -852,7 +855,7 @@ def browser_hover(
         body["durationMs"] = duration_ms
     if steps is not None:
         body["steps"] = steps
-    result = _post_action("/api/hover", _request_body(body, tab_id, ref, element, first=first),
+    result = _post_action("/api/hover", _request_body(body, tab_id, ref, element, confirm_token, first),
                           wait, timeout, expect, duration_ms)
     if (duration_ms or steps) and not _failed(result) and "moves" not in result:
         # An extension older than duration_ms and steps hovers once and answers as for one move.
@@ -1268,7 +1271,7 @@ def browser_check(
                     '5000). Unmet: ok=false, code="outcome_not_observed"; the action already ran, so do not '
                     'blindly repeat it.')] = None,
     confirm_token: Annotated[str | None, Field(
-        description="From a confirmation_required error, after the user approved this action.")] = None,
+        description="From a confirmation_required or user_viewing error, after the user approved this action.")] = None,
     first: Annotated[bool, Field(
         description="A write tool's selector matching several elements fails with ambiguous_target "
                     "unless true; true acts on the first match.")] = False,
@@ -1287,6 +1290,8 @@ def browser_check(
     {expected, observed, met}, plus the current tab state when unmet; new_tab is met once the
     action opens a tab, and value_changed compares with the value before dispatch.
     user_active: the user is using the tab (state.reason); nothing ran. Retry in a few seconds.
+    user_viewing: the tab is shown in the user's last focused window; nothing ran. Use a tab you
+    opened, or ask the user, then repeat with tab_id and state.confirmToken as confirm_token.
     """
     return _post_action("/api/check", _request_body({"selector": selector, "checked": checked}, tab_id, ref, element, confirm_token, first),
                         wait, timeout, expect)
@@ -1295,21 +1300,21 @@ def browser_check(
 @tool("browse", annotations=dict(title="Focus", **ACT))
 def browser_focus(
     selector: str = "", tab_id: TabId = None, ref: str | None = None, element: str | None = None,
-    first: bool = False,
+    confirm_token: str | None = None, first: bool = False,
 ) -> dict:
     """Focus an element (ref/selector, see browser_check)."""
-    return _post("/api/focus", _request_body({"selector": selector}, tab_id, ref, element, first=first))
+    return _post("/api/focus", _request_body({"selector": selector}, tab_id, ref, element, confirm_token, first))
 
 
 @tool("browse", annotations=dict(title="Blur", **ACT))
 def browser_blur(
     selector: str | None = None, tab_id: TabId = None,
-    ref: str | None = None, element: str | None = None, first: bool = False,
+    ref: str | None = None, element: str | None = None, confirm_token: str | None = None, first: bool = False,
 ) -> dict:
     """Blur an element (ref/selector, see browser_check), else the active element."""
     body = {}
     if selector: body["selector"] = selector
-    return _post("/api/blur", _request_body(body, tab_id, ref, element, first=first))
+    return _post("/api/blur", _request_body(body, tab_id, ref, element, confirm_token, first))
 
 
 # The extension presses a repeated key a task apart, within one request (#311).
@@ -1525,22 +1530,24 @@ def browser_duplicate_tab(tab_id: TabId = None) -> dict:
 
 
 @tool("tabs", annotations=dict(title="Reload tab", **ACT))
-def browser_reload_tab(bypass_cache: bool = False, tab_id: TabId = None, expect: dict | None = None) -> dict:
+def browser_reload_tab(bypass_cache: bool = False, tab_id: TabId = None, expect: dict | None = None,
+                       confirm_token: str | None = None) -> dict:
     """Reload a tab. Pass `bypass_cache=True` for a hard reload.
     ok=true means dispatched; verify with expect (see browser_check)."""
-    return _post_action("/api/reload-tab", _request_body({"bypassCache": bypass_cache}, tab_id), expect=expect)
+    return _post_action("/api/reload-tab", _request_body({"bypassCache": bypass_cache}, tab_id,
+                                                         confirm_token=confirm_token), expect=expect)
 
 
-def browser_back(tab_id: TabId = None, expect: dict | None = None) -> dict:
+def browser_back(tab_id: TabId = None, expect: dict | None = None, confirm_token: str | None = None) -> dict:
     """Go back in history (browser back button). ok=true means dispatched; verify with
     expect (see browser_check)."""
-    return _post_action("/api/back", _request_body({}, tab_id), expect=expect)
+    return _post_action("/api/back", _request_body({}, tab_id, confirm_token=confirm_token), expect=expect)
 
 
 @tool("browse", annotations=dict(title="Forward", **ACT))
-def browser_forward(tab_id: TabId = None, expect: dict | None = None) -> dict:
+def browser_forward(tab_id: TabId = None, expect: dict | None = None, confirm_token: str | None = None) -> dict:
     """Go forward in history. ok=true means dispatched; verify with expect (see browser_check)."""
-    return _post_action("/api/forward", _request_body({}, tab_id), expect=expect)
+    return _post_action("/api/forward", _request_body({}, tab_id, confirm_token=confirm_token), expect=expect)
 
 
 @tool("tabs", annotations=dict(title="Get zoom", **READ))

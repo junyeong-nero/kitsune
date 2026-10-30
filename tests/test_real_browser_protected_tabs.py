@@ -2,6 +2,8 @@
 
 Opt-in and built on tests/real_browser_harness.py, which documents how to run it. The
 browser's startup tab stands in for the user's starting tab: the agent did not open it.
+It is also the tab the user views, which #326 holds for every write; calls that are not about
+that hold send KITSUNE_HOLD_VIEWED_TAB=0's header (unheld).
 """
 from http.server import BaseHTTPRequestHandler
 import json
@@ -10,7 +12,7 @@ from unittest.mock import patch
 
 import real_browser_harness as harness
 from kitsune import playwright_tools, server, tools
-from kitsune.task_modes import MODE_HEADER, PROTECT_USER_TABS_HEADER
+from kitsune.task_modes import HOLD_VIEWED_TAB_HEADER, MODE_HEADER, PROTECT_USER_TABS_HEADER
 
 
 class _Page(BaseHTTPRequestHandler):
@@ -39,13 +41,21 @@ class RealBrowserProtectedTabTests(harness.RealBrowserTestCase):
         self.assertEqual(status, 200, text)
         return json.loads(text)
 
+    def unheld(self, path, body):
+        """POST as a client without user-tab protection and with KITSUNE_HOLD_VIEWED_TAB=0."""
+        headers = {**self.bridge.auth(), "Content-Type": "application/json", HOLD_VIEWED_TAB_HEADER: "0"}
+        status, _, text = harness._request(self.bridge.http_port, "POST", path, headers, self.bridge.host,
+                                           json.dumps(body), timeout=90)
+        self.assertEqual(status, 200, text)
+        return json.loads(text)
+
     def tab_url(self, tab_id):
         return {t["id"]: t["url"] for t in self.call("/api/tabs")["tabs"]}[tab_id]
 
     def user_tab(self):
         tab = next(t for t in self.call("/api/tabs")["tabs"] if not t["owned"])
-        # Start each test from a known page; protection is off for this call.
-        self.assert_ok(self.call("/api/navigate", {"url": self.page.origin + "/start", "tabId": tab["id"]}))
+        # Start each test from a known page; protection and the viewed-tab hold are off for this call.
+        self.assert_ok(self.unheld("/api/navigate", {"url": self.page.origin + "/start", "tabId": tab["id"]}))
         return tab["id"]
 
     def test_owned_helper_tab_navigates_and_closes(self):
@@ -74,7 +84,11 @@ class RealBrowserProtectedTabTests(harness.RealBrowserTestCase):
         token = self.protected("/api/navigate", body)["state"]["confirmToken"]
         self.assert_ok(self.protected("/api/navigate", {**body, "confirmToken": token}))
         self.assertEqual(self.tab_url(tab), self.page.origin + "/approved")
-        self.assert_ok(self.call("/api/navigate", {"url": self.page.origin + "/free", "tabId": tab}))
+        # Without protection the user tab is still the one the user views (#326): user_viewing, not user_tab.
+        free = {"url": self.page.origin + "/free", "tabId": tab}
+        self.assert_error(self.call("/api/navigate", free), "user_viewing", False)
+        self.assertEqual(self.tab_url(tab), self.page.origin + "/approved")
+        self.assert_ok(self.unheld("/api/navigate", free))
         self.assertEqual(self.tab_url(tab), self.page.origin + "/free")
 
     def restricted(self, path, body=None, mode="read"):

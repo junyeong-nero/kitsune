@@ -45,6 +45,7 @@ is not connected. It returns a `Browser`.
 | --- | --- | --- |
 | `mode` | `"act"` | `"read"` or `"draft"` restricts requests as [`KITSUNE_MODE`](api-reference.md#task-modes) does for MCP |
 | `protect_user_tabs` | `False` | `True` refuses navigation in tabs no client opened, as [`KITSUNE_PROTECT_USER_TABS`](api-reference.md#protected-user-tabs) |
+| `hold_viewed_tab` | `True` | `False` writes and navigates the tab the user is viewing without approval, as [`KITSUNE_HOLD_VIEWED_TAB=0`](api-reference.md#viewed-tab) |
 | `confirm` | `None` | A function that decides on actions ask-before-act holds; see [Ask-before-act](#ask-before-act) |
 | `replace_bridge` | `False` | `True` replaces a running bridge of another build |
 
@@ -228,7 +229,7 @@ already have taken effect: check the page before repeating it.
 
 | Exception | Raised for |
 | --- | --- |
-| `ConfirmationRequired` | An action that needs your approval, with `token` and `expires_in`: `confirmation_required` (ask-before-act) or `user_tab` |
+| `ConfirmationRequired` | An action that needs your approval, with `token` and `expires_in`: `confirmation_required` (ask-before-act), `user_tab` or `user_viewing` |
 | `ConnectionFailed` (also a `ConnectionError`) | The bridge or extension was not reached or dropped the request: the [connection codes](api-reference.md#connection-diagnosis), `bridge_disconnected` and `bridge_version_mismatch` |
 | `TimedOut` (also a `TimeoutError`) | `timeout`, a page load that timed out, and a wait that ran out |
 | `KitsuneError` | Every other failure, such as `stale_ref`, `ambiguous_target` or `outcome_not_observed` |
@@ -241,7 +242,9 @@ Some actions need your approval, and nothing runs until you give it: with
 [ask-before-act](api-reference.md#ask-before-act) on, the bridge holds submits, payment
 pages, JavaScript and cookie access (`confirmation_required`), and it never closes one of
 your own tabs, or with `protect_user_tabs` navigates it, without approval (`user_tab`,
-[Agent-owned tabs](api-reference.md#agent-owned-tabs)). These raise
+[Agent-owned tabs](api-reference.md#agent-owned-tabs)). Nor does it write or navigate the
+tab you are viewing (`user_viewing`, [Viewed tab](api-reference.md#viewed-tab)) unless
+`hold_viewed_tab=False`. These raise
 `ConfirmationRequired`. Repeat the call with `confirm=error.token` within
 `error.expires_in` seconds, or let `connect(confirm=...)` decide: the function gets the
 error, and when it returns `True` the action is sent once more with its token. In a

@@ -218,6 +218,8 @@ function background(tabs, content, clock = { setTimeout, clearTimeout, Date }) {
         contentVersion = Math.max(contentVersion, CONTENT_VERSION);
       },
     },
+    // The user last focused another browser window, so no tab here is held for being viewed (#326).
+    windows: { getLastFocused: async () => ({ id: 99, focused: true }) },
     runtime: { onMessage: event(), onStartup: event(), onInstalled: event() },
     webRequest: { onHeadersReceived: event(), onBeforeRequest: event() },
   };

@@ -404,8 +404,11 @@ def browser_press_key(key: str, confirm_token: str | None = None, repeat: int = 
 @_core
 def browser_type(target: str, text: str, element: str | None = None, submit: bool | None = None,
                  slowly: bool | None = None, confirm_token: str | None = None) -> dict:
+    # The token reaches both requests: a user_viewing token approves the text, and with it the Enter of
+    # the same tool call (#326). An ask-before-act token for the Enter passes the text request unless
+    # ask-before-act holds the text too (a payment-like page), which then rejects it as a mismatch.
     result = k.browser_type(text=text, mode="type" if slowly else "fill", tab_id=_current_tab, element=element,
-                            confirm_token=None if submit else confirm_token, **_target(target))
+                            confirm_token=confirm_token, **_target(target))
     if not submit or k._failed(result):
         return result
     return k.browser_keypress(key="Enter", tab_id=_current_tab, element=element, confirm_token=confirm_token,
@@ -419,8 +422,8 @@ def browser_navigate(url: str, confirm_token: str | None = None, tab_id: int | N
 
 
 @_core
-def browser_navigate_back(tab_id: int | None = None) -> dict:
-    return k.browser_back(tab_id=_current_tab if tab_id is None else tab_id)
+def browser_navigate_back(tab_id: int | None = None, confirm_token: str | None = None) -> dict:
+    return k.browser_back(tab_id=_current_tab if tab_id is None else tab_id, confirm_token=confirm_token)
 
 
 def _successful_static(entry: dict) -> bool:
@@ -558,9 +561,10 @@ def browser_drag(startTarget: str, endTarget: str, startElement: str | None = No
 
 
 @_core
-def browser_hover(target: str, element: str | None = None, duration_ms: int = 0, steps: int | None = None) -> dict:
+def browser_hover(target: str, element: str | None = None, duration_ms: int = 0, steps: int | None = None,
+                  confirm_token: str | None = None) -> dict:
     return k.browser_hover(tab_id=_current_tab, element=element, duration_ms=duration_ms, steps=steps,
-                           **_target(target))
+                           confirm_token=confirm_token, **_target(target))
 
 
 def _select(target: str, values: list[str], element: str | None, confirm_token: str | None,

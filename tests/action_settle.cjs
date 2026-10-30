@@ -27,7 +27,7 @@ function harness({ mutatesUntil = 0, requestMs = null, watching = true, unchange
     setTimeout, clearTimeout,
     getActiveTabId: async () => 7,
     tabsCreated: 0, openedTabs: [], actionStarts: new Map(), tabLoads: new Map(), mainFrameStatus: new Map(),
-    userActiveError: async () => null, guardedTabId: async () => null, touchStart() {}, touchEnd() {},
+    userActiveError: async () => null, viewedTabError: async () => null, guardedTabId: async () => null, touchStart() {}, touchEnd() {},
     protectedTabError: async () => null,
     getOpenedTabs: async () => ({ opened_tabs: [] }),
     takeOpenedPopup: async () => null,

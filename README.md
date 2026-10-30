@@ -32,9 +32,10 @@ the agent gets fewer, sharper tools. See [Philosophy](https://github.com/junyeon
 ## Why Kitsune?
 
 - Tabs the agent creates open in the background. Kitsune holds writes to a tab
-  while you are typing or clicking in it, refuses writes that name no tab until
-  the agent has opened or selected one, and closing one of your own tabs takes a
-  separate confirmation step. This reduces interference, but OS-level clicks and popups
+  while you are typing or clicking in it. Writes to the tab you are viewing, unless
+  the agent opened it, and closing one of your own tabs each take a separate
+  confirmation step. Writes that name no tab are refused until the agent has opened
+  or selected one. This reduces interference, but OS-level clicks and popups
   opened by sites still have [focus and input limitations](https://github.com/junyeong-nero/kitsune/blob/main/docs/api-reference.md#shared-browser).
 - You decide how much to delegate. `KITSUNE_MODE=read`, `draft`, or `act` limits
   both the tools the agent sees and the requests the bridge accepts. Draft mode

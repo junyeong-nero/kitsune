@@ -101,6 +101,7 @@ browser.tabs.onRemoved.addListener(tabId => {
   agentTabs.delete(tabId);
   agentTouches.delete(tabId);
   revertActivation.delete(tabId);
+  trustedShownTabs.delete(tabId);
   for (const record of agentWindows) {
     record.windowCopies?.delete(tabId);
     record.syncedCopies.delete(tabId);
@@ -324,6 +325,34 @@ async function userActiveError(tabId) {
   const state = tabId != null && await userActivity(tabId);
   return state ? tabError(`The user is using tab ${tabId}; nothing was done`, 'user_active', state) : null;
 }
+
+// Viewing counts as using (#326, docs/api-reference.md#viewed-tab): a guarded write or navigation
+// on the tab shown in the browser window the user last focused returns user_viewing even without
+// recent input. That window keeps the hold while another app (the agent's terminal) has the
+// focus. Closing a tab, view switches and screenshots are not held, nor are tabs the agent opened.
+// Only the bridge sets viewedTabApproved (a confirmed direct call; the userTabApproved of a
+// protected navigation counts too) and holdViewedTab: false (the client's KITSUNE_HOLD_VIEWED_TAB=0).
+// Showing another tab (switchTab, focusWindow) moves the hold with the view. A tab a trusted
+// command showed for its OS input (trustedShownTabs) is the agent's view, not the user's, until
+// the user's tab is shown again, but only for another trusted measurement (screenPoint): a trusted
+// drag measures its destination there after its source. Other writes on it are still held.
+const VIEWED_TAB_EXEMPT_ACTIONS = new Set(['closeTab', 'switchTab', 'focusWindow', 'elementScreenshot', 'fullPageScreenshot']);
+async function viewedTabError(params) {
+  const tabId = params.tabId;
+  // The bridge strips a caller's userTabApproved only on the routes that approve it.
+  const navigationApproved = params.userTabApproved && PROTECTED_NAVIGATIONS.has(params.action);
+  if (params.holdViewedTab === false || params.viewedTabApproved || navigationApproved ||
+      VIEWED_TAB_EXEMPT_ACTIONS.has(params.action) || tabId == null || agentTabs.has(tabId) ||
+      (params.action === 'screenPoint' && trustedShownTabs.get(tabId)?.until > Date.now())) return null;
+  const tab = await browser.tabs.get(tabId).catch(() => null);
+  if (!tab?.active) return null;
+  const focused = await browser.windows.getLastFocused().catch(() => null);
+  if (focused?.id !== tab.windowId) return null;
+  return tabError(`The user is viewing tab ${tabId}; nothing was done`, 'user_viewing',
+    { tabId, url: tab.url, title: tab.title, windowId: tab.windowId, reason: 'viewing',
+      browserFocused: !!focused.focused }, false);
+}
+
 // The longest pause a held click or a sustained hover asks for (content.js POINTER_MAX_MS).
 const POINTER_PAUSE_MAX_MS = 10000;
 
@@ -599,7 +628,7 @@ async function handleCommand(command) {
   const unprotected = await protectedTabError(params);
   if (unprotected) return unprotected;
   if (guarded) {
-    const busy = await userActiveError(await guardedTabId(params.action, params));
+    const busy = await userActiveError(await guardedTabId(params.action, params)) || await viewedTabError(params);
     if (busy) return busy;
   }
   if (tracksOpenedTabs && params.tabId != null) actionStarts.set(params.tabId, tabsCreated);
@@ -1304,7 +1333,18 @@ async function closeTab(tabId, { force = false, userTabApproved = false } = {}) 
 
 // A trusted OS click lands on whatever the screen shows, so a target tab that is not shown is
 // activated for the click; the bridge restores previousTabId right after it (restoreActiveTab).
+// The tab it hides for that moment is checked for the user's input, not held for being viewed
+// (viewedTabError holds only the click's own tab, before it is shown).
 const TRUSTED_CLICK_PAINT_MS = 150;
+// tabId -> { windowId, until }: tabs screenPointForClick showed, until restoreActiveTab, another
+// tab of their window is shown, or TRUSTED_SHOWN_MAX_MS (a bridge that never restored them).
+const trustedShownTabs = new Map();
+const TRUSTED_SHOWN_MAX_MS = 60000;
+browser.tabs.onActivated?.addListener(({ tabId, windowId }) => {
+  for (const [shown, entry] of trustedShownTabs) {
+    if (entry.windowId === windowId && shown !== tabId) trustedShownTabs.delete(shown);
+  }
+});
 // How long a shown tab may take to get a size on screen, polling this often.
 const TRUSTED_CLICK_LAYOUT_WAIT_MS = 1000;
 const TRUSTED_CLICK_LAYOUT_POLL_MS = 50;
@@ -1319,6 +1359,7 @@ async function screenPointForClick(params) {
       if (busy) return busy;
       previousTabId = shown?.id ?? null;
       await browser.tabs.update(tab.id, { active: true });
+      trustedShownTabs.set(tab.id, { windowId: tab.windowId, until: Date.now() + TRUSTED_SHOWN_MAX_MS });
       await new Promise(resolve => setTimeout(resolve, TRUSTED_CLICK_PAINT_MS));
     }
   } catch (e) {
@@ -1374,6 +1415,7 @@ async function zoomedScreenPoint(params) {
 
 // Shows the user's tab again after a trusted click, unless the user already moved elsewhere.
 async function restoreActiveTab(tabId, from) {
+  trustedShownTabs.delete(from);
   try {
     const shown = await browser.tabs.get(from);
     if (!shown.active) return { ok: true, restored: false };
@@ -1473,6 +1515,9 @@ const TAB_FAILURE_HINTS = {
     'work in a tab you opened, or ask the user.',
   tab_not_shown: 'The browser shows no page in this tab\'s window. Ask the user to finish or close whatever ' +
     'hides the page (for example, Zen\'s first-run welcome screen), then retry.',
+  user_viewing: 'The user is viewing this tab (shown in the browser window they last focused); nothing was done. ' +
+    'Work in a tab you opened (browser_tabs action=new), or ask the user and repeat a direct call with tab_id and ' +
+    'the confirm_token that call returns.',
   // Matches the bridge's browser_window_unavailable diagnosis hint.
   browser_window_unavailable: 'Open a normal browser window in the profile where Kitsune is installed (private windows need Run in Private Windows in about:addons), or pass tab_id.',
 };

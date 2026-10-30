@@ -42,9 +42,9 @@ class KitsuneError(Exception):
 
 class ConfirmationRequired(KitsuneError):
     """The action needs the user's approval and nothing ran: ask-before-act held it
-    (confirmation_required), or it closes or, with protect_user_tabs, navigates a tab no client
-    opened (user_tab). Once the user approves, repeat it with confirm=token within expires_in
-    seconds; a token works once."""
+    (confirmation_required), it closes or, with protect_user_tabs, navigates a tab no client
+    opened (user_tab), or it acts on the tab the user is viewing (user_viewing). Once the user
+    approves, repeat it with confirm=token within expires_in seconds; a token works once."""
 
     @property
     def token(self) -> str | None:
@@ -70,7 +70,7 @@ def raise_for(result):
         return result
     code = result.get("code")
     # read and draft refuse user tabs without a token: those cannot be approved.
-    if code in ("confirmation_required", "user_tab") and (result.get("state") or {}).get("confirmToken"):
+    if code in ("confirmation_required", "user_tab", "user_viewing") and (result.get("state") or {}).get("confirmToken"):
         raise ConfirmationRequired(result)
     if code in CONNECTION_CODES:
         raise ConnectionFailed(result)
