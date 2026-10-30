@@ -236,7 +236,7 @@ async function testATabWithNoSizeIsNotClicked() {
   const refused = copy(await hidden.context.screenPointForClick({ tabId: 2, selector: '#go', click: true }));
   assert.equal(refused.code, 'tab_not_shown', JSON.stringify(refused));
   assert.equal(refused.retryable, true);
-  assert.match(refused.hint, /Ask the user to finish or close it/);
+  assert.match(refused.hint, /Ask the user to finish or close whatever hides the page/);
   assert.deepEqual(refused.state, { tabId: 2, url: 'https://example.com/agent', status: 'complete', width: 0, height: 0 });
   assert.deepEqual(hidden.sent, [], 'nothing is measured');
   assert.deepEqual(hidden.activations, [2, 1], "the user's tab is shown again");

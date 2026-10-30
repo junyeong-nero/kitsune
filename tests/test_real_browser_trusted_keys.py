@@ -7,8 +7,9 @@ real pointer. Run it while nobody uses the machine, with Quartz and Accessibilit
     KITSUNE_E2E_BROWSER=/path/to/Firefox.app/Contents/MacOS/firefox KITSUNE_E2E_TRUSTED_INPUT=1 \\
         uv run --extra macos python -m unittest discover -s tests -p test_real_browser_trusted_keys.py -v
 
-Firefox, LibreWolf or Zen. On a fresh headed profile, Zen's first-run welcome screen hides every
-page, so the harness marks it as seen (#360).
+Use Firefox (or LibreWolf). On a fresh headed profile, Zen's first-run welcome screen hides every
+page, so tabs report about:blank and have no size (#360). The harness now marks it as seen, which
+fixes both in read-only probes, but this suite has not been run on Zen yet.
 
 The suite's browser runs headed on a temporary profile. Before each command the test brings that
 browser process (by pid, not by name, so another browser of the same name is left alone) to the

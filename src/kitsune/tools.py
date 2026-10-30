@@ -644,7 +644,7 @@ def browser_trusted_click(
     target_not_at_point: another element covers the target's center (state.hit); nothing
     was clicked.
     tab_not_shown: the tab's window shows no page (e.g. Zen's first-run welcome screen); nothing
-    was clicked. Ask the user to finish or close it, then retry.
+    was clicked. Ask the user to finish or close what hides the page, then retry.
     browser_not_at_point (macOS): another app's window (state.app) is where the click would
     land, usually a full-screen browser on another Space; nothing was clicked. Ask the user
     to show the browser, then retry.

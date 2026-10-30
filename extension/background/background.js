@@ -1159,6 +1159,8 @@ function waitForTabLoad(tabId, startNavigation, { reload = false, timeout = 1500
     let settled = false;
     let sawLoading = false;
     let poll = null;
+    // A check that asks the page (loadedPageUrl) can outlast the poll interval; one at a time.
+    let checking = false;
     const finish = (loaded, error) => {
       if (settled) return;
       settled = true;
@@ -1175,6 +1177,8 @@ function waitForTabLoad(tabId, startNavigation, { reload = false, timeout = 1500
       if (changeInfo.status === 'complete' && isLoaded(tab)) finish(true);
     }
     const check = async () => {
+      if (checking) return;
+      checking = true;
       try {
         const tab = await browser.tabs.get(tabId);
         if (settled) return;
@@ -1184,6 +1188,8 @@ function waitForTabLoad(tabId, startNavigation, { reload = false, timeout = 1500
           && await loadedPageUrl(tabId)) finish(true);
       } catch (e) {
         finish(false, e);
+      } finally {
+        checking = false;
       }
     };
     const deadline = setTimeout(() => finish(false), timeout);
@@ -1456,8 +1462,8 @@ const TAB_FAILURE_HINTS = {
     'or ask the user and repeat a direct browser_tabs close with the confirm_token that call returns.',
   user_active: 'The user is using this tab (state.reason); nothing was done. Retry in a few seconds, ' +
     'work in a tab you opened, or ask the user.',
-  tab_not_shown: 'The browser shows no page in this tab\'s window (for example, Zen\'s first-run welcome ' +
-    'screen). Ask the user to finish or close it, then retry.',
+  tab_not_shown: 'The browser shows no page in this tab\'s window. Ask the user to finish or close whatever ' +
+    'hides the page (for example, Zen\'s first-run welcome screen), then retry.',
   // Matches the bridge's browser_window_unavailable diagnosis hint.
   browser_window_unavailable: 'Open a normal browser window in the profile where Kitsune is installed (private windows need Run in Private Windows in about:addons), or pass tab_id.',
 };

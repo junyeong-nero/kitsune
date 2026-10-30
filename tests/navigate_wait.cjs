@@ -15,8 +15,10 @@ function event() {
 
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
-// onNavigate(h, call) runs inside tabs.update/tabs.reload, before the API call resolves.
-function harness(startUrl, onNavigate = () => {}) {
+// onNavigate(h, call) runs inside tabs.update/tabs.reload, before the API call resolves. page(),
+// when given, answers the content script's getPageInfo: [location.href, document.readyState], or
+// a promise that never settles for a page that does not answer.
+function harness(startUrl, onNavigate = () => {}, page = null) {
   let now = 0, nextId = 0;
   const timers = new Map();
   const schedule = (fn, delay, interval = false) => {
@@ -29,6 +31,7 @@ function harness(startUrl, onNavigate = () => {}) {
   const calls = [];
   const h = {
     calls,
+    pageInfoRequests: 0,
     listenersAtNavigate: null,
     send: command => context.handleCommand({ includeSnapshot: false, ...command })
       .then(result => JSON.parse(JSON.stringify(result))),
@@ -72,7 +75,12 @@ function harness(startUrl, onNavigate = () => {}) {
       get: async id => { assert.equal(id, 7); return { ...tab }; },
       update: async (id, props) => navigate({ method: 'update', id, ...props }),
       reload: async id => navigate({ method: 'reload', id }),
-      sendMessage: async () => { throw new Error('Unexpected content message'); },
+      sendMessage: async (id, message) => {
+        if (!page || message.action !== 'getPageInfo') throw new Error('Unexpected content message');
+        h.pageInfoRequests++;
+        const [url, readyState] = await page();
+        return { url, readyState, title: tab.title };
+      },
       executeScript: async () => { throw new Error('Unexpected content injection'); },
     },
     runtime: { onMessage: event(), onStartup: event(), onInstalled: event() },
@@ -96,6 +104,8 @@ function start(h, command) {
   pending.result = h.send(command).then(result => { pending.settled = true; return result; });
   return pending;
 }
+
+const PAGE_URL_TIMEOUT_MS = 500;
 
 async function main() {
   // Hash-only and identical-with-fragment targets are same-document: no load to wait for.
@@ -200,6 +210,34 @@ async function main() {
   assert.equal(failed.settled, true);
   assert.deepEqual(await failed.result, { error: 'Illegal URL' });
   failing.assertClean();
+
+  // #360: while Zen's first-run welcome screen hides the tab area, the tab's url stays about:blank
+  // after the load; the navigation counts once the page itself reports it loaded.
+  let shown = ['about:blank', 'complete'];
+  const stale = harness('about:blank', h => h.update({ status: 'loading' }), () => shown);
+  const staleNav = start(stale, { action: 'navigate', url: 'https://example.com/user', timeout: 3000 });
+  await stale.tick(200);
+  stale.update({ status: 'complete', title: 'user' });
+  await stale.tick(400);
+  assert.equal(staleNav.settled, false, 'the page still reports about:blank');
+  shown = ['https://example.com/user', 'complete'];
+  await stale.tick(200);
+  assert.equal(staleNav.settled, true);
+  assert.deepEqual(await staleNav.result, { ok: true, url: 'https://example.com/user' });
+  stale.assertClean();
+
+  // A page that does not answer is asked once at a time, not once per poll.
+  const silent = harness('about:blank', h => h.update({ status: 'loading' }), () => new Promise(() => {}));
+  const silentNav = start(silent, { action: 'navigate', url: 'https://example.com/user' });
+  await silent.tick(0);
+  silent.update({ status: 'complete' });
+  await silent.tick(1000);
+  assert.equal(silentNav.settled, false);
+  assert.equal(silent.pageInfoRequests, 2, 'polls at 200 and 800 ms; the first waits 500 ms for its answer');
+  await silent.tick(14000);
+  assert.deepEqual(await silentNav.result, { ok: false, timedOut: true, url: 'https://example.com/user' });
+  await silent.tick(PAGE_URL_TIMEOUT_MS); // the last unanswered request's own bound
+  silent.assertClean();
 
   console.log('navigate_wait: all tests passed');
 }
