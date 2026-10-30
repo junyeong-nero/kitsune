@@ -25,8 +25,8 @@ from .bridge_client import BridgeClient
 from .capabilities import CAPABILITY_GROUPS
 from .errors import failed as _failed  # whether a tool's own result reports failure
 from .waits import (
-    RESUME_DEADLINE_SECONDS, WORKFLOW_DEADLINE_SECONDS, action_request_seconds, batch_deadline_seconds,
-    command_wait_seconds, container_request_seconds,
+    ACTION_REQUEST_SECONDS, NAVIGATE_REQUEST_SECONDS, RESUME_DEADLINE_SECONDS, WORKFLOW_DEADLINE_SECONDS,
+    action_request_seconds, batch_deadline_seconds, command_wait_seconds, container_request_seconds,
 )
 
 # Annotation hints describe the whole tool, including its most dangerous operation.
@@ -269,12 +269,14 @@ def _request_body(body: dict, tab_id: int | None = None, ref: str | None = None,
 
 
 def _post_action(endpoint: str, body: dict, wait: bool = False, timeout: int = 10000,
-                 expect: dict | None = None, pointer_ms: int = 0) -> dict:
+                 expect: dict | None = None, pointer_ms: int = 0,
+                 base_seconds: float = ACTION_REQUEST_SECONDS) -> dict:
     """POST a page action.
 
     wait=True lets the page wait up to timeout ms for the target before dispatch;
     expect makes the bridge check the outcome after dispatch, within expect.timeout.
     pointer_ms is how long the action itself holds or moves the pointer.
+    base_seconds is the request timeout before those waits.
     """
     if wait:
         if timeout <= 0:
@@ -282,8 +284,8 @@ def _post_action(endpoint: str, body: dict, wait: bool = False, timeout: int = 1
         body = {**body, "wait": True, "timeout": timeout}
     if expect is not None:
         body = {**body, "expect": expect}
-    request_timeout = action_request_seconds(wait, timeout, expect) + pointer_ms / 1000
-    if request_timeout == 15:
+    request_timeout = action_request_seconds(wait, timeout, expect, base_seconds) + pointer_ms / 1000
+    if request_timeout == ACTION_REQUEST_SECONDS:
         return _post(endpoint, body)
     return _post(endpoint, body, timeout=request_timeout)
 
@@ -559,7 +561,8 @@ def browser_navigate(
     body = {"url": url}
     if raw:
         body["raw"] = True
-    return _post_action("/api/navigate", _request_body(body, tab_id, confirm_token=confirm_token), expect=expect)
+    return _post_action("/api/navigate", _request_body(body, tab_id, confirm_token=confirm_token), expect=expect,
+                        base_seconds=NAVIGATE_REQUEST_SECONDS)
 
 
 # -- Interaction --------------------------------------------------

@@ -429,10 +429,12 @@ class ServerExpectTests(unittest.TestCase):
                 getattr(tools, "browser_" + name)(tab_id=7, expect=expect, **kwargs)
                 self.assertEqual(post.call_args.args[0], endpoint)
                 self.assertEqual(post.call_args.args[1]["expect"], expect)
-                self.assertEqual(post.call_args.kwargs, {"timeout": 15 + 8 + 45})
+                base = waits.NAVIGATE_REQUEST_SECONDS if name == "navigate" else 15
+                self.assertEqual(post.call_args.kwargs, {"timeout": base + 8 + 45})
                 getattr(tools, "browser_" + name)(tab_id=7, **kwargs)
                 self.assertNotIn("expect", post.call_args.args[1])
-                self.assertEqual(post.call_args.kwargs, {})
+                self.assertEqual(post.call_args.kwargs,
+                                 {"timeout": waits.NAVIGATE_REQUEST_SECONDS} if name == "navigate" else {})
 
     def test_every_endpoint_of_an_expect_tool_accepts_expect(self):
         # MCP tools only forward expect to bridge actions that observe outcomes.

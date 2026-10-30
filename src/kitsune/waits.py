@@ -111,10 +111,24 @@ def container_request_seconds(deadline):
     return container_settle_seconds(deadline) + CONTAINER_MARGIN_SECONDS
 
 
-def action_request_seconds(wait, timeout, expect):
-    """Request timeout of a direct action: 15 s, plus its actionability wait (wait, timeout ms)
-    and, with expect, its outcome check (expect.timeout ms) and 45 s for the reply."""
-    seconds = 15
+# A direct action's request timeout before its waits.
+ACTION_REQUEST_SECONDS = 15
+
+# The extension's navigateTab waits up to NAVIGATION_LOAD_SECONDS (waitForTabLoad's default) for
+# the load, then asks the page for its URL for up to PAGE_URL_SECONDS (PAGE_URL_TIMEOUT_MS) before
+# it reports navigation_stalled (#366). A navigate request outlasts both by NAVIGATION_MARGIN_SECONDS,
+# so the caller gets that code and its hint, not a client-side timeout.
+NAVIGATION_LOAD_SECONDS = 15
+PAGE_URL_SECONDS = 0.5
+NAVIGATION_MARGIN_SECONDS = 10
+NAVIGATE_REQUEST_SECONDS = NAVIGATION_LOAD_SECONDS + PAGE_URL_SECONDS + NAVIGATION_MARGIN_SECONDS
+
+
+def action_request_seconds(wait, timeout, expect, base_seconds=ACTION_REQUEST_SECONDS):
+    """Request timeout of a direct action: base_seconds (NAVIGATE_REQUEST_SECONDS for a navigate),
+    plus its actionability wait (wait, timeout ms) and, with expect, its outcome check
+    (expect.timeout ms) and 45 s for the reply."""
+    seconds = base_seconds
     if wait:
         seconds += timeout / 1000
     if expect is not None:

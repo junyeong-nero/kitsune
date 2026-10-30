@@ -23,8 +23,8 @@ from pathlib import Path
 from .bridge_client import BridgeClient
 from .errors import ConfirmationRequired, ConnectionFailed, KitsuneError, TimedOut, raise_for
 from .waits import (
-    RESUME_DEADLINE_SECONDS, WORKFLOW_DEADLINE_SECONDS, action_request_seconds, batch_deadline_seconds,
-    command_wait_seconds, container_request_seconds,
+    ACTION_REQUEST_SECONDS, NAVIGATE_REQUEST_SECONDS, RESUME_DEADLINE_SECONDS, WORKFLOW_DEADLINE_SECONDS,
+    action_request_seconds, batch_deadline_seconds, command_wait_seconds, container_request_seconds,
 )
 
 MODES = ("read", "draft", "act")
@@ -542,7 +542,7 @@ class Tab:
 
     def _action(self, route: str, body: dict, *, wait: bool = False, timeout: int = 10000,
                 expect: dict | None = None, first: bool = False, confirm: str | None = None,
-                pointer_ms: int = 0) -> dict:
+                pointer_ms: int = 0, base_seconds: float = ACTION_REQUEST_SECONDS) -> dict:
         if wait:
             if timeout <= 0:
                 raise ValueError("timeout must be positive")
@@ -553,7 +553,8 @@ class Tab:
             body = {**body, "first": True}
         if confirm is not None:
             body = {**body, "confirmToken": confirm}
-        return self._request(route, body, timeout=action_request_seconds(wait, timeout, expect) + pointer_ms / 1000)
+        return self._request(route, body,
+                             timeout=action_request_seconds(wait, timeout, expect, base_seconds) + pointer_ms / 1000)
 
     # -- Reading ---------------------------------------------------
 
@@ -724,7 +725,8 @@ class Tab:
     # -- Navigation and tabs ---------------------------------------
 
     def navigate(self, url: str, *, expect: dict | None = None, confirm: str | None = None) -> dict:
-        return self._action("/api/navigate", {"url": url}, expect=expect, confirm=confirm)
+        return self._action("/api/navigate", {"url": url}, expect=expect, confirm=confirm,
+                            base_seconds=NAVIGATE_REQUEST_SECONDS)
 
     def back(self, *, expect: dict | None = None, confirm: str | None = None) -> dict:
         return self._action("/api/back", {}, expect=expect, confirm=confirm)
