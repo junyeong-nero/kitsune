@@ -1325,7 +1325,8 @@ another browser window.
   terminal, and the page is still on their screen. `state.browserFocused` is `false` then.
   The active tabs of the user's other windows, and their background tabs, are not held.
 - **Not held:** tabs the agent opened (`owned: true` in `browser_tabs` list), even once the
-  user shows one, and reads. Viewport, element and full-page screenshots are not held either,
+  user shows one, and reads. After an extension reload or a browser restart those tabs count
+  as the user's (see [Agent-owned tabs](#agent-owned-tabs)), so one the user is viewing is held. Viewport, element and full-page screenshots are not held either,
   nor are close (a user tab needs the [user_tab](#agent-owned-tabs) approval anyway),
   `browser_tabs` select and `browser_focus_window`.
 - **Held:** the writes [User activity](#user-activity) checks on their own tab. These are
@@ -1333,17 +1334,32 @@ another browser window.
   scroll, drag, focus, blur, JavaScript, media, upload, navigate, back, forward, reload,
   click-and-wait-navigation, and `browser_trusted_click`, `browser_trusted_type` and
   `browser_trusted_press_key` on the shown tab. Batch, workflow, parallel, broadcast and
-  retry steps are held the same way.
+  retry steps are held the same way. `browser_sync_barrier` returns the refusal at once
+  instead of polling until its timeout.
 - **Trusted input on another tab.** A trusted click or key command on a tab that is not
   shown still shows that tab for the click and then shows the user's tab again. Only the
   user's [activity](#user-activity) on the tab it hides stops it, not the hold.
+- **Switching the view moves the hold.** `browser_tabs` select (Kitsune's, which shows the
+  tab) and `browser_focus_window` are not held, so the tab they show becomes the held one,
+  and the tab the user saw before is a background tab that is no longer held. These calls
+  switch what the user sees, so send them only when the user asks (`user_active` still
+  refuses them while the user is using the tab they would leave).
 
 **Approval.** A direct call's refusal carries a confirm token, issued and spent like
-[ask-before-act](#ask-before-act)'s. After the user approves, repeat the call with
-`tab_id` set to `state.tabId` and `confirmToken` (MCP: `confirm_token`) within 120 s; it
-runs once. The token is bound to the call's parameters and the refused tab. A used or
-expired token adds `state.tokenRejected` and a new token. Container steps get no token and
-are refused. An accepted ask-before-act token for the same call, and the `user_tab`
+[ask-before-act](#ask-before-act)'s. After the user approves, repeat the identical call with
+`confirmToken` (MCP: `confirm_token`) within 120 s, adding `tab_id` set to `state.tabId` if
+the call named no tab; it runs once. The token is bound to the call's parameters and the
+refused tab. A used or expired token adds `state.tokenRejected` and a new token. Container
+steps get no token and are refused.
+
+The approval covers the whole MCP tool call on that tab. The MCP server sends a random
+`X-Kitsune-Tool-Call` id with each bridge request of a tool call, and the bridge approves
+that call's later requests on the same tab, for at most 120 s. So the core
+`browser_fill_form`, which writes each field with its own request, and
+`browser_type(submit=true)`, which presses Enter with a second one, need one approval. When
+ask-before-act then holds a later request of that call (the Enter in a field that submits),
+its token carries the viewed-tab approval once to the repeated tool call, so the user approves
+each hold once. An accepted ask-before-act token for the same call, and the `user_tab`
 approval of a [protected](#protected-user-tabs) navigation, approve the hold too, so one
 approval is enough. In read and draft modes the refusal carries no token, and its hint
 points to `browser_tab_list` new_tab. As with `user_tab`, the token goes back to the

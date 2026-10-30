@@ -16,11 +16,11 @@ import time
 import unittest
 from unittest.mock import patch
 
-from kitsune import server, task_modes, tools
+from kitsune import playwright_tools, server, task_modes, tools
 import real_browser_harness as harness
 
 PAGES = {
-    "/user": "<title>user</title><h1>user page</h1><textarea id='draft'></textarea>"
+    "/user": "<title>user</title><h1>user page</h1><textarea id='draft'></textarea><input id='name'>"
              "<button id='act' onclick=\"document.title='acted'\">Act</button>"
              "<script>addEventListener('mousedown', e => { document.title = 'down:' + e.isTrusted; }, true);</script>",
     "/agent": "<title>agent</title><h1>agent page</h1>"
@@ -276,6 +276,29 @@ class RealBrowserSharedBrowserTests(harness.RealBrowserTestCase):
         self.assert_ok(self.call_without_hold("/api/navigate", {"url": self.page.origin + "/second", "tabId": user_tab}))
         self.wait_for(lambda: self.tabs()[user_tab]["title"] == "second", "the opted-out navigation did not load")
         self.assertEqual(self.user_view()["shown"], [user_tab], "the user's tab stayed shown")
+
+    def test_fill_form_on_the_viewed_tab_needs_one_approval(self):
+        # #326 review: each field is its own bridge request; one token approves the whole tool call.
+        user_tab = self.user_page()
+
+        def post(endpoint, data, timeout=15, start_bridge=True):
+            headers = {**self.bridge.auth(), "Content-Type": "application/json", **server._gateway_headers()}
+            status, _, text = harness._request(self.bridge.http_port, "POST", endpoint, headers, self.bridge.host,
+                                               json.dumps(data), timeout=90)
+            return json.loads(text)
+
+        fields = [{"name": "Draft", "type": "textbox", "target": "#draft", "value": "hello"},
+                  {"name": "Name", "type": "textbox", "target": "#name", "value": "Ada"}]
+        fill_form = server._mcp_errors(playwright_tools.browser_fill_form)
+        with patch.object(tools, "_post", post), patch.object(playwright_tools, "_current_tab", user_tab):
+            refused = json.loads(fill_form(fields=fields).content[0].text)
+            self.assert_error(refused, "user_viewing", False)
+            self.assertEqual(refused["filled"], [])
+            filled = json.loads(fill_form(fields=fields, confirm_token=refused["state"]["confirmToken"]).content[0].text)
+        self.assertEqual(filled.get("filled"), ["Draft", "Name"], filled)
+        snapshot = self.call("/api/snapshot", {"tabId": user_tab})["snapshot"]  # a read: not held
+        self.assertIn('[value="hello"]', snapshot)
+        self.assertIn('[value="Ada"]', snapshot)
 
     def test_tab_list_with_include_active_reads_the_shown_tab_in_one_call(self):
         # #138: the MCP tool composes the inventory and the active page; route it to this bridge.

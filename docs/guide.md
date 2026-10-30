@@ -664,8 +664,9 @@ typing, key presses, form fills, scrolling, JavaScript, navigations and reloads 
 return a `user_viewing` error instead of acting. Reads and screenshots go on. Tabs the
 agent opened itself are never held, even when you look at them. On a direct call the
 error carries a `confirm_token`: the agent should ask you, then repeat the call with it.
-The token works once. To let the agent work in the tab you watch without asking, set
-`KITSUNE_HOLD_VIEWED_TAB=0` in its MCP server environment. Details are in the
+The token works once. When the agent switches your view to another tab (it should do
+so only when you ask), the hold moves with it. To let the agent work in the tab you
+watch without asking, set `KITSUNE_HOLD_VIEWED_TAB=0` in its MCP server environment. Details are in the
 [API reference](api-reference.md#viewed-tab).
 
 If your tabs must stay where they are, tell

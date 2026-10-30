@@ -134,8 +134,8 @@ Kitsune explicitly considers the person using the browser:
 - Agent-created tabs open in the background.
 - Ordinary tab screenshots use `tabs.captureTab` without selecting the tab.
 - Writes and navigations on a tab the user is using return `user_active` instead
-  of acting, and on the tab the user is viewing `user_viewing` until the user
-  approves.
+  of acting, and on the tab the user is viewing `user_viewing`, which needs a
+  separate, call-bound confirmation step.
 - Tabs carry agent ownership; closing a user tab requires a separate
   action-bound confirmation step.
 

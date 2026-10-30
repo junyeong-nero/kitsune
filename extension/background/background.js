@@ -329,12 +329,15 @@ async function userActiveError(tabId) {
 // on the tab shown in the browser window the user last focused returns user_viewing even without
 // recent input. That window keeps the hold while another app (the agent's terminal) has the
 // focus. Closing a tab, view switches and screenshots are not held, nor are tabs the agent opened.
-// Only the bridge sets viewedTabApproved (a confirmed direct call; userTabApproved counts too)
-// and holdViewedTab: false (the client's KITSUNE_HOLD_VIEWED_TAB=0).
+// Only the bridge sets viewedTabApproved (a confirmed direct call; the userTabApproved of a
+// protected navigation counts too) and holdViewedTab: false (the client's KITSUNE_HOLD_VIEWED_TAB=0).
+// Showing another tab (switchTab, focusWindow, a trusted click's tab) moves the hold with the view.
 const VIEWED_TAB_EXEMPT_ACTIONS = new Set(['closeTab', 'switchTab', 'focusWindow', 'elementScreenshot', 'fullPageScreenshot']);
 async function viewedTabError(params) {
   const tabId = params.tabId;
-  if (params.holdViewedTab === false || params.viewedTabApproved || params.userTabApproved ||
+  // The bridge strips a caller's userTabApproved only on the routes that approve it.
+  const navigationApproved = params.userTabApproved && PROTECTED_NAVIGATIONS.has(params.action);
+  if (params.holdViewedTab === false || params.viewedTabApproved || navigationApproved ||
       VIEWED_TAB_EXEMPT_ACTIONS.has(params.action) || tabId == null || agentTabs.has(tabId)) return null;
   const tab = await browser.tabs.get(tabId).catch(() => null);
   if (!tab?.active) return null;

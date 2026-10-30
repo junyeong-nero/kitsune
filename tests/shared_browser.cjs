@@ -466,10 +466,15 @@ async function testViewedTabIsHeld() {
 
   // Only the bridge releases the hold: the call was approved (its token, or the user_tab approval
   // of the same navigation), or the client set KITSUNE_HOLD_VIEWED_TAB=0.
-  for (const release of [{ viewedTabApproved: true }, { userTabApproved: true }, { holdViewedTab: false }]) {
+  for (const release of [{ viewedTabApproved: true }, { holdViewedTab: false }]) {
     assert.equal((await h.send({ action: 'click', tabId: 1, selector: '#go', ...release })).ok, true,
       JSON.stringify(release));
   }
+  // userTabApproved only approves a navigation: the bridge strips a caller's own only on those routes.
+  assert.equal((await h.send({ action: 'click', tabId: 1, selector: '#go', userTabApproved: true })).code,
+    'user_viewing');
+  await run(h, { action: 'navigate', tabId: 1, url: 'https://agent.example/approved', userTabApproved: true }, 16000);
+  assert.equal(h.tabs[1].url, 'https://agent.example/approved', 'an approved navigation of the viewed tab runs');
 
   // An explicit switch away is not held; the trusted click's brief showing of a background tab is
   // not either: only the user's input on the tab it hides stops it.

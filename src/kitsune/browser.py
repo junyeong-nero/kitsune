@@ -726,14 +726,14 @@ class Tab:
     def navigate(self, url: str, *, expect: dict | None = None, confirm: str | None = None) -> dict:
         return self._action("/api/navigate", {"url": url}, expect=expect, confirm=confirm)
 
-    def back(self, *, expect: dict | None = None) -> dict:
-        return self._action("/api/back", {}, expect=expect)
+    def back(self, *, expect: dict | None = None, confirm: str | None = None) -> dict:
+        return self._action("/api/back", {}, expect=expect, confirm=confirm)
 
-    def forward(self, *, expect: dict | None = None) -> dict:
-        return self._action("/api/forward", {}, expect=expect)
+    def forward(self, *, expect: dict | None = None, confirm: str | None = None) -> dict:
+        return self._action("/api/forward", {}, expect=expect, confirm=confirm)
 
-    def reload(self, *, bypass_cache: bool = False, expect: dict | None = None) -> dict:
-        return self._action("/api/reload-tab", {"bypassCache": bypass_cache}, expect=expect)
+    def reload(self, *, bypass_cache: bool = False, expect: dict | None = None, confirm: str | None = None) -> dict:
+        return self._action("/api/reload-tab", {"bypassCache": bypass_cache}, expect=expect, confirm=confirm)
 
     def show(self) -> dict:
         """Switch the user's view to this tab. Only on the user's request: it interrupts what they see."""
@@ -807,7 +807,8 @@ class Tab:
                             expect=expect, first=first, confirm=confirm)
 
     def hover(self, target: str, *, wait: bool = False, timeout: int = 10000, expect: dict | None = None,
-              first: bool = False, duration_ms: int = 0, steps: int | None = None) -> dict:
+              first: bool = False, duration_ms: int = 0, steps: int | None = None,
+              confirm: str | None = None) -> dict:
         """Move the pointer onto target; with duration_ms (0-10000) or steps (1-50, default 5 with
         duration_ms) it keeps moving across target, for hover-intent controls."""
         body = _action_target(target)
@@ -816,7 +817,7 @@ class Tab:
         if steps is not None:
             body["steps"] = steps
         return self._action("/api/hover", body, wait=wait, timeout=timeout, expect=expect, first=first,
-                            pointer_ms=duration_ms)
+                            pointer_ms=duration_ms, confirm=confirm)
 
     def type(self, target: str, text: str, *, clear: bool = False, wait: bool = False, timeout: int = 10000,
              expect: dict | None = None, first: bool = False, confirm: str | None = None) -> dict:
@@ -868,11 +869,11 @@ class Tab:
         return self.check(target, False, **options)
 
     def scroll(self, direction: str = "down", amount: int = 500, *, target: str | None = None,
-               expect: dict | None = None, first: bool = False) -> dict:
+               expect: dict | None = None, first: bool = False, confirm: str | None = None) -> dict:
         """Scroll target, else the window: up, down, left or right by amount pixels, or to top or bottom.
         scrolled_by is how far it moved."""
         return self._action("/api/scroll", {"direction": direction, "amount": amount, **_scope(target)},
-                            expect=expect, first=first)
+                            expect=expect, first=first, confirm=confirm)
 
     def submit_form(self, target: str | None = None, *, expect: dict | None = None, first: bool = False,
                     confirm: str | None = None) -> dict:
@@ -885,12 +886,12 @@ class Tab:
         leave them to the user again. Returns the policy and recent dialogs."""
         return self._request("/api/handle-dialog", _with_confirm({"accept": accept, "prompt_text": prompt_text}, confirm))
 
-    def focus(self, target: str, *, first: bool = False) -> dict:
-        return self._action("/api/focus", _action_target(target), first=first)
+    def focus(self, target: str, *, first: bool = False, confirm: str | None = None) -> dict:
+        return self._action("/api/focus", _action_target(target), first=first, confirm=confirm)
 
-    def blur(self, target: str | None = None, *, first: bool = False) -> dict:
+    def blur(self, target: str | None = None, *, first: bool = False, confirm: str | None = None) -> dict:
         """Remove focus from target, else from the focused element."""
-        return self._action("/api/blur", _scope(target), first=first)
+        return self._action("/api/blur", _scope(target), first=first, confirm=confirm)
 
     def drag(self, source: str, destination: str, *, wait: bool = False, timeout: int = 10000,
              expect: dict | None = None, first: bool = False, confirm: str | None = None) -> dict:
