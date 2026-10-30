@@ -484,6 +484,8 @@ async function testViewedTabIsHeld() {
   const destination = await run(h, { action: 'screenPoint', tabId: 2, selector: '#to', click: true, scroll: false }, 200);
   assert.equal(destination.code, undefined, JSON.stringify(destination));
   assert.equal(destination.screenX, 10);
+  // Only another trusted measurement passes there: other writes on the shown tab are still held.
+  assert.equal((await h.send({ action: 'click', tabId: 2, selector: '#go' })).code, 'user_viewing');
   assert.deepEqual(await h.send({ action: 'restoreActiveTab', tabId: 1, from: 2 }), { ok: true, restored: true });
   assert.deepEqual(h.shown(), [1]);
   h.activate(2);

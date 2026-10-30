@@ -334,7 +334,8 @@ async function userActiveError(tabId) {
 // protected navigation counts too) and holdViewedTab: false (the client's KITSUNE_HOLD_VIEWED_TAB=0).
 // Showing another tab (switchTab, focusWindow) moves the hold with the view. A tab a trusted
 // command showed for its OS input (trustedShownTabs) is the agent's view, not the user's, until
-// the user's tab is shown again: a trusted drag measures its destination there after its source.
+// the user's tab is shown again, but only for another trusted measurement (screenPoint): a trusted
+// drag measures its destination there after its source. Other writes on it are still held.
 const VIEWED_TAB_EXEMPT_ACTIONS = new Set(['closeTab', 'switchTab', 'focusWindow', 'elementScreenshot', 'fullPageScreenshot']);
 async function viewedTabError(params) {
   const tabId = params.tabId;
@@ -342,7 +343,7 @@ async function viewedTabError(params) {
   const navigationApproved = params.userTabApproved && PROTECTED_NAVIGATIONS.has(params.action);
   if (params.holdViewedTab === false || params.viewedTabApproved || navigationApproved ||
       VIEWED_TAB_EXEMPT_ACTIONS.has(params.action) || tabId == null || agentTabs.has(tabId) ||
-      trustedShownTabs.get(tabId)?.until > Date.now()) return null;
+      (params.action === 'screenPoint' && trustedShownTabs.get(tabId)?.until > Date.now())) return null;
   const tab = await browser.tabs.get(tabId).catch(() => null);
   if (!tab?.active) return null;
   const focused = await browser.windows.getLastFocused().catch(() => null);
