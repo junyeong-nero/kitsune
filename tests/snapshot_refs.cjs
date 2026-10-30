@@ -143,6 +143,8 @@ async function testContent() {
     getActiveTabId: async () => 42,
     tabsCreated: 0, openedTabs: [], actionStarts: new Map(), tabLoads: new Map(), mainFrameStatus: new Map(),
     userActiveError: async () => null, guardedTabId: async () => null, touchStart() {}, touchEnd() {},
+    // The top frame (#343): no ref here belongs to a cross-origin frame.
+    expandShortRefs: params => ({ params }), targetFrame: () => 0,
     dispatchCommand: send,
     forwardToContent: (action, params) => send({ action, ...params }),
   });
@@ -506,9 +508,9 @@ async function testRefLifetime() {
   assert.equal((await send({ action: 'focusElement', selector: first })).state.reason, 'element_removed');
 
   // A new injection/document owns fresh maps and tombstones; old IDs cannot contaminate it.
-  context.window.__claudeBridgeVersion = 45;
+  context.window.__claudeBridgeVersion = 46;
   vm.runInContext(fs.readFileSync('extension/content/content.js', 'utf8'), context);
-  assert.equal(context.window.__claudeBridgeVersion, 46, 'already-injected v45 content is upgraded');
+  assert.equal(context.window.__claudeBridgeVersion, 47, 'already-injected v46 content is upgraded');
   const fresh = refOf(await send({ action: 'getSnapshot', selector: '#node' }));
   assert.notEqual(fresh, first);
   assert.equal((await send({ action: 'focusElement', selector: first })).state.reason, 'other_document');
@@ -524,6 +526,8 @@ async function testBackground() {
     getActiveTabId: async () => 42,
     tabsCreated: 0, openedTabs: [], actionStarts: new Map(), tabLoads: new Map(), mainFrameStatus: new Map(),
     userActiveError: async () => null, guardedTabId: async () => null, touchStart() {}, touchEnd() {},
+    // The top frame (#343): no ref here belongs to a cross-origin frame.
+    expandShortRefs: params => ({ params }), targetFrame: () => 0,
     dispatchCommand: async params => { calls.push(params); return actionError ? { error: 'stale ref' } : { ok: true }; },
     forwardToContent: async (action, params) => {
       calls.push({ action, ...params });

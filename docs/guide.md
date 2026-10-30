@@ -133,9 +133,10 @@ restart the daemon to disable these automatic snapshots, or `full` to always ret
 full ones. Explicit snapshots
 remain available. This is a DOM-based accessibility approximation, not Firefox's
 platform accessibility tree; open and closed shadow roots are traversed. Same-origin
-iframes are read and acted on like the page. `browser_snapshot` also lists the content of
-cross-origin iframes (embedded payment forms, sign-in widgets, players), whose refs
-clicks, typing and trusted clicks accept (see [Frames](api-reference.md#frames)).
+iframes are read and acted on like the page. `browser_snapshot`, `browser_find`,
+`browser_forms`, `browser_dom` and post-action deltas also read the content of cross-origin
+iframes (embedded payment forms, sign-in widgets, players), whose refs clicks, typing and
+trusted clicks accept (see [Frames](api-reference.md#frames)).
 
 ## Requirements
 

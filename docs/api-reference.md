@@ -428,6 +428,34 @@ action returns its delta, after up to 1 s more.
 `browser_fill_form` returns one delta for all its fields: the first field records the page's
 lines, and the last waits and lists every field's change under the refs the agent already has.
 
+**Cross-origin frames (#354).** A delta also lists what changed inside cross-origin frames
+([Frames](#frames)), under the frame's line, which reads `[frame=cross_origin …]`. The
+document the action ran in (the page, or the frame holding its target) is compared with its
+record from right before the action, as above. Every other document (the page, or another
+frame) is compared with the last whole-page snapshot or delta that read it, so what the last
+result already listed is not repeated. A frame with nothing to compare with is listed in full,
+with its text lines, when:
+
+- the action ran in it, for example a Pay or Sign in button that loaded the frame's next page;
+- it now holds another page than when Kitsune last read it;
+- its line is in the delta, for example a frame the action added.
+
+A frame that only `browser_find`, `browser_forms` or `browser_dom` has read is not listed for
+that alone; its first delta read becomes what later deltas compare with. An action inside a
+frame names its target there as `target_ref`. `no_visible_change` covers the frames that
+answered, and is left out when the frame the action ran in did not answer in time. Frames the
+browser no longer finds (removed from the page) are not read again.
+
+Limits:
+- The wait above watches only the document the action ran in, so a frame that changes after it
+  goes quiet is not seen.
+- A frame's changes count as seen once its delta is read, even when the result does not show
+  them, for example when the delta's 4,000-character cap cut them or the frame was hidden.
+- `browser_fill_form` with fields in both the page and a frame compares the last field's frame
+  with what was last read of it, not with its state before the first field.
+
+`browser_wait_for(time)` lists frame changes the same way.
+
 The snapshot is full (no `snapshot_delta`; existing attached refs stay valid) for
 `browser_submit_form` and `browser_navigate`, which usually load another document,
 when the action loaded another document before the snapshot was taken (it has no
@@ -2223,7 +2251,7 @@ A frame whose content is unavailable is still listed, with
 viewport.
 
 **Cross-origin frames in `browser_snapshot`.** A cross-origin frame's content is read by a
-content script Kitsune injects into that frame when a snapshot first reads it, never on page
+content script Kitsune injects into that frame when a read first reaches it, never on page
 load. Its content follows the frame's line one level deeper, and the line reads
 `[frame=cross_origin src="…"]` instead:
 
@@ -2241,9 +2269,27 @@ below). One snapshot reads at most six cross-origin frames, in document order, a
 1.5 seconds. Frames smaller than 24×24 CSS pixels are not read. Frames past the limit, and
 frames that do not answer in time, keep `content=cross_origin`. When the limit leaves frames
 out, the result's `hint` says how many; a snapshot scoped to a frame's ref reads that frame.
-Post-action delta snapshots, `browser_dom`, `browser_find` and `browser_forms` do not read
-cross-origin frames yet. In [ask mode](#ask-before-act) writes inside them are held
-(`cross_origin_frame`, `payment_frame`).
+In [ask mode](#ask-before-act) writes inside them are held (`cross_origin_frame`,
+`payment_frame`).
+
+**Cross-origin frames in other reads (#354).** `browser_find`, `browser_forms`, `browser_dom`
+and post-action deltas read the same frames, with the same limits per call, and the refs they
+return act inside the frame:
+
+- `browser_find` searches each frame with the same query. Its matches join the page's, best
+  score first (the shorter text first among equal scores), at most 20 in all. When the query
+  matches as a CSS selector in any document, only such matches are returned, as on a page
+  without frames.
+- `browser_forms` lists a frame's fields after the page's, with `frame` set to the frame's title
+  or src. A frame that was read is no longer in `unavailableFrames`.
+- `browser_dom` puts a frame's tree under the frame's node, which then has
+  `frame: "cross_origin"` instead of `content`, within `max_depth` and the 20,000-character
+  cap. A frame's tree that no longer fits is left out, and the tree is `truncated`. Link
+  `href` values from a frame are redacted like snapshot URLs.
+- Bounds from a frame are in the top viewport, as for same-origin frames. Results from a frame
+  have no CSS `selector`, because a selector would match in the page; use the ref.
+- A delta lists a frame's changes under the frame's line, as described in
+  [Post-action snapshots](#post-action-snapshots).
 
 #### Images
 

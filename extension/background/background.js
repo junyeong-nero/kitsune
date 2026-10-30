@@ -3,7 +3,7 @@
 
 'use strict';
 
-const EXPECTED_CONTENT_VERSION = 46;
+const EXPECTED_CONTENT_VERSION = 47;
 const WS_URL = 'ws://127.0.0.1:47652';
 // scripts/build_extension.py sets 'signed' for the AMO build (see content.js).
 const KITSUNE_BUILD = 'dev';
@@ -758,7 +758,8 @@ async function runCommandSettled(params, { withSnapshot, deltaSnapshot, textSnap
         tabId: params.tabId, maxChars: 4000, focusLastAction: params.action !== 'navigate',
         observation: POST_SNAPSHOT_ACTIONS.get(params.action),
         ...(params.snapshotText ? { text: true } : {}),
-        ...(deltaSnapshot && !navigation ? { delta: true } : {}),
+        // The document the action ran in, whose delta has its baseline (#354).
+        ...(deltaSnapshot && !navigation ? { delta: true, actionFrame: actionFrame(params.tabId, params).frameId } : {}),
       });
       if (snapshot.error) result.snapshot_error = snapshot.error;
       else {
@@ -1715,55 +1716,106 @@ async function frameScreenPoint(tabId, frameId, point, params) {
   return point;
 }
 
-// One frame's own snapshot, injecting the content script into it first: frames get it only
-// when a snapshot reads them. null when it does not answer by deadline.
-async function readFrameSnapshot(tabId, frameId, params, deadline) {
+// A read's budget for the cross-origin frames in it, shared with the frames inside them.
+// answered: the frames that answered.
+function frameReadBudget() {
+  return { reads: CROSS_ORIGIN_FRAME_READS, deadline: Date.now() + FRAME_READ_TIMEOUT_MS, answered: new Set() };
+}
+
+// Where a read is: the frame of the document it reads, how many cross-origin frames deep that
+// document is, and the read's budget. innerScope is the scope of a frame listed in it.
+const innerScope = (scope, frame) => ({ ...scope, parent: frame.frameId, depth: scope.depth + 1 });
+
+// readFrame's answer for a frame the browser refused to script or message: one removed from
+// the page, for example, unlike a frame that is still loading or busy.
+const FRAME_GONE = Symbol('frame gone');
+
+// One frame's answer to message, injecting the content script into it first: frames get it
+// only when a read reaches them. null when it does not answer by deadline, FRAME_GONE above.
+async function readFrame(tabId, frameId, message, deadline) {
   let timer;
   const read = (async () => {
     await ensureContentScript(tabId, deadline, frameId);
-    return await browser.tabs.sendMessage(tabId, {
-      action: 'getSnapshot', maxChars: params.maxChars, text: params.text, observation: params.observation,
-      boxes: params.boxes, collapse: params.collapse, absoluteUrls: true,
-    }, { frameId });
-  })().catch(() => null);
+    return await browser.tabs.sendMessage(tabId, message, { frameId });
+  })().catch(e => e instanceof NoContentReceiver ? null : FRAME_GONE);
   const child = await Promise.race([read, new Promise(resolve => {
     timer = setTimeout(() => resolve(null), Math.max(0, deadline - Date.now()));
   })]);
   clearTimeout(timer);
-  return child && !child.error && typeof child.snapshot === 'string' ? child : null;
+  if (child === FRAME_GONE) return child;
+  return child && typeof child === 'object' && !child.error ? child : null;
 }
 
-// Lists each cross-origin frame's own snapshot under the frame's line, indented one level
-// deeper. Its line then reads [frame=cross_origin src=…] instead of [content=cross_origin …].
-// Frames are read in parallel, at most CROSS_ORIGIN_FRAME_READS per snapshot in document
-// order and each by one deadline; the others, and frames that do not answer, stay as they were.
-async function withFrameSnapshots(tabId, response, params, depth = 0, parent = 0,
-    budget = { reads: CROSS_ORIGIN_FRAME_READS, deadline: Date.now() + FRAME_READ_TIMEOUT_MS }) {
-  const { frames, ...result } = response;
-  if (!frames?.length || typeof result.snapshot !== 'string') return result;
-  const lines = result.snapshot.split('\n');
-  let cuts = result.cuts;
-  const listed = frames.map(frame => ({ ...frame, at: lines.findIndex(line => line.includes(`[ref=${frame.ref}]`)) }))
-    .filter(frame => frame.at >= 0);
-  if (depth >= CROSS_ORIGIN_FRAME_DEPTH) {
-    for (const { at } of listed) lines[at] = lines[at].replace('[content=cross_origin', '[content=too_deep');
-    return { ...result, snapshot: lines.join('\n') };
-  }
-  const reading = listed.slice(0, Math.max(0, budget.reads));
+// Reads the cross-origin frames a document lists ({ ref, frameId } each, in document order),
+// each with await message(frame), in parallel: at most the budget's reads, each by its
+// deadline. refsOf(child, frame) is the text holding the refs of a frame's answer, or null when
+// the answer is not this read's. Returns the frames read with their answers (read) and how many
+// were left out (unread); a document CROSS_ORIGIN_FRAME_DEPTH frames deep reads none (tooDeep).
+// A frame the browser no longer finds is forgotten, so deltas stop reading it (knownFrameDeltas).
+async function readFrames(tabId, frames, scope, message, refsOf) {
+  if (scope.depth >= CROSS_ORIGIN_FRAME_DEPTH) return { read: [], unread: 0, tooDeep: true };
+  const { budget } = scope;
+  const reading = frames.slice(0, Math.max(0, budget.reads));
   budget.reads -= reading.length;
-  const unread = listed.length - reading.length;
   const children = await Promise.all(reading.map(async frame => {
-    const child = await readFrameSnapshot(tabId, frame.frameId, params, budget.deadline);
-    if (!child) return null;
-    noteFrameRefs(tabId, child.snapshot, frame.frameId);
+    const child = await readFrame(tabId, frame.frameId, await message(frame), budget.deadline);
+    if (child === FRAME_GONE) frameParents.get(tabId)?.delete(frame.frameId);
+    const refs = child && child !== FRAME_GONE && refsOf(child, frame);
+    if (typeof refs !== 'string') return null;
+    budget.answered.add(frame.frameId);
+    noteFrameRefs(tabId, refs, frame.frameId);
     if (!frameParents.has(tabId)) frameParents.set(tabId, new Map());
-    frameParents.get(tabId).set(frame.frameId, { parent, ref: frame.ref });
-    return withFrameSnapshots(tabId, child, params, depth + 1, frame.frameId, budget);
+    frameParents.get(tabId).set(frame.frameId, { parent: scope.parent, ref: frame.ref });
+    return child;
   }));
+  return { read: reading.map((frame, i) => ({ frame, child: children[i] })).filter(({ child }) => child),
+    unread: frames.length - reading.length, tooDeep: false };
+}
+
+function unreadFramesHint(unread, how) {
+  return `${unread} more cross-origin frame${unread > 1 ? 's were' : ' was'} not read; ${how}`;
+}
+
+// The refs in a read's answer (every ref field), for noteFrameRefs.
+function resultRefs(value) {
+  if (Array.isArray(value)) return value.map(resultRefs).join(' ');
+  if (!value || typeof value !== 'object') return '';
+  return Object.entries(value).map(([key, item]) => key === 'ref' && typeof item === 'string' ? item : resultRefs(item))
+    .join(' ');
+}
+
+// A cross-origin frame's results as the document showing it sees them (#354): bounds move into
+// its top viewport by where the frame's viewport starts there (frame.offset), and CSS
+// selectors, which would run in that document, are dropped; refs reach the frame. Link URLs
+// (browser_dom's href) are redacted like snapshot URLs: another site's query can hold tokens.
+function fromFrame(value, frame) {
+  if (Array.isArray(value)) return value.map(item => fromFrame(item, frame));
+  if (!value || typeof value !== 'object') return value;
+  const [x, y] = frame.offset || [0, 0];
+  return Object.fromEntries(Object.entries(value).flatMap(([key, item]) => {
+    if (key === 'selector') return [];
+    if (key === 'href' && typeof item === 'string') return [[key, redactHistoryUrl(item)]];
+    if (key === 'bounds' && Array.isArray(item) && item.length === 4) {
+      return [[key, [Math.round(item[0] + x), Math.round(item[1] + y), item[2], item[3]]]];
+    }
+    return [[key, fromFrame(item, frame)]];
+  }));
+}
+
+// The frames a snapshot lists, with the index of each one's line (at).
+function listedFrames(frames, lines) {
+  return frames.map(frame => ({ ...frame, at: lines.findIndex(line => line.includes(`[ref=${frame.ref}]`)) }))
+    .filter(frame => frame.at >= 0);
+}
+
+// Lists each frame's own snapshot (child) under the frame's line, indented one level deeper. A
+// frame read reads [frame=cross_origin src=…] instead of [content=cross_origin …]; frames past
+// the depth limit read content=too_deep.
+function placeFrameSnapshots(result, lines, listed, { read, unread, tooDeep }) {
+  if (tooDeep) for (const { at } of listed) lines[at] = lines[at].replace('[content=cross_origin', '[content=too_deep');
+  let cuts = result.cuts;
   // Bottom up, so the line numbers of frames above stay valid.
-  const placed = reading.map((frame, i) => ({ ...frame, child: children[i] }))
-    .filter(frame => frame.child).sort((a, b) => b.at - a.at);
-  for (const { at, child } of placed) {
+  for (const { frame: { at }, child } of [...read].sort((a, b) => b.frame.at - a.frame.at)) {
     const indent = ' '.repeat(lines[at].search(/\S/) + 2);
     const inserted = child.snapshot.split('\n')
       .filter(line => line && line !== '- … truncated; scope with selector, ref or max_depth')
@@ -1776,12 +1828,204 @@ async function withFrameSnapshots(tabId, response, params, depth = 0, parent = 0
         ...childCuts.map(cut => cut + at + 1)].sort((a, b) => a - b);
     }
     if (child.truncated) result.truncated = true;
+    // A delta is unchanged when its frames' deltas are; an action inside a frame names its target there.
+    if (child.unchanged !== true) delete result.unchanged;
+    if (child.target_ref && !result.target_ref) result.target_ref = child.target_ref;
   }
-  if (unread && !result.hint) {
-    result.hint = `${unread} more cross-origin frame${unread > 1 ? 's were' : ' was'} not read; ` +
-      'snapshot a frame\'s ref to read it.';
-  }
+  if (unread && !result.hint) result.hint = unreadFramesHint(unread, 'snapshot a frame\'s ref to read it.');
   return { ...result, snapshot: lines.join('\n'), ...(cuts ? { cuts } : {}) };
+}
+
+const snapshotRefs = child => typeof child.snapshot === 'string' ? child.snapshot : null;
+
+// Lists each cross-origin frame's own snapshot under the frame's line (#343). Frames are read
+// in parallel, at most CROSS_ORIGIN_FRAME_READS per snapshot in document order and each by one
+// deadline; the others, and frames that do not answer, stay as they were.
+async function withFrameSnapshots(tabId, response, params, scope) {
+  const { frames, ...result } = response;
+  if (!frames?.length || typeof result.snapshot !== 'string') return result;
+  const lines = result.snapshot.split('\n');
+  const listed = listedFrames(frames, lines);
+  const reads = await readFrames(tabId, listed, scope, () => ({
+    action: 'getSnapshot', maxChars: params.maxChars, text: params.text, observation: params.observation,
+    boxes: params.boxes, collapse: params.collapse, absoluteUrls: true,
+  }), snapshotRefs);
+  reads.read = await Promise.all(reads.read.map(async ({ frame, child }) =>
+    ({ frame, child: await withFrameSnapshots(tabId, child, params, innerScope(scope, frame)) })));
+  return placeFrameSnapshots(result, lines, listed, reads);
+}
+
+// ── Deltas with cross-origin frames (#354) ──
+// A delta (an action's, or browser_wait_for(time)'s sinceObservation) covers the page and its
+// cross-origin frames. The document the action ran in (actionFrame) diffs against its baseline
+// from right before the action; every other one against what the agent last saw of it (its last
+// whole-page snapshot, lastObservation in the content script). Frames read before
+// (frameParents) are diffed first: a frame whose delta lists changes keeps its line in its
+// parent's delta (keepRefs), with that delta below it. A frame whose line a delta lists for
+// another reason (a new frame) is read too, in full when nothing of it was seen before.
+function deltaMode(params, frameId) {
+  return params.delta && (params.actionFrame ?? 0) === frameId ? { delta: true }
+    : { delta: false, sinceObservation: true, focusLastAction: false };
+}
+
+// Whether a frame's delta lists changes. A frame with nothing to diff against answers in full
+// (with text, textWhenFull). That is a change when the action ran in the frame or the frame
+// holds another document than when it was read before (a form it submitted, a sign-in step),
+// but not when no snapshot showed it yet (browser_find, browser_forms or browser_dom read it).
+function frameChanged(child, frame, params, replaced) {
+  return !!child.snapshot && (child.delta ? true : !!child.target_ref || frame.frameId === params.actionFrame || replaced);
+}
+
+// Whether a frame's refs are of a document no read of the frame has seen.
+function replacedDocument(tabId, refs, frameId) {
+  const generations = frameGenerations.get(tabId);
+  return ![...refs.matchAll(/\bs(\d+)e\d+\b/g)].some(m => generations?.get(m[1]) === frameId);
+}
+
+// The frames, by ref, whose delta lists changes.
+function changedFrameRefs(deltas) {
+  return [...deltas].filter(([, child]) => child.changed).map(([ref]) => ref);
+}
+
+// The deltas of the frames read before under the scope's document, by the ref of their frame
+// there. The frames holding the action's document come first, so the budget never leaves it out.
+async function knownFrameDeltas(tabId, params, scope) {
+  const links = frameParents.get(tabId) || new Map();
+  const path = new Set();
+  for (let id = params.actionFrame, n = 0; id && n < CROSS_ORIGIN_FRAME_DEPTH; id = links.get(id)?.parent, n++) path.add(id);
+  const known = [...links].filter(([, link]) => link.parent === scope.parent)
+    .map(([frameId, { ref }]) => ({ ref, frameId }))
+    .sort((a, b) => path.has(b.frameId) - path.has(a.frameId));
+  const { read } = await readFrameDeltas(tabId, known, params, scope);
+  return new Map(read.map(({ frame, child }) => [frame.ref, child]));
+}
+
+// Each frame's delta, after the deltas of the frames read before inside it; changed says
+// whether it lists changes (frameChanged).
+async function readFrameDeltas(tabId, frames, params, scope) {
+  const inner = new Map();
+  const replaced = new Map();
+  const reads = await readFrames(tabId, frames, scope, async frame => {
+    inner.set(frame.frameId, await knownFrameDeltas(tabId, params, innerScope(scope, frame)));
+    return { action: 'getSnapshot', maxChars: params.maxChars, text: params.text, observation: params.observation,
+      focusLastAction: params.focusLastAction, absoluteUrls: true, textWhenFull: true, ...deltaMode(params, frame.frameId),
+      keepRefs: changedFrameRefs(inner.get(frame.frameId)) };
+  }, (child, frame) => {
+    const refs = snapshotRefs(child);
+    // Before readFrames notes this answer's refs.
+    if (refs != null) replaced.set(frame.frameId, replacedDocument(tabId, refs, frame.frameId));
+    return refs;
+  });
+  reads.read = await Promise.all(reads.read.map(async ({ frame, child }) => {
+    const changed = frameChanged(child, frame, params, replaced.get(frame.frameId));
+    const merged = await withFrameDeltas(tabId, child, params, innerScope(scope, frame), inner.get(frame.frameId));
+    return { frame, child: { ...merged, changed: changed || changedFrameRefs(inner.get(frame.frameId)).length > 0 } };
+  }));
+  return reads;
+}
+
+// Lists the deltas of the frames a delta lists under their lines: known, the frames' deltas
+// read before this one (knownFrameDeltas).
+async function withFrameDeltas(tabId, response, params, scope, known) {
+  const { frames, ...result } = response;
+  if (!frames?.length || typeof result.snapshot !== 'string') return result;
+  const lines = result.snapshot.split('\n');
+  const listed = listedFrames(frames, lines);
+  const reads = await readFrameDeltas(tabId, listed.filter(frame => !known.has(frame.ref)), params, scope);
+  reads.read.push(...listed.filter(frame => known.has(frame.ref)).map(frame => ({ frame, child: known.get(frame.ref) })));
+  return placeFrameSnapshots(result, lines, listed, reads);
+}
+
+// ── browser_find, browser_forms and browser_dom in cross-origin frames (#354) ──
+// The content script's browser_find cap.
+const FIND_LIMIT = 20;
+
+// Each frame's matches join the page's. A query that matched as a CSS selector in a document
+// returns its matches unscored, and those win, as they do within one document; otherwise the
+// best scores across the documents, then the shorter text (the more specific element), the
+// page's first among equals.
+async function withFrameFinds(tabId, response, query, scope) {
+  const { frames, ...result } = response;
+  if (!frames?.length || !Array.isArray(result.results)) return result;
+  const { read, unread } = await readFrames(tabId, frames, scope, () => ({ action: 'find', query }),
+    child => Array.isArray(child.results) ? resultRefs(child) : null);
+  const children = await Promise.all(read.map(({ frame, child }) =>
+    withFrameFinds(tabId, child, query, innerScope(scope, frame))));
+  const all = [result.results, ...children.map((child, i) => fromFrame(child.results, read[i].frame))].flat();
+  const bySelector = all.filter(match => match.score == null);
+  const results = (bySelector.length ? bySelector
+    : all.sort((a, b) => b.score - a.score || (a.text?.length ?? 0) - (b.text?.length ?? 0))).slice(0, FIND_LIMIT);
+  const { hint, ...rest } = result;
+  const hints = [results.length ? null : hint, unread ? unreadFramesHint(unread, 'browser_snapshot reads a frame by its ref.') : null];
+  return { ...rest, results, ...(hints.some(Boolean) ? { hint: hints.filter(Boolean).join(' ') } : {}) };
+}
+
+// Each frame's fields follow the page's, with frame set to the frame's title or src (as
+// unavailableFrames names it) unless a frame inside it is named. A frame read leaves
+// unavailableFrames; frames inside it that were not read join it.
+async function withFrameForms(tabId, response, scope) {
+  const { frames, ...result } = response;
+  if (!frames?.length || !Array.isArray(result.fields)) return result;
+  const { read, unread, tooDeep } = await readFrames(tabId, frames, scope, () => ({ action: 'getFormFields' }),
+    child => Array.isArray(child.fields) ? resultRefs(child) : null);
+  const children = await Promise.all(read.map(({ frame, child }) => withFrameForms(tabId, child, innerScope(scope, frame))));
+  const { unavailableFrames = [], ...rest } = result;
+  const entries = new Map(unavailableFrames.map(entry => [entry.ref, entry]));
+  if (tooDeep) for (const { ref } of frames) if (entries.has(ref)) entries.get(ref).content = 'too_deep';
+  const readRefs = new Set(read.map(({ frame }) => frame.ref));
+  const fields = [...result.fields];
+  const unavailable = unavailableFrames.filter(entry => !readRefs.has(entry.ref));
+  read.forEach(({ frame }, i) => {
+    const entry = entries.get(frame.ref);
+    const name = entry?.title || entry?.src || '';
+    fields.push(...fromFrame(children[i].fields, frame).map(field => ({ ...field, frame: field.frame || name })));
+    unavailable.push(...(children[i].unavailableFrames || []));
+  });
+  return { ...rest, fields, ...(unavailable.length ? { unavailableFrames: unavailable } : {}),
+    ...(unread ? { hint: unreadFramesHint(unread, 'browser_snapshot reads a frame by its ref.') } : {}) };
+}
+
+// The content script's browser_dom cap, in characters of the tree's JSON, and its hint.
+const DOM_TREE_LIMIT = 20000;
+const DOM_TRUNCATED_HINT = 'Tree cut at 20,000 chars; scope it with selector, ref or max_depth, or use browser_snapshot.';
+
+// Each frame's tree becomes the child of its frame's node, which then has frame: 'cross_origin'
+// instead of content. Frames are read to the depth left below their node and within what is
+// left of the cap (limit); in document order, a frame's tree that no longer fits, or that has
+// no room for even its root, is left out and the tree is truncated.
+async function withFrameTrees(tabId, response, scope, maxDepth, limit = DOM_TREE_LIMIT) {
+  const { frames, ...result } = response;
+  if (!frames?.length || !result.tree) return result;
+  let left = limit - JSON.stringify(result.tree).length;
+  const depthBelow = frame => maxDepth - frame.depth - 1;
+  const { read, unread, tooDeep } = await readFrames(tabId, frames.filter(frame => depthBelow(frame) >= 0), scope,
+    frame => ({ action: 'getAccessibilityTree', depth: depthBelow(frame), limit: left }),
+    child => child.tree ? resultRefs(child.tree) : child.truncated ? '' : null);
+  const children = await Promise.all(read.map(({ frame, child }) =>
+    withFrameTrees(tabId, child, innerScope(scope, frame), depthBelow(frame), left)));
+  const nodes = new Map();
+  (function index(node) {
+    nodes.set(node.ref, node);
+    (node.children || []).forEach(index);
+  })(result.tree);
+  if (tooDeep) for (const { ref } of frames) if (nodes.get(ref)?.content) nodes.get(ref).content = 'too_deep';
+  read.forEach(({ frame }, i) => {
+    const node = nodes.get(frame.ref);
+    if (!node) return;
+    const tree = fromFrame(children[i].tree, frame);
+    const cost = tree ? JSON.stringify(tree).length + ',"children":[],'.length : Infinity;
+    if (cost > left) {
+      Object.assign(result, { truncated: true, hint: DOM_TRUNCATED_HINT });
+      return;
+    }
+    left -= cost;
+    delete node.content;
+    Object.assign(node, { frame: 'cross_origin', children: [tree] });
+    result.refs += children[i].refs || 0;
+    if (children[i].truncated) Object.assign(result, { truncated: true, hint: DOM_TRUNCATED_HINT });
+  });
+  if (unread && !result.hint) result.hint = unreadFramesHint(unread, 'browser_dom with a frame\'s ref reads it.');
+  return result;
 }
 
 // Public refs never reuse an index. Keep the generation-qualified ref private so the
@@ -2009,6 +2253,9 @@ async function forwardToContent(action, params) {
   if (!tabId) return noActiveTab('No active tab found');
 
   let retried = false;
+  // A delta's frames read before (#354), read once even when the message is sent again.
+  const delta = action === 'getSnapshot' && !!(params.delta || params.sinceObservation);
+  let deltaScope = null, frameDeltas = null;
   while (true) {
     // Verify the target tab before anything can reach a page, including a retry.
     const state = await tabState(tabId);
@@ -2030,9 +2277,15 @@ async function forwardToContent(action, params) {
       return failure;
     }
 
+    let message = { action, ...expanded.params };
+    if (delta) {
+      deltaScope ??= { parent: frameId, depth: 0, budget: frameReadBudget() };
+      frameDeltas ??= await knownFrameDeltas(tabId, params, deltaScope);
+      message = { ...message, ...deltaMode(params, frameId), keepRefs: changedFrameRefs(frameDeltas) };
+    }
     let response;
     try {
-      response = await browser.tabs.sendMessage(tabId, { action, ...expanded.params }, { frameId });
+      response = await browser.tabs.sendMessage(tabId, message, { frameId });
     } catch (e) {
       const missingReceiver = e.message === MISSING_CONTENT_RECEIVER;
       // A wake's receiver can disappear after the ping. Only this error proves nothing
@@ -2045,9 +2298,20 @@ async function forwardToContent(action, params) {
     }
     if (!response) return await tabFailure(tabId, 'No response from content script', true);
     if (response.code) response = await withTabState(tabId, response);
+    // Reads of cross-origin frames (#343, #354), with a budget of their own.
+    const frameScope = () => ({ parent: frameId, depth: 0, budget: frameReadBudget() });
     if (typeof response.snapshot === 'string') {
       if (frameId) noteFrameRefs(tabId, response.snapshot, frameId);
-      if (action === 'getSnapshot') response = await withFrameSnapshots(tabId, response, params, 0, frameId);
+      if (delta) {
+        response = await withFrameDeltas(tabId, response, params, deltaScope, frameDeltas);
+        // An action whose frame did not answer may have changed it.
+        if (params.actionFrame && !deltaScope.budget.answered.has(params.actionFrame)) delete response.unchanged;
+      } else if (action === 'getSnapshot') response = await withFrameSnapshots(tabId, response, params, frameScope());
+    }
+    if (action === 'find') response = await withFrameFinds(tabId, response, expanded.params.query, frameScope());
+    if (action === 'getFormFields') response = await withFrameForms(tabId, response, frameScope());
+    if (action === 'getAccessibilityTree') {
+      response = await withFrameTrees(tabId, response, frameScope(), expanded.params.depth ?? 6);
     }
     if (action === 'screenPoint' && frameId && !response.error) {
       response = await frameScreenPoint(tabId, frameId, response, expanded.params);
