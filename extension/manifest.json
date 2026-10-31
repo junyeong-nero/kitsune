@@ -19,12 +19,21 @@
     "clipboardRead",
     "clipboardWrite",
     "browsingData",
-    "sessions"
+    "sessions",
+    "alarms"
   ],
   "optional_permissions": [
     "history",
     "bookmarks"
   ],
+  "browser_action": {
+    "default_icon": {
+      "48": "icons/icon-48.png",
+      "96": "icons/icon-96.png"
+    },
+    "default_title": "Kitsune",
+    "default_popup": "popup/popup.html"
+  },
   "options_ui": {
     "page": "options/options.html"
   },

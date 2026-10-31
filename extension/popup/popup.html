@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Kitsune</title>
+  <style>
+    body { font: 13px/1.5 system-ui, sans-serif; margin: 0.8em; width: 18em; }
+    button, select { width: 100%; margin: 0.3em 0; }
+    p { margin: 0.4em 0; }
+    .note { color: GrayText; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <p>Agent tabs open: <strong id="count">…</strong></p>
+  <button id="close-all">Close agent tabs</button>
+  <p id="result" class="note" hidden></p>
+  <label for="idle">Close agent tabs idle for</label>
+  <select id="idle">
+    <option value="0">Never</option>
+    <option value="15">15 minutes</option>
+    <option value="30">30 minutes</option>
+    <option value="60">1 hour</option>
+    <option value="120">2 hours</option>
+    <option value="240">4 hours</option>
+  </select>
+  <p class="note">Pinned tabs are never closed. Pin an agent tab to keep it.</p>
+  <script src="popup.js"></script>
+</body>
+</html>

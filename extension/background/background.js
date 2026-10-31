@@ -101,6 +101,7 @@ browser.tabs.onRemoved.addListener(tabId => {
   linkFallbackTabs.delete(tabId);
   agentTabs.delete(tabId);
   agentTouches.delete(tabId);
+  agentTabUsedAt.delete(tabId);
   revertActivation.delete(tabId);
   trustedShownTabs.delete(tabId);
   for (const record of agentWindows) {
@@ -175,19 +176,66 @@ function touchStart(tabId) {
   const touch = agentTouches.get(tabId) || { running: 0, until: 0 };
   touch.running++;
   agentTouches.set(tabId, touch);
+  noteTabUse(tabId);
 }
 function touchEnd(tabId) {
   const touch = agentTouches.get(tabId);
   if (!touch) return;
   touch.running = Math.max(0, touch.running - 1);
   touch.until = Date.now() + AGENT_EFFECT_GRACE_MS;
+  noteTabUse(tabId);
 }
 function markAgentTab(tabId) {
   ownAgentTab(tabId);
+  noteTabUse(tabId);
   const load = tabLoads.get(tabId);
   if (load) load.agent = true;
   if (!agentTouches.has(tabId)) agentTouches.set(tabId, { running: 0, until: Date.now() + AGENT_EFFECT_GRACE_MS });
 }
+
+// == Agent tab cleanup (docs/api-reference.md#agent-tab-cleanup) ==
+// Agents that never close their tabs leave them piling up. The toolbar popup closes the agent's
+// tabs at once, and an opt-in idle limit (storage.local agentTabIdleMinutes, set in the popup)
+// closes those neither the agent nor the user used for that long. Pinned tabs stay: pinning is how
+// the user keeps one. Use times live in memory, so after a reload a restored tab counts from then.
+const AGENT_TAB_IDLE_KEY = 'agentTabIdleMinutes';
+const IDLE_SWEEP_ALARM = 'kitsune.agentTabIdleSweep';
+const agentTabUsedAt = new Map(); // tabId -> when the agent last acted on it or a window showed it
+const backgroundLoadedAt = Date.now();
+function noteTabUse(tabId) {
+  agentTabUsedAt.set(tabId, Date.now());
+}
+browser.tabs.onActivated?.addListener(({ tabId }) => noteTabUse(tabId));
+
+// idleMs 0 closes every unpinned agent tab; otherwise only those idle that long that are not
+// shown, playing sound or in use by an agent command.
+async function closeAgentTabs({ idleMs = 0 } = {}) {
+  await agentTabsRestored;
+  const now = Date.now();
+  const idle = tab => !tab.active && !tab.audible && !agentTouched(tab.id)
+    && now - (agentTabUsedAt.get(tab.id) ?? backgroundLoadedAt) >= idleMs;
+  const ids = (await browser.tabs.query({}))
+    .filter(tab => agentTabs.has(tab.id) && !tab.pinned && (!idleMs || idle(tab)))
+    .map(tab => tab.id);
+  const results = await Promise.allSettled(ids.map(id => browser.tabs.remove(id)));
+  return { closed: results.filter(r => r.status === 'fulfilled').length };
+}
+
+async function agentTabCount() {
+  await agentTabsRestored;
+  const tabs = await browser.tabs.query({});
+  return { count: tabs.filter(tab => agentTabs.has(tab.id) && !tab.pinned).length };
+}
+
+async function sweepIdleAgentTabs() {
+  const stored = await browser.storage.local.get(AGENT_TAB_IDLE_KEY).catch(() => ({}));
+  const minutes = Number(stored[AGENT_TAB_IDLE_KEY]) || 0;
+  return minutes > 0 ? await closeAgentTabs({ idleMs: minutes * 60000 }) : { closed: 0 };
+}
+browser.alarms?.create(IDLE_SWEEP_ALARM, { periodInMinutes: 1 });
+browser.alarms?.onAlarm.addListener(alarm => {
+  if (alarm.name === IDLE_SWEEP_ALARM) sweepIdleAgentTabs().catch(() => {});
+});
 
 // Firefox shows a tab a page opens (target=_blank, window.open) at once. When an agent action
 // opened it, the tab the user saw is shown again right away, and a popup window gives the
@@ -401,6 +449,10 @@ async function viewedTabError(params) {
 const POINTER_PAUSE_MAX_MS = 10000;
 
 browser.runtime.onMessage.addListener((msg, sender) => {
+  // The toolbar popup: an extension page, not a tab's content script.
+  const fromPopup = !sender.tab && sender.url === browser.runtime.getURL?.('popup/popup.html');
+  if (fromPopup && msg.action === 'agentTabCount') return agentTabCount();
+  if (fromPopup && msg.action === 'closeAgentTabs') return closeAgentTabs();
   if (msg.action === 'getDialogPolicy') {
     return Promise.resolve(dialogPolicies.get(sender.tab?.id) || null);
   }
