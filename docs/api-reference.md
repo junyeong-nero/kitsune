@@ -135,7 +135,8 @@ groups, including the named-only storage and history groups.
   script, data or local-file URLs. A refused navigation of a user tab
   ([protected user tabs](#protected-user-tabs)) carries no token; its hint points to
   `browser_tab_list(new_tab=...)`. So does a write or navigation refused on the
-  [tab the user is viewing](#viewed-tab) (`user_viewing`). Existing global URL/readonly/ask policy can tighten this.
+  [tab the user is viewing](#viewed-tab) (`needs_user`, `user_viewing`). Both have `state.approvable: false`.
+  Existing global URL/readonly/ask policy can tighten this.
 
 Restricted `tools/list` descriptions use their first paragraph, and schemas omit
 `confirm_token`. Calling an excluded name returns the existing `tool_not_published`
@@ -489,7 +490,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
   an identical retry succeeds; follow `hint` first (for example, take a new snapshot).
   `false` means a write may already have taken effect (a submit, message, payment
   or deletion can be behind any click or keypress); inspect the page before acting again.
-  The exceptions are `error_page`, `ambiguous_target`, `user_tab`, `user_viewing`,
+  The exceptions are `error_page`, `ambiguous_target`, `needs_user`,
   `permission_required`, `unsupported_platform`, `capability_restricted`, `mode_restricted` and
   `unknown_action`: nothing reached the page, and repeating cannot succeed until the tab
   navigates, the target is named uniquely, the user approves the close, navigation or action or
@@ -530,10 +531,8 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `browser_window_unavailable` | No active tab: the extension sees no normal window it can use | true |
 | `host_permission_denied` | Firefox does not let Kitsune script the tab's site (`state.reason`: `not_granted`, `restricted_domain`) | true |
 | `permission_required` | A [history or bookmark lookup](#history-and-bookmarks) needs an optional browser permission the user has not granted (`state.permission`: `history` or `bookmarks`). Only the user can grant it, on Kitsune's options page; the agent cannot. Also returned, with a reload hint, when the permission is granted but the running extension has not picked it up. `browser_trusted_type`, `browser_trusted_press_key` and `browser_trusted_drag` return it when the bridge lacks macOS Accessibility permission; nothing was sent | false |
-| `confirmation_required` | [Ask-before-act](#ask-before-act) held a sensitive action; nothing ran (`state.confirmToken`, `state.reason`) | true |
-| `user_tab` | `browser_tabs` close on a tab the agent did not open, or `browser_close_window` on a window with one; it stays open. Unless the client turned off [protected user tabs](#protected-user-tabs), also navigate, back or forward on such a tab; it stays where it is. A direct call's `state.confirmToken` closes or navigates it once the user approves (see [Agent-owned tabs](#agent-owned-tabs)) | false |
+| `needs_user` | Nothing ran: only the user can let the call go on (#376). `state.reason: "approval"`: it needs the user's approval, and `state.detail` is the code it replaces (below). `state.message` is a short request to show the user. A direct call's `state.confirmToken` runs it once the user approves; on an MCP client with elicitation the MCP server asks the user itself and the result has no token (see [Approval prompts](#approval-prompts)). `state.approvable` is `false` in read and draft modes, which cannot approve, and `state.approval` says how it can be approved (`token`, `elicitation`) | false |
 | `user_active` | The user is using the tab (`state.reason`: `input`, `typing`, `navigating`); the write or navigation did not run (see [User activity](#user-activity)) | true |
-| `user_viewing` | The tab is shown in the browser window the user last focused, and the agent did not open it (`state.reason: "viewing"`, `state.windowId`, `state.browserFocused`); the write or navigation did not run. A direct call's `state.confirmToken` runs it once the user approves (see [Viewed tab](#viewed-tab)) | false |
 | `outcome_not_observed` | The action was dispatched, but the outcome given in `expect` did not happen in time (see [Action outcomes](#action-outcomes)) | false for writes |
 | `no_current_tab` | From the MCP server: a write or navigation names no tab and the agent has no current tab (`state.tool`, `state.action` for a container step; `state.ownTabs`: the open tabs this MCP client opened, when there are any); nothing was sent (see [No current tab](#no-current-tab)) | false |
 | `tab_required` | A `parallel` step that acts on a tab has no `tabId` (`state.sequence`, `state.index`); nothing was dispatched (see [Container progress](#container-progress)) | true |
@@ -543,6 +542,28 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `container_timeout` | A batch or workflow reached its deadline; steps in progress may have taken effect and later steps did not start | false |
 | `tab_claimed` | A resumed `parallel` sequence writes a tab that another call's `parallel` in progress writes (`state.tabId`, `state.call`); nothing in that sequence was sent (see [Checkpoint and resume](checkpoint-resume.md#parallel)) | true |
 | `checkpoint_not_found`, `resume_token_invalid`, `workflow_changed`, `observed_invalid`, `observed_required`, `resume_failed` | `browser_resume` refused or stopped; see [Checkpoint and resume](checkpoint-resume.md#errors) | `observed_*`: true; others: false |
+
+`needs_user` replaces three codes, which stay as `state.detail` for one release. A `reason`
+the old `state` carried moves to `state.holdReason`; every other field keeps its name:
+
+| `state.detail` | Was the code | When | `state.holdReason` |
+|---|---|---|---|
+| `confirmation_required` | `confirmation_required` (`retryable: true`) | [Ask-before-act](#ask-before-act) held a sensitive action (`state.description`, `state.params`) | the hold reason (`submit_control`, `payment_page`, …) |
+| `user_tab` | `user_tab` | `browser_tabs` close on a tab the agent did not open, or `browser_close_window` on a window with one; it stays open. Unless the client turned off [protected user tabs](#protected-user-tabs), also navigate, back or forward on such a tab; it stays where it is (see [Agent-owned tabs](#agent-owned-tabs)) | none |
+| `user_viewing` | `user_viewing` | The tab is shown in the browser window the user last focused, and the agent did not open it (`state.windowId`, `state.browserFocused`); the write or navigation did not run (see [Viewed tab](#viewed-tab)) | `viewing` |
+
+```json
+{ "error": "The user is viewing tab 12; nothing was done", "code": "needs_user", "retryable": false,
+  "hint": "Nothing was done: the user is viewing this tab. Open a tab of your own ...",
+  "state": { "reason": "approval", "detail": "user_viewing", "tabId": 12, "url": "https://mail.example/",
+             "title": "Inbox", "windowId": 3, "holdReason": "viewing", "browserFocused": false,
+             "message": "Allow the agent's click in the tab you are viewing (Inbox)?", "approvable": true,
+             "confirmToken": "…", "expiresInSeconds": 120, "approval": "token" } }
+```
+
+Below, `needs_user` (`user_tab`) is a `needs_user` result with that `state.detail`. The
+Python API raises [`ConfirmationRequired`](python-api.md#errors) for an approval with a
+token, and for the old codes too.
 
 The connection codes (`bridge_unavailable`, `token_mismatch`, `port_conflict`,
 `extension_disconnected` before sending, `extension_version_mismatch`,
@@ -569,7 +590,7 @@ ports, missing responses and page errors are never automatically replayed this w
 
 The batch/`browser_retry` `retry` action stops after the first attempt that
 returns `retryable: false`, with `reason: "not retryable"`, even if `onErrors`
-matches. It also stops on `confirmation_required`, with
+matches. It also stops on an ask-before-act hold (`needs_user`, `confirmation_required`), with
 `reason: "confirmation required"`. Other errors are retried as before.
 
 Pointer actions (`browser_click` by selector/ref, `browser_double_click`,
@@ -692,6 +713,10 @@ These results are not errors:
   `extension_connected: false`.
 - A `browser_form_fill` that filled at least one key; keys that failed carry their
   own `error` in `results`.
+
+A `needs_user` approval hold is an error result. On a client that declared elicitation, the
+MCP server asks the user before it returns one, and the result never carries a confirm
+token, also inside container results (see [Approval prompts](#approval-prompts)).
 
 An `outcome_not_observed` error from an `expect` check still carries the action's
 post-action `snapshot` and `target_ref`: the action ran (see [Ref lifetime](#ref-lifetime)).
@@ -1098,7 +1123,7 @@ the user is doing (#139). Three rules follow:
    close without the user's approval.
 3. **Don't fight the user.** On a tab the user is using, agent writes and navigations
    return `user_active` instead of acting. Viewing counts as using: on the tab the user
-   sees, they return `user_viewing` until the user approves (see [Viewed tab](#viewed-tab)).
+   sees, they return `needs_user` (`user_viewing`) until the user approves (see [Viewed tab](#viewed-tab)).
 
 #### Never taking focus
 
@@ -1138,21 +1163,24 @@ are also listed in [`opened_tabs`](#opened-tabs), and the agent window's synced 
 described in [Agent windows](#agent-windows)), `false` for the user's tabs.
 
 `browser_tabs` close (`POST /api/close-tab`, batch `closeTab`) closes an owned tab. A
-user tab stays open, and the result is the error `user_tab` (`retryable: false`:
+user tab stays open, and the result is the error `needs_user` (`user_tab`; `retryable: false`:
 repeating the same call fails the same way; `state`: `tabId`, `url`, `title`). On a
 direct call the refusal carries a confirm token, issued and spent like
 [ask-before-act](#ask-before-act)'s whether or not ask mode is on:
 
 ```json
-{ "error": "Tab 12 was not opened by the agent, so it was not closed", "code": "user_tab", "retryable": false,
+{ "error": "Tab 12 was not opened by the agent, so it was not closed", "code": "needs_user", "retryable": false,
   "hint": "Nothing was closed: the agent did not open this tab. Leave it open, or ask the user to approve closing it, ...",
-  "state": { "tabId": 12, "url": "https://mail.example/", "title": "Inbox",
-             "confirmToken": "…", "expiresInSeconds": 120 } }
+  "state": { "reason": "approval", "detail": "user_tab", "tabId": 12, "url": "https://mail.example/", "title": "Inbox",
+             "message": "Allow the agent to close a tab it did not open (Inbox)?", "approvable": true,
+             "confirmToken": "…", "expiresInSeconds": 120, "approval": "token" } }
 ```
 
 After the user approves, repeat the identical call with `confirmToken` (MCP:
-`confirm_token`) within 120 s; it closes that tab once. The token is bound to the
-call's parameters (`tabId`, `force`), works once, and only on a direct call: batch,
+`confirm_token`) within 120 s; it closes that tab once. On an MCP client with elicitation,
+the MCP server asks the user and repeats it (see [Approval prompts](#approval-prompts)).
+The token is bound to the call's parameters (`tabId`, `force`), works once, and only on a
+direct call: batch,
 workflow and parallel steps never approve a close and get no token. A rejected token
 adds `state.tokenRejected` (`used`, `expired`) and a new token. With `force`, the
 extension disarms `beforeunload` only once it agreed to close the tab, so a refused
@@ -1160,7 +1188,7 @@ close leaves the user's page as it was.
 
 Closing a window closes its tabs, so `browser_close_window` (`POST /api/close-window`,
 batch `closeWindow`) refuses a window with any tab the agent did not open the same way
-(`user_tab`, `state.windowId`, `state.tabIds`: its user tabs), with the same approval.
+(`needs_user` (`user_tab`), `state.windowId`, `state.tabIds`: its user tabs), with the same approval.
 The browser's copies of other windows' tabs in a `createWindow` window do not count (see
 [Agent windows](#agent-windows)).
 
@@ -1203,14 +1231,15 @@ just because it is active.
 `browser_navigate`, `browser_back` and `browser_forward` (`POST /api/navigate`,
 `/api/back`, `/api/forward`, and batch, workflow and parallel `navigate`, `goBack`,
 `goForward`) on a tab the agent did not open, including the active tab when `tab_id` is
-omitted, return `user_tab` (`retryable: false`) without navigating:
+omitted, return `needs_user` (`user_tab`; `retryable: false`) without navigating:
 
 ```json
 { "error": "Tab 12 was not opened by the agent and this session protects user tabs, so it was not navigated",
-  "code": "user_tab", "retryable": false,
+  "code": "needs_user", "retryable": false,
   "hint": "Nothing navigated: this session protects tabs the agent did not open. Open a tab of your own (browser_tabs action=new) and work there, ...",
-  "state": { "tabId": 12, "url": "https://mail.example/", "title": "Inbox",
-             "confirmToken": "…", "expiresInSeconds": 120 } }
+  "state": { "reason": "approval", "detail": "user_tab", "tabId": 12, "url": "https://mail.example/", "title": "Inbox",
+             "message": "Allow the agent to navigate a tab it did not open (Inbox) to https://example.com/?",
+             "approvable": true, "confirmToken": "…", "expiresInSeconds": 120, "approval": "token" } }
 ```
 
 The command is never redirected to another tab. Tabs the agent owns navigate as before. After the user
@@ -1218,10 +1247,10 @@ approves, repeat the call with `tab_id` set to `state.tabId` and `confirmToken` 
 `confirm_token`) within 120 s. The token navigates that tab to that URL once. It is
 bound to the call's parameters and the refused tab, so a call without `tab_id` cannot
 carry it to whatever tab is active later. Only direct calls get and accept a token:
-batch, workflow and parallel steps are refused without one. The token goes back to the
-agent, so it proves an explicit second step, not that the user approved: an agent can
-repeat the call with it without asking. For real approval, have the MCP client prompt
-before calls that carry `confirm_token`.
+batch, workflow and parallel steps are refused without one. Without elicitation the token
+goes back to the agent, so it proves an explicit second step, not that the user approved:
+an agent can repeat the call with it without asking. On an MCP client with elicitation the
+agent never gets it: the MCP server asks the user (see [Approval prompts](#approval-prompts)).
 
 To let an agent the user asked to work in their tabs navigate them without approval, set
 `KITSUNE_PROTECT_USER_TABS=0` in its MCP server environment. The MCP server then sends
@@ -1271,7 +1300,7 @@ follows:
 - In a `createWindow` window, only the tabs `windows.create` made are the agent's
   (`tabIds` in the result). The browser's copies there are discarded when the window opens.
   Kitsune records them once, at that moment, and never makes them owned.
-  `browser_tabs` close refuses them (`user_tab`), because closing one would close the user's
+  `browser_tabs` close refuses them (`needs_user`), because closing one would close the user's
   tab. `browser_close_window` closes the window with them anyway: removing a window
   closes no originals.
 - A tab that opens in another window as a copy of the agent window's tab is adopted:
@@ -1338,15 +1367,17 @@ count as user input on the tab it hits for 3 s.
 Viewing counts as using (#326). A user reading a page, or one who just switched to the
 agent's terminal, gives the page no input, so [User activity](#user-activity) does not see
 them. So the tab shown in the browser window the user last focused is held as well. An
-agent write or navigation on it returns `user_viewing` (`retryable: false`) instead of
+agent write or navigation on it returns `needs_user` (`user_viewing`; `retryable: false`) instead of
 acting. The hold has no time limit: it ends when the user shows another tab, or focuses
 another browser window.
 
 ```json
-{ "error": "The user is viewing tab 12; nothing was done", "code": "user_viewing", "retryable": false,
+{ "error": "The user is viewing tab 12; nothing was done", "code": "needs_user", "retryable": false,
   "hint": "Nothing was done: the user is viewing this tab. Open a tab of your own (browser_tabs action=new) and work there, or ask the user to approve acting in this tab, then repeat the identical call (with tab_id=12 if it named no tab) with confirmToken ...",
-  "state": { "tabId": 12, "url": "https://mail.example/", "title": "Inbox", "windowId": 3,
-             "reason": "viewing", "browserFocused": false, "confirmToken": "…", "expiresInSeconds": 120 } }
+  "state": { "reason": "approval", "detail": "user_viewing", "tabId": 12, "url": "https://mail.example/",
+             "title": "Inbox", "windowId": 3, "holdReason": "viewing", "browserFocused": false,
+             "message": "Allow the agent's click in the tab you are viewing (Inbox)?", "approvable": true,
+             "confirmToken": "…", "expiresInSeconds": 120, "approval": "token" } }
 ```
 
 - **Which tab.** The active tab of `windows.getLastFocused()`. When another application
@@ -1407,9 +1438,11 @@ sends one id on several requests gets one approval covering its requests on that
 120 s. Such a caller can turn the hold off with its own header anyway. An accepted ask-before-act token for the same call, and the `user_tab`
 approval of a [protected](#protected-user-tabs) navigation, approve the hold too, so one
 approval is enough. In read and draft modes the refusal carries no token, and its hint
-points to `browser_tab_list` new_tab. As with `user_tab`, the token goes back to the
-agent, so it proves an explicit second step, not that the user approved. For real approval,
-have the MCP client prompt before calls that carry `confirm_token`.
+points to `browser_tab_list` new_tab. As with `user_tab`, without elicitation the token goes
+back to the agent, so it proves an explicit second step, not that the user approved. On an
+MCP client with elicitation the MCP server asks the user instead (see
+[Approval prompts](#approval-prompts)); the repeated tool call's later requests are approved
+with it as above.
 
 **Turning it off.** `KITSUNE_HOLD_VIEWED_TAB=0` in an MCP server environment lifts the hold
 for that client (it sends `X-Kitsune-Hold-Viewed-Tab: 0` with each bridge request; the
@@ -1436,7 +1469,7 @@ tab the user is viewing:
 ```json
 { "error": "browser_navigate writes a tab but names none, and there is no current tab, so it was not sent to the tab the user is viewing",
   "code": "no_current_tab", "retryable": false,
-  "hint": "Nothing was dispatched. Pass tab_id (browser_navigate and browser_navigate_back accept it too), or open a tab of your own with browser_tabs action=new or browser_tab_list new_tab and work there. browser_tabs action=select makes a tab current too, but navigating a tab the agent did not open is then refused (user_tab) unless the user approves.",
+  "hint": "Nothing was dispatched. Pass tab_id (browser_navigate and browser_navigate_back accept it too), or open a tab of your own with browser_tabs action=new or browser_tab_list new_tab and work there. browser_tabs action=select makes a tab current too, but navigating a tab the agent did not open is then refused (needs_user) unless the user approves.",
   "state": { "tool": "browser_navigate" } }
 ```
 
@@ -1550,7 +1583,7 @@ for a bridge (see below).
 
 In ask mode the bridge holds:
 
-| `state.reason` | Actions |
+| `state.holdReason` | Actions |
 |---|---|
 | `submit` | `browser_submit_form` (`submitForm`) |
 | `submit_control` | Click, double-click, trusted click, or click-and-wait-navigation on a submit control (`button` whose type is submit, `input type=submit/image`, or an element inside one, with a form). Also Enter (`browser_keypress`) on a text-like `input` in a form or on a submit control |
@@ -1582,20 +1615,25 @@ boolean and `askUrls` a list of non-empty strings that compile as regular expres
 Any other value (for example a bare string `"checkout"`) returns `invalid_policy`
 (HTTP 400), and none of the request is applied, in locked mode too.
 
-A held call returns `confirmation_required` (HTTP 403 from the bridge) and does not
-run. `retryable` is `true` because nothing reached the page:
+A held call returns `needs_user` (`confirmation_required`; HTTP 403 from the bridge) and
+does not run. Until #376 the code was `confirmation_required` with `retryable: true` and
+the hold reason in `state.reason`; now `retryable` is `false` like every `needs_user`, and the
+hold reason is `state.holdReason` (see [Action errors](#action-errors)):
 
 ```json
 { "error": "Confirmation required: clicks a submit control (Place order)",
-  "code": "confirmation_required", "retryable": true, "hint": "Nothing ran. Ask the user ...",
-  "state": { "confirmToken": "…", "expiresInSeconds": 120, "action": "click",
-             "reason": "submit_control", "description": "clicks a submit control (Place order)",
-             "tabId": 7, "url": "https://shop.example/cart", "params": { "ref": "e12" } } }
+  "code": "needs_user", "retryable": false, "hint": "Nothing ran. Ask the user ...",
+  "state": { "reason": "approval", "detail": "confirmation_required", "confirmToken": "…",
+             "expiresInSeconds": 120, "approval": "token", "action": "click",
+             "holdReason": "submit_control", "description": "clicks a submit control (Place order)",
+             "tabId": 7, "url": "https://shop.example/cart", "params": { "ref": "e12" },
+             "message": "Allow the agent's click? It clicks a submit control (Place order).", "approvable": true } }
 ```
 
 To approve the action, the client asks the user. It then repeats the identical call
 with the token: MCP tools take `confirm_token`, and HTTP and batch bodies take
-`confirmToken`. The token:
+`confirmToken`. On an MCP client with elicitation, the MCP server does both (see
+[Approval prompts](#approval-prompts)). The token:
 
 - is bound to the exact action, its parameters, and the resolved target tab. Without
   `tab_id`, that is the tab that was active when the call was held. A different action,
@@ -1611,7 +1649,7 @@ An accepted token for a navigation also approves navigating that tab when it is 
 [protected user tab](#protected-user-tabs), and the [viewed tab](#viewed-tab) hold, so the
 user approves a held navigation once.
 
-A rejected token returns a fresh `confirmation_required` error with
+A rejected token returns a fresh `needs_user` (`confirmation_required`) error with
 `state.tokenRejected` set to `unknown`, `used`, `expired`, `mismatch`, or `not_direct`.
 A batch, workflow, parallel sequence, or batch `sequence` stops at the first held
 step, so later steps that may depend on it do not run. A held batch result has
@@ -1620,14 +1658,16 @@ step, so later steps that may depend on it do not run. A held batch result has
 The audit log (`browser_audit`) records each held call
 (`params.confirmation: "required"`, `error: "confirmation_required"`) and each
 accepted token (`params.confirmation: "accepted"`), followed by the action's normal
-entry. The token itself is never logged.
+entry. Both add `approval`: how the user approved ([Audit log](#audit-log)). The token
+itself is never logged.
 
-**What the token proves.** The token goes back to the agent that made the call, so
-it enforces an explicit second step bound to one exact action. It does not prove that
-a human approved. Real approval has to come from the client, for example a
-permission prompt for the tool call that carries `confirm_token`. An agent that
-can call `browser_set_policy` can also turn agent-settable ask mode off. That mode
-guards against accidents only.
+**What the token proves.** Without elicitation the token goes back to the agent that made
+the call, so it enforces an explicit second step bound to one exact action, a guard
+against accidents. It does not prove that a human approved: the agent can repeat the call
+with it without asking (#374). Such approvals are logged with `approval: "token"`. On an
+MCP client with elicitation the agent never receives the token (see
+[Approval prompts](#approval-prompts)). An agent that can call `browser_set_policy` can
+also turn agent-settable ask mode off. That mode guards against accidents only.
 
 **Locked mode.** Start the bridge with `KITSUNE_ASK_BEFORE_ACT=1` in its environment
 (the MCP server passes its environment to a bridge it starts) or with
@@ -1741,32 +1781,60 @@ The page can change between the two: it can navigate to a payment-like URL, or a
 script can turn the target into a submit control. Such a change is not caught. Passing
 `tab_id` removes the active-tab part of this window, but not changes inside the page.
 
-**Client-side approval (MCP elicitation), evaluated.** MCP elicitation
-(`ctx.elicit`) would let the server ask the user through the client and retry with
-the token itself, so approval would not pass through the agent. It is not used, for
-these reasons:
-
-- The dependency floor is `mcp>=1.2.0`; `Context.elicit` arrived in later releases
-  (the 2025-06-18 protocol revision). Using it means raising the floor or a runtime
-  feature check.
-- Every Kitsune tool is a synchronous function. FastMCP runs synchronous tools on its
-  event loop, so a tool cannot await `ctx.elicit`. The held tools would have to become
-  `async` and move their bridge calls off the loop.
-- Client support varies: many clients do not declare the `elicitation` capability.
-  Clients that do may let the agent answer the form instead of the user. So
-  `confirmation_required` stays as the fallback, and an accepted elicitation is
-  still not proof that a human approved.
-
-A later change could add it as an option: for clients that declare `elicitation`,
-an `async` wrapper around held tools would elicit on `confirmation_required` and
-retry once with the token. For now, real approval has to come from the client's own
-permission prompt for the tool call that carries `confirm_token`.
-
 **Annotations are not policy.** MCP `ToolAnnotations` (`readOnlyHint`,
 `destructiveHint`, `idempotentHint`, `openWorldHint`) are static, per-tool metadata.
 Clients may use them for their own permission prompts. The bridge never reads them,
 and they do not change when ask mode is on. Enforcement comes from the bridge policy
 alone: `readonly`, `allow`/`deny`, and `ask`.
+
+#### Approval prompts
+
+A direct call held for the user's approval (`needs_user` with `state.reason: "approval"`:
+[ask-before-act](#ask-before-act), a [user tab](#agent-owned-tabs) or the
+[viewed tab](#viewed-tab)) is approved through MCP elicitation when the client supports it
+(#376). The client declares the `elicitation` capability (form mode, protocol 2025-06-18 or
+later) at initialize; Claude Code (2.1.76 and later) and Codex do.
+
+1. The MCP server asks the client to ask the user, in form mode with one choice, Approve or
+   Decline. The prompt names the request (`state.message`), the tool, the target element
+   (the call's `element`, else its target), the tab's title and URL where the result has them,
+   and why it was held
+   (`state.detail`, and the ask-before-act description).
+2. On Approve, the MCP server repeats the identical call once with the token. The model never
+   receives the token, so it cannot approve itself. The repeat's result is the call's result.
+   If a later request of the repeated call is held for another reason (the Enter of
+   `browser_type(submit=true)` after its text), the user is asked about that one too, at most 3
+   times per call.
+3. On Decline, or when the prompt is dismissed (`cancel`), fails or gets no answer in time, the
+   result is the held `needs_user` without `confirmToken` and `expiresInSeconds`, with
+   `state.approval: "elicitation"` and `state.decision`: `declined` or `cancelled` (also for
+   no answer). Nothing ran.
+4. If the repeat no longer matches what the user approved (the target resolved in another
+   tab), it is not repeated again: the result has `state.tokenRejected` and no token. Calling
+   the tool again asks again.
+
+The prompt waits until 5 s before the token expires (`expiresInSeconds`, 120 s), then the
+MCP server cancels it (`notifications/cancelled`), so an answer after that approves nothing.
+While it waits, a call that sent a `progressToken` gets a progress notification every 10 s
+(`"Waiting for the user's approval"`), so a client that resets its request timeout on
+progress keeps waiting; no bridge request is open meanwhile.
+
+An approval covers one held call, bound like the token to its action, parameters and tab.
+Claude Code `Elicitation` hooks can answer the prompt; that is the user's own configuration.
+A harness that drives Kitsune answers elicitations as the user.
+
+Containers cannot confirm a step: the bridge honors tokens on direct calls only. A held
+step's token would still approve the same step as a direct call, so on a client with
+elicitation the MCP server removes every `confirmToken` from the result, in `results`,
+nested sequences and parallel branches, and replaces the held step's hint. Repeat the held
+step as a direct call: the user is asked there. `browser_resume` does not ask either.
+
+Clients without elicitation, the Python API and raw HTTP callers keep the token in the result
+(`state.approval: "token"`), as before. That is a guard against accidents, not a security
+boundary: such an agent can repeat the call with the token without asking (#374). The audit
+log records each approval's path (`approval: "token"` or `"elicitation"`, see
+[Audit log](#audit-log)). The MCP server sends elicitation only with an MCP SDK that has
+form elicitation (`ServerSession.elicit_form`); with an older one, it keeps the token too.
 
 ### Sensitive-field redaction
 
@@ -1919,6 +1987,17 @@ Entries of commands a [`browser_tools_call`](#tool-gateway) ran add
 `via: {"gateway": "browser_tools_call", "tool": "<tool name>"}`. Direct calls have no
 `via`; entries never name the MCP tool otherwise.
 
+An approved write's entries (its `params.confirmation: "accepted"` entry and the write's
+own) add `approval`, how the user approved it (#376): `"elicitation"` when the MCP server
+asked the user in the client's prompt and repeated the call, `"token"` for every other repeat
+with a confirm token (a client without elicitation, the Python API, a raw HTTP call). The
+MCP server sends a random secret in `X-Kitsune-Approver` with each bridge request, and the
+bridge keeps only its hash with each token it issues. A repeat counts as `"elicitation"` only
+when it sends `X-Kitsune-Approval: elicitation` and the approver of the request the token was
+issued to, so another client sharing the bridge, or a caller that only claims it, logs
+`"token"`. Held calls and writes nothing approved have no `approval`, and the secret and its
+hash are never logged or returned.
+
 The bridge is shared by every client, so entries add `client`: the id the client sent in
 `X-Kitsune-Client`. Each MCP server and each Python API `connect()` sends its own, its
 process id and a random suffix (`"48213-9f2c1a"`), which matches it with that process's
@@ -1929,7 +2008,7 @@ the header, such as other HTTP callers, have no `client`. Entries also add `owne
 
 Each command run inside `browser_batch`, `browser_parallel`, `browser_broadcast`,
 `browser_retry`, a workflow, or a batch `sequence`/`if`/`while`/`try` gets its own
-entry, including held `confirmation_required` steps. These entries add
+entry, including held ask-before-act steps. These entries add
 `parent: {call, path}`. `call` is shared by every entry from one container call.
 `path` lists the enclosing steps from the outermost, for example
 `[{"action": "batch", "index": 1}, {"action": "parallel", "sequence": 0, "index": 2}]`.
@@ -2070,8 +2149,8 @@ never ran:
 | `status` | Meaning |
 |---|---|
 | `ok` | The command ran without an error. Like any result, this means dispatched, not that the outcome happened (see [Action outcomes](#action-outcomes)) |
-| `failed` | It returned an error that is safe to repeat (`retryable: true`, unclassified errors, `error_page`, `ambiguous_target`, `user_tab`, `permission_required`, the pre-dispatch refusals `capability_restricted`, `mode_restricted` and `unknown_action`, or `ok: false`) |
-| `held` | [Ask-before-act](#ask-before-act) held it; nothing ran |
+| `failed` | It returned an error that is safe to repeat (`retryable: true`, unclassified errors, `error_page`, `ambiguous_target`, `needs_user` other than an ask-before-act hold, `permission_required`, the pre-dispatch refusals `capability_restricted`, `mode_restricted` and `unknown_action`, or `ok: false`) |
+| `held` | [Ask-before-act](#ask-before-act) held it (`needs_user`, `confirmation_required`); nothing ran |
 | `unknown` | It may have taken effect: an error with `retryable: false`, or it was in progress at the container's deadline. Observe the page before acting again |
 | `skipped` | It never started: an earlier step stopped the container (a held step, `stopOnWarning`, a failed workflow step) or the deadline passed |
 
@@ -2166,7 +2245,7 @@ inventory. New opens the tab in the
 background and returns immediately unless
 `wait=True`, which waits up to `timeout` ms for the page to load and returns
 the actual URL and load status. Close refuses a tab the agent did not open with
-`user_tab` until the user approves it (`confirm_token`, see
+`needs_user` (`user_tab`) until the user approves it (`confirm_token`, see
 [Agent-owned tabs](#agent-owned-tabs)). Select switches the user's view: use it only
 when the user asked. Options for other actions are ignored.
 
@@ -2673,7 +2752,7 @@ desktop coordinates with `coordinate_space="screen"`. The OS click lands on what
 `tab_id` that is not the shown tab of its window is shown for the click, and the
 user's tab is shown again 300 ms after it (see [Shared browser](#shared-browser)). A
 viewport click returns `user_active` without clicking while the user is using the
-target tab or the tab it would hide, and `user_viewing` when the target tab is the one
+target tab or the tab it would hide, and `needs_user` (`user_viewing`) when the target tab is the one
 the user is [viewing](#viewed-tab) (`confirm_token` after the user approves). Ambiguous selectors return `ambiguous_target`
 before scrolling the element or invoking the OS; `first=True` opts into the first match.
 
@@ -2812,7 +2891,7 @@ Each call:
 1. Clicks the target (`selector` or a ref, required) with the OS pointer, as
    `browser_trusted_click` does. A `tab_id` that is not shown is shown for the call
    ([`tab_not_shown`](#action-errors) when the window shows no page). The tab the user is
-   [viewing](#viewed-tab) returns `user_viewing` before the click, until the user approves.
+   [viewing](#viewed-tab) returns `needs_user` (`user_viewing`) before the click, until the user approves.
 2. Requires the window at the click point to be the tab's own window
    ([`browser_not_at_point`](#action-errors), #336).
 3. Sends each key only while the browser that owns that window is the frontmost app and the
@@ -2856,7 +2935,7 @@ permission for the bridge. Elsewhere, or without them, it returns `unsupported_p
 Each call:
 1. Measures the source (`selector` or a ref) as `browser_trusted_click` does: scrolled into view
    and hit-tested (`target_not_at_point`). A `tab_id` that is not shown is shown for the call.
-   The tab the user is [viewing](#viewed-tab) returns `user_viewing` here, before anything is
+   The tab the user is [viewing](#viewed-tab) returns `needs_user` (`user_viewing`) here, before anything is
    shown or measured; `confirm_token` approves both measurements and the drag.
 2. Measures the destination (`to_selector`) in the same tab without scrolling, so the source
    point stays valid. It is hit-tested too, so a destination out of view returns
@@ -3102,10 +3181,10 @@ zero timeout performs one immediate check.
 `{ "url": "https://example.com", "tabId": 1, "expectTitle": "Example" }`
 - `tabId` optional (defaults to active tab)
 - `expectTitle` optional — warns if title doesn't match (catches silent redirects)
-- A tab the agent did not open returns `user_tab`; `confirmToken` is its token after the user
+- A tab the agent did not open returns `needs_user` (`user_tab`); `confirmToken` is its token after the user
   approved, and `X-Kitsune-Protect-User-Tabs: 0` lets the request navigate it (see
   [Protected user tabs](#protected-user-tabs)). The same holds for `/api/back` and `/api/forward`.
-- The tab the user is viewing returns `user_viewing`, as do the other page writes;
+- The tab the user is viewing returns `needs_user` (`user_viewing`), as do the other page writes;
   `confirmToken` is its token after the user approved, and `X-Kitsune-Hold-Viewed-Tab: 0`
   lifts the hold for the request (see [Viewed tab](#viewed-tab)).
 - A load that does not finish in 15 s returns `{ "ok": false, "timedOut": true, "url": "..." }`.
@@ -3144,7 +3223,7 @@ user's request; while the user is using the tab it would hide, it returns `user_
 
 ### POST /api/close-tab
 `{ "tabId": 123, "force": true, "confirmToken": "…" }` closes an agent-owned tab. A
-user tab returns `user_tab` with a confirm token; `confirmToken` is that token after the
+user tab returns `needs_user` (`user_tab`) with a confirm token; `confirmToken` is that token after the
 user approved (see [Agent-owned tabs](#agent-owned-tabs)). `force` disarms
 `beforeunload` first.
 

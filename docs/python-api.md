@@ -225,30 +225,41 @@ bridge's history scope ([History and bookmarks](api-reference.md#history-and-boo
 A failed result raises a `KitsuneError`. Its `code`, `retryable`, `hint` and `state`
 are the [action error](api-reference.md#action-errors) fields, and `result` is the
 whole reply. Branch on `code`, not on the message. `retryable=False` means a write may
-already have taken effect: check the page before repeating it.
+already have taken effect: check the page before repeating it. `needs_user` is the
+exception: nothing ran, and only you can let it go on.
 
 | Exception | Raised for |
 | --- | --- |
-| `ConfirmationRequired` | An action that needs your approval, with `token` and `expires_in`: `confirmation_required` (ask-before-act), `user_tab` or `user_viewing` |
+| `ConfirmationRequired` | An action that needs your approval (`needs_user` with `state.reason` `approval`, and a token), with `token`, `expires_in`, `message` and `detail`: `confirmation_required` (ask-before-act, with `hold_reason`), `user_tab` or `user_viewing` |
 | `ConnectionFailed` (also a `ConnectionError`) | The bridge or extension was not reached or dropped the request: the [connection codes](api-reference.md#connection-diagnosis), `bridge_disconnected` and `bridge_version_mismatch` |
 | `TimedOut` (also a `TimeoutError`) | `timeout`, a page load that timed out, and a wait that ran out |
 | `KitsuneError` | Every other failure, such as `stale_ref`, `ambiguous_target` or `outcome_not_observed` |
 
 Warnings that accompany a success (`warning`) do not raise.
 
+Until #376 these approvals had their own codes, `confirmation_required`, `user_tab` and
+`user_viewing`. They are now `code` `needs_user`, with the old code in `state.detail`
+(`error.detail`) for one release, and an ask-before-act hold's reason in `state.holdReason`
+(`error.hold_reason`, before: `state.reason`). `ConfirmationRequired` is raised for both
+shapes. A `needs_user` without a token, as in read and draft modes
+(`state.approvable: false`), raises a plain `KitsuneError`: nothing can approve it there.
+
 ## Ask-before-act
 
 Some actions need your approval, and nothing runs until you give it: with
 [ask-before-act](api-reference.md#ask-before-act) on, the bridge holds submits, payment
-pages, JavaScript and cookie access (`confirmation_required`), and it never closes one of
+pages, JavaScript and cookie access (`detail` `confirmation_required`), and it never closes one of
 your own tabs, or navigates it unless `protect_user_tabs=False`, without approval (`user_tab`,
 [Agent-owned tabs](api-reference.md#agent-owned-tabs)). Nor does it write or navigate the
 tab you are viewing (`user_viewing`, [Viewed tab](api-reference.md#viewed-tab)) unless
 `hold_viewed_tab=False`. These raise
-`ConfirmationRequired`. Repeat the call with `confirm=error.token` within
+`ConfirmationRequired`; `error.message` is a short request to show you. Repeat the call
+with `confirm=error.token` within
 `error.expires_in` seconds, or let `connect(confirm=...)` decide: the function gets the
 error, and when it returns `True` the action is sent once more with its token. In a
-script, that function can ask you, so the approval comes from a person:
+script, that function can ask you, so the approval comes from a person. The Python API has
+no MCP elicitation, so it always gets the token, and the bridge's
+[audit log](api-reference.md#audit-log) records these approvals with `approval: "token"`:
 
 ```python
 def ask(held):

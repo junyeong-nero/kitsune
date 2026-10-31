@@ -399,7 +399,7 @@ Kitsune's compact JSON results, not Playwright's Markdown. Where the two differ:
   `select` and `close` return the tabs after the change in the same form; `new` returns
   the new tab's `index`.
   `browser_close` closes the current tab, never the browser; closing a tab the agent did
-  not open needs the user's approval (`user_tab`).
+  not open needs the user's approval (`needs_user`, `state.detail` `user_tab`).
 - **Targets.** `target` is a snapshot ref (`e12`) or a CSS selector. Actions require one
   actionable match (else `ambiguous_target`). Actions and scoped snapshots also accept a
   subset of Playwright selectors: `text=` (also `/regex/`), `role=…[name="…"]` (also
@@ -463,7 +463,8 @@ Kitsune's compact JSON results, not Playwright's Markdown. Where the two differ:
 
 Ask-before-act holds still apply. The core schemas have no `confirm_token`; the tools
 accept it anyway, so after the user approves a held action an agent can repeat the call
-with `confirm_token` from the `confirmation_required` error.
+with `confirm_token` from the `needs_user` error. On a client with elicitation the MCP
+server asks the user and repeats it instead (see [Approving held actions](#approving-held-actions)).
 
 ### Task modes
 
@@ -617,10 +618,10 @@ submits, submit-button clicks, clicks on buttons labeled like a submit or paymen
 ("Place order", "Pay now", "결제하기"), Enter in form fields, `browser_js` and other
 agent JavaScript, cookie, session, and page-storage access, clipboard reads and
 writes, downloads, navigation to payment-like URLs, or page actions on such pages.
-Each such call returns a `confirmation_required` error. The error describes the
-pending action and carries a single-use token that expires in 120 seconds and is
-bound to that exact action, its parameters, and its tab. After
-asking you, the agent repeats the identical call with `confirm_token`. Batch, retry,
+Each such call needs your approval (see [Approving held actions](#approving-held-actions)).
+The `needs_user` error (`state.detail` `confirmation_required`; until #376 that was its code)
+describes the pending action and carries a single-use token that expires in 120 seconds and is
+bound to that exact action, its parameters, and its tab. Batch, retry,
 parallel, broadcast, and workflow commands never accept a token. Details are in the
 [API reference](api-reference.md#ask-before-act).
 
@@ -648,9 +649,28 @@ example, it navigates to a checkout URL). Such a change is not caught.
 KITSUNE_ASK_BEFORE_ACT = "1"
 ```
 
-The token goes back to the agent, so it proves an explicit second step, not that
-you approved. For real approval, also have your MCP client prompt you before tool
-calls, or at least before calls that carry `confirm_token`.
+### Approving held actions
+
+When Kitsune holds a call for your approval (ask-before-act, a tab the agent did not open,
+or the tab you are viewing), it returns `needs_user` with `state.reason` `approval`, and
+nothing runs. How you approve depends on the MCP client:
+
+- **Clients with elicitation** (Claude Code, Codex): Kitsune asks you in the client's own
+  prompt, naming the action, its target, the tab and why it was held. Approve, and Kitsune
+  runs that one call; the agent never sees a token, so it cannot approve itself. Decline or
+  dismiss it, and the agent gets `needs_user` with `state.decision` `declined` or
+  `cancelled`. The prompt closes unanswered 5 seconds before the approval would expire.
+  Steps inside batches, parallel calls and workflows are not asked about: the agent repeats
+  the held step as a direct call, which asks you.
+- **Clients without elicitation**: the error carries a token (`state.approval` `token`),
+  and the agent should ask you, then repeat the call with `confirm_token`. That token goes
+  back to the agent, so it guards against accidents only: the agent can repeat the call
+  without asking. Have your MCP client prompt you before tool calls, or at least before
+  calls that carry `confirm_token`.
+
+The bridge's audit log (`browser_audit`) records how each approved write was approved,
+`approval: "elicitation"` or `"token"`. Details are in the
+[API reference](api-reference.md#approval-prompts).
 
 ### Protecting your tabs
 
@@ -659,11 +679,11 @@ The agent closes and navigates only the tabs it opened unless you approve.
 The tab you are viewing is held. It is the tab shown in the browser window you
 focused last, also after you switch to the agent's terminal. The agent's clicks,
 typing, key presses, form fills, scrolling, JavaScript, navigations and reloads there
-return a `user_viewing` error instead of acting. Reads and screenshots go on. Tabs the
-agent opened itself are never held, even when you look at them. On a direct call the
-error carries a `confirm_token`: the agent should ask you, then repeat the call with it.
-The token works once. When the agent switches your view to another tab (it should do
-so only when you ask), the hold moves with it. To let the agent work in the tab you
+return a `needs_user` error (`state.detail` `user_viewing`) instead of acting. Reads and
+screenshots go on. Tabs the agent opened itself are never held, even when you look at them.
+A direct call needs your approval, once ([Approving held actions](#approving-held-actions)).
+When the agent switches your view to another tab (it should do so only when you ask), the
+hold moves with it. To let the agent work in the tab you
 watch without asking, set `KITSUNE_HOLD_VIEWED_TAB=0` in its MCP server environment. Details are in the
 [API reference](api-reference.md#viewed-tab).
 
@@ -672,12 +692,12 @@ new tabs (`browser_tabs` new) and pass their `tab_id`. Without `tab_id`, a call 
 the agent's current tab. Before the agent has opened or selected one, a write or
 navigation without `tab_id` fails with `no_current_tab` instead of acting on the tab you
 see. `browser_navigate`, `browser_navigate_back` and `browser_forward` on a tab the agent
-did not open return a `user_tab` error instead of navigating, also inside batches. That
-error tells the agent to use its own tab, and on a direct call it carries a
-`confirm_token`. As with ask-before-act, the token proves an explicit second step, not
-that you approved. In `read` and `draft` modes, which cannot confirm, the error carries
-no token; the agent opens its own tab with `browser_tab_list(new_tab=...)` instead, so a
-read-only agent can still reach any page without touching yours.
+did not open return a `needs_user` error (`state.detail` `user_tab`) instead of navigating,
+also inside batches. That error tells the agent to use its own tab, and on a direct call it
+can be approved like ask-before-act. In `read` and `draft` modes, which cannot confirm, the
+error carries no token (`state.approvable` `false`); the agent opens its own tab with
+`browser_tab_list(new_tab=...)` instead, so a read-only agent can still reach any page
+without touching yours.
 
 When you want the agent to work in your tabs without asking, set
 `KITSUNE_PROTECT_USER_TABS=0` in its MCP server environment and restart the client. It
