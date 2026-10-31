@@ -172,7 +172,8 @@ run get no new entry. The token never appears in the audit log or the bridge log
 A direct tool call that stops on `needs_user` and was not resolved in the call keeps a
 checkpoint (#376): an approval hold on a client without elicitation, or one whose
 [approval prompt](api-reference.md#approval-prompts) was declined, dismissed or got no answer
-in time. Its result adds `call` and `resume_token`, and its hint says what `browser_resume`
+in time, and a [`browser_ask_user`](api-reference.md#browser_ask_userreason-message-tab_idnone)
+request (below). Its result adds `call` and `resume_token`, and its hint says what `browser_resume`
 does with it:
 
 ```json
@@ -221,10 +222,24 @@ arguments, from the held request:
 - The result is the tool's own result. Approved, declined (`state.decision: "declined"`) and
   unanswered (`"cancelled"`) work as in the call. While it still stops on `needs_user`, it
   carries the same `call` and a new `resume_token`, and the old token stops working.
-- Later `needs_user` reasons that the page resolves (`sign_in` and others) plug into
-  `kitsune.server.PAGE_STATE_CHECKS`: a check of the held state that the resume polls every
-  second for up to `wait` seconds before it runs the call again. While the check fails, the
-  resume returns the stop again with a new `resume_token`, and nothing is sent.
+- A stop the page resolves has a check in `kitsune.server.PAGE_STATE_CHECKS`, which the
+  resume polls every second for up to `wait` seconds before it runs the call again. While the
+  check fails, the resume returns the stop again with a new `resume_token`, and nothing is
+  sent. `sign_in` and `human_check` are checked by the tab's
+  [`needs_user` hint](api-reference.md#needs_user-hints) (`/api/needs-user`): resolved once the
+  tab no longer shows one with that reason. A failed read is not resolved.
+
+`browser_ask_user` keeps a checkpoint when there is something to wait for:
+
+- **With elicitation**, when the prompt was dismissed or got no answer in time
+  (`state.decision: "cancelled"`), not when the user answered Can't. The resume asks the user
+  again in the client's prompt, for up to `wait` seconds (at most 120), and returns the answer
+  as the call would; `wait=0` asks nothing.
+- **Without elicitation**, when it asks about `sign_in` or `human_check` and the tab showed
+  that hint as it asked (`state.evidence`). The resume waits for the hint to be gone from the
+  tab, then returns `{"ok": true, "answer": "done", "via": "page", …}`. Without such a hint
+  there is nothing to watch, so the result has no `resume_token`: the agent asks in its reply.
+- The request itself never reaches the page, so a resume sends nothing to it either.
 
 Errors of a direct call's resume send nothing and keep the checkpoint:
 

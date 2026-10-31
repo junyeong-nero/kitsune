@@ -51,7 +51,7 @@ Yes, in three ways that combine:
 - `KITSUNE_MODE=read`, `draft` or `act` limits both the tools the agent sees and the requests the
   bridge accepts. Draft fills supported fields but has no click or submit tools. See
   [Task modes](guide.md#task-modes).
-- `KITSUNE_CAPS` enables tool groups; the default is the 25 core tools and `browser_resume`. Groups that read personal
+- `KITSUNE_CAPS` enables tool groups; the default is the 25 core tools, `browser_resume` and `browser_ask_user`. Groups that read personal
   data (`storage`, `history`) must be named. See [Choosing tools](https://github.com/junyeong-nero/kitsune#choosing-tools).
 - [Ask-before-act](guide.md#ask-before-act) holds submits, payment pages, JavaScript and cookie
   access until the agent repeats the call with a confirmation token.

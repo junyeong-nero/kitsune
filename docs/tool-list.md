@@ -3,9 +3,10 @@
 Current tools defined in [tools.py](../src/kitsune/tools.py) and
 [playwright_tools.py](../src/kitsune/playwright_tools.py) and registered by
 [server.py](../src/kitsune/server.py), grouped by capability. The
-default `KITSUNE_CAPS=core` exposes the 26 `core` tools:
+default `KITSUNE_CAPS=core` exposes the 27 `core` tools:
 [Playwright MCP](https://github.com/microsoft/playwright-mcp)'s 25 core tools with the same
-definitions ([Core tools](guide.md#core-tools)), and `browser_resume`. `KITSUNE_CAPS=all` exposes all 96. Set a
+definitions ([Core tools](guide.md#core-tools)), `browser_resume` and `browser_ask_user`. `KITSUNE_CAPS=all`
+exposes all 97. Set a
 comma-separated list to enable selected groups, for example
 `KITSUNE_CAPS=core,browse,read`. The `storage` and `history` groups are not part of `all`:
 they read personal data and must be named, as in `KITSUNE_CAPS=all,storage,history`.
@@ -18,10 +19,10 @@ These counts describe the default `KITSUNE_MODE=act`. `KITSUNE_MODE=read|draft`
 further intersects the capability surface and enforces the same limits on bridge calls;
 see [Task modes](guide.md#task-modes). With `core`:
 
-- `read` (8): `browser_tab_list`, `browser_navigate`, `browser_snapshot`, `browser_find`,
+- `read` (9): `browser_tab_list`, `browser_navigate`, `browser_snapshot`, `browser_find`,
   `browser_wait_for`, `browser_console_messages`, `browser_network_requests`,
-  `browser_network_request`.
-- `draft` (11): read plus `browser_type`, `browser_select_option`, `browser_fill_form`.
+  `browser_network_request`, `browser_ask_user`.
+- `draft` (12): read plus `browser_type`, `browser_select_option`, `browser_fill_form`.
 - Other enabled groups contribute only read tools (`browse` adds `browser_scroll` and,
   for draft, `browser_check`). Restricted modes replace multi-action `browser_tabs` with
   `browser_tab_list`, which lists tabs and opens background tabs (`new_tab`) but cannot
@@ -31,8 +32,9 @@ see [Task modes](guide.md#task-modes). With `core`:
 
 See the [API reference](api-reference.md) for parameters and behavior.
 
-## core — 26 (Playwright MCP's 25, and browser_resume)
+## core — 27 (Playwright MCP's 25, browser_resume and browser_ask_user)
 
+- `browser_ask_user`
 - `browser_click`
 - `browser_close`
 - `browser_console_messages`
@@ -63,7 +65,9 @@ See the [API reference](api-reference.md) for parameters and behavior.
 `browser_emulate_media` and `browser_run_code_unsafe` are listed for compatibility and
 answer `not_supported`. `browser_resume` is Kitsune's: it continues a direct call that stopped
 on `needs_user`, or a container call that did not finish `ok`
-([Checkpoint and resume](checkpoint-resume.md)).
+([Checkpoint and resume](checkpoint-resume.md)). So is `browser_ask_user`: it asks the user to
+sign in, pass a CAPTCHA, click a control that ignores the agent, or choose
+([API reference](api-reference.md#browser_ask_userreason-message-tab_idnone)).
 
 Targeted writes use [strict selectors](api-reference.md#strict-selectors): a core tool's
 selector `target` must match one element. The Kitsune-owned tools apply the same rule to

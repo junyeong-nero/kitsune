@@ -42,7 +42,7 @@ the agent gets fewer, sharper tools. See [Philosophy](https://github.com/junyeon
   lets the agent fill supported fields without click or submit tools, although
   sites may still autosave what it types. The default, `act`, has no such
   restriction. See [Task modes](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#task-modes).
-- The agent starts with Playwright MCP's 25 core tools and `browser_resume`. Kitsune's other tools
+- The agent starts with Playwright MCP's 25 core tools, `browser_resume` and `browser_ask_user`. Kitsune's other tools
   stay off until you allow them, and the agent can find and call the allowed ones
   without restarting its session. See [Choosing tools](https://github.com/junyeong-nero/kitsune#choosing-tools).
 - With the optional `automation` capability, an interrupted batch, parallel, or
