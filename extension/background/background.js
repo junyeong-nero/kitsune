@@ -46,6 +46,7 @@ browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (changeInfo.status === 'loading') {
     pruneShortRefs(tabId);
     tabLoads.set(tabId, { at: Date.now(), complete: false, agent: agentTouched(tabId) });
+    dropCopiedOwnership(tabId);
   }
   const load = tabLoads.get(tabId);
   if (load && changeInfo.status === 'complete') load.complete = true;
@@ -116,9 +117,52 @@ browser.tabs.onRemoved.addListener(tabId => {
 // focus, and it backs off from a tab the user is using.
 
 // Tabs the agent created or its page actions opened (getTabs `owned`); only these close without
-// the user's approval. They live in this background page, so a bridge restart keeps them; an
-// extension reload or browser restart forgets them, and those tabs then count as the user's.
+// the user's approval. They live in this background page, so a bridge restart keeps them, and
+// each is also stored as a session tab value (#376), which Firefox keeps across an extension
+// reload and a browser restart that restores the tab: restoreAgentTabs reads them back when this
+// script loads. Only this extension reads or writes its tab values, not pages or other
+// extensions, so a page cannot make its tab the agent's. Without browser.sessions (older Gecko,
+// the tests' mocks) ownership is in memory only, and a reload or restart forgets it.
 const agentTabs = new Set();
+const AGENT_TAB_KEY = 'kitsune.owned';
+const AGENT_TAB_VALUE = { v: 1 };
+function ownAgentTab(tabId) {
+  agentTabs.add(tabId);
+  browser.sessions?.setTabValue?.(tabId, AGENT_TAB_KEY, AGENT_TAB_VALUE).catch(() => {});
+}
+// For a tab that stays open and goes back to the user.
+function disownAgentTab(tabId) {
+  agentTabs.delete(tabId);
+  browser.sessions?.removeTabValue?.(tabId, AGENT_TAB_KEY).catch(() => {});
+}
+async function restoreAgentTabs() {
+  if (!browser.sessions?.getTabValue) return;
+  const tabs = await browser.tabs.query({});
+  await Promise.all(tabs.map(async tab => {
+    const value = await browser.sessions.getTabValue(tab.id, AGENT_TAB_KEY).catch(() => undefined);
+    if (value?.v === AGENT_TAB_VALUE.v) agentTabs.add(tab.id);
+  }));
+}
+// Bridge commands wait for it, so none counts a restored agent tab as the user's. Tabs the
+// agent opens meanwhile are added at once; a tab closed meanwhile has no value to read.
+const agentTabsRestored = restoreAgentTabs().catch(() => {});
+// Firefox gives a tab the user duplicates the values of its original, and a closed tab the user
+// reopens its own values back. Such a tab is the user's, so its value goes before a reload could
+// count it as the agent's. A reopened tab has its values when tabs.onCreated reports it, a
+// duplicate once it starts loading (tabs.onUpdated). Waiting for the restore keeps the tabs a
+// browser restart restored, which restoreAgentTabs has read by then; one restored after it was
+// read loses its value and counts as the user's. The agent's own duplicate may get the copy
+// before markAgentTab runs, so ownership is checked again after each step, and written again if
+// it came meanwhile.
+async function dropCopiedOwnership(tabId) {
+  if (!browser.sessions?.getTabValue || agentTabs.has(tabId)) return;
+  await agentTabsRestored;
+  const value = await browser.sessions.getTabValue(tabId, AGENT_TAB_KEY).catch(() => undefined);
+  if (value?.v !== AGENT_TAB_VALUE.v || agentTabs.has(tabId)) return;
+  await browser.sessions.removeTabValue?.(tabId, AGENT_TAB_KEY).catch(() => {});
+  if (agentTabs.has(tabId)) ownAgentTab(tabId);
+}
+browser.tabs.onCreated.addListener(tab => dropCopiedOwnership(tab.id));
 // tabId -> { running, until }: agent commands on the tab now, and until when the tabs it opens
 // and the loads it starts are still the agent's (a click's tab or navigation can lag its reply).
 const agentTouches = new Map();
@@ -139,7 +183,7 @@ function touchEnd(tabId) {
   touch.until = Date.now() + AGENT_EFFECT_GRACE_MS;
 }
 function markAgentTab(tabId) {
-  agentTabs.add(tabId);
+  ownAgentTab(tabId);
   const load = tabLoads.get(tabId);
   if (load) load.agent = true;
   if (!agentTouches.has(tabId)) agentTouches.set(tabId, { running: 0, until: Date.now() + AGENT_EFFECT_GRACE_MS });
@@ -236,7 +280,7 @@ browser.tabs.onCreated.addListener(tab => {
     }
     if (isSyncedCopy(tab, record)) {
       record.syncedCopies.add(tab.id);
-      agentTabs.add(tab.id);
+      ownAgentTab(tab.id);
       return;
     }
   }
@@ -245,7 +289,7 @@ function returnSyncedCopy(tabId) {
   const record = syncedCopyRecord(tabId);
   if (!record || record.closing || agentTouched(tabId)) return;
   record.syncedCopies.delete(tabId);
-  agentTabs.delete(tabId);
+  disownAgentTab(tabId);
 }
 browser.tabs.onActivated?.addListener(({ tabId }) => returnSyncedCopy(tabId));
 
@@ -277,7 +321,7 @@ async function closeSyncedCopies(record) {
   for (const tabId of [...record.syncedCopies]) {
     if (await userActivity(tabId)) {
       record.syncedCopies.delete(tabId);
-      agentTabs.delete(tabId);
+      disownAgentTab(tabId);
       continue;
     }
     await browser.tabs.remove(tabId).catch(() => {});
@@ -438,6 +482,7 @@ function connect() {
         cmdId = command.id;
         console.log('[Kitsune] <<', command.action, cmdId);
         
+        await agentTabsRestored;
         const result = await handleCommand(command);
         
         if (ws && ws.readyState === WebSocket.OPEN) {
