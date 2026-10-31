@@ -1,7 +1,8 @@
-# Checkpoint and resume for containers
+# Checkpoint and resume
 
 A `browser_batch`, `browser_parallel` or `browser_workflow` call that did not finish
-`ok` can be continued with `browser_resume` (#33, #115). One rule holds throughout:
+`ok` can be continued with `browser_resume` (#33, #115), and so can a direct call that
+stopped on `needs_user` ([Direct calls](#direct-calls), #376). One rule holds throughout:
 **resuming never sends a write again after it ran `ok`, and sends a write whose outcome
 is `unknown` again only after the caller observed that it did not take effect.**
 
@@ -38,11 +39,14 @@ including a `container_timeout`) keeps a checkpoint. Its response adds two field
 ## browser_resume
 
 ```
-browser_resume(call, resume_token, observed=None)
+browser_resume(call, resume_token, observed=None, wait=120)
 ```
 
-POST `/api/resume` with `{"call", "resume_token", "observed"}`. The tool is in the
-`automation` capability group (`KITSUNE_CAPS=automation`), not in `core`.
+The tool is in the `core` capability group (#376; it was in `automation`), so the default
+`KITSUNE_CAPS=core` has it. For a container call it sends POST `/api/resume` with
+`{"call", "resume_token", "observed"}`, a route of both `core` and `automation`; `wait` is
+not used. A direct call's checkpoint is resumed by the MCP server itself
+([Direct calls](#direct-calls)).
 
 The response has the shape of the original call: `results`, `progress`, `status` and
 `summary` for every command, plus `workflow` and `steps` for a workflow. If the
@@ -147,6 +151,9 @@ it was.
 | `observed_required` | 400 | A step needs an observation (`state.steps`: `step`, `action`, `tabId`, `status`, `accepts`) |
 | `resume_failed` | 200 | The resume stopped on an internal error. `progress` reports what ran, steps in progress may have taken effect, and the checkpoint is dropped |
 
+A direct call's resume adds `current_tab_changed` and answers `observed_invalid` and
+`resume_token_invalid` itself ([Direct calls](#direct-calls)).
+
 The per-sequence `tab_closed`, `tab_owned` and `tab_claimed` errors appear in
 `results` like other step errors. No error or audit entry contains the resume token,
 typed values, JavaScript or stored results.
@@ -160,8 +167,78 @@ stay redacted and JavaScript bodies are dropped
 with `params.observed: "applied"` and `params.sent: false`. Steps kept from the first
 run get no new entry. The token never appears in the audit log or the bridge log.
 
+## Direct calls
+
+A direct tool call that stops on `needs_user` and was not resolved in the call keeps a
+checkpoint (#376): an approval hold on a client without elicitation, or one whose
+[approval prompt](api-reference.md#approval-prompts) was declined, dismissed or got no answer
+in time. Its result adds `call` and `resume_token`, and its hint says what `browser_resume`
+does with it:
+
+```json
+{ "error": "The user is viewing tab 12; nothing was done", "code": "needs_user", "retryable": false,
+  "state": { "reason": "approval", "detail": "user_viewing", "decision": "declined", "approval": "elicitation", "…": "…" },
+  "call": 57, "resume_token": "Qk9…",
+  "hint": "The held action did not run: the user declined it … browser_resume(call, resume_token) asks them again …" }
+```
+
+- `call` is the audit call id the bridge gave the held request: its audit entry carries it
+  as `call` ([Audit log](api-reference.md#audit-log)), so it never names a container call.
+  A resume that is still pending keeps the same `call` and returns a new `resume_token`; the
+  hold it made again has an audit entry with its own `call`.
+- The MCP server that made the call keeps the checkpoint, under the rules for container
+  checkpoints: in memory only, at most 20 (the oldest is dropped first), each expiring 30
+  minutes after its call or its last resume, with only a SHA-256 hash of the token. It holds
+  the tool, its arguments (without `confirm_token`), the held result without its confirm token,
+  and the current tab the call ran on. It is dropped when a resume no longer stops on
+  `needs_user`. It is lost when that MCP server restarts, and another MCP client cannot
+  resume it: the bridge answers `checkpoint_not_found`, and the agent calls the tool again.
+- Holds that cannot be approved get no checkpoint: read and draft modes (`state.approvable:
+  false`), and tools without `confirm_token`. Container results never get a direct checkpoint.
+
+`browser_resume(call, resume_token, wait=120)` runs the tool again with its stored
+arguments, from the held request:
+
+- **Nothing of the call that ran `ok` is sent again.** The call restarts at the held
+  request: `browser_fill_form` does not fill the fields before the held one again, and
+  `browser_type(submit=true)` held at its Enter presses Enter without typing the text again
+  (the bridge names the held request in `state.action`). Every other tool that takes
+  `confirm_token` sends one write per call.
+- **A resume grants nothing a new call would not.** The held request goes through the
+  current policy again: ask-before-act, protected user tabs and the viewed-tab hold. If the
+  hold no longer applies (the user switched to another tab, so the viewed-tab hold is gone),
+  the call runs without an approval, as calling the tool again would at that moment.
+- **A resume never waits for a hold to lift.** On a client with elicitation, a request held
+  again is asked about in the approval prompt, which stays open up to `wait` seconds (at most
+  the token's 120 s less 5 s); `wait=0` asks nothing. Without elicitation the hold is checked
+  once and the resume returns at once: `needs_user` again with a fresh confirm token and a
+  new `resume_token`. So waiting and resuming cannot run a held write the moment the user
+  looks away.
+- `wait` is 0 to 300 seconds (default 120); larger values are capped at 300. While the
+  prompt is open, a call that sent a `progressToken` gets a progress notification every 10 s.
+  The MCP server waits itself, between bridge requests, so no bridge request outlasts its own
+  timeout; a client's tool-call timeout must allow `wait` plus the call itself.
+- The result is the tool's own result. Approved, declined (`state.decision: "declined"`) and
+  unanswered (`"cancelled"`) work as in the call. While it still stops on `needs_user`, it
+  carries the same `call` and a new `resume_token`, and the old token stops working.
+- Later `needs_user` reasons that the page resolves (`sign_in` and others) plug into
+  `kitsune.server.PAGE_STATE_CHECKS`: a check of the held state that the resume polls every
+  second for up to `wait` seconds before it runs the call again. While the check fails, the
+  resume returns the stop again with a new `resume_token`, and nothing is sent.
+
+Errors of a direct call's resume send nothing and keep the checkpoint:
+
+| `code` | Meaning |
+|---|---|
+| `current_tab_changed` | The call acts on the current tab, and the agent made another tab current since (`state.tabId`, `state.currentTab`). Make that tab current again with `browser_tabs` select, or call the tool again |
+| `observed_invalid` | `observed` was given: a direct call has no steps to observe |
+| `resume_token_invalid` | `resume_token` does not match the call's latest token |
+
+A resume whose call fails another way (its target is gone, the tab closed) returns that
+error, and the checkpoint is gone: check the page and call the tool again.
+
 ## Without browser_resume
 
-Without the `automation` group, or after the checkpoint is gone, resume by hand. Send
-a new batch that starts at the first record that is not `ok`, after observing the
-page for any `unknown` record.
+After a container's checkpoint is gone, resume by hand. Send a new batch that starts at
+the first record that is not `ok`, after observing the page for any `unknown` record.
+After a direct call's checkpoint is gone, call the tool again.

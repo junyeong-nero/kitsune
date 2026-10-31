@@ -12,8 +12,9 @@ must be named (`KITSUNE_CAPS=all,storage,history`); see
 [History and bookmarks](#history-and-bookmarks).
 See [Tools and capabilities](guide.md#tools) for the complete tool list per group.
 
-**The `core` group is Playwright MCP's 25 core tools**, published verbatim from
-`src/kitsune/playwright_tools.json`: `browser_close`, `browser_resize`,
+**The `core` group is Playwright MCP's 25 core tools and Kitsune's
+[`browser_resume`](#browser_resumecall-resume_token-observednone-wait120)** (#376). The 25
+are published verbatim from `src/kitsune/playwright_tools.json`: `browser_close`, `browser_resize`,
 `browser_console_messages`, `browser_handle_dialog`, `browser_emulate_media`,
 `browser_evaluate`, `browser_file_upload`, `browser_drop`, `browser_find`,
 `browser_fill_form`, `browser_press_key`, `browser_type`, `browser_navigate`,
@@ -531,7 +532,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `browser_window_unavailable` | No active tab: the extension sees no normal window it can use | true |
 | `host_permission_denied` | Firefox does not let Kitsune script the tab's site (`state.reason`: `not_granted`, `restricted_domain`) | true |
 | `permission_required` | A [history or bookmark lookup](#history-and-bookmarks) needs an optional browser permission the user has not granted (`state.permission`: `history` or `bookmarks`). Only the user can grant it, on Kitsune's options page; the agent cannot. Also returned, with a reload hint, when the permission is granted but the running extension has not picked it up. `browser_trusted_type`, `browser_trusted_press_key` and `browser_trusted_drag` return it when the bridge lacks macOS Accessibility permission; nothing was sent | false |
-| `needs_user` | Nothing ran: only the user can let the call go on (#376). `state.reason: "approval"`: it needs the user's approval, and `state.detail` is the code it replaces (below). `state.message` is a short request to show the user. A direct call's `state.confirmToken` runs it once the user approves; on an MCP client with elicitation the MCP server asks the user itself and the result has no token (see [Approval prompts](#approval-prompts)). `state.approvable` is `false` in read and draft modes, which cannot approve, and `state.approval` says how it can be approved (`token`, `elicitation`) | false |
+| `needs_user` | Nothing ran: only the user can let the call go on (#376). `state.reason: "approval"`: it needs the user's approval, and `state.detail` is the code it replaces (below). `state.message` is a short request to show the user. A direct call's `state.confirmToken` runs it once the user approves; on an MCP client with elicitation the MCP server asks the user itself and the result has no token (see [Approval prompts](#approval-prompts)). `state.approvable` is `false` in read and draft modes, which cannot approve, and `state.approval` says how it can be approved (`token`, `elicitation`). A direct call's result also has `call`, the audit call id of the hold, and, from the MCP server when the user did not resolve it in the call, `resume_token` for [`browser_resume`](checkpoint-resume.md#direct-calls) | false |
 | `user_active` | The user is using the tab (`state.reason`: `input`, `typing`, `navigating`); the write or navigation did not run (see [User activity](#user-activity)) | true |
 | `outcome_not_observed` | The action was dispatched, but the outcome given in `expect` did not happen in time (see [Action outcomes](#action-outcomes)) | false for writes |
 | `no_current_tab` | From the MCP server: a write or navigation names no tab and the agent has no current tab (`state.tool`, `state.action` for a container step; `state.ownTabs`: the open tabs this MCP client opened, when there are any); nothing was sent (see [No current tab](#no-current-tab)) | false |
@@ -541,7 +542,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `unknown_action` | A container step's `action` is not a batch action, so nothing was dispatched (`state.action`). When a batch action is close to it, ignoring case, `state.suggestion` and the hint name it (`html` → `getHTML`) | false |
 | `container_timeout` | A batch or workflow reached its deadline; steps in progress may have taken effect and later steps did not start | false |
 | `tab_claimed` | A resumed `parallel` sequence writes a tab that another call's `parallel` in progress writes (`state.tabId`, `state.call`); nothing in that sequence was sent (see [Checkpoint and resume](checkpoint-resume.md#parallel)) | true |
-| `checkpoint_not_found`, `resume_token_invalid`, `workflow_changed`, `observed_invalid`, `observed_required`, `resume_failed` | `browser_resume` refused or stopped; see [Checkpoint and resume](checkpoint-resume.md#errors) | `observed_*`: true; others: false |
+| `checkpoint_not_found`, `resume_token_invalid`, `workflow_changed`, `observed_invalid`, `observed_required`, `resume_failed`, `current_tab_changed` | `browser_resume` refused or stopped; see [Checkpoint and resume](checkpoint-resume.md#errors) and, for `current_tab_changed`, [Direct calls](checkpoint-resume.md#direct-calls) | `observed_*`, `current_tab_changed`: true; others: false |
 
 `needs_user` replaces three codes, which stay as `state.detail` for one release. A `reason`
 the old `state` carried moves to `state.holdReason`; every other field keeps its name:
@@ -1811,7 +1812,8 @@ later) at initialize; Claude Code (2.1.76 and later) and Codex do.
 3. On Decline, or when the prompt is dismissed (`cancel`), fails or gets no answer in time, the
    result is the held `needs_user` without `confirmToken` and `expiresInSeconds`, with
    `state.approval: "elicitation"` and `state.decision`: `declined` or `cancelled` (also for
-   no answer). Nothing ran.
+   no answer). Nothing ran. The result carries `call` and `resume_token`: `browser_resume`
+   asks the user again ([Direct calls](checkpoint-resume.md#direct-calls)).
 4. If the repeat holds the request the user approved again (it no longer matches: the target
    resolved in another tab), it is not repeated again: the result has `state.tokenRejected`
    and no token, and what the call did before it (`filled`) stays done. Calling the tool
@@ -1835,7 +1837,9 @@ nested sequences and parallel branches, and replaces the held step's hint. Repea
 step as a direct call: the user is asked there. `browser_resume` does not ask either.
 
 Clients without elicitation, the Python API and raw HTTP callers keep the token in the result
-(`state.approval: "token"`), as before. That is a guard against accidents, not a security
+(`state.approval: "token"`), as before. On an MCP client the result also carries `call` and
+`resume_token`; `browser_resume` then checks the hold once and returns at once, so it runs
+the call only when a new call would run it too. That is a guard against accidents, not a security
 boundary: such an agent can repeat the call with the token without asking (#374). The audit
 log records each approval's path (`approval: "token"` or `"elicitation"`, see
 [Audit log](#audit-log)). The MCP server sends elicitation only with an MCP SDK that has
@@ -1991,6 +1995,10 @@ unredacted value. Only the audit copy is scrubbed.
 Entries of commands a [`browser_tools_call`](#tool-gateway) ran add
 `via: {"gateway": "browser_tools_call", "tool": "<tool name>"}`. Direct calls have no
 `via`; entries never name the MCP tool otherwise.
+
+A direct request held for the user (`needs_user`) gets an audit call id: its entries add
+`call`, the `call` of its result (#376). Container steps keep theirs in `parent.call` and
+have no `call` of their own.
 
 An approved write's entries (its `params.confirmation: "accepted"` entry and the write's
 own) add `approval`, how the user approved it (#376): `"elicitation"` when the MCP server
@@ -2189,7 +2197,7 @@ a `container_timeout`. It is text for people; read `progress` in code.
 `progress` is also what to resume from: the commands before the first record that
 is not `ok` have run, `unknown` ones must be observed before they are repeated, and
 `skipped` ones are safe to send. A call whose `status` is not `ok` adds `call` and
-`resume_token`; pass them to [`browser_resume`](#browser_resumecall-resume_token-observednone)
+`resume_token`; pass them to [`browser_resume`](#browser_resumecall-resume_token-observednone-wait120)
 to continue it without sending its `ok` writes again ([Checkpoint and resume](checkpoint-resume.md)).
 
 A batch stops at its deadline (the sum of its waits plus 15 s, at least 300 s; a
@@ -2961,12 +2969,22 @@ The result reports `from` and `to` (`screenX`, `screenY`, `viewportX`, `viewport
 rules, like `browser_drag`. It takes the user's pointer for its duration (about 0.2 s plus 16 ms
 per step), so prefer `browser_drag` unless the page ignores it.
 
-### `browser_resume(call, resume_token, observed=None)`
+### `browser_resume(call, resume_token, observed=None, wait=120)`
 
-`automation` group. Continues a `browser_batch`, `browser_parallel` or
-`browser_workflow` call that did not finish `ok`, from the checkpoint the bridge
-keeps in memory for 30 minutes (at most 20). `call` and `resume_token` come from
-that call's response. Steps that ran `ok` are not sent again. Each `unknown` write
+`core` group (#376; it was in `automation`). Continues a call whose response had `call` and
+`resume_token`.
+
+A direct call that stopped on `needs_user` runs again from its held request, from the
+checkpoint the MCP server keeps: nothing that ran `ok` is sent again, and the held request
+goes through the current policy, so a resume runs nothing a new call would not. An approval
+hold is asked about again in the client's [approval prompt](#approval-prompts), for up to
+`wait` seconds (0 to 300, default 120; larger values are capped); without elicitation it is
+checked once and the resume returns at once. See
+[Direct calls](checkpoint-resume.md#direct-calls).
+
+A `browser_batch`, `browser_parallel` or `browser_workflow` call that did not finish `ok`
+continues from the checkpoint the bridge keeps in memory for 30 minutes (at most 20);
+`wait` is not used. Steps that ran `ok` are not sent again. Each `unknown` write
 needs an `observed` entry by its `progress` path (`"1"`, `"0.1.2"` for a parallel
 sequence step): `"not_applied"` sends it again, `"applied"` marks it `ok` without
 sending it. Read-only mode, the URL policy and ask-before-act apply to every resumed
@@ -3460,7 +3478,9 @@ A response whose `status` is not `ok` adds `call` and `resume_token` for
 **Batch actions:** navigate, newTab, closeTab, switchTab, click, type, fill, scroll, hover, find, js, pageInfo, pageText, pageTextByTabId, tabs, forms, dom, highlight, screenshot, waitForElement, waitForResult, sleep, parallel, media (see [Media](#media)).
 
 ### POST /api/resume
-Continue a batch, parallel or workflow call that did not finish `ok` (`browser_resume`).
+Continue a batch, parallel or workflow call that did not finish `ok` (`browser_resume`). A
+direct call's checkpoint is in the MCP server, so this route answers `checkpoint_not_found`
+for its `call`.
 ```json
 { "call": 42, "resume_token": "x3J...", "observed": { "1": "not_applied", "0.1.2": "applied" } }
 ```
