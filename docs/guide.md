@@ -361,7 +361,8 @@ Kitsune still needs a restart.
 
 The Kitsune-owned tools take `tab_id` to target background tabs; without it they act on
 the [current tab](#core-tools) like the core tools. They share an action
-contract (`ref`, `wait`, `expect`, `confirm_token`, `first`) documented on
+contract (`ref`, `wait`, `expect`, `confirm_token`, `first`; `confirm_token` is the
+[approval](#approving-held-actions) fallback for clients without elicitation) documented on
 `browser_check`; see the [API reference](api-reference.md) and the
 [tool list](tool-list.md).
 
@@ -463,10 +464,11 @@ Kitsune's compact JSON results, not Playwright's Markdown. Where the two differ:
   server's working directory. Absolute names and `~` are used as given. `saved_to` is the
   absolute path written.
 
-Ask-before-act holds still apply. The core schemas have no `confirm_token`; the tools
-accept it anyway, so after the user approves a held action an agent can repeat the call
-with `confirm_token` from the `needs_user` error. On a client with elicitation the MCP
-server asks the user and repeats it instead (see [Approving held actions](#approving-held-actions)).
+Ask-before-act holds still apply. On a client with elicitation the MCP server asks the
+user and repeats a held call itself (see [Approving held actions](#approving-held-actions)).
+The core schemas have no `confirm_token`, the fallback for clients without elicitation; the
+tools accept it anyway, so on such a client, after the user approves a held action, an agent
+can repeat the call with `confirm_token` from the `needs_user` error.
 
 ### Task modes
 
@@ -493,7 +495,8 @@ find, wait for text, console messages and the network request list and details.
 their read tools. The personal-data `storage` and `history` groups still require
 explicit opt-in.
 
-Restricted surfaces use first-paragraph descriptions and omit `confirm_token`.
+Restricted surfaces use first-paragraph descriptions and omit `confirm_token`, the approval
+fallback for clients without elicitation: they cannot approve.
 Calling an unpublished tool by name returns `tool_not_published` with the mode setting
 needed to publish it; `browser_status.mcp_tools.mode` identifies a restricted server.
 The [gateway tools](#finding-tools-without-a-restart) are listed in every mode and reach
@@ -596,8 +599,10 @@ What it does not protect against:
   URLs can still be personal: enable it only for agents you trust with them.
 - **Authenticated actions.** Existing sessions let the agent act as you on
   accessible sites. MCP annotations are client hints, not an approval system.
-  Ask-before-act (below) requires an explicit second step, but it is not human
-  approval either.
+  Ask-before-act (below) holds actions for your approval. In the client's prompt
+  (elicitation) the approval does not pass through the agent; the confirm token, the
+  fallback for clients without elicitation, is an explicit second step, not human
+  approval.
 
 Kitsune does not provide a password-vault listing tool. Native password-manager
 autofill is browser-controlled; whether an autofilled value is accessible depends
@@ -622,8 +627,9 @@ agent JavaScript, cookie, session, and page-storage access, clipboard reads and
 writes, downloads, navigation to payment-like URLs, or page actions on such pages.
 Each such call needs your approval (see [Approving held actions](#approving-held-actions)).
 The `needs_user` error (`state.detail` `confirmation_required`; until #376 that was its code)
-describes the pending action and carries a single-use token that expires in 120 seconds and is
-bound to that exact action, its parameters, and its tab. Batch, retry,
+describes the pending action. On a client without elicitation it carries a single-use token,
+the fallback for approving there, that expires in 120 seconds and is bound to that exact
+action, its parameters, and its tab. Batch, retry,
 parallel, broadcast, and workflow commands never accept a token. Details are in the
 [API reference](api-reference.md#ask-before-act).
 
@@ -750,6 +756,11 @@ still change such a tab's URL. Switching your view (`browser_tabs` select,
 | `bridge_unavailable` (`Kitsune bridge did not start`, `exited at startup`) | `state.logExcerpt` shows the bridge's last log line; see `~/.kitsune/bridge.log`, or run `kitsune-bridge start` in a terminal to see the error. `state.reason: "not_responding"`: the bridge hangs; run `kitsune-bridge stop` and retry |
 | `port_conflict` | `state.port` is held by another program (`lsof -nP -iTCP:47651 -sTCP:LISTEN`), or `KITSUNE_WS_PORT` differs from the extension's `WS_URL` |
 | `token_mismatch` (`401 Missing or invalid token`) | `KITSUNE_TOKEN` or `KITSUNE_HOME` set in one client but not in the daemon (or the other way round) |
+| `needs_user` with `state.reason: "approval"` (`state.detail`: `user_viewing`, `user_tab`, `confirmation_required`) | Nothing ran: the call needs your approval. On a client with elicitation (Claude Code 2.1.76 and later, Codex) you get a prompt; Approve runs that one call. No prompt appeared and the result has `state.approval: "token"`: the client lacks elicitation, so the agent should tell you `state.message` and repeat the call with `confirm_token`, the fallback for such clients, only after you agree. Or have it work in a tab of its own. See [Approving held actions](#approving-held-actions) |
+| `needs_user` with `state.decision: "declined"` or `"cancelled"` | `declined`: you declined the approval prompt, or answered Can't to `browser_ask_user`; nothing ran, and the agent should not ask again for the same thing. `cancelled`: the prompt was dismissed or closed unanswered (an approval prompt closes 5 s before its approval would expire). If you still want it done, the agent calls `browser_resume(call, resume_token)`, which asks you again (also after you declined an approval) |
+| `needs_user` with `state.reason: "agent_request"` | The agent asked you with `browser_ask_user`; `state.detail` says for what (`sign_in`, `human_check`, `trusted_input`, `other`) and `state.message` what to do. Do it, then answer Done in the client's prompt, or tell the agent in chat on a client without elicitation. For a sign-in or CAPTCHA the tab shows, the agent can call `browser_resume`, which waits until it is gone. See [When the agent needs you](#when-the-agent-needs-you) |
+| A result has a `needs_user` hint (`reason`: `sign_in`, `human_check`, `trusted_input`) | Kitsune saw something only you can do; nothing was held, and the call's own result stands. If the agent cannot go on, it asks you (`browser_ask_user`). `sign_in`: sign in yourself (password fields stay redacted from the agent); `human_check`: complete the CAPTCHA; `trusted_input`: click the control yourself, or let the agent try [`browser_trusted_click`](api-reference.md#browser_trusted_clickselector-x0-y0-coordinate_spaceviewport-focusfalse-tab_idnone-firstfalse-restore_pointertrue-buttonleft-click_count1-modifiersnone-hold_ms0). See [needs_user hints](api-reference.md#needs_user-hints) |
+| `browser_resume` returns `needs_user` again at once for an approval | Without elicitation a resume checks the hold once and never waits for you; it continues only if the hold no longer applies. Approve in chat, and the agent repeats the call with `confirm_token`. With `wait=0` it asks nothing; resume with a wait to be asked |
 | `Cannot access browser internal page` | `about:` pages are off-limits to extensions; switch to a normal tab |
 | A click returns `dispatched: true` but the page does not react (`outcome_not_observed`, target still visible) | Some pages accept only trusted input and ignore Kitsune's synthetic events. Check the page with `browser_snapshot` first, then try one [`browser_trusted_click`](api-reference.md#browser_trusted_clickselector-x0-y0-coordinate_spaceviewport-focusfalse-tab_idnone-firstfalse-restore_pointertrue-buttonleft-click_count1-modifiersnone-hold_ms0) on the same target and verify it with a read. It needs the `browse` capability, moves your real cursor for the click (then back, unless `restore_pointer=False` for a hover menu that closes when the pointer leaves) and, on macOS, needs pyobjc Quartz or `cliclick` plus Accessibility permission; on Linux, needs `xdotool` in an X11 session (not Wayland), and HiDPI X11 scaling is not compensated, so the click may land off by the scale factor. Page zoom is compensated, and a target covered by another element (an overlay or banner) returns `target_not_at_point` without clicking. Kitsune never switches to it on its own |
 | A hover returns `ok: true` but the menu or row controls it should reveal stay hidden | `browser_hover` sends pointer and mouse events, including `pointerenter`/`mouseenter` to each entered ancestor, but it cannot trigger CSS `:hover`, which follows only the real pointer. Use [`browser_trusted_click`](api-reference.md#browser_trusted_clickselector-x0-y0-coordinate_spaceviewport-focusfalse-tab_idnone-firstfalse-restore_pointertrue-buttonleft-click_count1-modifiersnone-hold_ms0) with `restore_pointer=False` on an element where a click is harmless, which leaves your real pointer there, or ask the user to point at it. See [POST /api/hover](api-reference.md#post-apihover) |
@@ -853,7 +864,8 @@ behaves as omitted; `tests/test_tool_schema_optionals.py` checks this for every 
 Every client sends input schemas in full, so parameters are documented there
 (`Annotated[..., Field(description=...)]`), not in `Args:` blocks. A tool's first
 paragraph says what it does and what a caller must know. The Kitsune-owned action tools
-share one contract (ref, element, wait, expect, confirm_token, first), documented once in
+share one contract (ref, element, wait, expect, confirm_token, first; confirm_token is the
+approval fallback for clients without elicitation), documented once in
 `browser_check`'s parameter descriptions; the other action tools say in their first
 paragraph that `ok` means dispatched, name `expect` and point to `browser_check` rather
 than repeating it. `tab_id` is described wherever it is accepted.

@@ -393,6 +393,8 @@ HOLD_VIEWED_TAB = os.environ.get("KITSUNE_HOLD_VIEWED_TAB", "").lower() not in {
 # that the browser is shared with its user; without this, agents avoid `select` to spare the
 # user's view and work around background tabs instead of reading them. Without the hand-off
 # sentence, agents asked in chat instead of clicking a page's own hand-off control (#352).
+# The SDK sends the same instructions to every client, before it knows whether the client has
+# elicitation, so the needs_user sentence covers both (#376).
 mcp._mcp_server.instructions = (
     "Kitsune controls the user's own Firefox-family browser while the user keeps using it. "
     + ("browser_tabs `new` opens a tab in the background, and `select` makes a tab your current "
@@ -410,19 +412,27 @@ mcp._mcp_server.instructions = (
        "later tools act on your tab without switching the user's view.")
     # #326: the tab the user is viewing is held for writes unless this client set KITSUNE_HOLD_VIEWED_TAB=0.
     + ((" Writes and navigations on the tab the user is viewing fail with needs_user (detail user_viewing) "
-        "unless you opened that tab: work in your own tabs, or ask the user before repeating the call with its "
-        "confirm_token, if it has one."
+        "unless you opened that tab: work in your own tabs."
         if permits_tool(MODE, "browser_tabs") else
         " Writes and navigations on the tab the user is viewing fail with needs_user (detail user_viewing); "
         "work in your own tab.")
        if HOLD_VIEWED_TAB else "")
     # #326: navigations on user tabs are refused unless this client set KITSUNE_PROTECT_USER_TABS=0.
     + ((" Navigate, back and forward on a tab no client opened fail with needs_user (detail user_tab): open a "
-        "tab of your own, or ask the user before repeating the call with its confirm_token, if it has one."
+        "tab of your own."
         if permits_tool(MODE, "browser_tabs") else
         " Navigate, back and forward on a tab no client opened fail with needs_user (detail user_tab); work in "
         "your own tab.")
-       if PROTECT_USER_TABS else ""))
+       if PROTECT_USER_TABS else "")
+    # #376: approvals come through the client's prompt; the confirm token is the fallback without one.
+    + " A needs_user result did nothing: tell the user why (state.message)."
+    + (" An approval (state.reason approval) is asked in your MCP client's own prompt, and the call runs once "
+       "the user approves; only a client without that prompt gets state.confirmToken: ask the user, then repeat "
+       "the call with confirm_token. browser_resume(call, resume_token) continues a result that has a "
+       "resume_token, waiting for the user where it can."
+       if permits_tool(MODE, "browser_resume") else "")
+    + " When you cannot go on without the user (a sign-in, a CAPTCHA, a choice only they can make), call "
+      "browser_ask_user.")
 # The tool browser_tools_call is running; its bridge requests name it for the audit log.
 _gateway_call: ContextVar[str | None] = ContextVar("kitsune_gateway_call", default=None)
 # The id of the tool call running (_mcp_errors), which its bridge requests carry.
