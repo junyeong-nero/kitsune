@@ -54,10 +54,10 @@ class _OwnershipChecks:
         # Neither held for being viewed nor a protected user tab (both on by default), and it
         # closes without the user's approval.
         self.assert_ok(self.call("/api/navigate", {"url": self.page.origin + "/next", "tabId": agent["id"]}))
-        self.assert_error(self.call("/api/navigate", {"url": self.page.origin + "/next", "tabId": users[0]["id"]}),
-                          "user_tab", False)
+        self.assert_needs_approval(self.call("/api/navigate", {"url": self.page.origin + "/next", "tabId": users[0]["id"]}),
+                                   "user_tab")
         self.assert_ok(self.call("/api/close-tab", {"tabId": agent["id"]}))
-        self.assert_error(self.call("/api/close-tab", {"tabId": users[0]["id"]}), "user_tab", False)
+        self.assert_needs_approval(self.call("/api/close-tab", {"tabId": users[0]["id"]}), "user_tab")
 
 
 class RealBrowserAgentTabReloadTests(_OwnershipChecks, harness.RealBrowserTestCase):
