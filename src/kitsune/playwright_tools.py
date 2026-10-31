@@ -424,8 +424,18 @@ def browser_type(target: str, text: str, element: str | None = None, submit: boo
                                 confirm_token=confirm_token, **_target(target))
         if not submit or k._failed(result):
             return result
-    return k.browser_keypress(key="Enter", tab_id=_current_tab, element=element, confirm_token=confirm_token,
-                              **_target(target))
+    result = k.browser_keypress(key="Enter", tab_id=_current_tab, element=element, confirm_token=confirm_token,
+                                **_target(target))
+    # The text is in the field when the Enter fails (a page that replaced the input as it was typed leaves
+    # the ref stale), so repeating the call would type it twice (#387). A hold keeps its shape: approving
+    # it repeats the call from the Enter.
+    if k._failed(result) and result.get("code") != "needs_user":
+        return {**result, "retryable": False, "state": {**(result.get("state") or {}), "typed": True},
+                "hint": "The text was typed; only the Enter after it failed. Do not call browser_type again. "
+                        "Take a browser_snapshot to check the field and page, then, if it was not submitted, "
+                        "press Enter with browser_press_key, which acts on the focused field (click the "
+                        "field's new ref first if it lost focus)."}
+    return result
 
 
 @_core
