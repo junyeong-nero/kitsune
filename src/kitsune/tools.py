@@ -126,7 +126,7 @@ def _no_current_tab(name: str, arguments: dict) -> dict | None:
     hint = ("Nothing was dispatched. Pass tab_id (browser_navigate and browser_navigate_back accept it too), "
             "or open a tab of your own with browser_tabs action=new or browser_tab_list new_tab and work there. "
             "browser_tabs action=select makes a tab current too, but navigating a tab the agent did not open "
-            "is then refused (user_tab) unless the user approves.")
+            "is then refused (needs_user) unless the user approves.")
     if name == "browser_workflow":
         return {"error": "browser_workflow names no tab_id and there is no current tab; its steps cannot be "
                           "inspected before they run, so it needs a tab even if it only reads",
@@ -396,7 +396,7 @@ def browser_tabs(
 
     list is always a fresh read; owned=true marks tabs the agent opened, mine=true those this
     MCP client opened (also before a restart); windowId/index only with several windows or
-    window_fields. close refuses a tab the agent did not open (user_tab) unless the user
+    window_fields. close refuses a tab the agent did not open (needs_user) unless the user
     approves (confirm_token). select switches the user's view: only when the user asks.
     Options of other actions are ignored.
     """
@@ -559,7 +559,7 @@ def browser_navigate(
     expect: dict | None = None, confirm_token: str | None = None,
 ) -> dict:
     """Navigate a tab to a URL. ok=true means dispatched; verify with expect (see browser_check).
-    By default a tab the agent did not open is refused (code user_tab) unless the user approves
+    By default a tab the agent did not open is refused (code needs_user) unless the user approves
     (confirm_token)."""
     body = {"url": url}
     if raw:
@@ -611,7 +611,7 @@ def browser_click(
                     '5000). Unmet: ok=false, code="outcome_not_observed"; the action already ran, so do not '
                     'blindly repeat it.')] = None,
     confirm_token: Annotated[str | None, Field(
-        description="From a confirmation_required or user_viewing error, after the user approved this action.")] = None,
+        description="From a needs_user error's state.confirmToken, after the user approved this action.")] = None,
     first: Annotated[bool, Field(
         description="A write tool's selector matching several elements fails with ambiguous_target "
                     "unless true; true acts on the first match.")] = False,
@@ -636,8 +636,9 @@ def browser_click(
     {expected, observed, met}, plus the current tab state when unmet; new_tab is met once the
     action opens a tab, and value_changed compares with the value before dispatch.
     user_active: the user is using the tab (state.reason); nothing ran. Retry in a few seconds.
-    user_viewing: the tab is shown in the user's last focused window; nothing ran. Use a tab you
-    opened, or ask the user, then repeat with tab_id and state.confirmToken as confirm_token.
+    needs_user (state.detail user_viewing): the tab is shown in the user's last focused window;
+    nothing ran. Use a tab you opened, or ask the user, then repeat with tab_id and
+    state.confirmToken as confirm_token.
     """
     if problem := _pointer_ms_error("hold_ms", hold_ms):
         return problem
@@ -1277,7 +1278,7 @@ def browser_check(
                     '5000). Unmet: ok=false, code="outcome_not_observed"; the action already ran, so do not '
                     'blindly repeat it.')] = None,
     confirm_token: Annotated[str | None, Field(
-        description="From a confirmation_required or user_viewing error, after the user approved this action.")] = None,
+        description="From a needs_user error's state.confirmToken, after the user approved this action.")] = None,
     first: Annotated[bool, Field(
         description="A write tool's selector matching several elements fails with ambiguous_target "
                     "unless true; true acts on the first match.")] = False,
@@ -1296,8 +1297,9 @@ def browser_check(
     {expected, observed, met}, plus the current tab state when unmet; new_tab is met once the
     action opens a tab, and value_changed compares with the value before dispatch.
     user_active: the user is using the tab (state.reason); nothing ran. Retry in a few seconds.
-    user_viewing: the tab is shown in the user's last focused window; nothing ran. Use a tab you
-    opened, or ask the user, then repeat with tab_id and state.confirmToken as confirm_token.
+    needs_user (state.detail user_viewing): the tab is shown in the user's last focused window;
+    nothing ran. Use a tab you opened, or ask the user, then repeat with tab_id and
+    state.confirmToken as confirm_token.
     """
     return _post_action("/api/check", _request_body({"selector": selector, "checked": checked}, tab_id, ref, element, confirm_token, first),
                         wait, timeout, expect)
@@ -1546,7 +1548,7 @@ def browser_reload_tab(bypass_cache: bool = False, tab_id: TabId = None, expect:
 
 def browser_back(tab_id: TabId = None, expect: dict | None = None, confirm_token: str | None = None) -> dict:
     """Go back in history (browser back button). ok=true means dispatched; verify with
-    expect (see browser_check). By default a tab the agent did not open is refused (code user_tab)
+    expect (see browser_check). By default a tab the agent did not open is refused (code needs_user)
     unless the user approves (confirm_token)."""
     return _post_action("/api/back", _request_body({}, tab_id, confirm_token=confirm_token), expect=expect)
 
@@ -1554,7 +1556,7 @@ def browser_back(tab_id: TabId = None, expect: dict | None = None, confirm_token
 @tool("browse", annotations=dict(title="Forward", **ACT))
 def browser_forward(tab_id: TabId = None, expect: dict | None = None, confirm_token: str | None = None) -> dict:
     """Go forward in history. ok=true means dispatched; verify with expect (see browser_check).
-    By default a tab the agent did not open is refused (code user_tab) unless the user approves
+    By default a tab the agent did not open is refused (code needs_user) unless the user approves
     (confirm_token)."""
     return _post_action("/api/forward", _request_body({}, tab_id, confirm_token=confirm_token), expect=expect)
 
@@ -1589,7 +1591,7 @@ def browser_create_window(url: str | None = None, incognito: bool = False,
 @tool("tabs", annotations=dict(title="Close window", **DESTRUCTIVE))
 def browser_close_window(window_id: int, confirm_token: str | None = None) -> dict:
     """Close a browser window by ID (from browser_windows); one with tabs the agent did not
-    open is refused (code user_tab) unless the user approves (confirm_token)."""
+    open is refused (code needs_user) unless the user approves (confirm_token)."""
     return _post("/api/close-window", _request_body({"windowId": window_id}, confirm_token=confirm_token))
 
 
@@ -1940,7 +1942,7 @@ def browser_set_policy(
     Ask mode (ask=True) holds sensitive actions without running them: form submits,
     submit-control or pay/order-labeled button clicks, Enter in a form field, browser_evaluate and
     other agent JavaScript, cookies, sessions, page storage, clipboard, downloads, navigation
-    to ask_urls (payment-like regexes, case-insensitive), and page actions on such pages. A held call returns code "confirmation_required" with
+    to ask_urls (payment-like regexes, case-insensitive), and page actions on such pages. A held call returns code "needs_user" with
     state.confirmToken; ask the user, then repeat the identical call with confirm_token
     within 120s. The token is single-use, bound to that action, its parameters and tab, and
     is never honored inside batch/retry/parallel/broadcast/workflows. A bridge started with

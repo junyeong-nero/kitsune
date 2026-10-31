@@ -135,10 +135,10 @@ class RealBrowserPythonApiTests(harness.RealBrowserTestCase):
         self.assertEqual(self.tab.info()["title"], "Python API", "nothing ran")
 
         reasons = []
-        approving = kitsune.connect(confirm=lambda held: reasons.append(held.state.get("reason")) or True)
+        approving = kitsune.connect(confirm=lambda held: reasons.append((held.detail, held.hold_reason)) or True)
         result = approving.tab(self.tab.id).submit_form("#order", expect={"url": "/done"})
         self.assertIs(result["outcome"]["met"], True, result)
-        self.assertEqual(reasons, ["submit"])
+        self.assertEqual(reasons, [("confirmation_required", "submit")])
         self.tab.wait_for(text="Thanks")
 
     def test_a_bridge_of_another_build_is_left_running(self):

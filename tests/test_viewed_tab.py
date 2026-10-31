@@ -94,7 +94,7 @@ class BridgeCase(unittest.TestCase):
 
     def refuse(self, path, body, headers=None):
         result = self.call(path, body, headers)
-        self.assertEqual((result["code"], result["retryable"]), ("user_viewing", False), result)
+        self.assertEqual((result["code"], result["state"]["detail"], result["retryable"]), ("needs_user", "user_viewing", False), result)
         return result
 
 
@@ -144,7 +144,7 @@ class ViewedTabBridgeTests(BridgeCase):
         result = self.call("/api/batch", {"commands": [
             {"action": "click", "selector": "#go", "tabId": VIEWED_TAB, "viewedTabApproved": True}]})
         step = result["results"][0]
-        self.assertEqual(step["code"], "user_viewing")
+        self.assertEqual(step["state"]["detail"], "user_viewing")
         self.assertNotIn("confirmToken", step["state"])
         self.assertNotIn("viewedTabApproved", self.extension.last("click"))
 
@@ -173,7 +173,7 @@ class ViewedTabBridgeTests(BridgeCase):
         self.extension.target = {"submits": True, "text": "Pay", "tag": "button"}
         body = {"selector": "#pay", "tabId": VIEWED_TAB}
         held = self.call("/api/click", body, status=403)
-        self.assertEqual(held["code"], "confirmation_required")
+        self.assertEqual(held["state"]["detail"], "confirmation_required")
         self.assertEqual(self.call("/api/click", {**body, "confirmToken": held["state"]["confirmToken"]}),
                          {"ok": True})
         self.assertIs(self.extension.last("click")["viewedTabApproved"], True)
@@ -227,12 +227,12 @@ class ViewedTabBridgeTests(BridgeCase):
     def test_a_trusted_drag_on_the_viewed_tab_needs_one_approval(self):
         body = {"selector": "#knob", "to": "#end", "tabId": VIEWED_TAB, "steps": 20}
         refused, drag = self.trusted_drag(body)
-        self.assertEqual((refused["code"], refused["retryable"]), ("user_viewing", False), refused)
+        self.assertEqual((refused["code"], refused["state"]["detail"], refused["retryable"]), ("needs_user", "user_viewing", False), refused)
         drag.assert_not_called()
         # Refused at the source, before the destination was measured or any tab shown.
         self.assertEqual([action for action, _ in self.extension.sent], ["screenPoint"])
         token = refused["state"]["confirmToken"]
-        self.assertEqual(self.trusted_drag({**body, "steps": 5, "confirmToken": token})[0]["code"], "user_viewing")
+        self.assertEqual(self.trusted_drag({**body, "steps": 5, "confirmToken": token})[0]["state"]["detail"], "user_viewing")
         dragged, drag = self.trusted_drag({**body, "confirmToken": token})
         self.assertIs(dragged.get("ok"), True, dragged)
         self.assertEqual(dragged["steps"], 20)
@@ -254,7 +254,7 @@ class ViewedTabBridgeTests(BridgeCase):
         result, _ = self.trusted_drag({**body, "confirmToken": token}, dragged=interrupted)
         self.assertEqual(result["code"], "drag_interrupted", result)
         again, drag = self.trusted_drag({**body, "confirmToken": token})
-        self.assertEqual((again["code"], again["state"]["tokenRejected"]), ("user_viewing", "used"), again)
+        self.assertEqual((again["state"]["detail"], again["state"]["tokenRejected"]), ("user_viewing", "used"), again)
         drag.assert_not_called()
 
     def test_sync_barrier_returns_the_refusal_at_once(self):
@@ -262,7 +262,7 @@ class ViewedTabBridgeTests(BridgeCase):
         started = time.monotonic()
         refused = self.call("/api/sync-barrier", body)
         self.assertLess(time.monotonic() - started, 2, "the barrier did not poll until its timeout")
-        self.assertEqual((refused["ok"], refused["code"]), (False, "user_viewing"), refused)
+        self.assertEqual((refused["ok"], refused["code"], refused["state"]["detail"]), (False, "needs_user", "user_viewing"), refused)
         self.assertNotIn("tab_id=", refused["hint"], "tabIds already names the tab")
         approved = self.call("/api/sync-barrier", {**body, "confirmToken": refused["state"]["confirmToken"]})
         self.assertIs(approved["ok"], True, approved)
@@ -295,7 +295,7 @@ class ViewedTabToolCallTests(BridgeCase):
 
     def test_fill_form_needs_one_approval_for_all_fields(self):
         refused = self.tool(playwright_tools.browser_fill_form, fields=self.FIELDS)
-        self.assertEqual((refused["code"], refused["filled"]), ("user_viewing", []), refused)
+        self.assertEqual((refused["state"]["detail"], refused["filled"]), ("user_viewing", []), refused)
         token = refused["state"]["confirmToken"]
         filled = self.tool(playwright_tools.browser_fill_form, fields=self.FIELDS, confirm_token=token)
         self.assertEqual(filled["filled"], ["Name", "Agree", "Plan"], filled)
@@ -303,12 +303,12 @@ class ViewedTabToolCallTests(BridgeCase):
             self.assertIs(self.extension.last(action)["viewedTabApproved"], True, action)
         # The approval ends with its tool call: the token is spent, and a new call is held again.
         again = self.tool(playwright_tools.browser_fill_form, fields=self.FIELDS, confirm_token=token)
-        self.assertEqual((again["code"], again["state"]["tokenRejected"]), ("user_viewing", "used"), again)
-        self.assertEqual(self.tool(playwright_tools.browser_click, target="#go")["code"], "user_viewing")
+        self.assertEqual((again["state"]["detail"], again["state"]["tokenRejected"]), ("user_viewing", "used"), again)
+        self.assertEqual(self.tool(playwright_tools.browser_click, target="#go")["state"]["detail"], "user_viewing")
 
     def test_type_with_submit_needs_one_approval(self):
         refused = self.tool(playwright_tools.browser_type, target="#q", text="hi", submit=True)
-        self.assertEqual(refused["code"], "user_viewing", refused)
+        self.assertEqual(refused["state"]["detail"], "user_viewing", refused)
         typed = self.tool(playwright_tools.browser_type, target="#q", text="hi", submit=True,
                           confirm_token=refused["state"]["confirmToken"])
         self.assertIs(typed.get("ok"), True, typed)
@@ -321,16 +321,16 @@ class ViewedTabToolCallTests(BridgeCase):
         self.extension.target = {"submits": True, "tag": "input"}
         arguments = {"target": "#q", "text": "hi", "submit": True}
         viewed = self.tool(playwright_tools.browser_type, **arguments)
-        self.assertEqual(viewed["code"], "user_viewing", viewed)
+        self.assertEqual(viewed["state"]["detail"], "user_viewing", viewed)
         held = self.tool(playwright_tools.browser_type, **arguments, confirm_token=viewed["state"]["confirmToken"])
-        self.assertEqual(held["code"], "confirmation_required", held)
+        self.assertEqual(held["state"]["detail"], "confirmation_required", held)
         self.assertNotIn("tokenRejected", held["state"], "the viewed-tab token was this tool call's")
         typed = self.tool(playwright_tools.browser_type, **arguments, confirm_token=held["state"]["confirmToken"])
         self.assertIs(typed.get("ok"), True, typed)
         self.assertIs(self.extension.last("keypress")["viewedTabApproved"], True)
         # The ask-before-act token carried the viewed-tab approval once.
         self.assertEqual(self.tool(playwright_tools.browser_type, **arguments,
-                                   confirm_token=held["state"]["confirmToken"])["code"], "user_viewing")
+                                   confirm_token=held["state"]["confirmToken"])["state"]["detail"], "user_viewing")
 
     def test_a_carrying_ask_token_on_another_request_is_held(self):
         # The ask token carries the viewed-tab approval only to the request that viewed-tab token approved.
@@ -342,7 +342,7 @@ class ViewedTabToolCallTests(BridgeCase):
         token = held["state"]["confirmToken"]
         self.extension.target = {}  # a click ask-before-act does not hold
         clicked = self.tool(playwright_tools.browser_click, target="#other", confirm_token=token)
-        self.assertEqual(clicked.get("code"), "user_viewing", clicked)
+        self.assertEqual((clicked.get("state") or {}).get("detail"), "user_viewing", clicked)
         self.assertNotIn("viewedTabApproved", self.extension.last("click"))
         # The token still finishes the call it was issued for.
         self.extension.target = {"submits": True, "tag": "input"}

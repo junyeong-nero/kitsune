@@ -74,16 +74,16 @@ class RealBrowserProtectedTabTests(harness.RealBrowserTestCase):
         tab = self.user_tab()
         for body in ({"url": self.page.origin + "/other", "tabId": tab}, {"url": self.page.origin + "/other"}):
             result = self.protected("/api/navigate", body)
-            self.assert_error(result, "user_tab", False)
+            self.assert_needs_approval(result, "user_tab")
             self.assertEqual(result["state"]["tabId"], tab)
             self.assertIn("browser_tabs", result["hint"])
-        self.assert_error(self.protected("/api/back", {"tabId": tab}), "user_tab", False)
+        self.assert_needs_approval(self.protected("/api/back", {"tabId": tab}), "user_tab")
         # On by default (#326): a client that sends no header is protected too.
-        self.assert_error(self.call("/api/navigate", {"url": self.page.origin + "/other", "tabId": tab}), "user_tab",
-                          False)
+        self.assert_needs_approval(self.call("/api/navigate", {"url": self.page.origin + "/other", "tabId": tab}),
+                                   "user_tab")
         batch = self.protected("/api/batch", {"commands": [
             {"action": "navigate", "url": self.page.origin + "/other", "tabId": tab}]})
-        self.assertEqual(batch["results"][0]["code"], "user_tab", batch)
+        self.assert_needs_approval(batch["results"][0], "user_tab")
         self.assertNotIn("confirmToken", batch["results"][0]["state"])
         self.assertEqual(self.tab_url(tab), self.page.origin + "/start")
 
@@ -95,7 +95,7 @@ class RealBrowserProtectedTabTests(harness.RealBrowserTestCase):
         self.assertEqual(self.tab_url(tab), self.page.origin + "/approved")
         # Without protection the user tab is still the one the user views (#326): user_viewing, not user_tab.
         free = {"url": self.page.origin + "/free", "tabId": tab}
-        self.assert_error(self.unprotected("/api/navigate", free), "user_viewing", False)
+        self.assert_needs_approval(self.unprotected("/api/navigate", free), "user_viewing")
         self.assertEqual(self.tab_url(tab), self.page.origin + "/approved")
         self.assert_ok(self.unheld("/api/navigate", free))
         self.assertEqual(self.tab_url(tab), self.page.origin + "/free")
@@ -134,7 +134,7 @@ class RealBrowserProtectedTabTests(harness.RealBrowserTestCase):
                          "the user's view did not change")
 
         status, refused = self.restricted("/api/navigate", {"url": self.page.origin + "/other", "tabId": user})
-        self.assert_error(refused, "user_tab", False)
+        self.assert_needs_approval(refused, "user_tab")
         self.assertIn("browser_tab_list new_tab", refused["hint"])
         self.assertNotIn("confirm_token", refused["hint"])
         self.assertNotIn("confirmToken", refused.get("state", {}), "read mode cannot use a token")

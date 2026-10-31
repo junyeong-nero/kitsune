@@ -38,8 +38,8 @@ Tabs it opens with `browser_tabs` `new` stay in the background, and selecting a 
 the agent's current tab, not what you see. Until the agent opens or selects a tab, its reads act
 on the tab you are viewing, and its writes and navigations that name no tab fail with
 `no_current_tab`. The tab you are viewing (shown in the browser window you focused last) is held:
-the agent's writes and navigations there fail with `user_viewing` until you approve, unless the agent
-opened that tab itself. Its navigations on your other tabs fail with `user_tab` until you approve, unless
+the agent's writes and navigations there fail with `needs_user` (`user_viewing`) until you approve, unless the agent
+opened that tab itself. Its navigations on your other tabs fail with `needs_user` (`user_tab`) until you approve, unless
 you set `KITSUNE_PROTECT_USER_TABS=0`. It can still select your other tabs or click in them, so ask it to
 work in new tabs. OS-level clicks and popups that sites open can still take focus. See [Shared browser](api-reference.md#shared-browser) and
 [Protecting your tabs](guide.md#protecting-your-tabs).

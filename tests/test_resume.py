@@ -313,7 +313,7 @@ class ResumePolicyTests(ResumeTests):
         self.assertEqual(self.statuses(payload["progress"]), ["ok", "held", "skipped"])
         again = self.resume(payload)
         self.assertEqual(self.statuses(again["progress"]), ["ok", "held", "skipped"])
-        self.assertEqual(again["results"][1]["code"], "confirmation_required")
+        self.assertEqual(again["results"][1]["state"]["detail"], "confirmation_required")
         self.assertEqual(again["call"], payload["call"])
         self.assertNotEqual(again["resume_token"], payload["resume_token"])
         self.refused(payload, "resume_token_invalid", status=403)

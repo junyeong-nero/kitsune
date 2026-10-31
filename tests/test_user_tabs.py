@@ -66,7 +66,7 @@ class UserTabCloseTests(unittest.TestCase):
 
     def refuse(self, body, action="closeTab"):
         result = self.close(body, action)
-        self.assertEqual((result["code"], result["retryable"]), ("user_tab", False), result)
+        self.assertEqual((result["code"], result["state"]["detail"], result["retryable"]), ("needs_user", "user_tab", False), result)
         self.assertEqual(result["state"]["expiresInSeconds"], bridge.CONFIRM_TOKEN_TTL)
         self.assertIn("ask the user", result["hint"])
         return result
@@ -107,7 +107,7 @@ class UserTabCloseTests(unittest.TestCase):
         self.assertNotIn("userTabApproved", self.extension.closes()[-1])
         # Batch, workflow and parallel steps never approve, and get no token.
         result = asyncio.run(bridge.run_command({"action": "closeTab", "tabId": 4, "userTabApproved": True}))
-        self.assertEqual(result["code"], "user_tab")
+        self.assertEqual(result["state"]["detail"], "user_tab")
         self.assertNotIn("confirmToken", result["state"])
         self.assertNotIn("userTabApproved", self.extension.closes()[-1])
 

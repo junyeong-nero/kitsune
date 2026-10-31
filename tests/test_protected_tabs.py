@@ -75,7 +75,7 @@ class ProtectedTabTests(unittest.TestCase):
 
     def refuse(self, path, body):
         result = self.call(path, body)
-        self.assertEqual((result["code"], result["retryable"]), ("user_tab", False), result)
+        self.assertEqual((result["code"], result["state"]["detail"], result["retryable"]), ("needs_user", "user_tab", False), result)
         self.assertIn("browser_tabs", result["hint"])
         self.assertIn("tab_id", result["hint"])
         # Core browser_tabs new returns an index and makes the tab current, not a tabId.
@@ -105,7 +105,7 @@ class ProtectedTabTests(unittest.TestCase):
         for mode in ("read", "draft"):
             with self.subTest(mode=mode):
                 result = self.call("/api/navigate", {"url": "https://a.example/", "tabId": 4}, mode=mode)
-                self.assertEqual(result["code"], "user_tab")
+                self.assertEqual(result["state"]["detail"], "user_tab")
                 self.assertEqual(result["hint"], bridge.RESTRICTED_USER_TAB_HINT)
                 self.assertNotIn("confirmToken", result["state"])
                 self.assertEqual(self.call("/api/new-tab", {"url": "https://a.example/"}, mode=mode), {"ok": True})
@@ -115,7 +115,7 @@ class ProtectedTabTests(unittest.TestCase):
         result = self.call("/api/batch", {"commands": [
             {"action": "navigate", "url": "https://a.example/", "tabId": 4, "userTabApproved": True}]})
         step = result["results"][0]
-        self.assertEqual(step["code"], "user_tab")
+        self.assertEqual(step["state"]["detail"], "user_tab")
         self.assertNotIn("confirmToken", step["state"])
         self.assertNotIn("userTabApproved", self.extension.last("navigate"))
         self.assertIs(self.extension.last("navigate")["protectUserTabs"], True)
@@ -161,10 +161,10 @@ class ProtectedTabTests(unittest.TestCase):
             token = (result.get("state") or {}).get("confirmToken")
             if token is None:
                 return result, tokens
-            tokens.append(result["code"])
+            tokens.append(result["state"]["detail"])
             # As the hints say: ask-before-act repeats the identical call, user_tab names the refused tab.
             body = {**body, "confirmToken": token}
-            if result["code"] == "user_tab":
+            if result["state"]["detail"] == "user_tab":
                 body["tabId"] = result["state"]["tabId"]
         self.fail(f"still refused after {approvals} approvals: {tokens}")
 
@@ -192,7 +192,7 @@ class ProtectedTabTests(unittest.TestCase):
         for header in (None, "1", "yes"):
             with self.subTest(header=header):
                 result = self.call("/api/navigate", {"url": "https://a.example/", "tabId": 4}, protect_header=header)
-                self.assertEqual(result["code"], "user_tab")
+                self.assertEqual(result["state"]["detail"], "user_tab")
                 self.assertIs(self.extension.last("navigate")["protectUserTabs"], True)
 
     def test_callers_cannot_approve_themselves(self):

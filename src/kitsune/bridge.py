@@ -62,8 +62,8 @@ except ImportError:
 from . import bridge_control, browser_diagnostics
 from .capabilities import ACTION_GROUPS, CAPS_HEADER, OPEN_ROUTES, ROUTE_GROUPS, caps_refusal, header_caps
 from .task_modes import (
-    CLIENT_HEADER, CLIENT_ID_PATTERN, GATEWAY_TOOL_HEADER, HOLD_VIEWED_TAB_HEADER, MODE_HEADER, OWNER_HEADER,
-    PROTECT_USER_TABS_HEADER, TOOL_CALL_HEADER, permits_action, permits_route, task_mode,
+    APPROVAL_HEADER, APPROVER_HEADER, CLIENT_HEADER, CLIENT_ID_PATTERN, GATEWAY_TOOL_HEADER, HOLD_VIEWED_TAB_HEADER,
+    MODE_HEADER, OWNER_HEADER, PROTECT_USER_TABS_HEADER, TOOL_CALL_HEADER, permits_action, permits_route, task_mode,
 )
 from .version import BRIDGE_BUILD, PACKAGE_VERSION, SOURCE_ROOT, extension_manifest_hash, extension_source_hash
 from .waits import (
@@ -184,9 +184,13 @@ _hold_viewed_tab = contextvars.ContextVar("kitsune_hold_viewed_tab", default=Tru
 _viewed_tab_approval = contextvars.ContextVar("kitsune_viewed_tab_approval", default=None)
 # The MCP tool call a request belongs to (TOOL_CALL_HEADER), validated like the client id.
 _tool_call = contextvars.ContextVar("kitsune_tool_call", default=None)
-# (client id, tool call id) -> {"tabId", "token", "binding", "expires"}: a viewed-tab approval covers
-# the other requests of the MCP tool call it was given in (_take_viewed_tab_approval). binding is the
-# user_viewing binding of the request that was approved.
+# A request's {"approver", "claim", "via"} (#376): the hash of its APPROVER_HEADER, whether APPROVAL_HEADER
+# claims an elicitation approval, and how a confirm token it spent was approved ("elicitation" or
+# "token"), which its audit entries record. A dict, like _viewed_tab_approval.
+_request_approval = contextvars.ContextVar("kitsune_request_approval", default=None)
+# (client id, tool call id) -> {"tabId", "token", "binding", "approval", "expires"}: a viewed-tab approval
+# covers the other requests of the MCP tool call it was given in (_take_viewed_tab_approval). binding is
+# the user_viewing binding of the request that was approved, approval how it was approved.
 _viewed_tab_calls = {}
 # A container call's default tab (#232): its steps that name no tabId run there instead of the
 # extension's active tab.
@@ -1558,6 +1562,11 @@ def _audit(action, params, ok, error, ms, **fields):
         entry["client"] = _client_id.get()
     if _owner_id.get():
         entry["owner"] = _owner_id.get()
+    approval = _request_approval.get()
+    # A request approved for the viewed tab can still be held by ask-before-act; that hold is not approved.
+    if (approval is not None and approval["via"]
+            and not (isinstance(params, dict) and params.get("confirmation") == "required")):
+        entry["approval"] = approval["via"]
     _audit_log.append(entry)
     if len(_audit_log) > _AUDIT_MAX:
         del _audit_log[: len(_audit_log) - _AUDIT_MAX]
@@ -1583,11 +1592,11 @@ _REPEAT_UNSAFE_ACTIONS = WRITE_ACTIONS | {"uploadCommit", "focusElement", "blurE
 # Nothing reached the page, but repeating cannot succeed: until the tab navigates (error_page),
 # because the command names several targets (ambiguous_target) or its target selector failed
 # to parse or validate before anything was dispatched (unsupported_selector), until the user
-# approves closing their tab (user_tab) or acting on the tab they view (user_viewing), until the
-# user grants a browser permission (permission_required), or until the client's KITSUNE_CAPS or
-# KITSUNE_MODE permits it or the container step names a batch action (capability_restricted,
-# mode_restricted, unknown_action).
-_PERSISTENT_FAILURE_CODES = {"error_page", "ambiguous_target", "unsupported_selector", "user_tab",
+# approves closing their tab or acting on the tab they view (needs_user; the extension's user_tab
+# and user_viewing), until the user grants a browser permission (permission_required), or until the
+# client's KITSUNE_CAPS or KITSUNE_MODE permits it or the container step names a batch action
+# (capability_restricted, mode_restricted, unknown_action).
+_PERSISTENT_FAILURE_CODES = {"error_page", "ambiguous_target", "unsupported_selector", "needs_user", "user_tab",
                              "user_viewing", "permission_required", "capability_restricted",
                              "mode_restricted", "unknown_action"}
 
@@ -1798,10 +1807,56 @@ async def _history_lookup(action, body):
     return result
 
 
+# ── needs_user (docs/api-reference.md#action-errors, #376) ──
+# A refusal only the user's approval lifts returns code needs_user with state.reason "approval"
+# and, for one release, the code it replaces in state.detail: user_viewing and user_tab (the
+# extension's refusals, mapped in send_to_extension) or confirmation_required (ask-before-act). A
+# reason the old state carried moves to state.holdReason. state.approvable is false in read and
+# draft, which cannot confirm; state.approval is "token" where a confirm token approves it.
+APPROVAL_DETAILS = ("user_viewing", "user_tab", "confirmation_required")
+
+
+def _approval_detail(result):
+    """The code an approval needs_user result replaces (APPROVAL_DETAILS), else None."""
+    if isinstance(result, dict) and result.get("code") == "needs_user":
+        state = result.get("state") or {}
+        if state.get("reason") == "approval":
+            return state.get("detail")
+    return None
+
+
+def _needs_approval(result, message):
+    """The approval needs_user result of a refusal with one of APPROVAL_DETAILS' codes; message asks the user."""
+    state = dict(result.get("state") or {})
+    if "reason" in state:
+        state["holdReason"] = state.pop("reason")
+    return {**result, "code": "needs_user", "retryable": False,
+            "state": {"reason": "approval", "detail": result["code"], **state, "message": message,
+                      "approvable": _task_mode.get() == "act"}}
+
+
+def _tab_label(state):
+    return state.get("title") or state.get("url") or f"tab {state.get('tabId')}"
+
+
+def _refusal_message(action, params, result):
+    """state.message of the extension's user_tab or user_viewing refusal."""
+    state = result.get("state") or {}
+    if result["code"] == "user_viewing":
+        return f"Allow the agent's {action} in the tab you are viewing ({_tab_label(state)})?"
+    if action == "closeWindow":
+        return f"Allow the agent to close window {state.get('windowId')}, which has tabs it did not open?"
+    if action == "closeTab":
+        return f"Allow the agent to close a tab it did not open ({_tab_label(state)})?"
+    verb = {"goBack": "go back in", "goForward": "go forward in"}.get(action, "navigate")
+    url = f" to {params['url']}" if action == "navigate" and (params or {}).get("url") else ""
+    return f"Allow the agent to {verb} a tab it did not open ({_tab_label(state)}){url}?"
+
+
 # ── Ask-before-act (docs/api-reference.md#ask-before-act) ──
-# Held actions do not run: they return confirmation_required with a token bound to the exact
-# action, parameters and tab. The token goes back to the agent, so it enforces an explicit second
-# step, not proof that a human approved.
+# Held actions do not run: they return needs_user (detail confirmation_required) with a token bound
+# to the exact action, parameters and tab. Without MCP elicitation the token goes back to the agent,
+# so it enforces an explicit second step, not proof that a human approved (#374).
 ASK_BEFORE_ACT_ENV = "KITSUNE_ASK_BEFORE_ACT"
 # A locked start leaves this file behind, so a later bridge started from an environment
 # without KITSUNE_ASK_BEFORE_ACT=1 (stop, idle shutdown, outdated-bridge replacement) is
@@ -1869,8 +1924,28 @@ def _issue_confirm_token(binding):
     while len(_confirm_tokens) >= 100:
         del _confirm_tokens[next(iter(_confirm_tokens))]
     token = secrets.token_urlsafe(24)
-    _confirm_tokens[token] = {"binding": binding, "expires": now_s + CONFIRM_TOKEN_TTL, "used": False}
+    approval = _request_approval.get()
+    _confirm_tokens[token] = {"binding": binding, "expires": now_s + CONFIRM_TOKEN_TTL, "used": False,
+                              "approver": approval["approver"] if approval is not None else None}
     return token
+
+
+def _approved_by(entry):
+    """How the user approved a token's call (#376): "elicitation" when this request claims it
+    (APPROVAL_HEADER) and comes from the client the token was issued to (APPROVER_HEADER), else "token"."""
+    approval = _request_approval.get()
+    issued_to = entry.get("approver")
+    if (approval is not None and approval["claim"] and approval["approver"] and issued_to
+            and hmac.compare_digest(approval["approver"], issued_to)):
+        return "elicitation"
+    return "token"
+
+
+def _note_approval(via):
+    """Record how this request was approved ("elicitation" or "token"), for its audit entries."""
+    approval = _request_approval.get()
+    if approval is not None:
+        approval["via"] = via
 
 
 def _spend_confirm_token(token, binding):
@@ -2013,6 +2088,7 @@ async def _ask_before_act(action, params, *, direct):
         if rejected is None and not direct:
             rejected = "not_direct"
         if rejected is None:
+            _note_approval(_approved_by(_confirm_tokens[token]))
             _unknown_outcomes.pop(_outcome_key(action, params), None)
             _audit(action, {**params, "confirmation": "accepted", "reason": reason}, True, None, 0)
             # The user approved this exact call on this tab, so it needs no viewed-tab or user_tab token too.
@@ -2032,19 +2108,19 @@ async def _ask_before_act(action, params, *, direct):
         # Enter after its text): the repeated tool call carries that approval with this token, but only
         # to the request that was approved (_take_viewed_tab_approval).
         _confirm_tokens[issued]["viewedBinding"] = approval["binding"]
-    state = {"confirmToken": issued, "expiresInSeconds": CONFIRM_TOKEN_TTL,
+    state = {"confirmToken": issued, "expiresInSeconds": CONFIRM_TOKEN_TTL, "approval": "token",
              "action": action, "reason": reason, "description": description,
              "tabId": tab_id, "url": url, "params": {k: v for k, v in params.items() if k != "userTabApproved"}}
     if rejected:
         state["tokenRejected"] = rejected
-    return _action_error(
-        f"Confirmation required: {description}", "confirmation_required", retryable=True,
-        hint=("Nothing ran. Ask the user to approve this exact action, then repeat the identical call "
-              f"with confirmToken (MCP: confirm_token) within {CONFIRM_TOKEN_TTL}s. The token works once, "
+    return _needs_approval(_action_error(
+        f"Confirmation required: {description}", "confirmation_required", retryable=False,
+        hint=("Nothing ran. Ask the user to approve this exact action (state.message), then repeat the identical "
+              f"call with confirmToken (MCP: confirm_token) within {CONFIRM_TOKEN_TTL}s. The token works once, "
               "only for this action, parameters and tab, and only on a direct tool call (never inside "
               "batch, retry, parallel, broadcast or workflows)."),
         **state,
-    )
+    ), f"Allow the agent's {action}? It {description}.")
 
 
 # ── User tabs (docs/api-reference.md#agent-owned-tabs) ──
@@ -2072,13 +2148,14 @@ def _take_user_tab_approval(action, params):
     rejected = _spend_confirm_token(token, binding)
     if rejected is None:
         params["userTabApproved"] = True
+        _note_approval(_approved_by(entry))
         _audit(action, {**params, "confirmation": "accepted", "reason": "user_tab"}, True, None, 0)
     return rejected
 
 
 def _offer_user_tab_approval(action, params, result, rejected=None):
     """Add a confirm token to a user_tab refusal of a direct close or protected navigation."""
-    if not isinstance(result, dict) or result.get("code") != "user_tab":
+    if _approval_detail(result) != "user_tab":
         return result
     if _task_mode.get() != "act":
         # read and draft cannot confirm; they open a tab of their own instead (#270).
@@ -2097,7 +2174,7 @@ def _offer_user_tab_approval(action, params, result, rejected=None):
                 "approve closing it, then repeat the identical call with confirmToken (MCP: confirm_token) "
                 f"within {CONFIRM_TOKEN_TTL}s. The token works once and only for this close.")
     state.update(confirmToken=_issue_confirm_token(_user_tab_binding(action, params)),
-                 expiresInSeconds=CONFIRM_TOKEN_TTL)
+                 expiresInSeconds=CONFIRM_TOKEN_TTL, approval="token")
     if rejected:
         state["tokenRejected"] = rejected
     result["hint"] = hint
@@ -2130,6 +2207,7 @@ def _grant_viewed_tab(tab_id, token, binding):
     while len(_viewed_tab_calls) >= 100:
         del _viewed_tab_calls[next(iter(_viewed_tab_calls))]
     _viewed_tab_calls[call] = {"tabId": tab_id, "token": token, "binding": binding,
+                               "approval": (_request_approval.get() or {}).get("via"),
                                "expires": now_s + CONFIRM_TOKEN_TTL}
 
 
@@ -2151,6 +2229,7 @@ def _take_viewed_tab_approval(action, params):
         if token is not None and token == grant["token"]:
             del params["confirmToken"]  # spent by this tool call's earlier request
         approval.update(approved=True, tabId=tab_id, binding=grant["binding"])
+        _note_approval(grant["approval"])
         return
     if entry is None:
         return
@@ -2159,6 +2238,7 @@ def _take_viewed_tab_approval(action, params):
         del params["confirmToken"]
         approval["rejected"] = _spend_confirm_token(token, binding)
         if approval["rejected"] is None:
+            _note_approval(_approved_by(entry))
             _grant_viewed_tab(tab_id, token, binding)
             _audit(action, {**params, "confirmation": "accepted", "reason": "user_viewing"}, True, None, 0)
     elif (tab_id is not None and entry.get("viewedBinding") == binding and not entry["used"]
@@ -2166,13 +2246,14 @@ def _take_viewed_tab_approval(action, params):
         # See _ask_before_act: once per token, only to the request that was approved for the viewed tab,
         # and the token stays for the request it was issued for.
         del entry["viewedBinding"]
+        _note_approval(_approved_by(entry))
         _grant_viewed_tab(tab_id, None, binding)
 
 
 def _offer_viewed_tab_approval(action, params, result):
     """Add a confirm token to a user_viewing refusal of a direct call."""
     approval = _viewed_tab_approval.get()
-    if approval is None or not isinstance(result, dict) or result.get("code") != "user_viewing":
+    if approval is None or _approval_detail(result) != "user_viewing":
         return result
     state = result.setdefault("state", {})
     # read and draft cannot confirm; send_to_extension gave them RESTRICTED_VIEWED_TAB_HINT.
@@ -2184,7 +2265,7 @@ def _offer_viewed_tab_approval(action, params, result):
     if not names_tabs:
         params = {**params, "tabId": state["tabId"]}
     state.update(confirmToken=_issue_confirm_token(_user_tab_binding(action, params, "user_viewing")),
-                 expiresInSeconds=CONFIRM_TOKEN_TTL)
+                 expiresInSeconds=CONFIRM_TOKEN_TTL, approval="token")
     if approval.get("rejected"):
         state["tokenRejected"] = approval["rejected"]
     named = "" if names_tabs else f" (with tab_id={state['tabId']} if it named no tab)"
@@ -2234,7 +2315,7 @@ def _invalid_ask_policy(body):
 
 
 def _is_held(result):
-    return isinstance(result, dict) and result.get("code") == "confirmation_required"
+    return _approval_detail(result) == "confirmation_required"
 
 
 def _invalidate_cache_for_action(action):
@@ -2280,7 +2361,7 @@ async def _sync_barrier_async(tab_ids, predicate, timeout=30000, poll_interval=3
         for tid in tab_ids:
             r = await send_to_extension("executeJS", {"tabId": tid, "code": predicate}, timeout=10)
             # Polling again cannot pass the viewed-tab hold (#326): it needs the user's approval.
-            if isinstance(r, dict) and (r.get("devBuildRequired") or r.get("code") == "user_viewing"):
+            if isinstance(r, dict) and (r.get("devBuildRequired") or _approval_detail(r) == "user_viewing"):
                 return {"ok": False, **r}
             last[tid] = r
             val = (r or {}).get("result")
@@ -2839,10 +2920,12 @@ async def send_to_extension(action, params=None, timeout=30):
     )
     _remember_outcome(action, params, result)
     _note_tab_openers(action, params, result)
-    if _task_mode.get() != "act" and isinstance(result, dict) and result.get("code") in ("user_tab", "user_viewing"):
-        # The extension's hint names browser_tabs and confirm_token, which read and draft lack (#270).
-        result = {**result, "hint": RESTRICTED_USER_TAB_HINT if result["code"] == "user_tab"
-                  else RESTRICTED_VIEWED_TAB_HINT}
+    if isinstance(result, dict) and result.get("code") in ("user_tab", "user_viewing"):
+        if _task_mode.get() != "act":
+            # The extension's hint names browser_tabs and confirm_token, which read and draft lack (#270).
+            result = {**result, "hint": RESTRICTED_USER_TAB_HINT if result["code"] == "user_tab"
+                      else RESTRICTED_VIEWED_TAB_HINT}
+        result = _needs_approval(result, _refusal_message(action, params, result))
     return result
 
 
@@ -4567,6 +4650,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
         protect = _protect_user_tabs.set(self.headers.get(PROTECT_USER_TABS_HEADER) != "0")
         hold = _hold_viewed_tab.set(self.headers.get(HOLD_VIEWED_TAB_HEADER) != "0")
         viewed = _viewed_tab_approval.set({"approved": False, "rejected": None})
+        approver = self.headers.get(APPROVER_HEADER) or ""
+        approval = _request_approval.set({
+            "approver": hashlib.sha256(approver.encode()).hexdigest() if approver else None,
+            "claim": self.headers.get(APPROVAL_HEADER) == "elicitation", "via": None})
         tool_call = self.headers.get(TOOL_CALL_HEADER) or ""
         call_token = _tool_call.set(tool_call if _CLIENT_ID.fullmatch(tool_call) else None)
         called = self.headers.get(GATEWAY_TOOL_HEADER) or ""
@@ -4594,6 +4681,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             _client_id.reset(client_token)
             _gateway_tool.reset(gateway)
             _tool_call.reset(call_token)
+            _request_approval.reset(approval)
             _viewed_tab_approval.reset(viewed)
             _hold_viewed_tab.reset(hold)
             _protect_user_tabs.reset(protect)

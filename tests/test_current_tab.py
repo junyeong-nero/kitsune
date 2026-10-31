@@ -105,9 +105,9 @@ class CurrentTabToolTests(unittest.TestCase):
         self.assertEqual(result["state"], {"tool": tool, **({"action": action} if action else {})})
         self.assertIn("pass tab_id", result["hint"].lower())
         self.assertIn("browser_tabs action=new", result["hint"])
-        # select of a user tab, then a navigation, is refused (user_tab), so new comes first.
+        # select of a user tab, then a navigation, is refused (needs_user), so new comes first.
         self.assertLess(result["hint"].index("action=new"), result["hint"].index("action=select"))
-        self.assertIn("user_tab", result["hint"])
+        self.assertIn("needs_user", result["hint"])
 
     def test_omitted_tab_id_is_the_current_tab(self):
         self.assertEqual(self.steps["new"], [["/api/new-tab", None]])

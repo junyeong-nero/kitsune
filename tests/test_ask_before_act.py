@@ -82,8 +82,9 @@ class AskBeforeActTestCase(unittest.TestCase):
     def held(self, route, body):
         status, result = self.call(route, body)
         self.assertEqual(status, 403)
-        self.assertEqual(result["code"], "confirmation_required")
-        self.assertIs(result["retryable"], True)
+        self.assertEqual((result["code"], result["state"]["reason"], result["state"]["detail"]),
+                         ("needs_user", "approval", "confirmation_required"))
+        self.assertIs(result["retryable"], False)
         return result
 
     def batch(self, *commands):
@@ -149,7 +150,7 @@ class ConfirmationTests(AskBeforeActTestCase):
         result = self.held(lambda h: h._forward("submitForm"), {"selector": "#pay", "tabId": 7})
         self.assertEqual(self.extension.actions(), [], "nothing ran")
         state = result["state"]
-        self.assertEqual((state["action"], state["reason"], state["tabId"], state["url"]),
+        self.assertEqual((state["action"], state["holdReason"], state["tabId"], state["url"]),
                          ("submitForm", "submit", 7, PAGE))
         self.assertEqual(state["expiresInSeconds"], bridge.CONFIRM_TOKEN_TTL)
         self.assertEqual(state["params"], {"selector": "#pay", "tabId": 7})
@@ -217,15 +218,15 @@ class SensitiveActionTests(AskBeforeActTestCase):
             (lambda h: h.handle_sync_barrier(), {"tabIds": [7], "predicate": "1"}),
         ]:
             with self.subTest(body=body):
-                self.assertEqual(self.held(route, body)["state"]["reason"], "javascript")
+                self.assertEqual(self.held(route, body)["state"]["holdReason"], "javascript")
         for command in ({"action": "js", "code": "1"}, {"action": "if", "condition": "1", "then": []},
                         {"action": "while", "condition": "1", "do": []}):
             with self.subTest(command=command):
-                self.assertEqual(self.batch(command)[0]["code"], "confirmation_required")
+                self.assertEqual(self.batch(command)[0]["state"]["detail"], "confirmation_required")
         self.assertEqual(self.extension.actions(), [])
 
     def test_cookie_reads_and_sessions_are_held(self):
-        self.assertEqual(self.held(lambda h: h._forward("cookies"), {"op": "get"})["state"]["reason"], "cookies")
+        self.assertEqual(self.held(lambda h: h._forward("cookies"), {"op": "get"})["state"]["holdReason"], "cookies")
         self.held(lambda h: h.handle_save_session(), {"name": "s", "urls": []})
         self.held(lambda h: h.handle_load_session(), {"name": "s"})
         self.assertEqual(self.extension.sent, [])
@@ -242,8 +243,8 @@ class SensitiveActionTests(AskBeforeActTestCase):
         ]:
             with self.subTest(action=action, op=body["op"]):
                 state = self.held(lambda h: h._forward(action), body)["state"]
-                self.assertEqual((state["reason"], state["url"]), (reason, PAGE if action == "storageOp" else None))
-                self.assertEqual(self.batch({"action": action, **body})[0]["code"], "confirmation_required")
+                self.assertEqual((state["holdReason"], state["url"]), (reason, PAGE if action == "storageOp" else None))
+                self.assertEqual(self.batch({"action": action, **body})[0]["state"]["detail"], "confirmation_required")
         self.assertEqual(self.extension.actions(), [])
         token = self.held(lambda h: h._forward("clipboard"), {"op": "read"})["state"]["confirmToken"]
         self.assertEqual(self.forward("clipboard", {"op": "read", "confirmToken": token}), (200, {"ok": True}))
@@ -251,12 +252,12 @@ class SensitiveActionTests(AskBeforeActTestCase):
 
     def test_payment_urls_and_pages_are_held(self):
         held = self.held(lambda h: h.handle_navigate(), {"url": "https://shop.example/Checkout/step1"})
-        self.assertEqual(held["state"]["reason"], "payment_url")
+        self.assertEqual(held["state"]["holdReason"], "payment_url")
         self.held(lambda h: h.handle_new_tab(), {"url": "https://pay.example/payment"})
         self.assertEqual(self.forward("navigate", {"url": "https://example.com/"}), (200, {"ok": True}))
         self.extension.url = "https://shop.example/checkout"
         held = self.held(lambda h: h.handle_type(), {"selector": "#card", "text": "4111"})
-        self.assertEqual(held["state"]["reason"], "payment_page")
+        self.assertEqual(held["state"]["holdReason"], "payment_page")
         self.assertEqual(self.extension.actions(), ["navigate"])
 
     def test_custom_ask_urls(self):
@@ -267,7 +268,7 @@ class SensitiveActionTests(AskBeforeActTestCase):
     def test_submit_controls_are_held_other_clicks_run(self):
         self.extension.target = {"ok": True, "tag": "button", "type": "submit", "submits": True, "text": "Place order"}
         held = self.held(lambda h: h.handle_click(), {"ref": "s1e5"})
-        self.assertEqual(held["state"]["reason"], "submit_control")
+        self.assertEqual(held["state"]["holdReason"], "submit_control")
         self.assertIn("Place order", held["error"])
         inspected = [p for a, p in self.extension.sent if a == "describeTarget"][-1]
         self.assertEqual(inspected, {"ref": "s1e5", "inspect": True})
@@ -279,7 +280,7 @@ class SensitiveActionTests(AskBeforeActTestCase):
         # JS-driven buttons (type=button, role=button) the page labels like a submit or payment.
         self.extension.target = {"ok": True, "tag": "div", "submits": False, "submitLabel": True, "text": "결제하기"}
         held = self.held(lambda h: h.handle_click(), {"ref": "s1e7"})
-        self.assertEqual(held["state"]["reason"], "submit_label")
+        self.assertEqual(held["state"]["holdReason"], "submit_label")
         self.assertIn("clicks a button labeled like a submit or payment (결제하기)", held["error"])
         held = self.held(lambda h: h._forward("keypress"), {"key": "Enter", "ref": "s1e7"})
         self.assertIn("presses Enter on a button", held["error"])
@@ -293,7 +294,7 @@ class SensitiveActionTests(AskBeforeActTestCase):
         self.extension.target = {"ok": True, "tag": "a", "submits": False, "submitLabel": False,
                                  "consequentialLabel": True, "text": "Delete account"}
         held = self.held(lambda h: h.handle_click(), {"ref": "s1e9"})
-        self.assertEqual(held["state"]["reason"], "consequential_label")
+        self.assertEqual(held["state"]["holdReason"], "consequential_label")
         self.assertIn("clicks a button or link labeled like a send, transfer, delete or account change "
                       "(Delete account)", held["error"])
         held = self.held(lambda h: h._forward("keypress"), {"key": "Enter", "ref": "s1e9"})
@@ -301,7 +302,7 @@ class SensitiveActionTests(AskBeforeActTestCase):
         self.extension.target = {"ok": True, "tag": "button", "submits": False, "submitLabel": True,
                                  "consequentialLabel": True, "text": "Pay"}
         held = self.held(lambda h: h.handle_click(), {"ref": "s1e10"})
-        self.assertEqual(held["state"]["reason"], "submit_label", "a submit label takes precedence")
+        self.assertEqual(held["state"]["holdReason"], "submit_label", "a submit label takes precedence")
         # An extension older than this bridge reports no consequentialLabel: such a click runs.
         self.extension.target = {"ok": True, "tag": "button", "submits": False, "submitLabel": False,
                                  "text": "Delete account"}
@@ -313,7 +314,7 @@ class SensitiveActionTests(AskBeforeActTestCase):
         self.extension.target = {"ok": True, "tag": "button", "submits": True, "text": "Place order"}
         body = {"selector": "#buy", "tabId": 7, "button": "right", "clickCount": 2, "modifiers": ["Shift"]}
         held = self.held(lambda h: h.handle_trusted_click(), body)
-        self.assertEqual(held["state"]["reason"], "submit_control")
+        self.assertEqual(held["state"]["holdReason"], "submit_control")
         self.assertIn("Shift+right-double-clicks a submit control (Place order)", held["error"])
         token = held["state"]["confirmToken"]
         result = self.held(lambda h: h.handle_trusted_click(), {**body, "button": "left", "confirmToken": token})
@@ -336,17 +337,17 @@ class SensitiveActionTests(AskBeforeActTestCase):
     def test_uninspectable_targets_fail_closed(self):
         self.extension.target = {"error": "Unknown action: describeTarget"}
         held = self.held(lambda h: h.handle_click(), {"selector": "#go"})
-        self.assertEqual(held["state"]["reason"], "uninspectable_target")
+        self.assertEqual(held["state"]["holdReason"], "uninspectable_target")
         held = self.held(lambda h: h.handle_trusted_click(),
                          {"coords": {"x": 1, "y": 2}, "coordinateSpace": "screen"})
-        self.assertEqual(held["state"]["reason"], "uninspectable_target")
+        self.assertEqual(held["state"]["holdReason"], "uninspectable_target")
         self.assertEqual(self.extension.actions(), [])
 
     def test_unknown_outcome_write_is_held_before_repeating(self):
         self.extension.reply = {"error": "Command timed out after 30s", "code": "timeout", "retryable": False}
         self.assertEqual(self.forward("click", {"selector": "#send", "tabId": 7})[1]["code"], "timeout")
         held = self.held(lambda h: h._forward("click"), {"selector": "#send", "tabId": 7})
-        self.assertEqual(held["state"]["reason"], "unknown_outcome")
+        self.assertEqual(held["state"]["holdReason"], "unknown_outcome")
         self.extension.reply = {"ok": True}
         token = held["state"]["confirmToken"]
         self.assertEqual(self.forward("click", {"selector": "#send", "tabId": 7, "confirmToken": token}),
@@ -399,7 +400,7 @@ class SensitiveActionTests(AskBeforeActTestCase):
         self.assertEqual(result["code"], "outcome_not_observed")
         self.assertIs(result["retryable"], False)
         held = self.held(lambda h: h._forward("click"), body)
-        self.assertEqual(held["state"]["reason"], "unknown_outcome")
+        self.assertEqual(held["state"]["holdReason"], "unknown_outcome")
 
 
 class CrossOriginFrameTests(AskBeforeActTestCase):
@@ -414,7 +415,7 @@ class CrossOriginFrameTests(AskBeforeActTestCase):
         ]:
             with self.subTest(action=action):
                 held = self.held(route, body)
-                self.assertEqual(held["state"]["reason"], "cross_origin_frame")
+                self.assertEqual(held["state"]["holdReason"], "cross_origin_frame")
                 self.assertIn("https://widget.example/chat", held["error"])
         self.assertEqual(self.extension.actions(), [])
         token = self.held(lambda h: h.handle_click(), {"ref": "s1e5"})["state"]["confirmToken"]
@@ -424,11 +425,11 @@ class CrossOriginFrameTests(AskBeforeActTestCase):
     def test_payment_like_frames_and_unknown_frames(self):
         self.extension.frame = {"url": "https://js.pay.example/payment/card"}
         held = self.held(lambda h: h.handle_click(), {"ref": "s1e5"})
-        self.assertEqual(held["state"]["reason"], "payment_frame")
+        self.assertEqual(held["state"]["holdReason"], "payment_frame")
         # A frame that did not say where it is is still another site's frame.
         self.extension.frame = {"url": None}
         held = self.held(lambda h: h.handle_click(), {"ref": "s1e5"})
-        self.assertEqual(held["state"]["reason"], "cross_origin_frame")
+        self.assertEqual(held["state"]["holdReason"], "cross_origin_frame")
         self.assertIn("origin unknown", held["error"])
         self.extension.frame = None
         self.assertEqual(self.forward("click", {"ref": "s1e5"}), (200, {"ok": True}))
@@ -479,13 +480,13 @@ class NoAutoConfirmTests(AskBeforeActTestCase):
                                            {"command": command, "maxAttempts": 3, "backoffMs": 0})
                 self.assertEqual((result["ok"], result["attempts"], result["reason"]),
                                  (False, 1, "confirmation required"))
-                self.assertEqual(result["result"]["code"], "confirmation_required")
+                self.assertEqual(result["result"]["state"]["detail"], "confirmation_required")
         self.assertEqual(self.extension.actions(), [])
 
     def test_broadcast_and_workflow_never_confirm(self):
         result = self.call(lambda h: h.handle_broadcast(),
                            {"tabIds": [7, 8], "command": {"action": "submitForm", "confirmToken": "x"}})[1]
-        self.assertEqual({r["code"] for r in result["results"].values()}, {"confirmation_required"})
+        self.assertEqual({r["state"]["detail"] for r in result["results"].values()}, {"confirmation_required"})
         self.assertEqual(self.extension.actions(), [])
 
 

@@ -1,5 +1,6 @@
 """Audit log entries keep what the agent did but never the text it typed."""
 import asyncio
+import hashlib
 import json
 import os
 import tempfile
@@ -230,6 +231,91 @@ class AuditClientTests(unittest.TestCase):
         self.assertTrue(bridge._CLIENT_ID.fullmatch(first.client_id))
 
 
+class ApprovalAuditTests(unittest.TestCase):
+    """#376: an approved write's entries record how it was approved: elicitation only for the MCP server
+    the token was issued to (APPROVER_HEADER) when it claims it (APPROVAL_HEADER), else token."""
+
+    A = {task_modes.APPROVER_HEADER: "secret-of-mcp-server-a"}
+    B = {task_modes.APPROVER_HEADER: "secret-of-mcp-server-b"}
+    CLAIM = {task_modes.APPROVAL_HEADER: "elicitation"}
+    # (path, body): held for the viewed tab, for closing a user tab, and by ask-before-act.
+    HOLDS = (("/api/click", {"selector": "#go", "tabId": 4}), ("/api/close-tab", {"tabId": 4}),
+             ("/api/submit-form", {"selector": "#pay", "tabId": 9}))
+
+    async def extension(self, action, params=None, timeout=30):
+        params = params or {}
+        if action == "describeTarget":
+            return {"tabId": params.get("tabId"), "url": "https://shop.example/"}
+        if action == "click" and not params.get("viewedTabApproved"):
+            return {"error": "viewing", "code": "user_viewing", "retryable": False, "state": {"tabId": 4}}
+        if action == "closeTab" and not params.get("userTabApproved"):
+            return {"error": "not opened", "code": "user_tab", "retryable": False, "state": {"tabId": 4}}
+        return {"ok": True}
+
+    def setUp(self):
+        for patcher in (patch.object(bridge, "_audit_log", []), patch.dict(bridge._confirm_tokens, clear=True),
+                        patch.dict(bridge._viewed_tab_calls, clear=True),
+                        patch.dict(bridge._policy, {"ask": True, "askUrls": [], "askLocked": False}),
+                        patch.object(bridge, "_global_command_lock", None),
+                        patch.object(bridge, "_tab_command_locks", {}), patch.object(bridge, "_scheduler_gate", None),
+                        patch.object(bridge, "_send_to_extension_raw", new=self.extension)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def post(self, path, body, headers):
+        handler = bridge.BridgeHandler.__new__(bridge.BridgeHandler)
+        handler.path, handler.command, handler.headers = path, "POST", headers
+        handler.read_body = Mock(return_value=dict(body))
+        handler.send_json = Mock()
+        handler.drain_body = Mock()
+        handler.authorized = Mock(return_value=True)
+        handler.run_async = Mock(side_effect=lambda coro, **kwargs: asyncio.run(coro))
+        handler.do_POST()
+        return handler.send_json.call_args.args[1]
+
+    def approvals(self, issued_to, repeated_by):
+        """Per hold: the approval of the entries the approved repeat logged."""
+        recorded = []
+        for path, body in self.HOLDS:
+            held = self.post(path, body, issued_to)
+            self.assertEqual((held["code"], held["state"]["approval"]), ("needs_user", "token"), held)
+            start = len(bridge._audit_log)
+            done = self.post(path, {**body, "confirmToken": held["state"]["confirmToken"]}, repeated_by)
+            self.assertIs(done.get("ok"), True, done)
+            entries = bridge._audit_log[start:]
+            self.assertEqual([e["params"].get("confirmation") for e in entries], ["accepted", None])
+            recorded.append({e.get("approval") for e in entries})
+        return recorded
+
+    def test_the_mcp_server_the_token_was_issued_to_records_elicitation(self):
+        self.assertEqual(self.approvals(self.A, {**self.A, **self.CLAIM}), [{"elicitation"}] * 3)
+
+    def test_every_other_repeat_records_token(self):
+        for issued_to, repeated_by in ((self.A, self.A), (self.A, {**self.B, **self.CLAIM}), ({}, self.CLAIM),
+                                       ({}, {**self.A, **self.CLAIM}), (self.A, self.CLAIM)):
+            with self.subTest(issued_to=issued_to, repeated_by=repeated_by):
+                self.assertEqual(self.approvals(issued_to, repeated_by), [{"token"}] * 3)
+
+    def test_unapproved_entries_and_the_audit_endpoint_carry_no_approval_or_secret(self):
+        self.approvals(self.A, {**self.A, **self.CLAIM})
+        self.post("/api/scroll", {"tabId": 9}, {**self.A, **self.CLAIM})  # a claim without a token approves nothing
+        held = [e for e in bridge._audit_log if e["params"].get("confirmation") == "required"]
+        self.assertEqual(len(held), 1, "the ask-before-act hold")
+        self.assertNotIn("approval", held[0])
+        self.assertNotIn("approval", bridge._audit_log[-1])
+        handler = bridge.BridgeHandler.__new__(bridge.BridgeHandler)
+        handler.send_json = Mock()
+        handler.path, handler.command = "/api/audit", "GET"
+        handler.handle_audit()
+        returned = json.dumps(handler.send_json.call_args.args[1])
+        self.assertIn('"approval": "elicitation"', returned)
+        for secret in (self.A, self.B):
+            value = secret[task_modes.APPROVER_HEADER]
+            for leaked in (value, hashlib.sha256(value.encode()).hexdigest()):
+                self.assertNotIn(leaked, returned)
+                self.assertNotIn(leaked, json.dumps(bridge._audit_log))
+
+
 class ContainerAuditTests(unittest.TestCase):
     """Commands run inside batch, parallel, broadcast, retry and workflows are audited."""
 
@@ -366,7 +452,7 @@ class ContainerAuditTests(unittest.TestCase):
             ]]},
         ]})
         [[[held]]] = payload["results"]
-        self.assertEqual(held["code"], "confirmation_required")
+        self.assertEqual((held["code"], held["state"]["detail"]), ("needs_user", "confirmation_required"))
         self.assertEqual(self.sent, [], "nothing ran")
         step = [{"action": "batch", "index": 0}, {"action": "parallel", "sequence": 0, "index": 0}]
         self.assertEqual(self.entries(), [

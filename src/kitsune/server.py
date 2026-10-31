@@ -25,14 +25,15 @@ import anyio
 from mcp.server.fastmcp import FastMCP, Image as McpImage
 from mcp.server.lowlevel import NotificationOptions
 from mcp.shared.exceptions import McpError
-from mcp.types import CallToolResult, ClientCapabilities, RootsCapability, TextContent, ToolAnnotations
+from mcp.types import (CallToolResult, CancelledNotification, CancelledNotificationParams, ClientCapabilities,
+                       RootsCapability, ServerNotification, TextContent, ToolAnnotations)
 from pydantic import Field
 
 from . import playwright_tools, tools
 from .capabilities import CAPABILITY_GROUPS, NAMED_ONLY_GROUPS, enabled_groups
 from .bridge_client import BridgeClient
 from .errors import failed as _failed  # whether a tool's own result reports failure
-from .task_modes import GATEWAY_TOOL_HEADER, TOOL_CALL_HEADER, permits_tool, task_mode
+from .task_modes import APPROVAL_HEADER, GATEWAY_TOOL_HEADER, TOOL_CALL_HEADER, permits_tool, task_mode
 from .tools import DESTRUCTIVE, _on_current_tab
 
 
@@ -163,6 +164,13 @@ class KitsuneMCP(FastMCP):
             return CallToolResult(content=[_compact_json({
                 "error": f"{MODE} mode does not permit confirmation", "code": "mode_restricted",
                 "retryable": False})], isError=True)
+        result = await self._run_tool(name, arguments)
+        session = self.session()
+        if isinstance(result, CallToolResult) and session is not None and _elicits(session):
+            result = await self._approved(session, name, arguments or {}, result)
+        return result
+
+    async def _run_tool(self, name, arguments):
         if name in playwright_tools.SCHEMAS and (arguments or {}).get("filename"):
             # Relative file names resolve against the client's workspace root (#225).
             root = playwright_tools.client_root.set(await first_client_root(self.get_context()))
@@ -171,6 +179,41 @@ class KitsuneMCP(FastMCP):
             finally:
                 playwright_tools.client_root.reset(root)
         return await super().call_tool(name, arguments)
+
+    async def _approved(self, session, name, arguments, result):
+        """result of a call on a client with elicitation: a held direct call is asked about and, once
+        the user approves, repeated with its token; no token stays in the result (#376).
+
+        Each repeat starts at the held request (playwright_tools.approved_hold), so a later held
+        request of the call (the next field of a payment form) is asked about in turn, and a hold
+        the user approved coming back means the repeat no longer matched it."""
+        tool = self._tool_manager.get_tool(name)
+        repeatable = tool is not None and "confirm_token" in tool.parameters.get("properties", {})
+        approved = []  # _hold_key of each hold the user approved in this call
+        call_id = secrets.token_hex(8)
+        while True:
+            held = _json_payload(result)
+            if held is None:
+                return result
+            if not _held_with_token(held) or not repeatable:
+                return _with_payload(result, _without_tokens(held))
+            if _hold_key(held) in approved:
+                # The page or tab changed since the user approved it: ask again on a new call.
+                return _with_payload(result, _unapproved(held, None, UNMATCHED_APPROVAL_HINT))
+            if approved:
+                # A later request of the call, held after the approved one ran: the token it was
+                # sent was spent there, which is no reason to report.
+                held["state"].pop("tokenRejected", None)
+            decision = await _ask_user(session, self._mcp_server.request_context, name, arguments, held["state"])
+            if decision != "approved":
+                return _with_payload(result, _unapproved(held, decision, DECISION_HINTS[decision]))
+            approved.append(_hold_key(held))
+            repeat, hold = _approval_repeat.set(call_id), playwright_tools.approved_hold.set(held)
+            try:
+                result = await self._run_tool(name, {**arguments, "confirm_token": held["state"]["confirmToken"]})
+            finally:
+                playwright_tools.approved_hold.reset(hold)
+                _approval_repeat.reset(repeat)
 
 
 mcp = KitsuneMCP("Kitsune")
@@ -225,16 +268,19 @@ mcp._mcp_server.instructions = (
        "user is viewing, and navigations and writes that pass no tab_id fail with no_current_tab; "
        "later tools act on your tab without switching the user's view.")
     # #326: the tab the user is viewing is held for writes unless this client set KITSUNE_HOLD_VIEWED_TAB=0.
-    + ((" Writes and navigations on the tab the user is viewing fail with user_viewing unless you opened "
-        "that tab: work in your own tabs, or ask the user before repeating the call with its confirm_token."
+    + ((" Writes and navigations on the tab the user is viewing fail with needs_user (detail user_viewing) "
+        "unless you opened that tab: work in your own tabs, or ask the user before repeating the call with its "
+        "confirm_token, if it has one."
         if permits_tool(MODE, "browser_tabs") else
-        " Writes and navigations on the tab the user is viewing fail with user_viewing; work in your own tab.")
+        " Writes and navigations on the tab the user is viewing fail with needs_user (detail user_viewing); "
+        "work in your own tab.")
        if HOLD_VIEWED_TAB else "")
     # #326: navigations on user tabs are refused unless this client set KITSUNE_PROTECT_USER_TABS=0.
-    + ((" Navigate, back and forward on a tab no client opened fail with user_tab: open a tab of your own, "
-        "or ask the user before repeating the call with its confirm_token."
+    + ((" Navigate, back and forward on a tab no client opened fail with needs_user (detail user_tab): open a "
+        "tab of your own, or ask the user before repeating the call with its confirm_token, if it has one."
         if permits_tool(MODE, "browser_tabs") else
-        " Navigate, back and forward on a tab no client opened fail with user_tab; work in your own tab.")
+        " Navigate, back and forward on a tab no client opened fail with needs_user (detail user_tab); work in "
+        "your own tab.")
        if PROTECT_USER_TABS else ""))
 # The tool browser_tools_call is running; its bridge requests name it for the audit log.
 _gateway_call: ContextVar[str | None] = ContextVar("kitsune_gateway_call", default=None)
@@ -280,8 +326,9 @@ def _mcp_errors(function):
     """
     @functools.wraps(function)
     def call(*args, **kwargs):
-        # Its bridge requests share one tool call id: a viewed-tab approval covers all of them (#326).
-        call_id = _tool_call.set(secrets.token_hex(8))
+        # Its bridge requests share one tool call id: a viewed-tab approval covers all of them (#326),
+        # and those of the repeats of a call the user approved (#376).
+        call_id = _tool_call.set(_approval_repeat.get() or secrets.token_hex(8))
         try:
             result = function(*args, **kwargs)
         finally:
@@ -295,6 +342,185 @@ def _mcp_errors(function):
         return CallToolResult(content=[_compact_json(result)], isError=_failed(result))
 
     return call
+
+
+# ── Approval through MCP elicitation (#376, docs/api-reference.md#ask-before-act) ──
+# A direct call held for the user's approval (needs_user, state.reason approval) returns a confirm
+# token. When the client declared form elicitation at initialize, the server asks the user in the
+# client's prompt and, on Approve, repeats the identical call with the token itself, so the model
+# never receives a token and cannot approve itself (#374). The repeat tells the bridge so
+# (APPROVAL_HEADER), for its audit log. Containers cannot confirm a step (the bridge honors tokens
+# on direct calls only): their results lose every token, and a direct call of the held step asks.
+# Without elicitation the token stays in the result, a guard against accidents only.
+
+# The prompt closes this long before the token expires, so the repeat still finds it valid.
+ELICITATION_MARGIN_SECONDS = 5
+# While the prompt is open, a call that sent a progressToken gets a progress notification this
+# often, so a client that resets its request timeout on progress keeps waiting.
+ELICITATION_PROGRESS_SECONDS = 10
+# The prompt shows the call's other arguments up to this many characters.
+APPROVAL_ARGUMENTS_CHARS = 500
+APPROVAL_SCHEMA = {"type": "object", "required": ["decision"], "properties": {
+    "decision": {"type": "string", "title": "Decision", "enum": ["Approve", "Decline"]}}}
+DECISION_HINTS = {
+    "declined": "The held action did not run: the user declined it in the approval prompt. Do not repeat it; "
+                "ask the user what to do instead, or work in a tab of your own.",
+    "cancelled": "The held action did not run: the approval prompt was dismissed or timed out without an answer. "
+                 "Ask the user whether to go ahead; calling the tool again asks them again.",
+}
+UNMATCHED_APPROVAL_HINT = ("The action the user approved did not run: repeated, it no longer matched what they "
+                           "approved (state.tokenRejected), so the page or tab changed. What the call did before "
+                           "it (filled) stays done. Check the page, then call the tool again to ask again.")
+CONTAINER_APPROVAL_HINT = ("Nothing ran: this step needs the user's approval, which only a direct call of the tool "
+                           "that does it can ask for. Make that call; the user is asked to approve it there.")
+# Why a call was held, by state.detail, for the prompt.
+_HELD_BECAUSE = {"user_viewing": "you are viewing this tab", "user_tab": "the agent did not open this tab",
+                 "confirmation_required": "ask-before-act"}
+# The tool call id the repeats of a call the user approved in the prompt share, so a viewed-tab
+# approval in one covers the next (#326); their bridge requests carry APPROVAL_HEADER.
+_approval_repeat: ContextVar[str | None] = ContextVar("kitsune_approval_repeat", default=None)
+
+
+def _elicits(session) -> bool:
+    """Whether the client declared form elicitation at initialize (an empty elicitation capability is
+    form mode) and this MCP SDK sends it (ServerSession.elicit_form). The SDK sends it on any negotiated
+    protocol version; clients declare the capability from 2025-06-18 on."""
+    params = session.client_params
+    elicitation = getattr(params.capabilities, "elicitation", None) if params is not None else None
+    return (hasattr(session, "elicit_form") and elicitation is not None
+            and (getattr(elicitation, "form", None) is not None or getattr(elicitation, "url", None) is None))
+
+
+def _json_payload(result) -> dict | None:
+    """The JSON object of a tool result made by _compact_json that names a confirm token, else None."""
+    if not isinstance(result, CallToolResult) or len(result.content) != 1 or result.content[0].type != "text":
+        return None
+    if '"confirmToken"' not in result.content[0].text:  # most results: no need to parse them
+        return None
+    try:
+        payload = json.loads(result.content[0].text)
+    except ValueError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _with_payload(result: CallToolResult, payload: dict) -> CallToolResult:
+    return result.model_copy(update={"content": [_compact_json(payload)]})
+
+
+def _held_with_token(payload) -> bool:
+    state = payload.get("state") if isinstance(payload, dict) and payload.get("code") == "needs_user" else None
+    return isinstance(state, dict) and state.get("reason") == "approval" and isinstance(state.get("confirmToken"), str)
+
+
+def _hold_key(held: dict) -> tuple:
+    """Which request of the call a hold is: its action and params as the call sent them, whichever
+    tab they resolved to; a user_viewing or user_tab hold, which names neither, by its tab."""
+    state = held["state"]
+    if "params" in state:
+        return state.get("detail"), state.get("action"), json.dumps(state["params"], sort_keys=True, default=str)
+    return state.get("detail"), state.get("tabId")
+
+
+def _without_token(state: dict) -> dict:
+    return {key: value for key, value in state.items() if key not in ("confirmToken", "expiresInSeconds")}
+
+
+def _without_tokens(value):
+    """value without confirm tokens: each held step it reports asks for a direct call instead."""
+    if isinstance(value, list):
+        return [_without_tokens(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    held = _held_with_token(value)
+    value = {key: _without_tokens(item) for key, item in value.items() if key != "confirmToken"}
+    if held:
+        value.update(state={**_without_token(value["state"]), "approval": "elicitation"}, hint=CONTAINER_APPROVAL_HINT)
+    return value
+
+
+def _unapproved(held: dict, decision: str | None, hint: str) -> dict:
+    """The held result the user did not approve, without its token."""
+    state = {**_without_token(held["state"]), "approval": "elicitation"}
+    if decision:
+        state["decision"] = decision
+    return _without_tokens({**held, "state": state, "hint": hint})
+
+
+def _approval_message(name: str, arguments: dict, state: dict) -> str:
+    """The prompt: what the call does, to which element and tab, with which arguments, and why it was
+    held. The model's element description is labeled as the agent's: only the ref or selector is
+    what the call acts on."""
+    params = state.get("params") if isinstance(state.get("params"), dict) else {}
+    target = next((str(value) for value in (arguments.get("target"), arguments.get("ref"), arguments.get("selector"),
+                                            params.get("ref"), params.get("selector")) if value), None)
+    rest = {key: value for key, value in arguments.items()
+            if key not in ("target", "ref", "selector", "element", "confirm_token")}
+    rest = json.dumps(rest, ensure_ascii=False, default=str)
+    if len(rest) > APPROVAL_ARGUMENTS_CHARS:
+        rest = rest[:APPROVAL_ARGUMENTS_CHARS - 1] + "…"
+    tab = " - ".join(str(state[key]) for key in ("title", "url") if state.get(key))
+    why = _HELD_BECAUSE.get(state.get("detail"), "it needs your approval")
+    if state.get("description"):
+        why += f": it {state['description']}"
+    lines = [state.get("message") or "Allow this action?", f"Tool: {name}"]
+    lines += [f"Target: {target}"] if target else []
+    lines += [f"Agent's description of the target: {arguments['element']}"] if arguments.get("element") else []
+    lines += [f"Arguments: {rest}"] if rest != "{}" else []
+    lines += [f"Tab: {tab}"] if tab else []
+    lines += [f"Held because {why}.", "Approve runs this action once; Decline leaves it undone."]
+    return "\n".join(lines)
+
+
+async def _ask_user(session, request, name: str, arguments: dict, state: dict) -> str:
+    """Ask the user about a held call: "approved", "declined" or "cancelled" (dismissed, failed or
+    unanswered until the token's expiresInSeconds less ELICITATION_MARGIN_SECONDS)."""
+    seconds = max(1, (state.get("expiresInSeconds") or 0) - ELICITATION_MARGIN_SECONDS)
+    progress_token = request.meta.progressToken if request.meta is not None else None
+    answer = elicitation_id = None
+    answered = False
+
+    async def keep_alive():
+        sent = 0
+        while True:
+            await anyio.sleep(ELICITATION_PROGRESS_SECONDS)
+            sent += 1
+            await session.send_progress_notification(progress_token, sent, message="Waiting for the user's approval",
+                                                     related_request_id=request.request_id)
+
+    waited = anyio.move_on_after(seconds)
+    try:
+        async with anyio.create_task_group() as group:
+            if progress_token is not None:
+                group.start_soon(keep_alive)
+            with waited:
+                # The id the SDK's send_request gives the elicitation request, to cancel it unanswered.
+                elicitation_id = getattr(session, "_request_id", None)
+                try:
+                    answer = await session.elicit_form(_approval_message(name, arguments, state), APPROVAL_SCHEMA,
+                                                       related_request_id=request.request_id)
+                except (McpError, ValueError):  # the client failed it, or answered outside APPROVAL_SCHEMA
+                    pass
+                answered = True
+            group.cancel_scope.cancel()
+    finally:
+        if not answered and elicitation_id is not None:
+            # Timed out, or the client cancelled the tool call: close the client's prompt, as an answer
+            # after this approves nothing.
+            reason = "The approval prompt timed out" if waited.cancelled_caught else "The tool call was cancelled"
+            with anyio.CancelScope(shield=True):
+                try:
+                    await session.send_notification(ServerNotification(CancelledNotification(
+                        params=CancelledNotificationParams(requestId=elicitation_id, reason=reason))),
+                        related_request_id=request.request_id)
+                except (anyio.BrokenResourceError, anyio.ClosedResourceError):  # the client is gone
+                    pass
+    if answer is None or answer.action == "cancel":
+        return "cancelled"
+    if answer.action == "decline":
+        return "declined"
+    choice = (answer.content or {}).get("decision")
+    return "approved" if choice == "Approve" else "declined" if choice == "Decline" else "cancelled"
 
 
 # How long a filename call waits for the client's roots/list answer before using the fallback.
@@ -357,15 +583,18 @@ def _register(spec: tools.ToolSpec, function=None) -> None:
 
 
 def _gateway_headers() -> dict:
-    """Name the tool browser_tools_call runs on its bridge requests, for the audit log, and the tool call."""
+    """Name the tool browser_tools_call runs on its bridge requests, for the audit log, the tool call,
+    and the repeat of a call the user approved in the client's prompt."""
     name, call_id = _gateway_call.get(), _tool_call.get()
-    return {**({GATEWAY_TOOL_HEADER: name} if name else {}), **({TOOL_CALL_HEADER: call_id} if call_id else {})}
+    return {**({GATEWAY_TOOL_HEADER: name} if name else {}), **({TOOL_CALL_HEADER: call_id} if call_id else {}),
+            **({APPROVAL_HEADER: "elicitation"} if _approval_repeat.get() else {})}
 
 
-# Every tool's bridge request carries this server's client and owner ids, caps, mode and user-tab protection.
+# Every tool's bridge request carries this server's client and owner ids, caps, mode, user-tab protection
+# and approver secret.
 _client = tools.client = BridgeClient(caps=enabled_groups(ENABLED_CAPS), mode=MODE,
                                       protect_user_tabs=PROTECT_USER_TABS, hold_viewed_tab=HOLD_VIEWED_TAB,
-                                      extra_headers=_gateway_headers)
+                                      extra_headers=_gateway_headers, approver=True)
 
 
 @functools.wraps(tools.browser_status)

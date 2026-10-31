@@ -47,7 +47,7 @@ class FirstParagraphTests(unittest.TestCase):
         for keyword in EXPECT_GRAMMAR:
             self.assertIn(keyword, click["expect"]["description"])
         self.assertIn("ambiguous_target", click["first"]["description"])
-        self.assertIn("confirmation_required", click["confirm_token"]["description"])
+        self.assertIn("needs_user", click["confirm_token"]["description"])
         for word in ("ok=true", "expect", "opened_tabs"):
             self.assertIn(word, self.first["browser_check"])
 
