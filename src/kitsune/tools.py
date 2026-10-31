@@ -25,8 +25,9 @@ from .bridge_client import BridgeClient
 from .capabilities import CAPABILITY_GROUPS
 from .errors import failed as _failed  # whether a tool's own result reports failure
 from .waits import (
-    ACTION_REQUEST_SECONDS, NAVIGATE_REQUEST_SECONDS, RESUME_DEADLINE_SECONDS, WORKFLOW_DEADLINE_SECONDS,
-    action_request_seconds, batch_deadline_seconds, command_wait_seconds, container_request_seconds,
+    ACTION_REQUEST_SECONDS, NAVIGATE_REQUEST_SECONDS, RESUME_DEADLINE_SECONDS, RESUME_MAX_WAIT_SECONDS,
+    RESUME_WAIT_SECONDS, WORKFLOW_DEADLINE_SECONDS, action_request_seconds, batch_deadline_seconds,
+    command_wait_seconds, container_request_seconds,
 )
 
 # Annotation hints describe the whole tool, including its most dangerous operation.
@@ -2082,18 +2083,23 @@ def browser_batch(
                  timeout=container_request_seconds(batch_deadline_seconds(commands)))
 
 
-@tool("automation", annotations=dict(title="Resume a container call", **DESTRUCTIVE))
+@tool("core", annotations=dict(title="Resume a call", **DESTRUCTIVE))
 def browser_resume(
     call: Annotated[int, Field(description="The call id from that response.")],
     resume_token: Annotated[str, Field(description="The resume_token from that response.")],
     observed: Annotated[dict[str, str] | None, Field(
-        description='For each unknown step (by progress path, e.g. "1" or "0.1.2"), "not_applied" to send '
-                    'it again or "applied" to mark it ok after checking the page.')] = None,
+        description='Containers: each unknown step\'s progress path ("1", "0.1.2") -> "not_applied" to send it '
+                    'again or "applied" to mark it ok.')] = None,
+    wait: Annotated[float, Field(description=f"Seconds to wait for the user, 0-{RESUME_MAX_WAIT_SECONDS}.")]
+        = RESUME_WAIT_SECONDS,
 ) -> dict:
-    """Resume a browser_batch, browser_parallel or browser_workflow call that did not finish ok.
+    """Continue a call that returned call and resume_token: a direct call stopped on needs_user, or
+    a batch, parallel or workflow. Nothing that ran ok is sent again.
 
-    Steps that ran ok are not sent again. Returns the same shape as the original call.
+    A held approval is asked again in the client's prompt, for up to wait seconds; without that
+    prompt it is checked once. Returns the original call's shape.
     """
+    # The MCP server resumes the direct calls it keeps; the bridge resumes containers (wait unused).
     body: dict = {"call": call, "resume_token": resume_token}
     if observed is not None:
         body["observed"] = observed

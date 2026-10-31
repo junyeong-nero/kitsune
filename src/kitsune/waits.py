@@ -111,6 +111,19 @@ def container_request_seconds(deadline):
     return container_settle_seconds(deadline) + CONTAINER_MARGIN_SECONDS
 
 
+# browser_resume of a direct call waits up to `wait` seconds for the user (#376), capped. The MCP
+# server does that wait itself, between bridge requests, so no bridge request outlasts its own timeout.
+RESUME_WAIT_SECONDS = 120
+RESUME_MAX_WAIT_SECONDS = 300
+
+
+def resume_wait_seconds(wait):
+    """A browser_resume wait as the MCP server applies it: 0 to RESUME_MAX_WAIT_SECONDS."""
+    if isinstance(wait, bool) or not isinstance(wait, (int, float)) or not math.isfinite(wait):
+        return RESUME_WAIT_SECONDS
+    return min(max(0, wait), RESUME_MAX_WAIT_SECONDS)
+
+
 # A direct action's request timeout before its waits.
 ACTION_REQUEST_SECONDS = 15
 

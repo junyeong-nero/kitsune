@@ -263,8 +263,9 @@ seconds) in the **MCP server's environment**, or run the daemon yourself with
 
 By default Kitsune publishes the 25 tools of [Playwright MCP](https://github.com/microsoft/playwright-mcp)'s
 default capabilities, with the same names, descriptions, input schemas and annotations, as
-its `core` capability group (see [Core tools](#core-tools)). Kitsune's own tools are in
-the other groups. Set `KITSUNE_CAPS` in the MCP server environment before starting it;
+its `core` capability group (see [Core tools](#core-tools)), with Kitsune's `browser_resume`,
+which continues a call that stopped for you (#376). Kitsune's other tools are in the other
+groups. Set `KITSUNE_CAPS` in the MCP server environment before starting it;
 restart the MCP client after changing it. The comma-separated list selects exactly those
 groups (include `core` to retain the default tools). `all` enables all 96 tools in every
 group except `storage` and `history`, which read personal data and must be named
@@ -278,9 +279,9 @@ KITSUNE_CAPS = "core,browse,read"
 
 | Group | Tools |
 |---|---|
-| `core` (25, Playwright MCP's) | `browser_close`, `browser_resize`, `browser_console_messages`, `browser_handle_dialog`, `browser_emulate_media`, `browser_evaluate`, `browser_file_upload`, `browser_drop`, `browser_find`, `browser_fill_form`, `browser_press_key`, `browser_type`, `browser_navigate`, `browser_navigate_back`, `browser_network_requests`, `browser_network_request`, `browser_run_code_unsafe`, `browser_take_screenshot`, `browser_snapshot`, `browser_click`, `browser_drag`, `browser_hover`, `browser_select_option`, `browser_tabs`, `browser_wait_for` |
+| `core` (26: Playwright MCP's 25 and `browser_resume`) | `browser_resume`, `browser_close`, `browser_resize`, `browser_console_messages`, `browser_handle_dialog`, `browser_emulate_media`, `browser_evaluate`, `browser_file_upload`, `browser_drop`, `browser_find`, `browser_fill_form`, `browser_press_key`, `browser_type`, `browser_navigate`, `browser_navigate_back`, `browser_network_requests`, `browser_network_request`, `browser_run_code_unsafe`, `browser_take_screenshot`, `browser_snapshot`, `browser_click`, `browser_drag`, `browser_hover`, `browser_select_option`, `browser_tabs`, `browser_wait_for` |
 | `admin` (8) | `browser_status`, `browser_cache`, `browser_reload_extension`, `browser_health`, `browser_logs`, `browser_audit`, `browser_set_policy`, `browser_get_policy` |
-| `automation` (12) | `browser_workflows`, `browser_workflow`, `browser_parallel`, `browser_broadcast`, `browser_sync_barrier`, `browser_tab_pool`, `browser_pool_acquire`, `browser_pool_release`, `browser_scheduler`, `browser_retry`, `browser_batch`, `browser_resume` |
+| `automation` (11) | `browser_workflows`, `browser_workflow`, `browser_parallel`, `browser_broadcast`, `browser_sync_barrier`, `browser_tab_pool`, `browser_pool_acquire`, `browser_pool_release`, `browser_scheduler`, `browser_retry`, `browser_batch` |
 | `browse` (11) | `browser_trusted_click`, `browser_trusted_drag`, `browser_trusted_type`, `browser_trusted_press_key`, `browser_scroll`, `browser_check`, `browser_focus`, `browser_blur`, `browser_submit_form`, `browser_click_and_wait_navigation`, `browser_forward` |
 | `inspect` (5) | `browser_highlight`, `browser_bounds`, `browser_computed_style`, `browser_explain_selector`, `browser_full_page_metrics` |
 | `network` (3) | `browser_downloads`, `browser_intercept`, `browser_capture_network` |
@@ -325,7 +326,7 @@ KITSUNE_CAPS = "all"
 KITSUNE_PUBLISH = "core"
 ```
 
-`tools/list` then has the 25 core tools and three gateway tools:
+`tools/list` then has the 26 core tools and three gateway tools:
 
 - `browser_tools_search(query, limit=5)` finds the tools this server runs but does not
   list, best match first, each with its full description, input schema and annotations.
@@ -372,7 +373,7 @@ are not enforced policy. The bridge enforces task-mode limits and `browser_set_p
 
 ### Core tools
 
-The `core` tools are Playwright MCP's, published verbatim from
+The `core` tools other than `browser_resume` are Playwright MCP's, published verbatim from
 `src/kitsune/playwright_tools.json` (captured from `@playwright/mcp` with
 `node scripts/update_playwright_tools.mjs`), so a client or prompt written for Playwright
 MCP works unchanged. They drive your own browser through the Kitsune extension and return
@@ -661,13 +662,16 @@ nothing runs. How you approve depends on the MCP client:
   runs that one call; the agent never sees a token, so it cannot approve itself. Decline or
   dismiss it, and the agent gets `needs_user` with `state.decision` `declined` or
   `cancelled`. The prompt closes unanswered 5 seconds before the approval would expire.
+  If you change your mind, the agent calls `browser_resume`, which asks you again and
+  continues the call where it was held.
   Steps inside batches, parallel calls and workflows are not asked about: the agent repeats
   the held step as a direct call, which asks you.
 - **Clients without elicitation**: the error carries a token (`state.approval` `token`),
   and the agent should ask you, then repeat the call with `confirm_token`. That token goes
   back to the agent, so it guards against accidents only: the agent can repeat the call
   without asking. Have your MCP client prompt you before tool calls, or at least before
-  calls that carry `confirm_token`.
+  calls that carry `confirm_token`. `browser_resume` on such a client checks the hold once
+  and returns at once; it never waits for you to look away from a tab.
 
 The bridge's audit log (`browser_audit`) records how each approved write was approved,
 `approval: "elicitation"` or `"token"`. Details are in the

@@ -125,6 +125,13 @@
     "total": 485,
     "firstParagraphTotal": 485
   },
+  "browser_resume": {
+    "description": 319,
+    "firstParagraph": 161,
+    "inputSchema": 536,
+    "total": 1038,
+    "firstParagraphTotal": 880
+  },
   "browser_run_code_unsafe": {
     "description": 126,
     "firstParagraph": 126,

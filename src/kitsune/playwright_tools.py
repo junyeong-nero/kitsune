@@ -1,6 +1,7 @@
 """The core tools: Playwright MCP's core tool set on Kitsune.
 
-The core group publishes exactly the tools of @playwright/mcp with its default capabilities.
+The core group publishes the tools of @playwright/mcp with its default capabilities, and
+Kitsune's browser_resume, which continues a call stopped on needs_user (#376).
 Names, descriptions, input schemas and annotations come verbatim from playwright_tools.json,
 captured from its tools/list (refresh it with scripts/update_playwright_tools.mjs); each tool
 here maps its arguments onto the Kitsune bridge and returns Kitsune's JSON results.
@@ -47,9 +48,10 @@ _requests: dict[int | None, list[dict]] = {}
 # The MCP client's first file root for this tool call; kitsune.server sets it around core calls
 # with a filename.
 client_root: ContextVar[Path | None] = ContextVar("client_root", default=None)
-# The held result the user approved in the client's prompt; kitsune.server sets it around the repeat
-# of the call, which skips the requests that ran before the held one (#376).
-approved_hold: ContextVar[dict | None] = ContextVar("approved_hold", default=None)
+# The held result a repeat of the call starts at: kitsune.server sets it around the repeat of a call the
+# user approved in the client's prompt, or that browser_resume continues, which skips the requests that
+# ran before the held one (#376).
+repeat_hold: ContextVar[dict | None] = ContextVar("repeat_hold", default=None)
 
 _REF = re.compile(r"e\d+")
 _FIELD_TYPES = {"textbox", "slider", "checkbox", "radio", "combobox"}
@@ -364,8 +366,8 @@ def browser_fill_form(fields: list[dict], confirm_token: str | None = None) -> d
             return {"error": "Each field needs a target", "field": field.get("name"), "filled": []}
         if field.get("type") not in _FIELD_TYPES:
             return {"error": f"Unknown field type: {field.get('type')}", "field": field.get("name"), "filled": []}
-    # A repeat the user approved starts at the held field: the fields before it were filled (#376).
-    hold = approved_hold.get()
+    # A repeat starts at the held field: the fields before it were filled (#376).
+    hold = repeat_hold.get()
     filled, last = list(hold.get("filled") or []) if hold else [], {}
     for i, field in enumerate(fields):
         if i < len(filled):
@@ -415,8 +417,8 @@ def browser_type(target: str, text: str, element: str | None = None, submit: boo
     # The token reaches both requests: a user_viewing token approves the text, and with it the Enter of
     # the same tool call (#326). An ask-before-act token for the Enter passes the text request unless
     # ask-before-act holds the text too (a payment-like page), which then rejects it as a mismatch.
-    # A repeat the user approved for the Enter skips the text, which was typed before it was held (#376).
-    hold = approved_hold.get()
+    # A repeat for the Enter skips the text, which was typed before it was held (#376).
+    hold = repeat_hold.get()
     if not (submit and hold and hold["state"].get("action") == "keypress"):
         result = k.browser_type(text=text, mode="type" if slowly else "fill", tab_id=_current_tab, element=element,
                                 confirm_token=confirm_token, **_target(target))

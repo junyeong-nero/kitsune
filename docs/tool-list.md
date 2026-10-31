@@ -3,9 +3,9 @@
 Current tools defined in [tools.py](../src/kitsune/tools.py) and
 [playwright_tools.py](../src/kitsune/playwright_tools.py) and registered by
 [server.py](../src/kitsune/server.py), grouped by capability. The
-default `KITSUNE_CAPS=core` exposes the 25 `core` tools, which are
-[Playwright MCP](https://github.com/microsoft/playwright-mcp)'s core tools with the same
-definitions ([Core tools](guide.md#core-tools)). `KITSUNE_CAPS=all` exposes all 96. Set a
+default `KITSUNE_CAPS=core` exposes the 26 `core` tools:
+[Playwright MCP](https://github.com/microsoft/playwright-mcp)'s 25 core tools with the same
+definitions ([Core tools](guide.md#core-tools)), and `browser_resume`. `KITSUNE_CAPS=all` exposes all 96. Set a
 comma-separated list to enable selected groups, for example
 `KITSUNE_CAPS=core,browse,read`. The `storage` and `history` groups are not part of `all`:
 they read personal data and must be named, as in `KITSUNE_CAPS=all,storage,history`.
@@ -31,7 +31,7 @@ see [Task modes](guide.md#task-modes). With `core`:
 
 See the [API reference](api-reference.md) for parameters and behavior.
 
-## core — 25 (Playwright MCP)
+## core — 26 (Playwright MCP's 25, and browser_resume)
 
 - `browser_click`
 - `browser_close`
@@ -51,6 +51,7 @@ See the [API reference](api-reference.md) for parameters and behavior.
 - `browser_network_requests`
 - `browser_press_key`
 - `browser_resize`
+- `browser_resume`
 - `browser_run_code_unsafe`
 - `browser_select_option`
 - `browser_snapshot`
@@ -60,7 +61,9 @@ See the [API reference](api-reference.md) for parameters and behavior.
 - `browser_wait_for`
 
 `browser_emulate_media` and `browser_run_code_unsafe` are listed for compatibility and
-answer `not_supported`.
+answer `not_supported`. `browser_resume` is Kitsune's: it continues a direct call that stopped
+on `needs_user`, or a container call that did not finish `ok`
+([Checkpoint and resume](checkpoint-resume.md)).
 
 Targeted writes use [strict selectors](api-reference.md#strict-selectors): a core tool's
 selector `target` must match one element. The Kitsune-owned tools apply the same rule to
@@ -80,17 +83,16 @@ Bridge diagnostics, logs, audit, cache and extension reload, and the bridge poli
 - `browser_set_policy`
 - `browser_status`
 
-## automation — 12
+## automation — 11
 
-Command batches, retries, workflows and parallel tab work; `browser_resume` continues an interrupted
-container call ([Checkpoint and resume](checkpoint-resume.md)).
+Command batches, retries, workflows and parallel tab work; `browser_resume` (in `core`) continues
+an interrupted container call ([Checkpoint and resume](checkpoint-resume.md)).
 
 - `browser_batch`
 - `browser_broadcast`
 - `browser_parallel`
 - `browser_pool_acquire`
 - `browser_pool_release`
-- `browser_resume`
 - `browser_retry`
 - `browser_scheduler`
 - `browser_sync_barrier`

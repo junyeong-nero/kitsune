@@ -252,8 +252,8 @@ See [Installation](installation.md) and [Configuration](guide.md#configuration).
 
 ### Default experience versus advanced promises
 
-The default `KITSUNE_CAPS=core` surface is Playwright MCP's 25 core tools. Kitsune's
-other groups, including batch/parallel/resume in `automation`, are enabled with
+The default `KITSUNE_CAPS=core` surface is Playwright MCP's 25 core tools and Kitsune's
+`browser_resume`. Kitsune's other groups, including batch/parallel in `automation`, are enabled with
 `KITSUNE_CAPS`; `KITSUNE_PUBLISH` can keep them out of the initial tool list behind
 the gateway tools. Restricted task modes and ask-before-act are opt-in. Do not
 advertise every advanced workflow as available immediately after the default setup.
