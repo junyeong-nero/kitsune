@@ -297,8 +297,9 @@ class RealBrowserIframeTests(harness.RealBrowserTestCase):
                 status, _, text = harness._request(self.bridge.http_port, "POST", path, headers, self.bridge.host,
                                                    json.dumps({"tabId": tab, **body}))
                 held = json.loads(text)
-                self.assertEqual((status, held.get("code")), (403, "confirmation_required"), held)
-                self.assertEqual(held["state"]["reason"], "cross_origin_frame")
+                self.assertEqual(status, 403, held)
+                self.assert_needs_approval(held, "confirmation_required")
+                self.assertEqual(held["state"]["holdReason"], "cross_origin_frame")
                 self.assertRegex(held["error"], r"http://localhost:\d+/widget")
         self.assertEqual(self.site.wait_for_save(timeout=1), [])
 
@@ -321,7 +322,7 @@ class RealBrowserIframeTests(harness.RealBrowserTestCase):
         for path, body in [("/api/fill", {"ref": holder["ref"], "value": HOLDER}), ("/api/click", {"ref": pay["ref"]})]:
             with self.subTest(path=path):
                 held = self.call(path, {"tabId": user["id"], **body})
-                self.assert_error(held, "user_viewing", False)
+                self.assert_needs_approval(held, "user_viewing")
                 tokens[path] = held["state"]["confirmToken"]
         self.assertEqual(self.site.wait_for_save(timeout=1), [], "nothing reached the frame")
         self.assert_ok(self.call("/api/fill", {"tabId": user["id"], "ref": holder["ref"], "value": HOLDER,
@@ -538,14 +539,15 @@ class RealBrowserCrossOriginFrameTests(harness.RealBrowserTestCase):
         status, _, text = harness._request(self.bridge.http_port, "POST", "/api/click", headers, self.bridge.host,
                                            json.dumps({"tabId": tab, "ref": button}))
         held = json.loads(text)
-        self.assertEqual((status, held.get("code")), (403, "confirmation_required"), held)
-        self.assertEqual(held["state"]["reason"], "cross_origin_frame")
+        self.assertEqual(status, 403, held)
+        self.assert_needs_approval(held, "confirmation_required")
+        self.assertEqual(held["state"]["holdReason"], "cross_origin_frame")
         self.assertRegex(held["error"], r"http://127\.0\.0\.1:\d+/inner")
         self.assertEqual(self.site.wait_for_save(timeout=1), [])
         # A click on the page itself is not held for the frame.
         heading = self.call("/api/click", {"tabId": tab, "ref": re.search(
             r'iframe "바깥" \[ref=(e\d+)\]', snapshot).group(1)})
-        self.assertNotEqual(heading.get("code"), "confirmation_required", heading)
+        self.assertNotEqual(heading.get("code"), "needs_user", heading)
         self.assert_ok(self.call("/api/click", {"tabId": tab, "ref": button,
                                                 "confirmToken": held["state"]["confirmToken"]}))
         self.assertEqual(self.site.wait_for_save(), [("/inner-click", {"from": "inner"})])

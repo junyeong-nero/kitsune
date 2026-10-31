@@ -19,8 +19,8 @@ import httpx
 from . import bridge_control
 from .bridge_control import BRIDGE, HTTP_PORT, LOG_FILE, TOKEN_FILE, WS_PORT, headers as _headers
 from .capabilities import CAPS_HEADER
-from .task_modes import (CLIENT_HEADER, CLIENT_ID_PATTERN, HOLD_VIEWED_TAB_HEADER, MODE_HEADER, OWNER_HEADER,
-                         PROTECT_USER_TABS_HEADER)
+from .task_modes import (APPROVER_HEADER, CLIENT_HEADER, CLIENT_ID_PATTERN, HOLD_VIEWED_TAB_HEADER, MODE_HEADER,
+                         OWNER_HEADER, PROTECT_USER_TABS_HEADER)
 from .version import BRIDGE_BUILD
 
 BRIDGE_START_TIMEOUT = 15
@@ -198,11 +198,13 @@ class BridgeClient:
     client_id, sent in CLIENT_HEADER, tells this client's commands apart in the bridge's audit
     log: its process id and a random suffix, so it can be matched with this process's logs.
     owner_id (see owner_id()), sent in OWNER_HEADER, survives an MCP server restart: the bridge
-    records the tabs these requests open as its own (#325).
+    records the tabs these requests open as its own (#325). approver=True (the MCP server) sends a
+    random secret in APPROVER_HEADER, so the bridge can tell this client's elicitation approvals from
+    token repeats (#376); it is never shown.
     """
 
     def __init__(self, *, caps, mode: str = "act", protect_user_tabs: bool = True, hold_viewed_tab: bool = True,
-                 extra_headers=None, replace_bridge: bool = True):
+                 extra_headers=None, replace_bridge: bool = True, approver: bool = False):
         self.caps = None if caps is None else ",".join(sorted(caps))
         self.mode = mode
         self.protect_user_tabs = protect_user_tabs
@@ -211,6 +213,7 @@ class BridgeClient:
         self.replace_bridge = replace_bridge
         self.client_id = f"{os.getpid()}-{secrets.token_hex(3)}"
         self.owner_id = owner_id()
+        self._approver = secrets.token_hex(16) if approver else None
         self._extension_wait_until = 0.0  # set when this client starts a bridge; see await_extension
 
     def ensure_bridge(self) -> dict | None:
@@ -328,6 +331,8 @@ class BridgeClient:
                 headers = {**_headers(), CLIENT_HEADER: self.client_id, OWNER_HEADER: self.owner_id}
                 if self.caps is not None:
                     headers[CAPS_HEADER] = self.caps
+                if self._approver is not None:
+                    headers[APPROVER_HEADER] = self._approver
                 if self.mode != "act":
                     headers[MODE_HEADER] = self.mode
                 if not self.protect_user_tabs:

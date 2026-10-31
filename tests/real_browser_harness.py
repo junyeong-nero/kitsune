@@ -405,3 +405,9 @@ class RealBrowserTestCase(unittest.TestCase):
         self.assertEqual(result.get("code"), code, result)
         self.assertIs(result.get("retryable"), retryable, result)
         self.assertIn("error", result)
+
+    def assert_needs_approval(self, result, detail):
+        """A needs_user approval refusal that replaces the code detail (#376)."""
+        self.assert_error(result, "needs_user", False)
+        state = result.get("state") or {}
+        self.assertEqual((state.get("reason"), state.get("detail")), ("approval", detail), result)

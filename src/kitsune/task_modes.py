@@ -15,6 +15,12 @@ CLIENT_HEADER = "X-Kitsune-Client"
 # The id of the MCP client a request comes from (BridgeClient.owner_id, #325): unlike CLIENT_HEADER it
 # survives an MCP server restart, so the bridge records the tabs it opens as that client's.
 OWNER_HEADER = "X-Kitsune-Owner"
+# A random secret per MCP server process, on each of its bridge requests (#376). The bridge keeps only its
+# hash, with each confirm token issued to one of those requests.
+APPROVER_HEADER = "X-Kitsune-Approver"
+# "elicitation" on the repeat of a held call the user approved in the MCP client's prompt (#376). The
+# bridge records it only when the request's APPROVER_HEADER matches the one the token was issued to.
+APPROVAL_HEADER = "X-Kitsune-Approval"
 # The characters and length the bridge accepts in CLIENT_HEADER, OWNER_HEADER and TOOL_CALL_HEADER.
 CLIENT_ID_PATTERN = r"[A-Za-z0-9._:-]{1,64}"
 

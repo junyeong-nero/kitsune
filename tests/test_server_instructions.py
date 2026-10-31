@@ -30,11 +30,12 @@ class ServerInstructionsTests(unittest.TestCase):
         self.assertIn("an action on your current tab opens", text)
         self.assertIn("becomes your current tab; the result names it in current_tab", text)
         # #326: the tab the user is viewing is held, unless this client turned the hold off.
-        self.assertIn("tab the user is viewing fail with user_viewing unless you opened that tab", text)
+        self.assertIn("tab the user is viewing fail with needs_user (detail user_viewing) unless you opened that tab", text)
         self.assertIn("confirm_token", text)
         self.assertNotIn("user_viewing", instructions("act", KITSUNE_HOLD_VIEWED_TAB="0"))
         # #326: navigations on user tabs are refused, unless this client turned the protection off.
-        self.assertIn("forward on a tab no client opened fail with user_tab: open a tab of your own", text)
+        self.assertIn("forward on a tab no client opened fail with needs_user (detail user_tab): open a tab of your own",
+                      text)
         self.assertNotIn("user_tab", instructions("act", KITSUNE_PROTECT_USER_TABS="0"))
         # #352: prefer the page's own hand-off control to asking the user in chat.
         self.assertIn("When a page offers its own control for handing a step to the user, use that "
@@ -49,8 +50,8 @@ class ServerInstructionsTests(unittest.TestCase):
                 self.assertIn("act on the tab the user is viewing", text)
                 self.assertIn("browser_tab_list new_tab opens a background tab", text)
                 self.assertIn("no_current_tab", text)
-                self.assertIn("fail with user_viewing; work in your own tab", text)
-                self.assertIn("no client opened fail with user_tab; work in your own tab", text)
+                self.assertIn("fail with needs_user (detail user_viewing); work in your own tab", text)
+                self.assertIn("no client opened fail with needs_user (detail user_tab); work in your own tab", text)
                 self.assertNotIn("confirm_token", text)
                 # Only act mode can click a page's hand-off control.
                 self.assertNotIn("handing a step to the user", text)

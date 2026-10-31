@@ -97,7 +97,8 @@ class BatchControlFlowTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_retry_refusals_do_not_sleep_or_repeat(self):
         for reply, options, reason in (
-            ({"error": "confirm", "code": "confirmation_required", "retryable": False}, {},
+            ({"error": "confirm", "code": "needs_user", "retryable": False,
+              "state": {"reason": "approval", "detail": "confirmation_required"}}, {},
              "confirmation required"),
             ({"error": "unknown effect", "retryable": False}, {}, "not retryable"),
             ({"error": "closed"}, {"onErrors": ["not ready"]}, "error not in onErrors"),
@@ -147,7 +148,8 @@ class BatchControlFlowTests(unittest.IsolatedAsyncioTestCase):
                 ])
 
     async def test_parallel_stops_only_the_held_sequence_and_releases_claims(self):
-        held = {"error": "confirm", "code": "confirmation_required"}
+        held = {"error": "confirm", "code": "needs_user",
+                "state": {"reason": "approval", "detail": "confirmation_required"}}
         first = {"action": "click", "tabId": 1}
         second = {"action": "click", "tabId": 2}
 
@@ -171,7 +173,8 @@ class BatchControlFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bridge._running_parallels, {})
 
     async def test_sequence_substitutes_results_then_stops_at_a_held_step(self):
-        held = {"error": "confirm", "code": "confirmation_required"}
+        held = {"error": "confirm", "code": "needs_user",
+                "state": {"reason": "approval", "detail": "confirmation_required"}}
         self.step.side_effect = [{"selector": "#go"}, held]
         commands = [{"action": "pageInfo"}, {"action": "click", "selector": "${$0.selector}"},
                     {"action": "tabs"}]

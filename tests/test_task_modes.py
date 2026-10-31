@@ -204,7 +204,8 @@ class TaskModePolicyTests(AskBeforeActTestCase):
             with self.subTest(mode=mode):
                 self.mode(mode)
                 status, result = self.forward("navigate", {"tabId": 3, "url": "https://example.com"})
-                self.assertEqual((status, result["code"]), (200, "user_tab"))
+                self.assertEqual((status, result["code"], result["state"]["detail"], result["state"]["approvable"]),
+                                 (200, "needs_user", "user_tab", mode == "act"))
                 if mode == "act":
                     self.assertEqual(result["hint"], refused["hint"])
                 else:

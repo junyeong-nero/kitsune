@@ -164,7 +164,7 @@ class RealBrowserSharedBrowserTests(harness.RealBrowserTestCase):
             self.assertTrue(any(title == t["title"] and t["url"] in ("about:blank", url) for title, url in originals), t)
         user_copy = next((i for i, t in copies.items() if t["title"] == "user"), None)
         if user_copy is not None:
-            self.assert_error(self.call("/api/close-tab", {"tabId": user_copy}), "user_tab", False)
+            self.assert_needs_approval(self.call("/api/close-tab", {"tabId": user_copy}), "user_tab")
             self.assertIn(user_copy, self.tabs())
             assert_user_view_unchanged("a copy of the user's tab is not closed")
         # Its own copy in the user's window is the agent's.
@@ -191,14 +191,14 @@ class RealBrowserSharedBrowserTests(harness.RealBrowserTestCase):
 
         for body in ({"tabId": second}, {"tabId": second, "force": True}):
             refused = self.call("/api/close-tab", body)
-            self.assert_error(refused, "user_tab", False)
+            self.assert_needs_approval(refused, "user_tab")
             self.assertIn(second, self.tabs(), "the user tab stays open")
         window_id = self.tabs()[second]["windowId"]
-        self.assert_error(self.call("/api/close-window", {"windowId": window_id}), "user_tab", False)
+        self.assert_needs_approval(self.call("/api/close-window", {"windowId": window_id}), "user_tab")
         self.assertIn(second, self.tabs(), "the user's window stays open")
         # Batch steps never get approval.
         batch = self.call("/api/batch", {"commands": [{"action": "closeTab", "tabId": second}]})
-        self.assertEqual(batch["results"][0]["code"], "user_tab", batch)
+        self.assert_needs_approval(batch["results"][0], "user_tab")
         self.assertNotIn("confirmToken", batch["results"][0]["state"])
         self.assertIn(second, self.tabs())
 
@@ -232,7 +232,7 @@ class RealBrowserSharedBrowserTests(harness.RealBrowserTestCase):
         time.sleep(3.2)  # the user-input window is 3 s
         # The user still views the tab (#326): the click needs their approval.
         held = self.call("/api/click", {"selector": "#act", "tabId": user_tab})
-        self.assert_error(held, "user_viewing", False)
+        self.assert_needs_approval(held, "user_viewing")
         self.assert_ok(self.call("/api/click", {"selector": "#act", "tabId": user_tab,
                                                 "confirmToken": held["state"]["confirmToken"]}))
         self.wait_for(lambda: self.tabs()[user_tab]["title"] == "acted", "the click after the window did not act")
@@ -256,8 +256,8 @@ class RealBrowserSharedBrowserTests(harness.RealBrowserTestCase):
                            ("/api/reload-tab", {})):
             # Unprotected, so the navigation reaches the viewed-tab hold instead of user_tab.
             result = self.call_opted_out(path, {**body, "tabId": user_tab}, hold=True)
-            self.assert_error(result, "user_viewing", False)
-            self.assertEqual((result["state"]["tabId"], result["state"]["windowId"], result["state"]["reason"]),
+            self.assert_needs_approval(result, "user_viewing")
+            self.assertEqual((result["state"]["tabId"], result["state"]["windowId"], result["state"]["holdReason"]),
                              (user_tab, window, "viewing"), result)
             self.assertIsInstance(result["state"]["browserFocused"], bool)
             self.assertIn("confirmToken", result["state"])
@@ -296,7 +296,7 @@ class RealBrowserSharedBrowserTests(harness.RealBrowserTestCase):
         fill_form = server._mcp_errors(playwright_tools.browser_fill_form)
         with patch.object(tools, "_post", post), patch.object(playwright_tools, "_current_tab", user_tab):
             refused = json.loads(fill_form(fields=fields).content[0].text)
-            self.assert_error(refused, "user_viewing", False)
+            self.assert_needs_approval(refused, "user_viewing")
             self.assertEqual(refused["filled"], [])
             filled = json.loads(fill_form(fields=fields, confirm_token=refused["state"]["confirmToken"]).content[0].text)
         self.assertEqual(filled.get("filled"), ["Draft", "Name"], filled)

@@ -16,6 +16,7 @@ import kitsune
 from kitsune import bridge_client, capabilities, playwright_tools, server, task_modes, tools
 from kitsune.bridge_client import BridgeClient
 from kitsune.browser import Browser, Tab
+from kitsune.errors import raise_for
 
 PNG = b"\x89PNG\r\n\x1a\nimage"
 REPLIES = {
@@ -284,8 +285,11 @@ class ErrorTests(BridgeTestCase):
               "state": {"tabId": 7}}, kitsune.KitsuneError),
             ({"ok": False, "dispatched": True, "error": "Expected outcome not observed within 5000ms",
               "code": "outcome_not_observed", "retryable": False}, kitsune.KitsuneError),
-            ({"error": "Confirmation required: submit", "code": "confirmation_required", "retryable": True,
-              "state": {"confirmToken": "tok", "expiresInSeconds": 120}}, kitsune.ConfirmationRequired),
+            ({"error": "Confirmation required: submit", "code": "needs_user", "retryable": False,
+              "state": {"reason": "approval", "detail": "confirmation_required", "holdReason": "submit",
+                        "message": "Allow the agent's submitForm? It submits a form.", "approvable": True,
+                        "confirmToken": "tok", "expiresInSeconds": 120, "approval": "token"}},
+             kitsune.ConfirmationRequired),
             ({"error": "Kitsune extension not connected", "code": "extension_disconnected", "retryable": True},
              kitsune.ConnectionFailed),
             ({"error": "Command timed out after 30s", "code": "timeout", "retryable": False}, kitsune.TimedOut),
@@ -301,9 +305,25 @@ class ErrorTests(BridgeTestCase):
                 self.assertTrue(str(raised.exception).startswith(f"{result['error']} [{result['code']}]"))
         self.assertIn("\nHint: Take a snapshot", str(kitsune.KitsuneError(cases[0][0])))
         held = kitsune.ConfirmationRequired(cases[2][0])
-        self.assertEqual((held.token, held.expires_in), ("tok", 120))
+        self.assertEqual((held.token, held.expires_in, held.detail, held.hold_reason, held.message),
+                         ("tok", 120, "confirmation_required", "submit", "Allow the agent's submitForm? It submits a form."))
         self.assertIsInstance(kitsune.ConnectionFailed(cases[3][0]), ConnectionError)
         self.assertIsInstance(kitsune.TimedOut(cases[4][0]), TimeoutError)
+
+    def test_only_approvals_with_a_token_raise_confirmation_required(self):
+        # #376: needs_user with state.reason approval, and for one release the codes it replaced.
+        state = {"confirmToken": "tok", "expiresInSeconds": 120}
+        for code in ("confirmation_required", "user_tab", "user_viewing"):
+            with self.subTest(code=code), self.assertRaises(kitsune.ConfirmationRequired) as raised:
+                raise_for({"error": "held", "code": code, "retryable": False, "state": state})
+            self.assertEqual((raised.exception.detail, raised.exception.token), (code, "tok"))
+        for result in ({"error": "sign in", "code": "needs_user", "retryable": False,
+                        "state": {"reason": "sign_in", **state}},
+                       {"error": "held", "code": "needs_user", "retryable": False,
+                        "state": {"reason": "approval", "detail": "user_viewing", "approvable": False}}):
+            with self.subTest(state=result["state"]), self.assertRaises(kitsune.KitsuneError) as raised:
+                raise_for(result)
+            self.assertIs(type(raised.exception), kitsune.KitsuneError)
 
     def test_warnings_and_container_failures_do_not_raise(self):
         warned = {"ok": True, "warning": {"code": "hidden_or_covered"}}
@@ -341,8 +361,9 @@ class ErrorTests(BridgeTestCase):
                 self.tab.wait_for(**conditions)
 
     def test_confirm_callback_repeats_a_held_action_with_its_token(self):
-        held = {"error": "Confirmation required: submit form", "code": "confirmation_required", "retryable": True,
-                "state": {"confirmToken": "tok", "expiresInSeconds": 120, "action": "submitForm"}}
+        held = {"error": "Confirmation required: submit form", "code": "needs_user", "retryable": False,
+                "state": {"reason": "approval", "detail": "confirmation_required", "confirmToken": "tok",
+                          "expiresInSeconds": 120, "action": "submitForm"}}
         asked = []
         self.browser.confirm = lambda error: asked.append(error) or True
         self.reply("/api/submit-form", [held, {"ok": True, "form": "#signup"}])
@@ -358,18 +379,21 @@ class ErrorTests(BridgeTestCase):
         self.assertEqual(len(self.bridge.requests), 3)
 
     def test_a_user_tab_closes_once_approved(self):
-        refused = {"error": "Tab 7 was not opened by the agent, so it was not closed", "code": "user_tab",
-                   "retryable": False, "state": {"tabId": 7, "confirmToken": "tok", "expiresInSeconds": 120}}
+        refused = {"error": "Tab 7 was not opened by the agent, so it was not closed", "code": "needs_user",
+                   "retryable": False, "state": {"reason": "approval", "detail": "user_tab", "tabId": 7,
+                                                 "confirmToken": "tok", "expiresInSeconds": 120}}
         self.reply("/api/close-tab", [refused])
         with self.assertRaises(kitsune.ConfirmationRequired) as raised:
             self.tab.close()
-        self.assertEqual((raised.exception.code, raised.exception.token), ("user_tab", "tok"))
+        self.assertEqual((raised.exception.code, raised.exception.detail, raised.exception.token),
+                         ("needs_user", "user_tab", "tok"))
         self.browser.confirm = lambda error: True
         self.reply("/api/close-tab", [refused, {"ok": True}])
         self.assertEqual(self.tab.close(), {"ok": True})
         self.assertEqual(self.bridge.last.body, {"tabId": 7, "confirmToken": "tok"})
         # read and draft refuse without a token, which nothing can approve.
-        self.reply("/api/close-tab", [{**refused, "state": {"tabId": 7}}])
+        self.reply("/api/close-tab", [{**refused, "state": {"reason": "approval", "detail": "user_tab", "tabId": 7,
+                                                             "approvable": False}}])
         with self.assertRaises(kitsune.KitsuneError) as raised:
             self.tab.close()
         self.assertIs(type(raised.exception), kitsune.KitsuneError)

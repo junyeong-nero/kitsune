@@ -748,7 +748,8 @@ class Tab:
 
     def close(self, *, force: bool = False, confirm: str | None = None) -> dict:
         """Close a tab a client opened. One of the user's own tabs raises ConfirmationRequired
-        (user_tab) and closes with its token once the user approves. force disarms beforeunload."""
+        (needs_user, detail user_tab) and closes with its token once the user approves. force disarms
+        beforeunload."""
         return self._request("/api/close-tab", _with_confirm({"force": True} if force else {}, confirm))
 
     def pin(self, pinned: bool = True) -> dict:

@@ -225,16 +225,19 @@ mcp._mcp_server.instructions = (
        "user is viewing, and navigations and writes that pass no tab_id fail with no_current_tab; "
        "later tools act on your tab without switching the user's view.")
     # #326: the tab the user is viewing is held for writes unless this client set KITSUNE_HOLD_VIEWED_TAB=0.
-    + ((" Writes and navigations on the tab the user is viewing fail with user_viewing unless you opened "
-        "that tab: work in your own tabs, or ask the user before repeating the call with its confirm_token."
+    + ((" Writes and navigations on the tab the user is viewing fail with needs_user (detail user_viewing) "
+        "unless you opened that tab: work in your own tabs, or ask the user before repeating the call with its "
+        "confirm_token, if it has one."
         if permits_tool(MODE, "browser_tabs") else
-        " Writes and navigations on the tab the user is viewing fail with user_viewing; work in your own tab.")
+        " Writes and navigations on the tab the user is viewing fail with needs_user (detail user_viewing); "
+        "work in your own tab.")
        if HOLD_VIEWED_TAB else "")
     # #326: navigations on user tabs are refused unless this client set KITSUNE_PROTECT_USER_TABS=0.
-    + ((" Navigate, back and forward on a tab no client opened fail with user_tab: open a tab of your own, "
-        "or ask the user before repeating the call with its confirm_token."
+    + ((" Navigate, back and forward on a tab no client opened fail with needs_user (detail user_tab): open a "
+        "tab of your own, or ask the user before repeating the call with its confirm_token, if it has one."
         if permits_tool(MODE, "browser_tabs") else
-        " Navigate, back and forward on a tab no client opened fail with user_tab; work in your own tab.")
+        " Navigate, back and forward on a tab no client opened fail with needs_user (detail user_tab); work in "
+        "your own tab.")
        if PROTECT_USER_TABS else ""))
 # The tool browser_tools_call is running; its bridge requests name it for the audit log.
 _gateway_call: ContextVar[str | None] = ContextVar("kitsune_gateway_call", default=None)

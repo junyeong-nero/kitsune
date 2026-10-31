@@ -8,6 +8,9 @@ CONNECTION_CODES = frozenset({
     "extension_disconnected", "extension_version_mismatch", "browser_window_unavailable", "host_permission_denied",
 })
 
+# The codes needs_user replaced for approvals, now its state.detail (#376).
+APPROVAL_DETAILS = frozenset({"confirmation_required", "user_tab", "user_viewing"})
+
 
 def failed(result) -> bool:
     """Whether a result reports failure: a non-empty top-level error or ok=false.
@@ -23,7 +26,8 @@ class KitsuneError(Exception):
     result is the whole reply, such as the outcome of an unmet expect.
 
     retryable=False means a write may already have taken effect: inspect the page before
-    repeating it. Branch on code, not on the message.
+    repeating it. needs_user is the exception: nothing ran, and repeating it needs the user.
+    Branch on code, not on the message.
     """
 
     def __init__(self, result: dict):
@@ -41,10 +45,12 @@ class KitsuneError(Exception):
 
 
 class ConfirmationRequired(KitsuneError):
-    """The action needs the user's approval and nothing ran: ask-before-act held it
-    (confirmation_required), it closes or, unless protect_user_tabs is off, navigates a tab no
-    client opened (user_tab), or it acts on the tab the user is viewing (user_viewing). Once the user
-    approves, repeat it with confirm=token within expires_in seconds; a token works once."""
+    """The action needs the user's approval and nothing ran (code needs_user, state.reason
+    approval, #376). detail is the code it replaces: ask-before-act held it (confirmation_required,
+    with hold_reason such as payment_page), it closes or, unless protect_user_tabs is off, navigates
+    a tab no client opened (user_tab), or it acts on the tab the user is viewing (user_viewing).
+    message asks the user. Once the user approves, repeat it with confirm=token within expires_in
+    seconds; a token works once."""
 
     @property
     def token(self) -> str | None:
@@ -53,6 +59,18 @@ class ConfirmationRequired(KitsuneError):
     @property
     def expires_in(self) -> int | None:
         return self.state.get("expiresInSeconds")
+
+    @property
+    def detail(self) -> str | None:
+        return self.state.get("detail") or (self.code if self.code in APPROVAL_DETAILS else None)
+
+    @property
+    def hold_reason(self) -> str | None:
+        return self.state.get("holdReason")
+
+    @property
+    def message(self) -> str | None:
+        return self.state.get("message")
 
 
 class ConnectionFailed(KitsuneError, ConnectionError):
@@ -69,8 +87,11 @@ def raise_for(result):
     if not failed(result):
         return result
     code = result.get("code")
-    # read and draft refuse user tabs without a token: those cannot be approved.
-    if code in ("confirmation_required", "user_tab", "user_viewing") and (result.get("state") or {}).get("confirmToken"):
+    state = result.get("state") or {}
+    # read and draft refuse user tabs without a token (state.approvable false): those cannot be approved.
+    # The codes needs_user replaced (state.detail) are still accepted.
+    approval = (code == "needs_user" and state.get("reason") == "approval") or code in APPROVAL_DETAILS
+    if approval and state.get("confirmToken"):
         raise ConfirmationRequired(result)
     if code in CONNECTION_CODES:
         raise ConnectionFailed(result)
