@@ -398,7 +398,9 @@ Kitsune's compact JSON results, not Playwright's Markdown. Where the two differ:
   and the result names it in `current_tab`.
   `browser_navigate` and `browser_navigate_back` also accept a `tab_id` that Playwright
   MCP's schema does not list. `index` is the position
-  in `browser_tabs` `list`, which also marks `active` and agent-`owned` tabs. `new`,
+  in `browser_tabs` `list`, which also marks `active` and agent-`owned` tabs, and the
+  `current` one unless it is a tab you may be viewing (active, not the agent's), where its
+  writes would be held ([Protecting your tabs](#protecting-your-tabs)). `new`,
   `select` and `close` return the tabs after the change in the same form; `new` returns
   the new tab's `index`.
   `browser_close` closes the current tab, never the browser; closing a tab the agent did
@@ -668,7 +670,9 @@ nothing runs. How you approve depends on the MCP client:
   The agent's description of the target is labeled as the agent's. Approve, and Kitsune
   runs that one call; the agent never sees a token, so it cannot approve itself. Decline or
   dismiss it, and the agent gets `needs_user` with `state.decision` `declined` or
-  `cancelled`. The prompt closes unanswered 5 seconds before the approval would expire.
+  `cancelled`. For the tab you are viewing, Decline means "not in this tab": the agent is
+  told to do it in a tab of its own, and for 10 seconds its next calls held on that tab are
+  declined without asking you again. The prompt closes unanswered 5 seconds before the approval would expire.
   If you change your mind, the agent calls `browser_resume`, which asks you again and
   continues the call where it was held.
   Steps inside batches, parallel calls and workflows are not asked about: the agent repeats

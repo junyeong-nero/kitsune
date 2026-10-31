@@ -556,9 +556,9 @@ the old `state` carried moves to `state.holdReason`; every other field keeps its
 | `user_viewing` | `user_viewing` | The tab is shown in the browser window the user last focused, and the agent did not open it (`state.windowId`, `state.browserFocused`); the write or navigation did not run (see [Viewed tab](#viewed-tab)) | `viewing` |
 
 ```json
-{ "error": "The user is viewing tab 12; nothing was done", "code": "needs_user", "retryable": false,
+{ "error": "The user is viewing tab 0 in browser_tabs (tabId 12); nothing was done", "code": "needs_user", "retryable": false,
   "hint": "Nothing was done: the user is viewing this tab. Open a tab of your own ...",
-  "state": { "reason": "approval", "detail": "user_viewing", "tabId": 12, "url": "https://mail.example/",
+  "state": { "reason": "approval", "detail": "user_viewing", "tabId": 12, "index": 0, "url": "https://mail.example/",
              "title": "Inbox", "windowId": 3, "holdReason": "viewing", "browserFocused": false,
              "message": "Allow the agent's click in the tab you are viewing (Inbox)?", "approvable": true,
              "confirmToken": "…", "expiresInSeconds": 120, "approval": "token" } }
@@ -1441,12 +1441,16 @@ agent's terminal, gives the page no input, so [User activity](#user-activity) do
 them. So the tab shown in the browser window the user last focused is held as well. An
 agent write or navigation on it returns `needs_user` (`user_viewing`; `retryable: false`) instead of
 acting. The hold has no time limit: it ends when the user shows another tab, or focuses
-another browser window.
+another browser window. From the MCP server, the error names the tab by its index in the core
+`browser_tabs` list as well as its `tabId`, and `state.index` has that index (#383); the
+Python API and raw HTTP callers get the `tabId` only. The core `browser_tabs` list does not
+mark the current tab `current` while it is active and the agent did not open it, so an agent
+that selected the user's tab opens a tab of its own before it writes.
 
 ```json
-{ "error": "The user is viewing tab 12; nothing was done", "code": "needs_user", "retryable": false,
+{ "error": "The user is viewing tab 0 in browser_tabs (tabId 12); nothing was done", "code": "needs_user", "retryable": false,
   "hint": "Nothing was done: the user is viewing this tab. Open a tab of your own (browser_tabs action=new) and work there, or ask the user to approve acting in this tab, then repeat the identical call (with tab_id=12 if it named no tab) with confirmToken ...",
-  "state": { "reason": "approval", "detail": "user_viewing", "tabId": 12, "url": "https://mail.example/",
+  "state": { "reason": "approval", "detail": "user_viewing", "tabId": 12, "index": 0, "url": "https://mail.example/",
              "title": "Inbox", "windowId": 3, "holdReason": "viewing", "browserFocused": false,
              "message": "Allow the agent's click in the tab you are viewing (Inbox)?", "approvable": true,
              "confirmToken": "…", "expiresInSeconds": 120, "approval": "token" } }
@@ -1889,6 +1893,12 @@ later) at initialize; Claude Code (2.1.76 and later) and Codex do.
    `state.approval: "elicitation"` and `state.decision`: `declined` or `cancelled` (also for
    no answer). Nothing ran. The result carries `call` and `resume_token`: `browser_resume`
    asks the user again ([Direct calls](checkpoint-resume.md#direct-calls)).
+   For the [viewed tab](#viewed-tab), Decline means "not in this tab" (#383): the prompt says
+   so ("Decline means the agent should not do it in this tab"), and the hint tells the agent
+   to do it in a tab of its own instead. For 10 s after such a decline, the next held calls on
+   that tab (the rest of the agent's turn) are declined without a prompt
+   (`state.decision: "declined"`, and a hint that says the user was not asked again);
+   `browser_resume` still asks.
 4. If the repeat holds the request the user approved again (it no longer matches: the target
    resolved in another tab), it is not repeated again: the result has `state.tokenRejected`
    and no token, and what the call did before it (`filled`) stays done. Calling the tool
