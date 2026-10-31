@@ -56,6 +56,7 @@ class SnapshotToolsTests(unittest.TestCase):
             ('POST', {'maxChars': 0}, {'maxChars': 0}),
             ('POST', {'collapse': False}, {'collapse': False}),
             ('POST', {'collapse': True}, {'collapse': True}),
+            ('POST', {'maxChars': 12000, 'skipUnchanged': True}, {'maxChars': 12000, 'skipUnchanged': True}),
         ]:
             with self.subTest(command=command, body=body):
                 handler = bridge.BridgeHandler.__new__(bridge.BridgeHandler)
