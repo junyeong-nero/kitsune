@@ -188,6 +188,8 @@ _tool_call = contextvars.ContextVar("kitsune_tool_call", default=None)
 # claims an elicitation approval, and how a confirm token it spent was approved ("elicitation" or
 # "token"), which its audit entries record. A dict, like _viewed_tab_approval.
 _request_approval = contextvars.ContextVar("kitsune_request_approval", default=None)
+# A direct request's {"call"}: the audit call id its needs_user hold took (_hold_call), else None.
+_direct_hold = contextvars.ContextVar("kitsune_direct_hold", default=None)
 # (client id, tool call id) -> {"tabId", "token", "binding", "approval", "expires"}: a viewed-tab approval
 # covers the other requests of the MCP tool call it was given in (_take_viewed_tab_approval). binding is
 # the user_viewing binding of the request that was approved, approval how it was approved.
@@ -1562,6 +1564,9 @@ def _audit(action, params, ok, error, ms, **fields):
         entry["client"] = _client_id.get()
     if _owner_id.get():
         entry["owner"] = _owner_id.get()
+    hold = _direct_hold.get()
+    if parent is None and hold is not None and hold["call"] is not None:
+        entry["call"] = hold["call"]
     approval = _request_approval.get()
     # A request approved for the viewed tab can still be held by ask-before-act; that hold is not approved.
     if (approval is not None and approval["via"]
@@ -1812,7 +1817,9 @@ async def _history_lookup(action, body):
 # and, for one release, the code it replaces in state.detail: user_viewing and user_tab (the
 # extension's refusals, mapped in send_to_extension) or confirmation_required (ask-before-act). A
 # reason the old state carried moves to state.holdReason. state.approvable is false in read and
-# draft, which cannot confirm; state.approval is "token" where a confirm token approves it.
+# draft, which cannot confirm; state.approval is "token" where a confirm token approves it. A
+# direct request's hold takes an audit call id (call), which the MCP server's direct-call checkpoint
+# goes by (docs/checkpoint-resume.md).
 APPROVAL_DETAILS = ("user_viewing", "user_tab", "confirmation_required")
 
 
@@ -1825,14 +1832,26 @@ def _approval_detail(result):
     return None
 
 
+def _hold_call():
+    """The audit call id of this direct request's hold, taken on first use; None in a container step."""
+    hold = _direct_hold.get()
+    if hold is None or _audit_parent.get() is not None:
+        return None
+    if hold["call"] is None:
+        hold["call"] = next(_audit_call_ids)
+    return hold["call"]
+
+
 def _needs_approval(result, message):
     """The approval needs_user result of a refusal with one of APPROVAL_DETAILS' codes; message asks the user."""
     state = dict(result.get("state") or {})
     if "reason" in state:
         state["holdReason"] = state.pop("reason")
+    call = _hold_call()
     return {**result, "code": "needs_user", "retryable": False,
             "state": {"reason": "approval", "detail": result["code"], **state, "message": message,
-                      "approvable": _task_mode.get() == "act"}}
+                      "approvable": _task_mode.get() == "act"},
+            **({"call": call} if call is not None else {})}
 
 
 def _tab_label(state):
@@ -2099,6 +2118,7 @@ async def _ask_before_act(action, params, *, direct):
                 params["tabId"] = tab_id
                 params["userTabApproved"] = True
             return None
+    _hold_call()  # before the audit entry, which records it
     _audit(action, {**params, "confirmation": "required", "reason": reason}, False, "confirmation_required", 0)
     issued = _issue_confirm_token(binding)
     approval = _viewed_tab_approval.get()
@@ -2925,6 +2945,8 @@ async def send_to_extension(action, params=None, timeout=30):
             # The extension's hint names browser_tabs and confirm_token, which read and draft lack (#270).
             result = {**result, "hint": RESTRICTED_USER_TAB_HINT if result["code"] == "user_tab"
                       else RESTRICTED_VIEWED_TAB_HINT}
+        # The held action, so a repeat of a tool call that sent several knows which one was held (#376).
+        result = {**result, "state": {"action": action, **(result.get("state") or {})}}
         result = _needs_approval(result, _refusal_message(action, params, result))
     return result
 
@@ -4109,7 +4131,9 @@ def _claim_checkpoint(body):
                 f"No checkpoint for call {call!r}", "checkpoint_not_found", retryable=False,
                 hint=(f"It finished ok, expired ({RESUME_TTL_SECONDS // 60} minutes after the call), was one of "
                       f"more than {RESUME_MAX_CHECKPOINTS} newer checkpoints, is being resumed, stopped on an "
-                      "internal error, or the bridge restarted. Check the page and continue by hand."),
+                      "internal error, or the bridge restarted. The checkpoint of a direct call held for the "
+                      "user is kept by the MCP server that made the call, and lost when it restarts. Check "
+                      "the page and continue by hand."),
                 call=call))
         token = body.get("resume_token")
         if not isinstance(token, str) or not hmac.compare_digest(_resume_token_digest(token), checkpoint["token"]):
@@ -4650,6 +4674,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         protect = _protect_user_tabs.set(self.headers.get(PROTECT_USER_TABS_HEADER) != "0")
         hold = _hold_viewed_tab.set(self.headers.get(HOLD_VIEWED_TAB_HEADER) != "0")
         viewed = _viewed_tab_approval.set({"approved": False, "rejected": None})
+        direct_hold = _direct_hold.set({"call": None})
         approver = self.headers.get(APPROVER_HEADER) or ""
         approval = _request_approval.set({
             "approver": hashlib.sha256(approver.encode()).hexdigest() if approver else None,
@@ -4682,6 +4707,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             _gateway_tool.reset(gateway)
             _tool_call.reset(call_token)
             _request_approval.reset(approval)
+            _direct_hold.reset(direct_hold)
             _viewed_tab_approval.reset(viewed)
             _hold_viewed_tab.reset(hold)
             _protect_user_tabs.reset(protect)
