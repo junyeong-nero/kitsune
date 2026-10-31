@@ -26,10 +26,10 @@ class ToolSurfaceTests(unittest.TestCase):
     def test_registration(self):
         core = self.registered("core")
         all_tools = self.registered("all")
-        # The core group is Playwright MCP's core tools and browser_resume (#376).
-        self.assertEqual(core, set(playwright_tools.SCHEMAS) | {"browser_resume"})
-        self.assertEqual(len(core), 26)
-        self.assertEqual(len(all_tools), 96)
+        # The core group is Playwright MCP's core tools, browser_resume and browser_ask_user (#376).
+        self.assertEqual(core, set(playwright_tools.SCHEMAS) | {"browser_resume", "browser_ask_user"})
+        self.assertEqual(len(core), 27)
+        self.assertEqual(len(all_tools), 97)
         removed = {
             "browser_page_text_by_tab_id", "browser_fill", "browser_set_editable_content",
             "browser_new_tab", "browser_close_tab", "browser_switch_tab",
@@ -67,7 +67,8 @@ class ToolSurfaceTests(unittest.TestCase):
     def test_default_registration(self):
         with patch.dict(os.environ):
             os.environ.pop("KITSUNE_CAPS", None)
-            self.assertEqual(self.registered_default(), set(playwright_tools.SCHEMAS) | {"browser_resume"})
+            self.assertEqual(self.registered_default(),
+                             set(playwright_tools.SCHEMAS) | {"browser_resume", "browser_ask_user"})
 
     def registered_default(self):
         result = subprocess.check_output(

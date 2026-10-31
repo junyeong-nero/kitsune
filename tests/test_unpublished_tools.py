@@ -62,7 +62,7 @@ class UnpublishedToolTests(unittest.TestCase):
         self.assertEqual(published | set(result["unpublished"]), everything)
         self.assertRegex(result["mcp_tools"].pop("client"), r"^\d+-[0-9a-f]{6}$")
         self.assertEqual(result["mcp_tools"].pop("owner"), "owner-171")  # #325
-        self.assertEqual(result["mcp_tools"], {"caps": ["core"], "unpublished": len(everything) - 26})
+        self.assertEqual(result["mcp_tools"], {"caps": ["core"], "unpublished": len(everything) - 27})
 
     def test_core_tool_outside_caps_names_core(self):
         result = unpublished("browse", "browser_click")

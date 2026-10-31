@@ -1913,6 +1913,54 @@ def _described_needs_user(result):
     return {**result, "needs_user": _needs_user_hint(hint["reason"], evidence)}
 
 
+# ── browser_ask_user (docs/api-reference.md#browser_ask_userreason-message-tab_idnone, #376) ──
+# The agent asks the user for what Kitsune cannot see or do. Nothing reaches the page: the result is a
+# needs_user stop (reason agent_request, detail what it asks for) with an audit call id. When its tab
+# shows the needs_user hint the agent asks about, state.evidence has it, so the MCP server's
+# browser_resume can wait for it to go away.
+AGENT_REQUESTS = ("sign_in", "human_check", "trusted_input", "other")
+AGENT_REQUEST_MESSAGE_CHARS = 1000
+
+
+async def _agent_request(body):
+    reason, message = body.get("reason"), body.get("message")
+    if reason not in AGENT_REQUESTS:
+        return {"error": f"reason must be one of {', '.join(AGENT_REQUESTS)}", "code": "invalid_argument",
+                "retryable": False}
+    if not isinstance(message, str) or not message.strip():
+        return {"error": "message must tell the user what to do", "code": "invalid_argument", "retryable": False}
+    message = message.strip()[:AGENT_REQUEST_MESSAGE_CHARS]
+    state = {"reason": "agent_request", "detail": reason, "message": message}
+    tab_id = _coerce_tab_id(body.get("tabId"))
+    if tab_id is not None:
+        info = await send_to_extension("getPageInfo", {"tabId": tab_id}, timeout=10)
+        if not isinstance(info, dict) or info.get("code") == "tab_closed":
+            return info
+        state["tabId"] = tab_id
+        if not info.get("error"):  # an about: page or one still loading is asked about without its details
+            state.update({key: info[key] for key in ("url", "title") if info.get(key)})
+            seen = info.get("needs_user")
+            if isinstance(seen, dict) and seen.get("reason") == reason and isinstance(seen.get("evidence"), dict):
+                state["evidence"] = seen["evidence"]
+    call = _hold_call()  # before the audit entry, which records it
+    _audit("askUser", {"reason": reason, **({"tabId": tab_id} if tab_id is not None else {})},
+           False, "needs_user", 0)
+    return {"ok": False, "error": "The agent needs the user", "code": "needs_user", "retryable": False,
+            "state": state, **({"call": call} if call is not None else {}),
+            "hint": "Nothing was done. Ask the user in your reply (state.message) and wait for their answer."}
+
+
+async def _tab_needs_user(body):
+    """{tabId, needs_user} of the hint a tab shows now (needs_user null without one), for browser_resume."""
+    tab_id = _coerce_tab_id(body.get("tabId"))
+    if tab_id is None:
+        return {"error": "tabId is required", "code": "invalid_argument", "retryable": False}
+    info = await send_to_extension("getPageInfo", {"tabId": tab_id}, timeout=10)
+    if not isinstance(info, dict) or info.get("error"):
+        return info
+    return {"ok": True, "tabId": tab_id, "needs_user": info.get("needs_user")}
+
+
 # ── Ask-before-act (docs/api-reference.md#ask-before-act) ──
 # Held actions do not run: they return needs_user (detail confirmation_required) with a token bound
 # to the exact action, parameters and tab. Without MCP elicitation the token goes back to the agent,
@@ -4819,6 +4867,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "/api/cache": self.handle_cache,
             "/api/workflow": self.handle_workflow,
             "/api/resume": self.handle_resume,
+            "/api/ask-user": lambda: self.send_json(200, self.run_async(_agent_request(self.read_body()))),
+            "/api/needs-user": lambda: self.send_json(200, self.run_async(_tab_needs_user(self.read_body()))),
             # GET endpoints also accepted as POST so callers can supply
             # a tabId in the body to target a non-active tab.
             "/api/page-info": self.handle_page_info,

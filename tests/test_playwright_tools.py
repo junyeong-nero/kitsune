@@ -1,4 +1,5 @@
-"""The core tools: Playwright MCP's, published verbatim and mapped onto the Kitsune bridge, and browser_resume."""
+"""The core tools: Playwright MCP's, published verbatim and mapped onto the Kitsune bridge, browser_resume and
+browser_ask_user."""
 import asyncio
 import json
 import os
@@ -25,10 +26,10 @@ class PublishedSurfaceTests(unittest.TestCase):
         env = {key: value for key, value in os.environ.items() if not key.startswith("KITSUNE_")}
         listed = json.loads(subprocess.run([sys.executable, "-c", LIST_SCRIPT], env=env, text=True,
                                            capture_output=True, check=True).stdout)
-        # Kitsune's browser_resume is the one core tool Playwright MCP does not have (#376).
-        self.assertEqual([tool["name"] for tool in listed if tool["name"] not in playwright_tools.SCHEMAS],
-                         ["browser_resume"])
-        self.assertEqual([tool for tool in listed if tool["name"] != "browser_resume"], VENDORED["tools"])
+        # Kitsune's browser_resume and browser_ask_user are the core tools Playwright MCP does not have (#376).
+        kitsune = ["browser_resume", "browser_ask_user"]
+        self.assertEqual([tool["name"] for tool in listed if tool["name"] not in playwright_tools.SCHEMAS], kitsune)
+        self.assertEqual([tool for tool in listed if tool["name"] not in kitsune], VENDORED["tools"])
 
     def test_every_vendored_tool_has_an_adapter(self):
         self.assertEqual([function.__name__ for function in playwright_tools._TOOLS],

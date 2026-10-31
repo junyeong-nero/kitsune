@@ -50,7 +50,7 @@ class ToolSchemaOptionalTests(unittest.TestCase):
         cls.tools = {name: Tool.from_function(getattr(tools, name)) for name in cls.published}
 
     def test_every_tool_is_compared_against_its_registered_model(self):
-        self.assertEqual(len(self.published), 79)
+        self.assertEqual(len(self.published), 80)
         for name, tool in self.tools.items():
             self.assertEqual(server._untitled_schema(tool.parameters), self.untitled[name], name)
 

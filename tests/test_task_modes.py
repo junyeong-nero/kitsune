@@ -75,15 +75,15 @@ class TaskModeCatalogTests(unittest.TestCase):
         read = self.core["read"]["tools"]
         self.assertEqual({tool["name"] for tool in read}, {
             "browser_tab_list", "browser_navigate", "browser_snapshot", "browser_find", "browser_wait_for",
-            "browser_console_messages", "browser_network_requests", "browser_network_request"})
+            "browser_console_messages", "browser_network_requests", "browser_network_request", "browser_ask_user"})
         tabs = next(tool for tool in read if tool["name"] == "browser_tab_list")
         # new_tab opens a background tab (#270); there is no close or select.
         self.assertEqual(set(tabs["inputSchema"]["properties"]), {"new_tab"})
         self.assertEqual(tabs["inputSchema"].get("required", []), [])
         # Character guard, not a tokenizer claim; exact tokens/task success belong to kitsune-benchmark.
-        # Mostly Playwright MCP's definitions, published verbatim.
+        # Mostly Playwright MCP's definitions, published verbatim, and browser_ask_user (#376).
         definitions = json.dumps(read, separators=(",", ":"), ensure_ascii=False)
-        self.assertLess(len(definitions), 6600)
+        self.assertLess(len(definitions), 7300)
 
     def test_modes_intersect_capabilities(self):
         for mode in ("read", "draft"):

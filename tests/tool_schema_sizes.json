@@ -1,4 +1,11 @@
 {
+  "browser_ask_user": {
+    "description": 352,
+    "firstParagraph": 116,
+    "inputSchema": 406,
+    "total": 943,
+    "firstParagraphTotal": 707
+  },
   "browser_click": {
     "description": 29,
     "firstParagraph": 29,
