@@ -656,7 +656,8 @@ or the tab you are viewing), it returns `needs_user` with `state.reason` `approv
 nothing runs. How you approve depends on the MCP client:
 
 - **Clients with elicitation** (Claude Code, Codex): Kitsune asks you in the client's own
-  prompt, naming the action, its target, the tab and why it was held. Approve, and Kitsune
+  prompt, naming the action, its target, the call's arguments, the tab and why it was held.
+  The agent's description of the target is labeled as the agent's. Approve, and Kitsune
   runs that one call; the agent never sees a token, so it cannot approve itself. Decline or
   dismiss it, and the agent gets `needs_user` with `state.decision` `declined` or
   `cancelled`. The prompt closes unanswered 5 seconds before the approval would expire.

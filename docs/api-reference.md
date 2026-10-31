@@ -1796,25 +1796,30 @@ A direct call held for the user's approval (`needs_user` with `state.reason: "ap
 later) at initialize; Claude Code (2.1.76 and later) and Codex do.
 
 1. The MCP server asks the client to ask the user, in form mode with one choice, Approve or
-   Decline. The prompt names the request (`state.message`), the tool, the target element
-   (the call's `element`, else its target), the tab's title and URL where the result has them,
-   and why it was held
-   (`state.detail`, and the ask-before-act description).
+   Decline. The prompt names the request (`state.message`), the tool, the target the call acts
+   on (its ref or selector), the call's `element` labeled as the agent's description of it, the
+   call's other arguments (text, URL, function, field values, `submit`; cut at 500 characters),
+   the tab's title and URL where the result has them, and why it was held (`state.detail`, and
+   the ask-before-act description).
 2. On Approve, the MCP server repeats the identical call once with the token. The model never
    receives the token, so it cannot approve itself. The repeat's result is the call's result.
-   If a later request of the repeated call is held for another reason (the Enter of
-   `browser_type(submit=true)` after its text), the user is asked about that one too, at most 3
-   times per call.
+   The repeat starts at the held request: requests of the call that ran before it are not sent
+   again (the text of `browser_type(submit=true)` when its Enter was held, the fields
+   `browser_fill_form` filled before the held one). If a later request of the repeat is held
+   (the next field on a payment-like page), the user is asked about that one too, once per
+   held request.
 3. On Decline, or when the prompt is dismissed (`cancel`), fails or gets no answer in time, the
    result is the held `needs_user` without `confirmToken` and `expiresInSeconds`, with
    `state.approval: "elicitation"` and `state.decision`: `declined` or `cancelled` (also for
    no answer). Nothing ran.
-4. If the repeat no longer matches what the user approved (the target resolved in another
-   tab), it is not repeated again: the result has `state.tokenRejected` and no token. Calling
-   the tool again asks again.
+4. If the repeat holds the request the user approved again (it no longer matches: the target
+   resolved in another tab), it is not repeated again: the result has `state.tokenRejected`
+   and no token, and what the call did before it (`filled`) stays done. Calling the tool
+   again asks again.
 
 The prompt waits until 5 s before the token expires (`expiresInSeconds`, 120 s), then the
 MCP server cancels it (`notifications/cancelled`), so an answer after that approves nothing.
+It cancels it too when the client cancels the tool call.
 While it waits, a call that sent a `progressToken` gets a progress notification every 10 s
 (`"Waiting for the user's approval"`), so a client that resets its request timeout on
 progress keeps waiting; no bridge request is open meanwhile.

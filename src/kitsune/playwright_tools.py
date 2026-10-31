@@ -47,6 +47,9 @@ _requests: dict[int | None, list[dict]] = {}
 # The MCP client's first file root for this tool call; kitsune.server sets it around core calls
 # with a filename.
 client_root: ContextVar[Path | None] = ContextVar("client_root", default=None)
+# The held result the user approved in the client's prompt; kitsune.server sets it around the repeat
+# of the call, which skips the requests that ran before the held one (#376).
+approved_hold: ContextVar[dict | None] = ContextVar("approved_hold", default=None)
 
 _REF = re.compile(r"e\d+")
 _FIELD_TYPES = {"textbox", "slider", "checkbox", "radio", "combobox"}
@@ -361,13 +364,18 @@ def browser_fill_form(fields: list[dict], confirm_token: str | None = None) -> d
             return {"error": "Each field needs a target", "field": field.get("name"), "filled": []}
         if field.get("type") not in _FIELD_TYPES:
             return {"error": f"Unknown field type: {field.get('type')}", "field": field.get("name"), "filled": []}
-    filled, last = [], {}
+    # A repeat the user approved starts at the held field: the fields before it were filled (#376).
+    hold = approved_hold.get()
+    filled, last = list(hold.get("filled") or []) if hold else [], {}
     for i, field in enumerate(fields):
+        if i < len(filled):
+            continue
         target, kind, value = field["target"], field["type"], field.get("value")
         element = field.get("element") or field.get("name")
         selector, ref = _selector(target)
         # One delta for all fields (#348): the first field records the baseline, and only the
-        # last one waits for the page and snapshots it.
+        # last one waits for the page and snapshots it. A repeat keeps each field's own, so the
+        # held field's request is the one the user approved, and the first run's baseline stays.
         snapshot = {} if len(fields) == 1 else (
             {"includeSnapshot": False, "deltaBaseline": True} if i == 0
             else {"includeSnapshot": False} if i < len(fields) - 1 else {"keepBaseline": True})
@@ -407,10 +415,13 @@ def browser_type(target: str, text: str, element: str | None = None, submit: boo
     # The token reaches both requests: a user_viewing token approves the text, and with it the Enter of
     # the same tool call (#326). An ask-before-act token for the Enter passes the text request unless
     # ask-before-act holds the text too (a payment-like page), which then rejects it as a mismatch.
-    result = k.browser_type(text=text, mode="type" if slowly else "fill", tab_id=_current_tab, element=element,
-                            confirm_token=confirm_token, **_target(target))
-    if not submit or k._failed(result):
-        return result
+    # A repeat the user approved for the Enter skips the text, which was typed before it was held (#376).
+    hold = approved_hold.get()
+    if not (submit and hold and hold["state"].get("action") == "keypress"):
+        result = k.browser_type(text=text, mode="type" if slowly else "fill", tab_id=_current_tab, element=element,
+                                confirm_token=confirm_token, **_target(target))
+        if not submit or k._failed(result):
+            return result
     return k.browser_keypress(key="Enter", tab_id=_current_tab, element=element, confirm_token=confirm_token,
                               **_target(target))
 

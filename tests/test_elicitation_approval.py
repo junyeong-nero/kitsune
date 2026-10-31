@@ -15,6 +15,8 @@ from unittest.mock import Mock, patch
 
 import anyio
 from mcp import types
+from mcp.server.session import ServerSession
+from mcp.shared.exceptions import McpError
 from mcp.shared.memory import create_connected_server_and_client_session
 
 from kitsune import bridge, bridge_client, playwright_tools, server, tools
@@ -30,13 +32,14 @@ class FakeExtension:
     def __init__(self):
         self.sent = []
         self.described_tab = None  # set: the tab describeTarget reports, as if the active tab changed
+        self.url = "https://shop.example/cart"  # a payment-like URL holds every write under ask-before-act
 
     async def __call__(self, action, params=None, timeout=30):
         params = dict(params or {})
         self.sent.append((action, params))
         tab_id = params.get("tabId")
         if action == "describeTarget":
-            described = {"tabId": self.described_tab or tab_id, "url": "https://shop.example/cart"}
+            described = {"tabId": self.described_tab or tab_id, "url": self.url}
             if params.get("inspect"):
                 described["target"] = {"ok": True, "tag": "button", "submits": True, "text": "Pay"}
             return described
@@ -203,17 +206,65 @@ class ViewedTabElicitationTests(ElicitationTestCase):
         self.assertEqual(held["headers"][APPROVER_HEADER], repeat["headers"][APPROVER_HEADER])
         self.assertIs(self.extension.actions("click")[-1]["viewedTabApproved"], True)
         self.assertNoToken()
-        # The prompt: action, target element, tab title and URL, and why it was held; form mode.
+        # The prompt: action, target, tab title and URL, and why it was held; form mode. The model's
+        # element description is labeled as the agent's.
         prompt = self.prompts[0]
         self.assertEqual(prompt.mode, "form")
         self.assertEqual(prompt.requestedSchema, server.APPROVAL_SCHEMA)
         for part in ("Allow the agent's click in the tab you are viewing (Inbox)?", "Tool: browser_click",
-                     "Target: Send button", "Tab: Inbox - https://user.example/inbox",
-                     "Held because you are viewing this tab."):
+                     "Target: #send\nAgent's description of the target: Send button\n",
+                     "Tab: Inbox - https://user.example/inbox", "Held because you are viewing this tab."):
             self.assertIn(part, prompt.message)
+        self.assertNotIn("Arguments:", prompt.message)
         # The audit log records how the write was approved.
         approved = [(e["action"], e["params"].get("confirmation"), e.get("approval")) for e in bridge._audit_log]
         self.assertEqual(approved[-2:], [("click", "accepted", "elicitation"), ("click", None, "elicitation")])
+
+    def test_the_prompt_shows_the_other_arguments_truncated(self):
+        self.call("browser_type", {"target": "e7", "element": "Search box", "text": "x" * 1000, "submit": True},
+                  answer_with("decline"))
+        message = self.prompts[0].message
+        self.assertIn("Target: e7\nAgent's description of the target: Search box\nArguments: {\"text\": \"xxx",
+                      message)
+        arguments = next(line for line in message.splitlines() if line.startswith("Arguments: "))
+        self.assertEqual(len(arguments), len("Arguments: ") + server.APPROVAL_ARGUMENTS_CHARS)
+        self.assertTrue(arguments.endswith("x…"))
+        self.call("browser_fill_form", {"fields": [{"name": "Card", "type": "textbox", "target": "#card",
+                                                    "value": "4242"}]}, answer_with("decline"))
+        self.assertIn('Arguments: {"fields": [{"name": "Card", "type": "textbox", "target": "#card", "value": "4242"}]}',
+                      self.prompts[0].message)
+
+    def test_a_cancelled_call_closes_its_prompt(self):
+        sent, prompts = [], []
+        send_notification = ServerSession.send_notification
+
+        async def recording(session, notification, related_request_id=None):
+            sent.append(notification.root)
+            await send_notification(session, notification, related_request_id)
+
+        async def run():
+            async def elicit(context, params):
+                prompts.append(context.request_id)
+                # The client cancels the tool call while its prompt is open; the user approves late.
+                await client.send_notification(types.ClientNotification(types.CancelledNotification(
+                    params=types.CancelledNotificationParams(requestId=call_id))))
+                await anyio.sleep(0.2)
+                return types.ElicitResult(action="accept", content={"decision": "Approve"})
+
+            async with create_connected_server_and_client_session(server.mcp, elicitation_callback=elicit) as client:
+                call_id = client._request_id
+                with self.assertRaises(McpError):
+                    await client.call_tool("browser_click", {"target": "#send"})
+                with anyio.fail_after(5):
+                    while not any(isinstance(n, types.CancelledNotification) for n in sent):
+                        await anyio.sleep(0.01)
+                await anyio.sleep(0.1)  # the late reply reaches the server before it closes
+
+        with patch.object(ServerSession, "send_notification", recording):
+            anyio.run(run)
+        cancelled = [n.params for n in sent if isinstance(n, types.CancelledNotification)]
+        self.assertEqual([(c.requestId, c.reason) for c in cancelled], [(prompts[0], "The tool call was cancelled")])
+        self.assertEqual(len(self.clicks()), 1, "nothing was repeated")
 
     def test_decline_and_cancel_return_needs_user_without_a_token(self):
         for answer, decision in ((answer_with("decline"), "declined"), (answer_with("cancel"), "cancelled"),
@@ -314,7 +365,8 @@ class AskBeforeActElicitationTests(ElicitationTestCase):
 
     def test_each_held_request_of_a_call_is_asked_about_once(self):
         # browser_type(submit) on the viewed tab: its text needs the viewed-tab approval, then its Enter
-        # in a submitting field ask-before-act's; the third repeat runs both.
+        # in a submitting field ask-before-act's; the second repeat presses Enter only, still approved
+        # for the viewed tab.
         with patch.object(playwright_tools, "_current_tab", VIEWED_TAB):
             result, payload = self.call("browser_type", {"target": "#q", "text": "hi", "submit": True},
                                         answer_with("accept", "Approve"))
@@ -323,6 +375,42 @@ class AskBeforeActElicitationTests(ElicitationTestCase):
         self.assertIn("Held because ask-before-act: it presses Enter in a form field (Pay).", self.prompts[1].message)
         self.assertEqual(len([r for r in self.requests if r["path"] == "/api/keypress"]), 2)
         self.assertEqual(len(self.extension.actions("keypress")), 1, "Enter was pressed once")
+        self.assertEqual(len([p for p in self.extension.actions("fill") if p.get("viewedTabApproved")]), 1,
+                         "the text was entered once")
+        self.assertNoToken()
+
+    def test_typing_slowly_then_submitting_types_the_text_once(self):
+        # slowly types without clearing: a repeat that typed again would leave "hihi" in the field.
+        result, payload = self.call("browser_type", {"target": "#q", "text": "hi", "slowly": True, "submit": True},
+                                    answer_with("accept", "Approve"))
+        self.assertIs(payload.get("ok"), True, payload)
+        self.assertEqual(len(self.prompts), 1)
+        self.assertEqual([p["text"] for p in self.extension.actions("type")], ["hi"])
+        self.assertEqual(len(self.extension.actions("keypress")), 1)
+        self.assertEqual([e.get("approval") for e in bridge._audit_log if e["action"] == "keypress"][-1], "elicitation")
+
+    def test_a_form_whose_every_field_is_held_is_filled_field_by_field(self):
+        self.extension.url = "https://shop.example/checkout"
+        fields = [{"name": name, "type": "textbox", "target": f"#{name}", "value": value}
+                  for name, value in (("card", "4242"), ("expiry", "12/30"), ("cvc", "123"), ("zip", "10001"))]
+        result, payload = self.call("browser_fill_form", {"fields": fields}, answer_with("accept", "Approve"))
+        self.assertIs(payload.get("ok"), True, payload)
+        self.assertEqual(payload["filled"], ["card", "expiry", "cvc", "zip"])
+        self.assertEqual(len(self.prompts), 4, "one approval per held field")
+        self.assertEqual([p["selector"] for p in self.extension.actions("fill")], ["#card", "#expiry", "#cvc", "#zip"])
+        self.assertNoToken()
+        # Declined at the second field: the first stays filled, and no token is reported as rejected.
+        self.extension.sent.clear()
+        answers = iter(("Approve", "Decline"))
+
+        async def approve_then_decline(params):
+            return types.ElicitResult(action="accept", content={"decision": next(answers)})
+
+        result, payload = self.call("browser_fill_form", {"fields": fields}, approve_then_decline)
+        self.assertEqual((payload["code"], payload["state"]["decision"], payload["filled"]),
+                         ("needs_user", "declined", ["card"]))
+        self.assertNotIn("tokenRejected", payload["state"])
+        self.assertEqual([p["selector"] for p in self.extension.actions("fill")], ["#card"])
         self.assertNoToken()
 
     def test_a_container_held_step_loses_its_token(self):

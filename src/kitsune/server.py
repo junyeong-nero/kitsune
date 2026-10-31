@@ -182,28 +182,38 @@ class KitsuneMCP(FastMCP):
 
     async def _approved(self, session, name, arguments, result):
         """result of a call on a client with elicitation: a held direct call is asked about and, once
-        the user approves, repeated with its token; no token stays in the result (#376)."""
+        the user approves, repeated with its token; no token stays in the result (#376).
+
+        Each repeat starts at the held request (playwright_tools.approved_hold), so a later held
+        request of the call (the next field of a payment form) is asked about in turn, and a hold
+        the user approved coming back means the repeat no longer matched it."""
         tool = self._tool_manager.get_tool(name)
         repeatable = tool is not None and "confirm_token" in tool.parameters.get("properties", {})
-        for approvals in range(ELICITATION_MAX_APPROVALS + 1):
+        approved = []  # _hold_key of each hold the user approved in this call
+        call_id = secrets.token_hex(8)
+        while True:
             held = _json_payload(result)
             if held is None:
                 return result
             if not _held_with_token(held) or not repeatable:
                 return _with_payload(result, _without_tokens(held))
-            if approvals and held["state"].get("tokenRejected"):
-                # The repeat did not match what the user approved (the page or tab changed): ask again on a new call.
+            if _hold_key(held) in approved:
+                # The page or tab changed since the user approved it: ask again on a new call.
                 return _with_payload(result, _unapproved(held, None, UNMATCHED_APPROVAL_HINT))
-            if approvals == ELICITATION_MAX_APPROVALS:
-                return _with_payload(result, _unapproved(held, None, REPEATED_HOLD_HINT))
+            if approved:
+                # A later request of the call, held after the approved one ran: the token it was
+                # sent was spent there, which is no reason to report.
+                held["state"].pop("tokenRejected", None)
             decision = await _ask_user(session, self._mcp_server.request_context, name, arguments, held["state"])
             if decision != "approved":
                 return _with_payload(result, _unapproved(held, decision, DECISION_HINTS[decision]))
-            elicited = _elicited.set(True)
+            approved.append(_hold_key(held))
+            repeat, hold = _approval_repeat.set(call_id), playwright_tools.approved_hold.set(held)
             try:
                 result = await self._run_tool(name, {**arguments, "confirm_token": held["state"]["confirmToken"]})
             finally:
-                _elicited.reset(elicited)
+                playwright_tools.approved_hold.reset(hold)
+                _approval_repeat.reset(repeat)
 
 
 mcp = KitsuneMCP("Kitsune")
@@ -316,8 +326,9 @@ def _mcp_errors(function):
     """
     @functools.wraps(function)
     def call(*args, **kwargs):
-        # Its bridge requests share one tool call id: a viewed-tab approval covers all of them (#326).
-        call_id = _tool_call.set(secrets.token_hex(8))
+        # Its bridge requests share one tool call id: a viewed-tab approval covers all of them (#326),
+        # and those of the repeats of a call the user approved (#376).
+        call_id = _tool_call.set(_approval_repeat.get() or secrets.token_hex(8))
         try:
             result = function(*args, **kwargs)
         finally:
@@ -347,8 +358,8 @@ ELICITATION_MARGIN_SECONDS = 5
 # While the prompt is open, a call that sent a progressToken gets a progress notification this
 # often, so a client that resets its request timeout on progress keeps waiting.
 ELICITATION_PROGRESS_SECONDS = 10
-# Held steps one tool call asks about: browser_type's text on the viewed tab, then its Enter.
-ELICITATION_MAX_APPROVALS = 3
+# The prompt shows the call's other arguments up to this many characters.
+APPROVAL_ARGUMENTS_CHARS = 500
 APPROVAL_SCHEMA = {"type": "object", "required": ["decision"], "properties": {
     "decision": {"type": "string", "title": "Decision", "enum": ["Approve", "Decline"]}}}
 DECISION_HINTS = {
@@ -357,18 +368,17 @@ DECISION_HINTS = {
     "cancelled": "The held action did not run: the approval prompt was dismissed or timed out without an answer. "
                  "Ask the user whether to go ahead; calling the tool again asks them again.",
 }
-UNMATCHED_APPROVAL_HINT = ("The held action did not run: the user approved it, but the repeated call no longer "
-                           "matched what they approved (state.tokenRejected). Check the page, then call the tool "
-                           "again to ask again.")
-REPEATED_HOLD_HINT = (f"The held action did not run: the call was held again after {ELICITATION_MAX_APPROVALS} "
-                      "approvals. Check the page, then call the tool again to ask again.")
+UNMATCHED_APPROVAL_HINT = ("The action the user approved did not run: repeated, it no longer matched what they "
+                           "approved (state.tokenRejected), so the page or tab changed. What the call did before "
+                           "it (filled) stays done. Check the page, then call the tool again to ask again.")
 CONTAINER_APPROVAL_HINT = ("Nothing ran: this step needs the user's approval, which only a direct call of the tool "
                            "that does it can ask for. Make that call; the user is asked to approve it there.")
 # Why a call was held, by state.detail, for the prompt.
 _HELD_BECAUSE = {"user_viewing": "you are viewing this tab", "user_tab": "the agent did not open this tab",
                  "confirmation_required": "ask-before-act"}
-# The repeat of a call the user approved in the prompt (APPROVAL_HEADER).
-_elicited: ContextVar[bool] = ContextVar("kitsune_elicited", default=False)
+# The tool call id the repeats of a call the user approved in the prompt share, so a viewed-tab
+# approval in one covers the next (#326); their bridge requests carry APPROVAL_HEADER.
+_approval_repeat: ContextVar[str | None] = ContextVar("kitsune_approval_repeat", default=None)
 
 
 def _elicits(session) -> bool:
@@ -403,6 +413,15 @@ def _held_with_token(payload) -> bool:
     return isinstance(state, dict) and state.get("reason") == "approval" and isinstance(state.get("confirmToken"), str)
 
 
+def _hold_key(held: dict) -> tuple:
+    """Which request of the call a hold is: its action and params as the call sent them, whichever
+    tab they resolved to; a user_viewing or user_tab hold, which names neither, by its tab."""
+    state = held["state"]
+    if "params" in state:
+        return state.get("detail"), state.get("action"), json.dumps(state["params"], sort_keys=True, default=str)
+    return state.get("detail"), state.get("tabId")
+
+
 def _without_token(state: dict) -> dict:
     return {key: value for key, value in state.items() if key not in ("confirmToken", "expiresInSeconds")}
 
@@ -425,21 +444,29 @@ def _unapproved(held: dict, decision: str | None, hint: str) -> dict:
     state = {**_without_token(held["state"]), "approval": "elicitation"}
     if decision:
         state["decision"] = decision
-    return {**held, "state": state, "hint": hint}
+    return _without_tokens({**held, "state": state, "hint": hint})
 
 
 def _approval_message(name: str, arguments: dict, state: dict) -> str:
-    """The prompt: what the call does, to which element and tab, and why it was held."""
+    """The prompt: what the call does, to which element and tab, with which arguments, and why it was
+    held. The model's element description is labeled as the agent's: only the ref or selector is
+    what the call acts on."""
     params = state.get("params") if isinstance(state.get("params"), dict) else {}
-    target = next((str(value) for value in (arguments.get("element"), arguments.get("target"), arguments.get("ref"),
-                                            arguments.get("selector"), params.get("ref"), params.get("selector"))
-                   if value), None)
+    target = next((str(value) for value in (arguments.get("target"), arguments.get("ref"), arguments.get("selector"),
+                                            params.get("ref"), params.get("selector")) if value), None)
+    rest = {key: value for key, value in arguments.items()
+            if key not in ("target", "ref", "selector", "element", "confirm_token")}
+    rest = json.dumps(rest, ensure_ascii=False, default=str)
+    if len(rest) > APPROVAL_ARGUMENTS_CHARS:
+        rest = rest[:APPROVAL_ARGUMENTS_CHARS - 1] + "…"
     tab = " - ".join(str(state[key]) for key in ("title", "url") if state.get(key))
     why = _HELD_BECAUSE.get(state.get("detail"), "it needs your approval")
     if state.get("description"):
         why += f": it {state['description']}"
     lines = [state.get("message") or "Allow this action?", f"Tool: {name}"]
     lines += [f"Target: {target}"] if target else []
+    lines += [f"Agent's description of the target: {arguments['element']}"] if arguments.get("element") else []
+    lines += [f"Arguments: {rest}"] if rest != "{}" else []
     lines += [f"Tab: {tab}"] if tab else []
     lines += [f"Held because {why}.", "Approve runs this action once; Decline leaves it undone."]
     return "\n".join(lines)
@@ -450,7 +477,8 @@ async def _ask_user(session, request, name: str, arguments: dict, state: dict) -
     unanswered until the token's expiresInSeconds less ELICITATION_MARGIN_SECONDS)."""
     seconds = max(1, (state.get("expiresInSeconds") or 0) - ELICITATION_MARGIN_SECONDS)
     progress_token = request.meta.progressToken if request.meta is not None else None
-    answer = None
+    answer = elicitation_id = None
+    answered = False
 
     async def keep_alive():
         sent = 0
@@ -460,22 +488,33 @@ async def _ask_user(session, request, name: str, arguments: dict, state: dict) -
             await session.send_progress_notification(progress_token, sent, message="Waiting for the user's approval",
                                                      related_request_id=request.request_id)
 
-    async with anyio.create_task_group() as group:
-        if progress_token is not None:
-            group.start_soon(keep_alive)
-        with anyio.move_on_after(seconds) as waited:
-            # The id the SDK's send_request gives the elicitation request, to cancel it on timeout.
-            elicitation_id = getattr(session, "_request_id", None)
-            try:
-                answer = await session.elicit_form(_approval_message(name, arguments, state), APPROVAL_SCHEMA,
-                                                   related_request_id=request.request_id)
-            except (McpError, ValueError):  # the client failed it, or answered outside APPROVAL_SCHEMA
-                pass
-        group.cancel_scope.cancel()
-    if waited.cancelled_caught and elicitation_id is not None:
-        # Close the client's prompt: an answer after this approves nothing.
-        await session.send_notification(ServerNotification(CancelledNotification(params=CancelledNotificationParams(
-            requestId=elicitation_id, reason="The approval prompt timed out"))), related_request_id=request.request_id)
+    waited = anyio.move_on_after(seconds)
+    try:
+        async with anyio.create_task_group() as group:
+            if progress_token is not None:
+                group.start_soon(keep_alive)
+            with waited:
+                # The id the SDK's send_request gives the elicitation request, to cancel it unanswered.
+                elicitation_id = getattr(session, "_request_id", None)
+                try:
+                    answer = await session.elicit_form(_approval_message(name, arguments, state), APPROVAL_SCHEMA,
+                                                       related_request_id=request.request_id)
+                except (McpError, ValueError):  # the client failed it, or answered outside APPROVAL_SCHEMA
+                    pass
+                answered = True
+            group.cancel_scope.cancel()
+    finally:
+        if not answered and elicitation_id is not None:
+            # Timed out, or the client cancelled the tool call: close the client's prompt, as an answer
+            # after this approves nothing.
+            reason = "The approval prompt timed out" if waited.cancelled_caught else "The tool call was cancelled"
+            with anyio.CancelScope(shield=True):
+                try:
+                    await session.send_notification(ServerNotification(CancelledNotification(
+                        params=CancelledNotificationParams(requestId=elicitation_id, reason=reason))),
+                        related_request_id=request.request_id)
+                except (anyio.BrokenResourceError, anyio.ClosedResourceError):  # the client is gone
+                    pass
     if answer is None or answer.action == "cancel":
         return "cancelled"
     if answer.action == "decline":
@@ -548,7 +587,7 @@ def _gateway_headers() -> dict:
     and the repeat of a call the user approved in the client's prompt."""
     name, call_id = _gateway_call.get(), _tool_call.get()
     return {**({GATEWAY_TOOL_HEADER: name} if name else {}), **({TOOL_CALL_HEADER: call_id} if call_id else {}),
-            **({APPROVAL_HEADER: "elicitation"} if _elicited.get() else {})}
+            **({APPROVAL_HEADER: "elicitation"} if _approval_repeat.get() else {})}
 
 
 # Every tool's bridge request carries this server's client and owner ids, caps, mode, user-tab protection
