@@ -33,9 +33,9 @@ the agent gets fewer, sharper tools. See [Philosophy](https://github.com/junyeon
 
 - Tabs the agent creates open in the background. Kitsune holds writes to a tab
   while you are typing or clicking in it. Writes to the tab you are viewing, unless
-  the agent opened it, and closing or navigating one of your own tabs each take a
-  separate confirmation step. Writes that name no tab are refused until the agent has opened
-  or selected one. This reduces interference, but OS-level clicks and popups
+  the agent opened it, and closing or navigating one of your own tabs each need
+  your [approval](https://github.com/junyeong-nero/kitsune#approvals). Writes that
+  name no tab are refused until the agent has opened or selected one. This reduces interference, but OS-level clicks and popups
   opened by sites still have [focus and input limitations](https://github.com/junyeong-nero/kitsune/blob/main/docs/api-reference.md#shared-browser).
 - You decide how much to delegate. `KITSUNE_MODE=read`, `draft`, or `act` limits
   both the tools the agent sees and the requests the bridge accepts. Draft mode
@@ -120,12 +120,27 @@ code, with a [Python API](https://github.com/junyeong-nero/kitsune#python-api) f
    tool set, set `KITSUNE_MODE=draft` before starting the MCP client.
 
 Use a dedicated browser profile, and give the agent access only to the accounts
-it needs. Have it ask you before it sends, buys, or deletes anything. The opt-in
+it needs. Have it ask you before it sends, buys, or deletes anything. None of
+Kitsune's controls prevent prompt injection. Read the [security guidance](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#security) before using sensitive accounts.
+
+### Approvals
+
+These calls need your approval: writes and navigations on the tab you are
+viewing, unless the agent opened it; closing or navigating a tab the agent did not
+open; and, with the opt-in
 [ask-before-act](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#ask-before-act)
-policy makes the bridge hold submits, payment pages, JavaScript, and cookie access
-until the agent repeats the call with a confirmation token. The agent can make
-that second call on its own, so it does not prove that a person approved, and
-none of these controls prevent prompt injection. Read the [security guidance](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#security) before using sensitive accounts.
+policy, submits, payment pages, JavaScript, and cookie access. On MCP clients with
+elicitation (Claude Code, Codex), the client asks you in its own prompt, and the
+call runs once you approve; the approval never passes through the agent. Clients
+without elicitation fall back to a confirmation token: the agent should ask you,
+then repeat the call with it. The agent can make that second call on its own, so
+the token guards against accidents but does not prove that a person approved. See
+[Approving held actions](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#approving-held-actions).
+
+For a sign-in, a CAPTCHA, or a choice only you can make, the agent asks you
+(`browser_ask_user`), in the client's prompt where it has one, and continues once you
+are done. See
+[When the agent needs you](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#when-the-agent-needs-you).
 
 ## MCP setup
 
