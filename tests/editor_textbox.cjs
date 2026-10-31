@@ -13,6 +13,9 @@ class InputEvent extends Event {
   }
 }
 
+// Mutation records since the start, for MutationObserver.takeRecords.
+const mutations = [];
+
 class Text {
   constructor(text) { Object.assign(this, { nodeType: 3, textContent: text }); }
 }
@@ -34,6 +37,7 @@ class Element extends EventTarget {
     node.parentNode = this;
     if (node.nodeType === 1) node.parentElement = this;
     this.childNodes.push(node);
+    mutations.push({ type: 'childList', target: this, addedNodes: [node] });
   }
   get children() { return this.childNodes.filter(node => node.nodeType === 1); }
   get textContent() { return this.childNodes.map(node => node.textContent).join(''); }
@@ -110,11 +114,13 @@ const byId = Object.fromEntries(body.descendants().filter(el => el.attrs.id).map
 
 let execCommandWorks = true;
 const commands = [];
-// Edits since the start, for MutationObserver.takeRecords.
-let mutations = 0;
 class MutationObserver {
-  observe() { this.seen = mutations; }
-  takeRecords() { return mutations > this.seen ? [{}] : []; }
+  observe() { this.seen = mutations.length; }
+  takeRecords() {
+    const records = mutations.slice(this.seen);
+    this.seen = mutations.length;
+    return records;
+  }
   disconnect() {}
 }
 const document = {
@@ -136,7 +142,7 @@ const document = {
       data: command === 'insertText' ? value : null }))) return true;
     range.deleteContents();
     if (command === 'insertText') range.insertNode(new Text(value));
-    mutations++;
+    else mutations.push({ type: 'childList', target: editHost, addedNodes: [] });
     editHost.dispatchEvent(new InputEvent('input', { bubbles: true, inputType }));
     return true;
   },
@@ -173,9 +179,10 @@ const refOf = (snapshot, el, label) => {
   const { snapshot } = await send({ action: 'getSnapshot' });
   const textboxes = snapshot.split('\n').filter(row => row.includes('- textbox'));
   assert.equal(textboxes.length, 3, `source editor, Name and Notes:\n${snapshot}`);
-  assert.match(snapshot, /- textbox "이전 문장" \[ref=s\d+e\d+\]/);
-  assert.match(snapshot, /- textbox "Name" \[ref=s\d+e\d+\]/);
-  assert.match(snapshot, /- textbox "Notes" \[ref=s\d+e\d+\]/);
+  // An editor's text is its value, as a field's is (#385).
+  assert.match(snapshot, /- textbox "이전 문장" \[ref=s\d+e\d+\] \[value="이전 문장"\]/);
+  assert.match(snapshot, /- textbox "Name" \[ref=s\d+e\d+\] \[value=""\]/);
+  assert.match(snapshot, /- textbox "Notes" \[ref=s\d+e\d+\] \[value="Meet @kitsune"\]/);
   assert.match(snapshot, /- slider "Volume" \[ref=s\d+e\d+\]/);
   // A descendant that is a control in its own right is still listed.
   assert.match(snapshot, /- button "@kitsune" \[ref=s\d+e\d+\]/);
@@ -266,6 +273,39 @@ const refOf = (snapshot, el, label) => {
   assert.equal(plain.code, 'not_fillable');
   assert.deepEqual(plain.state, { tag: 'div', reason: 'no_field' });
   assert.match(plain.hint, /contenteditable editor is filled through its textbox ref/);
+
+  // 9. A long editor's value is cut at 160 characters, like a field's, and marked as cut (#385).
+  reset();
+  const long = '가'.repeat(150) + ' 다음 문장입니다. 끝';
+  assert.equal((await send({ action: 'fill', selector: sourceRef, value: long })).ok, true);
+  const longRead = (await send({ action: 'getSnapshot' })).snapshot;
+  assert.ok(longRead.includes(`[ref=${sourceRef}] [value=${JSON.stringify(long.slice(0, 160) + '\u2026')}]`), longRead);
+
+  // 10. A delta is not unchanged when the action edited an editor past the value it shows, or the
+  //     page added an element the delta does not list (#385); a transient element does not count.
+  reset();
+  const edited = await send({ action: 'fill', selector: sourceRef, value: long + ' 추가', deltaBaseline: true });
+  assert.equal(edited.ok, true);
+  const editDelta = await send({ action: 'getSnapshot', delta: true });
+  assert.equal(editDelta.delta, true);
+  assert.equal(editDelta.unchanged, undefined, editDelta.snapshot);
+  const quiet = async (reaction = () => {}) => {
+    assert.equal((await send({ action: 'focusElement', selector: sourceRef, deltaBaseline: true })).ok, true);
+    reaction();
+    return send({ action: 'getSnapshot', delta: true });
+  };
+  assert.equal((await quiet()).unchanged, true, 'focusing changes nothing');
+  const spinner = h('DIV', { id: 'spinner' });
+  const added = await quiet(() => output.append(spinner));
+  assert.doesNotMatch(added.snapshot, /spinner/);
+  assert.equal(added.unchanged, undefined, 'an added element is a change');
+  const transient = await quiet(() => {
+    const flash = h('DIV', { id: 'flash' });
+    output.append(flash);
+    output.childNodes = output.childNodes.filter(node => node !== flash);
+    flash.isConnected = false;
+  });
+  assert.equal(transient.unchanged, true, 'an element added and removed again is not');
 
   console.log('Editor textbox and fill checks passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -895,16 +895,39 @@
   // settleState (page timers are throttled in background tabs, messages are not): how long ago
   // the action started and the page last changed, counting mutations in every document Kitsune
   // reads and in their shadow roots since right before the action dispatched.
+  // The watch also keeps what a delta may not list but is still a change (#385): elements added
+  // anywhere (up to SETTLE_ADDED_LIMIT; more set changed) and edits inside an editor (changed).
   let settleWatch = null;
+  const SETTLE_ADDED_LIMIT = 200;
+
+  function noteSettleRecords(watch, records) {
+    for (const record of records) {
+      const target = record.target?.nodeType === 1 ? record.target : record.target?.parentElement;
+      if (target && record.type !== 'attributes' && isEditableRegion(target)) watch.changed = true;
+      for (const node of record.addedNodes || []) {
+        if (node.nodeType !== 1 || TEXTLESS_TAGS.has(node.tagName)) continue;
+        if (watch.added.length < SETTLE_ADDED_LIMIT) watch.added.push(node);
+        else watch.changed = true;
+      }
+    }
+  }
+
+  // Whether the page changed during the watch in a way a delta may not list.
+  function settleWatchChanged(watch) {
+    if (!watch) return false;
+    if (watch.observer) noteSettleRecords(watch, watch.observer.takeRecords());
+    return watch.changed || watch.added.some(node => node.isConnected);
+  }
 
   function startSettleWatch() {
     stopSettleWatch();
-    const watch = { start: Date.now(), last: Date.now(), mutations: 0 };
+    const watch = { start: Date.now(), last: Date.now(), mutations: 0, added: [], changed: false };
     // Absent in vm test harnesses.
     if (typeof MutationObserver === 'function') {
       watch.observer = new MutationObserver(records => {
         watch.mutations += records.length;
         watch.last = Date.now();
+        noteSettleRecords(watch, records);
       });
       for (const doc of searchedDocuments()) {
         for (const root of [doc, ...shadowRootsIn(doc)]) {
@@ -967,8 +990,10 @@
     const baseline = mode === 'delta' ? actionBaseline : null;
     const full = mode === 'full' || (mode === 'delta' && !baseline);
     let target = null;
+    let changedDuringWatch = false;
     if (mode !== 'baseline') {
       actionBaseline = null;
+      changedDuringWatch = mode === 'delta' && settleWatchChanged(settleWatch);
       stopSettleWatch();
       // Remember the actual node even when this snapshot omits it.
       target = focusLastAction && lastActedElement?.isConnected ? lastActedElement : null;
@@ -1173,6 +1198,11 @@
         const states = [];
         if (role === 'heading') states.push(`level=${el.getAttribute('aria-level') || el.tagName.slice(1)}`);
         if ('value' in el && !isSensitiveField(el)) states.push(`value=${JSON.stringify(clean(el.value))}`);
+        // An editor's content is its value (#385), cut like a field's and marked when cut.
+        else if (isEditingHost(el) && !isSensitiveField(el)) {
+          const text = normalize(renderedText(el));
+          states.push(`value=${JSON.stringify(text.length > 160 ? clean(text) + '…' : text)}`);
+        }
         if (el.type === 'checkbox' || el.type === 'radio' || el.hasAttribute('aria-checked')) {
           states.push(`checked=${el.getAttribute('aria-checked') || !!el.checked}`);
         }
@@ -1531,8 +1561,8 @@
         delta: true,
         ...(window.location?.href !== baseline.url ? { url: window.location?.href } : {}),
         ...(document.title !== baseline.title ? { title: document.title } : {}),
-        ...(unchanged && window.location?.href === baseline.url && document.title === baseline.title
-          ? { unchanged: true } : {}),
+        ...(unchanged && !changedDuringWatch && window.location?.href === baseline.url &&
+          document.title === baseline.title ? { unchanged: true } : {}),
       } : {}),
       ...withNeedsUser(),
     };

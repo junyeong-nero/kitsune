@@ -913,7 +913,8 @@ async function runCommandSettled(params, { withSnapshot, deltaSnapshot, textSnap
         result.snapshot = snapshot.snapshot;
         if (snapshot.delta) {
           result.snapshot_delta = true;
-          if (snapshot.unchanged) result.no_visible_change = true;
+          // Requests the action started that are still pending may yet change the page (#385).
+          if (snapshot.unchanged && !watch?.pending.size) result.no_visible_change = true;
           // A same-document url or title change (history.pushState) is part of the delta.
           if (snapshot.url !== undefined) result.url = snapshot.url;
           if (snapshot.title !== undefined) result.title = snapshot.title;

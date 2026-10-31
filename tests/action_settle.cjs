@@ -140,6 +140,18 @@ async function testNoVisibleChangeAndKeepBaseline() {
   assert.deepEqual([h.sent[0].deltaBaseline, h.sent[0].settleWatch], [undefined, true]);
 }
 
+async function testPendingRequestsAreNotNoVisibleChange() {
+  // #385: a request the action started that outlasts the wait may still change the page.
+  const pending = harness({ unchanged: true, requestMs: REQUEST_CAP * 2 });
+  const hover = await pending.context.handleCommand({ action: 'hover', selector: '#more', tabId: 7 });
+  assert.equal(hover.snapshot_delta, true);
+  assert.equal(hover.no_visible_change, undefined);
+  // One that answered within the wait does not keep the page from saying so.
+  const answered = harness({ unchanged: true, requestMs: 200 });
+  const click = await answered.context.handleCommand({ action: 'click', selector: '#go', tabId: 7 });
+  assert.equal(click.no_visible_change, true);
+}
+
 async function testANavigatingClickReportsTheNewPage() {
   // #349: a link click waits for the new page and returns it whole, not a delta of the old one.
   const h = harness({ navigation: { loadMs: 700 } });
@@ -170,6 +182,7 @@ async function testANavigatingClickReportsTheNewPage() {
   await testCaps();
   await testNoWatchOrNoSnapshotDoesNotWait();
   await testNoVisibleChangeAndKeepBaseline();
+  await testPendingRequestsAreNotNoVisibleChange();
   await testANavigatingClickReportsTheNewPage();
   console.log('action_settle: ok');
 })().catch(e => { console.error(e); process.exit(1); });
