@@ -393,8 +393,8 @@ HOLD_VIEWED_TAB = os.environ.get("KITSUNE_HOLD_VIEWED_TAB", "").lower() not in {
 # that the browser is shared with its user; without this, agents avoid `select` to spare the
 # user's view and work around background tabs instead of reading them. Without the hand-off
 # sentence, agents asked in chat instead of clicking a page's own hand-off control (#352).
-# The SDK sends the same instructions to every client, before it knows whether the client has
-# elicitation, so the needs_user sentence covers both (#376).
+# A needs_user result's hint says how to approve (confirm token) or resume it, so the instructions
+# do not (#386); they are resent with every model request, and scripts/tool_schema_size.py budgets them.
 mcp._mcp_server.instructions = (
     "Kitsune controls the user's own Firefox-family browser while the user keeps using it. "
     + ("browser_tabs `new` opens a tab in the background, and `select` makes a tab your current "
@@ -404,35 +404,21 @@ mcp._mcp_server.instructions = (
        "no_current_tab. A restarted MCP server has no current tab: open or select one again; "
        "no_current_tab lists the open tabs this MCP client opened before in state.ownTabs. A tab "
        "that a batch or workflow newTab opens, or that an action on your current tab opens, becomes "
-       "your current tab; the result names it in current_tab. When a page offers its own control "
-       "for handing a step to the user, use that control rather than asking in chat."
+       "your current tab; the result names it in current_tab. Use a page's own control for handing "
+       "a step to the user rather than asking in chat."
        if permits_tool(MODE, "browser_tabs") else
        "Until browser_tab_list new_tab opens a background tab of your own, reads act on the tab the "
        "user is viewing, and navigations and writes that pass no tab_id fail with no_current_tab; "
        "later tools act on your tab without switching the user's view.")
-    # #326: the tab the user is viewing is held for writes unless this client set KITSUNE_HOLD_VIEWED_TAB=0.
-    + ((" Writes and navigations on the tab the user is viewing fail with needs_user (detail user_viewing) "
-        "unless you opened that tab: work in your own tabs."
-        if permits_tool(MODE, "browser_tabs") else
-        " Writes and navigations on the tab the user is viewing fail with needs_user (detail user_viewing); "
-        "work in your own tab.")
-       if HOLD_VIEWED_TAB else "")
-    # #326: navigations on user tabs are refused unless this client set KITSUNE_PROTECT_USER_TABS=0.
-    + ((" Navigate, back and forward on a tab no client opened fail with needs_user (detail user_tab): open a "
-        "tab of your own."
-        if permits_tool(MODE, "browser_tabs") else
-        " Navigate, back and forward on a tab no client opened fail with needs_user (detail user_tab); work in "
-        "your own tab.")
-       if PROTECT_USER_TABS else "")
-    # #376: approvals come through the client's prompt; the confirm token is the fallback without one.
-    + " A needs_user result did nothing: tell the user why (state.message)."
-    + (" An approval (state.reason approval) is asked in your MCP client's own prompt, and the call runs once "
-       "the user approves; only a client without that prompt gets state.confirmToken: ask the user, then repeat "
-       "the call with confirm_token. browser_resume(call, resume_token) continues a result that has a "
-       "resume_token, waiting for the user where it can."
-       if permits_tool(MODE, "browser_resume") else "")
-    + " When you cannot go on without the user (a sign-in, a CAPTCHA, a choice only they can make), call "
-      "browser_ask_user.")
+    # #326: the tab the user is viewing is held for writes unless this client set KITSUNE_HOLD_VIEWED_TAB=0,
+    # and navigations on user tabs are refused unless it set KITSUNE_PROTECT_USER_TABS=0.
+    + ((" Work in tabs you opened: "
+        + " and ".join((["writes on the tab the user is viewing"] if HOLD_VIEWED_TAB else [])
+                       + (["navigations on tabs no client opened"] if PROTECT_USER_TABS else []))
+        + " return needs_user.")
+       if HOLD_VIEWED_TAB or PROTECT_USER_TABS else "")
+    + " A needs_user result did nothing: tell the user why (state.message). If only the user can go on "
+      "(a sign-in, a CAPTCHA, a choice), call browser_ask_user.")
 # The tool browser_tools_call is running; its bridge requests name it for the audit log.
 _gateway_call: ContextVar[str | None] = ContextVar("kitsune_gateway_call", default=None)
 # The id of the tool call running (_mcp_errors), which its bridge requests carry.

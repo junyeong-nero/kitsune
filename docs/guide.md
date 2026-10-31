@@ -852,7 +852,8 @@ Tool definitions are resent with every model request, so their size is tracked:
 cut to the first paragraph, as some clients (Claude Code `--bare`) send it. A test fails
 until `--update` records a change in `tests/tool_schema_sizes.json`. The same test fails
 when the `core` total grows past `TOTAL_BUDGETS` or `FIRST_PARAGRAPH_BUDGETS`, or any
-single tool past `TOOL_BUDGET`; raise a budget only deliberately. The `core` tools are
+single tool past `TOOL_BUDGET`, or the server instructions of a mode past
+`INSTRUCTIONS_BUDGETS`; raise a budget only deliberately. The `core` tools are
 Playwright MCP's, published verbatim, and `tests/test_playwright_tools.py` checks the
 default `tools/list` against `src/kitsune/playwright_tools.json`. The Kitsune-owned tools'
 published input schemas omit the `title` keywords pydantic generates (`KitsuneMCP.list_tools`), and
