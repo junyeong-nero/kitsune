@@ -32,9 +32,10 @@ SNAPSHOT = Path(__file__).resolve().parent.parent / "tests" / "tool_schema_sizes
 # Ceilings in compact JSON characters (#88). Growth past one fails the size test; raise it
 # deliberately, with the reason in the change, rather than alongside a snapshot update.
 # The core tools are Playwright MCP's, published verbatim (playwright_tools.json): set about
-# 5% above their size, so refreshing that file shows what Playwright's growth costs.
-TOTAL_BUDGETS = {"core": 21_300}
-FIRST_PARAGRAPH_BUDGETS = {"core": 21_300}
+# 5% above their size, so refreshing that file shows what Playwright's growth costs. Raised by
+# 1,000 for Kitsune's browser_ask_user, which core publishes with browser_resume (#376).
+TOTAL_BUDGETS = {"core": 22_300}
+FIRST_PARAGRAPH_BUDGETS = {"core": 22_300}
 TOOL_BUDGET = 3_000  # any single core tool, full view
 
 
