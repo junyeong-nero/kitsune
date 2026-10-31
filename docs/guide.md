@@ -264,10 +264,11 @@ seconds) in the **MCP server's environment**, or run the daemon yourself with
 By default Kitsune publishes the 25 tools of [Playwright MCP](https://github.com/microsoft/playwright-mcp)'s
 default capabilities, with the same names, descriptions, input schemas and annotations, as
 its `core` capability group (see [Core tools](#core-tools)), with Kitsune's `browser_resume`,
-which continues a call that stopped for you (#376). Kitsune's other tools are in the other
+which continues a call that stopped for you, and `browser_ask_user`, with which the agent asks
+you for what it cannot do (#376). Kitsune's other tools are in the other
 groups. Set `KITSUNE_CAPS` in the MCP server environment before starting it;
 restart the MCP client after changing it. The comma-separated list selects exactly those
-groups (include `core` to retain the default tools). `all` enables all 96 tools in every
+groups (include `core` to retain the default tools). `all` enables all 97 tools in every
 group except `storage` and `history`, which read personal data and must be named
 (`KITSUNE_CAPS=all,storage,history`). Whitespace and case are ignored; unknown group names
 fail at startup.
@@ -279,7 +280,7 @@ KITSUNE_CAPS = "core,browse,read"
 
 | Group | Tools |
 |---|---|
-| `core` (26: Playwright MCP's 25 and `browser_resume`) | `browser_resume`, `browser_close`, `browser_resize`, `browser_console_messages`, `browser_handle_dialog`, `browser_emulate_media`, `browser_evaluate`, `browser_file_upload`, `browser_drop`, `browser_find`, `browser_fill_form`, `browser_press_key`, `browser_type`, `browser_navigate`, `browser_navigate_back`, `browser_network_requests`, `browser_network_request`, `browser_run_code_unsafe`, `browser_take_screenshot`, `browser_snapshot`, `browser_click`, `browser_drag`, `browser_hover`, `browser_select_option`, `browser_tabs`, `browser_wait_for` |
+| `core` (27: Playwright MCP's 25, `browser_resume` and `browser_ask_user`) | `browser_resume`, `browser_ask_user`, `browser_close`, `browser_resize`, `browser_console_messages`, `browser_handle_dialog`, `browser_emulate_media`, `browser_evaluate`, `browser_file_upload`, `browser_drop`, `browser_find`, `browser_fill_form`, `browser_press_key`, `browser_type`, `browser_navigate`, `browser_navigate_back`, `browser_network_requests`, `browser_network_request`, `browser_run_code_unsafe`, `browser_take_screenshot`, `browser_snapshot`, `browser_click`, `browser_drag`, `browser_hover`, `browser_select_option`, `browser_tabs`, `browser_wait_for` |
 | `admin` (8) | `browser_status`, `browser_cache`, `browser_reload_extension`, `browser_health`, `browser_logs`, `browser_audit`, `browser_set_policy`, `browser_get_policy` |
 | `automation` (11) | `browser_workflows`, `browser_workflow`, `browser_parallel`, `browser_broadcast`, `browser_sync_barrier`, `browser_tab_pool`, `browser_pool_acquire`, `browser_pool_release`, `browser_scheduler`, `browser_retry`, `browser_batch` |
 | `browse` (11) | `browser_trusted_click`, `browser_trusted_drag`, `browser_trusted_type`, `browser_trusted_press_key`, `browser_scroll`, `browser_check`, `browser_focus`, `browser_blur`, `browser_submit_form`, `browser_click_and_wait_navigation`, `browser_forward` |
@@ -326,7 +327,7 @@ KITSUNE_CAPS = "all"
 KITSUNE_PUBLISH = "core"
 ```
 
-`tools/list` then has the 26 core tools and three gateway tools:
+`tools/list` then has the 27 core tools and three gateway tools:
 
 - `browser_tools_search(query, limit=5)` finds the tools this server runs but does not
   list, best match first, each with its full description, input schema and annotations.
@@ -373,7 +374,7 @@ are not enforced policy. The bridge enforces task-mode limits and `browser_set_p
 
 ### Core tools
 
-The `core` tools other than `browser_resume` are Playwright MCP's, published verbatim from
+The `core` tools other than `browser_resume` and `browser_ask_user` are Playwright MCP's, published verbatim from
 `src/kitsune/playwright_tools.json` (captured from `@playwright/mcp` with
 `node scripts/update_playwright_tools.mjs`), so a client or prompt written for Playwright
 MCP works unchanged. They drive your own browser through the Kitsune extension and return
@@ -677,6 +678,21 @@ The bridge's audit log (`browser_audit`) records how each approved write was app
 `approval: "elicitation"` or `"token"`. Details are in the
 [API reference](api-reference.md#approval-prompts).
 
+### When the agent needs you
+
+Some steps only you can take: signing in, a CAPTCHA, a button that ignores the agent's
+synthetic clicks. Kitsune points them out on its results as a `needs_user` hint (#376): a shown
+sign-in field or a sign-in popup the browser blocked (`sign_in`), a reCAPTCHA, hCaptcha or
+Turnstile frame (`human_check`), or a click only a real click works for (`trusted_input`). It
+reads only fields, frames and URLs for this, never the page's wording, and holds nothing for
+it: the agent may still type into a sign-in form you asked it to fill.
+
+When the agent cannot go on, it asks you with `browser_ask_user`. On a client with
+elicitation you answer in the client's prompt: Done, or Can't. Otherwise the agent asks you in
+its reply; for a sign-in or CAPTCHA Kitsune sees on the tab, it can call `browser_resume`, which
+waits until the sign-in or CAPTCHA is gone from the tab, so you need not tell it you are done.
+Details are in the [API reference](api-reference.md#browser_ask_userreason-message-tab_idnone).
+
 ### Protecting your tabs
 
 The agent closes and navigates only the tabs it opened unless you approve.
@@ -766,12 +782,14 @@ has a `popup_blocked` warning with `state.reason: "script_popup"` (see
 [Script-opened popups](api-reference.md#script-opened-popups)). A script that fails
 before calling `window.open`, opens the popup later, or runs on a page whose Content
 Security Policy blocks Kitsune's wrapper gives no warning, so the click can still look
-successful or end in `outcome_not_observed`.
+successful or end in `outcome_not_observed`. When a refused popup is an OAuth, OpenID
+Connect or SAML sign-in request, the result also has a `needs_user` hint with `reason`
+`sign_in` (see [When the agent needs you](#when-the-agent-needs-you)).
 
 There are two ways through:
 
 1. **Ask the user to click (recommended).** The agent asks the user to click the
-   button, waits for them, then lists tabs with `browser_tabs` to find the popup or
+   button (`browser_ask_user`), waits for them, then lists tabs with `browser_tabs` to find the popup or
    tab that opened and continues there by `tab_id`. The user may also have to finish
    the provider's sign-in (account chooser, password, two-factor). This is the
    default to prefer because the browser is shared (#139): a trusted click moves your

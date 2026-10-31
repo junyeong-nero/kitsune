@@ -243,7 +243,7 @@ class CheckpointStoreTests(unittest.TestCase):
                 ("browser_snapshot", held),  # takes no confirm token
                 ("browser_click", {**held, "call": None}),
                 ("browser_click", {**held, "resume_token": "x"}),
-                ("browser_click", {**held, "state": {"reason": "sign_in"}}),  # no PAGE_STATE_CHECKS entry
+                ("browser_click", {**held, "state": {"reason": "sign_in"}}),  # no tab to check
                 ("browser_click", {"results": [held], "status": "held", "call": 3})):
             with self.subTest(name=name, payload=payload):
                 self.assertFalse(server.mcp._resumable(name, payload))

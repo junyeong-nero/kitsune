@@ -112,8 +112,8 @@ class ToolSchemaTitleTests(unittest.TestCase):
         cls.generated, cls.published = listing["generated"], listing["published"]
 
     def test_every_tool_is_compared(self):
-        # `all` (93) plus the named-only storage group (8).
-        self.assertEqual(len(self.published), 104 - len(playwright_tools.SCHEMAS))
+        # `all` (94) plus the named-only storage group (8).
+        self.assertEqual(len(self.published), 105 - len(playwright_tools.SCHEMAS))
         self.assertEqual(set(self.published), set(self.generated))
 
     def test_only_title_keywords_are_removed(self):

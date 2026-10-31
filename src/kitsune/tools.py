@@ -2106,5 +2106,23 @@ def browser_resume(
     return _post("/api/resume", body, timeout=container_request_seconds(RESUME_DEADLINE_SECONDS))
 
 
+@tool("core", annotations=dict(title="Ask the user", readOnlyHint=True, destructiveHint=False, idempotentHint=False,
+                               openWorldHint=False))
+def browser_ask_user(
+    reason: Annotated[Literal["sign_in", "human_check", "trusted_input", "other"], Field(
+        description="human_check: a CAPTCHA; trusted_input: a control ignoring your clicks; other: a choice.")],
+    message: Annotated[str, Field(description="What the user should do, addressed to them.")],
+    tab_id: TabId = None,
+) -> dict:
+    """Ask the user to do what you cannot: sign in, pass a CAPTCHA, click a control that ignores
+    your clicks, or choose.
+
+    Where the client can prompt, the user answers Done (ok) or Can't. Otherwise it returns
+    needs_user at once: ask in your reply. For a sign_in or human_check seen on the tab,
+    browser_resume(call, resume_token) waits until it is gone.
+    """
+    return _post("/api/ask-user", _request_body({"reason": reason, "message": message}, tab_id))
+
+
 # The core group: Playwright MCP's core tools, backed by the functions above.
 playwright_tools.register(sys.modules[__name__])

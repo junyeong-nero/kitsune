@@ -660,7 +660,83 @@
       forms: document.forms.length,
       links: document.links.length,
       images: document.images.length,
+      ...withNeedsUser(),
     };
+  }
+
+  // ── Needs the user (#376) ──
+  // What only the user can do on this page, a hint (needs_user) on page info, snapshots and the
+  // actions that snapshot; nothing waits for it or is refused. Only a shown frame of a known CAPTCHA
+  // or verification widget, by origin and path, until it is solved (human_check), or a shown sign-in
+  // field (sign_in) counts. Page text never does, so a page cannot word itself into one.
+  const HUMAN_CHECK_FRAMES = [
+    // A reCAPTCHA checkbox or its challenge; an invisible one's anchor shows no widget.
+    { widget: 'recaptcha', host: /^(?:www\.)?(?:google\.com|recaptcha\.net)$/,
+      path: /^\/recaptcha\/(?:api2|enterprise)\/(?:anchor|bframe)$/ },
+    { widget: 'hcaptcha', host: /(?:^|\.)hcaptcha\.com$/, path: /^\/captcha\// },
+    // Turnstile, also on Cloudflare's challenge pages.
+    { widget: 'turnstile', host: /^challenges\.cloudflare\.com$/, path: /^\/cdn-cgi\/challenge-platform\// },
+  ];
+  // An input with one of these autocomplete tokens signs in.
+  const SIGN_IN_AUTOCOMPLETE = new Set(['current-password', 'username', 'webauthn']);
+
+  // Rendered with a size, on the page: a challenge waiting off-page or hidden is not shown.
+  function shownOnPage(el) {
+    if (!isRendered(el)) return false;
+    const rect = el.getBoundingClientRect();
+    const view = el.ownerDocument?.defaultView || window;
+    return rect.width >= 2 && rect.height >= 2 &&
+      rect.right + (view.scrollX || 0) > 0 && rect.bottom + (view.scrollY || 0) > 0;
+  }
+
+  // { widget, frame } of a known CAPTCHA or verification frame; frame is its origin and path.
+  function humanCheckFrame(frame) {
+    let url;
+    try { url = new URL(frame.getAttribute('src') || '', frame.baseURI || document.baseURI); } catch { return null; }
+    if (url.protocol !== 'https:' || /[?&#]size=invisible(?:[&#]|$)/.test(url.search + url.hash)) return null;
+    const known = HUMAN_CHECK_FRAMES.find(({ host, path }) => host.test(url.hostname) && path.test(url.pathname));
+    return known ? { widget: known.widget, frame: url.origin + url.pathname } : null;
+  }
+
+  // 'password', 'username' or 'webauthn' for a field to sign in with, 'new-password' for one that sets
+  // a password (a sign-up or a password change), else null.
+  function signInField(input) {
+    const tokens = String(input.getAttribute('autocomplete') || '').toLowerCase().split(/\s+/);
+    if (tokens.includes('new-password')) return 'new-password';
+    if (String(input.type).toLowerCase() === 'password' || tokens.includes('current-password')) return 'password';
+    return tokens.find(token => SIGN_IN_AUTOCOMPLETE.has(token)) || null;
+  }
+
+  // A solved widget leaves its token in its response field.
+  const HUMAN_CHECK_RESPONSES = 'textarea[name="g-recaptcha-response"], textarea[name="h-captcha-response"], ' +
+    'input[name="cf-turnstile-response"]';
+
+  // { reason, evidence } of the top document and its shadow roots, else null: an unsolved CAPTCHA
+  // (a response field still empty) before a sign-in field, which a shown new-password field rules out.
+  function pageNeedsUser() {
+    let check = null, signIn = null, newPassword = false, responses = 0, solved = 0;
+    for (const el of queryTreeSelectorAll('iframe, input, textarea', document)) {
+      if (el.tagName === 'IFRAME') {
+        const widget = check ? null : humanCheckFrame(el);
+        if (widget && shownOnPage(el)) check = widget;
+      } else if (el.matches(HUMAN_CHECK_RESPONSES)) {
+        responses++;
+        if (el.value) solved++;
+      } else if (!newPassword && el.tagName === 'INPUT') {
+        const field = signInField(el);
+        if (!field || !shownOnPage(el)) continue;
+        if (field === 'new-password') newPassword = true;
+        else signIn ??= { reason: 'sign_in', evidence: { field } };
+      }
+    }
+    if (check && !(responses && solved === responses)) return { reason: 'human_check', evidence: check };
+    return newPassword ? null : signIn;
+  }
+
+  function withNeedsUser() {
+    let needsUser = null;
+    try { needsUser = pageNeedsUser(); } catch {}  // a hint never fails the read it comes with
+    return needsUser ? { needs_user: needsUser } : {};
   }
 
   // ── Page Text ──
@@ -1458,6 +1534,7 @@
         ...(unchanged && window.location?.href === baseline.url && document.title === baseline.title
           ? { unchanged: true } : {}),
       } : {}),
+      ...withNeedsUser(),
     };
   }
 

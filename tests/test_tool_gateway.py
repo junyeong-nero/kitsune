@@ -170,7 +170,7 @@ class GatewayTests(unittest.TestCase):
         listed = set(self.capability["listed"])
         self.assertTrue(GATEWAY <= listed)
         self.assertNotIn("browser_scroll", listed)
-        self.assertEqual(len(listed), 26 + len(GATEWAY))
+        self.assertEqual(len(listed), 27 + len(GATEWAY))
 
     def test_discover_then_invoke_in_one_connection(self):
         result = sessions(self.env, [

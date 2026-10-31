@@ -75,6 +75,8 @@ READ_TOOLS = {
     "browser_history_search": "historySearch",
     "browser_history_visits": "historyVisits",
     "browser_bookmarks_search": "bookmarksSearch",
+    # Asks the user; nothing reaches the page (#376).
+    "browser_ask_user": None,
 }
 DRAFT_TOOLS = {
     "browser_type": "type",
@@ -109,7 +111,7 @@ READ_ROUTES = frozenset({
     "/api/capture-network", "/api/wait-for-text", "/api/new-tab",
     "/api/resolve-tag", "/api/list-tags", "/api/list-sessions", "/api/health", "/api/logs",
     "/api/audit", "/api/scheduler", "/api/get-policy", "/api/history-search",
-    "/api/history-visits", "/api/bookmarks-search",
+    "/api/history-visits", "/api/bookmarks-search", "/api/ask-user", "/api/needs-user",
 })
 DRAFT_ROUTES = READ_ROUTES | {
     "/api/type", "/api/fill", "/api/set-editable-content", "/api/select-option", "/api/check", "/api/form-fill",

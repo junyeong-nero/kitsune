@@ -873,6 +873,7 @@ async function runCommandSettled(params, { withSnapshot, deltaSnapshot, textSnap
         if (snapshot.visibilityState) result.visibilityState = snapshot.visibilityState;
         else delete result.visibilityState;
         if (snapshot.target_ref) result.target_ref = snapshot.target_ref;
+        if (snapshot.needs_user) result.needs_user = snapshot.needs_user;
       }
     } catch (e) { result.snapshot_error = e.message; }
   }
@@ -910,6 +911,9 @@ async function takeOpenedPopup(tabId) {
 // it nor clicks again; an earlier warning stays. The URL comes from a page script, so it is
 // redacted like snapshot URLs.
 function scriptPopupBlocked(result, popup) {
+  // A refused sign-in popup is one only the user's click opens (#376): this action's hint replaces the page's.
+  const signIn = (Array.isArray(popup.urls) ? popup.urls : [popup.url]).map(signInPopup).find(Boolean);
+  if (signIn) result.needs_user = { reason: 'sign_in', evidence: { popup: signIn } };
   const url = typeof popup.url === 'string' && popup.url ? redactHistoryUrl(popup.url) : null;
   const urls = (Array.isArray(popup.urls) ? popup.urls : (popup.url ? [popup.url] : []))
     .filter(value => typeof value === 'string' && value).slice(0, 20).map(redactHistoryUrl);
@@ -920,6 +924,19 @@ function scriptPopupBlocked(result, popup) {
       '(a sign-in at state.url, for example), ask the ' +
       'user to click it, then continue in the new tab by tab_id (find it with browser_tabs), or use ' +
       'browser_trusted_click; if not (an ad, for example), ignore this warning.' };
+}
+
+// The origin and path of an OAuth or OpenID Connect authorization request (client_id with
+// response_type or redirect_uri), a SAML request or Firebase's sign-in handler; else null. Only the
+// protocol's own parameters and paths count, never the page's wording.
+function signInPopup(value) {
+  let url;
+  try { url = new URL(value); } catch { return null; }
+  if (!/^https?:$/.test(url.protocol)) return null;
+  const query = url.searchParams;
+  const oauth = query.has('client_id') && (query.has('response_type') || query.has('redirect_uri'));
+  return oauth || query.has('SAMLRequest') || url.pathname.endsWith('/__/auth/handler')
+    ? url.origin + url.pathname : null;
 }
 
 // A click meant to open its link in a new tab says so when none opened (#223).
@@ -975,6 +992,8 @@ async function openBlockedLink(tabId, link, result) {
       return;
     } catch {}
   }
+  // Only a trusted click opens it (#376).
+  result.needs_user = { reason: 'trusted_input', evidence: { popup_blocked: 'link' } };
   result.warning ??= { code: 'popup_blocked', state: { url: redactHistoryUrl(link.url) },
     hint: 'The link opens in a new tab, but no tab opened; the popup blocker likely dropped this ' +
       'synthetic click. Use browser_trusted_click on the original page control, or ask the user to click it; ' +

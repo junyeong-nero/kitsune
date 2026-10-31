@@ -38,7 +38,7 @@ from .bridge_client import BridgeClient
 from .errors import failed as _failed  # whether a tool's own result reports failure
 from .task_modes import APPROVAL_HEADER, GATEWAY_TOOL_HEADER, TOOL_CALL_HEADER, permits_tool, task_mode
 from .tools import DESTRUCTIVE, _on_current_tab
-from .waits import resume_wait_seconds
+from .waits import RESUME_WAIT_SECONDS, resume_wait_seconds
 
 
 # JSON Schema keywords whose values hold subschemas; everything else is a keyword value.
@@ -178,6 +178,8 @@ class KitsuneMCP(FastMCP):
         elicits = session is not None and _elicits(session)
         if isinstance(result, CallToolResult) and elicits:
             result = await self._approved(session, name, arguments or {}, result)
+            if name == "browser_ask_user":
+                result = await self._answered(session, result)
         return self._checkpointed(name, arguments or {}, result, elicits, tab)
 
     async def _run_tool(self, name, arguments):
@@ -233,12 +235,32 @@ class KitsuneMCP(FastMCP):
                 playwright_tools.repeat_hold.reset(hold)
                 _approval_repeat.reset(repeat)
 
+    async def _answered(self, session, result, ask_seconds=None):
+        """result of browser_ask_user on a client with elicitation: the user's answer in the client's prompt
+        (#376). Done is ok with answer "done"; Can't, a dismissed prompt or none within ASK_USER_SECONDS
+        (or ask_seconds, from browser_resume's wait; 0 asks nothing) keeps the needs_user stop, with
+        state.decision."""
+        asked = _json_payload(result, '"agent_request"')
+        if asked is None or asked.get("code") != "needs_user":
+            return result
+        state = asked["state"]
+        seconds = ASK_USER_SECONDS if ask_seconds is None else min(ask_seconds, ASK_USER_SECONDS)
+        if seconds <= 0:
+            return _with_payload(result, {**asked, "hint": UNASKED_REQUEST_HINT})
+        answer = await _elicit(session, self._mcp_server.request_context, _request_message(state), ASK_USER_SCHEMA,
+                               seconds, "Waiting for the user", "prompt")
+        decision = _choice(answer, "answer", {"Done": "done", "Can't": "declined"})
+        if decision == "done":
+            return CallToolResult(content=[_compact_json(_user_done(state, "elicitation"))])
+        return _with_payload(result, {**asked, "state": {**state, "decision": decision},
+                                      "hint": REQUEST_HINTS[decision]})
+
     def _checkpointed(self, name, arguments, result, elicits, tab, call=None):
         """result, with call and resume_token when it is a needs_user stop of a direct call that
         browser_resume can continue (#376). call is the checkpoint a resume continues, else the
         audit call id the bridge gave the hold; tab the current tab the call ran on."""
         stopped = _json_payload(result, '"needs_user"')
-        if stopped is None or not self._resumable(name, stopped, call):
+        if stopped is None or not self._resumable(name, stopped, call, elicits):
             return result
         call = stopped["call"] if call is None else call
         # Without elicitation the result keeps its confirm token; the checkpoint never holds one.
@@ -246,21 +268,27 @@ class KitsuneMCP(FastMCP):
             call, tool=name, arguments={key: value for key, value in arguments.items() if key != "confirm_token"},
             held={**stopped, "call": call, "state": _without_token(stopped["state"])}, tabId=tab)
         reason = stopped["state"]["reason"]
-        hint = RESUME_HINTS[("elicitation" if elicits else "token") if reason == "approval" else "page"]
+        hint = RESUME_HINTS[("elicitation" if elicits else "token") if reason == "approval"
+                            else "ask" if reason == "agent_request" and elicits else "page"]
         return _with_payload(result, {**stopped, "call": call, "resume_token": token,
                                       "hint": f"{stopped.get('hint') or ''} {hint}".strip()})
 
-    def _resumable(self, name, payload, call=None) -> bool:
+    def _resumable(self, name, payload, call=None, elicits=False) -> bool:
         """Whether payload is a direct call's needs_user that browser_resume can continue: an approval
-        hold of a tool that takes a confirm token, outside read and draft, or a stop the page resolves
-        (PAGE_STATE_CHECKS). A container's result or one that already has a resume_token is not."""
+        hold of a tool that takes a confirm token, outside read and draft, a stop the page resolves
+        (_page_reason), or browser_ask_user's stop the user did not answer Can't to, with elicitation.
+        A container's result, one that already has a resume_token, or any where browser_resume is not
+        published (read and draft) is not."""
         state = payload.get("state")
         if (payload.get("code") != "needs_user" or not isinstance(state, dict) or "resume_token" in payload
+                or "browser_resume" in UNPUBLISHED_TOOLS
                 or type(payload.get("call") if call is None else call) is not int):
             return False
         if state.get("reason") == "approval":
             return state.get("approvable") is not False and self._repeatable(name)
-        return state.get("reason") in PAGE_STATE_CHECKS
+        if state.get("reason") == "agent_request" and (name != "browser_ask_user" or state.get("decision") == "declined"):
+            return False
+        return (elicits and state.get("reason") == "agent_request") or _page_reason(state) is not None
 
     async def _resume_direct(self, arguments):
         """browser_resume of a direct call this server keeps a checkpoint for; None otherwise, so the
@@ -306,9 +334,19 @@ class KitsuneMCP(FastMCP):
         elicits = session is not None and _elicits(session)
         reason = held["state"]["reason"]
         request = self._mcp_server.request_context if session is not None else None
-        if reason != "approval" and not await _page_resolved(session, request, reason, held["state"], wait):
-            stopped = CallToolResult(content=[_compact_json(held)], isError=True)
-            return self._checkpointed(name, args, stopped, elicits, checkpoint["tabId"], call)
+        if reason == "agent_request" and elicits:
+            # browser_ask_user asks again in the client's prompt.
+            result = await self._run_tool(name, args)
+            if isinstance(result, CallToolResult):
+                result = await self._answered(session, result, wait)
+            return self._checkpointed(name, args, result, elicits, checkpoint["tabId"], call)
+        if reason != "approval":
+            page = _page_reason(held["state"])  # None: asked with elicitation, now without
+            if page is None or not await _page_resolved(session, request, page, held["state"], wait):
+                stopped = CallToolResult(content=[_compact_json(held)], isError=True)
+                return self._checkpointed(name, args, stopped, elicits, checkpoint["tabId"], call)
+            if reason == "agent_request":  # what browser_ask_user asked for is gone from the tab
+                return CallToolResult(content=[_compact_json(_user_done(held["state"], "page"))])
         hold = playwright_tools.repeat_hold.set(held)
         try:
             result = await self._run_tool(name, args)
@@ -591,34 +629,30 @@ def _sends_progress(request) -> bool:
     return request is not None and request.meta is not None and request.meta.progressToken is not None
 
 
-async def _ask_user(session, request, name: str, arguments: dict, state: dict, limit=None) -> str:
-    """Ask the user about a held call: "approved", "declined" or "cancelled" (dismissed, failed or
-    unanswered until the token's expiresInSeconds less ELICITATION_MARGIN_SECONDS, or limit seconds)."""
-    seconds = max(1, (state.get("expiresInSeconds") or 0) - ELICITATION_MARGIN_SECONDS)
-    if limit is not None:
-        seconds = min(seconds, limit)
+async def _elicit(session, request, message: str, schema: dict, seconds: float, waiting: str, prompt: str):
+    """The client's answer to a form prompt (an ElicitResult), or None when it failed or went unanswered
+    for seconds. waiting is the progress message meanwhile; prompt names it when it is closed unanswered."""
     answer = elicitation_id = None
     answered = False
     waited = anyio.move_on_after(seconds)
     try:
         async with anyio.create_task_group() as group:
             if _sends_progress(request):
-                group.start_soon(_keep_alive, session, request, "Waiting for the user's approval")
+                group.start_soon(_keep_alive, session, request, waiting)
             with waited:
                 # The id the SDK's send_request gives the elicitation request, to cancel it unanswered.
                 elicitation_id = getattr(session, "_request_id", None)
                 try:
-                    answer = await session.elicit_form(_approval_message(name, arguments, state), APPROVAL_SCHEMA,
-                                                       related_request_id=request.request_id)
-                except (McpError, ValueError):  # the client failed it, or answered outside APPROVAL_SCHEMA
+                    answer = await session.elicit_form(message, schema, related_request_id=request.request_id)
+                except (McpError, ValueError):  # the client failed it, or answered outside the schema
                     pass
                 answered = True
             group.cancel_scope.cancel()
     finally:
         if not answered and elicitation_id is not None:
             # Timed out, or the client cancelled the tool call: close the client's prompt, as an answer
-            # after this approves nothing.
-            reason = "The approval prompt timed out" if waited.cancelled_caught else "The tool call was cancelled"
+            # after this counts for nothing.
+            reason = f"The {prompt} timed out" if waited.cancelled_caught else "The tool call was cancelled"
             with anyio.CancelScope(shield=True):
                 try:
                     await session.send_notification(ServerNotification(CancelledNotification(
@@ -626,12 +660,58 @@ async def _ask_user(session, request, name: str, arguments: dict, state: dict, l
                         related_request_id=request.request_id)
                 except (anyio.BrokenResourceError, anyio.ClosedResourceError):  # the client is gone
                     pass
+    return answer
+
+
+def _choice(answer, field: str, choices: dict) -> str:
+    """What a prompt's answer chose: choices[its field's value], "declined" or "cancelled"."""
     if answer is None or answer.action == "cancel":
         return "cancelled"
     if answer.action == "decline":
         return "declined"
-    choice = (answer.content or {}).get("decision")
-    return "approved" if choice == "Approve" else "declined" if choice == "Decline" else "cancelled"
+    return choices.get((answer.content or {}).get(field), "cancelled")
+
+
+async def _ask_user(session, request, name: str, arguments: dict, state: dict, limit=None) -> str:
+    """Ask the user about a held call: "approved", "declined" or "cancelled" (dismissed, failed or
+    unanswered until the token's expiresInSeconds less ELICITATION_MARGIN_SECONDS, or limit seconds)."""
+    seconds = max(1, (state.get("expiresInSeconds") or 0) - ELICITATION_MARGIN_SECONDS)
+    if limit is not None:
+        seconds = min(seconds, limit)
+    answer = await _elicit(session, request, _approval_message(name, arguments, state), APPROVAL_SCHEMA, seconds,
+                           "Waiting for the user's approval", "approval prompt")
+    return _choice(answer, "decision", {"Approve": "approved", "Decline": "declined"})
+
+
+# ── browser_ask_user (#376, docs/api-reference.md#browser_ask_userreason-message-tab_idnone) ──
+# The bridge answers browser_ask_user with a needs_user stop (reason agent_request). On a client with
+# form elicitation the server asks the user in the client's prompt, Done or Can't (_answered); without
+# it the stop returns at once, for the agent to ask in its reply.
+ASK_USER_SECONDS = RESUME_WAIT_SECONDS
+ASK_USER_SCHEMA = {"type": "object", "required": ["answer"], "properties": {
+    "answer": {"type": "string", "title": "Answer", "enum": ["Done", "Can't"]}}}
+REQUEST_HINTS = {
+    "declined": "The user answered that they cannot do it. Do not ask again for the same thing; tell them what "
+                "you could not finish, or ask what to do instead.",
+    "cancelled": "The prompt was dismissed or timed out without an answer. Ask the user in your reply.",
+}
+UNASKED_REQUEST_HINT = ("browser_resume asked nothing with wait=0. Resume with a wait to ask the user in the "
+                        "client's prompt.")
+
+
+def _request_message(state: dict) -> str:
+    """The prompt: the agent's message, labeled as the agent's, and its tab."""
+    tab = " - ".join(str(state[key]) for key in ("title", "url") if state.get(key))
+    lines = [f"The agent asks: {state.get('message')}"] + ([f"Tab: {tab}"] if tab else [])
+    return "\n".join(lines + ["Done tells the agent you did it; Can't tells it you could not."])
+
+
+def _user_done(state: dict, via: str) -> dict:
+    """browser_ask_user's result once the user is done: they answered Done in the prompt (via
+    "elicitation"), or what it asked for is gone from the tab (via "page")."""
+    return {"ok": True, "answer": "done", "via": via, "reason": state.get("detail"),
+            **({"tabId": state["tabId"]} if "tabId" in state else {}),
+            "hint": "Check the page (browser_snapshot) before going on."}
 
 
 # ── Direct-call checkpoints (#376, docs/checkpoint-resume.md#direct-calls) ──
@@ -643,10 +723,20 @@ async def _ask_user(session, request, name: str, arguments: dict, state: dict, l
 # it names no container call. Another MCP server, or this one after a restart, cannot resume it.
 RESUME_MAX_CHECKPOINTS = 20  # bridge.RESUME_MAX_CHECKPOINTS
 RESUME_TTL_SECONDS = 30 * 60  # bridge.RESUME_TTL_SECONDS
+
+
+def _hint_gone(reason: str):
+    def gone(state: dict) -> bool:
+        """Whether tab state.tabId no longer shows the needs_user hint of reason; a failed read is not."""
+        result = tools._post("/api/needs-user", {"tabId": state["tabId"]}, timeout=10)
+        return not _failed(result) and (result.get("needs_user") or {}).get("reason") != reason
+    return gone
+
+
 # needs_user reasons the page resolves (sign_in, human_check) -> check(state), true once the user is
 # done: browser_resume polls it every PAGE_STATE_POLL_SECONDS for up to its wait, then runs the call
-# again. A reason without a check gets no checkpoint.
-PAGE_STATE_CHECKS: dict = {}
+# again (browser_ask_user's returns done). A stop without a check (_page_reason) gets no checkpoint.
+PAGE_STATE_CHECKS: dict = {reason: _hint_gone(reason) for reason in ("sign_in", "human_check")}
 PAGE_STATE_POLL_SECONDS = 1
 RESUME_HINTS = {
     "elicitation": "If the user wants it done later, browser_resume(call, resume_token) asks them again in the "
@@ -655,6 +745,7 @@ RESUME_HINTS = {
              "call only if the hold no longer applies, as calling the tool again would.",
     "page": "Tell the user what to do (state.message), then call browser_resume(call, resume_token): it waits "
             "up to wait seconds for the page to show the user is done, then continues the call.",
+    "ask": "browser_resume(call, resume_token) asks the user again in the client's prompt.",
 }
 UNASKED_APPROVAL_HINT = ("The held action did not run: browser_resume asked nothing with wait=0. Resume with a "
                          "wait to ask the user in the approval prompt.")
@@ -692,6 +783,16 @@ def _direct_checkpoint(call: int, token: str) -> dict | None:
     if checkpoint is None or not hmac.compare_digest(_resume_token_digest(token), checkpoint["token"]):
         return None
     return checkpoint
+
+
+def _page_reason(state: dict) -> str | None:
+    """The PAGE_STATE_CHECKS entry that tells when a stop on tab state.tabId is resolved, else None: its
+    reason, or for browser_ask_user's stop (agent_request) what it asked for, if the tab showed it then
+    (state.evidence): otherwise the check could tell nothing."""
+    reason = state.get("reason")
+    if reason == "agent_request":
+        reason = state.get("detail") if state.get("evidence") else None
+    return reason if reason in PAGE_STATE_CHECKS and type(state.get("tabId")) is int else None
 
 
 async def _page_resolved(session, request, reason: str, state: dict, wait: float) -> bool:

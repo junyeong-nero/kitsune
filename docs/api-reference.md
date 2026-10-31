@@ -5,7 +5,7 @@ Base URL: `http://127.0.0.1:47651`
 ## MCP tool surface
 
 `KITSUNE_CAPS=core` is the default; `KITSUNE_CAPS=all` registers
-96 tools. The groups are `core`, `browse`, `read`, `inspect`, `tabs`, `automation`,
+97 tools. The groups are `core`, `browse`, `read`, `inspect`, `tabs`, `automation`,
 `network`, `admin`, `storage`, and `history`. A comma list selects those groups only.
 `all` enables every group except `storage` and `history`, which read personal data and
 must be named (`KITSUNE_CAPS=all,storage,history`); see
@@ -13,7 +13,8 @@ must be named (`KITSUNE_CAPS=all,storage,history`); see
 See [Tools and capabilities](guide.md#tools) for the complete tool list per group.
 
 **The `core` group is Playwright MCP's 25 core tools and Kitsune's
-[`browser_resume`](#browser_resumecall-resume_token-observednone-wait120)** (#376). The 25
+[`browser_resume`](#browser_resumecall-resume_token-observednone-wait120) and
+[`browser_ask_user`](#browser_ask_userreason-message-tab_idnone)** (#376). The 25
 are published verbatim from `src/kitsune/playwright_tools.json`: `browser_close`, `browser_resize`,
 `browser_console_messages`, `browser_handle_dialog`, `browser_emulate_media`,
 `browser_evaluate`, `browser_file_upload`, `browser_drop`, `browser_find`,
@@ -532,7 +533,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `browser_window_unavailable` | No active tab: the extension sees no normal window it can use | true |
 | `host_permission_denied` | Firefox does not let Kitsune script the tab's site (`state.reason`: `not_granted`, `restricted_domain`) | true |
 | `permission_required` | A [history or bookmark lookup](#history-and-bookmarks) needs an optional browser permission the user has not granted (`state.permission`: `history` or `bookmarks`). Only the user can grant it, on Kitsune's options page; the agent cannot. Also returned, with a reload hint, when the permission is granted but the running extension has not picked it up. `browser_trusted_type`, `browser_trusted_press_key` and `browser_trusted_drag` return it when the bridge lacks macOS Accessibility permission; nothing was sent | false |
-| `needs_user` | Nothing ran: only the user can let the call go on (#376). `state.reason: "approval"`: it needs the user's approval, and `state.detail` is the code it replaces (below). `state.message` is a short request to show the user. A direct call's `state.confirmToken` runs it once the user approves; on an MCP client with elicitation the MCP server asks the user itself and the result has no token (see [Approval prompts](#approval-prompts)). `state.approvable` is `false` in read and draft modes, which cannot approve, and `state.approval` says how it can be approved (`token`, `elicitation`). A direct call's result also has `call`, the audit call id of the hold, and, from the MCP server when the user did not resolve it in the call, `resume_token` for [`browser_resume`](checkpoint-resume.md#direct-calls) | false |
+| `needs_user` | Nothing ran: only the user can let the call go on (#376). `state.reason: "approval"`: it needs the user's approval, and `state.detail` is the code it replaces (below). `state.message` is a short request to show the user. A direct call's `state.confirmToken` runs it once the user approves; on an MCP client with elicitation the MCP server asks the user itself and the result has no token (see [Approval prompts](#approval-prompts)). `state.approvable` is `false` in read and draft modes, which cannot approve, and `state.approval` says how it can be approved (`token`, `elicitation`). `state.reason: "agent_request"`: [`browser_ask_user`](#browser_ask_userreason-message-tab_idnone) asks the user, and `state.detail` is what it asks for. A direct call's result also has `call`, the audit call id of the hold, and, from the MCP server when the user did not resolve it in the call, `resume_token` for [`browser_resume`](checkpoint-resume.md#direct-calls). What Kitsune sees only the user can do on a page (`sign_in`, `human_check`, `trusted_input`) is never this error, but a [`needs_user` hint](#needs_user-hints) on the result | false |
 | `user_active` | The user is using the tab (`state.reason`: `input`, `typing`, `navigating`); the write or navigation did not run (see [User activity](#user-activity)) | true |
 | `outcome_not_observed` | The action was dispatched, but the outcome given in `expect` did not happen in time (see [Action outcomes](#action-outcomes)) | false for writes |
 | `no_current_tab` | From the MCP server: a write or navigation names no tab and the agent has no current tab (`state.tool`, `state.action` for a container step; `state.ownTabs`: the open tabs this MCP client opened, when there are any); nothing was sent (see [No current tab](#no-current-tab)) | false |
@@ -565,6 +566,38 @@ the old `state` carried moves to `state.holdReason`; every other field keeps its
 Below, `needs_user` (`user_tab`) is a `needs_user` result with that `state.detail`. The
 Python API raises [`ConfirmationRequired`](python-api.md#errors) for an approval with a
 token, and for the old codes too.
+
+#### needs_user hints
+
+When Kitsune sees that only the user can do something on a page, the result carries a
+`needs_user` object (#376). It is a hint, not a hold: nothing was refused or held for it, an
+`ok` result stays `ok` and a failure keeps its own `code`. `message` is a short request to
+show the user; `hint` tells the agent to ask the user
+([`browser_ask_user`](#browser_ask_userreason-message-tab_idnone)) if it cannot go on.
+
+```json
+{ "ok": true, "snapshot": "…",
+  "needs_user": { "reason": "sign_in", "message": "Sign in on this page.", "evidence": { "field": "password" },
+                  "hint": "Kitsune noticed this; nothing was held for it. If you cannot go on without the user, ask them: browser_ask_user(reason, message)." } }
+```
+
+| `reason` | When | `evidence` |
+|---|---|---|
+| `human_check` | A shown frame of a known CAPTCHA or verification widget, by origin and path: reCAPTCHA (`www.google.com` or `www.recaptcha.net`, `/recaptcha/api2/` or `/recaptcha/enterprise/` `anchor` or `bframe`), hCaptcha (`*.hcaptcha.com/captcha/…`) or Cloudflare Turnstile (`challenges.cloudflare.com/cdn-cgi/challenge-platform/…`), also in a shadow root. Not an invisible widget (`size=invisible`), a challenge frame still hidden, or `http`. Gone once every response field of these widgets on the page (`g-recaptcha-response`, `h-captcha-response`, `cf-turnstile-response`) holds a token, the widget solved | `widget` (`recaptcha`, `hcaptcha`, `turnstile`), `frame` (its origin and path) |
+| `sign_in` | A shown password field, or a shown field whose `autocomplete` is `current-password`, `username` or `webauthn`, unless a shown field sets a new password (`autocomplete="new-password"`: a sign-up or a password change). A shown CAPTCHA comes first | `field` (`password`, `username`, `webauthn`) |
+| `sign_in` | A click whose OAuth or OpenID Connect request (`client_id` with `response_type` or `redirect_uri`), SAML request (`SAMLRequest`) or Firebase sign-in handler (`/__/auth/handler`) popup the popup blocker refused (see [Script-opened popups](#script-opened-popups)) | `popup` (its origin and path) |
+| `trusted_input` | A click on a link whose tab the popup blocker dropped and Kitsune could not open (see [Popup-blocked links](#popup-blocked-links)), or a click whose `expect` was not met while its target is still shown (see [Action outcomes](#action-outcomes)) | `popup_blocked: "link"`, or `target_visible: true` |
+
+- Page text never makes a hint, and neither does a hidden or off-page element, so a page
+  cannot word itself into one. A page can still show a field or frame that makes one: it
+  only ever adds a hint.
+- `sign_in` and `human_check` come from the page as it is: on `browser_page_info` (and
+  `/api/page-info`), `browser_snapshot`, and each action whose result has a
+  [post-action snapshot](#post-action-snapshots), from the tab's top document and its shadow
+  roots (not its frames' documents). A click's own hint (a refused sign-in popup,
+  `trusted_input`) replaces the page's.
+- The extension checks one query of the document's frames and fields per read, so the
+  hints cost no extra request.
 
 The connection codes (`bridge_unavailable`, `token_mismatch`, `port_conflict`,
 `extension_disconnected` before sending, `extension_version_mismatch`,
@@ -893,7 +926,9 @@ means the tab could not be read within the allowance. A hint that needs a read t
 allowance had no time for (an opened tab, a click target still visible) is left out. For `browser_click`, when the clicked element (the result's `target_ref`, or
 the request's ref or selector if no post-action snapshot was taken) is still visible
 after the wait, the hint adds that the page may accept only trusted input and that
-`browser_trusted_click` (in the `browse` capability) is the alternative. That is a
+`browser_trusted_click` (in the `browse` capability) is the alternative, and the result
+has a [`needs_user` hint](#needs_user-hints) (`trusted_input`, `evidence.target_visible`) for
+asking the user to click it; the code stays `outcome_not_observed`. That is a
 possibility, not a diagnosis: the page may also be slow, or expect something else.
 Kitsune never retries the click or switches to an OS click on its own. A coordinate
 click with no `target_ref`, or a target that is gone, gets no such hint.
@@ -968,6 +1003,9 @@ If such a link, or a failed `tabs.create`, leaves no tab, the click result has a
   "hint": "The link opens in a new tab, but no tab opened; the popup blocker likely dropped this synthetic click. ..." } }
 ```
 
+Only a trusted click opens it, so the result also has a [`needs_user` hint](#needs_user-hints)
+(`trusted_input`, `evidence.popup_blocked: "link"`) for asking the user to click it (#376).
+
 The warning's `state.url` uses [History URL redaction](#history-url-redaction), so tokens
 and OAuth secrets read `[redacted]`. The fallback itself still opens the original URL.
 Do not navigate to a redacted placeholder URL; use the original page control instead.
@@ -1018,6 +1056,12 @@ called `window.open` and got `null` returns a `popup_blocked` warning with
 
 This is a likely cause, not a diagnosis, and Kitsune does not retry the popup or switch
 to an OS click on its own. With `expect`, an unmet outcome uses the warning's hint.
+
+When a refused URL is a sign-in request (an OAuth or OpenID Connect authorization request:
+`client_id` with `response_type` or `redirect_uri`; a SAML `SAMLRequest`; Firebase's
+`/__/auth/handler`), the result also has a [`needs_user` hint](#needs_user-hints) (`sign_in`,
+`evidence.popup`: its origin and path) for asking the user to click the sign-in button
+(#376). Only those protocol parameters count, never the button's label.
 
 The wrapper is page code that the content script injects with a `<script>` element
 before page scripts run. In a page that was already open when Kitsune first reached it,
@@ -1998,7 +2042,8 @@ Entries of commands a [`browser_tools_call`](#tool-gateway) ran add
 
 A direct request held for the user (`needs_user`) gets an audit call id: its entries add
 `call`, the `call` of its result (#376). Container steps keep theirs in `parent.call` and
-have no `call` of their own.
+have no `call` of their own. A [`browser_ask_user`](#browser_ask_userreason-message-tab_idnone)
+request gets one too: an `askUser` entry with `params.reason` and `params.tabId`, without its message.
 
 An approved write's entries (its `params.confirmation: "accepted"` entry and the write's
 own) add `approval`, how the user approved it (#376): `"elicitation"` when the MCP server
@@ -2972,7 +3017,7 @@ per step), so prefer `browser_drag` unless the page ignores it.
 ### `browser_resume(call, resume_token, observed=None, wait=120)`
 
 `core` group (#376; it was in `automation`). Continues a call whose response had `call` and
-`resume_token`.
+`resume_token`, including [`browser_ask_user`](#browser_ask_userreason-message-tab_idnone)'s.
 
 A direct call that stopped on `needs_user` runs again from its held request, from the
 checkpoint the MCP server keeps: nothing that ran `ok` is sent again, and the held request
@@ -2992,6 +3037,42 @@ step. The response has the original call's shape (`results`, `progress`, `status
 `summary`; a workflow adds `workflow` and `steps`). While the call is still not `ok`,
 the response also has `call` and a new `resume_token`. See
 [Checkpoint and resume](checkpoint-resume.md) for each decision and error.
+
+### `browser_ask_user(reason, message, tab_id=None)`
+
+`core` group, and published in every [task mode](#task-modes) (#376). Asks the user for what the
+agent cannot do or Kitsune cannot see: `reason` is `sign_in`, `human_check` (a CAPTCHA or
+verification), `trusted_input` (a control that ignores synthetic clicks) or `other` (a choice,
+an audio puzzle). `message` is addressed to the user (at most 1,000 characters are kept);
+`tab_id` defaults to the current tab. Nothing reaches the page, and the audit log records the
+request (`askUser`, without the message).
+
+- **On a client with elicitation** the MCP server asks the user in the client's prompt,
+  labeled as the agent's request and naming the tab, with Done and Can't, for up to 120 s:
+
+  ```json
+  { "ok": true, "answer": "done", "via": "elicitation", "reason": "sign_in", "tabId": 12,
+    "hint": "Check the page (browser_snapshot) before going on." }
+  ```
+
+  Can't, or a declined prompt, returns `needs_user` with `state.decision: "declined"`; a
+  dismissed prompt, or none answered in time, `"cancelled"` with `call` and `resume_token`:
+  `browser_resume` asks again.
+- **Without elicitation** it returns `needs_user` at once, for the agent to ask in its reply:
+
+  ```json
+  { "ok": false, "error": "The agent needs the user", "code": "needs_user", "retryable": false,
+    "state": { "reason": "agent_request", "detail": "sign_in", "message": "Sign in to your shop account, please.",
+               "tabId": 12, "url": "https://shop.example/login", "title": "Sign in", "evidence": { "field": "password" } },
+    "call": 61, "resume_token": "…",
+    "hint": "Nothing was done. Ask the user in your reply (state.message) and wait for their answer. Tell the user what to do …" }
+  ```
+
+  When `reason` is `sign_in` or `human_check` and the tab shows that
+  [hint](#needs_user-hints) (`state.evidence`), the result has `call` and `resume_token`:
+  `browser_resume` waits up to `wait` seconds for the hint to be gone from the tab and then
+  returns `{ "ok": true, "answer": "done", "via": "page", … }`. Otherwise there is nothing
+  to wait for, and no `resume_token`. See [Direct calls](checkpoint-resume.md#direct-calls).
 
 ### WordPress workflow
 
@@ -3086,7 +3167,8 @@ Also accepts POST with `{ "tabId": 123 }`. MCP tool: `browser_page_info(tab_id=N
 { "url": "...", "title": "...", "readyState": "complete", "lang": "en", "width": 890, "height": 992, "forms": 0, "links": 1, "images": 0 }
 ```
 `readyState` is the document's `document.readyState`; see
-[Snapshot readiness](#snapshot-readiness).
+[Snapshot readiness](#snapshot-readiness). A page that shows a sign-in field or a CAPTCHA adds a
+[`needs_user` hint](#needs_user-hints).
 
 ### GET /api/page-text
 All visible text on the page.
@@ -3485,6 +3567,24 @@ for its `call`.
 { "call": 42, "resume_token": "x3J...", "observed": { "1": "not_applied", "0.1.2": "applied" } }
 ```
 Returns the original call's response shape; see [Checkpoint and resume](checkpoint-resume.md).
+
+### POST /api/ask-user
+The needs_user stop of `browser_ask_user` (#376); nothing reaches the page. `tabId` is optional.
+```json
+{ "reason": "sign_in", "message": "Sign in to your shop account, please.", "tabId": 12 }
+```
+Returns `needs_user` with `state.reason: "agent_request"`, `state.detail` (the `reason`), `state.message`,
+the tab's `tabId`, `url` and `title`, `state.evidence` when the tab shows that
+[hint](#needs_user-hints), and `call`; see
+[`browser_ask_user`](#browser_ask_userreason-message-tab_idnone). Asking the user is the MCP server's.
+
+### POST /api/needs-user
+The [`needs_user` hint](#needs_user-hints) a tab shows now, which `browser_resume` polls (#376).
+```json
+{ "tabId": 12 }
+```
+Returns `{ "ok": true, "tabId": 12, "needs_user": { "reason": "sign_in", … } }`, with `needs_user: null`
+when the tab shows none.
 
 ## Workflows (NEW)
 

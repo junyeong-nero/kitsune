@@ -84,6 +84,7 @@ function harness(onClick = () => {}) {
         if (msg.action === 'ping') return { ok: true, version: Infinity };
         if (msg.action === 'click') return (await onClick(h, msg)) || { ok: true };
         if (msg.action === 'openedPopup') return h.openedPopup ? { opened_popup: h.openedPopup } : {};
+        if (msg.action === 'getSnapshot' && h.snapshot) return h.snapshot;
         return { ok: true };
       },
       executeScript: async () => {},
@@ -220,6 +221,8 @@ async function main() {
   assert.equal(warned.warning.code, 'popup_blocked');
   assert.deepEqual(warned.warning.state, { url: 'https://example.com/ok2' });
   assert.match(warned.warning.hint, /popup blocker/);
+  // #376: only a trusted click opens it, a hint for the user (needs_user) that holds nothing.
+  assert.deepEqual(warned.needs_user, { reason: 'trusted_input', evidence: { popup_blocked: 'link' } });
   assert.equal('targetBlankLink' in warned, false, 'the content-script field stays internal');
   opener.assertClean();
 
@@ -231,7 +234,8 @@ async function main() {
   const hidden = harness(() => ({ ok: true, warning: { code: 'hidden_or_covered' }, targetBlankLink: { ...link, opener: true } }));
   const hiddenClick = start(hidden, { action: 'click', tabId: 1, selector: '#hidden' });
   await hidden.tick(500);
-  assert.deepEqual(await hiddenClick.result, { ok: true, warning: { code: 'hidden_or_covered' } });
+  assert.deepEqual(await hiddenClick.result, { ok: true, warning: { code: 'hidden_or_covered' },
+    needs_user: { reason: 'trusted_input', evidence: { popup_blocked: 'link' } } });
 
   // #223: a middle or Ctrl/Cmd click's link opens in a background tab after the bounded wait,
   // as a popup-blocked link does, whatever its target.
@@ -297,7 +301,41 @@ async function main() {
   assert.match(refusedResult.warning.hint, /if not \(an ad, for example\), ignore this warning/);
   assert.match(refusedResult.warning.hint, /browser_trusted_click/);
   assert.equal('scriptPopup' in refusedResult, false, 'the content-script field stays internal');
+  // A client_id alone does not make it an OAuth request: no sign_in hint (#376).
+  assert.equal('needs_user' in refusedResult, false);
   refused.assertClean();
+  // #376: a refused OAuth, OpenID Connect or SAML request, or Firebase's sign-in handler, is a sign_in hint
+  // naming the popup's origin and path; the page's earlier hint gives way to the click's.
+  const signInPopups = [
+    ['https://accounts.google.com/o/oauth2/v2/auth?client_id=1&response_type=code&state=s1',
+      'https://accounts.google.com/o/oauth2/v2/auth'],
+    ['https://www.facebook.com/v19.0/dialog/oauth?client_id=1&redirect_uri=https%3A%2F%2Fshop.example%2Fcb',
+      'https://www.facebook.com/v19.0/dialog/oauth'],
+    ['https://idp.example/sso?SAMLRequest=abc', 'https://idp.example/sso'],
+    ['https://shop-1.firebaseapp.com/__/auth/handler?apiKey=k&providerId=google.com',
+      'https://shop-1.firebaseapp.com/__/auth/handler'],
+  ];
+  for (const [popupUrl, popup] of signInPopups) {
+    const signIn = harness(() => ({ ok: true, scriptPopup: { url: popupUrl, urls: ['https://ads.example/x', popupUrl] } }));
+    const signInResult = await signIn.send({ action: 'click', tabId: 1, selector: '#google' });
+    assert.equal(signInResult.warning.code, 'popup_blocked');
+    assert.deepEqual(signInResult.needs_user, { reason: 'sign_in', evidence: { popup } }, popupUrl);
+  }
+  // An action's snapshot brings the page's hint along; a refused sign-in popup replaces it.
+  const pageHint = { reason: 'human_check', evidence: { widget: 'recaptcha', frame: 'https://www.google.com/recaptcha/api2/anchor' } };
+  const snapshotted = harness();
+  snapshotted.snapshot = { snapshot: '- button "Next" [ref=e1]', needs_user: pageHint };
+  assert.deepEqual((await snapshotted.send({ action: 'click', tabId: 1, selector: '#next', includeSnapshot: true })).needs_user,
+    pageHint);
+  const replaced = harness(() => ({ ok: true, scriptPopup: { url: signInPopups[0][0] } }));
+  replaced.snapshot = { snapshot: '- button "Google" [ref=e1]', needs_user: pageHint };
+  assert.deepEqual((await replaced.send({ action: 'click', tabId: 1, selector: '#google', includeSnapshot: true })).needs_user,
+    { reason: 'sign_in', evidence: { popup: signInPopups[0][1] } });
+  for (const notSignIn of ['https://ads.example/x?redirect_uri=y', 'javascript:alert(1)?client_id=1&response_type=code',
+    'not a url']) {
+    const other = harness(() => ({ ok: true, scriptPopup: { url: notSignIn } }));
+    assert.equal('needs_user' in await other.send({ action: 'click', tabId: 1, selector: '#google' }), false, notSignIn);
+  }
   // The URL comes from a page script, so it is redacted like snapshot URLs.
   const secret = harness(() => ({ ok: true,
     scriptPopup: { url: 'https://accounts.example/auth?client_id=1&nonce=abc123&state=s1#access_token=ya29.a0Secret' } }));

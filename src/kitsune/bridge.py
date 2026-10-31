@@ -1872,6 +1872,95 @@ def _refusal_message(action, params, result):
     return f"Allow the agent to {verb} a tab it did not open ({_tab_label(state)}){url}?"
 
 
+# ── needs_user hints (docs/api-reference.md#needs_user-hints, #376) ──
+# What only the user can do, as Kitsune sees it: the extension reports a sign-in field, a blocked
+# sign-in popup or a CAPTCHA frame (sign_in, human_check), or a link only a trusted click opens
+# (trusted_input), and an unmet click outcome whose target is still shown is trusted_input too. Each
+# is a needs_user object on the result, never a failure: nothing was held or refused for it. The
+# bridge adds its message, for the user, and its hint.
+NEEDS_USER_HINT = ("Kitsune noticed this; nothing was held for it. If you cannot go on without the user, "
+                   "ask them: browser_ask_user(reason, message).")
+_HUMAN_CHECK_WIDGETS = {"recaptcha": "reCAPTCHA", "hcaptcha": "hCaptcha", "turnstile": "Cloudflare Turnstile"}
+
+
+def _needs_user_message(reason, evidence):
+    if reason == "sign_in" and evidence.get("popup"):
+        host = urlsplit(str(evidence["popup"])).hostname or "a sign-in page"
+        return (f"Sign in: the browser blocked the sign-in window ({host}) the agent's click opened. "
+                "Click the sign-in button yourself.")
+    if reason == "sign_in":
+        return "Sign in on this page."
+    if reason == "human_check":
+        return f"Complete the {_HUMAN_CHECK_WIDGETS.get(evidence.get('widget'), 'verification')} check on this page."
+    if evidence.get("popup_blocked") == "link":
+        return "Click the link yourself: the browser blocked the tab the agent's click opened."
+    return "Click it yourself: the page ignored the agent's click."
+
+
+def _needs_user_hint(reason, evidence):
+    """A needs_user hint object: reason, message, evidence and hint."""
+    return {"reason": reason, "message": _needs_user_message(reason, evidence), "evidence": evidence,
+            "hint": NEEDS_USER_HINT}
+
+
+def _described_needs_user(result):
+    """result with the extension's needs_user hint given its message and hint."""
+    hint = result.get("needs_user") if isinstance(result, dict) else None
+    if (not isinstance(hint, dict) or "message" in hint
+            or hint.get("reason") not in ("sign_in", "human_check", "trusted_input")):
+        return result
+    evidence = hint.get("evidence") if isinstance(hint.get("evidence"), dict) else {}
+    return {**result, "needs_user": _needs_user_hint(hint["reason"], evidence)}
+
+
+# ── browser_ask_user (docs/api-reference.md#browser_ask_userreason-message-tab_idnone, #376) ──
+# The agent asks the user for what Kitsune cannot see or do. Nothing reaches the page: the result is a
+# needs_user stop (reason agent_request, detail what it asks for) with an audit call id. When its tab
+# shows the needs_user hint the agent asks about, state.evidence has it, so the MCP server's
+# browser_resume can wait for it to go away.
+AGENT_REQUESTS = ("sign_in", "human_check", "trusted_input", "other")
+AGENT_REQUEST_MESSAGE_CHARS = 1000
+
+
+async def _agent_request(body):
+    reason, message = body.get("reason"), body.get("message")
+    if reason not in AGENT_REQUESTS:
+        return {"error": f"reason must be one of {', '.join(AGENT_REQUESTS)}", "code": "invalid_argument",
+                "retryable": False}
+    if not isinstance(message, str) or not message.strip():
+        return {"error": "message must tell the user what to do", "code": "invalid_argument", "retryable": False}
+    message = message.strip()[:AGENT_REQUEST_MESSAGE_CHARS]
+    state = {"reason": "agent_request", "detail": reason, "message": message}
+    tab_id = _coerce_tab_id(body.get("tabId"))
+    if tab_id is not None:
+        info = await send_to_extension("getPageInfo", {"tabId": tab_id}, timeout=10)
+        if not isinstance(info, dict) or info.get("code") == "tab_closed":
+            return info
+        state["tabId"] = tab_id
+        if not info.get("error"):  # an about: page or one still loading is asked about without its details
+            state.update({key: info[key] for key in ("url", "title") if info.get(key)})
+            seen = info.get("needs_user")
+            if isinstance(seen, dict) and seen.get("reason") == reason and isinstance(seen.get("evidence"), dict):
+                state["evidence"] = seen["evidence"]
+    call = _hold_call()  # before the audit entry, which records it
+    _audit("askUser", {"reason": reason, **({"tabId": tab_id} if tab_id is not None else {})},
+           False, "needs_user", 0)
+    return {"ok": False, "error": "The agent needs the user", "code": "needs_user", "retryable": False,
+            "state": state, **({"call": call} if call is not None else {}),
+            "hint": "Nothing was done. Ask the user in your reply (state.message) and wait for their answer."}
+
+
+async def _tab_needs_user(body):
+    """{tabId, needs_user} of the hint a tab shows now (needs_user null without one), for browser_resume."""
+    tab_id = _coerce_tab_id(body.get("tabId"))
+    if tab_id is None:
+        return {"error": "tabId is required", "code": "invalid_argument", "retryable": False}
+    info = await send_to_extension("getPageInfo", {"tabId": tab_id}, timeout=10)
+    if not isinstance(info, dict) or info.get("error"):
+        return info
+    return {"ok": True, "tabId": tab_id, "needs_user": info.get("needs_user")}
+
+
 # ── Ask-before-act (docs/api-reference.md#ask-before-act) ──
 # Held actions do not run: they return needs_user (detail confirmation_required) with a token bound
 # to the exact action, parameters and tab. Without MCP elicitation the token goes back to the agent,
@@ -2948,7 +3037,7 @@ async def send_to_extension(action, params=None, timeout=30):
         # The held action, so a repeat of a tool call that sent several knows which one was held (#376).
         result = {**result, "state": {"action": action, **(result.get("state") or {})}}
         result = _needs_approval(result, _refusal_message(action, params, result))
-    return result
+    return _described_needs_user(result)
 
 
 def _note_tab_openers(action, params, result):
@@ -3482,6 +3571,8 @@ async def _dispatch_with_expectation(action, params, spec, timeout):
     elif action == "click" and await _click_target_visible(tab_id, params, result, diagnosis_left()):
         hint += (" The clicked element is still visible: the page may accept only trusted input, "
                  "and browser_trusted_click (needs the browse capability) is the alternative.")
+        # This click's hint replaces the page's (#376).
+        result["needs_user"] = _needs_user_hint("trusted_input", {"target_visible": True})
     error = f"Expected outcome not observed within {spec['timeout']}ms"
     if outcome.get("observationIncomplete"):
         # Not evidence that the action failed or that repeating it is safe (#295).
@@ -4776,6 +4867,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "/api/cache": self.handle_cache,
             "/api/workflow": self.handle_workflow,
             "/api/resume": self.handle_resume,
+            "/api/ask-user": lambda: self.send_json(200, self.run_async(_agent_request(self.read_body()))),
+            "/api/needs-user": lambda: self.send_json(200, self.run_async(_tab_needs_user(self.read_body()))),
             # GET endpoints also accepted as POST so callers can supply
             # a tabId in the body to target a non-active tab.
             "/api/page-info": self.handle_page_info,
