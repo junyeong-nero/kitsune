@@ -1264,6 +1264,29 @@ A tab that goes back to the user loses its value. Limits:
 The extension also cannot tell an agent action's tab from one the user opened from the
 same tab within 2 s of that action; such a tab counts as the agent's.
 
+#### Agent tab cleanup
+
+Agents often leave the tabs they opened behind, so a long unattended session can pile up
+dozens. Kitsune's toolbar button opens a popup with two ways to clean them up. Both close
+only [agent-owned tabs](#agent-owned-tabs) and never close pinned tabs, so pinning an agent
+tab keeps it. Closed tabs can be reopened from the browser's recently closed tabs, and a
+reopened tab belongs to the user.
+
+- **Close agent tabs** closes every unpinned agent tab at once, including the one shown.
+  The popup shows how many there are.
+- **Close agent tabs idle for** (Never, 15 minutes, 30 minutes, 1, 2 or 4 hours; default
+  Never) checks once a minute (`alarms` permission) and closes agent tabs that have been
+  idle that long. A tab counts as used when the agent opens it or runs a command on it,
+  and when any window shows it. A tab that is shown, playing sound, or has an agent
+  command running on it is never closed by this check. Use times are kept in memory only,
+  so after an extension reload or browser restart the timer for restored agent tabs starts
+  again from then. The setting is stored in the extension's `storage.local`
+  (`agentTabIdleMinutes`).
+
+Only the popup can trigger these actions; pages and agents cannot. An agent that later uses
+an id of a closed tab gets `tab_closed`. Tab-pool tabs are agent tabs, so the cleanup can
+close idle pool tabs too.
+
 #### Protected user tabs
 
 Ownership, permission to close and permission to navigate are three different things.
