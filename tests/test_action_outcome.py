@@ -569,6 +569,7 @@ class TrustedClickHintTests(unittest.TestCase):
 
     def assert_no_trusted_hint(self, result):
         self.assertNotIn("browser_trusted_click", result.get("hint", ""))
+        self.assertNotIn("needs_user", result)
 
     def test_hint_when_the_clicked_element_is_still_visible(self):
         result, extension = self.run_click({"ok": True, "snapshot": "- button \"OK\" [ref=e9]", "target_ref": "e9"},
@@ -578,6 +579,10 @@ class TrustedClickHintTests(unittest.TestCase):
         self.assertIn("may", result["hint"])
         self.assertIn("browser_trusted_click", result["hint"])
         self.assertIn("the browse capability", result["hint"])
+        # #376: a hint for the user too, which keeps the failure as it was.
+        self.assertEqual(result["needs_user"], {
+            "reason": "trusted_input", "message": "Click it yourself: the page ignored the agent's click.",
+            "evidence": {"target_visible": True}, "hint": bridge.NEEDS_USER_HINT})
         self.assertIn(("waitForElement", {"tabId": 7, "selector": "e9", "timeout": 0}),
                       extension.calls)
         # No retry and no OS click: the click ran once.

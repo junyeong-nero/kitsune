@@ -1872,6 +1872,47 @@ def _refusal_message(action, params, result):
     return f"Allow the agent to {verb} a tab it did not open ({_tab_label(state)}){url}?"
 
 
+# ── needs_user hints (docs/api-reference.md#needs_user-hints, #376) ──
+# What only the user can do, as Kitsune sees it: the extension reports a sign-in field, a blocked
+# sign-in popup or a CAPTCHA frame (sign_in, human_check), or a link only a trusted click opens
+# (trusted_input), and an unmet click outcome whose target is still shown is trusted_input too. Each
+# is a needs_user object on the result, never a failure: nothing was held or refused for it. The
+# bridge adds its message, for the user, and its hint.
+NEEDS_USER_HINT = ("Kitsune noticed this; nothing was held for it. If you cannot go on without the user, "
+                   "ask them: browser_ask_user(reason, message).")
+_HUMAN_CHECK_WIDGETS = {"recaptcha": "reCAPTCHA", "hcaptcha": "hCaptcha", "turnstile": "Cloudflare Turnstile"}
+
+
+def _needs_user_message(reason, evidence):
+    if reason == "sign_in" and evidence.get("popup"):
+        host = urlsplit(str(evidence["popup"])).hostname or "a sign-in page"
+        return (f"Sign in: the browser blocked the sign-in window ({host}) the agent's click opened. "
+                "Click the sign-in button yourself.")
+    if reason == "sign_in":
+        return "Sign in on this page."
+    if reason == "human_check":
+        return f"Complete the {_HUMAN_CHECK_WIDGETS.get(evidence.get('widget'), 'verification')} check on this page."
+    if evidence.get("popup_blocked") == "link":
+        return "Click the link yourself: the browser blocked the tab the agent's click opened."
+    return "Click it yourself: the page ignored the agent's click."
+
+
+def _needs_user_hint(reason, evidence):
+    """A needs_user hint object: reason, message, evidence and hint."""
+    return {"reason": reason, "message": _needs_user_message(reason, evidence), "evidence": evidence,
+            "hint": NEEDS_USER_HINT}
+
+
+def _described_needs_user(result):
+    """result with the extension's needs_user hint given its message and hint."""
+    hint = result.get("needs_user") if isinstance(result, dict) else None
+    if (not isinstance(hint, dict) or "message" in hint
+            or hint.get("reason") not in ("sign_in", "human_check", "trusted_input")):
+        return result
+    evidence = hint.get("evidence") if isinstance(hint.get("evidence"), dict) else {}
+    return {**result, "needs_user": _needs_user_hint(hint["reason"], evidence)}
+
+
 # ── Ask-before-act (docs/api-reference.md#ask-before-act) ──
 # Held actions do not run: they return needs_user (detail confirmation_required) with a token bound
 # to the exact action, parameters and tab. Without MCP elicitation the token goes back to the agent,
@@ -2948,7 +2989,7 @@ async def send_to_extension(action, params=None, timeout=30):
         # The held action, so a repeat of a tool call that sent several knows which one was held (#376).
         result = {**result, "state": {"action": action, **(result.get("state") or {})}}
         result = _needs_approval(result, _refusal_message(action, params, result))
-    return result
+    return _described_needs_user(result)
 
 
 def _note_tab_openers(action, params, result):
@@ -3482,6 +3523,8 @@ async def _dispatch_with_expectation(action, params, spec, timeout):
     elif action == "click" and await _click_target_visible(tab_id, params, result, diagnosis_left()):
         hint += (" The clicked element is still visible: the page may accept only trusted input, "
                  "and browser_trusted_click (needs the browse capability) is the alternative.")
+        # This click's hint replaces the page's (#376).
+        result["needs_user"] = _needs_user_hint("trusted_input", {"target_visible": True})
     error = f"Expected outcome not observed within {spec['timeout']}ms"
     if outcome.get("observationIncomplete"):
         # Not evidence that the action failed or that repeating it is safe (#295).
