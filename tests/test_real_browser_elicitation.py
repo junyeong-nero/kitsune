@@ -50,8 +50,9 @@ def _payload(result):
 
 
 async def _calls(env, user_url, calls, answers, observe):
-    """Over stdio: select the user's tab as the current tab, then make each (tool, arguments) call;
-    the user gives answers in turn, and observe() runs at each prompt."""
+    """Over stdio: select the user's tab as the current tab, then make each (tool, arguments) call,
+    arguments a dict or made from the results so far; the user gives answers in turn, and observe()
+    runs at each prompt."""
     prompts, results = [], []
 
     async def elicit(context, params):
@@ -66,7 +67,7 @@ async def _calls(env, user_url, calls, answers, observe):
         (index,) = [tab["index"] for tab in tabs if tab.get("url") == user_url]
         await session.call_tool("browser_tabs", {"action": "select", "index": index})
         for name, arguments in calls:
-            result = await session.call_tool(name, arguments)
+            result = await session.call_tool(name, arguments(results) if callable(arguments) else arguments)
             results.append((result.isError, result.content[0].text))
     return prompts, results
 
@@ -143,3 +144,28 @@ class RealBrowserElicitationTests(harness.RealBrowserTestCase):
         self.assertIn("Held because ask-before-act", prompts[1][0])
         self.wait_for(lambda: self.tabs()[user]["title"] == "submitted:hi",
                       f"the form was not submitted with hi: {self.tabs()[user]['title']}")
+
+    def test_a_declined_click_resumes_once_the_user_approves_in_the_prompt_again(self):
+        user_url = self.site.origin + "/user"
+        user = self.user_page(user_url)
+
+        def resume(results):
+            declined = json.loads(results[0][1])
+            return {"call": declined["call"], "resume_token": declined["resume_token"]}
+
+        prompts, results = asyncio.run(asyncio.wait_for(
+            _calls(dict(self.bridge.env), user_url,
+                   [("browser_click", {"target": "#act"}), ("browser_resume", resume)],
+                   [("decline", None), ("accept", "Approve")], lambda: self.tabs()[user]["title"]),
+            MCP_SESSION_TIMEOUT))
+        (declined_error, declined), (resumed_error, resumed) = results
+        self.assertTrue(declined_error)
+        declined = json.loads(declined)
+        self.assertEqual((declined["code"], declined["state"]["decision"]), ("needs_user", "declined"))
+        self.assertFalse(resumed_error, resumed)
+        self.assertNotIn("resume_token", json.loads(resumed))
+        self.wait_for(lambda: self.tabs()[user]["title"] == "acted", "the resumed click did not act")
+        self.assertEqual([title for _, title in prompts], ["user", "user"], "nothing ran before the approval")
+        # call is the audit call id of the hold.
+        entries = self.call("/api/audit", {"limit": 50})["entries"]
+        self.assertEqual([e["action"] for e in entries if e.get("call") == declined["call"]], ["click"])

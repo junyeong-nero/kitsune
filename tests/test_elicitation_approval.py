@@ -135,7 +135,7 @@ class ElicitationTestCase(unittest.TestCase):
         return [request for request in self.requests if request["path"] == "/api/click"]
 
     def assertNoToken(self):
-        """No confirm token, issued or token-shaped, anywhere in the model-visible result. A container's
+        """No confirm token, issued or token-shaped, anywhere in the model-visible result. A
         resume_token (docs/checkpoint-resume.md) is the one token-shaped value it may carry."""
         for token in bridge._confirm_tokens:
             self.assertNotIn(token, self.text)
@@ -278,7 +278,7 @@ class ViewedTabElicitationTests(ElicitationTestCase):
                 self.assertEqual((state["reason"], state["detail"], state["decision"], state["approval"]),
                                  ("approval", "user_viewing", decision, "elicitation"))
                 self.assertNotIn("expiresInSeconds", state)
-                self.assertEqual(payload["hint"], server.DECISION_HINTS[decision])
+                self.assertEqual(payload["hint"], f'{server.DECISION_HINTS[decision]} {server.RESUME_HINTS["elicitation"]}')
                 self.assertEqual(len(self.clicks()), 1, "nothing was repeated")
                 self.assertNoToken()
         self.assertNotIn("viewedTabApproved", self.extension.actions("click")[-1])
@@ -357,7 +357,7 @@ class AskBeforeActElicitationTests(ElicitationTestCase):
         state = payload["state"]
         self.assertEqual((payload["code"], state["detail"], state["holdReason"], state["tokenRejected"]),
                          ("needs_user", "confirmation_required", "submit_control", "mismatch"))
-        self.assertEqual(payload["hint"], server.UNMATCHED_APPROVAL_HINT)
+        self.assertEqual(payload["hint"], f'{server.UNMATCHED_APPROVAL_HINT} {server.RESUME_HINTS["elicitation"]}')
         self.assertNotIn("decision", state)
         self.assertEqual(self.extension.actions("click"), [], "nothing ran")
         self.assertNoToken()

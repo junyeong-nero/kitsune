@@ -26,9 +26,9 @@ class ToolSurfaceTests(unittest.TestCase):
     def test_registration(self):
         core = self.registered("core")
         all_tools = self.registered("all")
-        # The core group is exactly Playwright MCP's core tools.
-        self.assertEqual(core, set(playwright_tools.SCHEMAS))
-        self.assertEqual(len(core), 25)
+        # The core group is Playwright MCP's core tools and browser_resume (#376).
+        self.assertEqual(core, set(playwright_tools.SCHEMAS) | {"browser_resume"})
+        self.assertEqual(len(core), 26)
         self.assertEqual(len(all_tools), 96)
         removed = {
             "browser_page_text_by_tab_id", "browser_fill", "browser_set_editable_content",
@@ -56,7 +56,7 @@ class ToolSurfaceTests(unittest.TestCase):
         self.assertEqual(sum(map(len, groups)), len(all_tools))
         self.assertEqual(self.registered(" CORE, automation "), core | self.registered("automation"))
         self.assertTrue({"browser_scheduler", "browser_batch", "browser_retry", "browser_tab_pool",
-                         "browser_parallel", "browser_broadcast", "browser_sync_barrier", "browser_resume",
+                         "browser_parallel", "browser_broadcast", "browser_sync_barrier",
                          "browser_workflow"} <= self.registered("automation"))
         # Everyday page actions are not grouped with the bridge and policy administration tools.
         self.assertTrue({"browser_scroll", "browser_forward", "browser_check"} <= self.registered("browse"))
@@ -67,7 +67,7 @@ class ToolSurfaceTests(unittest.TestCase):
     def test_default_registration(self):
         with patch.dict(os.environ):
             os.environ.pop("KITSUNE_CAPS", None)
-            self.assertEqual(self.registered_default(), set(playwright_tools.SCHEMAS))
+            self.assertEqual(self.registered_default(), set(playwright_tools.SCHEMAS) | {"browser_resume"})
 
     def registered_default(self):
         result = subprocess.check_output(

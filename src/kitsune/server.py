@@ -6,6 +6,8 @@ KITSUNE_MODE. Starts the shared bridge daemon on demand.
 """
 
 import functools
+import hashlib
+import hmac
 import inspect
 import json
 import logging
@@ -14,6 +16,7 @@ import os
 import re
 import secrets
 import sys
+import time
 import weakref
 from contextvars import ContextVar
 from pathlib import Path
@@ -27,7 +30,7 @@ from mcp.server.lowlevel import NotificationOptions
 from mcp.shared.exceptions import McpError
 from mcp.types import (CallToolResult, CancelledNotification, CancelledNotificationParams, ClientCapabilities,
                        RootsCapability, ServerNotification, TextContent, ToolAnnotations)
-from pydantic import Field
+from pydantic import Field, ValidationError
 
 from . import playwright_tools, tools
 from .capabilities import CAPABILITY_GROUPS, NAMED_ONLY_GROUPS, enabled_groups
@@ -35,6 +38,7 @@ from .bridge_client import BridgeClient
 from .errors import failed as _failed  # whether a tool's own result reports failure
 from .task_modes import APPROVAL_HEADER, GATEWAY_TOOL_HEADER, TOOL_CALL_HEADER, permits_tool, task_mode
 from .tools import DESTRUCTIVE, _on_current_tab
+from .waits import resume_wait_seconds
 
 
 # JSON Schema keywords whose values hold subschemas; everything else is a keyword value.
@@ -164,11 +168,17 @@ class KitsuneMCP(FastMCP):
             return CallToolResult(content=[_compact_json({
                 "error": f"{MODE} mode does not permit confirmation", "code": "mode_restricted",
                 "retryable": False})], isError=True)
+        if name == "browser_resume":
+            resumed = await self._resume_direct(arguments or {})
+            if resumed is not None:
+                return resumed
+        tab = playwright_tools._current_tab
         result = await self._run_tool(name, arguments)
         session = self.session()
-        if isinstance(result, CallToolResult) and session is not None and _elicits(session):
+        elicits = session is not None and _elicits(session)
+        if isinstance(result, CallToolResult) and elicits:
             result = await self._approved(session, name, arguments or {}, result)
-        return result
+        return self._checkpointed(name, arguments or {}, result, elicits, tab)
 
     async def _run_tool(self, name, arguments):
         if name in playwright_tools.SCHEMAS and (arguments or {}).get("filename"):
@@ -180,15 +190,20 @@ class KitsuneMCP(FastMCP):
                 playwright_tools.client_root.reset(root)
         return await super().call_tool(name, arguments)
 
-    async def _approved(self, session, name, arguments, result):
+    def _repeatable(self, name) -> bool:
+        """Whether a held call of this tool can be repeated with a confirm token."""
+        tool = self._tool_manager.get_tool(name)
+        return tool is not None and "confirm_token" in tool.parameters.get("properties", {})
+
+    async def _approved(self, session, name, arguments, result, ask_seconds=None):
         """result of a call on a client with elicitation: a held direct call is asked about and, once
         the user approves, repeated with its token; no token stays in the result (#376).
 
-        Each repeat starts at the held request (playwright_tools.approved_hold), so a later held
+        Each repeat starts at the held request (playwright_tools.repeat_hold), so a later held
         request of the call (the next field of a payment form) is asked about in turn, and a hold
-        the user approved coming back means the repeat no longer matched it."""
-        tool = self._tool_manager.get_tool(name)
-        repeatable = tool is not None and "confirm_token" in tool.parameters.get("properties", {})
+        the user approved coming back means the repeat no longer matched it. ask_seconds, from
+        browser_resume's wait, ends each prompt sooner; 0 asks nothing."""
+        repeatable = self._repeatable(name)
         approved = []  # _hold_key of each hold the user approved in this call
         call_id = secrets.token_hex(8)
         while True:
@@ -204,16 +219,104 @@ class KitsuneMCP(FastMCP):
                 # A later request of the call, held after the approved one ran: the token it was
                 # sent was spent there, which is no reason to report.
                 held["state"].pop("tokenRejected", None)
-            decision = await _ask_user(session, self._mcp_server.request_context, name, arguments, held["state"])
+            if ask_seconds is not None and ask_seconds <= 0:
+                return _with_payload(result, _unapproved(held, None, UNASKED_APPROVAL_HINT))
+            decision = await _ask_user(session, self._mcp_server.request_context, name, arguments, held["state"],
+                                       ask_seconds)
             if decision != "approved":
                 return _with_payload(result, _unapproved(held, decision, DECISION_HINTS[decision]))
             approved.append(_hold_key(held))
-            repeat, hold = _approval_repeat.set(call_id), playwright_tools.approved_hold.set(held)
+            repeat, hold = _approval_repeat.set(call_id), playwright_tools.repeat_hold.set(held)
             try:
                 result = await self._run_tool(name, {**arguments, "confirm_token": held["state"]["confirmToken"]})
             finally:
-                playwright_tools.approved_hold.reset(hold)
+                playwright_tools.repeat_hold.reset(hold)
                 _approval_repeat.reset(repeat)
+
+    def _checkpointed(self, name, arguments, result, elicits, tab, call=None):
+        """result, with call and resume_token when it is a needs_user stop of a direct call that
+        browser_resume can continue (#376). call is the checkpoint a resume continues, else the
+        audit call id the bridge gave the hold; tab the current tab the call ran on."""
+        stopped = _json_payload(result, '"needs_user"')
+        if stopped is None or not self._resumable(name, stopped, call):
+            return result
+        call = stopped["call"] if call is None else call
+        # Without elicitation the result keeps its confirm token; the checkpoint never holds one.
+        token = _save_direct_checkpoint(
+            call, tool=name, arguments={key: value for key, value in arguments.items() if key != "confirm_token"},
+            held={**stopped, "call": call, "state": _without_token(stopped["state"])}, tabId=tab)
+        reason = stopped["state"]["reason"]
+        hint = RESUME_HINTS[("elicitation" if elicits else "token") if reason == "approval" else "page"]
+        return _with_payload(result, {**stopped, "call": call, "resume_token": token,
+                                      "hint": f"{stopped.get('hint') or ''} {hint}".strip()})
+
+    def _resumable(self, name, payload, call=None) -> bool:
+        """Whether payload is a direct call's needs_user that browser_resume can continue: an approval
+        hold of a tool that takes a confirm token, outside read and draft, or a stop the page resolves
+        (PAGE_STATE_CHECKS). A container's result or one that already has a resume_token is not."""
+        state = payload.get("state")
+        if (payload.get("code") != "needs_user" or not isinstance(state, dict) or "resume_token" in payload
+                or type(payload.get("call") if call is None else call) is not int):
+            return False
+        if state.get("reason") == "approval":
+            return state.get("approvable") is not False and self._repeatable(name)
+        return state.get("reason") in PAGE_STATE_CHECKS
+
+    async def _resume_direct(self, arguments):
+        """browser_resume of a direct call this server keeps a checkpoint for; None otherwise, so the
+        bridge resumes a container call or answers checkpoint_not_found (docs/checkpoint-resume.md).
+
+        The tool runs again with its stored arguments, from the held request: nothing of the call that
+        ran ok is sent again, and the held request goes through the current policy, so a resume grants
+        nothing a new call would not. An approval hold is asked about again with elicitation, for up to
+        wait seconds; without it the hold is checked once: a resume never waits for a hold to lift."""
+        try:
+            parsed = self._tool_manager.get_tool("browser_resume").fn_metadata.arg_model.model_validate(arguments)
+        except ValidationError:  # the tool's own validation reports it
+            return None
+        call = parsed.call
+        checkpoint = _direct_checkpoint(call, parsed.resume_token)
+        if checkpoint is None and call in _direct_checkpoints:
+            # A container call of a restarted bridge may have the same id: the bridge answers first.
+            result = await self._run_tool("browser_resume", arguments)
+            if (_json_payload(result, '"checkpoint_not_found"') or {}).get("code") != "checkpoint_not_found":
+                return result
+            return _error_result(
+                "resume_token does not match this call's checkpoint", "resume_token_invalid", retryable=False,
+                hint="Nothing was sent. Pass the resume_token from the response that returned this call.",
+                state={"call": call})
+        if checkpoint is None:
+            return None
+        name, args, held = checkpoint["tool"], checkpoint["arguments"], checkpoint["held"]
+        if parsed.observed:
+            return _error_result(
+                "observed is for container steps; a direct call has none", "observed_invalid", retryable=True,
+                hint="Nothing was sent. Resume without observed: nothing of this call ran past its held request.",
+                state={"call": call})
+        if args.get("tab_id") is None and playwright_tools._current_tab != checkpoint["tabId"]:
+            return _error_result(
+                f"The current tab changed since call {call}", "current_tab_changed", retryable=True,
+                hint=(f"Nothing was sent. The call acts on the current tab, which was tab {checkpoint['tabId']}: "
+                      "make that tab current again (browser_tabs select), then resume, or call the tool again "
+                      "for this tab."),
+                state={"call": call, "tabId": checkpoint["tabId"], "currentTab": playwright_tools._current_tab})
+        del _direct_checkpoints[call]  # claimed while it runs, like a container's
+        wait = resume_wait_seconds(parsed.wait)
+        session = self.session()
+        elicits = session is not None and _elicits(session)
+        reason = held["state"]["reason"]
+        request = self._mcp_server.request_context if session is not None else None
+        if reason != "approval" and not await _page_resolved(session, request, reason, held["state"], wait):
+            stopped = CallToolResult(content=[_compact_json(held)], isError=True)
+            return self._checkpointed(name, args, stopped, elicits, checkpoint["tabId"], call)
+        hold = playwright_tools.repeat_hold.set(held)
+        try:
+            result = await self._run_tool(name, args)
+        finally:
+            playwright_tools.repeat_hold.reset(hold)
+        if isinstance(result, CallToolResult) and elicits:
+            result = await self._approved(session, name, args, result, wait)
+        return self._checkpointed(name, args, result, elicits, checkpoint["tabId"], call)
 
 
 mcp = KitsuneMCP("Kitsune")
@@ -391,11 +494,12 @@ def _elicits(session) -> bool:
             and (getattr(elicitation, "form", None) is not None or getattr(elicitation, "url", None) is None))
 
 
-def _json_payload(result) -> dict | None:
-    """The JSON object of a tool result made by _compact_json that names a confirm token, else None."""
+def _json_payload(result, marker='"confirmToken"') -> dict | None:
+    """The JSON object of a tool result made by _compact_json whose text has marker (by default, that
+    names a confirm token), else None."""
     if not isinstance(result, CallToolResult) or len(result.content) != 1 or result.content[0].type != "text":
         return None
-    if '"confirmToken"' not in result.content[0].text:  # most results: no need to parse them
+    if marker not in result.content[0].text:  # most results: no need to parse them
         return None
     try:
         payload = json.loads(result.content[0].text)
@@ -472,27 +576,34 @@ def _approval_message(name: str, arguments: dict, state: dict) -> str:
     return "\n".join(lines)
 
 
-async def _ask_user(session, request, name: str, arguments: dict, state: dict) -> str:
+async def _keep_alive(session, request, message):
+    """Send a progress notification every ELICITATION_PROGRESS_SECONDS, until cancelled."""
+    progress_token = request.meta.progressToken
+    sent = 0
+    while True:
+        await anyio.sleep(ELICITATION_PROGRESS_SECONDS)
+        sent += 1
+        await session.send_progress_notification(progress_token, sent, message=message,
+                                                 related_request_id=request.request_id)
+
+
+def _sends_progress(request) -> bool:
+    return request is not None and request.meta is not None and request.meta.progressToken is not None
+
+
+async def _ask_user(session, request, name: str, arguments: dict, state: dict, limit=None) -> str:
     """Ask the user about a held call: "approved", "declined" or "cancelled" (dismissed, failed or
-    unanswered until the token's expiresInSeconds less ELICITATION_MARGIN_SECONDS)."""
+    unanswered until the token's expiresInSeconds less ELICITATION_MARGIN_SECONDS, or limit seconds)."""
     seconds = max(1, (state.get("expiresInSeconds") or 0) - ELICITATION_MARGIN_SECONDS)
-    progress_token = request.meta.progressToken if request.meta is not None else None
+    if limit is not None:
+        seconds = min(seconds, limit)
     answer = elicitation_id = None
     answered = False
-
-    async def keep_alive():
-        sent = 0
-        while True:
-            await anyio.sleep(ELICITATION_PROGRESS_SECONDS)
-            sent += 1
-            await session.send_progress_notification(progress_token, sent, message="Waiting for the user's approval",
-                                                     related_request_id=request.request_id)
-
     waited = anyio.move_on_after(seconds)
     try:
         async with anyio.create_task_group() as group:
-            if progress_token is not None:
-                group.start_soon(keep_alive)
+            if _sends_progress(request):
+                group.start_soon(_keep_alive, session, request, "Waiting for the user's approval")
             with waited:
                 # The id the SDK's send_request gives the elicitation request, to cancel it unanswered.
                 elicitation_id = getattr(session, "_request_id", None)
@@ -521,6 +632,85 @@ async def _ask_user(session, request, name: str, arguments: dict, state: dict) -
         return "declined"
     choice = (answer.content or {}).get("decision")
     return "approved" if choice == "Approve" else "declined" if choice == "Decline" else "cancelled"
+
+
+# ── Direct-call checkpoints (#376, docs/checkpoint-resume.md#direct-calls) ──
+# A direct call that stops on needs_user the user did not resolve in the call (no elicitation, or the
+# prompt was declined, dismissed or timed out) keeps a checkpoint in this MCP server, under the bridge's
+# rules for container checkpoints: in memory only, at most RESUME_MAX_CHECKPOINTS, each expiring
+# RESUME_TTL_SECONDS after its call, holding the tool, its arguments, the held result and the current
+# tab, and only a hash of its resume_token. Its call is the audit call id the bridge gave the hold, so
+# it names no container call. Another MCP server, or this one after a restart, cannot resume it.
+RESUME_MAX_CHECKPOINTS = 20  # bridge.RESUME_MAX_CHECKPOINTS
+RESUME_TTL_SECONDS = 30 * 60  # bridge.RESUME_TTL_SECONDS
+# needs_user reasons the page resolves (sign_in, human_check) -> check(state), true once the user is
+# done: browser_resume polls it every PAGE_STATE_POLL_SECONDS for up to its wait, then runs the call
+# again. A reason without a check gets no checkpoint.
+PAGE_STATE_CHECKS: dict = {}
+PAGE_STATE_POLL_SECONDS = 1
+RESUME_HINTS = {
+    "elicitation": "If the user wants it done later, browser_resume(call, resume_token) asks them again in the "
+                   "approval prompt and continues the call once they approve.",
+    "token": "browser_resume(call, resume_token) checks the hold again and returns at once: it continues the "
+             "call only if the hold no longer applies, as calling the tool again would.",
+    "page": "Tell the user what to do (state.message), then call browser_resume(call, resume_token): it waits "
+            "up to wait seconds for the page to show the user is done, then continues the call.",
+}
+UNASKED_APPROVAL_HINT = ("The held action did not run: browser_resume asked nothing with wait=0. Resume with a "
+                         "wait to ask the user in the approval prompt.")
+_direct_checkpoints: dict[int, dict] = {}  # call id -> checkpoint, oldest first
+_checkpoint_clock = time.monotonic
+
+
+def _resume_token_digest(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _drop_expired_checkpoints() -> None:
+    now_s = _checkpoint_clock()
+    for call in [c for c, checkpoint in _direct_checkpoints.items() if checkpoint["expires"] <= now_s]:
+        del _direct_checkpoints[call]
+
+
+def _save_direct_checkpoint(call: int, **checkpoint) -> str:
+    """Keep a direct call's checkpoint under call, replacing an older one; return its new resume_token."""
+    token = secrets.token_urlsafe(24)
+    _drop_expired_checkpoints()
+    _direct_checkpoints.pop(call, None)
+    _direct_checkpoints[call] = {**checkpoint, "token": _resume_token_digest(token),
+                                 "expires": _checkpoint_clock() + RESUME_TTL_SECONDS}
+    while len(_direct_checkpoints) > RESUME_MAX_CHECKPOINTS:
+        del _direct_checkpoints[next(iter(_direct_checkpoints))]
+    return token
+
+
+def _direct_checkpoint(call: int, token: str) -> dict | None:
+    """The checkpoint of call whose resume_token is token, else None: a container's call, or another
+    MCP server's, goes to the bridge."""
+    _drop_expired_checkpoints()
+    checkpoint = _direct_checkpoints.get(call)
+    if checkpoint is None or not hmac.compare_digest(_resume_token_digest(token), checkpoint["token"]):
+        return None
+    return checkpoint
+
+
+async def _page_resolved(session, request, reason: str, state: dict, wait: float) -> bool:
+    """Whether PAGE_STATE_CHECKS[reason] tells, within wait seconds, that the user is done."""
+    check = PAGE_STATE_CHECKS[reason]
+    resolved = False
+    async with anyio.create_task_group() as group:
+        if _sends_progress(request):
+            group.start_soon(_keep_alive, session, request, "Waiting for the user")
+        with anyio.move_on_after(wait):
+            while not (resolved := await anyio.to_thread.run_sync(check, state)):
+                await anyio.sleep(PAGE_STATE_POLL_SECONDS)
+        group.cancel_scope.cancel()
+    return resolved
+
+
+def _error_result(error: str, code: str, *, retryable: bool, hint: str, state: dict) -> CallToolResult:
+    result = {"error": error, "code": code, "retryable": retryable, "hint": hint, "state": state}
+    return CallToolResult(content=[_compact_json(result)], isError=True)
 
 
 # How long a filename call waits for the client's roots/list answer before using the fallback.
