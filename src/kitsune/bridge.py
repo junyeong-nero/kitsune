@@ -1075,6 +1075,27 @@ def _trusted_click_coordinates(params):
     return None
 
 
+async def _handoff_native_refusal(params, point):
+    """Late, bound preflight before dispatching a native operation for a live handoff session.
+
+    This closes preparation awaits, not the cross-process gap after the reply or the OS
+    executor queue. An OS operation already started cannot be cancelled by this check.
+    """
+    if _handoff_identity.get() is None:
+        return None
+    tab_id = point.get("tabId", params.get("tabId"))
+    if tab_id is None:
+        return _action_error("Native input has no bound tab", "user_tab_read_only", retryable=False,
+                             hint="Name an owned tab explicitly; no OS input was sent.")
+    result = await send_to_extension("checkTabWrite", {"tabId": tab_id, "writeAction": "trustedClick"})
+    if isinstance(result, dict) and result.get("ok") is True:
+        return None
+    if isinstance(result, dict) and result.get("error"):
+        return result
+    return _action_error("Native tab authorization could not be verified", "user_tab_read_only", retryable=False,
+                         hint="No OS input was sent; request a fresh handoff or use your own tab.")
+
+
 async def trusted_click(params):
     """Use a real OS-level mouse click at a browser viewport coordinate."""
     if refusal := _unbound_screen_click(params) or _trusted_click_coordinates(params):
@@ -1147,6 +1168,8 @@ async def trusted_click(params):
     # Focus (up to about 1 s of frontmost polling), the window check (up to BROWSER_AT_POINT_WAIT)
     # and the click's own sleeps all run off the event loop, which serves every client (#336).
     try:
+        if refusal := await _handoff_native_refusal(params, point):
+            return refusal
         focused, clicked = await asyncio.to_thread(_focus_check_click, point, focus, title, process,
                                                    restore_pointer, button, click_count, modifiers, hold)
     finally:
@@ -1284,6 +1307,8 @@ async def trusted_drag(params):
             return end
         # Focus, the window checks and the drag's sleeps run off the event loop (#336).
         # focus=false (bridge callers only) leaves bringing the browser to the front to the caller.
+        if refusal := await _handoff_native_refusal(params, start):
+            return refusal
         focused, dragged = await asyncio.to_thread(_focus_check_drag, start, end,
                                                    params.get("focus", True) is not False,
                                                    params.get("process") or "", steps)
@@ -1489,6 +1514,8 @@ async def _trusted_keys(params, units, post_unit):
     try:
         # The click that focuses the field also proves the tab's window is at its point (#336).
         # focus=false (bridge callers only) leaves bringing the browser to the front to the caller.
+        if refusal := await _handoff_native_refusal(params, point):
+            return refusal
         focused, clicked = await asyncio.to_thread(_focus_check_click, point, params.get("focus", True) is not False,
                                                    "", process, True)
         if "error" in clicked:

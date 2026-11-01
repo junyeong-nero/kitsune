@@ -207,6 +207,8 @@ async function prepareOwnershipKeys(params) {
   const tabId = params.tabId || await getActiveTabId();
   const at = Date.now();
   const result = await forwardToContent('agentInput', { ...params, tabId });
+  const revoked = tabAdmissionError(params);
+  if (revoked) return revoked;
   if (result?.ok === true) {
     rememberOwnershipInput(tabId, 'keys', at, Math.min(Math.max(Number(params.ms) || 0, 0), 60000));
   }
@@ -336,7 +338,14 @@ function clearHandoffs() {
   for (const sessionId of handoffSessions.keys()) endHandoffSession(sessionId);
 }
 async function approveHandoff(request) {
-  const valid = () => handoffRequests.has(request.id) && handoffSessions.has(request.sessionId) && !agentTabs.has(request.tabId);
+  // Claim the answer before storage yields: neither another answer nor the 30s fallback
+  // may settle this request while approval is in progress.
+  if (!['browser', 'client'].includes(request.phase)) return handoffError();
+  request.phase = 'approving';
+  clearTimeout(request.timer);
+  handoffBadge();
+  const valid = () => request.phase === 'approving' && handoffRequests.get(request.id) === request &&
+    handoffSessions.has(request.sessionId) && !agentTabs.has(request.tabId);
   if (!valid()) return finishHandoff(request, handoffError());
   // A user duplicate can still carry its opener's persistent value while copied-ownership
   // cleanup is pending. Never let that value turn an ephemeral grant into a restart grant.
@@ -358,6 +367,7 @@ async function approveHandoff(request) {
   return { ok: true, tabId: request.tabId, owned: true };
 }
 function handoffFallback(request) {
+  if (handoffRequests.get(request.id) !== request || request.phase !== 'browser') return;
   request.phase = 'client';
   const result = { error: 'Tab handoff needs approval', code: 'needs_user', retryable: false,
     state: { reason: 'approval', detail: 'tab_handoff', action: 'requestTab', tabId: request.tabId,
@@ -441,7 +451,9 @@ async function closeAgentTabs({ idleMs = 0 } = {}) {
   const results = await Promise.allSettled(ids.map(async id => {
     // An automatic sweep must not close a just-backgrounded draft or recent input.
     // idleMs=0 is the user's explicit popup cleanup, not an agent command.
+    const grant = handoffs.get(id);
     if (idleMs && await userActivity(id)) return false;
+    if (!agentTabs.has(id) || handoffs.get(id) !== grant) return false;
     await browser.tabs.remove(id);
     return true;
   }));
@@ -568,7 +580,7 @@ function returnSyncedCopy(tabId) {
 browser.tabs.onActivated?.addListener(({ tabId }) => returnSyncedCopy(tabId));
 
 // windows.create for an explicit request; windowCopies: whether to record the browser's copies in it.
-async function createAgentWindow(createData, urls, { windowCopies, ownerId = null }) {
+async function createAgentWindow(createData, urls, { windowCopies, ownerId = null, authorization }) {
   const [focused, windows] = await Promise.all([
     browser.windows.getLastFocused().catch(() => null), browser.windows.getAll().catch(() => [])]);
   const record = {
@@ -579,6 +591,7 @@ async function createAgentWindow(createData, urls, { windowCopies, ownerId = nul
   agentWindows.add(record);
   let created;
   try {
+    requireTabAdmission(authorization);
     created = await browser.windows.create({ ...createData, focused: false });
   } catch (e) {
     agentWindows.delete(record);
@@ -591,9 +604,12 @@ async function createAgentWindow(createData, urls, { windowCopies, ownerId = nul
 }
 
 // After closeWindow removed the agent window: its synced copies now show the agent's page.
-async function closeSyncedCopies(record) {
+async function closeSyncedCopies(record, grants) {
   for (const tabId of [...record.syncedCopies]) {
-    if (await userActivity(tabId)) {
+    const grant = grants.get(tabId);
+    const busy = await userActivity(tabId);
+    if (!agentTabs.has(tabId) || agentTabOwners.get(tabId) !== record.ownerId || handoffs.get(tabId) !== grant) continue;
+    if (busy) {
       record.syncedCopies.delete(tabId);
       disownAgentTab(tabId);
       continue;
@@ -987,6 +1003,36 @@ function writesTab(action, params) {
   return TAB_WRITE_ACTIONS.has(action) || (action === 'find' && (params.loadMore || params.load_more)) ||
     (action === 'storageOp' && !['get', 'list', 'snapshot'].includes(params.op));
 }
+// Only the background creates this capability. Object spreads retain the Symbol for helper
+// calls, but JSON cannot supply it; it is removed before content messages leave the background.
+const TAB_ADMISSION = Symbol('tab admission');
+function tabAdmissionError(params) {
+  const admission = params?.[TAB_ADMISSION];
+  if (!admission) return null;
+  const revoked = admission.tabs.find(t => !ownsTab(t.tabId, admission.ownerId, admission.sessionId) ||
+    handoffs.get(t.tabId) !== t.grant);
+  return revoked ? tabError('Tab authorization changed before dispatch; nothing more was sent',
+    'user_tab_read_only', { tabId: revoked.tabId, action: admission.action }, false) : null;
+}
+function requireTabAdmission(params) {
+  const result = tabAdmissionError(params);
+  if (result) throw Object.assign(new Error(result.error), { tabAdmissionResult: result });
+}
+// The inventory query yields. Callers recheck grants synchronously after awaiting it,
+// immediately before the window API call. Departed tabs cannot retarget that call.
+async function requireWindowAdmission(params) {
+  const admission = params?.[TAB_ADMISSION];
+  if (!admission?.windowId) return requireTabAdmission(params);
+  const tabs = await browser.tabs.query({ windowId: admission.windowId });
+  const ids = new Set(admission.tabs.map(t => t.tabId));
+  if (tabs.some(t => !ids.has(t.id))) {
+    const result = tabError('Window tabs changed before dispatch; nothing more was sent',
+      'user_tab_read_only', { windowId: admission.windowId, action: admission.action }, false);
+    throw Object.assign(new Error(result.error), { tabAdmissionResult: result });
+  }
+  requireTabAdmission(params);
+}
+
 async function tabWriteError(params) {
   const action = params.action;
   const windowAction = ['closeWindow', 'focusWindow', 'resizeWindow'].includes(action);
@@ -1019,6 +1065,9 @@ async function tabWriteError(params) {
   const tab = targets.find(t => !ownsTab(t.id, params.ownerId, params.sessionId));
   if (tab) return tabError(`Tab ${tab.id} is read-only for this client; nothing was done`, 'user_tab_read_only',
     { tabId: tab.id, index: tabs.findIndex(t => t.id === tab.id), action }, false);
+  params[TAB_ADMISSION] = { action, ownerId: params.ownerId, sessionId: params.sessionId,
+    windowId: windowAction ? params.windowId : null,
+    tabs: targets.map(t => ({ tabId: t.id, grant: handoffs.get(t.id) })) };
   // Reordering a tab leaves the displayed page alone. Moving an active tab out can reveal
   // another tab or close/focus a window; do not perform that effect then attempt to undo it.
   if (relocating && targetTab.active && (action === 'detachTab' || params.windowId !== targetTab.windowId)) {
@@ -1037,6 +1086,7 @@ const BLOCKED_LINK_WAIT_MS = 500;
 async function handleCommand(command) {
   const transportEpoch = handoffTransportEpoch;
   const params = { ...command };
+  delete params[TAB_ADMISSION];
   if (params.tabId != null) {
     const tabId = typeof params.tabId === 'string' && /^[0-9]+$/.test(params.tabId) ? Number(params.tabId) : params.tabId;
     if (!Number.isSafeInteger(tabId) || tabId <= 0) {
@@ -1056,7 +1106,8 @@ async function handleCommand(command) {
     params.windowId = windowId;
   }
   if (params.action === 'checkTabWrite') {
-    return await tabWriteError({ ...params, action: params.writeAction }) || { ok: true };
+    const checked = { ...params, action: params.writeAction };
+    return await tabWriteError(checked) || tabAdmissionError(checked) || { ok: true };
   }
   if (params.action === 'checkUserActivity') {
     params.tabId ??= await getActiveTabId();
@@ -1068,8 +1119,6 @@ async function handleCommand(command) {
   }
   const readOnly = await tabWriteError(params);
   if (readOnly) return readOnly;
-  // Revocation during activity inspection must not admit an as-yet undispatched write.
-  const admittedHandoff = handoffs.get(params.tabId);
   // browser_wait_for(time)'s delta (#350) is a post-action snapshot: KITSUNE_POST_ACTION_SNAPSHOT=0 turns it off.
   if (params.action === 'getSnapshot' && params.sinceObservation && params.includeSnapshot === false) return { ok: true };
   // Descriptions are audit metadata only; never use them to locate elements.
@@ -1108,9 +1157,8 @@ async function handleCommand(command) {
       ['closeWindow', 'resizeWindow'].includes(params.action) ? params.windowId : null);
     if (busy) return busy;
   }
-  if (admittedHandoff && handoffs.get(params.tabId) !== admittedHandoff && writesTab(params.action, params)) {
-    return tabError('The user took this tab back', 'user_tab_read_only', { tabId: params.tabId }, false);
-  }
+  const revoked = tabAdmissionError(params);
+  if (revoked) return revoked;
   if (['openHandoffSession', 'requestTab'].includes(params.action) && transportEpoch !== handoffTransportEpoch) {
     return handoffError();
   }
@@ -1120,7 +1168,11 @@ async function handleCommand(command) {
   if (touched != null) touchStart(touched);
   try {
     const result = await runCommand(params, { withSnapshot, deltaSnapshot, textSnapshot, tracksOpenedTabs });
+    if (['screenPoint', 'agentInput', 'focusState'].includes(params.action)) return tabAdmissionError(params) || result;
     return repeatSnapshot && params.tabId != null ? await unchangedSince(params.tabId, result) : result;
+  } catch (e) {
+    if (e.tabAdmissionResult) return e.tabAdmissionResult;
+    throw e;
   } finally {
     if (touched != null) touchEnd(touched);
   }
@@ -1299,10 +1351,10 @@ async function runCommandSettled(params, { withSnapshot, deltaSnapshot, textSnap
       }
     } catch (e) { result.snapshot_error = e.message; }
   }
-  if (blankLink && params.tabId != null) await openBlockedLink(params.tabId, blankLink, result, params.ownerId);
+  if (blankLink && params.tabId != null) await openBlockedLink(params.tabId, blankLink, result, params.ownerId, params);
   // A middle or Ctrl/Cmd click's link opens like a popup-blocked one; a cancelled click is the page's.
   if (newTabLink && !newTabLink.prevented && params.tabId != null) {
-    await openBlockedLink(params.tabId, { url: newTabLink.url, opener: false }, result, params.ownerId);
+    await openBlockedLink(params.tabId, { url: newTabLink.url, opener: false }, result, params.ownerId, params);
   }
   // Checked after the snapshot, which gives a link's new tab time to be created.
   if (tracksOpenedTabs && params.tabId != null && result && typeof result === 'object') {
@@ -1423,7 +1475,7 @@ async function getOpenedTabs(tabId, urlWait = 0) {
 // drops the tab of a synthetic click. When no tab comes, open the link's own URL from the
 // clicked tab, as the click would have; a rel=opener link needs the page's window.opener,
 // so it only gets a popup_blocked warning.
-async function openBlockedLink(tabId, link, result, ownerId) {
+async function openBlockedLink(tabId, link, result, ownerId, authorization) {
   const since = actionStarts.get(tabId);
   const opened = () => openedTabs.some(t => t.openerTabId === tabId && t.seq > since);
   for (let waited = 0; !opened() && waited < BLOCKED_LINK_WAIT_MS; waited += 50) {
@@ -1433,6 +1485,7 @@ async function openBlockedLink(tabId, link, result, ownerId) {
   if (!link.opener) {
     try {
       const clicked = await browser.tabs.get(tabId);
+      requireTabAdmission(authorization);
       const tab = await browser.tabs.create({
         url: link.url, openerTabId: tabId, windowId: clicked.windowId, cookieStoreId: clicked.cookieStoreId,
         active: false,
@@ -1466,40 +1519,40 @@ async function dispatchCommand(command) {
     case 'waitForUrl':   return await waitForTabProperty('url', params);
     case 'waitForTitle': return await waitForTabProperty('title', params);
     case 'getOpenedTabs': return await getOpenedTabs(params.tabId);
-    case 'navigate':     return await navigateTab(params.url, params.tabId, params.expectTitle);
-    case 'switchTab':    return await switchTab(params.tabId);
+    case 'navigate':     return await navigateTab(params.url, params.tabId, params.expectTitle, params);
+    case 'switchTab':    return await switchTab(params.tabId, params);
     case 'newTab':       return await createTab(params.url, params);
     case 'closeTab':     return await closeTab(params.tabId, { ...params, userTabApproved: true });
     case 'restoreActiveTab': return await restoreActiveTab(params.tabId, params.from, params.ownerId);
     case 'screenPoint':  return params.click ? await screenPointForClick(params) : await zoomedScreenPoint(params);
-    case 'wakeTab':      return await wakeTab(params.tabId);
+    case 'wakeTab':      return await wakeTab(params.tabId, params);
     case 'reloadExtension': return reloadExtensionAction();
     case 'getPageTextFromTab': return await getPageText(params);
 
     // 1.4.0 browser-level additions
-    case 'pinTab':           return await updateTab(params.tabId, { pinned: !!params.pinned });
-    case 'muteTab':          return await updateTab(params.tabId, { muted: !!params.muted });
+    case 'pinTab':           return await updateTab(params.tabId, { pinned: !!params.pinned }, params);
+    case 'muteTab':          return await updateTab(params.tabId, { muted: !!params.muted }, params);
     case 'duplicateTab':     return await duplicateTab(params.tabId, params.ownerId);
-    case 'reloadTabBrowser': return await reloadTabBrowser(params.tabId, params.bypassCache);
+    case 'reloadTabBrowser': return await reloadTabBrowser(params.tabId, params.bypassCache, params);
     case 'goBack':
-    case 'goForward':        return await goInHistory(params.tabId, action);
+    case 'goForward':        return await goInHistory(params.tabId, action, params);
     case 'getZoom':          return await getZoom(params.tabId);
-    case 'setZoom':          return await setZoom(params.tabId, params.factor);
+    case 'setZoom':          return await setZoom(params.tabId, params.factor, params);
     case 'getWindows':       return await getWindowsList();
     case 'createWindow':     return await createWindow(params.url, params.incognito, params.ownerId);
-    case 'closeWindow':      return await closeWindow(params.windowId, true);
-    case 'focusWindow':      return await focusWindow(params.windowId);
-    case 'resizeWindow':     return await resizeWindow(params.windowId, params.width, params.height);
-    case 'moveTab':          return await moveTabAction(params.tabId, params.windowId, params.index);
-    case 'detachTab':        return await detachTab(params.tabId);
-    case 'elementScreenshot':return await elementScreenshot(params.tabId, params.selector, params.scale, params.imagePreview, params.format);
-    case 'fullPageScreenshot': return await fullPageScreenshot(params.tabId, params.imagePreview, params.format);
+    case 'closeWindow':      return await closeWindow(params.windowId, true, params);
+    case 'focusWindow':      return await focusWindow(params.windowId, params);
+    case 'resizeWindow':     return await resizeWindow(params.windowId, params.width, params.height, params);
+    case 'moveTab':          return await moveTabAction(params.tabId, params.windowId, params.index, params);
+    case 'detachTab':        return await detachTab(params.tabId, params);
+    case 'elementScreenshot':return await elementScreenshot(params.tabId, params.selector, params.scale, params.imagePreview, params.format, params);
+    case 'fullPageScreenshot': return await fullPageScreenshot(params.tabId, params.imagePreview, params.format, params);
     case 'cookies':          return await cookiesOp(params.op, params.url, params.name, params.value, params.domain, params.path, params.secure);
     case 'clipboard':        return await clipboardOp(params.op, params.text);
     case 'downloads':        return await downloadsOp(params.op, params.url, params.filename, params.query);
     case 'clearBrowsingData':return await clearBrowsingData(params.types, params.since);
     case 'intercept':        return await interceptOp(params.op, params.patterns, params.effect);
-    case 'clickAndWaitNavigation': return await clickAndWaitNavigation(params.tabId, params.selector, params.timeout, params.first);
+    case 'clickAndWaitNavigation': return await clickAndWaitNavigation(params.tabId, params.selector, params.timeout, params.first, params);
     case 'describeTarget':   return await describeTarget(params);
     // history.js (#140)
     case 'historySearch':    return await historySearch(params);
@@ -1511,6 +1564,7 @@ async function dispatchCommand(command) {
       const tabId = params.tabId || await getActiveTabId();
       const result = await forwardToContent('handleDialog', { ...params, tabId });
       if (!result.error) {
+        requireTabAdmission(params);
         if (params.accept == null) dialogPolicies.delete(tabId);
         else dialogPolicies.set(tabId, { accept: params.accept, prompt_text: params.prompt_text });
       }
@@ -1772,7 +1826,7 @@ function waitForTabLoad(tabId, startNavigation, { reload = false, timeout = 1500
   });
 }
 
-async function navigateTab(url, tabId, expectTitle) {
+async function navigateTab(url, tabId, expectTitle, authorization) {
   let targetTabId = null;
   try {
     targetTabId = tabId || (await getActiveTabId());
@@ -1783,9 +1837,10 @@ async function navigateTab(url, tabId, expectTitle) {
     let loaded = true;
     if (sameUrl && url.includes('#')) {
       // Same-document (fragment) navigation: no new load, so no status 'complete'.
+      requireTabAdmission(authorization);
       await browser.tabs.update(targetTabId, { url });
     } else {
-      loaded = await waitForTabLoad(targetTabId, () => browser.tabs.update(targetTabId, { url }), { reload: sameUrl });
+      loaded = await waitForTabLoad(targetTabId, () => { requireTabAdmission(authorization); return browser.tabs.update(targetTabId, { url }); }, { reload: sameUrl });
     }
 
     // Check if page title matches expectation (catches silent redirects)
@@ -1818,8 +1873,9 @@ async function navigateTab(url, tabId, expectTitle) {
 }
 
 // Switches the user's view: only for an explicit request (browser_tabs select).
-async function switchTab(tabId) {
+async function switchTab(tabId, authorization) {
   try {
+    requireTabAdmission(authorization);
     await browser.tabs.update(tabId, { active: true });
     return { ok: true };
   } catch (e) {
@@ -1875,7 +1931,8 @@ const NEUTER_UNLOAD_WAIT_MS = 8000;
 
 // Closes a tab the agent owns. A user tab needs userTabApproved, which only the bridge sets, after
 // the user approved that close with the confirm token of its user_tab refusal.
-async function closeTab(tabId, { force = false, userTabApproved = false } = {}) {
+async function closeTab(tabId, authorization = {}) {
+  const { force = false, userTabApproved = false } = authorization;
   try {
     if (!agentTabs.has(tabId) && !userTabApproved) {
       const tab = await browser.tabs.get(tabId);
@@ -1884,10 +1941,11 @@ async function closeTab(tabId, { force = false, userTabApproved = false } = {}) 
     }
     if (force) {
       let timer;
-      await Promise.race([forwardToContent('neuterUnload', { tabId }).catch(() => {}),
+      await Promise.race([forwardToContent('neuterUnload', { ...authorization, tabId }).catch(() => {}),
         new Promise(resolve => { timer = setTimeout(resolve, NEUTER_UNLOAD_WAIT_MS); })]);
       clearTimeout(timer);
     }
+    requireTabAdmission(authorization);
     await browser.tabs.remove(tabId);
     return { ok: true };
   } catch (e) {
@@ -1921,7 +1979,9 @@ async function screenPointForClick(params) {
       const busy = shown && await userActiveError(shown.id);
       if (busy) return busy;
       previousTabId = shown?.id ?? null;
+      requireTabAdmission(params);
       await browser.tabs.update(tab.id, { active: true });
+      requireTabAdmission(params);
       trustedShownTabs.set(tab.id, { previousTabId, ownerId: params.ownerId, windowId: tab.windowId, until: Date.now() + TRUSTED_SHOWN_MAX_MS });
       await new Promise(resolve => setTimeout(resolve, TRUSTED_CLICK_PAINT_MS));
     }
@@ -1936,8 +1996,9 @@ async function screenPointForClick(params) {
     // The bridge checks that this window is the one at the click point (#336).
     const win = await browser.windows.get(tab.windowId).catch(() => null);
     if (win) point = { ...point, window: { left: win.left, top: win.top, width: win.width, height: win.height } };
+    requireTabAdmission(params);
     rememberOwnershipInput(tab.id, 'click', inputStartedAt, 2000, params.modifiers);
-    if (previousTabId == null) return point;
+    if (previousTabId == null) return params[TAB_ADMISSION] ? { ...point, tabId: tab.id } : point;
     return { ...point, tabId: params.tabId, previousTabId };
   } finally {
     if (previousTabId != null && (!point || point.error)) {
@@ -2016,7 +2077,7 @@ function reloadExtensionAction() {
 const WAKE_TAB_TIMEOUT_MS = 15000;
 const WAKE_TAB_POLL_MS = 100;
 
-async function wakeTab(tabId) {
+async function wakeTab(tabId, authorization) {
   // Reload a discarded tab and wait until its page can be scripted. Idempotent — returns
   // immediately if the tab is already alive. Use before sending commands to a
   // tab that may have been idle long enough for Zen's Tab Unloader to discard.
@@ -2029,6 +2090,7 @@ async function wakeTab(tabId) {
     markReload(tabId);
     const since = Date.now();
     const deadline = since + WAKE_TAB_TIMEOUT_MS;
+    requireTabAdmission(authorization);
     await browser.tabs.reload(tabId);
     // The last completed check; one the deadline cut short observed nothing and keeps it.
     let page = {};
@@ -2044,7 +2106,7 @@ async function wakeTab(tabId) {
     return { ok: true, woken: true, ready: false, timedOut: true,
       state: page.noReceiver && state ? { ...state, reason: 'no_receiver' } : state };
   } catch (e) {
-    return { error: e.message };
+    return e.tabAdmissionResult || { error: e.message };
   }
 }
 
@@ -2228,6 +2290,7 @@ async function getPageText(params) {
 
 // Tab APIs fail opaquely; name the common case of a tab that no longer exists.
 async function tabApiError(tabId, e) {
+  if (e.tabAdmissionResult) return e.tabAdmissionResult;
   if (tabId != null && !(await tabState(tabId))) return tabError(e.message, 'tab_closed', { tabId });
   return { error: e.message };
 }
@@ -2276,9 +2339,10 @@ async function pingContent(tabId, budgetMs, frameId = 0) {
 // Throws the injection's error if the page refuses it, or NoContentReceiver if nothing answers.
 // With a deadline, every ping ends by it; the injection is one browser call it cannot cut short.
 // Without one, the first ping waits for its answer, as a busy page answers late.
-async function ensureContentScript(tabId, deadline = Infinity, frameId = 0) {
+async function ensureContentScript(tabId, deadline = Infinity, frameId = 0, authorization) {
   const firstBudget = deadline === Infinity ? Infinity : Math.min(CONTENT_PING_TIMEOUT_MS, deadline - Date.now());
   if (await pingContent(tabId, firstBudget, frameId)) return;
+  requireTabAdmission(authorization);
   await browser.tabs.executeScript(tabId, { file: '/content/content.js', frameId });
   const confirmBy = Math.min(Date.now() + CONTENT_CONFIRM_MS, deadline);
   let pings = 0;
@@ -2339,6 +2403,8 @@ async function frameScreenPoint(tabId, frameId, point, params) {
       return { error: 'The frame holding the target is no longer known; take a new browser_snapshot',
         code: 'stale_ref', retryable: true, hint: 'Take a new browser_snapshot and use its refs.' };
     }
+    const revoked = tabAdmissionError(params);
+    if (revoked) return revoked;
     point = await browser.tabs.sendMessage(tabId, { action: 'screenPoint', frame: link.ref,
       x: point.viewportX, y: point.viewportY, click: params.click, zoom: params.zoom,
       modifiers: params.modifiers }, { frameId: link.parent });
@@ -2902,8 +2968,9 @@ async function forwardToContent(action, params) {
     if (expanded.error) return await withTabState(tabId, expanded.error);
     const frameId = targetFrame(tabId, expanded.params);
     try {
-      await ensureContentScript(tabId, Infinity, frameId);
+      await ensureContentScript(tabId, Infinity, frameId, params);
     } catch (e) {
+      if (e.tabAdmissionResult) return e.tabAdmissionResult;
       if (!(e instanceof NoContentReceiver)) return await injectionFailure(tabId, e);
       // Nothing was sent; the tab's state explains the silence where it can.
       const failure = await tabFailure(tabId, e.message, false);
@@ -2911,13 +2978,15 @@ async function forwardToContent(action, params) {
       return failure;
     }
 
-    const { ownerId, sessionId, clientName, userTabsWritable, ...contentParams } = expanded.params;
+    const { [TAB_ADMISSION]: admission, ownerId, sessionId, clientName, userTabsWritable, ...contentParams } = expanded.params;
     let message = { action, ...contentParams };
     if (delta) {
       deltaScope ??= { parent: frameId, depth: 0, budget: frameReadBudget() };
       frameDeltas ??= await knownFrameDeltas(tabId, params, deltaScope);
       message = { ...message, ...deltaMode(params, frameId), keepRefs: changedFrameRefs(frameDeltas) };
     }
+    const revoked = tabAdmissionError(params);
+    if (revoked) return revoked;
     let response;
     try {
       response = await browser.tabs.sendMessage(tabId, message, { frameId });
@@ -2962,7 +3031,7 @@ async function forwardToContent(action, params) {
       if (result.state?.selector === expanded.params[key]) result.state.selector = params[key];
       if (typeof result.error === 'string') result.error = result.error.replaceAll(expanded.params[key], params[key]);
     }
-    return result;
+    return ['screenPoint', 'agentInput', 'focusState'].includes(action) ? tabAdmissionError(params) || result : result;
   }
 }
 
@@ -2981,11 +3050,12 @@ async function onTab(tabId, act) {
     const id = tabId || (await getActiveTabId());
     if (!id) return { error: 'No tab' };
     return await act(id);
-  } catch (e) { return { error: e.message }; }
+  } catch (e) { return e.tabAdmissionResult || { error: e.message }; }
 }
 
-const updateTab = (tabId, props) => onTab(tabId, async id => {
-  const tab = await browser.tabs.update(id, props);
+const updateTab = (tabId, props, authorization) => onTab(tabId, async id => {
+  requireTabAdmission(authorization);
+    const tab = await browser.tabs.update(id, props);
   return { ok: true, tabId: id, pinned: tab.pinned, muted: tab.mutedInfo?.muted };
 });
 
@@ -2995,22 +3065,25 @@ const duplicateTab = (tabId, ownerId = null) => onTab(tabId, async id => {
   return { ok: true, tabId: dup.id, sourceTabId: id };
 });
 
-const reloadTabBrowser = (tabId, bypassCache) => onTab(tabId, async id => {
+const reloadTabBrowser = (tabId, bypassCache, authorization) => onTab(tabId, async id => {
   markReload(id);
-  await browser.tabs.reload(id, { bypassCache: !!bypassCache });
+  requireTabAdmission(authorization);
+    await browser.tabs.reload(id, { bypassCache: !!bypassCache });
   return { ok: true, tabId: id, bypassCache: !!bypassCache };
 });
 
 // direction: 'goBack' or 'goForward'.
-const goInHistory = (tabId, direction) => onTab(tabId, async id => {
-  await browser.tabs[direction](id);
+const goInHistory = (tabId, direction, authorization) => onTab(tabId, async id => {
+  requireTabAdmission(authorization);
+    await browser.tabs[direction](id);
   return { ok: true, tabId: id };
 });
 
 const getZoom = tabId => onTab(tabId, async id => ({ ok: true, tabId: id, factor: await browser.tabs.getZoom(id) }));
 
-const setZoom = (tabId, factor) => onTab(tabId, async id => {
-  await browser.tabs.setZoom(id, Number(factor) || 1);
+const setZoom = (tabId, factor, authorization) => onTab(tabId, async id => {
+  requireTabAdmission(authorization);
+    await browser.tabs.setZoom(id, Number(factor) || 1);
   return { ok: true, tabId: id, factor: Number(factor) || 1 };
 });
 
@@ -3050,15 +3123,18 @@ async function createWindow(url, incognito, ownerId = null) {
 }
 
 // Closing a window closes its tabs, so one with user tabs needs approval like closeTab.
-async function closeWindow(windowId, userTabApproved = false) {
+async function closeWindow(windowId, userTabApproved = false, authorization) {
   try {
     const record = agentWindowRecord(windowId);
+    const syncedGrants = new Map([...(record?.syncedCopies || [])].map(id => [id, handoffs.get(id)]));
     const userTabs = (await browser.windows.get(windowId, { populate: true })).tabs
       .filter(tab => !agentTabs.has(tab.id) && !record?.windowCopies?.has(tab.id)).map(tab => tab.id);
     if (userTabs.length && !userTabApproved) {
       return tabError(`Window ${windowId} has tabs the agent did not open, so it was not closed`, 'user_tab',
         { windowId, tabIds: userTabs }, false);
     }
+    await requireWindowAdmission(authorization);
+    requireTabAdmission(authorization);
     if (!record) {
       await browser.windows.remove(windowId);
       return { ok: true, windowId };
@@ -3067,48 +3143,53 @@ async function closeWindow(windowId, userTabApproved = false) {
     record.closing = true;
     await browser.windows.remove(windowId).catch(e => { record.closing = false; throw e; });
     agentWindows.delete(record);
-    await closeSyncedCopies(record);
+    await closeSyncedCopies(record, syncedGrants);
     return { ok: true, windowId };
-  } catch (e) { return { error: e.message }; }
+  } catch (e) { return e.tabAdmissionResult || { error: e.message }; }
 }
 
 // Moves the user's focus: only for an explicit request (browser_focus_window).
-async function focusWindow(windowId) {
+async function focusWindow(windowId, authorization) {
   try {
+    await requireWindowAdmission(authorization);
+    requireTabAdmission(authorization);
     const agentWindow = agentWindowRecord(windowId);
     if (agentWindow) agentWindow.focusWindowId = null;
     await browser.windows.update(windowId, { focused: true });
     return { ok: true, windowId };
-  } catch (e) { return { error: e.message }; }
+  } catch (e) { return e.tabAdmissionResult || { error: e.message }; }
 }
 
 // Resizes the concrete window admitted for the target tab; does not focus it.
-async function resizeWindow(windowId, width, height) {
+async function resizeWindow(windowId, width, height, authorization) {
   try {
     if (![width, height].every(value => Number.isFinite(value) && value > 0)) {
       return { error: 'width and height must be positive numbers' };
     }
+    await requireWindowAdmission(authorization);
+    requireTabAdmission(authorization);
     const updated = await browser.windows.update(windowId, {
       state: 'normal', width: Math.round(width), height: Math.round(height),
     });
     return { ok: true, windowId: updated.id, width: updated.width, height: updated.height };
-  } catch (e) { return { error: e.message }; }
+  } catch (e) { return e.tabAdmissionResult || { error: e.message }; }
 }
 
-async function moveTabAction(tabId, windowId, index) {
+async function moveTabAction(tabId, windowId, index, authorization) {
   try {
+    requireTabAdmission(authorization);
     const moved = await browser.tabs.move(tabId, { windowId, index: index ?? -1 });
     return { ok: true, tabId, windowId, index: Array.isArray(moved) ? moved[0]?.index : moved.index };
-  } catch (e) { return { error: e.message }; }
+  } catch (e) { return e.tabAdmissionResult || { error: e.message }; }
 }
 
-async function detachTab(tabId) {
+async function detachTab(tabId, authorization) {
   try {
     const tab = await browser.tabs.get(tabId);
     const { window: w } = await createAgentWindow({ tabId }, [tab.url],
-      { windowCopies: false, ownerId: agentTabOwners.get(tabId) });
+      { windowCopies: false, ownerId: agentTabOwners.get(tabId), authorization });
     return { ok: true, windowId: w.id, tabId };
-  } catch (e) { return { error: e.message }; }
+  } catch (e) { return e.tabAdmissionResult || { error: e.message }; }
 }
 
 // Bound inline image payloads without adding a Python imaging dependency.
@@ -3138,8 +3219,8 @@ const CANVAS_MAX = 32000;   // Firefox canvas dimension limit is 32767
 const zlSleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 // Capture helpers call named content.js operations; no code strings leave the package.
-async function zlContent(tabId, action, params = {}) {
-  const r = await forwardToContent(action, { tabId, ...params });
+async function zlContent(tabId, action, params = {}, authorization) {
+  const r = await forwardToContent(action, { ...authorization, ...params, tabId });
   if (!r || r.error) {
     const error = new Error(r?.error || `No response from content operation ${action}`);
     error.screenshotResult = r;
@@ -3148,14 +3229,14 @@ async function zlContent(tabId, action, params = {}) {
   return r;
 }
 
-async function zlScroll(tabId, scroll) {
-  const r = await zlContent(tabId, 'captureScroll', scroll);
+async function zlScroll(tabId, scroll, authorization) {
+  const r = await zlContent(tabId, 'captureScroll', scroll, authorization);
   return r.sy;
 }
 
 // 2.1.1: scale (1-4) = output pixels per CSS pixel. captureTab renders the viewport at that scale, so
 // scale 2 gives a genuinely sharper image (text in article screenshots), not an upscale. Default 1 = old size.
-async function elementScreenshot(tabId, selector, scale, preview, format) {
+async function elementScreenshot(tabId, selector, scale, preview, format, authorization) {
   let hidFixed = false, id = null, captureAttribute = null, stage = 'resolve target';
   const want = Math.min(Math.max(Number(scale) || 1, 1), 4);
   try {
@@ -3164,7 +3245,7 @@ async function elementScreenshot(tabId, selector, scale, preview, format) {
     if (!id || !selector) return { error: 'tabId and selector required' };
     // Every selector uses the shared resolver, then capture/cleanup holds the exact node
     // (including shadow CSS and Playwright forms), not another document-only lookup.
-    const target = await forwardToContent('markScreenshotTarget', { tabId: id, selector });
+    const target = await forwardToContent('markScreenshotTarget', { ...authorization, tabId: id, selector });
     if (target.error) return target;
     selector = target.selector;
     captureAttribute = target.attribute;
@@ -3172,7 +3253,7 @@ async function elementScreenshot(tabId, selector, scale, preview, format) {
     if (isRestrictedUrl(tab.url)) return { error: 'Cannot access browser internal page' };
     const measure = async () => {
       stage = 'captureMeasure';
-      const r = await zlContent(id, 'captureMeasure', { selector });
+      const r = await zlContent(id, 'captureMeasure', { selector }, authorization);
       return r && !r.missing ? r : null;
     };
     let m = await measure();
@@ -3180,7 +3261,7 @@ async function elementScreenshot(tabId, selector, scale, preview, format) {
     if (m.w < 1 || m.h < 1) return { error: 'Element has no size: ' + selector };
     const tall = m.h > m.vh;
     stage = 'captureScrollIntoView';
-    await zlContent(id, 'captureScrollIntoView', { selector, block: tall ? 'start' : 'center' });
+    await zlContent(id, 'captureScrollIntoView', { selector, block: tall ? 'start' : 'center' }, authorization);
     await zlSleep(150);
     m = await measure();
     if (!m) return { error: 'No element matches: ' + selector };
@@ -3210,10 +3291,10 @@ async function elementScreenshot(tabId, selector, scale, preview, format) {
       }
       if (covered >= cssH) break;
       stage = 'hideFixed';
-      if (!hidFixed) { await zlContent(id, 'hideFixed', { selector }); hidFixed = true; }
+      if (!hidFixed) { await zlContent(id, 'hideFixed', { selector }, authorization); hidFixed = true; }
       const before = m.sy;
       stage = 'captureScroll';
-      await zlScroll(id, { by: Math.max(50, Math.floor(m.vh * 0.85)) });
+      await zlScroll(id, { by: Math.max(50, Math.floor(m.vh * 0.85)) }, authorization);
       await zlSleep(160);
       m = await measure();
       if (!m) return { error: 'No element matches: ' + selector };
@@ -3227,13 +3308,13 @@ async function elementScreenshot(tabId, selector, scale, preview, format) {
   } catch (e) { return screenshotFailure(e, stage, id); }
   finally {
     if (captureAttribute) {
-      try { await forwardToContent('unmarkScreenshotTarget', { tabId: id, attribute: captureAttribute }); } catch (e) {}
+      try { await forwardToContent('unmarkScreenshotTarget', { ...authorization, tabId: id, attribute: captureAttribute }); } catch (e) {}
     }
-    if (hidFixed) { try { await zlContent(id, 'restoreFixed'); } catch (e) {} }
+    if (hidFixed) { try { await zlContent(id, 'restoreFixed', {}, authorization); } catch (e) {} }
   }
 }
 
-async function fullPageScreenshot(tabId, preview, format) {
+async function fullPageScreenshot(tabId, preview, format, authorization) {
   let hidFixed = false, id = null, stage = 'resolve tab';
   try {
     format = screenshotFormat(format);
@@ -3242,20 +3323,20 @@ async function fullPageScreenshot(tabId, preview, format) {
     const tab = await browser.tabs.get(id);
     if (isRestrictedUrl(tab.url)) return { error: 'Cannot access browser internal page' };
     stage = 'fullPageMetrics';
-    const m = await zlContent(id, 'fullPageMetrics');
+    const m = await zlContent(id, 'fullPageMetrics', {}, authorization);
     const vh = m.viewportHeight, vw = m.viewportWidth;
     const docH = Math.min(m.docHeight, CANVAS_MAX), docW = Math.min(Math.max(m.docWidth, 1), CANVAS_MAX);
     const segments = [];
     let y = 0;
     for (let i = 0; i < 40 && y < docH; i++) {
       stage = 'captureScroll';
-      await zlScroll(id, { to: y });
+      await zlScroll(id, { to: y }, authorization);
       await zlSleep(150);   // let lazy content settle
-      const sy = Number(await zlScroll(id, {})) || 0;   // the page may clamp the last scroll
+      const sy = Number(await zlScroll(id, {}, authorization)) || 0;   // the page may clamp the last scroll
       stage = 'tabs.captureTab';
       segments.push({ y: sy, data: await browser.tabs.captureTab(id, { format: 'png' }) });
       stage = 'hideFixed';
-      if (!hidFixed) { await zlContent(id, 'hideFixed', { selector: null }); hidFixed = true; }
+      if (!hidFixed) { await zlContent(id, 'hideFixed', { selector: null }, authorization); hidFixed = true; }
       if (sy + vh >= docH) break;
       y = sy + vh;
     }
@@ -3276,7 +3357,7 @@ async function fullPageScreenshot(tabId, preview, format) {
              truncated: m.docHeight > CANVAS_MAX, dataUrl: preview ? await imagePreview(dataUrl) : dataUrl };
   } catch (e) { return screenshotFailure(e, stage, id); }
   finally {
-    if (hidFixed) { try { await zlContent(id, 'restoreFixed'); } catch (e) {} }
+    if (hidFixed) { try { await zlContent(id, 'restoreFixed', {}, authorization); } catch (e) {} }
   }
 }
 
@@ -3476,7 +3557,7 @@ async function targetFrameInfo(tabId, params) {
 }
 
 // ── Click and wait for navigation ──
-async function clickAndWaitNavigation(tabId, selector, timeout, first) {
+async function clickAndWaitNavigation(tabId, selector, timeout, first, authorization) {
   let cleanup;
   try {
     const id = tabId || (await getActiveTabId());
@@ -3498,7 +3579,7 @@ async function clickAndWaitNavigation(tabId, selector, timeout, first) {
       browser.tabs.onUpdated.addListener(listener);
     });
     // Nothing reports a popup this click opens, so the content script does not keep watching.
-    const click = await forwardToContent('click', { tabId: id, selector, first, reportPopup: false });
+    const click = await forwardToContent('click', { ...authorization, tabId: id, selector, first, reportPopup: false });
     if (click.error) return { ...click, clicked: false };
     const nav = await navPromise;
     return { ok: true, clicked: true, navigation: nav };

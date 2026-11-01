@@ -213,6 +213,7 @@ function harness({ onClick = () => {}, activity = {}, focusOnCreate = null, sync
       if (result !== undefined) return copy(await result);
     }
   };
+  h.browser = browser; // Deterministic API barriers for authorization-race tests.
   h.disconnect = () => context.cleanup();
   h.remove = id => browser.tabs.remove(id);
   return h;

@@ -1340,6 +1340,18 @@ permission without changing the user's view. It does not undo an action already 
 the page or OS. Other clients' tabs, including handoffs to another simultaneous session
 of the same stable owner, cannot be requested/transferred: they remain read-only.
 
+Browser/content mutations retain their original admission and recheck it at dispatch,
+including readiness retries and every admitted tab of a window operation. Taking back
+and granting again does not revive an older command. Browser approval claims the request
+and retires the 30-second timer before storage work, so it cannot also trigger elicitation.
+**Native-input limitation:** the bridge makes a late, tab-bound ownership preflight, but
+revocation can still occur after the extension's reply and before the Python OS worker
+starts (including executor queue delays). This interval is not an already-dispatched
+OS action and is not atomically protected. Separate native preparation commands also do
+not share one grant-generation snapshot. Existing per-key checks limit subsequent input;
+an OS operation that has actually started cannot be cancelled. Already-dispatched page
+changes, including temporary screenshot styling/scroll, are not undone after revocation.
+
 Handoffs are memory-only, separate from persistent `owner_id` ownership. A dedicated
 authenticated bridge connection represents the MCP session (one stdio session per server
 process); normal shutdown closes it, and EOF after abrupt process exit returns that

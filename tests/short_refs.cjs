@@ -54,6 +54,7 @@ function background(documents, stored = {}) {
       sent.push({ tabId, ...msg });
       return documents[tabId].send(msg);
     } } },
+    TAB_ADMISSION: Symbol('test admission'), tabAdmissionError: () => null,
     getActiveTabId: async () => 1,
     tabState: async tabId => ({ tabId, status: 'complete', url: `https://example.com/${tabId}` }),
     isRestrictedUrl: () => false, ensureContentScript: async () => {},
