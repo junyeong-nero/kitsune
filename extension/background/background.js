@@ -36,6 +36,7 @@ browser.tabs.onRemoved.addListener(tabId => {
   mainFrameStatus.delete(tabId);
   tabReloads.delete(tabId);
   tabLoads.delete(tabId);
+  actionPages.delete(tabId);
   notifyStatusWaiters(tabId, true);
 });
 browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
@@ -691,6 +692,13 @@ const POST_SNAPSHOT_ACTIONS = new Map([
 // These usually load another document, so their snapshot is full. The others return a delta
 // (see getSnapshot) unless the command passes snapshot: 'full'.
 const FULL_SNAPSHOT_ACTIONS = new Set(['submitForm', 'navigate']);
+// ── Repeated snapshots (#384) ──
+// tabId -> { tool, snapshot, load, url } of the tab's last action result when it carried a whole,
+// untruncated snapshot (not a delta). The next whole-page snapshot that asks (skipUnchanged) and
+// reads exactly that snapshot text in the same document at the same URL answers unchanged_since
+// with a one-line snapshot instead of the page. Any page action on the tab, or that snapshot,
+// drops the record.
+const actionPages = new Map();
 // Page actions on one existing tab (the bridge's outcome actions) report opened_tabs.
 const OPENER_ACTIONS = new Set([
   'click', 'doubleClick', 'type', 'fill', 'setEditableContent', 'selectOption', 'checkBox',
@@ -714,6 +722,10 @@ async function handleCommand(command) {
   if (params.action === 'getSnapshot' && params.sinceObservation && params.includeSnapshot === false) return { ok: true };
   // Descriptions are audit metadata only; never use them to locate elements.
   if (params.ref) params.selector = params.ref;
+  // A whole-page snapshot that may answer unchanged_since (#384): no scope, depth, boxes or delta.
+  const repeatSnapshot = params.action === 'getSnapshot' && params.skipUnchanged === true &&
+    params.selector == null && params.maxDepth == null && !params.boxes && !params.sinceObservation &&
+    !params.delta && params.collapse !== false;
   if (params.action === 'drag') {
     if (params.ref) params.from = params.ref;
     if (params.toRef) params.to = params.toRef;
@@ -733,7 +745,9 @@ async function handleCommand(command) {
   // A trusted click's screenPoint (see screenPointForClick) acts on the page like a click.
   const guarded = USER_GUARDED_ACTIONS.has(params.action) || (params.action === 'screenPoint' && !!params.click);
   const touches = guarded && params.action !== 'focusWindow';
-  if ((withSnapshot || textSnapshot || touches) && params.tabId == null) params.tabId = await getActiveTabId();
+  if ((withSnapshot || textSnapshot || touches || repeatSnapshot) && params.tabId == null) {
+    params.tabId = await getActiveTabId();
+  }
   const unprotected = await protectedTabError(params);
   if (unprotected) return unprotected;
   if (guarded) {
@@ -741,10 +755,12 @@ async function handleCommand(command) {
     if (busy) return busy;
   }
   if (tracksOpenedTabs && params.tabId != null) actionStarts.set(params.tabId, tabsCreated);
+  if (guarded && params.tabId != null) actionPages.delete(params.tabId);
   const touched = touches ? params.tabId : null;
   if (touched != null) touchStart(touched);
   try {
-    return await runCommand(params, { withSnapshot, deltaSnapshot, textSnapshot, tracksOpenedTabs });
+    const result = await runCommand(params, { withSnapshot, deltaSnapshot, textSnapshot, tracksOpenedTabs });
+    return repeatSnapshot && params.tabId != null ? await unchangedSince(params.tabId, result) : result;
   } finally {
     if (touched != null) touchEnd(touched);
   }
@@ -926,6 +942,9 @@ async function runCommandSettled(params, { withSnapshot, deltaSnapshot, textSnap
         else delete result.visibilityState;
         if (snapshot.target_ref) result.target_ref = snapshot.target_ref;
         if (snapshot.needs_user) result.needs_user = snapshot.needs_user;
+        if (!snapshot.delta && !snapshot.truncated && !result.navigation_pending && snapshot.snapshot) {
+          await recordActionPage(params.tabId, POST_SNAPSHOT_ACTIONS.get(params.action), snapshot.snapshot);
+        }
       }
     } catch (e) { result.snapshot_error = e.message; }
   }
@@ -944,6 +963,34 @@ async function runCommandSettled(params, { withSnapshot, deltaSnapshot, textSnap
     }
   }
   return result;
+}
+
+async function tabUrl(tabId) {
+  try {
+    return (await browser.tabs.get(tabId)).url;
+  } catch {
+    return null;
+  }
+}
+
+async function recordActionPage(tabId, tool, snapshot) {
+  const load = tabLoads.get(tabId);
+  const url = await tabUrl(tabId);
+  if (typeof url === 'string') actionPages.set(tabId, { tool, snapshot, load, url });
+}
+
+// A whole-page snapshot (result) of tabId, or unchanged_since when it is exactly the snapshot the
+// tab's last action result carried (see actionPages).
+async function unchangedSince(tabId, result) {
+  const page = actionPages.get(tabId);
+  if (!page) return result;
+  actionPages.delete(tabId);
+  if (!result || result.error || result.truncated || result.snapshot !== page.snapshot ||
+      tabLoads.get(tabId) !== page.load || await tabUrl(tabId) !== page.url) return result;
+  const refs = [...page.snapshot.matchAll(/\[ref=e(\d+)\]/g)].map(m => Number(m[1]));
+  const [low, high] = [Math.min(...refs), Math.max(...refs)];
+  const range = !refs.length ? '' : low === high ? ` (refs e${low})` : ` (refs e${low}–e${high})`;
+  return { ...result, snapshot: `unchanged since the ${page.tool} result${range}`, unchanged_since: page.tool };
 }
 
 // The popup a click or hover opened, with public refs (#329). A page that navigated away has

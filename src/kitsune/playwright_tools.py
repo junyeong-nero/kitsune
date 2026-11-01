@@ -556,6 +556,9 @@ def browser_snapshot(target: str | None = None, filename: str | None = None, dep
         body["maxDepth"] = int(depth)
     if boxes:
         body["boxes"] = True
+    if not filename and target is None and depth is None and not boxes:
+        # The whole page: one-line unchanged_since when the last action result carried it (#384).
+        body["skipUnchanged"] = True
     result = k._post("/api/snapshot", body)
     if filename and not k._failed(result):
         return {**_saved(filename, result.get("snapshot") or ""),

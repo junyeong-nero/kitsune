@@ -102,6 +102,21 @@ class RealBrowserActionObservationTests(harness.RealBrowserTestCase):
         self.assertNotIn("snapshot_delta", result)
         self.assertIn('heading "Hollow Knight Silksong"', result["snapshot"])
 
+    def test_a_snapshot_repeating_the_page_a_click_loaded_is_unchanged(self):
+        # #384: the core browser_snapshot sent with the click reads the page that result carried.
+        tab = self.open_tab(f"{self.site.origin}/list")
+        clicked = self.assert_ok(self.call("/api/click", {"tabId": tab, "ref": self.ref(tab, 'link "Hollow Knight Silksong"')}))
+        whole = {"tabId": tab, "maxChars": 12000, "skipUnchanged": True}
+        repeated = self.call("/api/snapshot", whole)
+        self.assertEqual(repeated.get("unchanged_since"), "browser_click", repeated)
+        ref = re.search(r"\[ref=(e\d+)\]", clicked["snapshot"]).group(1)
+        self.assertEqual(repeated["snapshot"], f"unchanged since the browser_click result (refs {ref})")
+        self.assertEqual(self.call("/api/snapshot", whole)["snapshot"], clicked["snapshot"], "only once")
+        # After a delta the page is returned.
+        self.call("/api/navigate", {"tabId": tab, "url": f"{self.site.origin}/list"})
+        self.assert_ok(self.call("/api/click", {"tabId": tab, "ref": self.ref(tab, 'button "Nothing"')}))
+        self.assertIn('link "Hollow Knight Silksong"', self.call("/api/snapshot", whole)["snapshot"])
+
     def test_a_script_navigation_after_the_click_is_reported(self):
         tab = self.open_tab(f"{self.site.origin}/list")
         result = self.assert_ok(self.call("/api/click", {"tabId": tab, "ref": self.ref(tab, 'button "Open by script"')}))

@@ -435,6 +435,29 @@ action returns its delta, after up to 1 s more.
   "snapshot": "- heading \"Hollow Knight Silksong\" [ref=e91] [level=1]\n…" }
 ```
 
+**A snapshot that repeats a full action result (#384).** Agents often send `browser_snapshot`
+in the same turn as an action, before reading its result, so a page that result already carried
+would be sent twice. The core `browser_snapshot` without `target`, `depth`, `boxes` or `filename`
+(it sends `"skipUnchanged": true` to HTTP `/api/snapshot`) is still read in full, but when it is
+exactly the `snapshot` text of the tab's last action result, in the same document at the same
+URL, it returns one line instead of the page, with `unchanged_since` naming that action's tool
+and the refs' range:
+
+```json
+{ "snapshot": "unchanged since the browser_click result (refs e91–e130)", "unchanged_since": "browser_click",
+  "url": "https://store.example/app/1030300/", "title": "Hollow Knight Silksong", "readyState": "complete" }
+```
+
+That result's snapshot and refs describe the page. This applies only:
+
+- after a full snapshot (`navigated`, `browser_navigate`, `browser_submit_form`, `snapshot:
+  "full"`), not a delta, a truncated snapshot or `navigation_pending`;
+- to the first such snapshot of the same tab after it; any other page action on the tab ends it;
+- when the text is identical. The core snapshot is readable and an action's is compact, so a
+  page with text lines the action result left out (`- text "…"`) is returned in full.
+
+A scoped, saved or `boxes` snapshot, `browser_find` and other reads return the page as before.
+
 `browser_fill_form` returns one delta for all its fields: the first field records the page's
 lines, and the last waits and lists every field's change under the refs the agent already has.
 

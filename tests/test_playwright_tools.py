@@ -142,6 +142,10 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(self.posted(), [("/api/snapshot", {"maxChars": 12000, "ref": "e4", "maxDepth": 2,
                                                             "boxes": True})])
         self.assertIn("error", playwright_tools.browser_snapshot(depth=1.5))
+        # Only a whole-page snapshot may answer unchanged_since (#384).
+        for scoped in ({"target": "e4"}, {"depth": 1}, {"boxes": True}):
+            playwright_tools.browser_snapshot(**scoped)
+            self.assertNotIn("skipUnchanged", self.posted()[-1][1], scoped)
         self.post.return_value = {"snapshot": '- button "OK" [ref=e1]', "url": "https://a/"}
         with tempfile.TemporaryDirectory() as directory, patch.object(Path, "cwd", return_value=Path(directory)):
             result = playwright_tools.browser_snapshot(filename="out/snap.yml")
@@ -174,7 +178,8 @@ class AdapterTests(unittest.TestCase):
                                   "truncated": True, "url": "https://a/", "title": "Desks",
                                   "hint": "Snapshot truncated; scope with selector, ref or max_depth."}
         result = playwright_tools.browser_snapshot()
-        self.assertEqual(self.posted(), [("/api/snapshot", {"maxChars": playwright_tools.SNAPSHOT_LIMIT})])
+        self.assertEqual(self.posted(), [("/api/snapshot", {"maxChars": playwright_tools.SNAPSHOT_LIMIT,
+                                                            "skipUnchanged": True})])
         lines = result["snapshot"].split("\n")
         self.assertEqual(lines[:2], ['- link "Desk 1" [ref=e1]', '  - /url: "https://a/1"'])
         self.assertEqual(lines[-1], "- … truncated; browser_find searches the rest")
