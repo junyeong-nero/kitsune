@@ -1356,7 +1356,8 @@ A tab that goes back to the user loses its value. Limits:
 - Ownership observation excludes announced agent OS input across the tab, including new
   frames: pointer/touch events and the announced modifiers for at most 2 s after click
   preparation, and keyboard/paste events for the announced keyboard window (at most 60 s).
-  Unrelated event types/modifiers still count. These exclusions do not weaken `user_active`.
+  Unrelated event types/modifiers still count. Child-frame activity reuses these exclusions;
+  top-frame activity retains its existing local OS-input windows.
   Concurrent genuine user input matching an announced OS event cannot be distinguished
   from the agent's input during that finite window.
 - Content scripts cannot observe input on browser-internal pages or while the
@@ -1378,7 +1379,9 @@ reopened tab belongs to the user.
   Never) checks once a minute (`alarms` permission) and closes agent tabs that have been
   idle that long. A tab counts as used when the agent opens it or runs a command on it,
   and when any window shows it. A tab that is shown, playing sound, or has an agent
-  command running on it is never closed by this check. Use times are kept in memory only,
+  command running on it is never closed by this check. Automatic cleanup also skips
+  `user_active` tabs, including recent input in a just-backgrounded tab; the explicit
+  user-requested popup cleanup does not wait. Use times are kept in memory only,
   so after an extension reload or browser restart the timer for restored agent tabs starts
   again from then. The setting is stored in the extension's `storage.local`
   (`agentTabIdleMinutes`).
@@ -1446,7 +1449,7 @@ closing that window needs approval.
 
 #### User activity
 
-An agent write or navigation on a tab the user is using returns the error
+An agent write, navigation or close on a tab the user is using returns the error
 `user_active` (`retryable: true`) instead of acting, with `state.tabId`, `state.url`
 and `state.reason`:
 
@@ -1456,11 +1459,14 @@ and `state.reason`:
 | `typing` | typing in a field: the input, textarea, editor or custom element (a shadow-root field shows as its host) that last got a trusted `keydown` or `paste` still has focus, holds content, and its document has focus (`state.field` is its tag; the value is never read out) | while all of that holds |
 | `navigating` | loading a new document in the tab they see (address bar, back button, a link), and no agent command on the tab started it (`state.sinceMs`) | while it loads, at most 10 s |
 
-Nothing reached the page; repeat after a few seconds, work in a tab you opened, or ask
-the user. Checked actions: click, double-click, type/fill/editable, select, check,
+On your own tab, wait a few seconds and retry. Input does not transfer ownership.
+Typing releases when the field loses focus or is emptied; merely pausing between keys
+in a focused, nonempty field does not release it. Checked actions: click, double-click, type/fill/editable, select, check,
 keypress, submit, form fill, hover, scroll, drag, focus, blur, JavaScript, upload,
 navigate, back, forward, reload, click-and-wait-navigation, close, element and
-full-page screenshots (they scroll the page), and trusted click (viewport) on their own tab; select (`switchTab`) and `browser_focus_window` on the tab
+full-page screenshots (they scroll the page), trusted input preparation and each native
+keyboard focus check on their own tab. Window close/resize checks every affected tab;
+pin/mute/zoom/move/detach also respect activity on their target. Select (`switchTab`) and `browser_focus_window` check the tab
 the user would leave. Reads never are. Ownership is checked before activity: user tabs
 return `user_tab_read_only` regardless of whether they are viewed.
 
@@ -1477,10 +1483,26 @@ as the agent's when an agent command on the tab was running, or ended at most 2 
 before, when the load started, so a click's or a navigate's own load never blocks the
 agent; a load in a background tab never counts.
 
-Limits: input in iframes is not seen (the content script runs in the top document),
-nor input outside the page (address bar typing counts once the load starts). A
-screen-coordinate trusted click has no tab and is not checked, and its own click may
-count as user input on the tab it hits for 3 s.
+Eligible same-origin, cross-origin and blank child frames use the lightweight input
+observer even before any frame command. Typing is queried in the originating document,
+including its document focus; field values never leave it. Temporary document-focus loss
+releases activity, but the same focused draft is protected again when document focus returns,
+without another input event. Replaced/removed frames cannot leave a stale typing lock. A missing or unresponsive child query releases typing after
+the 3 s input pause (queries wait at most 250 ms), like an unavailable top document.
+
+Limits: input outside the page is not observed (address bar typing counts once the load
+starts). Announced native keyboard/paste events are excluded for the bounded keyboard
+window (at most 60 s); simultaneous human input of the same class cannot be distinguished.
+Unrelated genuine input still blocks, and the next native keyboard focus check stops
+remaining keys with `user_active` and `state.keysSent` if keys were already delivered.
+Native-input cleanup leaves a busy temporarily shown tab displayed rather than switching
+away. That restoration attempt is consumed; a stale retry cannot later change the user's
+view after activity releases. Idle, still-authenticated restoration continues normally.
+A screen-coordinate trusted click is prohibited by default. Writable compatibility
+checks activity on its named or once-resolved implicit tab before any OS action, but
+coordinates cannot prove that tab is the actual destination. Its own click may count
+as user input for 3 s. Activity checks are admission checks, not an atomic lock against
+input arriving between a check and an action.
 
 #### Viewed tab
 
@@ -2826,7 +2848,8 @@ target, for hover menus that close when the pointer leaves. A `selector` is scro
 into view and clicked at its center; otherwise `x`/`y` are viewport coordinates, or
 desktop coordinates with `coordinate_space="screen"`. The OS click lands on whatever the screen shows, so a
 `tab_id` that is not the shown tab of its window is shown for the click, and the
-user's tab is shown again 300 ms after it (see [Shared browser](#shared-browser)). A
+user's tab is shown again 300 ms after it unless the temporarily shown tab is now busy
+or the user changed the view (see [Shared browser](#shared-browser)). A
 viewport click returns `user_active` without clicking while the user is using the
 target tab or the tab it would hide. A user-tab target instead returns `user_tab_read_only`
 before any OS input; approval tokens cannot bypass ownership. Ambiguous selectors return `ambiguous_target`

@@ -772,6 +772,29 @@ class TrustedClickTests(unittest.TestCase):
         check = patch.object(bridge, "_browser_not_at_point", return_value=None)
         check.start()
         self.addCleanup(check.stop)
+        activity = patch.object(bridge, "send_to_extension", new_callable=AsyncMock,
+                                return_value={"ok": True, "tabId": 1})
+        self.activity = activity.start()
+        self.addCleanup(activity.stop)
+
+    def test_screen_click_busy_preflight_precedes_all_os_effects(self):
+        busy = {"error": "user busy", "code": "user_active", "retryable": True}
+        for target in ({}, {"tabId": 12}):
+            with self.subTest(target=target), \
+                 patch.object(bridge, "_focus_browser_window") as focus, \
+                 patch.object(bridge, "_native_click_screen", return_value={"ok": True}) as click:
+                self.activity.return_value = busy
+                result = asyncio.run(bridge.trusted_click({"x": 5, "y": 6,
+                    "coordinateSpace": "screen", "focus": True, **target}))
+                self.assertEqual(result, busy)
+                self.activity.assert_awaited_with("checkUserActivity", target)
+                focus.assert_not_called()
+                click.assert_not_called()
+                self.activity.return_value = {"ok": True, "tabId": target.get("tabId", 1)}
+                result = asyncio.run(bridge.trusted_click({"x": 5, "y": 6,
+                    "coordinateSpace": "screen", "focus": True, **target}))
+                self.assertTrue(result["ok"])
+                click.assert_called_once()
 
     def test_screen_click_focus_is_browser_neutral(self):
         with patch.object(bridge, "_focus_browser_window", return_value=True) as focus, \
@@ -882,7 +905,7 @@ class TrustedClickTests(unittest.TestCase):
             self.assertTrue(result["ok"])
             self.assertLess(ticks[-1], 0.3, "the loop ran while focus was waited for")
 
-    def test_screen_clicks_are_not_checked(self):
+    def test_screen_clicks_do_not_claim_destination_window_validation(self):
         with patch.object(bridge, "_browser_not_at_point") as check, \
              patch.object(bridge, "_native_click_screen", return_value={"ok": True, "backend": "quartz"}):
             result = asyncio.run(bridge.trusted_click({"coords": {"x": 5, "y": 6}, "coordinateSpace": "screen"}))

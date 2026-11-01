@@ -36,6 +36,7 @@ browser.tabs.onRemoved.addListener(tabId => {
   mainFrameStatus.delete(tabId);
   tabReloads.delete(tabId);
   tabLoads.delete(tabId);
+  frameUserInputs.delete(tabId);
   actionPages.delete(tabId);
   notifyStatusWaiters(tabId, true);
 });
@@ -183,9 +184,9 @@ function noteTrustedTabInput(tabId, at) {
     disownInheritedTabs(entry.tabId);
   }
 }
-// Ownership-only exclusions for OS input announced by the bridge. Coordinate-based input can
+// Tab-wide exclusions for OS input announced by the bridge. Coordinate-based input can
 // land in a child frame that has never received a command, so these windows cover the whole tab.
-// They do not change user_active. Match the content script's event classes and finite deadlines.
+// Child-frame activity uses the same exclusions; top-frame activity keeps its local guards.
 const ownershipAgentInput = new Map(); // tabId -> { click?: { at, until, modifiers }, keys?: { at, until } }
 function rememberOwnershipInput(tabId, kind, at, ms, modifiers = []) {
   const windows = ownershipAgentInput.get(tabId) || {};
@@ -301,8 +302,14 @@ async function closeAgentTabs({ idleMs = 0 } = {}) {
   const ids = (await browser.tabs.query({}))
     .filter(tab => agentTabs.has(tab.id) && !tab.pinned && (!idleMs || idle(tab)))
     .map(tab => tab.id);
-  const results = await Promise.allSettled(ids.map(id => browser.tabs.remove(id)));
-  return { closed: results.filter(r => r.status === 'fulfilled').length };
+  const results = await Promise.allSettled(ids.map(async id => {
+    // An automatic sweep must not close a just-backgrounded draft or recent input.
+    // idleMs=0 is the user's explicit popup cleanup, not an agent command.
+    if (idleMs && await userActivity(id)) return false;
+    await browser.tabs.remove(id);
+    return true;
+  }));
+  return { closed: results.filter(r => r.status === 'fulfilled' && r.value).length };
 }
 
 async function agentTabCount() {
@@ -463,6 +470,31 @@ async function closeSyncedCopies(record) {
 // navigations on it, and view switches away from it, return user_active instead of acting.
 // A navigation counts while the shown tab loads a document the agent did not start.
 const USER_NAVIGATION_WINDOW_MS = 10000;
+// Only frames that reported genuine input need querying. Document tokens prevent a replaced
+// frame's focused element from being mistaken for the previous document's draft.
+const frameUserInputs = new Map(); // tabId -> Map(frameId -> { at, type, documentToken })
+async function frameUserActivity(tabId) {
+  const frames = frameUserInputs.get(tabId);
+  for (const [frameId, input] of frames || []) {
+    const sinceMs = Date.now() - input.at;
+    if (sinceMs < 3000) return { reason: 'input', input: input.type, sinceMs, windowMs: 3000 };
+    let timer;
+    const page = await Promise.race([
+      browser.tabs.sendMessage(tabId, { action: 'frameUserActivity', documentToken: input.documentToken },
+        { frameId }).catch(() => null),
+      new Promise(resolve => { timer = setTimeout(resolve, 250, null); }),
+    ]);
+    clearTimeout(timer);
+    if (frames.get(frameId) !== input) return await frameUserActivity(tabId);
+    if (page?.active) return page.state;
+    // A valid document can regain focus without another input event, just like the top
+    // document. Keep querying it; only gone/replaced/unresponsive documents are forgotten.
+    // Missing queries still get the bounded 3 s input pause, never an indefinite typing lock.
+    if (page?.documentToken !== input.documentToken) frames.delete(frameId);
+  }
+  if (frames && !frames.size) frameUserInputs.delete(tabId);
+  return null;
+}
 
 async function userActivity(tabId) {
   const tab = await browser.tabs.get(tabId).catch(() => null);
@@ -475,7 +507,8 @@ async function userActivity(tabId) {
   }
   if (tab.discarded || isRestrictedUrl(tab.url)) return null;
   const page = await browser.tabs.sendMessage(tabId, { action: 'userActivity' }, TOP_FRAME).catch(() => null);
-  return page?.active ? { tabId, url: tab.url, ...page.state } : null;
+  const state = page?.active ? page.state : await frameUserActivity(tabId);
+  return state ? { tabId, url: tab.url, ...state } : null;
 }
 
 // The tab whose user activity an action must respect: switching the view or window focus leaves
@@ -496,9 +529,16 @@ async function guardedTabId(action, params) {
   return (await browser.tabs.query({ windowId, active: true }).catch(() => []))[0]?.id ?? null;
 }
 
-async function userActiveError(tabId) {
-  const state = tabId != null && await userActivity(tabId);
-  return state ? tabError(`The user is using tab ${tabId}; nothing was done`, 'user_active', state) : null;
+async function userActiveError(tabId, windowId = null) {
+  const ids = new Set([tabId]);
+  if (windowId != null) {
+    for (const tab of await browser.tabs.query({ windowId })) ids.add(tab.id);
+  }
+  for (const id of ids) {
+    const state = id != null && await userActivity(id);
+    if (state) return tabError(`The user is using tab ${id}; nothing was done`, 'user_active', state);
+  }
+  return null;
 }
 
 // The longest pause a held click or a sustained hover asks for (content.js POINTER_MAX_MS).
@@ -511,8 +551,19 @@ browser.runtime.onMessage.addListener((msg, sender) => {
   if (fromPopup && msg.action === 'closeAgentTabs') return closeAgentTabs();
   if (msg.action === 'trustedTabInput' && Number.isInteger(sender.tab?.id) && sender.tab.id >= 0 &&
       sender.id === browser.runtime.id) {
-    if (!isOwnershipAgentInput(sender.tab.id, msg)) noteTrustedTabInput(sender.tab.id, msg.at);
-    return Promise.resolve(null);
+    const userInput = Number.isFinite(msg.at) && msg.at <= Date.now() &&
+      !isOwnershipAgentInput(sender.tab.id, msg);
+    if (userInput) {
+      noteTrustedTabInput(sender.tab.id, msg.at);
+      if (Number.isInteger(sender.frameId) && sender.frameId > 0 && typeof msg.documentToken === 'string') {
+        const frames = frameUserInputs.get(sender.tab.id) || new Map();
+        const previous = frames.get(sender.frameId);
+        if (!previous || msg.at >= previous.at) frames.set(sender.frameId,
+          { at: msg.at, type: msg.type, documentToken: msg.documentToken });
+        frameUserInputs.set(sender.tab.id, frames);
+      }
+    }
+    return Promise.resolve({ userInput });
   }
   if (msg.action === 'getDialogPolicy') {
     return Promise.resolve(dialogPolicies.get(sender.tab?.id) || null);
@@ -776,7 +827,9 @@ const OPENER_ACTIONS = new Set([
 // actions above and these. Element and full-page captures scroll the page.
 const USER_GUARDED_ACTIONS = new Set([
   ...OPENER_ACTIONS, 'media', 'executeJS', 'waitForResult', 'uploadCommit',
-  'closeTab', 'switchTab', 'focusWindow', 'elementScreenshot', 'fullPageScreenshot',
+  'closeTab', 'closeWindow', 'switchTab', 'focusWindow', 'elementScreenshot', 'fullPageScreenshot',
+  'pinTab', 'muteTab', 'setZoom', 'resizeWindow', 'moveTab', 'detachTab', 'wakeTab',
+  'highlight', 'clearHighlight', 'handleDialog', 'neuterUnload', 'focusState',
 ]);
 // Every tab mutation, including view-only changes and preparation for OS input, is checked
 // before content injection, user activity inspection or any browser API with side effects.
@@ -861,6 +914,14 @@ async function handleCommand(command) {
   if (params.action === 'checkTabWrite') {
     return await tabWriteError({ ...params, action: params.writeAction }) || { ok: true };
   }
+  if (params.action === 'checkUserActivity') {
+    params.tabId ??= await getActiveTabId();
+    if (params.tabId == null) return noActiveTab('No active tab found');
+    if (!await browser.tabs.get(params.tabId).catch(() => null)) {
+      return tabError(`Tab ${params.tabId} no longer exists`, 'tab_closed', { tabId: params.tabId });
+    }
+    return await userActiveError(params.tabId) || { ok: true, tabId: params.tabId };
+  }
   const readOnly = await tabWriteError(params);
   if (readOnly) return readOnly;
   // browser_wait_for(time)'s delta (#350) is a post-action snapshot: KITSUNE_POST_ACTION_SNAPSHOT=0 turns it off.
@@ -888,13 +949,17 @@ async function handleCommand(command) {
   const textSnapshot = params.action === 'getSnapshot' && !!params.text;
   const tracksOpenedTabs = OPENER_ACTIONS.has(params.action);
   // A trusted click's screenPoint (see screenPointForClick) acts on the page like a click.
-  const guarded = USER_GUARDED_ACTIONS.has(params.action) || ['screenPoint', 'agentInput'].includes(params.action);
-  const touches = guarded && params.action !== 'focusWindow';
-  if ((withSnapshot || textSnapshot || touches || repeatSnapshot) && params.tabId == null) {
+  const guarded = USER_GUARDED_ACTIONS.has(params.action) || ['screenPoint', 'agentInput'].includes(params.action) ||
+    (params.action === 'find' && (params.loadMore || params.load_more)) ||
+    (params.action === 'storageOp' && !['get', 'list', 'snapshot'].includes(params.op));
+  const tabGuarded = guarded && !['focusWindow', 'closeWindow'].includes(params.action);
+  const touches = tabGuarded && params.action !== 'focusState';
+  if ((withSnapshot || textSnapshot || tabGuarded || repeatSnapshot) && params.tabId == null) {
     params.tabId = await getActiveTabId();
   }
   if (guarded) {
-    const busy = await userActiveError(await guardedTabId(params.action, params));
+    const busy = await userActiveError(await guardedTabId(params.action, params),
+      ['closeWindow', 'resizeWindow'].includes(params.action) ? params.windowId : null);
     if (busy) return busy;
   }
   if (tracksOpenedTabs && params.tabId != null) actionStarts.set(params.tabId, tabsCreated);
@@ -1755,20 +1820,27 @@ async function zoomedScreenPoint(params) {
   return await forwardToContent('screenPoint', { ...params, tabId, zoom });
 }
 
-// Shows the user's tab again after a trusted click, unless the user already moved elsewhere.
+// Restore the previous view only while the temporary transition is still valid and idle.
 async function restoreActiveTab(tabId, from, ownerId) {
   const shownForInput = trustedShownTabs.get(from);
   if (!shownForInput || shownForInput.previousTabId !== tabId || shownForInput.ownerId !== ownerId) {
     return { ok: true, restored: false };
   }
-  trustedShownTabs.delete(from);
   try {
     const shown = await browser.tabs.get(from);
-    if (!shown.active) return { ok: true, restored: false };
+    if (!shown.active || await userActiveError(from)) return { ok: true, restored: false };
+    // Activity queries yield: the user may have switched away (and even back) meanwhile.
+    // Do not restore an invalidated transition or consume a newer client's preparation.
+    const current = await browser.tabs.get(from);
+    if (!current.active || trustedShownTabs.get(from) !== shownForInput) return { ok: true, restored: false };
+    trustedShownTabs.delete(from);
     await browser.tabs.update(tabId, { active: true });
     return { ok: true, restored: true };
   } catch (e) {
     return await tabApiError(tabId, e);
+  } finally {
+    // Busy cleanup is final too: a delayed retry must not switch the view after release.
+    if (trustedShownTabs.get(from) === shownForInput) trustedShownTabs.delete(from);
   }
 }
 

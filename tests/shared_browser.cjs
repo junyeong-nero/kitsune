@@ -35,6 +35,9 @@ function harness({ onClick = () => {}, activity = {}, focusOnCreate = null, sync
   };
   const h = {
     tabs, activity, calls: [], sent: [], focusedWindow: 1,
+    frameInput: (tabId, frameId, type) => browser.runtime.onMessage.emit(
+      { action: 'trustedTabInput', at: now, type, documentToken: `frame-${frameId}` },
+      { id: browser.runtime.id, tab: { id: tabId }, frameId }),
     send: command => context.handleCommand({ includeSnapshot: false, userTabsWritable,
       ...command }).then(copy),
     activate(id) {
@@ -145,6 +148,7 @@ function harness({ onClick = () => {}, activity = {}, focusOnCreate = null, sync
         if (msg.action === 'userActivity') return h.activity[id] ? { active: true, state: h.activity[id] } : { active: false };
         if (msg.action === 'click') return (await onClick(h, msg)) || { ok: true };
         if (msg.action === 'screenPoint') return { screenX: 10, screenY: 20, viewportX: 1, viewportY: 2, title: 't' };
+        if (msg.action === 'focusState') return { ok: true, focused: true };
         return { ok: true };
       },
       executeScript: async () => {},
@@ -190,7 +194,7 @@ function harness({ onClick = () => {}, activity = {}, focusOnCreate = null, sync
       },
       getAll: async () => [{ id: 1 }],
     },
-    runtime: { onMessage: event(), onStartup: event(), onInstalled: event() },
+    runtime: { id: 'kitsune-test', onMessage: event(), onStartup: event(), onInstalled: event() },
     permissions: { contains: async () => true },
   };
   const context = vm.createContext({

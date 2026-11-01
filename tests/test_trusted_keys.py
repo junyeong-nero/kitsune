@@ -4,6 +4,10 @@ The OS layer (focus, the window check and click, the frontmost app, posted key e
 mocked; tests/test_real_browser_trusted_keys.py sends real keys to an isolated browser.
 """
 import asyncio
+import json
+from pathlib import Path
+import shutil
+import subprocess
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -60,7 +64,107 @@ class TrustedKeysTestCase(unittest.TestCase):
         return [entry[0] for entry in self.timeline if entry[0] not in ("char", "key", "chord")]
 
 
+@unittest.skipUnless(shutil.which("node"), "Node is required for background/bridge integration")
+class NativeInputRestoreTests(TrustedKeysTestCase):
+    """Actual Python native-input loop and JS background dispatch; only OS/page APIs are mocked."""
+
+    def setUp(self):
+        super().setUp()
+        root = Path(__file__).resolve().parents[1]
+        self.background = subprocess.Popen(
+            ["node", "tests/native_input_restore.cjs", "--bridge"], cwd=root,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, bufsize=1)
+        self.addCleanup(self.close_background)
+        self.target = self.request({"op": "setup"})
+        self.busy_kind = None
+        self.interrupted = False
+
+        async def extension(action, params=None, timeout=30):
+            if action == "focusState" and self.busy_kind and self.posted() and not self.interrupted:
+                self.request({"op": "input", "kind": self.busy_kind})
+                self.interrupted = True
+            return self.request({"op": "command", "command": {"action": action, **(params or {})}})
+
+        self.extension = extension
+
+    def request(self, message):
+        self.background.stdin.write(json.dumps(message) + "\n")
+        self.background.stdin.flush()
+        line = self.background.stdout.readline()
+        self.assertTrue(line, "background test driver exited without a reply")
+        result = json.loads(line)
+        self.assertNotIn("testError", result)
+        return result
+
+    def close_background(self):
+        self.background.stdin.close()
+        try:
+            self.background.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.background.kill()
+            self.background.wait()
+        self.background.stdout.close()
+        self.background.stderr.close()
+
+    def type_text(self):
+        return asyncio.run(bridge.trusted_type({"tabId": self.target["tabId"],
+                                               "selector": "#field", "text": "abc"}))
+
+    def assert_interruption_keeps_user_view(self, kind):
+        self.busy_kind = kind
+        result = self.type_text()
+        self.assertEqual(result["code"], "user_active")
+        self.assertTrue(result["retryable"])
+        self.assertEqual(result["state"]["keysSent"], 1)
+        self.assertEqual(self.posted(), [("char", "a")])
+        tab_id = self.target["tabId"]
+        state = self.request({"op": "state"})
+        self.assertEqual(state["shown"], [tab_id], "native finally cleanup must leave the busy tab displayed")
+        self.assertTrue(next(tab for tab in state["tabs"] if tab["id"] == tab_id)["owned"])
+        self.request({"op": "release"})
+        stale_restore = {"op": "command", "command": {"action": "restoreActiveTab",
+                         "tabId": self.target["previousTabId"], "from": tab_id}}
+        self.assertFalse(self.request(stale_restore)["restored"], "busy cleanup consumed the transition")
+        self.request({"op": "activate", "tabId": 2})
+        self.assertFalse(self.request(stale_restore)["restored"])
+        self.assertEqual(self.request({"op": "state"})["shown"], [2])
+
+    def test_top_input_interruption_and_finally_cleanup(self):
+        self.assert_interruption_keeps_user_view("top")
+
+    def test_frame_input_interruption_and_finally_cleanup(self):
+        self.assert_interruption_keeps_user_view("frame")
+
+    def test_navigation_interruption_and_finally_cleanup(self):
+        self.assert_interruption_keeps_user_view("navigation")
+
+    def test_idle_native_completion_restores_previous_view(self):
+        result = self.type_text()
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["keysSent"], 3)
+        self.assertEqual(self.request({"op": "state"})["shown"], [self.target["previousTabId"]])
+
+
 class TrustedTypeTests(TrustedKeysTestCase):
+    def test_activity_before_next_key_stops_native_input_and_reports_partial_count(self):
+        extension = self.extension
+        busy = {"error": "user busy", "code": "user_active", "retryable": True,
+                "state": {"reason": "input", "input": "wheel"}}
+
+        async def activity(action, params=None, timeout=30):
+            if action == "focusState" and self.posted():
+                return busy
+            return await extension(action, params, timeout)
+
+        self.extension = activity
+        result = asyncio.run(bridge.trusted_type({"tabId": 396, "selector": "#field", "text": "abc"}))
+        self.assertEqual(result["code"], "user_active")
+        self.assertTrue(result["retryable"])
+        self.assertEqual(result["state"], {"reason": "input", "input": "wheel", "keysSent": 1})
+        self.assertEqual(self.posted(), [("char", "a")])
+        self.assertEqual(self.actions()[-1], "restoreActiveTab")
+
     def test_tab_anywhere_in_trusted_text_is_rejected_before_typing(self):
         for text in ("\t", "prefix\tsuffix", "ordinary\ntext\t"):
             with self.subTest(text=text):
