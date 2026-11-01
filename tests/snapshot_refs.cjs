@@ -150,6 +150,8 @@ async function testContent() {
   });
   vm.runInContext(background.slice(background.indexOf('const POST_SNAPSHOT_ACTIONS'), background.indexOf('async function dispatchCommand')), bridge);
   bridge.tabWriteError = async () => null; // Permission policy is tested in user_tabs_read_only.cjs.
+  bridge.handoffs = new Map();
+  bridge.handoffTransportEpoch = 0;
   const search = Object.assign(new Element('INPUT', '', { 'aria-label': 'Deep search' }), { value: '', type: 'search' });
   const before = new Element('BUTTON', 'Previous control');
   const after = new Element('BUTTON', 'Next control');
@@ -539,6 +541,8 @@ async function testBackground() {
   });
   vm.runInContext(source.slice(source.indexOf('const POST_SNAPSHOT_ACTIONS'), source.indexOf('async function dispatchCommand')), context);
   context.tabWriteError = async () => null; // Permission policy is tested in user_tabs_read_only.cjs.
+  context.handoffs = new Map();
+  context.handoffTransportEpoch = 0;
   for (const action of ['click', 'type', 'fill', 'selectOption', 'checkBox', 'keypress', 'submitForm', 'navigate']) {
     calls = [];
     const result = await context.handleCommand({ action, ref: 's1e0', element: 'audit only' });

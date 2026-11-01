@@ -25,6 +25,7 @@ import argparse
 import asyncio
 import fcntl
 import signal
+import socket
 import json
 import base64
 import math
@@ -44,7 +45,7 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from threading import Lock, Thread
 from datetime import datetime, timezone
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlsplit, unquote
 
 import hashlib
 import hmac
@@ -63,7 +64,7 @@ from . import bridge_control, browser_diagnostics
 from .capabilities import ACTION_GROUPS, CAPS_HEADER, OPEN_ROUTES, ROUTE_GROUPS, caps_refusal, header_caps
 from .task_modes import (
     APPROVAL_HEADER, APPROVER_HEADER, CLIENT_HEADER, CLIENT_ID_PATTERN, GATEWAY_TOOL_HEADER,
-    MODE_HEADER, OWNER_HEADER, USER_TABS_HEADER, TOOL_CALL_HEADER, permits_action, permits_route, task_mode, user_tabs,
+    MODE_HEADER, OWNER_HEADER, SESSION_HEADER, CLIENT_NAME_HEADER, USER_TABS_HEADER, TOOL_CALL_HEADER, permits_action, permits_route, task_mode, user_tabs,
 )
 from .version import BRIDGE_BUILD, PACKAGE_VERSION, SOURCE_ROOT, extension_manifest_hash, extension_source_hash
 from .waits import (
@@ -207,6 +208,25 @@ _TOOL_NAME = _re.compile(r"browser_[a-z0-9_]{1,64}")
 # The calling client's id (CLIENT_HEADER, #303), which audit entries record.
 _client_id = contextvars.ContextVar("kitsune_client_id", default=None)
 _CLIENT_ID = _re.compile(CLIENT_ID_PATTERN)
+# Live handoff channels, not stable owner ids. The secret is hashed and never returned or audited.
+_handoff_lifecycle = contextvars.ContextVar("kitsune_handoff_lifecycle", default=False)
+_handoff_identity = contextvars.ContextVar("kitsune_handoff_identity", default=None)
+_handoff_sessions = {}
+_handoff_sessions_lock = Lock()
+
+
+def _close_handoff_channels(websocket):
+    """Extension replacement/loss closes old channels so a later request can establish a fresh one."""
+    with _handoff_sessions_lock:
+        channels = [identity["connection"] for identity in _handoff_sessions.values()
+                    if identity.get("ws") is websocket]
+    for connection in channels:
+        try:
+            connection.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+
 # The calling MCP client's owner id (OWNER_HEADER, #325), validated like the client id.
 _owner_id = contextvars.ContextVar("kitsune_owner_id", default=None)
 # Legacy-extension ownership fallback and most-recent-first ordering for mine (#325).
@@ -1033,10 +1053,14 @@ def _focus_check_click(point, focus, title, process, restore_pointer, button="le
 
 
 def _unbound_screen_click(params):
-    if not _user_tabs_writable.get() and (params.get("coordinateSpace") or params.get("space")) == "screen":
+    spaces = [params[key] for key in ("coordinateSpace", "space") if key in params]
+    if "screen" in spaces:
         return _action_error("Screen coordinates cannot be bound to an owned tab; nothing was done",
                              "unsupported_target", retryable=False,
-                             hint="Use a ref or viewport coordinates on a tab of your own, not absolute screen coordinates.")
+                             hint="Use a ref or viewport coordinates on an originally agent-created tab, not absolute screen coordinates.")
+    if any(space != "viewport" for space in spaces):
+        return _action_error("Native clicks require coordinateSpace=viewport", "unsupported_target", retryable=False,
+                             hint="Use viewport coordinates or a ref on an originally agent-created tab.")
     return None
 
 
@@ -1055,13 +1079,33 @@ def _trusted_click_coordinates(params):
     return None
 
 
+async def _handoff_native_refusal(params, point):
+    """Late bound check for session callers; handoff targets are refused by the extension.
+
+    Native input remains supported on originally agent-created tabs. This check does not
+    make their extension-to-OS dispatch atomic or cancel an OS operation already started.
+    """
+    if _handoff_identity.get() is None:
+        return None
+    tab_id = point.get("tabId", params.get("tabId"))
+    if tab_id is None:
+        return _action_error("Native input has no bound tab", "user_tab_read_only", retryable=False,
+                             hint="Name an owned tab explicitly; no OS input was sent.")
+    result = await send_to_extension("checkTabWrite", {"tabId": tab_id, "writeAction": "trustedClick"})
+    if isinstance(result, dict) and result.get("ok") is True:
+        return None
+    if isinstance(result, dict) and result.get("error"):
+        return result
+    return _action_error("Native tab authorization could not be verified", "user_tab_read_only", retryable=False,
+                         hint="No OS input was sent; use DOM operations or create a new own tab for native input.")
+
+
 async def trusted_click(params):
     """Use a real OS-level mouse click at a browser viewport coordinate."""
     if refusal := _unbound_screen_click(params) or _trusted_click_coordinates(params):
         return refusal
     selector = params.get("selector") or ""
     coords = params.get("coords") or {}
-    coordinate_space = params.get("coordinateSpace") or params.get("space") or "viewport"
     focus = params.get("focus", False)
     x = params.get("x", coords.get("x"))
     y = params.get("y", coords.get("y"))
@@ -1082,32 +1126,6 @@ async def trusted_click(params):
     if mac_backend == "cliclick" and (refusal := _cliclick_refusal(button, click_count, hold)):
         return refusal
 
-    if coordinate_space == "screen":
-        # Writable compatibility permits raw screen coordinates, but not bypassing activity.
-        # Bind the implicit tab once; coordinates themselves still cannot prove the destination.
-        activity = await send_to_extension("checkUserActivity", {
-            **({"tabId": params["tabId"]} if params.get("tabId") is not None else {})})
-        if "error" in activity:
-            return activity
-        # Focus and the click wait and sleep: off the event loop, which serves every client (#336).
-        def focus_and_click():
-            return (_focus_browser_window(title, process) if focus else False,
-                    _native_click_screen(x, y, restore_pointer, button, click_count, modifiers, hold))
-        focused, clicked = await asyncio.to_thread(focus_and_click)
-        if "error" in clicked:
-            return clicked
-        return {
-            "ok": True,
-            "trusted": True,
-            "coordinateSpace": "screen",
-            "screenX": x,
-            "screenY": y,
-            "focused": focused,
-            "focusRequested": bool(focus),
-            "clickBackend": clicked.get("backend"),
-            **_pointer_restore_fields(clicked),
-        }
-
     point_params = {"selector": selector, "x": x, "y": y, "click": True}
     if params.get("first"):
         point_params["first"] = True
@@ -1127,6 +1145,8 @@ async def trusted_click(params):
     # Focus (up to about 1 s of frontmost polling), the window check (up to BROWSER_AT_POINT_WAIT)
     # and the click's own sleeps all run off the event loop, which serves every client (#336).
     try:
+        if refusal := await _handoff_native_refusal(params, point):
+            return refusal
         focused, clicked = await asyncio.to_thread(_focus_check_click, point, focus, title, process,
                                                    restore_pointer, button, click_count, modifiers, hold)
     finally:
@@ -1264,6 +1284,8 @@ async def trusted_drag(params):
             return end
         # Focus, the window checks and the drag's sleeps run off the event loop (#336).
         # focus=false (bridge callers only) leaves bringing the browser to the front to the caller.
+        if refusal := await _handoff_native_refusal(params, start):
+            return refusal
         focused, dragged = await asyncio.to_thread(_focus_check_drag, start, end,
                                                    params.get("focus", True) is not False,
                                                    params.get("process") or "", steps)
@@ -1469,6 +1491,8 @@ async def _trusted_keys(params, units, post_unit):
     try:
         # The click that focuses the field also proves the tab's window is at its point (#336).
         # focus=false (bridge callers only) leaves bringing the browser to the front to the caller.
+        if refusal := await _handoff_native_refusal(params, point):
+            return refusal
         focused, clicked = await asyncio.to_thread(_focus_check_click, point, params.get("focus", True) is not False,
                                                    "", process, True)
         if "error" in clicked:
@@ -1651,6 +1675,7 @@ def _audit(action, params, ok, error, ms, **fields):
 
 
 WRITE_ACTIONS = {
+    "requestTab",
     "click", "type", "setEditableContent", "scroll", "hover", "fill",
     "navigate", "newTab", "closeTab", "switchTab", "executeJS", "trustedClick", "trustedType", "trustedPressKey",
     "trustedDrag",
@@ -2290,7 +2315,10 @@ async def _tab_write_refusal(action, params):
         action = "executeJS"
     tab_actions = (WRITE_ACTIONS - {"newTab", "createWindow", "duplicateTab", "cookies", "clipboard",
                                     "downloads", "clearBrowsingData", "intercept", "reloadExtension", "loadSession"})
-    if _user_tabs_writable.get() or action not in tab_actions | {
+    native = action in {"trustedClick", "trustedDrag", "trustedType", "trustedPressKey",
+                        "screenPoint", "agentInput", "focusState"}
+    if (_user_tabs_writable.get() and not native) or action not in tab_actions | {
+            "screenPoint", "agentInput", "focusState",
             "find", "waitForResult", "focusElement", "blurElement", "focusWindow", "elementScreenshot", "fullPageScreenshot"}:
         return None
     # Non-finite coordinates cannot even be represented on the extension's JSON transport.
@@ -2947,6 +2975,8 @@ async def ws_handler(websocket):
     old_ws = extension_ws
     extension_ws_generation += 1
     my_generation = extension_ws_generation
+    if old_ws is not None:
+        _close_handoff_channels(old_ws)
     extension_ws = websocket
     extension_info = {}
     _tab_openers.clear()
@@ -2998,6 +3028,7 @@ async def ws_handler(websocket):
     except websockets.exceptions.ConnectionClosed:
         _log(f"⚠️ Extension disconnected (generation {my_generation})")
     finally:
+        _close_handoff_channels(websocket)
         if extension_ws is websocket:
             extension_ws = None
             extension_info = {}
@@ -3271,6 +3302,8 @@ async def _send_to_extension_raw(action, params=None, timeout=30):
     """Send a command over the active extension WebSocket without scheduling."""
     global command_counter
 
+    if action in {"openHandoffSession", "endHandoffSession"} and not _handoff_lifecycle.get():
+        return {"error": "Session lifecycle is transport-only", "code": "session_required"}
     params = dict(params or {})
     if invalid := _normalize_tab_target(params) or _normalize_window_target(action, params):
         return invalid
@@ -3283,6 +3316,14 @@ async def _send_to_extension_raw(action, params=None, timeout=30):
     params.pop("ownerId", None)
     if _owner_id.get() is not None:
         params["ownerId"] = _owner_id.get()
+    for key in ("sessionId", "clientName", "handoffApproved"):
+        params.pop(key, None)
+    identity = _handoff_identity.get()
+    if identity is not None:
+        with _handoff_sessions_lock:
+            live = _handoff_sessions.get(identity["sessionId"]) is identity
+        if live or action == "endHandoffSession":
+            params.update(sessionId=identity["sessionId"], clientName=identity["clientName"])
     post_action_snapshot = os.environ.get("KITSUNE_POST_ACTION_SNAPSHOT", "1").lower()
     params.setdefault("includeSnapshot", post_action_snapshot not in {"0", "false", "no", "off"})
     if post_action_snapshot == "text":
@@ -3295,6 +3336,8 @@ async def _send_to_extension_raw(action, params=None, timeout=30):
             "Kitsune extension not connected. Open Firefox or Zen and make sure the Kitsune extension is loaded.",
             action, sent=False)
     
+    if action == "openHandoffSession" and identity is not None:
+        identity["ws"] = ws
     command_counter += 1
     cmd_id = f"cmd_{command_counter}_{int(time.time())}"
     
@@ -5000,6 +5043,13 @@ class BridgeHandler(BaseHTTPRequestHandler):
         client_token = _client_id.set(client if _CLIENT_ID.fullmatch(client) else None)
         owner = self.headers.get(OWNER_HEADER) or ""
         owner_token = _owner_id.set(owner if _CLIENT_ID.fullmatch(owner) else None)
+        secret = self.headers.get(SESSION_HEADER) or ""
+        session_id = hashlib.sha256(secret.encode()).hexdigest() if secret else None
+        with _handoff_sessions_lock:
+            identity = _handoff_sessions.get(session_id)
+        if identity and (identity["client"] != _client_id.get() or identity["ownerId"] != _owner_id.get()):
+            identity = None
+        handoff_token = _handoff_identity.set(identity)
         try:
             if not permits_route(mode, path):
                 self.refuse(403, _mode_error(path))
@@ -5015,6 +5065,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             else:
                 self.refuse(404, {"error": "Not found"})
         finally:
+            _handoff_identity.reset(handoff_token)
             _owner_id.reset(owner_token)
             _client_id.reset(client_token)
             _gateway_tool.reset(gateway)
@@ -5032,6 +5083,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         routes = {
             "/": self.handle_status,
             "/api/status": self.handle_status,
+            "/api/handoff-session": self.handle_handoff_session,
             "/api/screenshot": self.handle_screenshot,
             "/api/page-info": self.handle_page_info,
             "/api/page-text": self.handle_page_text,
@@ -5077,6 +5129,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "/api/highlight": self.handle_highlight,
             "/api/clear-highlight": self.handle_clear_highlight,
             "/api/close-tab": self.handle_close_tab,
+            "/api/request-tab": self.handle_request_tab,
             "/api/switch-tab": self.handle_switch_tab,
             "/api/new-tab": self.handle_new_tab,
             "/api/wait-for-element": self.handle_wait_for_element,
@@ -5505,6 +5558,58 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     def handle_clear_highlight(self):
         self._send_extension_action("clearHighlight", {})
+
+    def handle_request_tab(self):
+        body = self.read_body()
+        if _handoff_identity.get() is None:
+            self.send_json(403, {"error": "A live handoff session is required", "code": "session_required"})
+            return
+        if problem := _check_policy("requestTab", body):
+            self.send_json(403, problem)
+            return
+        # This action has its own browser-first approval. Generic ask-before-act must not preempt it.
+        self.send_json(200, self.run_async(send_to_extension("requestTab", {
+            key: body[key] for key in ("tabId", "reason", "confirmToken") if key in body
+        }, timeout=40), timeout=45))
+
+    def handle_handoff_session(self):
+        secret = self.headers.get(SESSION_HEADER) or ""
+        if not _re.fullmatch(r"[a-f0-9]{64}", secret) or not _client_id.get() or not _owner_id.get():
+            self.send_json(400, {"error": "Invalid handoff session identity"})
+            return
+        session_id = hashlib.sha256(secret.encode()).hexdigest()
+        identity = {"connection": self.connection, "sessionId": session_id, "client": _client_id.get(), "ownerId": _owner_id.get(),
+                    "clientName": unquote(self.headers.get(CLIENT_NAME_HEADER) or _owner_id.get())[:200]}
+        with _handoff_sessions_lock:
+            if session_id in _handoff_sessions or len(_handoff_sessions) >= 64:
+                self.send_json(409, {"error": "Handoff session already open or limit reached"})
+                return
+            _handoff_sessions[session_id] = identity
+        token = _handoff_identity.set(identity)
+        lifecycle = _handoff_lifecycle.set(True)
+        try:
+            result = self.run_async(_send_to_extension_raw("openHandoffSession"), timeout=10)
+            if not result.get("ok"):
+                self.send_json(503, result)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.flush()
+            # A dedicated authenticated connection: no requests or data follow the headers.
+            # EOF (including abrupt process exit) revokes grants; no timer lease can renew one.
+            self.connection.recv(1)
+        finally:
+            with _handoff_sessions_lock:
+                _handoff_sessions.pop(session_id, None)
+            try:
+                self.run_async(_send_to_extension_raw("endHandoffSession"), timeout=10)
+            except Exception:
+                pass  # Extension transport loss also clears every ephemeral grant.
+            _handoff_lifecycle.reset(lifecycle)
+            _handoff_identity.reset(token)
+            self.close_connection = True
 
     def handle_close_tab(self):
         # With force, the extension disarms beforeunload once it has agreed to close the tab.

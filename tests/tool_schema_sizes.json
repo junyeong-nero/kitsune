@@ -161,11 +161,11 @@
     "firstParagraphTotal": 944
   },
   "browser_tabs": {
-    "description": 47,
-    "firstParagraph": 47,
-    "inputSchema": 453,
-    "total": 656,
-    "firstParagraphTotal": 656
+    "description": 33,
+    "firstParagraph": 33,
+    "inputSchema": 570,
+    "total": 759,
+    "firstParagraphTotal": 759
   },
   "browser_take_screenshot": {
     "description": 125,

@@ -194,11 +194,11 @@ function harness({ onClick = () => {}, activity = {}, focusOnCreate = null, sync
       },
       getAll: async () => [{ id: 1 }],
     },
-    runtime: { id: 'kitsune-test', onMessage: event(), onStartup: event(), onInstalled: event() },
+    runtime: { getURL: path => `moz-extension://kitsune-test/${path}`, id: 'kitsune-test', onMessage: event(), onStartup: event(), onInstalled: event() },
     permissions: { contains: async () => true },
   };
   const context = vm.createContext({
-    browser, URL, console: { log() {}, error() {} },
+    browser, URL, crypto: require('node:crypto').webcrypto, console: { log() {}, error() {} },
     WebSocket: class { close() {} send() {} },
     Date: class extends Date { static now() { return now; } },
     setTimeout: (fn, delay) => schedule(fn, delay),
@@ -207,6 +207,15 @@ function harness({ onClick = () => {}, activity = {}, focusOnCreate = null, sync
     clearInterval: id => timers.delete(id),
   });
   vm.runInContext(fs.readFileSync('extension/background/background.js', 'utf8'), context);
+  h.popup = async (message, sender = { id: browser.runtime.id, url: browser.runtime.getURL('popup/popup.html') }) => {
+    for (const listener of browser.runtime.onMessage.listeners) {
+      const result = listener(message, sender);
+      if (result !== undefined) return copy(await result);
+    }
+  };
+  h.browser = browser; // Deterministic API barriers for authorization-race tests.
+  h.disconnect = () => context.cleanup();
+  h.remove = id => browser.tabs.remove(id);
   return h;
 }
 

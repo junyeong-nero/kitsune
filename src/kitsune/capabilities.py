@@ -34,7 +34,7 @@ def _by_group(table: dict[str, tuple[str, ...]]) -> dict[str, frozenset[str]]:
 # tools call; core also has the waits and page actions batch commands share with it.
 ROUTE_GROUPS = _by_group({
     "core": (
-        "/api/ask-user", "/api/back", "/api/capture-network", "/api/check", "/api/click", "/api/close-tab",
+        "/api/ask-user", "/api/back", "/api/capture-network", "/api/check", "/api/click", "/api/close-tab", "/api/request-tab", "/api/handoff-session",
         "/api/console-logs", "/api/double-click", "/api/drag", "/api/element-screenshot", "/api/fill", "/api/find",
         "/api/form-fill", "/api/full-page-screenshot", "/api/handle-dialog", "/api/hover", "/api/js",
         "/api/keypress", "/api/navigate", "/api/needs-user", "/api/new-tab", "/api/resize-window", "/api/resume",

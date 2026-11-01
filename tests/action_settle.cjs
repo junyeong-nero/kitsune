@@ -75,6 +75,8 @@ function harness({ mutatesUntil = 0, requestMs = null, watching = true, unchange
   vm.runInContext(source.slice(source.indexOf('const POST_SNAPSHOT_ACTIONS'), source.indexOf('async function dispatchCommand')) +
     '\nthis.settleRequests = settleRequests;', context);
   context.tabWriteError = async () => null; // Isolated settling tests; ownership has separate coverage.
+  context.handoffs = new Map();
+  context.handoffTransportEpoch = 0;
   return { context, sent, snapshotAt: () => sent.find(m => m.action === 'getSnapshot')?.at };
 }
 

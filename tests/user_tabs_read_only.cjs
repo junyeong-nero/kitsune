@@ -47,7 +47,7 @@ async function main() {
       assert.deepEqual(result.state, { tabId: affected,
         index: Object.keys(h.tabs).map(Number).indexOf(affected), action });
       assert.match(result.hint, /browser_tabs action=new/);
-      assert.match(result.hint, /action=request when handoff support is available/);
+      assert.match(result.hint, /action=request/);
       assert.equal(result.state.confirmToken, undefined);
       assert.deepEqual(h.calls, [], 'no browser writes');
       assert.deepEqual(h.sent, [], 'not even userActivity or content injection');

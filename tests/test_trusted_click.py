@@ -765,7 +765,7 @@ class BrowserAtPointTests(unittest.TestCase):
 
 class TrustedClickTests(unittest.TestCase):
     def setUp(self):
-        # Native backend mechanics retain raw screen mode only under explicit compatibility writes.
+        # Exercise backend mechanics in writable compatibility too; raw screen is still refused.
         token = bridge._user_tabs_writable.set(True)
         self.addCleanup(bridge._user_tabs_writable.reset, token)
         # The window at the point is checked only on macOS (BrowserAtPointTests).
@@ -773,38 +773,34 @@ class TrustedClickTests(unittest.TestCase):
         check.start()
         self.addCleanup(check.stop)
         activity = patch.object(bridge, "send_to_extension", new_callable=AsyncMock,
-                                return_value={"ok": True, "tabId": 1})
+                                return_value={"ok": True, "tabId": 1, "screenX": 5, "screenY": 6,
+                                              "viewportX": 5, "viewportY": 6})
         self.activity = activity.start()
         self.addCleanup(activity.stop)
 
-    def test_screen_click_busy_preflight_precedes_all_os_effects(self):
-        busy = {"error": "user busy", "code": "user_active", "retryable": True}
+    def test_screen_click_refuses_before_activity_or_os_effects_even_writable(self):
         for target in ({}, {"tabId": 12}):
             with self.subTest(target=target), \
                  patch.object(bridge, "_focus_browser_window") as focus, \
-                 patch.object(bridge, "_native_click_screen", return_value={"ok": True}) as click:
-                self.activity.return_value = busy
+                 patch.object(bridge, "_native_click_screen") as click:
+                self.activity.return_value = {"error": "user busy", "code": "user_active", "retryable": True}
                 result = asyncio.run(bridge.trusted_click({"x": 5, "y": 6,
                     "coordinateSpace": "screen", "focus": True, **target}))
-                self.assertEqual(result, busy)
-                self.activity.assert_awaited_with("checkUserActivity", target)
+                self.assertEqual(result["code"], "unsupported_target")
+                self.assertFalse(result["retryable"])
+                self.activity.assert_not_called()
                 focus.assert_not_called()
                 click.assert_not_called()
-                self.activity.return_value = {"ok": True, "tabId": target.get("tabId", 1)}
-                result = asyncio.run(bridge.trusted_click({"x": 5, "y": 6,
-                    "coordinateSpace": "screen", "focus": True, **target}))
-                self.assertTrue(result["ok"])
-                click.assert_called_once()
 
-    def test_screen_click_focus_is_browser_neutral(self):
-        with patch.object(bridge, "_focus_browser_window", return_value=True) as focus, \
-             patch.object(bridge, "_native_click_screen",
-                          return_value={"ok": True, "backend": "quartz"}) as click:
+    def test_screen_click_with_selector_is_also_refused(self):
+        with patch.object(bridge, "_focus_browser_window") as focus, \
+             patch.object(bridge, "_native_click_screen") as click:
             result = asyncio.run(bridge.trusted_click(
-                {"coords": {"x": 5, "y": 6}, "coordinateSpace": "screen", "focus": True}))
-        focus.assert_called_once_with("", "")
-        click.assert_called_once_with(5, 6, True, "left", 1, (), 0.0)
-        self.assertEqual((result["focused"], result["clickBackend"]), (True, "quartz"))
+                {"selector": "#go", "coordinateSpace": "screen", "focus": True}))
+        self.assertEqual(result["code"], "unsupported_target")
+        focus.assert_not_called()
+        click.assert_not_called()
+        self.activity.assert_not_called()
 
     def test_viewport_click_focuses_page_title_and_process(self):
         point = {"screenX": 110, "screenY": 220, "viewportX": 10, "viewportY": 20, "title": "Docs"}
@@ -896,7 +892,7 @@ class TrustedClickTests(unittest.TestCase):
 
         point = {"screenX": 760, "screenY": 604, "viewportX": 700, "viewportY": 562}
         for params in ({"x": 700, "y": 562, "focus": True},
-                       {"coords": {"x": 5, "y": 6}, "coordinateSpace": "screen", "focus": True}):
+                       {"coords": {"x": 5, "y": 6}, "coordinateSpace": "viewport", "focus": True}):
             with self.subTest(space=params.get("coordinateSpace", "viewport")), \
                  patch.object(bridge, "send_to_extension", new_callable=AsyncMock, return_value=point), \
                  patch.object(bridge, "_focus_browser_window", side_effect=slow_focus), \
@@ -905,12 +901,13 @@ class TrustedClickTests(unittest.TestCase):
             self.assertTrue(result["ok"])
             self.assertLess(ticks[-1], 0.3, "the loop ran while focus was waited for")
 
-    def test_screen_clicks_do_not_claim_destination_window_validation(self):
+    def test_screen_clicks_refuse_without_destination_window_queries(self):
         with patch.object(bridge, "_browser_not_at_point") as check, \
-             patch.object(bridge, "_native_click_screen", return_value={"ok": True, "backend": "quartz"}):
+             patch.object(bridge, "_native_click_screen") as click:
             result = asyncio.run(bridge.trusted_click({"coords": {"x": 5, "y": 6}, "coordinateSpace": "screen"}))
-        self.assertTrue(result["ok"])
+        self.assertEqual(result["code"], "unsupported_target")
         check.assert_not_called()
+        click.assert_not_called()
 
     def test_restore_pointer_is_passed_to_the_backend_and_reported(self):
         point = {"screenX": 110, "screenY": 220, "viewportX": 10, "viewportY": 20}
@@ -920,7 +917,7 @@ class TrustedClickTests(unittest.TestCase):
             ({"selector": "#go"}, failed, True),
             ({"selector": "#go", "restorePointer": False},
              {"ok": True, "backend": "quartz", "pointerRestored": False}, False),
-            ({"coords": {"x": 5, "y": 6}, "coordinateSpace": "screen", "restorePointer": False},
+            ({"coords": {"x": 5, "y": 6}, "coordinateSpace": "viewport", "restorePointer": False},
              {"ok": True, "backend": "win32", "pointerRestored": False}, False),
         ):
             with self.subTest(params=params), \
@@ -956,7 +953,7 @@ class TrustedClickTests(unittest.TestCase):
             ({"modifiers": "Shift"},
              "trustedClick modifiers must be a list of Shift, Control, Alt and Meta, not 'Shift'"),
         ):
-            for target in ({"selector": "#go"}, {"coords": {"x": 1, "y": 2}, "coordinateSpace": "screen"}):
+            for target in ({"selector": "#go"}, {"coords": {"x": 1, "y": 2}, "coordinateSpace": "viewport"}):
                 with self.subTest(params=params, target=target), \
                      patch.object(bridge, "send_to_extension", new_callable=AsyncMock) as send, \
                      patch.object(bridge, "_native_click_screen") as click:
@@ -965,10 +962,10 @@ class TrustedClickTests(unittest.TestCase):
                 click.assert_not_called()
 
     def test_hold_ms_holds_a_single_click(self):
-        # #351: holdMs reaches the backend as seconds, for viewport and screen clicks alike.
+        # #351: holdMs reaches the backend as seconds, for selectors and viewport coordinates.
         point = {"screenX": 110, "screenY": 220, "viewportX": 10, "viewportY": 20}
         for target, at in (({"selector": "#go"}, (110, 220)),
-                           ({"coords": {"x": 5, "y": 6}, "coordinateSpace": "screen"}, (5, 6))):
+                           ({"coords": {"x": 5, "y": 6}, "coordinateSpace": "viewport"}, (110, 220))):
             with self.subTest(target=target), patch.object(bridge.sys, "platform", "linux"), \
                  patch.object(bridge, "send_to_extension", new_callable=AsyncMock, return_value=point), \
                  patch.object(bridge, "_native_click_screen", return_value={"ok": True, "backend": "xdotool"}) as click:
@@ -1027,7 +1024,7 @@ class TrustedClickTests(unittest.TestCase):
         self.assertEqual(send.call_args_list[-1].args, ("restoreActiveTab", {"tabId": 3, "from": 7}))
 
     def test_cliclick_refuses_before_the_tab_is_shown(self):
-        for target in ({"selector": "#go", "tabId": 7}, {"coords": {"x": 1, "y": 2}, "coordinateSpace": "screen"}):
+        for target in ({"selector": "#go", "tabId": 7}, {"coords": {"x": 1, "y": 2}, "coordinateSpace": "viewport"}):
             with self.subTest(target=target), patch.object(bridge.sys, "platform", "darwin"), \
                  patch.dict("sys.modules", {"Quartz": None}), \
                  patch.object(bridge.shutil, "which", return_value="/opt/homebrew/bin/cliclick"), \
@@ -1052,14 +1049,14 @@ class TrustedClickTests(unittest.TestCase):
             # Quartz sets event flags and presses no keys, so the user's Alt still counts.
             self.assertEqual(send.call_args_list[0].args[1].get("modifiers"), sent)
 
-    def test_linux_screen_click_reports_xdotool_backend(self):
+    def test_linux_viewport_click_reports_xdotool_backend(self):
         with patch.object(bridge.sys, "platform", "linux"), \
              patch.dict(os.environ, {"XDG_SESSION_TYPE": "x11", "DISPLAY": ":0"}), \
              patch.object(bridge.shutil, "which", return_value="/usr/bin/xdotool"), \
              patch.object(bridge.subprocess, "run",
                           return_value=subprocess.CompletedProcess([], 0, "", "")) as run:
             result = asyncio.run(bridge.trusted_click(
-                {"coords": {"x": 5, "y": 6}, "coordinateSpace": "screen", "focus": True}))
+                {"coords": {"x": 5, "y": 6}, "coordinateSpace": "viewport", "focus": True}))
         run.assert_called_once()
         self.assertEqual((result["focused"], result["clickBackend"], result["pointerRestored"]),
                          (False, "xdotool", True))
@@ -1069,7 +1066,7 @@ class TrustedClickTests(unittest.TestCase):
         with patch.object(bridge, "_focus_browser_window") as focus, \
              patch.object(bridge, "_native_click_screen", return_value=error):
             result = asyncio.run(bridge.trusted_click(
-                {"coords": {"x": 1, "y": 2}, "coordinateSpace": "screen"}))
+                {"coords": {"x": 1, "y": 2}, "coordinateSpace": "viewport"}))
         self.assertEqual(result, error)
         focus.assert_not_called()
 

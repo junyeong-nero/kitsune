@@ -23,6 +23,7 @@ function background(documents) {
       sent.push({ frameId, ...msg });
       return documents[frameId](msg);
     } } },
+    TAB_ADMISSION: Symbol('test admission'), tabAdmissionError: () => null,
     getActiveTabId: async () => 1,
     tabState: async tabId => ({ tabId, status: 'complete', url: 'https://shop.example/checkout' }),
     isRestrictedUrl: () => false, ensureContentScript: async () => {},
