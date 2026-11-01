@@ -14,7 +14,9 @@ description and `firstParagraphTotal` the definition as such a client sends it.
 tests/test_tool_schema_size.py fails when the sizes differ from tests/tool_schema_sizes.json,
 so every change to the definitions shows up in review as a snapshot diff, and when a
 total or a single tool grows past its budget below, in either view, which only a
-deliberate bump raises.
+deliberate bump raises. The server instructions are resent with every request too, so
+the table ends with their size in each mode, and the test fails when one grows past
+INSTRUCTIONS_BUDGETS (#386).
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ import asyncio
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -37,6 +40,10 @@ SNAPSHOT = Path(__file__).resolve().parent.parent / "tests" / "tool_schema_sizes
 TOTAL_BUDGETS = {"core": 22_300}
 FIRST_PARAGRAPH_BUDGETS = {"core": 22_300}
 TOOL_BUDGET = 3_000  # any single core tool, full view
+# Characters of the server instructions in each KITSUNE_MODE, with KITSUNE_HOLD_VIEWED_TAB and
+# KITSUNE_PROTECT_USER_TABS on, as by default, which makes them longest. Set about 5% above
+# their size after #386 shortened them.
+INSTRUCTIONS_BUDGETS = {"act": 1_160, "read": 640, "draft": 640}
 
 
 def _compact(value) -> int:
@@ -65,6 +72,23 @@ def measure() -> dict:
             "firstParagraphTotal": _compact({**definition, "description": first}),
         }
     return dict(sorted(tools.items()))
+
+
+def measure_instructions() -> dict:
+    """Characters of the server instructions in each mode of INSTRUCTIONS_BUDGETS. The
+    instructions are built at import from the environment, so each mode imports the server anew."""
+    env = {key: value for key, value in os.environ.items()
+           if key not in ("KITSUNE_HOLD_VIEWED_TAB", "KITSUNE_PROTECT_USER_TABS")}
+    script = "from kitsune import server; print(len(server.mcp._mcp_server.instructions))"
+    return {mode: int(subprocess.run([sys.executable, "-c", script], env={**env, "KITSUNE_MODE": mode},
+                                     capture_output=True, text=True, check=True).stdout)
+            for mode in INSTRUCTIONS_BUDGETS}
+
+
+def instructions_over_budget(sizes: dict) -> list[str]:
+    """Modes whose instructions exceed INSTRUCTIONS_BUDGETS."""
+    return [f"instructions ({mode}): {size} > budget {INSTRUCTIONS_BUDGETS[mode]}"
+            for mode, size in sizes.items() if size > INSTRUCTIONS_BUDGETS[mode]]
 
 
 def totals(tools: dict, names=None) -> dict:
@@ -116,7 +140,10 @@ def report(tools: dict, snapshot: dict) -> str:
     removed = sorted(set(snapshot) - set(tools))
     if removed:
         lines.append("removed since snapshot: " + ", ".join(removed))
-    lines += ["OVER BUDGET " + problem for problem in over_budget(tools)]
+    instructions = measure_instructions()
+    lines.append("instructions (characters): " + ", ".join(
+        f"{mode} {size} / budget {INSTRUCTIONS_BUDGETS[mode]}" for mode, size in instructions.items()))
+    lines += ["OVER BUDGET " + problem for problem in over_budget(tools) + instructions_over_budget(instructions)]
     return "\n".join(lines)
 
 

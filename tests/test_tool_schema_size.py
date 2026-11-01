@@ -1,4 +1,5 @@
-"""Track the size of the core MCP tool definitions, full and first-paragraph views (#88, #31, #135)."""
+"""Track the size of the core MCP tool definitions, full and first-paragraph views (#88, #31, #135),
+and of the server instructions (#386)."""
 import importlib.util
 import json
 import os
@@ -55,6 +56,20 @@ class ToolSchemaSizeTests(unittest.TestCase):
                 self.assertTrue(any(problem.startswith(f"{label} ({view}): ")
                                     for problem in grow_click(field, total_budget)), (view, label))
         self.assertEqual(set(tool_schema_size.FIRST_PARAGRAPH_BUDGETS), set(tool_schema_size.TOTAL_BUDGETS))
+
+    def test_instructions_within_budget(self):
+        sizes = tool_schema_size.measure_instructions()
+        self.assertEqual(set(sizes), {"act", "read", "draft"})
+        self.assertEqual(tool_schema_size.instructions_over_budget(sizes), [],
+                         "The server instructions grew past their budget (#386); they are resent with every model "
+                         "request. Trim them, or raise INSTRUCTIONS_BUDGETS in scripts/tool_schema_size.py "
+                         "deliberately.")
+
+    def test_instructions_budget_catches_growth(self):
+        budgets = tool_schema_size.INSTRUCTIONS_BUDGETS
+        self.assertEqual(tool_schema_size.instructions_over_budget(budgets), [])
+        self.assertEqual(tool_schema_size.instructions_over_budget({**budgets, "act": budgets["act"] + 1}),
+                         [f"instructions (act): {budgets['act'] + 1} > budget {budgets['act']}"])
 
 
 if __name__ == "__main__":
