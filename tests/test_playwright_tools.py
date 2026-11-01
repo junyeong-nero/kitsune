@@ -421,8 +421,17 @@ class AdapterTests(unittest.TestCase):
             playwright_tools.browser_wait_for(time=60, text="Done", textGone="Loading")
         sleep.assert_called_once_with(30)
         self.assertEqual([body.get("text_gone") or body.get("text") or endpoint for endpoint, body in self.posted()],
-                         ["/api/snapshot", "Loading", "Done"])
+                         ["/api/snapshot", "Loading", "/api/snapshot", "Done", "/api/snapshot"])
         self.assertIn("error", playwright_tools.browser_wait_for())
+
+    def test_wait_for_text_gone_returns_toast_that_appeared(self):
+        # #403: the toast shown as "Generating" ends is in the result, not lost before the next snapshot.
+        waited = {"ok": True, "text": None, "text_gone": "Generating", "elapsed": 2500}
+        self.post.side_effect = [waited, {"snapshot": '- text "Report ready: 4A159A"', "delta": True}]
+        result = playwright_tools.browser_wait_for(textGone="Generating")
+        self.assertEqual(result["text_gone"], "Generating")
+        self.assertIn("4A159A", result["snapshot"])
+        self.assertTrue(result["snapshot_delta"])
 
     def test_fill_form_dispatches_by_field_type(self):
         fields = [{"target": "e1", "name": "Email", "type": "textbox", "value": "a@b"},

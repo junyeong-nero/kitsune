@@ -85,12 +85,16 @@ class ToolTests(unittest.TestCase):
         self.addCleanup(post.stop)
         playwright_tools._current_tab = None
 
+    def waited(self):
+        """The last wait-for-text request; a met wait then reads its changes (#403)."""
+        return [c.args[:2] for c in self.post.call_args_list if c.args[0] == "/api/wait-for-text"][-1]
+
     def test_kitsune_tool_sends_new_only_only_for_text(self):
         tools.browser_wait_for(text="code", new_only=True, tab_id=9)
-        self.assertEqual(self.post.call_args.args[:2], ("/api/wait-for-text", {
+        self.assertEqual(self.waited(), ("/api/wait-for-text", {
             "timeout": 10000, "text": "code", "text_gone": None, "new_only": True, "tabId": 9}))
         tools.browser_wait_for(text="code", tab_id=9)
-        self.assertNotIn("new_only", self.post.call_args.args[1])
+        self.assertNotIn("new_only", self.waited()[1])
         self.post.reset_mock()
         self.assertIn("error", tools.browser_wait_for(text_gone="code", new_only=True))
         self.post.assert_not_called()
@@ -101,9 +105,9 @@ class ToolTests(unittest.TestCase):
         result = playwright_tools.browser_wait_for(text="code")
         self.assertIs(result["already_present"], True)
         self.assertIn("newOnly", result["hint"])
-        self.assertNotIn("new_only", self.post.call_args.args[1])
+        self.assertNotIn("new_only", self.waited()[1])
         playwright_tools.browser_wait_for(text="code", newOnly=True)
-        self.assertIs(self.post.call_args.args[1]["new_only"], True)
+        self.assertIs(self.waited()[1]["new_only"], True)
 
 
 if __name__ == "__main__":

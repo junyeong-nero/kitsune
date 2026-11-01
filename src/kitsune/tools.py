@@ -971,6 +971,7 @@ def browser_wait_for(
     (a non-empty result, including false/0; developer extension build only),
     url/title (JavaScript regex on tab metadata, so it survives navigation) or network_idle
     (500 ms without new resources). timeout is the maximum wait in ms; it does not limit time.
+    A met text/text_gone wait and a time sleep return what changed since the page was last seen.
 
     Other conditions run in the current document and should be started after navigation.
     Mixed conditions are rejected; wait for URL/title first, then the desired document
@@ -997,10 +998,13 @@ def browser_wait_for(
     elif text is not None or text_gone is not None:
         if (text if text is not None else text_gone) == "":
             return {"error": "text/text_gone must be non-empty"}
-        endpoint = "/api/wait-for-text"
         body.update(text=text, text_gone=text_gone)
         if new_only:
             body["new_only"] = True
+        result = _post("/api/wait-for-text", _request_body(body, tab_id), timeout=timeout / 1000 + 10)
+        # What changed while waiting, as after a time sleep (#403): a toast that shows up as the
+        # text resolves can be gone by the agent's next snapshot.
+        return result if _failed(result) else {**result, **_changes_since_observation(tab_id)}
     elif js is not None:
         endpoint = "/api/wait-for-result"
         body.update(code=js, pollInterval=500)
