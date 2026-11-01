@@ -1677,7 +1677,8 @@ _REPEAT_UNSAFE_ACTIONS = WRITE_ACTIONS | {"uploadCommit", "focusElement", "blurE
 # client's KITSUNE_CAPS or KITSUNE_MODE permits it or the container step names a batch action
 # (capability_restricted, mode_restricted, unknown_action).
 _PERSISTENT_FAILURE_CODES = {"error_page", "ambiguous_target", "unsupported_selector", "needs_user", "user_tab",
-                             "user_viewing", "user_tab_read_only", "invalid_tab_id", "invalid_coordinates", "permission_required", "capability_restricted",
+                             "user_viewing", "user_tab_read_only", "invalid_tab_id", "invalid_window_id", "window_unavailable",
+                             "invalid_coordinates", "permission_required", "capability_restricted",
                              "mode_restricted", "unknown_action"}
 
 
@@ -1702,9 +1703,25 @@ def _normalize_tab_target(params):
     return None
 
 
+def _normalize_window_target(action, params):
+    """Window aliases are not API targets; admission and dispatch use concrete IDs only."""
+    if action == "checkTabWrite":
+        action = params.get("writeAction")
+    raw = (params or {}).get("windowId")
+    if raw is None and action not in {"closeWindow", "focusWindow"}:
+        return None
+    window_id = _explicit_tab_id(raw)
+    if window_id is None:
+        return _action_error("windowId must be a positive integer or decimal digits", "invalid_window_id",
+                             retryable=False, hint="Use a concrete window id from browser_windows; aliases are unsupported.",
+                             windowId=raw)
+    params["windowId"] = window_id
+    return None
+
+
 def _check_policy(action, params):
     """Return error dict if action/url violates current policy, else None."""
-    if invalid := _normalize_tab_target(params):
+    if invalid := _normalize_tab_target(params) or _normalize_window_target(action, params):
         return invalid
     if not permits_action(_task_mode.get(), action):
         return _mode_error(action)
@@ -3162,7 +3179,7 @@ def _with_viewed_tab_fields(params):
 async def send_to_extension(action, params=None, timeout=30):
     """Send command to extension and wait for response."""
     params = dict(params or {})
-    if invalid := _normalize_tab_target(params):
+    if invalid := _normalize_tab_target(params) or _normalize_window_target(action, params):
         return invalid
     if action in _PROTECTED_NAVIGATIONS:
         # Only the calling client's setting decides whether its navigations are protected.
@@ -3260,7 +3277,7 @@ async def _send_to_extension_raw(action, params=None, timeout=30):
     global command_counter
 
     params = dict(params or {})
-    if invalid := _normalize_tab_target(params):
+    if invalid := _normalize_tab_target(params) or _normalize_window_target(action, params):
         return invalid
     # Identity is transport metadata, never a tool/container argument supplied by the caller.
     params.pop("userTabsWritable", None)

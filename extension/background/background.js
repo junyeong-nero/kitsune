@@ -799,16 +799,38 @@ async function tabWriteError(params) {
   // Bind an implicit target once: a user view change during admission must not retarget the write.
   if (tabId != null) params.tabId = tabId;
   const tabs = await browser.tabs.query({});
-  const windowId = action === 'resizeWindow' ? tabs.find(t => t.id === tabId)?.windowId : params.windowId;
-  if (tabId != null && !tabs.some(t => t.id === tabId)) {
+  const targetTab = tabs.find(t => t.id === tabId);
+  if (tabId != null && !targetTab) {
     return tabError(`Tab ${tabId} no longer exists`, 'tab_closed', { tabId });
   }
+  if ((!windowAction || action === 'resizeWindow') && !targetTab) {
+    return noActiveTab(action === 'navigate' ? 'No active tab' : 'No active tab found');
+  }
+  const relocating = action === 'moveTab' || action === 'detachTab';
+  // resizeWindow is tab-scoped; moveTab without a destination means the source window.
+  // Bind these now, never re-resolve a window from the tab after ownership admission.
+  if (action === 'resizeWindow') params.windowId = targetTab.windowId;
+  if (action === 'moveTab' && params.windowId == null) params.windowId = targetTab.windowId;
+  const windowIds = windowAction ? [params.windowId]
+    : relocating ? [targetTab.windowId, ...(action === 'moveTab' ? [params.windowId] : [])] : [];
+  for (const windowId of windowIds) {
+    if (!Number.isSafeInteger(windowId) || windowId <= 0 || !tabs.some(t => t.windowId === windowId)) {
+      return tabError(`Window ${windowId} has no available tabs`, 'window_unavailable', { windowId, action }, false);
+    }
+  }
   if (params.userTabsWritable === true) return null;
-  const targets = windowAction ? tabs.filter(t => t.windowId === windowId) : tabs.filter(t => t.id === tabId);
+  const targets = windowAction ? tabs.filter(t => t.windowId === params.windowId) : [targetTab];
   const tab = targets.find(t => !agentTabs.has(t.id) || agentTabOwners.get(t.id) !== (params.ownerId ?? null));
-  if (!tab) return null;
-  return tabError(`Tab ${tab.id} is read-only for this client; nothing was done`, 'user_tab_read_only',
+  if (tab) return tabError(`Tab ${tab.id} is read-only for this client; nothing was done`, 'user_tab_read_only',
     { tabId: tab.id, index: tabs.findIndex(t => t.id === tab.id), action }, false);
+  // Reordering a tab leaves the displayed page alone. Moving an active tab out can reveal
+  // another tab or close/focus a window; do not perform that effect then attempt to undo it.
+  if (relocating && targetTab.active && (action === 'detachTab' || params.windowId !== targetTab.windowId)) {
+    return { error: 'Moving an active tab between windows cannot preserve the displayed page',
+      code: 'unsupported_target', retryable: false, state: { tabId, windowId: targetTab.windowId, action },
+      hint: 'Move an inactive tab you own, or open a separate owned window; no tab or window was moved.' };
+  }
+  return null;
 }
 
 // A tab opened by a link starts on about:blank; wait this long for its real URL.
@@ -825,6 +847,16 @@ async function handleCommand(command) {
         state: { tabId: params.tabId }, hint: 'Use one tab id from browser_tabs; omit tabId for the implicit target.' };
     }
     params.tabId = tabId;
+  }
+  const targetAction = params.action === 'checkTabWrite' ? params.writeAction : params.action;
+  if (params.windowId != null || ['closeWindow', 'focusWindow'].includes(targetAction)) {
+    const windowId = typeof params.windowId === 'string' && /^[0-9]+$/.test(params.windowId)
+      ? Number(params.windowId) : params.windowId;
+    if (!Number.isSafeInteger(windowId) || windowId <= 0) {
+      return { error: 'windowId must be a positive integer or decimal digits', code: 'invalid_window_id', retryable: false,
+        state: { windowId: params.windowId }, hint: 'Use a concrete window id from browser_windows; aliases are unsupported.' };
+    }
+    params.windowId = windowId;
   }
   if (params.action === 'checkTabWrite') {
     return await tabWriteError({ ...params, action: params.writeAction }) || { ok: true };
@@ -1234,7 +1266,7 @@ async function dispatchCommand(command) {
     case 'createWindow':     return await createWindow(params.url, params.incognito, params.ownerId);
     case 'closeWindow':      return await closeWindow(params.windowId, true);
     case 'focusWindow':      return await focusWindow(params.windowId);
-    case 'resizeWindow':     return await resizeWindow(params.tabId, params.width, params.height);
+    case 'resizeWindow':     return await resizeWindow(params.windowId, params.width, params.height);
     case 'moveTab':          return await moveTabAction(params.tabId, params.windowId, params.index);
     case 'detachTab':        return await detachTab(params.tabId);
     case 'elementScreenshot':return await elementScreenshot(params.tabId, params.selector, params.scale, params.imagePreview, params.format);
@@ -1816,6 +1848,7 @@ async function wokenPageState(tabId, since, deadline) {
 // have reached the page, so its outcome is unknown; the bridge relaxes that for reads.
 // error_page is never retryable: nothing reached the page, but repeating cannot succeed.
 const TAB_FAILURE_HINTS = {
+  window_unavailable: 'List windows with browser_windows and target an open window with available tabs.',
   tab_closed: 'The tab no longer exists; list tabs with browser_tabs and target an open tab.',
   tab_unloaded: 'The tab was unloaded; wake it with browser_wake_tab, then take a new browser_snapshot.',
   navigating: 'The tab is loading a new document; wait for it with browser_wait_for, then take a new browser_snapshot.',
@@ -2819,16 +2852,13 @@ async function focusWindow(windowId) {
   } catch (e) { return { error: e.message }; }
 }
 
-// Resizes the window holding the tab (default: the active tab); does not focus it.
-async function resizeWindow(tabId, width, height) {
+// Resizes the concrete window admitted for the target tab; does not focus it.
+async function resizeWindow(windowId, width, height) {
   try {
     if (![width, height].every(value => Number.isFinite(value) && value > 0)) {
       return { error: 'width and height must be positive numbers' };
     }
-    const tab = tabId != null ? await browser.tabs.get(tabId)
-      : (await browser.tabs.query({ active: true, currentWindow: true }))[0];
-    if (!tab) return noActiveTab('No active tab found');
-    const updated = await browser.windows.update(tab.windowId, {
+    const updated = await browser.windows.update(windowId, {
       state: 'normal', width: Math.round(width), height: Math.round(height),
     });
     return { ok: true, windowId: updated.id, width: updated.width, height: updated.height };

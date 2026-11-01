@@ -1265,6 +1265,20 @@ no prompt or confirmation token. `state` contains `tabId`, `index` (the zero-bas
   select, uploads, arbitrary JavaScript, dialog/storage writes, view-mutating screenshots,
   `find load_more`, and equivalent batch, workflow and trusted-input commands.
 - Window close/focus/resize cannot mutate a window containing a user or other client's tab.
+  `windowId` must be a positive safe integer (decimal strings are canonicalized); aliases
+  such as Firefox's `WINDOW_ID_CURRENT` (`-2`) and malformed IDs fail with
+  `invalid_window_id`, even in writable compatibility. Close/focus require an explicit ID
+  from `browser_windows`; nonexistent windows or windows with no available tabs fail with
+  `window_unavailable` before mutation. Resize remains tab-scoped: it binds the target tab's
+  concrete window during admission, rather than resolving it again at dispatch.
+- Moving/detaching an inactive owned tab remains allowed in shared windows; shifting tab-strip
+  indices does not confer ownership of other tabs. A missing/null move destination binds the
+  tab's current window; an explicit destination must be concrete and have available tabs.
+  Default permissions refuse moving an active tab to another window or detaching it
+  (`unsupported_target`, nonretryable), since that may select another tab or focus/close a
+  window. No speculative move-and-restore is performed. Reordering in the same window stays
+  allowed, as does the established unfocused-window path for detaching an inactive owned tab.
+  Explicit writable compatibility retains prior active-tab movement behavior.
 - Own tabs continue to work with the existing `user_active` protections. Trusted OS input
   may show an owned tab temporarily, then restore the previous user tab; restoration is
   bound to that client's recorded input transition, not an arbitrary view-switch API.

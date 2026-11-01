@@ -61,7 +61,8 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
   pending = pending.then(async () => {
     h.sent.length = h.calls.length = 0;
     const result = await h.send({ ...JSON.parse(line), includeSnapshot: false });
-    console.log(JSON.stringify({ result, sent: h.sent, calls: h.calls }));
+    console.log(JSON.stringify({ result, sent: h.sent, calls: h.calls,
+      shown: h.shown(), focusedWindow: h.focusedWindow }));
   }).catch(error => { console.error(error); process.exit(1); });
 });
 """], cwd=Path(__file__).resolve().parents[1], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -154,6 +155,76 @@ class UserTabsReadOnlyTests(unittest.TestCase):
                 result = self.call("/api/trusted-click", {"tabId": own, "x": 10, "y": value})
                 self.assertEqual(result["code"], "invalid_coordinates")
                 self.assertEqual(self.extension.commands[-1]["action"], "checkTabWrite")
+
+    @unittest.skipUnless(shutil.which("node"), "actual background integration needs node")
+    def test_window_targets_against_actual_background(self):
+        self.extension.close()
+        self.extension = BackgroundPermissionExtension(self.bridge, [])
+        self.addCleanup(self.extension.close)
+        own = self.call("/api/new-tab", {})["tabId"]
+        for ask in (False, True):
+            self.call("/api/set-policy", {"ask": ask})
+            for window_id in (-2, -1, 0, False, True, "", [], [1], {}, 1.5, "-2", "1.5", 2**53,
+                              float("inf"), float("nan")):
+                for endpoint in ("close-window", "focus-window", "move-tab", "resize-window", "detach-tab"):
+                    with self.subTest(ask=ask, endpoint=endpoint, window_id=window_id):
+                        before = len(self.extension.commands)
+                        result = self.call("/api/" + endpoint,
+                            {"windowId": window_id, "tabId": own, "width": 800, "height": 600})
+                        self.assertEqual((result.get("code"), result.get("retryable")), ("invalid_window_id", False))
+                        self.assertEqual(len(self.extension.commands), before, "invalid before prompt or dispatch")
+            for endpoint in ("close-window", "focus-window"):
+                for body in ({}, {"windowId": None}):
+                    self.assertEqual(self.call("/api/" + endpoint, body)["code"], "invalid_window_id")
+            for endpoint in ("close-window", "focus-window", "move-tab"):
+                result = self.call("/api/" + endpoint, {"windowId": 999, "tabId": own})
+                self.assertEqual((result.get("code"), result.get("retryable")), ("window_unavailable", False))
+                self.assertEqual(self.extension.dispatched[-1]["calls"], [])
+                self.assertEqual(self.extension.dispatched[-1]["sent"], [])
+            for endpoint in ("close-window", "focus-window", "resize-window"):
+                result = self.call("/api/" + endpoint,
+                    {"windowId": "1", "tabId": own, "width": 800, "height": 600})
+                self.assertEqual(result.get("code"), "user_tab_read_only")
+                self.assertEqual(self.extension.dispatched[-1]["calls"], [])
+                self.assertEqual(self.extension.dispatched[-1]["sent"], [])
+        self.call("/api/set-policy", {"ask": False})
+        self.assertEqual(self.call("/api/close-window", {"windowId": -2},
+            headers={task_modes.HOLD_VIEWED_TAB_HEADER: "0"})["code"], "invalid_window_id")
+        window = self.call("/api/create-window", {})
+        wid, active = window["windowId"], window["tabIds"][0]
+        for target in (str(wid), "1", None):
+            result = self.call("/api/move-tab", {"tabId": own, "windowId": target})
+            self.assertTrue(result.get("ok"), result)
+            self.assertEqual(self.extension.dispatched[-1]["calls"],
+                [["tabs.move", own, {"windowId": int(target) if target else 1, "index": -1}]])
+            self.assertEqual(self.extension.dispatched[-1]["shown"], [1])
+            self.assertEqual(self.extension.dispatched[-1]["focusedWindow"], 1)
+        for tab_id, owner in ((1, "client-a"), (own, "client-b")):
+            for endpoint in ("move-tab", "detach-tab"):
+                result = self.call("/api/" + endpoint, {"tabId": tab_id, "windowId": wid}, owner=owner)
+                self.assertEqual(result.get("code"), "user_tab_read_only")
+                self.assertEqual(self.extension.dispatched[-1]["calls"], [])
+        for endpoint in ("move-tab", "detach-tab"):
+            result = self.call("/api/" + endpoint, {"tabId": active, "windowId": 1})
+            self.assertEqual(result.get("code"), "unsupported_target")
+            self.assertEqual(self.extension.dispatched[-1]["calls"], [])
+        self.assertTrue(self.call("/api/move-tab", {"tabId": active})["ok"], "same-window active reorder is safe")
+        foreign = self.call("/api/new-tab", {}, owner="client-b")["tabId"]
+        self.assertTrue(self.call("/api/move-tab", {"tabId": foreign, "windowId": wid}, owner="client-b")["ok"])
+        for endpoint in ("close-window", "focus-window", "resize-window"):
+            result = self.call("/api/" + endpoint, {"windowId": wid, "tabId": active, "width": 800, "height": 600})
+            self.assertEqual(result.get("code"), "user_tab_read_only")
+            self.assertEqual(result["state"]["tabId"], foreign)
+            self.assertEqual(self.extension.dispatched[-1]["calls"], [])
+        self.assertTrue(self.call("/api/move-tab", {"tabId": foreign, "windowId": 1}, owner="client-b")["ok"])
+        for endpoint in ("resize-window", "focus-window", "close-window"):
+            result = self.call("/api/" + endpoint, {"windowId": str(wid), "tabId": active, "width": 800, "height": 600})
+            self.assertTrue(result.get("ok"), result)
+            writes = self.extension.dispatched[-1]["calls"]
+            self.assertEqual(writes[0][1], wid, "dispatch uses the canonical admitted window")
+        result = self.call("/api/batch", {"commands": [{"action": "focusWindow", "windowId": -2}]})
+        self.assertEqual(result["results"][0]["code"], "invalid_window_id")
+        self.assertTrue(self.call("/api/detach-tab", {"tabId": own})["ok"], "inactive owned detach remains allowed")
 
     def test_two_clients_denied_without_confirmation_or_effects(self):
         a = self.call("/api/new-tab", {})["tabId"]

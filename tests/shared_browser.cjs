@@ -109,6 +109,12 @@ function harness({ onClick = () => {}, activity = {}, focusOnCreate = null, sync
       get: async id => { if (!tabs[id]) throw missing(id); return { ...tabs[id] }; },
       getZoom: async id => { if (!tabs[id]) throw missing(id); return 1; },
       create: async props => { h.calls.push(['tabs.create', copy(props)]); return created(props); },
+      move: async (id, props) => {
+        h.calls.push(['tabs.move', id, copy(props)]);
+        if (!tabs[id]) throw missing(id);
+        Object.assign(tabs[id], { windowId: props.windowId ?? tabs[id].windowId, index: props.index });
+        return { ...tabs[id] };
+      },
       duplicate: async (id, props) => {
         h.calls.push(['tabs.duplicate', id, copy(props)]);
         return created({ ...props, url: tabs[id].url, windowId: tabs[id].windowId });
@@ -151,6 +157,7 @@ function harness({ onClick = () => {}, activity = {}, focusOnCreate = null, sync
         let tab;
         if (props.tabId != null) {
           tabs[props.tabId].windowId = 9;
+          tabs[props.tabId].active = true;
           tab = { ...tabs[props.tabId] };
         } else {
           tab = created({ url: props.url?.[0], windowId: 9 });
