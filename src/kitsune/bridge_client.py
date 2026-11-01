@@ -12,7 +12,6 @@ import re
 import secrets
 import subprocess
 import sys
-import sys
 import time
 
 import httpx
@@ -342,6 +341,9 @@ class BridgeClient:
                     headers[MODE_HEADER] = self.mode
                 if self.extra_headers:
                     headers.update(self.extra_headers())
+                # HTTP names are case-insensitive: no extra spelling may precede our permission.
+                permission_names = (USER_TABS_HEADER.lower(), USER_TABS_HEADER.lower().encode("ascii"))
+                headers = {key: value for key, value in headers.items() if key.lower() not in permission_names}
                 headers[USER_TABS_HEADER] = self.user_tabs
                 r = httpx.request(method, f"{BRIDGE}{endpoint}", headers=headers,
                                   verify=bridge_control.tls_context(), **kwargs)

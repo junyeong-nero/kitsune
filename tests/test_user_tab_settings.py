@@ -1,5 +1,6 @@
 """#398: one permission from config through MCP instructions, client headers and bridge context."""
 import contextlib
+from http.client import parse_headers
 import io
 import json
 import os
@@ -7,6 +8,8 @@ import subprocess
 import sys
 import unittest
 from unittest.mock import Mock, patch
+
+import httpx
 
 from kitsune import bridge, bridge_client, task_modes
 from kitsune.bridge_client import BridgeClient
@@ -145,12 +148,27 @@ class UserTabSettingsTests(unittest.TestCase):
             BridgeClient(caps=None, user_tabs="invalid", hold_viewed_tab=False)
 
     def test_permission_header_is_authoritative_over_extra_headers(self):
-        with patch.object(bridge_client.httpx, "request") as request:
-            request.return_value.status_code = 200
-            request.return_value.json.return_value = {"ok": True}
-            client = BridgeClient(caps=None, extra_headers=lambda: {task_modes.USER_TABS_HEADER: "writable"})
-            client.request("GET", "/api/status", start_bridge=False)
-            self.assertEqual(request.call_args.kwargs["headers"][task_modes.USER_TABS_HEADER], "read-only")
+        def request(method, url, headers, **kwargs):
+            # Exercise HTTPX's actual header representation and the HTTP server's parser,
+            # not dictionary lookups that conceal case-variant duplicate wire headers.
+            wire = httpx.Request(method, url, headers=headers).headers.raw
+            parsed = parse_headers(io.BytesIO(b"\r\n".join(key + b": " + value for key, value in wire) + b"\r\n\r\n"))
+            self.assertEqual(parsed.get_all(task_modes.USER_TABS_HEADER), [permission])
+            handler, admitted = dispatched_permission(parsed)
+            handler.refuse.assert_not_called()
+            self.assertEqual(admitted, [permission == "writable"])
+            return httpx.Response(200, json={"ok": True})
+
+        spellings = (task_modes.USER_TABS_HEADER, "x-kitsune-user-tabs", "X-KITSUNE-USER-TABS", "x-KiTsUnE-uSeR-TaBs",
+                     b"x-kitsune-user-tabs", b"X-KITSUNE-USER-TABS")
+        for permission in ("read-only", "writable"):
+            opposite = "writable" if permission == "read-only" else "read-only"
+            for extra in [*({name: opposite} for name in spellings), dict.fromkeys(spellings, opposite)]:
+                with self.subTest(permission=permission, extra=extra), \
+                        patch.object(bridge_client.httpx, "request", side_effect=request):
+                    client = BridgeClient(caps=None, user_tabs=permission, extra_headers=lambda: extra)
+                    self.assertEqual(client.request("GET", "/api/status", start_bridge=False), {"ok": True})
+                self.assertFalse(bridge._user_tabs_writable.get(), "permission escaped request scope")
 
 
 if __name__ == "__main__":

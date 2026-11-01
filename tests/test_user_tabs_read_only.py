@@ -15,7 +15,9 @@ import tempfile
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from kitsune import bridge, playwright_tools, task_modes, tools
+import httpx
+
+from kitsune import bridge, bridge_client, playwright_tools, task_modes, tools
 from test_bridge_security import Bridge, _request
 from test_tab_inventory_bridge import tab
 from test_tab_owners import OwningExtension
@@ -288,6 +290,50 @@ class UserTabsReadOnlyTests(unittest.TestCase):
             self.assertEqual(json.loads(text)["code"], "invalid_user_tabs")
         self.assertEqual(self.extension.commands, [])
         self.assertEqual(self.extension.effects, [])
+
+    def test_case_variant_extra_headers_cannot_grant_writes_over_http(self):
+        with patch.object(bridge_client, "BRIDGE", f"http://{self.bridge.host}"), \
+                patch.object(bridge_client, "_headers", self.bridge.auth):
+            for name in ("x-kitsune-user-tabs", "X-KITSUNE-USER-TABS", "x-KiTsUnE-uSeR-TaBs"):
+                client = bridge_client.BridgeClient(caps=None, user_tabs="read-only",
+                                                    extra_headers=lambda: {name: "writable"})
+                result = client.request("POST", "/api/click", start_bridge=False, json={"tabId": 1})
+                # A duplicate would be HTTP 400; the request must reach read-only admission.
+                self.assertEqual(result["code"], "user_tab_read_only")
+                self.assertNotIn("userTabsWritable", self.extension.commands[-1])
+        self.assertEqual(self.extension.effects, [])
+
+    def test_duplicate_permission_headers_are_rejected_before_admission(self):
+        name = task_modes.USER_TABS_HEADER
+        variants = (name, name.lower(), name.upper(), "x-KiTsUnE-uSeR-TaBs")
+        identity = [*self.bridge.auth().items(), (task_modes.OWNER_HEADER, "client-a")]
+        headers_cases = [
+            [(name, first), (variant, second)]
+            for variant in variants
+            for first, second in (("read-only", "writable"), ("writable", "read-only"),
+                                  ("read-only", "read-only"), ("writable", "writable"))
+        ]
+        headers_cases.extend([[(name, value)] for value in
+                              ("read-only, writable", "writable, read-only", "read-only, read-only", "writable, writable")])
+        with httpx.Client(trust_env=False) as client:
+            for headers in headers_cases:
+                with self.subTest(headers=headers):
+                    result = client.post(f"http://{self.bridge.host}/api/click",
+                                         headers=[*identity, *headers], json={"tabId": 1})
+                    self.assertEqual(result.status_code, 400, result.text)
+                    self.assertEqual(result.json()["code"], "invalid_user_tabs")
+            self.assertEqual(self.extension.commands, [], "invalid headers must never reach the extension")
+            for headers in ([], [(name.lower(), "read-only")]):
+                result = client.post(f"http://{self.bridge.host}/api/click",
+                                     headers=[*identity, *headers], json={"tabId": 1})
+                self.assertEqual(result.status_code, 200, result.text)
+                self.assertEqual(result.json()["code"], "user_tab_read_only")
+            self.assertEqual(self.extension.effects, [])
+            result = client.post(f"http://{self.bridge.host}/api/click",
+                                 headers=[*identity, (name.upper(), "writable")], json={"tabId": 1})
+            self.assertEqual(result.status_code, 200, result.text)
+            self.assertTrue(result.json()["ok"])
+            self.assertEqual(len(self.extension.effects), 1)
 
     def test_owned_tab_does_not_authorize_unbound_screen_click(self):
         a = self.call("/api/new-tab", {})["tabId"]

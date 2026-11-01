@@ -738,7 +738,10 @@ stderr, never protocol stdout (Python: once per connection).
 
 The client sends only `X-Kitsune-User-Tabs: read-only|writable` to the bridge. Missing
 headers default to read-only; invalid values reject the request with HTTP 400
-(`invalid_user_tabs`) before any action. Old `X-Kitsune-Hold-Viewed-Tab` and
+(`invalid_user_tabs`) before any action. Header names are case-insensitive: the client
+replaces any extra spelling with its configured permission. Multiple occurrences (even
+identical values) and comma-combined values are rejected, never resolved by order.
+Old `X-Kitsune-Hold-Viewed-Tab` and
 `X-Kitsune-Protect-User-Tabs` headers are ignored, not permission grants: upgrade old
 clients to use the new header. Tool arguments cannot override it. The bridge's
 process environment does not set permissions for its clients.

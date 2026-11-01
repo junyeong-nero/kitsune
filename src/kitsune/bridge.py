@@ -4969,7 +4969,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self.refuse(400, {"error": str(exc), "code": "invalid_caps", "retryable": False})
             return
         try:
-            permission = user_tabs(self.headers.get(USER_TABS_HEADER))
+            permissions = [value for key, value in self.headers.items() if key.lower() == USER_TABS_HEADER.lower()]
+            if len(permissions) > 1:
+                raise ValueError(f"{USER_TABS_HEADER} must occur at most once")
+            permission = user_tabs(permissions[0] if permissions else None)
         except ValueError as exc:
             self.refuse(400, {"error": str(exc), "code": "invalid_user_tabs", "retryable": False})
             return
