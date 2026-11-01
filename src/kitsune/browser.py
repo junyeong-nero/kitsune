@@ -77,9 +77,8 @@ def connect(*, mode: str = "act", protect_user_tabs: bool = True, hold_viewed_ta
     """Connect to the shared bridge, starting it if none runs, and check that the extension is connected.
 
     mode ("read", "draft" or "act") limits what the bridge accepts, as KITSUNE_MODE does for the
-    MCP server; protect_user_tabs=False lets navigations move tabs no client opened without approval,
-    as KITSUNE_PROTECT_USER_TABS=0 does, and hold_viewed_tab=False lifts the hold on the tab the user
-    is viewing, as KITSUNE_HOLD_VIEWED_TAB=0 does. confirm, if set, is called
+    MCP server; either protect_user_tabs=False or hold_viewed_tab=False explicitly enables
+    compatibility writes on user tabs, as the corresponding environment opt-outs do. confirm, if set, is called
     with the ConfirmationRequired error of an action that needs the user's approval; when it
     returns True, the action is repeated once with its token, so a person can approve it (for
     example with input()). A running bridge of another build raises ConnectionFailed

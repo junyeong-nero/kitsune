@@ -61,6 +61,13 @@ class TrustedKeysTestCase(unittest.TestCase):
 
 
 class TrustedTypeTests(TrustedKeysTestCase):
+    def test_tab_anywhere_in_trusted_text_is_rejected_before_typing(self):
+        for text in ("\t", "prefix\tsuffix", "ordinary\ntext\t"):
+            with self.subTest(text=text):
+                result = asyncio.run(bridge.trusted_type({"tabId": 396, "selector": "#otp", "text": text, "clear": True}))
+                self.assertEqual((result["code"], result["retryable"]), ("key_denied", False))
+        self.assertEqual(self.timeline, [])
+
     def test_types_each_character_after_checking_the_browser_and_the_field(self):
         result = asyncio.run(bridge.trusted_type({"selector": "#otp", "text": "4821\n9"}))
         self.assertEqual(result, {"ok": True, "trusted": True, "keysSent": 6, "focused": True,
@@ -142,6 +149,52 @@ KEYBOARD_UNAVAILABLE = bridge._mac_keyboard_unavailable
 
 
 class TrustedPressKeyTests(TrustedKeysTestCase):
+    def test_browser_target_shortcuts_cannot_escape_an_owned_tab(self):
+        for keys in ("Tab", "Shift+Tab", "Meta+1", "Control+9", "Alt+2", "Shift+Meta+1", "Control+Tab", "Shift+Control+Tab",
+                     "Control+PageDown", "Control+PageUp", "Meta+Alt+ArrowLeft", "Meta+[", "Meta+]",
+                     "Meta+L", "Control+L", "Meta+K", "Control+K", "Alt+D", "F6", "Shift+F6",
+                     "Meta+N", "Control+N", "Shift+Meta+N", "Meta+T", "Shift+Meta+T", "Control+Shift+T",
+                     "Meta+R", "Control+R", "F5", "Control+F5", "Alt+Home", "Alt+ArrowRight",
+                     "Meta+Alt+I", "Control+Shift+I", "Control+Shift+M", "Control+Shift+P", "Meta+Shift+P",
+                     "Control+Shift+A", "Control+U", "F12", "Meta+`", "Control+F4", "Alt+F4", "Meta+Q"):
+            with self.subTest(keys=keys):
+                result = asyncio.run(bridge.trusted_press_key({"tabId": 396, "selector": "#otp", "keys": keys}))
+                self.assertEqual(result.get("code"), "key_denied", result)
+                self.assertIs(result["retryable"], False)
+        self.assertEqual(self.timeline, [], "refuse before showing, focusing or posting keys")
+
+    def test_find_and_editing_chords_still_use_the_owned_field_focus_checks(self):
+        for keys in ("Meta+F", "Control+F", "Meta+A", "Meta+C", "Meta+V", "Meta+X", "Meta+Z",
+                     "Control+ArrowLeft", "Shift+ArrowRight", "Backspace"):
+            with self.subTest(keys=keys):
+                self.timeline.clear()
+                result = asyncio.run(bridge.trusted_press_key({"tabId": 396, "selector": "#otp", "keys": keys}))
+                self.assertTrue(result["ok"], result)
+                self.assertEqual(len(self.posted()), 1)
+                self.assertIn("focusState", self.actions())
+        self.timeline.clear()
+        self.extension.focused = [False]
+        self.assertEqual(asyncio.run(bridge.trusted_press_key({"tabId": 396, "selector": "#otp", "keys": "Meta+F"}))["code"],
+                         "keyboard_focus_lost")
+        self.assertEqual(self.posted(), [])
+
+    def test_unrecognized_modifier_and_key_aliases_fail_without_input(self):
+        for keys in ("Cmd+1", "Command+1", "Ctrl+Tab", "Option+ArrowLeft", "ControlOrMeta+L",
+                     "Meta+Digit1", "Meta+Return", "meta+1", "Meta+1 Meta+2", "Meta+C Tab", "Meta+C,Shift+Tab", ["Meta+C", "Tab"]):
+            with self.subTest(keys=keys):
+                self.assertIn("error", asyncio.run(bridge.trusted_press_key({"tabId": 396, "selector": "#otp", "keys": keys})))
+        self.assertEqual(self.timeline, [])
+
+    def test_explicit_writable_retains_tab_shortcuts_but_not_always_denied_escapes(self):
+        token = bridge._user_tabs_writable.set(True)
+        self.addCleanup(bridge._user_tabs_writable.reset, token)
+        self.assertTrue(asyncio.run(bridge.trusted_press_key({"tabId": 396, "selector": "#otp", "keys": "Meta+1"}))["ok"])
+        self.assertEqual(self.posted(), [("chord", "Meta+1")])
+        self.timeline.clear()
+        self.assertEqual(asyncio.run(bridge.trusted_press_key({"tabId": 396, "selector": "#otp", "keys": "Meta+Q"}))["code"],
+                         "key_denied")
+        self.assertEqual(self.timeline, [])
+
     def test_presses_the_chord_once_the_target_is_focused(self):
         result = asyncio.run(bridge.trusted_press_key({"selector": "#otp", "keys": "Meta+V"}))
         self.assertEqual((result["ok"], result["keys"], result["keysSent"]), (True, "Meta+v", 1))

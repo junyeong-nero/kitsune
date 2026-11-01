@@ -140,6 +140,7 @@ const field = (tagName, attrs, props) => new Element(tagName, attrs, [], props);
     forwardToContent: (action, params) => { calls.push({ action, ...params }); return send({ action, ...params }); },
   });
   vm.runInContext(background.slice(background.indexOf('const POST_SNAPSHOT_ACTIONS'), background.indexOf('async function dispatchCommand')), bridge);
+  bridge.tabWriteError = async () => null; // Permission policy is tested in user_tabs_read_only.cjs.
   context.document.querySelector = selector => selector === '#remember' ? remember : null;
   const plainAction = await bridge.handleCommand({ action: 'checkBox', selector: '#remember', checked: true });
   assert.equal(calls.at(-1).text, undefined);

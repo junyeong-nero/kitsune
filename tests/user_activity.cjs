@@ -15,12 +15,13 @@ function content() {
   const host = { tagName: 'MAIL-COMPOSER', isConnected: true };  // a field inside its shadow root
   const button = { tagName: 'BUTTON', isConnected: true };
   const document = { body: {}, activeElement: null, focused: true, hasFocus() { return this.focused; },
-    querySelector: () => null, querySelectorAll: () => [] };
+    querySelector: () => null, querySelectorAll: () => [], elementFromPoint: () => button };
   let onMessage;
   const context = vm.createContext({
     console, crypto: webcrypto, Event, CSS: { escape: x => x },
     Date: class extends Date { static now() { return now; } },
     window: {
+      innerWidth: 800, innerHeight: 600, mozInnerScreenX: 0, mozInnerScreenY: 0,
       addEventListener: (type, fn, options) => {
         assert.equal(options.capture, true, 'listeners see input before page handlers');
         listeners[type] = fn;

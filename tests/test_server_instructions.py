@@ -33,16 +33,10 @@ class ServerInstructionsTests(unittest.TestCase):
         # Tabs the agent opens in a batch or from its current tab become current.
         self.assertIn("an action on your current tab opens", text)
         self.assertIn("becomes your current tab; the result names it in current_tab", text)
-        # #326: the tab the user is viewing is held, and navigations on user tabs are refused, unless this
-        # client turned the hold or the protection off (#386: one sentence for both).
-        self.assertIn("Work in tabs you opened: writes on the tab the user is viewing and navigations on tabs no "
-                      "client opened return needs_user.", text)
-        self.assertIn("Work in tabs you opened: navigations on tabs no client opened return needs_user.",
-                      instructions("act", KITSUNE_HOLD_VIEWED_TAB="0"))
-        self.assertIn("Work in tabs you opened: writes on the tab the user is viewing return needs_user.",
-                      instructions("act", KITSUNE_PROTECT_USER_TABS="0"))
-        self.assertNotIn("Work in tabs you opened",
-                         instructions("act", KITSUNE_HOLD_VIEWED_TAB="0", KITSUNE_PROTECT_USER_TABS="0"))
+        self.assertIn("User and other clients' tabs are read-only", text)
+        self.assertIn("user_tab_read_only, without prompting; open your own tab first.", text)
+        for setting in ("KITSUNE_HOLD_VIEWED_TAB", "KITSUNE_PROTECT_USER_TABS"):
+            self.assertNotIn("read-only", instructions("act", **{setting: "0"}))
         # #376: a needs_user result did nothing; the user can be asked. #386: how to approve (confirm token)
         # or resume is in the result's hint, not here.
         self.assertIn("A needs_user result did nothing: tell the user why (state.message).", text)
@@ -61,8 +55,7 @@ class ServerInstructionsTests(unittest.TestCase):
                 self.assertIn("act on the tab the user is viewing", text)
                 self.assertIn("browser_tab_list new_tab opens a background tab", text)
                 self.assertIn("no_current_tab", text)
-                self.assertIn("Work in tabs you opened: writes on the tab the user is viewing and navigations on "
-                              "tabs no client opened return needs_user.", text)
+                self.assertIn("User and other clients' tabs are read-only", text)
                 self.assertNotIn("confirm_token", text)
                 # #376: read and draft cannot approve or resume, but can ask the user.
                 self.assertIn("A needs_user result did nothing: tell the user why (state.message).", text)

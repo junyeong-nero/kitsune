@@ -46,20 +46,23 @@ class TabResultTests(unittest.TestCase):
                 {"index": 0, "title": "A", "url": "https://a/", "active": True},
                 {"index": 1, "title": "B", "url": "https://b/", "current": True, "owned": True}]})
 
-    def test_the_tab_the_user_may_be_viewing_is_not_marked_current(self):
-        # #383: A is active and the agent did not open it, so writes there are held: "current" would read
-        # as the agent's own tab. It is still the current tab, and select names its index.
-        self.open.append(_tab(5, "C"))  # the user's background tab is marked as before
-        self.assertEqual(playwright_tools.browser_tabs("select", index=0), {
-            "ok": True, "index": 0, "tabs": [
-                {"index": 0, "title": "A", "url": "https://a/", "active": True},
-                {"index": 1, "title": "B", "url": "https://b/", "owned": True},
-                {"index": 2, "title": "C", "url": "https://c/"}]})
-        self.assertEqual(playwright_tools._current_tab, 3)
-        self.assertTrue(playwright_tools.browser_tabs("select", index=2)["tabs"][2]["current"])
-        # A client that lifted the hold (KITSUNE_HOLD_VIEWED_TAB=0) sees it marked.
-        with patch.object(tools.client, "hold_viewed_tab", False):
-            self.assertTrue(playwright_tools.browser_tabs("select", index=0)["tabs"][0]["current"])
+    def test_current_is_truthful_for_user_and_other_client_tabs(self):
+        # Ownership can change after selection; listing never hides the agent's current tab.
+        playwright_tools._current_tab = 3
+        self.assertTrue(playwright_tools.browser_tabs("list")["tabs"][0]["current"])
+        self.open[0]["owned"] = True
+        self.assertTrue(playwright_tools.browser_tabs("list")["tabs"][0]["current"])
+        self.open[0]["owned"] = False
+        self.assertTrue(playwright_tools.browser_tabs("list")["tabs"][0]["current"])
+
+    def test_denied_select_keeps_current(self):
+        playwright_tools._current_tab = 8
+        refusal = {"error": "read only", "code": "user_tab_read_only", "retryable": False}
+        self.post.side_effect = None
+        self.post.return_value = refusal
+        self.assertEqual(playwright_tools.browser_tabs("select", index=0), refusal)
+        self.assertEqual(playwright_tools._current_tab, 8)
+        self.post.assert_called_once_with("/api/tab-write-check", {"tabId": 3, "writeAction": "switchTab"})
 
     def test_close_returns_the_remaining_tabs(self):
         playwright_tools.browser_tabs("select", index=1)

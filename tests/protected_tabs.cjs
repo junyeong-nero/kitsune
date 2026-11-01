@@ -1,5 +1,5 @@
 // Run with: node tests/protected_tabs.cjs (no browser or npm dependencies).
-// Issue #199: with protectUserTabs, navigate/back/forward leave tabs the agent did not open alone.
+// #395 replaces navigation approval with deterministic ownership refusal.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
@@ -19,7 +19,7 @@ function harness({ focusedWindow = 2 } = {}) {
     tabs: {
       onCreated: event(), onUpdated: event(), onRemoved: event(), onActivated: event(),
       get: async id => ({ ...tabs[id] }),
-      query: async () => Object.values(tabs).filter(tab => tab.active),
+      query: async query => Object.values(tabs).filter(tab => !query.active || tab.active),
       goBack: async id => { moved.push(['goBack', id]); },
       goForward: async id => { moved.push(['goForward', id]); },
       reload: async id => { moved.push(['reload', id]); },
@@ -53,9 +53,9 @@ async function protectedInitialTabIsRefused() {
     { action: 'goForward', tabId: 1 },
   ]) {
     const result = await h.run({ ...command, protectUserTabs: true });
-    assert.equal(result.code, 'user_tab', JSON.stringify(result));
+    assert.equal(result.code, 'user_tab_read_only', JSON.stringify(result));
     assert.equal(result.retryable, false);
-    assert.deepEqual(result.state, { tabId: 1, url: 'https://example.com/start', title: 'Start' });
+    assert.deepEqual(result.state, { tabId: 1, index: 0, action: command.action });
     assert.match(result.hint, /browser_tabs/);
   }
   assert.deepEqual(h.moved, [], 'nothing navigated, and no other tab was used instead');
@@ -70,35 +70,17 @@ async function ownedHelperTabNavigates() {
 
 async function authorizedNavigationRuns() {
   const h = harness();
-  // Approved by the user through the bridge's confirm token.
-  const approved = await h.run({ action: 'navigate', url: 'https://example.com/x', tabId: 1,
-    protectUserTabs: true, userTabApproved: true });
-  assert.equal(approved.ok, true);
-  // Without protection, navigating a user tab is unchanged.
-  assert.equal((await h.run({ action: 'navigate', url: 'https://example.com/y', tabId: 1 })).ok, true);
-  assert.equal((await h.run({ action: 'goForward', tabId: 1 })).ok, true);
-  // Limits: reload keeps the URL and is not guarded.
-  assert.equal((await h.run({ action: 'reloadTabBrowser', tabId: 1, protectUserTabs: true })).ok, true);
-  assert.deepEqual(h.moved, [['navigate', 1], ['navigate', 1], ['goForward', 1], ['reload', 1]]);
-}
-
-// The user's approval of navigating their tab also covers it while they view it (#326).
-async function approvedNavigationOfTheViewedTabRuns() {
-  const h = harness({ focusedWindow: 1 });
-  const held = await h.run({ action: 'navigate', url: 'https://example.com/x', tabId: 1 });
-  assert.equal(held.code, 'user_viewing', JSON.stringify(held));
-  assert.equal((await h.run({ action: 'navigate', url: 'https://example.com/x', tabId: 1, protectUserTabs: true })).code,
-    'user_tab', 'a protected tab asks for one approval: user_tab');
-  const approved = await h.run({ action: 'navigate', url: 'https://example.com/x', tabId: 1,
-    protectUserTabs: true, userTabApproved: true });
-  assert.equal(approved.ok, true);
-  assert.deepEqual(h.moved, [['navigate', 1]]);
+  for (const action of ['navigate', 'goBack', 'goForward', 'reloadTabBrowser']) {
+    const command = { action, tabId: 1, url: 'https://example.com/x', userTabApproved: true };
+    assert.equal((await h.run(command)).code, 'user_tab_read_only', 'old approval is not ownership');
+    assert.equal((await h.run({ ...command, userTabsWritable: true })).ok, true);
+  }
+  assert.equal(h.moved.length, 4);
 }
 
 (async () => {
   await protectedInitialTabIsRefused();
   await ownedHelperTabNavigates();
   await authorizedNavigationRuns();
-  await approvedNavigationOfTheViewedTabRuns();
   console.log('protected_tabs: ok');
 })().catch(e => { console.error(e); process.exit(1); });

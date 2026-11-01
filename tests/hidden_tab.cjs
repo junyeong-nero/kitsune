@@ -202,6 +202,7 @@ async function testBackgroundCopiesVisibility() {
     forwardToContent: async () => ({ snapshot: 'tree', ...(hidden ? { visibilityState: 'hidden' } : {}) }),
   });
   vm.runInContext(source.slice(source.indexOf('const POST_SNAPSHOT_ACTIONS'), source.indexOf('async function dispatchCommand')), context);
+  context.tabWriteError = async () => null; // Permission policy is tested in user_tabs_read_only.cjs.
   const navigated = await context.handleCommand({ action: 'navigate', url: 'https://example.test/' });
   assert.equal(navigated.snapshot, 'tree');
   assert.equal(navigated.visibilityState, 'hidden');

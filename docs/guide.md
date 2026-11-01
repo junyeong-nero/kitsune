@@ -532,8 +532,8 @@ kitsune-benchmark; character-size guards in this repo are not token measurements
 | `KITSUNE_BRIDGE_IDLE_TIMEOUT` | `0` (never) | Seconds without client activity before the bridge exits; see [Idle shutdown](#idle-shutdown-opt-in) |
 | `KITSUNE_OUTPUT_DIR` | Unset | Directory, in the MCP server environment, for relative `filename` arguments of the `core` tools; unset, they resolve against the client's first root, else the server's working directory (see [Core tools](#core-tools)) |
 | `KITSUNE_OWNER_ID` | The MCP client's process | Tab owner id of the MCP client, in the MCP server environment: the bridge records the tabs it opens as this client's and offers them after a server restart. Up to 64 letters, digits, `.`, `_`, `:` or `-`. Set it when the server runs through a launcher other than `uv` or `uvx`, such as a shell script or a Python wrapper. Give each MCP client its own value: clients with the same value share their tabs. See [Tab owners](api-reference.md#tab-owners) |
-| `KITSUNE_PROTECT_USER_TABS` | On | Set to `0` in an MCP server environment to let that client navigate, go back and go forward on tabs the agent did not open without a confirm step; see [Protecting your tabs](#protecting-your-tabs) |
-| `KITSUNE_HOLD_VIEWED_TAB` | On | Set to `0` in an MCP server environment to let that client write and navigate the tab you are viewing without a confirm step; see [Protecting your tabs](#protecting-your-tabs) |
+| `KITSUNE_PROTECT_USER_TABS` | On | Compatibility opt-out: set to `0` to allow that client to write user tabs; see [Protecting your tabs](#protecting-your-tabs) |
+| `KITSUNE_HOLD_VIEWED_TAB` | On | Compatibility opt-out: set to `0` to allow that client to write user tabs; see [Protecting your tabs](#protecting-your-tabs) |
 | `KITSUNE_ASK_BEFORE_ACT` | Unset | Set to `1` in the MCP server environment to start the bridge with [ask-before-act](#ask-before-act) locked on; the lock then persists in `ask-before-act-locked` under `KITSUNE_HOME` |
 | `KITSUNE_HISTORY_ALLOW_DOMAINS` | Unset (every domain) | Bridge: comma-separated domains (with subdomains) the `history` tools may return; see [History and bookmarks](api-reference.md#history-and-bookmarks) |
 | `KITSUNE_HISTORY_DENY_DOMAINS` | Unset (none) | Bridge: comma-separated domains (with subdomains) the `history` tools never return; wins over the allow list |
@@ -705,46 +705,26 @@ Details are in the [API reference](api-reference.md#browser_ask_userreason-messa
 
 ### Protecting your tabs
 
-The agent closes and navigates only the tabs it opened unless you approve.
+User tabs and other clients' tabs are **read-only**. Writes, scrolling, hovering,
+focusing, selecting, navigation, reload and close fail immediately with
+`user_tab_read_only` (`retryable: false`), without an approval prompt. The error names
+`state.tabId`, `state.index` (the `browser_tabs list` index) and `state.action`.
+Open the URL in a tab of the agent's own (`browser_tabs action=new`) before writing.
+Requesting ownership with `browser_tabs action=request` is a later stage, not available yet.
 
-The tab you are viewing is held. It is the tab shown in the browser window you
-focused last, also after you switch to the agent's terminal. The agent's clicks,
-typing, key presses, form fills, scrolling, JavaScript, navigations and reloads there
-return a `needs_user` error (`state.detail` `user_viewing`) instead of acting. Reads and
-screenshots go on. Tabs the agent opened itself are never held, even when you look at them.
-A direct call needs your approval, once ([Approving held actions](#approving-held-actions)).
-When the agent switches your view to another tab (it should do so only when you ask), the
-hold moves with it. To let the agent work in the tab you
-watch without asking, set `KITSUNE_HOLD_VIEWED_TAB=0` in its MCP server environment. Details are in the
-[API reference](api-reference.md#viewed-tab).
+Snapshots, ordinary find, DOM reads, console/network reads and viewport screenshots
+can read your tabs without scrolling, focusing or switching your view. `find load_more`
+and element/full-page screenshots may scroll, so they require an owned tab.
+The `current` marker always identifies the agent's current tab, regardless of ownership;
+selection is not an ownership grant. On an owned tab, trusted user input still pauses
+writes with the existing retryable `user_active` response.
 
-Your other tabs are protected from navigation. The agent should open its material in
-new tabs (`browser_tabs` new) and pass their `tab_id`. Without `tab_id`, a call acts on
-the agent's current tab. Before the agent has opened or selected one, a write or
-navigation without `tab_id` fails with `no_current_tab` instead of acting on the tab you
-see. `browser_navigate`, `browser_navigate_back` and `browser_forward` on a tab the agent
-did not open return a `needs_user` error (`state.detail` `user_tab`) instead of navigating,
-also inside batches. That error tells the agent to use its own tab, and on a direct call it
-can be approved like ask-before-act. In `read` and `draft` modes, which cannot confirm, the
-error carries no token (`state.approvable` `false`); the agent opens its own tab with
-`browser_tab_list(new_tab=...)` instead, so a read-only agent can still reach any page
-without touching yours.
-
-When you want the agent to work in your tabs without asking, set
-`KITSUNE_PROTECT_USER_TABS=0` in its MCP server environment and restart the client. It
-applies to that client only. The tab you are viewing stays held unless you also set
-`KITSUNE_HOLD_VIEWED_TAB=0`.
-
-```toml
-[mcp_servers.kitsune.env]
-KITSUNE_PROTECT_USER_TABS = "0"
-```
-
-Limits: only those three calls are guarded on tabs you are not viewing. Clicked
-links, form submits, agent JavaScript, redirects and navigations the page starts can
-still change such a tab's URL. Switching your view (`browser_tabs` select,
-`browser_focus_window`) and screenshots are not held. Details are in the
-[API reference](api-reference.md#protected-user-tabs).
+Compatibility: explicitly setting either `KITSUNE_PROTECT_USER_TABS=0` or
+`KITSUNE_HOLD_VIEWED_TAB=0` (Python: either corresponding option `False`) allows that
+client to write user tabs, while `user_active` still applies. With neither opt-out,
+user tabs are read-only. The consolidated setting and deprecation warnings are a
+later settings stage; `KITSUNE_USER_TABS` is not implemented yet.
+See [Tab permissions](api-reference.md#tab-permissions).
 
 ## Troubleshooting
 
@@ -760,6 +740,7 @@ still change such a tab's URL. Switching your view (`browser_tabs` select,
 | `bridge_unavailable` (`Kitsune bridge did not start`, `exited at startup`) | `state.logExcerpt` shows the bridge's last log line; see `~/.kitsune/bridge.log`, or run `kitsune-bridge start` in a terminal to see the error. `state.reason: "not_responding"`: the bridge hangs; run `kitsune-bridge stop` and retry |
 | `port_conflict` | `state.port` is held by another program (`lsof -nP -iTCP:47651 -sTCP:LISTEN`), or `KITSUNE_WS_PORT` differs from the extension's `WS_URL` |
 | `token_mismatch` (`401 Missing or invalid token`) | `KITSUNE_TOKEN` or `KITSUNE_HOME` set in one client but not in the daemon (or the other way round) |
+| `user_tab_read_only` | Nothing ran and no approval is offered. Open the URL in a tab of the agent's own before writing; reads must not scroll or focus your tab |
 | `needs_user` with `state.reason: "approval"` (`state.detail`: `user_viewing`, `user_tab`, `confirmation_required`) | Nothing ran: the call needs your approval. On a client with elicitation (Claude Code 2.1.76 and later, Codex) you get a prompt; Approve runs that one call. No prompt appeared and the result has `state.approval: "token"`: the client lacks elicitation, so the agent should tell you `state.message` and repeat the call with `confirm_token`, the fallback for such clients, only after you agree. Or have it work in a tab of its own. See [Approving held actions](#approving-held-actions) |
 | `needs_user` with `state.decision: "declined"` or `"cancelled"` | `declined`: you declined the approval prompt, or answered Can't to `browser_ask_user`; nothing ran, and the agent should not ask again for the same thing. `cancelled`: the prompt was dismissed or closed unanswered (an approval prompt closes 5 s before its approval would expire). If you still want it done, the agent calls `browser_resume(call, resume_token)`, which asks you again (also after you declined an approval) |
 | `needs_user` with `state.reason: "agent_request"` | The agent asked you with `browser_ask_user`; `state.detail` says for what (`sign_in`, `human_check`, `trusted_input`, `other`) and `state.message` what to do. Do it, then answer Done in the client's prompt, or tell the agent in chat on a client without elicitation. For a sign-in or CAPTCHA the tab shows, the agent can call `browser_resume`, which waits until it is gone. See [When the agent needs you](#when-the-agent-needs-you) |

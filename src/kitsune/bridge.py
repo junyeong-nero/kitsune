@@ -148,12 +148,16 @@ _keep_alive_tasks = {}  # tab_id -> asyncio.Task
 
 # ── 1.4.0 orchestration / state ──
 _tags = {}  # tag name -> tab_id
-_tab_pool = {  # tab id pool for fast-acquire workflows
-    "size": 0,
-    "available": [],   # list of tab ids
-    "in_use": set(),   # tab ids currently checked out
-    "url": "about:blank",
-}
+# Reusable tabs never cross the stable ownership boundary, even after release.
+_tab_pools = {}  # owner id -> pool state; mutated on the bridge event loop
+_tab_pool_locks = {}  # owner id -> asyncio.Lock
+
+
+def _owner_pool():
+    return _tab_pools.setdefault(_owner_id.get(),
+                                {"size": 0, "available": [], "in_use": set(), "url": "about:blank"})
+
+
 _audit_log = []  # list of {ts, action, params, ok, error, ms[, parent]}
 _AUDIT_MAX = 2000
 # {"call", "path"} of the container step running in this task; None for direct calls.
@@ -179,6 +183,8 @@ _task_mode = contextvars.ContextVar("kitsune_task_mode", default="act")
 _protect_user_tabs = contextvars.ContextVar("kitsune_protect_user_tabs", default=True)
 # The calling client's KITSUNE_HOLD_VIEWED_TAB (#326): False lifts the hold on the tab the user views.
 _hold_viewed_tab = contextvars.ContextVar("kitsune_hold_viewed_tab", default=True)
+# Only explicit transport opt-outs grant compatibility writes; internal hold bypasses do not.
+_user_tabs_writable = contextvars.ContextVar("kitsune_user_tabs_writable", default=False)
 # A direct call's {"approved", "rejected"} for the viewed-tab hold (_take_viewed_tab_approval); a
 # dict, so the request's tasks and its handler share it.
 _viewed_tab_approval = contextvars.ContextVar("kitsune_viewed_tab_approval", default=None)
@@ -1030,8 +1036,33 @@ def _focus_check_click(point, focus, title, process, restore_pointer, button="le
                                                     button, click_count, modifiers, hold)
 
 
+def _unbound_screen_click(params):
+    if not _user_tabs_writable.get() and (params.get("coordinateSpace") or params.get("space")) == "screen":
+        return _action_error("Screen coordinates cannot be bound to an owned tab; nothing was done",
+                             "unsupported_target", retryable=False,
+                             hint="Use a ref or viewport coordinates on a tab of your own, not absolute screen coordinates.")
+    return None
+
+
+def _trusted_click_coordinates(params):
+    coords = params.get("coords") or {}
+    if not isinstance(coords, dict):
+        return _action_error("coords must contain numeric x and y", "invalid_coordinates", retryable=False)
+    x, y = params.get("x", coords.get("x")), params.get("y", coords.get("y"))
+    # Missing coordinates are checked by the required-target validation; supplied ones must be numeric.
+    screen = (params.get("coordinateSpace") or params.get("space")) == "screen"
+    if any(type(value) not in (int, float) or not math.isfinite(value) or (not screen and value < 0)
+           for value in (x, y) if value is not None):
+        return _action_error("OS click coordinates must be finite numbers inside the page viewport",
+                             "invalid_coordinates", retryable=False,
+                             hint="Use finite in-page viewport coordinates or a visible element ref.")
+    return None
+
+
 async def trusted_click(params):
     """Use a real OS-level mouse click at a browser viewport coordinate."""
+    if refusal := _unbound_screen_click(params) or _trusted_click_coordinates(params):
+        return refusal
     selector = params.get("selector") or ""
     coords = params.get("coords") or {}
     coordinate_space = params.get("coordinateSpace") or params.get("space") or "viewport"
@@ -1295,6 +1326,45 @@ TRUSTED_KEY_OUTSIDE_PAGE = frozenset(_parse_trusted_chord(c)[2] for c in (
     "Meta+S", "Meta+Shift+S", "Meta+P", "Meta+O", "Control+S", "Control+Shift+S", "Control+P", "Control+O"))
 
 
+def _trusted_key_refusal(params):
+    """Browser target shortcuts cannot be authorized by ownership of the focused page field."""
+    chord = _parse_trusted_chord(params.get("keys"))
+    if isinstance(chord, dict):
+        return chord
+    modifiers, key, name = chord
+    if name in _TRUSTED_KEY_DENIED:
+        return {"error": f"{name} closes, quits or leaves the browser; trusted keys never send it",
+                "code": "key_denied", "retryable": False}
+    if _user_tabs_writable.get():
+        return None
+    mods = set(modifiers)
+    browser_modifier = bool(mods & {"Meta", "Control"})
+    escapes = (
+        (key in "0123456789" and bool(mods & {"Meta", "Control", "Alt"}))
+        or (key in {"Tab", "PageUp", "PageDown", "`"} and bool(mods & {"Meta", "Control", "Alt"}))
+        or (browser_modifier and key in {"t", "n", "w", "q", "l", "k", "e", "r", "o", "b", "h", "j", "u", "[", "]"})
+        or (browser_modifier and bool(mods & {"Alt", "Shift"}) and key in {"a", "p", "m", "i", "j", "c", "k", "u"})
+        or ("Alt" in mods and key in {"d", "Home", "ArrowLeft", "ArrowRight"})
+        or ("Meta" in mods and key in {"ArrowLeft", "ArrowRight"})
+        or key in {"Tab", "F1", "F4", "F5", "F6", "F10", "F11", "F12"}
+    )
+    if escapes:
+        return {"error": f"{name} may target browser tabs, windows or navigation outside the owned page",
+                "code": "key_denied", "retryable": False,
+                "hint": "Use explicit element focus or a DOM/tab-scoped API on an owned tab instead; OS shortcut destinations cannot be authorized."}
+    return None
+
+
+def _trusted_type_refusal(params):
+    # trustedType emits actual Tab keys, not Unicode text, for tabs embedded in a string.
+    # Reject the whole string before focusing or typing any preceding characters.
+    if not _user_tabs_writable.get() and isinstance(params.get("text"), str) and "\t" in params["text"]:
+        return {"error": "Trusted Tab traversal may leave the owned page; no text was typed",
+                "code": "key_denied", "retryable": False,
+                "hint": "Use explicit element focus or a DOM-scoped fill to enter tab characters."}
+    return None
+
+
 def _mac_keyboard_unavailable():
     """The {error} when this process cannot send OS keys, else None."""
     if sys.platform != "darwin":
@@ -1402,7 +1472,9 @@ async def _trusted_keys(params, units, post_unit):
             return clicked
         window = await asyncio.to_thread(_mac_window_at, point["screenX"], point["screenY"])
         browser_pid = window[0] if window else 0
-        await send_to_extension("agentInput", {**target, "ms": 2000 + len(units) * (delay + 200)})
+        prepared = await send_to_extension("agentInput", {**target, "ms": 2000 + len(units) * (delay + 200)})
+        if isinstance(prepared, dict) and prepared.get("error"):
+            return prepared
         for unit in units:
             if not browser_pid or await asyncio.to_thread(_mac_frontmost_pid) != browser_pid:
                 return _trusted_key_stopped("not_frontmost", sent, "Another app came to the front; nothing more "
@@ -1427,6 +1499,8 @@ async def _trusted_keys(params, units, post_unit):
 
 async def trusted_type(params):
     """Type text into a field with the OS keyboard (#346). The text is never reported."""
+    if refusal := _trusted_type_refusal(params):
+        return refusal
     text = params.get("text")
     if not isinstance(text, str) or not text:
         return {"error": "trustedType needs non-empty text"}
@@ -1456,9 +1530,8 @@ async def trusted_press_key(params):
     if isinstance(chord, dict):
         return chord
     modifiers, key, name = chord
-    if name in _TRUSTED_KEY_DENIED:
-        return {"error": f"{name} closes, quits or leaves the browser; trusted keys never send it",
-                "code": "key_denied", "retryable": False}
+    if refusal := _trusted_key_refusal(params):
+        return refusal
     result = await _trusted_keys(params, [chord], lambda unit: _mac_post_chord(unit[0], unit[1]))
     if result.get("ok"):
         result["keys"] = name
@@ -1588,6 +1661,11 @@ WRITE_ACTIONS = {
 }
 
 
+# Composite writes prepare files/OS input before their eventual extension mutation.
+# They need an ownership probe even when ask-before-act is disabled.
+_PREPARED_TAB_WRITES = {"trustedClick", "trustedDrag", "trustedType", "trustedPressKey", "uploadFile"}
+
+
 # Repeating these after an unknown outcome could duplicate a side effect (a submit,
 # message, payment or deletion), so their timeouts and disconnects are not retryable.
 _REPEAT_UNSAFE_ACTIONS = WRITE_ACTIONS | {"uploadCommit", "focusElement", "blurElement"}
@@ -1599,7 +1677,8 @@ _REPEAT_UNSAFE_ACTIONS = WRITE_ACTIONS | {"uploadCommit", "focusElement", "blurE
 # client's KITSUNE_CAPS or KITSUNE_MODE permits it or the container step names a batch action
 # (capability_restricted, mode_restricted, unknown_action).
 _PERSISTENT_FAILURE_CODES = {"error_page", "ambiguous_target", "unsupported_selector", "needs_user", "user_tab",
-                             "user_viewing", "permission_required", "capability_restricted",
+                             "user_viewing", "user_tab_read_only", "invalid_tab_id", "invalid_window_id", "window_unavailable",
+                             "invalid_coordinates", "permission_required", "capability_restricted",
                              "mode_restricted", "unknown_action"}
 
 
@@ -1611,8 +1690,39 @@ def _url_matches(pattern, url, flags=0):
         return False
 
 
+def _normalize_tab_target(params):
+    """Canonicalize scalar IDs before admission; falsy/array values never mean the active tab."""
+    raw = (params or {}).get("tabId")
+    if raw is None:
+        return None
+    tab_id = _explicit_tab_id(raw)
+    if tab_id is None:
+        return _action_error("tabId must be a positive integer or decimal digits", "invalid_tab_id", retryable=False,
+                             hint="Use one tab id from browser_tabs; omit tabId for the implicit target.", tabId=raw)
+    params["tabId"] = tab_id
+    return None
+
+
+def _normalize_window_target(action, params):
+    """Window aliases are not API targets; admission and dispatch use concrete IDs only."""
+    if action == "checkTabWrite":
+        action = params.get("writeAction")
+    raw = (params or {}).get("windowId")
+    if raw is None and action not in {"closeWindow", "focusWindow"}:
+        return None
+    window_id = _explicit_tab_id(raw)
+    if window_id is None:
+        return _action_error("windowId must be a positive integer or decimal digits", "invalid_window_id",
+                             retryable=False, hint="Use a concrete window id from browser_windows; aliases are unsupported.",
+                             windowId=raw)
+    params["windowId"] = window_id
+    return None
+
+
 def _check_policy(action, params):
     """Return error dict if action/url violates current policy, else None."""
+    if invalid := _normalize_tab_target(params) or _normalize_window_target(action, params):
+        return invalid
     if not permits_action(_task_mode.get(), action):
         return _mode_error(action)
     if _task_mode.get() != "act":
@@ -2165,6 +2275,34 @@ async def _held_reason(action, params):
     return reason, description, tab_id, url_now or url
 
 
+async def _tab_write_refusal(action, params):
+    """Check permissions without acting, before any approval or trusted-input preparation."""
+    if action == "syncBarrier":
+        for tab_id in params.get("tabIds", []):
+            refusal = await _tab_write_refusal("executeJS", {"tabId": tab_id})
+            if refusal:
+                return refusal
+        return None
+    if action in {"if", "while"}:
+        action = "executeJS"
+    tab_actions = (WRITE_ACTIONS - {"newTab", "createWindow", "duplicateTab", "cookies", "clipboard",
+                                    "downloads", "clearBrowsingData", "intercept", "reloadExtension", "loadSession"})
+    if _user_tabs_writable.get() or action not in tab_actions | {
+            "find", "waitForResult", "focusElement", "blurElement", "focusWindow", "elementScreenshot", "fullPageScreenshot"}:
+        return None
+    # Non-finite coordinates cannot even be represented on the extension's JSON transport.
+    if action == "trustedClick" and (invalid := _trusted_click_coordinates(params)):
+        return invalid
+    result = await send_to_extension("checkTabWrite", {**params, "writeAction": action})
+    if isinstance(result, dict) and result.get("error"):
+        return result
+    if action == "trustedPressKey":
+        return _trusted_key_refusal(params)
+    if action == "trustedType":
+        return _trusted_type_refusal(params)
+    return (_unbound_screen_click(params) or _trusted_click_coordinates(params)) if action == "trustedClick" else None
+
+
 async def _ask_before_act(action, params, *, direct):
     """Return an ambiguity or confirmation_required error before dispatch, else None.
 
@@ -2172,7 +2310,13 @@ async def _ask_before_act(action, params, *, direct):
     retry, parallel, broadcast and workflows never confirm an action.
     """
     token = params.pop("confirmToken", None) if isinstance(params, dict) else None
-    if not _ask_enabled():
+    asking = _ask_enabled()
+    if not asking and action not in _PREPARED_TAB_WRITES:
+        return None
+    refusal = await _tab_write_refusal(action, params)
+    if refusal:
+        return refusal
+    if not asking:
         return None
     held = await _held_reason(action, params)
     if held is None:
@@ -2466,8 +2610,9 @@ async def _sync_barrier_async(tab_ids, predicate, timeout=30000, poll_interval=3
         all_pass = True
         for tid in tab_ids:
             r = await send_to_extension("executeJS", {"tabId": tid, "code": predicate}, timeout=10)
-            # Polling again cannot pass the viewed-tab hold (#326): it needs the user's approval.
-            if isinstance(r, dict) and (r.get("devBuildRequired") or _approval_detail(r) == "user_viewing"):
+            # Permissions cannot change by polling; legacy viewed-tab holds need approval too.
+            if isinstance(r, dict) and (r.get("devBuildRequired") or r.get("code") == "user_tab_read_only"
+                                       or _approval_detail(r) == "user_viewing"):
                 return {"ok": False, **r}
             last[tid] = r
             val = (r or {}).get("result")
@@ -2482,33 +2627,54 @@ async def _sync_barrier_async(tab_ids, predicate, timeout=30000, poll_interval=3
 # ── Tab pool ──
 
 async def _ensure_tab_pool(target_size, url):
-    """Grow or shrink the pool to target_size warm tabs."""
-    while len(_tab_pool["available"]) + len(_tab_pool["in_use"]) < target_size:
+    """Grow/shrink only this owner's pool. A refusal never forgets a still-open tab."""
+    pool = _owner_pool()
+    while len(pool["available"]) + len(pool["in_use"]) < target_size:
         r = await send_to_extension("newTab", {"url": url})
         tid = r.get("tabId") if isinstance(r, dict) else None
-        if tid:
-            _tab_pool["available"].append(tid)
-        else:
+        if not tid:
             return {"error": "failed to create pool tab: " + str(r)}
-    # Shrink: close extra available tabs
-    while len(_tab_pool["available"]) + len(_tab_pool["in_use"]) > target_size and _tab_pool["available"]:
-        tid = _tab_pool["available"].pop()
-        try:
-            await send_to_extension("closeTab", {"tabId": tid})
-        except Exception:
-            pass
-    _tab_pool["size"] = target_size
-    _tab_pool["url"] = url
+        pool["available"].append(tid)
+    while len(pool["available"]) + len(pool["in_use"]) > target_size and pool["available"]:
+        tid = pool["available"][-1]
+        result = await send_to_extension("closeTab", {"tabId": tid})
+        if isinstance(result, dict) and result.get("error"):
+            return result
+        pool["available"].pop()
+    pool["size"] = target_size
+    pool["url"] = url
     return _pool_status()
 
 
 def _pool_status():
-    return {
-        "size": _tab_pool["size"],
-        "available": list(_tab_pool["available"]),
-        "in_use": list(_tab_pool["in_use"]),
-        "url": _tab_pool["url"],
-    }
+    pool = _owner_pool()
+    return {"size": pool["size"], "available": list(pool["available"]),
+            "in_use": list(pool["in_use"]), "url": pool["url"]}
+
+
+async def _pool_operation(op, body):
+    lock = _tab_pool_locks.setdefault(_owner_id.get(), asyncio.Lock())
+    async with lock:
+        pool = _owner_pool()
+        if op == "resize":
+            return await _ensure_tab_pool(int(body.get("size", 0)), body.get("url", "about:blank"))
+        if op == "acquire":
+            if not pool["available"]:
+                if pool["size"] == 0:
+                    return {"error": "Tab pool not initialized; call /api/tab-pool first"}
+                grow = await _ensure_tab_pool(pool["size"] + 1, pool["url"])
+                if "error" in grow:
+                    return grow
+            tab_id = pool["available"].pop(0)
+            pool["in_use"].add(tab_id)
+            return {"ok": True, "tabId": tab_id, **_pool_status()}
+        tab_id = body.get("tabId")
+        if tab_id not in pool["in_use"] and tab_id not in pool["available"]:
+            return {"error": "tabId is not in this client's pool"}
+        pool["in_use"].discard(tab_id)
+        if tab_id not in pool["available"]:
+            pool["available"].append(tab_id)
+        return {"ok": True, **_pool_status()}
 
 
 # ── Session save/load (cookies + localStorage) ──
@@ -3012,6 +3178,9 @@ def _with_viewed_tab_fields(params):
 
 async def send_to_extension(action, params=None, timeout=30):
     """Send command to extension and wait for response."""
+    params = dict(params or {})
+    if invalid := _normalize_tab_target(params) or _normalize_window_target(action, params):
+        return invalid
     if action in _PROTECTED_NAVIGATIONS:
         # Only the calling client's setting decides whether its navigations are protected.
         params = {k: v for k, v in (params or {}).items() if k != "protectUserTabs"}
@@ -3083,7 +3252,7 @@ def _with_own_tabs(result, own_only):
         return result
     owner = _owner_id.get()
     openers = dict(_tab_openers)
-    pool = set(_tab_pool["available"]) | set(_tab_pool["in_use"])
+    pool = {tid for state in list(_tab_pools.values()) for tid in list(state["available"]) + list(state["in_use"])}
 
     per_client = result.get("ownershipByClient") is True
     if not per_client and owner is not None:
@@ -3108,7 +3277,12 @@ async def _send_to_extension_raw(action, params=None, timeout=30):
     global command_counter
 
     params = dict(params or {})
+    if invalid := _normalize_tab_target(params) or _normalize_window_target(action, params):
+        return invalid
     # Identity is transport metadata, never a tool/container argument supplied by the caller.
+    params.pop("userTabsWritable", None)
+    if _user_tabs_writable.get():
+        params["userTabsWritable"] = True
     params.pop("ownerId", None)
     if _owner_id.get() is not None:
         params["ownerId"] = _owner_id.get()
@@ -3796,9 +3970,12 @@ _UNFINISHED = object()
 
 def _explicit_tab_id(value):
     """The tab id value names (a positive integer or its digits), else None."""
-    if isinstance(value, str) and value.isdigit():
-        value = int(value)
-    return value if type(value) is int and value > 0 else None
+    if isinstance(value, str) and _re.fullmatch(r"[0-9]+", value):
+        try:
+            value = int(value)
+        except ValueError:
+            return None
+    return value if type(value) is int and 0 < value <= 2**53 - 1 else None
 
 
 def _container_default_tab(body):
@@ -4805,6 +4982,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
         caps_token = _client_caps.set(caps)
         protect = _protect_user_tabs.set(self.headers.get(PROTECT_USER_TABS_HEADER) != "0")
         hold = _hold_viewed_tab.set(self.headers.get(HOLD_VIEWED_TAB_HEADER) != "0")
+        writable = _user_tabs_writable.set(self.headers.get(HOLD_VIEWED_TAB_HEADER) == "0"
+                                          or self.headers.get(PROTECT_USER_TABS_HEADER) == "0")
         viewed = _viewed_tab_approval.set({"approved": False, "rejected": None})
         direct_hold = _direct_hold.set({"call": None})
         approver = self.headers.get(APPROVER_HEADER) or ""
@@ -4841,6 +5020,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             _request_approval.reset(approval)
             _direct_hold.reset(direct_hold)
             _viewed_tab_approval.reset(viewed)
+            _user_tabs_writable.reset(writable)
             _hold_viewed_tab.reset(hold)
             _protect_user_tabs.reset(protect)
             _client_caps.reset(caps_token)
@@ -4892,6 +5072,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "/api/upload-file": self.handle_upload_file,
             "/api/navigate": self.handle_navigate,
             "/api/find": self.handle_find,
+            "/api/tab-write-check": self.handle_tab_write_check,
             "/api/js": self.handle_js,
             "/api/highlight": self.handle_highlight,
             "/api/clear-highlight": self.handle_clear_highlight,
@@ -5155,7 +5336,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     def _held(self, action, body):
         """Apply ask-before-act to a direct call; send the held error and return True if held."""
-        if not _ask_enabled():
+        if not _ask_enabled() and action not in _PREPARED_TAB_WRITES:
             body.pop("confirmToken", None)
             return False
         held = self.run_async(_ask_before_act(action, body, direct=True))
@@ -5298,6 +5479,11 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
     
+    def handle_tab_write_check(self):
+        body = self.read_body()
+        result = self.run_async(_tab_write_refusal(body.get("writeAction"), body))
+        self.send_json(200, result or {"ok": True})
+
     def handle_find(self):
         body = self.read_body()
         # Extension expects "query", users may send "selector"
@@ -5470,36 +5656,13 @@ class BridgeHandler(BaseHTTPRequestHandler):
     # ── Tab pool ──
 
     def handle_tab_pool(self):
-        body = self.read_body()
-        size = int(body.get("size", 0))
-        url = body.get("url", "about:blank")
-        result = self.run_async(_ensure_tab_pool(size, url))
-        self.send_json(200, result)
+        self.send_json(200, self.run_async(_pool_operation("resize", self.read_body())))
 
     def handle_pool_acquire(self):
-        if not _tab_pool["available"]:
-            # Auto-grow if empty
-            if _tab_pool["size"] == 0:
-                self.send_json(400, {"error": "Tab pool not initialized; call /api/tab-pool first"})
-                return
-            grow = self.run_async(_ensure_tab_pool(_tab_pool["size"] + 1, _tab_pool["url"]))
-            if "error" in grow:
-                self.send_json(500, grow)
-                return
-        tab_id = _tab_pool["available"].pop(0)
-        _tab_pool["in_use"].add(tab_id)
-        self.send_json(200, {"ok": True, "tabId": tab_id, **_pool_status()})
+        self.send_json(200, self.run_async(_pool_operation("acquire", {})))
 
     def handle_pool_release(self):
-        body = self.read_body()
-        tab_id = body.get("tabId")
-        if tab_id is None:
-            self.send_json(400, {"error": "tabId required"})
-            return
-        _tab_pool["in_use"].discard(tab_id)
-        if tab_id not in _tab_pool["available"]:
-            _tab_pool["available"].append(tab_id)
-        self.send_json(200, {"ok": True, **_pool_status()})
+        self.send_json(200, self.run_async(_pool_operation("release", self.read_body())))
 
     # ── Sessions ──
 

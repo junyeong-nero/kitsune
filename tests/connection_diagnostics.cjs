@@ -70,6 +70,7 @@ function background({ tabs = {}, windows = 1, granted = () => true, files = null
     console: { log() {}, error() {} },
   });
   vm.runInContext(fs.readFileSync('extension/background/background.js', 'utf8'), context);
+  for (const id of Object.keys(tabs)) context.markAgentTab(Number(id));
   return {
     browser, sent, contains, state,
     socket: () => sockets[sockets.length - 1],

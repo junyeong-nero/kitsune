@@ -103,7 +103,7 @@ def permits_action(mode: str, action: str) -> bool:
 # resume an act call, write files or stop the shared daemon by bypassing tools/list.
 READ_ROUTES = frozenset({
     "/", "/api/status", "/api/version", "/api/tabs", "/api/page-info", "/api/page-text",
-    "/api/page-text-by-tab-id", "/api/snapshot", "/api/forms", "/api/dom", "/api/find",
+    "/api/page-text-by-tab-id", "/api/snapshot", "/api/forms", "/api/dom", "/api/find", "/api/tab-write-check",
     "/api/navigate", "/api/scroll", "/api/workflows", "/api/query", "/api/html", "/api/links",
     "/api/images", "/api/meta", "/api/structured-data", "/api/bounds", "/api/computed-style",
     "/api/readability", "/api/markdown", "/api/iframes", "/api/explain-selector",

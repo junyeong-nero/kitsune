@@ -31,10 +31,10 @@ the agent gets fewer, sharper tools. See [Philosophy](https://github.com/junyeon
 
 ## Why Kitsune?
 
-- Tabs the agent creates open in the background. Kitsune holds writes to a tab
-  while you are typing or clicking in it. Writes to the tab you are viewing, unless
-  the agent opened it, and closing or navigating one of your own tabs each need
-  your [approval](https://github.com/junyeong-nero/kitsune#approvals). Writes that
+- Tabs the agent creates open in the background. Your tabs and other clients' tabs
+  are read-only: writes, scrolling, focusing, selecting and closing them are refused
+  without a prompt (`user_tab_read_only`). The agent opens its own tab to write, and
+  pauses even there while you are typing or clicking. Writes that
   name no tab are refused until the agent has opened or selected one. This reduces interference, but OS-level clicks and popups
   opened by sites still have [focus and input limitations](https://github.com/junyeong-nero/kitsune/blob/main/docs/api-reference.md#shared-browser).
 - You decide how much to delegate. `KITSUNE_MODE=read`, `draft`, or `act` limits
@@ -125,11 +125,10 @@ Kitsune's controls prevent prompt injection. Read the [security guidance](https:
 
 ### Approvals
 
-These calls need your approval: writes and navigations on the tab you are
-viewing, unless the agent opened it; closing or navigating a tab the agent did not
-open; and, with the opt-in
+User-tab writes are refused, not offered for approval; tab handoff is a later stage.
+With the opt-in
 [ask-before-act](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#ask-before-act)
-policy, submits, payment pages, JavaScript, and cookie access. On MCP clients with
+policy, submits, payment pages, JavaScript, and cookie access need approval. On MCP clients with
 elicitation (Claude Code, Codex), the client asks you in its own prompt, and the
 call runs once you approve; the approval never passes through the agent. Clients
 without elicitation fall back to a confirmation token: the agent should ask you,
@@ -288,8 +287,8 @@ tab.close()
 ```
 
 The MCP server limits what an agent sees; the Python API does not, but the bridge's
-shared-browser rules hold for both: tabs open in the background, your own tabs close
-or navigate only with your approval, and sensitive fields stay redacted. `kitsune.connect(confirm=...)`
+shared-browser rules hold for both: tabs open in the background, user and other clients' tabs
+are read-only by default, and sensitive fields stay redacted. `kitsune.connect(confirm=...)`
 lets a person approve each action that needs it. See [Python API](https://github.com/junyeong-nero/kitsune/blob/main/docs/python-api.md).
 
 Until 0.6.0 the code was part of `kitsune-browser-mcp`. If you upgrade a pip install

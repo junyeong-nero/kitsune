@@ -106,6 +106,7 @@ function harness(onReload = () => {}) {
     clearInterval: () => {},
   });
   vm.runInContext(fs.readFileSync('extension/background/background.js', 'utf8'), context);
+  context.markAgentTab(7);
   return h;
 }
 

@@ -1,4 +1,5 @@
 """Direct JavaScript, session, trusted-click and cache endpoints go through the same admission (#193, #194)."""
+import asyncio
 import concurrent.futures
 import json
 import math
@@ -127,6 +128,8 @@ class TrustedClickTimeoutTests(AskBeforeActTestCase):
 
     def test_timeout_returns_an_audited_timeout_error(self):
         def time_out(coro, **kwargs):
+            if coro.cr_code.co_name == "_ask_before_act":
+                return asyncio.run(coro)
             coro.close()
             raise concurrent.futures.TimeoutError()
 

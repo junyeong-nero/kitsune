@@ -39,7 +39,7 @@ ROUTE_GROUPS = _by_group({
         "/api/form-fill", "/api/full-page-screenshot", "/api/handle-dialog", "/api/hover", "/api/js",
         "/api/keypress", "/api/navigate", "/api/needs-user", "/api/new-tab", "/api/resize-window", "/api/resume",
         "/api/screenshot",
-        "/api/select-option", "/api/set-editable-content", "/api/snapshot", "/api/switch-tab", "/api/tabs",
+        "/api/select-option", "/api/set-editable-content", "/api/snapshot", "/api/tab-write-check", "/api/switch-tab", "/api/tabs",
         "/api/type", "/api/upload-file", "/api/wait-for-element", "/api/wait-for-network-idle", "/api/wait-for-result",
         "/api/wait-for-text", "/api/wait-for-title", "/api/wait-for-url", "/api/watch-console",
     ),

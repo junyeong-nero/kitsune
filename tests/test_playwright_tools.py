@@ -303,6 +303,8 @@ class AdapterTests(unittest.TestCase):
                      for page in pages]
 
         def answer(endpoint, body, **kwargs):
+            if endpoint == "/api/tab-write-check":
+                return {"ok": True}
             if endpoint == "/api/scroll":
                 return scroll or {"ok": True, "scrolled_by": 400}
             return snapshots.pop(0) if len(snapshots) > 1 else snapshots[0]
@@ -328,7 +330,8 @@ class AdapterTests(unittest.TestCase):
         snapshot = ("/api/snapshot", {"collapse": False, "tabId": 7})
         scroll = ("/api/scroll", {"direction": "bottom", "tabId": 7, "confirmToken": "tok"})
         # After each scroll it polls the snapshot until it changes.
-        self.assertEqual(self.posted(), [snapshot, scroll, snapshot, snapshot, scroll, snapshot, snapshot])
+        self.assertEqual(self.posted(), [("/api/tab-write-check", {"tabId": 7, "writeAction": "find", "loadMore": True}),
+                                         snapshot, scroll, snapshot, snapshot, scroll, snapshot, snapshot])
         self.assertEqual(sleep.call_count, 4)
         sleep.assert_called_with(playwright_tools.FIND_LOAD_MORE_POLL_SECONDS)
 
@@ -337,7 +340,8 @@ class AdapterTests(unittest.TestCase):
         self.answer_pages(["#1", "#2"])
         found = playwright_tools.browser_find(text="#2", load_more=True)
         self.assertEqual((found["count"], found["scrolls"]), (1, 0))
-        self.assertEqual(self.posted(), [("/api/snapshot", {"collapse": False, "tabId": 7})])
+        self.assertEqual(self.posted(), [("/api/tab-write-check", {"tabId": 7, "writeAction": "find", "loadMore": True}),
+                                         ("/api/snapshot", {"collapse": False, "tabId": 7})])
 
     def test_find_load_more_stops_when_a_scroll_changes_nothing(self):
         playwright_tools._current_tab = 7

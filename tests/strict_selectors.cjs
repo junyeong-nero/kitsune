@@ -89,7 +89,7 @@ function load(dom) {
     File, atob, DataTransfer: class { constructor() { this.items = { add() {} }; this.files = []; } },
     CSS: { escape: x => x }, setTimeout, MessageChannel,
     HTMLInputElement: class {}, HTMLTextAreaElement: class {},
-    window: { mozInnerScreenX: 0, mozInnerScreenY: 0,
+    window: { mozInnerScreenX: 0, mozInnerScreenY: 0, innerWidth: 800, innerHeight: 600,
       getComputedStyle: el => ({ display: 'hidden' in el.attrs ? 'none' : 'block', visibility: 'visible' }) },
     document: {
       body: dom.body, activeElement: dom.body, 

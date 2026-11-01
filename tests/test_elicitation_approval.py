@@ -37,6 +37,8 @@ class FakeExtension:
 
     async def __call__(self, action, params=None, timeout=30):
         params = dict(params or {})
+        if action == "checkTabWrite":
+            return {"ok": True}  # Legacy hold transport fixture, not the new permission gate.
         self.sent.append((action, params))
         tab_id = params.get("tabId")
         if action == "getTabs" and self.tabs is not None:
@@ -388,6 +390,29 @@ class ViewedTabElicitationTests(ElicitationTestCase):
         for output in outputs:
             self.assertNotIn(secret, output)
             self.assertNotIn(hashed, output)
+
+
+class UserTabReadOnlyElicitationTests(ElicitationTestCase):
+    def test_read_only_refusal_never_elicits_or_repeats_even_with_ask_enabled(self):
+        refusal = {"error": "read only", "code": "user_tab_read_only", "retryable": False,
+                   "state": {"tabId": VIEWED_TAB, "index": 0, "action": "click"},
+                   "hint": "Open a tab of your own with browser_tabs action=new."}
+        sent = []
+
+        async def read_only(action, params=None, timeout=30):
+            sent.append(action)
+            return refusal
+
+        self.extension = read_only
+        for asking in (False, True):
+            with self.subTest(ask=asking), patch.dict(bridge._policy, {"ask": asking}):
+                sent.clear()
+                result, payload = self.call("browser_click", {"target": "#go"}, answer_with("accept", "Approve"))
+                self.assertTrue(result.isError)
+                self.assertEqual(payload["code"], "user_tab_read_only")
+                self.assertEqual(self.prompts, [])
+                self.assertEqual(sent, ["checkTabWrite"] if asking else ["click"])
+                self.assertNoToken()
 
 
 class AskBeforeActElicitationTests(ElicitationTestCase):

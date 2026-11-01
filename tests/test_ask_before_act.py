@@ -27,6 +27,8 @@ class FakeExtension:
 
     async def __call__(self, action, params=None, timeout=30):
         params = dict(params or {})
+        if action == "checkTabWrite":
+            return {"ok": True}  # This fixture models writable agent tabs.
         self.sent.append((action, params))
         if action == "describeTarget":
             if isinstance(self.target, dict) and self.target.get("error") and params.get("inspect"):
@@ -319,9 +321,9 @@ class SensitiveActionTests(AskBeforeActTestCase):
         token = held["state"]["confirmToken"]
         result = self.held(lambda h: h.handle_trusted_click(), {**body, "button": "left", "confirmToken": token})
         self.assertEqual(result["state"]["tokenRejected"], "mismatch")
-        held = self.held(lambda h: h.handle_trusted_click(),
-                         {"coords": {"x": 1, "y": 2}, "coordinateSpace": "screen", "button": "middle"})
-        self.assertIn("middle-clicks screen coordinates", held["error"])
+        _, refused = self.call(lambda h: h.handle_trusted_click(),
+                               {"coords": {"x": 1, "y": 2}, "coordinateSpace": "screen", "button": "middle"})
+        self.assertEqual(refused["code"], "unsupported_target")
         self.assertEqual(self.extension.actions(), [])
 
     def test_enter_in_form_field_is_held(self):
@@ -338,9 +340,9 @@ class SensitiveActionTests(AskBeforeActTestCase):
         self.extension.target = {"error": "Unknown action: describeTarget"}
         held = self.held(lambda h: h.handle_click(), {"selector": "#go"})
         self.assertEqual(held["state"]["holdReason"], "uninspectable_target")
-        held = self.held(lambda h: h.handle_trusted_click(),
-                         {"coords": {"x": 1, "y": 2}, "coordinateSpace": "screen"})
-        self.assertEqual(held["state"]["holdReason"], "uninspectable_target")
+        _, refused = self.call(lambda h: h.handle_trusted_click(),
+                               {"coords": {"x": 1, "y": 2}, "coordinateSpace": "screen"})
+        self.assertEqual(refused["code"], "unsupported_target")
         self.assertEqual(self.extension.actions(), [])
 
     def test_unknown_outcome_write_is_held_before_repeating(self):

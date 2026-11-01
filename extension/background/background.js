@@ -3,7 +3,7 @@
 
 'use strict';
 
-const EXPECTED_CONTENT_VERSION = 49;
+const EXPECTED_CONTENT_VERSION = 50;
 const WS_URL = 'ws://127.0.0.1:47652';
 // scripts/build_extension.py sets 'signed' for the AMO build (see content.js).
 const KITSUNE_BUILD = 'dev';
@@ -135,7 +135,7 @@ browser.tabs.onRemoved.addListener(tabId => {
 // the tests' mocks) ownership is in memory only, and a reload or restart forgets it.
 const agentTabs = new Set();
 const AGENT_TAB_KEY = 'kitsune.owned';
-// Keep global membership for the existing guards/cleanup; permissions change in #395.
+// Global membership is for cleanup; write permissions always compare the requesting owner.
 // A missing owner is legacy ownership, never ownership of a named MCP client.
 const agentTabOwners = new Map();
 const validOwnerId = owner => typeof owner === 'string' && /^[A-Za-z0-9_.:-]{1,64}$/.test(owner);
@@ -501,33 +501,6 @@ async function userActiveError(tabId) {
   return state ? tabError(`The user is using tab ${tabId}; nothing was done`, 'user_active', state) : null;
 }
 
-// Viewing counts as using (#326, docs/api-reference.md#viewed-tab): a guarded write or navigation
-// on the tab shown in the browser window the user last focused returns user_viewing even without
-// recent input. That window keeps the hold while another app (the agent's terminal) has the
-// focus. Closing a tab, view switches and screenshots are not held, nor are tabs the agent opened.
-// Only the bridge sets viewedTabApproved (a confirmed direct call; the userTabApproved of a
-// protected navigation counts too) and holdViewedTab: false (the client's KITSUNE_HOLD_VIEWED_TAB=0).
-// Showing another tab (switchTab, focusWindow) moves the hold with the view. A tab a trusted
-// command showed for its OS input (trustedShownTabs) is the agent's view, not the user's, until
-// the user's tab is shown again, but only for another trusted measurement (screenPoint): a trusted
-// drag measures its destination there after its source. Other writes on it are still held.
-const VIEWED_TAB_EXEMPT_ACTIONS = new Set(['closeTab', 'switchTab', 'focusWindow', 'elementScreenshot', 'fullPageScreenshot']);
-async function viewedTabError(params) {
-  const tabId = params.tabId;
-  // The bridge strips a caller's userTabApproved only on the routes that approve it.
-  const navigationApproved = params.userTabApproved && PROTECTED_NAVIGATIONS.has(params.action);
-  if (params.holdViewedTab === false || params.viewedTabApproved || navigationApproved ||
-      VIEWED_TAB_EXEMPT_ACTIONS.has(params.action) || tabId == null || agentTabs.has(tabId) ||
-      (params.action === 'screenPoint' && trustedShownTabs.get(tabId)?.until > Date.now())) return null;
-  const tab = await browser.tabs.get(tabId).catch(() => null);
-  if (!tab?.active) return null;
-  const focused = await browser.windows.getLastFocused().catch(() => null);
-  if (focused?.id !== tab.windowId) return null;
-  return tabError(`The user is viewing tab ${tabId}; nothing was done`, 'user_viewing',
-    { tabId, url: tab.url, title: tab.title, windowId: tab.windowId, reason: 'viewing',
-      browserFocused: !!focused.focused }, false);
-}
-
 // The longest pause a held click or a sustained hover asks for (content.js POINTER_MAX_MS).
 const POINTER_PAUSE_MAX_MS = 10000;
 
@@ -802,9 +775,64 @@ const OPENER_ACTIONS = new Set([
 // Writes and navigations that back off from a tab the user is using (see userActivity): the page
 // actions above and these. Element and full-page captures scroll the page.
 const USER_GUARDED_ACTIONS = new Set([
-  ...OPENER_ACTIONS, 'media', 'executeJS', 'uploadCommit',
+  ...OPENER_ACTIONS, 'media', 'executeJS', 'waitForResult', 'uploadCommit',
   'closeTab', 'switchTab', 'focusWindow', 'elementScreenshot', 'fullPageScreenshot',
 ]);
+// Every tab mutation, including view-only changes and preparation for OS input, is checked
+// before content injection, user activity inspection or any browser API with side effects.
+const TAB_WRITE_ACTIONS = new Set([
+  ...USER_GUARDED_ACTIONS, 'pinTab', 'muteTab', 'reloadTabBrowser', 'setZoom', 'resizeWindow',
+  'moveTab', 'detachTab', 'wakeTab', 'highlight', 'clearHighlight', 'handleDialog',
+  'uploadChunk', 'uploadAbort', 'agentInput', 'neuterUnload', 'keepAlive',
+  'markScreenshotTarget', 'unmarkScreenshotTarget', 'screenPoint',
+  'trustedClick', 'trustedDrag', 'trustedType', 'trustedPressKey', 'uploadFile',
+]);
+function writesTab(action, params) {
+  return TAB_WRITE_ACTIONS.has(action) || (action === 'find' && (params.loadMore || params.load_more)) ||
+    (action === 'storageOp' && !['get', 'list', 'snapshot'].includes(params.op));
+}
+async function tabWriteError(params) {
+  const action = params.action;
+  const windowAction = ['closeWindow', 'focusWindow', 'resizeWindow'].includes(action);
+  if (!windowAction && !writesTab(action, params)) return null;
+  const tabId = params.tabId ?? ((!windowAction || action === 'resizeWindow') ? await getActiveTabId() : null);
+  // Bind an implicit target once: a user view change during admission must not retarget the write.
+  if (tabId != null) params.tabId = tabId;
+  const tabs = await browser.tabs.query({});
+  const targetTab = tabs.find(t => t.id === tabId);
+  if (tabId != null && !targetTab) {
+    return tabError(`Tab ${tabId} no longer exists`, 'tab_closed', { tabId });
+  }
+  if ((!windowAction || action === 'resizeWindow') && !targetTab) {
+    return noActiveTab(action === 'navigate' ? 'No active tab' : 'No active tab found');
+  }
+  const relocating = action === 'moveTab' || action === 'detachTab';
+  // resizeWindow is tab-scoped; moveTab without a destination means the source window.
+  // Bind these now, never re-resolve a window from the tab after ownership admission.
+  if (action === 'resizeWindow') params.windowId = targetTab.windowId;
+  if (action === 'moveTab' && params.windowId == null) params.windowId = targetTab.windowId;
+  const windowIds = windowAction ? [params.windowId]
+    : relocating ? [targetTab.windowId, ...(action === 'moveTab' ? [params.windowId] : [])] : [];
+  for (const windowId of windowIds) {
+    if (!Number.isSafeInteger(windowId) || windowId <= 0 || !tabs.some(t => t.windowId === windowId)) {
+      return tabError(`Window ${windowId} has no available tabs`, 'window_unavailable', { windowId, action }, false);
+    }
+  }
+  if (params.userTabsWritable === true) return null;
+  const targets = windowAction ? tabs.filter(t => t.windowId === params.windowId) : [targetTab];
+  const tab = targets.find(t => !agentTabs.has(t.id) || agentTabOwners.get(t.id) !== (params.ownerId ?? null));
+  if (tab) return tabError(`Tab ${tab.id} is read-only for this client; nothing was done`, 'user_tab_read_only',
+    { tabId: tab.id, index: tabs.findIndex(t => t.id === tab.id), action }, false);
+  // Reordering a tab leaves the displayed page alone. Moving an active tab out can reveal
+  // another tab or close/focus a window; do not perform that effect then attempt to undo it.
+  if (relocating && targetTab.active && (action === 'detachTab' || params.windowId !== targetTab.windowId)) {
+    return { error: 'Moving an active tab between windows cannot preserve the displayed page',
+      code: 'unsupported_target', retryable: false, state: { tabId, windowId: targetTab.windowId, action },
+      hint: 'Move an inactive tab you own, or open a separate owned window; no tab or window was moved.' };
+  }
+  return null;
+}
+
 // A tab opened by a link starts on about:blank; wait this long for its real URL.
 const OPENED_TAB_URL_WAIT_MS = 1000;
 // How long a click on a target=_blank link waits for its tab before openBlockedLink opens it.
@@ -812,6 +840,29 @@ const BLOCKED_LINK_WAIT_MS = 500;
 
 async function handleCommand(command) {
   const params = { ...command };
+  if (params.tabId != null) {
+    const tabId = typeof params.tabId === 'string' && /^[0-9]+$/.test(params.tabId) ? Number(params.tabId) : params.tabId;
+    if (!Number.isSafeInteger(tabId) || tabId <= 0) {
+      return { error: 'tabId must be a positive integer or decimal digits', code: 'invalid_tab_id', retryable: false,
+        state: { tabId: params.tabId }, hint: 'Use one tab id from browser_tabs; omit tabId for the implicit target.' };
+    }
+    params.tabId = tabId;
+  }
+  const targetAction = params.action === 'checkTabWrite' ? params.writeAction : params.action;
+  if (params.windowId != null || ['closeWindow', 'focusWindow'].includes(targetAction)) {
+    const windowId = typeof params.windowId === 'string' && /^[0-9]+$/.test(params.windowId)
+      ? Number(params.windowId) : params.windowId;
+    if (!Number.isSafeInteger(windowId) || windowId <= 0) {
+      return { error: 'windowId must be a positive integer or decimal digits', code: 'invalid_window_id', retryable: false,
+        state: { windowId: params.windowId }, hint: 'Use a concrete window id from browser_windows; aliases are unsupported.' };
+    }
+    params.windowId = windowId;
+  }
+  if (params.action === 'checkTabWrite') {
+    return await tabWriteError({ ...params, action: params.writeAction }) || { ok: true };
+  }
+  const readOnly = await tabWriteError(params);
+  if (readOnly) return readOnly;
   // browser_wait_for(time)'s delta (#350) is a post-action snapshot: KITSUNE_POST_ACTION_SNAPSHOT=0 turns it off.
   if (params.action === 'getSnapshot' && params.sinceObservation && params.includeSnapshot === false) return { ok: true };
   // Descriptions are audit metadata only; never use them to locate elements.
@@ -837,15 +888,13 @@ async function handleCommand(command) {
   const textSnapshot = params.action === 'getSnapshot' && !!params.text;
   const tracksOpenedTabs = OPENER_ACTIONS.has(params.action);
   // A trusted click's screenPoint (see screenPointForClick) acts on the page like a click.
-  const guarded = USER_GUARDED_ACTIONS.has(params.action) || (params.action === 'screenPoint' && !!params.click);
+  const guarded = USER_GUARDED_ACTIONS.has(params.action) || ['screenPoint', 'agentInput'].includes(params.action);
   const touches = guarded && params.action !== 'focusWindow';
   if ((withSnapshot || textSnapshot || touches || repeatSnapshot) && params.tabId == null) {
     params.tabId = await getActiveTabId();
   }
-  const unprotected = await protectedTabError(params);
-  if (unprotected) return unprotected;
   if (guarded) {
-    const busy = await userActiveError(await guardedTabId(params.action, params)) || await viewedTabError(params);
+    const busy = await userActiveError(await guardedTabId(params.action, params));
     if (busy) return busy;
   }
   if (tracksOpenedTabs && params.tabId != null) actionStarts.set(params.tabId, tabsCreated);
@@ -858,22 +907,6 @@ async function handleCommand(command) {
   } finally {
     if (touched != null) touchEnd(touched);
   }
-}
-
-// Under a session's protectUserTabs (#199), only the bridge's userTabApproved navigates a tab the
-// agent did not open. The bridge sets it unless the client opted out (#326). Clicks, forms,
-// reloads and page-initiated loads are not covered.
-const PROTECTED_NAVIGATIONS = new Set(['navigate', 'goBack', 'goForward']);
-async function protectedTabError(params) {
-  const tabId = params.tabId;
-  if (!params.protectUserTabs || params.userTabApproved || !PROTECTED_NAVIGATIONS.has(params.action) ||
-      tabId == null || agentTabs.has(tabId)) return null;
-  const tab = await browser.tabs.get(tabId).catch(() => null);
-  if (!tab) return null;
-  return { ...tabError(`Tab ${tabId} was not opened by the agent and this session protects user tabs, so it was ` +
-    'not navigated', 'user_tab', { tabId, url: tab.url, title: tab.title }, false),
-    hint: 'Nothing navigated. Open a tab of your own (browser_tabs action=new) and work there, ' +
-      'or ask the user and repeat a direct call with tab_id and the confirm_token it returns.' };
 }
 
 // ── Settling after an action (#348) ──
@@ -1213,8 +1246,8 @@ async function dispatchCommand(command) {
     case 'navigate':     return await navigateTab(params.url, params.tabId, params.expectTitle);
     case 'switchTab':    return await switchTab(params.tabId);
     case 'newTab':       return await createTab(params.url, params);
-    case 'closeTab':     return await closeTab(params.tabId, params);
-    case 'restoreActiveTab': return await restoreActiveTab(params.tabId, params.from);
+    case 'closeTab':     return await closeTab(params.tabId, { ...params, userTabApproved: true });
+    case 'restoreActiveTab': return await restoreActiveTab(params.tabId, params.from, params.ownerId);
     case 'screenPoint':  return params.click ? await screenPointForClick(params) : await zoomedScreenPoint(params);
     case 'wakeTab':      return await wakeTab(params.tabId);
     case 'reloadExtension': return reloadExtensionAction();
@@ -1231,9 +1264,9 @@ async function dispatchCommand(command) {
     case 'setZoom':          return await setZoom(params.tabId, params.factor);
     case 'getWindows':       return await getWindowsList();
     case 'createWindow':     return await createWindow(params.url, params.incognito, params.ownerId);
-    case 'closeWindow':      return await closeWindow(params.windowId, params.userTabApproved);
+    case 'closeWindow':      return await closeWindow(params.windowId, true);
     case 'focusWindow':      return await focusWindow(params.windowId);
-    case 'resizeWindow':     return await resizeWindow(params.tabId, params.width, params.height);
+    case 'resizeWindow':     return await resizeWindow(params.windowId, params.width, params.height);
     case 'moveTab':          return await moveTabAction(params.tabId, params.windowId, params.index);
     case 'detachTab':        return await detachTab(params.tabId);
     case 'elementScreenshot':return await elementScreenshot(params.tabId, params.selector, params.scale, params.imagePreview, params.format);
@@ -1641,8 +1674,7 @@ async function closeTab(tabId, { force = false, userTabApproved = false } = {}) 
 
 // A trusted OS click lands on whatever the screen shows, so a target tab that is not shown is
 // activated for the click; the bridge restores previousTabId right after it (restoreActiveTab).
-// The tab it hides for that moment is checked for the user's input, not held for being viewed
-// (viewedTabError holds only the click's own tab, before it is shown).
+// Ownership is checked before showing the target; the tab it hides is checked for user input.
 const TRUSTED_CLICK_PAINT_MS = 150;
 // tabId -> { windowId, until }: tabs screenPointForClick showed, until restoreActiveTab, another
 // tab of their window is shown, or TRUSTED_SHOWN_MAX_MS (a bridge that never restored them).
@@ -1667,7 +1699,7 @@ async function screenPointForClick(params) {
       if (busy) return busy;
       previousTabId = shown?.id ?? null;
       await browser.tabs.update(tab.id, { active: true });
-      trustedShownTabs.set(tab.id, { windowId: tab.windowId, until: Date.now() + TRUSTED_SHOWN_MAX_MS });
+      trustedShownTabs.set(tab.id, { previousTabId, ownerId: params.ownerId, windowId: tab.windowId, until: Date.now() + TRUSTED_SHOWN_MAX_MS });
       await new Promise(resolve => setTimeout(resolve, TRUSTED_CLICK_PAINT_MS));
     }
   } catch (e) {
@@ -1686,7 +1718,7 @@ async function screenPointForClick(params) {
     return { ...point, tabId: params.tabId, previousTabId };
   } finally {
     if (previousTabId != null && (!point || point.error)) {
-      await restoreActiveTab(previousTabId, params.tabId);
+      await restoreActiveTab(previousTabId, params.tabId, params.ownerId);
     }
   }
 }
@@ -1724,7 +1756,11 @@ async function zoomedScreenPoint(params) {
 }
 
 // Shows the user's tab again after a trusted click, unless the user already moved elsewhere.
-async function restoreActiveTab(tabId, from) {
+async function restoreActiveTab(tabId, from, ownerId) {
+  const shownForInput = trustedShownTabs.get(from);
+  if (!shownForInput || shownForInput.previousTabId !== tabId || shownForInput.ownerId !== ownerId) {
+    return { ok: true, restored: false };
+  }
   trustedShownTabs.delete(from);
   try {
     const shown = await browser.tabs.get(from);
@@ -1812,6 +1848,7 @@ async function wokenPageState(tabId, since, deadline) {
 // have reached the page, so its outcome is unknown; the bridge relaxes that for reads.
 // error_page is never retryable: nothing reached the page, but repeating cannot succeed.
 const TAB_FAILURE_HINTS = {
+  window_unavailable: 'List windows with browser_windows and target an open window with available tabs.',
   tab_closed: 'The tab no longer exists; list tabs with browser_tabs and target an open tab.',
   tab_unloaded: 'The tab was unloaded; wake it with browser_wake_tab, then take a new browser_snapshot.',
   navigating: 'The tab is loading a new document; wait for it with browser_wait_for, then take a new browser_snapshot.',
@@ -1819,6 +1856,8 @@ const TAB_FAILURE_HINTS = {
   restricted_page: 'Browser-internal pages cannot be scripted; navigate the tab to a web page or target another tab.',
   error_page: 'The page has no scriptable document (often an error response with an empty body), so reading it again fails the same way; check state.httpStatus and state.title, then navigate the tab elsewhere or target another tab.',
   host_permission_denied: 'Firefox does not let Kitsune script this site. For state.reason not_granted, allow its site access in about:addons → Kitsune → Permissions; restricted_domain sites (addons.mozilla.org, …) are closed to all extensions, so use another tab.',
+  user_tab_read_only: 'Open a tab of your own with browser_tabs action=new and this URL, or request this tab ' +
+    'with browser_tabs action=request when handoff support is available; reads must not scroll or focus it.',
   user_tab: 'The agent did not open this tab (owned: false in browser_tabs list), so it stays open. Leave it, ' +
     'or ask the user and repeat a direct browser_tabs close with the confirm_token that call returns.',
   user_active: 'The user is using this tab (state.reason); nothing was done. Retry in a few seconds, ' +
@@ -2076,6 +2115,8 @@ async function frameScreenPoint(tabId, frameId, point, params) {
     if (!point || point.error) return point;
     frameId = link.parent;
   }
+  if (frameId) return { error: 'Frame coordinates did not reach the page viewport', code: 'invalid_coordinates',
+    retryable: false, hint: 'Use a target in a shallower frame; no OS point was authorized.' };
   return point;
 }
 
@@ -2640,7 +2681,8 @@ async function forwardToContent(action, params) {
       return failure;
     }
 
-    let message = { action, ...expanded.params };
+    const { ownerId, userTabsWritable, ...contentParams } = expanded.params;
+    let message = { action, ...contentParams };
     if (delta) {
       deltaScope ??= { parent: frameId, depth: 0, budget: frameReadBudget() };
       frameDeltas ??= await knownFrameDeltas(tabId, params, deltaScope);
@@ -2810,16 +2852,13 @@ async function focusWindow(windowId) {
   } catch (e) { return { error: e.message }; }
 }
 
-// Resizes the window holding the tab (default: the active tab); does not focus it.
-async function resizeWindow(tabId, width, height) {
+// Resizes the concrete window admitted for the target tab; does not focus it.
+async function resizeWindow(windowId, width, height) {
   try {
     if (![width, height].every(value => Number.isFinite(value) && value > 0)) {
       return { error: 'width and height must be positive numbers' };
     }
-    const tab = tabId != null ? await browser.tabs.get(tabId)
-      : (await browser.tabs.query({ active: true, currentWindow: true }))[0];
-    if (!tab) return noActiveTab('No active tab found');
-    const updated = await browser.windows.update(tab.windowId, {
+    const updated = await browser.windows.update(windowId, {
       state: 'normal', width: Math.round(width), height: Math.round(height),
     });
     return { ok: true, windowId: updated.id, width: updated.width, height: updated.height };

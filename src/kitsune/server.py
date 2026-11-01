@@ -418,13 +418,9 @@ mcp._mcp_server.instructions = (
        "Until browser_tab_list new_tab opens a background tab of your own, reads act on the tab the "
        "user is viewing, and navigations and writes that pass no tab_id fail with no_current_tab; "
        "later tools act on your tab without switching the user's view.")
-    # #326: the tab the user is viewing is held for writes unless this client set KITSUNE_HOLD_VIEWED_TAB=0,
-    # and navigations on user tabs are refused unless it set KITSUNE_PROTECT_USER_TABS=0.
-    + ((" Work in tabs you opened: "
-        + " and ".join((["writes on the tab the user is viewing"] if HOLD_VIEWED_TAB else [])
-                       + (["navigations on tabs no client opened"] if PROTECT_USER_TABS else []))
-        + " return needs_user.")
-       if HOLD_VIEWED_TAB or PROTECT_USER_TABS else "")
+    + (" User and other clients' tabs are read-only: writes, scroll, focus and select fail with "
+       "user_tab_read_only, without prompting; open your own tab first."
+       if HOLD_VIEWED_TAB and PROTECT_USER_TABS else "")
     + " A needs_user result did nothing: tell the user why (state.message). If only the user can go on "
       "(a sign-in, a CAPTCHA, a choice), call browser_ask_user.")
 # The tool browser_tools_call is running; its bridge requests name it for the audit log.

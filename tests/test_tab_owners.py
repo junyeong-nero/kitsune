@@ -187,7 +187,7 @@ class TabOpenersTests(ContainerTests):
         openers = patch.object(bridge, "_tab_openers", {})
         self.openers = openers.start()
         self.addCleanup(openers.stop)
-        pool = patch.dict(bridge._tab_pool, {"size": 0, "available": [], "in_use": set(), "url": "about:blank"})
+        pool = patch.dict(bridge._tab_pools, {}, clear=True)
         pool.start()
         self.addCleanup(pool.stop)
         self.next_tab = iter(range(50, 70))
@@ -312,9 +312,10 @@ class TabOpenersTests(ContainerTests):
         self.assertEqual(self.owners(), {50: OWNER}, "the tab is still open, so its record stays")
 
     def test_tab_pool_tabs_are_never_mine(self):
-        # Any client may acquire a pool tab: OWNER grew the pool, OTHER drives tab 50, 51 waits.
+        # Only its owner may acquire a pool tab; pool tabs still never appear as mine.
         self.as_owner(OWNER, lambda h: h.handle_tab_pool(), {"size": 2})
-        acquired = self.as_owner(OTHER, lambda h: h.handle_pool_acquire(), {})
+        self.assertIn("error", self.as_owner(OTHER, lambda h: h.handle_pool_acquire(), {}))
+        acquired = self.as_owner(OWNER, lambda h: h.handle_pool_acquire(), {})
         self.assertEqual((acquired["tabId"], self.owners()), (50, {50: OWNER, 51: OWNER}))
         self.assertEqual(self.tabs(OWNER, mine=True), [])
         self.assertEqual([tab.get("mine") for tab in self.tabs(OWNER)], [None] * 4)
@@ -332,7 +333,7 @@ class TabOpenersTests(ContainerTests):
         self.addCleanup(bridge._owner_id.reset, token)
         listed = {"ownershipByClient": True, "tabs": [
             {"id": 50, "owned": True}, {"id": 51, "owned": False}, {"id": 52, "owned": True}]}
-        with patch.dict(bridge._tab_pool, {"available": [52], "in_use": set()}):
+        with patch.dict(bridge._tab_pools, {OWNER: {"available": [52], "in_use": set()}}):
             self.assertEqual(bridge._with_own_tabs(listed, True),
                              {"tabs": [{"id": 50, "owned": True, "mine": True}]})
             all_tabs = bridge._with_own_tabs(listed, False)
