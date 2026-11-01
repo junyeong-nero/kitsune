@@ -3,7 +3,7 @@
 
 (function() {
   'use strict';
-  const CONTENT_VERSION = 47;
+  const CONTENT_VERSION = 48;
   if (window.__claudeBridgeVersion >= CONTENT_VERSION) return;
   window.__claudeBridgeVersion = CONTENT_VERSION;
 
@@ -400,6 +400,8 @@
         (event.type === 'keydown' && agentTrustedClickKeys.has(event.key)))) return;
     if (now < agentTrustedKeysUntil && /^(key|paste|input|beforeinput|composition)/.test(event.type)) return;
     lastUserInput = { at: now, type: event.type };
+    // Timestamp the event, not delivery: the background also reconciles a tab reported first.
+    browser.runtime.sendMessage({ action: 'trustedTabInput', at: now }).catch(() => {});
     if ((event.type === 'keydown' || event.type === 'paste') && isTypingTarget(event.target)) {
       userTypedField = event.target;
     }

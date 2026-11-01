@@ -398,8 +398,8 @@ def browser_tabs(
     """List, open, close, or select tabs; new opens a background tab (act on it with tab_id)
     and returns its tabId.
 
-    list is always a fresh read; owned=true marks tabs the agent opened, mine=true those this
-    MCP client opened (also before a restart); windowId/index only with several windows or
+    list is always a fresh read; owned=true marks this MCP client's tabs (including inherited
+    tabs); mine=true excludes shared pool tabs; windowId/index only with several windows or
     window_fields. close refuses a tab the agent did not open (needs_user) unless the user
     approves (confirm_token). select switches the user's view: only when the user asks.
     Options of other actions are ignored.

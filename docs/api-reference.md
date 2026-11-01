@@ -1234,11 +1234,20 @@ sees, which is not the new tab.
 
 #### Agent-owned tabs
 
-`browser_tabs` list (`GET /api/tabs`) marks every tab with `owned`: `true` for tabs the
-agent opened (`browser_tabs` new, `duplicateTab`, the tabs `createWindow` asked for,
-session and pool tabs, the link fallback, and tabs a page opened on an agent action, which
-are also listed in [`opened_tabs`](#opened-tabs), and the agent window's synced copies
-described in [Agent windows](#agent-windows)), `false` for the user's tabs.
+`browser_tabs` list (`GET /api/tabs`) marks every tab with `owned`: `true` for this
+MCP client's tabs, `false` for user tabs and other clients' tabs (#394). Explicit
+creations (`browser_tabs` new, `duplicateTab`, `createWindow`, session/pool tabs and
+link fallback) belong to the calling client's [owner id](#tab-owners). A page-created
+`window.open` or `target=_blank` tab inherits its `openerTabId`'s owner, even outside
+an agent action. If the opener received trusted user input in the **1 s before
+creation (inclusive)**, the new tab belongs to the user instead. Synthetic events
+and Kitsune's recognized OS input do not count. Input does not change the opener's
+ownership. The agent window's synced copies inherit its owner as well.
+
+This is the ownership stage of #393, **not yet per-client read-only enforcement**.
+Existing close/navigation/viewed-tab guards still recognize globally agent-opened
+tabs, including other clients' tabs and ownerless legacy tabs. The behavior below
+is that existing compatibility policy; `owned: false` alone does not enforce it.
 
 `browser_tabs` close (`POST /api/close-tab`, batch `closeTab`) closes an owned tab. A
 user tab stays open, and the result is the error `needs_user` (`user_tab`; `retryable: false`:
@@ -1288,13 +1297,14 @@ A tab that goes back to the user loses its value. Limits:
 - A restart that does not restore the tabs, a new profile, or a browser without
   `browser.sessions` loses ownership: the tabs count as user tabs, so closing them needs
   approval.
-- What else the extension knew about these tabs does not persist: the 2 s window in which
-  a tab an agent action opened counts as the agent's, and the
-  [agent window](#agent-windows) records. The bridge's [tab owners](#tab-owners) (`mine`)
-  are cleared too.
-
-The extension also cannot tell an agent action's tab from one the user opened from the
-same tab within 2 s of that action; such a tab counts as the agent's.
+- Transient input/action timestamps and [agent window](#agent-windows) records do
+  not persist. Ownership does, including the client id in version-2 session values.
+  Older version-1 values have no owner: they remain globally agent-opened for the
+  existing guards, but no named client sees them as `owned`.
+- Content scripts cannot observe input on browser-internal pages or while the
+  extension is unloaded. The 1 s threshold has deterministic unit coverage, but the
+  trusted-event-to-`tabs.onCreated` delay has **not been measured in Firefox** for
+  #394. No live user-browser OS interaction was used to validate it.
 
 #### Agent tab cleanup
 
@@ -1666,23 +1676,24 @@ their tabs.
 `browser.client.owner_id`. It is not the audit `client` id (`X-Kitsune-Client`), which
 changes with every MCP server process.
 
-The bridge records the owner of each tab a request with this header opens: `newTab`
-(direct, batch and workflow steps, pool and session tabs) and the tabs in an action's
-`opened_tabs` (`link_fallback` included). A tab keeps its first owner. The bridge forgets a
-tab when `closeTab` closes it or a tab list no longer has it, and forgets every tab when
-the extension connects again (after a browser restart, which reuses tab ids, or an
-extension reload). The record lives in the bridge process only: after a bridge restart,
-the tabs opened before it have no owner. `owned` (above) is the extension's and says
-whether the agent, any client, opened a tab. It survives an extension reload or a browser
-restart; tab owners do not, so the agent's tabs are `owned` but no client's `mine` after one.
+The bridge sends the validated owner header to the extension as command metadata;
+tool arguments cannot override it. The extension stores the owner in each tab's
+session value, so it survives extension reload, bridge restart and a browser restart
+that restores the tab. Restored tabs remain `owned` only for the same owner id, not
+for a new client process with a different derived id. For continuity across a full
+client restart, configure a distinct stable `KITSUNE_OWNER_ID` for each client.
+Clients deliberately configured with the same id share ownership; the default
+process-derived identity cannot distinguish clients using the same launcher process.
 
-In the tab list of Kitsune's `browser_tabs` list and `browser_tab_list` (`GET /api/tabs`),
-tabs whose owner is the requesting client's add `mine: true` when they are also `owned`,
-so a tab the extension gave back to the user is never `mine`. Neither is a tab pool tab
-(`browser_tab_pool`, `browser_pool_acquire`), which any client may acquire. Other
-clients' tabs do not, and the core `browser_tabs` list is unchanged. `POST /api/tabs` with
-`{"mine": true}` lists only those tabs, the most recently opened first; the MCP server
-uses it for [`state.ownTabs`](#no-current-tab).
+`mine: true` is a compatibility alias for `owned: true` on named clients' non-pool
+tabs. Shared pool tabs remain excluded from `mine`, even when `owned` by their
+creator; pool acquisition does not transfer ownership in this stage. `POST /api/tabs`
+with `{"mine": true}` lists only those tabs, which the MCP server uses for
+[`state.ownTabs`](#no-current-tab). The bridge keeps a volatile creation-order cache
+for most-recent-first ordering; restored tabs absent from that cache follow browser
+list order. Against an older extension with only global ownership, only tabs recorded
+for the requesting owner in the bridge cache are `owned`/`mine`; reconnecting clears
+that cache rather than risking another client's tabs.
 
 ### Ask-before-act
 

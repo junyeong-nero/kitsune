@@ -9,6 +9,7 @@ const { webcrypto } = require('node:crypto');
 function content() {
   let now = 100000;
   const listeners = {};
+  const reported = [];
   const field = { tagName: 'INPUT', value: '', isConnected: true };
   const editor = { tagName: 'DIV', isContentEditable: true, textContent: '', isConnected: true };
   const host = { tagName: 'MAIL-COMPOSER', isConnected: true };  // a field inside its shadow root
@@ -27,11 +28,14 @@ function content() {
       getComputedStyle: () => ({ display: 'block', visibility: 'visible' }),
     },
     document,
-    browser: { runtime: { onMessage: { addListener: fn => { onMessage = fn; } }, sendMessage: () => Promise.resolve(null) } },
+    browser: { runtime: { onMessage: { addListener: fn => { onMessage = fn; } }, sendMessage: msg => {
+      if (msg.action === 'trustedTabInput') reported.push(JSON.parse(JSON.stringify(msg)));
+      return Promise.resolve(null);
+    } } },
   });
   vm.runInContext(fs.readFileSync('extension/content/content.js', 'utf8'), context);
   return {
-    field, editor, host, button, document, listeners,
+    field, editor, host, button, document, listeners, reported,
     tick: ms => { now += ms; },
     // Trusted input comes from the browser; Kitsune's own dispatchEvent calls are untrusted.
     input: (type, target, isTrusted = true) => listeners[type]({ type, target, isTrusted }),
@@ -50,8 +54,11 @@ async function main() {
   page.input('keydown', page.field, false);
   assert.deepEqual(await page.send({ action: 'userActivity' }), { active: false });
 
+  assert.deepEqual(page.reported, [], 'synthetic events do not affect opener inheritance');
+
   // Any trusted input counts for 3 s.
   page.input('wheel', page.button);
+  assert.deepEqual(page.reported, [{ action: 'trustedTabInput', at: 100000 }]);
   page.tick(2999);
   assert.deepEqual(await page.send({ action: 'userActivity' }),
     { active: true, state: { reason: 'input', input: 'wheel', sinceMs: 2999, windowMs: 3000 } });
@@ -94,6 +101,7 @@ async function main() {
   await clicked.send({ action: 'screenPoint', x: 5, y: 5, click: true });
   clicked.input('pointerdown', clicked.button);
   clicked.input('mousedown', clicked.button);
+  assert.deepEqual(clicked.reported, [], 'agent OS clicks do not affect opener inheritance');
   assert.deepEqual(await clicked.send({ action: 'userActivity' }), { active: false });
   clicked.input('keydown', clicked.button);
   assert.equal((await clicked.send({ action: 'userActivity' })).state.input, 'keydown');
@@ -105,6 +113,7 @@ async function main() {
   await modified.send({ action: 'screenPoint', x: 5, y: 5, click: true, modifiers: ['Shift', 'Meta'] });
   for (const key of ['Shift', 'Meta']) modified.listeners.keydown({ type: 'keydown', key, target: modified.button, isTrusted: true });
   modified.input('mousedown', modified.button);
+  assert.deepEqual(modified.reported, [], 'agent modifiers do not affect opener inheritance');
   assert.deepEqual(await modified.send({ action: 'userActivity' }), { active: false });
   modified.listeners.keydown({ type: 'keydown', key: 'Control', target: modified.button, isTrusted: true });
   assert.equal((await modified.send({ action: 'userActivity' })).state.input, 'keydown');
@@ -126,6 +135,7 @@ async function main() {
   assert.deepEqual(await typed.send({ action: 'agentInput', ms: 3000 }), { ok: true });
   typed.input('keydown', typed.field);
   typed.input('paste', typed.field);
+  assert.deepEqual(typed.reported, [], 'agent OS keys do not affect opener inheritance');
   assert.deepEqual(await typed.send({ action: 'userActivity' }), { active: false });
   typed.input('mousedown', typed.button);
   assert.equal((await typed.send({ action: 'userActivity' })).state.input, 'mousedown');

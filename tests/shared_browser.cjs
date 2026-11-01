@@ -271,7 +271,7 @@ async function testOpenedTabsStayInBackground() {
   assert.deepEqual(result.opened_tabs.map(t => t.tabId), [openedId]);
   assert.deepEqual(h.shown(), [1], 'the opener is shown again');
   assert.deepEqual(h.activations(), [['tabs.update', 1, { active: true }]]);
-  assert.equal((await owned(h))[openedId], true, 'a tab the agent action opened is owned');
+  assert.equal((await owned(h))[openedId], false, 'a page tab inherits its user opener, not the acting agent');
 
   // Either event order is undone.
   const early = harness({ onClick: h => { h.open(1, { activatedFirst: true }); } });

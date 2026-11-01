@@ -319,6 +319,26 @@ class TabOpenersTests(ContainerTests):
         self.assertEqual(self.tabs(OWNER, mine=True), [])
         self.assertEqual([tab.get("mine") for tab in self.tabs(OWNER)], [None] * 4)
 
+    def test_legacy_global_owned_is_filtered_to_the_known_requesting_owner(self):
+        self.as_owner(OWNER, lambda h: h.handle_new_tab(), {})
+        self.as_owner(OTHER, lambda h: h.handle_new_tab(), {})
+        self.assertEqual([t["owned"] for t in self.tabs(OWNER)], [False, False, True, False])
+        self.assertEqual([t["owned"] for t in self.tabs(OTHER)], [False, False, False, True])
+        self.openers.clear()
+        self.assertEqual([t["owned"] for t in self.tabs(OWNER)], [False] * 4)
+
+    def test_persisted_owned_drives_mine_without_cache_but_shared_pool_stays_excluded(self):
+        token = bridge._owner_id.set(OWNER)
+        self.addCleanup(bridge._owner_id.reset, token)
+        listed = {"ownershipByClient": True, "tabs": [
+            {"id": 50, "owned": True}, {"id": 51, "owned": False}, {"id": 52, "owned": True}]}
+        with patch.dict(bridge._tab_pool, {"available": [52], "in_use": set()}):
+            self.assertEqual(bridge._with_own_tabs(listed, True),
+                             {"tabs": [{"id": 50, "owned": True, "mine": True}]})
+            all_tabs = bridge._with_own_tabs(listed, False)
+        self.assertNotIn("ownershipByClient", all_tabs)
+        self.assertEqual([t.get("mine") for t in all_tabs["tabs"]], [True, None, None])
+
     def test_a_new_extension_connection_forgets_every_owner(self):
         self.openers.update({50: {"owner": OWNER, "opened": 1.0}})
 
@@ -335,12 +355,21 @@ class TabOpenersTests(ContainerTests):
 
 
 class OwningExtension(ScriptedExtension):
-    """A scripted extension whose newTab tabs are the agent's (getTabs owned: true), like agentTabs."""
+    """Per-client session values model the extension's persisted owner records (#394)."""
 
     def _new_tab(self, command):
         result = super()._new_tab(command)
-        self.tabs[-1]["owned"] = True
+        self.tabs[-1]["owner"] = command.get("ownerId")
         return result
+
+    def _answer(self, command):
+        if command["action"] == "getTabs":
+            with self.lock:
+                return {"ownershipByClient": True, "tabs": [
+                    {**{k: v for k, v in tab.items() if k != "owner"},
+                     "owned": tab.get("owner") is not None and tab["owner"] == command.get("ownerId")}
+                    for tab in self.tabs]}
+        return super()._answer(command)
 
 
 class OwnedBridgeTests(unittest.TestCase):
@@ -373,6 +402,7 @@ class OwnedBridgeTests(unittest.TestCase):
         # The restarted server has another client id but the same owner id.
         listed = self.call("GET", "/api/tabs", "101-cccccc", OWNER)["tabs"]
         self.assertEqual({t["id"]: t.get("mine") for t in listed}, {1: None, opened["tabId"]: True, 3: None})
+        self.assertEqual({t["id"]: t["owned"] for t in listed}, {1: False, opened["tabId"]: True, 3: False})
         own = self.call("POST", "/api/tabs", "101-cccccc", OWNER, {"mine": True})["tabs"]
         self.assertEqual([t["id"] for t in own], [opened["tabId"]])
         self.assertEqual([t["id"] for t in self.call("POST", "/api/tabs", "200-bbbbbb", OTHER, {"mine": True})["tabs"]],
@@ -380,6 +410,26 @@ class OwnedBridgeTests(unittest.TestCase):
         # The user closed it: it is no longer offered.
         self.extension.set_tabs(tab(1, "https://user.test/", active=True), tab(3, "https://b.test/"))
         self.assertEqual(self.call("POST", "/api/tabs", "101-cccccc", OWNER, {"mine": True})["tabs"], [])
+
+    def test_persisted_ownership_survives_extension_reconnection_without_bridge_cache(self):
+        opened = self.call("POST", "/api/new-tab", "100-aaaaaa", OWNER, {"url": "https://a.test/"})
+        saved = [dict(t) for t in self.extension.tabs]
+        self.extension.close()
+        self.extension = self.connect_extension()
+        self.extension.set_tabs(*saved)
+        own = self.call("POST", "/api/tabs", "101-cccccc", OWNER, {"mine": True})["tabs"]
+        self.assertEqual([t["id"] for t in own], [opened["tabId"]])
+        self.assertEqual(self.call("POST", "/api/tabs", "200-bbbbbb", OTHER, {"mine": True})["tabs"], [])
+
+    def test_owner_argument_cannot_override_header_in_direct_or_container_calls(self):
+        opened = self.call("POST", "/api/new-tab", "100-aaaaaa", OWNER,
+                           {"url": "https://a.test/", "ownerId": OTHER})
+        self.call("POST", "/api/batch", "100-aaaaaa", OWNER,
+                  {"commands": [{"action": "newTab", "ownerId": OTHER}]})
+        own = self.call("POST", "/api/tabs", "100-aaaaaa", OWNER, {"mine": True})["tabs"]
+        self.assertEqual(len(own), 2)
+        self.assertIn(opened["tabId"], [t["id"] for t in own])
+        self.assertEqual(self.call("POST", "/api/tabs", "200-bbbbbb", OTHER, {"mine": True})["tabs"], [])
 
     def test_a_restarted_browser_reusing_a_tab_id_does_not_offer_another_clients_tab(self):
         opened = self.call("POST", "/api/new-tab", "100-aaaaaa", OWNER, {"url": "https://a.test/"})

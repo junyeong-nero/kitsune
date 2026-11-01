@@ -23,6 +23,7 @@ function event() {
 function browserState({ sessions = true } = {}) {
   return {
     sessions,
+    now: 100000,
     // windowId 1 is the user's focused window; its active tab is the one the user views.
     tabs: new Map(),
     values: new Map(), // `${tabId}|${key}` -> JSON, as Firefox stores tab values
@@ -116,6 +117,7 @@ function load(state) {
     close() {}
   }
   const context = vm.createContext({
+    Date: class extends Date { static now() { return state.now; } },
     browser, URL, console: { log() {}, error() {} },
     WebSocket,
     setTimeout: () => 0, clearTimeout() {}, setInterval: () => 0, clearInterval() {},
@@ -137,8 +139,11 @@ function load(state) {
     return pending;
   };
   const run = command => start(command).result;
-  const owned = async () => Object.fromEntries((await run({ action: 'getTabs' })).tabs.map(t => [t.id, t.owned]));
-  return { run, start, owned, onCreated, onUpdated, onActivated };
+  const owned = async ownerId => Object.fromEntries((await run({ action: 'getTabs', ownerId })).tabs.map(t => [t.id, t.owned]));
+  return { run, start, owned, onCreated, onUpdated, onActivated,
+    input: (tabId, at = state.now) => browser.runtime.onMessage.emit(
+      { action: 'trustedTabInput', at }, { tab: { id: tabId } }),
+  };
 }
 
 // A duplicate of tab id, as Firefox makes one: onCreated reports it before it has the values of
@@ -245,24 +250,24 @@ async function aTabGivenBackToTheUserLosesItsValue() {
 
 // The agent's own duplicate gets the copied value before markAgentTab runs: it stays the agent's.
 async function theAgentsDuplicateStaysOwned() {
-  for (const holdRemove of [false, true]) {
+  for (const ownerId of [null, 'client-a']) for (const holdRemove of [false, true]) {
     const state = browserState();
     const h = load(state);
-    const { tabId: original } = await h.run({ action: 'newTab', url: 'https://example.com/original' });
+    const { tabId: original } = await h.run({ action: 'newTab', ownerId, url: 'https://example.com/original' });
     await settle();
     // The cleanup reads the copied value and removes it before duplicate() resolves.
     // With holdRemove, that removal lands only after markAgentTab has written the value again.
     const removal = holdRemove ? (state.removeGate = gate()) : null;
     state.beforeDuplicateResolves = settle;
-    const dup = await h.run({ action: 'duplicateTab', tabId: original });
+    const dup = await h.run({ action: 'duplicateTab', tabId: original, ownerId });
     assert.equal(dup.ok, true, JSON.stringify(dup));
     removal?.release();
     state.removeGate = null;
     await settle();
     assert.deepEqual(state.valueRemovals, [dup.tabId], 'the race happened');
-    assert.deepEqual(stored(state, dup.tabId), { v: 1 }, `holdRemove=${holdRemove}`);
-    assert.equal((await h.owned())[dup.tabId], true);
-    assert.equal((await load(state).owned())[dup.tabId], true, 'and after a reload');
+    assert.deepEqual(stored(state, dup.tabId), ownerId ? { v: 2, owner: ownerId } : { v: 1 }, `holdRemove=${holdRemove}`);
+    assert.equal((await h.owned(ownerId))[dup.tabId], true);
+    assert.equal((await load(state).owned(ownerId))[dup.tabId], true, 'and after a reload');
   }
 }
 
@@ -347,7 +352,126 @@ async function failingSessionsDoNotBreakCommands() {
   assert.equal((await load(state).owned())[tabId], false, 'unreadable values: not owned');
 }
 
+// #394: ownership is the stable MCP owner's, never whichever client lists/acts last.
+async function perClientOwnershipAndRestart() {
+  const state = browserState();
+  addTab(state, { id: 1 });
+  addTab(state, { id: 2 });
+  state.values.set(`2|${KEY}`, JSON.stringify({ v: 1 })); // migration: no invented owner
+  const h = load(state);
+  const a = (await h.run({ action: 'newTab', ownerId: 'client-a' })).tabId;
+  const b = (await h.run({ action: 'newTab', ownerId: 'client-b' })).tabId;
+  const dup = (await h.run({ action: 'duplicateTab', tabId: a, ownerId: 'client-b' })).tabId;
+  const win = await h.run({ action: 'createWindow', ownerId: 'client-a' });
+  await settle();
+  assert.deepEqual(stored(state, a), { v: 2, owner: 'client-a' });
+  assert.deepEqual(stored(state, dup), { v: 2, owner: 'client-b' });
+  for (const loaded of [h, load(state)]) {
+    assert.deepEqual(await loaded.owned('client-a'),
+      { 1: false, 2: false, [a]: true, [b]: false, [dup]: false, [win.tabIds[0]]: true });
+    assert.deepEqual(await loaded.owned('client-b'),
+      { 1: false, 2: false, [a]: false, [b]: true, [dup]: true, [win.tabIds[0]]: false });
+    assert.equal((await loaded.owned())[a], false, 'anonymous cannot claim a named owner');
+  }
+  // A restored browser assigns new tab IDs; session values follow tabs, not old IDs.
+  const restored = browserState();
+  for (const [id, tab] of state.tabs) {
+    addTab(restored, { ...tab, id: id + 1000 });
+    const value = stored(state, id);
+    if (value) restored.values.set(`${id + 1000}|${KEY}`, JSON.stringify(value));
+  }
+  const restarted = load(restored);
+  assert.equal((await restarted.owned('client-a'))[a + 1000], true);
+  assert.equal((await restarted.owned('client-b'))[a + 1000], false);
+  assert.equal((await restarted.owned('client-a'))[2 + 1000], false);
+}
+
+async function openerInheritanceAndTrustedInput() {
+  const state = browserState();
+  addTab(state, { id: 1 });
+  const h = load(state);
+  const a = (await h.run({ action: 'newTab', ownerId: 'client-a' })).tabId;
+  state.now += 10000; // no recent agent action: window.open/target=_blank still inherits
+  const open = (id, openerTabId) => {
+    addTab(state, { id, openerTabId });
+    h.onCreated.emit({ ...state.tabs.get(id) });
+  };
+  open(200, a);
+  open(201, 200);
+  open(202, 1);
+  assert.equal((await h.owned('client-a'))[200], true);
+  assert.equal((await h.owned('client-a'))[201], true, 'transitive inheritance');
+  assert.equal((await h.owned('client-a'))[202], false, 'user opener');
+  assert.equal((await h.owned('client-b'))[200], false);
+  state.now++;
+  h.input(a);
+  open(203, a); // middle-click with its pointerdown already delivered
+  state.now += 1000;
+  open(204, a); // inclusive 1 s boundary
+  state.now++;
+  open(205, a);
+  assert.deepEqual([203, 204, 205].map(id => stored(state, id)),
+    [undefined, undefined, { v: 2, owner: 'client-a' }]);
+  // Late delivery still uses event time, and revokes inherited descendants, not explicit creations.
+  state.now += 2000;
+  const at = state.now;
+  open(206, a);
+  open(207, 206);
+  state.now += 1500;
+  h.input(a, at);
+  assert.equal((await h.owned('client-a'))[206], false);
+  assert.equal((await h.owned('client-a'))[207], false);
+  assert.equal((await h.owned('client-a'))[a], true, 'input never returns its opener to the user');
+  // Input after creation does not change a tab that was already open.
+  open(208, a);
+  state.now++;
+  h.input(a);
+  assert.equal((await h.owned('client-a'))[208], true);
+  await settle();
+  const reloaded = await load(state).owned('client-a');
+  for (const id of [200, 201, 205, 208]) assert.equal(reloaded[id], true, `tab ${id}`);
+  for (const id of [202, 203, 204, 206, 207]) assert.equal(reloaded[id], false, `tab ${id}`);
+}
+
+async function explicitDuplicateOwnerReachesEarlyDescendants() {
+  const state = browserState();
+  const h = load(state);
+  const a = (await h.run({ action: 'newTab', ownerId: 'client-a' })).tabId;
+  addTab(state, { id: 200, openerTabId: a });
+  h.onCreated.emit({ ...state.tabs.get(200) });
+  state.beforeDuplicateResolves = async () => {
+    // A duplicated page can open its own tab before tabs.duplicate resolves to its caller.
+    addTab(state, { id: 300, openerTabId: state.nextId - 1 });
+    h.onCreated.emit({ ...state.tabs.get(300) });
+  };
+  const dup = await h.run({ action: 'duplicateTab', tabId: 200, ownerId: 'client-b' });
+  assert.equal((await h.owned('client-b'))[dup.tabId], true);
+  assert.equal((await h.owned('client-b'))[300], true);
+  assert.equal((await h.owned('client-a'))[300], false);
+  await settle();
+  assert.deepEqual(stored(state, 300), { v: 2, owner: 'client-b' });
+}
+
+async function restoredOpenerCanPassOnOwnership() {
+  const state = browserState();
+  addTab(state, { id: 5 });
+  state.values.set(`5|${KEY}`, JSON.stringify({ v: 2, owner: 'client-a' }));
+  const restore = state.gate = gate();
+  const h = load(state);
+  addTab(state, { id: 6, openerTabId: 5 });
+  h.onCreated.emit({ ...state.tabs.get(6) });
+  await settle();
+  restore.release();
+  await settle();
+  assert.equal((await h.owned('client-a'))[6], true);
+  assert.deepEqual(stored(state, 6), { v: 2, owner: 'client-a' });
+}
+
 (async () => {
+  await perClientOwnershipAndRestart();
+  await openerInheritanceAndTrustedInput();
+  await restoredOpenerCanPassOnOwnership();
+  await explicitDuplicateOwnerReachesEarlyDescendants();
   await markedTabsStoreTheirValue();
   await aFreshLoadRestoresOwnershipBeforeTheFirstCommand();
   await aTabWithoutAValueStaysAUserTab();
