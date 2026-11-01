@@ -1,4 +1,4 @@
-"""browser_tabs new, select and close return the tabs as list does (#224).
+"""browser_tabs action tab lists (#224) and explicit-list permission guidance (#416).
 
 new reports the new tab's index (the index every other action takes), not the bridge's tabId.
 """
@@ -18,6 +18,9 @@ class TabResultTests(unittest.TestCase):
         playwright_tools._clicked.clear()
         playwright_tools._requests.clear()
         self.open = [_tab(3, "A", active=True), _tab(8, "B", owned=True)]
+        permission = patch.object(tools.client, "user_tabs", "read-only")
+        permission.start()
+        self.addCleanup(permission.stop)
         post = patch.object(tools, "_post", side_effect=self.bridge)
         get = patch.object(tools, "_get", side_effect=lambda endpoint: {"tabs": list(self.open)})
         self.post, self.get = post.start(), get.start()
@@ -55,14 +58,107 @@ class TabResultTests(unittest.TestCase):
         self.open[0]["owned"] = False
         self.assertTrue(playwright_tools.browser_tabs("list")["tabs"][0]["current"])
 
-    def test_denied_select_keeps_current(self):
+    def test_list_hint_for_current_user_or_foreign_tab_including_background(self):
+        # The inventory represents both user and foreign tabs as not owned by this client.
+        for ownership in ({}, {"owned": False}):
+            for active in (False, True):
+                with self.subTest(ownership=ownership, active=active):
+                    self.open[0] = _tab(3, "A", active=active, **ownership)
+                    playwright_tools._current_tab = 3
+                    self.get.reset_mock()
+                    result = playwright_tools.browser_tabs("list")
+                    self.assertEqual(result["hint"],
+                        "Tab 0 is read-only for this client. Before writing, open your own tab "
+                        "with browser_tabs action=new url=https://a/ and work there.")
+                    self.assertTrue(result["tabs"][0]["current"])
+                    self.assertEqual(bool(result["tabs"][0].get("active")), active)
+                    self.assertNotIn("owned", result["tabs"][0])
+                    self.assertNotIn("code", result)
+                    self.get.assert_called_once_with("/api/tabs")
+        self.post.assert_not_called()
+
+    def test_list_hint_tracks_current_index_url_and_ownership_changes(self):
+        playwright_tools._current_tab = 3
+        self.open.reverse()
+        self.open[1]["url"] = "https://a/path?q=one&next=two#part"
+        result = playwright_tools.browser_tabs("list")
+        self.assertIn("Tab 1 is read-only", result["hint"])
+        self.assertIn("url=https://a/path?q=one&next=two#part", result["hint"])
+        # An authorized handoff is listed as owned; taking it back removes that grant.
+        self.open[1]["owned"] = True
+        self.assertNotIn("hint", playwright_tools.browser_tabs("list"))
+        self.open[1]["owned"] = False
+        self.assertEqual(playwright_tools.browser_tabs("list"), result)
+
+    def test_owned_current_has_no_hint_even_with_active_user_tab(self):
         playwright_tools._current_tab = 8
-        refusal = {"error": "read only", "code": "user_tab_read_only", "retryable": False}
+        result = playwright_tools.browser_tabs("list")
+        self.assertNotIn("hint", result)
+        self.assertTrue(result["tabs"][1]["current"])
+
+    def test_writable_current_user_tab_has_no_list_or_select_hint(self):
+        playwright_tools._current_tab = 3
+        with patch.object(tools.client, "user_tabs", "writable"):
+            for action, arguments in (("list", {}), ("select", {"index": 0})):
+                result = playwright_tools.browser_tabs(action, **arguments)
+                self.assertNotIn("hint", result)
+                self.assertTrue(result["tabs"][0]["current"])
+
+    def test_no_current_or_stale_current_has_no_hint(self):
+        for current in (None, 99):
+            with self.subTest(current=current):
+                playwright_tools._current_tab = current
+                result = playwright_tools.browser_tabs("list")
+                self.assertNotIn("hint", result)
+                self.assertFalse(any(tab.get("current") for tab in result["tabs"]))
+                self.assertIsNone(playwright_tools._current_tab)
+
+    def test_failed_list_preserves_error_without_permission_hint(self):
+        playwright_tools._current_tab = 3
+        failure = {"error": "bridge down", "hint": "Reconnect the bridge."}
+        self.get.side_effect = None
+        self.get.return_value = failure
+        self.assertEqual(playwright_tools.browser_tabs("list"), failure)
+        self.assertEqual(playwright_tools._current_tab, 3)
+        self.get.assert_called_once_with("/api/tabs")
+        self.post.assert_not_called()
+
+    def test_denied_select_keeps_current_and_existing_refusal_hint(self):
+        refusal = {"error": "read only", "code": "user_tab_read_only", "retryable": False,
+                   "state": {"tabId": 3, "index": 0, "action": "switchTab"},
+                   "hint": "Open a tab of your own with browser_tabs action=new and this URL, or request this tab "
+                           "with browser_tabs action=request; reads must not scroll or focus it."}
         self.post.side_effect = None
         self.post.return_value = refusal
-        self.assertEqual(playwright_tools.browser_tabs("select", index=0), refusal)
-        self.assertEqual(playwright_tools._current_tab, 8)
-        self.post.assert_called_once_with("/api/tab-write-check", {"tabId": 3, "writeAction": "switchTab"})
+        for current in (None, 3, 8):
+            with self.subTest(current=current):
+                playwright_tools._current_tab = current
+                self.get.reset_mock()
+                self.post.reset_mock()
+                self.assertEqual(playwright_tools.browser_tabs("select", index=0), refusal)
+                self.assertEqual(playwright_tools._current_tab, current)
+                self.get.assert_called_once_with("/api/tabs")
+                self.post.assert_called_once_with("/api/tab-write-check", {"tabId": 3, "writeAction": "switchTab"})
+
+    def test_close_other_tab_does_not_hint_about_current_user_tab(self):
+        playwright_tools._current_tab = 3
+        result = playwright_tools.browser_tabs("close", index=1)
+        self.assertEqual(result, {"ok": True, "tabs": [
+            {"index": 0, "title": "A", "url": "https://a/", "active": True, "current": True}]})
+        self.assertIn("hint", playwright_tools.browser_tabs("list"))
+
+    def test_request_preserves_its_result_without_list_hint(self):
+        playwright_tools._current_tab = 3
+        for response in ({"ok": True, "tabId": 3, "owned": True},
+                         {"error": "Approval required", "code": "needs_user", "hint": "Ask the user."}):
+            with self.subTest(response=response):
+                self.post.reset_mock()
+                self.post.side_effect = None
+                self.post.return_value = response
+                self.assertEqual(playwright_tools.browser_tabs("request", tab_id=3, reason="Edit page"), response)
+                self.post.assert_called_once()
+                self.get.assert_not_called()
+                self.assertEqual(playwright_tools._current_tab, 3)
 
     def test_close_returns_the_remaining_tabs(self):
         playwright_tools.browser_tabs("select", index=1)

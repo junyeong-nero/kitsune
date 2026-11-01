@@ -129,16 +129,25 @@ def _tabs() -> dict:
     return result
 
 
-def _tab_list() -> dict:
-    """The open tabs by index; current is selection, never an ownership grant."""
+def _tab_list(permission_hint: bool = False) -> dict:
+    """The open tabs by index; current is selection, never an ownership grant.
+
+    Only an explicit list adds guidance before a write; action results keep their own hints.
+    """
     result = _tabs()
     if k._failed(result):
         return result
-    return {"tabs": [{"index": i, "title": tab.get("title"), "url": tab.get("url"),
-                      **({"current": True} if tab.get("id") == _current_tab else {}),
-                      **({"active": True} if tab.get("active") else {}),
-                      **({"owned": True} if tab.get("owned") else {})}
-                     for i, tab in enumerate(result.get("tabs") or [])]}
+    listed = {"tabs": [{"index": i, "title": tab.get("title"), "url": tab.get("url"),
+                        **({"current": True} if tab.get("id") == _current_tab else {}),
+                        **({"active": True} if tab.get("active") else {}),
+                        **({"owned": True} if tab.get("owned") else {})}
+                       for i, tab in enumerate(result.get("tabs") or [])]}
+    if permission_hint and _current_tab is not None and getattr(k.client, "user_tabs", "read-only") != "writable":
+        current = next((tab for tab in listed["tabs"] if tab.get("current")), None)
+        if current is not None and not current.get("owned"):
+            listed["hint"] = (f"Tab {current['index']} is read-only for this client. Before writing, open your own tab "
+                              f"with browser_tabs action=new url={current['url']} and work there.")
+    return listed
 
 
 def _tab_index(tab_id: int) -> int | None:
@@ -683,7 +692,7 @@ def browser_tabs(action: str, index: float | None = None, url: str | None = None
                 return error
         return k.browser_tabs("request", tab_id=tab_id, reason=reason, confirm_token=confirm_token)
     if action == "list":
-        return _tab_list()
+        return _tab_list(permission_hint=True)
     if action == "new":
         # The new tab's index replaces the bridge's tabId, which no core tool takes.
         result = k.browser_tabs("new", url=url, wait=url is not None, confirm_token=confirm_token)
