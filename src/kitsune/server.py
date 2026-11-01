@@ -403,17 +403,17 @@ HOLD_VIEWED_TAB = os.environ.get("KITSUNE_HOLD_VIEWED_TAB", "").lower() not in {
 # sentence, agents asked in chat instead of clicking a page's own hand-off control (#352).
 # A needs_user result's hint says how to approve (confirm token) or resume it, so the instructions
 # do not (#386); they are resent with every model request, and scripts/tool_schema_size.py budgets them.
+# The no_current_tab refusal lists the tabs this client opened before a restart (state.ownTabs) and
+# says how to keep working in one, so the instructions only say a restart clears the current tab (#405).
 mcp._mcp_server.instructions = (
-    "Kitsune controls the user's own Firefox-family browser while the user keeps using it. "
-    + ("browser_tabs `new` opens a tab in the background, and `select` makes a tab your current "
+    "Kitsune controls the user's own Firefox-family browser while they keep using it. "
+    + ("browser_tabs `new` opens a tab in the background and `select` makes a tab your current "
        "tab without switching the user's view, so you can read, fill and screenshot background "
-       "tabs without interrupting the user. Until you open or select a tab, reads act on the tab "
-       "the user is viewing, and writes and navigations that pass no tab_id fail with "
-       "no_current_tab. A restarted MCP server has no current tab: open or select one again; "
-       "no_current_tab lists the open tabs this MCP client opened before in state.ownTabs. A tab "
-       "that a batch or workflow newTab opens, or that an action on your current tab opens, becomes "
-       "your current tab; the result names it in current_tab. Use a page's own control for handing "
-       "a step to the user rather than asking in chat."
+       "tabs. Until you open or select a tab, also after an MCP server restart, reads act on the "
+       "tab the user is viewing, and writes and navigations that pass no tab_id fail with "
+       "no_current_tab. A tab that a batch or workflow newTab or an action on your current tab "
+       "opens becomes your current tab; the result names it in current_tab. Use a page's own "
+       "control for handing a step to the user rather than asking in chat."
        if permits_tool(MODE, "browser_tabs") else
        "Until browser_tab_list new_tab opens a background tab of your own, reads act on the tab the "
        "user is viewing, and navigations and writes that pass no tab_id fail with no_current_tab; "

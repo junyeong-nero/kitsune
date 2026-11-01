@@ -1,9 +1,9 @@
 {
   "browser_ask_user": {
-    "description": 352,
+    "description": 332,
     "firstParagraph": 116,
     "inputSchema": 406,
-    "total": 943,
+    "total": 923,
     "firstParagraphTotal": 707
   },
   "browser_click": {
@@ -133,11 +133,11 @@
     "firstParagraphTotal": 485
   },
   "browser_resume": {
-    "description": 319,
-    "firstParagraph": 161,
-    "inputSchema": 536,
-    "total": 1038,
-    "firstParagraphTotal": 880
+    "description": 300,
+    "firstParagraph": 164,
+    "inputSchema": 503,
+    "total": 986,
+    "firstParagraphTotal": 850
   },
   "browser_run_code_unsafe": {
     "description": 126,

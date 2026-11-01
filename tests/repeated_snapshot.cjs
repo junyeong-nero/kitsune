@@ -8,7 +8,8 @@ const vm = require('node:vm');
 const source = fs.readFileSync('extension/background/background.js', 'utf8');
 const PAGE = '- heading "Orders" [ref=e12] [level=1]\n- list [ref=e13]\n  - link "Order 1" [ref=e20]';
 
-// pages: tabId -> { url, action (an action's snapshot), read (a getSnapshot's), truncated }.
+// pages: tabId -> { url, action (an action's compact snapshot), read (a readable one: a getSnapshot's, or
+// a navigation's that fits its budget, #401), truncated }.
 function harness(pages = { 7: {}, 8: {} }) {
   for (const page of Object.values(pages)) {
     Object.assign(page, { url: 'https://shop.test/orders', action: PAGE, read: PAGE, ...page });
@@ -35,9 +36,14 @@ function harness(pages = { 7: {}, 8: {} }) {
     // A post-action snapshot: a delta unless the action loads a page (navigate) or asks for a full one.
     forwardToContent: async (action, params) => {
       const page = pages[params.tabId];
+      context.postActionReads.push(params);
       if (params.delta) return { snapshot: '- button "Go" [ref=e30]', delta: true };
+      if (params.text === true) {
+        return { snapshot: page.read, ...(page.truncated || page.read.length > params.maxChars ? { truncated: true } : {}) };
+      }
       return { snapshot: page.action, ...(page.truncated ? { truncated: true } : {}) };
     },
+    postActionReads: [],
     browser: { tabs: { get: async id => ({ id, status: 'complete', url: pages[id].url, title: 'Orders' }),
       sendMessage: async () => ({ watching: false }) } },
   });
@@ -65,6 +71,32 @@ async function testASnapshotAfterAFullActionResultIsUnchanged() {
   assert.equal(loaded.navigated.url, 'https://shop.test/orders');
   assert.equal(loaded.snapshot_delta, undefined);
   assert.equal((await h.snapshot({ tabId: 7 })).snapshot, 'unchanged since the browser_click result (refs e12–e20)');
+}
+
+// #401, #400: a page a navigation loaded that fits NAVIGATION_TEXT_LIMIT is snapshotted with its text
+// lines, so the readable snapshot that follows is identical and answers unchanged_since.
+async function testANavigationCarriesTheTextOfASmallPage() {
+  const notice = '- heading "Notice" [ref=e9] [level=1]\n- text "Open 13:00–18:00 on 2027-06-12."';
+  const h = harness({ 7: { action: '- heading "Notice" [ref=e9] [level=1]', read: notice } });
+  const navigated = await h.context.handleCommand({ action: 'navigate', url: 'https://shop.test/orders', tabId: 7 });
+  assert.equal(navigated.snapshot, notice);
+  assert.equal(h.context.postActionReads.length, 1, 'one read when the page fits');
+  assert.equal((await h.snapshot({ tabId: 7 })).unchanged_since, 'browser_navigate');
+  // A click that loaded the page (navigated).
+  const clicked = await h.context.handleCommand({ action: 'click', selector: 'a', tabId: 7 });
+  assert.equal(clicked.snapshot, notice);
+  assert.equal((await h.snapshot({ tabId: 7 })).snapshot, 'unchanged since the browser_click result (refs e9)');
+  // A delta stays compact.
+  assert.equal((await h.context.handleCommand({ action: 'click', selector: '#a', tabId: 7 })).snapshot_delta, true);
+  assert.equal(h.context.postActionReads.at(-1).text, undefined);
+  // So does a page past the budget, and a full snapshot an action asked for.
+  h.pages[7].read = notice + `\n- text "${'x'.repeat(2000)}"`;
+  h.context.postActionReads.length = 0;
+  assert.equal((await h.context.handleCommand({ action: 'navigate', url: 'https://shop.test/orders', tabId: 7 })).snapshot,
+    h.pages[7].action);
+  assert.deepEqual(h.context.postActionReads.map(read => [read.text, read.maxChars]), [[true, 2000], [undefined, 4000]]);
+  assert.equal((await h.context.handleCommand({ action: 'click', selector: '#a', snapshot: 'full', tabId: 7 })).snapshot,
+    h.pages[7].action);
 }
 
 async function testOnlyAfterAFullUntruncatedResult() {
@@ -120,6 +152,7 @@ async function testScopedSnapshotsReturnThePage() {
 
 (async () => {
   await testASnapshotAfterAFullActionResultIsUnchanged();
+  await testANavigationCarriesTheTextOfASmallPage();
   await testOnlyAfterAFullUntruncatedResult();
   await testOnlyTheSameTabDocumentAndText();
   await testScopedSnapshotsReturnThePage();

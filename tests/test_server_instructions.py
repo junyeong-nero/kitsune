@@ -26,6 +26,10 @@ class ServerInstructionsTests(unittest.TestCase):
         # #303: without a current tab, writes are refused instead of acting on the user's tab.
         self.assertIn("reads act on the tab the user is viewing", text)
         self.assertIn("no_current_tab", text)
+        # A restarted server has no current tab (#325); its no_current_tab refusal lists the client's
+        # earlier tabs in state.ownTabs, so the instructions do not repeat that (#405).
+        self.assertIn("Until you open or select a tab, also after an MCP server restart,", text)
+        self.assertNotIn("ownTabs", text)
         # Tabs the agent opens in a batch or from its current tab become current.
         self.assertIn("an action on your current tab opens", text)
         self.assertIn("becomes your current tab; the result names it in current_tab", text)

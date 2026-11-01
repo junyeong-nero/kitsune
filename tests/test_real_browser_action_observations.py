@@ -23,6 +23,8 @@ PAGES = {
 <a href="/empty">No content</a>""",
     "/item/1": "<!doctype html><title>Hollow Knight Silksong</title><h1>Hollow Knight Silksong</h1>",
     "/item/2": "<!doctype html><title>Item 2</title><h1>Item 2</h1>",
+    "/notice": """<!doctype html><title>Notice</title><h1>운영 공지: 6월 시설 점검</h1>
+<p>2027-06-12 (토)은 시설 점검으로 13:00–18:00에만 운영합니다.</p><a href="/notice">Reload</a>""",
     # ui-infinite: hovering the sentinel loads the next batch; a slow batch lands after the hover.
     "/infinite": """<!doctype html><title>Infinite</title><ul id=items><li>Item 1</li></ul>
 <p id=sentinel>불러오는 중…</p><div id=card>Card<span id=preview hidden>Preview: Item 1 details</span></div>
@@ -116,6 +118,20 @@ class RealBrowserActionObservationTests(harness.RealBrowserTestCase):
         self.call("/api/navigate", {"tabId": tab, "url": f"{self.site.origin}/list"})
         self.assert_ok(self.call("/api/click", {"tabId": tab, "ref": self.ref(tab, 'button "Nothing"')}))
         self.assertIn('link "Hollow Knight Silksong"', self.call("/api/snapshot", whole)["snapshot"])
+
+    def test_a_small_page_a_navigation_loaded_carries_its_text(self):
+        # #401: the text a small page shows is in the navigate or navigated result, so (#400) the
+        # browser_snapshot that follows is that snapshot and answers unchanged_since.
+        tab = self.open_tab(f"{self.site.origin}/list")
+        whole = {"tabId": tab, "maxChars": 12000, "skipUnchanged": True}
+        text = '- text "2027-06-12 (토)은 시설 점검으로 13:00–18:00에만 운영합니다."'
+        navigated = self.assert_ok(self.call("/api/navigate", {"tabId": tab, "url": f"{self.site.origin}/notice"}))
+        self.assertIn(text, navigated["snapshot"])
+        self.assertEqual(self.call("/api/snapshot", whole).get("unchanged_since"), "browser_navigate")
+        clicked = self.assert_ok(self.call("/api/click", {"tabId": tab, "ref": self.ref(tab, 'link "Reload"')}))
+        self.assertIn("navigated", clicked)
+        self.assertIn(text, clicked["snapshot"])
+        self.assertEqual(self.call("/api/snapshot", whole).get("unchanged_since"), "browser_click")
 
     def test_a_script_navigation_after_the_click_is_reported(self):
         tab = self.open_tab(f"{self.site.origin}/list")

@@ -49,6 +49,32 @@ ASYNC_PAGE = """<!doctype html><meta charset="utf-8"><title>async results</title
     document.body.append(p);
   });
 </script>"""
+# An infinite-scroll list like kitsune-benchmark's ui-infinite: 10 more items 400 ms after its sentinel
+# scrolls into view, 50 in all (#404).
+INFINITE_PAGE = """<!doctype html><meta charset="utf-8"><title>infinite</title>
+<ul id="list"></ul><p id="sentinel">Loading…</p><script>
+  const list = document.getElementById('list'), sentinel = document.getElementById('sentinel');
+  let shown = 0, loading = false;
+  const more = () => {
+    if (loading || shown >= 50) return;
+    loading = true;
+    setTimeout(() => {
+      for (let n = shown + 1; n <= shown + 10; n++) {
+        const li = document.createElement('li');
+        li.style.height = '60px';
+        li.append('Item #' + n + ' ', Object.assign(document.createElement('button'), {textContent: 'Save'}));
+        list.append(li);
+      }
+      shown += 10;
+      loading = false;
+      if (shown >= 50) sentinel.textContent = 'All loaded';
+      observer.unobserve(sentinel);
+      observer.observe(sentinel);
+    }, 400);
+  };
+  const observer = new IntersectionObserver(entries => { if (entries.some(e => e.isIntersecting)) more(); });
+  observer.observe(sentinel);
+</script>"""
 # A completed HTTP 200 document that is genuinely empty.
 EMPTY_PAGE = '<!doctype html><meta charset="utf-8"><title>empty</title><body></body>'
 results_released = threading.Event()
@@ -62,6 +88,7 @@ class _Site(BaseHTTPRequestHandler):
                 b'{"ok":true}' if self.path.startswith("/api/") else
                 f"<title>second</title><p>second page</p>".encode() if self.path == "/second" else
                 ASYNC_PAGE.encode() if self.path == "/async" else
+                INFINITE_PAGE.encode() if self.path == "/infinite" else
                 EMPTY_PAGE.encode() if self.path == "/empty" else PAGE.encode())
         self.send_response(200)
         self.send_header("Content-Type", "application/json" if self.path.startswith("/api/") else "text/html")
@@ -136,6 +163,23 @@ class RealBrowserPlaywrightToolTests(harness.RealBrowserTestCase):
         self.tool("browser_navigate_back", {})
         self.text("idle")
         self.assertEqual(self.call("/api/page-info", {"tabId": tab})["title"], "pw tools")
+
+    def test_find_load_more_loads_an_infinite_list_until_the_item_appears(self):
+        # #404: one browser_find loads batch after batch, where hovering the last item loads one per call.
+        tab = self.open_current("/infinite")
+        # A background tab may get no IntersectionObserver callbacks, so the list loads only where it is shown.
+        self.assert_ok(self.call("/api/switch-tab", {"tabId": tab}))
+        self.text("Item #10")
+        missing = self.tool("browser_find", {"text": "Item #45"})
+        self.assertEqual(missing["count"], 0, missing)
+        self.assertIn("load_more", missing["hint"])
+        found = self.tool("browser_find", {"text": "Item #45", "load_more": True})
+        self.assertEqual(found["count"], 1, found)
+        self.assertGreaterEqual(found["scrolls"], 4, found)
+        self.assertTrue(any(r.startswith(">") and "Item #45" in r for b in found["blocks"] for r in b["lines"]), found)
+        ended = self.tool("browser_find", {"text": "Item #51", "load_more": True})
+        self.assertEqual(ended["count"], 0, ended)
+        self.assertIn("stopped changing", ended["hint"])
 
     def test_snapshots_report_readiness_and_empty_content(self):
         self.open_current()

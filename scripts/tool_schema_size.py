@@ -42,8 +42,8 @@ FIRST_PARAGRAPH_BUDGETS = {"core": 22_300}
 TOOL_BUDGET = 3_000  # any single core tool, full view
 # Characters of the server instructions in each KITSUNE_MODE, with KITSUNE_HOLD_VIEWED_TAB and
 # KITSUNE_PROTECT_USER_TABS on, as by default, which makes them longest. Set about 5% above
-# their size after #386 shortened them.
-INSTRUCTIONS_BUDGETS = {"act": 1_160, "read": 640, "draft": 640}
+# their size after #386 and #405 shortened them.
+INSTRUCTIONS_BUDGETS = {"act": 985, "read": 630, "draft": 630}
 
 
 def _compact(value) -> int:
