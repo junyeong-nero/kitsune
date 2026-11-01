@@ -129,24 +129,13 @@ def _tabs() -> dict:
     return result
 
 
-def _held_view(tab: dict) -> bool:
-    """Whether tab may be the one the user is viewing, which this client's writes are held on (#326):
-    an active tab the agent did not open. The list cannot tell which window the user focused last,
-    so with several windows each one's active tab counts."""
-    return bool(tab.get("active") and not tab.get("owned") and getattr(k.client, "hold_viewed_tab", True))
-
-
 def _tab_list() -> dict:
-    """The open tabs as browser_tabs list returns them, by index.
-
-    The current tab is not marked current while it may be the one the user is viewing (_held_view):
-    writes there are held, so the agent should open a tab of its own first (#383).
-    """
+    """The open tabs by index; current is selection, never an ownership grant."""
     result = _tabs()
     if k._failed(result):
         return result
     return {"tabs": [{"index": i, "title": tab.get("title"), "url": tab.get("url"),
-                      **({"current": True} if tab.get("id") == _current_tab and not _held_view(tab) else {}),
+                      **({"current": True} if tab.get("id") == _current_tab else {}),
                       **({"active": True} if tab.get("active") else {}),
                       **({"owned": True} if tab.get("owned") else {})}
                      for i, tab in enumerate(result.get("tabs") or [])]}
@@ -332,6 +321,10 @@ def browser_find(text: str | None = None, regex: str | None = None, filename: st
         return matches
     if load_more and _current_tab is None:
         return k._offering_own_tabs(k._no_current_tab("browser_find", {"load_more": True}))
+    if load_more:
+        permission = k._post("/api/tab-write-check", {"tabId": _current_tab, "writeAction": "find", "loadMore": True})
+        if k._failed(permission):
+            return permission
     urls = _url_query(text, regex)
     result = _find_snapshot()
     if k._failed(result):
@@ -698,6 +691,9 @@ def browser_tabs(action: str, index: float | None = None, url: str | None = None
         tab_id, error = _tab_at(index)
         if error:
             return error
+        permission = k._post("/api/tab-write-check", {"tabId": tab_id, "writeAction": "switchTab"})
+        if k._failed(permission):
+            return permission
         _current_tab = tab_id
         return _with_tab_list({"ok": True, "index": int(index)})
     if action == "close":

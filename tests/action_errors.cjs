@@ -229,6 +229,7 @@ function background(tabs, content, clock = { setTimeout, clearTimeout, Date }) {
     console: { log() {}, error() {} }, WebSocket: class { close() {} },
   });
   vm.runInContext(fs.readFileSync('extension/background/background.js', 'utf8'), context);
+  for (const id of Object.keys(tabs)) context.markAgentTab(Number(id));
   return {
     sent, injected, pinged,
     removeReceiver: () => { receiverMissing = true; },

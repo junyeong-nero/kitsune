@@ -34,6 +34,8 @@ class FakeExtension:
 
     async def __call__(self, action, params=None, timeout=30):
         params = dict(params or {})
+        if action == "checkTabWrite":
+            return {"ok": True}  # Legacy hold transport fixture, not the new permission gate.
         self.sent.append((action, params))
         tab_id = params.get("tabId") or VIEWED_TAB
         if action == "describeTarget":

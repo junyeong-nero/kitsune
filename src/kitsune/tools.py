@@ -126,8 +126,7 @@ def _no_current_tab(name: str, arguments: dict) -> dict | None:
     """
     hint = ("Nothing was dispatched. Pass tab_id (browser_navigate and browser_navigate_back accept it too), "
             "or open a tab of your own with browser_tabs action=new or browser_tab_list new_tab and work there. "
-            "browser_tabs action=select makes a tab current too, but navigating a tab the agent did not open "
-            "is then refused (needs_user) unless the user approves.")
+            "browser_tabs action=select can make an owned tab current; user and other clients' tabs are read-only.")
     if name == "browser_workflow":
         return {"error": "browser_workflow names no tab_id and there is no current tab; its steps cannot be "
                           "inspected before they run, so it needs a tab even if it only reads",
@@ -399,9 +398,9 @@ def browser_tabs(
     and returns its tabId.
 
     list is always a fresh read; owned=true marks this MCP client's tabs (including inherited
-    tabs); mine=true excludes shared pool tabs; windowId/index only with several windows or
-    window_fields. close refuses a tab the agent did not open (needs_user) unless the user
-    approves (confirm_token). select switches the user's view: only when the user asks.
+    tabs); mine=true excludes pool tabs; windowId/index only with several windows or
+    window_fields. close/select refuse user and other clients' tabs (user_tab_read_only).
+    select switches the user's view: only when the user asks.
     Options of other actions are ignored.
     """
     if action == "list":
@@ -640,9 +639,7 @@ def browser_click(
     {expected, observed, met}, plus the current tab state when unmet; new_tab is met once the
     action opens a tab, and value_changed compares with the value before dispatch.
     user_active: the user is using the tab (state.reason); nothing ran. Retry in a few seconds.
-    needs_user (state.detail user_viewing): the tab is shown in the user's last focused window;
-    nothing ran. Use a tab you opened, or ask the user, then repeat with tab_id and
-    state.confirmToken as confirm_token.
+    user_tab_read_only: nothing ran and no prompt is offered; open a tab of your own before writing.
     """
     if problem := _pointer_ms_error("hold_ms", hold_ms):
         return problem
@@ -1311,9 +1308,7 @@ def browser_check(
     {expected, observed, met}, plus the current tab state when unmet; new_tab is met once the
     action opens a tab, and value_changed compares with the value before dispatch.
     user_active: the user is using the tab (state.reason); nothing ran. Retry in a few seconds.
-    needs_user (state.detail user_viewing): the tab is shown in the user's last focused window;
-    nothing ran. Use a tab you opened, or ask the user, then repeat with tab_id and
-    state.confirmToken as confirm_token.
+    user_tab_read_only: nothing ran and no prompt is offered; open a tab of your own before writing.
     """
     return _post_action("/api/check", _request_body({"selector": selector, "checked": checked}, tab_id, ref, element, confirm_token, first),
                         wait, timeout, expect)
@@ -1839,7 +1834,7 @@ def browser_untag_tab(name: str) -> dict:
 
 @tool("automation", annotations=dict(title="Resize browser tab pool", **DESTRUCTIVE))
 def browser_tab_pool(size: int, url: str = "about:blank") -> dict:
-    """Maintain a warm pool of N tabs always ready to be acquired.
+    """Maintain a warm pool of N tabs for this client owner, ready to be acquired.
 
     Grows or shrinks to `size`. Acquire/release via browser_pool_acquire and
     browser_pool_release. Auto-grows by one if you acquire from an empty pool.

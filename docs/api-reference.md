@@ -134,10 +134,9 @@ groups, including the named-only storage and history groups.
 - Neither restricted mode permits click, submit, keypress, dialog confirmation,
   agent JavaScript, policy changes, container calls or resume. No confirmation tokens
   are issued or accepted. Navigate and new tabs permit HTTP(S) or `about:blank`, not
-  script, data or local-file URLs. A refused navigation of a user tab
-  ([protected user tabs](#protected-user-tabs)) carries no token; its hint points to
-  `browser_tab_list(new_tab=...)`. So does a write or navigation refused on the
-  [tab the user is viewing](#viewed-tab) (`needs_user`, `user_viewing`). Both have `state.approvable: false`.
+  script, data or local-file URLs. User tabs are read-only in every mode by default:
+  writes return `user_tab_read_only` without a token. Open an owned background tab
+  with `browser_tab_list(new_tab=...)` before writing.
   Existing global URL/readonly/ask policy can tighten this.
 
 Restricted `tools/list` descriptions use their first paragraph, and schemas omit
@@ -569,6 +568,8 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `needs_user` | Nothing ran: only the user can let the call go on (#376). `state.reason: "approval"`: it needs the user's approval, and `state.detail` is the code it replaces (below). `state.message` is a short request to show the user. On an MCP client with elicitation the MCP server asks the user itself and the result has no token (see [Approval prompts](#approval-prompts)); elsewhere, the fallback for clients without elicitation, a direct call's `state.confirmToken` runs it once the user approves. `state.approvable` is `false` in read and draft modes, which cannot approve, and `state.approval` says how it can be approved (`token`, `elicitation`). `state.reason: "agent_request"`: [`browser_ask_user`](#browser_ask_userreason-message-tab_idnone) asks the user, and `state.detail` is what it asks for. A direct call's result also has `call`, the audit call id of the hold, and, from the MCP server when the user did not resolve it in the call, `resume_token` for [`browser_resume`](checkpoint-resume.md#direct-calls). What Kitsune sees only the user can do on a page (`sign_in`, `human_check`, `trusted_input`) is never this error, but a [`needs_user` hint](#needs_user-hints) on the result. See the [end-to-end example](#example-needs_user-end-to-end) | false |
 | `user_active` | The user is using the tab (`state.reason`: `input`, `typing`, `navigating`); the write or navigation did not run (see [User activity](#user-activity)) | true |
 | `outcome_not_observed` | The action was dispatched, but the outcome given in `expect` did not happen in time (see [Action outcomes](#action-outcomes)) | false for writes |
+| `user_tab_read_only` | A user or other client owns the target; nothing ran and no prompt is offered. `state.tabId`, `state.index`, `state.action`; open an owned tab before writing (see [Tab permissions](#tab-permissions)) | false |
+| `unsupported_target` | Absolute screen-coordinate input cannot be bound to an owned tab under the default policy; use a ref or viewport coordinates | false |
 | `no_current_tab` | From the MCP server: a write or navigation names no tab and the agent has no current tab (`state.tool`, `state.action` for a container step; `state.ownTabs`: the open tabs this MCP client opened, when there are any); nothing was sent (see [No current tab](#no-current-tab)) | false |
 | `tab_required` | A `parallel` step that acts on a tab has no `tabId` (`state.sequence`, `state.index`); nothing was dispatched (see [Container progress](#container-progress)) | true |
 | `tab_owned` | Two `parallel` sequences write the same tab (`state.tabId`, `state.owner`); nothing was dispatched | true |
@@ -578,7 +579,9 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `tab_claimed` | A resumed `parallel` sequence writes a tab that another call's `parallel` in progress writes (`state.tabId`, `state.call`); nothing in that sequence was sent (see [Checkpoint and resume](checkpoint-resume.md#parallel)) | true |
 | `checkpoint_not_found`, `resume_token_invalid`, `workflow_changed`, `observed_invalid`, `observed_required`, `resume_failed`, `current_tab_changed` | `browser_resume` refused or stopped; see [Checkpoint and resume](checkpoint-resume.md#errors) and, for `current_tab_changed`, [Direct calls](checkpoint-resume.md#direct-calls) | `observed_*`, `current_tab_changed`: true; others: false |
 
-`needs_user` replaces three codes, which stay as `state.detail` for one release. A `reason`
+`needs_user` replaces three codes, which stay as `state.detail` for one release.
+`user_tab` and `user_viewing` below describe legacy extension responses; the current
+extension instead returns `user_tab_read_only` for user-tab writes, without approval. A `reason`
 the old `state` carried moves to `state.holdReason`; every other field keeps its name:
 
 | `state.detail` | Was the code | When | `state.holdReason` |
@@ -1197,11 +1200,10 @@ the user is doing (#139). Three rules follow:
 1. **Never take focus.** Tabs the agent opens open in the background, and no capture
    or action shows a tab or focuses a window unless the call exists to do that
    (`browser_tabs` select, `browser_focus_window`).
-2. **Agent-owned tabs.** The extension tracks the tabs the agent opened; only those
-   close without the user's approval.
-3. **Don't fight the user.** On a tab the user is using, agent writes and navigations
-   return `user_active` instead of acting. Viewing counts as using: on the tab the user
-   sees, they return `needs_user` (`user_viewing`) until the user approves (see [Viewed tab](#viewed-tab)).
+2. **Agent-owned tabs.** User and other clients' tabs are read-only; only this client's
+   owned tabs accept writes by default (see [Tab permissions](#tab-permissions)).
+3. **Don't fight the user.** On an owned tab the user is using, agent writes and navigations
+   return the existing retryable `user_active` instead of acting.
 
 #### Never taking focus
 
@@ -1244,41 +1246,55 @@ creation (inclusive)**, the new tab belongs to the user instead. Synthetic event
 and Kitsune's recognized OS input do not count. Input does not change the opener's
 ownership. The agent window's synced copies inherit its owner as well.
 
-This is the ownership stage of #393, **not yet per-client read-only enforcement**.
-Existing close/navigation/viewed-tab guards still recognize globally agent-opened
-tabs, including other clients' tabs and ownerless legacy tabs. The behavior below
-is that existing compatibility policy; `owned: false` alone does not enforce it.
+#### Tab permissions
 
-`browser_tabs` close (`POST /api/close-tab`, batch `closeTab`) closes an owned tab. A
-user tab stays open, and the result is the error `needs_user` (`user_tab`; `retryable: false`:
-repeating the same call fails the same way; `state`: `tabId`, `url`, `title`). On an MCP
-client with elicitation, the MCP server asks the user and closes the tab once they approve
-(see [Approval prompts](#approval-prompts)). Elsewhere a direct call's refusal carries a
-confirm token, issued and spent like [ask-before-act](#ask-before-act)'s whether or not ask
-mode is on:
+Ownership now enforces permissions per client (#395). User tabs and other clients'
+tabs refuse all writes immediately with `user_tab_read_only`, `retryable: false`, and
+no prompt or confirmation token. `state` contains `tabId`, `index` (the zero-based
+`browser_tabs list` position, across windows) and `action`.
 
 ```json
-{ "error": "Tab 12 was not opened by the agent, so it was not closed", "code": "needs_user", "retryable": false,
-  "hint": "Nothing was closed: the agent did not open this tab. Leave it open, or ask the user to approve closing it, ...",
-  "state": { "reason": "approval", "detail": "user_tab", "tabId": 12, "url": "https://mail.example/", "title": "Inbox",
-             "message": "Allow the agent to close a tab it did not open (Inbox)?", "approvable": true,
-             "confirmToken": "…", "expiresInSeconds": 120, "approval": "token" } }
+{"error":"Tab 12 is read-only for this client; nothing was done","code":"user_tab_read_only",
+ "retryable":false,"state":{"tabId":12,"index":0,"action":"click"},
+ "hint":"Open a tab of your own with browser_tabs action=new and this URL, or request this tab with browser_tabs action=request when handoff support is available; reads must not scroll or focus it."}
 ```
 
-After the user approves, repeat the identical call with `confirmToken` (MCP:
-`confirm_token`, the fallback for clients without elicitation) within 120 s; it closes that
-tab once. The token is bound to the call's parameters (`tabId`, `force`), works once, and only on a
-direct call: batch,
-workflow and parallel steps never approve a close and get no token. A rejected token
-adds `state.tokenRejected` (`used`, `expired`) and a new token. With `force`, the
-extension disarms `beforeunload` only once it agreed to close the tab, so a refused
-close leaves the user's page as it was.
+- Allowed: snapshots, ordinary find, DOM/console/network reads and viewport screenshots.
+  These do not scroll, focus or switch the shown tab.
+- Refused: page writes, hover, scroll, focus/blur, navigation/history/reload/close,
+  select, uploads, arbitrary JavaScript, dialog/storage writes, view-mutating screenshots,
+  `find load_more`, and equivalent batch, workflow and trusted-input commands.
+- Window close/focus/resize cannot mutate a window containing a user or other client's tab.
+- Own tabs continue to work with the existing `user_active` protections. Trusted OS input
+  may show an owned tab temporarily, then restore the previous user tab; restoration is
+  bound to that client's recorded input transition, not an arbitrary view-switch API.
+- Raw `coordinate_space="screen"` clicks cannot prove which tab they hit. Under the default
+  policy even an owned `tab_id` cannot authorize them (`unsupported_target`, nonretryable);
+  use a ref or viewport coordinates in an owned tab. Explicit writable compatibility retains
+  the previous raw-screen behavior and its OS-input limitations.
 
-Closing a window closes its tabs, so `browser_close_window` (`POST /api/close-window`,
-batch `closeWindow`) refuses a window with any tab the agent did not open the same way
-(`needs_user` (`user_tab`), `state.windowId`, `state.tabIds`: its user tabs), with the same approval.
-The browser's copies of other windows' tabs in a `createWindow` window do not count (see
-[Agent windows](#agent-windows)).
+`current` always identifies the agent's actual current tab, whoever owns it (#399).
+Core `browser_tabs select` changes the agent's current selection, not the shown tab;
+low-level `switchTab` changes the shown tab. Both refuse user-tab targets. Neither grants ownership.
+The hint's `browser_tabs action=request` is future handoff support (#396), not implemented here.
+Existing approval tokens do not grant ownership or override this refusal.
+
+Pools are partitioned by stable client owner: create/acquire/release/shrink affect only
+that owner's pool. Releasing another owner's tab is refused, with no transfer of ownership.
+Pool tabs remain excluded from `mine` results. The popup's user-operated global cleanup
+remains separate and may close pool tabs.
+
+The existing explicit [compatibility opt-outs](guide.md#protecting-your-tabs) allow writes
+without changing ownership; neither caller JSON nor internal hold bypasses can enable them.
+The unified environment/header setting and deprecation warnings remain #398 work.
+Tab permissions do **not** sandbox browser/account-wide side effects: cookie changes,
+clipboard writes, downloads/cancellation, clearing browsing data and the global network
+interception rules can still affect shared state. They have no concrete tab target and
+remain subject to their existing capabilities, task-mode and optional ask-before-act policy.
+Interception is a global blocking webRequest listener, not a safe read or a tab-local rule.
+In contrast, dialog policies and page storage have concrete tab targets and are guarded.
+Legacy `user_tab`/`user_viewing` approval results are still understood by the bridge for
+older extensions, but this extension no longer emits those holds for user-tab writes.
 
 Ownership lives in the extension's background page. A bridge restart or reconnect
 keeps it. The extension also stores it on each owned tab as a session tab value
@@ -1295,12 +1311,10 @@ A tab that goes back to the user loses its value. Limits:
   starts before the browser restored a tab and reads no value for it, that tab counts as
   a user tab, as it did before #376.
 - A restart that does not restore the tabs, a new profile, or a browser without
-  `browser.sessions` loses ownership: the tabs count as user tabs, so closing them needs
-  approval.
+  `browser.sessions` loses ownership: the tabs count as read-only user tabs.
 - Transient input/action timestamps and [agent window](#agent-windows) records do
   not persist. Ownership does, including the client id in version-2 session values.
-  Older version-1 values have no owner: they remain globally agent-opened for the
-  existing guards, but no named client sees them as `owned`.
+  Older version-1 values have no owner: no named client sees them as `owned` or may write them by default.
 - A lightweight observer watches eligible child frames independently of frame commands,
   including same-origin/cross-origin frames and `about:blank`/`srcdoc` frames where Firefox
   permits injection. It is also installed into existing frames on extension reconnect.
@@ -1341,62 +1355,10 @@ close idle pool tabs too.
 
 #### Protected user tabs
 
-Ownership, permission to close and permission to navigate are three different things.
-Ownership (`owned`) only records who opened a tab. Closing a user tab always needs the
-user's approval (above). Navigating a user tab needs it too, by default (#326): an agent
-works in tabs it opened. Open extra material in a tab of its own (`browser_tabs` new) and
-work there: the tab becomes the [current tab](#no-current-tab), and Kitsune's `browser_tabs`
-also returns its `tabId` to pass as `tab_id`. A call without `tab_id` acts on the
-tab the user sees, which is usually a starting tab. Do not reuse a starting tab
-just because it is active.
-
-`browser_navigate`, `browser_back` and `browser_forward` (`POST /api/navigate`,
-`/api/back`, `/api/forward`, and batch, workflow and parallel `navigate`, `goBack`,
-`goForward`) on a tab the agent did not open, including the active tab when `tab_id` is
-omitted, return `needs_user` (`user_tab`; `retryable: false`) without navigating:
-
-```json
-{ "error": "Tab 12 was not opened by the agent and this session protects user tabs, so it was not navigated",
-  "code": "needs_user", "retryable": false,
-  "hint": "Nothing navigated: this session protects tabs the agent did not open. Open a tab of your own (browser_tabs action=new) and work there, ...",
-  "state": { "reason": "approval", "detail": "user_tab", "tabId": 12, "url": "https://mail.example/", "title": "Inbox",
-             "message": "Allow the agent to navigate a tab it did not open (Inbox) to https://example.com/?",
-             "approvable": true, "confirmToken": "…", "expiresInSeconds": 120, "approval": "token" } }
-```
-
-The command is never redirected to another tab. Tabs the agent owns navigate as before. On an
-MCP client with elicitation the MCP server asks the user (see [Approval prompts](#approval-prompts)).
-Elsewhere, after the user approves, repeat the call with `tab_id` set to `state.tabId` and
-`confirmToken` (MCP: `confirm_token`, the fallback for clients without elicitation) within
-120 s. The token navigates that tab to that URL once. It is bound to the call's parameters
-and the refused tab, so a call without `tab_id` cannot carry it to whatever tab is active
-later. Only direct calls get and accept a token:
-batch, workflow and parallel steps are refused without one. Without elicitation the token
-goes back to the agent, so it proves an explicit second step, not that the user approved:
-an agent can repeat the call with it without asking. On an MCP client with elicitation the
-agent never gets it.
-
-To let an agent the user asked to work in their tabs navigate them without approval, set
-`KITSUNE_PROTECT_USER_TABS=0` in its MCP server environment. The MCP server then sends
-`X-Kitsune-Protect-User-Tabs: 0` with every bridge request, so it covers that client's
-session only; other clients sharing the bridge keep their own setting. A request without
-the header, such as a direct HTTP call, is protected. The Python API's
-`connect(protect_user_tabs=False)` is the same opt-out. The tab the user is viewing is
-still [held](#viewed-tab) unless `KITSUNE_HOLD_VIEWED_TAB=0` is set as well.
-
-Limits: only these server-mediated navigations are guarded. The approval of a navigation
-also covers the [viewed tab](#viewed-tab) hold, so a protected tab the user is viewing needs
-one approval, not two. Under [ask-before-act](#ask-before-act), a navigation that ask mode
-holds (a `payment_url`) needs one approval as well: its accepted token also approves the
-protected tab it was held on, and a token issued after a `user_tab` approval still confirms
-the repeated call. A user tab's URL can still change through link clicks (`browser_click`, `clickAndWaitNavigation`), form submits,
-Enter in a field, agent JavaScript, redirects, and navigation the page starts itself.
-Reload keeps the URL and is not guarded. This is not comprehensive URL preservation.
-View switches (`browser_tabs` select, `browser_focus_window`) and screenshots change no URL
-and are not guarded either.
-Ownership is the extension's, as above: it survives an extension reload and a browser
-restart that restores the tabs. Tabs whose ownership was lost (see its limits) count as
-user tabs and are protected too.
+Navigation, back, forward and reload follow [Tab permissions](#tab-permissions), just
+like clicks and writes: a user tab is refused without a prompt. This replaces the
+old navigation-only approval hold. Read-only clients can open their own background
+tab with `browser_tab_list(new_tab=...)`.
 
 #### Agent windows
 
@@ -1465,8 +1427,8 @@ the user. Checked actions: click, double-click, type/fill/editable, select, chec
 keypress, submit, form fill, hover, scroll, drag, focus, blur, JavaScript, upload,
 navigate, back, forward, reload, click-and-wait-navigation, close, element and
 full-page screenshots (they scroll the page), and trusted click (viewport) on their own tab; select (`switchTab`) and `browser_focus_window` on the tab
-the user would leave. Reads never are. Without any input, the tab the user is viewing is
-held too; see [Viewed tab](#viewed-tab).
+the user would leave. Reads never are. Ownership is checked before activity: user tabs
+return `user_tab_read_only` regardless of whether they are viewed.
 
 How it tells the user from the agent: Kitsune's own DOM events are synthetic, so their
 `isTrusted` is `false`, and the content script only counts trusted events. Its
@@ -1488,105 +1450,12 @@ count as user input on the tab it hits for 3 s.
 
 #### Viewed tab
 
-Viewing counts as using (#326). A user reading a page, or one who just switched to the
-agent's terminal, gives the page no input, so [User activity](#user-activity) does not see
-them. So the tab shown in the browser window the user last focused is held as well. An
-agent write or navigation on it returns `needs_user` (`user_viewing`; `retryable: false`) instead of
-acting. The hold has no time limit: it ends when the user shows another tab, or focuses
-another browser window. From the MCP server, the error names the tab by its index in the core
-`browser_tabs` list as well as its `tabId`, and `state.index` has that index (#383); the
-Python API and raw HTTP callers get the `tabId` only. The core `browser_tabs` list does not
-mark the current tab `current` while it is active and the agent did not open it, so an agent
-that selected the user's tab opens a tab of its own before it writes.
-
-```json
-{ "error": "The user is viewing tab 0 in browser_tabs (tabId 12); nothing was done", "code": "needs_user", "retryable": false,
-  "hint": "Nothing was done: the user is viewing this tab. Open a tab of your own (browser_tabs action=new) and work there, or ask the user to approve acting in this tab, then repeat the identical call (with tab_id=12 if it named no tab) with confirmToken ...",
-  "state": { "reason": "approval", "detail": "user_viewing", "tabId": 12, "index": 0, "url": "https://mail.example/",
-             "title": "Inbox", "windowId": 3, "holdReason": "viewing", "browserFocused": false,
-             "message": "Allow the agent's click in the tab you are viewing (Inbox)?", "approvable": true,
-             "confirmToken": "…", "expiresInSeconds": 120, "approval": "token" } }
-```
-
-- **Which tab.** The active tab of `windows.getLastFocused()`. When another application
-  has the focus (`windows.onFocusChanged` reports `WINDOW_ID_NONE`), the browser window
-  focused before it keeps the hold: the user may have only switched to the agent's
-  terminal, and the page is still on their screen. `state.browserFocused` is `false` then.
-  The active tabs of the user's other windows, and their background tabs, are not held.
-- **Not held:** tabs the agent opened (`owned: true` in `browser_tabs` list), even once the
-  user shows one, also after an extension reload or a browser restart that restores them,
-  and reads. A tab whose ownership was lost (see [Agent-owned tabs](#agent-owned-tabs))
-  counts as the user's, so it is held while the user views it. Viewport, element and full-page screenshots are not held either,
-  nor are close (a user tab needs the [user_tab](#agent-owned-tabs) approval anyway),
-  `browser_tabs` select and `browser_focus_window`.
-- **Held:** the writes [User activity](#user-activity) checks on their own tab. These are
-  click, double-click, type/fill/editable, select, check, keypress, submit, form fill, hover,
-  scroll, drag, focus, blur, JavaScript, media, upload, navigate, back, forward, reload,
-  click-and-wait-navigation, and `browser_trusted_click`, `browser_trusted_type`,
-  `browser_trusted_press_key` and `browser_trusted_drag` on the shown tab. A ref that routes
-  the action into a frame, also a cross-origin one, is held with its tab. `hold_ms` and
-  `duration_ms` are part of the call the token is bound to. Batch, workflow, parallel, broadcast and
-  retry steps are held the same way. `browser_sync_barrier` returns the refusal at once
-  instead of polling until its timeout.
-- **Trusted input on another tab.** A trusted click, drag or key command on a tab that is not
-  shown still shows that tab for the click and then shows the user's tab again. Only the
-  user's [activity](#user-activity) on the tab it hides stops it, not the hold. While the
-  agent shows a tab this way it is not held either, so `browser_trusted_drag` measures its
-  destination there after its source. That ends when the user's tab is shown again, another
-  tab of the window is shown, or after 60 s.
-- **Order.** The hold refuses before anything is shown or sent: after `user_active`, and
-  before a trusted command shows a tab, `tab_not_shown` or any OS input, so `drag_interrupted`
-  can only follow an approved call. Where no OS input can run at all (`unsupported_platform`,
-  `permission_required` for Accessibility), those come first, as there is nothing to approve.
-- **Switching the view moves the hold.** `browser_tabs` select (Kitsune's, which shows the
-  tab) and `browser_focus_window` are not held, so the tab they show becomes the held one,
-  and the tab the user saw before is a background tab that is no longer held. These calls
-  switch what the user sees, so send them only when the user asks (`user_active` still
-  refuses them while the user is using the tab they would leave).
-
-**Approval.** On an MCP client with elicitation the MCP server asks the user (see
-[Approval prompts](#approval-prompts)). Elsewhere a direct call's refusal carries a confirm
-token, issued and spent like [ask-before-act](#ask-before-act)'s. After the user approves,
-repeat the identical call with `confirmToken` (MCP: `confirm_token`, the fallback for clients
-without elicitation) within 120 s, adding `tab_id` set to `state.tabId` if
-the call named no tab; it runs once. The token is bound to the call's parameters and the
-refused tab. A used or expired token adds `state.tokenRejected` and a new token. Container
-steps get no token and are refused.
-
-The approval covers the whole MCP tool call on that tab. The MCP server sends a random
-`X-Kitsune-Tool-Call` id with each bridge request of a tool call, and the bridge approves
-every later request of that call on the same tab, whatever it does, for at most 120 s; the
-token itself is bound only to the request it was issued for. So the core
-`browser_fill_form`, which writes each field with its own request (the fields after the first
-are approved with it), and `browser_type(submit=true)`, which presses Enter with a second one,
-need one approval. When ask-before-act then holds a later request of that call (the Enter in a
-field that submits), its token carries the viewed-tab approval once to the repeated tool call,
-and only to the request the viewed-tab token approved (the text), so the user approves each
-hold once. The grant is kept per client (`X-Kitsune-Client`) and call id. The call id is
-asserted by the caller: an MCP agent cannot choose it, but a raw HTTP or Python caller that
-sends one id on several requests gets one approval covering its requests on that tab for
-120 s. Such a caller can turn the hold off with its own header anyway. An accepted ask-before-act token for the same call, and the `user_tab`
-approval of a [protected](#protected-user-tabs) navigation, approve the hold too, so one
-approval is enough. In read and draft modes the refusal carries no token, and its hint
-points to `browser_tab_list` new_tab. As with `user_tab`, without elicitation the token goes
-back to the agent, so it proves an explicit second step, not that the user approved. On an
-MCP client with elicitation the MCP server asks the user instead (see
-[Approval prompts](#approval-prompts)); the repeated tool call's later requests are approved
-with it as above.
-
-**Turning it off.** `KITSUNE_HOLD_VIEWED_TAB=0` in an MCP server environment lifts the hold
-for that client (it sends `X-Kitsune-Hold-Viewed-Tab: 0` with each bridge request; the
-Python API's `connect(hold_viewed_tab=False)` does the same). Use it when the user asks an
-agent to work in the tab they are watching. `user_active` still applies. Other clients
-sharing the bridge keep their own setting. A request cannot skip the hold with fields of its
-own: the bridge drops them and sets them itself.
-
-Limits: the extension does not know whether the browser window is visible on screen (for
-example behind another window or on another Space), only that it was focused last. For the
-moment a trusted command shows another tab, neither that tab nor the user's tab, then in the
-background, is held. A screen-coordinate trusted click has no tab and is not
-checked. Pin, mute, duplicate, zoom, highlight, dialog handling and storage writes are not
-held, as they are not checked for user activity.
+The old viewed-tab approval hold is replaced by [Tab permissions](#tab-permissions).
+Viewing does not change ownership: user tabs are read-only even in the background,
+and owned tabs remain writable while viewed unless the existing `user_active` guard
+reports trusted user activity. Legacy `needs_user` details `user_viewing` and `user_tab`
+remain recognized for older extensions during migration; they are not the default
+permission mechanism and cannot approve a write refused as `user_tab_read_only`.
 
 #### No current tab
 
@@ -1599,7 +1468,7 @@ tab the user is viewing:
 ```json
 { "error": "browser_navigate writes a tab but names none, and there is no current tab, so it was not sent to the tab the user is viewing",
   "code": "no_current_tab", "retryable": false,
-  "hint": "Nothing was dispatched. Pass tab_id (browser_navigate and browser_navigate_back accept it too), or open a tab of your own with browser_tabs action=new or browser_tab_list new_tab and work there. browser_tabs action=select makes a tab current too, but navigating a tab the agent did not open is then refused (needs_user) unless the user approves.",
+  "hint": "Nothing was dispatched. Pass tab_id (browser_navigate and browser_navigate_back accept it too), or open a tab of your own with browser_tabs action=new or browser_tab_list new_tab and work there. browser_tabs action=select can make an owned tab current; user and other clients' tabs are read-only.",
   "state": { "tool": "browser_navigate" } }
 ```
 
@@ -2925,8 +2794,8 @@ desktop coordinates with `coordinate_space="screen"`. The OS click lands on what
 `tab_id` that is not the shown tab of its window is shown for the click, and the
 user's tab is shown again 300 ms after it (see [Shared browser](#shared-browser)). A
 viewport click returns `user_active` without clicking while the user is using the
-target tab or the tab it would hide, and `needs_user` (`user_viewing`) when the target tab is the one
-the user is [viewing](#viewed-tab) (approved in the client's prompt, or with `confirm_token` on a client without elicitation). Ambiguous selectors return `ambiguous_target`
+target tab or the tab it would hide. A user-tab target instead returns `user_tab_read_only`
+before any OS input; approval tokens cannot bypass ownership. Ambiguous selectors return `ambiguous_target`
 before scrolling the element or invoking the OS; `first=True` opts into the first match.
 
 A viewport point is converted to desktop coordinates with the tab's page zoom
@@ -3063,8 +2932,8 @@ permission for the bridge. Elsewhere, or without them, they return `unsupported_
 Each call:
 1. Clicks the target (`selector` or a ref, required) with the OS pointer, as
    `browser_trusted_click` does. A `tab_id` that is not shown is shown for the call
-   ([`tab_not_shown`](#action-errors) when the window shows no page). The tab the user is
-   [viewing](#viewed-tab) returns `needs_user` (`user_viewing`) before the click, until the user approves.
+   ([`tab_not_shown`](#action-errors) when the window shows no page). A user or other client's
+   tab returns `user_tab_read_only` before any click or view switch.
 2. Requires the window at the click point to be the tab's own window
    ([`browser_not_at_point`](#action-errors), #336).
 3. Sends each key only while the browser that owns that window is the frontmost app and the
@@ -3108,9 +2977,8 @@ permission for the bridge. Elsewhere, or without them, it returns `unsupported_p
 Each call:
 1. Measures the source (`selector` or a ref) as `browser_trusted_click` does: scrolled into view
    and hit-tested (`target_not_at_point`). A `tab_id` that is not shown is shown for the call.
-   The tab the user is [viewing](#viewed-tab) returns `needs_user` (`user_viewing`) here, before anything is
-   shown or measured; one approval (in the client's prompt, or `confirm_token` on a client
-   without elicitation) covers both measurements and the drag.
+   User and other clients' tabs return `user_tab_read_only` before anything is shown or measured;
+   approval tokens do not override ownership.
 2. Measures the destination (`to_selector`) in the same tab without scrolling, so the source
    point stays valid. It is hit-tested too, so a destination out of view returns
    `target_not_at_point`.
@@ -3437,12 +3305,9 @@ single reads (see `browser_wait_for`); a zero timeout performs one immediate che
 `{ "url": "https://example.com", "tabId": 1, "expectTitle": "Example" }`
 - `tabId` optional (defaults to active tab)
 - `expectTitle` optional — warns if title doesn't match (catches silent redirects)
-- A tab the agent did not open returns `needs_user` (`user_tab`); `confirmToken` is its token after the user
-  approved, and `X-Kitsune-Protect-User-Tabs: 0` lets the request navigate it (see
-  [Protected user tabs](#protected-user-tabs)). The same holds for `/api/back` and `/api/forward`.
-- The tab the user is viewing returns `needs_user` (`user_viewing`), as do the other page writes;
-  `confirmToken` is its token after the user approved, and `X-Kitsune-Hold-Viewed-Tab: 0`
-  lifts the hold for the request (see [Viewed tab](#viewed-tab)).
+- User and other clients' tabs return `user_tab_read_only` without a prompt; the same applies
+  to `/api/back`, `/api/forward` and reload. Explicit compatibility opt-outs are described
+  in [Protecting your tabs](guide.md#protecting-your-tabs).
 - A load that does not finish in 15 s returns `{ "ok": false, "timedOut": true, "url": "..." }`.
   If the tab is still `about:blank` / `complete` and the page cannot confirm a loaded destination,
   it also carries `code: "navigation_stalled"`, `retryable: false`, and the recovery `hint` of

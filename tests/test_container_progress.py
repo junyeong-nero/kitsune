@@ -39,6 +39,8 @@ class ContainerTests(unittest.TestCase):
 
     async def extension(self, action, params=None, timeout=30):
         params = dict(params or {})
+        if action == "checkTabWrite":
+            return {"ok": True}  # Container scheduling tests use agent-owned tabs.
         self.sent.append((action, params))
         tab_id = params.get("tabId")
         if tab_id in self.closed:

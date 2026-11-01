@@ -185,10 +185,9 @@ def _port_conflict(port: int, reason: str, message: str) -> dict:
 class BridgeClient:
     """Bridge requests that carry one caller's capability groups, task mode and user-tab protection.
 
-    hold_viewed_tab=False (KITSUNE_HOLD_VIEWED_TAB=0) lets these requests act on the tab the user is
-    viewing without the confirm step of a user_viewing refusal (#326). protect_user_tabs=False
-    (KITSUNE_PROTECT_USER_TABS=0) lets them navigate tabs no client opened without the confirm step
-    of a user_tab refusal (#199, #326).
+    Either hold_viewed_tab=False (KITSUNE_HOLD_VIEWED_TAB=0) or protect_user_tabs=False
+    (KITSUNE_PROTECT_USER_TABS=0) explicitly permits compatibility writes on user tabs.
+    With neither opt-out, user and other clients' tabs are read-only. user_active still applies.
 
     caps are the groups the bridge lets these requests use: it refuses routes and container steps
     of other groups (#230). caps=None sends no caps header, so the bridge refuses no group; caps

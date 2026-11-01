@@ -218,11 +218,11 @@ async function aTabWithoutAValueStaysAUserTab() {
   addTab(state, { id: 6, active: true });
   const h = load(state);
   const viewed = await h.run({ action: 'navigate', url: 'https://example.com/x', tabId: 6 });
-  assert.equal(viewed.code, 'user_viewing', JSON.stringify(viewed));
+  assert.equal(viewed.code, 'user_tab_read_only', JSON.stringify(viewed));
   const protectedTab = await h.run({ action: 'navigate', url: 'https://example.com/x', tabId: 6, protectUserTabs: true });
-  assert.equal(protectedTab.code, 'user_tab', JSON.stringify(protectedTab));
+  assert.equal(protectedTab.code, 'user_tab_read_only', JSON.stringify(protectedTab));
   const close = await h.run({ action: 'closeTab', tabId: 6 });
-  assert.equal(close.code, 'user_tab', JSON.stringify(close));
+  assert.equal(close.code, 'user_tab_read_only', JSON.stringify(close));
   assert.deepEqual(state.navigated, []);
   assert.deepEqual(state.removed, []);
   assert.equal((await h.owned())[6], false);
@@ -333,7 +333,7 @@ async function withoutSessionsOwnershipIsInMemory() {
   const h = load(state);
   const { tabId } = await h.run({ action: 'newTab', url: 'https://example.com/new' });
   assert.deepEqual(await h.owned(), { 6: false, [tabId]: true });
-  assert.equal((await h.run({ action: 'closeTab', tabId: 6 })).code, 'user_tab');
+  assert.equal((await h.run({ action: 'closeTab', tabId: 6 })).code, 'user_tab_read_only');
   assert.deepEqual(await h.run({ action: 'closeTab', tabId }), { ok: true });
   const { tabId: kept } = await h.run({ action: 'newTab', url: 'https://example.com/kept' });
   assert.deepEqual(await load(state).owned(), { 6: false, [kept]: false }, 'a reload forgets it');

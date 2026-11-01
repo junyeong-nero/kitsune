@@ -48,6 +48,7 @@ function harness(pages = { 7: {}, 8: {} }) {
       sendMessage: async () => ({ watching: false }) } },
   });
   vm.runInContext(source.slice(source.indexOf('const POST_SNAPSHOT_ACTIONS'), source.indexOf('async function dispatchCommand')), context);
+  context.tabWriteError = async () => null; // Permission policy is tested in user_tabs_read_only.cjs.
   const snapshot = (params = {}) => context.handleCommand({ action: 'getSnapshot', maxChars: 12000, skipUnchanged: true, ...params });
   return { context, pages, reads, snapshot };
 }

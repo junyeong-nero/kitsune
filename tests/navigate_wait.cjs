@@ -95,6 +95,7 @@ function harness(startUrl, onNavigate = () => {}, page = null) {
     clearInterval: id => timers.delete(id),
   });
   vm.runInContext(fs.readFileSync('extension/background/background.js', 'utf8'), context);
+  context.markAgentTab(7);
   return h;
 }
 

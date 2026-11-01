@@ -765,6 +765,9 @@ class BrowserAtPointTests(unittest.TestCase):
 
 class TrustedClickTests(unittest.TestCase):
     def setUp(self):
+        # Native backend mechanics retain raw screen mode only under explicit compatibility writes.
+        token = bridge._user_tabs_writable.set(True)
+        self.addCleanup(bridge._user_tabs_writable.reset, token)
         # The window at the point is checked only on macOS (BrowserAtPointTests).
         check = patch.object(bridge, "_browser_not_at_point", return_value=None)
         check.start()

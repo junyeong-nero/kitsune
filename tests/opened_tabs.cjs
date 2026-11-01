@@ -103,6 +103,7 @@ function harness(onClick = () => {}) {
     clearInterval: id => timers.delete(id),
   });
   vm.runInContext(fs.readFileSync('extension/background/background.js', 'utf8'), context);
+  for (const id of Object.keys(tabs)) context.markAgentTab(Number(id));
   vm.runInContext(fs.readFileSync('extension/background/history.js', 'utf8'), context);
   listenersAtStart.updated = onUpdated.listeners.size;
   listenersAtStart.removed = onRemoved.listeners.size;
