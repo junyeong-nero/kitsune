@@ -2085,19 +2085,19 @@ def browser_batch(
 
 @tool("core", annotations=dict(title="Resume a call", **DESTRUCTIVE))
 def browser_resume(
-    call: Annotated[int, Field(description="The call id from that response.")],
-    resume_token: Annotated[str, Field(description="The resume_token from that response.")],
+    call: Annotated[int, Field(description="From that result.")],
+    resume_token: Annotated[str, Field(description="From that result.")],
     observed: Annotated[dict[str, str] | None, Field(
         description='Containers: each unknown step\'s progress path ("1", "0.1.2") -> "not_applied" to send it '
                     'again or "applied" to mark it ok.')] = None,
     wait: Annotated[float, Field(description=f"Seconds to wait for the user, 0-{RESUME_MAX_WAIT_SECONDS}.")]
         = RESUME_WAIT_SECONDS,
 ) -> dict:
-    """Continue a call that returned call and resume_token: a direct call stopped on needs_user, or
-    a batch, parallel or workflow. Nothing that ran ok is sent again.
+    """Continue a call whose result has call and resume_token: a direct call stopped on needs_user,
+    or a batch, parallel or workflow. Nothing that ran ok is sent again.
 
-    A held approval is asked again in the client's prompt, for up to wait seconds; without that
-    prompt it is checked once. Returns the original call's shape.
+    A held approval is asked again in the client's prompt for up to wait seconds, else checked
+    once. Returns the original call's shape.
     """
     # The MCP server resumes the direct calls it keeps; the bridge resumes containers (wait unused).
     body: dict = {"call": call, "resume_token": resume_token}
@@ -2119,7 +2119,7 @@ def browser_ask_user(
 
     Where the client can prompt, the user answers Done (ok) or Can't. Otherwise it returns
     needs_user at once: ask in your reply. For a sign_in or human_check seen on the tab,
-    browser_resume(call, resume_token) waits until it is gone.
+    browser_resume waits until it is gone.
     """
     return _post("/api/ask-user", _request_body({"reason": reason, "message": message}, tab_id))
 
