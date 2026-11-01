@@ -170,17 +170,18 @@ run get no new entry. The token never appears in the audit log or the bridge log
 ## Direct calls
 
 A direct tool call that stops on `needs_user` and was not resolved in the call keeps a
-checkpoint (#376): an approval hold on a client without elicitation, or one whose
+checkpoint (#376), except for tab handoff requests: an ask-before-act hold on a client
+without elicitation, or one whose
 [approval prompt](api-reference.md#approval-prompts) was declined, dismissed or got no answer
 in time, and a [`browser_ask_user`](api-reference.md#browser_ask_userreason-message-tab_idnone)
 request (below). Its result adds `call` and `resume_token`, and its hint says what `browser_resume`
 does with it:
 
 ```json
-{ "error": "The user is viewing tab 0 in browser_tabs (tabId 12); nothing was done", "code": "needs_user", "retryable": false,
-  "state": { "reason": "approval", "detail": "user_viewing", "decision": "declined", "approval": "elicitation", "…": "…" },
+{ "error": "The action needs approval; nothing was done", "code": "needs_user", "retryable": false,
+  "state": { "reason": "approval", "detail": "confirmation_required", "decision": "declined", "approval": "elicitation", "…": "…" },
   "call": 57, "resume_token": "Qk9…",
-  "hint": "The held action did not run: the user declined it in the tab they are viewing … browser_resume(call, resume_token) asks them again …" }
+  "hint": "The held action did not run: the user declined it … browser_resume(call, resume_token) asks them again …" }
 ```
 
 - `call` is the audit call id the bridge gave the held request: its audit entry carries it
@@ -196,6 +197,8 @@ does with it:
   resume it: the bridge answers `checkpoint_not_found`, and the agent calls the tool again.
 - Holds that cannot be approved get no checkpoint: read and draft modes (`state.approvable:
   false`), and tools without `confirm_token`. Container results never get a direct checkpoint.
+  [Tab handoff requests](api-reference.md#requesting-and-returning-a-tab) also have no resume
+  checkpoint: repeat the exact request with its valid confirm token, or make a fresh request.
 
 `browser_resume(call, resume_token, wait=120)` runs the tool again with its stored
 arguments, from the held request:
@@ -206,15 +209,14 @@ arguments, from the held request:
   (the bridge names the held request in `state.action`). Every other tool that takes
   `confirm_token` sends one write per call.
 - **A resume grants nothing a new call would not.** The held request goes through the
-  current policy again: ask-before-act, protected user tabs and the viewed-tab hold. If the
-  hold no longer applies (the user switched to another tab, so the viewed-tab hold is gone),
+  current policy again, including ask-before-act and tab permissions. User-tab writes
+  are read-only by default; a resume cannot grant ownership. If the hold no longer applies,
   the call runs without an approval, as calling the tool again would at that moment.
 - **A resume never waits for a hold to lift.** On a client with elicitation, a request held
   again is asked about in the approval prompt, which stays open up to `wait` seconds (at most
   the token's 120 s less 5 s); `wait=0` asks nothing. Without elicitation the hold is checked
   once and the resume returns at once: `needs_user` again with a fresh confirm token and a
-  new `resume_token`. So waiting and resuming cannot run a held write the moment the user
-  looks away.
+  new `resume_token`. Switching the user's view does not change tab permissions.
 - `wait` is 0 to 300 seconds (default 120); larger values are capped at 300. While the
   prompt is open, a call that sent a `progressToken` gets a progress notification every 10 s.
   The MCP server waits itself, between bridge requests, so no bridge request outlasts its own

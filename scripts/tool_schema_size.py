@@ -38,12 +38,12 @@ SNAPSHOT = Path(__file__).resolve().parent.parent / "tests" / "tool_schema_sizes
 # 5% above their size, so refreshing that file shows what Playwright's growth costs. Raised by
 # 1,000 for Kitsune's browser_ask_user, which core publishes with browser_resume (#376).
 TOTAL_BUDGETS = {"core": 22_300}
-FIRST_PARAGRAPH_BUDGETS = {"core": 22_300}
+FIRST_PARAGRAPH_BUDGETS = {"core": 22_000}
 TOOL_BUDGET = 3_000  # any single core tool, full view
 # Characters of the server instructions in each KITSUNE_MODE with the default read-only
-# user-tab permission, which makes them longest. Set about 5% above
-# their size after #386 and #405 shortened them.
-INSTRUCTIONS_BUDGETS = {"act": 985, "read": 630, "draft": 630}
+# user-tab permission, which makes them longest. Act stays within v0.7.1's 747 characters
+# (#405); read/draft have about 5% headroom. Do not drop permission/recovery rules to fit.
+INSTRUCTIONS_BUDGETS = {"act": 747, "read": 500, "draft": 500}
 
 
 def _compact(value) -> int:

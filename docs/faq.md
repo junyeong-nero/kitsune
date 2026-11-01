@@ -58,7 +58,9 @@ Yes, in three ways that combine:
 
 ## How do I approve a held action?
 
-A held call returns `needs_user` and does nothing (#376). On an MCP client with elicitation
+An ask-before-act hold returns `needs_user` and does not run the held action (#376).
+User-tab writes are refused without prompting; an explicit [handoff request](api-reference.md#requesting-and-returning-a-tab)
+asks in the browser first, then falls back to the client. For ask-before-act on an MCP client with elicitation
 (Claude Code, Codex), the client asks you in its own prompt, naming the action, its target and
 the tab; Approve runs that one call, and the agent never sees the approval. Clients without
 elicitation fall back to a confirmation token (`confirm_token`): the agent should ask you, then

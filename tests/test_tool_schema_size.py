@@ -36,6 +36,9 @@ class ToolSchemaSizeTests(unittest.TestCase):
                   f"{report}\nIf the change is intended, run `uv run python scripts/tool_schema_size.py "
                   "--update` and commit tests/tool_schema_sizes.json.")
 
+    def test_core_still_has_27_tools(self):
+        self.assertEqual(len(measured_sizes()), 27)
+
     def test_sizes_within_budget(self):
         problems = tool_schema_size.over_budget(measured_sizes())
         self.assertEqual(problems, [], "Tool definitions grew past their budget (#88). Trim them, or "
@@ -64,6 +67,9 @@ class ToolSchemaSizeTests(unittest.TestCase):
                          "The server instructions grew past their budget (#386); they are resent with every model "
                          "request. Trim them, or raise INSTRUCTIONS_BUDGETS in scripts/tool_schema_size.py "
                          "deliberately.")
+
+    def test_act_instruction_budget_does_not_exceed_v071(self):
+        self.assertLessEqual(tool_schema_size.INSTRUCTIONS_BUDGETS["act"], 747)
 
     def test_instructions_budget_catches_growth(self):
         budgets = tool_schema_size.INSTRUCTIONS_BUDGETS

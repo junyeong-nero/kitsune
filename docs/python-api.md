@@ -63,7 +63,7 @@ checkpoints, so the Python API does that only with `replace_bridge=True` (or aft
 
 | `Browser` method | Returns |
 | --- | --- |
-| `tabs()` | Every open tab: `id`, `url`, `title`, `active`, `windowId`, `index`, `owned` (a client opened it) |
+| `tabs()` | Every open tab: `id`, `url`, `title`, `active`, `windowId`, `index`, `owned` (this client owns it) |
 | `new_tab(url="about:blank", wait=True, timeout=15000)` | A `Tab` for a new background tab. A load past `timeout` ms raises `TimedOut`; the tab stays open, with its id in `error.result["tabId"]` |
 | `tab(tab_id)` | A `Tab` for an existing tab |
 | `active_tab()` | The tab you are viewing. With several windows, each has one: it raises `ambiguous_target`, and you pick one from `tabs()` |
@@ -73,7 +73,7 @@ viewing it.
 
 | `Tab` method | Does |
 | --- | --- |
-| `close(force=False)` | Close a tab a client opened; closing one of your own tabs needs your approval ([Ask-before-act](#ask-before-act)). `force` disarms `beforeunload` |
+| `close(force=False)` | Close this client's tab; user and other clients' tabs are refused with `user_tab_read_only` by default. `force` disarms `beforeunload` |
 | `show()` | Switch your view to the tab; call it only when you want that |
 | `wake()` | Reload a tab the browser discarded and wait until the page answers |
 | `duplicate()` | A `Tab` for a background copy |
@@ -82,8 +82,8 @@ viewing it.
 | `tag(name)` | Name the tab; `browser.tags.tab(name)` finds it, `.list()` and `.remove(name)` manage names |
 
 `browser.windows` has `list()`, `create(url=None, incognito=False)`, `close(window_id)`
-(a window with your own tabs needs your approval) and `focus(window_id)`, which takes
-your focus. `browser.pool` keeps reusable background tabs: `create(size, url)`,
+and `focus(window_id)`, which takes your focus. Closing or focusing a window with user
+or other clients' tabs is refused by default. `browser.pool` keeps reusable background tabs: `create(size, url)`,
 `acquire()` for a `Tab`, `release(tab)`.
 
 ## Reading
@@ -230,7 +230,7 @@ exception: nothing ran, and only you can let it go on.
 
 | Exception | Raised for |
 | --- | --- |
-| `ConfirmationRequired` | An action that needs your approval (`needs_user` with `state.reason` `approval`, and a token), with `token`, `expires_in`, `message` and `detail`: `confirmation_required` (ask-before-act, with `hold_reason`), `user_tab` or `user_viewing` |
+| `ConfirmationRequired` | An action that needs your approval (`needs_user` with `state.reason` `approval`, and a token), with `token`, `expires_in`, `message` and `detail`: `confirmation_required` (ask-before-act, with `hold_reason`), or legacy `user_tab`/`user_viewing` |
 | `ConnectionFailed` (also a `ConnectionError`) | The bridge or extension was not reached or dropped the request: the [connection codes](api-reference.md#connection-diagnosis), `bridge_disconnected` and `bridge_version_mismatch` |
 | `TimedOut` (also a `TimeoutError`) | `timeout`, a page load that timed out, and a wait that ran out |
 | `KitsuneError` | Every other failure, such as `stale_ref`, `ambiguous_target` or `outcome_not_observed` |
