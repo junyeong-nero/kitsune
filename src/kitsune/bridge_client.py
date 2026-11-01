@@ -6,6 +6,7 @@ error contract (docs/api-reference.md#connection-diagnosis), not raised. This mo
 no MCP code.
 """
 
+import asyncio
 import functools
 import os
 import re
@@ -16,10 +17,12 @@ import time
 
 import httpx
 
+from urllib.parse import quote
+
 from . import bridge_control
 from .bridge_control import BRIDGE, HTTP_PORT, LOG_FILE, TOKEN_FILE, WS_PORT, headers as _headers
 from .capabilities import CAPS_HEADER
-from .task_modes import (APPROVER_HEADER, CLIENT_HEADER, CLIENT_ID_PATTERN, MODE_HEADER,
+from .task_modes import (SESSION_HEADER, CLIENT_NAME_HEADER, APPROVER_HEADER, CLIENT_HEADER, CLIENT_ID_PATTERN, MODE_HEADER,
                          OWNER_HEADER, USER_TABS_HEADER, user_tabs as parse_user_tabs, user_tabs_deprecation)
 from .version import BRIDGE_BUILD
 
@@ -217,8 +220,57 @@ class BridgeClient:
         self.replace_bridge = replace_bridge
         self.client_id = f"{os.getpid()}-{secrets.token_hex(3)}"
         self.owner_id = owner_id()
+        self._handoff_secret = None
+        self._handoff_task = None
+        self._handoff_lock = None
         self._approver = secrets.token_hex(16) if approver else None
         self._extension_wait_until = 0.0  # set when this client starts a bridge; see await_extension
+
+    async def open_handoff_session(self, client_name: str):
+        """Keep a dedicated response open until MCP teardown; reconnect never reuses its secret."""
+        if self._handoff_lock is None:
+            self._handoff_lock = asyncio.Lock()
+        async with self._handoff_lock:
+            if self._handoff_task is not None and not self._handoff_task.done():
+                return
+            await asyncio.to_thread(self.await_extension)
+            secret = secrets.token_hex(32)
+            ready = asyncio.get_running_loop().create_future()
+            async def channel():
+                try:
+                    headers = {**_headers(), CLIENT_HEADER: self.client_id, OWNER_HEADER: self.owner_id,
+                               SESSION_HEADER: secret, CLIENT_NAME_HEADER: quote(client_name[:200]), MODE_HEADER: self.mode}
+                    if self.caps is not None:
+                        headers[CAPS_HEADER] = self.caps
+                    async with httpx.AsyncClient(verify=bridge_control.tls_context(), timeout=None) as client:
+                        async with client.stream("GET", f"{BRIDGE}/api/handoff-session", headers=headers) as response:
+                            response.raise_for_status()
+                            self._handoff_secret = secret
+                            ready.set_result(None)
+                            async for _ in response.aiter_raw():
+                                pass
+                except Exception as exc:
+                    if not ready.done():
+                        ready.set_exception(exc)
+                finally:
+                    if self._handoff_secret == secret:
+                        self._handoff_secret = None
+            self._handoff_task = asyncio.create_task(channel())
+            try:
+                await asyncio.wait_for(ready, 15)
+            except BaseException:
+                await self.close_handoff_session()
+                raise
+
+    async def close_handoff_session(self):
+        task, self._handoff_task = self._handoff_task, None
+        self._handoff_secret = None
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
     def ensure_bridge(self) -> dict | None:
         """Start or replace the shared bridge, serializing lifecycle changes; return an error result."""
@@ -333,6 +385,8 @@ class BridgeClient:
                 self.await_extension()
             try:
                 headers = {**_headers(), CLIENT_HEADER: self.client_id, OWNER_HEADER: self.owner_id}
+                if self._handoff_secret is not None:
+                    headers[SESSION_HEADER] = self._handoff_secret
                 if self.caps is not None:
                     headers[CAPS_HEADER] = self.caps
                 if self._approver is not None:

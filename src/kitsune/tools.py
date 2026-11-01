@@ -222,7 +222,7 @@ def _on_current_tab(function):
     """
     name = function.__name__
     parameter = inspect.signature(function).parameters.get("tab_id")
-    fills_tab = parameter is not None and parameter.default is None
+    fills_tab = parameter is not None and parameter.default is None and name != "browser_tabs"
     if not fills_tab and name not in TAB_WRITE_TOOLS:
         return function
 
@@ -380,8 +380,8 @@ def _tab_list(result: dict, window_fields: bool) -> dict:
 
 
 def browser_tabs(
-    action: Literal["list", "new", "close", "select"] = "list",
-    tab_id: Annotated[int | None, Field(description="close/select (required).")] = None,
+    action: Literal["list", "new", "close", "select", "request"] = "list",
+    tab_id: Annotated[int | None, Field(description="close/select/request (required).")] = None,
     url: Annotated[str | None, Field(description="new (default about:blank).")] = None,
     force: Annotated[bool, Field(description="close: disarm beforeunload.")] = False,
     raw: Annotated[bool, Field(description="new: bypass the image viewer.")] = False,
@@ -389,7 +389,8 @@ def browser_tabs(
         description="new: wait up to timeout ms for the load; returns tabId, final url and status, or on "
                     "timeout ok=false, timedOut=true with the tab open.")] = False,
     timeout: int = 15000,
-    confirm_token: Annotated[str | None, Field(description="new/close; see browser_check.")] = None,
+    confirm_token: Annotated[str | None, Field(description="new/close/request; see browser_check.")] = None,
+    reason: str | None = None,
     window_fields: bool = False,
     include_active: Annotated[bool, Field(
         description="list: add active_page, the active tab's browser_snapshot(text=True).")] = False,
@@ -400,9 +401,15 @@ def browser_tabs(
     list is always a fresh read; owned=true marks this MCP client's tabs (including inherited
     tabs); mine=true excludes pool tabs; windowId/index only with several windows or
     window_fields. close/select refuse user and other clients' tabs (user_tab_read_only).
+    request asks for a session-scoped handoff (reason required), browser first then client after 30s.
     select switches the user's view: only when the user asks.
     Options of other actions are ignored.
     """
+    if action == "request":
+        if tab_id is None or not reason or not reason.strip() or len(reason) > 1000:
+            return {"error": "request requires tab_id and a reason of 1–1000 characters"}
+        return _post("/api/request-tab", _request_body({"tabId": tab_id, "reason": reason},
+                                                      confirm_token=confirm_token), timeout=45)
     if action == "list":
         result = _tab_list(_get("/api/tabs"), window_fields)
         if include_active and not _failed(result):
@@ -428,7 +435,7 @@ def browser_tabs(
                 body["force"] = True
             _request_body(body, confirm_token=confirm_token)
         return _post("/api/close-tab" if action == "close" else "/api/switch-tab", body)
-    return {"error": "action must be list, new, close, or select"}
+    return {"error": "action must be list, new, close, select, or request"}
 
 
 def browser_tab_list(

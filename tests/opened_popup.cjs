@@ -281,6 +281,8 @@ const background = vm.createContext({
 vm.runInContext(fs.readFileSync('extension/background/history.js', 'utf8'), background);
 vm.runInContext(source.slice(source.indexOf('const POST_SNAPSHOT_ACTIONS'), source.indexOf('async function dispatchCommand')), background);
   background.tabWriteError = async () => null; // Permission policy is tested in user_tabs_read_only.cjs.
+  background.handoffs = new Map();
+  background.handoffTransportEpoch = 0;
 vm.runInContext(source.slice(source.indexOf('const MISSING_CONTENT_RECEIVER'), source.indexOf('async function getActiveTabId')), background);
 background.dispatchCommand = params => background.forwardToContent(params.action, params);
 const send = (action, params = {}) => background.forwardToContent(action, { tabId: 1, ...params })

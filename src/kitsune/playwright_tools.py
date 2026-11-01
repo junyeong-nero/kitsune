@@ -672,8 +672,16 @@ def browser_select_option(target: str, values: list[str], element: str | None = 
 
 @_core
 def browser_tabs(action: str, index: float | None = None, url: str | None = None,
-                 confirm_token: str | None = None) -> dict:
+                 confirm_token: str | None = None, tab_id: int | None = None, reason: str | None = None) -> dict:
     global _current_tab
+    if action == "request":
+        if (index is None) == (tab_id is None):
+            return {"error": "request requires exactly one of index or tab_id"}
+        if index is not None:
+            tab_id, error = _tab_at(index)
+            if error:
+                return error
+        return k.browser_tabs("request", tab_id=tab_id, reason=reason, confirm_token=confirm_token)
     if action == "list":
         return _tab_list()
     if action == "new":
@@ -720,7 +728,7 @@ def browser_tabs(action: str, index: float | None = None, url: str | None = None
                 _current_tab = None
             return _with_tab_list(result)
         return result
-    return {"error": "action must be list, new, close, or select"}
+    return {"error": "action must be list, new, close, select, or request"}
 
 
 @_core

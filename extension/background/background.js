@@ -31,6 +31,7 @@ const tabLoads = new Map();
 const notifyStatusWaiters = (tabId, closed = false) =>
   [...(mainFrameStatusWaiters.get(tabId) || [])].forEach(notify => notify(closed));
 browser.tabs.onRemoved.addListener(tabId => {
+  takeBackHandoff(tabId);
   dialogPolicies.delete(tabId);
   pruneShortRefs(tabId);
   mainFrameStatus.delete(tabId);
@@ -41,6 +42,7 @@ browser.tabs.onRemoved.addListener(tabId => {
   notifyStatusWaiters(tabId, true);
 });
 browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (changeInfo.status === 'loading' || changeInfo.url || changeInfo.discarded) invalidateHandoff(tabId);
   if (changeInfo.discarded === true) mainFrameStatus.delete(tabId);
   // The browser also wakes discarded tabs, e.g. when one is selected.
   if (changeInfo.discarded === false) tabReloads.set(tabId, Date.now());
@@ -142,6 +144,7 @@ const agentTabOwners = new Map();
 const validOwnerId = owner => typeof owner === 'string' && /^[A-Za-z0-9_.:-]{1,64}$/.test(owner);
 const isOwnershipValue = value => value?.v === 1 || (value?.v === 2 && validOwnerId(value.owner));
 function ownAgentTab(tabId, ownerId = null) {
+  if (handoffs.has(tabId)) return;
   agentTabs.add(tabId);
   agentTabOwners.set(tabId, validOwnerId(ownerId) ? ownerId : null);
   const value = agentTabOwners.get(tabId) == null ? { v: 1 } : { v: 2, owner: ownerId };
@@ -276,6 +279,130 @@ function markAgentTab(tabId, ownerId = null) {
   const load = tabLoads.get(tabId);
   if (load) load.agent = true;
   if (!agentTouches.has(tabId)) agentTouches.set(tabId, { running: 0, until: Date.now() + AGENT_EFFECT_GRACE_MS });
+}
+
+// Explicit handoffs are session-scoped and deliberately never written to browser.sessions.
+// Children opened by an agent remain ordinary owned tabs; only the handed-off original returns.
+let handoffTransportEpoch = 0;
+const handoffSessions = new Map();
+const handoffs = new Map();
+const handoffRequests = new Map();
+const HANDOFF_BROWSER_MS = 30000;
+const HANDOFF_TOKEN_MS = 120000;
+const handoffHint = 'Work in a tab of your own (browser_tabs action=new), or ask again with browser_tabs action=request.';
+const ownsTab = (tabId, ownerId, sessionId) => agentTabs.has(tabId) &&
+  agentTabOwners.get(tabId) === (ownerId ?? null) &&
+  (!handoffs.has(tabId) || handoffs.get(tabId).sessionId === sessionId);
+function handoffError(decision = 'cancelled') {
+  return { error: 'The tab was not handed off', code: 'needs_user', retryable: false,
+    state: { reason: 'approval', detail: 'tab_handoff', decision }, hint: handoffHint };
+}
+function handoffBadge() {
+  const count = [...handoffRequests.values()].filter(r => r.phase === 'browser').length;
+  browser.browserAction?.setBadgeText({ text: count ? String(count) : '' });
+}
+function finishHandoff(request, result, keep = false) {
+  clearTimeout(request.timer);
+  if (!keep) handoffRequests.delete(request.id);
+  request.resolve?.(result);
+  request.resolve = null;
+  handoffBadge();
+  return result;
+}
+function invalidateHandoff(tabId) {
+  for (const request of handoffRequests.values()) {
+    if (request.tabId === tabId) finishHandoff(request, handoffError());
+  }
+}
+function takeBackHandoff(tabId) {
+  invalidateHandoff(tabId);
+  if (handoffs.delete(tabId)) {
+    // Synchronous permission revocation, with no browser activation or navigation.
+    disownAgentTab(tabId);
+    trustedShownTabs.delete(tabId);
+  }
+  return { ok: true };
+}
+function endHandoffSession(sessionId) {
+  handoffSessions.delete(sessionId);
+  for (const request of handoffRequests.values()) {
+    if (request.sessionId === sessionId) finishHandoff(request, handoffError());
+  }
+  for (const [tabId, grant] of handoffs) if (grant.sessionId === sessionId) takeBackHandoff(tabId);
+  return { ok: true };
+}
+function clearHandoffs() {
+  handoffTransportEpoch++;
+  for (const sessionId of handoffSessions.keys()) endHandoffSession(sessionId);
+}
+function approveHandoff(request) {
+  if (!handoffRequests.has(request.id) || !handoffSessions.has(request.sessionId) || agentTabs.has(request.tabId)) {
+    return finishHandoff(request, handoffError());
+  }
+  handoffs.set(request.tabId, request);
+  agentTabs.add(request.tabId);
+  agentTabOwners.set(request.tabId, request.ownerId);
+  noteTabUse(request.tabId);
+  // Invalidate competing approvals before they can steal this tab.
+  finishHandoff(request, { ok: true, tabId: request.tabId, owned: true });
+  invalidateHandoff(request.tabId);
+  return { ok: true, tabId: request.tabId, owned: true };
+}
+function handoffFallback(request) {
+  request.phase = 'client';
+  const result = { error: 'Tab handoff needs approval', code: 'needs_user', retryable: false,
+    state: { reason: 'approval', detail: 'tab_handoff', action: 'requestTab', tabId: request.tabId,
+      title: request.title, url: request.url, message: `${request.clientName} requests this tab: ${request.reason}`,
+      confirmToken: request.id, expiresInSeconds: HANDOFF_TOKEN_MS / 1000, approval: 'token' },
+    hint: 'Ask the user, then repeat the identical request with confirm_token; otherwise work in your own tab.' };
+  finishHandoff(request, result, true);
+  request.timer = setTimeout(() => finishHandoff(request, handoffError()), HANDOFF_TOKEN_MS);
+}
+async function requestTab(params) {
+  const session = handoffSessions.get(params.sessionId);
+  if (!session || session.ownerId !== params.ownerId) return handoffError();
+  if (!Number.isSafeInteger(params.tabId) || typeof params.reason !== 'string' ||
+      !params.reason.trim() || params.reason.length > 1000) {
+    return { error: 'request requires tab_id and a reason of 1–1000 characters', code: 'invalid_argument' };
+  }
+  const load = tabLoads.get(params.tabId);
+  const tab = await browser.tabs.get(params.tabId).catch(() => null);
+  if (tabLoads.get(params.tabId) !== load) return handoffError();
+  if (!tab || handoffSessions.get(params.sessionId) !== session) return handoffError();
+  if (params.confirmToken) {
+    const request = handoffRequests.get(params.confirmToken);
+    if (!request || request.phase !== 'client' || request.sessionId !== params.sessionId ||
+        request.ownerId !== params.ownerId || request.tabId !== params.tabId || request.reason !== params.reason ||
+        request.url !== tab.url) return handoffError();
+    return approveHandoff(request);
+  }
+  if (ownsTab(tab.id, params.ownerId, params.sessionId)) return { ok: true, tabId: tab.id, owned: true };
+  if (agentTabs.has(tab.id)) return tabError('Another client or session owns this tab', 'user_tab_read_only',
+    { tabId: tab.id, action: 'requestTab' }, false);
+  if (handoffRequests.size >= 64 || tab.status === 'loading') return handoffError();
+  // One outstanding request per session/tab; a repeated call cannot leave invisible stale prompts.
+  for (const request of handoffRequests.values()) {
+    if (request.tabId === tab.id && request.sessionId === params.sessionId) finishHandoff(request, handoffError());
+  }
+  return new Promise(resolve => {
+    const request = { id: crypto.randomUUID(), sessionId: params.sessionId, ownerId: params.ownerId,
+      clientName: session.clientName, tabId: tab.id, title: tab.title || '', url: tab.url,
+      reason: params.reason, phase: 'browser', resolve };
+    handoffRequests.set(request.id, request);
+    request.timer = setTimeout(() => handoffFallback(request), HANDOFF_BROWSER_MS);
+    handoffBadge();
+  });
+}
+function handoffPopup() {
+  const publicRecord = r => ({ id: r.id, tabId: r.tabId, clientName: r.clientName,
+    title: r.title, url: r.url, reason: r.reason });
+  return { requests: [...handoffRequests.values()].filter(r => r.phase === 'browser').map(publicRecord),
+    tabs: [...handoffs.values()].map(publicRecord) };
+}
+function handoffDecision(id, decision) {
+  const request = handoffRequests.get(id);
+  if (!request || request.phase !== 'browser') return handoffError();
+  return decision === 'approve' ? approveHandoff(request) : finishHandoff(request, handoffError('declined'));
 }
 
 // == Agent tab cleanup (docs/api-reference.md#agent-tab-cleanup) ==
@@ -547,6 +674,11 @@ const POINTER_PAUSE_MAX_MS = 10000;
 browser.runtime.onMessage.addListener((msg, sender) => {
   // The toolbar popup: an extension page, not a tab's content script.
   const fromPopup = !sender.tab && sender.url === browser.runtime.getURL?.('popup/popup.html');
+  if (fromPopup && sender.id === browser.runtime.id) {
+    if (msg.action === 'handoffs') return Promise.resolve(handoffPopup());
+    if (msg.action === 'handoffDecision') return Promise.resolve(handoffDecision(msg.id, msg.decision));
+    if (msg.action === 'takeBackHandoff') return Promise.resolve(takeBackHandoff(msg.tabId));
+  }
   if (fromPopup && msg.action === 'agentTabCount') return agentTabCount();
   if (fromPopup && msg.action === 'closeAgentTabs') return closeAgentTabs();
   if (msg.action === 'trustedTabInput' && Number.isInteger(sender.tab?.id) && sender.tab.id >= 0 &&
@@ -647,6 +779,7 @@ function connect() {
         console.log('[Kitsune] <<', command.action, cmdId);
         
         await agentTabsRestored;
+        if (ws !== socket && ['openHandoffSession', 'requestTab'].includes(command.action)) return;
         const result = await handleCommand(command);
         
         if (ws && ws.readyState === WebSocket.OPEN) {
@@ -706,6 +839,7 @@ for (const event of [browser.windows?.onCreated, browser.windows?.onRemoved,
 }
 
 function cleanup() {
+  clearHandoffs();
   stopHeartbeat();
   if (ws) {
     try { ws.close(); } catch {}
@@ -873,7 +1007,7 @@ async function tabWriteError(params) {
   }
   if (params.userTabsWritable === true) return null;
   const targets = windowAction ? tabs.filter(t => t.windowId === params.windowId) : [targetTab];
-  const tab = targets.find(t => !agentTabs.has(t.id) || agentTabOwners.get(t.id) !== (params.ownerId ?? null));
+  const tab = targets.find(t => !ownsTab(t.id, params.ownerId, params.sessionId));
   if (tab) return tabError(`Tab ${tab.id} is read-only for this client; nothing was done`, 'user_tab_read_only',
     { tabId: tab.id, index: tabs.findIndex(t => t.id === tab.id), action }, false);
   // Reordering a tab leaves the displayed page alone. Moving an active tab out can reveal
@@ -892,6 +1026,7 @@ const OPENED_TAB_URL_WAIT_MS = 1000;
 const BLOCKED_LINK_WAIT_MS = 500;
 
 async function handleCommand(command) {
+  const transportEpoch = handoffTransportEpoch;
   const params = { ...command };
   if (params.tabId != null) {
     const tabId = typeof params.tabId === 'string' && /^[0-9]+$/.test(params.tabId) ? Number(params.tabId) : params.tabId;
@@ -924,6 +1059,8 @@ async function handleCommand(command) {
   }
   const readOnly = await tabWriteError(params);
   if (readOnly) return readOnly;
+  // Revocation during activity inspection must not admit an as-yet undispatched write.
+  const admittedHandoff = handoffs.get(params.tabId);
   // browser_wait_for(time)'s delta (#350) is a post-action snapshot: KITSUNE_POST_ACTION_SNAPSHOT=0 turns it off.
   if (params.action === 'getSnapshot' && params.sinceObservation && params.includeSnapshot === false) return { ok: true };
   // Descriptions are audit metadata only; never use them to locate elements.
@@ -961,6 +1098,12 @@ async function handleCommand(command) {
     const busy = await userActiveError(await guardedTabId(params.action, params),
       ['closeWindow', 'resizeWindow'].includes(params.action) ? params.windowId : null);
     if (busy) return busy;
+  }
+  if (admittedHandoff && handoffs.get(params.tabId) !== admittedHandoff && writesTab(params.action, params)) {
+    return tabError('The user took this tab back', 'user_tab_read_only', { tabId: params.tabId }, false);
+  }
+  if (['openHandoffSession', 'requestTab'].includes(params.action) && transportEpoch !== handoffTransportEpoch) {
+    return handoffError();
   }
   if (tracksOpenedTabs && params.tabId != null) actionStarts.set(params.tabId, tabsCreated);
   if (guarded && params.tabId != null) actionPages.delete(params.tabId);
@@ -1304,7 +1447,13 @@ async function dispatchCommand(command) {
   switch (action) {
     // Browser-level commands (handled here)
     case 'screenshot':   return await captureScreenshot(params);
-    case 'getTabs':      return await getOpenTabs(params.ownerId);
+    case 'openHandoffSession':
+      if (typeof params.sessionId !== 'string' || !validOwnerId(params.ownerId)) return handoffError();
+      handoffSessions.set(params.sessionId, { ownerId: params.ownerId, clientName: params.clientName });
+      return { ok: true };
+    case 'endHandoffSession': return endHandoffSession(params.sessionId);
+    case 'requestTab': return await requestTab(params);
+    case 'getTabs':      return await getOpenTabs(params.ownerId, params.sessionId);
     case 'waitForUrl':   return await waitForTabProperty('url', params);
     case 'waitForTitle': return await waitForTabProperty('title', params);
     case 'getOpenedTabs': return await getOpenedTabs(params.tabId);
@@ -1528,14 +1677,14 @@ async function captureScreenshot(params = {}) {
   }
 }
 
-async function getOpenTabs(ownerId = null) {
+async function getOpenTabs(ownerId = null, sessionId = null) {
   try {
     const tabs = await browser.tabs.query({});
     return {
       ownershipByClient: true,
       tabs: tabs.map(t => ({
         id: t.id, url: t.url, title: t.title,
-        active: t.active, windowId: t.windowId, index: t.index, owned: agentTabs.has(t.id) && agentTabOwners.get(t.id) === ownerId
+        active: t.active, windowId: t.windowId, index: t.index, owned: ownsTab(t.id, ownerId, sessionId)
       }))
     };
   } catch (e) {
@@ -1929,7 +2078,7 @@ const TAB_FAILURE_HINTS = {
   error_page: 'The page has no scriptable document (often an error response with an empty body), so reading it again fails the same way; check state.httpStatus and state.title, then navigate the tab elsewhere or target another tab.',
   host_permission_denied: 'Firefox does not let Kitsune script this site. For state.reason not_granted, allow its site access in about:addons → Kitsune → Permissions; restricted_domain sites (addons.mozilla.org, …) are closed to all extensions, so use another tab.',
   user_tab_read_only: 'Open a tab of your own with browser_tabs action=new and this URL, or request this tab ' +
-    'with browser_tabs action=request when handoff support is available; reads must not scroll or focus it.',
+    'with browser_tabs action=request; reads must not scroll or focus it.',
   user_tab: 'The agent did not open this tab (owned: false in browser_tabs list), so it stays open. Leave it, ' +
     'or ask the user and repeat a direct browser_tabs close with the confirm_token that call returns.',
   user_active: 'The user is using this tab (state.reason); nothing was done. Retry in a few seconds, ' +
@@ -2753,7 +2902,7 @@ async function forwardToContent(action, params) {
       return failure;
     }
 
-    const { ownerId, userTabsWritable, ...contentParams } = expanded.params;
+    const { ownerId, sessionId, clientName, userTabsWritable, ...contentParams } = expanded.params;
     let message = { action, ...contentParams };
     if (delta) {
       deltaScope ??= { parent: frameId, depth: 0, budget: frameReadBudget() };

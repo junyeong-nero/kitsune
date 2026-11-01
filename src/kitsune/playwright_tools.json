@@ -850,7 +850,7 @@
   },
   {
    "name": "browser_tabs",
-   "description": "List, create, close, or select a browser tab.",
+   "description": "List, create, close, select, or request a tab handoff.",
    "inputSchema": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
@@ -861,16 +861,19 @@
        "list",
        "new",
        "close",
-       "select"
+       "select",
+       "request"
       ],
       "description": "Operation to perform"
      },
      "index": {
-      "description": "Tab index, used for close/select. If omitted for close, current tab is closed.",
+      "description": "close/select/request: tab index; close defaults to current.",
       "type": "number"
      },
+     "tab_id": {"type": "integer", "description": "request: ID instead of index."},
+     "reason": {"type": "string", "description": "request: reason shown to user."},
      "url": {
-      "description": "URL to navigate to in the new tab, used for new.",
+      "description": "new: URL.",
       "type": "string"
      }
     },

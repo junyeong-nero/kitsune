@@ -203,6 +203,8 @@ async function testBackgroundCopiesVisibility() {
   });
   vm.runInContext(source.slice(source.indexOf('const POST_SNAPSHOT_ACTIONS'), source.indexOf('async function dispatchCommand')), context);
   context.tabWriteError = async () => null; // Permission policy is tested in user_tabs_read_only.cjs.
+  context.handoffs = new Map();
+  context.handoffTransportEpoch = 0;
   const navigated = await context.handleCommand({ action: 'navigate', url: 'https://example.test/' });
   assert.equal(navigated.snapshot, 'tree');
   assert.equal(navigated.visibilityState, 'hidden');

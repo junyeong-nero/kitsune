@@ -185,6 +185,14 @@ class KitsuneMCP(FastMCP):
         return _with_tab_index(self._checkpointed(name, arguments or {}, result, elicits, tab))
 
     async def _run_tool(self, name, arguments):
+        if name == "browser_tabs" and (arguments or {}).get("action") == "request" and self.session() is not None:
+            params = getattr(self.session(), "client_params", None)
+            info = getattr(params, "clientInfo", None)
+            try:
+                await _client.open_handoff_session(getattr(info, "name", None) or _client.owner_id)
+            except Exception:
+                return CallToolResult(content=[_compact_json({"error": "Could not establish a live handoff session",
+                                                              "code": "session_required"})], isError=True)
         if name in playwright_tools.SCHEMAS and (arguments or {}).get("filename"):
             # Relative file names resolve against the client's workspace root (#225).
             root = playwright_tools.client_root.set(await first_client_root(self.get_context()))
@@ -372,7 +380,10 @@ async def _session_lifespan(server):
     # Low-level Server.run enters this once per MCP session, not once per tool or process.
     if USER_TABS_ALIASES:
         print(user_tabs_deprecation(USER_TABS_ALIASES), file=sys.stderr)
-    yield {}
+    try:
+        yield {}
+    finally:
+        await _client.close_handoff_session()
 
 
 mcp = KitsuneMCP("Kitsune", lifespan=_session_lifespan)
@@ -630,6 +641,10 @@ def _approval_message(name: str, arguments: dict, state: dict) -> str:
     lines += [f"Arguments: {rest}"] if rest != "{}" else []
     lines += [f"Tab: {tab}"] if tab else []
     lines += [f"Held because {why}."]
+    if state.get("detail") == "tab_handoff":
+        lines += ["Approve hands this tab to this client until you take it back in the Kitsune popup or the session ends. "
+                  "Later writes need no handoff prompt; Decline leaves the tab yours."]
+        return "\n".join(lines)
     lines += (["Approve runs this action once here; Decline means the agent should not do it in this tab."]
               if state.get("detail") == "user_viewing" else ["Approve runs this action once; Decline leaves it undone."])
     return "\n".join(lines)

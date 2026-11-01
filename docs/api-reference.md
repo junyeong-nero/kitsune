@@ -1256,7 +1256,7 @@ no prompt or confirmation token. `state` contains `tabId`, `index` (the zero-bas
 ```json
 {"error":"Tab 12 is read-only for this client; nothing was done","code":"user_tab_read_only",
  "retryable":false,"state":{"tabId":12,"index":0,"action":"click"},
- "hint":"Open a tab of your own with browser_tabs action=new and this URL, or request this tab with browser_tabs action=request when handoff support is available; reads must not scroll or focus it."}
+ "hint":"Open a tab of your own with browser_tabs action=new and this URL, or request this tab with browser_tabs action=request; reads must not scroll or focus it."}
 ```
 
 - Allowed: snapshots, ordinary find, DOM/console/network reads and viewport screenshots.
@@ -1309,8 +1309,52 @@ no prompt or confirmation token. `state` contains `tabId`, `index` (the zero-bas
 `current` always identifies the agent's actual current tab, whoever owns it (#399).
 Core `browser_tabs select` changes the agent's current selection, not the shown tab;
 low-level `switchTab` changes the shown tab. Both refuse user-tab targets. Neither grants ownership.
-The hint's `browser_tabs action=request` is future handoff support (#396), not implemented here.
-Existing approval tokens do not grant ownership or override this refusal.
+`browser_tabs action=request` asks for an explicit handoff (#396), described below.
+Tokens for other actions do not grant ownership or override this refusal.
+
+#### Requesting and returning a tab
+
+Use `browser_tabs(action="request", index=0, reason="Explain why this tab is needed")`,
+or supply `tab_id` instead of `index`. The native Python tool uses `tab_id`. This is an
+existing tool action; it adds no tools or instruction prefix. A request does not select,
+activate, navigate or focus the tab. After approval, core `select` can make it current
+without changing the user's view; native writes may target its `tab_id` directly.
+
+The Kitsune toolbar badge marks pending requests. Its popup shows the client name,
+tab title, URL, and the agent's reason, with **Approve handoff** and **Decline**. These
+labels are untrusted text, not page HTML or executable links. Only the extension popup
+can answer: a page/content script cannot spoof it. A browser answer completes the call
+without a client prompt. No answer for **30 seconds** retires that browser prompt and
+falls back to MCP elicitation. Without elicitation the result contains a 120-second
+confirm token: ask the user and repeat the identical request with `confirm_token`.
+Tokens are one-use and bound to the session, tab, document and reason. Reordering an
+index must never authorize a different tab; if the repeat no longer targets the original
+tab, request it again. Navigation before approval invalidates the prompt/token. Navigation
+after approval preserves ownership. A decline returns `needs_user` with
+`state.decision="declined"` and recommends an agent-created tab.
+
+A successful handoff is `owned` for this requesting session, including writes without
+further handoff prompts (ordinary policy checks and `user_active` still apply). The popup
+lists handed-off tabs by client and provides **Take back**. Taking back immediately revokes
+permission without changing the user's view. It does not undo an action already sent to
+the page or OS. Other clients' tabs, including handoffs to another simultaneous session
+of the same stable owner, cannot be requested/transferred: they remain read-only.
+
+Handoffs are memory-only, separate from persistent `owner_id` ownership. A dedicated
+authenticated bridge connection represents the MCP session; normal shutdown closes it,
+and EOF after abrupt process exit returns that session's handed-off tabs. Detection of
+network/process failure is not instantaneous: it depends on socket closure/detection.
+Bridge/extension disconnection or extension reload also drops grants and pending approvals;
+reconnection requires fresh approval. At most 64 channels and 64 pending approvals are
+kept. Session secrets are never tool arguments, page messages, popup labels or results.
+
+Only explicitly handed-off tabs return. Tabs the agent originally opened, and children
+it opens from a handed-off tab, remain persistent agent tabs. The trusted-input exception
+for user-opened children still applies. Closing a tab clears its pending approvals/grant.
+
+Handoff holds intentionally do not offer `browser_resume` checkpoints in this version.
+Use the exact token repeat while valid; after decline, expiry, take-back or disconnect,
+make a fresh `browser_tabs action=request`. Existing tools' resume behavior is unchanged.
 
 Pools are partitioned by stable client owner: create/acquire/release/shrink affect only
 that owner's pool. Releasing another owner's tab is refused, with no transfer of ownership.

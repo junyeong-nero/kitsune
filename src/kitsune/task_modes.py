@@ -15,6 +15,8 @@ CLIENT_HEADER = "X-Kitsune-Client"
 # The id of the MCP client a request comes from (BridgeClient.owner_id, #325): unlike CLIENT_HEADER it
 # survives an MCP server restart, so the bridge records the tabs it opens as that client's.
 OWNER_HEADER = "X-Kitsune-Owner"
+SESSION_HEADER = "X-Kitsune-Session"
+CLIENT_NAME_HEADER = "X-Kitsune-Client-Name"
 # A random secret per MCP server process, on each of its bridge requests (#376). The bridge keeps only its
 # hash, with each confirm token issued to one of those requests.
 APPROVER_HEADER = "X-Kitsune-Approver"
