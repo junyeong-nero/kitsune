@@ -449,7 +449,8 @@
       'settleState':           () => settleState(),
       'getPageInfo':           () => getPageInfo(),
       'handleDialog':          () => handleDialog(msg.accept, msg.prompt_text),
-      'waitForText':           () => waitForText(msg.text, msg.text_gone, msg.timeout, msg.diagnose === true),
+      'waitForText':           () => waitForText(msg.text, msg.text_gone, msg.timeout, msg.diagnose === true,
+                                     msg.text_seen),
       'getPageText':           () => getPageText(msg.selector),
       'getSnapshot':           () => {
                                      // sinceObservation (#350): the delta against the page the agent last saw.
@@ -2829,10 +2830,13 @@
         'name_matches, or wait for text the page shows.' };
   }
 
-  function waitForText(text, textGone, timeout = 10000, diagnose = false) {
+  // textSeen (#402): how often text occurred when a new_only wait began; text then counts as
+  // appeared only once it occurs more often. Such reads report text_count, the occurrences now.
+  function waitForText(text, textGone, timeout = 10000, diagnose = false, textSeen = null) {
     if ((text == null && textGone == null) ||
         [text, textGone].some(t => t != null && (typeof t !== 'string' || !t.length)) ||
-        !Number.isFinite(timeout) || timeout < 0) {
+        !Number.isFinite(timeout) || timeout < 0 ||
+        (textSeen != null && (text == null || !Number.isInteger(textSeen) || textSeen < 0))) {
       return { error: 'Provide non-empty text and/or text_gone and a non-negative timeout' };
     }
     const start = Date.now();
@@ -2843,12 +2847,14 @@
         const rendered = body && window.getComputedStyle(body).display !== 'none' &&
           window.getComputedStyle(document.documentElement).display !== 'none';
         const visibleText = rendered ? body.innerText : '';
-        const appeared = text == null || visibleText.includes(text);
+        const counted = textSeen == null ? {} : { text_count: visibleText.split(text).length - 1 };
+        const appeared = text == null ||
+          (textSeen == null ? visibleText.includes(text) : counted.text_count > textSeen);
         const disappeared = textGone == null || !visibleText.includes(textGone);
         const elapsed = Date.now() - start;
-        if (appeared && disappeared) resolve({ ok: true, text, text_gone: textGone, elapsed });
-        else if (elapsed >= timeout) resolve({ ok: false, text, text_gone: textGone, elapsed,
-          error: `Timed out after ${timeout}ms waiting for visible text`,
+        if (appeared && disappeared) resolve({ ok: true, text, text_gone: textGone, elapsed, ...counted });
+        else if (elapsed >= timeout) resolve({ ok: false, text, text_gone: textGone, elapsed, ...counted,
+          error: `Timed out after ${timeout}ms waiting for ${textSeen ? 'new ' : ''}visible text`,
           ...(diagnose && !appeared ? textNameDiagnosis(text) : {}) });
         else setTimeout(poll, Math.min(100, timeout - elapsed));
       }
