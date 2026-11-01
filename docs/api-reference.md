@@ -432,6 +432,11 @@ the old one, and adds `navigation_pending: true` when the page has not finished 
 A main-frame request that keeps the document (a 204, a download) is not a navigation: the
 action returns its delta, after up to 1 s more.
 
+**Text of a page a navigation loaded (#401).** The snapshot of a `browser_navigate` result, or of
+a `navigated` one, is readable, with the page's `- text "…"` lines, when the whole page fits
+2,000 characters; a larger page gets the compact snapshot (no text lines, up to 4,000
+characters) as before. A short notice or confirmation page then needs no `browser_snapshot`.
+
 ```json
 { "ok": true, "tag": "a", "navigated": { "url": "https://store.example/app/1030300/", "title": "Hollow Knight Silksong" },
   "snapshot": "- heading \"Hollow Knight Silksong\" [ref=e91] [level=1]\n…" }
@@ -456,7 +461,9 @@ That result's snapshot and refs describe the page. This applies only:
   "full"`), not a delta, a truncated snapshot or `navigation_pending`;
 - to the first such snapshot of the same tab after it; any other page action on the tab ends it;
 - when the text is identical. The core snapshot is readable and an action's is compact, so a
-  page with text lines the action result left out (`- text "…"`) is returned in full.
+  page with text lines the action result left out (`- text "…"`) is returned in full. A
+  `browser_navigate` or `navigated` result is readable too when the page fits 2,000
+  characters (#401), so a small page it loaded is not sent twice (#400).
 
 A scoped, saved or `boxes` snapshot, `browser_find` and other reads return the page as before.
 
