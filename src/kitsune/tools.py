@@ -662,7 +662,7 @@ def browser_trusted_click(
     x: Annotated[int, Field(description="X coordinate, used if selector is empty.")] = 0,
     y: Annotated[int, Field(description="Y coordinate, used if selector is empty.")] = 0,
     coordinate_space: Annotated[str, Field(
-        description='"viewport" for browser viewport coords or "screen" for desktop coords.')] = "viewport",
+        description='"viewport" for browser viewport coords; "screen" is refused (unbound target).')] = "viewport",
     focus: Annotated[bool, Field(
         description="Try to foreground the browser (Zen, Firefox, LibreWolf) first.")] = False,
     tab_id: Annotated[int | None, Field(
@@ -685,7 +685,9 @@ def browser_trusted_click(
     confirm_token and first work as in browser_check.
 
     This is slower and moves the user's cursor for the click, so prefer browser_click unless
-    a page specifically ignores synthetic clicks. The pointer is moved back afterwards;
+    a page specifically ignores synthetic clicks. Handed-off tabs refuse native input;
+    use DOM operations there or create a new own tab for native input. Raw screen coordinates are refused
+    even in writable mode. The pointer is moved back afterwards;
     pointerRestored reports it, with pointerRestoreError when that failed (the click still
     counts). Works on Windows, macOS and Linux (X11); macOS needs pyobjc Quartz or cliclick
     (which cannot middle-click, right-double-click or hold) plus Accessibility permission for the

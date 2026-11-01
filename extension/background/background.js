@@ -144,6 +144,7 @@ const agentTabOwners = new Map();
 const validOwnerId = owner => typeof owner === 'string' && /^[A-Za-z0-9_.:-]{1,64}$/.test(owner);
 const isOwnershipValue = value => value?.v === 1 || (value?.v === 2 && validOwnerId(value.owner));
 function ownAgentTab(tabId, ownerId = null) {
+  // Repeated bookkeeping cannot make a session grant persistent or native-input eligible.
   if (handoffs.has(tabId)) return;
   agentTabs.add(tabId);
   agentTabOwners.set(tabId, validOwnerId(ownerId) ? ownerId : null);
@@ -999,6 +1000,18 @@ const TAB_WRITE_ACTIONS = new Set([
   'markScreenshotTarget', 'unmarkScreenshotTarget', 'screenPoint',
   'trustedClick', 'trustedDrag', 'trustedType', 'trustedPressKey', 'uploadFile',
 ]);
+// Handoffs authorize DOM/browser operations, never OS input or its preparation. Consult
+// the background's grant map, not caller fields or the writable compatibility opt-out.
+const NATIVE_INPUT_ACTIONS = new Set([
+  'trustedClick', 'trustedDrag', 'trustedType', 'trustedPressKey', 'screenPoint', 'agentInput', 'focusState',
+]);
+function nativeHandoffError(action, tabId) {
+  if (!NATIVE_INPUT_ACTIONS.has(action) || !handoffs.has(tabId)) return null;
+  return { error: 'Handed-off tabs do not support native input',
+    code: 'unsupported_target', retryable: false,
+    state: { tabId, action, reason: 'handoff_native_input' },
+    hint: 'Use DOM operations on this tab, or create a new own tab with browser_tabs action=new for native input.' };
+}
 function writesTab(action, params) {
   return TAB_WRITE_ACTIONS.has(action) || (action === 'find' && (params.loadMore || params.load_more)) ||
     (action === 'storageOp' && !['get', 'list', 'snapshot'].includes(params.op));
@@ -1009,6 +1022,11 @@ const TAB_ADMISSION = Symbol('tab admission');
 function tabAdmissionError(params) {
   const admission = params?.[TAB_ADMISSION];
   if (!admission) return null;
+  for (const { tabId } of admission.tabs) {
+    const refusal = nativeHandoffError(admission.action, tabId);
+    if (refusal) return refusal;
+  }
+  if (admission.writable) return null;
   const revoked = admission.tabs.find(t => !ownsTab(t.tabId, admission.ownerId, admission.sessionId) ||
     handoffs.get(t.tabId) !== t.grant);
   return revoked ? tabError('Tab authorization changed before dispatch; nothing more was sent',
@@ -1060,12 +1078,15 @@ async function tabWriteError(params) {
       return tabError(`Window ${windowId} has no available tabs`, 'window_unavailable', { windowId, action }, false);
     }
   }
-  if (params.userTabsWritable === true) return null;
+  const writable = params.userTabsWritable === true;
   const targets = windowAction ? tabs.filter(t => t.windowId === params.windowId) : [targetTab];
-  const tab = targets.find(t => !ownsTab(t.id, params.ownerId, params.sessionId));
+  const tab = !writable && targets.find(t => !ownsTab(t.id, params.ownerId, params.sessionId));
   if (tab) return tabError(`Tab ${tab.id} is read-only for this client; nothing was done`, 'user_tab_read_only',
     { tabId: tab.id, index: tabs.findIndex(t => t.id === tab.id), action }, false);
-  params[TAB_ADMISSION] = { action, ownerId: params.ownerId, sessionId: params.sessionId,
+  const nativeRefusal = nativeHandoffError(action, tabId);
+  if (nativeRefusal) return nativeRefusal;
+  if (writable && !NATIVE_INPUT_ACTIONS.has(action)) return null;
+  params[TAB_ADMISSION] = { action, writable, ownerId: params.ownerId, sessionId: params.sessionId,
     windowId: windowAction ? params.windowId : null,
     tabs: targets.map(t => ({ tabId: t.id, grant: handoffs.get(t.id) })) };
   // Reordering a tab leaves the displayed page alone. Moving an active tab out can reveal

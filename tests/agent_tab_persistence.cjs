@@ -142,6 +142,7 @@ function load(state) {
   const owned = async ownerId => Object.fromEntries((await run({ action: 'getTabs', ownerId })).tabs.map(t => [t.id, t.owned]));
   return { run, start, owned, onCreated, onUpdated, onActivated,
     handoffs: () => context.handoffPopup(), decide: id => context.handoffDecision(id, 'approve'),
+    remark: (tabId, ownerId) => context.markAgentTab(tabId, ownerId),
     input: (tabId, at = state.now) => browser.runtime.onMessage.emit(
       { action: 'trustedTabInput', at }, { tab: { id: tabId } }),
   };
@@ -499,6 +500,14 @@ async function handoffsNeverRestoreCopiedPersistentOwnership() {
   await h.decide(h.handoffs().requests[0].id);
   assert.equal((await request.result).owned, true);
   assert.equal(stored(state, 1), undefined);
+  // Late ownership bookkeeping must not promote an ephemeral grant or remove its provenance.
+  h.remark(1, 'client-a');
+  await settle();
+  assert.equal(stored(state, 1), undefined);
+  const native = await h.run({ action: 'checkTabWrite', writeAction: 'trustedClick', tabId: 1,
+    ownerId: 'client-a', sessionId: 'session-a', userTabsWritable: true });
+  assert.equal(native.code, 'unsupported_target');
+  assert.equal(native.state.reason, 'handoff_native_input');
   assert.equal((await load(state).owned('client-a'))[1], false, 'handoff must never survive extension reload');
 }
 

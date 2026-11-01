@@ -1301,10 +1301,13 @@ no prompt or confirmation token. `state` contains `tabId`, `index` (the zero-bas
   and per-key field-focus checks; subsequent calls must refocus/revalidate the owned field.
   Explicit writable compatibility retains the previous shortcut/traversal behavior, while
   existing always-denied application escapes and focus/activity guards still apply.
-- Raw `coordinate_space="screen"` clicks cannot prove which tab they hit. Under the default
-  policy even an owned `tab_id` cannot authorize them (`unsupported_target`, nonretryable);
-  use a ref or viewport coordinates in an owned tab. Explicit writable compatibility retains
-  the previous raw-screen behavior and its OS-input limitations.
+- Raw `coordinate_space="screen"` clicks cannot prove which tab they hit. They are now
+  refused **even in writable compatibility mode and even with an owned `tab_id`**
+  (`unsupported_target`, nonretryable). This intentionally removes the former writable
+  raw-screen behavior: coordinates could otherwise hit a handed-off tab. The parameter
+  remains accepted so callers receive a structured refusal; the HTTP `space` alias is
+  also refused, and malformed coordinate-space values never fall back to raw-screen mode.
+  Use a ref or viewport coordinates on an originally agent-created tab instead.
 
 `current` always identifies the agent's actual current tab, whoever owns it (#399).
 Core `browser_tabs select` changes the agent's current selection, not the shown tab;
@@ -1318,7 +1321,8 @@ Use `browser_tabs(action="request", index=0, reason="Explain why this tab is nee
 or supply `tab_id` instead of `index`. The native Python tool uses `tab_id`. This is an
 existing tool action; it adds no tools or instruction prefix. A request does not select,
 activate, navigate or focus the tab. After approval, core `select` can make it current
-without changing the user's view; native writes may target its `tab_id` directly.
+without changing the user's view; Python/HTTP DOM operations may target its `tab_id` directly.
+A handoff does not grant trusted/native OS-input capability.
 
 The Kitsune toolbar badge marks pending requests. Its popup shows the client name,
 tab title, URL, and the agent's reason, with **Approve handoff** and **Decline**. These
@@ -1333,24 +1337,37 @@ tab, request it again. Navigation before approval invalidates the prompt/token. 
 after approval preserves ownership. A decline returns `needs_user` with
 `state.decision="declined"` and recommends an agent-created tab.
 
-A successful handoff is `owned` for this requesting session, including writes without
-further handoff prompts (ordinary policy checks and `user_active` still apply). The popup
+A successful handoff is `owned` for this requesting session, including DOM/browser writes
+without further handoff prompts (ordinary policy checks and `user_active` still apply). The popup
 lists handed-off tabs by client and provides **Take back**. Taking back immediately revokes
 permission without changing the user's view. It does not undo an action already sent to
-the page or OS. Other clients' tabs, including handoffs to another simultaneous session
+the page. Other clients' tabs, including handoffs to another simultaneous session
 of the same stable owner, cannot be requested/transferred: they remain read-only.
 
 Browser/content mutations retain their original admission and recheck it at dispatch,
 including readiness retries and every admitted tab of a window operation. Taking back
 and granting again does not revive an older command. Browser approval claims the request
 and retires the 30-second timer before storage work, so it cannot also trigger elicitation.
-**Native-input limitation:** the bridge makes a late, tab-bound ownership preflight, but
-revocation can still occur after the extension's reply and before the Python OS worker
-starts (including executor queue delays). This interval is not an already-dispatched
-OS action and is not atomically protected. Separate native preparation commands also do
-not share one grant-generation snapshot. Existing per-key checks limit subsequent input;
-an OS operation that has actually started cannot be cancelled. Already-dispatched page
-changes, including temporary screenshot styling/scroll, are not undone after revocation.
+**Handoffs are DOM/browser-only, not full native-input capability.** Trusted OS click
+(including double-click, held click and leaving the pointer for hover menus), drag, type
+and press-key are refused on handed-off tabs before focus, page preparation or OS scheduling.
+The low-level `screenPoint`, `agentInput` and `focusState` preparation routes are refused too.
+There is no separate native-hover tool; ordinary DOM `hover` remains supported, as do DOM
+click, fill/type, press-key and drag. An authorized handed-off target returns nonretryable
+`unsupported_target` with `state.reason="handoff_native_input"`, recommending DOM operations
+or a new own tab (`browser_tabs action=new`) for native input. Unowned tabs and another
+session's grant retain `user_tab_read_only` under the default policy.
+
+The extension decides from its internal grant provenance, never caller JSON. Writable
+opt-outs cannot authorize native input on a current handoff grant, and ownership bookkeeping
+cannot promote that grant into persistent ownership. Regranting does not change the native
+refusal. Because no native preparation or OS work is admitted for a handed-off target,
+executor queue delays and cross-command regrant cannot revive those denied operations.
+Native input on originally agent-created tabs remains supported, with existing activity,
+focus and late bound preflight checks. This is **not** a claim of atomic revocation for
+arbitrary native actions: extension-to-OS scheduling and already-started OS effects are not
+made atomic or cancellable. Already-dispatched page changes, including temporary screenshot
+styling/scroll, are not undone after revocation.
 
 Handoffs are memory-only, separate from persistent `owner_id` ownership. A dedicated
 authenticated bridge connection represents the MCP session (one stdio session per server
@@ -2904,8 +2921,11 @@ that ignore synthetic DOM clicks. It moves the user's cursor for the click, so p
 `browser_click`. Afterwards the cursor goes back to where it was;
 `restore_pointer=False` (request field `restorePointer: false`) leaves it on the
 target, for hover menus that close when the pointer leaves. A `selector` is scrolled
-into view and clicked at its center; otherwise `x`/`y` are viewport coordinates, or
-desktop coordinates with `coordinate_space="screen"`. The OS click lands on whatever the screen shows, so a
+into view and clicked at its center; otherwise `x`/`y` are viewport coordinates.
+Raw desktop coordinates (`coordinate_space="screen"`) return nonretryable `unsupported_target`,
+including in writable mode: no `tab_id` can bind where they land. Handed-off tabs also return
+`unsupported_target`; use DOM operations there or create a new own tab for native input.
+The OS click lands on whatever the screen shows, so a
 `tab_id` that is not the shown tab of its window is shown for the click, and the
 user's tab is shown again 300 ms after it unless the temporarily shown tab is now busy
 or the user changed the view (see [Shared browser](#shared-browser)). A
@@ -3006,7 +3026,7 @@ would otherwise land in the app in front, such as the terminal running the agent
 the user to show the browser there (switch to its Space, or leave full screen), then
 retry. With only cliclick the point cannot be checked, so a viewport click refuses only
 when `focus=True` was asked and the browser did not come to the front
-(`state.reason: "not_frontmost"`). `coordinate_space="screen"` clicks are not checked.
+(`state.reason: "not_frontmost"`). Raw `coordinate_space="screen"` clicks are refused altogether.
 
 The browser's window at the point must also be the tab's own window (#336). The extension
 reports that window's bounds (`browser.windows.get`), and the bridge compares them with the
@@ -3514,7 +3534,7 @@ Add `"wait": true, "timeout": 10000` to wait for the target first (see
 
 ### POST /api/trusted-click
 `{ "selector": "button.submit", "focus": true }` or
-`{ "coords": { "x": 640, "y": 400 }, "coordinateSpace": "screen" }` — optional
+`{ "coords": { "x": 640, "y": 400 }, "coordinateSpace": "viewport" }` — optional
 `tabId`, `title`, `process`, `restorePointer`, `button` (`left`/`right`/`middle`),
 `clickCount` (1 or 2), `modifiers` (`["Shift", "Control", "Alt", "Meta"]`). OS-level click on Windows, macOS and Linux (X11); see
 [`browser_trusted_click`](#browser_trusted_clickselector-x0-y0-coordinate_spaceviewport-focusfalse-tab_idnone-firstfalse-restore_pointertrue-buttonleft-click_count1-modifiersnone-hold_ms0).

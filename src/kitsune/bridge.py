@@ -1053,10 +1053,14 @@ def _focus_check_click(point, focus, title, process, restore_pointer, button="le
 
 
 def _unbound_screen_click(params):
-    if not _user_tabs_writable.get() and (params.get("coordinateSpace") or params.get("space")) == "screen":
+    spaces = [params[key] for key in ("coordinateSpace", "space") if key in params]
+    if "screen" in spaces:
         return _action_error("Screen coordinates cannot be bound to an owned tab; nothing was done",
                              "unsupported_target", retryable=False,
-                             hint="Use a ref or viewport coordinates on a tab of your own, not absolute screen coordinates.")
+                             hint="Use a ref or viewport coordinates on an originally agent-created tab, not absolute screen coordinates.")
+    if any(space != "viewport" for space in spaces):
+        return _action_error("Native clicks require coordinateSpace=viewport", "unsupported_target", retryable=False,
+                             hint="Use viewport coordinates or a ref on an originally agent-created tab.")
     return None
 
 
@@ -1076,10 +1080,10 @@ def _trusted_click_coordinates(params):
 
 
 async def _handoff_native_refusal(params, point):
-    """Late, bound preflight before dispatching a native operation for a live handoff session.
+    """Late bound check for session callers; handoff targets are refused by the extension.
 
-    This closes preparation awaits, not the cross-process gap after the reply or the OS
-    executor queue. An OS operation already started cannot be cancelled by this check.
+    Native input remains supported on originally agent-created tabs. This check does not
+    make their extension-to-OS dispatch atomic or cancel an OS operation already started.
     """
     if _handoff_identity.get() is None:
         return None
@@ -1093,7 +1097,7 @@ async def _handoff_native_refusal(params, point):
     if isinstance(result, dict) and result.get("error"):
         return result
     return _action_error("Native tab authorization could not be verified", "user_tab_read_only", retryable=False,
-                         hint="No OS input was sent; request a fresh handoff or use your own tab.")
+                         hint="No OS input was sent; use DOM operations or create a new own tab for native input.")
 
 
 async def trusted_click(params):
@@ -1102,7 +1106,6 @@ async def trusted_click(params):
         return refusal
     selector = params.get("selector") or ""
     coords = params.get("coords") or {}
-    coordinate_space = params.get("coordinateSpace") or params.get("space") or "viewport"
     focus = params.get("focus", False)
     x = params.get("x", coords.get("x"))
     y = params.get("y", coords.get("y"))
@@ -1122,32 +1125,6 @@ async def trusted_click(params):
     # Refuse before focusing the browser or showing the tab for a click that cannot be sent.
     if mac_backend == "cliclick" and (refusal := _cliclick_refusal(button, click_count, hold)):
         return refusal
-
-    if coordinate_space == "screen":
-        # Writable compatibility permits raw screen coordinates, but not bypassing activity.
-        # Bind the implicit tab once; coordinates themselves still cannot prove the destination.
-        activity = await send_to_extension("checkUserActivity", {
-            **({"tabId": params["tabId"]} if params.get("tabId") is not None else {})})
-        if "error" in activity:
-            return activity
-        # Focus and the click wait and sleep: off the event loop, which serves every client (#336).
-        def focus_and_click():
-            return (_focus_browser_window(title, process) if focus else False,
-                    _native_click_screen(x, y, restore_pointer, button, click_count, modifiers, hold))
-        focused, clicked = await asyncio.to_thread(focus_and_click)
-        if "error" in clicked:
-            return clicked
-        return {
-            "ok": True,
-            "trusted": True,
-            "coordinateSpace": "screen",
-            "screenX": x,
-            "screenY": y,
-            "focused": focused,
-            "focusRequested": bool(focus),
-            "clickBackend": clicked.get("backend"),
-            **_pointer_restore_fields(clicked),
-        }
 
     point_params = {"selector": selector, "x": x, "y": y, "click": True}
     if params.get("first"):
@@ -2338,7 +2315,10 @@ async def _tab_write_refusal(action, params):
         action = "executeJS"
     tab_actions = (WRITE_ACTIONS - {"newTab", "createWindow", "duplicateTab", "cookies", "clipboard",
                                     "downloads", "clearBrowsingData", "intercept", "reloadExtension", "loadSession"})
-    if _user_tabs_writable.get() or action not in tab_actions | {
+    native = action in {"trustedClick", "trustedDrag", "trustedType", "trustedPressKey",
+                        "screenPoint", "agentInput", "focusState"}
+    if (_user_tabs_writable.get() and not native) or action not in tab_actions | {
+            "screenPoint", "agentInput", "focusState",
             "find", "waitForResult", "focusElement", "blurElement", "focusWindow", "elementScreenshot", "fullPageScreenshot"}:
         return None
     # Non-finite coordinates cannot even be represented on the extension's JSON transport.

@@ -31,7 +31,7 @@ function barrier(object, method, matches) {
 }
 async function pingRevocations() {
   for (const how of ['take-back', 'session-end', 'transport', 'regrant']) {
-    for (const action of ['click', 'agentInput', 'focusState', 'screenPoint', 'clickAndWaitNavigation',
+    for (const action of ['click', 'clickAndWaitNavigation',
       'closeTab', 'elementScreenshot', 'fullPageScreenshot']) {
       const h = await setup();
       const gate = barrier(h.browser.tabs, 'sendMessage', (_id, msg) => msg.action === 'ping');
@@ -133,15 +133,13 @@ async function windowAndBrowserBoundaries() {
 }
 async function noLateOSAuthorization() {
   const h = await setup();
-  const gate = barrier(h.browser.windows, 'get', () => true);
-  const pending = h.send({ action: 'screenPoint', ...client, tabId: 1, selector: '#go', click: true });
-  await gate.entered;
-  assert.ok(h.sent.some(([name]) => name === 'screenPoint'), 'measurement already dispatched');
-  await h.revoke(1);
-  gate.release();
-  const result = await pending;
-  assert.equal(result.code, 'user_tab_read_only');
-  assert.equal(result.screenX, undefined, 'do not return OS authorization after final async window read');
+  for (const action of ['screenPoint', 'agentInput', 'focusState']) {
+    const result = await h.send({ action, ...client, tabId: 1, selector: '#go', click: true });
+    assert.equal(result.code, 'unsupported_target');
+    assert.equal(result.screenX, undefined, 'handoffs never produce OS authorization');
+  }
+  assert.deepEqual(h.sent, [], 'no native preparation, not even a readiness/activity query');
+  assert.deepEqual(h.calls, []);
 }
 async function browserDecisionClaimsTimer() {
   for (const cancel of [null, 'navigate', 'session', 'take-back', 'storage-error']) {
