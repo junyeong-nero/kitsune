@@ -207,11 +207,8 @@ _client_id = contextvars.ContextVar("kitsune_client_id", default=None)
 _CLIENT_ID = _re.compile(CLIENT_ID_PATTERN)
 # The calling MCP client's owner id (OWNER_HEADER, #325), validated like the client id.
 _owner_id = contextvars.ContextVar("kitsune_owner_id", default=None)
-# tab id -> {"owner", "opened" (time.monotonic())} of open tabs that a request with an owner id
-# opened (#325). Only this process holds it: a restarted bridge knows no tab's owner. A new extension
-# connection clears it, since a browser restart reuses tab ids. The extension's `owned` survives an
-# extension reload or a restored browser restart (#376); this record does not, so no tab is `mine`
-# after one.
+# Legacy-extension ownership fallback and most-recent-first ordering for mine (#325).
+# Modern extensions persist per-client ownership themselves (#394); this cache is not authority.
 _tab_openers = {}
 # Tabs a batch or workflow call's newTab steps opened and did not close, oldest first (#303).
 _container_new_tabs = contextvars.ContextVar("kitsune_container_new_tabs", default=None)
@@ -3076,8 +3073,9 @@ def _with_own_tabs(result, own_only):
     """A getTabs result whose tabs the calling client opened carry mine: true (#325).
 
     own_only keeps only those, most recently opened first. Without an owner id no tab is mine, and
-    neither is a tab the extension no longer counts as the agent's (owned), such as one the user
-    took back, nor a tab pool tab, which any client may acquire. It runs in the HTTP thread, so it
+    neither is a tab the extension no longer counts as this client's (owned), nor a shared pool tab.
+    Modern extensions decide ownership from persistent session values; older extensions use the
+    bridge's opener cache conservatively. It runs in the HTTP thread, so it
     reads copies of _tab_openers and the pool.
     """
     tabs = result.get("tabs") if isinstance(result, dict) else None
@@ -3087,13 +3085,22 @@ def _with_own_tabs(result, own_only):
     openers = dict(_tab_openers)
     pool = set(_tab_pool["available"]) | set(_tab_pool["in_use"])
 
+    per_client = result.get("ownershipByClient") is True
+    if not per_client and owner is not None:
+        # An older extension's global flag is not proof this client owns the tab.
+        tabs = [{**tab, "owned": tab.get("owned") is True
+                 and (openers.get(tab.get("id")) or {}).get("owner") == owner}
+                if isinstance(tab, dict) else tab for tab in tabs]
+
     def mine(tab):
         return (owner is not None and isinstance(tab, dict) and tab.get("owned") is True
-                and tab.get("id") not in pool and (openers.get(tab.get("id")) or {}).get("owner") == owner)
+                and tab.get("id") not in pool)
 
     if own_only:
-        tabs = sorted(filter(mine, tabs), key=lambda tab: openers[tab["id"]]["opened"], reverse=True)
-    return {**result, "tabs": [{**tab, "mine": True} if mine(tab) else tab for tab in tabs]}
+        tabs = sorted(filter(mine, tabs),
+                      key=lambda tab: (openers.get(tab["id"]) or {}).get("opened", 0), reverse=True)
+    return {**{key: value for key, value in result.items() if key != "ownershipByClient"},
+            "tabs": [{**tab, "mine": True} if mine(tab) else tab for tab in tabs]}
 
 
 async def _send_to_extension_raw(action, params=None, timeout=30):
@@ -3101,6 +3108,10 @@ async def _send_to_extension_raw(action, params=None, timeout=30):
     global command_counter
 
     params = dict(params or {})
+    # Identity is transport metadata, never a tool/container argument supplied by the caller.
+    params.pop("ownerId", None)
+    if _owner_id.get() is not None:
+        params["ownerId"] = _owner_id.get()
     post_action_snapshot = os.environ.get("KITSUNE_POST_ACTION_SNAPSHOT", "1").lower()
     params.setdefault("includeSnapshot", post_action_snapshot not in {"0", "false", "no", "off"})
     if post_action_snapshot == "text":

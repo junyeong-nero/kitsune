@@ -146,7 +146,7 @@ class Browser:
         return self.request("/api/status?diagnostics=true" if diagnostics else "/api/status")
 
     def tabs(self) -> list[dict]:
-        """Every open tab: id, url, title, active, windowId, index, and owned for a tab a client opened."""
+        """Every open tab: id, url, title, active, windowId, index, and owned for this client's tabs (including opener inheritance)."""
         return self.request("/api/tabs")["tabs"]
 
     def tab(self, tab_id: int) -> "Tab":

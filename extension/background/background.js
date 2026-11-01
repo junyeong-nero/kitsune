@@ -3,7 +3,7 @@
 
 'use strict';
 
-const EXPECTED_CONTENT_VERSION = 47;
+const EXPECTED_CONTENT_VERSION = 49;
 const WS_URL = 'ws://127.0.0.1:47652';
 // scripts/build_extension.py sets 'signed' for the AMO build (see content.js).
 const KITSUNE_BUILD = 'dev';
@@ -87,20 +87,28 @@ browser.webRequest?.onHeadersReceived.addListener(
 // Tabs a page opens (target=_blank links, window.open) name it as their opener.
 // Page actions report the tabs their tab opened since the action started.
 let tabsCreated = 0;
-const openedTabs = [];          // { tabId, openerTabId, seq } for open tabs with an opener
+const openedTabs = [];          // { tabId, openerTabId, seq, createdAt, inherited } for tabs with an opener
 const actionStarts = new Map(); // tabId -> tabsCreated when its last page action started
 const linkFallbackTabs = new Set(); // tabs opened by openBlockedLink
 browser.tabs.onCreated.addListener(tab => {
   tabsCreated++;
   if (tab.openerTabId != null) {
-    openedTabs.push({ tabId: tab.id, openerTabId: tab.openerTabId, seq: tabsCreated });
-    if (agentTouched(tab.openerTabId)) keepOpenedTabInBackground(tab);
+    const entry = { tabId: tab.id, openerTabId: tab.openerTabId, seq: tabsCreated,
+      createdAt: Date.now(), inherited: false };
+    openedTabs.push(entry);
+    inheritAgentTab(entry);
+    // The opener's session value may still be loading during browser startup.
+    agentTabsRestored.then(() => inheritAgentTab(entry));
+    if (!userOpenedTab(entry) && agentTouched(tab.openerTabId)) keepOpenedTabInBackground(tab);
   }
 });
 browser.tabs.onRemoved.addListener(tabId => {
   actionStarts.delete(tabId);
   linkFallbackTabs.delete(tabId);
   agentTabs.delete(tabId);
+  agentTabOwners.delete(tabId);
+  trustedTabInput.delete(tabId);
+  ownershipAgentInput.delete(tabId);
   agentTouches.delete(tabId);
   agentTabUsedAt.delete(tabId);
   revertActivation.delete(tabId);
@@ -118,8 +126,8 @@ browser.tabs.onRemoved.addListener(tabId => {
 // The user and the agent use this browser at the same time: agent work never takes the user's
 // focus, and it backs off from a tab the user is using.
 
-// Tabs the agent created or its page actions opened (getTabs `owned`); only these close without
-// the user's approval. They live in this background page, so a bridge restart keeps them, and
+// Tabs created by a client or inherited from its opener; getTabs reports ownership per client.
+// Existing compatibility guards allow these to close without the user's approval. They live in this background page, so a bridge restart keeps them, and
 // each is also stored as a session tab value (#376), which Firefox keeps across an extension
 // reload and a browser restart that restores the tab: restoreAgentTabs reads them back when this
 // script loads. Only this extension reads or writes its tab values, not pages or other
@@ -127,14 +135,83 @@ browser.tabs.onRemoved.addListener(tabId => {
 // the tests' mocks) ownership is in memory only, and a reload or restart forgets it.
 const agentTabs = new Set();
 const AGENT_TAB_KEY = 'kitsune.owned';
-const AGENT_TAB_VALUE = { v: 1 };
-function ownAgentTab(tabId) {
+// Keep global membership for the existing guards/cleanup; permissions change in #395.
+// A missing owner is legacy ownership, never ownership of a named MCP client.
+const agentTabOwners = new Map();
+const validOwnerId = owner => typeof owner === 'string' && /^[A-Za-z0-9_.:-]{1,64}$/.test(owner);
+const isOwnershipValue = value => value?.v === 1 || (value?.v === 2 && validOwnerId(value.owner));
+function ownAgentTab(tabId, ownerId = null) {
   agentTabs.add(tabId);
-  browser.sessions?.setTabValue?.(tabId, AGENT_TAB_KEY, AGENT_TAB_VALUE).catch(() => {});
+  agentTabOwners.set(tabId, validOwnerId(ownerId) ? ownerId : null);
+  const value = agentTabOwners.get(tabId) == null ? { v: 1 } : { v: 2, owner: ownerId };
+  browser.sessions?.setTabValue?.(tabId, AGENT_TAB_KEY, value).catch(() => {});
+}
+const trustedTabInput = new Map(); // tabId -> trusted content event's timestamp, not message arrival
+const USER_OPENED_TAB_WINDOW_MS = 1000;
+const userOpenedTab = (entry, at = trustedTabInput.get(entry.openerTabId)) => {
+  if (at != null && entry.createdAt >= at && entry.createdAt - at <= USER_OPENED_TAB_WINDOW_MS) {
+    entry.userOpened = true;
+  }
+  return !!entry.userOpened;
+};
+function inheritAgentTab(entry) {
+  if (!openedTabs.includes(entry) || userOpenedTab(entry) || !agentTabs.has(entry.openerTabId)) return;
+  const ownerId = agentTabOwners.get(entry.openerTabId);
+  if (agentTabs.has(entry.tabId) && (!entry.inherited || agentTabOwners.get(entry.tabId) === ownerId)) return;
+  if (!entry.inherited) noteTabUse(entry.tabId);
+  entry.inherited = true;
+  ownAgentTab(entry.tabId, ownerId);
+  for (const child of openedTabs.filter(t => t.openerTabId === entry.tabId)) inheritAgentTab(child);
+}
+function disownInheritedTabs(tabId) {
+  for (const entry of openedTabs.filter(t => t.openerTabId === tabId && t.inherited)) {
+    entry.inherited = false;
+    disownAgentTab(entry.tabId);
+    disownInheritedTabs(entry.tabId);
+  }
+}
+function noteTrustedTabInput(tabId, at) {
+  if (!Number.isFinite(at) || at > Date.now()) return;
+  trustedTabInput.set(tabId, Math.max(trustedTabInput.get(tabId) ?? -Infinity, at));
+  // Content messages and tabs.onCreated can arrive in either order. Only inherited ownership
+  // is revoked: an explicit newTab/duplicate/window command still belongs to its caller.
+  // Latch even while restoration is pending, before a newer timestamp replaces this event.
+  for (const entry of openedTabs.filter(t => t.openerTabId === tabId && userOpenedTab(t, at))) {
+    if (!entry.inherited) continue;
+    entry.inherited = false;
+    disownAgentTab(entry.tabId);
+    disownInheritedTabs(entry.tabId);
+  }
+}
+// Ownership-only exclusions for OS input announced by the bridge. Coordinate-based input can
+// land in a child frame that has never received a command, so these windows cover the whole tab.
+// They do not change user_active. Match the content script's event classes and finite deadlines.
+const ownershipAgentInput = new Map(); // tabId -> { click?: { at, until, modifiers }, keys?: { at, until } }
+function rememberOwnershipInput(tabId, kind, at, ms, modifiers = []) {
+  const windows = ownershipAgentInput.get(tabId) || {};
+  windows[kind] = { at, until: at + ms, modifiers: new Set(Array.isArray(modifiers) ? modifiers : []) };
+  ownershipAgentInput.set(tabId, windows);
+}
+function isOwnershipAgentInput(tabId, msg) {
+  const windows = ownershipAgentInput.get(tabId);
+  const during = span => span && msg.at >= span.at && msg.at < span.until;
+  return (during(windows?.click) && (/^(mouse|pointer|touch)/.test(msg.type) ||
+      (msg.type === 'keydown' && windows.click.modifiers.has(msg.modifier)))) ||
+    (during(windows?.keys) && /^(key|paste|input|beforeinput|composition)/.test(msg.type));
+}
+async function prepareOwnershipKeys(params) {
+  const tabId = params.tabId || await getActiveTabId();
+  const at = Date.now();
+  const result = await forwardToContent('agentInput', { ...params, tabId });
+  if (result?.ok === true) {
+    rememberOwnershipInput(tabId, 'keys', at, Math.min(Math.max(Number(params.ms) || 0, 0), 60000));
+  }
+  return result;
 }
 // For a tab that stays open and goes back to the user.
 function disownAgentTab(tabId) {
   agentTabs.delete(tabId);
+  agentTabOwners.delete(tabId);
   browser.sessions?.removeTabValue?.(tabId, AGENT_TAB_KEY).catch(() => {});
 }
 async function restoreAgentTabs() {
@@ -142,7 +219,10 @@ async function restoreAgentTabs() {
   const tabs = await browser.tabs.query({});
   await Promise.all(tabs.map(async tab => {
     const value = await browser.sessions.getTabValue(tab.id, AGENT_TAB_KEY).catch(() => undefined);
-    if (value?.v === AGENT_TAB_VALUE.v) agentTabs.add(tab.id);
+    if (isOwnershipValue(value) && !agentTabs.has(tab.id)) {
+      agentTabs.add(tab.id);
+      agentTabOwners.set(tab.id, value.v === 2 ? value.owner : null);
+    }
   }));
 }
 // Bridge commands wait for it, so none counts a restored agent tab as the user's. Tabs the
@@ -160,13 +240,13 @@ async function dropCopiedOwnership(tabId) {
   if (!browser.sessions?.getTabValue || agentTabs.has(tabId)) return;
   await agentTabsRestored;
   const value = await browser.sessions.getTabValue(tabId, AGENT_TAB_KEY).catch(() => undefined);
-  if (value?.v !== AGENT_TAB_VALUE.v || agentTabs.has(tabId)) return;
+  if (!isOwnershipValue(value) || agentTabs.has(tabId)) return;
   await browser.sessions.removeTabValue?.(tabId, AGENT_TAB_KEY).catch(() => {});
-  if (agentTabs.has(tabId)) ownAgentTab(tabId);
+  if (agentTabs.has(tabId)) ownAgentTab(tabId, agentTabOwners.get(tabId));
 }
 browser.tabs.onCreated.addListener(tab => dropCopiedOwnership(tab.id));
-// tabId -> { running, until }: agent commands on the tab now, and until when the tabs it opens
-// and the loads it starts are still the agent's (a click's tab or navigation can lag its reply).
+// tabId -> { running, until }: agent commands on the tab now, and the grace for keeping its
+// popups in the background and recognizing agent navigation (not an ownership deadline).
 const agentTouches = new Map();
 const AGENT_EFFECT_GRACE_MS = 2000;
 const agentTouched = tabId => {
@@ -186,8 +266,11 @@ function touchEnd(tabId) {
   touch.until = Date.now() + AGENT_EFFECT_GRACE_MS;
   noteTabUse(tabId);
 }
-function markAgentTab(tabId) {
-  ownAgentTab(tabId);
+function markAgentTab(tabId, ownerId = null) {
+  const entry = openedTabs.find(t => t.tabId === tabId);
+  if (entry) entry.inherited = false;
+  ownAgentTab(tabId, ownerId);
+  for (const child of openedTabs.filter(t => t.openerTabId === tabId)) inheritAgentTab(child);
   noteTabUse(tabId);
   const load = tabLoads.get(tabId);
   if (load) load.agent = true;
@@ -250,7 +333,6 @@ browser.windows?.getLastFocused?.().then(w => {
   focusedWindowId ??= w.focused ? w.id : browser.windows.WINDOW_ID_NONE;
 }, () => {});
 function keepOpenedTabInBackground(tab) {
-  markAgentTab(tab.id);
   const deadline = Date.now() + OPENED_TAB_REVERT_MS;
   revertActivation.set(tab.id, deadline);
   const last = lastActivation.get(tab.windowId);
@@ -329,7 +411,7 @@ browser.tabs.onCreated.addListener(tab => {
     }
     if (isSyncedCopy(tab, record)) {
       record.syncedCopies.add(tab.id);
-      ownAgentTab(tab.id);
+      ownAgentTab(tab.id, record.ownerId);
       return;
     }
   }
@@ -343,11 +425,11 @@ function returnSyncedCopy(tabId) {
 browser.tabs.onActivated?.addListener(({ tabId }) => returnSyncedCopy(tabId));
 
 // windows.create for an explicit request; windowCopies: whether to record the browser's copies in it.
-async function createAgentWindow(createData, urls, { windowCopies }) {
+async function createAgentWindow(createData, urls, { windowCopies, ownerId = null }) {
   const [focused, windows] = await Promise.all([
     browser.windows.getLastFocused().catch(() => null), browser.windows.getAll().catch(() => [])]);
   const record = {
-    windowId: null, userWindowIds: new Set(windows.map(w => w.id)), urls: new Set(['about:blank', ...urls]),
+    ownerId, windowId: null, userWindowIds: new Set(windows.map(w => w.id)), urls: new Set(['about:blank', ...urls]),
     until: Date.now() + AGENT_WINDOW_SYNC_MS, focusWindowId: focused?.focused ? focused.id : null,
     windowCopies: windowCopies ? new Set() : null, syncedCopies: new Set(), closing: false,
   };
@@ -454,6 +536,11 @@ browser.runtime.onMessage.addListener((msg, sender) => {
   const fromPopup = !sender.tab && sender.url === browser.runtime.getURL?.('popup/popup.html');
   if (fromPopup && msg.action === 'agentTabCount') return agentTabCount();
   if (fromPopup && msg.action === 'closeAgentTabs') return closeAgentTabs();
+  if (msg.action === 'trustedTabInput' && Number.isInteger(sender.tab?.id) && sender.tab.id >= 0 &&
+      sender.id === browser.runtime.id) {
+    if (!isOwnershipAgentInput(sender.tab.id, msg)) noteTrustedTabInput(sender.tab.id, msg.at);
+    return Promise.resolve(null);
+  }
   if (msg.action === 'getDialogPolicy') {
     return Promise.resolve(dialogPolicies.get(sender.tab?.id) || null);
   }
@@ -658,6 +745,9 @@ async function injectAllTabs() {
         continue;
       }
       try {
+        await browser.tabs.executeScript(tab.id, {
+          file: '/content/frame-input.js', allFrames: true, matchAboutBlank: true,
+        }).catch(() => {}); // An inaccessible child must not prevent the existing top-frame injection.
         await browser.tabs.executeScript(tab.id, { file: '/content/content.js' });
         injected++;
       } catch {
@@ -959,10 +1049,10 @@ async function runCommandSettled(params, { withSnapshot, deltaSnapshot, textSnap
       }
     } catch (e) { result.snapshot_error = e.message; }
   }
-  if (blankLink && params.tabId != null) await openBlockedLink(params.tabId, blankLink, result);
+  if (blankLink && params.tabId != null) await openBlockedLink(params.tabId, blankLink, result, params.ownerId);
   // A middle or Ctrl/Cmd click's link opens like a popup-blocked one; a cancelled click is the page's.
   if (newTabLink && !newTabLink.prevented && params.tabId != null) {
-    await openBlockedLink(params.tabId, { url: newTabLink.url, opener: false }, result);
+    await openBlockedLink(params.tabId, { url: newTabLink.url, opener: false }, result, params.ownerId);
   }
   // Checked after the snapshot, which gives a link's new tab time to be created.
   if (tracksOpenedTabs && params.tabId != null && result && typeof result === 'object') {
@@ -1083,7 +1173,7 @@ async function getOpenedTabs(tabId, urlWait = 0) {
 // drops the tab of a synthetic click. When no tab comes, open the link's own URL from the
 // clicked tab, as the click would have; a rel=opener link needs the page's window.opener,
 // so it only gets a popup_blocked warning.
-async function openBlockedLink(tabId, link, result) {
+async function openBlockedLink(tabId, link, result, ownerId) {
   const since = actionStarts.get(tabId);
   const opened = () => openedTabs.some(t => t.openerTabId === tabId && t.seq > since);
   for (let waited = 0; !opened() && waited < BLOCKED_LINK_WAIT_MS; waited += 50) {
@@ -1098,7 +1188,7 @@ async function openBlockedLink(tabId, link, result) {
         active: false,
       });
       linkFallbackTabs.add(tab.id);
-      markAgentTab(tab.id);
+      markAgentTab(tab.id, ownerId);
       return;
     } catch {}
   }
@@ -1116,7 +1206,7 @@ async function dispatchCommand(command) {
   switch (action) {
     // Browser-level commands (handled here)
     case 'screenshot':   return await captureScreenshot(params);
-    case 'getTabs':      return await getOpenTabs();
+    case 'getTabs':      return await getOpenTabs(params.ownerId);
     case 'waitForUrl':   return await waitForTabProperty('url', params);
     case 'waitForTitle': return await waitForTabProperty('title', params);
     case 'getOpenedTabs': return await getOpenedTabs(params.tabId);
@@ -1133,14 +1223,14 @@ async function dispatchCommand(command) {
     // 1.4.0 browser-level additions
     case 'pinTab':           return await updateTab(params.tabId, { pinned: !!params.pinned });
     case 'muteTab':          return await updateTab(params.tabId, { muted: !!params.muted });
-    case 'duplicateTab':     return await duplicateTab(params.tabId);
+    case 'duplicateTab':     return await duplicateTab(params.tabId, params.ownerId);
     case 'reloadTabBrowser': return await reloadTabBrowser(params.tabId, params.bypassCache);
     case 'goBack':
     case 'goForward':        return await goInHistory(params.tabId, action);
     case 'getZoom':          return await getZoom(params.tabId);
     case 'setZoom':          return await setZoom(params.tabId, params.factor);
     case 'getWindows':       return await getWindowsList();
-    case 'createWindow':     return await createWindow(params.url, params.incognito);
+    case 'createWindow':     return await createWindow(params.url, params.incognito, params.ownerId);
     case 'closeWindow':      return await closeWindow(params.windowId, params.userTabApproved);
     case 'focusWindow':      return await focusWindow(params.windowId);
     case 'resizeWindow':     return await resizeWindow(params.tabId, params.width, params.height);
@@ -1170,6 +1260,7 @@ async function dispatchCommand(command) {
       }
       return result;
     }
+    case 'agentInput':   return await prepareOwnershipKeys(params);
     case 'getPageText':  return await getPageText(params);
     case 'waitForText':
     case 'getPageInfo':
@@ -1188,7 +1279,6 @@ async function dispatchCommand(command) {
     case 'clearHighlight':
     case 'waitForElement':
     case 'focusState':
-    case 'agentInput':
     case 'waitForResult':
     // 1.4.0 forwarded actions
     case 'query':
@@ -1340,13 +1430,14 @@ async function captureScreenshot(params = {}) {
   }
 }
 
-async function getOpenTabs() {
+async function getOpenTabs(ownerId = null) {
   try {
     const tabs = await browser.tabs.query({});
     return {
+      ownershipByClient: true,
       tabs: tabs.map(t => ({
         id: t.id, url: t.url, title: t.title,
-        active: t.active, windowId: t.windowId, index: t.index, owned: agentTabs.has(t.id)
+        active: t.active, windowId: t.windowId, index: t.index, owned: agentTabs.has(t.id) && agentTabOwners.get(t.id) === ownerId
       }))
     };
   } catch (e) {
@@ -1491,11 +1582,11 @@ const STALLED_TAB_HINT = 'Retrying will not fix this: the browser needs an updat
 // Opens an agent-owned tab in the background. Immediate by default. With wait, resolves once the
 // tab loads (or the timeout passes, leaving the tab open) and reports the actual URL, so
 // redirects are visible.
-async function createTab(url, { wait = false, timeout = 15000 } = {}) {
+async function createTab(url, { wait = false, timeout = 15000, ownerId = null } = {}) {
   try {
     const target = url || 'about:blank';
     const tab = await browser.tabs.create({ url: target, active: false });
-    markAgentTab(tab.id);
+    markAgentTab(tab.id, ownerId);
     if (!wait) return { ok: true, tabId: tab.id };
     // A new tab has no previous document, so any non-about: 'complete' is the destination.
     const loaded = target.startsWith('about:')
@@ -1583,12 +1674,14 @@ async function screenPointForClick(params) {
     return await tabApiError(params.tabId, e);
   }
   let point;
+  const inputStartedAt = Date.now();
   try {
     point = await tabNotShownError(tab.id) || await zoomedScreenPoint(params);
     if (point.error) return point;
     // The bridge checks that this window is the one at the click point (#336).
     const win = await browser.windows.get(tab.windowId).catch(() => null);
     if (win) point = { ...point, window: { left: win.left, top: win.top, width: win.width, height: win.height } };
+    rememberOwnershipInput(tab.id, 'click', inputStartedAt, 2000, params.modifiers);
     if (previousTabId == null) return point;
     return { ...point, tabId: params.tabId, previousTabId };
   } finally {
@@ -2624,9 +2717,9 @@ const updateTab = (tabId, props) => onTab(tabId, async id => {
   return { ok: true, tabId: id, pinned: tab.pinned, muted: tab.mutedInfo?.muted };
 });
 
-const duplicateTab = tabId => onTab(tabId, async id => {
+const duplicateTab = (tabId, ownerId = null) => onTab(tabId, async id => {
   const dup = await browser.tabs.duplicate(id, { active: false });
-  markAgentTab(dup.id);
+  markAgentTab(dup.id, ownerId);
   return { ok: true, tabId: dup.id, sourceTabId: id };
 });
 
@@ -2664,19 +2757,19 @@ async function getWindowsList() {
   } catch (e) { return { error: e.message }; }
 }
 
-async function createWindow(url, incognito) {
+async function createWindow(url, incognito, ownerId = null) {
   try {
     let urls;
     if (url) urls = Array.isArray(url) ? url : [url];
     const { window: w, record } = await createAgentWindow({ url: urls, incognito: !!incognito }, urls || [],
-      { windowCopies: true });
+      { windowCopies: true, ownerId });
     // The tabs windows.create made are the agent's; the browser's copies are discarded (see Agent windows).
     const tabIds = [];
     for (const tab of w.tabs || []) {
       if (tab.discarded) {
         record.windowCopies.add(tab.id);
       } else {
-        markAgentTab(tab.id);
+        markAgentTab(tab.id, ownerId);
         tabIds.push(tab.id);
       }
     }
@@ -2743,7 +2836,8 @@ async function moveTabAction(tabId, windowId, index) {
 async function detachTab(tabId) {
   try {
     const tab = await browser.tabs.get(tabId);
-    const { window: w } = await createAgentWindow({ tabId }, [tab.url], { windowCopies: false });
+    const { window: w } = await createAgentWindow({ tabId }, [tab.url],
+      { windowCopies: false, ownerId: agentTabOwners.get(tabId) });
     return { ok: true, windowId: w.id, tabId };
   } catch (e) { return { error: e.message }; }
 }
