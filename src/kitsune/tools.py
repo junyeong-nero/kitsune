@@ -138,6 +138,9 @@ def _no_current_tab(name: str, arguments: dict) -> dict | None:
         action = _tabless_step_write(arguments.get("command"))
     elif name == "browser_storage":
         action = None if arguments.get("op") in _STORAGE_READS else "storageOp"
+    elif name == "browser_find":
+        # The core browser_find's load_more scrolls the page (#404).
+        action = "scroll" if arguments.get("load_more") else None
     else:
         action = None
     if action is None and name not in TAB_WRITE_TOOLS:
@@ -959,10 +962,12 @@ def browser_wait_for(
     timeout: int = 10000, tab_id: TabId = None,
     ref: str | None = None, element: str | None = None,
     confirm_token: Annotated[str | None, Field(description="js waits; see browser_check.")] = None,
+    new_only: bool = False,
 ) -> dict:
     """Wait for exactly one condition, or sleep for time seconds: selector/ref (a visible
     element, see browser_check; ref wins), text/text_gone (rendered page text, literal
-    substring; placeholders and aria-labels shown as snapshot names are not matched), js
+    substring; placeholders and aria-labels shown as snapshot names are not matched; text
+    already shown reports already_present, and new_only waits for a new occurrence), js
     (a non-empty result, including false/0; developer extension build only),
     url/title (JavaScript regex on tab metadata, so it survives navigation) or network_idle
     (500 ms without new resources). timeout is the maximum wait in ms; it does not limit time.
@@ -976,6 +981,8 @@ def browser_wait_for(
     conditions = [text, text_gone, js, url, title, time]
     if element_condition + sum(value is not None for value in conditions) + bool(network_idle) != 1:
         return {"error": "Provide exactly one of selector/ref, text, text_gone, js, url, title, network_idle, time"}
+    if new_only and text is None:
+        return {"error": "new_only applies only to text"}
     if timeout <= 0:
         return {"error": "timeout must be positive"}
     if time is not None:
@@ -992,6 +999,8 @@ def browser_wait_for(
         if (text if text is not None else text_gone) == "":
             return {"error": "text/text_gone must be non-empty"}
         body.update(text=text, text_gone=text_gone)
+        if new_only:
+            body["new_only"] = True
         result = _post("/api/wait-for-text", _request_body(body, tab_id), timeout=timeout / 1000 + 10)
         # What changed while waiting, as after a time sleep (#403): a toast that shows up as the
         # text resolves can be gone by the agent's next snapshot.
@@ -2089,19 +2098,19 @@ def browser_batch(
 
 @tool("core", annotations=dict(title="Resume a call", **DESTRUCTIVE))
 def browser_resume(
-    call: Annotated[int, Field(description="The call id from that response.")],
-    resume_token: Annotated[str, Field(description="The resume_token from that response.")],
+    call: Annotated[int, Field(description="From that result.")],
+    resume_token: Annotated[str, Field(description="From that result.")],
     observed: Annotated[dict[str, str] | None, Field(
         description='Containers: each unknown step\'s progress path ("1", "0.1.2") -> "not_applied" to send it '
                     'again or "applied" to mark it ok.')] = None,
     wait: Annotated[float, Field(description=f"Seconds to wait for the user, 0-{RESUME_MAX_WAIT_SECONDS}.")]
         = RESUME_WAIT_SECONDS,
 ) -> dict:
-    """Continue a call that returned call and resume_token: a direct call stopped on needs_user, or
-    a batch, parallel or workflow. Nothing that ran ok is sent again.
+    """Continue a call whose result has call and resume_token: a direct call stopped on needs_user,
+    or a batch, parallel or workflow. Nothing that ran ok is sent again.
 
-    A held approval is asked again in the client's prompt, for up to wait seconds; without that
-    prompt it is checked once. Returns the original call's shape.
+    A held approval is asked again in the client's prompt for up to wait seconds, else checked
+    once. Returns the original call's shape.
     """
     # The MCP server resumes the direct calls it keeps; the bridge resumes containers (wait unused).
     body: dict = {"call": call, "resume_token": resume_token}
@@ -2123,7 +2132,7 @@ def browser_ask_user(
 
     Where the client can prompt, the user answers Done (ok) or Can't. Otherwise it returns
     needs_user at once: ask in your reply. For a sign_in or human_check seen on the tab,
-    browser_resume(call, resume_token) waits until it is gone.
+    browser_resume waits until it is gone.
     """
     return _post("/api/ask-user", _request_body({"reason": reason, "message": message}, tab_id))
 

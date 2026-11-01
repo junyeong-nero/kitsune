@@ -296,6 +296,93 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual((found["count"], found["shown"]), (2, 1))
         self.assertEqual(found["blocks"][0]["lines"][-1], f'>   - text "item {"x" * 20000}"')
 
+    def answer_pages(self, *pages, scroll=None):
+        """/api/snapshot answers each page's items as a list, the last one from then on; /api/scroll answers
+        scroll."""
+        snapshots = [{"snapshot": "\n".join(["- list [ref=e1]", *(f'  - listitem "{item}"' for item in page)])}
+                     for page in pages]
+
+        def answer(endpoint, body, **kwargs):
+            if endpoint == "/api/scroll":
+                return scroll or {"ok": True, "scrolled_by": 400}
+            return snapshots.pop(0) if len(snapshots) > 1 else snapshots[0]
+        self.post.side_effect = answer
+
+    def test_find_without_a_match_points_to_load_more(self):
+        self.answer_snapshot("- main [ref=e1]", '  - text "Report #1"')
+        found = playwright_tools.browser_find(text="Report #71")
+        self.assertEqual(found, {"count": 0, "blocks": [], "hint": playwright_tools.FIND_NO_MATCH_HINT})
+        self.assertEqual(playwright_tools.browser_find(text="Report #1")["count"], 1)
+        self.assertNotIn("hint", playwright_tools.browser_find(text="Report #1"))
+
+    def test_find_load_more_scrolls_until_the_text_appears(self):
+        # #404: an infinite list loads its next batch when scrolled to its end; one call loads until the item shows.
+        playwright_tools._current_tab = 7
+        self.answer_pages(["#1", "#2"], ["#1", "#2"], ["#1", "#2", "#3", "#4"], ["#1", "#2", "#3", "#4"],
+                          ["#1", "#2", "#3", "#4", "#5", "#6"])
+        with patch.object(tools, "_sleep") as sleep:
+            found = playwright_tools.browser_find(text="#5", load_more=True, confirm_token="tok")
+        self.assertEqual((found["count"], found["scrolls"]), (1, 2))
+        self.assertNotIn("hint", found)
+        self.assertIn('>   - listitem "#5"', found["blocks"][0]["lines"])
+        snapshot = ("/api/snapshot", {"collapse": False, "tabId": 7})
+        scroll = ("/api/scroll", {"direction": "bottom", "tabId": 7, "confirmToken": "tok"})
+        # After each scroll it polls the snapshot until it changes.
+        self.assertEqual(self.posted(), [snapshot, scroll, snapshot, snapshot, scroll, snapshot, snapshot])
+        self.assertEqual(sleep.call_count, 4)
+        sleep.assert_called_with(playwright_tools.FIND_LOAD_MORE_POLL_SECONDS)
+
+    def test_find_load_more_does_not_scroll_when_the_text_is_there(self):
+        playwright_tools._current_tab = 7
+        self.answer_pages(["#1", "#2"])
+        found = playwright_tools.browser_find(text="#2", load_more=True)
+        self.assertEqual((found["count"], found["scrolls"]), (1, 0))
+        self.assertEqual(self.posted(), [("/api/snapshot", {"collapse": False, "tabId": 7})])
+
+    def test_find_load_more_stops_when_a_scroll_changes_nothing(self):
+        playwright_tools._current_tab = 7
+        self.answer_pages(["#1", "#2"])
+        with patch.object(tools, "_sleep") as sleep:
+            found = playwright_tools.browser_find(text="#9", load_more=True)
+        self.assertEqual((found["count"], found["scrolls"]), (0, 1))
+        self.assertIn("stopped changing", found["hint"])
+        self.assertEqual(sleep.call_count, playwright_tools.FIND_LOAD_MORE_POLLS)
+        self.assertEqual([endpoint for endpoint, _ in self.posted()].count("/api/scroll"), 1)
+
+    def test_find_load_more_is_bounded(self):
+        playwright_tools._current_tab = 7
+        pages = [[f"#{n}" for n in range(batch * 10)] for batch in range(1, 30)]
+        self.answer_pages(*pages)
+        with patch.object(tools, "_sleep"):
+            found = playwright_tools.browser_find(text="#999", load_more=True)
+        budget = playwright_tools.FIND_LOAD_MORE_SCROLLS
+        self.assertEqual((found["count"], found["scrolls"]), (0, budget))
+        self.assertIn("call again", found["hint"])
+        self.assertEqual([endpoint for endpoint, _ in self.posted()].count("/api/scroll"), budget)
+
+    def test_find_load_more_returns_a_failed_scroll(self):
+        playwright_tools._current_tab = 7
+        held = {"error": "held", "code": "needs_user", "state": {"reason": "approval", "detail": "user_viewing"}}
+        self.answer_pages(["#1"], scroll=held)
+        self.assertEqual(playwright_tools.browser_find(text="#9", load_more=True), held)
+
+    def test_find_load_more_needs_a_current_tab(self):
+        # Scrolling writes the tab, so it is not sent to the tab the user is viewing (#303).
+        self.answer_pages(["#1"])
+        refused = playwright_tools.browser_find(text="#9", load_more=True)
+        self.assertEqual((refused["code"], refused["state"]["action"]), ("no_current_tab", "scroll"))
+        self.assertNotIn("/api/scroll", [endpoint for endpoint, _ in self.posted()])
+        self.assertNotIn("/api/snapshot", [endpoint for endpoint, _ in self.posted()])
+
+    def test_find_takes_an_unpublished_load_more(self):
+        # Like repeat and hold_ms, load_more is accepted but not in Playwright's published schema.
+        self.assertNotIn("load_more", playwright_tools.SCHEMAS["browser_find"]["inputSchema"]["properties"])
+        playwright_tools._current_tab = 7
+        self.answer_pages(["#1", "#2"])
+        result = asyncio.run(server.mcp.call_tool("browser_find", {"text": "#2", "load_more": True}))
+        self.assertFalse(result.isError)
+        self.assertEqual(json.loads(result.content[0].text)["scrolls"], 0)
+
     def test_evaluate_calls_the_function_and_parses_its_json(self):
         self.post.return_value = {"result": '{"title":"Example"}'}
         self.assertEqual(playwright_tools.browser_evaluate(function="() => ({title: document.title})"),

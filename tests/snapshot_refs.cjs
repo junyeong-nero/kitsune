@@ -544,18 +544,21 @@ async function testBackground() {
     assert.equal(result.snapshot_truncated, true);
     assert.equal(calls[0].selector, 's1e0');
     assert.equal(calls[0].tabId, 42);
-    assert.equal(calls[1].action, 'getSnapshot');
-    assert.equal(calls[1].maxChars, 4000);
-    assert.equal(calls[1].tabId, 42);
-    assert.equal(calls[1].focusLastAction, action !== 'navigate');
-    assert.equal(calls[1].observation, { type: 'browser_type', fill: 'browser_type', selectOption: 'browser_select_option',
+    // navigate first reads the page with text lines (#401); this one does not fit, so it is compact.
+    if (action === 'navigate') assert.deepEqual([calls[1].text, calls[1].maxChars], [true, 2000]);
+    const read = calls.at(-1);
+    assert.equal(read.action, 'getSnapshot');
+    assert.equal(read.maxChars, 4000);
+    assert.equal(read.tabId, 42);
+    assert.equal(read.focusLastAction, action !== 'navigate');
+    assert.equal(read.observation, { type: 'browser_type', fill: 'browser_type', selectOption: 'browser_select_option',
       checkBox: 'browser_check', keypress: 'browser_press_key', submitForm: 'browser_submit_form' }[action] ||
       `browser_${action}`);
     assert.equal(result.target_ref, action !== 'navigate' ? 's2e100' : undefined);
     // submitForm and navigate usually load another document, so their snapshot is full.
     const delta = !['submitForm', 'navigate'].includes(action);
     assert.equal(calls[0].deltaBaseline, delta || undefined);
-    assert.equal(calls[1].delta, delta || undefined);
+    assert.equal(read.delta, delta || undefined);
     assert.equal(result.snapshot_delta, delta || undefined);
     assert.equal(result.url, delta ? 'https://example.test/#moved' : undefined);
   }

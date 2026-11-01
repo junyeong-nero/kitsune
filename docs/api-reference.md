@@ -432,6 +432,11 @@ the old one, and adds `navigation_pending: true` when the page has not finished 
 A main-frame request that keeps the document (a 204, a download) is not a navigation: the
 action returns its delta, after up to 1 s more.
 
+**Text of a page a navigation loaded (#401).** The snapshot of a `browser_navigate` result, or of
+a `navigated` one, is readable, with the page's `- text "…"` lines, when the whole page fits
+2,000 characters; a larger page gets the compact snapshot (no text lines, up to 4,000
+characters) as before. A short notice or confirmation page then needs no `browser_snapshot`.
+
 ```json
 { "ok": true, "tag": "a", "navigated": { "url": "https://store.example/app/1030300/", "title": "Hollow Knight Silksong" },
   "snapshot": "- heading \"Hollow Knight Silksong\" [ref=e91] [level=1]\n…" }
@@ -456,7 +461,9 @@ That result's snapshot and refs describe the page. This applies only:
   "full"`), not a delta, a truncated snapshot or `navigation_pending`;
 - to the first such snapshot of the same tab after it; any other page action on the tab ends it;
 - when the text is identical. The core snapshot is readable and an action's is compact, so a
-  page with text lines the action result left out (`- text "…"`) is returned in full.
+  page with text lines the action result left out (`- text "…"`) is returned in full. A
+  `browser_navigate` or `navigated` result is readable too when the page fits 2,000
+  characters (#401), so a small page it loaded is not sent twice (#400).
 
 A scoped, saved or `boxes` snapshot, `browser_find` and other reads return the page as before.
 
@@ -2450,6 +2457,20 @@ narrow the query, scope a snapshot, or set `filename`. `count` is always the tot
 `filename` every match, including a matched `/url` line for any query, is saved with its own
 window and path, as before, so its `count` can be higher than the inline one.
 
+An inline result without a match has a `hint` that names `load_more` (#404). The core
+`browser_find` accepts `load_more: true` (and a `confirm_token` for it), not listed in its
+schema (Playwright MCP's): for an infinite-scroll list that loads its next batch when scrolled
+to its end, it scrolls the current tab to the bottom (POST `/api/scroll` `direction: bottom`,
+which falls back to the scrollable container at the viewport's center) until the query
+matches, at most 10 times (`FIND_LOAD_MORE_SCROLLS`). After each scroll it reads the snapshot
+every 250 ms for up to 3 s until it changes; a scroll that changed nothing within that time
+ends the search. The result adds `scrolls` and, without a match, a `hint` that says whether the
+page stopped changing or may load more on another call. A list that loads through an
+`IntersectionObserver` may not load in a background tab, which Firefox may not deliver its
+callbacks to (nor those of a hover). Scrolling writes the tab, so without a
+current tab `load_more` returns `no_current_tab` (`state.action: "scroll"`), and a held or
+failed scroll is returned as it is.
+
 Without an acted-on target, a cut snapshot of a page with a `main` landmark defers each
 `navigation`, `banner` or `contentinfo` landmark outside `main` whose lines exceed a small
 block (2,000 characters or a quarter of the budget). The landmark keeps its line, in
@@ -2797,7 +2818,7 @@ that node stays attached in the same document; navigation or replacement invalid
   "form": { "ref": "e3", "action": "/wishlist/add", "method": "post", "button": "Add" } }
 ```
 
-### `browser_wait_for(selector=None, text=None, text_gone=None, js=None, url=None, title=None, network_idle=False, time=None, timeout=10000, tab_id=None, ref=None, element=None)`
+### `browser_wait_for(selector=None, text=None, text_gone=None, js=None, url=None, title=None, network_idle=False, time=None, timeout=10000, tab_id=None, ref=None, element=None, new_only=False)`
 
 Replaces `browser_wait_for_element`, `browser_wait_for_result`,
 `browser_wait_for_url`, `browser_wait_for_title`, and `browser_wait_for_network_idle`.
@@ -3383,8 +3404,11 @@ which snapshots show as names, are not page text and never match. Returns
 text of a timed-out `text` wait is the name of a visible element, the result also has
 `matched_as: "accessible_name"`, `name_matches` (up to 3 `{ref, role, name, source}`,
 where `source` is the attribute) and a `hint`: act on the ref, or wait for text the page
-shows. The bridge polls single reads (see `browser_wait_for`); a
-zero timeout performs one immediate check.
+shows. A `text` wait met by its first read, because the text was already on the page (in a
+field's label, say), adds `already_present: true` and a `hint` (#402). With `"new_only": true`
+(`browser_wait_for(new_only=True)`; the core tool's `newOnly` is accepted but not published), the wait
+counts the text's occurrences at its start and is met only once more occur. The bridge polls
+single reads (see `browser_wait_for`); a zero timeout performs one immediate check.
 
 ## Navigation (POST)
 
