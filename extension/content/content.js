@@ -3,7 +3,7 @@
 
 (function() {
   'use strict';
-  const CONTENT_VERSION = 48;
+  const CONTENT_VERSION = 49;
   if (window.__claudeBridgeVersion >= CONTENT_VERSION) return;
   window.__claudeBridgeVersion = CONTENT_VERSION;
 
@@ -401,7 +401,13 @@
     if (now < agentTrustedKeysUntil && /^(key|paste|input|beforeinput|composition)/.test(event.type)) return;
     lastUserInput = { at: now, type: event.type };
     // Timestamp the event, not delivery: the background also reconciles a tab reported first.
-    browser.runtime.sendMessage({ action: 'trustedTabInput', at: now }).catch(() => {});
+    // The lightweight child-frame observer reports independently of command injection.
+    if (!window.__kitsuneFrameInputInstalled) {
+      browser.runtime.sendMessage({ action: 'trustedTabInput', at: now, type: event.type,
+        ...(event.type === 'keydown' && ['Alt', 'Control', 'Meta', 'Shift'].includes(event.key)
+          ? { modifier: event.key } : {}),
+      }).catch(() => {});
+    }
     if ((event.type === 'keydown' || event.type === 'paste') && isTypingTarget(event.target)) {
       userTypedField = event.target;
     }

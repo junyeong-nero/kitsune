@@ -62,7 +62,7 @@ function load({ idleMinutes } = {}) {
     if (agent) context.markAgentTab(tab.id);
   };
   const message = (msg, sender) => Promise.resolve(onMessage.emit(msg, sender).find(r => r !== undefined));
-  return { context, clock, tabs, removed, addTab, onActivated, message, alarms, onAlarm };
+  return { context, clock, tabs, removed, addTab, onActivated, message, alarms, onAlarm, onCreated: browser.tabs.onCreated };
 }
 
 async function popupClosesEveryUnpinnedAgentTab() {
@@ -145,7 +145,27 @@ async function restoredAgentTabsCountFromTheReload() {
   assert.deepEqual(h.removed, [9]);
 }
 
+async function freshInheritedTabIsNotIdleAfterLongUptime() {
+  const h = load({ idleMinutes: 15 });
+  h.addTab({ id: 1, pinned: true }, { agent: true });
+  h.clock.now += 60 * MINUTE;
+  h.addTab({ id: 2, openerTabId: 1 });
+  h.onCreated.emit({ ...h.tabs.get(2) });
+  await flush();
+  await h.context.sweepIdleAgentTabs();
+  assert.deepEqual(h.removed, [], 'a new popup is not as old as the extension');
+  h.clock.now += 14 * MINUTE;
+  // Reconciliation is not tab use: even a change of inherited owner must keep the first time.
+  h.context.markAgentTab(1, 'other-client');
+  await h.context.sweepIdleAgentTabs();
+  assert.deepEqual(h.removed, []);
+  h.clock.now += MINUTE;
+  await h.context.sweepIdleAgentTabs();
+  assert.deepEqual(h.removed, [2]);
+}
+
 (async () => {
+  await freshInheritedTabIsNotIdleAfterLongUptime();
   await popupClosesEveryUnpinnedAgentTab();
   await pagesCannotCloseAgentTabs();
   await idleLimitIsOffByDefault();

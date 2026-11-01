@@ -58,7 +58,7 @@ async function main() {
 
   // Any trusted input counts for 3 s.
   page.input('wheel', page.button);
-  assert.deepEqual(page.reported, [{ action: 'trustedTabInput', at: 100000 }]);
+  assert.deepEqual(page.reported, [{ action: 'trustedTabInput', at: 100000, type: 'wheel' }]);
   page.tick(2999);
   assert.deepEqual(await page.send({ action: 'userActivity' }),
     { active: true, state: { reason: 'input', input: 'wheel', sinceMs: 2999, windowMs: 3000 } });

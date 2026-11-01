@@ -1301,6 +1301,16 @@ A tab that goes back to the user loses its value. Limits:
   not persist. Ownership does, including the client id in version-2 session values.
   Older version-1 values have no owner: they remain globally agent-opened for the
   existing guards, but no named client sees them as `owned`.
+- A lightweight observer watches eligible child frames independently of frame commands,
+  including same-origin/cross-origin frames and `about:blank`/`srcdoc` frames where Firefox
+  permits injection. It is also installed into existing frames on extension reconnect.
+  Only trusted event timestamps/types and modifier names are reported, never typed text.
+- Ownership observation excludes announced agent OS input across the tab, including new
+  frames: pointer/touch events and the announced modifiers for at most 2 s after click
+  preparation, and keyboard/paste events for the announced keyboard window (at most 60 s).
+  Unrelated event types/modifiers still count. These exclusions do not weaken `user_active`.
+  Concurrent genuine user input matching an announced OS event cannot be distinguished
+  from the agent's input during that finite window.
 - Content scripts cannot observe input on browser-internal pages or while the
   extension is unloaded. The 1 s threshold has deterministic unit coverage, but the
   trusted-event-to-`tabs.onCreated` delay has **not been measured in Firefox** for

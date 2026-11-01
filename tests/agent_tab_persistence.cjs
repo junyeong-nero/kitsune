@@ -467,7 +467,26 @@ async function restoredOpenerCanPassOnOwnership() {
   assert.deepEqual(stored(state, 6), { v: 2, owner: 'client-a' });
 }
 
+async function inputDuringRestoreStaysUserOpened() {
+  const state = browserState();
+  addTab(state, { id: 5 });
+  state.values.set(`5|${KEY}`, JSON.stringify({ v: 2, owner: 'client-a' }));
+  const restore = state.gate = gate();
+  const h = load(state);
+  addTab(state, { id: 6, openerTabId: 5 });
+  h.onCreated.emit({ ...state.tabs.get(6) });
+  h.input(5); // qualifies at creation, but inheritance is still waiting for the owner
+  state.now++;
+  h.input(5); // newer input must not erase the qualifying event
+  restore.release();
+  await settle();
+  assert.equal((await h.owned('client-a'))[6], false);
+  assert.equal(stored(state, 6), undefined);
+  assert.equal((await load(state).owned('client-a'))[6], false);
+}
+
 (async () => {
+  await inputDuringRestoreStaysUserOpened();
   await perClientOwnershipAndRestart();
   await openerInheritanceAndTrustedInput();
   await restoredOpenerCanPassOnOwnership();

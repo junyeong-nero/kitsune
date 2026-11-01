@@ -3,7 +3,7 @@
 
 'use strict';
 
-const EXPECTED_CONTENT_VERSION = 48;
+const EXPECTED_CONTENT_VERSION = 49;
 const WS_URL = 'ws://127.0.0.1:47652';
 // scripts/build_extension.py sets 'signed' for the AMO build (see content.js).
 const KITSUNE_BUILD = 'dev';
@@ -108,6 +108,7 @@ browser.tabs.onRemoved.addListener(tabId => {
   agentTabs.delete(tabId);
   agentTabOwners.delete(tabId);
   trustedTabInput.delete(tabId);
+  ownershipAgentInput.delete(tabId);
   agentTouches.delete(tabId);
   agentTabUsedAt.delete(tabId);
   revertActivation.delete(tabId);
@@ -157,6 +158,7 @@ function inheritAgentTab(entry) {
   if (!openedTabs.includes(entry) || userOpenedTab(entry) || !agentTabs.has(entry.openerTabId)) return;
   const ownerId = agentTabOwners.get(entry.openerTabId);
   if (agentTabs.has(entry.tabId) && (!entry.inherited || agentTabOwners.get(entry.tabId) === ownerId)) return;
+  if (!entry.inherited) noteTabUse(entry.tabId);
   entry.inherited = true;
   ownAgentTab(entry.tabId, ownerId);
   for (const child of openedTabs.filter(t => t.openerTabId === entry.tabId)) inheritAgentTab(child);
@@ -173,11 +175,38 @@ function noteTrustedTabInput(tabId, at) {
   trustedTabInput.set(tabId, Math.max(trustedTabInput.get(tabId) ?? -Infinity, at));
   // Content messages and tabs.onCreated can arrive in either order. Only inherited ownership
   // is revoked: an explicit newTab/duplicate/window command still belongs to its caller.
-  for (const entry of openedTabs.filter(t => t.openerTabId === tabId && t.inherited && userOpenedTab(t, at))) {
+  // Latch even while restoration is pending, before a newer timestamp replaces this event.
+  for (const entry of openedTabs.filter(t => t.openerTabId === tabId && userOpenedTab(t, at))) {
+    if (!entry.inherited) continue;
     entry.inherited = false;
     disownAgentTab(entry.tabId);
     disownInheritedTabs(entry.tabId);
   }
+}
+// Ownership-only exclusions for OS input announced by the bridge. Coordinate-based input can
+// land in a child frame that has never received a command, so these windows cover the whole tab.
+// They do not change user_active. Match the content script's event classes and finite deadlines.
+const ownershipAgentInput = new Map(); // tabId -> { click?: { at, until, modifiers }, keys?: { at, until } }
+function rememberOwnershipInput(tabId, kind, at, ms, modifiers = []) {
+  const windows = ownershipAgentInput.get(tabId) || {};
+  windows[kind] = { at, until: at + ms, modifiers: new Set(Array.isArray(modifiers) ? modifiers : []) };
+  ownershipAgentInput.set(tabId, windows);
+}
+function isOwnershipAgentInput(tabId, msg) {
+  const windows = ownershipAgentInput.get(tabId);
+  const during = span => span && msg.at >= span.at && msg.at < span.until;
+  return (during(windows?.click) && (/^(mouse|pointer|touch)/.test(msg.type) ||
+      (msg.type === 'keydown' && windows.click.modifiers.has(msg.modifier)))) ||
+    (during(windows?.keys) && /^(key|paste|input|beforeinput|composition)/.test(msg.type));
+}
+async function prepareOwnershipKeys(params) {
+  const tabId = params.tabId || await getActiveTabId();
+  const at = Date.now();
+  const result = await forwardToContent('agentInput', { ...params, tabId });
+  if (result?.ok === true) {
+    rememberOwnershipInput(tabId, 'keys', at, Math.min(Math.max(Number(params.ms) || 0, 0), 60000));
+  }
+  return result;
 }
 // For a tab that stays open and goes back to the user.
 function disownAgentTab(tabId) {
@@ -507,8 +536,9 @@ browser.runtime.onMessage.addListener((msg, sender) => {
   const fromPopup = !sender.tab && sender.url === browser.runtime.getURL?.('popup/popup.html');
   if (fromPopup && msg.action === 'agentTabCount') return agentTabCount();
   if (fromPopup && msg.action === 'closeAgentTabs') return closeAgentTabs();
-  if (msg.action === 'trustedTabInput' && sender.tab?.id != null) {
-    noteTrustedTabInput(sender.tab.id, msg.at);
+  if (msg.action === 'trustedTabInput' && Number.isInteger(sender.tab?.id) && sender.tab.id >= 0 &&
+      sender.id === browser.runtime.id) {
+    if (!isOwnershipAgentInput(sender.tab.id, msg)) noteTrustedTabInput(sender.tab.id, msg.at);
     return Promise.resolve(null);
   }
   if (msg.action === 'getDialogPolicy') {
@@ -715,6 +745,9 @@ async function injectAllTabs() {
         continue;
       }
       try {
+        await browser.tabs.executeScript(tab.id, {
+          file: '/content/frame-input.js', allFrames: true, matchAboutBlank: true,
+        }).catch(() => {}); // An inaccessible child must not prevent the existing top-frame injection.
         await browser.tabs.executeScript(tab.id, { file: '/content/content.js' });
         injected++;
       } catch {
@@ -1227,6 +1260,7 @@ async function dispatchCommand(command) {
       }
       return result;
     }
+    case 'agentInput':   return await prepareOwnershipKeys(params);
     case 'getPageText':  return await getPageText(params);
     case 'waitForText':
     case 'getPageInfo':
@@ -1245,7 +1279,6 @@ async function dispatchCommand(command) {
     case 'clearHighlight':
     case 'waitForElement':
     case 'focusState':
-    case 'agentInput':
     case 'waitForResult':
     // 1.4.0 forwarded actions
     case 'query':
@@ -1641,12 +1674,14 @@ async function screenPointForClick(params) {
     return await tabApiError(params.tabId, e);
   }
   let point;
+  const inputStartedAt = Date.now();
   try {
     point = await tabNotShownError(tab.id) || await zoomedScreenPoint(params);
     if (point.error) return point;
     // The bridge checks that this window is the one at the click point (#336).
     const win = await browser.windows.get(tab.windowId).catch(() => null);
     if (win) point = { ...point, window: { left: win.left, top: win.top, width: win.width, height: win.height } };
+    rememberOwnershipInput(tab.id, 'click', inputStartedAt, 2000, params.modifiers);
     if (previousTabId == null) return point;
     return { ...point, tabId: params.tabId, previousTabId };
   } finally {

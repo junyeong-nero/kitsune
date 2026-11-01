@@ -272,11 +272,11 @@ async function testBackgroundErrors() {
     assert.deepEqual([closed.error, closed.code, closed.state], ['Invalid tab ID: 9', 'tab_closed', { tabId: 9 }], action);
   }
 
-  // Existing v47 content must be reinjected for ownership input reporting, current v48 need not.
-  h.setContentVersion(47);
+  // Existing v48 content must be reinjected for frame input reporting, current v49 need not.
+  h.setContentVersion(48);
   assert.deepEqual(await h.send({ action: 'click', tabId: 2, selector: '#go' }), { ok: true });
   assert.deepEqual(h.injected, [2]);
-  h.setContentVersion(48);
+  h.setContentVersion(49);
   assert.deepEqual(await h.send({ action: 'click', tabId: 2, selector: '#go' }), { ok: true });
   assert.deepEqual(h.injected, [2]);
 
