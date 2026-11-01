@@ -126,16 +126,35 @@ def _tabs() -> dict:
     return result
 
 
+def _held_view(tab: dict) -> bool:
+    """Whether tab may be the one the user is viewing, which this client's writes are held on (#326):
+    an active tab the agent did not open. The list cannot tell which window the user focused last,
+    so with several windows each one's active tab counts."""
+    return bool(tab.get("active") and not tab.get("owned") and getattr(k.client, "hold_viewed_tab", True))
+
+
 def _tab_list() -> dict:
-    """The open tabs as browser_tabs list returns them, by index."""
+    """The open tabs as browser_tabs list returns them, by index.
+
+    The current tab is not marked current while it may be the one the user is viewing (_held_view):
+    writes there are held, so the agent should open a tab of its own first (#383).
+    """
     result = _tabs()
     if k._failed(result):
         return result
     return {"tabs": [{"index": i, "title": tab.get("title"), "url": tab.get("url"),
-                      **({"current": True} if tab.get("id") == _current_tab else {}),
+                      **({"current": True} if tab.get("id") == _current_tab and not _held_view(tab) else {}),
                       **({"active": True} if tab.get("active") else {}),
                       **({"owned": True} if tab.get("owned") else {})}
                      for i, tab in enumerate(result.get("tabs") or [])]}
+
+
+def _tab_index(tab_id: int) -> int | None:
+    """Tab tab_id's index in browser_tabs list, else None (a failed listing, or the tab is gone)."""
+    result = _tabs()
+    if k._failed(result):
+        return None
+    return next((i for i, tab in enumerate(result.get("tabs") or []) if tab.get("id") == tab_id), None)
 
 
 def _with_tab_list(result: dict) -> dict:

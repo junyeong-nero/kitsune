@@ -177,10 +177,10 @@ request (below). Its result adds `call` and `resume_token`, and its hint says wh
 does with it:
 
 ```json
-{ "error": "The user is viewing tab 12; nothing was done", "code": "needs_user", "retryable": false,
+{ "error": "The user is viewing tab 0 in browser_tabs (tabId 12); nothing was done", "code": "needs_user", "retryable": false,
   "state": { "reason": "approval", "detail": "user_viewing", "decision": "declined", "approval": "elicitation", "…": "…" },
   "call": 57, "resume_token": "Qk9…",
-  "hint": "The held action did not run: the user declined it … browser_resume(call, resume_token) asks them again …" }
+  "hint": "The held action did not run: the user declined it in the tab they are viewing … browser_resume(call, resume_token) asks them again …" }
 ```
 
 - `call` is the audit call id the bridge gave the held request: its audit entry carries it
