@@ -513,8 +513,6 @@ class McpParityTests(BridgeTestCase):
             (lambda: tools.browser_back(tab_id=7), lambda: self.tab.back()),
             (lambda: tools.browser_handle_dialog(accept=True, prompt_text="Ada", tab_id=7),
              lambda: self.tab.handle_dialogs(True, "Ada")),
-            (lambda: tools.browser_wait_for(text="Done", timeout=3000, tab_id=7),
-             lambda: self.tab.wait_for(text="Done", timeout=3000)),
             (lambda: tools.browser_wait_for(url="/done$", tab_id=7), lambda: self.tab.wait_for(url="/done$")),
             (lambda: tools.browser_page_text(tab_id=7), lambda: self.tab.text()),
             (lambda: tools.browser_snapshot(tab_id=7, ref="e2", max_depth=1), lambda: self.tab.snapshot("e2", max_depth=1)),
@@ -541,6 +539,10 @@ class McpParityTests(BridgeTestCase):
                 sent = self.sent(library_call)
                 self.assertTrue(sent)
                 self.assertEqual(sent, self.sent(mcp_call))
+        # A met MCP text wait then reads what changed since the agent last looked (#403).
+        sent = self.sent(lambda: self.tab.wait_for(text="Done", timeout=3000))
+        self.assertEqual(self.sent(lambda: tools.browser_wait_for(text="Done", timeout=3000, tab_id=7)),
+                         sent + [("/api/snapshot", {"sinceObservation": True, "maxChars": 4000, "tabId": 7}, 15)])
 
     def test_every_other_capability_matches_its_mcp_tool(self):
         tab, browser = self.tab, self.browser

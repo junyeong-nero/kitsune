@@ -2811,7 +2811,7 @@ Invalid combinations return an error before contacting the bridge.
 | Condition | Meaning | Bridge endpoint |
 |---|---|---|
 | `selector` / `ref` | Wait for a visible element, poll every 200 ms | `/api/wait-for-element` |
-| `text`, `text_gone` | Literal substring of `document.body.innerText` appears/disappears, poll every 100 ms; placeholders and aria-labels are not page text | `/api/wait-for-text` |
+| `text`, `text_gone` | Literal substring of `document.body.innerText` appears/disappears, poll every 100 ms; placeholders and aria-labels are not page text; once met, returns what changed like `time` (see below) | `/api/wait-for-text`, then `/api/snapshot` (`sinceObservation`) |
 | `js` | Expression returns a non-empty result, poll every 500 ms | `/api/wait-for-result` |
 | `url`, `title` | JavaScript regex pattern matches | `/api/wait-for-url`, `/api/wait-for-title` |
 | `network_idle=True` | No new network resources for 500 ms | `/api/wait-for-network-idle` |
@@ -2824,6 +2824,11 @@ between that result and the sleep count too, such as an infinite list's batch ar
 the agent decides what to do. Without an earlier observation of the document, the snapshot is
 full. `KITSUNE_POST_ACTION_SNAPSHOT=0` turns it off, and a page that cannot be read leaves the
 result as `{"ok": true, "slept": …}`.
+
+A met `text` or `text_gone` wait (#403) adds the same changes to its
+`{"ok": true, "text": …, "text_gone": …, "elapsed": …}` result, so a toast that appears as
+a status line goes away is in the result rather than lost before the next snapshot. A
+timed-out or failed text wait returns its result unchanged.
 
 `timeout` is in milliseconds and does not limit an explicit sleep. JS retains
 bridge non-empty-result semantics: `false` and `0` count as results; return

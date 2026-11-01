@@ -133,10 +133,34 @@ class ToolSurfaceTests(unittest.TestCase):
                 self.assertGreater(post.call_args.kwargs["timeout"], 12)
             for condition in ("text", "text_gone"):
                 needle = 'say "hello"\n\\ world'
+                post.reset_mock()
                 tools.browser_wait_for(**{condition: needle}, tab_id=9)
-                self.assertEqual(post.call_args.args[0], "/api/wait-for-text")
-                self.assertEqual(post.call_args.args[1][condition], needle)
-                self.assertEqual(post.call_args.args[1]["tabId"], 9)
+                self.assertEqual(post.call_args_list[0].args[0], "/api/wait-for-text")
+                self.assertEqual(post.call_args_list[0].args[1][condition], needle)
+                self.assertEqual(post.call_args_list[0].args[1]["tabId"], 9)
+
+    def test_text_wait_returns_changes_since_observation(self):
+        # #403: a toast that appears as the status text goes is in the met wait's result.
+        waited = {"ok": True, "text": None, "text_gone": "Generating", "elapsed": 2500}
+        changes = {"snapshot": '- text "Report ready: 4A159A"', "delta": True}
+        for condition, value in (("text_gone", "Generating"), ("text", "Report ready")):
+            with patch.object(tools, "_post", side_effect=[waited, changes]) as post:
+                self.assertEqual(tools.browser_wait_for(**{condition: value}, tab_id=9),
+                                 {**waited, "snapshot": '- text "Report ready: 4A159A"', "snapshot_delta": True})
+                self.assertEqual(post.call_args_list[0].args[0], "/api/wait-for-text")
+                post.assert_called_with("/api/snapshot", {"sinceObservation": True, "maxChars": 4000, "tabId": 9})
+        with patch.object(tools, "_post", side_effect=[waited, {"snapshot": "", "delta": True, "unchanged": True}]):
+            self.assertTrue(tools.browser_wait_for(text_gone="Generating")["no_visible_change"])
+        # Snapshots off ({"ok": true}) or an unreadable page leave the wait's result alone.
+        for reply in ({"ok": True}, {"error": "No tab", "code": "no_tab"}):
+            with patch.object(tools, "_post", side_effect=[waited, reply]):
+                self.assertEqual(tools.browser_wait_for(text_gone="Generating"), waited)
+        # A timed-out wait answers as before, without a snapshot read.
+        timed_out = {"ok": False, "text": "Done", "text_gone": None, "elapsed": 10000,
+                     "error": "Timed out after 10000ms waiting for visible text"}
+        with patch.object(tools, "_post", return_value=timed_out) as post:
+            self.assertEqual(tools.browser_wait_for(text="Done"), timed_out)
+            post.assert_called_once()
 
     def test_wait_validation_and_sleep(self):
         with patch.object(tools, "_post") as post, patch.object(tools, "_sleep") as sleep:
