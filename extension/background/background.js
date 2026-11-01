@@ -335,8 +335,17 @@ function clearHandoffs() {
   handoffTransportEpoch++;
   for (const sessionId of handoffSessions.keys()) endHandoffSession(sessionId);
 }
-function approveHandoff(request) {
-  if (!handoffRequests.has(request.id) || !handoffSessions.has(request.sessionId) || agentTabs.has(request.tabId)) {
+async function approveHandoff(request) {
+  const valid = () => handoffRequests.has(request.id) && handoffSessions.has(request.sessionId) && !agentTabs.has(request.tabId);
+  if (!valid()) return finishHandoff(request, handoffError());
+  // A user duplicate can still carry its opener's persistent value while copied-ownership
+  // cleanup is pending. Never let that value turn an ephemeral grant into a restart grant.
+  try {
+    await browser.sessions?.removeTabValue?.(request.tabId, AGENT_TAB_KEY);
+  } catch {
+    return finishHandoff(request, handoffError());
+  }
+  if (!valid()) {
     return finishHandoff(request, handoffError());
   }
   handoffs.set(request.tabId, request);

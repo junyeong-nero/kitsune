@@ -850,7 +850,7 @@
   },
   {
    "name": "browser_tabs",
-   "description": "List, create, close, select, or request a tab handoff.",
+   "description": "Manage tabs; request a handoff.",
    "inputSchema": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
@@ -863,14 +863,14 @@
        "close",
        "select",
        "request"
-      ],
-      "description": "Operation to perform"
+      ]
      },
      "index": {
-      "description": "close/select/request: tab index; close defaults to current.",
+      "description": "Tab index (close defaults to current).",
       "type": "number"
      },
      "tab_id": {"type": "integer", "description": "request: ID instead of index."},
+     "confirm_token": {"type": "string", "description": "request: approval token."},
      "reason": {"type": "string", "description": "request: reason shown to user."},
      "url": {
       "description": "new: URL.",

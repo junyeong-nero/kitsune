@@ -1341,8 +1341,11 @@ the page or OS. Other clients' tabs, including handoffs to another simultaneous 
 of the same stable owner, cannot be requested/transferred: they remain read-only.
 
 Handoffs are memory-only, separate from persistent `owner_id` ownership. A dedicated
-authenticated bridge connection represents the MCP session; normal shutdown closes it,
-and EOF after abrupt process exit returns that session's handed-off tabs. Detection of
+authenticated bridge connection represents the MCP session (one stdio session per server
+process); normal shutdown closes it, and EOF after abrupt process exit returns that
+session's handed-off tabs. Stateless HTTP/native calls cannot acquire a handoff without
+a live `BridgeClient.open_handoff_session` channel; native callers must close it with
+`close_handoff_session` when their session ends. Detection of
 network/process failure is not instantaneous: it depends on socket closure/detection.
 Bridge/extension disconnection or extension reload also drops grants and pending approvals;
 reconnection requires fresh approval. At most 64 channels and 64 pending approvals are

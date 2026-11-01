@@ -118,7 +118,7 @@ function load(state) {
   }
   const context = vm.createContext({
     Date: class extends Date { static now() { return state.now; } },
-    browser, URL, console: { log() {}, error() {} },
+    browser, URL, crypto: require('node:crypto').webcrypto, console: { log() {}, error() {} },
     WebSocket,
     setTimeout: () => 0, clearTimeout() {}, setInterval: () => 0, clearInterval() {},
   });
@@ -141,6 +141,7 @@ function load(state) {
   const run = command => start(command).result;
   const owned = async ownerId => Object.fromEntries((await run({ action: 'getTabs', ownerId })).tabs.map(t => [t.id, t.owned]));
   return { run, start, owned, onCreated, onUpdated, onActivated,
+    handoffs: () => context.handoffPopup(), decide: id => context.handoffDecision(id, 'approve'),
     input: (tabId, at = state.now) => browser.runtime.onMessage.emit(
       { action: 'trustedTabInput', at }, { tab: { id: tabId } }),
   };
@@ -485,7 +486,24 @@ async function inputDuringRestoreStaysUserOpened() {
   assert.equal((await load(state).owned('client-a'))[6], false);
 }
 
+async function handoffsNeverRestoreCopiedPersistentOwnership() {
+  const state = browserState();
+  state.tabs.set(1, { id: 1, windowId: 1, active: true, url: 'https://user.test/', title: 'User' });
+  const h = load(state);
+  assert.equal((await h.owned('client-a'))[1], false);
+  await h.run({ action: 'openHandoffSession', sessionId: 'session-a', ownerId: 'client-a', clientName: 'A' });
+  const request = h.start({ action: 'requestTab', tabId: 1, sessionId: 'session-a', ownerId: 'client-a', reason: 'work' });
+  await settle();
+  // Firefox can copy a session value after onCreated, while cleanup still awaits storage.
+  state.values.set(`1|${KEY}`, JSON.stringify({ v: 2, owner: 'client-a' }));
+  await h.decide(h.handoffs().requests[0].id);
+  assert.equal((await request.result).owned, true);
+  assert.equal(stored(state, 1), undefined);
+  assert.equal((await load(state).owned('client-a'))[1], false, 'handoff must never survive extension reload');
+}
+
 (async () => {
+  await handoffsNeverRestoreCopiedPersistentOwnership();
   await inputDuringRestoreStaysUserOpened();
   await perClientOwnershipAndRestart();
   await openerInheritanceAndTrustedInput();

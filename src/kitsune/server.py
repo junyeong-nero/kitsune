@@ -501,6 +501,16 @@ def _mcp_errors(function):
             return result
         return CallToolResult(content=[_compact_json(result)], isError=_failed(result))
 
+    if function.__name__ == "browser_tabs":
+        @functools.wraps(function)
+        async def tabs_call(*args, **kwargs):
+            if kwargs.get("action", args[0] if args else "list") == "request":
+                # The browser prompt waits 30s. Keep MCP EOF/cancellation runnable so lifespan
+                # teardown can revoke the session while this bounded HTTP request is outstanding.
+                return await anyio.to_thread.run_sync(functools.partial(call, *args, **kwargs),
+                                                     abandon_on_cancel=True)
+            return call(*args, **kwargs)
+        return tabs_call
     return call
 
 
