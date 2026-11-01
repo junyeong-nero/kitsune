@@ -138,6 +138,9 @@ def _no_current_tab(name: str, arguments: dict) -> dict | None:
         action = _tabless_step_write(arguments.get("command"))
     elif name == "browser_storage":
         action = None if arguments.get("op") in _STORAGE_READS else "storageOp"
+    elif name == "browser_find":
+        # The core browser_find's load_more scrolls the page (#404).
+        action = "scroll" if arguments.get("load_more") else None
     else:
         action = None
     if action is None and name not in TAB_WRITE_TOOLS:

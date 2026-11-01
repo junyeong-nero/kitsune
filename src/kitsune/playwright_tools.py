@@ -19,7 +19,9 @@ browser_press_key a repeat count (1-100) that the extension presses within one r
 browser_click and browser_hover add opened_popup to their result when they open a menu, listbox
 or dialog, also one a background tab did not paint, with its items' refs (#329). Like repeat,
 browser_click's hold_ms (0-10000 ms, a long press) and browser_hover's duration_ms and steps
-(moves across the target, for hover intent) are accepted but not published (#351).
+(moves across the target, for hover intent) are accepted but not published (#351). So is
+browser_find's load_more, which scrolls an infinite-scroll list until the query matches; a result
+without a match names it in its hint (#404).
 
 browser_fill_form type slider and browser_type fill set an ARIA slider or spinbutton (no native
 input) by pressing arrow keys in the extension until aria-valuenow is the value (#311).
@@ -282,6 +284,14 @@ def _search(text: str | None, regex: str | None):
 # are marked with ">", /url lines are searched only for URL-like queries and shown only under a matched
 # link, and the result is cut at FIND_LIMIT characters line by line. filename saves every match, as before.
 FIND_LIMIT = 8000
+# load_more (#404), for infinite-scroll lists that load the next batch near their end: between reads,
+# browser_find scrolls the page to the bottom (at most FIND_LOAD_MORE_SCROLLS times) and waits up to
+# FIND_LOAD_MORE_POLLS polls for the snapshot to change. A scroll that changed nothing ends the search.
+FIND_LOAD_MORE_SCROLLS = 10
+FIND_LOAD_MORE_POLLS = 12
+FIND_LOAD_MORE_POLL_SECONDS = 0.25
+FIND_NO_MATCH_HINT = ("No match. If it may be further down a list that loads more as it scrolls, "
+                      "load_more=true scrolls until it appears.")
 _URL_LINE = re.compile(r"^\s*- /url: ")
 _URL_LIKE = re.compile(r"/|https?\??:|www\.|[\w-]+(\.[\w-]+)*\.[a-z]{2,}(/|$)", re.IGNORECASE)
 
@@ -297,16 +307,56 @@ def _url_query(text: str | None, regex: str | None) -> bool:
     return "://" in query or _URL_LIKE.match(query) is not None
 
 
+def _loaded_more(load_more: bool, scrolls: int, ended: bool, hits: list) -> dict:
+    """What browser_find's load_more did: its scrolls and, without a match, why it stopped."""
+    if not load_more:
+        return {}
+    if hits:
+        return {"scrolls": scrolls}
+    hint = (f"No match after {scrolls} scrolls to the bottom: the page stopped changing." if ended else
+            f"No match after {scrolls} scrolls to the bottom, and the page still changes: call again to load more.")
+    return {"scrolls": scrolls, "hint": hint}
+
+
+def _find_snapshot() -> dict:
+    # Every item of a repeated sibling run, including those a snapshot collapses.
+    return k._post("/api/snapshot", k._request_body({"collapse": False}, _current_tab))
+
+
 @_core
-def browser_find(text: str | None = None, regex: str | None = None, filename: str | None = None) -> dict:
+def browser_find(text: str | None = None, regex: str | None = None, filename: str | None = None,
+                 load_more: bool = False, confirm_token: str | None = None) -> dict:
     matches = _search(text, regex)
     if isinstance(matches, dict):
         return matches
-    # Every item of a repeated sibling run, including those a snapshot collapses.
-    result = k._post("/api/snapshot", k._request_body({"collapse": False}, _current_tab))
+    if load_more and _current_tab is None:
+        return k._offering_own_tabs(k._no_current_tab("browser_find", {"load_more": True}))
+    urls = _url_query(text, regex)
+    result = _find_snapshot()
     if k._failed(result):
         return result
     lines = (result.get("snapshot") or "").split("\n")
+    # load_more (#404): scroll to the bottom until the query matches, the page stops changing or the budget is spent.
+    scrolls, ended = 0, False
+    while load_more and scrolls < FIND_LOAD_MORE_SCROLLS and not any(
+            line and (urls or filename or not _URL_LINE.match(line)) and matches(line) for line in lines):
+        scrolled = k._post("/api/scroll", k._request_body({"direction": "bottom"}, _current_tab,
+                                                          confirm_token=confirm_token))
+        if k._failed(scrolled):
+            return scrolled
+        scrolls += 1
+        for _ in range(FIND_LOAD_MORE_POLLS):
+            k._sleep(FIND_LOAD_MORE_POLL_SECONDS)
+            result = _find_snapshot()
+            if k._failed(result):
+                return result
+            after = (result.get("snapshot") or "").split("\n")
+            if after != lines:
+                lines = after
+                break
+        else:
+            ended = True
+            break
     indent = [len(line) - len(line.lstrip(" ")) for line in lines]
 
     def ancestors(i):
@@ -321,8 +371,7 @@ def browser_find(text: str | None = None, regex: str | None = None, filename: st
         found = [{"path": [lines[j].strip() for j in ancestors(i)], "lines": lines[max(0, i - 2):i + 3]}
                  for i, line in enumerate(lines) if line and matches(line)]
         text_out = "\n\n".join("\n".join([" > ".join(m["path"]) or "(root)", *m["lines"]]) for m in found)
-        return {**_saved(filename, text_out), "count": len(found)}
-    urls = _url_query(text, regex)
+        return {**_saved(filename, text_out), "count": len(found), **_loaded_more(load_more, scrolls, ended, found)}
     hits = [i for i, line in enumerate(lines) if line and (urls or not _URL_LINE.match(line)) and matches(line)]
     hit = set(hits)
     blocks: dict[tuple, dict] = {}
@@ -369,7 +418,9 @@ def browser_find(text: str | None = None, regex: str | None = None, filename: st
             used += cost
         if full:
             break
-    response = {"count": len(hits), "blocks": out}
+    response = {"count": len(hits), "blocks": out, **_loaded_more(load_more, scrolls, ended, hits)}
+    if not hits and not load_more:
+        response["hint"] = FIND_NO_MATCH_HINT
     if len(listed) < len(hits):
         response.update(truncated=True, shown=len(listed),
                         hint=f"Showing {len(listed)} of {len(hits)} matches. Narrow text or regex, snapshot a block's "

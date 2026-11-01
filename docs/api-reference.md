@@ -2450,6 +2450,20 @@ narrow the query, scope a snapshot, or set `filename`. `count` is always the tot
 `filename` every match, including a matched `/url` line for any query, is saved with its own
 window and path, as before, so its `count` can be higher than the inline one.
 
+An inline result without a match has a `hint` that names `load_more` (#404). The core
+`browser_find` accepts `load_more: true` (and a `confirm_token` for it), not listed in its
+schema (Playwright MCP's): for an infinite-scroll list that loads its next batch when scrolled
+to its end, it scrolls the current tab to the bottom (POST `/api/scroll` `direction: bottom`,
+which falls back to the scrollable container at the viewport's center) until the query
+matches, at most 10 times (`FIND_LOAD_MORE_SCROLLS`). After each scroll it reads the snapshot
+every 250 ms for up to 3 s until it changes; a scroll that changed nothing within that time
+ends the search. The result adds `scrolls` and, without a match, a `hint` that says whether the
+page stopped changing or may load more on another call. A list that loads through an
+`IntersectionObserver` may not load in a background tab, which Firefox may not deliver its
+callbacks to (nor those of a hover). Scrolling writes the tab, so without a
+current tab `load_more` returns `no_current_tab` (`state.action: "scroll"`), and a held or
+failed scroll is returned as it is.
+
 Without an acted-on target, a cut snapshot of a page with a `main` landmark defers each
 `navigation`, `banner` or `contentinfo` landmark outside `main` whose lines exceed a small
 block (2,000 characters or a quarter of the budget). The landmark keeps its line, in
