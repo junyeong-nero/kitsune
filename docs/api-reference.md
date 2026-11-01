@@ -569,7 +569,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `user_active` | The user is using the tab (`state.reason`: `input`, `typing`, `navigating`); the write or navigation did not run (see [User activity](#user-activity)) | true |
 | `outcome_not_observed` | The action was dispatched, but the outcome given in `expect` did not happen in time (see [Action outcomes](#action-outcomes)) | false for writes |
 | `user_tab_read_only` | A user or other client owns the target; nothing ran and no prompt is offered. `state.tabId`, `state.index`, `state.action`; open an owned tab before writing (see [Tab permissions](#tab-permissions)) | false |
-| `unsupported_target` | Absolute screen-coordinate input cannot be bound to an owned tab under the default policy; use a ref or viewport coordinates | false |
+| `unsupported_target` | Absolute screen-coordinate input is refused in every permission mode; native input is also refused on handed-off tabs. Use DOM actions, or a ref or viewport coordinates on an agent-created tab for native input | false |
 | `no_current_tab` | From the MCP server: a write or navigation names no tab and the agent has no current tab (`state.tool`, `state.action` for a container step; `state.ownTabs`: the open tabs this MCP client opened, when there are any); nothing was sent (see [No current tab](#no-current-tab)) | false |
 | `tab_required` | A `parallel` step that acts on a tab has no `tabId` (`state.sequence`, `state.index`); nothing was dispatched (see [Container progress](#container-progress)) | true |
 | `tab_owned` | Two `parallel` sequences write the same tab (`state.tabId`, `state.owner`); nothing was dispatched | true |
@@ -1574,11 +1574,11 @@ remaining keys with `user_active` and `state.keysSent` if keys were already deli
 Native-input cleanup leaves a busy temporarily shown tab displayed rather than switching
 away. That restoration attempt is consumed; a stale retry cannot later change the user's
 view after activity releases. Idle, still-authenticated restoration continues normally.
-A screen-coordinate trusted click is prohibited by default. Writable compatibility
-checks activity on its named or once-resolved implicit tab before any OS action, but
-coordinates cannot prove that tab is the actual destination. Its own click may count
-as user input for 3 s. Activity checks are admission checks, not an atomic lock against
-input arriving between a check and an action.
+Screen-coordinate trusted clicks are prohibited in every permission mode, including
+writable compatibility, because coordinates cannot establish the destination tab.
+Use DOM actions, or tab-bound native input on an agent-created tab. Activity checks
+are admission checks, not an atomic lock against input arriving between a check and
+an action.
 
 #### Viewed tab
 
