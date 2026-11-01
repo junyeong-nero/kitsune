@@ -21,7 +21,7 @@ function event() {
 function load({ idleMinutes } = {}) {
   const clock = { now: 1_000_000 };
   const tabs = new Map();
-  const removed = [];
+  const removed = [], activity = new Map();
   const onActivated = event(), onMessage = event(), onAlarm = event();
   const alarms = new Map(); // name -> create() info
   const browser = {
@@ -37,7 +37,7 @@ function load({ idleMinutes } = {}) {
         tabs.delete(id);
         removed.push(id);
       },
-      sendMessage: async () => null,
+      sendMessage: async id => activity.has(id) ? { active: true, state: activity.get(id) } : null,
     },
     alarms: { create: (name, info) => alarms.set(name, info), onAlarm },
     windows: { getLastFocused: async () => ({ id: 1, focused: true }), getAll: async () => [{ id: 1 }] },
@@ -62,7 +62,8 @@ function load({ idleMinutes } = {}) {
     if (agent) context.markAgentTab(tab.id);
   };
   const message = (msg, sender) => Promise.resolve(onMessage.emit(msg, sender).find(r => r !== undefined));
-  return { context, clock, tabs, removed, addTab, onActivated, message, alarms, onAlarm, onCreated: browser.tabs.onCreated };
+  return { context, clock, tabs, removed, activity, addTab, onActivated, message, alarms, onAlarm,
+    onUpdated: browser.tabs.onUpdated, onCreated: browser.tabs.onCreated };
 }
 
 async function popupClosesEveryUnpinnedAgentTab() {
@@ -119,6 +120,27 @@ async function idleLimitClosesOnlyIdleBackgroundAgentTabs() {
   assert.deepEqual(h.removed.sort(), [2, 6, 7]);
 }
 
+async function idleSweepRespectsUserActivityWithoutResettingIdleTime() {
+  const h = load({ idleMinutes: 15 });
+  for (const id of [2, 3, 4]) h.addTab({ id }, { agent: true });
+  h.clock.now += 20 * MINUTE;
+  h.activity.set(2, { reason: 'input', input: 'wheel', sinceMs: 0, windowMs: 3000 });
+  h.activity.set(3, { reason: 'typing', field: 'input' });
+  Object.assign(h.tabs.get(4), { active: true, status: 'loading' });
+  h.onUpdated.emit(4, { status: 'loading' });
+  assert.equal((await h.context.sweepIdleAgentTabs()).closed, 0);
+  assert.deepEqual(h.removed, [], 'expired idle age does not override input, typing or navigation');
+  h.clock.now += 3000;
+  h.activity.delete(2);
+  assert.equal((await h.context.sweepIdleAgentTabs()).closed, 1);
+  assert.deepEqual(h.removed, [2], 'the sweep did not reset the idle timestamp');
+  h.activity.delete(3);
+  assert.equal((await h.context.sweepIdleAgentTabs()).closed, 1, 'typing release permits cleanup');
+  // Only the toolbar's explicit user request can bypass the pause.
+  assert.equal((await h.context.handleCommand({ action: 'closeAgentTabs' })).closed, undefined);
+  assert.equal((await h.message({ action: 'closeAgentTabs' }, { url: POPUP_URL })).closed, 1);
+}
+
 async function aMinuteAlarmRunsTheSweep() {
   const h = load({ idleMinutes: 15 });
   assert.equal(JSON.stringify([...h.alarms]), JSON.stringify([['kitsune.agentTabIdleSweep', { periodInMinutes: 1 }]]));
@@ -171,6 +193,7 @@ async function freshInheritedTabIsNotIdleAfterLongUptime() {
   await idleLimitIsOffByDefault();
   await idleLimitClosesOnlyIdleBackgroundAgentTabs();
   await aMinuteAlarmRunsTheSweep();
+  await idleSweepRespectsUserActivityWithoutResettingIdleTime();
   await restoredAgentTabsCountFromTheReload();
   console.log('agent_tab_cleanup: ok');
 })().catch(e => { console.error(e); process.exit(1); });

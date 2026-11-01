@@ -1083,6 +1083,12 @@ async def trusted_click(params):
         return refusal
 
     if coordinate_space == "screen":
+        # Writable compatibility permits raw screen coordinates, but not bypassing activity.
+        # Bind the implicit tab once; coordinates themselves still cannot prove the destination.
+        activity = await send_to_extension("checkUserActivity", {
+            **({"tabId": params["tabId"]} if params.get("tabId") is not None else {})})
+        if "error" in activity:
+            return activity
         # Focus and the click wait and sleep: off the event loop, which serves every client (#336).
         def focus_and_click():
             return (_focus_browser_window(title, process) if focus else False,

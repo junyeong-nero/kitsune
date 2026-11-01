@@ -61,6 +61,24 @@ class TrustedKeysTestCase(unittest.TestCase):
 
 
 class TrustedTypeTests(TrustedKeysTestCase):
+    def test_activity_before_next_key_stops_native_input_and_reports_partial_count(self):
+        extension = self.extension
+        busy = {"error": "user busy", "code": "user_active", "retryable": True,
+                "state": {"reason": "input", "input": "wheel"}}
+
+        async def activity(action, params=None, timeout=30):
+            if action == "focusState" and self.posted():
+                return busy
+            return await extension(action, params, timeout)
+
+        self.extension = activity
+        result = asyncio.run(bridge.trusted_type({"tabId": 396, "selector": "#field", "text": "abc"}))
+        self.assertEqual(result["code"], "user_active")
+        self.assertTrue(result["retryable"])
+        self.assertEqual(result["state"], {"reason": "input", "input": "wheel", "keysSent": 1})
+        self.assertEqual(self.posted(), [("char", "a")])
+        self.assertEqual(self.actions()[-1], "restoreActiveTab")
+
     def test_tab_anywhere_in_trusted_text_is_rejected_before_typing(self):
         for text in ("\t", "prefix\tsuffix", "ordinary\ntext\t"):
             with self.subTest(text=text):

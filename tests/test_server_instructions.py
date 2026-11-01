@@ -20,6 +20,13 @@ def instructions(mode, **settings):
 
 
 class ServerInstructionsTests(unittest.TestCase):
+    def test_own_tab_activity_retry_in_every_mode_and_permission_setting(self):
+        for mode in ("act", "read", "draft"):
+            for setting in ("read-only", "writable"):
+                with self.subTest(mode=mode, setting=setting):
+                    self.assertIn("On your own tab, user_active means wait a few seconds and retry.",
+                                  instructions(mode, KITSUNE_USER_TABS=setting))
+
     def test_act_mode_explains_background_tabs(self):
         text = instructions("act")
         self.assertIn("opens a tab in the background", text)
