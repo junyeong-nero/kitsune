@@ -32,7 +32,8 @@ the agent gets fewer, sharper tools. See [Philosophy](https://github.com/junyeon
 ## Why Kitsune?
 
 - Tabs the agent creates open in the background. Your tabs and other clients' tabs
-  are read-only: writes, scrolling, focusing, selecting and closing them are refused
+  are read-only by default ([opt out with `KITSUNE_USER_TABS=writable`](docs/guide.md#protecting-your-tabs)):
+  writes, scrolling, focusing, selecting and closing them are refused
   without a prompt (`user_tab_read_only`). The agent opens its own tab to write, and
   pauses even there while you are typing or clicking. Writes that
   name no tab are refused until the agent has opened or selected one. This reduces interference, but OS-level clicks and popups

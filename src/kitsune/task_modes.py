@@ -1,10 +1,10 @@
 """Startup tool surfaces and per-request bridge limits (#141)."""
 
+from collections.abc import Mapping, Sequence
+
 MODE_HEADER = "X-Kitsune-Mode"
-# KITSUNE_PROTECT_USER_TABS=0 sends "0": this client's navigations may move user tabs (#199, #326).
-PROTECT_USER_TABS_HEADER = "X-Kitsune-Protect-User-Tabs"
-# KITSUNE_HOLD_VIEWED_TAB=0 sends "0": the tab the user is viewing is not held for this client (#326).
-HOLD_VIEWED_TAB_HEADER = "X-Kitsune-Hold-Viewed-Tab"
+# Authoritative per-request permission; absent means read-only. Old wire headers grant nothing.
+USER_TABS_HEADER = "X-Kitsune-User-Tabs"
 # A random id per MCP tool call, on each of its bridge requests: a viewed-tab approval covers the
 # other requests of that call (#326).
 TOOL_CALL_HEADER = "X-Kitsune-Tool-Call"
@@ -30,6 +30,32 @@ def task_mode(value: str | None) -> str:
     if mode not in {"read", "draft", "act"}:
         raise ValueError(f"Unknown KITSUNE_MODE: {mode}")
     return mode
+
+
+def user_tabs(value: str | None) -> str:
+    """Canonical permission shared by config, SDK and HTTP; invalid explicit values never opt out."""
+    if value is None:
+        return "read-only"
+    normalized = value.strip().lower() if isinstance(value, str) else None
+    if normalized not in {"read-only", "writable"}:
+        raise ValueError(f"Invalid user-tab permission {value!r}: KITSUNE_USER_TABS / "
+                         f"{USER_TABS_HEADER} must be read-only or writable")
+    return normalized
+
+
+def user_tabs_from_env(env: Mapping[str, str]) -> tuple[str, tuple[str, ...]]:
+    """Explicit new setting wins; deprecated false aliases apply only when it is absent."""
+    aliases = tuple(name for name in ("KITSUNE_HOLD_VIEWED_TAB", "KITSUNE_PROTECT_USER_TABS") if name in env)
+    value = env.get("KITSUNE_USER_TABS")
+    if value is None and any(env[name].strip().lower() in {"0", "false", "no", "off"} for name in aliases):
+        value = "writable"
+    return user_tabs(value), aliases
+
+
+def user_tabs_deprecation(aliases: Sequence[str]) -> str:
+    return (f"Deprecated user-tab settings: {', '.join(aliases)}; use KITSUNE_USER_TABS "
+            "(Python: user_tabs) instead. Explicit read-only/writable takes precedence; "
+            "the aliases will be removed after one release.")
 
 
 # Explicitly mapped so a newly added tool cannot silently widen a restricted mode.

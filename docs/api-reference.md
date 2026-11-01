@@ -1317,9 +1317,10 @@ that owner's pool. Releasing another owner's tab is refused, with no transfer of
 Pool tabs remain excluded from `mine` results. The popup's user-operated global cleanup
 remains separate and may close pool tabs.
 
-The existing explicit [compatibility opt-outs](guide.md#protecting-your-tabs) allow writes
-without changing ownership; neither caller JSON nor internal hold bypasses can enable them.
-The unified environment/header setting and deprecation warnings remain #398 work.
+`KITSUNE_USER_TABS=writable` allows writes without changing ownership; neither caller
+JSON nor approval tokens enable it. The bridge uses one authoritative
+`X-Kitsune-User-Tabs` header. See [User-tab setting](guide.md#protecting-your-tabs) for
+values, defaults, precedence, invalid-value errors and the one-release deprecated aliases.
 Tab permissions do **not** sandbox browser/account-wide side effects: cookie changes,
 clipboard writes, downloads/cancellation, clearing browsing data and the global network
 interception rules can still affect shared state. They have no concrete tab target and
@@ -1487,8 +1488,8 @@ The old viewed-tab approval hold is replaced by [Tab permissions](#tab-permissio
 Viewing does not change ownership: user tabs are read-only even in the background,
 and owned tabs remain writable while viewed unless the existing `user_active` guard
 reports trusted user activity. Legacy `needs_user` details `user_viewing` and `user_tab`
-remain recognized for older extensions during migration; they are not the default
-permission mechanism and cannot approve a write refused as `user_tab_read_only`.
+remain recognized through the one-release alias period (and are removed only after it);
+they are not the default permission mechanism and cannot approve a write refused as `user_tab_read_only`.
 
 #### No current tab
 

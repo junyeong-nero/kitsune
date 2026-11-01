@@ -1,20 +1,15 @@
-"""Issue #199: a session protects user tabs from server-mediated navigation (KITSUNE_PROTECT_USER_TABS).
-
-Ownership, permission to close and permission to navigate are separate: an owned helper tab
-closes and navigates freely, a protected user tab navigates only with the user's approval, and
-without protection navigation is unchanged. Protection is on unless the client sends "0" (#326).
-"""
+"""Legacy user_tab response/token compatibility retained for the alias release (#398)."""
 import asyncio
 import unittest
 from unittest.mock import Mock, patch
 
-from kitsune import bridge, bridge_client, server, task_modes, tools
+from kitsune import bridge, task_modes, tools
 
 ACTIVE_TAB = 4
 
 
 class FakeExtension:
-    """Refuses protected navigation of tabs it does not own, like background.js handleCommand."""
+    """Models legacy navigation approval responses, not current extension permissions."""
 
     def __init__(self, owned=(9,)):
         self.owned = set(owned)
@@ -26,7 +21,7 @@ class FakeExtension:
         tab_id = params.get("tabId") or ACTIVE_TAB
         if action == "describeTarget":
             return {"tabId": tab_id, "url": "https://user.example/"}
-        if (action in {"navigate", "goBack", "goForward"} and params.get("protectUserTabs")
+        if (action in {"navigate", "goBack", "goForward"} and not bridge._user_tabs_writable.get()
                 and tab_id not in self.owned and not params.get("userTabApproved")):
             return {"error": f"Tab {tab_id} was not opened by the agent, so it was not navigated",
                     "code": "user_tab", "retryable": False, "hint": "extension hint",
@@ -61,7 +56,7 @@ class ProtectedTabTests(unittest.TestCase):
     def call(self, path, body, protect_header=None, mode=None):
         handler = bridge.BridgeHandler.__new__(bridge.BridgeHandler)
         handler.path = path
-        handler.headers = {} if protect_header is None else {task_modes.PROTECT_USER_TABS_HEADER: protect_header}
+        handler.headers = {} if protect_header is None else {task_modes.USER_TABS_HEADER: "writable" if protect_header == "0" else "read-only"}
         if mode:
             handler.headers[task_modes.MODE_HEADER] = mode
         handler.read_body = Mock(return_value=dict(body))
@@ -85,7 +80,7 @@ class ProtectedTabTests(unittest.TestCase):
     # (a) Owned helper tabs: navigation and cleanup are unchanged under protection.
     def test_owned_helper_tab_navigates_and_closes(self):
         self.assertEqual(self.call("/api/navigate", {"url": "https://a.example/", "tabId": 9}), {"ok": True})
-        self.assertIs(self.extension.last("navigate")["protectUserTabs"], True)
+        self.assertNotIn("protectUserTabs", self.extension.last("navigate"))
         self.assertEqual(self.call("/api/back", {"tabId": 9}), {"ok": True})
         self.assertEqual(self.call("/api/close-tab", {"tabId": 9}), {"ok": True})
 
@@ -118,7 +113,7 @@ class ProtectedTabTests(unittest.TestCase):
         self.assertEqual(step["state"]["detail"], "user_tab")
         self.assertNotIn("confirmToken", step["state"])
         self.assertNotIn("userTabApproved", self.extension.last("navigate"))
-        self.assertIs(self.extension.last("navigate")["protectUserTabs"], True)
+        self.assertNotIn("protectUserTabs", self.extension.last("navigate"))
 
     def test_limits_clicks_are_not_guarded(self):
         self.call("/api/click", {"selector": "a", "tabId": 4})
@@ -193,7 +188,7 @@ class ProtectedTabTests(unittest.TestCase):
             with self.subTest(header=header):
                 result = self.call("/api/navigate", {"url": "https://a.example/", "tabId": 4}, protect_header=header)
                 self.assertEqual(result["state"]["detail"], "user_tab")
-                self.assertIs(self.extension.last("navigate")["protectUserTabs"], True)
+                self.assertNotIn("protectUserTabs", self.extension.last("navigate"))
 
     def test_callers_cannot_approve_themselves(self):
         self.refuse("/api/navigate", {"url": "https://a.example/", "tabId": 4, "userTabApproved": True})
@@ -204,18 +199,6 @@ class ProtectedTabTests(unittest.TestCase):
         self.assertEqual(self.call("/api/navigate", body, protect_header="0"), {"ok": True})
         self.assertNotIn("protectUserTabs", self.extension.last("navigate"))
         self.assertEqual(self.call("/api/back", {"tabId": 4}, protect_header="0"), {"ok": True})
-
-
-class ServerProtectUserTabsTests(unittest.TestCase):
-    def test_mcp_forwards_protection_on_every_bridge_request(self):
-        for protect in (True, False):
-            with patch.object(server._client, "protect_user_tabs", protect), \
-                    patch.object(bridge_client.httpx, "request") as request:
-                request.return_value.status_code = 200
-                request.return_value.json.return_value = {"ok": True}
-                tools._post("/api/navigate", {"url": "https://example.com"})
-            headers = request.call_args.kwargs["headers"]
-            self.assertEqual(headers.get(task_modes.PROTECT_USER_TABS_HEADER), None if protect else "0")
 
 
 if __name__ == "__main__":

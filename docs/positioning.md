@@ -133,11 +133,10 @@ Kitsune explicitly considers the person using the browser:
 
 - Agent-created tabs open in the background.
 - Ordinary tab screenshots use `tabs.captureTab` without selecting the tab.
-- Writes and navigations on a tab the user is using return `user_active` instead
-  of acting, and on the tab the user is viewing `needs_user` (`user_viewing`), which needs a
-  separate, call-bound confirmation step.
-- Tabs carry agent ownership; closing a user tab requires a separate
-  action-bound confirmation step.
+- User and other clients' tabs are read-only by default: writes fail immediately with
+  `user_tab_read_only`, without an approval prompt.
+- Agent tabs remain writable while viewed, but trusted user input pauses writes with
+  `user_active`. See [User-tab setting](guide.md#protecting-your-tabs) for the opt-out.
 
 The benefit is reduced workspace interference, not merely multi-tab support.
 See [Shared browser](api-reference.md#shared-browser),

@@ -203,7 +203,7 @@ class GatewayTests(unittest.TestCase):
                     self.assertRegex(request["headers"][task_modes.TOOL_CALL_HEADER], r"^[0-9a-f]{16}$")
                 for request in gateway["requests"]:
                     self.assertTrue(request["headers"][task_modes.GATEWAY_TOOL_HEADER].startswith("browser_"))
-                    self.assertEqual(request["headers"][task_modes.PROTECT_USER_TABS_HEADER], "0")
+                    self.assertEqual(request["headers"][task_modes.USER_TABS_HEADER], "writable")
                 for request in direct["requests"]:
                     self.assertNotIn(task_modes.GATEWAY_TOOL_HEADER, request["headers"])
         scrolled, screenshot, submit, invalid, snapshot = pairs[::2]

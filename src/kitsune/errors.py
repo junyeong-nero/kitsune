@@ -47,8 +47,9 @@ class KitsuneError(Exception):
 class ConfirmationRequired(KitsuneError):
     """The action needs the user's approval and nothing ran (code needs_user, state.reason
     approval, #376). detail is the code it replaces: ask-before-act held it (confirmation_required,
-    with hold_reason such as payment_page), it closes or, unless protect_user_tabs is off, navigates
-    a tab no client opened (user_tab), or it acts on the tab the user is viewing (user_viewing).
+    with hold_reason such as payment_page). Legacy user_tab and user_viewing details remain
+    recognized through the deprecated settings alias release; current user-tab writes are refused
+    with user_tab_read_only, not held for approval.
     message asks the user. Once the user approves, repeat it with confirm=token within expires_in
     seconds; a token works once."""
 

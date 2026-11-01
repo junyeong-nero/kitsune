@@ -12,6 +12,7 @@ import re
 import secrets
 import subprocess
 import sys
+import sys
 import time
 
 import httpx
@@ -19,8 +20,8 @@ import httpx
 from . import bridge_control
 from .bridge_control import BRIDGE, HTTP_PORT, LOG_FILE, TOKEN_FILE, WS_PORT, headers as _headers
 from .capabilities import CAPS_HEADER
-from .task_modes import (APPROVER_HEADER, CLIENT_HEADER, CLIENT_ID_PATTERN, HOLD_VIEWED_TAB_HEADER, MODE_HEADER,
-                         OWNER_HEADER, PROTECT_USER_TABS_HEADER)
+from .task_modes import (APPROVER_HEADER, CLIENT_HEADER, CLIENT_ID_PATTERN, MODE_HEADER,
+                         OWNER_HEADER, USER_TABS_HEADER, user_tabs as parse_user_tabs, user_tabs_deprecation)
 from .version import BRIDGE_BUILD
 
 BRIDGE_START_TIMEOUT = 15
@@ -185,9 +186,9 @@ def _port_conflict(port: int, reason: str, message: str) -> dict:
 class BridgeClient:
     """Bridge requests that carry one caller's capability groups, task mode and user-tab protection.
 
-    Either hold_viewed_tab=False (KITSUNE_HOLD_VIEWED_TAB=0) or protect_user_tabs=False
-    (KITSUNE_PROTECT_USER_TABS=0) explicitly permits compatibility writes on user tabs.
-    With neither opt-out, user and other clients' tabs are read-only. user_active still applies.
+    user_tabs="writable" permits writes on user tabs; the default is "read-only".
+    Explicit user_tabs wins over deprecated hold_viewed_tab/protect_user_tabs=False aliases.
+    user_active still applies.
 
     caps are the groups the bridge lets these requests use: it refuses routes and container steps
     of other groups (#230). caps=None sends no caps header, so the bridge refuses no group; caps
@@ -202,12 +203,17 @@ class BridgeClient:
     token repeats (#376); it is never shown.
     """
 
-    def __init__(self, *, caps, mode: str = "act", protect_user_tabs: bool = True, hold_viewed_tab: bool = True,
+    def __init__(self, *, caps, mode: str = "act", user_tabs: str | None = None,
+                 protect_user_tabs: bool | None = None, hold_viewed_tab: bool | None = None,
                  extra_headers=None, replace_bridge: bool = True, approver: bool = False):
         self.caps = None if caps is None else ",".join(sorted(caps))
         self.mode = mode
-        self.protect_user_tabs = protect_user_tabs
-        self.hold_viewed_tab = hold_viewed_tab
+        aliases = tuple(name for name, value in (("protect_user_tabs", protect_user_tabs),
+                                                 ("hold_viewed_tab", hold_viewed_tab)) if value is not None)
+        self.user_tabs = parse_user_tabs(user_tabs if user_tabs is not None else
+                                        "writable" if protect_user_tabs is False or hold_viewed_tab is False else None)
+        if aliases:
+            print(user_tabs_deprecation(aliases), file=sys.stderr)
         self.extra_headers = extra_headers
         self.replace_bridge = replace_bridge
         self.client_id = f"{os.getpid()}-{secrets.token_hex(3)}"
@@ -334,12 +340,9 @@ class BridgeClient:
                     headers[APPROVER_HEADER] = self._approver
                 if self.mode != "act":
                     headers[MODE_HEADER] = self.mode
-                if not self.protect_user_tabs:
-                    headers[PROTECT_USER_TABS_HEADER] = "0"
-                if not self.hold_viewed_tab:
-                    headers[HOLD_VIEWED_TAB_HEADER] = "0"
                 if self.extra_headers:
                     headers.update(self.extra_headers())
+                headers[USER_TABS_HEADER] = self.user_tabs
                 r = httpx.request(method, f"{BRIDGE}{endpoint}", headers=headers,
                                   verify=bridge_control.tls_context(), **kwargs)
                 if r.status_code == 401:

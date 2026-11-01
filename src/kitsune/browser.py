@@ -72,13 +72,14 @@ def _cut(result: dict, what: str) -> dict:
     return result
 
 
-def connect(*, mode: str = "act", protect_user_tabs: bool = True, hold_viewed_tab: bool = True, confirm=None,
+def connect(*, mode: str = "act", user_tabs: str | None = None,
+            protect_user_tabs: bool | None = None, hold_viewed_tab: bool | None = None, confirm=None,
             replace_bridge: bool = False) -> "Browser":
     """Connect to the shared bridge, starting it if none runs, and check that the extension is connected.
 
     mode ("read", "draft" or "act") limits what the bridge accepts, as KITSUNE_MODE does for the
-    MCP server; either protect_user_tabs=False or hold_viewed_tab=False explicitly enables
-    compatibility writes on user tabs, as the corresponding environment opt-outs do. confirm, if set, is called
+    MCP server. user_tabs="writable" permits user-tab writes (default: "read-only"). Explicit
+    user_tabs overrides the deprecated protect_user_tabs=False and hold_viewed_tab=False aliases. confirm, if set, is called
     with the ConfirmationRequired error of an action that needs the user's approval; when it
     returns True, the action is repeated once with its token, so a person can approve it (for
     example with input()). A running bridge of another build raises ConnectionFailed
@@ -87,7 +88,7 @@ def connect(*, mode: str = "act", protect_user_tabs: bool = True, hold_viewed_ta
     """
     if mode not in MODES:
         raise ValueError(f"mode must be read, draft or act, not {mode!r}")
-    client = BridgeClient(caps=None, mode=mode, protect_user_tabs=protect_user_tabs, hold_viewed_tab=hold_viewed_tab,
+    client = BridgeClient(caps=None, mode=mode, user_tabs=user_tabs, protect_user_tabs=protect_user_tabs, hold_viewed_tab=hold_viewed_tab,
                           replace_bridge=replace_bridge)
     error = client.ensure_bridge()
     if error:

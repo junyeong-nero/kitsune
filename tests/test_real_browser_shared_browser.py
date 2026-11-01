@@ -76,6 +76,14 @@ class RealBrowserSharedBrowserTests(harness.RealBrowserTestCase):
         cls.page = harness.FixtureServer(_Page)
         cls.addClassCleanup(cls.page.stop)
         super().setUpClass()
+        auth = cls.bridge.auth
+        owner = patch.object(cls.bridge, "auth", side_effect=lambda: {**auth(), task_modes.OWNER_HEADER: "e2e-shared-browser"})
+        owner.start()
+        cls.addClassCleanup(owner.stop)
+
+    def assert_read_only(self, result):
+        self.assert_error(result, "user_tab_read_only", False)
+        self.assertNotIn("confirmToken", result.get("state", {}))
 
     def parent(self, script, *args):
         debugger = harness.RemoteDebugger(self.browser.rdp_port)
@@ -164,13 +172,17 @@ class RealBrowserSharedBrowserTests(harness.RealBrowserTestCase):
             self.assertTrue(any(title == t["title"] and t["url"] in ("about:blank", url) for title, url in originals), t)
         user_copy = next((i for i, t in copies.items() if t["title"] == "user"), None)
         if user_copy is not None:
-            self.assert_needs_approval(self.call("/api/close-tab", {"tabId": user_copy}), "user_tab")
+            self.assert_read_only(self.call("/api/close-tab", {"tabId": user_copy}))
             self.assertIn(user_copy, self.tabs())
             assert_user_view_unchanged("a copy of the user's tab is not closed")
         # Its own copy in the user's window is the agent's.
         self.assertTrue(all(t["owned"] for i, t in tabs.items() if t["windowId"] != window["windowId"]
                             and i not in before_window), tabs)
-        self.assert_ok(self.call("/api/close-window", {"windowId": window["windowId"]}))
+        if copies:
+            self.assert_read_only(self.call("/api/close-window", {"windowId": window["windowId"]}))
+            self.assert_ok(self.call_opted_out("/api/close-window", {"windowId": window["windowId"]}))
+        else:
+            self.assert_ok(self.call("/api/close-window", {"windowId": window["windowId"]}))
         assert_user_view_unchanged("close-window")
         # Every tab from before is open on its URL, and no copy is left showing the agent's page.
         self.assertEqual({i: t["url"] for i, t in self.tabs().items()}, before_window, "close-window")
@@ -181,7 +193,7 @@ class RealBrowserSharedBrowserTests(harness.RealBrowserTestCase):
         assert_user_view_unchanged("closing owned tabs")
         self.assertEqual(self.tabs()[user_tab]["url"], self.page.origin + "/user")
 
-    def test_closing_a_user_tab_is_refused_until_the_user_approves(self):
+    def test_closing_a_user_tab_is_refused_without_prompt(self):
         self.user_page()
         second_url = self.page.origin + "/second"
         self.parent(USER_OPENS_BACKGROUND_TAB, second_url)
@@ -191,19 +203,19 @@ class RealBrowserSharedBrowserTests(harness.RealBrowserTestCase):
 
         for body in ({"tabId": second}, {"tabId": second, "force": True}):
             refused = self.call("/api/close-tab", body)
-            self.assert_needs_approval(refused, "user_tab")
+            self.assert_read_only(refused)
             self.assertIn(second, self.tabs(), "the user tab stays open")
         window_id = self.tabs()[second]["windowId"]
-        self.assert_needs_approval(self.call("/api/close-window", {"windowId": window_id}), "user_tab")
+        self.assert_read_only(self.call("/api/close-window", {"windowId": window_id}))
         self.assertIn(second, self.tabs(), "the user's window stays open")
         # Batch steps never get approval.
         batch = self.call("/api/batch", {"commands": [{"action": "closeTab", "tabId": second}]})
-        self.assert_needs_approval(batch["results"][0], "user_tab")
+        self.assert_read_only(batch["results"][0])
         self.assertNotIn("confirmToken", batch["results"][0]["state"])
         self.assertIn(second, self.tabs())
 
-        token = refused["state"]["confirmToken"]
-        self.assert_ok(self.call("/api/close-tab", {"tabId": second, "force": True, "confirmToken": token}))
+        self.assert_read_only(self.call("/api/close-tab", {"tabId": second, "confirmToken": "forged"}))
+        self.assert_ok(self.call_opted_out("/api/close-tab", {"tabId": second}))
         self.assertNotIn(second, self.tabs())
 
     def test_recent_trusted_user_input_blocks_agent_writes(self):
@@ -219,8 +231,8 @@ class RealBrowserSharedBrowserTests(harness.RealBrowserTestCase):
 
         for path, body in (("/api/click", {"selector": "#act"}), ("/api/type", {"selector": "#draft", "text": "x"}),
                            ("/api/navigate", {"url": self.page.origin + "/agent"})):
-            # Unprotected, so the navigation reaches the user-input check instead of user_tab (#326).
-            result = self.call_opted_out(path, {**body, "tabId": user_tab}, hold=True)
+            # Writable still respects the trusted user-input pause.
+            result = self.call_opted_out(path, {**body, "tabId": user_tab})
             self.assert_error(result, "user_active", True)
             self.assertEqual(result["state"]["reason"], "input", result)
             self.assertIn(result["state"]["input"], ("pointerdown", "mousedown"), result)
@@ -230,63 +242,45 @@ class RealBrowserSharedBrowserTests(harness.RealBrowserTestCase):
         self.assertIn("user page", self.call("/api/page-text", {"tabId": user_tab})["text"])
 
         time.sleep(3.2)  # the user-input window is 3 s
-        # The user still views the tab (#326): the click needs their approval.
-        held = self.call("/api/click", {"selector": "#act", "tabId": user_tab})
-        self.assert_needs_approval(held, "user_viewing")
-        self.assert_ok(self.call("/api/click", {"selector": "#act", "tabId": user_tab,
-                                                "confirmToken": held["state"]["confirmToken"]}))
+        self.assert_read_only(self.call("/api/click", {"selector": "#act", "tabId": user_tab}))
+        self.assert_ok(self.call_opted_out("/api/click", {"selector": "#act", "tabId": user_tab}))
         self.wait_for(lambda: self.tabs()[user_tab]["title"] == "acted", "the click after the window did not act")
 
-    def call_opted_out(self, path, body, hold=False):
-        """POST as a client with KITSUNE_PROTECT_USER_TABS=0 and, unless hold, KITSUNE_HOLD_VIEWED_TAB=0."""
-        headers = {**self.bridge.auth(), "Content-Type": "application/json", task_modes.PROTECT_USER_TABS_HEADER: "0"}
-        if not hold:
-            headers[task_modes.HOLD_VIEWED_TAB_HEADER] = "0"
+    def call_opted_out(self, path, body):
+        """An explicitly writable client, without changing tab ownership."""
+        headers = {**self.bridge.auth(), "Content-Type": "application/json", task_modes.USER_TABS_HEADER: "writable"}
         status, _, text = harness._request(self.bridge.http_port, "POST", path, headers, self.bridge.host,
                                            json.dumps(body), timeout=90)
         self.assertEqual(status, 200, text)
         return json.loads(text)
 
-    def test_the_tab_the_user_views_is_held_until_the_user_approves(self):
-        # #326: viewing counts as using. The user gives no input; their tab is just shown.
+    def test_viewed_user_tab_is_read_only_without_prompt(self):
         user_tab = self.user_page()
-        window = self.tabs()[user_tab]["windowId"]
         for path, body in (("/api/click", {"selector": "#act"}), ("/api/type", {"selector": "#draft", "text": "x"}),
                            ("/api/scroll", {"direction": "down"}), ("/api/navigate", {"url": self.page.origin + "/agent"}),
                            ("/api/reload-tab", {})):
-            # Unprotected, so the navigation reaches the viewed-tab hold instead of user_tab.
-            result = self.call_opted_out(path, {**body, "tabId": user_tab}, hold=True)
-            self.assert_needs_approval(result, "user_viewing")
-            self.assertEqual((result["state"]["tabId"], result["state"]["windowId"], result["state"]["holdReason"]),
-                             (user_tab, window, "viewing"), result)
-            self.assertIsInstance(result["state"]["browserFocused"], bool)
-            self.assertIn("confirmToken", result["state"])
+            result = self.call(path, {**body, "tabId": user_tab})
+            self.assert_read_only(result)
+            self.assertEqual(result["state"]["tabId"], user_tab)
         tab = self.tabs()[user_tab]
         self.assertEqual((tab["url"], tab["title"], tab["active"]), (self.page.origin + "/user", "user", True),
                          "nothing acted")
-        # Reads go on, and the agent's own background tab is not held.
         self.assertIn("user page", self.call("/api/page-text", {"tabId": user_tab})["text"])
         agent = self.open_tab(self.page.origin + "/agent")
         self.assert_ok(self.call("/api/navigate", {"url": self.page.origin + "/second", "tabId": agent}))
-
-        # The user approves one click: its token acts once.
-        held = self.call("/api/click", {"selector": "#act", "tabId": user_tab})
-        approved = {"selector": "#act", "tabId": user_tab, "confirmToken": held["state"]["confirmToken"]}
-        self.assert_ok(self.call("/api/click", approved))
-        self.wait_for(lambda: self.tabs()[user_tab]["title"] == "acted", "the approved click did not act")
-        self.assertEqual(self.call("/api/click", approved)["state"]["tokenRejected"], "used")
-
-        # A client with KITSUNE_HOLD_VIEWED_TAB=0 (and KITSUNE_PROTECT_USER_TABS=0) acts without a confirm step.
+        self.assert_read_only(self.call("/api/click", {"selector": "#act", "tabId": user_tab, "confirmToken": "forged"}))
         self.assert_ok(self.call_opted_out("/api/navigate", {"url": self.page.origin + "/second", "tabId": user_tab}))
-        self.wait_for(lambda: self.tabs()[user_tab]["title"] == "second", "the opted-out navigation did not load")
+        self.wait_for(lambda: self.tabs()[user_tab]["title"] == "second", "the writable navigation did not load")
         self.assertEqual(self.user_view()["shown"], [user_tab], "the user's tab stayed shown")
 
-    def test_fill_form_on_the_viewed_tab_needs_one_approval(self):
-        # #326 review: each field is its own bridge request; one token approves the whole tool call.
+    def test_fill_form_on_user_tab_requires_writable_not_approval(self):
+        # Each field is its own request; all must carry the effective permission.
+        permission = "read-only"
         user_tab = self.user_page()
 
         def post(endpoint, data, timeout=15, start_bridge=True):
-            headers = {**self.bridge.auth(), "Content-Type": "application/json", **server._gateway_headers()}
+            headers = {**self.bridge.auth(), "Content-Type": "application/json",
+                       task_modes.USER_TABS_HEADER: permission, **server._gateway_headers()}
             status, _, text = harness._request(self.bridge.http_port, "POST", endpoint, headers, self.bridge.host,
                                                json.dumps(data), timeout=90)
             return json.loads(text)
@@ -296,9 +290,10 @@ class RealBrowserSharedBrowserTests(harness.RealBrowserTestCase):
         fill_form = server._mcp_errors(playwright_tools.browser_fill_form)
         with patch.object(tools, "_post", post), patch.object(playwright_tools, "_current_tab", user_tab):
             refused = json.loads(fill_form(fields=fields).content[0].text)
-            self.assert_needs_approval(refused, "user_viewing")
+            self.assert_read_only(refused)
             self.assertEqual(refused["filled"], [])
-            filled = json.loads(fill_form(fields=fields, confirm_token=refused["state"]["confirmToken"]).content[0].text)
+            permission = "writable"
+            filled = json.loads(fill_form(fields=fields).content[0].text)
         self.assertEqual(filled.get("filled"), ["Draft", "Name"], filled)
         snapshot = self.call("/api/snapshot", {"tabId": user_tab})["snapshot"]  # a read: not held
         self.assertIn('[value="hello"]', snapshot)
