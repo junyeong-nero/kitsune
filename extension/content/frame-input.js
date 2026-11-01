@@ -36,9 +36,10 @@
       // hasFocus includes focus in the containing documents, unlike activeElement alone.
       const hasContent = field && (typeof field.value === 'string' ? field.value.length > 0
         : field.isContentEditable ? (field.textContent || '').trim().length > 0 : true);
+      // An inactive matching document is still queryable after focus returns, without new input.
       return field?.isConnected && field === document.activeElement && document.hasFocus() && hasContent
         ? { active: true, state: { reason: 'typing', field: field.tagName.toLowerCase() } }
-        : { active: false };
+        : { active: false, documentToken };
     });
   });
 })();

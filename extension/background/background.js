@@ -487,9 +487,10 @@ async function frameUserActivity(tabId) {
     clearTimeout(timer);
     if (frames.get(frameId) !== input) return await frameUserActivity(tabId);
     if (page?.active) return page.state;
-    // Missing/navigated/unresponsive frames cannot leave an indefinite typing lock. Recent
-    // input still gets its full 3 s pause; this matches the top-frame missing-query fallback.
-    if (frames.get(frameId) === input) frames.delete(frameId);
+    // A valid document can regain focus without another input event, just like the top
+    // document. Keep querying it; only gone/replaced/unresponsive documents are forgotten.
+    // Missing queries still get the bounded 3 s input pause, never an indefinite typing lock.
+    if (page?.documentToken !== input.documentToken) frames.delete(frameId);
   }
   if (frames && !frames.size) frameUserInputs.delete(tabId);
   return null;
@@ -1819,20 +1820,27 @@ async function zoomedScreenPoint(params) {
   return await forwardToContent('screenPoint', { ...params, tabId, zoom });
 }
 
-// Shows the user's tab again after a trusted click, unless the user already moved elsewhere.
+// Restore the previous view only while the temporary transition is still valid and idle.
 async function restoreActiveTab(tabId, from, ownerId) {
   const shownForInput = trustedShownTabs.get(from);
   if (!shownForInput || shownForInput.previousTabId !== tabId || shownForInput.ownerId !== ownerId) {
     return { ok: true, restored: false };
   }
-  trustedShownTabs.delete(from);
   try {
     const shown = await browser.tabs.get(from);
-    if (!shown.active) return { ok: true, restored: false };
+    if (!shown.active || await userActiveError(from)) return { ok: true, restored: false };
+    // Activity queries yield: the user may have switched away (and even back) meanwhile.
+    // Do not restore an invalidated transition or consume a newer client's preparation.
+    const current = await browser.tabs.get(from);
+    if (!current.active || trustedShownTabs.get(from) !== shownForInput) return { ok: true, restored: false };
+    trustedShownTabs.delete(from);
     await browser.tabs.update(tabId, { active: true });
     return { ok: true, restored: true };
   } catch (e) {
     return await tabApiError(tabId, e);
+  } finally {
+    // Busy cleanup is final too: a delayed retry must not switch the view after release.
+    if (trustedShownTabs.get(from) === shownForInput) trustedShownTabs.delete(from);
   }
 }
 

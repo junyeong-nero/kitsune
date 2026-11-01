@@ -1444,7 +1444,8 @@ def _trusted_key_stopped(reason, sent, hint):
 async def _trusted_keys(params, units, post_unit):
     """Shows the target's tab, clicks the target with the OS pointer to focus it, then sends
     each unit with post_unit (blocking, off the event loop) while the browser stays frontmost
-    and the target keeps the page's focus. The user's tab is shown again after the last key."""
+    and the target keeps the page's focus. Cleanup restores the previous tab only if the
+    temporarily shown tab is idle and its authenticated transition is still valid."""
     selector = params.get("selector") or ""
     if not selector:
         return {"error": "Trusted keyboard input needs selector or ref: the field it focuses and types into"}

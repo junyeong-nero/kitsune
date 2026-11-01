@@ -1485,8 +1485,9 @@ agent; a load in a background tab never counts.
 
 Eligible same-origin, cross-origin and blank child frames use the lightweight input
 observer even before any frame command. Typing is queried in the originating document,
-including its document focus; field values never leave it. Replaced/removed frames cannot
-leave a stale typing lock. A missing or unresponsive child query releases typing after
+including its document focus; field values never leave it. Temporary document-focus loss
+releases activity, but the same focused draft is protected again when document focus returns,
+without another input event. Replaced/removed frames cannot leave a stale typing lock. A missing or unresponsive child query releases typing after
 the 3 s input pause (queries wait at most 250 ms), like an unavailable top document.
 
 Limits: input outside the page is not observed (address bar typing counts once the load
@@ -1494,6 +1495,9 @@ starts). Announced native keyboard/paste events are excluded for the bounded key
 window (at most 60 s); simultaneous human input of the same class cannot be distinguished.
 Unrelated genuine input still blocks, and the next native keyboard focus check stops
 remaining keys with `user_active` and `state.keysSent` if keys were already delivered.
+Native-input cleanup leaves a busy temporarily shown tab displayed rather than switching
+away. That restoration attempt is consumed; a stale retry cannot later change the user's
+view after activity releases. Idle, still-authenticated restoration continues normally.
 A screen-coordinate trusted click is prohibited by default. Writable compatibility
 checks activity on its named or once-resolved implicit tab before any OS action, but
 coordinates cannot prove that tab is the actual destination. Its own click may count
@@ -2844,7 +2848,8 @@ target, for hover menus that close when the pointer leaves. A `selector` is scro
 into view and clicked at its center; otherwise `x`/`y` are viewport coordinates, or
 desktop coordinates with `coordinate_space="screen"`. The OS click lands on whatever the screen shows, so a
 `tab_id` that is not the shown tab of its window is shown for the click, and the
-user's tab is shown again 300 ms after it (see [Shared browser](#shared-browser)). A
+user's tab is shown again 300 ms after it unless the temporarily shown tab is now busy
+or the user changed the view (see [Shared browser](#shared-browser)). A
 viewport click returns `user_active` without clicking while the user is using the
 target tab or the tab it would hide. A user-tab target instead returns `user_tab_read_only`
 before any OS input; approval tokens cannot bypass ownership. Ambiguous selectors return `ambiguous_target`
