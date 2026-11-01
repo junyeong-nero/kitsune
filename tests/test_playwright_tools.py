@@ -73,6 +73,27 @@ class AdapterTests(unittest.TestCase):
             ("/api/keypress", {"key": "Enter", "selector": "#q"}),
         ])
 
+    def test_type_submit_reports_the_typed_text_when_its_enter_hits_a_stale_ref(self):
+        # #387: the page replaced the input as the text arrived, so the Enter on the same ref is stale.
+        stale = {"error": "stale ref, call browser_snapshot again", "code": "stale_ref", "retryable": True,
+                 "hint": "The element was removed from the page; take a new browser_snapshot and use its refs.",
+                 "state": {"reason": "element_removed", "ref": "e7"}}
+        self.post.side_effect = [{"ok": True}, stale]
+        result = playwright_tools.browser_type(target="e7", text="Firefox", submit=True)
+        self.assertEqual([path for path, _ in self.posted()], ["/api/fill", "/api/keypress"])
+        self.assertEqual(result["code"], "stale_ref")
+        self.assertIs(result["retryable"], False)
+        self.assertEqual(result["state"], {"reason": "element_removed", "ref": "e7", "typed": True})
+        self.assertIn("Do not call browser_type again", result["hint"])
+        self.assertIn("browser_press_key", result["hint"])
+
+        # A text that failed was not typed; an Enter held for approval keeps its hold.
+        self.post.side_effect = [stale]
+        self.assertEqual(playwright_tools.browser_type(target="e7", text="Firefox", submit=True), stale)
+        held = {"error": "held", "code": "needs_user", "retryable": True, "state": {"reason": "approval"}}
+        self.post.side_effect = [{"ok": True}, held]
+        self.assertEqual(playwright_tools.browser_type(target="e7", text="Firefox", submit=True), held)
+
     def test_press_key_splits_modifier_combinations(self):
         for key, expected in (("ArrowLeft", {"key": "ArrowLeft"}),
                               ("Control+Shift+A", {"key": "A", "modifiers": {"ctrl": True, "shift": True}}),
