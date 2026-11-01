@@ -775,7 +775,9 @@ def browser_trusted_press_key(
     """Press a key chord with the real OS keyboard, for browser commands only a real keyboard
     runs (paste, copy, cut, find, undo); confirm_token and first work as in browser_check.
     Chords that close, quit or leave the browser (Meta+Q, Meta+W, Meta+Tab, ...) are refused
-    with key_denied; with ask-before-act, save/open/print chords need confirmation.
+    with key_denied. By default, browser tab/window/navigation shortcuts and trusted Tab
+    traversal are refused too; use explicit element focus or a tab-scoped API instead.
+    Editing and tab-local find remain allowed; with ask-before-act, save/print need confirmation.
     Only on macOS (pyobjc Quartz and Accessibility permission for the bridge); elsewhere it
     returns unsupported_platform without typing. Kitsune clicks the target with the OS pointer
     (as browser_trusted_click, showing a tab that is not shown and then the user's tab again)

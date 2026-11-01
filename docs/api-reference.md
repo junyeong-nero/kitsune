@@ -1268,6 +1268,25 @@ no prompt or confirmation token. `state` contains `tabId`, `index` (the zero-bas
 - Own tabs continue to work with the existing `user_active` protections. Trusted OS input
   may show an owned tab temporarily, then restore the previous user tab; restoration is
   bound to that client's recorded input transition, not an arbitrary view-switch API.
+- Direct and container `tabId` values must be positive safe integers (decimal strings are
+  canonicalized). Booleans, zero, empty strings, arrays and other malformed targets fail
+  with `invalid_tab_id` before admission; they never fall back to the active tab. Missing/null
+  targets retain implicit-target behavior. Nonexistent write targets fail before dispatch.
+- OS viewport coordinates must be finite, inside every affected page/frame viewport and
+  hit page content. Bounds are checked again after frame translation and before desktop
+  conversion; invalid points return `invalid_coordinates`, without OS input. Transformed
+  iframe geometry that the translation-only mapper cannot prove is refused, not approximated.
+- Under default permissions, trusted keyboard shortcuts that can target browser tabs,
+  windows, address/search bars or developer tools return `key_denied` before focus or keys.
+  This includes ordinal/next/previous-tab variants, history/reload shortcuts and trusted
+  `Tab`/`Shift+Tab` traversal. Use explicit focus or tab-scoped APIs instead: this is an
+  OS-target-binding limitation, not a prohibition on navigation in owned tabs. A trusted
+  text string containing Tab is refused in full, before earlier characters are typed.
+  Chord sequences/unsupported modifier aliases are not accepted by the one-chord API.
+  Ordinary editing and Meta/Control+F (tab-local find) remain subject to ownership, activity
+  and per-key field-focus checks; subsequent calls must refocus/revalidate the owned field.
+  Explicit writable compatibility retains the previous shortcut/traversal behavior, while
+  existing always-denied application escapes and focus/activity guards still apply.
 - Raw `coordinate_space="screen"` clicks cannot prove which tab they hit. Under the default
   policy even an owned `tab_id` cannot authorize them (`unsupported_target`, nonretryable);
   use a ref or viewport coordinates in an owned tab. Explicit writable compatibility retains

@@ -3,7 +3,7 @@
 
 (function() {
   'use strict';
-  const CONTENT_VERSION = 49;
+  const CONTENT_VERSION = 50;
   if (window.__claudeBridgeVersion >= CONTENT_VERSION) return;
   window.__claudeBridgeVersion = CONTENT_VERSION;
 
@@ -2990,31 +2990,85 @@
   // its point here, in the document that shows the frame.
   // scroll=false (a trusted drag's destination, #351) measures the target where it is, so the
   // source point taken before stays valid; a target out of view then fails the hit test.
+  function invalidScreenPoint(x, y, width, height) {
+    return { error: 'The OS point must be finite and inside the page or frame viewport',
+      code: 'invalid_coordinates', retryable: false,
+      state: { viewportX: x, viewportY: y, width, height },
+      hint: 'Use finite viewport coordinates inside the visible page, or a visible element ref; browser chrome is not a page target.' };
+  }
+
+  function screenViewportError(x, y, width, height) {
+    return ![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0 ||
+      x < 0 || y < 0 || x >= width || y >= height ? invalidScreenPoint(x, y, width, height) : null;
+  }
+
+  // The existing frame geometry uses translation only. Never authorize OS input through a
+  // scaled/rotated frame (or transformed ancestor) using that translation approximation.
+  function transformedScreenFrame(frame) {
+    for (let node = frame; node; node = flatParent(node)) {
+      const style = styleOf(node);
+      if ((style.transform && style.transform !== 'none') || (style.perspective && style.perspective !== 'none') ||
+          ['translate', 'rotate', 'scale'].some(key => style[key] && style[key] !== 'none') ||
+          (style.zoom && !['1', 'normal'].includes(String(style.zoom)))) {
+        return { error: 'Transformed frame coordinates cannot authorize OS input', code: 'invalid_coordinates',
+          retryable: false, hint: 'Use a target in an untransformed frame or a tab of your own opened at the frame URL.' };
+      }
+    }
+    return null;
+  }
+
+  // Map a point in a same-origin document through each enclosing frame, checking every viewport.
+  function screenPointInPage(x, y, doc) {
+    for (let frame; ; doc = frame.ownerDocument) {
+      const view = doc?.defaultView || window;
+      const invalid = screenViewportError(x, y, view.innerWidth, view.innerHeight);
+      if (invalid) return invalid;
+      frame = hostFrame(doc);
+      if (!frame) return { x, y };
+      const transformed = transformedScreenFrame(frame);
+      if (transformed) return transformed;
+      const offset = frameContentOffset(frame);
+      x += offset.x;
+      y += offset.y;
+    }
+  }
+
   function screenPoint(selector, x, y, click, first, zoom, modifiers, frame, scroll = true) {
     // Viewport point (element centre or x/y) plus its desktop position for OS-level clicks.
     let el = null;
     if (frame) {
       el = resolveElement(frame);
       if (!el || !FRAME_TAGS.has(el.tagName)) return notFound();
-      const rect = viewportRect(el);
-      x += rect.left + (el.clientLeft || 0) + (parseFloat(styleOf(el).paddingLeft) || 0);
-      y += rect.top + (el.clientTop || 0) + (parseFloat(styleOf(el).paddingTop) || 0);
+      const style = styleOf(el);
+      const invalid = screenViewportError(x, y,
+        el.clientWidth - (parseFloat(style.paddingLeft) || 0) - (parseFloat(style.paddingRight) || 0),
+        el.clientHeight - (parseFloat(style.paddingTop) || 0) - (parseFloat(style.paddingBottom) || 0));
+      if (invalid) return invalid;
+      const transformed = transformedScreenFrame(el);
+      if (transformed) return transformed;
+      const offset = frameContentOffset(el);
+      x += offset.x;
+      y += offset.y;
     } else if (selector) {
       el = click ? resolveTarget(selector, null, { first, pointer: true }) : resolveElement(selector);
       if (!el) return notFound();
       if (scroll) el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
-      const rect = viewportRect(el);
+      const rect = el.getBoundingClientRect();
       x = rect.left + rect.width / 2;
       y = rect.top + rect.height / 2;
     }
-    if (x == null || y == null) return { error: 'No target point' };
-    if (click && el) {
-      const elsewhere = targetNotAtPoint(el, x, y);
-      if (elsewhere) return elsewhere;
-    }
+    const mapped = screenPointInPage(x, y, el ? docOf(el) : document);
+    if (mapped.error) return mapped;
+    ({ x, y } = mapped);
     if (click) {
-      agentTrustedClickUntil = Date.now() + AGENT_TRUSTED_CLICK_MS;
-      agentTrustedClickKeys = new Set(Array.isArray(modifiers) ? modifiers : []);
+      if (el) {
+        const elsewhere = targetNotAtPoint(el, x, y);
+        if (elsewhere) return elsewhere;
+      } else if (!elementAtPoint(x, y).el) {
+        return actionError('No page content at the viewport point; no OS input was authorized',
+          'target_not_at_point', 'Use a point on visible page content or a visible element ref.',
+          { viewportX: x, viewportY: y, hit: null });
+      }
     }
     const scale = Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
     const viewportLeft = Number.isFinite(window.mozInnerScreenX)
@@ -3023,12 +3077,20 @@
     const viewportTop = Number.isFinite(window.mozInnerScreenY)
       ? window.mozInnerScreenY
       : window.screenY + Math.max(0, window.outerHeight - window.innerHeight);
+    const screenX = (viewportLeft + x) * scale, screenY = (viewportTop + y) * scale;
+    if (![screenX, screenY].every(Number.isFinite) || (zoom != null && (!Number.isFinite(zoom) || zoom <= 0))) {
+      return invalidScreenPoint(x, y, window.innerWidth, window.innerHeight);
+    }
+    if (click) {
+      agentTrustedClickUntil = Date.now() + AGENT_TRUSTED_CLICK_MS;
+      agentTrustedClickKeys = new Set(Array.isArray(modifiers) ? modifiers : []);
+    }
     return {
       title: document.title,
       viewportX: x,
       viewportY: y,
-      screenX: (viewportLeft + x) * scale,
-      screenY: (viewportTop + y) * scale,
+      screenX,
+      screenY,
       zoom: scale,
       devicePixelRatio: window.devicePixelRatio || 1,
     };

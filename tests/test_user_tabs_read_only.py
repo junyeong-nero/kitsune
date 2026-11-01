@@ -7,6 +7,10 @@ can grant writes. No real browser/profile or OS input is used.
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import json
+from pathlib import Path
+import select
+import shutil
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -46,6 +50,44 @@ class PermissionExtension(OwningExtension):
         return super()._answer(command)
 
 
+class BackgroundPermissionExtension(PermissionExtension):
+    """Real WebSocket bridge commands dispatched by the actual background.js in its JS harness."""
+    def __init__(self, *args):
+        self.background = subprocess.Popen(["node", "-e", r"""
+const { harness } = require('./tests/shared_browser.cjs');
+const h = harness({ userTabsWritable: false });
+let pending = Promise.resolve();
+require('node:readline').createInterface({ input: process.stdin }).on('line', line => {
+  pending = pending.then(async () => {
+    h.sent.length = h.calls.length = 0;
+    const result = await h.send({ ...JSON.parse(line), includeSnapshot: false });
+    console.log(JSON.stringify({ result, sent: h.sent, calls: h.calls }));
+  }).catch(error => { console.error(error); process.exit(1); });
+});
+"""], cwd=Path(__file__).resolve().parents[1], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, bufsize=1)
+        self.dispatched = []
+        super().__init__(*args)
+
+    def _answer(self, command):
+        self.commands.append(command)
+        self.background.stdin.write(json.dumps(command) + "\n")
+        self.background.stdin.flush()
+        if not select.select([self.background.stdout], [], [], 5)[0]:
+            raise AssertionError("actual background did not answer")
+        response = json.loads(self.background.stdout.readline())
+        self.dispatched.append(response)
+        return response["result"]
+
+    def close(self):
+        super().close()
+        if self.background.poll() is None:
+            self.background.terminate()
+            self.background.wait(timeout=5)
+        for stream in (self.background.stdin, self.background.stdout, self.background.stderr):
+            stream.close()
+
+
 class UserTabsReadOnlyTests(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
@@ -61,6 +103,57 @@ class UserTabsReadOnlyTests(unittest.TestCase):
             self.bridge.host, json.dumps(body) if body is not None else None)
         self.assertIn(status, (200, 403), text)
         return json.loads(text)
+
+    @unittest.skipUnless(shutil.which("node"), "actual background integration needs node")
+    def test_direct_targets_and_keys_against_actual_background(self):
+        self.extension.close()
+        self.extension = BackgroundPermissionExtension(self.bridge, [])
+        self.addCleanup(self.extension.close)
+        for ask in (False, True):
+            self.call("/api/set-policy", {"ask": ask})
+            for tab_id in (0, False, True, "", [], [1, 2], {}, -1, 1.5, "0", "1.5", 2**53):
+                for endpoint, extra in (
+                    ("click", {}), ("move-tab", {"windowId": 1}),
+                    ("trusted-click", {"modifiers": ["Meta", "Shift"], "clickCount": 2}),
+                    ("trusted-click", {"modifiers": ["Control", "Alt"], "button": "middle"}),
+                    ("trusted-press-key", {"keys": "Meta+V"}), ("trusted-type", {"text": "hello"}),
+                    ("trusted-drag", {"to": "#end"})):
+                    with self.subTest(ask=ask, tab_id=tab_id, endpoint=endpoint):
+                        count = len(self.extension.commands)
+                        result = self.call("/api/" + endpoint, {"tabId": tab_id, "selector": "#go", **extra})
+                        self.assertEqual((result["code"], result["retryable"]), ("invalid_tab_id", False))
+                        self.assertEqual(len(self.extension.commands), count, "refused before preflight/prompt/OS input")
+        self.call("/api/set-policy", {"ask": False})
+        self.assertEqual(self.call("/api/click", {"tabId": False},
+            headers={task_modes.HOLD_VIEWED_TAB_HEADER: "0"})["code"], "invalid_tab_id")
+        self.assertEqual(self.call("/api/click", {"tabId": "1", "selector": "#go"})["code"], "user_tab_read_only")
+        self.assertEqual(self.extension.commands[-1]["tabId"], 1)
+        self.assertEqual(self.extension.dispatched[-1]["sent"], [])
+        self.assertEqual(self.call("/api/click", {"tabId": 999, "selector": "#go"})["code"], "tab_closed")
+        self.assertEqual(self.extension.dispatched[-1]["sent"], [])
+        self.assertEqual(self.extension.dispatched[-1]["calls"], [])
+        own = self.call("/api/new-tab", {})["tabId"]
+        self.assertTrue(self.call("/api/click", {"tabId": str(own), "selector": "#go"})["ok"])
+        self.assertIn(["click", own], self.extension.dispatched[-1]["sent"])
+        result = self.call("/api/batch", {"commands": [{"action": "click", "tabId": str(own), "selector": "#go"}]})
+        self.assertTrue(result["results"][0]["ok"])
+        self.assertEqual(self.extension.commands[-1]["tabId"], own)
+        for ask in (False, True):
+            self.call("/api/set-policy", {"ask": ask})
+            for keys in ("Meta+1", "Control+Tab", "Shift+Control+Tab", "Tab", "Shift+Tab", "Meta+C Tab", "Meta+L"):
+                result = self.call("/api/trusted-press-key", {"tabId": own, "selector": "#otp", "keys": keys})
+                self.assertIn("error", result)
+                self.assertNotEqual(result.get("code"), "needs_user")
+                self.assertEqual(self.extension.commands[-1]["action"], "checkTabWrite")
+                self.assertEqual(self.extension.dispatched[-1]["sent"], [])
+                self.assertEqual(self.extension.dispatched[-1]["calls"], [])
+            result = self.call("/api/trusted-type", {"tabId": own, "selector": "#otp", "text": "before\tafter"})
+            self.assertEqual(result["code"], "key_denied")
+            self.assertEqual(self.extension.commands[-1]["action"], "checkTabWrite")
+            for value in (-1, "20", True, float("inf"), float("nan")):
+                result = self.call("/api/trusted-click", {"tabId": own, "x": 10, "y": value})
+                self.assertEqual(result["code"], "invalid_coordinates")
+                self.assertEqual(self.extension.commands[-1]["action"], "checkTabWrite")
 
     def test_two_clients_denied_without_confirmation_or_effects(self):
         a = self.call("/api/new-tab", {})["tabId"]

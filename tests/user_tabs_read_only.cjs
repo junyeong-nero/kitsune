@@ -4,8 +4,28 @@ const { harness, run } = require('./shared_browser.cjs');
 
 async function main() {
   const h = harness({ userTabsWritable: false });
+  for (const tabId of [0, false, true, '', [], [1, 2], {}, -1, 1.5, '0', '1.5', Infinity, NaN, 2 ** 53]) {
+    for (const action of ['click', 'moveTab', 'screenPoint']) {
+      h.calls.length = h.sent.length = 0;
+      const refused = await h.send({ action, ownerId: 'client-a', tabId, selector: '#go', click: true });
+      assert.equal(refused.code, 'invalid_tab_id', `${action}: ${JSON.stringify(tabId)}`);
+      assert.equal(refused.retryable, false);
+      assert.deepEqual(h.calls, []);
+      assert.deepEqual(h.sent, []);
+    }
+  }
+  assert.equal((await h.send({ action: 'click', tabId: false, userTabsWritable: true })).code, 'invalid_tab_id');
   const a = (await h.send({ action: 'newTab', ownerId: 'client-a', url: 'https://a.test/' })).tabId;
   const b = (await h.send({ action: 'newTab', ownerId: 'client-b', url: 'https://b.test/' })).tabId;
+  h.sent.length = h.calls.length = 0;
+  assert.equal((await h.send({ action: 'click', tabId: '1', ownerId: 'client-a' })).code, 'user_tab_read_only');
+  assert.deepEqual(h.sent, []);
+  assert.equal((await h.send({ action: 'click', tabId: String(a), ownerId: 'client-a', selector: '#go' })).ok, true);
+  assert.ok(h.sent.some(([action, tabId]) => action === 'click' && tabId === a));
+  h.sent.length = h.calls.length = 0;
+  assert.equal((await h.send({ action: 'click', tabId: 999, ownerId: 'client-a' })).code, 'tab_closed');
+  assert.deepEqual(h.sent, []);
+  assert.deepEqual(h.calls, []);
   const writes = [
     'click', 'doubleClick', 'type', 'fill', 'setEditableContent', 'keypress', 'checkBox', 'selectOption',
     'submitForm', 'formFill', 'drag', 'uploadChunk', 'uploadCommit', 'uploadAbort', 'hover', 'scroll',

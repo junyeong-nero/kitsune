@@ -3,7 +3,7 @@
 
 'use strict';
 
-const EXPECTED_CONTENT_VERSION = 49;
+const EXPECTED_CONTENT_VERSION = 50;
 const WS_URL = 'ws://127.0.0.1:47652';
 // scripts/build_extension.py sets 'signed' for the AMO build (see content.js).
 const KITSUNE_BUILD = 'dev';
@@ -792,7 +792,6 @@ function writesTab(action, params) {
     (action === 'storageOp' && !['get', 'list', 'snapshot'].includes(params.op));
 }
 async function tabWriteError(params) {
-  if (params.userTabsWritable === true) return null;
   const action = params.action;
   const windowAction = ['closeWindow', 'focusWindow', 'resizeWindow'].includes(action);
   if (!windowAction && !writesTab(action, params)) return null;
@@ -801,6 +800,10 @@ async function tabWriteError(params) {
   if (tabId != null) params.tabId = tabId;
   const tabs = await browser.tabs.query({});
   const windowId = action === 'resizeWindow' ? tabs.find(t => t.id === tabId)?.windowId : params.windowId;
+  if (tabId != null && !tabs.some(t => t.id === tabId)) {
+    return tabError(`Tab ${tabId} no longer exists`, 'tab_closed', { tabId });
+  }
+  if (params.userTabsWritable === true) return null;
   const targets = windowAction ? tabs.filter(t => t.windowId === windowId) : tabs.filter(t => t.id === tabId);
   const tab = targets.find(t => !agentTabs.has(t.id) || agentTabOwners.get(t.id) !== (params.ownerId ?? null));
   if (!tab) return null;
@@ -815,6 +818,14 @@ const BLOCKED_LINK_WAIT_MS = 500;
 
 async function handleCommand(command) {
   const params = { ...command };
+  if (params.tabId != null) {
+    const tabId = typeof params.tabId === 'string' && /^[0-9]+$/.test(params.tabId) ? Number(params.tabId) : params.tabId;
+    if (!Number.isSafeInteger(tabId) || tabId <= 0) {
+      return { error: 'tabId must be a positive integer or decimal digits', code: 'invalid_tab_id', retryable: false,
+        state: { tabId: params.tabId }, hint: 'Use one tab id from browser_tabs; omit tabId for the implicit target.' };
+    }
+    params.tabId = tabId;
+  }
   if (params.action === 'checkTabWrite') {
     return await tabWriteError({ ...params, action: params.writeAction }) || { ok: true };
   }
@@ -2071,6 +2082,8 @@ async function frameScreenPoint(tabId, frameId, point, params) {
     if (!point || point.error) return point;
     frameId = link.parent;
   }
+  if (frameId) return { error: 'Frame coordinates did not reach the page viewport', code: 'invalid_coordinates',
+    retryable: false, hint: 'Use a target in a shallower frame; no OS point was authorized.' };
   return point;
 }
 

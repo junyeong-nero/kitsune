@@ -1044,9 +1044,24 @@ def _unbound_screen_click(params):
     return None
 
 
+def _trusted_click_coordinates(params):
+    coords = params.get("coords") or {}
+    if not isinstance(coords, dict):
+        return _action_error("coords must contain numeric x and y", "invalid_coordinates", retryable=False)
+    x, y = params.get("x", coords.get("x")), params.get("y", coords.get("y"))
+    # Missing coordinates are checked by the required-target validation; supplied ones must be numeric.
+    screen = (params.get("coordinateSpace") or params.get("space")) == "screen"
+    if any(type(value) not in (int, float) or not math.isfinite(value) or (not screen and value < 0)
+           for value in (x, y) if value is not None):
+        return _action_error("OS click coordinates must be finite numbers inside the page viewport",
+                             "invalid_coordinates", retryable=False,
+                             hint="Use finite in-page viewport coordinates or a visible element ref.")
+    return None
+
+
 async def trusted_click(params):
     """Use a real OS-level mouse click at a browser viewport coordinate."""
-    if refusal := _unbound_screen_click(params):
+    if refusal := _unbound_screen_click(params) or _trusted_click_coordinates(params):
         return refusal
     selector = params.get("selector") or ""
     coords = params.get("coords") or {}
@@ -1311,6 +1326,45 @@ TRUSTED_KEY_OUTSIDE_PAGE = frozenset(_parse_trusted_chord(c)[2] for c in (
     "Meta+S", "Meta+Shift+S", "Meta+P", "Meta+O", "Control+S", "Control+Shift+S", "Control+P", "Control+O"))
 
 
+def _trusted_key_refusal(params):
+    """Browser target shortcuts cannot be authorized by ownership of the focused page field."""
+    chord = _parse_trusted_chord(params.get("keys"))
+    if isinstance(chord, dict):
+        return chord
+    modifiers, key, name = chord
+    if name in _TRUSTED_KEY_DENIED:
+        return {"error": f"{name} closes, quits or leaves the browser; trusted keys never send it",
+                "code": "key_denied", "retryable": False}
+    if _user_tabs_writable.get():
+        return None
+    mods = set(modifiers)
+    browser_modifier = bool(mods & {"Meta", "Control"})
+    escapes = (
+        (key in "0123456789" and bool(mods & {"Meta", "Control", "Alt"}))
+        or (key in {"Tab", "PageUp", "PageDown", "`"} and bool(mods & {"Meta", "Control", "Alt"}))
+        or (browser_modifier and key in {"t", "n", "w", "q", "l", "k", "e", "r", "o", "b", "h", "j", "u", "[", "]"})
+        or (browser_modifier and bool(mods & {"Alt", "Shift"}) and key in {"a", "p", "m", "i", "j", "c", "k", "u"})
+        or ("Alt" in mods and key in {"d", "Home", "ArrowLeft", "ArrowRight"})
+        or ("Meta" in mods and key in {"ArrowLeft", "ArrowRight"})
+        or key in {"Tab", "F1", "F4", "F5", "F6", "F10", "F11", "F12"}
+    )
+    if escapes:
+        return {"error": f"{name} may target browser tabs, windows or navigation outside the owned page",
+                "code": "key_denied", "retryable": False,
+                "hint": "Use explicit element focus or a DOM/tab-scoped API on an owned tab instead; OS shortcut destinations cannot be authorized."}
+    return None
+
+
+def _trusted_type_refusal(params):
+    # trustedType emits actual Tab keys, not Unicode text, for tabs embedded in a string.
+    # Reject the whole string before focusing or typing any preceding characters.
+    if not _user_tabs_writable.get() and isinstance(params.get("text"), str) and "\t" in params["text"]:
+        return {"error": "Trusted Tab traversal may leave the owned page; no text was typed",
+                "code": "key_denied", "retryable": False,
+                "hint": "Use explicit element focus or a DOM-scoped fill to enter tab characters."}
+    return None
+
+
 def _mac_keyboard_unavailable():
     """The {error} when this process cannot send OS keys, else None."""
     if sys.platform != "darwin":
@@ -1445,6 +1499,8 @@ async def _trusted_keys(params, units, post_unit):
 
 async def trusted_type(params):
     """Type text into a field with the OS keyboard (#346). The text is never reported."""
+    if refusal := _trusted_type_refusal(params):
+        return refusal
     text = params.get("text")
     if not isinstance(text, str) or not text:
         return {"error": "trustedType needs non-empty text"}
@@ -1474,9 +1530,8 @@ async def trusted_press_key(params):
     if isinstance(chord, dict):
         return chord
     modifiers, key, name = chord
-    if name in _TRUSTED_KEY_DENIED:
-        return {"error": f"{name} closes, quits or leaves the browser; trusted keys never send it",
-                "code": "key_denied", "retryable": False}
+    if refusal := _trusted_key_refusal(params):
+        return refusal
     result = await _trusted_keys(params, [chord], lambda unit: _mac_post_chord(unit[0], unit[1]))
     if result.get("ok"):
         result["keys"] = name
@@ -1622,7 +1677,7 @@ _REPEAT_UNSAFE_ACTIONS = WRITE_ACTIONS | {"uploadCommit", "focusElement", "blurE
 # client's KITSUNE_CAPS or KITSUNE_MODE permits it or the container step names a batch action
 # (capability_restricted, mode_restricted, unknown_action).
 _PERSISTENT_FAILURE_CODES = {"error_page", "ambiguous_target", "unsupported_selector", "needs_user", "user_tab",
-                             "user_viewing", "user_tab_read_only", "permission_required", "capability_restricted",
+                             "user_viewing", "user_tab_read_only", "invalid_tab_id", "invalid_coordinates", "permission_required", "capability_restricted",
                              "mode_restricted", "unknown_action"}
 
 
@@ -1634,8 +1689,23 @@ def _url_matches(pattern, url, flags=0):
         return False
 
 
+def _normalize_tab_target(params):
+    """Canonicalize scalar IDs before admission; falsy/array values never mean the active tab."""
+    raw = (params or {}).get("tabId")
+    if raw is None:
+        return None
+    tab_id = _explicit_tab_id(raw)
+    if tab_id is None:
+        return _action_error("tabId must be a positive integer or decimal digits", "invalid_tab_id", retryable=False,
+                             hint="Use one tab id from browser_tabs; omit tabId for the implicit target.", tabId=raw)
+    params["tabId"] = tab_id
+    return None
+
+
 def _check_policy(action, params):
     """Return error dict if action/url violates current policy, else None."""
+    if invalid := _normalize_tab_target(params):
+        return invalid
     if not permits_action(_task_mode.get(), action):
         return _mode_error(action)
     if _task_mode.get() != "act":
@@ -2203,10 +2273,17 @@ async def _tab_write_refusal(action, params):
     if _user_tabs_writable.get() or action not in tab_actions | {
             "find", "waitForResult", "focusElement", "blurElement", "focusWindow", "elementScreenshot", "fullPageScreenshot"}:
         return None
+    # Non-finite coordinates cannot even be represented on the extension's JSON transport.
+    if action == "trustedClick" and (invalid := _trusted_click_coordinates(params)):
+        return invalid
     result = await send_to_extension("checkTabWrite", {**params, "writeAction": action})
     if isinstance(result, dict) and result.get("error"):
         return result
-    return _unbound_screen_click(params) if action == "trustedClick" else None
+    if action == "trustedPressKey":
+        return _trusted_key_refusal(params)
+    if action == "trustedType":
+        return _trusted_type_refusal(params)
+    return (_unbound_screen_click(params) or _trusted_click_coordinates(params)) if action == "trustedClick" else None
 
 
 async def _ask_before_act(action, params, *, direct):
@@ -3084,6 +3161,9 @@ def _with_viewed_tab_fields(params):
 
 async def send_to_extension(action, params=None, timeout=30):
     """Send command to extension and wait for response."""
+    params = dict(params or {})
+    if invalid := _normalize_tab_target(params):
+        return invalid
     if action in _PROTECTED_NAVIGATIONS:
         # Only the calling client's setting decides whether its navigations are protected.
         params = {k: v for k, v in (params or {}).items() if k != "protectUserTabs"}
@@ -3180,6 +3260,8 @@ async def _send_to_extension_raw(action, params=None, timeout=30):
     global command_counter
 
     params = dict(params or {})
+    if invalid := _normalize_tab_target(params):
+        return invalid
     # Identity is transport metadata, never a tool/container argument supplied by the caller.
     params.pop("userTabsWritable", None)
     if _user_tabs_writable.get():
@@ -3871,9 +3953,12 @@ _UNFINISHED = object()
 
 def _explicit_tab_id(value):
     """The tab id value names (a positive integer or its digits), else None."""
-    if isinstance(value, str) and value.isdigit():
-        value = int(value)
-    return value if type(value) is int and value > 0 else None
+    if isinstance(value, str) and _re.fullmatch(r"[0-9]+", value):
+        try:
+            value = int(value)
+        except ValueError:
+            return None
+    return value if type(value) is int and 0 < value <= 2**53 - 1 else None
 
 
 def _container_default_tab(body):

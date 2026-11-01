@@ -509,9 +509,9 @@ async function testRefLifetime() {
   assert.equal((await send({ action: 'focusElement', selector: first })).state.reason, 'element_removed');
 
   // A new injection/document owns fresh maps and tombstones; old IDs cannot contaminate it.
-  context.window.__claudeBridgeVersion = 48;
+  context.window.__claudeBridgeVersion = 49;
   vm.runInContext(fs.readFileSync('extension/content/content.js', 'utf8'), context);
-  assert.equal(context.window.__claudeBridgeVersion, 49, 'already-injected v48 content is upgraded');
+  assert.equal(context.window.__claudeBridgeVersion, 50, 'already-injected v49 content is upgraded');
   const fresh = refOf(await send({ action: 'getSnapshot', selector: '#node' }));
   assert.notEqual(fresh, first);
   assert.equal((await send({ action: 'focusElement', selector: first })).state.reason, 'other_document');

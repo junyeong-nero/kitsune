@@ -194,7 +194,7 @@ function background(tabs, content, clock = { setTimeout, clearTimeout, Date }) {
   const browser = {
     tabs: {
       onCreated: event(), onUpdated: event(), onRemoved: event(),
-      query: async () => Object.values(tabs).filter(tab => tab.active).map(tab => ({ ...tab })),
+      query: async query => Object.values(tabs).filter(tab => !query.active || tab.active).map(tab => ({ ...tab })),
       get: async id => { if (!tabs[id]) throw missing(id); return { ...tabs[id] }; },
       update: async id => { if (!tabs[id]) throw missing(id); return { ...tabs[id] }; },
       remove: async id => { if (!tabs[id]) throw missing(id); delete tabs[id]; browser.tabs.onRemoved.fire(id); },
@@ -232,6 +232,7 @@ function background(tabs, content, clock = { setTimeout, clearTimeout, Date }) {
   for (const id of Object.keys(tabs)) context.markAgentTab(Number(id));
   return {
     sent, injected, pinged,
+    own: tabId => context.markAgentTab(tabId),
     removeReceiver: () => { receiverMissing = true; },
     restoreReceiver: () => { receiverMissing = false; },
     freezeContent: frozen => { contentFrozen = frozen; },
@@ -270,14 +271,14 @@ async function testBackgroundErrors() {
   assert.deepEqual(h.sent, [], 'closed and restricted tabs receive no command');
   for (const action of ['navigate', 'switchTab', 'closeTab']) {
     const closed = await h.send({ action, tabId: 9, url: 'https://example.com/next' });
-    assert.deepEqual([closed.error, closed.code, closed.state], ['Invalid tab ID: 9', 'tab_closed', { tabId: 9 }], action);
+    assert.deepEqual([closed.error, closed.code, closed.state], ['Tab 9 no longer exists', 'tab_closed', { tabId: 9 }], action);
   }
 
-  // Existing v48 content must be reinjected for frame input reporting, current v49 need not.
-  h.setContentVersion(48);
+  // Old content must be reinjected for viewport bounds enforcement; current content need not.
+  h.setContentVersion(CONTENT_VERSION - 1);
   assert.deepEqual(await h.send({ action: 'click', tabId: 2, selector: '#go' }), { ok: true });
   assert.deepEqual(h.injected, [2]);
-  h.setContentVersion(49);
+  h.setContentVersion(CONTENT_VERSION);
   assert.deepEqual(await h.send({ action: 'click', tabId: 2, selector: '#go' }), { ok: true });
   assert.deepEqual(h.injected, [2]);
 
@@ -323,6 +324,7 @@ async function testBackgroundErrors() {
   const closing = await h.send({ action: 'click', tabId: 2, selector: '#go' });
   assert.deepEqual([closing.code, closing.state], ['tab_closed', { tabId: 2 }]);
   tabs[4] = page(4, { discarded: true });
+  h.own(4);
   h.failInjection('Missing host permission for the tab');
   const discarded = await h.send({ action: 'click', tabId: 4, selector: '#go' });
   assert.equal(discarded.error, 'Cannot inject content script: Missing host permission for the tab');

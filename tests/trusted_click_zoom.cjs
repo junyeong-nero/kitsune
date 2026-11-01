@@ -64,7 +64,7 @@ function load(dom, { at, screen = { mozInnerScreenX: 100, mozInnerScreenY: 80 } 
   const context = vm.createContext({
     console, crypto: webcrypto, Event, CSS: { escape: x => x }, setTimeout, MessageChannel,
     HTMLInputElement: class {}, HTMLTextAreaElement: class {},
-    window: { ...screen, devicePixelRatio: 2, getComputedStyle: () => ({ display: 'block', visibility: 'visible' }) },
+    window: { innerWidth: 800, innerHeight: 600, ...screen, devicePixelRatio: 2, getComputedStyle: () => ({ display: 'block', visibility: 'visible' }) },
     document: {
       title: 'Zoomed', body: dom.body, activeElement: dom.body,
       documentElement: { scrollWidth: 100, scrollHeight: 100, appendChild() {} },
@@ -81,7 +81,76 @@ function load(dom, { at, screen = { mozInnerScreenX: 100, mozInnerScreenY: 80 } 
   });
   vm.runInContext(fs.readFileSync('extension/content/content.js', 'utf8'), context);
   const send = msg => new Promise(resolve => listener(msg, {}, result => resolve(copy(result))));
-  return { send, points };
+  return { send, points, context };
+}
+
+async function testViewportBounds() {
+  for (const [x, y] of [[10, -60], [-1, 20], [800, 20], [20, 600], [Infinity, 20],
+    [20, NaN], ['10', 20], [null, 20]]) {
+    const dom = page();
+    const h = load(dom, { at: dom.go });
+    const refused = await h.send({ action: 'screenPoint', x, y, click: true });
+    assert.equal(refused.code, 'invalid_coordinates', JSON.stringify([x, y]));
+    assert.equal(refused.retryable, false);
+    assert.equal(refused.screenX, undefined);
+    assert.deepEqual(h.points, [], 'invalid coordinates never reach a hit test');
+  }
+}
+
+async function testFrameAndConvertedBounds() {
+  const dom = page();
+  const frame = new Element('IFRAME', { id: 'frame' });
+  Object.assign(frame, { clientWidth: 100, clientHeight: 80 });
+  dom.body.children.push(frame);
+  frame.parentElement = frame.parentNode = dom.body;
+  const h = load(dom, { at: frame });
+  frame.ownerDocument = h.context.document;
+  for (const [x, y] of [[-1, 10], [100, 10], [10, 80], [Infinity, 20]]) {
+    const result = await h.send({ action: 'screenPoint', frame: '#frame', x, y, click: true });
+    assert.equal(result.code, 'invalid_coordinates');
+  }
+  const point = await h.send({ action: 'screenPoint', frame: '#frame', x: 10, y: 20, click: true, zoom: 1.5 });
+  assert.deepEqual([point.viewportX, point.viewportY, point.screenX, point.screenY], [50, 320, 225, 600]);
+  // Valid child coordinates become invalid after translation into a clipped parent viewport.
+  frame.getBoundingClientRect = () => ({ left: 790, top: 580, width: 100, height: 80 });
+  assert.equal((await h.send({ action: 'screenPoint', frame: '#frame', x: 20, y: 30, click: true })).code,
+    'invalid_coordinates');
+  frame.getBoundingClientRect = () => ({ left: 10, top: -100, width: 100, height: 80 });
+  assert.equal((await h.send({ action: 'screenPoint', frame: '#frame', x: 20, y: 30, click: true })).code,
+    'invalid_coordinates');
+  h.context.window.getComputedStyle = () => ({ transform: 'matrix(2, 0, 0, 2, 0, 0)' });
+  assert.equal((await h.send({ action: 'screenPoint', frame: '#frame', x: 20, y: 30, click: true })).code,
+    'invalid_coordinates', 'translation-only geometry must not authorize scaled frames');
+
+  // Same-origin target centres are checked in their own document before converting to the top page.
+  const nested = page();
+  const parent = new Element('IFRAME');
+  const localView = { frameElement: parent, innerWidth: 100, innerHeight: 80,
+    getComputedStyle: () => ({ display: 'block', visibility: 'visible' }) };
+  nested.go.ownerDocument = { defaultView: localView };
+  const same = load(nested, { at: nested.go });
+  parent.ownerDocument = same.context.document;
+  assert.equal((await same.send({ action: 'screenPoint', selector: '#go', click: true })).code,
+    'invalid_coordinates', 'off-frame centre cannot be treated as a top-page point');
+  nested.go.getBoundingClientRect = () => ({ left: 10, top: 20, width: 20, height: 20 });
+  const visible = await same.send({ action: 'screenPoint', selector: '#go', click: true });
+  assert.deepEqual([visible.viewportX, visible.viewportY], [60, 330]);
+}
+
+async function testPageHitAndFiniteConversion() {
+  const dom = page();
+  const h = load(dom, { at: dom.body });
+  for (const [x, y] of [[0, 0], [799.5, 599.5]]) {
+    assert.equal((await h.send({ action: 'screenPoint', x, y, click: true, zoom: 0.8 })).error, undefined);
+  }
+  const missing = await load(page(), { at: null }).send({ action: 'screenPoint', x: 10, y: 20, click: true });
+  assert.equal(missing.code, 'target_not_at_point');
+  for (const zoom of [0, -1, Infinity, NaN]) {
+    assert.equal((await h.send({ action: 'screenPoint', x: 10, y: 20, click: true, zoom })).code, 'invalid_coordinates');
+  }
+  const overflow = await load(dom, { at: dom.body, screen: { mozInnerScreenX: Number.MAX_VALUE,
+    mozInnerScreenY: 80 } }).send({ action: 'screenPoint', x: 10, y: 20, click: true, zoom: 2 });
+  assert.equal(overflow.code, 'invalid_coordinates');
 }
 
 async function testZoomScalesTheDesktopPoint() {
@@ -99,15 +168,16 @@ async function testZoomScalesTheDesktopPoint() {
     assert.deepEqual(points, [[90, 310]], 'the click point is hit-tested in viewport pixels');
   }
 
-  // Raw viewport x/y convert the same way; they name no target, so nothing is hit-tested.
+  // Raw viewport x/y must hit actual page content, even without a named target.
   const dom = page();
   const raw = load(dom, { at: dom.cover });
   const point = await raw.send({ action: 'screenPoint', x: 10, y: 20, click: true, zoom: 1.5 });
   assert.deepEqual([point.screenX, point.screenY, point.zoom], [165, 150, 1.5]);
-  assert.deepEqual(raw.points, []);
+  assert.deepEqual(raw.points, [[10, 20]]);
 
   // Without mozInnerScreenX/Y, the window-chrome estimate is in the same zoomed pixels.
-  const fallback = load(page(), { at: null, screen: { screenX: 10, screenY: 20, outerWidth: 820,
+  const fallbackDom = page();
+  const fallback = load(fallbackDom, { at: fallbackDom.body, screen: { screenX: 10, screenY: 20, outerWidth: 820,
     innerWidth: 800, outerHeight: 700, innerHeight: 600 } });
   const estimated = await fallback.send({ action: 'screenPoint', x: 10, y: 20, click: true, zoom: 0.8 });
   assert.deepEqual([estimated.screenX, estimated.screenY], [(10 + 10 + 10) * 0.8, (20 + 100 + 20) * 0.8]);
@@ -274,6 +344,9 @@ async function testATabWithNoSizeIsNotClicked() {
 }
 
 (async () => {
+  await testViewportBounds();
+  await testFrameAndConvertedBounds();
+  await testPageHitAndFiniteConversion();
   await testZoomScalesTheDesktopPoint();
   await testClickRefusesWhenTheTargetIsNotAtThePoint();
   await testDescendantsOfTheTargetCount();
