@@ -439,8 +439,7 @@ def browser_tab_list(
     returns its tabId. Does not close tabs or switch the user's view.
     """
     # read and draft publish this instead of browser_tabs. A tab of its own lets a restricted
-    # agent read any page without navigating the user's tabs, which KITSUNE_PROTECT_USER_TABS
-    # refuses by default (#270, #326).
+    # agent read any page without navigating the user's read-only tabs.
     if new_tab is None:
         return _tab_list(_get("/api/tabs"), False)
     opened = browser_tabs("new", url=new_tab, wait=True)

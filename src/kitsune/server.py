@@ -18,6 +18,7 @@ import secrets
 import sys
 import time
 import weakref
+from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Annotated
@@ -36,7 +37,8 @@ from . import playwright_tools, tools
 from .capabilities import CAPABILITY_GROUPS, NAMED_ONLY_GROUPS, enabled_groups
 from .bridge_client import BridgeClient
 from .errors import failed as _failed  # whether a tool's own result reports failure
-from .task_modes import APPROVAL_HEADER, GATEWAY_TOOL_HEADER, TOOL_CALL_HEADER, permits_tool, task_mode
+from .task_modes import (APPROVAL_HEADER, GATEWAY_TOOL_HEADER, TOOL_CALL_HEADER, permits_tool, task_mode,
+                         user_tabs_from_env, user_tabs_deprecation)
 from .tools import DESTRUCTIVE, _on_current_tab
 from .waits import RESUME_WAIT_SECONDS, resume_wait_seconds
 
@@ -365,7 +367,15 @@ class KitsuneMCP(FastMCP):
         return self._checkpointed(name, args, result, elicits, checkpoint["tabId"], call)
 
 
-mcp = KitsuneMCP("Kitsune")
+@asynccontextmanager
+async def _session_lifespan(server):
+    # Low-level Server.run enters this once per MCP session, not once per tool or process.
+    if USER_TABS_ALIASES:
+        print(user_tabs_deprecation(USER_TABS_ALIASES), file=sys.stderr)
+    yield {}
+
+
+mcp = KitsuneMCP("Kitsune", lifespan=_session_lifespan)
 
 
 def _caps(setting: str, value: str) -> frozenset:
@@ -393,10 +403,7 @@ if _unauthorized_caps:
                      f"{', '.join(sorted(_unauthorized_caps))}")
 
 MODE = task_mode(os.environ.get("KITSUNE_MODE"))
-# On unless set to 0: navigations on tabs no client opened need a confirm step (#326).
-PROTECT_USER_TABS = os.environ.get("KITSUNE_PROTECT_USER_TABS", "").lower() not in {"0", "false", "no", "off"}
-# On unless set to 0: writes on the tab the user is viewing need a confirm step (#326).
-HOLD_VIEWED_TAB = os.environ.get("KITSUNE_HOLD_VIEWED_TAB", "").lower() not in {"0", "false", "no", "off"}
+USER_TABS, USER_TABS_ALIASES = user_tabs_from_env(os.environ)
 # Sent once at initialize. The core tools keep Playwright MCP's descriptions, which cannot say
 # that the browser is shared with its user; without this, agents avoid `select` to spare the
 # user's view and work around background tabs instead of reading them. Without the hand-off
@@ -420,7 +427,7 @@ mcp._mcp_server.instructions = (
        "later tools act on your tab without switching the user's view.")
     + (" User and other clients' tabs are read-only: writes, scroll, focus and select fail with "
        "user_tab_read_only, without prompting; open your own tab first."
-       if HOLD_VIEWED_TAB and PROTECT_USER_TABS else "")
+       if USER_TABS == "read-only" else "")
     + " A needs_user result did nothing: tell the user why (state.message). If only the user can go on "
       "(a sign-in, a CAPTCHA, a choice), call browser_ask_user.")
 # The tool browser_tools_call is running; its bridge requests name it for the audit log.
@@ -920,7 +927,7 @@ def _gateway_headers() -> dict:
 # Every tool's bridge request carries this server's client and owner ids, caps, mode, user-tab protection
 # and approver secret.
 _client = tools.client = BridgeClient(caps=enabled_groups(ENABLED_CAPS), mode=MODE,
-                                      protect_user_tabs=PROTECT_USER_TABS, hold_viewed_tab=HOLD_VIEWED_TAB,
+                                      user_tabs=USER_TABS,
                                       extra_headers=_gateway_headers, approver=True)
 
 

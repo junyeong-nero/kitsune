@@ -1,20 +1,11 @@
-"""Issue #326: viewing counts as using.
-
-The extension refuses writes and navigations on the tab shown in the browser window the user last
-focused (user_viewing, extension side in tests/shared_browser.cjs). The bridge turns a direct
-call's refusal into a confirm step like user_tab's, and a client can lift the hold with
-KITSUNE_HOLD_VIEWED_TAB=0.
-"""
+"""Legacy user_viewing response/token compatibility retained for the alias release (#398)."""
 import asyncio
 import json
-import os
-import subprocess
-import sys
 import time
 import unittest
 from unittest.mock import Mock, patch
 
-from kitsune import bridge, bridge_client, errors, playwright_tools, server, task_modes, tools
+from kitsune import bridge, errors, playwright_tools, server, task_modes, tools
 from kitsune.browser import Browser, Tab
 
 VIEWED_TAB = 4
@@ -23,7 +14,7 @@ HELD_ACTIONS = {"click", "fill", "type", "checkBox", "selectOption", "keypress",
 
 
 class FakeExtension:
-    """Holds the shown tab VIEWED_TAB like background.js viewedTabError; tab 9 is the agent's.
+    """Models legacy viewed-tab approval responses; tab 9 is the agent's.
 
     target: what describeTarget reports when ask-before-act inspects a target.
     """
@@ -43,7 +34,7 @@ class FakeExtension:
                     "target": self.target if params.get("inspect") else {}}
         held = action in HELD_ACTIONS or (action == "screenPoint" and params.get("click"))
         navigation_approved = params.get("userTabApproved") and action in {"navigate", "goBack"}
-        if (held and tab_id == VIEWED_TAB and params.get("holdViewedTab") is not False
+        if (held and tab_id == VIEWED_TAB and not bridge._user_tabs_writable.get()
                 and not params.get("viewedTabApproved") and not navigation_approved):
             return {"error": f"The user is viewing tab {tab_id}; nothing was done", "code": "user_viewing",
                     "retryable": False, "hint": "extension hint",
@@ -151,9 +142,9 @@ class ViewedTabBridgeTests(BridgeCase):
         self.assertNotIn("viewedTabApproved", self.extension.last("click"))
 
     def test_client_setting_lifts_the_hold(self):
-        headers = {task_modes.HOLD_VIEWED_TAB_HEADER: "0"}
+        headers = {task_modes.USER_TABS_HEADER: "writable"}
         self.assertEqual(self.call("/api/click", {"selector": "#go", "tabId": VIEWED_TAB}, headers), {"ok": True})
-        self.assertIs(self.extension.last("click")["holdViewedTab"], False)
+        self.assertNotIn("holdViewedTab", self.extension.last("click"))
         self.assertEqual(self.call("/api/batch", {"commands": [
             {"action": "fill", "selector": "#q", "value": "x", "tabId": VIEWED_TAB}]}, headers)["results"][0],
             {"ok": True})
@@ -403,25 +394,6 @@ class ViewedTabClientTests(unittest.TestCase):
         with self.assertRaises(errors.KitsuneError) as plain:
             errors.raise_for({**refused, "state": {"tabId": 4}})
         self.assertNotIsInstance(plain.exception, errors.ConfirmationRequired)
-
-    def test_the_hold_is_on_unless_set_to_zero(self):
-        for value, held in ((None, True), ("1", True), ("0", False), ("off", False)):
-            env = {k: v for k, v in os.environ.items() if k != "KITSUNE_HOLD_VIEWED_TAB"}
-            if value is not None:
-                env["KITSUNE_HOLD_VIEWED_TAB"] = value
-            out = subprocess.run([sys.executable, "-c", "from kitsune import server; print(server.HOLD_VIEWED_TAB)"],
-                                 env=env, text=True, capture_output=True, check=True).stdout.strip()
-            self.assertEqual(out, str(held), value)
-
-    def test_mcp_sends_the_setting_only_when_off(self):
-        for hold in (True, False):
-            with patch.object(server._client, "hold_viewed_tab", hold), \
-                    patch.object(bridge_client.httpx, "request") as request:
-                request.return_value.status_code = 200
-                request.return_value.json.return_value = {"ok": True}
-                tools._post("/api/click", {"selector": "#go", "tabId": 4})
-            headers = request.call_args.kwargs["headers"]
-            self.assertEqual(headers.get(task_modes.HOLD_VIEWED_TAB_HEADER), None if hold else "0")
 
     def test_held_tools_take_a_confirm_token(self):
         with patch.object(tools, "_post", return_value={"ok": True}) as post:

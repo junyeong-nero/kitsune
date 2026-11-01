@@ -15,7 +15,9 @@ import tempfile
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from kitsune import bridge, playwright_tools, task_modes, tools
+import httpx
+
+from kitsune import bridge, bridge_client, playwright_tools, task_modes, tools
 from test_bridge_security import Bridge, _request
 from test_tab_inventory_bridge import tab
 from test_tab_owners import OwningExtension
@@ -126,7 +128,7 @@ class UserTabsReadOnlyTests(unittest.TestCase):
                         self.assertEqual(len(self.extension.commands), count, "refused before preflight/prompt/OS input")
         self.call("/api/set-policy", {"ask": False})
         self.assertEqual(self.call("/api/click", {"tabId": False},
-            headers={task_modes.HOLD_VIEWED_TAB_HEADER: "0"})["code"], "invalid_tab_id")
+            headers={task_modes.USER_TABS_HEADER: "writable"})["code"], "invalid_tab_id")
         self.assertEqual(self.call("/api/click", {"tabId": "1", "selector": "#go"})["code"], "user_tab_read_only")
         self.assertEqual(self.extension.commands[-1]["tabId"], 1)
         self.assertEqual(self.extension.dispatched[-1]["sent"], [])
@@ -189,7 +191,7 @@ class UserTabsReadOnlyTests(unittest.TestCase):
                 self.assertEqual(self.extension.dispatched[-1]["sent"], [])
         self.call("/api/set-policy", {"ask": False})
         self.assertEqual(self.call("/api/close-window", {"windowId": -2},
-            headers={task_modes.HOLD_VIEWED_TAB_HEADER: "0"})["code"], "invalid_window_id")
+            headers={task_modes.USER_TABS_HEADER: "writable"})["code"], "invalid_window_id")
         window = self.call("/api/create-window", {})
         wid, active = window["windowId"], window["tabIds"][0]
         for target in (str(wid), "1", None):
@@ -246,7 +248,7 @@ class UserTabsReadOnlyTests(unittest.TestCase):
 
     def test_caller_permission_fields_cannot_cross_transport_in_batches(self):
         command = {"action": "click", "tabId": 1, "selector": "#go", "ownerId": "forged",
-                   "userTabsWritable": True, "holdViewedTab": False, "userTabApproved": True}
+                   "userTabsWritable": True, "holdViewedTab": False, "protectUserTabs": False, "userTabApproved": True}
         result = self.call("/api/batch", {"commands": [command]})
         self.assertEqual(result["results"][0]["code"], "user_tab_read_only")
         result = self.call("/api/batch", {"commands": [{"action": "retry", "command": command, "maxAttempts": 5}]})
@@ -254,6 +256,8 @@ class UserTabsReadOnlyTests(unittest.TestCase):
         for sent in self.extension.commands:
             self.assertEqual(sent.get("ownerId"), "client-a")
             self.assertNotIn("userTabsWritable", sent)
+            self.assertNotIn("holdViewedTab", sent)
+            self.assertNotIn("protectUserTabs", sent)
         self.assertEqual(self.extension.effects, [])
         self.call("/api/set-policy", {"ask": True})
         for action in ("if", "while"):
@@ -262,12 +266,74 @@ class UserTabsReadOnlyTests(unittest.TestCase):
         result = self.call("/api/sync-barrier", {"tabIds": [1], "predicate": "1"})
         self.assertEqual(result["code"], "user_tab_read_only")
 
-    def test_explicit_legacy_headers_only_grant_compatibility_writes(self):
-        for header in (task_modes.HOLD_VIEWED_TAB_HEADER, task_modes.PROTECT_USER_TABS_HEADER):
-            result = self.call("/api/click", {"tabId": 1}, headers={header: "0"})
+    def test_authoritative_header_and_stale_headers_fail_closed(self):
+        for header in ("X-Kitsune-Hold-Viewed-Tab", "X-Kitsune-Protect-User-Tabs"):
+            for value in ("0", "false", "off", "writable"):
+                result = self.call("/api/click", {"tabId": 1}, headers={header: value})
+                self.assertEqual(result["code"], "user_tab_read_only")
+            result = self.call("/api/click", {"tabId": 1},
+                               headers={header: "0", task_modes.USER_TABS_HEADER: "read-only"})
+            self.assertEqual(result["code"], "user_tab_read_only")
+        self.assertEqual(self.extension.effects, [])
+        for value in ("writable", " WRITABLE "):
+            result = self.call("/api/click", {"tabId": 1}, headers={task_modes.USER_TABS_HEADER: value})
             self.assertTrue(result["ok"])
             self.assertIs(self.extension.commands[-1]["userTabsWritable"], True)
         self.assertEqual(self.call("/api/click", {"tabId": 1})["code"], "user_tab_read_only")
+
+    def test_invalid_header_rejects_before_side_effects(self):
+        for value in ("", "0", "false", "true", "write", "readonly"):
+            status, _, text = _request(self.bridge.http_port, "POST", "/api/click",
+                {**self.bridge.auth(), task_modes.USER_TABS_HEADER: value, "Content-Type": "application/json"},
+                self.bridge.host, json.dumps({"tabId": 1, "userTabsWritable": True}))
+            self.assertEqual(status, 400, text)
+            self.assertEqual(json.loads(text)["code"], "invalid_user_tabs")
+        self.assertEqual(self.extension.commands, [])
+        self.assertEqual(self.extension.effects, [])
+
+    def test_case_variant_extra_headers_cannot_grant_writes_over_http(self):
+        with patch.object(bridge_client, "BRIDGE", f"http://{self.bridge.host}"), \
+                patch.object(bridge_client, "_headers", self.bridge.auth):
+            for name in ("x-kitsune-user-tabs", "X-KITSUNE-USER-TABS", "x-KiTsUnE-uSeR-TaBs"):
+                client = bridge_client.BridgeClient(caps=None, user_tabs="read-only",
+                                                    extra_headers=lambda: {name: "writable"})
+                result = client.request("POST", "/api/click", start_bridge=False, json={"tabId": 1})
+                # A duplicate would be HTTP 400; the request must reach read-only admission.
+                self.assertEqual(result["code"], "user_tab_read_only")
+                self.assertNotIn("userTabsWritable", self.extension.commands[-1])
+        self.assertEqual(self.extension.effects, [])
+
+    def test_duplicate_permission_headers_are_rejected_before_admission(self):
+        name = task_modes.USER_TABS_HEADER
+        variants = (name, name.lower(), name.upper(), "x-KiTsUnE-uSeR-TaBs")
+        identity = [*self.bridge.auth().items(), (task_modes.OWNER_HEADER, "client-a")]
+        headers_cases = [
+            [(name, first), (variant, second)]
+            for variant in variants
+            for first, second in (("read-only", "writable"), ("writable", "read-only"),
+                                  ("read-only", "read-only"), ("writable", "writable"))
+        ]
+        headers_cases.extend([[(name, value)] for value in
+                              ("read-only, writable", "writable, read-only", "read-only, read-only", "writable, writable")])
+        with httpx.Client(trust_env=False) as client:
+            for headers in headers_cases:
+                with self.subTest(headers=headers):
+                    result = client.post(f"http://{self.bridge.host}/api/click",
+                                         headers=[*identity, *headers], json={"tabId": 1})
+                    self.assertEqual(result.status_code, 400, result.text)
+                    self.assertEqual(result.json()["code"], "invalid_user_tabs")
+            self.assertEqual(self.extension.commands, [], "invalid headers must never reach the extension")
+            for headers in ([], [(name.lower(), "read-only")]):
+                result = client.post(f"http://{self.bridge.host}/api/click",
+                                     headers=[*identity, *headers], json={"tabId": 1})
+                self.assertEqual(result.status_code, 200, result.text)
+                self.assertEqual(result.json()["code"], "user_tab_read_only")
+            self.assertEqual(self.extension.effects, [])
+            result = client.post(f"http://{self.bridge.host}/api/click",
+                                 headers=[*identity, (name.upper(), "writable")], json={"tabId": 1})
+            self.assertEqual(result.status_code, 200, result.text)
+            self.assertTrue(result.json()["ok"])
+            self.assertEqual(len(self.extension.effects), 1)
 
     def test_owned_tab_does_not_authorize_unbound_screen_click(self):
         a = self.call("/api/new-tab", {})["tabId"]
@@ -320,8 +386,3 @@ class PermissionSeamTests(unittest.TestCase):
             asyncio.run(bridge._run_workflow("test", [{"action": "click"}, {"action": "fill"}], {}, results))
         self.assertEqual(results, [refusal])
         step.assert_awaited_once()
-
-    def test_internal_hold_bypass_does_not_enable_compatibility(self):
-        token = bridge._hold_viewed_tab.set(False)
-        self.addCleanup(bridge._hold_viewed_tab.reset, token)
-        self.assertFalse(bridge._user_tabs_writable.get())

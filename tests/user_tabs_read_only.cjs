@@ -112,6 +112,15 @@ async function main() {
   // Only the bridge-authoritative compatibility setting permits writes, not old approval fields.
   assert.equal((await h.send({ action: 'click', ownerId: 'client-a', tabId: 1,
     userTabsWritable: true, selector: '#go' })).ok, true);
+  // #398: writable lifts ownership protection, never the trusted-input pause; it is per command.
+  h.activity[1] = { reason: 'input', input: 'keydown' };
+  assert.equal((await h.send({ action: 'click', ownerId: 'client-a', tabId: 1,
+    userTabsWritable: true, holdViewedTab: false, selector: '#go' })).code, 'user_active');
+  delete h.activity[1];
+  assert.equal((await h.send({ action: 'click', ownerId: 'client-a', tabId: 1,
+    selector: '#go' })).code, 'user_tab_read_only');
+  assert.equal((await h.send({ action: 'getTabs', ownerId: 'client-a' })).tabs.find(t => t.id === 1).owned,
+    false, 'writable never transfers ownership');
   console.log('user_tabs_read_only: passed');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

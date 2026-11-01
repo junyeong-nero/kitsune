@@ -423,11 +423,17 @@ class ConnectTests(unittest.TestCase):
         headers = self.bridge.last.headers
         self.assertNotIn(capabilities.CAPS_HEADER, headers)
         self.assertNotIn(task_modes.MODE_HEADER, headers)
-        # User tabs are protected unless protect_user_tabs=False sends "0" (#326).
-        self.assertNotIn(task_modes.PROTECT_USER_TABS_HEADER, headers)
+        # Default and deprecated SDK opt-out use the same authoritative header.
+        self.assertEqual(headers[task_modes.USER_TABS_HEADER], "read-only")
         kitsune.connect(mode="draft", protect_user_tabs=False).tab(7).text()
         headers = self.bridge.last.headers
-        self.assertEqual((headers[task_modes.MODE_HEADER], headers[task_modes.PROTECT_USER_TABS_HEADER]), ("draft", "0"))
+        self.assertEqual((headers[task_modes.MODE_HEADER], headers[task_modes.USER_TABS_HEADER]), ("draft", "writable"))
+        kitsune.connect(user_tabs="writable").tab(7).text()
+        self.assertEqual(self.bridge.last.headers[task_modes.USER_TABS_HEADER], "writable")
+        kitsune.connect(user_tabs="read-only", hold_viewed_tab=False).tab(7).text()
+        self.assertEqual(self.bridge.last.headers[task_modes.USER_TABS_HEADER], "read-only")
+        with self.assertRaises(ValueError):
+            kitsune.connect(user_tabs="invalid", protect_user_tabs=False)
         with self.assertRaises(ValueError):
             kitsune.connect(mode="unsafe")
 

@@ -40,8 +40,8 @@ SNAPSHOT = Path(__file__).resolve().parent.parent / "tests" / "tool_schema_sizes
 TOTAL_BUDGETS = {"core": 22_300}
 FIRST_PARAGRAPH_BUDGETS = {"core": 22_300}
 TOOL_BUDGET = 3_000  # any single core tool, full view
-# Characters of the server instructions in each KITSUNE_MODE, with KITSUNE_HOLD_VIEWED_TAB and
-# KITSUNE_PROTECT_USER_TABS on, as by default, which makes them longest. Set about 5% above
+# Characters of the server instructions in each KITSUNE_MODE with the default read-only
+# user-tab permission, which makes them longest. Set about 5% above
 # their size after #386 and #405 shortened them.
 INSTRUCTIONS_BUDGETS = {"act": 985, "read": 630, "draft": 630}
 
@@ -78,7 +78,7 @@ def measure_instructions() -> dict:
     """Characters of the server instructions in each mode of INSTRUCTIONS_BUDGETS. The
     instructions are built at import from the environment, so each mode imports the server anew."""
     env = {key: value for key, value in os.environ.items()
-           if key not in ("KITSUNE_HOLD_VIEWED_TAB", "KITSUNE_PROTECT_USER_TABS")}
+           if key not in ("KITSUNE_USER_TABS", "KITSUNE_HOLD_VIEWED_TAB", "KITSUNE_PROTECT_USER_TABS")}
     script = "from kitsune import server; print(len(server.mcp._mcp_server.instructions))"
     return {mode: int(subprocess.run([sys.executable, "-c", script], env={**env, "KITSUNE_MODE": mode},
                                      capture_output=True, text=True, check=True).stdout)

@@ -20,7 +20,7 @@
   },
   "model": "opus",
   "mcp_env": {
-    "KITSUNE_PROTECT_USER_TABS": "1"
+    "KITSUNE_USER_TABS": "read-only"
   },
   "done_when": {
     "min_new_tabs": 2,

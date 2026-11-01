@@ -33,9 +33,9 @@ def api(method, path, body=None):
     """Call the demo bridge; returns (status, decoded body).
 
     These calls stage the user's own setup, such as a click on the startup tab, so they send
-    KITSUNE_HOLD_VIEWED_TAB=0's header: the tab the user is viewing is not held for them (#326).
+    the authoritative writable user-tab permission header.
     """
-    headers = {"Authorization": "Bearer " + token(), "X-Kitsune-Hold-Viewed-Tab": "0"}
+    headers = {"Authorization": "Bearer " + token(), "X-Kitsune-User-Tabs": "writable"}
     if body is not None:
         headers["Content-Type"] = "application/json"
     status, _, text = _request(HTTP_PORT, method, path, headers, f"127.0.0.1:{HTTP_PORT}",

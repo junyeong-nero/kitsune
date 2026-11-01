@@ -109,10 +109,8 @@ class PolicyOffTests(AskBeforeActTestCase):
                 handler = self.handler(body)
                 route(handler)
                 handler.send_json.assert_called_once_with(200, {"ok": True})
-                # No inspection round trip and one bridge-to-loop hop, as before. A navigation carries
-                # the default user-tab protection (#326).
-                sent = {**body, "protectUserTabs": True} if action == "navigate" else body
-                self.assertEqual(self.extension.sent, [(action, sent)])
+                # No inspection round trip or obsolete hold/protect metadata.
+                self.assertEqual(self.extension.sent, [(action, body)])
                 handler.run_async.assert_called_once()
 
     def test_batch_runs_unchanged_and_token_is_stripped(self):

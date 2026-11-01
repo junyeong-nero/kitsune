@@ -1,10 +1,7 @@
-"""Issue #199 in a real browser: KITSUNE_PROTECT_USER_TABS keeps navigation off the user's tabs,
-by default (#326).
+"""#395/#398 in a real browser: default read-only user tabs and explicit writable opt-out.
 
-Opt-in and built on tests/real_browser_harness.py, which documents how to run it. The
-browser's startup tab stands in for the user's starting tab: the agent did not open it.
-It is also the tab the user views, which #326 holds for every write; calls that are not about
-that hold send KITSUNE_HOLD_VIEWED_TAB=0's header (unheld).
+Opt-in via real_browser_harness.py. The startup tab is a user tab; only fixture setup
+and explicitly writable scenarios opt out. All owned-tab requests share one client identity.
 """
 from http.server import BaseHTTPRequestHandler
 import json
@@ -12,8 +9,8 @@ import unittest
 from unittest.mock import patch
 
 import real_browser_harness as harness
-from kitsune import playwright_tools, server, tools
-from kitsune.task_modes import HOLD_VIEWED_TAB_HEADER, MODE_HEADER, PROTECT_USER_TABS_HEADER
+from kitsune import playwright_tools, tools
+from kitsune.task_modes import MODE_HEADER, OWNER_HEADER, USER_TABS_HEADER
 
 
 class _Page(BaseHTTPRequestHandler):
@@ -34,34 +31,37 @@ class RealBrowserProtectedTabTests(harness.RealBrowserTestCase):
         cls.page = harness.FixtureServer(_Page)
         cls.addClassCleanup(cls.page.stop)
         super().setUpClass()
+        auth = cls.bridge.auth
+        owner = patch.object(cls.bridge, "auth", side_effect=lambda: {**auth(), OWNER_HEADER: "e2e-protected-tabs"})
+        owner.start()
+        cls.addClassCleanup(owner.stop)
 
     def protected(self, path, body):
-        headers = {**self.bridge.auth(), "Content-Type": "application/json", PROTECT_USER_TABS_HEADER: "1"}
+        headers = {**self.bridge.auth(), "Content-Type": "application/json", USER_TABS_HEADER: "read-only"}
         status, _, text = harness._request(self.bridge.http_port, "POST", path, headers, self.bridge.host,
                                            json.dumps(body), timeout=90)
         self.assertEqual(status, 200, text)
         return json.loads(text)
 
-    def unprotected(self, path, body, hold=True):
-        """POST as a client with KITSUNE_PROTECT_USER_TABS=0 and, unless hold, KITSUNE_HOLD_VIEWED_TAB=0."""
-        headers = {**self.bridge.auth(), "Content-Type": "application/json", PROTECT_USER_TABS_HEADER: "0"}
-        if not hold:
-            headers[HOLD_VIEWED_TAB_HEADER] = "0"
+    def writable(self, path, body):
+        """Only explicit compatibility writes carry the authoritative writable permission."""
+        headers = {**self.bridge.auth(), "Content-Type": "application/json", USER_TABS_HEADER: "writable"}
         status, _, text = harness._request(self.bridge.http_port, "POST", path, headers, self.bridge.host,
                                            json.dumps(body), timeout=90)
         self.assertEqual(status, 200, text)
         return json.loads(text)
 
-    def unheld(self, path, body):
-        return self.unprotected(path, body, hold=False)
+    def assert_read_only(self, result):
+        self.assert_error(result, "user_tab_read_only", False)
+        self.assertNotIn("confirmToken", result.get("state", {}))
 
     def tab_url(self, tab_id):
         return {t["id"]: t["url"] for t in self.call("/api/tabs")["tabs"]}[tab_id]
 
     def user_tab(self):
         tab = next(t for t in self.call("/api/tabs")["tabs"] if not t["owned"])
-        # Start each test from a known page; protection and the viewed-tab hold are off for this call.
-        self.assert_ok(self.unheld("/api/navigate", {"url": self.page.origin + "/start", "tabId": tab["id"]}))
+        # Explicit fixture setup does not grant ownership.
+        self.assert_ok(self.writable("/api/navigate", {"url": self.page.origin + "/start", "tabId": tab["id"]}))
         return tab["id"]
 
     def test_owned_helper_tab_navigates_and_closes(self):
@@ -74,35 +74,31 @@ class RealBrowserProtectedTabTests(harness.RealBrowserTestCase):
         tab = self.user_tab()
         for body in ({"url": self.page.origin + "/other", "tabId": tab}, {"url": self.page.origin + "/other"}):
             result = self.protected("/api/navigate", body)
-            self.assert_needs_approval(result, "user_tab")
+            self.assert_read_only(result)
             self.assertEqual(result["state"]["tabId"], tab)
             self.assertIn("browser_tabs", result["hint"])
-        self.assert_needs_approval(self.protected("/api/back", {"tabId": tab}), "user_tab")
-        # On by default (#326): a client that sends no header is protected too.
-        self.assert_needs_approval(self.call("/api/navigate", {"url": self.page.origin + "/other", "tabId": tab}),
-                                   "user_tab")
+        self.assert_read_only(self.protected("/api/back", {"tabId": tab}))
+        # Read-only by default: a client that sends no header is protected too.
+        self.assert_read_only(self.call("/api/navigate", {"url": self.page.origin + "/other", "tabId": tab}))
         batch = self.protected("/api/batch", {"commands": [
             {"action": "navigate", "url": self.page.origin + "/other", "tabId": tab}]})
-        self.assert_needs_approval(batch["results"][0], "user_tab")
+        self.assert_read_only(batch["results"][0])
         self.assertNotIn("confirmToken", batch["results"][0]["state"])
         self.assertEqual(self.tab_url(tab), self.page.origin + "/start")
 
-    def test_approved_and_unprotected_navigation_runs(self):
+    def test_only_explicit_writable_navigation_runs_without_granting_ownership(self):
         tab = self.user_tab()
-        body = {"url": self.page.origin + "/approved", "tabId": tab}
-        token = self.protected("/api/navigate", body)["state"]["confirmToken"]
-        self.assert_ok(self.protected("/api/navigate", {**body, "confirmToken": token}))
-        self.assertEqual(self.tab_url(tab), self.page.origin + "/approved")
-        # Without protection the user tab is still the one the user views (#326): user_viewing, not user_tab.
-        free = {"url": self.page.origin + "/free", "tabId": tab}
-        self.assert_needs_approval(self.unprotected("/api/navigate", free), "user_viewing")
-        self.assertEqual(self.tab_url(tab), self.page.origin + "/approved")
-        self.assert_ok(self.unheld("/api/navigate", free))
+        body = {"url": self.page.origin + "/free", "tabId": tab}
+        self.assert_read_only(self.protected("/api/navigate", {**body, "confirmToken": "forged"}))
+        self.assertEqual(self.tab_url(tab), self.page.origin + "/start")
+        self.assert_ok(self.writable("/api/navigate", body))
         self.assertEqual(self.tab_url(tab), self.page.origin + "/free")
+        self.assertFalse(next(t for t in self.call("/api/tabs")["tabs"] if t["id"] == tab)["owned"])
+        self.assert_read_only(self.call("/api/back", {"tabId": tab}))
 
     def restricted(self, path, body=None, mode="read"):
         """(HTTP status, reply) of a request from a read/draft client that protects user tabs."""
-        headers = {**self.bridge.auth(), MODE_HEADER: mode, PROTECT_USER_TABS_HEADER: "1"}
+        headers = {**self.bridge.auth(), MODE_HEADER: mode, USER_TABS_HEADER: "read-only"}
         if body is not None:
             headers["Content-Type"] = "application/json"
         status, _, text = harness._request(self.bridge.http_port, "GET" if body is None else "POST", path,
@@ -111,7 +107,7 @@ class RealBrowserProtectedTabTests(harness.RealBrowserTestCase):
         return status, json.loads(text)
 
     def test_read_mode_opens_and_reads_its_own_tab_and_leaves_user_tabs_alone(self):
-        # #270: read + KITSUNE_PROTECT_USER_TABS=1 can reach any page in a tab of its own.
+        # Read mode can reach any page in a tab of its own.
         user = self.user_tab()
         get = lambda path: self.restricted(path)[1]
         post = lambda path, body, timeout=15: self.restricted(path, body)[1]
@@ -134,8 +130,8 @@ class RealBrowserProtectedTabTests(harness.RealBrowserTestCase):
                          "the user's view did not change")
 
         status, refused = self.restricted("/api/navigate", {"url": self.page.origin + "/other", "tabId": user})
-        self.assert_needs_approval(refused, "user_tab")
-        self.assertIn("browser_tab_list new_tab", refused["hint"])
+        self.assert_read_only(refused)
+        self.assertIn("browser_tabs action=new", refused["hint"])
         self.assertNotIn("confirm_token", refused["hint"])
         self.assertNotIn("confirmToken", refused.get("state", {}), "read mode cannot use a token")
         for path in ("/api/switch-tab", "/api/close-tab"):

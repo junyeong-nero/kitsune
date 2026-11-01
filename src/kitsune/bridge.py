@@ -62,8 +62,8 @@ except ImportError:
 from . import bridge_control, browser_diagnostics
 from .capabilities import ACTION_GROUPS, CAPS_HEADER, OPEN_ROUTES, ROUTE_GROUPS, caps_refusal, header_caps
 from .task_modes import (
-    APPROVAL_HEADER, APPROVER_HEADER, CLIENT_HEADER, CLIENT_ID_PATTERN, GATEWAY_TOOL_HEADER, HOLD_VIEWED_TAB_HEADER,
-    MODE_HEADER, OWNER_HEADER, PROTECT_USER_TABS_HEADER, TOOL_CALL_HEADER, permits_action, permits_route, task_mode,
+    APPROVAL_HEADER, APPROVER_HEADER, CLIENT_HEADER, CLIENT_ID_PATTERN, GATEWAY_TOOL_HEADER,
+    MODE_HEADER, OWNER_HEADER, USER_TABS_HEADER, TOOL_CALL_HEADER, permits_action, permits_route, task_mode, user_tabs,
 )
 from .version import BRIDGE_BUILD, PACKAGE_VERSION, SOURCE_ROOT, extension_manifest_hash, extension_source_hash
 from .waits import (
@@ -179,11 +179,7 @@ _LOG_MAX = 5000
 # Ask-before-act is opt-in. askUrls are payment-like URL patterns it guards (case-insensitive).
 DEFAULT_ASK_URLS = [r"checkout", r"payment", r"billing", r"/pay\b", r"purchase", r"/order"]
 _task_mode = contextvars.ContextVar("kitsune_task_mode", default="act")
-# The calling client's KITSUNE_PROTECT_USER_TABS (#199): unless False, its navigations leave user tabs alone (#326).
-_protect_user_tabs = contextvars.ContextVar("kitsune_protect_user_tabs", default=True)
-# The calling client's KITSUNE_HOLD_VIEWED_TAB (#326): False lifts the hold on the tab the user views.
-_hold_viewed_tab = contextvars.ContextVar("kitsune_hold_viewed_tab", default=True)
-# Only explicit transport opt-outs grant compatibility writes; internal hold bypasses do not.
+# The calling client's authoritative user-tab permission (#398).
 _user_tabs_writable = contextvars.ContextVar("kitsune_user_tabs_writable", default=False)
 # A direct call's {"approved", "rejected"} for the viewed-tab hold (_take_viewed_tab_approval); a
 # dict, so the request's tasks and its handler share it.
@@ -3159,20 +3155,18 @@ RESTRICTED_USER_TAB_HINT = ("Nothing navigated. Open the page in a tab of your o
 RESTRICTED_VIEWED_TAB_HINT = ("Nothing was done: the user is viewing this tab. Open the page in a tab of your own "
                               "with browser_tab_list new_tab, or leave this tab to the user.")
 # Only the bridge sets these on extension commands (send_to_extension).
-_VIEWED_TAB_FIELDS = ("viewedTabApproved", "holdViewedTab")
+_VIEWED_TAB_FIELDS = ("viewedTabApproved", "holdViewedTab", "protectUserTabs")
 
 
 def _with_viewed_tab_fields(params):
-    """params as sent to the extension: the viewed-tab hold follows this request, not the caller's fields."""
+    """Strip obsolete hold settings; retain only legacy confirm-token approval compatibility."""
     approval = _viewed_tab_approval.get()
     approved = approval is not None and approval.get("approved")
-    if not (approved or not _hold_viewed_tab.get() or any(key in (params or {}) for key in _VIEWED_TAB_FIELDS)):
+    if not (approved or any(key in (params or {}) for key in _VIEWED_TAB_FIELDS)):
         return params
     params = {k: v for k, v in (params or {}).items() if k not in _VIEWED_TAB_FIELDS}
     if approved:
         params["viewedTabApproved"] = True
-    if not _hold_viewed_tab.get():
-        params["holdViewedTab"] = False
     return params
 
 
@@ -3181,12 +3175,6 @@ async def send_to_extension(action, params=None, timeout=30):
     params = dict(params or {})
     if invalid := _normalize_tab_target(params) or _normalize_window_target(action, params):
         return invalid
-    if action in _PROTECTED_NAVIGATIONS:
-        # Only the calling client's setting decides whether its navigations are protected.
-        params = {k: v for k, v in (params or {}).items() if k != "protectUserTabs"}
-        if _protect_user_tabs.get():
-            params["protectUserTabs"] = True
-    # Sent with the bridge's viewed-tab fields; outcomes are remembered by the caller's params.
     sent = _with_viewed_tab_fields(params)
     result = await _run_in_command_scope(
         action,
@@ -3280,6 +3268,8 @@ async def _send_to_extension_raw(action, params=None, timeout=30):
     if invalid := _normalize_tab_target(params) or _normalize_window_target(action, params):
         return invalid
     # Identity is transport metadata, never a tool/container argument supplied by the caller.
+    params.pop("holdViewedTab", None)
+    params.pop("protectUserTabs", None)
     params.pop("userTabsWritable", None)
     if _user_tabs_writable.get():
         params["userTabsWritable"] = True
@@ -4978,12 +4968,17 @@ class BridgeHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self.refuse(400, {"error": str(exc), "code": "invalid_caps", "retryable": False})
             return
+        try:
+            permissions = [value for key, value in self.headers.items() if key.lower() == USER_TABS_HEADER.lower()]
+            if len(permissions) > 1:
+                raise ValueError(f"{USER_TABS_HEADER} must occur at most once")
+            permission = user_tabs(permissions[0] if permissions else None)
+        except ValueError as exc:
+            self.refuse(400, {"error": str(exc), "code": "invalid_user_tabs", "retryable": False})
+            return
         token = _task_mode.set(mode)
         caps_token = _client_caps.set(caps)
-        protect = _protect_user_tabs.set(self.headers.get(PROTECT_USER_TABS_HEADER) != "0")
-        hold = _hold_viewed_tab.set(self.headers.get(HOLD_VIEWED_TAB_HEADER) != "0")
-        writable = _user_tabs_writable.set(self.headers.get(HOLD_VIEWED_TAB_HEADER) == "0"
-                                          or self.headers.get(PROTECT_USER_TABS_HEADER) == "0")
+        writable = _user_tabs_writable.set(permission == "writable")
         viewed = _viewed_tab_approval.set({"approved": False, "rejected": None})
         direct_hold = _direct_hold.set({"call": None})
         approver = self.headers.get(APPROVER_HEADER) or ""
@@ -5021,8 +5016,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
             _direct_hold.reset(direct_hold)
             _viewed_tab_approval.reset(viewed)
             _user_tabs_writable.reset(writable)
-            _hold_viewed_tab.reset(hold)
-            _protect_user_tabs.reset(protect)
             _client_caps.reset(caps_token)
             _task_mode.reset(token)
 

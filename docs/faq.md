@@ -37,13 +37,12 @@ OpenCode, Claude Desktop and Cursor: [MCP setup](https://github.com/junyeong-ner
 Tabs it opens with `browser_tabs` `new` stay in the background, and selecting a tab changes only
 the agent's current tab, not what you see. Until the agent opens or selects a tab, its reads act
 on the tab you are viewing, and its writes and navigations that name no tab fail with
-`no_current_tab`. The tab you are viewing (shown in the browser window you focused last) is held:
-the agent's writes and navigations there fail with `needs_user` (`user_viewing`) until you
-[approve](#how-do-i-approve-a-held-action), unless the agent opened that tab itself. Its
-navigations on your other tabs fail with `needs_user` (`user_tab`) until you approve, unless you
-set `KITSUNE_PROTECT_USER_TABS=0`. It can still select your other tabs or click in them, so ask it
-to work in new tabs. OS-level clicks and popups that sites open can still take focus. See [Shared browser](api-reference.md#shared-browser) and
-[Protecting your tabs](guide.md#protecting-your-tabs).
+`no_current_tab`. Your tabs and other clients' tabs are read-only by default, whether viewed
+or in the background: writes, navigation, scrolling, selecting and closing fail immediately
+with `user_tab_read_only`, without a prompt. The agent should open its own tab first.
+Trusted input still pauses writes on an agent tab with `user_active`. For the permission
+opt-out, see [Protecting your tabs](guide.md#protecting-your-tabs). OS-level clicks and
+popups that sites open can still take focus; see [Shared browser](api-reference.md#shared-browser).
 
 ## Can I limit what the agent does?
 

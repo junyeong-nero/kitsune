@@ -13,9 +13,10 @@ import threading
 import time
 import unittest
 from urllib.parse import parse_qs, urlparse
+from unittest.mock import patch
 
 import real_browser_harness as harness
-from kitsune.task_modes import HOLD_VIEWED_TAB_HEADER, PROTECT_USER_TABS_HEADER
+from kitsune.task_modes import OWNER_HEADER, USER_TABS_HEADER
 
 ZIP = "06236"
 DETAIL = "KITSUNE_FAKE_DETAIL_157"
@@ -117,6 +118,10 @@ class RealBrowserIframeTests(harness.RealBrowserTestCase):
         cls.site = AddressSite()
         cls.addClassCleanup(cls.site.stop)
         super().setUpClass()
+        auth = cls.bridge.auth
+        owner = patch.object(cls.bridge, "auth", side_effect=lambda: {**auth(), OWNER_HEADER: "e2e-iframes"})
+        owner.start()
+        cls.addClassCleanup(owner.stop)
 
     def ref(self, tab, line):
         snapshot = self.call("/api/snapshot", {"tabId": tab})["snapshot"]
@@ -303,14 +308,13 @@ class RealBrowserIframeTests(harness.RealBrowserTestCase):
                 self.assertRegex(held["error"], r"http://localhost:\d+/widget")
         self.assertEqual(self.site.wait_for_save(timeout=1), [])
 
-    def test_refs_into_a_cross_origin_frame_of_the_viewed_tab_are_held(self):
-        # #326 with #354: a ref routes the action into the frame, but the tab is the one the user views.
+    def test_refs_into_a_cross_origin_frame_of_a_user_tab_are_read_only(self):
+        # A ref routes into the frame, but cannot override its user tab's permission.
         with self.site.lock:
             self.site.saved.clear()
         user = next(t for t in self.call("/api/tabs")["tabs"] if not t["owned"])
         self.assertIs(user["active"], True)
-        headers = {**self.bridge.auth(), "Content-Type": "application/json", HOLD_VIEWED_TAB_HEADER: "0",
-                   PROTECT_USER_TABS_HEADER: "0"}
+        headers = {**self.bridge.auth(), "Content-Type": "application/json", USER_TABS_HEADER: "writable"}
         status, _, text = harness._request(self.bridge.http_port, "POST", "/api/navigate", headers, self.bridge.host,
                                            json.dumps({"tabId": user["id"], "url": f"{self.site.origin}/checkout"}),
                                            timeout=60)
@@ -318,17 +322,18 @@ class RealBrowserIframeTests(harness.RealBrowserTestCase):
         holder = next(f for f in self.call("/api/forms", {"tabId": user["id"]})["fields"] if f["name"] == "holder")
         pay = next(r for r in self.call("/api/find", {"tabId": user["id"], "query": "결제"})["results"]
                    if (r["tag"], r["text"]) == ("button", "결제"))
-        tokens = {}
         for path, body in [("/api/fill", {"ref": holder["ref"], "value": HOLDER}), ("/api/click", {"ref": pay["ref"]})]:
             with self.subTest(path=path):
                 held = self.call(path, {"tabId": user["id"], **body})
-                self.assert_needs_approval(held, "user_viewing")
-                tokens[path] = held["state"]["confirmToken"]
+                self.assert_error(held, "user_tab_read_only", False)
+                self.assertNotIn("confirmToken", held.get("state", {}))
         self.assertEqual(self.site.wait_for_save(timeout=1), [], "nothing reached the frame")
-        self.assert_ok(self.call("/api/fill", {"tabId": user["id"], "ref": holder["ref"], "value": HOLDER,
-                                               "confirmToken": tokens["/api/fill"]}))
-        self.assert_ok(self.call("/api/click", {"tabId": user["id"], "ref": pay["ref"],
-                                                "confirmToken": tokens["/api/click"]}))
+        # Explicit writable requests may act, without a confirmation token or ownership transfer.
+        for path, body in [("/api/fill", {"ref": holder["ref"], "value": HOLDER}), ("/api/click", {"ref": pay["ref"]})]:
+            status, _, text = harness._request(self.bridge.http_port, "POST", path, headers, self.bridge.host,
+                                               json.dumps({"tabId": user["id"], **body}), timeout=60)
+            self.assertEqual(status, 200, text)
+            self.assert_ok(json.loads(text))
         self.assertEqual(self.site.wait_for_save(), [("/pay", {"card": CARD, "holder": HOLDER})])
 
     def test_action_deltas_list_what_changed_inside_the_cross_origin_frame(self):
@@ -447,6 +452,10 @@ class RealBrowserCrossOriginFrameTests(harness.RealBrowserTestCase):
         cls.site = FrameSite()
         cls.addClassCleanup(cls.site.stop)
         super().setUpClass()
+        auth = cls.bridge.auth
+        owner = patch.object(cls.bridge, "auth", side_effect=lambda: {**auth(), OWNER_HEADER: "e2e-iframes"})
+        owner.start()
+        cls.addClassCleanup(owner.stop)
 
     @classmethod
     def extension_scripts(cls):
