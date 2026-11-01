@@ -565,7 +565,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `browser_window_unavailable` | No active tab: the extension sees no normal window it can use | true |
 | `host_permission_denied` | Firefox does not let Kitsune script the tab's site (`state.reason`: `not_granted`, `restricted_domain`) | true |
 | `permission_required` | A [history or bookmark lookup](#history-and-bookmarks) needs an optional browser permission the user has not granted (`state.permission`: `history` or `bookmarks`). Only the user can grant it, on Kitsune's options page; the agent cannot. Also returned, with a reload hint, when the permission is granted but the running extension has not picked it up. `browser_trusted_type`, `browser_trusted_press_key` and `browser_trusted_drag` return it when the bridge lacks macOS Accessibility permission; nothing was sent | false |
-| `needs_user` | Nothing ran: only the user can let the call go on (#376). `state.reason: "approval"`: it needs the user's approval, and `state.detail` is the code it replaces (below). `state.message` is a short request to show the user. On an MCP client with elicitation the MCP server asks the user itself and the result has no token (see [Approval prompts](#approval-prompts)); elsewhere, the fallback for clients without elicitation, a direct call's `state.confirmToken` runs it once the user approves. `state.approvable` is `false` in read and draft modes, which cannot approve, and `state.approval` says how it can be approved (`token`, `elicitation`). `state.reason: "agent_request"`: [`browser_ask_user`](#browser_ask_userreason-message-tab_idnone) asks the user, and `state.detail` is what it asks for. A direct call's result also has `call`, the audit call id of the hold, and, from the MCP server when the user did not resolve it in the call, `resume_token` for [`browser_resume`](checkpoint-resume.md#direct-calls). What Kitsune sees only the user can do on a page (`sign_in`, `human_check`, `trusted_input`) is never this error, but a [`needs_user` hint](#needs_user-hints) on the result. See the [end-to-end example](#example-needs_user-end-to-end) | false |
+| `needs_user` | Nothing ran: only the user can let the call go on (#376). `state.reason: "approval"`: it needs the user's approval, and `state.detail` is the code it replaces (below). `state.message` is a short request to show the user. On an MCP client with elicitation the MCP server asks the user itself and the result has no token (see [Approval prompts](#approval-prompts)); elsewhere, the fallback for clients without elicitation, a direct call's `state.confirmToken` runs it once the user approves. `state.approvable` is `false` in read and draft modes, which cannot approve, and `state.approval` says how it can be approved (`token`, `elicitation`). `state.reason: "agent_request"`: [`browser_ask_user`](#browser_ask_userreason-message-tab_idnone) asks the user, and `state.detail` is what it asks for. A resumable direct call's result also has `call`, the audit call id of the hold, and, from the MCP server when the user did not resolve it in the call, `resume_token` for [`browser_resume`](checkpoint-resume.md#direct-calls). Explicit [handoff requests](#requesting-and-returning-a-tab) use `state.detail: "tab_handoff"` and have no resume checkpoint. What Kitsune sees only the user can do on a page (`sign_in`, `human_check`, `trusted_input`) is never this error, but a [`needs_user` hint](#needs_user-hints) on the result. See the [end-to-end example](#example-needs_user-end-to-end) | false |
 | `user_active` | The user is using the tab (`state.reason`: `input`, `typing`, `navigating`); the write or navigation did not run (see [User activity](#user-activity)) | true |
 | `outcome_not_observed` | The action was dispatched, but the outcome given in `expect` did not happen in time (see [Action outcomes](#action-outcomes)) | false for writes |
 | `user_tab_read_only` | A user or other client owns the target; nothing ran and no prompt is offered. `state.tabId`, `state.index`, `state.action`; open an owned tab before writing (see [Tab permissions](#tab-permissions)) | false |
@@ -1319,7 +1319,7 @@ Tokens for other actions do not grant ownership or override this refusal.
 
 Use `browser_tabs(action="request", index=0, reason="Explain why this tab is needed")`,
 or supply `tab_id` instead of `index`. The native Python tool uses `tab_id`. This is an
-existing tool action; it adds no tools or instruction prefix. A request does not select,
+existing tool action; it adds no tool. A request does not select,
 activate, navigate or focus the tab. After approval, core `select` can make it current
 without changing the user's view; Python/HTTP DOM operations may target its `tab_id` directly.
 A handoff does not grant trusted/native OS-input capability.
@@ -1499,9 +1499,9 @@ follows:
 - In a `createWindow` window, only the tabs `windows.create` made are the agent's
   (`tabIds` in the result). The browser's copies there are discarded when the window opens.
   Kitsune records them once, at that moment, and never makes them owned.
-  `browser_tabs` close refuses them (`needs_user`), because closing one would close the user's
-  tab. `browser_close_window` closes the window with them anyway: removing a window
-  closes no originals.
+  Under default permissions, `browser_tabs` close and `browser_close_window` both refuse
+  them (`user_tab_read_only`). The writable opt-out allows closing the window with those
+  copies: removing a window closes no originals.
 - A tab that opens in another window as a copy of the agent window's tab is adopted:
   `owned: true`, and `browser_close_window` closes it after the window. Adoption is
   conservative, and every condition must hold. The tab opens within 1.5 s of
@@ -1517,11 +1517,11 @@ Limits: this is a heuristic. A lazy background tab that something other than the
 opens in those 1.5 s at about:blank counts as the agent's, for example one opened by
 another extension. If the user closes the agent window, its adopted copies stay open,
 agent-owned, and show the agent's page; `browser_tabs` close closes them. In a `browser_detach_tab` window, the browser's copies count as user tabs, so
-`browser_close_window` on it needs the user's approval. The extension keeps its records of
+`browser_close_window` on it is refused by default. The extension keeps its records of
 an agent window in memory only: after an extension reload or a browser restart, adopted copies stay owned but no
 longer go back to the user when shown, `browser_close_window` no longer closes them after
 the window, and the browser's copies in a `createWindow` window count as user tabs, so
-closing that window needs approval.
+closing that window is refused by default.
 
 #### User activity
 
@@ -1779,9 +1779,9 @@ take `confirmToken`. The token:
   a token is spent and the step stays held. Batch `if`/`while` can therefore not run
   in ask mode.
 
-An accepted token for a navigation also approves navigating that tab when it is a
-[protected user tab](#protected-user-tabs), and the [viewed tab](#viewed-tab) hold, so the
-user approves a held navigation once.
+An ask-before-act token does not override [tab permissions](#tab-permissions) or grant
+ownership. Open an agent tab or explicitly request a [handoff](#requesting-and-returning-a-tab)
+before writing a read-only user tab.
 
 A rejected token returns a fresh `needs_user` (`confirmation_required`) error with
 `state.tokenRejected` set to `unknown`, `used`, `expired`, `mismatch`, or `not_direct`.
@@ -1923,10 +1923,12 @@ alone: `readonly`, `allow`/`deny`, and `ask`.
 
 #### Approval prompts
 
-A direct call held for the user's approval (`needs_user` with `state.reason: "approval"`:
-[ask-before-act](#ask-before-act), a [user tab](#agent-owned-tabs) or the
-[viewed tab](#viewed-tab)) is approved through MCP elicitation when the client supports it
-(#376). The client declares the `elicitation` capability (form mode, protocol 2025-06-18 or
+A direct call held by [ask-before-act](#ask-before-act) (`needs_user` with
+`state.reason: "approval"`) is approved through MCP elicitation when the client supports it
+(#376). The same fallback handles legacy extension `user_tab`/`user_viewing` holds;
+current user-tab writes are refused without prompting. Explicit [handoff requests](#requesting-and-returning-a-tab)
+ask in the browser first, then use client approval after 30 seconds, and do not offer resume checkpoints.
+The client declares the `elicitation` capability (form mode, protocol 2025-06-18 or
 later) at initialize; Claude Code (2.1.76 and later) and Codex do.
 
 1. The MCP server asks the client to ask the user, in form mode with one choice, Approve or
@@ -1947,7 +1949,7 @@ later) at initialize; Claude Code (2.1.76 and later) and Codex do.
    `state.approval: "elicitation"` and `state.decision`: `declined` or `cancelled` (also for
    no answer). Nothing ran. The result carries `call` and `resume_token`: `browser_resume`
    asks the user again ([Direct calls](checkpoint-resume.md#direct-calls)).
-   For the [viewed tab](#viewed-tab), Decline means "not in this tab" (#383): the prompt says
+   For a legacy extension's `user_viewing` hold, Decline means "not in this tab" (#383): the prompt says
    so ("Decline means the agent should not do it in this tab"), and the hint tells the agent
    to do it in a tab of its own instead. For 10 s after such a decline, the next held calls on
    that tab (the rest of the agent's turn) are declined without a prompt
@@ -3196,24 +3198,13 @@ request (`askUser`, without the message).
 
 #### Example: needs_user end to end
 
-An agent signs in to a shop on the tab the user is viewing, tab 12 (#376).
+An agent needs the user to sign in to a shop (#376).
 
-1. `browser_click(target="e12", element="Sign in")` is held: the user is viewing the tab.
-   On a client with elicitation the client asks the user, and once they approve, the result
-   is the click's own; there is nothing to resume. Without elicitation the result carries the
-   confirm token, the fallback for such clients:
-
-   ```json
-   { "error": "The user is viewing tab 12; nothing was done", "code": "needs_user", "retryable": false,
-     "state": { "reason": "approval", "detail": "user_viewing", "tabId": 12,
-                "message": "Allow the agent's click in the tab you are viewing (Shop)?", "approvable": true,
-                "confirmToken": "…", "expiresInSeconds": 120, "approval": "token", "…": "…" },
-     "call": 57, "resume_token": "…",
-     "hint": "Nothing was done: the user is viewing this tab. … browser_resume(call, resume_token) checks the hold again and returns at once …" }
-   ```
-
-   The agent tells the user `state.message`. Once they agree, it repeats the call with
-   `confirm_token` and `tab_id=12` within 120 s; the audit log records `approval: "token"`.
+1. The agent opens its own background tab (`browser_tabs action=new`), tab 12, navigates
+   to the shop, reads it, then calls `browser_click(target="e12", element="Sign in")`.
+   A user tab would instead refuse the click with `user_tab_read_only`; merely viewing
+   an owned tab does not hold the click. A [handoff](#requesting-and-returning-a-tab)
+   is an alternative when the existing user tab is needed.
 2. The click's result shows a sign-in form, with a [hint](#needs_user-hints):
    `"needs_user": { "reason": "sign_in", "message": "Sign in on this page.", … }`. Nothing was
    held for it, and the agent cannot sign in, so it asks:

@@ -424,24 +424,19 @@ USER_TABS, USER_TABS_ALIASES = user_tabs_from_env(os.environ)
 # The no_current_tab refusal lists the tabs this client opened before a restart (state.ownTabs) and
 # says how to keep working in one, so the instructions only say a restart clears the current tab (#405).
 mcp._mcp_server.instructions = (
-    "Kitsune shares the user's Firefox-family browser. "
-    + ("browser_tabs `new` opens a tab in the background and `select` makes a tab your current "
-       "tab without switching the user's view. Until you open or select a tab, also after an MCP "
-       "server restart, reads act on the "
-       "tab the user is viewing, and writes and navigations that pass no tab_id fail with "
-       "no_current_tab. A tab that a batch or workflow newTab or an action on your current tab "
-       "opens becomes your current tab; the result names it in current_tab. Use a page's own "
-       "control for handing a step to the user rather than asking in chat."
+    "Shared browser. "
+    + ("User and other clients' tabs are read-only (user_tab_read_only, no prompt): open your own "
+       "before writes, scroll, hover, focus or select. " if USER_TABS == "read-only" else "")
+    + ("browser_tabs request needs approval: session-only DOM/browser handoff, no native input. "
+       "browser_tabs new opens a background current tab; select sets current without switching the user's view. "
+       "MCP restart clears current: until new/select, reads use the viewed tab; writes/navigation without "
+       "tab_id fail no_current_tab. Batch/workflow newTab or tabs opened from current become current "
+       "(current_tab). Prefer page controls to hand a step to the user."
        if permits_tool(MODE, "browser_tabs") else
-       "Until browser_tab_list new_tab opens a background tab of your own, reads act on the tab the "
-       "user is viewing; writes/navigations without tab_id fail with no_current_tab. "
-       "Later tools use your background tab.")
-    + (" User and other clients' tabs are read-only: writes, scroll, focus and select fail with "
-       "user_tab_read_only, without prompting; open your own tab first."
-       if USER_TABS == "read-only" else "")
-    + " On your own tab, user_active means wait a few seconds and retry."
-    + " A needs_user result did nothing: tell the user why (state.message). If only the user can go on "
-      "(a sign-in, a CAPTCHA, a choice), call browser_ask_user.")
+       "browser_tab_list new_tab opens a background current tab. MCP restart clears current: until "
+       "new_tab, reads use the viewed tab; writes/navigation without tab_id fail no_current_tab.")
+    + " On your own tab, user_active: wait a few seconds and retry."
+    + " needs_user error: nothing ran; show state.message. Need the user? browser_ask_user.")
 # The tool browser_tools_call is running; its bridge requests name it for the audit log.
 _gateway_call: ContextVar[str | None] = ContextVar("kitsune_gateway_call", default=None)
 # The id of the tool call running (_mcp_errors), which its bridge requests carry.

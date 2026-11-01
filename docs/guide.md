@@ -390,21 +390,21 @@ Kitsune's compact JSON results, not Playwright's Markdown. Where the two differ:
   without a current tab; its `no_current_tab` then lists the open tabs its MCP client
   opened before, the most recent first, in `state.ownTabs`, and the hint names that tab,
   so the agent can pass it as `tab_id`. The server does not pick one itself:
-  the tab may belong to an earlier conversation. The bridge knows a tab's MCP client
-  until the bridge, the browser or the extension restarts
-  ([Tab owners](api-reference.md#tab-owners)). A tab a batch or
+  the tab may belong to an earlier conversation. Persistent ownership survives bridge/extension
+  restarts and browser session restore for the same client id; handed-off tabs return when
+  their session ends ([Tab owners](api-reference.md#tab-owners)). A tab a batch or
   workflow `newTab` opens, or an action on the
   current tab opens (a click on a `target=_blank` link, for example), becomes current,
   and the result names it in `current_tab`.
   `browser_navigate` and `browser_navigate_back` also accept a `tab_id` that Playwright
   MCP's schema does not list. `index` is the position
   in `browser_tabs` `list`, which also marks `active` and agent-`owned` tabs, and the
-  `current` one unless it is a tab you may be viewing (active, not the agent's), where its
-  writes would be held ([Protecting your tabs](#protecting-your-tabs)). `new`,
+  `current` one regardless of ownership. Selection does not grant ownership
+  ([Protecting your tabs](#protecting-your-tabs)). `new`,
   `select` and `close` return the tabs after the change in the same form; `new` returns
   the new tab's `index`.
-  `browser_close` closes the current tab, never the browser; closing a tab the agent did
-  not open needs the user's approval (`needs_user`, `state.detail` `user_tab`).
+  `browser_close` closes the current tab, never the browser; closing a user or other
+  client's tab is refused with `user_tab_read_only` by default.
 - **Targets.** `target` is a snapshot ref (`e12`) or a CSS selector. Actions require one
   actionable match (else `ambiguous_target`). Actions and scoped snapshots also accept a
   subset of Playwright selectors: `text=` (also `/regex/`), `role=…[name="…"]` (also
@@ -660,18 +660,17 @@ KITSUNE_ASK_BEFORE_ACT = "1"
 
 ### Approving held actions
 
-When Kitsune holds a call for your approval (ask-before-act, a tab the agent did not open,
-or the tab you are viewing), it returns `needs_user` with `state.reason` `approval`, and
-nothing runs. How you approve depends on the MCP client:
+When ask-before-act holds a call for your approval, it returns `needs_user` with
+`state.reason` `approval`, and the held action does not run. User-tab writes instead fail
+with `user_tab_read_only`, without prompting. An explicit [handoff request](api-reference.md#requesting-and-returning-a-tab)
+asks in the browser first, then falls back to the client. For ask-before-act, approval works as follows:
 
 - **Clients with elicitation** (Claude Code, Codex): Kitsune asks you in the client's own
   prompt, naming the action, its target, the call's arguments, the tab and why it was held.
   The agent's description of the target is labeled as the agent's. Approve, and Kitsune
   runs that one call; the agent never sees a token, so it cannot approve itself. Decline or
   dismiss it, and the agent gets `needs_user` with `state.decision` `declined` or
-  `cancelled`. For the tab you are viewing, Decline means "not in this tab": the agent is
-  told to do it in a tab of its own, and for 10 seconds its next calls held on that tab are
-  declined without asking you again. The prompt closes unanswered 5 seconds before the approval would expire.
+  `cancelled`. The prompt closes unanswered 5 seconds before the approval would expire.
   If you change your mind, the agent calls `browser_resume`, which asks you again and
   continues the call where it was held.
   Steps inside batches, parallel calls and workflows are not asked about: the agent repeats
@@ -681,7 +680,7 @@ nothing runs. How you approve depends on the MCP client:
   back to the agent, so it guards against accidents only: the agent can repeat the call
   without asking. Have your MCP client prompt you before tool calls, or at least before
   calls that carry `confirm_token`. `browser_resume` on such a client checks the hold once
-  and returns at once; it never waits for you to look away from a tab.
+  and returns at once; it never waits for approval.
 
 The bridge's audit log (`browser_audit`) records how each approved write was approved,
 `approval: "elicitation"` or `"token"`. Details are in the
@@ -709,7 +708,13 @@ focusing, selecting, navigation, reload and close fail immediately with
 `user_tab_read_only` (`retryable: false`), without an approval prompt. The error names
 `state.tabId`, `state.index` (the `browser_tabs list` index) and `state.action`.
 Open the URL in a tab of the agent's own (`browser_tabs action=new`) before writing.
-Requesting ownership with `browser_tabs action=request` is a later stage, not available yet.
+Alternatively, `browser_tabs action=request` with an `index` or `tab_id` and a `reason`
+asks for a [session-scoped handoff](api-reference.md#requesting-and-returning-a-tab). Approval is browser-first
+(the toolbar popup), then client fallback after 30 seconds. A grant permits DOM/browser
+operations, **not trusted/native OS input**; it does not select or activate the tab.
+The user can **Take back** in the popup; session end or bridge/extension disconnection
+also returns it. Agent-created tabs keep their persistent ownership. Other clients'
+tabs cannot be transferred.
 
 Snapshots, ordinary find, DOM reads, console/network reads and viewport screenshots
 can read your tabs without scrolling, focusing or switching your view. `find load_more`
@@ -762,9 +767,10 @@ See [Tab permissions](api-reference.md#tab-permissions).
 | `bridge_unavailable` (`Kitsune bridge did not start`, `exited at startup`) | `state.logExcerpt` shows the bridge's last log line; see `~/.kitsune/bridge.log`, or run `kitsune-bridge start` in a terminal to see the error. `state.reason: "not_responding"`: the bridge hangs; run `kitsune-bridge stop` and retry |
 | `port_conflict` | `state.port` is held by another program (`lsof -nP -iTCP:47651 -sTCP:LISTEN`), or `KITSUNE_WS_PORT` differs from the extension's `WS_URL` |
 | `token_mismatch` (`401 Missing or invalid token`) | `KITSUNE_TOKEN` or `KITSUNE_HOME` set in one client but not in the daemon (or the other way round) |
-| `user_tab_read_only` | Nothing ran and no approval is offered. Open the URL in a tab of the agent's own before writing; reads must not scroll or focus your tab |
-| `needs_user` with `state.reason: "approval"` (`state.detail`: `user_viewing`, `user_tab`, `confirmation_required`) | Nothing ran: the call needs your approval. On a client with elicitation (Claude Code 2.1.76 and later, Codex) you get a prompt; Approve runs that one call. No prompt appeared and the result has `state.approval: "token"`: the client lacks elicitation, so the agent should tell you `state.message` and repeat the call with `confirm_token`, the fallback for such clients, only after you agree. Or have it work in a tab of its own. See [Approving held actions](#approving-held-actions) |
-| `needs_user` with `state.decision: "declined"` or `"cancelled"` | `declined`: you declined the approval prompt, or answered Can't to `browser_ask_user`; nothing ran, and the agent should not ask again for the same thing. `cancelled`: the prompt was dismissed or closed unanswered (an approval prompt closes 5 s before its approval would expire). If you still want it done, the agent calls `browser_resume(call, resume_token)`, which asks you again (also after you declined an approval) |
+| `user_tab_read_only` | Nothing ran and no approval is offered. Open the URL in a tab of the agent's own before writing, or explicitly request a [handoff](api-reference.md#requesting-and-returning-a-tab); reads must not scroll or focus your tab |
+| `needs_user` with `state.detail: "tab_handoff"` | The handoff was declined, invalidated or needs client approval after the browser prompt timed out. Follow `state.message` and the hint; repeat the exact request with its token only after approval, or open an agent tab. Handoff requests do not have resume checkpoints |
+| `needs_user` with `state.reason: "approval"` (`state.detail`: `confirmation_required`, or legacy `user_viewing`/`user_tab`) | Nothing ran: the call needs your approval. On a client with elicitation (Claude Code 2.1.76 and later, Codex) you get a prompt; Approve runs that one call. No prompt appeared and the result has `state.approval: "token"`: the client lacks elicitation, so the agent should tell you `state.message` and repeat the call with `confirm_token`, the fallback for such clients, only after you agree. Or have it work in a tab of its own. See [Approving held actions](#approving-held-actions) |
+| `needs_user` with `state.decision: "declined"` or `"cancelled"` | `declined`: you declined the approval prompt, or answered Can't to `browser_ask_user`; nothing ran, and the agent should not ask again for the same thing. `cancelled`: the prompt was dismissed or closed unanswered (an approval prompt closes 5 s before its approval would expire). If you still want it done, the agent calls `browser_resume(call, resume_token)` when supplied, which asks you again. Handoff requests have no resume token: make a fresh request |
 | `needs_user` with `state.reason: "agent_request"` | The agent asked you with `browser_ask_user`; `state.detail` says for what (`sign_in`, `human_check`, `trusted_input`, `other`) and `state.message` what to do. Do it, then answer Done in the client's prompt, or tell the agent in chat on a client without elicitation. For a sign-in or CAPTCHA the tab shows, the agent can call `browser_resume`, which waits until it is gone. See [When the agent needs you](#when-the-agent-needs-you) |
 | A result has a `needs_user` hint (`reason`: `sign_in`, `human_check`, `trusted_input`) | Kitsune saw something only you can do; nothing was held, and the call's own result stands. If the agent cannot go on, it asks you (`browser_ask_user`). `sign_in`: sign in yourself (password fields stay redacted from the agent); `human_check`: complete the CAPTCHA; `trusted_input`: click the control yourself, or let the agent try [`browser_trusted_click`](api-reference.md#browser_trusted_clickselector-x0-y0-coordinate_spaceviewport-focusfalse-tab_idnone-firstfalse-restore_pointertrue-buttonleft-click_count1-modifiersnone-hold_ms0). See [needs_user hints](api-reference.md#needs_user-hints) |
 | `browser_resume` returns `needs_user` again at once for an approval | Without elicitation a resume checks the hold once and never waits for you; it continues only if the hold no longer applies. Approve in chat, and the agent repeats the call with `confirm_token`. With `wait=0` it asks nothing; resume with a wait to be asked |

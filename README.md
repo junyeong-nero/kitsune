@@ -126,7 +126,10 @@ Kitsune's controls prevent prompt injection. Read the [security guidance](https:
 
 ### Approvals
 
-User-tab writes are refused, not offered for approval; tab handoff is a later stage.
+User-tab writes are refused, not offered for approval. An explicit
+[tab handoff request](docs/api-reference.md#requesting-and-returning-a-tab) asks in the browser
+first, then the client. Approval grants session-only DOM/browser access, not native OS input;
+you can take the tab back from the popup, and session end returns it automatically.
 With the opt-in
 [ask-before-act](https://github.com/junyeong-nero/kitsune/blob/main/docs/guide.md#ask-before-act)
 policy, submits, payment pages, JavaScript, and cookie access need approval. On MCP clients with
