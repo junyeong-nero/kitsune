@@ -692,6 +692,10 @@ const POST_SNAPSHOT_ACTIONS = new Map([
 // These usually load another document, so their snapshot is full. The others return a delta
 // (see getSnapshot) unless the command passes snapshot: 'full'.
 const FULL_SNAPSHOT_ACTIONS = new Set(['submitForm', 'navigate']);
+// A page browser_navigate or an action loaded (navigated) is snapshotted readable, with its
+// text lines, when that fits this budget (#401); a larger page keeps the compact snapshot. It is
+// then the snapshot a following browser_snapshot reads, which answers unchanged_since (#400).
+const NAVIGATION_TEXT_LIMIT = 2000;
 // ── Repeated snapshots (#384) ──
 // tabId -> { tool, snapshot, load, url } of the tab's last action result when it carried a whole,
 // untruncated snapshot (not a delta). The next whole-page snapshot that asks (skipUnchanged) and
@@ -917,13 +921,19 @@ async function runCommandSettled(params, { withSnapshot, deltaSnapshot, textSnap
   }
   if (withSnapshot && result && !result.error && result.ok !== false) {
     try {
-      const snapshot = await forwardToContent('getSnapshot', {
+      const request = {
         tabId: params.tabId, maxChars: 4000, focusLastAction: params.action !== 'navigate',
         observation: POST_SNAPSHOT_ACTIONS.get(params.action),
         ...(params.snapshotText ? { text: true } : {}),
         // The document the action ran in, whose delta has its baseline (#354).
         ...(deltaSnapshot && !navigation ? { delta: true, actionFrame: actionFrame(params.tabId, params).frameId } : {}),
-      });
+      };
+      let snapshot = null;
+      if ((params.action === 'navigate' || navigation) && !params.snapshotText) {
+        const readable = await forwardToContent('getSnapshot', { ...request, maxChars: NAVIGATION_TEXT_LIMIT, text: true });
+        if (!readable.error && !readable.truncated) snapshot = readable;
+      }
+      snapshot ??= await forwardToContent('getSnapshot', request);
       if (snapshot.error) result.snapshot_error = snapshot.error;
       else {
         result.snapshot = snapshot.snapshot;
