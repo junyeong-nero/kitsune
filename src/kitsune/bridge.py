@@ -3393,6 +3393,8 @@ async def _click_target_visible(tab_id, params, result, budget_s):
 
 # A zero-timeout page wait is one read, which may take up to this long (#292).
 PAGE_WAIT_SINGLE_READ_SECONDS = 5
+# A text wait met at its start (#402); the core browser_wait_for names its own newOnly.
+WAIT_ALREADY_PRESENT_HINT = "Already on the page; new_only waits for a new occurrence."
 # A page wait's last read starts this long before its deadline, which is how long it has
 # to answer: a property of read latency, not of the caller's pollInterval (#292).
 PAGE_WAIT_LAST_READ_SECONDS = 0.1
@@ -3463,7 +3465,33 @@ async def _poll_page_wait(action, params):
     (#292). A reply other than a timed-out read (met, or an error) ends the wait; an unmet
     wait reports the requested timeout and elapsed from its last completed read, with
     observationIncomplete when the read in progress at the deadline did not answer.
+
+    A text wait met by its first read reports already_present: the text was on the page
+    when the wait began (#402). With new_only, that read instead counts the text's
+    occurrences, and the wait is met only once more occur.
     """
+    text_wait = action == "waitForText" and params.get("text") is not None
+    new_only = text_wait and params.get("new_only") is True
+    params = {key: value for key, value in params.items() if key != "new_only"}
+    first_read = True
+    already_present = False
+    text_seen = 0
+
+    async def read(extra, budget_s):
+        nonlocal first_read, already_present, text_seen
+        r = await _read_page_once(action, {**params, **({"text_seen": text_seen} if new_only else {}), **extra},
+                                  budget_s)
+        if not isinstance(r, dict) or not first_read:
+            return r
+        first_read = False
+        if text_wait and r.get("ok") is True:
+            if not new_only:
+                already_present = True
+            else:
+                text_seen = r.get("text_count", 0)
+                r = {**r, "ok": False, "error": "Timed out after 0ms waiting for new visible text"}
+        return r
+
     timeout_ms = params.get("timeout", 10000)
     poll_s = (params.get("pollInterval") or 100) / 1000
     start = time.monotonic()
@@ -3475,14 +3503,12 @@ async def _poll_page_wait(action, params):
     if timeout_ms <= 0:
         # No read fits a 0 ms deadline, so a zero timeout is one read with its own allowance.
         allowance_s = PAGE_WAIT_SINGLE_READ_SECONDS
-        completed = await _read_page_once(
-            action, {**params, **({"diagnose": True} if diagnose else {})}, allowance_s)
+        completed = await read({"diagnose": True} if diagnose else {}, allowance_s)
     else:
         allowance_s = timeout_ms / 1000
         completed, incomplete = await _poll_reads(
             deadline, allowance_s, poll_s,
-            lambda budget_s, last: _read_page_once(
-                action, {**params, **({"diagnose": True} if diagnose and last else {})}, budget_s),
+            lambda budget_s, last: read({"diagnose": True} if diagnose and last else {}, budget_s),
             lambda r: not isinstance(r, dict) or r.get("ok") is not False)
     elapsed = int((time.monotonic() - start) * 1000)
     if completed is None:
@@ -3493,6 +3519,8 @@ async def _poll_page_wait(action, params):
             hint="The tab may be busy or unresponsive; check it with browser_snapshot, then wait again.",
             timeoutSeconds=allowance_s), "elapsed": elapsed}
     r = completed
+    if new_only and isinstance(r, dict):
+        r.pop("text_count", None)
     if isinstance(r, dict) and r.get("ok") is False:
         r["elapsed"] = elapsed
         r["error"] = _re.sub(r"^Timed out after 0ms", f"Timed out after {timeout_ms}ms", r.get("error", ""))
@@ -3502,6 +3530,8 @@ async def _poll_page_wait(action, params):
                            "last completed read")
     elif isinstance(r, dict) and r.get("ok") is True:
         r["elapsed"] = elapsed
+        if already_present:
+            r.update(already_present=True, hint=WAIT_ALREADY_PRESENT_HINT)
     return r
 
 

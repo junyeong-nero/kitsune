@@ -19,7 +19,8 @@ browser_press_key a repeat count (1-100) that the extension presses within one r
 browser_click and browser_hover add opened_popup to their result when they open a menu, listbox
 or dialog, also one a background tab did not paint, with its items' refs (#329). Like repeat,
 browser_click's hold_ms (0-10000 ms, a long press) and browser_hover's duration_ms and steps
-(moves across the target, for hover intent) are accepted but not published (#351).
+(moves across the target, for hover intent) are accepted but not published (#351), as is
+browser_wait_for's newOnly, which waits for text not on the page when the wait began (#402).
 
 browser_fill_form type slider and browser_type fill set an ARIA slider or spinbutton (no native
 input) by pressing arrow keys in the extension until aria-valuenow is the value (#311).
@@ -676,7 +677,8 @@ def browser_tabs(action: str, index: float | None = None, url: str | None = None
 
 
 @_core
-def browser_wait_for(time: float | None = None, text: str | None = None, textGone: str | None = None) -> dict:
+def browser_wait_for(time: float | None = None, text: str | None = None, textGone: str | None = None,
+                     newOnly: bool = False) -> dict:
     if time is None and text is None and textGone is None:
         return {"error": "Either time, text or textGone must be provided"}
     result = {"ok": True}
@@ -689,5 +691,7 @@ def browser_wait_for(time: float | None = None, text: str | None = None, textGon
         if k._failed(result):
             return result
     if text is not None:
-        result = k.browser_wait_for(text=text, tab_id=_current_tab)
+        result = k.browser_wait_for(text=text, tab_id=_current_tab, new_only=newOnly)
+        if result.get("already_present"):
+            result["hint"] = "Already on the page; newOnly waits for a new occurrence."
     return result

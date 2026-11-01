@@ -959,10 +959,12 @@ def browser_wait_for(
     timeout: int = 10000, tab_id: TabId = None,
     ref: str | None = None, element: str | None = None,
     confirm_token: Annotated[str | None, Field(description="js waits; see browser_check.")] = None,
+    new_only: bool = False,
 ) -> dict:
     """Wait for exactly one condition, or sleep for time seconds: selector/ref (a visible
     element, see browser_check; ref wins), text/text_gone (rendered page text, literal
-    substring; placeholders and aria-labels shown as snapshot names are not matched), js
+    substring; placeholders and aria-labels shown as snapshot names are not matched; text
+    already shown reports already_present, and new_only waits for a new occurrence), js
     (a non-empty result, including false/0; developer extension build only),
     url/title (JavaScript regex on tab metadata, so it survives navigation) or network_idle
     (500 ms without new resources). timeout is the maximum wait in ms; it does not limit time.
@@ -975,6 +977,8 @@ def browser_wait_for(
     conditions = [text, text_gone, js, url, title, time]
     if element_condition + sum(value is not None for value in conditions) + bool(network_idle) != 1:
         return {"error": "Provide exactly one of selector/ref, text, text_gone, js, url, title, network_idle, time"}
+    if new_only and text is None:
+        return {"error": "new_only applies only to text"}
     if timeout <= 0:
         return {"error": "timeout must be positive"}
     if time is not None:
@@ -992,6 +996,8 @@ def browser_wait_for(
             return {"error": "text/text_gone must be non-empty"}
         endpoint = "/api/wait-for-text"
         body.update(text=text, text_gone=text_gone)
+        if new_only:
+            body["new_only"] = True
     elif js is not None:
         endpoint = "/api/wait-for-result"
         body.update(code=js, pollInterval=500)
