@@ -40,10 +40,21 @@ document.getElementById('tags').addEventListener('input', e => {
     "/status": """<!doctype html><title>status</title><p id=status>우산 — 진행 중</p>
 <button onclick="fetch('/slow').then(r => r.text()).then(t => { document.getElementById('status').textContent = t; })">
 우산 완료 표시</button>""",
+    # ui-editor (#385): a contenteditable memo whose text is its paragraphs, and one longer than
+    # the 160 characters its value shows.
+    "/memo": """<!doctype html><meta charset="utf-8"><title>memo</title>
+<div contenteditable=true aria-label="메모 본문"><p>프로젝트 메모</p><p>이번 주 진행 상황을 정리합니다.</p></div>
+<div contenteditable=true aria-label="긴 메모"><p>""" + "가" * 170 + """</p></div>""",
+    # ui-infinite (#385): the next items load after a request that outlasts the wait.
+    "/stall": """<!doctype html><title>stall</title><ul id=items><li>#1</li></ul>
+<button onclick="fetch('/stall-items').then(r => r.text()).then(t => {
+  document.getElementById('items').insertAdjacentHTML('beforeend', t); })">더 보기</button>""",
     "/still": """<!doctype html><title>still</title><button onclick="void 0">아무 일 없음</button>
 <form><label>이메일 <input name=email></label><label><input type=checkbox name=weekly> 주간 소식</label></form>""",
 }
 SLOW_MS = 900
+# Well past the 4 s a delta waits for pending requests.
+STALL_MS = 8000
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -52,6 +63,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/slow":
             time.sleep(SLOW_MS / 1000)
             self.reply("우산 — 완료")
+            return
+        if path == "/stall-items":
+            time.sleep(STALL_MS / 1000)
+            self.reply("<li>#2</li>")
             return
         if path not in PAGES:
             self.send_error(404)
@@ -120,6 +135,27 @@ class RealBrowserActionSettleTests(harness.RealBrowserTestCase):
         _, quick = self.act("/api/click", {"tabId": tab, "ref": self.ref(tab, 'button "아무 일 없음"'),
                                            "includeSnapshot": False})
         self.assertLess(quick, 0.5)
+
+    def test_an_editor_shows_its_text_and_typing_into_it_is_a_change(self):
+        tab = self.open_tab(f"{self.site.origin}/memo")
+        snapshot = self.call("/api/snapshot", {"tabId": tab})["snapshot"]
+        self.assertRegex(snapshot, r'textbox "메모 본문" \[ref=e\d+\] \[value="프로젝트 메모 이번 주 진행 상황을 정리합니다\."\]')
+        self.assertIn(f'[value="{"가" * 160}…"]', snapshot)
+        result, _ = self.act("/api/type", {"tabId": tab, "ref": self.ref(tab, 'textbox "메모 본문"'),
+                                           "text": " 자료는 공유 폴더에 올렸습니다."})
+        self.assertIn('정리합니다. 자료는 공유 폴더에 올렸습니다."]', result["snapshot"])
+        self.assertNotIn("no_visible_change", result)
+        # Past the 160 characters the value shows, the edit is still a change.
+        result, _ = self.act("/api/type", {"tabId": tab, "ref": self.ref(tab, 'textbox "긴 메모"'), "text": " 끝"})
+        self.assertTrue(result.get("snapshot_delta"), result)
+        self.assertNotIn("no_visible_change", result)
+
+    def test_a_request_still_pending_after_the_wait_is_not_no_visible_change(self):
+        tab = self.open_tab(f"{self.site.origin}/stall")
+        result, _ = self.act("/api/click", {"tabId": tab, "ref": self.ref(tab, 'button "더 보기"')})
+        self.assertTrue(result.get("snapshot_delta"), result)
+        self.assertNotIn("#2", result["snapshot"], "the items load after the wait")
+        self.assertNotIn("no_visible_change", result)
 
     def test_fill_form_fields_share_one_delta(self):
         # The bodies browser_fill_form sends for two fields (#348).

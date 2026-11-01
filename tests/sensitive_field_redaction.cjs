@@ -276,8 +276,9 @@ const editable = (tagName, props = {}) => new Element(tagName, {
     assert.match(snapshot.snapshot, new RegExp(`(?:textbox|spinbutton) "${el.id}" \\[ref=s\\d+e\\d+\\]$`, 'm'), el.id);
   }
   assert.match(snapshot.snapshot, /textbox "notes" \[ref=s\d+e\d+\] \[value="plain notes"\]/);
-  assert.match(snapshot.snapshot, /textbox "draft text" \[ref=s\d+e\d+\]$/m, 'an ordinary editing region keeps its name');
-  assert.match(snapshot.snapshot, /textbox "" \[ref=s\d+e\d+\]$/m, 'a masked editing region has no text name');
+  assert.match(snapshot.snapshot, /textbox "draft text" \[ref=s\d+e\d+\] \[value="draft text"\]$/m,
+    'an ordinary editing region keeps its name, and its text is its value (#385)');
+  assert.match(snapshot.snapshot, /textbox "" \[ref=s\d+e\d+\]$/m, 'a masked editing region has no text name or value');
   assert.equal(snapshot.snapshot.match(/button "" \[ref=s\d+e\d+\]$/gm).length, 2,
     'a masked button and a masked button input have no text name');
   assert.match(snapshot.snapshot, /textbox "Backup code:" \[ref=s\d+e\d+\] \[value=""\]/,

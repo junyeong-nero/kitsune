@@ -418,7 +418,9 @@ example `- text "Saved."`), also when the snapshot is otherwise compact. In a ru
 items, up to 20 items that are new since the delta's baseline are listed even past the first
 five that a snapshot shows, so the next batch of an infinite list is named, not only counted. When the delta found
 no new or changed line and the URL and title are the same, the result adds
-`no_visible_change: true`. A change that comes after the wait is not seen: use `expect` or
+`no_visible_change: true`, unless during the wait the page added an element (still attached when
+the delta is read) or an editor's content changed, which a delta may not show, or a request the
+wait watches is still pending (#385). A change that comes after the wait is not seen: use `expect` or
 `browser_wait_for`. Actions without a post-action snapshot (`includeSnapshot: false`,
 `KITSUNE_POST_ACTION_SNAPSHOT=0`) and full post-action snapshots do not wait.
 
@@ -2718,7 +2720,9 @@ that `beforeinput`, `type` and `fill` leave the content as the page left it and 
 real click does, unless the page cancels `mousedown`: it focuses the clicked control,
 or the editor with the caret at the click point (`x`/`y`) or at the end of the clicked
 element (`selector`/`ref`). So clicking an editor's last paragraph and then typing
-appends to it.
+appends to it. Snapshots list an editor once, as a `textbox` whose `value=` state is its text
+with whitespace collapsed, cut at 160 characters like a field's and then ending in `…` (#385);
+a masked editor has none (see [Sensitive-field redaction](#sensitive-field-redaction)).
 
 All modes accept the [actionability wait](#actionability-wait). Editable mode sends `format="text"`. Callers migrating from the old editor tool
 should pass `clear=True` to retain its replace-by-default behavior. For trusted
