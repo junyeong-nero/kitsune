@@ -124,7 +124,7 @@ async function testHelloCarriesTheSourceAndManifestHashes() {
   const ws = h.socket();
   await ws.onopen();
   assert.deepEqual(ws.messages[0],
-    { type: 'hello', version: '0.2.1', build: 'dev', sourceHash: SOURCE_HASH, manifestHash: MANIFEST_HASH });
+    { type: 'hello', version: '0.2.1', build: 'dev', sourceHash: SOURCE_HASH, manifestHash: MANIFEST_HASH, popupUsage: true });
 
   // Firefox's getManifest() lists script paths as absolute moz-extension:// URLs (seen in a real
   // browser, #121); the hash still covers the manifest's relative paths.
@@ -144,7 +144,7 @@ async function testHelloCarriesTheSourceAndManifestHashes() {
     const unknown = background({ files });
     await unknown.socket().onopen();
     assert.deepEqual(unknown.socket().messages[0],
-      { type: 'hello', version: '0.2.1', build: 'dev', sourceHash, manifestHash });
+      { type: 'hello', version: '0.2.1', build: 'dev', sourceHash, manifestHash, popupUsage: true });
   }
 }
 

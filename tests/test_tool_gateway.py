@@ -68,7 +68,11 @@ async def main(calls):
                     continue
                 result = await session.call_tool(step["name"], step.get("arguments", {}))
                 await anyio.sleep(0.05)  # let notifications arrive
-                results.append({**dump(result), "requests": requests[start:]})
+                activity = [r for r in requests[start:] if r["endpoint"] == "/api/mcp-activity"]
+                assert len(activity) == 1 and activity[0]["body"] == {}, activity
+                # Usage is one metadata event even for gateway/invalid calls, not a browser action.
+                results.append({**dump(result), "requests": [r for r in requests[start:]
+                                                           if r["endpoint"] != "/api/mcp-activity"]})
             out["results"] = results
             out["notes"] = {"a": notes_a, "b": notes_b}
             out["root"] = str(ROOT)

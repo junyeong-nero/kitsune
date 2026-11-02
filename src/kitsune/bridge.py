@@ -128,6 +128,7 @@ AUTH_TOKEN = _load_or_create_token()
 extension_ws = None  # WebSocket connection to extension
 extension_ws_generation = 0
 extension_info = {}  # {"version", "build", "sourceHash", "manifestHash"} from hello, "browser" from state
+_popup_usage = {"calls": 0, "lastActivity": None}  # current extension connection; never persisted
 pending_commands = {}  # id -> {"future": asyncio.Future, "ws": websocket, ...}
 command_counter = 0
 _ws_send_lock = None
@@ -2970,8 +2971,29 @@ def _parse_workflow_text(content, variables=None):
 ALLOWED_WS_ORIGINS = [_re.compile(_re.escape(ALLOWED_WS_ORIGIN_PREFIX) + ".*")]
 
 
+async def _publish_popup_usage():
+    socket = extension_ws
+    if socket is None or not extension_info.get("popupUsage"):
+        return
+    async with _get_ws_send_lock():
+        if socket is extension_ws:
+            await socket.send(json.dumps({"type": "usage", **_popup_usage}))
+
+
+async def _record_mcp_activity():
+    # Called on the bridge loop, so concurrent clients cannot lose increments.
+    if extension_ws is not None:
+        _popup_usage["calls"] += 1
+        _popup_usage["lastActivity"] = int(time.time() * 1000)
+        try:
+            await _publish_popup_usage()
+        except websockets.exceptions.ConnectionClosed:
+            pass
+    return {"ok": True}
+
+
 async def ws_handler(websocket):
-    global extension_ws, extension_ws_generation, extension_info
+    global extension_ws, extension_ws_generation, extension_info, _popup_usage
     old_ws = extension_ws
     extension_ws_generation += 1
     my_generation = extension_ws_generation
@@ -2979,6 +3001,7 @@ async def ws_handler(websocket):
         _close_handoff_channels(old_ws)
     extension_ws = websocket
     extension_info = {}
+    _popup_usage = {"calls": 0, "lastActivity": None}
     _tab_openers.clear()
 
     if old_ws is not None and old_ws is not websocket:
@@ -3009,6 +3032,9 @@ async def ws_handler(websocket):
                         if key in data:
                             extension_info[key] = data[key]
                     _log(f"Extension {extension_info['version']} ({extension_info['build']} build)")
+                    if data.get("popupUsage") is True:
+                        extension_info["popupUsage"] = True
+                        await _publish_popup_usage()
                 continue
             if data.get("type") == "state":
                 if extension_ws is websocket:
@@ -5110,6 +5136,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         if not self.authorized():
             return
         routes = {
+            "/api/mcp-activity": lambda: self.send_json(200, self.run_async(_record_mcp_activity())),
             "/api/shutdown": self.handle_shutdown,
             "/api/click": self.handle_click,
             "/api/trusted-click": self.handle_trusted_click,

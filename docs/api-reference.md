@@ -1443,6 +1443,15 @@ A tab that goes back to the user loses its value. Limits:
 
 #### Agent tab cleanup
 
+The toolbar popup follows the browser's popup colors (`theme` permission), with an automatic
+light/dark fallback. It also shows the extension's connection to the local bridge, completed
+MCP calls (including errors), and time since the last completed call. Usage is summed across
+MCP clients for the current extension–bridge connection and resets on reconnect. One outer
+MCP call counts once, including gateway calls, batches, and approval retries; internal browser
+commands and Python API calls do not count. Reporting is best effort, in memory only, and
+contains no tool names, URLs, arguments or results. Older bridges show usage as unavailable,
+not zero. “Connected” means the bridge is reachable, not that an MCP client is currently running.
+
 Agents often leave the tabs they opened behind, so a long unattended session can pile up
 dozens. Kitsune's toolbar button opens a popup with two ways to clean them up. Both close
 only [agent-owned tabs](#agent-owned-tabs) and never close pinned tabs, so pinning an agent
@@ -1451,7 +1460,7 @@ reopened tab belongs to the user.
 
 - **Close agent tabs** closes every unpinned agent tab at once, including the one shown.
   The popup shows how many there are.
-- **Close agent tabs idle for** (Never, 5 minutes, 15 minutes, 30 minutes, 1, 2 or 4 hours;
+- **Auto-close after** (Never, 5 minutes, 15 minutes, 30 minutes, 1, 2 or 4 hours;
   default 5 minutes) checks once a minute (`alarms` permission) and closes agent tabs that have been
   idle that long. A tab counts as used when the agent opens it or runs a command on it,
   and when any window shows it. A tab that is shown, playing sound, or has an agent

@@ -17,7 +17,7 @@ NAMED_ONLY_GROUPS = frozenset({"storage", "history"})
 CAPS_HEADER = "X-Kitsune-Caps"
 
 # Routes any client may call: status, version and the image page the browser itself loads.
-OPEN_ROUTES = frozenset({"/", "/api/status", "/api/version", "/view"})
+OPEN_ROUTES = frozenset({"/", "/api/status", "/api/version", "/api/mcp-activity", "/view"})
 
 
 def _by_group(table: dict[str, tuple[str, ...]]) -> dict[str, frozenset[str]]:
