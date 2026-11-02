@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96" fill="none">
+  <title>Kitsune</title>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="96" y2="96" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#101F22"/>
+      <stop offset="1" stop-color="#183C37"/>
+    </linearGradient>
+    <linearGradient id="fur" x1="20" y1="20" x2="74" y2="78" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFBD73"/>
+      <stop offset="1" stop-color="#EF753E"/>
+    </linearGradient>
+  </defs>
+  <rect width="96" height="96" rx="22" fill="url(#background)"/>
+  <!-- The social-preview mascot's face, simplified for extension and toolbar sizes. -->
+  <path d="M16 51L12 19L36 32Q48 28 60 32L84 19L81 52L61 72Q48 83 35 72Z" fill="url(#fur)"/>
+  <path d="M18 28L21 45L30 35Z" fill="#763E36"/>
+  <path d="M78 28L66 35L76 45Z" fill="#763E36"/>
+  <path d="M16 51C28 51 37 57 48 68C42 76 38 76 31 70Z" fill="#FFF0DC"/>
+  <path d="M81 52C69 49 59 58 48 68C53 76 58 76 64 70Z" fill="#FFF0DC"/>
+  <path d="M26 52Q32 58 38 53M59 53Q65 58 71 52" stroke="#343D33" stroke-width="3" stroke-linecap="round"/>
+  <path d="M44 66Q48 64 52 66L49 70Q48 71 47 70Z" fill="#343D33"/>
+  <path d="M48 70V73" stroke="#343D33" stroke-width="1.5" stroke-linecap="round"/>
+  <path d="M48 39L51 44L48 49L45 44Z" fill="#FFE8C8"/>
+</svg>
