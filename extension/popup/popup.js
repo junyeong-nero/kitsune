@@ -41,7 +41,7 @@ async function showUsage() {
   const { connected, calls, lastActivity } = await browser.runtime.sendMessage({ action: 'popupStatus' });
   const connection = document.getElementById('connection');
   connection.textContent = connected ? 'Connected' : 'Disconnected';
-  connection.className = `connection${connected ? ' connected' : ''}`;
+  connection.className = `connection ${connected ? 'connected' : 'disconnected'}`;
   document.getElementById('calls').textContent = connected && calls != null ? calls.toLocaleString() : '—';
   const seconds = lastActivity == null ? null : Math.max(0, Math.floor((Date.now() - lastActivity) / 1000));
   document.getElementById('last-active').textContent = !connected || seconds == null ? '—'
