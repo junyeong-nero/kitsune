@@ -39,7 +39,8 @@ h2, h3 { font-size: 14px; font-weight: 600; }
   border-radius: 50%;
   background: currentColor;
 }
-.connection.connected { color: var(--primary); }
+.connection.connected { color: light-dark(#1b7a3d, #81c995); }
+.connection.disconnected { color: light-dark(#b3261e, #f28b82); }
 .usage {
   display: grid;
   grid-template-columns: 1fr 1fr;

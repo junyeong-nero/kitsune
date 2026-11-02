@@ -47,6 +47,7 @@ async function testUsageAndCleanup() {
   const h = popup();
   await flush();
   assert.equal(h.get('connection').textContent, 'Connected');
+  assert.equal(h.get('connection').className, 'connection connected');
   assert.equal(h.get('calls').textContent, '0');
   assert.equal(h.get('last-active').textContent, '—');
   assert.equal(h.get('close-all').disabled, true);
@@ -68,8 +69,12 @@ async function testUsageAndCleanup() {
   h.state.connected = false;
   await h.poll();
   assert.equal(h.get('connection').textContent, 'Disconnected');
+  assert.equal(h.get('connection').className, 'connection disconnected');
   assert.equal(h.get('last-active').textContent, '—');
   assert.match(h.get('usage-note').textContent, /Waiting/);
+  h.state.connected = true;
+  await h.poll();
+  assert.equal(h.get('connection').className, 'connection connected');
 }
 
 async function testPendingCleanupStaysDisabledAndRecovers() {
