@@ -427,7 +427,7 @@ function handoffDecision(id, decision) {
 
 // == Agent tab cleanup (docs/api-reference.md#agent-tab-cleanup) ==
 // Agents that never close their tabs leave them piling up. The toolbar popup closes the agent's
-// tabs at once, and an opt-in idle limit (storage.local agentTabIdleMinutes, set in the popup)
+// tabs at once, and a 5-minute default idle limit (storage.local agentTabIdleMinutes, set in the popup)
 // closes those neither the agent nor the user used for that long. Pinned tabs stay: pinning is how
 // the user keeps one. Use times live in memory, so after a reload a restored tab counts from then.
 const AGENT_TAB_IDLE_KEY = 'agentTabIdleMinutes';
@@ -469,7 +469,7 @@ async function agentTabCount() {
 
 async function sweepIdleAgentTabs() {
   const stored = await browser.storage.local.get(AGENT_TAB_IDLE_KEY).catch(() => ({}));
-  const minutes = Number(stored[AGENT_TAB_IDLE_KEY]) || 0;
+  const minutes = Number(stored[AGENT_TAB_IDLE_KEY] ?? 5);
   return minutes > 0 ? await closeAgentTabs({ idleMs: minutes * 60000 }) : { closed: 0 };
 }
 browser.alarms?.create(IDLE_SWEEP_ALARM, { periodInMinutes: 1 });

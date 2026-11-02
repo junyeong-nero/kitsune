@@ -25,7 +25,7 @@ idleSelect.addEventListener('change', () => {
 });
 
 browser.storage.local.get(IDLE_KEY).then(stored => {
-  idleSelect.value = String(stored[IDLE_KEY] || 0);
+  idleSelect.value = String(stored[IDLE_KEY] ?? 5);
 });
 showCount();
 

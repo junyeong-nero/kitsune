@@ -1,5 +1,5 @@
 // Run with: node tests/agent_tab_cleanup.cjs (no browser or npm dependencies).
-// Agent tab cleanup: the toolbar popup closes the agent's tabs, and an opt-in idle limit closes
+// Agent tab cleanup: the toolbar popup closes the agent's tabs, and a default 5-minute idle limit closes
 // those nobody used for that long. User tabs and pinned tabs always stay.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -89,8 +89,18 @@ async function pagesCannotCloseAgentTabs() {
   assert.deepEqual(h.removed, []);
 }
 
-async function idleLimitIsOffByDefault() {
+async function idleLimitDefaultsToFiveMinutes() {
   const h = load();
+  h.addTab({ id: 2 }, { agent: true });
+  h.clock.now += 5 * MINUTE - 1;
+  assert.equal((await h.context.sweepIdleAgentTabs()).closed, 0);
+  h.clock.now += 1;
+  assert.equal((await h.context.sweepIdleAgentTabs()).closed, 1);
+  assert.deepEqual(h.removed, [2]);
+}
+
+async function explicitNeverDisablesIdleLimit() {
+  const h = load({ idleMinutes: 0 });
   h.addTab({ id: 2 }, { agent: true });
   h.clock.now += 24 * 60 * MINUTE;
   assert.deepEqual({ ...await h.context.sweepIdleAgentTabs() }, { closed: 0 });
@@ -186,11 +196,52 @@ async function freshInheritedTabIsNotIdleAfterLongUptime() {
   assert.deepEqual(h.removed, [2]);
 }
 
+async function popupLoadsAndSavesIdleSettings() {
+  const html = fs.readFileSync('extension/popup/popup.html', 'utf8');
+  const options = [...html.matchAll(/<option value="(\d+)">/g)].map(match => match[1]);
+  assert.ok(options.includes('5'), 'the default must be selectable');
+  for (const saved of [undefined, 0, 5, 15, 30, 60, 120, 240]) {
+    const elements = new Map();
+    const writes = [];
+    const context = vm.createContext({
+      document: { getElementById: id => {
+        if (!elements.has(id)) elements.set(id, {
+          value: '', listeners: {}, replaceChildren() {},
+          addEventListener(name, fn) { this.listeners[name] = fn; },
+        });
+        return elements.get(id);
+      } },
+      browser: {
+        storage: { local: {
+          get: async () => saved === undefined ? {} : { agentTabIdleMinutes: saved },
+          set: async value => writes.push(value.agentTabIdleMinutes),
+        } },
+        runtime: { sendMessage: async ({ action }) => action === 'handoffs'
+          ? { requests: [], tabs: [] } : { count: 0 } },
+      },
+      setInterval() {},
+    });
+    vm.runInContext(fs.readFileSync('extension/popup/popup.js', 'utf8'), context);
+    await flush();
+    const select = elements.get('idle');
+    assert.equal(select.value, String(saved ?? 5));
+    assert.ok(options.includes(select.value));
+    assert.deepEqual(writes, [], 'opening the popup does not overwrite saved settings');
+    for (const value of options) {
+      select.value = value;
+      select.listeners.change();
+    }
+    assert.deepEqual(writes, options.map(Number));
+  }
+}
+
 (async () => {
   await freshInheritedTabIsNotIdleAfterLongUptime();
   await popupClosesEveryUnpinnedAgentTab();
   await pagesCannotCloseAgentTabs();
-  await idleLimitIsOffByDefault();
+  await idleLimitDefaultsToFiveMinutes();
+  await explicitNeverDisablesIdleLimit();
+  await popupLoadsAndSavesIdleSettings();
   await idleLimitClosesOnlyIdleBackgroundAgentTabs();
   await aMinuteAlarmRunsTheSweep();
   await idleSweepRespectsUserActivityWithoutResettingIdleTime();
