@@ -5,18 +5,26 @@ const countLine = document.getElementById('count');
 const closeButton = document.getElementById('close-all');
 const resultLine = document.getElementById('result');
 const idleSelect = document.getElementById('idle');
+let closingTabs = false;
 
 async function showCount() {
   const { count } = await browser.runtime.sendMessage({ action: 'agentTabCount' });
   countLine.textContent = String(count);
-  closeButton.disabled = count === 0;
+  closeButton.disabled = closingTabs || count === 0;
 }
 
 closeButton.addEventListener('click', async () => {
+  closingTabs = true;
   closeButton.disabled = true;
-  const { closed } = await browser.runtime.sendMessage({ action: 'closeAgentTabs' });
-  resultLine.hidden = false;
-  resultLine.textContent = `Closed ${closed} tab${closed === 1 ? '' : 's'}. Recently closed tabs can be reopened from History.`;
+  try {
+    const { closed } = await browser.runtime.sendMessage({ action: 'closeAgentTabs' });
+    resultLine.textContent = `Closed ${closed} tab${closed === 1 ? '' : 's'}. Recently closed tabs can be reopened from History.`;
+  } catch {
+    resultLine.textContent = 'Could not close agent tabs. Try again.';
+  } finally {
+    closingTabs = false;
+    resultLine.hidden = false;
+  }
   await showCount();
 });
 
@@ -29,39 +37,78 @@ browser.storage.local.get(IDLE_KEY).then(stored => {
 });
 showCount();
 
+async function showUsage() {
+  const { connected, calls, lastActivity } = await browser.runtime.sendMessage({ action: 'popupStatus' });
+  const connection = document.getElementById('connection');
+  connection.textContent = connected ? 'Connected' : 'Disconnected';
+  connection.className = `connection${connected ? ' connected' : ''}`;
+  document.getElementById('calls').textContent = connected && calls != null ? calls.toLocaleString() : '—';
+  const seconds = lastActivity == null ? null : Math.max(0, Math.floor((Date.now() - lastActivity) / 1000));
+  document.getElementById('last-active').textContent = !connected || seconds == null ? '—'
+    : seconds < 10 ? 'Just now' : seconds < 60 ? `${seconds}s ago`
+    : seconds < 3600 ? `${Math.floor(seconds / 60)}m ago` : `${Math.floor(seconds / 3600)}h ago`;
+  document.getElementById('usage-note').textContent = !connected ? 'Waiting for the local bridge'
+    : calls == null ? 'Update the MCP server to see usage'
+    : 'Since bridge connected · all clients';
+}
+
 // Untrusted client/page labels are text only, never HTML or links.
+let handoffState = '';
+let handoffBusy = 0;
 async function showHandoffs() {
   const state = await browser.runtime.sendMessage({ action: 'handoffs' });
+  const serialized = JSON.stringify(state);
+  // Polling must not replace a focused button or re-announce unchanged cards.
+  if (handoffBusy || serialized === handoffState) return;
+  handoffState = serialized;
   const root = document.getElementById('handoffs');
   root.replaceChildren();
   for (const [kind, records] of [['Request', state.requests], ['Handed off', state.tabs]]) {
     for (const record of records) {
       const section = document.createElement('section');
-      const label = document.createElement('strong');
-      label.textContent = `${kind}: ${record.clientName}`;
-      section.append(label);
-      for (const text of [record.title, record.url, `Reason: ${record.reason}`]) {
-        const line = document.createElement('p');
+      section.className = 'handoff';
+      for (const [tag, className, text] of [
+        ['p', 'handoff-label', kind === 'Request' ? 'Tab access request' : 'Handed off'],
+        ['p', 'handoff-client', record.clientName],
+        ['h3', '', record.title],
+        ['p', 'handoff-url', record.url],
+        ['p', 'handoff-reason', record.reason],
+      ]) {
+        const line = document.createElement(tag);
+        line.className = className;
         line.textContent = text;
-        line.style.overflowWrap = 'anywhere';
         section.append(line);
       }
-      for (const decision of kind === 'Request' ? ['approve', 'decline'] : ['take back']) {
+      const actions = document.createElement('div');
+      actions.className = 'actions';
+      for (const decision of kind === 'Request' ? ['decline', 'approve'] : ['take back']) {
         const button = document.createElement('button');
+        button.className = `button${decision === 'decline' ? ' button-text' : ''}`;
         button.textContent = decision === 'approve' ? 'Approve handoff' : decision === 'decline' ? 'Decline' : 'Take back';
         button.addEventListener('click', async () => {
-          button.disabled = true;
-          await browser.runtime.sendMessage(decision === 'take back'
-            ? { action: 'takeBackHandoff', tabId: record.tabId }
-            : { action: 'handoffDecision', id: record.id, decision });
+          handoffBusy += 1;
+          for (const action of actions.children) action.disabled = true;
+          try {
+            await browser.runtime.sendMessage(decision === 'take back'
+              ? { action: 'takeBackHandoff', tabId: record.tabId }
+              : { action: 'handoffDecision', id: record.id, decision });
+          } catch {
+            resultLine.hidden = false;
+            resultLine.textContent = 'Could not update tab access. Try again.';
+          } finally {
+            handoffBusy -= 1;
+            for (const action of actions.children) action.disabled = false;
+          }
           await showHandoffs();
           await showCount();
         });
-        section.append(button);
+        actions.append(button);
       }
+      section.append(actions);
       root.append(section);
     }
   }
 }
 showHandoffs();
-setInterval(showHandoffs, 1000);
+showUsage();
+setInterval(() => { showHandoffs(); showUsage(); showCount(); }, 1000);

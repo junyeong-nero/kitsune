@@ -9,7 +9,7 @@ const vm = require('node:vm');
 function event() {
   const listeners = new Set();
   return { addListener: fn => listeners.add(fn), removeListener: fn => listeners.delete(fn),
-    fire: (...args) => [...listeners].forEach(fn => fn(...args)) };
+    fire: (...args) => [...listeners].map(fn => fn(...args)) };
 }
 
 // The extension's background script with a WebSocket that opens and closes when the test says so.
@@ -36,6 +36,7 @@ function background({ tabs = {} } = {}) {
     windows: { onCreated: event(), onRemoved: event(), getAll: async () => [{ id: 1 }] },
     permissions: { onAdded: event(), onRemoved: event(), contains: async () => true },
     runtime: {
+      id: 'kitsune@test',
       onMessage: event(), onStartup: event(), onInstalled: event(),
       getManifest: () => ({ version: '0.2.1' }),
       getURL: path => `moz-extension://kitsune/${path}`,
@@ -107,7 +108,34 @@ async function testARepliedCommandOutlivesItsReplacedSocket() {
   assert.equal(second.closed, false);
 }
 
+async function testPopupUsageIsConnectionScopedAndPrivate() {
+  const h = background();
+  const sender = { id: h.browser.runtime.id, url: h.browser.runtime.getURL('popup/popup.html') };
+  const status = async () => JSON.parse(JSON.stringify(await h.browser.runtime.onMessage.fire(
+    { action: 'popupStatus' }, sender)[0]));
+  assert.deepEqual(await status(), { connected: false, calls: null, lastActivity: null });
+  const first = h.socket();
+  await first.open();
+  assert.equal(first.messages[0].popupUsage, true);
+  await new Promise(resolve => setImmediate(resolve)); // async browser-state message
+  const usage = { type: 'usage', calls: 3, lastActivity: 12345 };
+  const messages = first.messages.length;
+  await first.onmessage({ data: JSON.stringify(usage) });
+  assert.equal(first.messages.length, messages, 'usage is not dispatched as a browser command');
+  assert.deepEqual(await status(), { connected: true, calls: 3, lastActivity: 12345 });
+  for (const other of [{ ...sender, tab: { id: 1 } }, { ...sender, id: 'other' }, { ...sender, url: 'https://a.test' }]) {
+    assert.equal(h.browser.runtime.onMessage.fire({ action: 'popupStatus' }, other)[0], undefined);
+  }
+  h.context.connect();
+  await h.socket().open();
+  await first.onmessage({ data: JSON.stringify(usage) });
+  assert.deepEqual(await status(), { connected: true, calls: null, lastActivity: null }, 'ignore stale usage');
+  h.socket().onclose();
+  assert.deepEqual(await status(), { connected: false, calls: null, lastActivity: null });
+}
+
 (async () => {
+  await testPopupUsageIsConnectionScopedAndPrivate();
   await testStartupEventsKeepTheLoadTimeConnection();
   await testReplacedSocketDoesNotCloseItsReplacement();
   await testARepliedCommandOutlivesItsReplacedSocket();

@@ -163,6 +163,22 @@ class KitsuneMCP(FastMCP):
         return [tool for name, tool in (await self.all_tools()).items() if name in shown]
 
     async def call_tool(self, name, arguments):
+        nested = _mcp_call_active.get()
+        token = _mcp_call_active.set(True)
+        try:
+            return await self._call_tool(name, arguments)
+        finally:
+            _mcp_call_active.reset(token)
+            if not nested:
+                # One completed MCP call, not each bridge command, gateway dispatch or approval retry.
+                # Best effort: no URLs, arguments or results; never start a bridge just for statistics.
+                try:
+                    await anyio.to_thread.run_sync(functools.partial(
+                        _client.post, "/api/mcp-activity", {}, timeout=0.25, start_bridge=False))
+                except Exception:
+                    pass
+
+    async def _call_tool(self, name, arguments):
         # A known tool this configuration leaves out names its setting instead of "Unknown tool" (#171).
         if name in UNPUBLISHED_TOOLS:
             return CallToolResult(content=[_compact_json(_unpublished_tool(name))], isError=True)
@@ -441,6 +457,7 @@ mcp._mcp_server.instructions = (
 _gateway_call: ContextVar[str | None] = ContextVar("kitsune_gateway_call", default=None)
 # The id of the tool call running (_mcp_errors), which its bridge requests carry.
 _tool_call: ContextVar[str | None] = ContextVar("kitsune_tool_call", default=None)
+_mcp_call_active: ContextVar[bool] = ContextVar("kitsune_mcp_call_active", default=False)
 
 # Every known tool (core and Kitsune-owned) -> its capability group.
 TOOL_GROUPS: dict[str, str] = {}

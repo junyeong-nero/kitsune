@@ -8,6 +8,7 @@ const WS_URL = 'ws://127.0.0.1:47652';
 // scripts/build_extension.py sets 'signed' for the AMO build (see content.js).
 const KITSUNE_BUILD = 'dev';
 let ws = null;
+let popupUsage = { calls: null, lastActivity: null };
 let reconnectTimer = null;
 let heartbeatTimer = null;
 let reconnectDelay = 1000; // Start at 1s, exponential backoff
@@ -701,6 +702,8 @@ browser.runtime.onMessage.addListener((msg, sender) => {
   // The toolbar popup: an extension page, not a tab's content script.
   const fromPopup = !sender.tab && sender.url === browser.runtime.getURL?.('popup/popup.html');
   if (fromPopup && sender.id === browser.runtime.id) {
+    if (msg.action === 'popupStatus') return Promise.resolve({
+      connected: ws?.readyState === WebSocket.OPEN, ...popupUsage });
     if (msg.action === 'handoffs') return Promise.resolve(handoffPopup());
     if (msg.action === 'handoffDecision') return Promise.resolve(handoffDecision(msg.id, msg.decision));
     if (msg.action === 'takeBackHandoff') return Promise.resolve(takeBackHandoff(msg.tabId));
@@ -790,7 +793,7 @@ function connect() {
       const [sourceHash, manifestHash] = await Promise.all([SOURCE_HASH, MANIFEST_HASH]);
       if (ws !== socket) return; // replaced while the fingerprints were computed
       ws.send(JSON.stringify({ type: 'hello', version: browser.runtime.getManifest().version, build: KITSUNE_BUILD,
-        sourceHash, manifestHash }));
+        sourceHash, manifestHash, popupUsage: true }));
       sendBrowserState();
       sendBrowserInfo(socket);
       startHeartbeat();
@@ -801,6 +804,10 @@ function connect() {
       let cmdId = null;
       try {
         const command = JSON.parse(event.data);
+        if (command.type === 'usage') {
+          if (ws === socket) popupUsage = { calls: command.calls, lastActivity: command.lastActivity };
+          return;
+        }
         cmdId = command.id;
         console.log('[Kitsune] <<', command.action, cmdId);
         
@@ -865,6 +872,7 @@ for (const event of [browser.windows?.onCreated, browser.windows?.onRemoved,
 }
 
 function cleanup() {
+  popupUsage = { calls: null, lastActivity: null };
   clearHandoffs();
   stopHeartbeat();
   if (ws) {

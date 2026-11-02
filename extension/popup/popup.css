@@ -1,0 +1,115 @@
+:root {
+  color-scheme: light dark;
+  --surface: light-dark(#fbfcf9, #191d1b);
+  --on-surface: light-dark(#202722, #e1e7e0);
+  --container: color-mix(in srgb, var(--surface), var(--on-surface) 4%);
+  --muted: color-mix(in srgb, var(--on-surface) 72%, var(--surface));
+  --outline: color-mix(in srgb, var(--on-surface) 22%, var(--surface));
+  --primary: color-mix(in srgb, var(--on-surface) 80%, #478960);
+  --primary-container: color-mix(in srgb, var(--surface) 89%, #478960);
+  background: var(--surface);
+  color: var(--on-surface);
+  font: 13px/1.5 system-ui, sans-serif;
+}
+
+* { box-sizing: border-box; }
+body { width: 360px; max-width: 100vw; margin: 0; padding: 16px; }
+h1, h2, h3, p { margin: 0; }
+h1 { font-size: 20px; font-weight: 650; letter-spacing: -0.6px; }
+h2, h3 { font-size: 14px; font-weight: 600; }
+.brand-dot { color: #db8049; }
+.header, .section-heading, .setting, .actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.header { margin-bottom: 16px; }
+.connection {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.connection::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.connection.connected { color: var(--primary); }
+.usage {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px 20px;
+  padding: 16px;
+  border-radius: 16px;
+  background: var(--container);
+}
+.label { display: block; color: var(--muted); font-size: 12px; }
+.metric { display: block; font-size: 24px; font-weight: 550; line-height: 32px; font-variant-numeric: tabular-nums; }
+.metric-time { font-size: 18px; }
+.usage .note { grid-column: 1 / -1; }
+.note { color: var(--muted); font-size: 11px; line-height: 1.5; }
+#handoffs:empty { display: none; }
+#handoffs { display: grid; gap: 12px; margin-top: 16px; }
+.handoff {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--outline);
+  border-radius: 16px;
+  overflow-wrap: anywhere;
+}
+.handoff-label { color: var(--primary); font-size: 11px; font-weight: 600; }
+.handoff-client { margin-bottom: 12px; color: var(--muted); font-size: 11px; }
+.handoff-url { margin-top: 4px; color: var(--muted); font-size: 11px; }
+.handoff-reason { margin: 12px 0 16px; font-size: 12px; }
+.actions { justify-content: flex-end; gap: 8px; }
+.tab-controls { margin-top: 16px; }
+.section-heading { margin-bottom: 12px; }
+.count { min-width: 24px; padding: 2px 8px; border-radius: 8px; background: var(--primary-container); text-align: center; font-size: 12px; font-weight: 600; }
+button, select { font: inherit; }
+.button {
+  min-height: 40px;
+  padding: 8px 18px;
+  border: 1px solid transparent;
+  border-radius: 20px;
+  background: var(--primary);
+  color: var(--surface);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 120ms, border-color 120ms;
+}
+.button-outlined, .button-text { background: transparent; color: var(--primary); }
+.button-outlined { border-color: var(--outline); }
+.button-text { padding-inline: 12px; }
+#close-all { width: 100%; }
+.button:hover:not(:disabled) { background: color-mix(in srgb, var(--primary) 88%, var(--surface)); }
+.button-outlined:hover:not(:disabled), .button-text:hover:not(:disabled) { background: var(--primary-container); }
+.button:active:not(:disabled) { filter: brightness(0.92); }
+.button:disabled { background: var(--container); color: var(--muted); cursor: default; opacity: 0.6; }
+:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
+#result { margin-top: 8px; }
+.setting { margin-top: 16px; }
+.setting label { font-weight: 500; }
+select {
+  min-height: 40px;
+  max-width: 150px;
+  padding: 8px 10px;
+  border: 1px solid var(--outline);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--on-surface);
+  cursor: pointer;
+}
+#idle-note { margin-top: 8px; }
+@media (prefers-reduced-motion: reduce) {
+  .button { transition: none; }
+}
+@media (forced-colors: active) {
+  :root { --surface: Canvas; --on-surface: CanvasText; --primary: ButtonText; --outline: ButtonBorder; }
+  .usage { border: 1px solid CanvasText; }
+  .button { border-color: ButtonText; }
+}
