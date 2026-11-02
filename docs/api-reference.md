@@ -1451,8 +1451,8 @@ reopened tab belongs to the user.
 
 - **Close agent tabs** closes every unpinned agent tab at once, including the one shown.
   The popup shows how many there are.
-- **Close agent tabs idle for** (Never, 15 minutes, 30 minutes, 1, 2 or 4 hours; default
-  Never) checks once a minute (`alarms` permission) and closes agent tabs that have been
+- **Close agent tabs idle for** (Never, 5 minutes, 15 minutes, 30 minutes, 1, 2 or 4 hours;
+  default 5 minutes) checks once a minute (`alarms` permission) and closes agent tabs that have been
   idle that long. A tab counts as used when the agent opens it or runs a command on it,
   and when any window shows it. A tab that is shown, playing sound, or has an agent
   command running on it is never closed by this check. Automatic cleanup also skips
@@ -1460,7 +1460,8 @@ reopened tab belongs to the user.
   user-requested popup cleanup does not wait. Use times are kept in memory only,
   so after an extension reload or browser restart the timer for restored agent tabs starts
   again from then. The setting is stored in the extension's `storage.local`
-  (`agentTabIdleMinutes`).
+  (`agentTabIdleMinutes`). Existing saved settings, including Never, are preserved;
+  the 5-minute default applies only when no setting has been saved.
 
 Only the popup can trigger these actions; pages and agents cannot. An agent that later uses
 an id of a closed tab gets `tab_closed`. Tab-pool tabs are agent tabs, so the cleanup can
