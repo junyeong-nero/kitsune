@@ -5053,8 +5053,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "/api/mute-tab": lambda: self._forward("muteTab"),
             "/api/duplicate-tab": lambda: self._forward("duplicateTab"),
             "/api/reload-tab": lambda: self._forward("reloadTabBrowser"),
-            "/api/back": lambda: self._forward("goBack"),
-            "/api/forward": lambda: self._forward("goForward"),
+            "/api/back": lambda: self._send_navigation("goBack", self.read_body(), timeout=15),
+            "/api/forward": lambda: self._send_navigation("goForward", self.read_body(), timeout=15),
             "/api/get-zoom": lambda: self._forward("getZoom"),
             "/api/set-zoom": lambda: self._forward("setZoom"),
             "/api/windows": lambda: self._forward("getWindows"),
@@ -5372,7 +5372,12 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self._send_extension_action("fill", self.read_body())
     
     def handle_navigate(self):
-        self._send_extension_action("navigate", _wrap_image_url(self.read_body()))
+        self._send_navigation("navigate", _wrap_image_url(self.read_body()))
+
+    def _send_navigation(self, action, body, timeout=35):
+        # Only the bridge sets userTabApproved (on a close the user approved); a caller's never reaches the extension.
+        body.pop("userTabApproved", None)
+        self._send_extension_action(action, body, timeout=timeout)
 
     def handle_view(self):
         """2.0.9 - local wrapper page for bare image URLs (see _wrap_image_url)."""

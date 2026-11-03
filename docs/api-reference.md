@@ -581,9 +581,9 @@ only `error`. MCP tools return these failures with `isError: true` (see
 
 `needs_user` replaces three codes, which stay as `state.detail` for one release. The
 current extension refuses user-tab writes with `user_tab_read_only` instead, without
-approval; `user_tab` below comes only from a v0.7.1 extension. `user_viewing`, the old
-viewed-tab hold, is no longer produced (no released extension had it); the Python API still
-recognizes it until the alias release ends. A `reason` the old `state` carried moves to
+approval; `user_tab` below comes only from a v0.7.1 extension. The table lists two of the
+three: the third, `user_viewing` (the old viewed-tab hold), is no longer produced (no released
+extension had it), though the Python API still recognizes it until the alias release ends. A `reason` the old `state` carried moves to
 `state.holdReason`; every other field keeps its name:
 
 | `state.detail` | Was the code | When | `state.holdReason` |

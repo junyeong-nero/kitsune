@@ -69,11 +69,12 @@ class NavigationTests(unittest.TestCase):
                                        ("/api/back", "goBack", {}), ("/api/forward", "goForward", {})):
                 with self.subTest(user_tabs=user_tabs, action=action):
                     sent = {**body, "tabId": ACTIVE_TAB, "protectUserTabs": True, "holdViewedTab": True,
-                            "viewedTabApproved": True}
+                            "viewedTabApproved": True, "userTabApproved": True}
                     self.assertEqual(self.call(path, sent, user_tabs), (200, {"ok": True}))
                     received = self.extension.last(action)
                     self.assertEqual(received["tabId"], ACTIVE_TAB)
-                    for field in ("protectUserTabs", "holdViewedTab", "viewedTabApproved", "confirmToken"):
+                    for field in ("protectUserTabs", "holdViewedTab", "viewedTabApproved", "userTabApproved",
+                                  "confirmToken"):
                         self.assertNotIn(field, received)
                     self.assertIs(received.get("userTabsWritable"), True if user_tabs == "writable" else None)
         self.assertEqual(bridge._confirm_tokens, {}, "no navigation approval is offered")
