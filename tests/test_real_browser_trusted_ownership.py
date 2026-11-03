@@ -402,6 +402,9 @@ class RealBrowserTrustedOwnershipTests(harness.RealBrowserTestCase):
         late = next(t for t in self.created_by(agent, 2) if t["id"] != enter["id"])
         self.addCleanup(self.close_user_tab, late["id"])
         self.assertGreater(late["at"] - enter["at"], USER_OPENED_TAB_WINDOW_MS, (enter, late))
+        inputs = [e for e in self.events() if e["type"] in ("keydown", "mousedown", "pointerdown")]
+        self.assertEqual([e for e in inputs if late["at"] - USER_OPENED_TAB_WINDOW_MS <= e["at"] <= late["at"]], [],
+                         (late, inputs))
         time.sleep(USER_OPENED_TAB_WINDOW_MS / 1000 + 0.2)
         tabs = self.wait_for(lambda: (t := self.tabs()) and t[late["id"]]["url"].endswith("/opened?late") and t,
                              "the page's own tab did not load")
@@ -524,14 +527,15 @@ class RealBrowserTrustedOwnershipTests(harness.RealBrowserTestCase):
         field = self.frame_field_ref(agent)
         self.user_tabs_into_the_frame(url)
         typed_at = self.user_typed(url, "hi", "hi", click=False)
-        typing = [e for e in self.events() if e["type"] == "input" or e["key"] in ("h", "i")]
+        typing = sorted((e for e in self.events() if e["type"] == "input" or e["key"] in ("h", "i")),
+                        key=lambda e: (e["frame"], e["seq"]))
         self.assertEqual([(e["type"], e["target"], e["frame"]) for e in typing],
                          [("keydown", "field", True), ("input", "field", True)] * 2, self.events())
         reasons = [self.assert_user_active(r, ("input", "typing")) for r in self.agent_frame_writes(agent, field)]
         self.assertEqual(reasons[0], "input", reasons)
 
         time.sleep(max(0, typed_at + USER_INPUT_WINDOW_S + 0.3 - time.monotonic()))
-        for result in self.agent_frame_writes(agent, field):
+        for result in self.agent_frame_writes(agent, field) + [self.call("/api/close-tab", {"tabId": agent})]:
             self.assert_user_active(result, ("typing",))
             self.assertEqual(result["state"]["field"], "input", result)
         self.assert_only_user_events("hi", frame=True)
@@ -566,7 +570,8 @@ class RealBrowserTrustedOwnershipTests(harness.RealBrowserTestCase):
         self.user_tabs_into_the_frame(url)
         typed_at = self.user_typed(url, ["a", "b", "Backspace", "Backspace"], "", click=False)
         self.assert_user_active(self.call("/api/type", {"tabId": agent, "ref": field, "text": "x"}), ("input",))
-        self.assertEqual((self.events()[-1]["frame"], self.events()[-1]["focused"]), (True, "field"))
+        latest = max((e for e in self.events() if e["frame"]), key=lambda e: e["seq"])
+        self.assertEqual(latest["focused"], "field", self.events())
         self.assert_only_user_events("", frame=True)
         time.sleep(max(0, typed_at + USER_INPUT_WINDOW_S + 0.3 - time.monotonic()))
 
