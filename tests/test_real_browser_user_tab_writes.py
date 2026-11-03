@@ -4,7 +4,8 @@ Opt-in and built on tests/real_browser_harness.py, which documents how to run it
 test_real_browser_user_tab_reads, the tools run in real MCP servers over stdio (as in
 test_real_browser_elicitation), so their requests go through the server's BridgeClient with its
 client and owner ids, caps and user-tab headers. Each client declares elicitation and records
-every prompt it gets: a write held for approval would prompt there.
+every prompt it gets, and the toolbar popup is read at the end: a write held for approval would
+prompt or add a card there.
 
 The core tools write the agent's current tab, and a stdio session can only select a tab it may
 write. So the tab becomes the agent's current tab the way a real session can get there: the
@@ -188,7 +189,7 @@ class RealBrowserUserTabWriteTests(harness.RealBrowserTestCase):
     def in_tab(self, url, script):
         debugger = harness.RemoteDebugger(self.browser.rdp_port)
         try:
-            return reads._evaluate_in_tab(debugger, url, script)
+            return reads.evaluate_in_tab(debugger, url, script)
         finally:
             debugger.close()
 
@@ -230,6 +231,15 @@ class RealBrowserUserTabWriteTests(harness.RealBrowserTestCase):
                                           for c in state["cards"])
         self.wait_for(card, f"the popup did not show a {label!r} card for {url} from {client}")
         self.assertTrue(self.popup({"label": label, "url": url, "button": button})["clicked"])
+
+    def assert_popup_cards(self, url, expected):
+        """The popup lists exactly expected, (label, client) pairs, for url: a held write would add a card."""
+        self.wait_for(lambda: (state := self.popup())["ready"] and state["connection"] == "Connected",
+                      "the toolbar popup did not load")
+        time.sleep(1.5)  # popup.js lists the handoffs once it loads, then every second
+        cards = [(card["label"], card["client"]) for card in self.popup()["cards"] if card["url"] == url]
+        self.assertEqual(cards, expected, "a write left a card in the toolbar popup")
+        self.parent(handoff.POPUP_CLOSES % json.dumps(harness.EXTENSION_ID))
 
     async def approved(self, session, client, url):
         """client requests the tab at url and the user approves it in the popup."""
@@ -381,6 +391,7 @@ class RealBrowserUserTabWriteTests(harness.RealBrowserTestCase):
             self.assert_refused_at_once(step, seconds, result, tab_id, index, action)
             for token in ("confirmToken", "confirm_token", "resume_token"):
                 self.assertNotIn(token, json.dumps(result), step)
+            self.assertEqual(session.prompts, [], step)
             await asyncio.to_thread(self.assert_unchanged, url, before, step)
         for step, tool, arguments, actions in containers:
             error, result, seconds = await session.tool(tool, arguments)
@@ -392,12 +403,15 @@ class RealBrowserUserTabWriteTests(harness.RealBrowserTestCase):
                     self.assertNotIn("error", outcome, (step, n, result))
                 else:
                     self.assert_refused_at_once(f"{step} step {n}", seconds, outcome, tab_id, index, action)
-            self.assertNotIn("confirmToken", json.dumps(result), step)
+            for token in ("confirmToken", "confirm_token"):
+                self.assertNotIn(token, json.dumps(result), step)
+            self.assertEqual(session.prompts, [], step)
             await asyncio.to_thread(self.assert_unchanged, url, before, step)
         # Kitsune has no Playwright page: run_code is refused for every tab before anything is sent.
         error, result, _ = await session.tool("browser_run_code_unsafe", {"code": "async page => page.click('#act')"})
         self.assertTrue(error, result)
         self.assert_error(result, "not_supported", False)
+        self.assertEqual(session.prompts, [], "run_code")
         await asyncio.to_thread(self.assert_unchanged, url, before, "run_code")
 
     def assert_refused_at_once(self, step, seconds, result, tab_id, index, action):
@@ -443,11 +457,15 @@ class RealBrowserUserTabWriteTests(harness.RealBrowserTestCase):
                                       self.container_writes(tab_id, agent_url, current=True)
                                       + self.container_writes(tab_id, agent_url, current=False))
             self.assertEqual((await agent.listed(url)).get("current"), True, "a refusal moved the current tab")
+            await asyncio.to_thread(self.assert_popup_cards, url, [])
 
         self.run_sessions(scenario, AGENT)
         # The observation is not blind: the user's own change of the page shows up.
         self.in_tab(url, "(document.getElementById('news').click(), true)")
-        self.assertIn("news", self.observe(url)["page"]["checked"])
+        after = self.observe(url)["page"]
+        self.assertIn("news", after["checked"], after)
+        self.assertIn("click", after["events"], after)
+        self.assertIn("change", after["events"], after)
 
     def test_every_write_on_a_tab_handed_to_another_client_refuses_without_a_prompt(self):
         tab_id, url = self.form_tab("other")
@@ -464,12 +482,14 @@ class RealBrowserUserTabWriteTests(harness.RealBrowserTestCase):
             await asyncio.to_thread(self.leave_page, url)
             before = await asyncio.to_thread(self.observe, url)
             self.assert_user_left_page(before, url, tab_id, shown=True)
+            await asyncio.to_thread(self.assert_unchanged, url, before, "observing")
             index = listed["index"]
             await self.check_refusals(agent, url, before, tab_id, index,
                                       self.core_writes(url) + self.addressed_writes(tab_id, index, agent_url),
                                       self.container_writes(tab_id, agent_url, current=True)
                                       + self.container_writes(tab_id, agent_url, current=False))
             self.assertIs((await other.listed(url)).get("owned"), True, "a refusal changed the other client's grant")
+            await asyncio.to_thread(self.assert_popup_cards, url, [("Handed off", OTHER[1])])
             # The observation is not blind: the client holding the tab checks the box.
             await other.ok("browser_check", {"selector": "#news", "tab_id": tab_id})
             after = (await asyncio.to_thread(self.observe, url))["page"]
@@ -493,14 +513,17 @@ class RealBrowserUserTabWriteTests(harness.RealBrowserTestCase):
             await asyncio.to_thread(self.leave_page, url)
             before = await asyncio.to_thread(self.observe, url)
             self.assert_user_left_page(before, url, tab_id, shown=False)
+            await asyncio.to_thread(self.assert_unchanged, url, before, "observing")
             index = listed["index"]
             await self.check_refusals(agent, url, before, tab_id, index,
                                       self.addressed_writes(tab_id, index, agent_url),
                                       self.container_writes(tab_id, agent_url, current=False))
             self.assertEqual((await agent.listed(agent_url)).get("current"), True, "a refusal moved the current tab")
+            await asyncio.to_thread(self.assert_popup_cards, url, [])
             # The observation is not blind: the client that opened the tab checks the box.
             await other.ok("browser_check", {"selector": "#news", "tab_id": tab_id})
             after = (await asyncio.to_thread(self.observe, url))["page"]
             self.assertIn("news", after["checked"], after)
+            self.assertIn("change", after["events"], after)
 
         self.run_sessions(scenario, AGENT, OTHER)
