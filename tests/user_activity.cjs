@@ -48,12 +48,12 @@ async function main() {
   const page = content();
   assert.deepEqual(Object.keys(page.listeners).sort(),
     ['keydown', 'mousedown', 'paste', 'pointerdown', 'touchstart', 'wheel']);
-  assert.deepEqual(await page.send({ action: 'userActivity' }), { active: false });
+  assert.deepEqual(await page.send({ action: 'userActivity' }), { active: false, pageFocused: true });
 
   // Synthetic events (Kitsune's own clicks and keypresses) are not the user.
   page.input('mousedown', page.button, false);
   page.input('keydown', page.field, false);
-  assert.deepEqual(await page.send({ action: 'userActivity' }), { active: false });
+  assert.deepEqual(await page.send({ action: 'userActivity' }), { active: false, pageFocused: true });
 
   assert.deepEqual(page.reported, [], 'synthetic events do not affect opener inheritance');
 
@@ -64,7 +64,7 @@ async function main() {
   assert.deepEqual(await page.send({ action: 'userActivity' }),
     { active: true, state: { reason: 'input', input: 'wheel', sinceMs: 2999, windowMs: 3000 } });
   page.tick(1);
-  assert.deepEqual(await page.send({ action: 'userActivity' }), { active: false });
+  assert.deepEqual(await page.send({ action: 'userActivity' }), { active: false, pageFocused: true });
 
   // Typing counts while the field keeps focus in a focused document and holds content.
   page.document.activeElement = page.field;
@@ -74,20 +74,20 @@ async function main() {
   assert.deepEqual(await page.send({ action: 'userActivity' }),
     { active: true, state: { reason: 'typing', field: 'input' } }, 'the value is never read out');
   page.document.focused = false;  // the user switched to another tab or app
-  assert.deepEqual(await page.send({ action: 'userActivity' }), { active: false });
+  assert.deepEqual(await page.send({ action: 'userActivity' }), { active: false, pageFocused: false });
   page.document.focused = true;
   assert.equal((await page.send({ action: 'userActivity' })).state?.reason, 'typing', 'document focus returned');
   page.field.value = '';
-  assert.deepEqual(await page.send({ action: 'userActivity' }), { active: false }, 'an emptied field is no draft');
+  assert.deepEqual(await page.send({ action: 'userActivity' }), { active: false, pageFocused: true }, 'an emptied field is no draft');
   page.field.value = 'agent text';  // #397: the agent types into the released field
-  assert.deepEqual(await page.send({ action: 'userActivity' }), { active: false }, 'released typing stays released');
+  assert.deepEqual(await page.send({ action: 'userActivity' }), { active: false, pageFocused: true }, 'released typing stays released');
   page.input('keydown', page.field);
   page.field.value = 'draft';
   page.tick(5000);
   page.document.activeElement = page.button;
-  assert.deepEqual(await page.send({ action: 'userActivity' }), { active: false }, 'focus left the field');
+  assert.deepEqual(await page.send({ action: 'userActivity' }), { active: false, pageFocused: true }, 'focus left the field');
   page.document.activeElement = page.field;  // #397: the agent's command focuses it again
-  assert.deepEqual(await page.send({ action: 'userActivity' }), { active: false }, 'released typing stays released');
+  assert.deepEqual(await page.send({ action: 'userActivity' }), { active: false, pageFocused: true }, 'released typing stays released');
 
   // Editors and fields in shadow roots (seen as their custom-element host) count too.
   for (const [el, text] of [[page.editor, 'textContent'], [page.host, null]]) {
@@ -102,7 +102,7 @@ async function main() {
   page.document.activeElement = agentField;
   page.input('keydown', agentField, false);
   page.tick(5000);
-  assert.deepEqual(await page.send({ action: 'userActivity' }), { active: false });
+  assert.deepEqual(await page.send({ action: 'userActivity' }), { active: false, pageFocused: true });
 
   // browser_trusted_click: the OS click right after its screenPoint is the agent's, a keypress is not.
   const clicked = content();
@@ -110,7 +110,7 @@ async function main() {
   clicked.input('pointerdown', clicked.button);
   clicked.input('mousedown', clicked.button);
   assert.deepEqual(clicked.reported, [], 'agent OS clicks do not affect opener inheritance');
-  assert.deepEqual(await clicked.send({ action: 'userActivity' }), { active: false });
+  assert.deepEqual(await clicked.send({ action: 'userActivity' }), { active: false, pageFocused: true });
   clicked.input('keydown', clicked.button);
   assert.equal((await clicked.send({ action: 'userActivity' })).state.input, 'keydown');
   clicked.tick(2000);  // the trusted-click window is over
@@ -122,7 +122,7 @@ async function main() {
   for (const key of ['Shift', 'Meta']) modified.listeners.keydown({ type: 'keydown', key, target: modified.button, isTrusted: true });
   modified.input('mousedown', modified.button);
   assert.deepEqual(modified.reported, [], 'agent modifiers do not affect opener inheritance');
-  assert.deepEqual(await modified.send({ action: 'userActivity' }), { active: false });
+  assert.deepEqual(await modified.send({ action: 'userActivity' }), { active: false, pageFocused: true });
   modified.listeners.keydown({ type: 'keydown', key: 'Control', target: modified.button, isTrusted: true });
   assert.equal((await modified.send({ action: 'userActivity' })).state.input, 'keydown');
   const later = content();
@@ -144,7 +144,7 @@ async function main() {
   typed.input('keydown', typed.field);
   typed.input('paste', typed.field);
   assert.deepEqual(typed.reported, [], 'agent OS keys do not affect opener inheritance');
-  assert.deepEqual(await typed.send({ action: 'userActivity' }), { active: false });
+  assert.deepEqual(await typed.send({ action: 'userActivity' }), { active: false, pageFocused: true });
   typed.input('mousedown', typed.button);
   assert.equal((await typed.send({ action: 'userActivity' })).state.input, 'mousedown');
   const after = content();

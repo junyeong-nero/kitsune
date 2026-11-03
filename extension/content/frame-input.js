@@ -40,8 +40,10 @@
       if (field?.isConnected && field === document.activeElement && document.hasFocus() && hasContent) {
         return { active: true, state: { reason: 'typing', field: field.tagName.toLowerCase() } };
       }
-      // Released in a focused document: the agent's own later focus or text there is no user draft.
-      if (field && document.hasFocus()) userTypedField = null;
+      // Released in a focused document, or after focus moved elsewhere in its focused page (the
+      // background's pageFocused, from the top frame): the agent's own later focus or text there is
+      // no user draft. Only focus leaving the whole page keeps the field for when focus returns.
+      if (field && (document.hasFocus() || msg.pageFocused === true)) userTypedField = null;
       return { active: false, documentToken };
     });
   });
