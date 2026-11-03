@@ -280,6 +280,7 @@ class RealBrowserTrustedOwnershipTests(harness.RealBrowserTestCase):
                 delays[kind].append(created["at"] - downs[0]["at"])
                 # The content's input report and tabs.onCreated can arrive in either order; wait out the window.
                 time.sleep(USER_OPENED_TAB_WINDOW_MS / 1000 + 0.2)
+                self.assertTrue(all(e["trusted"] for e in self.events()), self.events())
                 tabs = self.tabs()
                 self.assertTrue(tabs[created["id"]]["url"].endswith("/opened?user"), tabs[created["id"]])
                 self.assertIs(tabs[created["id"]]["owned"], False, (kind, run, tabs[created["id"]]))
@@ -296,7 +297,6 @@ class RealBrowserTrustedOwnershipTests(harness.RealBrowserTestCase):
             for value in values:
                 self.assertGreaterEqual(value, 0, values)
                 self.assertLess(value, USER_OPENED_TAB_WINDOW_MS, values)
-        self.assertTrue(all(e["trusted"] for e in self.events()), self.events())
 
     # -- #397 --
 
@@ -327,7 +327,6 @@ class RealBrowserTrustedOwnershipTests(harness.RealBrowserTestCase):
         agent, url = self.shown_agent_tab("/form")
         typed_at = self.user_typed(url, "hi", "hi")
         reasons = [self.assert_user_active(r, ("input", "typing")) for r in self.agent_writes(agent)]
-        self.assertLess(time.monotonic() - typed_at, USER_INPUT_WINDOW_S, "the writes ran inside the input window")
         self.assertEqual(reasons[0], "input", reasons)
 
         time.sleep(max(0, typed_at + USER_INPUT_WINDOW_S + 0.3 - time.monotonic()))

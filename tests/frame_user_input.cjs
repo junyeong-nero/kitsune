@@ -274,6 +274,10 @@ async function frameActivityTransitions() {
       if (kind === 'removed') editor.isConnected = false;
       if (kind === 'empty editor') editor.textContent = '  ';
       assert.equal(await h.busy(), null, kind);
+      if (kind === 'blur') {
+        child.document.activeElement = editor;  // #397: the agent's command focuses it again
+        assert.equal(await h.busy(), null, 'released typing stays released after a refocus');
+      }
     }
   }
   for (const type of ['keydown', 'mousedown', 'pointerdown', 'touchstart', 'wheel', 'paste']) {
