@@ -126,9 +126,9 @@ def via(name, arguments=None, session="a"):
     return call("browser_tools_call", {"name": name, "arguments": arguments or {}}, session)
 
 
-def without_gateway_header(result, call_ids=False):
-    """result without the gateway header; call_ids: also without the random tool call id (#326)."""
-    dropped = {task_modes.GATEWAY_TOOL_HEADER, *([task_modes.TOOL_CALL_HEADER] if call_ids else [])}
+def without_gateway_header(result):
+    """result without the gateway header."""
+    dropped = {task_modes.GATEWAY_TOOL_HEADER}
     requests = [{**request, "headers": {key: value for key, value in request["headers"].items()
                                         if key not in dropped}}
                 for request in result["requests"]]
@@ -201,10 +201,7 @@ class GatewayTests(unittest.TestCase):
         for gateway, direct in zip(pairs[::2], pairs[1::2]):
             with self.subTest(direct=direct["content"][0]):
                 # Same content, error status and bridge requests (protect-user-tabs header included).
-                self.assertEqual(without_gateway_header(gateway, call_ids=True),
-                                 without_gateway_header(direct, call_ids=True))
-                for request in gateway["requests"] + direct["requests"]:
-                    self.assertRegex(request["headers"][task_modes.TOOL_CALL_HEADER], r"^[0-9a-f]{16}$")
+                self.assertEqual(without_gateway_header(gateway), without_gateway_header(direct))
                 for request in gateway["requests"]:
                     self.assertTrue(request["headers"][task_modes.GATEWAY_TOOL_HEADER].startswith("browser_"))
                     self.assertEqual(request["headers"][task_modes.USER_TABS_HEADER], "writable")

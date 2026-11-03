@@ -37,7 +37,7 @@ from . import playwright_tools, tools
 from .capabilities import CAPABILITY_GROUPS, NAMED_ONLY_GROUPS, enabled_groups
 from .bridge_client import BridgeClient
 from .errors import failed as _failed  # whether a tool's own result reports failure
-from .task_modes import (APPROVAL_HEADER, GATEWAY_TOOL_HEADER, TOOL_CALL_HEADER, permits_tool, task_mode,
+from .task_modes import (APPROVAL_HEADER, GATEWAY_TOOL_HEADER, permits_tool, task_mode,
                          user_tabs_from_env, user_tabs_deprecation)
 from .tools import DESTRUCTIVE, _on_current_tab
 from .waits import RESUME_WAIT_SECONDS, resume_wait_seconds
@@ -189,7 +189,7 @@ class KitsuneMCP(FastMCP):
         if name == "browser_resume":
             resumed = await self._resume_direct(arguments or {})
             if resumed is not None:
-                return _with_tab_index(resumed)
+                return resumed
         tab = playwright_tools._current_tab
         result = await self._run_tool(name, arguments)
         session = self.session()
@@ -198,7 +198,7 @@ class KitsuneMCP(FastMCP):
             result = await self._approved(session, name, arguments or {}, result)
             if name == "browser_ask_user":
                 result = await self._answered(session, result)
-        return _with_tab_index(self._checkpointed(name, arguments or {}, result, elicits, tab))
+        return self._checkpointed(name, arguments or {}, result, elicits, tab)
 
     async def _run_tool(self, name, arguments):
         if name == "browser_tabs" and (arguments or {}).get("action") == "request" and self.session() is not None:
@@ -223,12 +223,9 @@ class KitsuneMCP(FastMCP):
         tool = self._tool_manager.get_tool(name)
         return tool is not None and "confirm_token" in tool.parameters.get("properties", {})
 
-    async def _approved(self, session, name, arguments, result, ask_seconds=None, ask_again=False):
+    async def _approved(self, session, name, arguments, result, ask_seconds=None):
         """result of a call on a client with elicitation: a held direct call is asked about and, once
         the user approves, repeated with its token; no token stays in the result (#376).
-
-        A user_viewing hold on a tab the user declined one on within VIEWED_TAB_DECLINE_SECONDS is
-        declined without asking (#383), unless ask_again (browser_resume, which asks again on purpose).
 
         Each repeat starts at the held request (playwright_tools.repeat_hold), so a later held
         request of the call (the next field of a payment form) is asked about in turn, and a hold
@@ -236,7 +233,6 @@ class KitsuneMCP(FastMCP):
         browser_resume's wait, ends each prompt sooner; 0 asks nothing."""
         repeatable = self._repeatable(name)
         approved = []  # _hold_key of each hold the user approved in this call
-        call_id = secrets.token_hex(8)
         while True:
             held = _json_payload(result)
             if held is None:
@@ -250,19 +246,14 @@ class KitsuneMCP(FastMCP):
                 # A later request of the call, held after the approved one ran: the token it was
                 # sent was spent there, which is no reason to report.
                 held["state"].pop("tokenRejected", None)
-            if not ask_again and _viewed_tab_declined(held["state"]):
-                return _with_payload(result, _unapproved(held, "declined", VIEWED_TAB_REDECLINED_HINT))
             if ask_seconds is not None and ask_seconds <= 0:
                 return _with_payload(result, _unapproved(held, None, UNASKED_APPROVAL_HINT))
             decision = await _ask_user(session, self._mcp_server.request_context, name, arguments, held["state"],
                                        ask_seconds)
-            if decision == "declined" and held["state"].get("detail") == "user_viewing":
-                _declined_tabs[held["state"].get("tabId")] = _decline_clock()
-                return _with_payload(result, _unapproved(held, decision, VIEWED_TAB_DECLINED_HINT))
             if decision != "approved":
                 return _with_payload(result, _unapproved(held, decision, DECISION_HINTS[decision]))
             approved.append(_hold_key(held))
-            repeat, hold = _approval_repeat.set(call_id), playwright_tools.repeat_hold.set(held)
+            repeat, hold = _approval_repeat.set(True), playwright_tools.repeat_hold.set(held)
             try:
                 result = await self._run_tool(name, {**arguments, "confirm_token": held["state"]["confirmToken"]})
             finally:
@@ -387,7 +378,7 @@ class KitsuneMCP(FastMCP):
         finally:
             playwright_tools.repeat_hold.reset(hold)
         if isinstance(result, CallToolResult) and elicits:
-            result = await self._approved(session, name, args, result, wait, ask_again=True)
+            result = await self._approved(session, name, args, result, wait)
         return self._checkpointed(name, args, result, elicits, checkpoint["tabId"], call)
 
 
@@ -455,8 +446,6 @@ mcp._mcp_server.instructions = (
     + " needs_user error: nothing ran; show state.message. Need the user? browser_ask_user.")
 # The tool browser_tools_call is running; its bridge requests name it for the audit log.
 _gateway_call: ContextVar[str | None] = ContextVar("kitsune_gateway_call", default=None)
-# The id of the tool call running (_mcp_errors), which its bridge requests carry.
-_tool_call: ContextVar[str | None] = ContextVar("kitsune_tool_call", default=None)
 _mcp_call_active: ContextVar[bool] = ContextVar("kitsune_mcp_call_active", default=False)
 
 # Every known tool (core and Kitsune-owned) -> its capability group.
@@ -498,13 +487,7 @@ def _mcp_errors(function):
     """
     @functools.wraps(function)
     def call(*args, **kwargs):
-        # Its bridge requests share one tool call id: a viewed-tab approval covers all of them (#326),
-        # and those of the repeats of a call the user approved (#376).
-        call_id = _tool_call.set(_approval_repeat.get() or secrets.token_hex(8))
-        try:
-            result = function(*args, **kwargs)
-        finally:
-            _tool_call.reset(call_id)
+        result = function(*args, **kwargs)
         if isinstance(result, list):
             return [_compact_json(item) if isinstance(item, dict)
                     else McpImage(data=item.data, format=item.format) if isinstance(item, tools.Image)
@@ -550,28 +533,16 @@ DECISION_HINTS = {
     "cancelled": "The held action did not run: the approval prompt was dismissed or timed out without an answer. "
                  "Ask the user whether to go ahead; calling the tool again asks them again.",
 }
-# A declined user_viewing hold means "not in this tab", as its prompt says (#383).
-VIEWED_TAB_DECLINED_HINT = ("The held action did not run: the user declined it in the tab they are viewing. Do not "
-                            "repeat it there; open a tab of your own (browser_tabs action=new) and do it there.")
-# For this long after the user declines a user_viewing hold, later holds on that tab (the rest of
-# a turn's calls) are declined without asking again (#383).
-VIEWED_TAB_DECLINE_SECONDS = 10
-VIEWED_TAB_REDECLINED_HINT = ("The held action did not run: the user just declined an action in the tab they are "
-                              "viewing, so they were not asked again. Do not repeat it there; open a tab of your "
-                              "own (browser_tabs action=new) and do it there.")
-_declined_tabs: dict[int, float] = {}  # tab id -> when the user last declined a user_viewing hold on it
-_decline_clock = time.monotonic
 UNMATCHED_APPROVAL_HINT = ("The action the user approved did not run: repeated, it no longer matched what they "
                            "approved (state.tokenRejected), so the page or tab changed. What the call did before "
                            "it (filled) stays done. Check the page, then call the tool again to ask again.")
 CONTAINER_APPROVAL_HINT = ("Nothing ran: this step needs the user's approval, which only a direct call of the tool "
                            "that does it can ask for. Make that call; the user is asked to approve it there.")
 # Why a call was held, by state.detail, for the prompt.
-_HELD_BECAUSE = {"user_viewing": "you are viewing this tab", "user_tab": "the agent did not open this tab",
-                 "confirmation_required": "ask-before-act"}
-# The tool call id the repeats of a call the user approved in the prompt share, so a viewed-tab
-# approval in one covers the next (#326); their bridge requests carry APPROVAL_HEADER.
-_approval_repeat: ContextVar[str | None] = ContextVar("kitsune_approval_repeat", default=None)
+_HELD_BECAUSE = {"user_tab": "the agent did not open this tab", "confirmation_required": "ask-before-act"}
+# Set while the MCP server repeats a call the user approved in the prompt: its bridge requests carry
+# APPROVAL_HEADER.
+_approval_repeat: ContextVar[bool] = ContextVar("kitsune_approval_repeat", default=False)
 
 
 def _elicits(session) -> bool:
@@ -609,7 +580,7 @@ def _held_with_token(payload) -> bool:
 
 def _hold_key(held: dict) -> tuple:
     """Which request of the call a hold is: its action and params as the call sent them, whichever
-    tab they resolved to; a user_viewing or user_tab hold, which names neither, by its tab."""
+    tab they resolved to; a user_tab hold, which names neither, by its tab."""
     state = held["state"]
     if "params" in state:
         return state.get("detail"), state.get("action"), json.dumps(state["params"], sort_keys=True, default=str)
@@ -667,32 +638,8 @@ def _approval_message(name: str, arguments: dict, state: dict) -> str:
         lines += ["Approve hands this tab to this client until you take it back in the Kitsune popup or the session ends. "
                   "Later writes need no handoff prompt; Decline leaves the tab yours."]
         return "\n".join(lines)
-    lines += (["Approve runs this action once here; Decline means the agent should not do it in this tab."]
-              if state.get("detail") == "user_viewing" else ["Approve runs this action once; Decline leaves it undone."])
+    lines += ["Approve runs this action once; Decline leaves it undone."]
     return "\n".join(lines)
-
-
-def _viewed_tab_declined(state: dict) -> bool:
-    """Whether state is a user_viewing hold on a tab the user declined one on within
-    VIEWED_TAB_DECLINE_SECONDS."""
-    declined = _declined_tabs.get(state.get("tabId")) if state.get("detail") == "user_viewing" else None
-    return declined is not None and _decline_clock() - declined < VIEWED_TAB_DECLINE_SECONDS
-
-
-def _with_tab_index(result):
-    """result, with a user_viewing hold's tab named by its browser_tabs index too (state.index), as the
-    core tools name tabs; the extension names it by tabId (#383)."""
-    held = _json_payload(result, '"user_viewing"')
-    state = held.get("state") if held is not None and held.get("code") == "needs_user" else None
-    if (not isinstance(state, dict) or state.get("detail") != "user_viewing" or type(state.get("tabId")) is not int
-            or "index" in state):
-        return result
-    index = playwright_tools._tab_index(state["tabId"])
-    if index is None:
-        return result
-    return _with_payload(result, {
-        **held, "error": f"The user is viewing tab {index} in browser_tabs (tabId {state['tabId']}); nothing was done",
-        "state": {**state, "index": index}})
 
 
 async def _keep_alive(session, request, message):
@@ -955,10 +902,10 @@ def _register(spec: tools.ToolSpec, function=None) -> None:
 
 
 def _gateway_headers() -> dict:
-    """Name the tool browser_tools_call runs on its bridge requests, for the audit log, the tool call,
-    and the repeat of a call the user approved in the client's prompt."""
-    name, call_id = _gateway_call.get(), _tool_call.get()
-    return {**({GATEWAY_TOOL_HEADER: name} if name else {}), **({TOOL_CALL_HEADER: call_id} if call_id else {}),
+    """Name the tool browser_tools_call runs on its bridge requests, for the audit log, and the repeat
+    of a call the user approved in the client's prompt."""
+    name = _gateway_call.get()
+    return {**({GATEWAY_TOOL_HEADER: name} if name else {}),
             **({APPROVAL_HEADER: "elicitation"} if _approval_repeat.get() else {})}
 
 

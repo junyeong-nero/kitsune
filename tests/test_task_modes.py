@@ -193,26 +193,6 @@ class TaskModePolicyTests(AskBeforeActTestCase):
                     self.assertEqual((status, result["code"]), (403, "mode_restricted"), url)
                 self.assertEqual(self.extension.actions(), [])
 
-    def test_a_protected_user_tab_points_restricted_modes_to_a_tab_of_their_own(self):
-        refused = {"error": "Tab 3 was not opened by the agent and this session protects user tabs, so it was "
-                            "not navigated", "code": "user_tab", "retryable": False,
-                   "hint": "Nothing navigated. Open a tab of your own (browser_tabs action=new) and work there, "
-                           "or ask the user and repeat a direct call with tab_id and the "
-                           "confirm_token it returns."}
-        self.extension.reply = refused
-        for mode in ("read", "draft", "act"):
-            with self.subTest(mode=mode):
-                self.mode(mode)
-                status, result = self.forward("navigate", {"tabId": 3, "url": "https://example.com"})
-                self.assertEqual((status, result["code"], result["state"]["detail"], result["state"]["approvable"]),
-                                 (200, "needs_user", "user_tab", mode == "act"))
-                if mode == "act":
-                    self.assertEqual(result["hint"], refused["hint"])
-                else:
-                    self.assertIn("browser_tab_list new_tab", result["hint"])
-                    self.assertNotIn("confirm_token", result["hint"])
-                    self.assertNotIn("browser_tabs", result["hint"])
-
     def test_draft_refuses_a_payment_like_new_tab_as_it_refuses_navigate(self):
         # Draft's forced ask-before-act holds a payment-like URL; draft cannot confirm it.
         self.mode("draft")

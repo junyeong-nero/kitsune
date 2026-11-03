@@ -190,8 +190,7 @@ async function testBackgroundCopiesVisibility() {
   const context = vm.createContext({
     getActiveTabId: async () => 42,
     tabsCreated: 0, openedTabs: [], actionStarts: new Map(), tabLoads: new Map(), mainFrameStatus: new Map(),
-    userActiveError: async () => null, viewedTabError: async () => null, guardedTabId: async () => null, touchStart() {}, touchEnd() {},
-    protectedTabError: async () => null,
+    userActiveError: async () => null, guardedTabId: async () => null, touchStart() {}, touchEnd() {},
     // The top frame (#343): no ref here belongs to a cross-origin frame.
     expandShortRefs: params => ({ params }), targetFrame: () => 0,
     getOpenedTabs: async () => ({ opened_tabs: [] }),

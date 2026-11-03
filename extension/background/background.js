@@ -2185,9 +2185,6 @@ const TAB_FAILURE_HINTS = {
     'work in a tab you opened, or ask the user.',
   tab_not_shown: 'The browser shows no page in this tab\'s window. Ask the user to finish or close whatever ' +
     'hides the page (for example, Zen\'s first-run welcome screen), then retry.',
-  user_viewing: 'The user is viewing this tab (shown in the browser window they last focused); nothing was done. ' +
-    'Open a tab of your own (browser_tabs action=new) and work there, or ask the user and repeat a direct call with tab_id and ' +
-    'the confirm_token that call returns.',
   // Matches the bridge's browser_window_unavailable diagnosis hint.
   browser_window_unavailable: 'Open a normal browser window in the profile where Kitsune is installed (private windows need Run in Private Windows in about:addons), or pass tab_id.',
 };

@@ -7,8 +7,8 @@ const vm = require('node:vm');
 const event = () => ({ addListener() {}, removeListener() {} });
 const copy = value => JSON.parse(JSON.stringify(value));
 
-// focusedWindow: the browser window the user last focused. By default another one, so tab 1 is not
-// held for being viewed (#326, see shared_browser.cjs).
+// focusedWindow: the browser window the user last focused, by default another one. protectUserTabs
+// below is the old navigation-hold field, which no longer changes anything.
 function harness({ focusedWindow = 2 } = {}) {
   const tabs = {
     1: { id: 1, windowId: 1, active: true, url: 'https://example.com/start', title: 'Start' },

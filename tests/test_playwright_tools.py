@@ -366,7 +366,7 @@ class AdapterTests(unittest.TestCase):
 
     def test_find_load_more_returns_a_failed_scroll(self):
         playwright_tools._current_tab = 7
-        held = {"error": "held", "code": "needs_user", "state": {"reason": "approval", "detail": "user_viewing"}}
+        held = {"error": "held", "code": "needs_user", "state": {"reason": "approval", "detail": "confirmation_required"}}
         self.answer_pages(["#1"], scroll=held)
         self.assertEqual(playwright_tools.browser_find(text="#9", load_more=True), held)
 
