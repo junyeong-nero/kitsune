@@ -1,4 +1,4 @@
-"""browser_tabs action tab lists (#224) and explicit-list permission guidance (#416).
+"""browser_tabs action tab lists (#224), a truthful current marker (#399) and explicit-list permission guidance (#416).
 
 new reports the new tab's index (the index every other action takes), not the bridge's tabId.
 """
@@ -33,6 +33,17 @@ class TabResultTests(unittest.TestCase):
             return {"ok": True, "tabId": 11, "url": "https://d/", "status": "complete"}
         if endpoint == "/api/close-tab":
             self.open = [tab for tab in self.open if tab["id"] != data["tabId"]]
+        if endpoint == "/api/request-tab":
+            # An approved handoff: the inventory lists the tab as owned by this client from now on.
+            next(tab for tab in self.open if tab["id"] == data["tabId"])["owned"] = True
+            return {"ok": True, "tabId": data["tabId"], "owned": True}
+        if endpoint == "/api/tab-write-check":
+            # The bridge admits writes on owned tabs, and on any tab for a writable client.
+            target = next(tab for tab in self.open if tab["id"] == data["tabId"])
+            if not target.get("owned") and tools.client.user_tabs != "writable":
+                return {"error": "read only", "code": "user_tab_read_only", "retryable": False,
+                        "state": {"tabId": target["id"], "index": self.open.index(target),
+                                  "action": data["writeAction"]}}
         return {"ok": True}
 
     def test_new_returns_its_index_and_the_tabs(self):
@@ -48,6 +59,53 @@ class TabResultTests(unittest.TestCase):
             "ok": True, "index": 1, "tabs": [
                 {"index": 0, "title": "A", "url": "https://a/", "active": True},
                 {"index": 1, "title": "B", "url": "https://b/", "current": True, "owned": True}]})
+
+    def test_select_on_a_handed_off_tab_lists_it_current_without_hint(self):
+        # #399: once a handoff is approved, select makes the user's tab current and says so.
+        self.assertEqual(playwright_tools.browser_tabs("select", index=0)["code"], "user_tab_read_only")
+        self.assertIsNone(playwright_tools._current_tab)
+        self.assertEqual(playwright_tools.browser_tabs("request", index=0, reason="Edit page"),
+                         {"ok": True, "tabId": 3, "owned": True})
+        self.assertIsNone(playwright_tools._current_tab)
+        self.assertEqual(playwright_tools.browser_tabs("select", index=0), {
+            "ok": True, "index": 0, "tabs": [
+                {"index": 0, "title": "A", "url": "https://a/", "current": True, "active": True, "owned": True},
+                {"index": 1, "title": "B", "url": "https://b/", "owned": True}]})
+        self.assertEqual(playwright_tools._current_tab, 3)
+        self.post.assert_called_with("/api/tab-write-check", {"tabId": 3, "writeAction": "switchTab"})
+        self.assertNotIn("hint", playwright_tools.browser_tabs("list"))
+
+    def test_writable_select_on_a_user_tab_makes_it_current(self):
+        # #399: the kitsune-benchmark setup selects the user's starting tab and waits for current.
+        self.assertEqual(playwright_tools.browser_tabs("select", index=0)["code"], "user_tab_read_only")
+        with patch.object(tools.client, "user_tabs", "writable"):
+            for current in (None, 8):
+                with self.subTest(current=current):
+                    playwright_tools._current_tab = current
+                    self.assertEqual(playwright_tools.browser_tabs("select", index=0), {
+                        "ok": True, "index": 0, "tabs": [
+                            {"index": 0, "title": "A", "url": "https://a/", "current": True, "active": True},
+                            {"index": 1, "title": "B", "url": "https://b/", "owned": True}]})
+                    self.assertEqual(playwright_tools._current_tab, 3)
+
+    def test_select_result_has_no_list_hint_for_an_unowned_current_tab(self):
+        # #416: only an explicit list explains the read-only current tab; select keeps its own result.
+        # A read-only client gets such a select result when the user takes a handed-off tab back
+        # right after select's admission check, before its tab listing.
+        playwright_tools.browser_tabs("request", index=0, reason="Edit page")
+
+        def take_back_after_check(endpoint, data, timeout=15):
+            result = self.bridge(endpoint, data, timeout)
+            if endpoint == "/api/tab-write-check":
+                self.open[0]["owned"] = False
+            return result
+
+        self.post.side_effect = take_back_after_check
+        result = playwright_tools.browser_tabs("select", index=0)
+        self.assertNotIn("hint", result)
+        self.assertTrue(result["tabs"][0]["current"])
+        self.assertNotIn("owned", result["tabs"][0])
+        self.assertIn("hint", playwright_tools.browser_tabs("list"))
 
     def test_current_is_truthful_for_user_and_other_client_tabs(self):
         # Ownership can change after selection; listing never hides the agent's current tab.
@@ -168,7 +226,7 @@ class TabResultTests(unittest.TestCase):
         self.assertIsNone(playwright_tools._current_tab)
 
     def test_results_match_list(self):
-        for action, arguments in (("new", {"url": "https://d/"}), ("select", {"index": 0}), ("close", {"index": 1})):
+        for action, arguments in (("new", {"url": "https://d/"}), ("select", {"index": 1}), ("close", {"index": 1})):
             with self.subTest(action=action):
                 result = playwright_tools.browser_tabs(action, **arguments)
                 self.assertEqual(result["tabs"], playwright_tools.browser_tabs("list")["tabs"])

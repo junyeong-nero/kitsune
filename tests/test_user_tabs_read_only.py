@@ -12,6 +12,7 @@ import select
 import shutil
 import subprocess
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -157,6 +158,59 @@ class UserTabsReadOnlyTests(unittest.TestCase):
                 result = self.call("/api/trusted-click", {"tabId": own, "x": 10, "y": value})
                 self.assertEqual(result["code"], "invalid_coordinates")
                 self.assertEqual(self.extension.commands[-1]["action"], "checkTabWrite")
+
+    @unittest.skipUnless(shutil.which("node"), "actual background integration needs node")
+    def test_core_select_and_list_current_against_actual_background(self):
+        # #399: current stays truthful; #416: only an explicit list explains a read-only current tab.
+        self.extension.close()
+        self.extension = BackgroundPermissionExtension(self.bridge, [])
+        self.addCleanup(self.extension.close)
+        hint = ("Tab 0 is read-only for this client. Before writing, open your own tab "
+                "with browser_tabs action=new url=https://user.example/one and work there.")
+
+        def core(user_tabs, action, **arguments):
+            headers = {task_modes.USER_TABS_HEADER: user_tabs}
+            with patch.object(tools, "client", SimpleNamespace(user_tabs=user_tabs)), \
+                    patch.object(tools, "_get", lambda endpoint: self.call(endpoint, headers=headers)), \
+                    patch.object(tools, "_post", lambda endpoint, data, timeout=15, start_bridge=True:
+                                 self.call(endpoint, data, headers=headers)):
+                return playwright_tools.browser_tabs(action, **arguments)
+
+        with patch.object(playwright_tools, "_current_tab", None):
+            refused = core("read-only", "select", index=0)
+            self.assertEqual((refused["code"], refused["retryable"]), ("user_tab_read_only", False), refused)
+            self.assertEqual(refused["state"]["action"], "switchTab")
+            self.assertEqual(self.extension.commands[-1]["action"], "checkTabWrite")
+            self.assertIsNone(playwright_tools._current_tab)
+            listed = core("read-only", "list")
+            self.assertNotIn("hint", listed)
+            self.assertFalse(any(tab.get("current") for tab in listed["tabs"]))
+
+            selected = core("writable", "select", index=0)
+            self.assertEqual((selected["ok"], selected["index"]), (True, 0), selected)
+            self.assertNotIn("hint", selected)
+            self.assertEqual(selected["tabs"][0], {"index": 0, "title": None, "url": "https://user.example/one",
+                                                   "current": True, "active": True})
+            self.assertEqual(playwright_tools._current_tab, 1)
+            self.assertNotIn("hint", core("writable", "list"))
+            listed = core("read-only", "list")
+            self.assertEqual(listed["hint"], hint)
+            self.assertTrue(listed["tabs"][0]["current"])
+            self.assertNotIn("owned", listed["tabs"][0])
+            self.assertEqual(core("read-only", "select", index=1)["code"], "user_tab_read_only")
+            self.assertEqual(playwright_tools._current_tab, 1, "a refused select leaves current unchanged")
+
+            opened = core("read-only", "new")
+            self.assertNotIn("hint", opened)
+            own = opened["index"]
+            self.assertEqual({key: opened["tabs"][own].get(key) for key in ("current", "owned")},
+                             {"current": True, "owned": True})
+            self.assertEqual(core("read-only", "select", index=0)["code"], "user_tab_read_only")
+            selected = core("read-only", "select", index=own)
+            self.assertNotIn("hint", selected)
+            self.assertEqual({key: selected["tabs"][own].get(key) for key in ("current", "owned")},
+                             {"current": True, "owned": True})
+            self.assertNotIn("hint", core("read-only", "list"))
 
     @unittest.skipUnless(shutil.which("node"), "actual background integration needs node")
     def test_window_targets_against_actual_background(self):
