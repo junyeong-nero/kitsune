@@ -260,6 +260,8 @@ async function frameActivityTransitions() {
     field.value = '';
     assert.equal(await h.busy(), null, 'empty field releases');
     assert.equal((await h.command({ action: 'type', text: 'agent' })).ok, true);
+    field.value = 'agent';  // #397: the agent's text in the released field
+    assert.equal(await h.busy(), null, 'released typing stays released');
     for (const kind of ['blur', 'document blur', 'removed', 'empty editor']) {
       const editor = { tagName: 'DIV', isContentEditable: true, textContent: 'draft', isConnected: true };
       child.document.hasFocus = () => true;

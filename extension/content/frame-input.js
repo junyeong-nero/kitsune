@@ -37,9 +37,12 @@
       const hasContent = field && (typeof field.value === 'string' ? field.value.length > 0
         : field.isContentEditable ? (field.textContent || '').trim().length > 0 : true);
       // An inactive matching document is still queryable after focus returns, without new input.
-      return field?.isConnected && field === document.activeElement && document.hasFocus() && hasContent
-        ? { active: true, state: { reason: 'typing', field: field.tagName.toLowerCase() } }
-        : { active: false, documentToken };
+      if (field?.isConnected && field === document.activeElement && document.hasFocus() && hasContent) {
+        return { active: true, state: { reason: 'typing', field: field.tagName.toLowerCase() } };
+      }
+      // Released in a focused document: the agent's own later focus or text there is no user draft.
+      if (field && document.hasFocus()) userTypedField = null;
+      return { active: false, documentToken };
     });
   });
 })();
