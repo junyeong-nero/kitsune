@@ -5,6 +5,7 @@ and explicitly writable scenarios opt out. All owned-tab requests share one clie
 """
 from http.server import BaseHTTPRequestHandler
 import json
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -95,6 +96,63 @@ class RealBrowserProtectedTabTests(harness.RealBrowserTestCase):
         self.assertEqual(self.tab_url(tab), self.page.origin + "/free")
         self.assertFalse(next(t for t in self.call("/api/tabs")["tabs"] if t["id"] == tab)["owned"])
         self.assert_read_only(self.call("/api/back", {"tabId": tab}))
+
+    def core_tabs(self, user_tabs, action, **arguments):
+        """Core browser_tabs as an MCP client with KITSUNE_USER_TABS=user_tabs runs it."""
+        def request(path, body=None, timeout=15, start_bridge=True):
+            headers = {**self.bridge.auth(), USER_TABS_HEADER: user_tabs}
+            if body is not None:
+                headers["Content-Type"] = "application/json"
+            status, _, text = harness._request(self.bridge.http_port, "GET" if body is None else "POST", path,
+                                               headers, self.bridge.host,
+                                               None if body is None else json.dumps(body), timeout=90)
+            self.assertIn(status, (200, 403), text)
+            return json.loads(text)
+        with patch.object(tools, "client", SimpleNamespace(user_tabs=user_tabs)), \
+                patch.object(tools, "_get", request), patch.object(tools, "_post", request):
+            return playwright_tools.browser_tabs(action, **arguments)
+
+    def test_core_select_keeps_current_truthful_and_list_explains_read_only(self):
+        # #399: select never hides current; #416: an explicit list explains a read-only current tab.
+        user = self.user_tab()
+        start = self.page.origin + "/start"
+        with patch.object(playwright_tools, "_current_tab", None):
+            index = next(t["index"] for t in self.core_tabs("read-only", "list")["tabs"] if t["url"] == start)
+            self.assert_read_only(self.core_tabs("read-only", "select", index=index))
+            self.assertIsNone(playwright_tools._current_tab)
+            listed = self.core_tabs("read-only", "list")
+            self.assertNotIn("hint", listed)
+            self.assertFalse(any(t.get("current") for t in listed["tabs"]), listed)
+
+            # The kitsune-benchmark setup: a writable client selects the user's tab and waits for current.
+            selected = self.assert_ok(self.core_tabs("writable", "select", index=index))
+            self.assertNotIn("hint", selected)
+            self.assertTrue(selected["tabs"][index].get("current"), selected)
+            self.assertNotIn("owned", selected["tabs"][index])
+            self.assertEqual(playwright_tools._current_tab, user)
+            listed = self.core_tabs("read-only", "list")
+            self.assertTrue(listed["tabs"][index].get("current"), listed)
+            self.assertEqual(listed["hint"], f"Tab {index} is read-only for this client. Before writing, open your "
+                                             f"own tab with browser_tabs action=new url={start} and work there.")
+
+            opened = self.core_tabs("read-only", "new", url=self.page.origin + "/own")
+            own = playwright_tools._current_tab
+            self.assertNotEqual(own, user, opened)
+            self.addCleanup(self.call, "/api/close-tab", {"tabId": own})
+            self.assertNotIn("hint", opened)
+            self.assertEqual({key: opened["tabs"][opened["index"]].get(key) for key in ("current", "owned")},
+                             {"current": True, "owned": True})
+            # Indices are positions: the new tab can shift the user's tab.
+            index = next(t["index"] for t in opened["tabs"] if t["url"] == start)
+            self.assert_read_only(self.core_tabs("read-only", "select", index=index))
+            self.assertEqual(playwright_tools._current_tab, own, "a refused select leaves current unchanged")
+            selected = self.assert_ok(self.core_tabs("read-only", "select", index=opened["index"]))
+            self.assertNotIn("hint", selected)
+            self.assertTrue(selected["tabs"][opened["index"]].get("current"), selected)
+            self.assertNotIn("hint", self.core_tabs("read-only", "list"))
+        user_tab = next(t for t in self.call("/api/tabs")["tabs"] if t["id"] == user)
+        self.assertEqual((user_tab["url"], user_tab["active"], user_tab["owned"]), (start, True, False),
+                         "selection neither changed the user's tab nor its view nor granted ownership")
 
     def restricted(self, path, body=None, mode="read"):
         """(HTTP status, reply) of a request from a read/draft client that protects user tabs."""

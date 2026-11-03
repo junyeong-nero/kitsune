@@ -11,6 +11,8 @@ async function main() {
   const request = (who = a, tabId = 1, extra = {}) => h.send({ action: 'requestTab', ...who, tabId,
     reason: 'Work on this page', ...extra });
   const write = who => h.send({ action: 'click', ...who, tabId: 1, selector: '#go' });
+  // Core browser_tabs select admits its target with this check before it makes the tab current (#399).
+  const selectable = who => h.send({ action: 'checkTabWrite', writeAction: 'switchTab', ...who, tabId: 1 });
   const popup = () => h.popup({ action: 'handoffs' });
   const decide = (id, decision = 'approve') => h.popup({ action: 'handoffDecision', id, decision });
   const owned = async who => (await h.send({ action: 'getTabs', ...who })).tabs.find(t => t.id === 1).owned;
@@ -24,12 +26,15 @@ async function main() {
   assert.equal(await h.popup({ action: 'handoffDecision', id: prompt.id, decision: 'approve' },
     { id: 'kitsune-test', tab: { id: 1 }, url: h.tabs[1].url }), undefined);
   assert.equal(await owned(a), false);
+  assert.equal((await selectable(a)).code, 'user_tab_read_only');
   await decide(prompt.id);
   assert.equal((await pending).ok, true);
   assert.equal(await owned(a), true);
   assert.equal(await owned(b), false, 'same stable owner does not share a handoff');
   assert.equal((await write(a)).ok, true);
   assert.equal((await write(b)).code, 'user_tab_read_only');
+  assert.deepEqual(await selectable(a), { ok: true }, 'a handed-off tab can be selected');
+  assert.equal((await selectable(b)).code, 'user_tab_read_only');
   assert.equal((await request(b)).code, 'user_tab_read_only', 'no silent transfer');
   h.activity[1] = { reason: 'input', input: 'keydown' };
   assert.equal((await write(a)).code, 'user_active');
@@ -41,6 +46,7 @@ async function main() {
   assert.equal((await h.send({ action: 'getTabs', ...a })).tabs.find(t => t.id === child).owned, true);
   await h.popup({ action: 'takeBackHandoff', tabId: 1 });
   assert.equal((await write(a)).code, 'user_tab_read_only');
+  assert.equal((await selectable(a)).code, 'user_tab_read_only');
   assert.equal((await decide(prompt.id)).code, 'needs_user', 'old popup cannot regrant');
   assert.equal((await request(a, 1, { confirmToken: prompt.id })).code, 'needs_user');
   pending = request();
