@@ -91,17 +91,29 @@ POPUP = """(async () => {
   if (!popup) throw new Error('the toolbar popup did not open');
   const panel = popup.closest('panel');
   const name = 'kitsune-e2e-popup-' + Math.random();
+  let listener, timer;
   const reply = new Promise((resolve, reject) => {
-    const listener = message => {
-      popup.messageManager.removeMessageListener(name, listener);
-      resolve(message.data);
-    };
-    popup.messageManager.addMessageListener(name, listener);
-    win.setTimeout(() => reject(new Error('the popup frame script did not answer')), 5000);
+    listener = message => resolve(message.data);
+    timer = win.setTimeout(() => reject(new Error('the popup frame script did not answer')), 5000);
   });
-  popup.messageManager.loadFrameScript('data:,' + encodeURIComponent(
-    `(${%(frame)s})(${JSON.stringify(name)}, ${JSON.stringify(%(click)s)})`), false);
-  return {...await reply, panel: panel && panel.id, panelState: panel && panel.state};
+  popup.messageManager.addMessageListener(name, listener);
+  try {
+    popup.messageManager.loadFrameScript('data:,' + encodeURIComponent(
+      `(${%(frame)s})(${JSON.stringify(name)}, ${JSON.stringify(%(click)s)})`), false);
+    return {...await reply, panelState: panel.state};
+  } finally {
+    win.clearTimeout(timer);
+    popup.messageManager.removeMessageListener(name, listener);
+  }
+})()"""
+# The action button's badge: the text background.js set, and the button's badge attribute
+# (absent when the text is empty). Zen puts the button in the extensions panel unless pinned.
+BADGE = """(async () => {
+  const {ExtensionParent} = ChromeUtils.importESModule('resource://gre/modules/ExtensionParent.sys.mjs');
+  const action = ExtensionParent.apiManager.global.browserActionFor(WebExtensionPolicy.getByID(%s).extension);
+  const win = Services.wm.getMostRecentWindow('navigator:browser');
+  const button = action.widget.forWindow(win).node.querySelector('.webextension-browser-action');
+  return {text: action.action.getProperty(null, 'badgeText'), shown: button.getAttribute('badge') ?? ''};
 })()"""
 POPUP_CLOSES = """(async () => {
   const policy = WebExtensionPolicy.getByID(%s);
@@ -246,7 +258,7 @@ class RealBrowserHandoffTests(harness.RealBrowserTestCase):
         """The open toolbar popup's state; click={"label", "url", "button"} clicks that card's button."""
         state = self.parent(POPUP % {"extension": json.dumps(harness.EXTENSION_ID), "frame": json.dumps(POPUP_FRAME),
                                      "click": json.dumps(click)})
-        self.assertEqual((state["panel"], state["panelState"]), ("customizationui-widget-panel", "open"), state)
+        self.assertEqual(state["panelState"], "open", state)
         return state
 
     def popup_cards(self, url):
@@ -265,14 +277,28 @@ class RealBrowserHandoffTests(harness.RealBrowserTestCase):
         return self.wait_for(lambda: next((c for c in self.popup_cards(url) or () if c["label"] == label), None),
                              f"the popup did not show a {label!r} card for {url}")
 
-    def assert_card(self, card, url, label, buttons):
-        self.assertEqual(card, {"label": label, "client": CLIENT_NAME, "title": "Handoff " + url.rsplit("/", 1)[1],
+    def badge(self):
+        return self.parent(BADGE % json.dumps(harness.EXTENSION_ID))
+
+    def assert_badge(self, text):
+        """The toolbar badge counts the requests waiting in the popup (it is cleared with "")."""
+        expected = {"text": text, "shown": text}
+        deadline = time.monotonic() + 3
+        while (badge := self.badge()) != expected and time.monotonic() < deadline:
+            time.sleep(0.2)
+        self.assertEqual(badge, expected)
+
+    def assert_card(self, card, url, label, buttons, title=None):
+        """card names the client, the tab's title (by default the fixture's unclicked title), url and REASON."""
+        self.assertEqual(card, {"label": label, "client": CLIENT_NAME,
+                                "title": title or "Handoff " + url.rsplit("/", 1)[1],
                                 "url": url, "reason": REASON, "buttons": buttons})
 
-    def decide(self, url, button):
+    def decide(self, url, button, title=None):
         """Wait for the popup's request card for url, check what it names, and click button."""
         self.assert_card(self.wait_for_card(url, "Tab access request"), url, "Tab access request",
-                         ["Decline", "Approve handoff"])
+                         ["Decline", "Approve handoff"], title)
+        self.assert_badge("1")
         self.assertTrue(self.popup({"label": "Tab access request", "url": url, "button": button})["clicked"])
 
     def assert_read_only(self, outcome):
@@ -297,7 +323,9 @@ class RealBrowserHandoffTests(harness.RealBrowserTestCase):
         """Request the tab at url and approve it in the popup; returns the request's (isError, payload)."""
         pending = asyncio.ensure_future(session.request(url))
         await asyncio.to_thread(self.decide, url, "Approve handoff")
-        return await pending
+        granted = await pending
+        await asyncio.to_thread(self.assert_badge, "")
+        return granted
 
     def test_popup_approval_hands_over_the_tab_without_a_prompt(self):
         url = self.user_tab("approve")
@@ -323,6 +351,7 @@ class RealBrowserHandoffTests(harness.RealBrowserTestCase):
             pending = asyncio.ensure_future(session.request(url))
             await asyncio.to_thread(self.decide, url, "Decline")
             declined = await pending
+            await asyncio.to_thread(self.assert_badge, "")
             return declined, await session.index(url), await session.write(url), session.prompts
 
         (error, declined), listed, write, prompts = self.run_session(scenario, answers=[])
@@ -364,16 +393,23 @@ class RealBrowserHandoffTests(harness.RealBrowserTestCase):
         self.wait_for(lambda: self.popup_cards(url) == [], "the popup still lists the ended session's handoff")
 
         async def scenario(session):
-            return (await session.index(url), await session.index(own), await session.write(url),
-                    await session.write(own), await session.request(own))
+            listed = (await session.index(url), await session.index(own), await session.write(url),
+                      await session.write(own), await session.request(own))
+            # A grant left behind would refuse this at once ("Another client or session owns this tab").
+            pending = asyncio.ensure_future(session.request(url))
+            await asyncio.to_thread(self.decide, url, "Decline", "acted:1")
+            return (*listed, await pending)
 
-        user, agent, refused, acted, requested = self.run_session(scenario, answers=[])
+        user, agent, refused, acted, requested, (error, declined) = self.run_session(scenario, answers=[])
         self.assertNotIn("owned", user)
         self.assertIs(agent.get("owned"), True, agent)
         self.assert_read_only(refused)
         self.assert_acted(acted, own, 1)
         self.assertEqual(requested, (False, {"ok": True, "tabId": self.tab(own)["id"], "owned": True}),
                          "the agent's own tab needs no handoff")
+        self.assertTrue(error, declined)
+        self.assert_error(declined, "needs_user", False)
+        self.assertEqual(declined["state"]["decision"], "declined", "the tab could be requested afresh")
         self.assertEqual(self.tab(url)["title"], "acted:1", "the user tab kept the first session's click only")
 
     async def hand_over_and_open_own(self, session, url, own):
@@ -404,20 +440,20 @@ class RealBrowserHandoffTests(harness.RealBrowserTestCase):
             outcome = await self.hand_over_and_open_own(session, url, own)
             (pid,) = _server_pids()
             os.kill(pid, signal.SIGKILL)  # no MCP shutdown and no handoff session close
-            revoked = await asyncio.to_thread(self.wait_for, lambda: self.popup_cards(url) == [],
-                                              "the popup still lists the killed client's handoff")
-            return (*outcome, revoked)
+            await asyncio.to_thread(self.wait_for, lambda: self.popup_cards(url) == [],
+                                    "the popup still lists the killed client's handoff")
+            return outcome
 
-        granted, acted, revoked = self.run_session(scenario, answers=[])
+        granted, acted = self.run_session(scenario, answers=[])
         self.assertFalse(granted[0], granted)
         self.assertFalse(acted[0], acted)
-        self.assertTrue(revoked)
         self.ended_session_checks(url, own)
 
     def wait_for_unanswered_request(self, url):
+        """The popup lists the request (wait_for_card's 15 s are within the browser's 30 s)."""
         card = self.wait_for_card(url, "Tab access request")
         self.assert_card(card, url, "Tab access request", ["Decline", "Approve handoff"])
-        return time.monotonic()
+        self.assert_badge("1")
 
     def test_unanswered_browser_prompt_falls_back_to_client_elicitation(self):
         url = self.user_tab("fallback-elicitation")
@@ -425,16 +461,16 @@ class RealBrowserHandoffTests(harness.RealBrowserTestCase):
         async def scenario(session):
             start = time.monotonic()
             pending = asyncio.ensure_future(session.request(url))
-            shown = await asyncio.to_thread(self.wait_for_unanswered_request, url)
+            await asyncio.to_thread(self.wait_for_unanswered_request, url)
             granted = await pending
-            return start, shown, granted, await session.index(url), await session.write(url), session.prompts
+            return start, granted, await session.index(url), await session.write(url), session.prompts
 
-        start, shown, granted, listed, acted, prompts = self.run_session(
-            scenario, answers=[("accept", "Approve")], observe=lambda: self.retired_cards(url))
+        start, granted, listed, acted, prompts = self.run_session(
+            scenario, answers=[("accept", "Approve")], observe=lambda: (self.retired_cards(url), self.badge()))
         (prompt,) = prompts
         self.assertGreaterEqual(prompt["at"] - start, BROWSER_FALLBACK_SECONDS - 1, "the browser had 30 s first")
-        self.assertLess(shown - start, BROWSER_FALLBACK_SECONDS, "the popup listed the request before the fallback")
-        self.assertEqual(prompt["observed"], [], "the browser prompt retired before the client asked")
+        self.assertEqual(prompt["observed"], ([], {"text": "", "shown": ""}),
+                         "the browser prompt and its badge retired before the client asked")
         for part in (f"{CLIENT_NAME} requests this tab: {REASON}", f"Tab: Handoff fallback-elicitation - {url}"):
             self.assertIn(part, prompt["message"])
         self.assertEqual(granted, (False, {"ok": True, "tabId": self.tab(url)["id"], "owned": True}))
@@ -447,19 +483,19 @@ class RealBrowserHandoffTests(harness.RealBrowserTestCase):
         async def scenario(session):
             start = time.monotonic()
             pending = asyncio.ensure_future(session.request(url))
-            shown = await asyncio.to_thread(self.wait_for_unanswered_request, url)
+            await asyncio.to_thread(self.wait_for_unanswered_request, url)
             error, held = await pending
             answered = time.monotonic()
             retired = await asyncio.to_thread(self.retired_cards, url)
+            await asyncio.to_thread(self.assert_badge, "")
             token = held.get("state", {}).get("confirmToken")
             unconfirmed = await session.write(url)
             granted = await session.request(url, confirm_token=token)
-            return (start, shown, answered, (error, held), retired, unconfirmed, granted,
+            return (start, answered, (error, held), retired, unconfirmed, granted,
                     await session.index(url), await session.write(url))
 
-        start, shown, answered, (error, held), retired, unconfirmed, granted, listed, acted = self.run_session(scenario)
+        start, answered, (error, held), retired, unconfirmed, granted, listed, acted = self.run_session(scenario)
         self.assertGreaterEqual(answered - start, BROWSER_FALLBACK_SECONDS - 1, "the browser had 30 s first")
-        self.assertLess(shown - start, BROWSER_FALLBACK_SECONDS)
         self.assertTrue(error, held)
         self.assert_error(held, "needs_user", False)
         state = held["state"]
