@@ -8,14 +8,15 @@ focus, selection and events, and the parent process reads the shown tab: these r
 focus or select nothing, and the explicitly writable opt-out's scroll shows they see a change.
 
 The core tools run through an MCP client session on this process's server (FastMCP validation
-and its approval elicitation), whose bridge requests go to the class's bridge as one client.
+and its approval elicitation). Their bridge requests go to the class's bridge as one client
+with the read-only user-tab permission and the server's tool-call headers, but not through the
+server's BridgeClient (no client id, approver secret or caps headers).
 They act on the agent's current tab, or on the shown tab while there is none. browser_tabs
 select refuses a user tab, so to read or write a background user tab through them the test makes
 that tab current directly; browser_tabs list then marks it current as for any other tab.
 """
 import asyncio
 from http.server import BaseHTTPRequestHandler
-import inspect
 import json
 import logging
 import time
@@ -174,12 +175,25 @@ class RealBrowserUserTabReadTests(harness.RealBrowserTestCase):
             patcher = patch.object(playwright_tools, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
-        post = lambda endpoint, data, timeout=15, start_bridge=True: self.call(endpoint, data)
-        for patcher in (patch.object(tools, "_get", self.call), patch.object(tools, "_post", post),
+        get = lambda endpoint: self.tool_request(endpoint)
+        post = lambda endpoint, data, timeout=15, start_bridge=True: self.tool_request(endpoint, data)
+        for patcher in (patch.object(tools, "_get", get), patch.object(tools, "_post", post),
                         # The server's activity count goes to this bridge too, never to a default one.
                         patch.object(server._client, "post", post)):
             patcher.start()
             self.addCleanup(patcher.stop)
+
+    def tool_request(self, endpoint, data=None):
+        """A tool's bridge request with the read-only user-tab permission and the server's tool-call headers
+        sent explicitly, as its BridgeClient sends them (GET without data)."""
+        headers = {**self.bridge.auth(), USER_TABS_HEADER: "read-only", **server._gateway_headers()}
+        if data is not None:
+            headers["Content-Type"] = "application/json"
+        status, _, text = harness._request(self.bridge.http_port, "GET" if data is None else "POST", endpoint,
+                                           headers, self.bridge.host, None if data is None else json.dumps(data),
+                                           timeout=90)
+        self.assertEqual(status, 200, text)
+        return json.loads(text)
 
     def parent(self, script, *args):
         debugger = harness.RemoteDebugger(self.browser.rdp_port)
@@ -242,6 +256,7 @@ class RealBrowserUserTabReadTests(harness.RealBrowserTestCase):
         self.assertEqual((page["active"], page["selection"], page["events"]), ("draft", SELECTION, []), observed)
         self.assertEqual(page["visibility"], "visible" if shown else "hidden", observed)
         self.assertEqual(observed["shown"]["tabId"] == tab_id, shown, observed)
+        self.assertIs(observed["shown"]["windowFocused"], True, observed)
 
     def assert_unchanged(self, url, before, step):
         self.assertEqual(self.observe(url), before, f"{step} changed the user's tab or view")
@@ -328,17 +343,13 @@ class RealBrowserUserTabReadTests(harness.RealBrowserTestCase):
         prompts = asyncio.run(asyncio.wait_for(_in_session(body), MCP_SESSION_TIMEOUT))
         self.assertEqual(prompts, [])
 
-    def assert_refused_at_once(self, step, started, error, result, tab_id, index, action):
-        """A user_tab_read_only refusal of step, without a token, an approval or a wait."""
-        elapsed = time.monotonic() - started
-        self.assertTrue(error, (step, result))
+    def assert_refused_at_once(self, step, elapsed, result, tab_id, index, action):
+        """A user_tab_read_only refusal of step that answered without waiting for an approval."""
         self.assert_error(result, "user_tab_read_only", False)
         self.assertEqual({key: result["state"].get(key) for key in ("tabId", "index", "action")},
                          {"tabId": tab_id, "index": index, "action": action}, (step, result))
         for way in ("browser_tabs action=new", "browser_tabs action=request"):
             self.assertIn(way, result.get("hint", ""), step)
-        for token in ("confirmToken", "confirm_token", "resume_token"):
-            self.assertNotIn(token, json.dumps(result), step)
         self.assertLess(elapsed, REFUSAL_SECONDS, step)
 
     def check_writes_refuse(self, name, shown):
@@ -357,12 +368,24 @@ class RealBrowserUserTabReadTests(harness.RealBrowserTestCase):
             self.assertFalse(error, listed)
             (index,) = [tab["index"] for tab in listed["tabs"] if tab["url"] == url]
 
-            async def refused(step, call, action):
-                """call returns an MCP call's (isError, result), or a Kitsune tool's result."""
+            async def refused_over_mcp(step, tool, arguments, action):
+                """An MCP error; a hold would have prompted (prompts below), as this client elicits."""
+                started = time.monotonic()
+                error, result = await mcp.payload(tool, arguments)
+                elapsed = time.monotonic() - started
+                self.assertTrue(error, (step, result))
+                self.assert_refused_at_once(step, elapsed, result, tab_id, index, action)
+                self.assert_unchanged(url, before, step)
+
+            def refused_directly(step, call, action):
+                """A direct Kitsune tool call has no elicitation: a hold would return a confirm token."""
                 started = time.monotonic()
                 result = call()
-                error, result = await result if inspect.isawaitable(result) else (tools._failed(result), result)
-                self.assert_refused_at_once(step, started, error, result, tab_id, index, action)
+                elapsed = time.monotonic() - started
+                self.assertTrue(tools._failed(result), (step, result))
+                self.assert_refused_at_once(step, elapsed, result, tab_id, index, action)
+                for token in ("confirmToken", "confirm_token", "resume_token"):
+                    self.assertNotIn(token, json.dumps(result), step)
                 self.assert_unchanged(url, before, step)
 
             # Addressed by index or tab_id while the agent's own tab is current.
@@ -371,14 +394,14 @@ class RealBrowserUserTabReadTests(harness.RealBrowserTestCase):
                     ("close", "browser_tabs", {"action": "close", "index": index}, "closeTab"),
                     ("navigate", "browser_navigate", {"url": agent_url, "tab_id": tab_id}, "navigate"),
                     ("back", "browser_navigate_back", {"tab_id": tab_id}, "goBack")):
-                await refused(f"browser_tabs {step}" if tool == "browser_tabs" else tool,
-                              lambda: mcp.payload(tool, arguments), action)
+                await refused_over_mcp(f"browser_tabs {step}" if tool == "browser_tabs" else tool, tool, arguments,
+                                       action)
                 self.assertEqual(playwright_tools._current_tab, agent, step)
             # The Kitsune tools with tab_id.
             for step, call, action in (
                     ("scroll", lambda: tools.browser_scroll(direction="down", tab_id=tab_id), "scroll"),
                     ("reload", lambda: tools.browser_reload_tab(tab_id=tab_id), "reloadTabBrowser")):
-                await refused(f"Kitsune {step}", call, action)
+                refused_directly(f"Kitsune {step}", call, action)
             # The core tools on the user's tab as the current tab.
             playwright_tools._current_tab = tab_id
             for tool, arguments, action in (
@@ -391,7 +414,7 @@ class RealBrowserUserTabReadTests(harness.RealBrowserTestCase):
                     ("browser_navigate", {"url": agent_url}, "navigate"),
                     ("browser_navigate_back", {}, "goBack"),
                     ("browser_close", {}, "closeTab")):
-                await refused(f"{tool} {arguments}", lambda: mcp.payload(tool, arguments), action)
+                await refused_over_mcp(f"{tool} {arguments}", tool, arguments, action)
                 self.assertEqual(playwright_tools._current_tab, tab_id, tool)
             # list marks the current tab, whoever owns it, and only that one.
             playwright_tools._current_tab = agent
