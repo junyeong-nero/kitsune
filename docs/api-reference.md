@@ -3061,9 +3061,9 @@ Control Center, named in the system's language), so it never lands on the menu b
 remains is Zen's own full-screen strip: a second Zen window, 68 points tall, over the top of the
 page (the page starts at 8 points). It moves down below a shown menu bar (30 to 98 points). A
 click on it refuses with `state.reason: "other_browser_window"`, so the top 60 or so points of a
-full-screen Zen page take no trusted click. Scroll the target further down the page, or ask the
-user to leave full screen, then retry. To see which windows macOS reports there on another
-setup, run the opt-in check while nobody uses the machine:
+full-screen Zen page take no trusted click (#431). Scroll the target further down the page, or
+ask the user to leave full screen, then retry. To see which windows macOS reports there on
+another setup, run the opt-in check while nobody uses the machine:
 
 ```bash
 KITSUNE_E2E_BROWSER=/Applications/Zen.app/Contents/MacOS/zen KITSUNE_E2E_TRUSTED_INPUT=1 \

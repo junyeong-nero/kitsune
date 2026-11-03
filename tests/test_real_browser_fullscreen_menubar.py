@@ -2,7 +2,8 @@
 
 A check, not a regression test: it prints what the window-at-point helper (_mac_window_at) finds
 near the top of a page in native full screen and which browser_not_at_point reason a viewport
-trusted click there would get, and asserts nothing about it. The menu bar (a Window Server window
+trusted click there would get. It asserts only what the docs state, after printing the points: at
+the window's top the hidden menu bar is not the window found, and a shown one refuses. The menu bar (a Window Server window
 at the main menu level, with Control Center's menu extras at the status level) is told apart from
 the browser's own full-screen toolbar strip (other_browser_window).
 
@@ -19,7 +20,8 @@ With KITSUNE_E2E_REVEAL_MENU_BAR=1 as well, it then shows the menu bar the way a
 moves the real pointer (mouse-move events only, no button) to rest at the top edge of its own
 full-screen window, probes the same points again, and moves the pointer back to where it was.
 It moves the pointer only while its own browser is the frontmost app and its window is the first
-window under the menu bar at that edge; otherwise the step fails without moving it.
+window under the menu bar at that edge; otherwise the step fails without moving it. It fails too
+if the menu bar's windows do not change (it did not show), rather than print mislabelled points.
 
 Each point prints one JSON line: `point` names the point and the menu bar's state (hidden,
 revealed, hidden again); `case` is menu_bar, tab_window, other_browser_window, other_window or
@@ -82,17 +84,17 @@ def on_screen_windows():
     return listed
 
 
-def windows_at(x, y):
-    """Every on-screen window containing desktop point (x, y), front to back."""
-    return [w for w in on_screen_windows()
+def windows_at(windows, x, y):
+    """Every window of `windows` (on_screen_windows()) containing desktop point (x, y)."""
+    return [w for w in windows
             if w["bounds"][0] <= x < w["bounds"][0] + w["bounds"][2] and w["bounds"][1] <= y < w["bounds"][1] + w["bounds"][3]]
 
 
-def menu_bar_windows(display):
-    """Every on-screen window at the menu bar's levels whose left edge is on display (left, top,
-    width, height), whatever its top, front to back."""
+def menu_bar_windows(windows, display):
+    """Every window of `windows` (on_screen_windows()) at the menu bar's levels whose left edge is
+    on display (left, top, width, height), whatever its top."""
     levels = menu_bar_levels()
-    return [w for w in on_screen_windows()
+    return [w for w in windows
             if w["layer"] in levels and display[0] <= w["bounds"][0] < display[0] + display[2]]
 
 
@@ -151,7 +153,10 @@ class RealBrowserFullScreenMenuBarTests(harness.RealBrowserTestCase):
 
     def probe(self, label, x, y, target_window):
         found = kitsune_bridge._mac_window_at(x, y)
-        stack = windows_at(x, y)
+        # One list for stack, menuBarWindows and browserWindows, so they agree with each other
+        # while the menu bar slides; the two bridge helpers read their own.
+        windows = on_screen_windows()
+        stack = windows_at(windows, x, y)
         refusal = kitsune_bridge._browser_not_at_point(x, y, target_window=target_window)
         pid, owner, bounds = found
         front = next((w for w in stack if not w["skipped"]), None)
@@ -169,17 +174,24 @@ class RealBrowserFullScreenMenuBarTests(harness.RealBrowserTestCase):
         evidence = {"point": label, "screen": [x, y], "case": case,
                     "windowAt": {"pid": pid, "owner": owner, "layer": layer, "bounds": list(bounds) if bounds else None},
                     "refusal": (refusal or {}).get("state", {}).get("reason"), "stack": stack,
-                    "menuBarWindows": menu_bar_windows(target_window),
-                    "browserWindows": [w for w in on_screen_windows() if w["pid"] == self.browser.process.pid]}
+                    "menuBarWindows": menu_bar_windows(windows, target_window),
+                    "browserWindows": [w for w in windows if w["pid"] == self.browser.process.pid]}
         print(f"\n#336 {json.dumps(evidence)}", flush=True)
+        return evidence
 
     def probe_points(self, state, x, target, content_top):
-        # A point in the window's top strip, above the page: a viewport click may not reach it.
-        self.probe(f"{state}: window top y=10 (above the page)", x, target[1] + 10, target)
-        self.probe(f"{state}: page top + 10", x, round(content_top) + 10, target)
-        self.probe(f"{state}: window top y=40 (below the menu bar's height)", x, target[1] + 40, target)
-        self.probe(f"{state}: window top y=80", x, target[1] + 80, target)
-        self.probe(f"{state}: middle (control)", x, round(target[1] + target[3] / 2), target)
+        """The evidence of each point, the window top + 10 (within the menu bar's height) first."""
+        return [self.probe(f"{state}: window top + 10", x, target[1] + 10, target),
+                self.probe(f"{state}: page top + 10", x, round(content_top) + 10, target),
+                self.probe(f"{state}: window top y=40 (below the menu bar's height)", x, target[1] + 40, target),
+                self.probe(f"{state}: window top y=80", x, target[1] + 80, target),
+                self.probe(f"{state}: middle (control)", x, round(target[1] + target[3] / 2), target)]
+
+    def assert_menu_bar_hidden(self, top):
+        """The documented result (#336): the hidden menu bar is not the window at the window top."""
+        self.assertNotEqual(top["case"], "menu_bar",
+                            f"the hidden menu bar is the window at {top['screen']}: the documented "
+                            f"result does not hold on this setup: {top}")
 
     def reveal_menu_bar(self, x, target, content_top):
         """Rest the real pointer at the top edge of this suite's full-screen window, so macOS shows
@@ -190,27 +202,30 @@ class RealBrowserFullScreenMenuBarTests(harness.RealBrowserTestCase):
         # Safety: the pointer goes only over this suite's own window, while its browser is in front.
         self.assertEqual(kitsune_bridge._mac_frontmost_pid(), self.browser.process.pid,
                          "the suite's browser is not the frontmost app; the pointer was not moved")
-        under = next((w for w in windows_at(x, edge)
+        under = next((w for w in windows_at(on_screen_windows(), x, edge)
                       if not w["skipped"] and w["layer"] not in menu_bar_levels()), None)
         self.assertEqual((under or {}).get("pid"), self.browser.process.pid,
                          f"the suite's browser window is not at {[x, edge]}; the pointer was not moved: {under}")
-        hidden = menu_bar_windows(target)
+        hidden = menu_bar_windows(on_screen_windows(), target)
         for y in range(edge + 200, edge - 1, -20):
-            move_pointer(x, max(y, edge))
+            move_pointer(x, y)
             time.sleep(0.02)
-        move_pointer(x, edge)
         # The menu bar slides in after a short delay; wait for the list to change, then settle.
         deadline = time.monotonic() + 3
-        while menu_bar_windows(target) == hidden and time.monotonic() < deadline:
+        while menu_bar_windows(on_screen_windows(), target) == hidden and time.monotonic() < deadline:
             time.sleep(0.1)
         time.sleep(1)
-        print(f"\n#336 pointer at {pointer_location()} (top edge), menu bar windows changed: "
-              f"{menu_bar_windows(target) != hidden}", flush=True)
-        self.probe_points("menu bar revealed", x, target, content_top)
+        changed = menu_bar_windows(on_screen_windows(), target) != hidden
+        print(f"\n#336 pointer at {pointer_location()} (top edge), menu bar windows changed: {changed}", flush=True)
+        self.assertTrue(changed, "the menu bar did not show; the revealed probes would not be evidence")
+        revealed = self.probe_points("menu bar revealed", x, target, content_top)
         move_pointer(*start)
         time.sleep(2)
         print(f"\n#336 pointer back at {pointer_location()}", flush=True)
-        self.probe_points("menu bar hidden again", x, target, content_top)
+        hidden_again = self.probe_points("menu bar hidden again", x, target, content_top)
+        # A click must never land on a shown menu bar.
+        self.assertIsNotNone(revealed[0]["refusal"], f"a click on the shown menu bar would be made: {revealed[0]}")
+        self.assert_menu_bar_hidden(hidden_again[0])
 
     def test_reports_the_window_at_the_top_of_a_full_screen_page(self):
         tab = self.open_tab(f"{self.site.origin}/top")
@@ -226,7 +241,9 @@ class RealBrowserFullScreenMenuBarTests(harness.RealBrowserTestCase):
         print(f"\n#336 window {list(target)} state {window['state']}, page top at y={content_top}, "
               f"pointer at {pointer_location()}, browser pid {self.browser.process.pid}", flush=True)
         x = round(window["left"] + window["width"] / 2)
-        self.probe_points("menu bar hidden", x, target, content_top)
+        hidden = self.probe_points("menu bar hidden", x, target, content_top)
+        with self.subTest("menu bar hidden"):
+            self.assert_menu_bar_hidden(hidden[0])
         with self.subTest("menu bar revealed"):
             if os.environ.get("KITSUNE_E2E_REVEAL_MENU_BAR") != "1":
                 self.skipTest("moves the real pointer to the top edge: set KITSUNE_E2E_REVEAL_MENU_BAR=1")
