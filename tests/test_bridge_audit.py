@@ -238,23 +238,19 @@ class ApprovalAuditTests(unittest.TestCase):
     A = {task_modes.APPROVER_HEADER: "secret-of-mcp-server-a"}
     B = {task_modes.APPROVER_HEADER: "secret-of-mcp-server-b"}
     CLAIM = {task_modes.APPROVAL_HEADER: "elicitation"}
-    # (path, body): held for the viewed tab, for closing a user tab, and by ask-before-act.
-    HOLDS = (("/api/click", {"selector": "#go", "tabId": 4}), ("/api/close-tab", {"tabId": 4}),
-             ("/api/submit-form", {"selector": "#pay", "tabId": 9}))
+    # (path, body): held for closing a user tab (a v0.7.1 extension's user_tab), and by ask-before-act.
+    HOLDS = (("/api/close-tab", {"tabId": 4}), ("/api/submit-form", {"selector": "#pay", "tabId": 9}))
 
     async def extension(self, action, params=None, timeout=30):
         params = params or {}
         if action == "describeTarget":
             return {"tabId": params.get("tabId"), "url": "https://shop.example/"}
-        if action == "click" and not params.get("viewedTabApproved"):
-            return {"error": "viewing", "code": "user_viewing", "retryable": False, "state": {"tabId": 4}}
         if action == "closeTab" and not params.get("userTabApproved"):
             return {"error": "not opened", "code": "user_tab", "retryable": False, "state": {"tabId": 4}}
         return {"ok": True}
 
     def setUp(self):
         for patcher in (patch.object(bridge, "_audit_log", []), patch.dict(bridge._confirm_tokens, clear=True),
-                        patch.dict(bridge._viewed_tab_calls, clear=True),
                         patch.dict(bridge._policy, {"ask": True, "askUrls": [], "askLocked": False}),
                         patch.object(bridge, "_global_command_lock", None),
                         patch.object(bridge, "_tab_command_locks", {}), patch.object(bridge, "_scheduler_gate", None),
@@ -288,13 +284,13 @@ class ApprovalAuditTests(unittest.TestCase):
         return recorded
 
     def test_the_mcp_server_the_token_was_issued_to_records_elicitation(self):
-        self.assertEqual(self.approvals(self.A, {**self.A, **self.CLAIM}), [{"elicitation"}] * 3)
+        self.assertEqual(self.approvals(self.A, {**self.A, **self.CLAIM}), [{"elicitation"}] * 2)
 
     def test_every_other_repeat_records_token(self):
         for issued_to, repeated_by in ((self.A, self.A), (self.A, {**self.B, **self.CLAIM}), ({}, self.CLAIM),
                                        ({}, {**self.A, **self.CLAIM}), (self.A, self.CLAIM)):
             with self.subTest(issued_to=issued_to, repeated_by=repeated_by):
-                self.assertEqual(self.approvals(issued_to, repeated_by), [{"token"}] * 3)
+                self.assertEqual(self.approvals(issued_to, repeated_by), [{"token"}] * 2)
 
     def test_unapproved_entries_and_the_audit_endpoint_carry_no_approval_or_secret(self):
         self.approvals(self.A, {**self.A, **self.CLAIM})

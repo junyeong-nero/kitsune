@@ -5,9 +5,6 @@ from collections.abc import Mapping, Sequence
 MODE_HEADER = "X-Kitsune-Mode"
 # Authoritative per-request permission; absent means read-only. Old wire headers grant nothing.
 USER_TABS_HEADER = "X-Kitsune-User-Tabs"
-# A random id per MCP tool call, on each of its bridge requests: a viewed-tab approval covers the
-# other requests of that call (#326).
-TOOL_CALL_HEADER = "X-Kitsune-Tool-Call"
 # The tool a browser_tools_call runs (#227): the audit log records the call came through it.
 GATEWAY_TOOL_HEADER = "X-Kitsune-Gateway-Tool"
 # The id of the client that sent a request (BridgeClient.client_id, #303): audit entries record it.
@@ -23,7 +20,7 @@ APPROVER_HEADER = "X-Kitsune-Approver"
 # "elicitation" on the repeat of a held call the user approved in the MCP client's prompt (#376). The
 # bridge records it only when the request's APPROVER_HEADER matches the one the token was issued to.
 APPROVAL_HEADER = "X-Kitsune-Approval"
-# The characters and length the bridge accepts in CLIENT_HEADER, OWNER_HEADER and TOOL_CALL_HEADER.
+# The characters and length the bridge accepts in CLIENT_HEADER and OWNER_HEADER.
 CLIENT_ID_PATTERN = r"[A-Za-z0-9._:-]{1,64}"
 
 

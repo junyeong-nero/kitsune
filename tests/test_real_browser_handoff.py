@@ -9,7 +9,10 @@ by a toolbar click, and nothing looks at its pixels. popup.html loaded in a tab 
 an equivalent: background.js answers handoff messages only from a page outside a tab.
 
 User tabs are opened by the browser itself, not by the agent. Every MCP server shares
-one stable KITSUNE_OWNER_ID, so a later session is the same client in a new session.
+one stable KITSUNE_OWNER_ID, so a later session is the same client in a new session,
+except the second client of the two-client test, which has an owner id of its own. The
+copy of the extension also runs test_real_browser's control script, which closes the
+extension's bridge WebSocket so that the extension reconnects without a reload.
 """
 import asyncio
 from contextlib import asynccontextmanager
@@ -25,13 +28,18 @@ from mcp import ClientSession, StdioServerParameters, types
 from mcp.client.stdio import stdio_client
 
 import real_browser_harness as harness
+from test_real_browser import CONTROL_SCRIPT, ExtensionControl
 
 CLIENT_NAME = "Kitsune E2E Handoff Client"
 OWNER_ID = "e2e-handoff-owner"
+OTHER_CLIENT_NAME = "Kitsune E2E Other Client"
+OTHER_OWNER_ID = "e2e-handoff-other"
 REASON = "Fill in the form on this page"
 SESSION_TIMEOUT = 90
 # The extension's browser-first window before the client fallback (background.js HANDOFF_BROWSER_MS).
 BROWSER_FALLBACK_SECONDS = 30
+# How long a fallback confirm token stays valid (background.js HANDOFF_TOKEN_MS).
+TOKEN_SECONDS = 120
 
 # The browser, not the agent, opens url in a new background tab: a user tab.
 USER_OPENS = """(async () => {
@@ -115,6 +123,30 @@ BADGE = """(async () => {
   const button = action.widget.forWindow(win).node.querySelector('.webextension-browser-action');
   return {text: action.action.getProperty(null, 'badgeText'), shown: button.getAttribute('badge') ?? ''};
 })()"""
+# The popup blocker drops a window.open without input; the child-tab test turns it off for itself
+# and then restores the browser default. Each returns whether the blocker is on.
+POPUPS_ALLOWED = """(async () => {
+  Services.prefs.setBoolPref('dom.disable_open_during_load', false);
+  return Services.prefs.getBoolPref('dom.disable_open_during_load');
+})()"""
+POPUP_BLOCKER_RESTORED = """(async () => {
+  Services.prefs.clearUserPref('dom.disable_open_during_load');
+  return Services.prefs.getBoolPref('dom.disable_open_during_load');
+})()"""
+# Reloads the add-on, as about:debugging's Reload button does.
+EXTENSION_RELOADS = """(async () => {
+  const {AddonManager} = ChromeUtils.importESModule('resource://gre/modules/AddonManager.sys.mjs');
+  await (await AddonManager.getAddonByID(%s)).reload();
+  return true;
+})()"""
+# The URL of the tab that opened the tab at url (tabs.openerTabId), read in the parent process.
+OPENER_URL = """(async () => {
+  for (const win of Services.wm.getEnumerator('navigator:browser')) {
+    const tab = win.gBrowser.tabs.find(t => t.linkedBrowser.currentURI.spec === %s);
+    if (tab) return tab.openerTab?.linkedBrowser.currentURI.spec ?? null;
+  }
+  return null;
+})()"""
 POPUP_CLOSES = """(async () => {
   const policy = WebExtensionPolicy.getByID(%s);
   const url = `moz-extension://${policy.mozExtensionHostname}/popup/popup.html`;
@@ -128,13 +160,15 @@ POPUP_CLOSES = """(async () => {
 
 
 class _Pages(BaseHTTPRequestHandler):
-    """A titled page whose button counts its clicks in the title."""
+    """A titled page whose button counts its clicks in the title. An opens-X page also opens
+    opened-X in a new tab as it loads, with no input."""
 
     def do_GET(self):
         name = self.path.strip("/") or "index"
+        opens = f"<script>window.open('/opened-{name[6:]}')</script>" if name.startswith("opens-") else ""
         body = (f"<title>Handoff {name}</title><p>{name} page</p>"
                 "<button id=act onclick=\"document.title='acted:' + (window.actions=(window.actions||0)+1)\">"
-                "Act</button>").encode()
+                f"Act</button>{opens}").encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html")
         self.send_header("Content-Length", str(len(body)))
@@ -180,8 +214,8 @@ class _Session:
 
 
 @asynccontextmanager
-async def _mcp(env, answers=None, observe=None):
-    """An MCP session of CLIENT_NAME. answers: the elicitation answers in order, or None for a
+async def _mcp(env, answers=None, observe=None, name=CLIENT_NAME):
+    """An MCP session of the client name. answers: the elicitation answers in order, or None for a
     client without elicitation. Each prompt is recorded with observe() before it is answered."""
     prompts = []
 
@@ -196,7 +230,7 @@ async def _mcp(env, answers=None, observe=None):
     server = StdioServerParameters(command=sys.executable, args=["-m", "kitsune.server"], env=env)
     async with stdio_client(server) as (read, write), ClientSession(
             read, write, elicitation_callback=None if answers is None else elicit,
-            client_info=types.Implementation(name=CLIENT_NAME, version="1")) as session:
+            client_info=types.Implementation(name=name, version="1")) as session:
         await session.initialize()
         yield _Session(session, prompts)
 
@@ -213,7 +247,13 @@ class RealBrowserHandoffTests(harness.RealBrowserTestCase):
     def setUpClass(cls):
         cls.site = harness.FixtureServer(_Pages)
         cls.addClassCleanup(cls.site.stop)
+        cls.control = ExtensionControl()
+        cls.addClassCleanup(cls.control.stop)
         super().setUpClass()
+
+    @classmethod
+    def extension_scripts(cls):
+        return {"test-control.js": CONTROL_SCRIPT % cls.control.port}
 
     def setUp(self):
         self.env = dict(self.bridge.env, KITSUNE_OWNER_ID=OWNER_ID)
@@ -288,16 +328,16 @@ class RealBrowserHandoffTests(harness.RealBrowserTestCase):
             time.sleep(0.2)
         self.assertEqual(badge, expected)
 
-    def assert_card(self, card, url, label, buttons, title=None):
+    def assert_card(self, card, url, label, buttons, title=None, client=CLIENT_NAME):
         """card names the client, the tab's title (by default the fixture's unclicked title), url and REASON."""
-        self.assertEqual(card, {"label": label, "client": CLIENT_NAME,
+        self.assertEqual(card, {"label": label, "client": client,
                                 "title": title or "Handoff " + url.rsplit("/", 1)[1],
                                 "url": url, "reason": REASON, "buttons": buttons})
 
-    def decide(self, url, button, title=None):
+    def decide(self, url, button, title=None, client=CLIENT_NAME):
         """Wait for the popup's request card for url, check what it names, and click button."""
         self.assert_card(self.wait_for_card(url, "Tab access request"), url, "Tab access request",
-                         ["Decline", "Approve handoff"], title)
+                         ["Decline", "Approve handoff"], title, client)
         self.assert_badge("1")
         self.assertTrue(self.popup({"label": "Tab access request", "url": url, "button": button})["clicked"])
 
@@ -313,16 +353,16 @@ class RealBrowserHandoffTests(harness.RealBrowserTestCase):
         self.assertFalse(error, payload)
         self.wait_for(lambda: self.tab(url)["title"] == f"acted:{count}", f"the click on {url} did not act")
 
-    def run_session(self, scenario, answers=None, observe=None):
+    def run_session(self, scenario, answers=None, observe=None, timeout=SESSION_TIMEOUT):
         async def run():
             async with _mcp(self.env, answers, observe) as session:
                 return await scenario(session)
-        return asyncio.run(asyncio.wait_for(run(), SESSION_TIMEOUT))
+        return asyncio.run(asyncio.wait_for(run(), timeout))
 
-    async def approved(self, session, url):
+    async def approved(self, session, url, client=CLIENT_NAME):
         """Request the tab at url and approve it in the popup; returns the request's (isError, payload)."""
         pending = asyncio.ensure_future(session.request(url))
-        await asyncio.to_thread(self.decide, url, "Approve handoff")
+        await asyncio.to_thread(self.decide, url, "Approve handoff", None, client)
         granted = await pending
         await asyncio.to_thread(self.assert_badge, "")
         return granted
@@ -508,3 +548,189 @@ class RealBrowserHandoffTests(harness.RealBrowserTestCase):
         self.assertEqual(granted, (False, {"ok": True, "tabId": self.tab(url)["id"], "owned": True}))
         self.assertIs(listed.get("owned"), True, listed)
         self.assert_acted(acted, url, 1)
+
+    def test_a_tab_the_handed_off_page_opens_stays_owned_after_take_back(self):
+        # Only the handed-off tab returns; a tab its page opens is an ordinary, persistent agent tab
+        # (docs/api-reference.md#requesting-and-returning-a-tab).
+        url = self.user_tab("child-from")
+        opener, child = self.agent_url("opens-child"), self.agent_url("opened-child")
+        for opened in (opener, child):
+            self.addCleanup(self.parent, CLOSE_TABS_AT % json.dumps(opened))
+        self.assertIs(self.parent(POPUPS_ALLOWED), False)
+        self.addCleanup(self.parent, POPUP_BLOCKER_RESTORED)
+
+        async def scenario(session):
+            granted = await self.approved(session, url)
+            selected = await session.tool("browser_tabs", {"action": "select",
+                                                           "index": (await session.index(url))["index"]})
+            # The handed-off tab loads a page that opens its own tab: no click, key or other input.
+            navigated = await session.tool("browser_navigate", {"url": opener})
+            await asyncio.to_thread(self.wait_for, lambda: any(
+                t["url"] == child and t["title"] == "Handoff opened-child" for t in self.tabs()),
+                "the handed-off page did not open its tab")
+            opened = await session.index(child)
+            handed = await asyncio.to_thread(self.wait_for_card, url, "Handed off")
+            child_cards = await asyncio.to_thread(self.popup_cards, child)
+            taken = await asyncio.to_thread(self.popup, {"label": "Handed off", "url": url, "button": "Take back"})
+            await asyncio.to_thread(self.wait_for, lambda: self.popup_cards(url) == [],
+                                    "the popup still lists the taken-back tab")
+            return (granted, selected, navigated, opened, handed, child_cards, taken, await session.index(opener),
+                    await session.index(child), await session.write(opener), await session.write(child))
+
+        (granted, selected, navigated, opened, handed, child_cards, taken, returned, kept, refused,
+         acted) = self.run_session(scenario, answers=[])
+        self.assertFalse(granted[0], granted)
+        self.assertFalse(selected[0], selected)
+        self.assertFalse(navigated[0], navigated)
+        self.assertEqual(self.parent(OPENER_URL % json.dumps(child)), opener, "the handed-off tab opened it")
+        self.assertIs(opened.get("owned"), True, opened)
+        self.assert_card(handed, url, "Handed off", ["Take back"])
+        self.assertEqual(child_cards, [], "the opened tab is not a handoff of its own")
+        self.assertTrue(taken["clicked"])
+        self.assertNotIn("owned", returned)
+        self.assertIs(kept.get("owned"), True, kept)
+        self.assert_read_only(refused)
+        self.assertEqual(self.tab(opener)["title"], "Handoff opens-child", "nothing ran after the take back")
+        self.assert_acted(acted, child, 1)
+
+        async def later(session):
+            return await session.index(child), await session.write(child), await session.index(opener)
+
+        # The opened tab outlives the session that opened it: the same client still owns it.
+        kept, acted, returned = self.run_session(later, answers=[])
+        self.assertIs(kept.get("owned"), True, kept)
+        self.assert_acted(acted, child, 2)
+        self.assertNotIn("owned", returned)
+
+    def lost_transport_checks(self, name, lose):
+        """A grant and a pending request, then lose() drops the extension's bridge connection and
+        returns once it is back: both are gone, the agent's own tab stays its own, and the same
+        session can ask afresh (docs/api-reference.md#requesting-and-returning-a-tab)."""
+        url, waiting = self.user_tab(f"{name}-granted"), self.user_tab(f"{name}-pending")
+        own = self.agent_url(f"own-{name}")
+
+        async def scenario(session):
+            await self.hand_over_and_open_own(session, url, own)
+            handed = await asyncio.to_thread(self.wait_for_card, url, "Handed off")
+            pending = asyncio.ensure_future(session.request(waiting))
+            await asyncio.to_thread(self.wait_for_unanswered_request, waiting)
+            lost_at = time.monotonic()
+            await asyncio.to_thread(lose)
+            dropped = await pending
+            answered = time.monotonic() - lost_at
+            await asyncio.to_thread(self.wait_for, lambda: self.popup_cards(url) == self.popup_cards(waiting) == [],
+                                    "the popup still lists the grant or the request")
+            await asyncio.to_thread(self.assert_badge, "")
+            after = (await session.index(url), await session.index(own), await session.write(url),
+                     await session.write(own))
+            asked = await self.approved(session, waiting)
+            return handed, dropped, answered, after, asked, await session.index(waiting), await session.write(waiting)
+
+        handed, (error, dropped), answered, (user, agent, refused, acted), asked, listed, regranted = \
+            self.run_session(scenario, answers=[])
+        self.assert_card(handed, url, "Handed off", ["Take back"])
+        self.assertLess(answered, BROWSER_FALLBACK_SECONDS - 5, "the pending request ended with the connection")
+        self.assertTrue(error, dropped)
+        self.assert_error(dropped, "extension_disconnected", False)
+        self.assertNotIn("owned", user)
+        self.assertIs(agent.get("owned"), True, agent)
+        self.assert_read_only(refused)
+        self.assertEqual(self.tab(url)["title"], "acted:1", "nothing ran after the grant was dropped")
+        self.assert_acted(acted, own, 1)
+        self.assertEqual(asked, (False, {"ok": True, "tabId": self.tab(waiting)["id"], "owned": True}),
+                         "a fresh request after the reconnect is approved afresh")
+        self.assertIs(listed.get("owned"), True, listed)
+        self.assert_acted(regranted, waiting, 1)
+
+    def test_a_bridge_reconnect_drops_grants_and_pending_requests(self):
+        def lose():
+            generation = self.bridge.status()["extension_generation"]
+            self.assertEqual(self.control.call("dropBridge"), {"dropped": True})
+            self.wait_for_extension(after_generation=generation)
+
+        self.lost_transport_checks("reconnect", lose)
+
+    def test_an_extension_reload_drops_grants_and_pending_requests(self):
+        # Pins what the user sees after a reload. A reload resets the memory-only grants by itself,
+        # so the reconnect test is the one that exercises clearHandoffs.
+        def lose():
+            generation = self.bridge.status()["extension_generation"]
+            self.parent(POPUP_CLOSES % json.dumps(harness.EXTENSION_ID))
+            # Not /api/reload-extension: the bridge queues that command behind the pending request.
+            self.parent(EXTENSION_RELOADS % json.dumps(harness.EXTENSION_ID))
+            self.wait_for_extension(after_generation=generation)
+
+        self.lost_transport_checks("reload", lose)
+
+    def test_an_expired_confirm_token_is_refused_and_grants_nothing(self):
+        # Waits out the real 30 s browser window and the 120 s token, about two and a half minutes.
+        # An unknown token is refused the same way; the positive control, the same token repeated
+        # in time and granted, is test_unanswered_browser_prompt_falls_back_to_a_confirm_token_without_elicitation.
+        url = self.user_tab("token-expiry")
+
+        async def scenario(session):
+            pending = asyncio.ensure_future(session.request(url))
+            await asyncio.to_thread(self.wait_for_unanswered_request, url)
+            error, held = await pending
+            issued = time.monotonic()
+            token = held.get("state", {}).get("confirmToken")
+            await asyncio.sleep(TOKEN_SECONDS + 3)
+            age = time.monotonic() - issued
+            expired = await session.request(url, confirm_token=token)
+            return ((error, held), age, expired, await session.index(url),
+                    await session.write(url), await asyncio.to_thread(self.popup_cards, url))
+
+        (error, held), age, (refused_error, refused), listed, write, cards = self.run_session(
+            scenario, timeout=SESSION_TIMEOUT + TOKEN_SECONDS)
+        self.assertTrue(error, held)
+        self.assert_error(held, "needs_user", False)
+        state = held["state"]
+        self.assertEqual((state["detail"], state["approval"], state["expiresInSeconds"]),
+                         ("tab_handoff", "token", TOKEN_SECONDS))
+        self.assertIsInstance(state["confirmToken"], str)
+        self.assertGreater(age, TOKEN_SECONDS, "the repeat came after the token expired")
+        self.assertTrue(refused_error, refused)
+        self.assert_error(refused, "needs_user", False)
+        self.assertEqual((refused["state"]["detail"], refused["state"]["decision"]), ("tab_handoff", "cancelled"))
+        self.assertNotIn("confirmToken", json.dumps(refused), "an expired token is not renewed")
+        self.assertNotIn("owned", listed)
+        self.assert_read_only(write)
+        self.assertEqual(self.tab(url)["title"], "Handoff token-expiry")
+        self.assertEqual(cards, [], "no handoff and no new request")
+        self.assert_badge("")
+
+    def test_a_grant_to_one_client_is_not_the_other_clients(self):
+        mine, theirs = self.user_tab("client-a"), self.user_tab("client-b")
+        other_env = dict(self.bridge.env, KITSUNE_OWNER_ID=OTHER_OWNER_ID)
+
+        async def run():
+            async with _mcp(self.env, []) as one, _mcp(other_env, [], name=OTHER_CLIENT_NAME) as other:
+                granted = await self.approved(one, mine)
+                foreign = (await other.index(mine), await other.write(mine))
+                started = time.monotonic()
+                requested = await other.request(mine)
+                requested_in = time.monotonic() - started
+                other_granted = await self.approved(other, theirs, OTHER_CLIENT_NAME)
+                cards = await asyncio.to_thread(lambda: (self.popup_cards(mine), self.popup_cards(theirs)))
+                return (granted, foreign, requested, requested_in, other_granted, cards,
+                        (await one.index(theirs), await one.write(theirs)),
+                        await one.write(mine), await other.write(theirs), one.prompts + other.prompts)
+
+        (granted, (listed, refused), (error, requested), requested_in, other_granted, (mine_cards, theirs_cards),
+         (other_listed, other_refused), acted, other_acted, prompts) = asyncio.run(
+            asyncio.wait_for(run(), SESSION_TIMEOUT))
+        self.assertEqual(granted, (False, {"ok": True, "tabId": self.tab(mine)["id"], "owned": True}))
+        self.assertNotIn("owned", listed)
+        self.assert_read_only(refused)
+        # Another client's grant cannot be requested away: refused at once, with no prompt anywhere.
+        self.assert_read_only((error, requested))
+        self.assertLess(requested_in, 5)
+        self.assertEqual(other_granted, (False, {"ok": True, "tabId": self.tab(theirs)["id"], "owned": True}))
+        self.assertNotIn("owned", other_listed)
+        self.assert_read_only(other_refused)
+        (mine_card,), (theirs_card,) = mine_cards, theirs_cards
+        self.assert_card(mine_card, mine, "Handed off", ["Take back"])
+        self.assert_card(theirs_card, theirs, "Handed off", ["Take back"], client=OTHER_CLIENT_NAME)
+        self.assert_acted(acted, mine, 1)
+        self.assert_acted(other_acted, theirs, 1)
+        self.assertEqual(prompts, [])

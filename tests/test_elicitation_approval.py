@@ -22,12 +22,12 @@ from mcp.shared.memory import create_connected_server_and_client_session
 from kitsune import bridge, bridge_client, playwright_tools, server, tools
 from kitsune.task_modes import APPROVAL_HEADER, APPROVER_HEADER
 
-VIEWED_TAB, AGENT_TAB = 4, 9
+USER_TAB, AGENT_TAB = 4, 9
 TOKEN_SHAPED = re.compile(r"[A-Za-z0-9_-]{32}")
 
 
 class FakeExtension:
-    """The user views VIEWED_TAB; AGENT_TAB is the agent's. describeTarget reports a submit control."""
+    """AGENT_TAB is the agent's. describeTarget reports a submit control, which ask-before-act holds."""
 
     def __init__(self):
         self.sent = []
@@ -38,7 +38,7 @@ class FakeExtension:
     async def __call__(self, action, params=None, timeout=30):
         params = dict(params or {})
         if action == "checkTabWrite":
-            return {"ok": True}  # Legacy hold transport fixture, not the new permission gate.
+            return {"ok": True}  # every tab is writable here; UserTabReadOnlyElicitationTests refuses
         self.sent.append((action, params))
         tab_id = params.get("tabId")
         if action == "getTabs" and self.tabs is not None:
@@ -48,11 +48,6 @@ class FakeExtension:
             if params.get("inspect"):
                 described["target"] = {"ok": True, "tag": "button", "submits": True, "text": "Pay"}
             return described
-        if tab_id == VIEWED_TAB and not params.get("viewedTabApproved") and action not in ("describeTarget",):
-            return {"error": f"The user is viewing tab {tab_id}; nothing was done", "code": "user_viewing",
-                    "retryable": False, "hint": "extension hint",
-                    "state": {"tabId": tab_id, "url": "https://user.example/inbox", "title": "Inbox",
-                              "windowId": 1, "reason": "viewing", "browserFocused": False}}
         return {"ok": True}
 
     def actions(self, action):
@@ -86,8 +81,6 @@ class ElicitationTestCase(unittest.TestCase):
                                         "askUrls": list(bridge.DEFAULT_ASK_URLS), "askLocked": False}),
             patch.dict(bridge._confirm_tokens, clear=True),
             patch.dict(bridge._unknown_outcomes, clear=True),
-            patch.dict(bridge._viewed_tab_calls, clear=True),
-            patch.dict(server._declined_tabs, clear=True),
             patch.object(bridge, "_audit_log", []),
             patch.object(bridge, "_global_command_lock", None),
             patch.object(bridge, "_tab_command_locks", {}),
@@ -95,7 +88,7 @@ class ElicitationTestCase(unittest.TestCase):
             patch.object(bridge, "_send_to_extension_raw", new=lambda *a, **k: self.extension(*a, **k)),
             patch.object(bridge_client, "_headers", return_value={}),
             patch.object(bridge_client.httpx, "request", side_effect=self.bridge_http),
-            patch.object(playwright_tools, "_current_tab", VIEWED_TAB),
+            patch.object(playwright_tools, "_current_tab", AGENT_TAB),
         ]
         for patcher in patches:
             patcher.start()
@@ -181,7 +174,9 @@ def answer_with(action, decision=None, delay=0):
     return answer
 
 
-class ViewedTabElicitationTests(ElicitationTestCase):
+class ApprovalElicitationTests(ElicitationTestCase):
+    ask = True
+
     def test_approve_repeats_the_identical_call_once_with_the_token(self):
         elicits, negotiated = server._elicits, []
 
@@ -194,6 +189,7 @@ class ViewedTabElicitationTests(ElicitationTestCase):
                 bridge._audit_log.clear()
                 bridge._confirm_tokens.clear()
                 self.requests.clear()
+                self.extension.sent.clear()
                 self.approve(protocol)
                 self.assertEqual(negotiated[-1], protocol)
 
@@ -210,18 +206,17 @@ class ViewedTabElicitationTests(ElicitationTestCase):
         self.assertNotIn(APPROVAL_HEADER, held["headers"])
         self.assertEqual(repeat["headers"][APPROVAL_HEADER], "elicitation")
         self.assertEqual(held["headers"][APPROVER_HEADER], repeat["headers"][APPROVER_HEADER])
-        self.assertIs(self.extension.actions("click")[-1]["viewedTabApproved"], True)
+        self.assertEqual([p["selector"] for p in self.extension.actions("click")], ["#send"])
         self.assertNoToken()
-        # The prompt: action, target, tab title and URL, and why it was held; form mode. The model's
-        # element description is labeled as the agent's.
+        # The prompt: action, target, tab URL, and why it was held; form mode. The model's element
+        # description is labeled as the agent's.
         prompt = self.prompts[0]
         self.assertEqual(prompt.mode, "form")
         self.assertEqual(prompt.requestedSchema, server.APPROVAL_SCHEMA)
-        for part in ("Allow the agent's click in the tab you are viewing (Inbox)?", "Tool: browser_click",
+        for part in ("Allow the agent's click? It clicks a submit control (Pay).", "Tool: browser_click",
                      "Target: #send\nAgent's description of the target: Send button\n",
-                     "Tab: Inbox - https://user.example/inbox", "Held because you are viewing this tab.",
-                     # #383: a decline means "not in this tab".
-                     "Approve runs this action once here; Decline means the agent should not do it in this tab."):
+                     "Tab: https://shop.example/cart", "Held because ask-before-act: it clicks a submit control (Pay).",
+                     "Approve runs this action once; Decline leaves it undone."):
             self.assertIn(part, prompt.message)
         self.assertNotIn("Arguments:", prompt.message)
         # The audit log records how the write was approved.
@@ -237,7 +232,7 @@ class ViewedTabElicitationTests(ElicitationTestCase):
         arguments = next(line for line in message.splitlines() if line.startswith("Arguments: "))
         self.assertEqual(len(arguments), len("Arguments: ") + server.APPROVAL_ARGUMENTS_CHARS)
         self.assertTrue(arguments.endswith("x…"))
-        server._declined_tabs.clear()  # a later turn: the decline above no longer answers for the tab
+        self.extension.url = "https://shop.example/checkout"  # a payment-like page holds each field
         self.call("browser_fill_form", {"fields": [{"name": "Card", "type": "textbox", "target": "#card",
                                                     "value": "4242"}]}, answer_with("decline"))
         self.assertIn('Arguments: {"fields": [{"name": "Card", "type": "textbox", "target": "#card", "value": "4242"}]}',
@@ -280,69 +275,23 @@ class ViewedTabElicitationTests(ElicitationTestCase):
                                  (answer_with("accept", "Decline"), "declined"), (answer_with("accept"), "cancelled")):
             with self.subTest(decision=decision):
                 self.requests.clear()
-                server._declined_tabs.clear()
                 result, payload = self.call("browser_click", {"target": "#send"}, answer)
                 self.assertTrue(result.isError)
                 self.assertEqual((payload["code"], payload["retryable"]), ("needs_user", False))
                 state = payload["state"]
                 self.assertEqual((state["reason"], state["detail"], state["decision"], state["approval"]),
-                                 ("approval", "user_viewing", decision, "elicitation"))
+                                 ("approval", "confirmation_required", decision, "elicitation"))
                 self.assertNotIn("expiresInSeconds", state)
-                hint = server.VIEWED_TAB_DECLINED_HINT if decision == "declined" else server.DECISION_HINTS[decision]
-                self.assertEqual(payload["hint"], f'{hint} {server.RESUME_HINTS["elicitation"]}')
+                self.assertEqual(payload["hint"], f'{server.DECISION_HINTS[decision]} {server.RESUME_HINTS["elicitation"]}')
                 self.assertEqual(len(self.clicks()), 1, "nothing was repeated")
                 self.assertNoToken()
-        self.assertNotIn("viewedTabApproved", self.extension.actions("click")[-1])
-
-    def test_a_declined_tab_is_not_asked_about_again_in_the_same_turn(self):
-        # #383: the turn's next held call on the tab is declined without a prompt, and nothing runs.
-        result, payload = self.call("browser_type", {"target": "#q", "text": "memo"}, answer_with("decline"))
-        self.assertEqual((payload["state"]["decision"], len(self.prompts)), ("declined", 1))
-        self.assertIn("open a tab of your own", payload["hint"])
-        result, payload = self.call("browser_click", {"target": "#save"}, answer_with("accept", "Approve"))
-        self.assertEqual(self.prompts, [])
-        self.assertTrue(result.isError)
-        self.assertEqual((payload["code"], payload["state"]["detail"], payload["state"]["decision"]),
-                         ("needs_user", "user_viewing", "declined"))
-        self.assertEqual(payload["hint"], f'{server.VIEWED_TAB_REDECLINED_HINT} {server.RESUME_HINTS["elicitation"]}')
-        self.assertEqual(len(self.clicks()), 1, "nothing was repeated")
-        self.assertFalse(any(p.get("viewedTabApproved") for _, p in self.extension.sent))
-        self.assertNoToken()
-        # After VIEWED_TAB_DECLINE_SECONDS the user is asked again.
-        declined = server._declined_tabs[VIEWED_TAB]
-        with patch.object(server, "_decline_clock", return_value=declined + server.VIEWED_TAB_DECLINE_SECONDS):
-            result, payload = self.call("browser_click", {"target": "#save"}, answer_with("accept", "Approve"))
-        self.assertEqual(len(self.prompts), 1)
-        self.assertIs(payload.get("ok"), True, payload)
-
-    def test_a_decline_answers_only_for_its_tab_and_only_user_viewing_holds(self):
-        server._declined_tabs[VIEWED_TAB] = server._decline_clock()
-        self.assertTrue(server._viewed_tab_declined({"detail": "user_viewing", "tabId": VIEWED_TAB}))
-        self.assertFalse(server._viewed_tab_declined({"detail": "user_viewing", "tabId": AGENT_TAB}))
-        self.assertFalse(server._viewed_tab_declined({"detail": "user_tab", "tabId": VIEWED_TAB}))
-        self.assertFalse(server._viewed_tab_declined({"detail": "confirmation_required", "tabId": VIEWED_TAB}))
-
-    def test_the_held_tab_is_named_by_its_browser_tabs_index_too(self):
-        # #383: core results name tabs by index, so a user_viewing hold names its index as well as its tabId.
-        self.extension.tabs = [{"id": 7, "url": "https://a.example/", "title": "A", "owned": True},
-                               {"id": VIEWED_TAB, "url": "https://user.example/inbox", "title": "Inbox", "active": True}]
-        for answer in (None, answer_with("decline")):
-            with self.subTest(elicitation=answer is not None):
-                result, payload = self.call("browser_click", {"target": "#send"}, answer)
-                self.assertEqual(payload["error"],
-                                 f"The user is viewing tab 1 in browser_tabs (tabId {VIEWED_TAB}); nothing was done")
-                self.assertEqual((payload["state"]["index"], payload["state"]["tabId"]), (1, VIEWED_TAB))
-        # A tab the listing no longer has keeps the extension's message.
-        self.extension.tabs = []
-        result, payload = self.call("browser_click", {"target": "#send"})
-        self.assertEqual(payload["error"], f"The user is viewing tab {VIEWED_TAB}; nothing was done")
-        self.assertNotIn("index", payload["state"])
+        self.assertEqual(self.extension.actions("click"), [], "nothing ran")
 
     def test_a_client_without_elicitation_keeps_the_token(self):
         result, payload = self.call("browser_click", {"target": "#send"})
         self.assertTrue(result.isError)
         state = payload["state"]
-        self.assertEqual((payload["code"], state["detail"], state["approval"]), ("needs_user", "user_viewing", "token"))
+        self.assertEqual((payload["code"], state["detail"], state["approval"]), ("needs_user", "confirmation_required", "token"))
         self.assertIn(state["confirmToken"], bridge._confirm_tokens)
         self.assertEqual(len(self.clicks()), 1)
         # The model repeats the call with the token itself: the audit log tells that path apart.
@@ -395,7 +344,7 @@ class ViewedTabElicitationTests(ElicitationTestCase):
 class UserTabReadOnlyElicitationTests(ElicitationTestCase):
     def test_read_only_refusal_never_elicits_or_repeats_even_with_ask_enabled(self):
         refusal = {"error": "read only", "code": "user_tab_read_only", "retryable": False,
-                   "state": {"tabId": VIEWED_TAB, "index": 0, "action": "click"},
+                   "state": {"tabId": USER_TAB, "index": 0, "action": "click"},
                    "hint": "Open a tab of your own with browser_tabs action=new."}
         sent = []
 
@@ -418,12 +367,6 @@ class UserTabReadOnlyElicitationTests(ElicitationTestCase):
 class AskBeforeActElicitationTests(ElicitationTestCase):
     ask = True
 
-    def setUp(self):
-        super().setUp()
-        patcher = patch.object(playwright_tools, "_current_tab", AGENT_TAB)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-
     def test_a_repeat_that_no_longer_matches_is_not_repeated_again(self):
         async def approve_then_switch_tab(params):
             self.extension.described_tab = AGENT_TAB + 1  # the target now resolves in another tab
@@ -443,19 +386,19 @@ class AskBeforeActElicitationTests(ElicitationTestCase):
         self.assertIn("Approve runs this action once; Decline leaves it undone.", self.prompts[0].message)
 
     def test_each_held_request_of_a_call_is_asked_about_once(self):
-        # browser_type(submit) on the viewed tab: its text needs the viewed-tab approval, then its Enter
-        # in a submitting field ask-before-act's; the second repeat presses Enter only, still approved
-        # for the viewed tab.
-        with patch.object(playwright_tools, "_current_tab", VIEWED_TAB):
-            result, payload = self.call("browser_type", {"target": "#q", "text": "hi", "submit": True},
-                                        answer_with("accept", "Approve"))
+        # browser_type(submit) on a payment-like page: its text and then its Enter are held; the second
+        # repeat presses Enter only.
+        self.extension.url = "https://shop.example/checkout"
+        result, payload = self.call("browser_type", {"target": "#q", "text": "hi", "submit": True},
+                                    answer_with("accept", "Approve"))
         self.assertIs(payload.get("ok"), True, payload)
-        self.assertEqual(["Held because you are viewing this tab." in p.message for p in self.prompts], [True, False])
-        self.assertIn("Held because ask-before-act: it presses Enter in a form field (Pay).", self.prompts[1].message)
+        self.assertEqual([p.message.splitlines()[0] for p in self.prompts],
+                         ["Allow the agent's fill? It acts on a payment-like page (checkout).",
+                          "Allow the agent's keypress? It acts on a payment-like page (checkout)."])
+        self.assertEqual(len([r for r in self.requests if r["path"] == "/api/fill"]), 2)
         self.assertEqual(len([r for r in self.requests if r["path"] == "/api/keypress"]), 2)
         self.assertEqual(len(self.extension.actions("keypress")), 1, "Enter was pressed once")
-        self.assertEqual(len([p for p in self.extension.actions("fill") if p.get("viewedTabApproved")]), 1,
-                         "the text was entered once")
+        self.assertEqual(len(self.extension.actions("fill")), 1, "the text was entered once")
         self.assertNoToken()
 
     def test_typing_slowly_then_submitting_types_the_text_once(self):

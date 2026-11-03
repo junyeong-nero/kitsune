@@ -10,36 +10,17 @@ import unittest
 from unittest.mock import patch
 
 from mcp import types
-from test_elicitation_approval import AGENT_TAB, VIEWED_TAB, ElicitationTestCase, FakeExtension, answer_with
+from test_elicitation_approval import AGENT_TAB, ElicitationTestCase, answer_with
 
 from kitsune import bridge, playwright_tools, server, waits
 
 
-class Extension(FakeExtension):
-    """FakeExtension whose user can look away from VIEWED_TAB (viewed False), or start viewing it after
-    an action (view_after)."""
-
-    def __init__(self):
-        super().__init__()
-        self.viewed = True
-        self.view_after = None
-
-    async def __call__(self, action, params=None, timeout=30):
-        params = dict(params or {})
-        if self.viewed or params.get("tabId") != VIEWED_TAB or action == "describeTarget":
-            result = await super().__call__(action, params, timeout)
-        else:
-            self.sent.append((action, params))
-            result = {"ok": True}
-        if action == self.view_after:
-            self.viewed = True
-        return result
-
-
 class ResumeTestCase(ElicitationTestCase):
+    """Ask-before-act holds the click on the submit control FakeExtension describes."""
+    ask = True
+
     def setUp(self):
         super().setUp()
-        self.extension = Extension()
         patcher = patch.dict(server._direct_checkpoints, clear=True)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -52,7 +33,7 @@ class ResumeTestCase(ElicitationTestCase):
         return [request for request in self.requests if request["path"] == path]
 
 
-class ViewedTabResumeTests(ResumeTestCase):
+class DirectResumeTests(ResumeTestCase):
     def hold(self, answer=None):
         result, payload = self.call("browser_click", {"target": "#send"}, answer)
         self.assertEqual(payload["code"], "needs_user", payload)
@@ -67,7 +48,7 @@ class ViewedTabResumeTests(ResumeTestCase):
         checkpoint = server._direct_checkpoints[call]
         self.assertEqual(checkpoint["token"], hashlib.sha256(token.encode()).hexdigest())
         self.assertEqual((checkpoint["tool"], checkpoint["arguments"], checkpoint["tabId"]),
-                         ("browser_click", {"target": "#send"}, VIEWED_TAB))
+                         ("browser_click", {"target": "#send"}, AGENT_TAB))
         self.assertNotIn(token, json.dumps(server._direct_checkpoints, default=str))
         self.assertNotIn("confirmToken", checkpoint["held"]["state"])
         # call is the audit call id of the hold.
@@ -80,12 +61,12 @@ class ViewedTabResumeTests(ResumeTestCase):
         result, again = self.resume(payload, wait=300)
         self.assertLess(time.monotonic() - started, 5, "a resume never waits for a hold to lift")
         self.assertEqual((again["code"], again["state"]["detail"], again["call"]),
-                         ("needs_user", "user_viewing", payload["call"]))
+                         ("needs_user", "confirmation_required", payload["call"]))
         self.assertNotEqual(again["resume_token"], payload["resume_token"])
         self.assertNotEqual(again["state"]["confirmToken"], payload["state"]["confirmToken"])
         self.assertIn(again["state"]["confirmToken"], bridge._confirm_tokens)
         self.assertEqual(len(self.clicks()), 2, "the held click was checked again once")
-        self.assertFalse(any(p.get("viewedTabApproved") for p in self.extension.actions("click")))
+        self.assertEqual(self.extension.actions("click"), [], "nothing ran")
         # The old token stopped working; the new one still does.
         result, refused = self.resume(payload)
         self.assertEqual(refused["code"], "resume_token_invalid")
@@ -94,19 +75,18 @@ class ViewedTabResumeTests(ResumeTestCase):
 
     def test_a_resume_runs_the_call_only_when_a_new_call_would_too(self):
         payload = self.hold()
-        # The user still views the tab: a new call is held, and so is the resume.
+        # Ask-before-act still holds it: a new call is held, and so is the resume.
         self.assertEqual(self.call("browser_click", {"target": "#send"})[1]["code"], "needs_user")
         payload = self.resume(payload)[1]
         self.assertEqual(payload["code"], "needs_user")
-        # The user looked away: a new call runs, and so does the resume, without any approval.
-        self.extension.viewed = False
+        # Ask-before-act was turned off: a new call runs, and so does the resume, without any approval.
+        bridge._policy["ask"] = False
         self.assertIs(self.call("browser_click", {"target": "#other"})[1].get("ok"), True)
         result, resumed = self.resume(payload)
         self.assertIs(resumed.get("ok"), True, resumed)
         self.assertNotIn("resume_token", resumed)
         self.assertNotIn(payload["call"], server._direct_checkpoints)
-        self.assertEqual([p["selector"] for p in self.extension.actions("click")[-2:]], ["#other", "#send"])
-        self.assertNotIn("viewedTabApproved", self.extension.actions("click")[-1])
+        self.assertEqual([p["selector"] for p in self.extension.actions("click")], ["#other", "#send"])
         # Its checkpoint is gone: the bridge answers.
         self.assertEqual(self.resume(payload)[1]["code"], "checkpoint_not_found")
 
@@ -117,8 +97,8 @@ class ViewedTabResumeTests(ResumeTestCase):
         result, resumed = self.resume(payload, answer_with("accept", "Approve"))
         self.assertIs(resumed.get("ok"), True, resumed)
         self.assertEqual(len(self.prompts), 1)
-        self.assertIn("Allow the agent's click in the tab you are viewing (Inbox)?", self.prompts[0].message)
-        self.assertIs(self.extension.actions("click")[-1]["viewedTabApproved"], True)
+        self.assertIn("Allow the agent's click? It clicks a submit control (Pay).", self.prompts[0].message)
+        self.assertEqual([p["selector"] for p in self.extension.actions("click")], ["#send"])
         self.assertEqual(bridge._audit_log[-1]["approval"], "elicitation")
         self.assertNoToken()
         self.assertEqual(server._direct_checkpoints, {})
@@ -129,7 +109,6 @@ class ViewedTabResumeTests(ResumeTestCase):
         result, again = self.resume(payload, answer_with("accept", "Approve", delay=3), wait=1)
         self.assertEqual((again["code"], again["state"]["decision"], again["call"]),
                          ("needs_user", "cancelled", payload["call"]))
-        self.assertNotIn("viewedTabApproved", self.extension.actions("click")[-1])
         # wait=0 asks nothing; a decline is reported as such, still resumable.
         result, unasked = self.resume(again, answer_with("accept", "Approve"), wait=0)
         self.assertEqual(self.prompts, [])
@@ -139,7 +118,7 @@ class ViewedTabResumeTests(ResumeTestCase):
         self.assertEqual((declined["state"]["decision"], declined["call"]), ("declined", payload["call"]))
         self.assertIn("resume_token", declined)
         self.assertNoToken()
-        self.assertFalse(any(p.get("viewedTabApproved") for p in self.extension.actions("click")))
+        self.assertEqual(self.extension.actions("click"), [], "nothing ran")
 
     def test_wait_is_capped(self):
         self.assertEqual([waits.resume_wait_seconds(w) for w in (1000, 300, 12.5, 0, -5, None, True, float("nan"))],
@@ -158,10 +137,10 @@ class ViewedTabResumeTests(ResumeTestCase):
 
     def test_a_resume_refuses_another_current_tab_and_observed(self):
         payload = self.hold()
-        with patch.object(playwright_tools, "_current_tab", AGENT_TAB):
+        with patch.object(playwright_tools, "_current_tab", AGENT_TAB + 1):
             result, refused = self.resume(payload)
         self.assertEqual((refused["code"], refused["state"]["tabId"], refused["state"]["currentTab"]),
-                         ("current_tab_changed", VIEWED_TAB, AGENT_TAB))
+                         ("current_tab_changed", AGENT_TAB, AGENT_TAB + 1))
         result, refused = self.resume(payload, observed={"0": "applied"})
         self.assertEqual(refused["code"], "observed_invalid")
         self.assertEqual(len(self.clicks()), 1, "nothing was sent")
@@ -173,20 +152,8 @@ class ViewedTabResumeTests(ResumeTestCase):
         self.assertEqual(payload["code"], "checkpoint_not_found")
         self.assertEqual(len(self.paths("/api/resume")), 1)
 
-    def test_type_whose_enter_is_held_on_the_viewed_tab_resumes_at_the_enter(self):
-        # The user starts viewing the tab after the text was typed: the bridge names the held action.
-        self.extension.viewed, self.extension.view_after = False, "type"
-        result, payload = self.call("browser_type", {"target": "#q", "text": "hi", "slowly": True, "submit": True})
-        self.assertEqual((payload["code"], payload["state"]["detail"], payload["state"]["action"]),
-                         ("needs_user", "user_viewing", "keypress"))
-        result, resumed = self.resume(payload, answer_with("accept", "Approve"))
-        self.assertIs(resumed.get("ok"), True, resumed)
-        self.assertEqual([p["text"] for p in self.extension.actions("type")], ["hi"], "typed once")
-        self.assertEqual(len(self.paths("/api/type")), 1)
-        # Held in the call, held again in the resume, then pressed once approved.
-        self.assertEqual([p.get("viewedTabApproved") for p in self.extension.actions("keypress")], [None, None, True])
-
     def test_a_page_state_stop_waits_for_its_check(self):
+        bridge._policy["ask"] = False  # only the sign-in stop: once it lifts, the click runs
         checks = []
 
         def signed_in(state):
@@ -197,8 +164,7 @@ class ViewedTabResumeTests(ResumeTestCase):
                 "state": {"reason": "sign_in", "tabId": AGENT_TAB, "message": "Sign in to continue"}}
         payload = {"call": 77, "resume_token": server._save_direct_checkpoint(
             77, tool="browser_click", arguments={"target": "#next"}, held=held, tabId=AGENT_TAB)}
-        with (patch.object(playwright_tools, "_current_tab", AGENT_TAB),
-              patch.dict(server.PAGE_STATE_CHECKS, {"sign_in": signed_in}),
+        with (patch.dict(server.PAGE_STATE_CHECKS, {"sign_in": signed_in}),
               patch.object(server, "PAGE_STATE_POLL_SECONDS", 0.05)):
             done_after = 1000
             started = time.monotonic()
@@ -260,14 +226,6 @@ class CheckpointStoreTests(unittest.TestCase):
 
 
 class AskBeforeActResumeTests(ResumeTestCase):
-    ask = True
-
-    def setUp(self):
-        super().setUp()
-        patcher = patch.object(playwright_tools, "_current_tab", AGENT_TAB)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-
     def test_fill_form_resumes_at_the_held_field(self):
         self.extension.url = "https://shop.example/checkout"
         fields = [{"name": name, "type": "textbox", "target": f"#{name}", "value": value}

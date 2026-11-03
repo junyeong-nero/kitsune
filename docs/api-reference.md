@@ -579,23 +579,25 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `tab_claimed` | A resumed `parallel` sequence writes a tab that another call's `parallel` in progress writes (`state.tabId`, `state.call`); nothing in that sequence was sent (see [Checkpoint and resume](checkpoint-resume.md#parallel)) | true |
 | `checkpoint_not_found`, `resume_token_invalid`, `workflow_changed`, `observed_invalid`, `observed_required`, `resume_failed`, `current_tab_changed` | `browser_resume` refused or stopped; see [Checkpoint and resume](checkpoint-resume.md#errors) and, for `current_tab_changed`, [Direct calls](checkpoint-resume.md#direct-calls) | `observed_*`, `current_tab_changed`: true; others: false |
 
-`needs_user` replaces three codes, which stay as `state.detail` for one release.
-`user_tab` and `user_viewing` below describe legacy extension responses; the current
-extension instead returns `user_tab_read_only` for user-tab writes, without approval. A `reason`
-the old `state` carried moves to `state.holdReason`; every other field keeps its name:
+`needs_user` replaces three codes, which stay as `state.detail` for one release. The
+current extension refuses user-tab writes with `user_tab_read_only` instead, without
+approval; `user_tab` below comes only from a v0.7.1 extension. The table lists two of the
+three: the third, `user_viewing` (the old viewed-tab hold), is no longer produced (no released
+extension had it), though the Python API still recognizes it until the alias release ends. A `reason` the old `state` carried moves to
+`state.holdReason`; every other field keeps its name:
 
 | `state.detail` | Was the code | When | `state.holdReason` |
 |---|---|---|---|
 | `confirmation_required` | `confirmation_required` (`retryable: true`) | [Ask-before-act](#ask-before-act) held a sensitive action (`state.description`, `state.params`) | the hold reason (`submit_control`, `payment_page`, …) |
-| `user_tab` | `user_tab` | `browser_tabs` close on a tab the agent did not open, or `browser_close_window` on a window with one; it stays open. Unless the client turned off [protected user tabs](#protected-user-tabs), also navigate, back or forward on such a tab; it stays where it is (see [Agent-owned tabs](#agent-owned-tabs)) | none |
-| `user_viewing` | `user_viewing` | The tab is shown in the browser window the user last focused, and the agent did not open it (`state.windowId`, `state.browserFocused`); the write or navigation did not run (see [Viewed tab](#viewed-tab)) | `viewing` |
+| `user_tab` | `user_tab` | A v0.7.1 extension refused `browser_tabs` close on a tab the agent did not open, or `browser_close_window` on a window with one; it stays open (see [Agent-owned tabs](#agent-owned-tabs)) | none |
 
 ```json
-{ "error": "The user is viewing tab 0 in browser_tabs (tabId 12); nothing was done", "code": "needs_user", "retryable": false,
-  "hint": "Nothing was done: the user is viewing this tab. Open a tab of your own ...",
-  "state": { "reason": "approval", "detail": "user_viewing", "tabId": 12, "index": 0, "url": "https://mail.example/",
-             "title": "Inbox", "windowId": 3, "holdReason": "viewing", "browserFocused": false,
-             "message": "Allow the agent's click in the tab you are viewing (Inbox)?", "approvable": true,
+{ "error": "Confirmation required: clicks a submit control (Pay)", "code": "needs_user", "retryable": false,
+  "hint": "Nothing ran. Ask the user to approve this exact action (state.message), then repeat the identical call ...",
+  "state": { "reason": "approval", "detail": "confirmation_required", "holdReason": "submit_control",
+             "action": "click", "description": "clicks a submit control (Pay)", "tabId": 12,
+             "url": "https://shop.example/cart", "params": { "selector": "#pay", "tabId": 12 },
+             "message": "Allow the agent's click? It clicks a submit control (Pay).", "approvable": true,
              "confirmToken": "…", "expiresInSeconds": 120, "approval": "token" } }
 ```
 
@@ -1403,8 +1405,9 @@ interception rules can still affect shared state. They have no concrete tab targ
 remain subject to their existing capabilities, task-mode and optional ask-before-act policy.
 Interception is a global blocking webRequest listener, not a safe read or a tab-local rule.
 In contrast, dialog policies and page storage have concrete tab targets and are guarded.
-Legacy `user_tab`/`user_viewing` approval results are still understood by the bridge for
-older extensions, but this extension no longer emits those holds for user-tab writes.
+A v0.7.1 extension's `user_tab` refusal to close a user tab is still turned into a
+`needs_user` approval by the bridge; the current extension emits no approval holds for
+user tabs.
 
 Ownership lives in the extension's background page. A bridge restart or reconnect
 keeps it. The extension also stores it on each owned tab as a session tab value
@@ -1438,12 +1441,17 @@ A tab that goes back to the user loses its value. Limits:
   from the agent's input during that finite window.
 - Content scripts cannot observe input on browser-internal pages or while the
   extension is unloaded. The 1 s threshold has deterministic unit coverage. The
-  trusted-`mousedown`-to-`tabs.onCreated` delay was measured only in headless Zen with
+  trusted-`mousedown`-to-`tabs.onCreated` delay was measured in headless Zen with
   privileged synthesized trusted DOM input and no button hold time: 6–103 ms over 60
   middle and Cmd clicks, and 8–45 ms from a trusted Enter `keydown` over 16 keyboard
   opens (Cmd+Enter, Enter on a `target=_blank` link)
-  (tests/test_real_browser_trusted_ownership.py). Real OS input and real users' timing
-  (button hold, a loaded browser) have not been measured.
+  (tests/test_real_browser_trusted_ownership.py). With real OS
+  input (Quartz CGEvents) in headed Zen 1.24b on macOS, holding the button 50–150 ms,
+  60 middle and Cmd clicks took 68–183 ms (median 116.5 ms) from posting the OS
+  `mousedown`, and 22–177 ms (median 110 ms) from the page's `mousedown`, the time the
+  extension compares (tests/test_real_browser_os_trusted_ownership.py). The link opens on
+  release, so the delay grows with the hold. Real users' timing in a loaded browser has
+  not been measured.
 
 #### Agent tab cleanup
 
@@ -1604,9 +1612,9 @@ an action.
 The old viewed-tab approval hold is replaced by [Tab permissions](#tab-permissions).
 Viewing does not change ownership: user tabs are read-only even in the background,
 and owned tabs remain writable while viewed unless the existing `user_active` guard
-reports trusted user activity. Legacy `needs_user` details `user_viewing` and `user_tab`
-remain recognized through the one-release alias period (and are removed only after it);
-they are not the default permission mechanism and cannot approve a write refused as `user_tab_read_only`.
+reports trusted user activity. Neither the extension nor the bridge produces the old
+`needs_user` detail `user_viewing` any more; the Python API still recognizes it through the
+one-release alias period. No approval can lift a write refused as `user_tab_read_only`.
 
 #### No current tab
 
@@ -1944,7 +1952,7 @@ alone: `readonly`, `allow`/`deny`, and `ask`.
 
 A direct call held by [ask-before-act](#ask-before-act) (`needs_user` with
 `state.reason: "approval"`) is approved through MCP elicitation when the client supports it
-(#376). The same fallback handles legacy extension `user_tab`/`user_viewing` holds;
+(#376). The same fallback handles a v0.7.1 extension's `user_tab` close holds;
 current user-tab writes are refused without prompting. Explicit [handoff requests](#requesting-and-returning-a-tab)
 ask in the browser first, then use client approval after 30 seconds, and do not offer resume checkpoints.
 The client declares the `elicitation` capability (form mode, protocol 2025-06-18 or
@@ -1968,12 +1976,6 @@ later) at initialize; Claude Code (2.1.76 and later) and Codex do.
    `state.approval: "elicitation"` and `state.decision`: `declined` or `cancelled` (also for
    no answer). Nothing ran. The result carries `call` and `resume_token`: `browser_resume`
    asks the user again ([Direct calls](checkpoint-resume.md#direct-calls)).
-   For a legacy extension's `user_viewing` hold, Decline means "not in this tab" (#383): the prompt says
-   so ("Decline means the agent should not do it in this tab"), and the hint tells the agent
-   to do it in a tab of its own instead. For 10 s after such a decline, the next held calls on
-   that tab (the rest of the agent's turn) are declined without a prompt
-   (`state.decision: "declined"`, and a hint that says the user was not asked again);
-   `browser_resume` still asks.
 4. If the repeat holds the request the user approved again (it no longer matches: the target
    resolved in another tab), it is not repeated again: the result has `state.tokenRejected`
    and no token, and what the call did before it (`filled`) stays done. Calling the tool
@@ -2418,9 +2420,11 @@ the first read take one call. A failed page read is returned as `active_page` be
 inventory. New opens the tab in the
 background and returns immediately unless
 `wait=True`, which waits up to `timeout` ms for the page to load and returns
-the actual URL and load status. Close refuses a tab the agent did not open with
-`needs_user` (`user_tab`) until the user approves it (in the client's prompt, or with
-`confirm_token` on a client without elicitation; see [Agent-owned tabs](#agent-owned-tabs)). Select switches the user's view: use it only
+the actual URL and load status. Close follows [Tab permissions](#tab-permissions): a
+tab this client may not write is refused with `user_tab_read_only`. A
+v0.7.1 extension instead refuses a tab the agent did not open with `needs_user` (`user_tab`) until
+the user approves it (in the client's prompt, or with `confirm_token` on a client without
+elicitation). Select switches the user's view: use it only
 when the user asked. Options for other actions are ignored.
 
 ### `browser_page_text(tab_id=None)`
@@ -3057,14 +3061,18 @@ browser panel or menu covering the page refuses with `state.reason: "other_brows
 `state.window` (the window at the point, `[left, top, width, height]`) and `state.targetWindow`.
 An extension older than this bridge sends no bounds, so any browser window passes, as before.
 
-Known limit, unverified (#336): with the browser in native full screen, a click within the
-menu bar's height from the top of the screen may be refused. The menu bar (a `Window Server`
-window at layer 24, with Control Center's menu extras at layer 25) may stay in the on-screen
-window list while it is hidden, which would refuse with `state.reason: "other_window"` and
-`state.app: "Window Server"` (or `"Control Center"`). The browser's own full-screen toolbar
-strip there may refuse with `"other_browser_window"`. Scroll the target further down the page,
-or ask the user to leave full screen, then retry. To see which window macOS reports there, run
-the opt-in check while nobody uses the machine:
+Full screen, verified on macOS 26.5.1 with Zen 1.24b (#336): in native full screen the hidden
+menu bar is not in the on-screen window list, so it does not refuse clicks. Only a menu bar the
+user shows (the pointer resting at the top edge of the screen) is listed: a `Window Server`
+window at layer 24 over the top 30 points, with Control Center's menu extras at layer 25. A
+click there refuses with `state.reason: "other_window"` and `state.app: "Window Server"` (or
+Control Center, named in the system's language), so it never lands on the menu bar. What
+remains is Zen's own full-screen strip: a second Zen window, 68 points tall, over the top of the
+page (the page starts at 8 points). It moves down below a shown menu bar (30 to 98 points). A
+click on it refuses with `state.reason: "other_browser_window"`, so the top 60 or so points of a
+full-screen Zen page take no trusted click (#431). Scroll the target further down the page, or
+ask the user to leave full screen, then retry. To see which windows macOS reports there on
+another setup, run the opt-in check while nobody uses the machine:
 
 ```bash
 KITSUNE_E2E_BROWSER=/Applications/Zen.app/Contents/MacOS/zen KITSUNE_E2E_TRUSTED_INPUT=1 \
@@ -3072,7 +3080,9 @@ KITSUNE_E2E_BROWSER=/Applications/Zen.app/Contents/MacOS/zen KITSUNE_E2E_TRUSTED
 ```
 
 Without `--extra macos` Quartz is missing and the check skips. It puts its own browser window
-in full screen, makes no click and prints the window at a few points near the top of the page.
+in full screen, makes no click and prints the windows at a few points near the top of the page.
+With `KITSUNE_E2E_REVEAL_MENU_BAR=1` as well, it then moves the pointer (no click) to the top
+edge to show the menu bar, prints them again, and moves the pointer back.
 
 Focusing the browser, the window check and the click run off the bridge's event loop, so other
 clients' requests are served while a trusted click waits for focus.
@@ -3489,10 +3499,10 @@ requested intentionally still succeeds; a tab still loading retains the ordinary
 user's request; while the user is using the tab it would hide, it returns `user_active`.
 
 ### POST /api/close-tab
-`{ "tabId": 123, "force": true, "confirmToken": "…" }` closes an agent-owned tab. A
-user tab returns `needs_user` (`user_tab`) with a confirm token; `confirmToken` is that token after the
-user approved (see [Agent-owned tabs](#agent-owned-tabs)). `force` disarms
-`beforeunload` first.
+`{ "tabId": 123, "force": true, "confirmToken": "…" }` closes a tab this client may
+write; any other tab returns `user_tab_read_only` (see [Tab permissions](#tab-permissions)). With a v0.7.1 extension, a tab the agent did not open
+returns `needs_user` (`user_tab`) with a confirm token instead; `confirmToken` is that token after
+the user approved. `force` disarms `beforeunload` first.
 
 ### POST /api/wake-tab
 `{ "tabId": 123 }` reloads a discarded tab. A tab that is not discarded returns

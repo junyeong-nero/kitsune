@@ -1,44 +1,44 @@
-"""Legacy user_tab response/token compatibility retained for the alias release (#398)."""
+"""The navigation hold is gone (#398): the bridge sends navigations on as they are, with no hold fields.
+
+The extension admits them by tab permissions (user_tab_read_only, see test_user_tabs_read_only); the
+bridge no longer turns a navigation refusal into a user_tab approval. Closing a user tab keeps its
+user_tab approval for a v0.7.1 extension (test_user_tabs).
+"""
 import asyncio
+import json
 import unittest
 from unittest.mock import Mock, patch
 
-from kitsune import bridge, task_modes, tools
+from kitsune import bridge, task_modes
 
 ACTIVE_TAB = 4
 
 
-class FakeExtension:
-    """Models legacy navigation approval responses, not current extension permissions."""
+class ExtensionSocket:
+    """The extension's WebSocket, as the bridge writes to it: records each command and runs it.
+    describeTarget reports the active tab for commands without one."""
 
-    def __init__(self, owned=(9,)):
-        self.owned = set(owned)
+    def __init__(self):
         self.sent = []
 
-    async def __call__(self, action, params=None, timeout=30):
-        params = dict(params or {})
-        self.sent.append((action, params))
-        tab_id = params.get("tabId") or ACTIVE_TAB
-        if action == "describeTarget":
-            return {"tabId": tab_id, "url": "https://user.example/"}
-        if (action in {"navigate", "goBack", "goForward"} and not bridge._user_tabs_writable.get()
-                and tab_id not in self.owned and not params.get("userTabApproved")):
-            return {"error": f"Tab {tab_id} was not opened by the agent, so it was not navigated",
-                    "code": "user_tab", "retryable": False, "hint": "extension hint",
-                    "state": {"tabId": tab_id, "url": "https://user.example/"}}
-        if action == "closeTab" and tab_id not in self.owned and not params.get("userTabApproved"):
-            return {"error": f"Tab {tab_id} was not opened by the agent, so it was not closed",
-                    "code": "user_tab", "retryable": False, "state": {"tabId": tab_id}}
-        return {"ok": True}
+    async def send(self, message):
+        command = json.loads(message)
+        self.sent.append(command)
+        reply = ({"tabId": command.get("tabId") or ACTIVE_TAB, "url": "https://user.example/"}
+                 if command["action"] == "describeTarget" else {"ok": True})
+        bridge.pending_commands[command["id"]]["future"].set_result(reply)
 
     def last(self, action):
-        return [params for sent, params in self.sent if sent == action][-1]
+        return [command for command in self.sent if command["action"] == action][-1]
 
 
-class ProtectedTabTests(unittest.TestCase):
+class NavigationTests(unittest.TestCase):
     def setUp(self):
-        self.extension = FakeExtension()
+        self.extension = ExtensionSocket()
         patches = [
+            patch.object(bridge, "extension_ws", self.extension),
+            patch.object(bridge, "_ws_send_lock", None),
+            patch.dict(bridge.pending_commands, clear=True),
             patch.dict(bridge._policy, {"allow": [], "deny": [], "readonly": False, "ask": False,
                                         "askUrls": list(bridge.DEFAULT_ASK_URLS), "askLocked": False}),
             patch.dict(bridge._confirm_tokens, clear=True),
@@ -47,158 +47,52 @@ class ProtectedTabTests(unittest.TestCase):
             patch.object(bridge, "_global_command_lock", None),
             patch.object(bridge, "_tab_command_locks", {}),
             patch.object(bridge, "_scheduler_gate", None),
-            patch.object(bridge, "_send_to_extension_raw", new=lambda *a, **k: self.extension(*a, **k)),
         ]
         for patcher in patches:
             patcher.start()
             self.addCleanup(patcher.stop)
 
-    def call(self, path, body, protect_header=None, mode=None):
+    def call(self, path, body, user_tabs=None):
         handler = bridge.BridgeHandler.__new__(bridge.BridgeHandler)
         handler.path = path
-        handler.headers = {} if protect_header is None else {task_modes.USER_TABS_HEADER: "writable" if protect_header == "0" else "read-only"}
-        if mode:
-            handler.headers[task_modes.MODE_HEADER] = mode
+        handler.headers = {} if user_tabs is None else {task_modes.USER_TABS_HEADER: user_tabs}
         handler.read_body = Mock(return_value=dict(body))
         handler.send_json = Mock()
         handler.run_async = Mock(side_effect=lambda coro, **kwargs: asyncio.run(coro))
         handler.authorized = Mock(return_value=True)
         handler.do_POST()
-        status, result = handler.send_json.call_args.args
-        self.assertEqual(status, 200)
-        return result
+        return handler.send_json.call_args.args
 
-    def refuse(self, path, body):
-        result = self.call(path, body)
-        self.assertEqual((result["code"], result["state"]["detail"], result["retryable"]), ("needs_user", "user_tab", False), result)
-        self.assertIn("browser_tabs", result["hint"])
-        self.assertIn("tab_id", result["hint"])
-        # Core browser_tabs new returns an index and makes the tab current, not a tabId.
-        self.assertIn("(browser_tabs action=new) and work there", result["hint"])
-        return result
+    def test_navigations_reach_the_extension_without_hold_fields(self):
+        for user_tabs in (None, "read-only", "writable"):
+            for path, action, body in (("/api/navigate", "navigate", {"url": "https://a.example/"}),
+                                       ("/api/back", "goBack", {}), ("/api/forward", "goForward", {})):
+                with self.subTest(user_tabs=user_tabs, action=action):
+                    sent = {**body, "tabId": ACTIVE_TAB, "protectUserTabs": True, "holdViewedTab": True,
+                            "viewedTabApproved": True, "userTabApproved": True}
+                    self.assertEqual(self.call(path, sent, user_tabs), (200, {"ok": True}))
+                    received = self.extension.last(action)
+                    self.assertEqual(received["tabId"], ACTIVE_TAB)
+                    for field in ("protectUserTabs", "holdViewedTab", "viewedTabApproved", "userTabApproved",
+                                  "confirmToken"):
+                        self.assertNotIn(field, received)
+                    self.assertIs(received.get("userTabsWritable"), True if user_tabs == "writable" else None)
+        self.assertEqual(bridge._confirm_tokens, {}, "no navigation approval is offered")
 
-    # (a) Owned helper tabs: navigation and cleanup are unchanged under protection.
-    def test_owned_helper_tab_navigates_and_closes(self):
-        self.assertEqual(self.call("/api/navigate", {"url": "https://a.example/", "tabId": 9}), {"ok": True})
-        self.assertNotIn("protectUserTabs", self.extension.last("navigate"))
-        self.assertEqual(self.call("/api/back", {"tabId": 9}), {"ok": True})
-        self.assertEqual(self.call("/api/close-tab", {"tabId": 9}), {"ok": True})
-
-    # (b) Protected initial tabs: navigate, back and forward are refused, nothing is redirected.
-    def test_protected_user_tab_refuses_navigation(self):
-        result = self.refuse("/api/navigate", {"url": "https://a.example/", "tabId": 4})
-        self.assertEqual(result["state"]["tabId"], 4)
-        self.assertEqual(result["state"]["expiresInSeconds"], bridge.CONFIRM_TOKEN_TTL)
-        self.refuse("/api/back", {"tabId": 4})
-        self.refuse("/api/forward", {"tabId": 4})
-        # Without tab_id the active (user) tab is the target; it is refused, not swapped for another tab.
-        self.assertEqual(self.refuse("/api/navigate", {"url": "https://a.example/"})["state"]["tabId"], ACTIVE_TAB)
-        self.assertEqual([p.get("tabId") for a, p in self.extension.sent if a == "navigate"], [4, None])
-
-    def test_restricted_modes_get_no_token_and_open_a_tab_of_their_own(self):
-        # read and draft cannot confirm (#270): the refusal points to browser_tab_list new_tab.
-        for mode in ("read", "draft"):
-            with self.subTest(mode=mode):
-                result = self.call("/api/navigate", {"url": "https://a.example/", "tabId": 4}, mode=mode)
-                self.assertEqual(result["state"]["detail"], "user_tab")
-                self.assertEqual(result["hint"], bridge.RESTRICTED_USER_TAB_HINT)
-                self.assertNotIn("confirmToken", result["state"])
-                self.assertEqual(self.call("/api/new-tab", {"url": "https://a.example/"}, mode=mode), {"ok": True})
-        self.assertEqual(bridge._confirm_tokens, {})
-
-    def test_batch_steps_are_refused_without_a_token(self):
-        result = self.call("/api/batch", {"commands": [
-            {"action": "navigate", "url": "https://a.example/", "tabId": 4, "userTabApproved": True}]})
-        step = result["results"][0]
-        self.assertEqual(step["state"]["detail"], "user_tab")
-        self.assertNotIn("confirmToken", step["state"])
-        self.assertNotIn("userTabApproved", self.extension.last("navigate"))
-        self.assertNotIn("protectUserTabs", self.extension.last("navigate"))
-
-    def test_limits_clicks_are_not_guarded(self):
-        self.call("/api/click", {"selector": "a", "tabId": 4})
-        self.assertNotIn("protectUserTabs", self.extension.last("click"))
-
-    # (c) Explicitly authorized navigation.
-    def test_confirm_token_authorizes_one_navigation(self):
-        body = {"url": "https://a.example/", "tabId": 4}
-        token = self.refuse("/api/navigate", body)["state"]["confirmToken"]
-        # Bound to this exact navigation.
-        self.refuse("/api/navigate", {"url": "https://b.example/", "tabId": 4, "confirmToken": token})
-        self.refuse("/api/navigate", {"url": "https://a.example/", "tabId": 5, "confirmToken": token})
-        token = self.refuse("/api/navigate", body)["state"]["confirmToken"]
-        self.assertEqual(self.call("/api/navigate", {**body, "confirmToken": token}), {"ok": True})
-        self.assertIs(self.extension.last("navigate")["userTabApproved"], True)
-        again = self.refuse("/api/navigate", {**body, "confirmToken": token})
-        self.assertEqual(again["state"]["tokenRejected"], "used")
-        self.assertNotIn("userTabApproved", self.extension.last("navigate"))
-
-    def test_token_for_the_active_tab_binds_its_tab_id(self):
-        result = self.refuse("/api/navigate", {"url": "https://a.example/"})
-        token = result["state"]["confirmToken"]
-        self.assertIn(f"tab_id={ACTIVE_TAB}", result["hint"])
-        body = {"url": "https://a.example/", "tabId": ACTIVE_TAB, "confirmToken": token}
-        self.assertEqual(self.call("/api/navigate", body), {"ok": True})
-
-    def approve_until_done(self, body, approvals=3):
-        """Repeat a direct navigation with each token it returns; return the result and the tokens used."""
-        tokens = []
-        for _ in range(approvals + 1):
-            handler = bridge.BridgeHandler.__new__(bridge.BridgeHandler)
-            handler.path = "/api/navigate"
-            handler.headers = {}
-            handler.read_body = Mock(return_value=dict(body))
-            handler.send_json = Mock()
-            handler.run_async = Mock(side_effect=lambda coro, **kwargs: asyncio.run(coro))
-            handler.authorized = Mock(return_value=True)
-            handler.do_POST()
-            result = handler.send_json.call_args.args[1]
-            token = (result.get("state") or {}).get("confirmToken")
-            if token is None:
-                return result, tokens
-            tokens.append(result["state"]["detail"])
-            # As the hints say: ask-before-act repeats the identical call, user_tab names the refused tab.
-            body = {**body, "confirmToken": token}
-            if result["state"]["detail"] == "user_tab":
-                body["tabId"] = result["state"]["tabId"]
-        self.fail(f"still refused after {approvals} approvals: {tokens}")
-
-    def test_one_ask_before_act_approval_covers_a_protected_payment_navigation(self):
-        # The ask token approves this navigation on this tab, so the user_tab refusal does not follow.
+    def test_an_ask_before_act_approval_pins_the_navigation_to_the_approved_tab(self):
+        # Without tab_id the hold resolves the active tab; the approved repeat goes to that tab only.
         bridge._policy["ask"] = True
-        for body in ({"url": "https://shop.example/checkout", "tabId": 4}, {"url": "https://shop.example/checkout"}):
+        for body in ({"url": "https://shop.example/checkout", "tabId": ACTIVE_TAB},
+                     {"url": "https://shop.example/checkout"}):
             with self.subTest(body=body):
-                result, tokens = self.approve_until_done(body)
-                self.assertEqual((result, tokens), ({"ok": True}, ["confirmation_required"]))
+                status, held = self.call("/api/navigate", body)
+                self.assertEqual((status, held["code"], held["state"]["detail"], held["state"]["tabId"]),
+                                 (403, "needs_user", "confirmation_required", ACTIVE_TAB), held)
+                status, result = self.call("/api/navigate", {**body, "confirmToken": held["state"]["confirmToken"]})
+                self.assertEqual((status, result), (200, {"ok": True}))
                 sent = self.extension.last("navigate")
-                self.assertEqual((sent["tabId"], sent["userTabApproved"]), (ACTIVE_TAB, True))
-
-    def test_ask_token_issued_after_a_user_tab_approval_is_accepted(self):
-        # A user_tab token from before ask mode was turned on, then the ask hold: two approvals, no loop.
-        body = {"url": "https://shop.example/checkout", "tabId": 4}
-        token = self.refuse("/api/navigate", body)["state"]["confirmToken"]
-        bridge._policy["ask"] = True
-        result, tokens = self.approve_until_done({**body, "confirmToken": token})
-        self.assertEqual((result, tokens), ({"ok": True}, ["confirmation_required"]))
-        self.assertIs(self.extension.last("navigate")["userTabApproved"], True)
-
-    def test_protection_is_on_unless_the_client_sends_0(self):
-        # #326: a request without the header, such as a direct HTTP call, is protected; "1" still is.
-        for header in (None, "1", "yes"):
-            with self.subTest(header=header):
-                result = self.call("/api/navigate", {"url": "https://a.example/", "tabId": 4}, protect_header=header)
-                self.assertEqual(result["state"]["detail"], "user_tab")
-                self.assertNotIn("protectUserTabs", self.extension.last("navigate"))
-
-    def test_callers_cannot_approve_themselves(self):
-        self.refuse("/api/navigate", {"url": "https://a.example/", "tabId": 4, "userTabApproved": True})
-        self.assertNotIn("userTabApproved", self.extension.last("navigate"))
-
-    def test_without_protection_user_tab_navigation_is_unchanged(self):
-        body = {"url": "https://a.example/", "tabId": 4, "protectUserTabs": True}
-        self.assertEqual(self.call("/api/navigate", body, protect_header="0"), {"ok": True})
-        self.assertNotIn("protectUserTabs", self.extension.last("navigate"))
-        self.assertEqual(self.call("/api/back", {"tabId": 4}, protect_header="0"), {"ok": True})
+                self.assertEqual(sent["tabId"], ACTIVE_TAB)
+                self.assertNotIn("userTabApproved", sent)
 
 
 if __name__ == "__main__":
