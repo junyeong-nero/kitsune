@@ -21,6 +21,8 @@ const { harness } = require('./shared_browser.cjs');
       const result = await h.send({ tabId, ...command });
       assert.equal(result.code, 'user_active', command.action);
       assert.equal(result.retryable, true);
+      // The server instructions leave the retry to this hint (#405).
+      assert.match(result.hint, /Retry in a few seconds/, command.action);
       assert.equal(h.calls.length, effects, 'no mutation before busy refusal');
     }
     const inventory = await h.send({ action: 'getTabs' });

@@ -1,10 +1,10 @@
 {
   "browser_ask_user": {
-    "description": 332,
-    "firstParagraph": 116,
-    "inputSchema": 406,
-    "total": 923,
-    "firstParagraphTotal": 707
+    "description": 154,
+    "firstParagraph": 154,
+    "inputSchema": 302,
+    "total": 641,
+    "firstParagraphTotal": 641
   },
   "browser_click": {
     "description": 29,
@@ -133,11 +133,11 @@
     "firstParagraphTotal": 485
   },
   "browser_resume": {
-    "description": 300,
-    "firstParagraph": 164,
-    "inputSchema": 503,
-    "total": 986,
-    "firstParagraphTotal": 850
+    "description": 142,
+    "firstParagraph": 142,
+    "inputSchema": 411,
+    "total": 736,
+    "firstParagraphTotal": 736
   },
   "browser_run_code_unsafe": {
     "description": 126,

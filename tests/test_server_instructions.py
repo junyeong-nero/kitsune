@@ -28,21 +28,19 @@ class ServerInstructionsTests(unittest.TestCase):
     def test_permission_rule_and_recovery_in_every_mode_and_setting(self):
         for (mode, setting), text in self.texts.items():
             with self.subTest(mode=mode, setting=setting):
-                self.assertIn("On your own tab, user_active: wait a few seconds and retry.", text)
-                self.assertIn("needs_user error: nothing ran; show state.message.", text)
-                self.assertIn("Need the user? browser_ask_user.", text)
-                self.assertIn("MCP restart clears current", text)
-                self.assertIn("reads use the viewed tab", text)
-                self.assertIn("writes/navigation without tab_id fail no_current_tab", text)
+                self.assertIn("browser_ask_user", text)
+                self.assertIn("an MCP restart clears current", text)
+                self.assertIn("reads use the viewed tab and writes/navigation need tab_id", text)
                 if setting == "read-only":
-                    self.assertIn("User and other clients' tabs are read-only (user_tab_read_only, no prompt)", text)
-                    self.assertIn("open your own before writes, scroll, hover, focus or select", text)
+                    self.assertIn("User and other clients' tabs are read-only: open your own before writes, "
+                                  "scroll, hover, focus or select.", text)
                 else:
                     self.assertNotIn("read-only", text)
-                    self.assertNotIn("user_tab_read_only", text)
-                # Legacy viewed-tab approval is gone, not needs_user for other approvals/user help.
-                for obsolete in ("user_viewing", "hold", "ownTabs", "confirm_token", "browser_resume"):
-                    self.assertNotIn(obsolete, text)
+                # Legacy viewed-tab approval is gone; how to answer needs_user, user_active, user_tab_read_only
+                # and no_current_tab is in those results' hints (#405).
+                for left_to_hints in ("user_viewing", "hold", "ownTabs", "confirm_token", "browser_resume",
+                                      "needs_user", "user_active", "user_tab_read_only", "no_current_tab"):
+                    self.assertNotIn(left_to_hints, text)
 
     def test_act_mode_explains_background_current_tabs_and_handoff(self):
         for setting in ("read-only", "writable"):
@@ -50,11 +48,12 @@ class ServerInstructionsTests(unittest.TestCase):
                 text = self.texts["act", setting]
                 self.assertIn("browser_tabs new opens a background current tab", text)
                 self.assertIn("select sets current without switching the user's view", text)
-                self.assertIn("until new/select", text)
-                self.assertIn("Batch/workflow newTab or tabs opened from current become current (current_tab)", text)
-                self.assertIn("browser_tabs request needs approval: session-only DOM/browser handoff, no native input", text)
+                self.assertIn("Until new/select", text)
+                self.assertIn("Batch/workflow newTab and tabs opened from current become current.", text)
+                self.assertIn("browser_tabs request asks the user to hand over a tab (DOM writes, no native input)",
+                              text)
                 # #352: prefer page controls to asking in chat when handing a step to the user.
-                self.assertIn("Prefer page controls to hand a step to the user.", text)
+                self.assertIn("Prefer page controls, else browser_ask_user, to hand a step to the user.", text)
 
     def test_deprecated_opt_out_aliases_do_not_advertise_read_only(self):
         for setting in ("KITSUNE_HOLD_VIEWED_TAB", "KITSUNE_PROTECT_USER_TABS"):
@@ -67,7 +66,8 @@ class ServerInstructionsTests(unittest.TestCase):
                 with self.subTest(mode=mode, setting=setting):
                     text = self.texts[mode, setting]
                     self.assertIn("browser_tab_list new_tab opens a background current tab", text)
-                    self.assertIn("until new_tab", text)
+                    self.assertIn("Until new_tab", text)
+                    self.assertIn("Need the user? browser_ask_user.", text)
                     for unavailable in ("browser_tabs", "handoff", "Prefer page controls"):
                         self.assertNotIn(unavailable, text)
 
