@@ -280,7 +280,7 @@ class RealBrowserOsTrustedOwnershipTests(harness.RealBrowserTestCase):
         Q = self.quartz
         event = Q.CGEventCreateKeyboardEvent(None, code, down)
         if text is not None:
-            Q.CGEventKeyboardSetUnicodeString(event, len(text), text)
+            Q.CGEventKeyboardSetUnicodeString(event, len(text.encode("utf-16-le")) // 2, text)
         Q.CGEventSetFlags(event, flags)
         Q.CGEventPost(Q.kCGHIDEventTap, event)
 
@@ -381,6 +381,8 @@ class RealBrowserOsTrustedOwnershipTests(harness.RealBrowserTestCase):
                                      "page": created["at"] - downs[0]["at"]})
                 # The content's input report and tabs.onCreated can arrive in either order; wait out the window.
                 time.sleep(USER_OPENED_TAB_WINDOW_MS / 1000 + 0.2)
+                self.assertEqual(len([t for t in self.site.reports.get("created") if t["opener"] == agent]), 1,
+                                 f"one click opened more than one tab: {self.site.reports.get('created')}")
                 self.assertTrue(all(e["trusted"] for e in self.events()), self.events())
                 tabs = self.tabs()
                 self.assertTrue(tabs[created["id"]]["url"].endswith("/opened?user"), tabs[created["id"]])
@@ -423,6 +425,11 @@ class RealBrowserOsTrustedOwnershipTests(harness.RealBrowserTestCase):
                       f"the user's typing did not leave {value!r}: {self.events()}")
         return time.monotonic()
 
+    def wait_for_agent_inputs(self, values):
+        """Wait until the field's untrusted (agent) input events, in order, left exactly values."""
+        self.wait_for(lambda: [e["value"] for e in self.events("input") if not e["trusted"]] == values,
+                      f"the agent's input events did not leave exactly {values}: {self.events()}")
+
     def assert_only_user_events(self, value):
         events = self.events()
         self.assertTrue(events and all(e["trusted"] for e in events), events)
@@ -455,10 +462,10 @@ class RealBrowserOsTrustedOwnershipTests(harness.RealBrowserTestCase):
 
         for result in self.agent_writes(agent):
             self.assert_ok(result)
-        agent_events = [e for e in self.events() if not e["trusted"]]
         # The agent's text follows the user's, which no agent keystroke changed.
-        self.assertIn(("input", "field", "hix"), [(e["type"], e["target"], e["value"]) for e in agent_events])
-        self.assertIn(("click", "act"), [(e["type"], e["target"]) for e in agent_events])
+        self.wait_for_agent_inputs(["hix", "hixz"])
+        self.wait_for(lambda: ("click", "act") in [(e["type"], e["target"]) for e in self.events() if not e["trusted"]],
+                      f"the agent's click did not reach the page: {self.events()}")
         tab = self.wait_for(lambda: (t := self.tabs()[agent])["url"] == self.site.origin + "/next" and t,
                             "the agent's navigation did not load")
         self.assertIs(tab["owned"], True)
@@ -475,9 +482,7 @@ class RealBrowserOsTrustedOwnershipTests(harness.RealBrowserTestCase):
         # The field keeps focus, but it is empty. The agent's own text there does not hold it again.
         self.assert_ok(self.call("/api/type", {"tabId": agent, "selector": "#field", "text": "x"}))
         self.assert_ok(self.call("/api/keypress", {"tabId": agent, "selector": "#field", "key": "z"}))
-        values = [(e["type"], e["value"]) for e in self.events() if not e["trusted"]]
-        self.assertIn(("input", "x"), values)
-        self.assertIn(("input", "xz"), values)
+        self.wait_for_agent_inputs(["x", "xz"])
         self.assertIs(self.tabs()[agent]["owned"], True)
 
 
