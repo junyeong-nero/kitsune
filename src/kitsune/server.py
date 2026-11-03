@@ -422,28 +422,27 @@ if _unauthorized_caps:
 
 MODE = task_mode(os.environ.get("KITSUNE_MODE"))
 USER_TABS, USER_TABS_ALIASES = user_tabs_from_env(os.environ)
-# Sent once at initialize. The core tools keep Playwright MCP's descriptions, which cannot say
-# that the browser is shared with its user; without this, agents avoid `select` to spare the
-# user's view and work around background tabs instead of reading them. Without the hand-off
-# sentence, agents asked in chat instead of clicking a page's own hand-off control (#352).
-# A needs_user result's hint says how to approve (confirm token) or resume it, so the instructions
-# do not (#386); they are resent with every model request, and scripts/tool_schema_size.py budgets them.
-# The no_current_tab refusal lists the tabs this client opened before a restart (state.ownTabs) and
-# says how to keep working in one, so the instructions only say a restart clears the current tab (#405).
+# Sent at initialize, and resent by clients with every model request. The core tools keep
+# Playwright MCP's descriptions, which cannot say that the browser is shared with its user; without
+# this, agents avoid `select` to spare the user's view and work around background tabs instead of
+# reading them. Without the hand-off sentence, agents asked in chat instead of clicking a page's own
+# hand-off control (#352). scripts/tool_schema_size.py budgets them, so what a result's hint already
+# says where the agent needs it is left to that hint (#386, #405): how to answer a needs_user
+# (nothing ran; state.message), retrying user_active, recovering from user_tab_read_only and
+# no_current_tab (which lists the tabs this client opened before a restart, state.ownTabs), and the
+# native-input refusal of a handed-off tab.
 mcp._mcp_server.instructions = (
     "Shared browser. "
-    + ("User and other clients' tabs are read-only (user_tab_read_only, no prompt): open your own "
-       "before writes, scroll, hover, focus or select. " if USER_TABS == "read-only" else "")
-    + ("browser_tabs request needs approval: session-only DOM/browser handoff, no native input. "
+    + ("User and other clients' tabs are read-only: open your own before writes, scroll, hover, focus "
+       "or select. " if USER_TABS == "read-only" else "")
+    + ("browser_tabs request asks the user to hand over a tab (DOM writes, no native input). "
        "browser_tabs new opens a background current tab; select sets current without switching the user's view. "
-       "MCP restart clears current: until new/select, reads use the viewed tab; writes/navigation without "
-       "tab_id fail no_current_tab. Batch/workflow newTab or tabs opened from current become current "
-       "(current_tab). Prefer page controls to hand a step to the user."
+       "Until new/select (an MCP restart clears current), reads use the viewed tab and writes/navigation "
+       "need tab_id. Batch/workflow newTab and tabs opened from current become current. "
+       "Prefer page controls, else browser_ask_user, to hand a step to the user."
        if permits_tool(MODE, "browser_tabs") else
-       "browser_tab_list new_tab opens a background current tab. MCP restart clears current: until "
-       "new_tab, reads use the viewed tab; writes/navigation without tab_id fail no_current_tab.")
-    + " On your own tab, user_active: wait a few seconds and retry."
-    + " needs_user error: nothing ran; show state.message. Need the user? browser_ask_user.")
+       "browser_tab_list new_tab opens a background current tab. Until new_tab (an MCP restart clears "
+       "current), reads use the viewed tab and writes/navigation need tab_id. Need the user? browser_ask_user."))
 # The tool browser_tools_call is running; its bridge requests name it for the audit log.
 _gateway_call: ContextVar[str | None] = ContextVar("kitsune_gateway_call", default=None)
 _mcp_call_active: ContextVar[bool] = ContextVar("kitsune_mcp_call_active", default=False)

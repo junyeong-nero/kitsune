@@ -87,6 +87,9 @@ class AskBeforeActTestCase(unittest.TestCase):
         self.assertEqual((result["code"], result["state"]["reason"], result["state"]["detail"]),
                          ("needs_user", "approval", "confirmation_required"))
         self.assertIs(result["retryable"], False)
+        # The server instructions leave answering a needs_user to its hint (#405).
+        self.assertTrue(result["hint"].startswith("Nothing ran. Ask the user"), result["hint"])
+        self.assertIn("(state.message)", result["hint"])
         return result
 
     def batch(self, *commands):

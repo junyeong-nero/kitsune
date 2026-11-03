@@ -2103,20 +2103,16 @@ def browser_batch(
 
 @tool("core", annotations=dict(title="Resume a call", **DESTRUCTIVE))
 def browser_resume(
-    call: Annotated[int, Field(description="From that result.")],
-    resume_token: Annotated[str, Field(description="From that result.")],
+    call: int,
+    resume_token: str,
     observed: Annotated[dict[str, str] | None, Field(
-        description='Containers: each unknown step\'s progress path ("1", "0.1.2") -> "not_applied" to send it '
-                    'again or "applied" to mark it ok.')] = None,
+        description='Unknown container step\'s progress path ("0.1") -> "not_applied" (send again) or '
+                    '"applied" (mark ok).')] = None,
     wait: Annotated[float, Field(description=f"Seconds to wait for the user, 0-{RESUME_MAX_WAIT_SECONDS}.")]
         = RESUME_WAIT_SECONDS,
 ) -> dict:
-    """Continue a call whose result has call and resume_token: a direct call stopped on needs_user,
-    or a batch, parallel or workflow. Nothing that ran ok is sent again.
-
-    A held approval is asked again in the client's prompt for up to wait seconds, else checked
-    once. Returns the original call's shape.
-    """
+    """Continue a call whose result has call and resume_token (a needs_user stop, batch, parallel or
+    workflow); nothing that ran ok is sent again."""
     # The MCP server resumes the direct calls it keeps; the bridge resumes containers (wait unused).
     body: dict = {"call": call, "resume_token": resume_token}
     if observed is not None:
@@ -2127,18 +2123,12 @@ def browser_resume(
 @tool("core", annotations=dict(title="Ask the user", readOnlyHint=True, destructiveHint=False, idempotentHint=False,
                                openWorldHint=False))
 def browser_ask_user(
-    reason: Annotated[Literal["sign_in", "human_check", "trusted_input", "other"], Field(
-        description="human_check: a CAPTCHA; trusted_input: a control ignoring your clicks; other: a choice.")],
+    reason: Literal["sign_in", "human_check", "trusted_input", "other"],
     message: Annotated[str, Field(description="What the user should do, addressed to them.")],
     tab_id: TabId = None,
 ) -> dict:
-    """Ask the user to do what you cannot: sign in, pass a CAPTCHA, click a control that ignores
-    your clicks, or choose.
-
-    Where the client can prompt, the user answers Done (ok) or Can't. Otherwise it returns
-    needs_user at once: ask in your reply. For a sign_in or human_check seen on the tab,
-    browser_resume waits until it is gone.
-    """
+    """Ask the user to do what you cannot: sign in, pass a CAPTCHA (human_check), click a control
+    that ignores your clicks (trusted_input), or choose (other)."""
     return _post("/api/ask-user", _request_body({"reason": reason, "message": message}, tab_id))
 
 

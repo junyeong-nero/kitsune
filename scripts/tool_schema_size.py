@@ -34,16 +34,18 @@ SNAPSHOT = Path(__file__).resolve().parent.parent / "tests" / "tool_schema_sizes
 
 # Ceilings in compact JSON characters (#88). Growth past one fails the size test; raise it
 # deliberately, with the reason in the change, rather than alongside a snapshot update.
-# The core tools are Playwright MCP's, published verbatim (playwright_tools.json): set about
-# 5% above their size, so refreshing that file shows what Playwright's growth costs. Raised by
-# 1,000 for Kitsune's browser_ask_user, which core publishes with browser_resume (#376).
-TOTAL_BUDGETS = {"core": 22_300}
-FIRST_PARAGRAPH_BUDGETS = {"core": 22_000}
+# The core tools are Playwright MCP's, published verbatim (playwright_tools.json), plus Kitsune's
+# browser_resume and browser_ask_user (#376). The core budgets sit just above their size (about 60
+# characters, about 4% of Kitsune's two tools, after #405 trimmed those to 1,377 characters), so a
+# refresh of that file that grows it needs a deliberate raise that shows what Playwright's growth costs.
+TOTAL_BUDGETS = {"core": 21_800}
+FIRST_PARAGRAPH_BUDGETS = {"core": 21_800}
 TOOL_BUDGET = 3_000  # any single core tool, full view
 # Characters of the server instructions in each KITSUNE_MODE with the default read-only
-# user-tab permission, which makes them longest. Act stays within v0.7.1's 747 characters
-# (#405); read/draft have about 5% headroom. Do not drop permission/recovery rules to fit.
-INSTRUCTIONS_BUDGETS = {"act": 747, "read": 500, "draft": 500}
+# user-tab permission, which makes them longest. Each has about 5% headroom (#405), well within
+# v0.7.1's 747 characters. Do not drop permission/recovery rules to fit: a rule may leave the
+# instructions only when the result that needs it says it in its hint.
+INSTRUCTIONS_BUDGETS = {"act": 590, "read": 335, "draft": 335}
 
 
 def _compact(value) -> int:
