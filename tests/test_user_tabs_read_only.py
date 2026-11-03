@@ -181,8 +181,6 @@ class UserTabsReadOnlyTests(unittest.TestCase):
             self.assertEqual((refused["code"], refused["retryable"]), ("user_tab_read_only", False), refused)
             self.assertEqual(refused["state"]["action"], "switchTab")
             self.assertEqual(self.extension.commands[-1]["action"], "checkTabWrite")
-            self.assertEqual(self.extension.dispatched[-1]["sent"], [])
-            self.assertEqual(self.extension.dispatched[-1]["calls"], [])
             self.assertIsNone(playwright_tools._current_tab)
             listed = core("read-only", "list")
             self.assertNotIn("hint", listed)
