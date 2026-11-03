@@ -431,13 +431,13 @@ if _unauthorized_caps:
 
 MODE = task_mode(os.environ.get("KITSUNE_MODE"))
 USER_TABS, USER_TABS_ALIASES = user_tabs_from_env(os.environ)
-# Sent once at initialize. The core tools keep Playwright MCP's descriptions, which cannot say
-# that the browser is shared with its user; without this, agents avoid `select` to spare the
-# user's view and work around background tabs instead of reading them. Without the hand-off
-# sentence, agents asked in chat instead of clicking a page's own hand-off control (#352).
-# They are resent with every model request, and scripts/tool_schema_size.py budgets them, so what a
-# result's hint already says where the agent needs it is left to that hint (#386, #405): how to answer a
-# needs_user (nothing ran; state.message), retrying user_active, recovering from user_tab_read_only and
+# Sent at initialize, and resent by clients with every model request. The core tools keep
+# Playwright MCP's descriptions, which cannot say that the browser is shared with its user; without
+# this, agents avoid `select` to spare the user's view and work around background tabs instead of
+# reading them. Without the hand-off sentence, agents asked in chat instead of clicking a page's own
+# hand-off control (#352). scripts/tool_schema_size.py budgets them, so what a result's hint already
+# says where the agent needs it is left to that hint (#386, #405): how to answer a needs_user
+# (nothing ran; state.message), retrying user_active, recovering from user_tab_read_only and
 # no_current_tab (which lists the tabs this client opened before a restart, state.ownTabs), and the
 # native-input refusal of a handed-off tab.
 mcp._mcp_server.instructions = (

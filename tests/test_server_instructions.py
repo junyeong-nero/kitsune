@@ -25,7 +25,7 @@ class ServerInstructionsTests(unittest.TestCase):
         cls.texts = {(mode, setting): instructions(mode, KITSUNE_USER_TABS=setting)
                      for mode in ("act", "read", "draft") for setting in ("read-only", "writable")}
 
-    def test_permission_rule_and_recovery_in_every_mode_and_setting(self):
+    def test_permission_rule_in_every_mode_recovery_left_to_hints(self):
         for (mode, setting), text in self.texts.items():
             with self.subTest(mode=mode, setting=setting):
                 self.assertIn("browser_ask_user", text)

@@ -56,7 +56,9 @@ async function protectedInitialTabIsRefused() {
     assert.equal(result.code, 'user_tab_read_only', JSON.stringify(result));
     assert.equal(result.retryable, false);
     assert.deepEqual(result.state, { tabId: 1, index: 0, action: command.action });
-    assert.match(result.hint, /browser_tabs/);
+    // The server instructions leave the recovery to this hint (#405).
+    assert.match(result.hint, /browser_tabs action=new/);
+    assert.match(result.hint, /browser_tabs action=request/);
   }
   assert.deepEqual(h.moved, [], 'nothing navigated, and no other tab was used instead');
 }
