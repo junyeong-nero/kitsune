@@ -78,7 +78,11 @@ function harness() {
     const f = { top, frameId: sender.frameId, document, load: file => vm.runInContext(source(file), frameContext),
       send: async msg => {
         for (const reply of replies) {
-          const result = reply(msg, {}, () => {});
+          // The full content script answers through sendResponse; the observer returns a promise.
+          let responded = false, respond;
+          const response = new Promise(resolve => { respond = value => { responded = true; resolve(value); }; });
+          const result = reply(msg, {}, respond);
+          if (responded || result === true) return response;
           if (result !== undefined && result !== false) return result;
         }
         return null;
@@ -365,11 +369,54 @@ async function frameActivityTransitions() {
   assert.equal((await race.busy()).input, 'pointerdown', 'old query cannot clear a newer event');
 }
 
+// #397: focus that moves from a child frame's draft to elsewhere in its page releases the draft, as
+// it does in the top frame, so the agent's own later focus there does not hold the tab. Focus that
+// leaves the whole page (another window or app) keeps it for when focus returns.
+async function focusMovedWithinThePage() {
+  for (const pageFocused of [true, false]) {
+    const h = harness(), page = h.frame({ top: true }), child = h.frame({ url: 'https://other.test/frame' });
+    let topFocused = true;
+    page.document.hasFocus = () => topFocused;
+    const field = { tagName: 'INPUT', value: 'user draft', isConnected: true };
+    child.document.activeElement = field;
+    child.input('keydown', 'x', true, field);
+    h.tick(3000);
+    assert.equal((await h.busy())?.reason, 'typing', 'the frame draft holds the tab');
+    // The field stays its document's active element; only the frame's document loses focus.
+    child.document.hasFocus = () => false;
+    topFocused = pageFocused;
+    assert.equal(await h.busy(), null, `released (page focused: ${pageFocused})`);
+    // The agent's command focuses the field again, or the user returns to the page.
+    child.document.hasFocus = () => true;
+    topFocused = true;
+    if (pageFocused) {
+      assert.equal(await h.busy(), null, 'released typing stays released after the agent refocuses it');
+      assert.equal((await h.command({ action: 'type', text: 'agent' })).ok, true);
+      child.input('keydown', 'y', true, field);
+      h.tick(3000);
+      assert.equal((await h.busy())?.reason, 'typing', 'the user\'s next keydown protects the field again');
+    } else {
+      assert.equal((await h.busy())?.reason, 'typing', 'the draft is protected again when the page regains focus');
+    }
+  }
+  // Without the top frame's answer the background cannot tell, and keeps the draft.
+  const h = harness(), child = h.frame();
+  const field = { tagName: 'INPUT', value: 'user draft', isConnected: true };
+  child.document.activeElement = field;
+  child.input('keydown', 'x', true, field);
+  h.tick(3000);
+  child.document.hasFocus = () => false;
+  assert.equal(await h.busy(), null);
+  child.document.hasFocus = () => true;
+  assert.equal((await h.busy())?.reason, 'typing', 'an unanswered top frame does not release the draft');
+}
+
 (async () => {
   await genuineFrameInput();
   await startupAndDuplicateInjection();
   await announcedAgentInput();
   await failedPreparationAndSenderValidation();
   await frameActivityTransitions();
+  await focusMovedWithinThePage();
   console.log('frame_user_input: ok');
 })().catch(error => { console.error(error); process.exit(1); });

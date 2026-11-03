@@ -3,7 +3,7 @@
 
 'use strict';
 
-const EXPECTED_CONTENT_VERSION = 51;
+const EXPECTED_CONTENT_VERSION = 52;
 const WS_URL = 'ws://127.0.0.1:47652';
 // scripts/build_extension.py sets 'signed' for the AMO build (see content.js).
 const KITSUNE_BUILD = 'dev';
@@ -627,19 +627,21 @@ const USER_NAVIGATION_WINDOW_MS = 10000;
 // Only frames that reported genuine input need querying. Document tokens prevent a replaced
 // frame's focused element from being mistaken for the previous document's draft.
 const frameUserInputs = new Map(); // tabId -> Map(frameId -> { at, type, documentToken })
-async function frameUserActivity(tabId) {
+// pageFocused: the top frame's content script answered that focus is in its page. A child frame
+// that lost focus within its focused page then forgets its released draft (frame-input.js).
+async function frameUserActivity(tabId, pageFocused = false) {
   const frames = frameUserInputs.get(tabId);
   for (const [frameId, input] of frames || []) {
     const sinceMs = Date.now() - input.at;
     if (sinceMs < 3000) return { reason: 'input', input: input.type, sinceMs, windowMs: 3000 };
     let timer;
     const page = await Promise.race([
-      browser.tabs.sendMessage(tabId, { action: 'frameUserActivity', documentToken: input.documentToken },
-        { frameId }).catch(() => null),
+      browser.tabs.sendMessage(tabId, { action: 'frameUserActivity', documentToken: input.documentToken,
+        pageFocused }, { frameId }).catch(() => null),
       new Promise(resolve => { timer = setTimeout(resolve, 250, null); }),
     ]);
     clearTimeout(timer);
-    if (frames.get(frameId) !== input) return await frameUserActivity(tabId);
+    if (frames.get(frameId) !== input) return await frameUserActivity(tabId, pageFocused);
     if (page?.active) return page.state;
     // A valid document can regain focus without another input event, just like the top
     // document. Keep querying it; only gone/replaced/unresponsive documents are forgotten.
@@ -661,7 +663,7 @@ async function userActivity(tabId) {
   }
   if (tab.discarded || isRestrictedUrl(tab.url)) return null;
   const page = await browser.tabs.sendMessage(tabId, { action: 'userActivity' }, TOP_FRAME).catch(() => null);
-  const state = page?.active ? page.state : await frameUserActivity(tabId);
+  const state = page?.active ? page.state : await frameUserActivity(tabId, page?.pageFocused === true);
   return state ? { tabId, url: tab.url, ...state } : null;
 }
 

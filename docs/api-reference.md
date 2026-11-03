@@ -1443,7 +1443,9 @@ A tab that goes back to the user loses its value. Limits:
   extension is unloaded. The 1 s threshold has deterministic unit coverage. The
   trusted-`mousedown`-to-`tabs.onCreated` delay was measured in headless Zen with
   privileged synthesized trusted DOM input and no button hold time: 6–103 ms over 60
-  middle and Cmd clicks (tests/test_real_browser_trusted_ownership.py). With real OS
+  middle and Cmd clicks, and 8–45 ms from a trusted Enter `keydown` over 16 keyboard
+  opens (Cmd+Enter, Enter on a `target=_blank` link)
+  (tests/test_real_browser_trusted_ownership.py). With real OS
   input (Quartz CGEvents) in headed Zen 1.24b on macOS, holding the button 50–150 ms,
   60 middle and Cmd clicks took 68–183 ms (median 116.5 ms) from posting the OS
   `mousedown`, and 22–177 ms (median 110 ms) from the page's `mousedown`, the time the
@@ -1583,10 +1585,13 @@ agent; a load in a background tab never counts.
 
 Eligible same-origin, cross-origin and blank child frames use the lightweight input
 observer even before any frame command. Typing is queried in the originating document,
-including its document focus; field values never leave it. Temporary document-focus loss
-releases activity, but the same focused draft is protected again when document focus returns,
-without another input event. Replaced/removed frames cannot leave a stale typing lock. A missing or unresponsive child query releases typing after
-the 3 s input pause (queries wait at most 250 ms), like an unavailable top document.
+including its document focus; field values never leave it. Focus that moves from the
+frame to elsewhere in its page releases the draft, as a blur does in the top document.
+Temporary loss of the whole page's focus (another window or app, the address bar)
+releases activity, but the same focused draft is protected again when focus returns,
+without another input event. Replaced/removed frames cannot leave a stale typing lock.
+A missing or unresponsive child query releases typing after the 3 s input pause
+(queries wait at most 250 ms), like an unavailable top document.
 
 Limits: input outside the page is not observed (address bar typing counts once the load
 starts). Announced native keyboard/paste events are excluded for the bounded keyboard

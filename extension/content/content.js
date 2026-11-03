@@ -3,7 +3,7 @@
 
 (function() {
   'use strict';
-  const CONTENT_VERSION = 51;
+  const CONTENT_VERSION = 52;
   if (window.__claudeBridgeVersion >= CONTENT_VERSION) return;
   window.__claudeBridgeVersion = CONTENT_VERSION;
 
@@ -436,7 +436,8 @@
     // Released (focus left the field, or it is empty): the agent's own later focus or text there
     // is not the user's draft. Only document focus loss keeps the field for when focus returns.
     if (field && document.hasFocus()) userTypedField = null;
-    return { active: false };
+    // pageFocused: focus is in this page or one of its frames, for child frames' drafts (frame-input.js).
+    return { active: false, pageFocused: document.hasFocus() };
   }
 
   // ── Message Handler ──
