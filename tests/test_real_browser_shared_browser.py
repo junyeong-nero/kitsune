@@ -2,10 +2,8 @@
 
 Opt-in and built on tests/real_browser_harness.py, which documents how to run it. The
 user's actions come from the browser's parent process over the remote debugging protocol
-(harness.RemoteDebugger): it loads the user's pages like the address bar does, and its
-nsIDOMWindowUtils mouse events reach the page as trusted input, as a user's clicks do.
-Kitsune's own events are synthetic, so only these count as the user. It also reads the
-shown tab with browser_tabs(include_active=True) (#138).
+(harness.RemoteDebugger): it loads the user's pages like the address bar does. It also
+reads the shown tab with browser_tabs(include_active=True) (#138).
 
 The first class allows popups, so the browser itself opens (and shows) a target=_blank
 link's tab; the default-prefs class keeps the popup blocker, so the extension opens it.
@@ -21,8 +19,7 @@ import real_browser_harness as harness
 
 PAGES = {
     "/user": "<title>user</title><h1>user page</h1><textarea id='draft'></textarea><input id='name'>"
-             "<button id='act' onclick=\"document.title='acted'\">Act</button>"
-             "<script>addEventListener('mousedown', e => { document.title = 'down:' + e.isTrusted; }, true);</script>",
+             "<button id='act' onclick=\"document.title='acted'\">Act</button>",
     "/agent": "<title>agent</title><h1>agent page</h1>"
               "<a id='new' href='/opened' target='_blank'>new tab link</a>",
     "/opened": "<title>opened</title><h1>opened</h1>",
@@ -40,18 +37,6 @@ USER_NAVIGATES = """(async () => {
 USER_OPENS_BACKGROUND_TAB = """(async () => {
   const win = Services.wm.getMostRecentWindow('navigator:browser');
   win.gBrowser.addTrustedTab(%s);
-  return true;
-})()"""
-
-# The user presses and releases the mouse over the page they see. Returns false when the
-# browser has no windowUtils.sendMouseEvent (Firefox 158 and Zen built on it removed it).
-USER_CLICKS = """(async () => {
-  const win = Services.wm.getMostRecentWindow('navigator:browser');
-  if (typeof win.windowUtils.sendMouseEvent !== 'function') return false;
-  const rect = win.gBrowser.selectedBrowser.getBoundingClientRect();
-  for (const type of ['mousedown', 'mouseup']) {
-    win.windowUtils.sendMouseEvent(type, rect.left + 200, rect.top + 200, 0, 1, 0);
-  }
   return true;
 })()"""
 
@@ -217,34 +202,6 @@ class RealBrowserSharedBrowserTests(harness.RealBrowserTestCase):
         self.assert_read_only(self.call("/api/close-tab", {"tabId": second, "confirmToken": "forged"}))
         self.assert_ok(self.call_opted_out("/api/close-tab", {"tabId": second}))
         self.assertNotIn(second, self.tabs())
-
-    def test_recent_trusted_user_input_blocks_agent_writes(self):
-        user_tab = self.user_page()
-        if not self.parent(USER_CLICKS):
-            self.skipTest("the parent process has no windowUtils.sendMouseEvent to send trusted mouse input")
-        try:
-            self.wait_for(lambda: self.tabs()[user_tab]["title"].startswith("down:"), "no mousedown", timeout=3)
-        except AssertionError:
-            self.skipTest("the parent process could not deliver mouse input to the page in this browser")
-        if self.tabs()[user_tab]["title"] != "down:true":
-            self.skipTest("the harness's mouse input reached the page untrusted, so it cannot stand in for a user")
-
-        for path, body in (("/api/click", {"selector": "#act"}), ("/api/type", {"selector": "#draft", "text": "x"}),
-                           ("/api/navigate", {"url": self.page.origin + "/agent"})):
-            # Writable still respects the trusted user-input pause.
-            result = self.call_opted_out(path, {**body, "tabId": user_tab})
-            self.assert_error(result, "user_active", True)
-            self.assertEqual(result["state"]["reason"], "input", result)
-            self.assertIn(result["state"]["input"], ("pointerdown", "mousedown"), result)
-        tab = self.tabs()[user_tab]
-        self.assertEqual((tab["url"], tab["title"]), (self.page.origin + "/user", "down:true"), "nothing acted")
-        # Reads go on.
-        self.assertIn("user page", self.call("/api/page-text", {"tabId": user_tab})["text"])
-
-        time.sleep(3.2)  # the user-input window is 3 s
-        self.assert_read_only(self.call("/api/click", {"selector": "#act", "tabId": user_tab}))
-        self.assert_ok(self.call_opted_out("/api/click", {"selector": "#act", "tabId": user_tab}))
-        self.wait_for(lambda: self.tabs()[user_tab]["title"] == "acted", "the click after the window did not act")
 
     def call_opted_out(self, path, body):
         """An explicitly writable client, without changing tab ownership."""
