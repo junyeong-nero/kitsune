@@ -107,7 +107,7 @@ class _Pages(BaseHTTPRequestHandler):
         pass
 
 
-def _evaluate_in_tab(debugger, url, script):
+def evaluate_in_tab(debugger, url, script):
     """Run script, a JS expression, in the page of the tab at url through its devtools console."""
     (descriptor,) = [tab for tab in debugger.request("root", "listTabs")["tabs"] if tab.get("url") == url]
     console = debugger.request(descriptor["actor"], "getTarget")["frame"]["consoleActor"]
@@ -205,7 +205,7 @@ class RealBrowserUserTabReadTests(harness.RealBrowserTestCase):
     def in_tab(self, url, script):
         debugger = harness.RemoteDebugger(self.browser.rdp_port)
         try:
-            return _evaluate_in_tab(debugger, url, script)
+            return evaluate_in_tab(debugger, url, script)
         finally:
             debugger.close()
 
