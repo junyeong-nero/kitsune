@@ -123,10 +123,14 @@ BADGE = """(async () => {
   const button = action.widget.forWindow(win).node.querySelector('.webextension-browser-action');
   return {text: action.action.getProperty(null, 'badgeText'), shown: button.getAttribute('badge') ?? ''};
 })()"""
-# The popup blocker drops a window.open without input; the child-tab test turns it off for itself.
-POPUPS_BLOCKED = """(async () => {
-  if (%s) Services.prefs.clearUserPref('dom.disable_open_during_load');
-  else Services.prefs.setBoolPref('dom.disable_open_during_load', false);
+# The popup blocker drops a window.open without input; the child-tab test turns it off for itself
+# and then restores the browser default. Each returns whether the blocker is on.
+POPUPS_ALLOWED = """(async () => {
+  Services.prefs.setBoolPref('dom.disable_open_during_load', false);
+  return Services.prefs.getBoolPref('dom.disable_open_during_load');
+})()"""
+POPUP_BLOCKER_RESTORED = """(async () => {
+  Services.prefs.clearUserPref('dom.disable_open_during_load');
   return Services.prefs.getBoolPref('dom.disable_open_during_load');
 })()"""
 # Reloads the add-on, as about:debugging's Reload button does.
@@ -552,8 +556,8 @@ class RealBrowserHandoffTests(harness.RealBrowserTestCase):
         opener, child = self.agent_url("opens-child"), self.agent_url("opened-child")
         for opened in (opener, child):
             self.addCleanup(self.parent, CLOSE_TABS_AT % json.dumps(opened))
-        self.assertIs(self.parent(POPUPS_BLOCKED % "false"), False)
-        self.addCleanup(self.parent, POPUPS_BLOCKED % "true")
+        self.assertIs(self.parent(POPUPS_ALLOWED), False)
+        self.addCleanup(self.parent, POPUP_BLOCKER_RESTORED)
 
         async def scenario(session):
             granted = await self.approved(session, url)
@@ -647,6 +651,8 @@ class RealBrowserHandoffTests(harness.RealBrowserTestCase):
         self.lost_transport_checks("reconnect", lose)
 
     def test_an_extension_reload_drops_grants_and_pending_requests(self):
+        # Pins what the user sees after a reload. A reload resets the memory-only grants by itself,
+        # so the reconnect test is the one that exercises clearHandoffs.
         def lose():
             generation = self.bridge.status()["extension_generation"]
             self.parent(POPUP_CLOSES % json.dumps(harness.EXTENSION_ID))
@@ -658,6 +664,8 @@ class RealBrowserHandoffTests(harness.RealBrowserTestCase):
 
     def test_an_expired_confirm_token_is_refused_and_grants_nothing(self):
         # Waits out the real 30 s browser window and the 120 s token, about two and a half minutes.
+        # An unknown token is refused the same way; the positive control, the same token repeated
+        # in time and granted, is test_unanswered_browser_prompt_falls_back_to_a_confirm_token_without_elicitation.
         url = self.user_tab("token-expiry")
 
         async def scenario(session):
