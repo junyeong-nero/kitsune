@@ -3052,14 +3052,18 @@ browser panel or menu covering the page refuses with `state.reason: "other_brows
 `state.window` (the window at the point, `[left, top, width, height]`) and `state.targetWindow`.
 An extension older than this bridge sends no bounds, so any browser window passes, as before.
 
-Known limit, unverified (#336): with the browser in native full screen, a click within the
-menu bar's height from the top of the screen may be refused. The menu bar (a `Window Server`
-window at layer 24, with Control Center's menu extras at layer 25) may stay in the on-screen
-window list while it is hidden, which would refuse with `state.reason: "other_window"` and
-`state.app: "Window Server"` (or `"Control Center"`). The browser's own full-screen toolbar
-strip there may refuse with `"other_browser_window"`. Scroll the target further down the page,
-or ask the user to leave full screen, then retry. To see which window macOS reports there, run
-the opt-in check while nobody uses the machine:
+Full screen, verified on macOS 26.5.1 with Zen 1.24b (#336): in native full screen the hidden
+menu bar is not in the on-screen window list, so it does not refuse clicks. Only a menu bar the
+user shows (the pointer resting at the top edge of the screen) is listed: a `Window Server`
+window at layer 24 over the top 30 points, with Control Center's menu extras at layer 25. A
+click there refuses with `state.reason: "other_window"` and `state.app: "Window Server"` (or
+Control Center, named in the system's language), so it never lands on the menu bar. What
+remains is Zen's own full-screen strip: a second Zen window, 68 points tall, over the top of the
+page (the page starts at 8 points). It moves down below a shown menu bar (30 to 98 points). A
+click on it refuses with `state.reason: "other_browser_window"`, so the top 60 or so points of a
+full-screen Zen page take no trusted click (#431). Scroll the target further down the page, or
+ask the user to leave full screen, then retry. To see which windows macOS reports there on
+another setup, run the opt-in check while nobody uses the machine:
 
 ```bash
 KITSUNE_E2E_BROWSER=/Applications/Zen.app/Contents/MacOS/zen KITSUNE_E2E_TRUSTED_INPUT=1 \
@@ -3067,7 +3071,9 @@ KITSUNE_E2E_BROWSER=/Applications/Zen.app/Contents/MacOS/zen KITSUNE_E2E_TRUSTED
 ```
 
 Without `--extra macos` Quartz is missing and the check skips. It puts its own browser window
-in full screen, makes no click and prints the window at a few points near the top of the page.
+in full screen, makes no click and prints the windows at a few points near the top of the page.
+With `KITSUNE_E2E_REVEAL_MENU_BAR=1` as well, it then moves the pointer (no click) to the top
+edge to show the menu bar, prints them again, and moves the pointer back.
 
 Focusing the browser, the window check and the click run off the bridge's event loop, so other
 clients' requests are served while a trusted click waits for focus.
