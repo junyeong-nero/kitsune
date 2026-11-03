@@ -3,7 +3,8 @@
 Opt-in and built on tests/real_browser_harness.py, which documents how to run it. Fixture pages show
 a sign-in form, a sign-up form, a reCAPTCHA frame (its src never loads: srcdoc wins) and page text
 that only talks about signing in. The MCP server runs over stdio against the harness bridge, from a
-client without elicitation.
+client without elicitation. The user signs in through the page's devtools console: the harness's own
+bridge client is another client, so the agent's tab is read-only for it (#393).
 """
 import asyncio
 from http.server import BaseHTTPRequestHandler
@@ -15,6 +16,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 import real_browser_harness as harness
+import test_real_browser_user_tab_reads as reads
 
 MCP_SESSION_TIMEOUT = 60
 RECAPTCHA = "https://www.google.com/recaptcha/api2/anchor"
@@ -31,10 +33,11 @@ PAGES = {
 
 class _Pages(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path not in PAGES:
+        path = self.path.split("?")[0]
+        if path not in PAGES:
             self.send_error(404)
             return
-        body = (f"<title>{self.path.strip('/')}</title>" + PAGES[self.path]).encode()
+        body = (f"<title>{path.strip('/')}</title>" + PAGES[path]).encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html")
         self.send_header("Content-Length", str(len(body)))
@@ -103,13 +106,15 @@ class RealBrowserNeedsUserTests(harness.RealBrowserTestCase):
             self.assertNotIn("needs_user", self.call("/api/snapshot", {"tabId": tab}), path)
 
     def test_browser_resume_waits_for_the_user_to_sign_in(self):
-        url = self.site.origin + "/login"
+        url = self.site.origin + "/login?resume"  # its own URL, so the user's click finds this tab
 
         def user_signs_in():
             time.sleep(1.5)
-            (tab,) = [t["id"] for t in self.call("/api/tabs")["tabs"] if t["url"] == url]
-            self.addCleanup(self.call, "/api/close-tab", {"tabId": tab})
-            self.assert_ok(self.call("/api/click", {"tabId": tab, "selector": "#go"}))
+            debugger = harness.RemoteDebugger(self.browser.rdp_port)
+            try:
+                self.assertTrue(reads.evaluate_in_tab(debugger, url, "(document.querySelector('#go').click(), true)"))
+            finally:
+                debugger.close()
 
         started = time.monotonic()
         asked, resumed = asyncio.run(asyncio.wait_for(
