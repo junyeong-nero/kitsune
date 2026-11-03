@@ -1438,10 +1438,15 @@ A tab that goes back to the user loses its value. Limits:
   from the agent's input during that finite window.
 - Content scripts cannot observe input on browser-internal pages or while the
   extension is unloaded. The 1 s threshold has deterministic unit coverage. The
-  trusted-`mousedown`-to-`tabs.onCreated` delay was measured only in headless Zen with
+  trusted-`mousedown`-to-`tabs.onCreated` delay was measured in headless Zen with
   privileged synthesized trusted DOM input and no button hold time: 6–103 ms over 60
-  middle and Cmd clicks (tests/test_real_browser_trusted_ownership.py). Real OS input and
-  real users' timing (button hold, a loaded browser) have not been measured.
+  middle and Cmd clicks (tests/test_real_browser_trusted_ownership.py). With real OS
+  input (Quartz CGEvents) in headed Zen 1.24b on macOS, holding the button 50–150 ms,
+  60 middle and Cmd clicks took 68–183 ms (median 116.5 ms) from posting the OS
+  `mousedown`, and 22–177 ms (median 110 ms) from the page's `mousedown`, the time the
+  extension compares (tests/test_real_browser_os_trusted_ownership.py). The link opens on
+  release, so the delay grows with the hold. Real users' timing in a loaded browser has
+  not been measured.
 
 #### Agent tab cleanup
 

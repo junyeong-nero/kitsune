@@ -22,8 +22,8 @@ When set:
   test_real_browser_protected_tabs.py, test_real_browser_submit_form.py,
   test_real_browser_connection_diagnostics.py, test_real_browser_shared_browser.py,
   test_real_browser_iframes.py, test_real_browser_trusted_keys.py,
-  test_real_browser_trusted_ownership.py) bypass call(), so those requests are not in
-  the timeline; the bridge log still lists them.
+  test_real_browser_trusted_ownership.py, test_real_browser_os_trusted_ownership.py) bypass
+  call(), so those requests are not in the timeline; the bridge log still lists them.
 - The owned browser records top-level navigation events in its parent process: state changes
   (start/stop flags and status), location changes and tab open/close, each with Date.now().
 - Resource samples hold the load average, the CPU count, and ps columns (pid, ppid, pgid, %cpu,
