@@ -150,14 +150,6 @@ def _tab_list(permission_hint: bool = False) -> dict:
     return listed
 
 
-def _tab_index(tab_id: int) -> int | None:
-    """Tab tab_id's index in browser_tabs list, else None (a failed listing, or the tab is gone)."""
-    result = _tabs()
-    if k._failed(result):
-        return None
-    return next((i for i, tab in enumerate(result.get("tabs") or []) if tab.get("id") == tab_id), None)
-
-
 def _with_tab_list(result: dict) -> dict:
     """An action's result with the tabs after it, as list returns them.
 
@@ -487,8 +479,7 @@ def browser_press_key(key: str, confirm_token: str | None = None, repeat: int = 
 @_core
 def browser_type(target: str, text: str, element: str | None = None, submit: bool | None = None,
                  slowly: bool | None = None, confirm_token: str | None = None) -> dict:
-    # The token reaches both requests: a user_viewing token approves the text, and with it the Enter of
-    # the same tool call (#326). An ask-before-act token for the Enter passes the text request unless
+    # The token reaches both requests: an ask-before-act token for the Enter passes the text request unless
     # ask-before-act holds the text too (a payment-like page), which then rejects it as a mismatch.
     # A repeat for the Enter skips the text, which was typed before it was held (#376).
     hold = repeat_hold.get()
