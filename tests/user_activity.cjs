@@ -76,11 +76,18 @@ async function main() {
   page.document.focused = false;  // the user switched to another tab or app
   assert.deepEqual(await page.send({ action: 'userActivity' }), { active: false });
   page.document.focused = true;
+  assert.equal((await page.send({ action: 'userActivity' })).state?.reason, 'typing', 'document focus returned');
   page.field.value = '';
   assert.deepEqual(await page.send({ action: 'userActivity' }), { active: false }, 'an emptied field is no draft');
+  page.field.value = 'agent text';  // #397: the agent types into the released field
+  assert.deepEqual(await page.send({ action: 'userActivity' }), { active: false }, 'released typing stays released');
+  page.input('keydown', page.field);
   page.field.value = 'draft';
+  page.tick(5000);
   page.document.activeElement = page.button;
   assert.deepEqual(await page.send({ action: 'userActivity' }), { active: false }, 'focus left the field');
+  page.document.activeElement = page.field;  // #397: the agent's command focuses it again
+  assert.deepEqual(await page.send({ action: 'userActivity' }), { active: false }, 'released typing stays released');
 
   // Editors and fields in shadow roots (seen as their custom-element host) count too.
   for (const [el, text] of [[page.editor, 'textContent'], [page.host, null]]) {

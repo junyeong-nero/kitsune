@@ -260,6 +260,8 @@ async function frameActivityTransitions() {
     field.value = '';
     assert.equal(await h.busy(), null, 'empty field releases');
     assert.equal((await h.command({ action: 'type', text: 'agent' })).ok, true);
+    field.value = 'agent';  // #397: the agent's text in the released field
+    assert.equal(await h.busy(), null, 'released typing stays released');
     for (const kind of ['blur', 'document blur', 'removed', 'empty editor']) {
       const editor = { tagName: 'DIV', isContentEditable: true, textContent: 'draft', isConnected: true };
       child.document.hasFocus = () => true;
@@ -272,6 +274,10 @@ async function frameActivityTransitions() {
       if (kind === 'removed') editor.isConnected = false;
       if (kind === 'empty editor') editor.textContent = '  ';
       assert.equal(await h.busy(), null, kind);
+      if (kind === 'blur') {
+        child.document.activeElement = editor;  // #397: the agent's command focuses it again
+        assert.equal(await h.busy(), null, 'released typing stays released after a refocus');
+      }
     }
   }
   for (const type of ['keydown', 'mousedown', 'pointerdown', 'touchstart', 'wheel', 'paste']) {

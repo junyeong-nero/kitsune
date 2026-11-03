@@ -3,7 +3,7 @@
 
 (function() {
   'use strict';
-  const CONTENT_VERSION = 50;
+  const CONTENT_VERSION = 51;
   if (window.__claudeBridgeVersion >= CONTENT_VERSION) return;
   window.__claudeBridgeVersion = CONTENT_VERSION;
 
@@ -433,6 +433,9 @@
     if (field?.isConnected && field === document.activeElement && document.hasFocus() && hasUserContent(field)) {
       return { active: true, state: { reason: 'typing', field: field.tagName.toLowerCase() } };
     }
+    // Released (focus left the field, or it is empty): the agent's own later focus or text there
+    // is not the user's draft. Only document focus loss keeps the field for when focus returns.
+    if (field && document.hasFocus()) userTypedField = null;
     return { active: false };
   }
 

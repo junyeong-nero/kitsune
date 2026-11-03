@@ -20,7 +20,9 @@ When set:
   open_tab (/api/new-tab, the request that timed out in #293) goes through call(). Suites that
   send bridge requests with harness._request directly (test_real_browser.py,
   test_real_browser_protected_tabs.py, test_real_browser_submit_form.py,
-  test_real_browser_connection_diagnostics.py) bypass call(), so those requests are not in
+  test_real_browser_connection_diagnostics.py, test_real_browser_shared_browser.py,
+  test_real_browser_iframes.py, test_real_browser_trusted_keys.py,
+  test_real_browser_trusted_ownership.py) bypass call(), so those requests are not in
   the timeline; the bridge log still lists them.
 - The owned browser records top-level navigation events in its parent process: state changes
   (start/stop flags and status), location changes and tab open/close, each with Date.now().

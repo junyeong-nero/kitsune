@@ -1437,9 +1437,11 @@ A tab that goes back to the user loses its value. Limits:
   Concurrent genuine user input matching an announced OS event cannot be distinguished
   from the agent's input during that finite window.
 - Content scripts cannot observe input on browser-internal pages or while the
-  extension is unloaded. The 1 s threshold has deterministic unit coverage, but the
-  trusted-event-to-`tabs.onCreated` delay has **not been measured in Firefox** for
-  #394. No live user-browser OS interaction was used to validate it.
+  extension is unloaded. The 1 s threshold has deterministic unit coverage. The
+  trusted-`mousedown`-to-`tabs.onCreated` delay was measured only in headless Zen with
+  privileged synthesized trusted DOM input and no button hold time: 6–103 ms over 60
+  middle and Cmd clicks (tests/test_real_browser_trusted_ownership.py). Real OS input and
+  real users' timing (button hold, a loaded browser) have not been measured.
 
 #### Agent tab cleanup
 
@@ -1547,7 +1549,9 @@ and `state.reason`:
 
 On your own tab, wait a few seconds and retry. Input does not transfer ownership.
 Typing releases when the field loses focus or is emptied; merely pausing between keys
-in a focused, nonempty field does not release it. Checked actions: click, double-click, type/fill/editable, select, check,
+in a focused, nonempty field does not release it. Once a check has seen the release, the
+field counts again only after the user's next trusted `keydown` or `paste` in it, so the
+agent's own focus or text there does not hold the tab. Checked actions: click, double-click, type/fill/editable, select, check,
 keypress, submit, form fill, hover, scroll, drag, focus, blur, JavaScript, upload,
 navigate, back, forward, reload, click-and-wait-navigation, close, element and
 full-page screenshots (they scroll the page), trusted input preparation and each native
