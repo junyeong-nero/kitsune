@@ -32,12 +32,13 @@ Chromium or WebDriver to install.
   the agent is connected, and closes all of the agent's tabs with one click. Tabs the agent
   leaves idle close by themselves after five minutes (you can change this in the popup).
 - **The tools are familiar.** The agent starts with Playwright MCP's 25 core tools, under the
-  same names, plus `browser_ask_user` and `browser_resume` for when it needs you. Prompts written for Playwright MCP work
-  unchanged. More tools (page text, forms, batches, downloads, …) stay off until you allow them.
+  same names, plus `browser_ask_user` and `browser_resume` for when it needs you. Prompts written
+  for Playwright MCP work unchanged. More tools (page text, forms, batches, downloads, …) stay off
+  until you allow them.
 - **You decide how much to hand over.** `KITSUNE_MODE=read`, `draft` or `act` limits what the
   agent can do. In draft mode it can fill in forms but cannot click or submit.
 
-![Claude Code asks for the user's Wikipedia tab after researching in background tabs; the user approves in Kitsune's toolbar popup, the agent jumps the tab to the right section, and the user closes the agent's tabs and takes the tab back from the popup](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/demo-handoff.gif)
+![Claude Code asks for the user's Wikipedia tab after researching in background tabs; the user approves in Kitsune's toolbar popup, the agent jumps the tab to the right section, and the user takes the tab back and closes the agent's tabs from the popup](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/demo-handoff.gif)
 
 <sub>New in 0.7.2: the agent asks for your tab, and you approve, take it back and clean up from the toolbar popup. A real recording on Wikipedia, sped up while the agent thinks (<a href="https://github.com/user-attachments/assets/532e8a65-2801-4a4c-89b4-2ec8cec7322b">full 45-second video</a>).</sub>
 
