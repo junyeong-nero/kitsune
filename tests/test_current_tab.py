@@ -105,7 +105,7 @@ class CurrentTabToolTests(unittest.TestCase):
         self.assertEqual(result["state"], {"tool": tool, **({"action": action} if action else {})})
         self.assertIn("pass tab_id", result["hint"].lower())
         self.assertIn("browser_tabs action=new", result["hint"])
-        # New comes first; select is only useful for an owned tab under the default policy.
+        # New comes first; select makes any tab current, but only for reads under the default policy (#449).
         self.assertLess(result["hint"].index("action=new"), result["hint"].index("action=select"))
         self.assertIn("read-only", result["hint"])
 

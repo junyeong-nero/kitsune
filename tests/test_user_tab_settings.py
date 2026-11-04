@@ -89,7 +89,8 @@ class UserTabSettingsTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 data = json.loads(result.stdout)
                 self.assertEqual(data["permission"], expected)
-                self.assertEqual("User and other clients' tabs are read-only" in data["instructions"],
+                self.assertEqual("Every tab is readable; writes, scroll, hover and focus need your own tab"
+                                 in data["instructions"],
                                  expected == "read-only")
                 self.assertNotIn("user_viewing", data["instructions"])
                 warnings = [line for line in result.stderr.splitlines() if "Deprecated user-tab settings:" in line]

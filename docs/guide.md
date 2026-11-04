@@ -382,7 +382,8 @@ MCP works unchanged. They drive your own browser through the Kitsune extension a
 Kitsune's compact JSON results, not Playwright's Markdown. Where the two differ:
 
 - **Current tab.** Tools act on the tab `browser_tabs` `new` or `select` made current;
-  `select` does not switch your view. Kitsune's own tools called without `tab_id`, and
+  `select` does not switch your view. It takes any tab, yours and other clients' too, so
+  the agent can read it; on a tab it cannot write, the result says `read_only: true`. Kitsune's own tools called without `tab_id`, and
   `browser_batch`, `browser_retry` and `browser_workflow` commands that name no `tabId`,
   act on the current tab too. Until there is one, reads act on the active tab, and writes
   and navigations that name no tab return `no_current_tab` without sending anything
@@ -703,8 +704,8 @@ Details are in the [API reference](api-reference.md#browser_ask_userreason-messa
 
 ### Protecting your tabs
 
-User tabs and other clients' tabs are **read-only**. Writes, scrolling, hovering,
-focusing, selecting, navigation, reload and close fail immediately with
+Every tab is readable, but user tabs and other clients' tabs are **read-only**. Writes,
+scrolling, hovering, focusing, navigation, reload and close fail immediately with
 `user_tab_read_only` (`retryable: false`), without an approval prompt. The error names
 `state.tabId`, `state.index` (the `browser_tabs list` index) and `state.action`.
 Open the URL in a tab of the agent's own (`browser_tabs action=new`) before writing.
@@ -717,8 +718,12 @@ also returns it. Agent-created tabs keep their persistent ownership. Other clien
 tabs cannot be transferred.
 
 Snapshots, ordinary find, DOM reads, console/network reads and viewport screenshots
-can read your tabs without scrolling, focusing or switching your view. `find load_more`
-and element/full-page screenshots may scroll, so they require an owned tab.
+can read your tabs without scrolling, focusing or switching your view; the agent's
+`browser_tabs select` makes any of them its current tab for that, without showing it.
+Reading a discarded tab reloads it in the background. `find load_more` and
+element/full-page screenshots scroll the page, so on a tab the agent cannot write they
+run only while the tab is not shown, and put its scroll position back afterwards; on the
+tab you are looking at they are refused.
 The `current` marker always identifies the agent's current tab, regardless of ownership;
 selection is not an ownership grant. On an owned tab, trusted user input still pauses
 writes with the existing retryable `user_active` response.
@@ -767,7 +772,7 @@ See [Tab permissions](api-reference.md#tab-permissions).
 | `bridge_unavailable` (`Kitsune bridge did not start`, `exited at startup`) | `state.logExcerpt` shows the bridge's last log line; see `~/.kitsune/bridge.log`, or run `kitsune-bridge start` in a terminal to see the error. `state.reason: "not_responding"`: the bridge hangs; run `kitsune-bridge stop` and retry |
 | `port_conflict` | `state.port` is held by another program (`lsof -nP -iTCP:47651 -sTCP:LISTEN`), or `KITSUNE_WS_PORT` differs from the extension's `WS_URL` |
 | `token_mismatch` (`401 Missing or invalid token`) | `KITSUNE_TOKEN` or `KITSUNE_HOME` set in one client but not in the daemon (or the other way round) |
-| `user_tab_read_only` | Nothing ran and no approval is offered. Open the URL in a tab of the agent's own before writing, or explicitly request a [handoff](api-reference.md#requesting-and-returning-a-tab); reads must not scroll or focus your tab |
+| `user_tab_read_only` | Nothing ran and no approval is offered. Open the URL in a tab of the agent's own before writing, or explicitly request a [handoff](api-reference.md#requesting-and-returning-a-tab). Reads work on any tab; those that scroll it (element or full-page screenshots, `find load_more`) only while it is not shown |
 | `needs_user` with `state.detail: "tab_handoff"` | The handoff was declined, invalidated or needs client approval after the browser prompt timed out. Follow `state.message` and the hint; repeat the exact request with its token only after approval, or open an agent tab. Handoff requests do not have resume checkpoints |
 | `needs_user` with `state.reason: "approval"` (`state.detail`: `confirmation_required`, or legacy `user_tab`) | Nothing ran: the call needs your approval. On a client with elicitation (Claude Code 2.1.76 and later, Codex) you get a prompt; Approve runs that one call. No prompt appeared and the result has `state.approval: "token"`: the client lacks elicitation, so the agent should tell you `state.message` and repeat the call with `confirm_token`, the fallback for such clients, only after you agree. Or have it work in a tab of its own. See [Approving held actions](#approving-held-actions) |
 | `needs_user` with `state.decision: "declined"` or `"cancelled"` | `declined`: you declined the approval prompt, or answered Can't to `browser_ask_user`; nothing ran, and the agent should not ask again for the same thing. `cancelled`: the prompt was dismissed or closed unanswered (an approval prompt closes 5 s before its approval would expire). If you still want it done, the agent calls `browser_resume(call, resume_token)` when supplied, which asks you again. Handoff requests have no resume token: make a fresh request |

@@ -113,20 +113,22 @@ class RealBrowserProtectedTabTests(harness.RealBrowserTestCase):
             return playwright_tools.browser_tabs(action, **arguments)
 
     def test_core_select_keeps_current_truthful_and_list_explains_read_only(self):
-        # #399: select never hides current; #416: an explicit list explains a read-only current tab.
+        # #399: select never hides current; #416: an explicit list explains a read-only current tab;
+        # #449: select makes a user tab current, read-only.
         user = self.user_tab()
         start = self.page.origin + "/start"
         with patch.object(playwright_tools, "_current_tab", None):
             index = next(t["index"] for t in self.core_tabs("read-only", "list")["tabs"] if t["url"] == start)
-            self.assert_read_only(self.core_tabs("read-only", "select", index=index))
-            self.assertIsNone(playwright_tools._current_tab)
-            listed = self.core_tabs("read-only", "list")
-            self.assertNotIn("hint", listed)
-            self.assertFalse(any(t.get("current") for t in listed["tabs"]), listed)
+            self.assertFalse(any(t.get("current") for t in self.core_tabs("read-only", "list")["tabs"]))
+            selected = self.assert_ok(self.core_tabs("read-only", "select", index=index))
+            self.assertIs(selected["read_only"], True, selected)
+            self.assertTrue(selected["tabs"][index].get("current"), selected)
+            self.assertEqual(playwright_tools._current_tab, user)
 
             # The kitsune-benchmark setup: a writable client selects the user's tab and waits for current.
             selected = self.assert_ok(self.core_tabs("writable", "select", index=index))
             self.assertNotIn("hint", selected)
+            self.assertNotIn("read_only", selected)
             self.assertTrue(selected["tabs"][index].get("current"), selected)
             self.assertNotIn("owned", selected["tabs"][index])
             self.assertEqual(playwright_tools._current_tab, user)
@@ -144,8 +146,8 @@ class RealBrowserProtectedTabTests(harness.RealBrowserTestCase):
                              {"current": True, "owned": True})
             # Indices are positions: the new tab can shift the user's tab.
             index = next(t["index"] for t in opened["tabs"] if t["url"] == start)
-            self.assert_read_only(self.core_tabs("read-only", "select", index=index))
-            self.assertEqual(playwright_tools._current_tab, own, "a refused select leaves current unchanged")
+            self.assertIs(self.assert_ok(self.core_tabs("read-only", "select", index=index))["read_only"], True)
+            self.assertEqual(playwright_tools._current_tab, user)
             selected = self.assert_ok(self.core_tabs("read-only", "select", index=opened["index"]))
             self.assertNotIn("hint", selected)
             self.assertTrue(selected["tabs"][opened["index"]].get("current"), selected)

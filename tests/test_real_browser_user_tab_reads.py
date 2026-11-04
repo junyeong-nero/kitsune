@@ -390,7 +390,6 @@ class RealBrowserUserTabReadTests(harness.RealBrowserTestCase):
 
             # Addressed by index or tab_id while the agent's own tab is current.
             for step, tool, arguments, action in (
-                    ("select", "browser_tabs", {"action": "select", "index": index}, "switchTab"),
                     ("close", "browser_tabs", {"action": "close", "index": index}, "closeTab"),
                     ("navigate", "browser_navigate", {"url": agent_url, "tab_id": tab_id}, "navigate"),
                     ("back", "browser_navigate_back", {"tab_id": tab_id}, "goBack")):
@@ -402,13 +401,21 @@ class RealBrowserUserTabReadTests(harness.RealBrowserTestCase):
                     ("scroll", lambda: tools.browser_scroll(direction="down", tab_id=tab_id), "scroll"),
                     ("reload", lambda: tools.browser_reload_tab(tab_id=tab_id), "reloadTabBrowser")):
                 refused_directly(f"Kitsune {step}", call, action)
-            # The core tools on the user's tab as the current tab.
-            playwright_tools._current_tab = tab_id
+            # Select makes the user's tab current for reads, without showing it (#449).
+            error, selected = await mcp.payload("browser_tabs", {"action": "select", "index": index})
+            self.assertFalse(error, selected)
+            self.assertTrue(selected["read_only"], selected)
+            self.assertEqual(playwright_tools._current_tab, tab_id)
+            self.assert_unchanged(url, before, "browser_tabs select")
+            # The core tools on the user's tab as the current tab. Reads that scroll the page are
+            # refused only on the shown tab (#449; a background tab's run below).
+            scrolling_reads = (
+                ("browser_take_screenshot", {"target": "#far", "element": "Far button"}, "elementScreenshot"),
+                ("browser_take_screenshot", {"fullPage": True}, "fullPageScreenshot"),
+                ("browser_find", {"text": "not on the page", "load_more": True}, "find"))
             for tool, arguments, action in (
                     ("browser_hover", {"target": "#far", "element": "Far button"}, "hover"),
-                    ("browser_take_screenshot", {"target": "#far", "element": "Far button"}, "elementScreenshot"),
-                    ("browser_take_screenshot", {"fullPage": True}, "fullPageScreenshot"),
-                    ("browser_find", {"text": "not on the page", "load_more": True}, "find"),
+                    *(scrolling_reads if shown else ()),
                     ("browser_click", {"target": "#far", "element": "Far button"}, "click"),
                     ("browser_type", {"target": "#draft", "text": "typed"}, "fill"),
                     ("browser_navigate", {"url": agent_url}, "navigate"),
@@ -423,6 +430,16 @@ class RealBrowserUserTabReadTests(harness.RealBrowserTestCase):
             self.assertEqual([tab["url"] for tab in listed["tabs"] if tab.get("current")], [agent_url], listed)
             self.assertEqual(listed["tabs"][index]["url"], url, listed)
             self.assertNotIn("current", listed["tabs"][index])
+            if not shown:
+                # On the background tab they run and scroll the page back; the page saw scroll events.
+                playwright_tools._current_tab = tab_id
+                for tool, arguments, _ in scrolling_reads:
+                    result = await mcp.call(tool, arguments)
+                    self.assertFalse(result.isError, (tool, arguments, result))
+                    observed = self.observe(url)
+                    self.assertEqual((observed["page"]["scroll"], observed["shown"], observed["active"]),
+                                     (before["page"]["scroll"], before["shown"], before["active"]), (tool, arguments))
+                playwright_tools._current_tab = agent
 
         prompts = asyncio.run(asyncio.wait_for(_in_session(body), MCP_SESSION_TIMEOUT))
         self.assertEqual(prompts, [])

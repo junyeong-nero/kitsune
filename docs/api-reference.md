@@ -553,7 +553,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `stale_ref` | The ref is no longer valid; `state.reason` is `element_removed`, `not_in_snapshot` (unknown/unissued ref), or `other_document` (the tab navigated, or the ref came from another tab) | true |
 | `navigating` | The tab is loading: a `not_found`/`stale_ref` while loading (`state.cause`), or the page unloaded while handling the command. Also a page that refused the content script within 5 s of a wake or reload without an error status, or whose 2xx response arrived only while the command waited for it: it may be an old document about to be replaced | true before dispatch; false for writes after |
 | `tab_closed` | The target tab no longer exists | true |
-| `tab_unloaded` | The tab is discarded and its page cannot be reached; use `browser_wake_tab` | true |
+| `tab_unloaded` | The tab is discarded and its page cannot be reached; use `browser_wake_tab`. Reads wake it themselves (#449), so writes report it | true |
 | `restricted_page` | Browser-internal page (`about:`, `moz-extension:`, …) | true |
 | `content_unavailable` | The page's content script could not be injected or did not answer. `state.reason: "no_receiver"`: the injection succeeded but no ping from the current content script was answered within 0.5 s, so nothing was sent | true before dispatch; false for writes after |
 | `error_page` | A loaded `http(s)` page refused the content script: the browser shows its own document, such as an error response with an empty body. `state` adds `title` and, when the extension saw the response, `httpStatus`. Nothing was dispatched, but reads fail the same way until the tab navigates; for a 4xx/5xx status, `browser_page_text` instead returns an empty result (`text: ""`, `empty: true`, `httpStatus`, `tabId`, `url`, `title`) | false |
@@ -1204,8 +1204,9 @@ the user is doing (#139). Three rules follow:
 1. **Never take focus.** Tabs the agent opens open in the background, and no capture
    or action shows a tab or focuses a window unless the call exists to do that
    (`browser_tabs` select, `browser_focus_window`).
-2. **Agent-owned tabs.** User and other clients' tabs are read-only; only this client's
-   owned tabs accept writes by default (see [Tab permissions](#tab-permissions)).
+2. **Agent-owned tabs.** Every tab is readable, whoever owns it; user and other clients' tabs
+   are read-only, and only this client's owned tabs accept writes by default (see
+   [Tab permissions](#tab-permissions)).
 3. **Don't fight the user.** On an owned tab the user is using, agent writes and navigations
    return the existing retryable `user_active` instead of acting.
 
@@ -1221,12 +1222,12 @@ Every place that could show a tab or focus a window:
 | `createWindow`, `detachTab` (`windows.create`) | focused the new window | `focused: false`, and the focus goes back to the user's window right away in case the browser focused the new window anyway (see [Agent windows](#agent-windows)) |
 | Tabs a page opens on an agent action (`target="_blank"`, `window.open`) | Firefox shows them | the extension shows the tab the user saw again at once (`tabs.onActivated`'s `previousTabId`) and gives a popup window's focus back to the window the user had focused; the new tab flickers for a moment. Firefox decides to show them, so this is an undo, not a prevention |
 | `browser_screenshot` viewport with `tab_id` | selected the tab and focused its window, and never restored them | `tabs.captureTab` captures the tab in place |
-| Element and full-page screenshots | showed the tab during capture, then restored it | `tabs.captureTab`; nothing is shown |
+| Element and full-page screenshots | showed the tab during capture, then restored it | `tabs.captureTab`; nothing is shown, and the page's scroll position is restored afterwards (#449) |
 | `browser_trusted_click` on a tab that is not shown | clicked whatever tab was shown | shows the tab for the click, then shows the user's tab again 300 ms after it (unless the user moved elsewhere meanwhile) |
 | `browser_trusted_click(focus=True)` | foregrounds the browser (OS) | unchanged: an explicit opt-in |
 | `browser_tabs` select, batch `switchTab` (`tabs.update({active: true})`) | switched the view | unchanged, but only for an explicit request; refused with `user_active` while the user is using the tab they would leave |
 | `browser_focus_window`, batch `focusWindow` (`windows.update({focused: true})`) | focused the window | unchanged, but only for an explicit request; refused with `user_active` while the user is using the focused window's tab |
-| `wakeTab`, `navigate`, reload, back/forward | | never showed a tab; unchanged |
+| `wakeTab`, `navigate`, reload, back/forward | | never showed a tab; unchanged. A read of a discarded tab wakes it the same way (#449) |
 
 The OS click of `browser_trusted_click` still moves the real cursor for the click
 (it goes back afterwards unless `restore_pointer=False`) and focuses the window it lands
@@ -1260,14 +1261,31 @@ no prompt or confirmation token. `state` contains `tabId`, `index` (the zero-bas
 ```json
 {"error":"Tab 12 is read-only for this client; nothing was done","code":"user_tab_read_only",
  "retryable":false,"state":{"tabId":12,"index":0,"action":"click"},
- "hint":"Open a tab of your own with browser_tabs action=new and this URL, or request this tab with browser_tabs action=request; reads must not scroll or focus it."}
+ "hint":"Open a tab of your own with browser_tabs action=new and this URL, or request this tab with browser_tabs action=request. Reads work; those that scroll it (element or full-page screenshots, find load_more) only while it is not shown."}
 ```
 
+Every tab is readable, whoever owns it; only writes are gated (#449):
+
+| On a tab this client cannot write | Shown tab | Tab not shown |
+|---|---|---|
+| Snapshots, ordinary find, DOM/console/network reads, viewport screenshots, core `browser_tabs select` | allowed | allowed |
+| Element and full-page screenshots, `find load_more` | refused | allowed; the scroll position is restored afterwards |
+| Writes, hover, scroll, focus/blur, `browser_evaluate` and other JavaScript, navigation | refused | refused |
+
 - Allowed: snapshots, ordinary find, DOM/console/network reads and viewport screenshots.
-  These do not scroll, focus or switch the shown tab.
+  These do not scroll, focus or switch the shown tab. Reading a discarded tab wakes
+  (reloads) it in the background without showing it, as `wakeTab` does; waking for a
+  read is not a write, while an explicit `wakeTab` or a write on a discarded tab still is.
+- Allowed only while the tab is not shown (not active in its window): element and
+  full-page screenshots, which scroll the page to capture it and restore its scroll
+  position afterwards, and `find load_more`, whose scrolls the core `browser_find` sends
+  with `loadMore: true` and scrolls back by what they scrolled. On the shown tab they
+  are refused, since they would move the user's view. The extension decides by the
+  tab's `active` state when the command arrives; a tab the user shows during a capture
+  is not stopped mid-capture.
 - Refused: page writes, hover, scroll, focus/blur, navigation/history/reload/close,
-  select, uploads, arbitrary JavaScript, dialog/storage writes, view-mutating screenshots,
-  `find load_more`, and equivalent batch, workflow and trusted-input commands.
+  low-level `switchTab`, `wakeTab`, uploads, arbitrary JavaScript, dialog/storage
+  writes, and equivalent batch, workflow and trusted-input commands.
 - Window close/focus/resize cannot mutate a window containing a user or other client's tab.
   `windowId` must be a positive safe integer (decimal strings are canonicalized); aliases
   such as Firefox's `WINDOW_ID_CURRENT` (`-2`) and malformed IDs fail with
@@ -1314,8 +1332,12 @@ no prompt or confirmation token. `state` contains `tabId`, `index` (the zero-bas
   Use a ref or viewport coordinates on an originally agent-created tab instead.
 
 `current` always identifies the agent's actual current tab, whoever owns it (#399).
-Core `browser_tabs select` changes the agent's current selection, not the shown tab;
-low-level `switchTab` changes the shown tab. Both refuse user-tab targets. Neither grants ownership.
+Core `browser_tabs select` changes the agent's current selection, not the shown tab, and
+takes any tab, user and other clients' tabs too (#449): reads on it work. When this
+client cannot write the tab, the result adds `read_only: true` and a `hint` (open your
+own tab with `browser_tabs action=new`, or `browser_tabs action=request` this one), and
+writes on it return `user_tab_read_only`. Low-level `switchTab` changes the shown tab and
+refuses user-tab targets. Neither grants ownership.
 `browser_tabs action=request` asks for an explicit handoff (#396), described below.
 Tokens for other actions do not grant ownership or override this refusal.
 
@@ -1614,7 +1636,7 @@ an action.
 #### Viewed tab
 
 The old viewed-tab approval hold is replaced by [Tab permissions](#tab-permissions).
-Viewing does not change ownership: user tabs are read-only even in the background,
+Viewing does not change ownership: user tabs are read-only (yet readable) even in the background,
 and owned tabs remain writable while viewed unless the existing `user_active` guard
 reports trusted user activity. Neither the extension nor the bridge produces the old
 `needs_user` detail `user_viewing` any more; the Python API still recognizes it through the
@@ -1631,7 +1653,7 @@ tab the user is viewing:
 ```json
 { "error": "browser_navigate writes a tab but names none, and there is no current tab, so it was not sent to the tab the user is viewing",
   "code": "no_current_tab", "retryable": false,
-  "hint": "Nothing was dispatched. Pass tab_id (browser_navigate and browser_navigate_back accept it too), or open a tab of your own with browser_tabs action=new or browser_tab_list new_tab and work there. browser_tabs action=select can make an owned tab current; user and other clients' tabs are read-only.",
+  "hint": "Nothing was dispatched. Pass tab_id (browser_navigate and browser_navigate_back accept it too), or open a tab of your own with browser_tabs action=new or browser_tab_list new_tab and work there. browser_tabs action=select makes any tab current for reads; user and other clients' tabs stay read-only.",
   "state": { "tool": "browser_navigate" } }
 ```
 
@@ -2520,7 +2542,10 @@ page stopped changing or may load more on another call. A list that loads throug
 `IntersectionObserver` may not load in a background tab, which Firefox may not deliver its
 callbacks to (nor those of a hover). Scrolling writes the tab, so without a
 current tab `load_more` returns `no_current_tab` (`state.action: "scroll"`), and a held or
-failed scroll is returned as it is.
+failed scroll is returned as it is. On a current tab this client cannot write (#449), it
+runs only while the tab is not shown: its scrolls carry `loadMore: true`, which the
+extension admits there, and it scrolls each scrolled target back by what it scrolled
+before returning; on the shown tab it returns `user_tab_read_only`.
 
 Without an acted-on target, a cut snapshot of a page with a `main` landmark defers each
 `navigation`, `banner` or `contentinfo` landmark outside `main` whose lines exceed a small
@@ -3509,7 +3534,8 @@ returns `needs_user` (`user_tab`) with a confirm token instead; `confirmToken` i
 the user approved. `force` disarms `beforeunload` first.
 
 ### POST /api/wake-tab
-`{ "tabId": 123 }` reloads a discarded tab. A tab that is not discarded returns
+`{ "tabId": 123 }` reloads a discarded tab this client may write; reads of a discarded
+tab of any owner wake it themselves (#449). A tab that is not discarded returns
 `{ "ok": true, "woken": false, "discarded": false }` at once. Otherwise the call
 waits up to 15 s for the reloaded page to finish loading and answer the content
 script, and then returns `{ "ok": true, "woken": true, "ready": true }`; the next

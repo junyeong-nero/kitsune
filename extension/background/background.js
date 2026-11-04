@@ -3,7 +3,7 @@
 
 'use strict';
 
-const EXPECTED_CONTENT_VERSION = 52;
+const EXPECTED_CONTENT_VERSION = 53;
 const WS_URL = 'ws://127.0.0.1:47652';
 // scripts/build_extension.py sets 'signed' for the AMO build (see content.js).
 const KITSUNE_BUILD = 'dev';
@@ -1031,6 +1031,14 @@ function writesTab(action, params) {
   return TAB_WRITE_ACTIONS.has(action) || (action === 'find' && (params.loadMore || params.load_more)) ||
     (action === 'storageOp' && !['get', 'list', 'snapshot'].includes(params.op));
 }
+// Reads that scroll the page (#449): element and full-page captures, which restore the scroll
+// position, and find load_more with the scrolls the core browser_find sends for it (loadMore),
+// which it scrolls back. They may run on a tab this client cannot write only while the tab is
+// not shown (not active in its window), where they cannot move the user's view.
+function scrollingRead(action, params) {
+  return ['elementScreenshot', 'fullPageScreenshot'].includes(action) ||
+    (['find', 'scroll'].includes(action) && !!(params.loadMore || params.load_more));
+}
 // Only the background creates this capability. Object spreads retain the Symbol for helper
 // calls, but JSON cannot supply it; it is removed before content messages leave the background.
 const TAB_ADMISSION = Symbol('tab admission');
@@ -1096,6 +1104,7 @@ async function tabWriteError(params) {
   const writable = params.userTabsWritable === true;
   const targets = windowAction ? tabs.filter(t => t.windowId === params.windowId) : [targetTab];
   const tab = !writable && targets.find(t => !ownsTab(t.id, params.ownerId, params.sessionId));
+  if (tab && !windowAction && !targetTab.active && scrollingRead(action, params)) return null;
   if (tab) return tabError(`Tab ${tab.id} is read-only for this client; nothing was done`, 'user_tab_read_only',
     { tabId: tab.id, index: tabs.findIndex(t => t.id === tab.id), action }, false);
   const nativeRefusal = nativeHandoffError(action, tabId);
@@ -1761,6 +1770,11 @@ async function captureScreenshot(params = {}) {
       : (await browser.tabs.query({ active: true, currentWindow: true }))[0];
     if (!tab) return noActiveTab('No active tab found');
     tabId = tab.id;
+    // A discarded tab has no page to capture: wake it, in the background, for this read (#449).
+    if (tab.discarded) {
+      stage = 'wakeTab';
+      await wakeTab(tab.id);
+    }
     stage = 'tabs.captureTab';
     const dataUrl = await browser.tabs.captureTab(tab.id, { format, quality: 90 });
     stage = 'image preview';
@@ -2185,7 +2199,8 @@ const TAB_FAILURE_HINTS = {
   error_page: 'The page has no scriptable document (often an error response with an empty body), so reading it again fails the same way; check state.httpStatus and state.title, then navigate the tab elsewhere or target another tab.',
   host_permission_denied: 'Firefox does not let Kitsune script this site. For state.reason not_granted, allow its site access in about:addons → Kitsune → Permissions; restricted_domain sites (addons.mozilla.org, …) are closed to all extensions, so use another tab.',
   user_tab_read_only: 'Open a tab of your own with browser_tabs action=new and this URL, or request this tab ' +
-    'with browser_tabs action=request; reads must not scroll or focus it.',
+    'with browser_tabs action=request. Reads work; those that scroll it (element or full-page screenshots, ' +
+    'find load_more) only while it is not shown.',
   user_tab: 'The agent did not open this tab (owned: false in browser_tabs list), so it stays open. Leave it, ' +
     'or ask the user and repeat a direct browser_tabs close with the confirm_token that call returns.',
   user_active: 'The user is using this tab (state.reason); nothing was done. Retry in a few seconds, ' +
@@ -2985,7 +3000,7 @@ async function forwardToContent(action, params) {
   const tabId = params.tabId || (await getActiveTabId());
   if (!tabId) return noActiveTab('No active tab found');
 
-  let retried = false;
+  let retried = false, woken = false;
   // A delta's frames read before (#354), read once even when the message is sent again.
   const delta = action === 'getSnapshot' && !!(params.delta || params.sinceObservation);
   let deltaScope = null, frameDeltas = null;
@@ -2995,6 +3010,13 @@ async function forwardToContent(action, params) {
     if (!state) return tabError(`Tab ${tabId} no longer exists`, 'tab_closed', { tabId });
     if (isRestrictedUrl(state.url)) {
       return tabError(`Cannot access browser internal page: ${state.url.split('?')[0]}`, 'restricted_page', state);
+    }
+    // Reading a discarded tab of any owner wakes it, in the background (#449): waking for a read
+    // is not a write. Writes still fail with tab_unloaded; a wake that fails leaves that error too.
+    if (state.discarded && !woken && !writesTab(action, params)) {
+      woken = true;
+      await wakeTab(tabId);
+      continue;
     }
 
     const expanded = expandShortRefs(params, tabId);
@@ -3267,10 +3289,17 @@ async function zlScroll(tabId, scroll, authorization) {
   return r.sy;
 }
 
+// The page's scroll position, as captureScroll restores it: captures read the page, so they leave
+// it where it was (#449).
+async function zlScrollPosition(tabId, authorization) {
+  const r = await zlContent(tabId, 'captureScroll', {}, authorization);
+  return { to: r.sy, left: r.sx };
+}
+
 // 2.1.1: scale (1-4) = output pixels per CSS pixel. captureTab renders the viewport at that scale, so
 // scale 2 gives a genuinely sharper image (text in article screenshots), not an upscale. Default 1 = old size.
 async function elementScreenshot(tabId, selector, scale, preview, format, authorization) {
-  let hidFixed = false, id = null, captureAttribute = null, stage = 'resolve target';
+  let hidFixed = false, id = null, captureAttribute = null, scrolled = null, stage = 'resolve target';
   const want = Math.min(Math.max(Number(scale) || 1, 1), 4);
   try {
     format = screenshotFormat(format);
@@ -3293,6 +3322,8 @@ async function elementScreenshot(tabId, selector, scale, preview, format, author
     if (!m) return { error: 'No element matches: ' + selector };
     if (m.w < 1 || m.h < 1) return { error: 'Element has no size: ' + selector };
     const tall = m.h > m.vh;
+    stage = 'captureScroll';
+    scrolled = await zlScrollPosition(id, authorization);
     stage = 'captureScrollIntoView';
     await zlContent(id, 'captureScrollIntoView', { selector, block: tall ? 'start' : 'center' }, authorization);
     await zlSleep(150);
@@ -3340,6 +3371,7 @@ async function elementScreenshot(tabId, selector, scale, preview, format, author
              complete: covered >= cssH - 1, dataUrl: preview ? await imagePreview(cropped) : cropped };
   } catch (e) { return screenshotFailure(e, stage, id); }
   finally {
+    if (scrolled) { try { await zlContent(id, 'captureScroll', scrolled, authorization); } catch (e) {} }
     if (captureAttribute) {
       try { await forwardToContent('unmarkScreenshotTarget', { ...authorization, tabId: id, attribute: captureAttribute }); } catch (e) {}
     }
@@ -3348,7 +3380,7 @@ async function elementScreenshot(tabId, selector, scale, preview, format, author
 }
 
 async function fullPageScreenshot(tabId, preview, format, authorization) {
-  let hidFixed = false, id = null, stage = 'resolve tab';
+  let hidFixed = false, id = null, scrolled = null, stage = 'resolve tab';
   try {
     format = screenshotFormat(format);
     id = tabId || (await getActiveTabId());
@@ -3357,6 +3389,8 @@ async function fullPageScreenshot(tabId, preview, format, authorization) {
     if (isRestrictedUrl(tab.url)) return { error: 'Cannot access browser internal page' };
     stage = 'fullPageMetrics';
     const m = await zlContent(id, 'fullPageMetrics', {}, authorization);
+    stage = 'captureScroll';
+    scrolled = await zlScrollPosition(id, authorization);
     const vh = m.viewportHeight, vw = m.viewportWidth;
     const docH = Math.min(m.docHeight, CANVAS_MAX), docW = Math.min(Math.max(m.docWidth, 1), CANVAS_MAX);
     const segments = [];
@@ -3390,6 +3424,7 @@ async function fullPageScreenshot(tabId, preview, format, authorization) {
              truncated: m.docHeight > CANVAS_MAX, dataUrl: preview ? await imagePreview(dataUrl) : dataUrl };
   } catch (e) { return screenshotFailure(e, stage, id); }
   finally {
+    if (scrolled) { try { await zlContent(id, 'captureScroll', scrolled, authorization); } catch (e) {} }
     if (hidFixed) { try { await zlContent(id, 'restoreFixed', {}, authorization); } catch (e) {} }
   }
 }

@@ -36,7 +36,9 @@ async function main() {
     'markScreenshotTarget', 'unmarkScreenshotTarget', 'screenPoint',
   ];
   for (const [ownerId, tabId] of [['client-a', 1], ['client-a', 2], ['client-a', b], ['client-b', a]]) {
-    for (const action of writes) {
+    // #449: element and full-page captures are reads that may scroll a tab that is not shown
+    // (read_any_tab.cjs); on the shown tab 1 they are refused like writes.
+    for (const action of writes.filter(action => tabId === 1 || !action.endsWith('Screenshot'))) {
       h.calls.length = h.sent.length = 0;
       const result = await h.send({ action, ownerId, tabId, selector: '#go', click: true,
         url: 'https://changed.test/', force: true, viewedTabApproved: true, userTabApproved: true,
@@ -55,7 +57,8 @@ async function main() {
   }
   for (const command of [
     { action: 'find', loadMore: true, tabId: 1 },
-    { action: 'find', load_more: true, tabId: 2 },
+    { action: 'find', load_more: true, tabId: 1 },
+    { action: 'scroll', loadMore: true, tabId: 1 },
     { action: 'storageOp', op: 'set', tabId: 1 },
     { action: 'focusWindow', windowId: 1 },
     { action: 'closeWindow', windowId: 1 },

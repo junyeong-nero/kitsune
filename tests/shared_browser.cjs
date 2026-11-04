@@ -214,6 +214,7 @@ function harness({ onClick = () => {}, activity = {}, focusOnCreate = null, sync
     }
   };
   h.browser = browser; // Deterministic API barriers for authorization-race tests.
+  h.context = context; // Background globals a test stubs, such as screenshot canvases.
   h.disconnect = () => context.cleanup();
   h.remove = id => browser.tabs.remove(id);
   return h;
