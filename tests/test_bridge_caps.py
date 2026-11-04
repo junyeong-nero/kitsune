@@ -9,9 +9,9 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from kitsune import bridge, capabilities, task_modes
+from kitsune import bridge, capabilities, playwright_tools, task_modes, tools
 from kitsune.capabilities import ACTION_GROUPS, CAPS_HEADER, OPEN_ROUTES, ROUTE_GROUPS
-from test_ask_before_act import AskBeforeActTestCase
+from test_ask_before_act import AskBeforeActTestCase, FakeExtension
 
 # Every tool's bridge routes with the bridge mocked: {tool: [group, [routes]]}. Tools with several
 # request shapes are called once per shape.
@@ -67,6 +67,31 @@ def bridge_run_actions() -> set[str]:
     """Container actions the bridge runs itself rather than forwarding (_execute_command)."""
     direct = set(re.findall(r"action == '(\w+)'", inspect.getsource(bridge._execute_command)))
     return direct | set(bridge._CONTROL_FLOW_HANDLERS)
+
+
+class ListExtension(FakeExtension):
+    """An inactive tab 7 whose list loads one more item after each scroll to the bottom."""
+
+    def __init__(self, owned):
+        super().__init__()
+        self.owned = owned
+        self.items = ["#1"]
+        self.scrolls = []
+
+    async def __call__(self, action, params=None, timeout=30):
+        params = dict(params or {})
+        if action == "getTabs":
+            return {"tabs": [{"id": 7, "url": "https://user.test/", "active": False, "owned": self.owned}],
+                    "ownershipByClient": True}
+        if action == "getSnapshot":
+            return {"snapshot": "\n".join(["- list [ref=e1]", *(f'  - listitem "{item}"' for item in self.items)])}
+        if action == "scroll":
+            self.scrolls.append({key: params[key] for key in ("direction", "amount", "loadMore", "tabId")
+                                 if key in params})
+            if params["direction"] == "bottom":
+                self.items.append(f"#{len(self.items) + 1}")
+            return {"ok": True, "scrolled_by": 400, "target": "window"}
+        return await super().__call__(action, params, timeout)
 
 
 class CapabilityTableTests(unittest.TestCase):
@@ -287,6 +312,58 @@ class BridgeCapsTests(AskBeforeActTestCase):
         status, result = self.request("/api/batch", {"commands": [{"action": "navigate", "url": "https://a.test"}]},
                                       "core")
         self.assertEqual((status, result["state"]["groups"]), (403, ["automation"]))
+
+    def test_core_scrolls_only_for_find_load_more(self):
+        # #447: /api/scroll is browser_scroll's (browse); core may post it only as browser_find's load_more.
+        for caps, body, allowed in (
+                ("core", {"direction": "bottom", "loadMore": True, "tabId": 7}, True),
+                ("core", {"direction": "down", "amount": 500, "tabId": 7}, False),
+                ("core", {"direction": "down", "loadMore": False, "tabId": 7}, False),
+                ("core", {"direction": "down", "loadMore": "true", "tabId": 7}, False),
+                ("read", {"direction": "bottom", "loadMore": True, "tabId": 7}, False),
+                ("browse", {"direction": "down", "tabId": 7}, True),
+                ("browse", {"direction": "bottom", "loadMore": True, "tabId": 7}, True)):
+            with self.subTest(caps=caps, body=body):
+                self.extension.sent.clear()
+                status, result = self.request("/api/scroll", body, caps)
+                if allowed:
+                    self.assertEqual(status, 200, result)
+                    self.assertEqual(self.extension.actions(), ["scroll"])
+                else:
+                    self.assertEqual((status, result["code"], result["retryable"]),
+                                     (403, "capability_restricted", False))
+                    self.assertEqual(result["state"]["groups"],
+                                     ["browse"] if caps == "core" else ["browse", "core"])
+                    self.assertEqual(self.extension.sent, [])
+        # Container scroll steps stay browse, with or without loadMore.
+        self.extension.sent.clear()
+        status, result = self.request("/api/batch", {"commands": [
+            {"action": "scroll", "tabId": 7, "direction": "bottom", "loadMore": True}]}, "automation,core")
+        self.assertEqual((status, result["results"][0]["code"]), (200, "capability_restricted"))
+        self.assertEqual(self.extension.sent, [])
+
+    def test_core_browser_find_load_more_through_the_bridge(self):
+        # #447: the core browser_find's load_more runs under KITSUNE_CAPS=core, on a tab this client
+        # owns and on a background tab it can only read (#449: scrolled back afterwards).
+        self.addCleanup(setattr, playwright_tools, "_current_tab", playwright_tools._current_tab)
+        playwright_tools._current_tab = 7
+
+        def post(endpoint, data, timeout=15, start_bridge=True):
+            return self.request(endpoint, data, "core")[1]
+
+        for owned in (True, False):
+            with self.subTest(owned=owned):
+                extension = ListExtension(owned)
+                with patch.object(bridge, "_send_to_extension_raw", new=extension), \
+                        patch.object(tools, "_post", side_effect=post), \
+                        patch.object(tools, "_get", side_effect=lambda endpoint: self.request(
+                            endpoint, {}, "core", method="GET")[1]), \
+                        patch.object(tools, "_sleep"):
+                    found = playwright_tools.browser_find(text="#3", load_more=True)
+                self.assertEqual((found.get("count"), found.get("scrolls")), (1, 2), found)
+                bottom = {"direction": "bottom", "loadMore": True, "tabId": 7}
+                back = [{"direction": "up", "amount": 800, "loadMore": True, "tabId": 7}]
+                self.assertEqual(extension.scrolls, [bottom, bottom, *([] if owned else back)])
 
     def test_refusal_without_a_group(self):
         refused = capabilities.caps_refusal(frozenset({"core"}), "teleport", None)

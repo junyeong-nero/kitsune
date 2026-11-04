@@ -78,6 +78,19 @@ ROUTE_GROUPS = _by_group({
     "history": ("/api/bookmarks-search", "/api/history-search", "/api/history-visits"),
 })
 
+# The core browser_find's load_more scrolls the page through /api/scroll with loadMore: true (#447),
+# so that request is core's too; any other /api/scroll is browser_scroll's (browse). The bridge reads
+# the body to tell them apart (BridgeHandler.handle_scroll). Container scroll steps stay browse.
+LOAD_MORE_SCROLL_GROUPS = ROUTE_GROUPS["/api/scroll"] | {"core"}
+
+
+def scroll_groups(body) -> frozenset:
+    """The groups that permit an /api/scroll request: core as well only for browser_find's (loadMore: true)."""
+    if isinstance(body, dict) and body.get("loadMore") is True:
+        return LOAD_MORE_SCROLL_GROUPS
+    return ROUTE_GROUPS["/api/scroll"]
+
+
 # Container steps by the extension action they run (bridge.BATCH_ACTION_MAP values, and the
 # actions the bridge runs itself).
 ACTION_GROUPS = _by_group({

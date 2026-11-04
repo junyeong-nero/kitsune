@@ -328,7 +328,7 @@ class AdapterTests(unittest.TestCase):
         self.assertNotIn("hint", found)
         self.assertIn('>   - listitem "#5"', found["blocks"][0]["lines"])
         snapshot = ("/api/snapshot", {"collapse": False, "tabId": 7})
-        scroll = ("/api/scroll", {"direction": "bottom", "tabId": 7, "confirmToken": "tok"})
+        scroll = ("/api/scroll", {"direction": "bottom", "loadMore": True, "tabId": 7, "confirmToken": "tok"})
         # After each scroll it polls the snapshot until it changes.
         self.assertEqual(self.posted(), [("/api/tab-write-check", {"tabId": 7, "writeAction": "find", "loadMore": True}),
                                          snapshot, scroll, snapshot, snapshot, scroll, snapshot, snapshot])
@@ -388,8 +388,7 @@ class AdapterTests(unittest.TestCase):
                  [check, snapshot, bottom, snapshot, bottom,
                   ("/api/scroll", {"direction": "up", "amount": 400, "loadMore": True, "tabId": 7})]),
                 (True, {"ok": True, "scrolled_by": 300, "target": "#feed"},
-                 [check, snapshot, ("/api/scroll", {"direction": "bottom", "tabId": 7}), snapshot,
-                  ("/api/scroll", {"direction": "bottom", "tabId": 7}), snapshot])):
+                 [check, snapshot, bottom, snapshot, bottom, snapshot])):
             with self.subTest(owned=owned, last_scroll=last_scroll):
                 self.post.reset_mock()
                 self.get.return_value = {"tabs": [{"id": 7, "url": "https://user.test/", "owned": owned}]}
