@@ -154,7 +154,15 @@ async function testBrowserTheme() {
   assert.equal(style['--surface'], undefined, 'partial palettes use readable fallback colors');
 }
 
+// Firefox sizes a toolbar popup from its content, so a viewport-relative width feeds back into that sizing (#440).
+function testFixedWidth() {
+  const css = fs.readFileSync('extension/popup/popup.css', 'utf8');
+  assert.match(css, /^body \{[^}]*\bwidth: 360px;/m, 'the popup body has a fixed width');
+  assert.doesNotMatch(css, /\d(vw|vh|vmin|vmax)\b/, 'popup sizes do not depend on the popup viewport');
+}
+
 (async () => {
+  testFixedWidth();
   await testUsageAndCleanup();
   await testPendingCleanupStaysDisabledAndRecovers();
   await testHandoffActionsAndSafeLabels();
