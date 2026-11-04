@@ -390,7 +390,8 @@ Kitsune's compact JSON results, not Playwright's Markdown. Where the two differ:
   ([No current tab](api-reference.md#no-current-tab)). An MCP server that restarts starts
   without a current tab; its `no_current_tab` then lists the open tabs its MCP client
   opened before, the most recent first, in `state.ownTabs`, and the hint names that tab,
-  so the agent can pass it as `tab_id`. The server does not pick one itself:
+  so the agent can pass it as `tab_id` (to a core tool, which takes none, the hint names its
+  `browser_tabs` index to select). The server does not pick one itself:
   the tab may belong to an earlier conversation. Persistent ownership survives bridge/extension
   restarts and browser session restore for the same client id; handed-off tabs return when
   their session ends ([Tab owners](api-reference.md#tab-owners)). A tab a batch or

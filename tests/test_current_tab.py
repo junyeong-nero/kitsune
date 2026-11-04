@@ -103,8 +103,14 @@ class CurrentTabToolTests(unittest.TestCase):
         self.assertEqual(self.steps[label], [], "nothing is sent, so the user's active tab is not written")
         self.assertEqual((result["code"], result["retryable"]), ("no_current_tab", False), result)
         self.assertEqual(result["state"], {"tool": tool, **({"action": action} if action else {})})
-        self.assertIn("pass tab_id", result["hint"].lower())
-        self.assertIn("browser_tabs action=new", result["hint"])
+        if tool in playwright_tools.SCHEMAS:
+            # The core schemas, Playwright MCP's, list no tab_id (#448).
+            self.assertNotIn("tab_id", result["hint"])
+            self.assertIn("browser_tabs action=new url=", result["hint"])
+        else:
+            self.assertIn("pass tab_id", result["hint"].lower())
+            self.assertIn("browser_tabs action=new", result["hint"])
+        self.assertNotIn("browser_tab_list", result["hint"], "act mode publishes browser_tabs instead")
         # New comes first; select makes any tab current, but only for reads under the default policy (#449).
         self.assertLess(result["hint"].index("action=new"), result["hint"].index("action=select"))
         self.assertIn("read-only", result["hint"])
@@ -128,7 +134,6 @@ class CurrentTabToolTests(unittest.TestCase):
         self.assertRefused("click_before", "browser_click")
         self.assertRefused("storage_set_before", "browser_storage", "storageOp")
         self.assertRefused("gateway_before", "browser_scroll")
-        self.assertIn("browser_navigate and browser_navigate_back accept it", self.results["navigate_before"]["hint"])
 
     def test_container_steps_that_write_without_a_tab_are_refused(self):
         self.assertRefused("batch_before", "browser_batch", "navigate")
