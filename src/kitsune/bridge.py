@@ -61,7 +61,8 @@ except ImportError:
     sys.exit("websockets is not installed. Reinstall kitsune with its dependencies.")
 
 from . import bridge_control, browser_diagnostics
-from .capabilities import ACTION_GROUPS, CAPS_HEADER, OPEN_ROUTES, ROUTE_GROUPS, caps_refusal, header_caps
+from .capabilities import (ACTION_GROUPS, CAPS_HEADER, LOAD_MORE_SCROLL_GROUPS, OPEN_ROUTES, ROUTE_GROUPS,
+                           caps_refusal, header_caps, scroll_groups)
 from .task_modes import (
     APPROVAL_HEADER, APPROVER_HEADER, CLIENT_HEADER, CLIENT_ID_PATTERN, GATEWAY_TOOL_HEADER,
     MODE_HEADER, OWNER_HEADER, SESSION_HEADER, CLIENT_NAME_HEADER, USER_TABS_HEADER, permits_action, permits_route, task_mode, user_tabs,
@@ -4917,7 +4918,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
             if not permits_route(mode, path):
                 self.refuse(403, _mode_error(path))
                 return
-            refused = None if path in OPEN_ROUTES else caps_refusal(caps, path, ROUTE_GROUPS.get(path))
+            # /api/scroll's groups depend on its body (scroll_groups): every group that may post it
+            # passes here, and handle_scroll checks the body.
+            groups = LOAD_MORE_SCROLL_GROUPS if path == "/api/scroll" else ROUTE_GROUPS.get(path)
+            refused = None if path in OPEN_ROUTES else caps_refusal(caps, path, groups)
             if refused and path in routes:
                 self.refuse(403, refused)
                 return
@@ -5363,7 +5367,12 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self._send_extension_action("setEditableContent", self.read_body())
     
     def handle_scroll(self):
-        self._send_extension_action("scroll", self.read_body())
+        body = self.read_body()
+        refused = caps_refusal(_client_caps.get(), "/api/scroll", scroll_groups(body))
+        if refused:
+            self.send_json(403, refused)
+            return
+        self._send_extension_action("scroll", body)
     
     def handle_hover(self):
         self._send_extension_action("hover", self.read_body())

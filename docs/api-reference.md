@@ -76,7 +76,12 @@ error as its result, and its [progress](#container-progress) status is `failed`:
 
 Container routes need `automation`, and each step needs its own action's group;
 actions the core tools also use (navigate, click, type, check, waits, screenshots, `js`, ...)
-are `core`. `/`, `/api/status`, `/api/version` and `/view` are open to every client.
+are `core`. `/api/scroll` is `browse` (`browser_scroll`), except a request whose body has
+`loadMore: true`, which `core` may also post: the scrolls of the core `browser_find`'s
+`load_more` (#447). The bridge reads the body to tell them apart, so a `core` client's
+`/api/scroll` without `loadMore: true` is still `capability_restricted`, and container
+`scroll` steps need `browse` with or without it. `/`, `/api/status`, `/api/version` and
+`/view` are open to every client.
 An unknown group in the header returns 400 `invalid_caps`. Requests without the header,
 such as the `kitsune-bridge` command's, are not restricted.
 
@@ -2533,19 +2538,21 @@ window and path, as before, so its `count` can be higher than the inline one.
 An inline result without a match has a `hint` that names `load_more` (#404). The core
 `browser_find` accepts `load_more: true` (and a `confirm_token` for it), not listed in its
 schema (Playwright MCP's): for an infinite-scroll list that loads its next batch when scrolled
-to its end, it scrolls the current tab to the bottom (POST `/api/scroll` `direction: bottom`,
-which falls back to the scrollable container at the viewport's center) until the query
-matches, at most 10 times (`FIND_LOAD_MORE_SCROLLS`). After each scroll it reads the snapshot
+to its end, it scrolls the current tab to the bottom (POST `/api/scroll` with `direction:
+bottom` and `loadMore: true`, which falls back to the scrollable container at the viewport's
+center) until the query matches, at most 10 times (`FIND_LOAD_MORE_SCROLLS`). After each scroll it reads the snapshot
 every 250 ms for up to 3 s until it changes; a scroll that changed nothing within that time
 ends the search. The result adds `scrolls` and, without a match, a `hint` that says whether the
 page stopped changing or may load more on another call. A list that loads through an
 `IntersectionObserver` may not load in a background tab, which Firefox may not deliver its
 callbacks to (nor those of a hover). Scrolling writes the tab, so without a
 current tab `load_more` returns `no_current_tab` (`state.action: "scroll"`), and a held or
-failed scroll is returned as it is. On a current tab this client cannot write (#449), it
-runs only while the tab is not shown: its scrolls carry `loadMore: true`, which the
-extension admits there, and it scrolls each scrolled target back by what it scrolled
-before returning; on the shown tab it returns `user_tab_read_only`.
+failed scroll is returned as it is. Its scrolls carry `loadMore: true`, so they run under
+the default `KITSUNE_CAPS=core`, which does not enable `browser_scroll`'s `/api/scroll` (#447;
+see [Capability enforcement](#capability-enforcement)). On a current tab this client cannot
+write (#449), it runs only while the tab is not shown: the extension admits `loadMore: true`
+scrolls there, and find scrolls each scrolled target back by what it scrolled before
+returning; on the shown tab it returns `user_tab_read_only`.
 
 Without an acted-on target, a cut snapshot of a page with a `main` landmark defers each
 `navigation`, `banner` or `contentinfo` landmark outside `main` whose lines exceed a small
@@ -3630,7 +3637,8 @@ keeps the value setter.
 
 ### POST /api/scroll
 `{ "direction": "down", "amount": 500 }` — optional container `selector` or `ref`;
-`element` is an audit-only description.
+`element` is an audit-only description. Needs `browse`; with `loadMore: true` (the core
+`browser_find`'s `load_more` scrolls, #447) `core` also permits it.
 
 ### POST /api/hover
 `{ "selector": "a.link" }`

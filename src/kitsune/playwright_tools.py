@@ -347,8 +347,9 @@ def browser_find(text: str | None = None, regex: str | None = None, filename: st
         return matches
     if load_more and _current_tab is None:
         return k._offering_own_tabs(k._no_current_tab("browser_find", {"load_more": True}))
-    # On a tab this client cannot write, the extension admits load_more's scrolls (loadMore) only while
-    # the tab is not shown, and find scrolls the page back afterwards: how far it scrolled each target (#449).
+    # load_more's scrolls carry loadMore: true, which the bridge admits under the core caps (#447) and the
+    # extension, on a tab this client cannot write, only while the tab is not shown; there find scrolls
+    # the page back afterwards: how far it scrolled each target (#449).
     scrolled_back = None
     if load_more:
         permission = k._post("/api/tab-write-check", {"tabId": _current_tab, "writeAction": "find", "loadMore": True})
@@ -369,8 +370,8 @@ def browser_find(text: str | None = None, regex: str | None = None, filename: st
     try:
         while load_more and scrolls < FIND_LOAD_MORE_SCROLLS and not any(
                 line and (urls or filename or not _URL_LINE.match(line)) and matches(line) for line in lines):
-            body = {"direction": "bottom", **({} if scrolled_back is None else {"loadMore": True})}
-            scrolled = k._post("/api/scroll", k._request_body(body, _current_tab, confirm_token=confirm_token))
+            scrolled = k._post("/api/scroll", k._request_body({"direction": "bottom", "loadMore": True},
+                                                              _current_tab, confirm_token=confirm_token))
             if k._failed(scrolled):
                 return scrolled
             if scrolled_back is not None:
