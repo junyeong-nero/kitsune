@@ -311,16 +311,18 @@ class ErrorTests(BridgeTestCase):
         self.assertIsInstance(kitsune.TimedOut(cases[4][0]), TimeoutError)
 
     def test_only_approvals_with_a_token_raise_confirmation_required(self):
-        # #376: needs_user with state.reason approval, and for one release the codes it replaced.
+        # #376: needs_user with state.reason approval, and the codes it replaced.
         state = {"confirmToken": "tok", "expiresInSeconds": 120}
-        for code in ("confirmation_required", "user_tab", "user_viewing"):
+        for code in ("confirmation_required", "user_tab"):
             with self.subTest(code=code), self.assertRaises(kitsune.ConfirmationRequired) as raised:
                 raise_for({"error": "held", "code": code, "retryable": False, "state": state})
             self.assertEqual((raised.exception.detail, raised.exception.token), (code, "tok"))
+        # #446: the legacy viewed-tab code user_viewing is no longer an approval.
         for result in ({"error": "sign in", "code": "needs_user", "retryable": False,
                         "state": {"reason": "sign_in", **state}},
+                       {"error": "held", "code": "user_viewing", "retryable": False, "state": state},
                        {"error": "held", "code": "needs_user", "retryable": False,
-                        "state": {"reason": "approval", "detail": "user_viewing", "approvable": False}}):
+                        "state": {"reason": "approval", "detail": "user_tab", "approvable": False}}):
             with self.subTest(state=result["state"]), self.assertRaises(kitsune.KitsuneError) as raised:
                 raise_for(result)
             self.assertIs(type(raised.exception), kitsune.KitsuneError)
@@ -423,17 +425,18 @@ class ConnectTests(unittest.TestCase):
         headers = self.bridge.last.headers
         self.assertNotIn(capabilities.CAPS_HEADER, headers)
         self.assertNotIn(task_modes.MODE_HEADER, headers)
-        # Default and deprecated SDK opt-out use the same authoritative header.
         self.assertEqual(headers[task_modes.USER_TABS_HEADER], "read-only")
-        kitsune.connect(mode="draft", protect_user_tabs=False).tab(7).text()
+        kitsune.connect(mode="draft", user_tabs="writable").tab(7).text()
         headers = self.bridge.last.headers
         self.assertEqual((headers[task_modes.MODE_HEADER], headers[task_modes.USER_TABS_HEADER]), ("draft", "writable"))
-        kitsune.connect(user_tabs="writable").tab(7).text()
-        self.assertEqual(self.bridge.last.headers[task_modes.USER_TABS_HEADER], "writable")
-        kitsune.connect(user_tabs="read-only", hold_viewed_tab=False).tab(7).text()
+        kitsune.connect(user_tabs="read-only").tab(7).text()
         self.assertEqual(self.bridge.last.headers[task_modes.USER_TABS_HEADER], "read-only")
         with self.assertRaises(ValueError):
-            kitsune.connect(user_tabs="invalid", protect_user_tabs=False)
+            kitsune.connect(user_tabs="invalid")
+        # The deprecated aliases were removed after the 0.7.2 alias release (#446).
+        for alias in ("protect_user_tabs", "hold_viewed_tab"):
+            with self.subTest(alias=alias), self.assertRaises(TypeError):
+                kitsune.connect(**{alias: False})
         with self.assertRaises(ValueError):
             kitsune.connect(mode="unsafe")
 

@@ -79,8 +79,7 @@ def measure() -> dict:
 def measure_instructions() -> dict:
     """Characters of the server instructions in each mode of INSTRUCTIONS_BUDGETS. The
     instructions are built at import from the environment, so each mode imports the server anew."""
-    env = {key: value for key, value in os.environ.items()
-           if key not in ("KITSUNE_USER_TABS", "KITSUNE_HOLD_VIEWED_TAB", "KITSUNE_PROTECT_USER_TABS")}
+    env = {key: value for key, value in os.environ.items() if key != "KITSUNE_USER_TABS"}
     script = "from kitsune import server; print(len(server.mcp._mcp_server.instructions))"
     return {mode: int(subprocess.run([sys.executable, "-c", script], env={**env, "KITSUNE_MODE": mode},
                                      capture_output=True, text=True, check=True).stdout)

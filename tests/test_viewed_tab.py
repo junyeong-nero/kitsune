@@ -1,7 +1,7 @@
-"""The Python client still understands legacy user_viewing results until the alias release ends (#398).
+"""The legacy viewed-tab hold's user_viewing is no longer an approval (#398, #446).
 
-Neither the extension nor the bridge produces them any more; errors.APPROVAL_DETAILS keeps the detail
-as documented compatibility. Held tools keep taking confirm tokens, which ask-before-act issues.
+Neither the extension nor the bridge produces it; since the alias release ended the Python client
+raises it as a plain error. Held tools keep taking confirm tokens, which ask-before-act issues.
 """
 import unittest
 from unittest.mock import Mock, patch
@@ -11,16 +11,14 @@ from kitsune.browser import Browser, Tab
 
 
 class ViewedTabClientTests(unittest.TestCase):
-    def test_raise_for_asks_for_confirmation(self):
+    def test_raise_for_no_longer_asks_for_confirmation(self):
         refused = {"error": "The user is viewing tab 4; nothing was done", "code": "user_viewing",
                    "retryable": False, "state": {"tabId": 4, "confirmToken": "tok", "expiresInSeconds": 120}}
-        with self.assertRaises(errors.ConfirmationRequired) as raised:
-            errors.raise_for(refused)
-        self.assertEqual(raised.exception.token, "tok")
-        # read and draft get no token: a plain error.
-        with self.assertRaises(errors.KitsuneError) as plain:
-            errors.raise_for({**refused, "state": {"tabId": 4}})
-        self.assertNotIsInstance(plain.exception, errors.ConfirmationRequired)
+        self.assertNotIn("user_viewing", errors.APPROVAL_DETAILS)
+        for result in (refused, {**refused, "state": {"tabId": 4}}):
+            with self.subTest(state=result["state"]), self.assertRaises(errors.KitsuneError) as plain:
+                errors.raise_for(result)
+            self.assertIs(type(plain.exception), errors.KitsuneError)
 
     def test_held_tools_take_a_confirm_token(self):
         with patch.object(tools, "_post", return_value={"ok": True}) as post:
