@@ -3,12 +3,18 @@
 Starts an ffmpeg capture of the stage through the runner, types the prompt, waits until the agent
 has opened the scene's tabs and gone quiet, then opens each `review` tab as the user would, stops
 the capture and saves the bridge audit log for sync.py.
+
+With `approve_handoff` [wait, hold, after], the user answers the agent's tab request in the toolbar
+popup once its badge shows. With `popup_after` [hold, [[button, hold], ...]], the user opens the
+popup when the agent is done, clicks each button in turn, closes it and holds the shot for `end`
+seconds when given as a third item.
 """
 import json
 import subprocess
 import sys
 import time
 
+import popup
 from common import LOGS, QUEUE, TAKES, WORK, api, load, run_in_runner
 
 MAX_SECONDS = 600
@@ -45,7 +51,18 @@ exec ffmpeg -hide_banner -f avfoundation -capture_cursor 0 -framerate 30 -i "{di
 
     entered = None
     done = scene["done_when"]
+    approve = scene.get("approve_handoff")
     while time.time() - t_start < MAX_SECONDS:
+        if approve and popup.badge():
+            wait, hold, after = approve
+            time.sleep(wait)
+            popup.show()
+            log("user opens the popup")
+            time.sleep(hold)
+            log("user approves the handoff", popup.click("Approve handoff"))
+            time.sleep(after)
+            popup.close()
+            approve = None
         events = [json.loads(line) for line in (LOGS / "typer.jsonl").read_text().splitlines() if line.strip()]
         entered = entered or next((e["t"] for e in events if e["ev"] == "enter"), None)
         if entered:
@@ -70,6 +87,16 @@ exec ffmpeg -hide_banner -f avfoundation -capture_cursor 0 -framerate 30 -i "{di
             time.sleep(hold)
         else:
             log("no tab for", needle)
+    if scene.get("popup_after"):
+        hold, clicks, *end = scene["popup_after"]
+        popup.show()
+        log("user opens the popup")
+        time.sleep(hold)
+        for label, after in clicks:
+            log("user clicks", label, popup.click(label))
+            time.sleep(after)
+        popup.close()
+        time.sleep(end[0] if end else 0)
 
     subprocess.run(["pkill", "-INT", "-f", f"ffmpeg.*{out}"])  # ffmpeg finishes the file on SIGINT
     deadline = time.time() + 30

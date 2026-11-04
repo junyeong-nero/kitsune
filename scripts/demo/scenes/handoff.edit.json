@@ -1,0 +1,44 @@
+{
+  "comment": "Edit for the take behind assets/demo-handoff.gif (Kitsune 0.7.2, developer build). Source times from sync.py and take.py's log: typing 4.0-12.8 s, enter 13.5, agent tabs 26.7 and 33.4, \"Now I'll ask for the Kitsune tab\" 36.6, popup with the request 41.1, approve 44.1, the agent scrolls the user's tab 55.9, answer 60.2, popup again 78.1, Take back 81.1, Close agent tabs 85.1, popup closed 88.1, end 91.1. Views are [x0, y0, width] in stage pixels: Zen spans 0-1790 (sidebar to ~330; the popup x 28-630, y 256-1456 with a card, its buttons and the agent-tab count above 1060), Claude Code starts at 1774.",
+  "views": {
+    "full": "full",
+    "prompt": [1772, -30, 1220],
+    "tabs": [-20, -20, 1480],
+    "popup": [-20, 150, 1400],
+    "page": [300, -20, 1560],
+    "answer": [1772, 180, 1220]
+  },
+  "cuts": {
+    "full": {
+      "time": [[0.0, 0.0], [2.0, 3.0], [2.6, 4.0], [7.0, 12.8], [7.8, 13.5], [14.0, 36.6], [16.5, 41.1], [19.5, 44.1],
+               [21.5, 46.5], [23.5, 55.9], [26.0, 60.2], [31.0, 72.1], [32.0, 78.1], [35.0, 81.1], [38.5, 85.1],
+               [41.5, 88.1], [44.5, 91.1]],
+      "camera": [[0.0, "full", 0], [3.0, "prompt", 0.8], [9.5, "tabs", 1.0], [15.0, "popup", 0.9], [22.8, "page", 0.9],
+                 [26.4, "answer", 0.9], [32.2, "popup", 0.9], [42.3, "full", 0.9]],
+      "captions": [[0.1, 2.5, "Your own browser, as you left it"],
+                   [2.7, 7.6, "Asking Claude Code to research, then use your tab"],
+                   [7.9, 14.0, "It researches in background tabs of its own"],
+                   [14.2, 19.4, "Your tab is read-only to it, so it asks; you approve in the popup"],
+                   [19.6, 25.8, "With your OK, it jumps your tab to the right section"],
+                   [26.0, 31.8, "The answer comes from the tabs it opened"],
+                   [32.0, 38.4, "Take your tab back from the popup at any time"],
+                   [38.6, 44.5, "and close all of its tabs in one click"]]
+    },
+    "short": {
+      "caption_size": 36,
+      "time": [[0.0, 0.0], [1.0, 3.0], [1.4, 4.0], [4.2, 12.8], [4.6, 13.5], [8.6, 36.6], [9.8, 41.1], [12.0, 44.1],
+               [13.4, 46.5], [14.6, 55.9], [16.0, 60.2], [18.8, 72.1], [19.4, 78.1], [21.0, 81.1], [22.8, 85.1],
+               [24.6, 88.1], [26.0, 91.1]],
+      "camera": [[0.0, "full", 0], [1.6, "prompt", 0.6], [5.4, "tabs", 0.8], [9.4, "popup", 0.7], [14.2, "page", 0.7],
+                 [16.4, "answer", 0.8], [19.6, "popup", 0.7], [25.2, "full", 0.7]],
+      "captions": [[0.1, 1.3, "Your own browser, as you left it"],
+                   [1.4, 4.5, "Asking Claude Code to research, then use your tab"],
+                   [4.7, 8.5, "It researches in background tabs of its own"],
+                   [8.7, 13.3, "Your tab is read-only to it: it asks, you approve"],
+                   [13.5, 16.0, "It jumps your tab to the right section"],
+                   [16.2, 19.2, "The answer comes from the tabs it opened"],
+                   [19.4, 22.8, "Take your tab back at any time"],
+                   [22.9, 26.0, "and close all of its tabs in one click"]]
+    }
+  }
+}

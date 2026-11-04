@@ -1,0 +1,31 @@
+{
+  "description": "Research in background tabs, then borrow the user's tab through the toolbar popup; the user takes the tab back and closes the agent's tabs. Take back comes first: a handed-off tab counts as an agent tab, so Close agent tabs would close it too.",
+  "prompt": "I'm reading this article about kitsune. In two background tabs, find out how Inari Ōkami and Fushimi Inari-taisha are linked to foxes. Then ask me for this tab and jump it to the part about how many tails a kitsune has. Answer in three short lines.",
+  "start_url": "https://en.wikipedia.org/wiki/Kitsune",
+  "browser_prefs": {
+    "intl.accept_languages": "en-US, en",
+    "intl.locale.requested": "en-US"
+  },
+  "display": {
+    "avfoundation_device": 4,
+    "origin": [1920, 124],
+    "scale": 2
+  },
+  "stage": [1920, 157, 1470, 923],
+  "terminal": {
+    "font_size": 14,
+    "columns": 62,
+    "theme": "Everforest Dark Hard"
+  },
+  "model": "opus",
+  "mcp_env": {
+    "KITSUNE_USER_TABS": "read-only"
+  },
+  "pin_action": true,
+  "approve_handoff": [1.5, 2.5, 2.0],
+  "done_when": {
+    "min_new_tabs": 2,
+    "idle_seconds": 12
+  },
+  "popup_after": [2.5, [["Take back", 2.5], ["Close agent tabs", 3.0]], 3.0]
+}
