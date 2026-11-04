@@ -1292,6 +1292,10 @@ Every tab is readable, whoever owns it; only writes are gated (#449):
   low-level `switchTab`, `wakeTab`, uploads, arbitrary JavaScript, dialog/storage
   writes, and equivalent batch, workflow and trusted-input commands.
 - Window close/focus/resize cannot mutate a window containing a user or other client's tab.
+  A new tab opens in the same window and would not help, so for these actions the hint is
+  instead: "This window holds a tab this client cannot write, so nothing was done. Window
+  actions (close, focus, resize) work only in a window that holds only this client's tabs;
+  a new tab opens in this same window, so it does not help."
   `windowId` must be a positive safe integer (decimal strings are canonicalized); aliases
   such as Firefox's `WINDOW_ID_CURRENT` (`-2`) and malformed IDs fail with
   `invalid_window_id`, even in writable compatibility. Close/focus require an explicit ID

@@ -102,6 +102,10 @@ class _Site(BaseHTTPRequestHandler):
 
 
 class RealBrowserPlaywrightToolTests(harness.RealBrowserTestCase):
+    # Zen's window sync fills a new window with unowned copies of the other windows' tabs, which
+    # would make browser_resize refuse it too; without it, a created window holds only its own tab.
+    PROFILE_PREFS = {"zen.window-sync.enabled": False}
+
     @classmethod
     def setUpClass(cls):
         cls.site = harness.FixtureServer(_Site)
@@ -269,13 +273,27 @@ class RealBrowserPlaywrightToolTests(harness.RealBrowserTestCase):
             saved = self.tool("browser_take_screenshot", {"filename": str(Path(directory, "page.png"))})
             self.assertTrue(Path(saved["saved_to"]).read_bytes().startswith(b"\x89PNG"))
 
+        # The new tab shares the browser's window with the user's tab, so resizing it is refused (#395, #451).
+        is_error, content = self.call_tool("browser_resize", {"width": 900, "height": 700})
+        refused = json.loads(content[0].text)
+        self.assertTrue(is_error, refused)
+        self.assertEqual((refused["code"], refused["state"]["action"]), ("user_tab_read_only", "resizeWindow"), refused)
+        self.assertNotIn("action=new", refused["hint"])
+        # In a window holding only this client's tabs it works.
+        window = self.call("/api/create-window", {"url": self.site.origin + "/"})
+        self.addCleanup(self.call, "/api/close-window", {"windowId": window["windowId"]})
+        tabs = self.call("/api/tabs")["tabs"]
+        self.assertTrue(all(tab["owned"] for tab in tabs if tab["windowId"] == window["windowId"]), tabs)
+        index = {tab["id"]: i for i, tab in enumerate(tabs)}
+        tab = playwright_tools._current_tab
+        self.assertNotIn("read_only", self.tool("browser_tabs", {"action": "select", "index": index[window["tabIds"][0]]}))
         self.assertTrue(self.tool("browser_resize", {"width": 900, "height": 700})["ok"])
+        self.tool("browser_tabs", {"action": "select", "index": index[tab]})
         for name in ("browser_emulate_media", "browser_run_code_unsafe"):
             is_error, content = self.call_tool(name, {})
             self.assertTrue(is_error)
             self.assertEqual(json.loads(content[0].text)["code"], "not_supported")
 
-        tab = playwright_tools._current_tab
         self.tool("browser_close", {})
         self.assertIsNone(playwright_tools._current_tab)
         self.assertNotIn(tab, [entry["id"] for entry in self.call("/api/tabs")["tabs"]])
