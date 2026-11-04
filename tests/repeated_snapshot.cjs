@@ -141,6 +141,22 @@ async function testOnlyTheSameTabDocumentAndText() {
   assert.equal((await h.snapshot({ tabId: 7 })).snapshot, PAGE);
 }
 
+// #442: only the caller whose action result carried the snapshot saw it; another client, or another
+// handoff session of the same client, gets the page, and leaves the record to that caller.
+async function testOnlyTheCallerThatGotTheActionResult() {
+  const h = harness();
+  const a = { ownerId: 'claude-101', sessionId: 'a'.repeat(64) };
+  await h.context.handleCommand({ action: 'navigate', url: 'https://shop.test/orders', tabId: 7, ...a });
+  for (const caller of [{}, { ownerId: 'codex-202' }, { ownerId: 'claude-101' }, { ...a, sessionId: 'b'.repeat(64) }]) {
+    assert.equal((await h.snapshot({ tabId: 7, ...caller })).snapshot, PAGE, JSON.stringify(caller));
+  }
+  assert.equal((await h.snapshot({ tabId: 7, ...a })).unchanged_since, 'browser_navigate');
+  // A caller without an owner id (an HTTP client) is one caller too.
+  await h.context.handleCommand({ action: 'navigate', url: 'https://shop.test/orders', tabId: 7 });
+  assert.equal((await h.snapshot({ tabId: 7, ...a })).snapshot, PAGE);
+  assert.equal((await h.snapshot({ tabId: 7 })).unchanged_since, 'browser_navigate');
+}
+
 async function testScopedSnapshotsReturnThePage() {
   const h = harness();
   await h.context.handleCommand({ action: 'navigate', url: 'https://shop.test/orders', tabId: 7 });
@@ -157,6 +173,7 @@ async function testScopedSnapshotsReturnThePage() {
   await testANavigationCarriesTheTextOfASmallPage();
   await testOnlyAfterAFullUntruncatedResult();
   await testOnlyTheSameTabDocumentAndText();
+  await testOnlyTheCallerThatGotTheActionResult();
   await testScopedSnapshotsReturnThePage();
   console.log('repeated_snapshot: ok');
 })().catch(e => { console.error(e); process.exit(1); });

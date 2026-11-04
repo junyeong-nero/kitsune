@@ -981,12 +981,15 @@ const FULL_SNAPSHOT_ACTIONS = new Set(['submitForm', 'navigate']);
 // then the snapshot a following browser_snapshot reads, which answers unchanged_since (#400).
 const NAVIGATION_TEXT_LIMIT = 2000;
 // ── Repeated snapshots (#384) ──
-// tabId -> { tool, snapshot, load, url } of the tab's last action result when it carried a whole,
-// untruncated snapshot (not a delta). The next whole-page snapshot that asks (skipUnchanged) and
-// reads exactly that snapshot text in the same document at the same URL answers unchanged_since
-// with a one-line snapshot instead of the page. Any page action on the tab, or that snapshot,
-// drops the record.
+// tabId -> { tool, snapshot, load, url, caller } of the tab's last action result when it carried a
+// whole, untruncated snapshot (not a delta). The next whole-page snapshot that asks (skipUnchanged),
+// from the caller that got that result (actionCaller), and reads exactly that snapshot text in the
+// same document at the same URL answers unchanged_since with a one-line snapshot instead of the
+// page. Other callers never saw the result and get the page (#442). Any page action on the tab, or
+// that caller's snapshot, drops the record.
 const actionPages = new Map();
+// The client (ownerId, as tab ownership is keyed, #394) and handoff session a command comes from.
+const actionCaller = params => JSON.stringify([params.ownerId ?? null, params.sessionId ?? null]);
 // Page actions on one existing tab (the bridge's outcome actions) report opened_tabs.
 const OPENER_ACTIONS = new Set([
   'click', 'doubleClick', 'type', 'fill', 'setEditableContent', 'selectOption', 'checkBox',
@@ -1200,7 +1203,7 @@ async function handleCommand(command) {
   try {
     const result = await runCommand(params, { withSnapshot, deltaSnapshot, textSnapshot, tracksOpenedTabs });
     if (['screenPoint', 'agentInput', 'focusState'].includes(params.action)) return tabAdmissionError(params) || result;
-    return repeatSnapshot && params.tabId != null ? await unchangedSince(params.tabId, result) : result;
+    return repeatSnapshot && params.tabId != null ? await unchangedSince(params.tabId, actionCaller(params), result) : result;
   } catch (e) {
     if (e.tabAdmissionResult) return e.tabAdmissionResult;
     throw e;
@@ -1377,7 +1380,7 @@ async function runCommandSettled(params, { withSnapshot, deltaSnapshot, textSnap
         if (snapshot.target_ref) result.target_ref = snapshot.target_ref;
         if (snapshot.needs_user) result.needs_user = snapshot.needs_user;
         if (!snapshot.delta && !snapshot.truncated && !result.navigation_pending && snapshot.snapshot) {
-          await recordActionPage(params.tabId, POST_SNAPSHOT_ACTIONS.get(params.action), snapshot.snapshot);
+          await recordActionPage(params.tabId, POST_SNAPSHOT_ACTIONS.get(params.action), snapshot.snapshot, actionCaller(params));
         }
       }
     } catch (e) { result.snapshot_error = e.message; }
@@ -1407,17 +1410,17 @@ async function tabUrl(tabId) {
   }
 }
 
-async function recordActionPage(tabId, tool, snapshot) {
+async function recordActionPage(tabId, tool, snapshot, caller) {
   const load = tabLoads.get(tabId);
   const url = await tabUrl(tabId);
-  if (typeof url === 'string') actionPages.set(tabId, { tool, snapshot, load, url });
+  if (typeof url === 'string') actionPages.set(tabId, { tool, snapshot, load, url, caller });
 }
 
-// A whole-page snapshot (result) of tabId, or unchanged_since when it is exactly the snapshot the
-// tab's last action result carried (see actionPages).
-async function unchangedSince(tabId, result) {
+// A whole-page snapshot (result) of tabId for caller, or unchanged_since when it is exactly the
+// snapshot the tab's last action result carried to that caller (see actionPages).
+async function unchangedSince(tabId, caller, result) {
   const page = actionPages.get(tabId);
-  if (!page) return result;
+  if (!page || page.caller !== caller) return result;
   actionPages.delete(tabId);
   if (!result || result.error || result.truncated || result.snapshot !== page.snapshot ||
       tabLoads.get(tabId) !== page.load || await tabUrl(tabId) !== page.url) return result;
