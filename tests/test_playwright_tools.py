@@ -370,6 +370,46 @@ class AdapterTests(unittest.TestCase):
         self.answer_pages(["#1"], scroll=held)
         self.assertEqual(playwright_tools.browser_find(text="#9", load_more=True), held)
 
+    def test_find_load_more_on_a_tab_it_cannot_write_scrolls_back(self):
+        # #449: on a tab this client cannot write, the extension admits load_more's scrolls (loadMore) only
+        # while the tab is not shown; find scrolls each target back by what it scrolled, also after a failure.
+        playwright_tools._current_tab = 7
+        check = ("/api/tab-write-check", {"tabId": 7, "writeAction": "find", "loadMore": True})
+        snapshot = ("/api/snapshot", {"collapse": False, "tabId": 7})
+        bottom = ("/api/scroll", {"direction": "bottom", "loadMore": True, "tabId": 7})
+        failed = {"error": "read only", "code": "user_tab_read_only"}
+        for owned, last_scroll, expected in (
+                (False, {"ok": True, "scrolled_by": 300, "target": "#feed"},
+                 [check, snapshot, bottom, snapshot, bottom, snapshot,
+                  ("/api/scroll", {"direction": "up", "amount": 400, "loadMore": True, "tabId": 7}),
+                  ("/api/scroll", {"direction": "up", "amount": 300, "loadMore": True, "selector": "#feed",
+                                   "tabId": 7})]),
+                (False, failed,
+                 [check, snapshot, bottom, snapshot, bottom,
+                  ("/api/scroll", {"direction": "up", "amount": 400, "loadMore": True, "tabId": 7})]),
+                (True, {"ok": True, "scrolled_by": 300, "target": "#feed"},
+                 [check, snapshot, ("/api/scroll", {"direction": "bottom", "tabId": 7}), snapshot,
+                  ("/api/scroll", {"direction": "bottom", "tabId": 7}), snapshot])):
+            with self.subTest(owned=owned, last_scroll=last_scroll):
+                self.post.reset_mock()
+                self.get.return_value = {"tabs": [{"id": 7, "url": "https://user.test/", "owned": owned}]}
+                pages = [["#1"], ["#1", "#2"], ["#1", "#2", "#3"]]
+                scrolls = [{"ok": True, "scrolled_by": 400, "target": "window"}, last_scroll]
+
+                def answer(endpoint, body, **kwargs):
+                    if endpoint == "/api/tab-write-check":
+                        return {"ok": True}
+                    if endpoint == "/api/scroll":
+                        return scrolls.pop(0) if body["direction"] == "bottom" else {"ok": True}
+                    items = pages.pop(0) if len(pages) > 1 else pages[0]
+                    return {"snapshot": "\n".join(["- list [ref=e1]", *(f'  - listitem "{item}"' for item in items)])}
+                self.post.side_effect = answer
+                with patch.object(tools, "_sleep"):
+                    found = playwright_tools.browser_find(text="#3", load_more=True)
+                self.assertEqual(self.posted(), expected)
+                self.assertEqual(found.get("count", found.get("code")),
+                                 "user_tab_read_only" if last_scroll is failed else 1)
+
     def test_find_load_more_needs_a_current_tab(self):
         # Scrolling writes the tab, so it is not sent to the tab the user is viewing (#303).
         self.answer_pages(["#1"])

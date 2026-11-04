@@ -10,6 +10,8 @@ browser_emulate_media and browser_run_code_unsafe answer not_supported.
 
 Tools act on the current tab, which browser_tabs new or select sets; select does not switch the
 user's view, and tabs the agent opens otherwise can become current (kitsune.tools._adopted_tab).
+Every tab is readable, so select makes any tab current; on one this client cannot write, its result
+says read_only and the extension refuses writes (user_tab_read_only, #449).
 Kitsune's own tools that are called without tab_id act on it too. Until there is
 one, reads act on the user's active tab and the MCP server refuses writes and navigations
 (no_current_tab, kitsune.tools._on_current_tab). browser_navigate and browser_navigate_back
@@ -129,6 +131,14 @@ def _tabs() -> dict:
     return result
 
 
+def _writable(tab: dict) -> bool:
+    """Whether this client may write a listed tab: it owns it (opened or handed off) or writes user tabs.
+
+    The extension admits each write itself; this only explains its decision ahead of time.
+    """
+    return bool(tab.get("owned")) or getattr(k.client, "user_tabs", "read-only") == "writable"
+
+
 def _tab_list(permission_hint: bool = False) -> dict:
     """The open tabs by index; current is selection, never an ownership grant.
 
@@ -142,9 +152,9 @@ def _tab_list(permission_hint: bool = False) -> dict:
                         **({"active": True} if tab.get("active") else {}),
                         **({"owned": True} if tab.get("owned") else {})}
                        for i, tab in enumerate(result.get("tabs") or [])]}
-    if permission_hint and _current_tab is not None and getattr(k.client, "user_tabs", "read-only") != "writable":
+    if permission_hint and _current_tab is not None:
         current = next((tab for tab in listed["tabs"] if tab.get("current")), None)
-        if current is not None and not current.get("owned"):
+        if current is not None and not _writable(current):
             listed["hint"] = (f"Tab {current['index']} is read-only for this client. Before writing, open your own tab "
                               f"with browser_tabs action=new url={current['url']} and work there.")
     return listed
@@ -159,8 +169,8 @@ def _with_tab_list(result: dict) -> dict:
     return result if k._failed(listed) else {**result, **listed}
 
 
-def _tab_at(index) -> tuple[int | None, dict | None]:
-    """(tab id, None) for a browser_tabs index, else (None, error)."""
+def _listed_tab(index) -> tuple[dict | None, dict | None]:
+    """(the listed tab, None) for a browser_tabs index, else (None, error)."""
     result = _tabs()
     if k._failed(result):
         return None, result
@@ -168,7 +178,13 @@ def _tab_at(index) -> tuple[int | None, dict | None]:
     if isinstance(index, bool) or index != int(index) or not 0 <= int(index) < len(tabs):
         return None, {"error": f"Tab {index} not found", "code": "not_found", "retryable": False,
                       "hint": "Use an index from browser_tabs action=list."}
-    return tabs[int(index)]["id"], None
+    return tabs[int(index)], None
+
+
+def _tab_at(index) -> tuple[int | None, dict | None]:
+    """(tab id, None) for a browser_tabs index, else (None, error)."""
+    tab, error = _listed_tab(index)
+    return (None, error) if error else (tab["id"], None)
 
 
 @_core
@@ -314,6 +330,15 @@ def _find_snapshot() -> dict:
     return k._post("/api/snapshot", k._request_body({"collapse": False}, _current_tab))
 
 
+def _scroll_back(scrolled: dict | None) -> None:
+    """Scroll each target browser_find's load_more scrolled (target -> pixels) back where it was (#449)."""
+    for target, by in (scrolled or {}).items():
+        if by:
+            k._post("/api/scroll", k._request_body(
+                {"direction": "up" if by > 0 else "down", "amount": abs(by), "loadMore": True,
+                 **({} if target == "window" else {"selector": target})}, _current_tab))
+
+
 @_core
 def browser_find(text: str | None = None, regex: str | None = None, filename: str | None = None,
                  load_more: bool = False, confirm_token: str | None = None) -> dict:
@@ -322,10 +347,18 @@ def browser_find(text: str | None = None, regex: str | None = None, filename: st
         return matches
     if load_more and _current_tab is None:
         return k._offering_own_tabs(k._no_current_tab("browser_find", {"load_more": True}))
+    # On a tab this client cannot write, the extension admits load_more's scrolls (loadMore) only while
+    # the tab is not shown, and find scrolls the page back afterwards: how far it scrolled each target (#449).
+    scrolled_back = None
     if load_more:
         permission = k._post("/api/tab-write-check", {"tabId": _current_tab, "writeAction": "find", "loadMore": True})
         if k._failed(permission):
             return permission
+        listed = k._get("/api/tabs")
+        tab = None if k._failed(listed) else next(
+            (tab for tab in listed.get("tabs") or [] if tab.get("id") == _current_tab), None)
+        if tab is not None and not _writable(tab):
+            scrolled_back = {}
     urls = _url_query(text, regex)
     result = _find_snapshot()
     if k._failed(result):
@@ -333,25 +366,31 @@ def browser_find(text: str | None = None, regex: str | None = None, filename: st
     lines = (result.get("snapshot") or "").split("\n")
     # load_more (#404): scroll to the bottom until the query matches, the page stops changing or the budget is spent.
     scrolls, ended = 0, False
-    while load_more and scrolls < FIND_LOAD_MORE_SCROLLS and not any(
-            line and (urls or filename or not _URL_LINE.match(line)) and matches(line) for line in lines):
-        scrolled = k._post("/api/scroll", k._request_body({"direction": "bottom"}, _current_tab,
-                                                          confirm_token=confirm_token))
-        if k._failed(scrolled):
-            return scrolled
-        scrolls += 1
-        for _ in range(FIND_LOAD_MORE_POLLS):
-            k._sleep(FIND_LOAD_MORE_POLL_SECONDS)
-            result = _find_snapshot()
-            if k._failed(result):
-                return result
-            after = (result.get("snapshot") or "").split("\n")
-            if after != lines:
-                lines = after
+    try:
+        while load_more and scrolls < FIND_LOAD_MORE_SCROLLS and not any(
+                line and (urls or filename or not _URL_LINE.match(line)) and matches(line) for line in lines):
+            body = {"direction": "bottom", **({} if scrolled_back is None else {"loadMore": True})}
+            scrolled = k._post("/api/scroll", k._request_body(body, _current_tab, confirm_token=confirm_token))
+            if k._failed(scrolled):
+                return scrolled
+            if scrolled_back is not None:
+                target = scrolled.get("target") or "window"
+                scrolled_back[target] = scrolled_back.get(target, 0) + (scrolled.get("scrolled_by") or 0)
+            scrolls += 1
+            for _ in range(FIND_LOAD_MORE_POLLS):
+                k._sleep(FIND_LOAD_MORE_POLL_SECONDS)
+                result = _find_snapshot()
+                if k._failed(result):
+                    return result
+                after = (result.get("snapshot") or "").split("\n")
+                if after != lines:
+                    lines = after
+                    break
+            else:
+                ended = True
                 break
-        else:
-            ended = True
-            break
+    finally:
+        _scroll_back(scrolled_back)
     indent = [len(line) - len(line.lstrip(" ")) for line in lines]
 
     def ancestors(i):
@@ -696,14 +735,18 @@ def browser_tabs(action: str, index: float | None = None, url: str | None = None
     if action == "select":
         if index is None:
             return {"error": "index is required for action=select"}
-        tab_id, error = _tab_at(index)
+        tab, error = _listed_tab(index)
         if error:
             return error
-        permission = k._post("/api/tab-write-check", {"tabId": tab_id, "writeAction": "switchTab"})
-        if k._failed(permission):
-            return permission
-        _current_tab = tab_id
-        return _with_tab_list({"ok": True, "index": int(index)})
+        # Every tab is readable, whoever owns it (#449): any tab becomes current, never shown.
+        _current_tab = tab["id"]
+        result = {"ok": True, "index": int(index)}
+        if not _writable(tab):
+            result.update(read_only=True, hint=(
+                f"Reads work on tab {int(index)}, but this client cannot write it. To write, open your own tab "
+                f"with browser_tabs action=new url={tab.get('url')}, or request this one with browser_tabs "
+                "action=request."))
+        return _with_tab_list(result)
     if action == "close":
         if index is not None:
             tab_id, error = _tab_at(index)

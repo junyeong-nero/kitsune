@@ -329,9 +329,8 @@ class RealBrowserUserTabWriteTests(harness.RealBrowserTestCase):
         ]
 
     def addressed_writes(self, tab_id, index, agent_url):
-        """The writes that name the tab, by index or tab_id."""
+        """The writes that name the tab, by index or tab_id (select only reads it, #449)."""
         return [
-            ("select", "browser_tabs", {"action": "select", "index": index}, "switchTab"),
             ("close", "browser_tabs", {"action": "close", "index": index}, "closeTab"),
             ("navigate", "browser_navigate", {"url": agent_url, "tab_id": tab_id}, "navigate"),
             ("back", "browser_navigate_back", {"tab_id": tab_id}, "goBack"),

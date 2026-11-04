@@ -3,7 +3,7 @@
 
 (function() {
   'use strict';
-  const CONTENT_VERSION = 52;
+  const CONTENT_VERSION = 53;
   if (window.__claudeBridgeVersion >= CONTENT_VERSION) return;
   window.__claudeBridgeVersion = CONTENT_VERSION;
 
@@ -508,7 +508,7 @@
       'userActivity':          () => userActivity(),
       'captureMeasure':        () => captureMeasure(msg.selector),
       'captureScrollIntoView': () => captureScrollIntoView(msg.selector, msg.block),
-      'captureScroll':         () => captureScroll(msg.to, msg.by),
+      'captureScroll':         () => captureScroll(msg.to, msg.by, msg.left),
       'hideFixed':             () => hideFixed(msg.selector),
       'restoreFixed':          () => restoreFixed(),
       // ── 1.4.0 additions ──
@@ -3139,10 +3139,11 @@
     return { ok: true };
   }
 
-  function captureScroll(to, by) {
-    if (Number.isFinite(to)) window.scrollTo(0, to);
+  // left: the horizontal position a capture restores with its vertical one (#449).
+  function captureScroll(to, by, left) {
+    if (Number.isFinite(to)) window.scrollTo(Number.isFinite(left) ? left : 0, to);
     else if (Number.isFinite(by)) window.scrollBy(0, by);
-    return { sy: scrollY };
+    return { sy: scrollY, sx: scrollX };
   }
 
   // Hide position:fixed/sticky elements (headers, cookie bars) so they don't repeat in every

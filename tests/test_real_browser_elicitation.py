@@ -122,7 +122,7 @@ class RealBrowserElicitationTests(harness.RealBrowserTestCase):
         self.assert_ok(self.call("/api/set-policy", {"ask": True}))
         self.addCleanup(self.call, "/api/set-policy", {"ask": False})
 
-    def test_user_tab_selection_and_writes_refuse_without_a_prompt(self):
+    def test_user_tab_selection_reads_and_writes_refuse_without_a_prompt(self):
         user_url = self.site.origin + "/user"
         user = self.user_page(user_url)
         before = self.tabs()[user]
@@ -132,17 +132,19 @@ class RealBrowserElicitationTests(harness.RealBrowserTestCase):
                     ("browser_navigate", {"url": self.site.origin + "/changed", "tab_id": user})],
                    [], lambda: self.tabs()[user]["title"]),
             MCP_SESSION_TIMEOUT))
-        self.assertEqual(len(results), 3, "selection, unaddressed click and addressed navigation must refuse")
-        for (error, text), code in zip(results, ("user_tab_read_only", "no_current_tab", "user_tab_read_only")):
+        self.assertEqual(len(results), 3, "selection, then a click on the current tab and an addressed navigation")
+        # #449: selection makes the user's tab current for reads; the writes on it refuse.
+        (select_error, select_text), *writes = results
+        self.assertFalse(select_error, select_text)
+        self.assertIs(json.loads(select_text)["read_only"], True, select_text)
+        for (error, text), action in zip(writes, ("click", "navigate")):
             self.assertTrue(error, text)
-            self.assert_error(json.loads(text), code, False)
+            refused = json.loads(text)
+            self.assert_error(refused, "user_tab_read_only", False)
+            self.assertEqual((refused["state"]["tabId"], refused["state"]["action"]), (user, action), text)
             for token in ("confirmToken", "confirm_token", "resume_token"):
                 self.assertNotIn(token, text)
         self.assertEqual(prompts, [])
-        # Refused selection never invents a current tab or dispatches the following click.
-        click = json.loads(results[1][1])
-        self.assertEqual(click["state"]["tool"], "browser_click")
-        self.assertIn("Nothing was dispatched", click["hint"])
         after = self.tabs()[user]
         for key in ("url", "title", "active", "owned"):
             self.assertEqual(after[key], before[key], key)

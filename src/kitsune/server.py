@@ -425,7 +425,8 @@ USER_TABS, USER_TABS_ALIASES = user_tabs_from_env(os.environ)
 # Sent at initialize, and resent by clients with every model request. The core tools keep
 # Playwright MCP's descriptions, which cannot say that the browser is shared with its user; without
 # this, agents avoid `select` to spare the user's view and work around background tabs instead of
-# reading them. Without the hand-off sentence, agents asked in chat instead of clicking a page's own
+# reading them; every tab is readable, so select takes any tab and only writes are gated (#449).
+# Without the hand-off sentence, agents asked in chat instead of clicking a page's own
 # hand-off control (#352). scripts/tool_schema_size.py budgets them, so what a result's hint already
 # says where the agent needs it is left to that hint (#386, #405): how to answer a needs_user
 # (nothing ran; state.message), retrying user_active, recovering from user_tab_read_only and
@@ -433,10 +434,11 @@ USER_TABS, USER_TABS_ALIASES = user_tabs_from_env(os.environ)
 # native-input refusal of a handed-off tab.
 mcp._mcp_server.instructions = (
     "Shared browser. "
-    + ("User and other clients' tabs are read-only: open your own before writes, scroll, hover, focus "
-       "or select. " if USER_TABS == "read-only" else "")
+    + ("Every tab is readable; writes, scroll, hover and focus need your own tab. "
+       if USER_TABS == "read-only" else "")
     + ("browser_tabs request asks the user to hand over a tab (DOM writes, no native input). "
-       "browser_tabs new opens a background current tab; select sets current without switching the user's view. "
+       "browser_tabs new opens a background current tab; select makes any tab current without switching "
+       "the user's view. "
        "Until new/select (an MCP restart clears current), reads use the viewed tab and writes/navigation "
        "need tab_id. Batch/workflow newTab and tabs opened from current become current. "
        "Prefer page controls, else browser_ask_user, to hand a step to the user."

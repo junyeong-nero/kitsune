@@ -32,10 +32,11 @@ class ServerInstructionsTests(unittest.TestCase):
                 self.assertIn("an MCP restart clears current", text)
                 self.assertIn("reads use the viewed tab and writes/navigation need tab_id", text)
                 if setting == "read-only":
-                    self.assertIn("User and other clients' tabs are read-only: open your own before writes, "
-                                  "scroll, hover, focus or select.", text)
+                    # #449: every tab is readable; select takes any tab, only writes are gated.
+                    self.assertIn("Every tab is readable; writes, scroll, hover and focus need your own tab.", text)
                 else:
-                    self.assertNotIn("read-only", text)
+                    self.assertNotIn("readable", text)
+                self.assertNotIn("read-only", text)
                 # Legacy viewed-tab approval is gone; how to answer needs_user, user_active, user_tab_read_only
                 # and no_current_tab is in those results' hints (#405).
                 for left_to_hints in ("user_viewing", "hold", "ownTabs", "confirm_token", "browser_resume",
@@ -47,7 +48,7 @@ class ServerInstructionsTests(unittest.TestCase):
             with self.subTest(setting=setting):
                 text = self.texts["act", setting]
                 self.assertIn("browser_tabs new opens a background current tab", text)
-                self.assertIn("select sets current without switching the user's view", text)
+                self.assertIn("select makes any tab current without switching the user's view", text)
                 self.assertIn("Until new/select", text)
                 self.assertIn("Batch/workflow newTab and tabs opened from current become current.", text)
                 self.assertIn("browser_tabs request asks the user to hand over a tab (DOM writes, no native input)",
@@ -58,7 +59,7 @@ class ServerInstructionsTests(unittest.TestCase):
     def test_deprecated_opt_out_aliases_do_not_advertise_read_only(self):
         for setting in ("KITSUNE_HOLD_VIEWED_TAB", "KITSUNE_PROTECT_USER_TABS"):
             with self.subTest(setting=setting):
-                self.assertNotIn("read-only", instructions("act", **{setting: "0"}))
+                self.assertNotIn("Every tab is readable", instructions("act", **{setting: "0"}))
 
     def test_restricted_modes_do_not_advertise_unavailable_tab_actions(self):
         for mode in ("read", "draft"):

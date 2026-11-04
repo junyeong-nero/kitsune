@@ -161,34 +161,51 @@ class UserTabsReadOnlyTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("node"), "actual background integration needs node")
     def test_core_select_and_list_current_against_actual_background(self):
-        # #399: current stays truthful; #416: only an explicit list explains a read-only current tab.
+        # #399: current stays truthful; #416: only an explicit list explains a read-only current tab;
+        # #449: select makes any tab current, reads work there and writes are refused.
         self.extension.close()
         self.extension = BackgroundPermissionExtension(self.bridge, [])
         self.addCleanup(self.extension.close)
         hint = ("Tab 0 is read-only for this client. Before writing, open your own tab "
                 "with browser_tabs action=new url=https://user.example/one and work there.")
 
-        def core(user_tabs, action, **arguments):
+        def core(user_tabs, action, tool=playwright_tools.browser_tabs, **arguments):
             headers = {task_modes.USER_TABS_HEADER: user_tabs}
             with patch.object(tools, "client", SimpleNamespace(user_tabs=user_tabs)), \
                     patch.object(tools, "_get", lambda endpoint: self.call(endpoint, headers=headers)), \
                     patch.object(tools, "_post", lambda endpoint, data, timeout=15, start_bridge=True:
                                  self.call(endpoint, data, headers=headers)):
-                return playwright_tools.browser_tabs(action, **arguments)
+                return tool(action, **arguments) if action else tool(**arguments)
 
+        other = self.call("/api/new-tab", {"url": "https://b.test/"}, owner="client-b")["tabId"]
         with patch.object(playwright_tools, "_current_tab", None):
-            refused = core("read-only", "select", index=0)
-            self.assertEqual((refused["code"], refused["retryable"]), ("user_tab_read_only", False), refused)
-            self.assertEqual(refused["state"]["action"], "switchTab")
-            self.assertEqual(self.extension.commands[-1]["action"], "checkTabWrite")
-            self.assertIsNone(playwright_tools._current_tab)
             listed = core("read-only", "list")
             self.assertNotIn("hint", listed)
             self.assertFalse(any(tab.get("current") for tab in listed["tabs"]))
+            # The shown user tab 1, the background user tab 2 and client-b's background tab.
+            for index, tab_id in ((0, 1), (1, 2), (2, other)):
+                with self.subTest(tab_id=tab_id):
+                    selected = core("read-only", "select", index=index)
+                    self.assertEqual((selected["ok"], selected["index"], selected["read_only"]), (True, index, True),
+                                     selected)
+                    self.assertIn("browser_tabs action=new", selected["hint"])
+                    self.assertTrue(selected["tabs"][index]["current"])
+                    self.assertNotIn("owned", selected["tabs"][index])
+                    self.assertEqual(playwright_tools._current_tab, tab_id)
+                    self.assertNotEqual(self.extension.commands[-1]["action"], "switchTab")
+                    read = core("read-only", None, tool=playwright_tools.browser_snapshot)
+                    self.assertNotIn("code", read)
+                    self.assertIn(["getSnapshot", tab_id], self.extension.dispatched[-1]["sent"])
+                    refused = core("read-only", None, tool=playwright_tools.browser_click, target="#go")
+                    self.assertEqual((refused["code"], refused["state"]["tabId"]), ("user_tab_read_only", tab_id))
+                    self.assertEqual(self.extension.dispatched[-1]["sent"], [])
+                    self.assertEqual(self.extension.dispatched[-1]["shown"], [1], "the shown tab never changes")
+            self.assertEqual(core("read-only", "list")["tabs"][2]["current"], True)
 
             selected = core("writable", "select", index=0)
             self.assertEqual((selected["ok"], selected["index"]), (True, 0), selected)
             self.assertNotIn("hint", selected)
+            self.assertNotIn("read_only", selected)
             self.assertEqual(selected["tabs"][0], {"index": 0, "title": None, "url": "https://user.example/one",
                                                    "current": True, "active": True})
             self.assertEqual(playwright_tools._current_tab, 1)
@@ -197,17 +214,16 @@ class UserTabsReadOnlyTests(unittest.TestCase):
             self.assertEqual(listed["hint"], hint)
             self.assertTrue(listed["tabs"][0]["current"])
             self.assertNotIn("owned", listed["tabs"][0])
-            self.assertEqual(core("read-only", "select", index=1)["code"], "user_tab_read_only")
-            self.assertEqual(playwright_tools._current_tab, 1, "a refused select leaves current unchanged")
 
             opened = core("read-only", "new")
             self.assertNotIn("hint", opened)
             own = opened["index"]
             self.assertEqual({key: opened["tabs"][own].get(key) for key in ("current", "owned")},
                              {"current": True, "owned": True})
-            self.assertEqual(core("read-only", "select", index=0)["code"], "user_tab_read_only")
+            self.assertTrue(core("read-only", "select", index=0)["read_only"])
             selected = core("read-only", "select", index=own)
             self.assertNotIn("hint", selected)
+            self.assertNotIn("read_only", selected)
             self.assertEqual({key: selected["tabs"][own].get(key) for key in ("current", "owned")},
                              {"current": True, "owned": True})
             self.assertNotIn("hint", core("read-only", "list"))
