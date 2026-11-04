@@ -534,7 +534,7 @@ kitsune-benchmark; character-size guards in this repo are not token measurements
 | `KITSUNE_BRIDGE_IDLE_TIMEOUT` | `0` (never) | Seconds without client activity before the bridge exits; see [Idle shutdown](#idle-shutdown-opt-in) |
 | `KITSUNE_OUTPUT_DIR` | Unset | Directory, in the MCP server environment, for relative `filename` arguments of the `core` tools; unset, they resolve against the client's first root, else the server's working directory (see [Core tools](#core-tools)) |
 | `KITSUNE_OWNER_ID` | The MCP client's process | Tab owner id of the MCP client, in the MCP server environment: the bridge records the tabs it opens as this client's and offers them after a server restart. Up to 64 letters, digits, `.`, `_`, `:` or `-`. Set it when the server runs through a launcher other than `uv` or `uvx`, such as a shell script or a Python wrapper. Give each MCP client its own value: clients with the same value share their tabs. See [Tab owners](api-reference.md#tab-owners) |
-| `KITSUNE_USER_TABS` | `read-only` | Set to `writable` to allow this client to write user tabs; see [Protecting your tabs](#protecting-your-tabs) for values, precedence and deprecated aliases |
+| `KITSUNE_USER_TABS` | `read-only` | Set to `writable` to allow this client to write user tabs; see [Protecting your tabs](#protecting-your-tabs) for values and invalid-value errors |
 | `KITSUNE_ASK_BEFORE_ACT` | Unset | Set to `1` in the MCP server environment to start the bridge with [ask-before-act](#ask-before-act) locked on; the lock then persists in `ask-before-act-locked` under `KITSUNE_HOME` |
 | `KITSUNE_HISTORY_ALLOW_DOMAINS` | Unset (every domain) | Bridge: comma-separated domains (with subdomains) the `history` tools may return; see [History and bookmarks](api-reference.md#history-and-bookmarks) |
 | `KITSUNE_HISTORY_DENY_DOMAINS` | Unset (none) | Bridge: comma-separated domains (with subdomains) the `history` tools never return; wins over the allow list |
@@ -735,17 +735,13 @@ client may write user and other clients' tabs without changing ownership; `user_
 task-mode limits and ask-before-act still apply. Invalid explicit values (including an
 empty string) stop MCP startup with a configuration error, rather than weakening protection.
 Python uses `kitsune.connect(user_tabs="writable")`; it does not read this environment
-setting. Omitting `user_tabs` means read-only unless a deprecated SDK alias opts out.
+setting. Omitting `user_tabs` means read-only.
 
-For **one release**, `KITSUNE_HOLD_VIEWED_TAB` and `KITSUNE_PROTECT_USER_TABS` remain
-deprecated aliases: explicitly setting either to `0`, `false`, `no` or `off` enables
-`writable` when the new setting is absent (case/whitespace insensitive). Other alias
-values do not opt out. An explicit `KITSUNE_USER_TABS` value always wins, even
-`read-only` with an alias set to `0`; an invalid new value never falls back to an alias.
-The Python aliases `hold_viewed_tab=False` and `protect_user_tabs=False` follow the same
-precedence: explicit `user_tabs` wins. Any explicit use of a deprecated alias, including
-an overridden or enabled one, logs one combined deprecation warning per MCP session to
-stderr, never protocol stdout (Python: once per connection).
+The deprecated aliases `KITSUNE_HOLD_VIEWED_TAB` and `KITSUNE_PROTECT_USER_TABS` (and
+Python's `hold_viewed_tab` and `protect_user_tabs`) were removed after the 0.7.2 alias
+release. The environment variables are now ignored without a warning, so a client that
+set either to `0` is read-only again until it sets `KITSUNE_USER_TABS=writable`; the
+Python arguments raise `TypeError`.
 
 The client sends only `X-Kitsune-User-Tabs: read-only|writable` to the bridge. Missing
 headers default to read-only; invalid values reject the request with HTTP 400

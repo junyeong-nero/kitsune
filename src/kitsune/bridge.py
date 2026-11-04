@@ -1942,7 +1942,7 @@ async def _history_lookup(action, body):
 
 # ── needs_user (docs/api-reference.md#action-errors, #376) ──
 # A refusal only the user's approval lifts returns code needs_user with state.reason "approval"
-# and, for one release, the code it replaces in state.detail: user_tab (a v0.7.1 extension's refusal
+# and the code it replaces in state.detail: user_tab (a v0.7.1 extension's refusal
 # to close a user tab, mapped in send_to_extension) or confirmation_required (ask-before-act). A
 # reason the old state carried moves to state.holdReason. state.approvable is false in read and
 # draft, which cannot confirm; state.approval is "token" where a confirm token approves it. A

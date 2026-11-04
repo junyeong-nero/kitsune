@@ -12,8 +12,7 @@ print(json.dumps(server.mcp._mcp_server.create_initialization_options().instruct
 
 
 def instructions(mode, **settings):
-    settings_names = ("KITSUNE_USER_TABS", "KITSUNE_HOLD_VIEWED_TAB", "KITSUNE_PROTECT_USER_TABS")
-    env = {**{k: v for k, v in os.environ.items() if k not in settings_names},
+    env = {**{k: v for k, v in os.environ.items() if k != "KITSUNE_USER_TABS"},
            "KITSUNE_MODE": mode, **settings}
     result = subprocess.run([sys.executable, "-c", SCRIPT], env=env, text=True, capture_output=True, check=True)
     return json.loads(result.stdout)
@@ -56,10 +55,11 @@ class ServerInstructionsTests(unittest.TestCase):
                 # #352: prefer page controls to asking in chat when handing a step to the user.
                 self.assertIn("Prefer page controls, else browser_ask_user, to hand a step to the user.", text)
 
-    def test_deprecated_opt_out_aliases_do_not_advertise_read_only(self):
+    def test_removed_opt_out_aliases_keep_the_read_only_rule(self):
+        # #446: the aliases no longer opt out, so the instructions still state the read-only rule.
         for setting in ("KITSUNE_HOLD_VIEWED_TAB", "KITSUNE_PROTECT_USER_TABS"):
             with self.subTest(setting=setting):
-                self.assertNotIn("Every tab is readable", instructions("act", **{setting: "0"}))
+                self.assertIn("Every tab is readable", instructions("act", **{setting: "0"}))
 
     def test_restricted_modes_do_not_advertise_unavailable_tab_actions(self):
         for mode in ("read", "draft"):

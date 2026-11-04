@@ -8,8 +8,9 @@ CONNECTION_CODES = frozenset({
     "extension_disconnected", "extension_version_mismatch", "browser_window_unavailable", "host_permission_denied",
 })
 
-# The codes needs_user replaced for approvals, now its state.detail (#376).
-APPROVAL_DETAILS = frozenset({"confirmation_required", "user_tab", "user_viewing"})
+# The codes needs_user replaced for approvals, now its state.detail (#376). user_tab is a v0.7.1
+# extension's refusal to close a user tab, which the bridge still maps (bridge.APPROVAL_DETAILS).
+APPROVAL_DETAILS = frozenset({"confirmation_required", "user_tab"})
 
 
 def failed(result) -> bool:
@@ -47,9 +48,8 @@ class KitsuneError(Exception):
 class ConfirmationRequired(KitsuneError):
     """The action needs the user's approval and nothing ran (code needs_user, state.reason
     approval, #376). detail is the code it replaces: ask-before-act held it (confirmation_required,
-    with hold_reason such as payment_page). Legacy user_tab and user_viewing details remain
-    recognized through the deprecated settings alias release; current user-tab writes are refused
-    with user_tab_read_only, not held for approval.
+    with hold_reason such as payment_page), or a v0.7.1 extension refused to close a user tab
+    (user_tab). User-tab writes are refused with user_tab_read_only, not held for approval.
     message asks the user. Once the user approves, repeat it with confirm=token within expires_in
     seconds; a token works once."""
 

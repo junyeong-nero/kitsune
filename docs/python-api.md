@@ -44,8 +44,7 @@ is not connected. It returns a `Browser`.
 | Argument | Default | Effect |
 | --- | --- | --- |
 | `mode` | `"act"` | `"read"` or `"draft"` restricts requests as [`KITSUNE_MODE`](api-reference.md#task-modes) does for MCP |
-| `user_tabs` | unset (`read-only`) | `writable` allows this client to write user tabs; explicit `read-only` overrides deprecated aliases. See [User-tab setting](guide.md#protecting-your-tabs) |
-| `protect_user_tabs`, `hold_viewed_tab` | unset | Deprecated for one release; explicit `False` aliases `user_tabs="writable"` only when `user_tabs` is unset; explicit use warns once per connection |
+| `user_tabs` | unset (`read-only`) | `writable` allows this client to write user tabs. See [User-tab setting](guide.md#protecting-your-tabs) |
 | `confirm` | `None` | A function that decides on actions ask-before-act holds; see [Ask-before-act](#ask-before-act) |
 | `replace_bridge` | `False` | `True` replaces a running bridge of another build |
 
@@ -230,17 +229,17 @@ exception: nothing ran, and only you can let it go on.
 
 | Exception | Raised for |
 | --- | --- |
-| `ConfirmationRequired` | An action that needs your approval (`needs_user` with `state.reason` `approval`, and a token), with `token`, `expires_in`, `message` and `detail`: `confirmation_required` (ask-before-act, with `hold_reason`), or legacy `user_tab`/`user_viewing` |
+| `ConfirmationRequired` | An action that needs your approval (`needs_user` with `state.reason` `approval`, and a token), with `token`, `expires_in`, `message` and `detail`: `confirmation_required` (ask-before-act, with `hold_reason`), or `user_tab` (closing a user tab, from a v0.7.1 extension) |
 | `ConnectionFailed` (also a `ConnectionError`) | The bridge or extension was not reached or dropped the request: the [connection codes](api-reference.md#connection-diagnosis), `bridge_disconnected` and `bridge_version_mismatch` |
 | `TimedOut` (also a `TimeoutError`) | `timeout`, a page load that timed out, and a wait that ran out |
 | `KitsuneError` | Every other failure, such as `stale_ref`, `ambiguous_target` or `outcome_not_observed` |
 
 Warnings that accompany a success (`warning`) do not raise.
 
-Until #376 these approvals had their own codes, `confirmation_required`, `user_tab` and
-`user_viewing`. They are now `code` `needs_user`, with the old code in `state.detail`
-(`error.detail`) for one release, and an ask-before-act hold's reason in `state.holdReason`
-(`error.hold_reason`, before: `state.reason`). `ConfirmationRequired` is raised for both
+Until #376 these approvals had their own codes, `confirmation_required` and `user_tab`.
+They are now `code` `needs_user`, with the old code in `state.detail` (`error.detail`), and
+an ask-before-act hold's reason in `state.holdReason` (`error.hold_reason`, before:
+`state.reason`). `ConfirmationRequired` is raised for both
 shapes. A `needs_user` without a token, as in read and draft modes
 (`state.approvable: false`), raises a plain `KitsuneError`: nothing can approve it there.
 
@@ -250,8 +249,7 @@ Some actions need your approval, and nothing runs until you give it: with
 [ask-before-act](api-reference.md#ask-before-act) on, the bridge holds submits, payment
 pages, JavaScript and cookie access (`detail` `confirmation_required`). User-tab writes
 instead fail immediately with `user_tab_read_only`; approval tokens do not override tab
-permissions. Legacy `user_tab`/`user_viewing` approval responses remain understood through
-the alias release. Actions needing approval raise
+permissions. Actions needing approval raise
 `ConfirmationRequired`; `error.message` is a short request to show you. Repeat the call
 with `confirm=error.token` within
 `error.expires_in` seconds, or let `connect(confirm=...)` decide: the function gets the

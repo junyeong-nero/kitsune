@@ -37,8 +37,7 @@ from . import playwright_tools, tools
 from .capabilities import CAPABILITY_GROUPS, NAMED_ONLY_GROUPS, enabled_groups
 from .bridge_client import BridgeClient
 from .errors import failed as _failed  # whether a tool's own result reports failure
-from .task_modes import (APPROVAL_HEADER, GATEWAY_TOOL_HEADER, permits_tool, task_mode,
-                         user_tabs_from_env, user_tabs_deprecation)
+from .task_modes import APPROVAL_HEADER, GATEWAY_TOOL_HEADER, permits_tool, task_mode, user_tabs
 from .tools import DESTRUCTIVE, _on_current_tab
 from .waits import RESUME_WAIT_SECONDS, resume_wait_seconds
 
@@ -385,8 +384,6 @@ class KitsuneMCP(FastMCP):
 @asynccontextmanager
 async def _session_lifespan(server):
     # Low-level Server.run enters this once per MCP session, not once per tool or process.
-    if USER_TABS_ALIASES:
-        print(user_tabs_deprecation(USER_TABS_ALIASES), file=sys.stderr)
     try:
         yield {}
     finally:
@@ -421,7 +418,7 @@ if _unauthorized_caps:
                      f"{', '.join(sorted(_unauthorized_caps))}")
 
 MODE = task_mode(os.environ.get("KITSUNE_MODE"))
-USER_TABS, USER_TABS_ALIASES = user_tabs_from_env(os.environ)
+USER_TABS = user_tabs(os.environ.get("KITSUNE_USER_TABS"))
 # Sent at initialize, and resent by clients with every model request. The core tools keep
 # Playwright MCP's descriptions, which cannot say that the browser is shared with its user; without
 # this, agents avoid `select` to spare the user's view and work around background tabs instead of

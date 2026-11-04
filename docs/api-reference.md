@@ -586,11 +586,9 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `tab_claimed` | A resumed `parallel` sequence writes a tab that another call's `parallel` in progress writes (`state.tabId`, `state.call`); nothing in that sequence was sent (see [Checkpoint and resume](checkpoint-resume.md#parallel)) | true |
 | `checkpoint_not_found`, `resume_token_invalid`, `workflow_changed`, `observed_invalid`, `observed_required`, `resume_failed`, `current_tab_changed` | `browser_resume` refused or stopped; see [Checkpoint and resume](checkpoint-resume.md#errors) and, for `current_tab_changed`, [Direct calls](checkpoint-resume.md#direct-calls) | `observed_*`, `current_tab_changed`: true; others: false |
 
-`needs_user` replaces three codes, which stay as `state.detail` for one release. The
-current extension refuses user-tab writes with `user_tab_read_only` instead, without
-approval; `user_tab` below comes only from a v0.7.1 extension. The table lists two of the
-three: the third, `user_viewing` (the old viewed-tab hold), is no longer produced (no released
-extension had it), though the Python API still recognizes it until the alias release ends. A `reason` the old `state` carried moves to
+`needs_user` replaces two codes, which stay as `state.detail`. The current extension
+refuses user-tab writes with `user_tab_read_only` instead, without approval; `user_tab`
+below comes only from a v0.7.1 extension. A `reason` the old `state` carried moves to
 `state.holdReason`; every other field keeps its name:
 
 | `state.detail` | Was the code | When | `state.holdReason` |
@@ -1431,7 +1429,7 @@ remains separate and may close pool tabs.
 `KITSUNE_USER_TABS=writable` allows writes without changing ownership; neither caller
 JSON nor approval tokens enable it. The bridge uses one authoritative
 `X-Kitsune-User-Tabs` header. See [User-tab setting](guide.md#protecting-your-tabs) for
-values, defaults, precedence, invalid-value errors and the one-release deprecated aliases.
+values, defaults and invalid-value errors.
 Tab permissions do **not** sandbox browser/account-wide side effects: cookie changes,
 clipboard writes, downloads/cancellation, clearing browsing data and the global network
 interception rules can still affect shared state. They have no concrete tab target and
@@ -1647,9 +1645,7 @@ an action.
 The old viewed-tab approval hold is replaced by [Tab permissions](#tab-permissions).
 Viewing does not change ownership: user tabs are read-only (yet readable) even in the background,
 and owned tabs remain writable while viewed unless the existing `user_active` guard
-reports trusted user activity. Neither the extension nor the bridge produces the old
-`needs_user` detail `user_viewing` any more; the Python API still recognizes it through the
-one-release alias period. No approval can lift a write refused as `user_tab_read_only`.
+reports trusted user activity. No approval can lift a write refused as `user_tab_read_only`.
 
 #### No current tab
 

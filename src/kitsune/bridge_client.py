@@ -23,7 +23,7 @@ from . import bridge_control
 from .bridge_control import BRIDGE, HTTP_PORT, LOG_FILE, TOKEN_FILE, WS_PORT, headers as _headers
 from .capabilities import CAPS_HEADER
 from .task_modes import (SESSION_HEADER, CLIENT_NAME_HEADER, APPROVER_HEADER, CLIENT_HEADER, CLIENT_ID_PATTERN, MODE_HEADER,
-                         OWNER_HEADER, USER_TABS_HEADER, user_tabs as parse_user_tabs, user_tabs_deprecation)
+                         OWNER_HEADER, USER_TABS_HEADER, user_tabs as parse_user_tabs)
 from .version import BRIDGE_BUILD
 
 BRIDGE_START_TIMEOUT = 15
@@ -189,7 +189,6 @@ class BridgeClient:
     """Bridge requests that carry one caller's capability groups, task mode and user-tab protection.
 
     user_tabs="writable" permits writes on user tabs; the default is "read-only".
-    Explicit user_tabs wins over deprecated hold_viewed_tab/protect_user_tabs=False aliases.
     user_active still applies.
 
     caps are the groups the bridge lets these requests use: it refuses routes and container steps
@@ -206,16 +205,10 @@ class BridgeClient:
     """
 
     def __init__(self, *, caps, mode: str = "act", user_tabs: str | None = None,
-                 protect_user_tabs: bool | None = None, hold_viewed_tab: bool | None = None,
                  extra_headers=None, replace_bridge: bool = True, approver: bool = False):
         self.caps = None if caps is None else ",".join(sorted(caps))
         self.mode = mode
-        aliases = tuple(name for name, value in (("protect_user_tabs", protect_user_tabs),
-                                                 ("hold_viewed_tab", hold_viewed_tab)) if value is not None)
-        self.user_tabs = parse_user_tabs(user_tabs if user_tabs is not None else
-                                        "writable" if protect_user_tabs is False or hold_viewed_tab is False else None)
-        if aliases:
-            print(user_tabs_deprecation(aliases), file=sys.stderr)
+        self.user_tabs = parse_user_tabs(user_tabs)
         self.extra_headers = extra_headers
         self.replace_bridge = replace_bridge
         self.client_id = f"{os.getpid()}-{secrets.token_hex(3)}"

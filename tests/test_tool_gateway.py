@@ -166,7 +166,7 @@ class GatewayTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.env = environment("core,browse,read,admin", "core", KITSUNE_PROTECT_USER_TABS="0")
+        cls.env = environment("core,browse,read,admin", "core", KITSUNE_USER_TABS="writable")
         cls.capability = run(CAPABILITY, cls.env)
 
     def test_capability_and_initial_list(self):
