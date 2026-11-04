@@ -2368,9 +2368,10 @@
   // ── Scroll ──
   function scrollPage(direction, amount, selector, first) {
     let target = (selector ? resolveTarget(selector, null, { first }) : null) || window;
-    // amount is pixels; keep this aligned with the MCP tool contract.
+    // amount is pixels; keep this aligned with the MCP tool contract. Not rounded: browser_find
+    // scrolls a page back by the fractional scrolled_by it reported (#449).
     const parsed = Number(amount);
-    const dist = Number.isFinite(parsed) ? Math.round(parsed) : 500;
+    const dist = Number.isFinite(parsed) ? parsed : 500;
     const horizontal = direction === 'left' || direction === 'right';
     const opts = { behavior: 'instant' };
     const position = el => {
