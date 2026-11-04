@@ -52,7 +52,7 @@ function load({ idleMinutes } = {}) {
   };
   class WebSocket { constructor() { this.readyState = 1; } send() {} close() {} }
   const context = vm.createContext({
-    browser, URL, WebSocket, console: { log() {}, error() {} },
+    browser, URL, WebSocket, crypto, console: { log() {}, error() {} },
     setTimeout: () => 0, clearTimeout() {}, setInterval: () => 0, clearInterval() {},
   });
   vm.runInContext('Date', context).now = () => clock.now;
@@ -77,6 +77,31 @@ async function popupClosesEveryUnpinnedAgentTab() {
   assert.deepEqual({ ...await h.message({ action: 'closeAgentTabs' }, popup) }, { closed: 2 });
   assert.deepEqual(h.removed.sort(), [2, 3]);
   assert.deepEqual({ ...await h.message({ action: 'agentTabCount' }, popup) }, { count: 0 });
+}
+
+// #441: a handed-off tab is the user's tab lent for a session, not an agent tab.
+async function cleanupKeepsHandedOffUserTabs() {
+  const h = load({ idleMinutes: 5 });
+  const popup = { url: POPUP_URL };
+  const who = { ownerId: 'owner', sessionId: 'session' };
+  h.addTab({ id: 1, status: 'complete' });             // the user's, handed off below
+  h.addTab({ id: 2 }, { agent: true });
+  h.addTab({ id: 3 }, { agent: true });
+  await h.context.handleCommand({ action: 'openHandoffSession', ...who, clientName: 'Client' });
+  const pending = h.context.handleCommand({ action: 'requestTab', ...who, tabId: 1, reason: 'Work on this page' });
+  await flush();
+  const [prompt] = (await h.message({ action: 'handoffs' }, popup)).requests;
+  await h.message({ action: 'handoffDecision', id: prompt.id, decision: 'approve' }, popup);
+  assert.equal((await pending).owned, true);
+  assert.deepEqual({ ...await h.message({ action: 'agentTabCount' }, popup) }, { count: 2 });
+  h.clock.now += 5 * MINUTE;
+  assert.deepEqual({ ...await h.context.sweepIdleAgentTabs() }, { closed: 2 }, 'the idle sweep skips it');
+  assert.deepEqual(h.removed.sort(), [2, 3]);
+  h.addTab({ id: 4 }, { agent: true });
+  assert.deepEqual({ ...await h.message({ action: 'closeAgentTabs' }, popup) }, { closed: 1 }, 'so does the popup');
+  assert.deepEqual(h.removed.sort(), [2, 3, 4]);
+  assert.ok(h.tabs.has(1), 'the user keeps the tab');
+  assert.equal((await h.message({ action: 'handoffs' }, popup)).tabs[0].tabId, 1, 'and the grant stays');
 }
 
 async function pagesCannotCloseAgentTabs() {
@@ -238,6 +263,7 @@ async function popupLoadsAndSavesIdleSettings() {
 (async () => {
   await freshInheritedTabIsNotIdleAfterLongUptime();
   await popupClosesEveryUnpinnedAgentTab();
+  await cleanupKeepsHandedOffUserTabs();
   await pagesCannotCloseAgentTabs();
   await idleLimitDefaultsToFiveMinutes();
   await explicitNeverDisablesIdleLimit();
