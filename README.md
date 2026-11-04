@@ -39,7 +39,7 @@ Chromium or WebDriver to install.
 
 ![Claude Code asks for the user's Wikipedia tab after researching in background tabs; the user approves in Kitsune's toolbar popup, the agent jumps the tab to the right section, and the user closes the agent's tabs and takes the tab back from the popup](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/demo-handoff.gif)
 
-<sub>New in 0.7.2: the agent asks for your tab, and you approve, take it back and clean up from the toolbar popup.</sub>
+<sub>New in 0.7.2: the agent asks for your tab, and you approve, take it back and clean up from the toolbar popup. A real recording on Wikipedia, sped up while the agent thinks (<a href="https://github.com/user-attachments/assets/532e8a65-2801-4a4c-89b4-2ec8cec7322b">full 45-second video</a>).</sub>
 
 ## Get started
 
