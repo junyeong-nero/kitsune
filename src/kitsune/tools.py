@@ -24,6 +24,7 @@ from . import playwright_tools
 from .bridge_client import BridgeClient
 from .capabilities import CAPABILITY_GROUPS
 from .errors import failed as _failed  # whether a tool's own result reports failure
+from .task_modes import permits_tool
 from .waits import (
     ACTION_REQUEST_SECONDS, NAVIGATE_REQUEST_SECONDS, RESUME_DEADLINE_SECONDS, RESUME_MAX_WAIT_SECONDS,
     RESUME_WAIT_SECONDS, WORKFLOW_DEADLINE_SECONDS, action_request_seconds, batch_deadline_seconds,
@@ -119,14 +120,39 @@ def _tabless_step_write(step) -> str | None:
     return next(filter(None, map(_tabless_step_write, nested)), None)
 
 
+def _publishes_browser_tabs() -> bool:
+    """Whether this MCP server publishes browser_tabs (act mode), not browser_tab_list (read, draft)."""
+    return permits_tool(getattr(client, "mode", "act"), "browser_tabs")
+
+
+def _no_current_tab_hint(name: str) -> str:
+    """How the agent gets a tab for name without a current tab, with the tools it is published with (#448).
+
+    Kitsune's own tools take tab_id. The core tools' schemas, Playwright MCP's, list none: they act on
+    the current tab only.
+    """
+    act = _publishes_browser_tabs()
+    if name in playwright_tools.SCHEMAS:
+        if not act:
+            return (f"Nothing was dispatched. {name} acts on the current tab: open a tab of your own with "
+                    "browser_tab_list new_tab=<url> and work there.")
+        return (f"Nothing was dispatched. {name} acts on the current tab: open a tab of your own with "
+                "browser_tabs action=new url=<url> and work there, or make one of your tabs current with "
+                "browser_tabs action=select; user and other clients' tabs stay read-only.")
+    if not act:
+        return ("Nothing was dispatched. Pass tab_id, or open a tab of your own with browser_tab_list new_tab "
+                "and work there; user and other clients' tabs stay read-only.")
+    return ("Nothing was dispatched. Pass tab_id, or open a tab of your own with browser_tabs action=new and "
+            "work there. browser_tabs action=select makes any tab current for reads; user and other clients' "
+            "tabs stay read-only.")
+
+
 def _no_current_tab(name: str, arguments: dict) -> dict | None:
     """The refusal of a published tool call that would write the user's active tab (#303), else None.
 
     Called when the call names no tab and there is no current tab.
     """
-    hint = ("Nothing was dispatched. Pass tab_id (browser_navigate and browser_navigate_back accept it too), "
-            "or open a tab of your own with browser_tabs action=new or browser_tab_list new_tab and work there. "
-            "browser_tabs action=select makes any tab current for reads; user and other clients' tabs stay read-only.")
+    hint = _no_current_tab_hint(name)
     if name == "browser_workflow":
         return {"error": "browser_workflow names no tab_id and there is no current tab; its steps cannot be "
                           "inspected before they run, so it needs a tab even if it only reads",
@@ -157,6 +183,17 @@ OWN_TABS_OFFERED = 5
 OWN_TABS_TIMEOUT = 3
 
 
+def _quick_tab_list(body: dict) -> list[dict] | None:
+    """The tabs /api/tabs lists for body from a bridge that already runs, within OWN_TABS_TIMEOUT;
+    None when the lookup fails."""
+    try:
+        listed = _post("/api/tabs", body, timeout=OWN_TABS_TIMEOUT, start_bridge=False)
+    except Exception:
+        return None
+    tabs = listed.get("tabs") if isinstance(listed, dict) and not _failed(listed) else None
+    return [tab for tab in tabs if isinstance(tab, dict)] if isinstance(tabs, list) else None
+
+
 def _offering_own_tabs(refusal: dict) -> dict:
     """A no_current_tab refusal with the open tabs this MCP client opened (#325), else unchanged.
 
@@ -166,21 +203,49 @@ def _offering_own_tabs(refusal: dict) -> dict:
     is not made current, since the tab may belong to an earlier conversation of that client. A
     failed lookup leaves the refusal as it was. It asks only a bridge that already runs: one it
     would start knows no tab's owner yet.
+
+    A core tool takes no tab_id, so its hint names tabs by their browser_tabs index, and also the
+    tab the user is viewing when exactly one tab is active (#448): its refs came from a snapshot of
+    that tab, which is read-only unless this client may write it. Without browser_tabs (read and
+    draft modes) a core tool reaches no other tab, so its refusal stays as it is.
     """
-    try:
-        listed = _post("/api/tabs", {"mine": True}, timeout=OWN_TABS_TIMEOUT, start_bridge=False)
-    except Exception:
+    core = refusal["state"]["tool"] in playwright_tools.SCHEMAS
+    if core and not _publishes_browser_tabs():
         return refusal
-    tabs = listed.get("tabs") if isinstance(listed, dict) and not _failed(listed) else None
+    mine = _quick_tab_list({"mine": True})
+    if mine is None:
+        return refusal
     own = [{"tabId": tab["id"], "url": tab.get("url"), "title": tab.get("title")}
-           for tab in tabs if isinstance(tab, dict) and tab.get("mine") is True and isinstance(tab.get("id"), int)
-           ] if isinstance(tabs, list) else []
-    if not own:
+           for tab in mine if tab.get("mine") is True and isinstance(tab.get("id"), int)]
+    hints, index = [], {}
+    if core:
+        # The full list, in browser_tabs' index order; mine sorts by opening.
+        tabs = _quick_tab_list({}) or []
+        index = {tab.get("id"): i for i, tab in enumerate(tabs)}
+        viewed = [tab for tab in tabs if tab.get("active")]
+        if len(viewed) == 1 and not (own and viewed[0].get("id") == own[0]["tabId"]):
+            tab, i = viewed[0], index[viewed[0].get("id")]
+            if playwright_tools._writable(tab):
+                hints.append(f"The user is viewing tab {i} ({tab.get('url')}); browser_tabs action=select "
+                             f"index={i} makes it current.")
+            else:
+                hints.append(f"The user is viewing tab {i} ({tab.get('url')}), which this client cannot write: "
+                             f"to write it, open your own copy with browser_tabs action=new url={tab.get('url')}, "
+                             f"or ask the user for it with browser_tabs action=request index={i}.")
+    if own:
+        tab_id = own[0]["tabId"]
+        if not core:
+            tab, resume = f"Tab {tab_id}", f"pass tab_id={tab_id}"
+        elif tab_id in index:
+            tab, resume = f"Tab {index[tab_id]}", f"browser_tabs action=select index={index[tab_id]}"
+        else:
+            tab, resume = f"The tab at {own[0]['url']}", "browser_tabs action=list shows its index to select"
+        hints.append(f"{tab} is the tab this MCP client opened most recently (state.ownTabs), "
+                     f"maybe in an earlier conversation: to keep working in it, {resume}.")
+    if not hints:
         return refusal
-    tab_id = own[0]["tabId"]
-    hint = (f"{refusal['hint']} Tab {tab_id} is the tab this MCP client opened most recently (state.ownTabs), "
-            f"maybe in an earlier conversation: to keep working in it, pass tab_id={tab_id}.")
-    return {**refusal, "hint": hint, "state": {**refusal["state"], "ownTabs": own[:OWN_TABS_OFFERED]}}
+    state = {**refusal["state"], **({"ownTabs": own[:OWN_TABS_OFFERED]} if own else {})}
+    return {**refusal, "hint": " ".join([refusal["hint"], *hints]), "state": state}
 
 
 def _adopted_tab(name: str, result, tab_id: int | None, current: int | None) -> int | None:

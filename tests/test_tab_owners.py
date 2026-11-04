@@ -509,5 +509,107 @@ class OwnTabsRefusalTests(unittest.TestCase):
         self.assertEqual(self.sent, [7, None], "the read went to the active tab")
 
 
+class CoreToolRefusalTests(unittest.TestCase):
+    """#448: a core tool's no_current_tab hint names what its tools can do: no tab_id, browser_tabs indexes."""
+
+    USER = {"id": 7, "url": "https://user.test/form", "title": "Form", "active": True}
+    OWN = {"id": 58, "url": "https://own.test/", "title": "Own", "active": False, "owned": True}
+
+    def setUp(self):
+        current = patch.object(playwright_tools, "_current_tab", None)
+        current.start()
+        self.addCleanup(current.stop)
+        self.sent = []
+
+        def browser_type(target: str, text: str) -> dict:
+            self.sent.append(target)
+            return {"ok": True}
+        self.type = tools._on_current_tab(browser_type)
+
+    def refuse(self, tabs, client=None):
+        """The refusal of a core browser_type with tabs open, and the bodies of the /api/tabs lookups."""
+        posts = []
+
+        def post(endpoint, body, timeout=15, start_bridge=True):
+            self.assertEqual((endpoint, timeout, start_bridge), ("/api/tabs", tools.OWN_TABS_TIMEOUT, False))
+            posts.append(body)
+            if isinstance(tabs, Exception):
+                raise tabs
+            mine = [{**tab, "mine": True} for tab in tabs if tab.get("owned")]
+            return {"tabs": mine if body.get("mine") else [{**tab, "mine": True} if tab.get("owned") else tab
+                                                             for tab in tabs]}
+        with patch.object(tools, "_post", side_effect=post), patch.object(tools, "client", client):
+            result = self.type(target="e3", text="hi")
+        self.assertEqual(self.sent, [], "nothing is dispatched")
+        self.assertIsNone(playwright_tools._current_tab, "no tab is adopted")
+        self.assertEqual((result["code"], result["retryable"]), ("no_current_tab", False))
+        return result, posts
+
+    def test_the_hint_offers_browser_tabs_not_tab_id(self):
+        result, posts = self.refuse([])
+        self.assertEqual(posts, [{"mine": True}, {}])
+        self.assertEqual(result, tools._no_current_tab("browser_type", {}))
+        self.assertEqual(result["state"], {"tool": "browser_type"})
+        hint = result["hint"]
+        self.assertNotIn("tab_id", hint, "the core schemas list no tab_id")
+        self.assertNotIn("browser_tab_list", hint, "act mode publishes browser_tabs instead")
+        self.assertIn("browser_tabs action=new url=<url>", hint)
+        self.assertLess(hint.index("action=new"), hint.index("action=select"))
+
+    def test_the_hint_names_the_viewed_tab_and_how_to_write_it(self):
+        result, _ = self.refuse([{"id": 3, "url": "https://a.test/", "active": False}, self.USER])
+        self.assertEqual(result["state"], {"tool": "browser_type"})
+        self.assertTrue(result["hint"].startswith(tools._no_current_tab("browser_type", {})["hint"] + " "))
+        self.assertTrue(result["hint"].endswith(
+            "The user is viewing tab 1 (https://user.test/form), which this client cannot write: to write it, "
+            "open your own copy with browser_tabs action=new url=https://user.test/form, or ask the user for it "
+            "with browser_tabs action=request index=1."), result["hint"])
+        self.assertNotIn("tab_id", result["hint"])
+
+    def test_a_writable_viewed_tab_is_offered_to_select(self):
+        result, _ = self.refuse([self.USER], client=Mock(mode="act", user_tabs="writable"))
+        self.assertTrue(result["hint"].endswith(
+            "The user is viewing tab 0 (https://user.test/form); browser_tabs action=select index=0 makes it current."))
+
+    def test_the_clients_own_tab_is_offered_by_its_index(self):
+        result, _ = self.refuse([self.USER, self.OWN])
+        self.assertEqual(result["state"]["ownTabs"], [{"tabId": 58, "url": "https://own.test/", "title": "Own"}])
+        self.assertIn("action=request index=0.", result["hint"])
+        self.assertTrue(result["hint"].endswith(
+            "Tab 1 is the tab this MCP client opened most recently (state.ownTabs), maybe in an earlier "
+            "conversation: to keep working in it, browser_tabs action=select index=1."), result["hint"])
+        self.assertNotIn("tab_id", result["hint"])
+        # Viewing its own tab, the hint names it once.
+        result, _ = self.refuse([{**self.USER, "active": False}, {**self.OWN, "active": True}])
+        self.assertNotIn("viewing", result["hint"])
+        self.assertIn("action=select index=1.", result["hint"])
+
+    def test_several_viewed_tabs_or_a_failed_lookup_name_none(self):
+        unchanged = tools._no_current_tab("browser_type", {})
+        self.assertEqual(self.refuse([self.USER, {**self.USER, "id": 8}])[0], unchanged)
+        self.assertEqual(self.refuse(RuntimeError("bridge gone")), (unchanged, [{"mine": True}]))
+
+    def test_without_browser_tabs_the_hint_offers_browser_tab_list(self):
+        for mode in ("draft", "read"):
+            with self.subTest(mode=mode):
+                result, posts = self.refuse([self.USER, self.OWN], client=Mock(mode=mode, user_tabs="read-only"))
+                self.assertEqual(posts, [], "no core tool it publishes reaches another tab")
+                self.assertEqual(result["hint"], "Nothing was dispatched. browser_type acts on the current tab: "
+                                                 "open a tab of your own with browser_tab_list new_tab=<url> and "
+                                                 "work there.")
+                # Kitsune's own tools take tab_id, and only browser_tab_list opens tabs.
+                with patch.object(tools, "client", Mock(mode=mode)):
+                    own = tools._no_current_tab("browser_scroll", {})["hint"]
+                self.assertIn("Pass tab_id", own)
+                self.assertIn("browser_tab_list new_tab", own)
+                self.assertNotIn("browser_tabs", own)
+
+    def test_kitsune_own_tools_keep_tab_id_and_tab_ids(self):
+        hint = tools._no_current_tab("browser_scroll", {})["hint"]
+        self.assertIn("Pass tab_id", hint)
+        self.assertNotIn("browser_tab_list", hint, "act mode publishes browser_tabs instead")
+        self.assertNotIn("browser_navigate", hint, "the core tools' unlisted tab_id is not offered")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1656,10 +1656,26 @@ navigation that names no tab is refused before anything is sent, instead of goin
 tab the user is viewing:
 
 ```json
-{ "error": "browser_navigate writes a tab but names none, and there is no current tab, so it was not sent to the tab the user is viewing",
+{ "error": "browser_scroll writes a tab but names none, and there is no current tab, so it was not sent to the tab the user is viewing",
   "code": "no_current_tab", "retryable": false,
-  "hint": "Nothing was dispatched. Pass tab_id (browser_navigate and browser_navigate_back accept it too), or open a tab of your own with browser_tabs action=new or browser_tab_list new_tab and work there. browser_tabs action=select makes any tab current for reads; user and other clients' tabs stay read-only.",
-  "state": { "tool": "browser_navigate" } }
+  "hint": "Nothing was dispatched. Pass tab_id, or open a tab of your own with browser_tabs action=new and work there. browser_tabs action=select makes any tab current for reads; user and other clients' tabs stay read-only.",
+  "state": { "tool": "browser_scroll" } }
+```
+
+The hint names only tools the MCP server publishes (#448). In the read and draft modes, which
+publish `browser_tab_list` instead of `browser_tabs`, it says `browser_tab_list new_tab`. The core
+tools' schemas, Playwright MCP's, list no `tab_id`, so a core tool's hint does not offer one: it
+says to open a tab with `browser_tabs action=new url=<url>` or select one of the agent's own
+tabs. When exactly one tab is active (one browser window), that hint also names it by its
+`browser_tabs` index and URL, since the refs of the write likely came from a snapshot of it: on a
+tab this client cannot write, how to open a copy or ask for it; on one it can, how to select it.
+It comes from the same quick tab lookup as `state.ownTabs` (below):
+
+```json
+{ "error": "browser_type writes a tab but names none, and there is no current tab, so it was not sent to the tab the user is viewing",
+  "code": "no_current_tab", "retryable": false,
+  "hint": "Nothing was dispatched. browser_type acts on the current tab: open a tab of your own with browser_tabs action=new url=<url> and work there, or make one of your tabs current with browser_tabs action=select; user and other clients' tabs stay read-only. The user is viewing tab 2 (https://example.com/form), which this client cannot write: to write it, open your own copy with browser_tabs action=new url=https://example.com/form, or ask the user for it with browser_tabs action=request index=2.",
+  "state": { "tool": "browser_type" } }
 ```
 
 Writes are the bridge's write actions that act on a tab, plus focus and blur (see
@@ -1686,12 +1702,17 @@ the tab it worked in before its MCP server restarted, the refusal adds
 hint names the first one (#325):
 
 ```json
-{ "error": "browser_navigate writes a tab but names none, and there is no current tab, so it was not sent to the tab the user is viewing",
+{ "error": "browser_scroll writes a tab but names none, and there is no current tab, so it was not sent to the tab the user is viewing",
   "code": "no_current_tab", "retryable": false,
   "hint": "Nothing was dispatched. ... Tab 812 is the tab this MCP client opened most recently (state.ownTabs), maybe in an earlier conversation: to keep working in it, pass tab_id=812.",
-  "state": { "tool": "browser_navigate",
+  "state": { "tool": "browser_scroll",
              "ownTabs": [{ "tabId": 812, "url": "https://example.com/report", "title": "Report" }] } }
 ```
+
+A core tool's hint names that tab by its index instead (`Tab 3 is ...: to keep working in it,
+browser_tabs action=select index=3.`), and the tab the user is viewing only when it is another
+tab. In the read and draft modes a core tool's refusal offers no tabs: nothing they publish
+makes another tab current.
 
 None of them becomes current: the MCP client may have opened it for an earlier
 conversation, so the agent decides. The MCP server asks only a bridge that already runs,
