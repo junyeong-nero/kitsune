@@ -2,6 +2,10 @@
 const assert = require('node:assert/strict');
 const { harness, run } = require('./shared_browser.cjs');
 
+const WINDOW_READ_ONLY_HINT = 'This window holds a tab this client cannot write, so nothing was done. ' +
+  'Window actions (close, focus, resize) work only in a window that holds only this client\'s tabs; ' +
+  'a new tab opens in this same window, so it does not help.';
+
 async function main() {
   const h = harness({ userTabsWritable: false });
   for (const tabId of [0, false, true, '', [], [1, 2], {}, -1, 1.5, '0', '1.5', Infinity, NaN, 2 ** 53]) {
@@ -48,8 +52,12 @@ async function main() {
       const affected = action === 'resizeWindow' ? 1 : tabId;
       assert.deepEqual(result.state, { tabId: affected,
         index: Object.keys(h.tabs).map(Number).indexOf(affected), action });
-      assert.match(result.hint, /browser_tabs action=new/);
-      assert.match(result.hint, /action=request/);
+      if (action === 'resizeWindow') {
+        assert.equal(result.hint, WINDOW_READ_ONLY_HINT);
+      } else {
+        assert.match(result.hint, /browser_tabs action=new/);
+        assert.match(result.hint, /action=request/);
+      }
       assert.equal(result.state.confirmToken, undefined);
       assert.deepEqual(h.calls, [], 'no browser writes');
       assert.deepEqual(h.sent, [], 'not even userActivity or content injection');
@@ -66,6 +74,20 @@ async function main() {
   ]) {
     assert.equal((await h.send({ ...command, ownerId: 'client-a' })).code, 'user_tab_read_only');
   }
+  // #451: a window action is refused for any tab in the window; a new tab would open in that same
+  // window, so the hint names the window instead of suggesting one. Page actions keep their hint.
+  for (const command of [
+    { action: 'resizeWindow', tabId: a, width: 800, height: 600 },
+    { action: 'focusWindow', windowId: 1 },
+    { action: 'closeWindow', windowId: 1 },
+  ]) {
+    const refused = await h.send({ ...command, ownerId: 'client-a' });
+    assert.equal(refused.code, 'user_tab_read_only', JSON.stringify(command));
+    assert.equal(refused.state.action, command.action);
+    assert.equal(refused.hint, WINDOW_READ_ONLY_HINT, JSON.stringify(command));
+    assert.doesNotMatch(refused.hint, /action=new/);
+  }
+  assert.match((await h.send({ action: 'click', tabId: 1, ownerId: 'client-a' })).hint, /browser_tabs action=new/);
   for (const op of ['get', 'list', 'snapshot']) {
     assert.equal((await h.send({ action: 'storageOp', tabId: 1, op })).error, undefined);
   }

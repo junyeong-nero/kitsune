@@ -1052,8 +1052,8 @@ function tabAdmissionError(params) {
   if (admission.writable) return null;
   const revoked = admission.tabs.find(t => !ownsTab(t.tabId, admission.ownerId, admission.sessionId) ||
     handoffs.get(t.tabId) !== t.grant);
-  return revoked ? tabError('Tab authorization changed before dispatch; nothing more was sent',
-    'user_tab_read_only', { tabId: revoked.tabId, action: admission.action }, false) : null;
+  return revoked ? userTabReadOnlyError('Tab authorization changed before dispatch; nothing more was sent',
+    { tabId: revoked.tabId, action: admission.action }) : null;
 }
 function requireTabAdmission(params) {
   const result = tabAdmissionError(params);
@@ -1067,8 +1067,8 @@ async function requireWindowAdmission(params) {
   const tabs = await browser.tabs.query({ windowId: admission.windowId });
   const ids = new Set(admission.tabs.map(t => t.tabId));
   if (tabs.some(t => !ids.has(t.id))) {
-    const result = tabError('Window tabs changed before dispatch; nothing more was sent',
-      'user_tab_read_only', { windowId: admission.windowId, action: admission.action }, false);
+    const result = userTabReadOnlyError('Window tabs changed before dispatch; nothing more was sent',
+      { windowId: admission.windowId, action: admission.action });
     throw Object.assign(new Error(result.error), { tabAdmissionResult: result });
   }
   requireTabAdmission(params);
@@ -1076,7 +1076,7 @@ async function requireWindowAdmission(params) {
 
 async function tabWriteError(params) {
   const action = params.action;
-  const windowAction = ['closeWindow', 'focusWindow', 'resizeWindow'].includes(action);
+  const windowAction = WINDOW_ACTIONS.has(action);
   if (!windowAction && !writesTab(action, params)) return null;
   const tabId = params.tabId ?? ((!windowAction || action === 'resizeWindow') ? await getActiveTabId() : null);
   // Bind an implicit target once: a user view change during admission must not retarget the write.
@@ -1105,8 +1105,8 @@ async function tabWriteError(params) {
   const targets = windowAction ? tabs.filter(t => t.windowId === params.windowId) : [targetTab];
   const tab = !writable && targets.find(t => !ownsTab(t.id, params.ownerId, params.sessionId));
   if (tab && !windowAction && !targetTab.active && scrollingRead(action, params)) return null;
-  if (tab) return tabError(`Tab ${tab.id} is read-only for this client; nothing was done`, 'user_tab_read_only',
-    { tabId: tab.id, index: tabs.findIndex(t => t.id === tab.id), action }, false);
+  if (tab) return userTabReadOnlyError(`Tab ${tab.id} is read-only for this client; nothing was done`,
+    { tabId: tab.id, index: tabs.findIndex(t => t.id === tab.id), action });
   const nativeRefusal = nativeHandoffError(action, tabId);
   if (nativeRefusal) return nativeRefusal;
   if (writable && !NATIVE_INPUT_ACTIONS.has(action)) return null;
@@ -2243,6 +2243,17 @@ async function tabState(tabId) {
 
 function tabError(message, code, state, retryable = true) {
   return { error: message, code, retryable, hint: TAB_FAILURE_HINTS[code], state };
+}
+
+const WINDOW_ACTIONS = new Set(['closeWindow', 'focusWindow', 'resizeWindow']);
+// A window action is refused for any tab in the window it cannot write, and a new tab opens in
+// that same window, so the user_tab_read_only hint's new tab would not help.
+const WINDOW_READ_ONLY_HINT = 'This window holds a tab this client cannot write, so nothing was done. ' +
+  'Window actions (close, focus, resize) work only in a window that holds only this client\'s tabs; ' +
+  'a new tab opens in this same window, so it does not help.';
+function userTabReadOnlyError(message, state) {
+  const result = tabError(message, 'user_tab_read_only', state, false);
+  return WINDOW_ACTIONS.has(state.action) ? { ...result, hint: WINDOW_READ_ONLY_HINT } : result;
 }
 
 async function tabFailure(tabId, message, dispatched) {
