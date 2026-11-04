@@ -440,6 +440,9 @@ function noteTabUse(tabId) {
 }
 browser.tabs.onActivated?.addListener(({ tabId }) => noteTabUse(tabId));
 
+// A handed-off tab stays the user's: cleanup neither counts nor closes it (#441).
+const cleanableAgentTab = tab => agentTabs.has(tab.id) && !handoffs.has(tab.id) && !tab.pinned;
+
 // idleMs 0 closes every unpinned agent tab; otherwise only those idle that long that are not
 // shown, playing sound or in use by an agent command.
 async function closeAgentTabs({ idleMs = 0 } = {}) {
@@ -448,14 +451,13 @@ async function closeAgentTabs({ idleMs = 0 } = {}) {
   const idle = tab => !tab.active && !tab.audible && !agentTouched(tab.id)
     && now - (agentTabUsedAt.get(tab.id) ?? backgroundLoadedAt) >= idleMs;
   const ids = (await browser.tabs.query({}))
-    .filter(tab => agentTabs.has(tab.id) && !tab.pinned && (!idleMs || idle(tab)))
+    .filter(tab => cleanableAgentTab(tab) && (!idleMs || idle(tab)))
     .map(tab => tab.id);
   const results = await Promise.allSettled(ids.map(async id => {
     // An automatic sweep must not close a just-backgrounded draft or recent input.
     // idleMs=0 is the user's explicit popup cleanup, not an agent command.
-    const grant = handoffs.get(id);
     if (idleMs && await userActivity(id)) return false;
-    if (!agentTabs.has(id) || handoffs.get(id) !== grant) return false;
+    if (!agentTabs.has(id) || handoffs.has(id)) return false;
     await browser.tabs.remove(id);
     return true;
   }));
@@ -465,7 +467,7 @@ async function closeAgentTabs({ idleMs = 0 } = {}) {
 async function agentTabCount() {
   await agentTabsRestored;
   const tabs = await browser.tabs.query({});
-  return { count: tabs.filter(tab => agentTabs.has(tab.id) && !tab.pinned).length };
+  return { count: tabs.filter(cleanableAgentTab).length };
 }
 
 async function sweepIdleAgentTabs() {

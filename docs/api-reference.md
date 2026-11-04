@@ -1467,7 +1467,9 @@ not zero. “Connected” means the bridge is reachable, not that an MCP client 
 Agents often leave the tabs they opened behind, so a long unattended session can pile up
 dozens. Kitsune's toolbar button opens a popup with two ways to clean them up. Both close
 only [agent-owned tabs](#agent-owned-tabs) and never close pinned tabs, so pinning an agent
-tab keeps it. Closed tabs can be reopened from the browser's recently closed tabs, and a
+tab keeps it. A tab the user [handed off](#requesting-and-returning-a-tab) stays the user's:
+cleanup neither counts nor closes it, while children the agent opened from it are agent tabs.
+Closed tabs can be reopened from the browser's recently closed tabs, and a
 reopened tab belongs to the user.
 
 - **Close agent tabs** closes every unpinned agent tab at once, including the one shown.
