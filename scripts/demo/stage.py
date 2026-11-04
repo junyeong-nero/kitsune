@@ -19,6 +19,7 @@ import subprocess
 import sys
 import time
 
+import popup
 from common import HERE, HTTP_PORT, LOGS, PYTHON, QUEUE, REPO, STATE, WORK, WS_PORT, api, load, windows
 from real_browser_harness import BASE_PREFS, DEFAULT_WS_URL, RemoteDebugger, check_extension_copy
 from test_bridge_security import _free_port
@@ -149,6 +150,8 @@ def up(scene):
     else:
         sys.exit(f"the extension did not connect to the demo bridge; see {LOGS / 'browser.log'}")
     time.sleep(2)
+    if scene.get("pin_action"):
+        print("toolbar button", popup.pin())
     first = api("GET", "/api/tabs")[1]["tabs"][0]["id"]
     for selector in scene.get("setup_clicks", []):
         print("setup click", selector, api("POST", "/api/click", {"tabId": first, "selector": selector})[1].get("ok"))

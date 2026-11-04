@@ -9,18 +9,19 @@ import sys
 
 from PIL import Image, ImageDraw, ImageFont
 
-# kitsune-benchmark docs/results/2026-10-26-opus-subscription-v0.7.0.md (taskset-v3).
+# kitsune-benchmark docs/results/2026-11-04-opus-subscription-v0.7.2.md (taskset-v3.2, lite plan).
 RESULTS = {
-    "title": "Benchmark · Kitsune v0.7.0 vs Playwright MCP 0.0.83",
-    "subtitle": "Same model, same tasks, same 23-tool allowlist, Firefox. 2026-10-26.",
+    "title": "Benchmark · Kitsune v0.7.2 vs Playwright MCP 0.0.83",
+    "subtitle": "Same model, same tasks, same 23-tool allowlist, Firefox. 2026-11-04.",
+    # Runs that never moved the user's view (coexistence, user-seeded).
     "kept_front": {"tasks": 28, "kitsune": 28, "playwright": 2},
     # Claude Code list-price estimate, Kitsune / Playwright MCP, on tasks both solved.
-    "cost": {"Personal": 0.837, "Crowded": 0.675, "Isolated": 0.908},
-    "success": {"kitsune": {"Personal": 84, "Crowded": 62, "Isolated": 63},
-                "playwright": {"Personal": 83, "Crowded": 63, "Isolated": 63},
-                "of": {"Personal": 84, "Crowded": 63, "Isolated": 63}},
-    "footer": ("Claude Opus 5.5 via Claude Code, one attempt per task. Playwright MCP was not built to share",
-               "a browser with a person. Full reports: github.com/junyeong-nero/kitsune-benchmark"),
+    "cost": {"Personal": 0.970, "Crowded": 0.562, "Isolated": 0.867},
+    "success": {"kitsune": {"Personal": 54, "Crowded": 21, "Isolated": 21},
+                "playwright": {"Personal": 56, "Crowded": 21, "Isolated": 21},
+                "of": {"Personal": 56, "Crowded": 21, "Isolated": 21}},
+    "footer": ("Claude Opus 5.5 via Claude Code, one attempt per task, two data variants. Playwright MCP was not",
+               "built to share a browser with a person. Full reports: github.com/junyeong-nero/kitsune-benchmark"),
 }
 
 W, H, SCALE = 1200, 795, 2
