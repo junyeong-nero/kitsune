@@ -493,7 +493,10 @@ That result's snapshot and refs describe the page. This applies only:
   #448), not a delta, a truncated snapshot or `navigation_pending`;
 - to the first such snapshot of the same tab after it; any other page action on the tab ends it;
 - to the caller that got that result: the same client (its owner id) and handoff session. Any
-  other caller never saw it and gets the page (#442);
+  other caller never saw it and gets the page (#442). Calls through the same MCP server share both
+  ids, so a harness or proxy that navigates a tab before handing it to the model through that
+  server should take one whole-page `browser_snapshot` itself: that drops the record, and the
+  model's first snapshot gets the page;
 - when the text is identical. The core snapshot is readable and an action's is compact, so a
   page with text lines the action result left out (`- text "…"`) is returned in full. A
   `browser_navigate` or `navigated` result is readable too when the page fits 2,000
