@@ -3577,6 +3577,8 @@
     TABLE: 'table', TD: 'cell', TH: 'columnheader', TR: 'row', UL: 'list' };
   // A snapshot line's `role "name"`, passed as a target instead of its ref.
   const SNAPSHOT_LABEL = /^[a-z]+ "(?:[^"\\]|\\.)*"$/i;
+  // A tab passed as a target (tab:1, tab=1, tab 1), to read another tab (#473).
+  const TAB_TARGET = /^tab\s*[:=#]?\s*(\d+)$/i;
 
   function unsupportedSelector(selector, reason) {
     return new ActionError(`Unsupported selector: ${reason}`, { code: 'unsupported_selector', retryable: false,
@@ -3586,9 +3588,16 @@
   // A native CSS failure: invalid syntax can never match, so it is not a retryable not_found.
   function cssSelectorError(selector, e) {
     if (e?.name !== 'SyntaxError') return null;
-    return unsupportedSelector(selector, SNAPSHOT_LABEL.test(selector.trim())
+    return tabTargetError(selector) || unsupportedSelector(selector, SNAPSHOT_LABEL.test(selector.trim())
       ? 'this is a snapshot line\'s role and name; pass that line\'s ref instead'
       : 'it is not valid CSS');
+  }
+
+  // A target that names a tab, not an element; null for any other selector.
+  function tabTargetError(selector) {
+    const tab = TAB_TARGET.exec(selector.trim());
+    return tab && unsupportedSelector(selector, `this names a tab, not an element: browser_tabs action=select ` +
+      `index=${Number(tab[1])} makes it current for reads without changing the user's view; then call browser_snapshot`);
   }
 
   // The index after the string, (…) or […] group that opens at text[i]. As in CSS, the end of
@@ -3701,7 +3710,7 @@
       if (!body) throw unsupportedSelector(selector, 'xpath= needs an expression');
       return xpathPart(body, index, selector);
     }
-    throw unsupportedSelector(selector, `the ${name}= selector engine`);
+    throw tabTargetError(selector) || unsupportedSelector(selector, `the ${name}= selector engine`);
   }
 
   // As in Playwright, an absolute path after >> is made relative to the earlier match. The

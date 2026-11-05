@@ -14,8 +14,9 @@ class Text {
 const syntaxError = selector => new DOMException(`'${selector}' is not a valid selector`, 'SyntaxError');
 
 // Compounds of tag, #id, .class, [attr], [attr=v], [attr="v"] and :disabled, joined by
-// descendant or child combinators, in comma lists. Anything else is a SyntaxError.
-const COMPOUND = /^([\p{L}\p{N}-]+|\*)?((?:[.#][\w-]+|\[[\w-]+(?:=(?:"[^"]*"|[\w-]+))?\])*)(:disabled)?$/u;
+// descendant or child combinators, in comma lists. Anything else, such as a tag that starts
+// with a digit, is a SyntaxError.
+const COMPOUND = /^([\p{L}-][\p{L}\p{N}-]*|\*)?((?:[.#][\w-]+|\[[\w-]+(?:=(?:"[^"]*"|[\w-]+))?\])*)(:disabled)?$/u;
 const SIMPLE = /\.([\w-]+)|#([\w-]+)|\[([\w-]+)(?:=(?:"([^"]*)"|([\w-]+)))?\]/g;
 function compoundMatches(el, compound, selector) {
   const m = COMPOUND.exec(compound);
@@ -425,6 +426,12 @@ async function testUnsupportedSyntaxIsNotRetryable() {
     'button >> ': /empty part/,
     'id=p1': /id= selector engine/,
     'checkbox "마이크 선택"': /snapshot line/,
+    // #473: a tab passed as a target, to read another tab.
+    'tab:1': /names a tab, not an element: browser_tabs action=select index=1 makes it current/,
+    'Tab=2': /names a tab, not an element: browser_tabs action=select index=2 makes it current/,
+    'tab 3': /names a tab, not an element: browser_tabs action=select index=3 makes it current/,
+    'tab:x': /not valid CSS/,
+    'tab=x': /tab= selector engine/,
     '저장': /not an element name/,
     'e12 > button': /not an element name/,
     'div[': /not valid CSS/,
@@ -456,6 +463,9 @@ async function testUnsupportedSyntaxIsNotRetryable() {
   assert.ok(Date.now() - started < 1000);
   // Read actions report it too.
   assert.equal((await send({ action: 'getBounds', selector: 'text=/(/' })).code, 'unsupported_selector');
+  const snapshot = await send({ action: 'getSnapshot', selector: 'tab:1' });
+  assert.equal(snapshot.code, 'unsupported_selector', JSON.stringify(snapshot));
+  assert.match(snapshot.error, /names a tab, not an element: browser_tabs action=select index=1 .*then call browser_snapshot/);
 }
 
 const byId = (dom, id) => [dom.html, ...dom.html.descendants()].find(el => el.id === id);
