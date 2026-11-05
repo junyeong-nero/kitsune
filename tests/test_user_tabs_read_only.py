@@ -167,7 +167,8 @@ class UserTabsReadOnlyTests(unittest.TestCase):
         self.extension = BackgroundPermissionExtension(self.bridge, [])
         self.addCleanup(self.extension.close)
         hint = ("Tab 0 is read-only for this client. Before writing, open your own tab "
-                "with browser_tabs action=new url=https://user.example/one and work there.")
+                "with browser_tabs action=new url=https://user.example/one and work there. The new tab's "
+                "result lists the page with new refs; refs from this tab do not apply there.")
 
         def core(user_tabs, action, tool=playwright_tools.browser_tabs, **arguments):
             headers = {task_modes.USER_TABS_HEADER: user_tabs}

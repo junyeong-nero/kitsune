@@ -156,7 +156,8 @@ def _tab_list(permission_hint: bool = False) -> dict:
         current = next((tab for tab in listed["tabs"] if tab.get("current")), None)
         if current is not None and not _writable(current):
             listed["hint"] = (f"Tab {current['index']} is read-only for this client. Before writing, open your own tab "
-                              f"with browser_tabs action=new url={current['url']} and work there.")
+                              f"with browser_tabs action=new url={current['url']} and work there. The new tab's "
+                              "result lists the page with new refs; refs from this tab do not apply there.")
     return listed
 
 
@@ -758,7 +759,8 @@ def browser_tabs(action: str, index: float | None = None, url: str | None = None
             result.update(read_only=True, hint=(
                 f"Reads work on tab {int(index)}, but this client cannot write it. To write, open your own tab "
                 f"with browser_tabs action=new url={tab.get('url')}, or request this one with browser_tabs "
-                "action=request."))
+                "action=request. The new tab's result lists the page with new refs; refs from this tab do not "
+                "apply there."))
         return _with_tab_list(result)
     if action == "close":
         if index is not None:

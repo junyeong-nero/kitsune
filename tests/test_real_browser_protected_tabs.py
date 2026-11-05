@@ -135,7 +135,9 @@ class RealBrowserProtectedTabTests(harness.RealBrowserTestCase):
             listed = self.core_tabs("read-only", "list")
             self.assertTrue(listed["tabs"][index].get("current"), listed)
             self.assertEqual(listed["hint"], f"Tab {index} is read-only for this client. Before writing, open your "
-                                             f"own tab with browser_tabs action=new url={start} and work there.")
+                                             f"own tab with browser_tabs action=new url={start} and work there. "
+                                             "The new tab's result lists the page with new refs; refs from this "
+                                             "tab do not apply there.")
 
             opened = self.core_tabs("read-only", "new", url=self.page.origin + "/own")
             own = playwright_tools._current_tab

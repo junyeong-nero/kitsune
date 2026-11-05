@@ -115,7 +115,8 @@ class TabResultTests(unittest.TestCase):
                             "ok": True, "index": 0, "read_only": True,
                             "hint": "Reads work on tab 0, but this client cannot write it. To write, open your own "
                                     "tab with browser_tabs action=new url=https://a/, or request this one with "
-                                    "browser_tabs action=request.",
+                                    "browser_tabs action=request. The new tab's result lists the page with new refs; "
+                                    "refs from this tab do not apply there.",
                             "tabs": [{"index": 0, "title": "A", "url": "https://a/", "current": True,
                                       **({"active": True} if active else {})},
                                      {"index": 1, "title": "B", "url": "https://b/", "owned": True}]})
@@ -144,7 +145,8 @@ class TabResultTests(unittest.TestCase):
                     result = playwright_tools.browser_tabs("list")
                     self.assertEqual(result["hint"],
                         "Tab 0 is read-only for this client. Before writing, open your own tab "
-                        "with browser_tabs action=new url=https://a/ and work there.")
+                        "with browser_tabs action=new url=https://a/ and work there. The new tab's result "
+                        "lists the page with new refs; refs from this tab do not apply there.")
                     self.assertTrue(result["tabs"][0]["current"])
                     self.assertEqual(bool(result["tabs"][0].get("active")), active)
                     self.assertNotIn("owned", result["tabs"][0])
