@@ -69,11 +69,15 @@ const addButton = new Element('BUTTON', {}, ['행 추가'], {
 });
 const main = h('MAIN', {}, h('H1', {}, '재고 관리'), h('TABLE', {}, h('THEAD', {}, header), tbody),
   h('NAV', {}, ...pager, addButton));
-// A 250-row log, and seven groups of seven items each.
-const big = h('TBODY', {}, ...Array.from({ length: 250 }, (_, i) => h('TR', {}, h('TD', {}, `행 ${i + 1}`), h('TD', {}, '기록'))));
+// A 250-row log, a 102-row log, seven groups of eight items each, and lists of 6, 7 and 8 items.
+const logRows = (length, label) => Array.from({ length }, (_, i) => h('TR', {}, h('TD', {}, `${label} ${i + 1}`), h('TD', {}, '기록')));
+const big = h('TBODY', {}, ...logRows(250, '행'));
+const log = h('TBODY', {}, ...logRows(102, '줄'));
 const groups = h('SECTION', {}, ...Array.from({ length: 7 }, (_, g) => h('DIV', {}, h('H2', {}, `그룹 ${g + 1}`),
-  h('UL', {}, ...Array.from({ length: 7 }, (_, i) => h('LI', {}, h('DIV', {}, `항목 ${g + 1}-${i + 1}`)))))));
-const body = h('BODY', {}, main, h('ASIDE', {}, h('TABLE', {}, big), groups));
+  h('UL', {}, ...Array.from({ length: 8 }, (_, i) => h('LI', {}, h('DIV', {}, `항목 ${g + 1}-${i + 1}`)))))));
+const shortLists = h('SECTION', {}, ...[6, 7, 8].map(length => h('UL', {},
+  ...Array.from({ length }, (_, i) => h('LI', {}, h('DIV', {}, `목록 ${length}-${i + 1}`))))));
+const body = h('BODY', {}, main, h('ASIDE', {}, h('TABLE', {}, big), h('TABLE', {}, log), groups, shortLists));
 
 let listener;
 const content = vm.createContext({
@@ -85,7 +89,8 @@ const content = vm.createContext({
   window: { getComputedStyle: () => ({ display: 'block', visibility: 'visible', getPropertyValue: () => '' }) },
   document: { body, title: 'ui-table',
     getElementById: () => null,
-    querySelector: selector => ({ main, tbody, 'tbody tr:nth-child(8)': rows[7], '#big': big, '#groups': groups })[selector] || null,
+    querySelector: selector => ({ main, tbody, 'tbody tr:nth-child(8)': rows[7], '#big': big, '#log': log, '#groups': groups,
+      '#short-lists': shortLists })[selector] || null,
     querySelectorAll: () => [],
   },
   browser: { runtime: { onMessage: { addListener: fn => { listener = fn; } },
@@ -196,14 +201,30 @@ const rowLines = snapshot => snapshot.split('\n').filter(line => line.includes('
   assert.equal([...everything.snapshot.matchAll(ROW)].length, 250);
   assert.match(everything.snapshot, /- text "행 250"/);
 
-  // A scope lists all seven of its own groups; each group's run of seven items still collapses.
+  // A scope lists up to SCOPED_ITEM_LIMIT + 2 items in full: the marker would hide fewer than 3 (#458).
+  assert.match(page.snapshot, /^ *- … 97 more similar items; snapshot e\d+ to list all$/m);
+  const log102 = await send('getSnapshot', { selector: '#log' });
+  assert.equal([...log102.snapshot.matchAll(/- text "줄 \d+"/g)].length, 102);
+  assert.doesNotMatch(log102.snapshot, /more similar items/);
+
+  // A scope lists all seven of its own groups; each group's run of eight items still collapses.
   const scopedGroups = await send('getSnapshot', { selector: '#groups' });
   assert.equal(scopedGroups.snapshot.match(/heading "그룹 \d+"/g).length, 7);
   const nested = scopedGroups.snapshot.split('\n').filter(line => MARKER.test(line));
   assert.equal(nested.length, 7);
-  assert.ok(nested.every(line => line.match(MARKER)[1] === '2'));
+  assert.ok(nested.every(line => line.match(MARKER)[1] === '3'));
   assert.doesNotMatch(scopedGroups.snapshot, /항목 \d-6/);
   assert.equal(new Set(nested.map(line => line.match(MARKER)[2])).size, 7, 'each run names its own list');
+
+  // A marker hides at least three items (#458): runs of six and seven are listed in full, and
+  // a run of eight shows five items and "… 3 more", in the full page and in a scope above them.
+  for (const snapshot of [page.snapshot, (await send('getSnapshot', { selector: '#short-lists' })).snapshot]) {
+    const listed = length => snapshot.split('\n').filter(line => line.includes(`- text "목록 ${length}-`)).length;
+    assert.deepEqual([6, 7, 8].map(listed), [6, 7, 5], snapshot);
+    const shortMarkers = snapshot.slice(snapshot.indexOf('목록 6-1')).split('\n').filter(line => MARKER.test(line));
+    assert.deepEqual(shortMarkers.map(line => line.match(MARKER)[1]), ['3']);
+    assert.doesNotMatch(snapshot, /목록 8-6/);
+  }
 
   console.log('Collapsed item checks passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

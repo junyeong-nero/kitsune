@@ -893,6 +893,9 @@
   // A run of similar siblings shows its first COLLAPSED_ITEM_LIMIT items. A snapshot scoped to
   // their container shows up to SCOPED_ITEM_LIMIT of its own; browser_find searches the rest.
   const COLLAPSED_ITEM_LIMIT = 5;
+  // A marker costs about as much as one item's line (#458): items it would hide fewer than
+  // COLLAPSE_MIN_HIDDEN of are listed instead, so a run of up to 7 is listed in full.
+  const COLLAPSE_MIN_HIDDEN = 3;
   const NEW_ITEM_LIMIT = 20;
   const SCOPED_ITEM_LIMIT = 100;
 
@@ -1344,12 +1347,23 @@
         // A delta lists up to NEW_ITEM_LIMIT items that are new since its baseline past the
         // collapse (#350): an infinite list's next batch is what the action loaded.
         let newItems = 0;
+        const listed = [];
         for (let i = start; i < end; i++) {
-          runItems.add(children[i]);
           const listNew = i - start >= shown && !!baseline?.items && !baseline.items.has(children[i]) &&
             newItems < NEW_ITEM_LIMIT;
           if (listNew) newItems++;
-          if (i - start < shown || targetAncestors.has(children[i]) || listNew) {
+          listed.push(i - start < shown || targetAncestors.has(children[i]) || listNew);
+        }
+        // Each marker hides at least COLLAPSE_MIN_HIDDEN items (#458), also between listed ones.
+        for (let i = 0; i < listed.length;) {
+          let next = i;
+          while (next < listed.length && !listed[next]) next++;
+          if (next - i < COLLAPSE_MIN_HIDDEN) listed.fill(true, i, next);
+          i = next + 1;
+        }
+        for (let i = start; i < end; i++) {
+          runItems.add(children[i]);
+          if (listed[i - start]) {
             flushOmitted();
             visit(children[i], childDepth, parent, domDepth + 1, named);
           } else omitted++;
