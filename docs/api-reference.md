@@ -410,13 +410,18 @@ verify an outcome, or `browser_snapshot` for the whole page.
 not right after dispatch. The bridge waits:
 
 - at least 400 ms after the action (1.1 s in a hidden tab, where Firefox delays page timers to
-  at least 1 s);
+  at least 1 s). In a visible tab a plain field write has no minimum (#460): a fill
+  (`browser_type` without `slowly`, `browser_fill_form`), select or check of a native field
+  without `role=combobox`, `aria-autocomplete` or a `list` attribute. Typing slowly, keys,
+  clicks and fields with that markup keep it, and so does a `browser_fill_form` call when any
+  of its fields does;
 - until the page has made no DOM change for 150 ms, counting changes in same-origin frames and
   shadow roots;
 - until the XHR/fetch, script and frame requests the tab started after the action are done.
 
 It waits at most 1.5 s, or 4 s while such requests are pending. This covers confirmations,
-status lines and autocomplete lists that render a moment later, including debounced ones. A
+status lines and autocomplete lists that render a moment later, including debounced ones
+(a debounced reaction to a plain field write, such as a filter box, may come after the delta). A
 delta also lists text the action made appear anywhere on the page as `text` lines (for
 example `- text "Saved."`), also when the snapshot is otherwise compact. In a run of similar
 items, up to 20 items that are new since the delta's baseline are listed even past the first
