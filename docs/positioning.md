@@ -136,7 +136,7 @@ Kitsune explicitly considers the person using the browser:
 - User and other clients' tabs are read-only by default: writes fail immediately with
   `user_tab_read_only`, without an approval prompt.
 - Agent tabs remain writable while viewed, but trusted user input pauses writes with
-  `user_active`. See [User-tab setting](guide.md#protecting-your-tabs) for the opt-out.
+  `user_active`. See [User-tab setting](your-tabs.md#protecting-your-tabs) for the opt-out.
 
 The benefit is reduced workspace interference, not merely multi-tab support.
 See [Shared browser](api-reference.md#shared-browser),
@@ -162,14 +162,14 @@ the user” or treat ownership as a security boundary.
 
 This makes delegation more concrete than a prompt saying “please do not submit.”
 The restricted modes intersect with the enabled capability groups; they do not
-silently enable missing tools. See [Task modes](guide.md#task-modes) and
+silently enable missing tools. See [Task modes](tools.md#task-modes) and
 [the explicit policy map](../src/kitsune/task_modes.py).
 
 Ask-before-act, sensitive-field redaction, and redacted audit values complement
 these controls. However, ask-before-act is off by default, its second call does
 not prove human approval, and redaction is heuristic. None of this prevents prompt
 injection or makes a full personal profile safe to expose. Follow the
-[security guidance](guide.md#security).
+[security guidance](security.md).
 
 ### 3. Recovery that distinguishes uncertainty from failure
 
@@ -247,7 +247,7 @@ manifest requires Firefox 142+ and broad extension permissions; hiding MCP tools
 does not reduce those installation permissions.
 
 The opportunity is simpler task-oriented onboarding, not another layer of knobs.
-See [Installation](installation.md) and [Configuration](guide.md#configuration).
+See [Installation](installation.md) and [Configuration](configuration.md).
 
 ### Default experience versus advanced promises
 

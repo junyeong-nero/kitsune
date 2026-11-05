@@ -46,18 +46,28 @@ exclude_docs: |
 validation:
   links:
     not_found: info
+    anchors: warn
 
 nav:
   - Home: index.md
   - Getting started:
       - Installation: installation.md
-      - Guide: guide.md
-      - FAQ: faq.md
+      - Try it: try-it.md
+  - Concepts:
+      - How it works: how-it-works.md
+      - Your tabs and approvals: your-tabs.md
+      - Tools, capabilities and modes: tools.md
+      - Security: security.md
+  - Guides:
+      - Configuration: configuration.md
+      - Python API: python-api.md
+      - Checkpoint and resume: checkpoint-resume.md
   - Reference:
       - Tool list: tool-list.md
       - API reference: api-reference.md
-      - Python API: python-api.md
-      - Checkpoint and resume: checkpoint-resume.md
+  - Help:
+      - Troubleshooting: troubleshooting.md
+      - FAQ: faq.md
   - Scraping playbooks:
       - scraping-playbooks/README.md
       - Amazon: scraping-playbooks/amazon.md
@@ -66,4 +76,7 @@ nav:
       - eBay: scraping-playbooks/ebay.md
       - Newegg: scraping-playbooks/newegg.md
   - About:
+      - Benchmark and comparison: benchmark.md
       - Philosophy: philosophy.md
+  - Contributing:
+      - Development: development.md

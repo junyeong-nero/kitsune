@@ -10,7 +10,7 @@ Base URL: `http://127.0.0.1:47651`
 `all` enables every group except `storage` and `history`, which read personal data and
 must be named (`KITSUNE_CAPS=all,storage,history`); see
 [History and bookmarks](#history-and-bookmarks).
-See [Tools and capabilities](guide.md#tools) for the complete tool list per group.
+See [Tools and capabilities](tools.md) for the complete tool list per group.
 
 **The `core` group is Playwright MCP's 25 core tools and Kitsune's
 [`browser_resume`](#browser_resumecall-resume_token-observednone-wait120) and
@@ -27,7 +27,7 @@ snapshot ref such as `e12`, a CSS selector or one of the
 [Playwright selector forms](#target-selectors) Kitsune resolves), they act on the current tab (writes
 without one fail, see [No current tab](#no-current-tab)), and
 `browser_emulate_media` and `browser_run_code_unsafe` answer `not_supported`; see
-[Core tools](guide.md#core-tools) for how each maps onto the extension. The tool
+[Core tools](tools.md#core-tools) for how each maps onto the extension. The tool
 sections below describe the Kitsune-owned tools and the bridge commands the core tools
 use; Kitsune's former `core` tools are in `read` (`browser_page_info`,
 `browser_page_text`, `browser_forms`, `browser_dom`, `browser_markdown`), `browse`
@@ -90,7 +90,7 @@ such as the `kitsune-bridge` command's, are not restricted.
 With `KITSUNE_PUBLISH` set to fewer groups than `KITSUNE_CAPS` enables, `tools/list`
 starts with the published groups plus three gateway tools, and the server advertises
 `tools.listChanged`. They reach only tools `KITSUNE_CAPS` and `KITSUNE_MODE` permit. See
-[Finding tools without a restart](guide.md#finding-tools-without-a-restart).
+[Finding tools without a restart](tools.md#finding-tools-without-a-restart).
 
 `browser_tools_search(query, limit=5)` ranks the enabled tools that `tools/list` did not
 show at session start against the query words (name matches count most, then group
@@ -161,7 +161,7 @@ reports the shared policy plus the effective `mode`, `ask` and `confirmAllowed:f
 for restricted requests. Another authenticated client can still use act; this is
 not a separate authentication boundary. Keep the bridge token private.
 
-See [Task modes](guide.md#task-modes) for configuration, the eight-tool read
+See [Task modes](tools.md#task-modes) for configuration, the eight-tool read
 surface and site-event/autosave limitations. Exact token and task-success measurements
 are external kitsune-benchmark work, not inferred from compact JSON character counts.
 
@@ -880,7 +880,7 @@ the checkout the bridge runs from. A difference is `extension_version_mismatch`
 with `state.reason: "stale_developer_build"` and, for each that differs,
 `state.extensionSourceHash` and `state.expectedSourceHash` or
 `state.extensionManifestHash` and `state.expectedManifestHash` (see
-[Updating Kitsune](guide.md#updating-kitsune)). A fingerprint unknown on either
+[Updating Kitsune](installation.md#upgrading)). A fingerprint unknown on either
 side (an extension from before that check, the signed build, or a bridge
 installed from a package) is not compared.
 
@@ -1089,7 +1089,7 @@ the tab it opens is not agent-owned.
 #### Script-opened popups
 
 Popups that page scripts open with `window.open`, such as OAuth/SSO sign-in popups
-(see [Sign-in popups](guide.md#sign-in-popups-oauthsso)), are never reopened, because
+(see [Sign-in popups](troubleshooting.md#sign-in-popups-oauthsso)), are never reopened, because
 the script keeps using the window it opened. The popup blocker refuses them after a
 synthetic click as it refuses a link's tab, and `window.open` then returns `null`. So
 the content script wraps the page's `window.open` once per document, and a
@@ -1459,7 +1459,7 @@ remains separate and may close pool tabs.
 
 `KITSUNE_USER_TABS=writable` allows writes without changing ownership; neither caller
 JSON nor approval tokens enable it. The bridge uses one authoritative
-`X-Kitsune-User-Tabs` header. See [User-tab setting](guide.md#protecting-your-tabs) for
+`X-Kitsune-User-Tabs` header. See [User-tab setting](your-tabs.md#protecting-your-tabs) for
 values, defaults and invalid-value errors.
 Tab permissions do **not** sandbox browser/account-wide side effects: cookie changes,
 clipboard writes, downloads/cancellation, clearing browsing data and the global network
@@ -3558,7 +3558,7 @@ single reads (see `browser_wait_for`); a zero timeout performs one immediate che
 - `expectTitle` optional — warns if title doesn't match (catches silent redirects)
 - User and other clients' tabs return `user_tab_read_only` without a prompt; the same applies
   to `/api/back`, `/api/forward` and reload. Explicit compatibility opt-outs are described
-  in [Protecting your tabs](guide.md#protecting-your-tabs).
+  in [Protecting your tabs](your-tabs.md#protecting-your-tabs).
 - A load that does not finish in 15 s returns `{ "ok": false, "timedOut": true, "url": "..." }`.
   If the tab is still `about:blank` / `complete` and the page cannot confirm a loaded destination,
   it also carries `code: "navigation_stalled"`, `retryable: false`, and the recovery `hint` of
