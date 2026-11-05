@@ -1033,6 +1033,10 @@
       target = focusLastAction && lastActedElement?.isConnected ? lastActedElement : null;
       lastActedElement = null;
     }
+    // A whole-page delta names removed elements by the refs the agent has for them, which pruning
+    // drops for detached ones (#457).
+    const baselineRefs = baseline && !selector
+      ? new Map([...baseline.lines.keys()].map(el => [el, elementRefs.get(el)])) : null;
     pruneRefMap();
     // Lines whose ref is assigned once a delta is selected are measured with this stand-in.
     const pendingRef = `s${refGeneration}e${refCounter}`;
@@ -1303,8 +1307,10 @@
         if (normalize(plain)) {
           const clipped = text.length > TEXT_LINE_LIMIT ? text.slice(0, TEXT_LINE_LIMIT) + '…' : text;
           const signature = `text ${JSON.stringify(clipped)}`;
+          // A removed text line is named cut like an editor's value (#457).
+          const label = `text ${JSON.stringify(text.length > 160 ? clean(text) + '…' : text)}`;
           append({ line: `${'  '.repeat(Math.min(childDepth, 12))}- ${signature}`,
-            parent, interactive: false, source: el, signature });
+            parent, interactive: false, source: el, signature, label });
         }
       }
       if (maxDepth != null && domDepth >= maxDepth) return;
@@ -1376,13 +1382,17 @@
 
     const record = () => {
       const signatures = new Map();
+      // Each element's first role or text line, and the element of the line it is under: what a
+      // delta names when the element is gone (#457).
+      const lines = new Map();
       for (const entry of entries) {
         const el = entry.el || entry.source;
         if (!el) continue;
         if (!signatures.has(el)) signatures.set(el, new Set());
         signatures.get(el).add(entry.signature);
+        if (entry.label && !lines.has(el)) lines.set(el, { label: entry.label, parent: entries[entry.parent]?.el });
       }
-      return { signatures, items: runItems, url: window.location?.href, title: document.title, withText };
+      return { signatures, lines, items: runItems, url: window.location?.href, title: document.title, withText };
     };
     if (mode === 'baseline') {
       actionBaseline = record();
@@ -1468,7 +1478,7 @@
     }
     if (baseline) {
       // The target, then lines the baseline lacks (new or newly shown elements, changed names,
-      // states or text) in document order, each under its ancestors. Removals are not listed.
+      // states or text) in document order, each under its ancestors, then removals.
       if (targetIndex >= 0) keepTarget();
       const changedFrames = new Set(keepRefs.map(ref => Object.hasOwn(refMap, ref) ? refMap[ref] : null));
       const changed = [];
@@ -1482,14 +1492,31 @@
       });
       const listed = [...changed, ...frameLines].sort((a, b) => a - b);
       for (const i of listed) keep(i);
-      unchanged = !changed.length;
+      // A baseline line whose element is detached or no longer shown (the walk did not reach it)
+      // is a change too (#457): one line names the top element of each removed part, without
+      // what was under it, so a closed dialog is not no_visible_change.
+      const removed = [];
+      if (baselineRefs) {
+        for (const [el, { label, parent }] of baseline.lines) {
+          if (metadata.has(el) || (parent && !metadata.has(parent))) continue;
+          const ref = baselineRefs.get(el);
+          removed.push(`- removed: ${label}${ref ? ` [ref=${ref}]` : ''}`);
+        }
+      }
+      unchanged = !changed.length && !removed.length;
       // A collapse marker follows the listed items of its run.
       entries.forEach((entry, i) => {
         if (entry.run === undefined || kept.has(i)) return;
         for (let j = entry.run; j < i; j++) if (kept.has(j)) return add(i);
       });
-      selected = entries.filter((_, i) => kept.has(i));
-      truncated = listed.some(i => !kept.has(i));
+      const removedShown = [];
+      for (const line of removed) {
+        if (used + line.length + 1 > limit + 1) break;
+        used += line.length + 1;
+        removedShown.push({ line });
+      }
+      selected = [...entries.filter((_, i) => kept.has(i)), ...removedShown];
+      truncated = listed.some(i => !kept.has(i)) || removedShown.length < removed.length;
       // Refs add to the current generation; an element that already has one keeps it.
       // A collapse marker's ref names its container (source).
       for (const entry of selected) {
