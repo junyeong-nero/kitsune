@@ -40,6 +40,7 @@ markdown_extensions:
 exclude_docs: |
   releasing.md
   recording-the-demo.md
+  positioning.md
 
 # Some pages link to source files outside docs/ (../src, ../extension); don't warn on those.
 validation:
@@ -66,4 +67,3 @@ nav:
       - Newegg: scraping-playbooks/newegg.md
   - About:
       - Philosophy: philosophy.md
-      - Positioning: positioning.md
