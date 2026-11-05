@@ -1,0 +1,69 @@
+site_name: Kitsune
+site_description: Drive the Firefox, Zen, or LibreWolf browser you already have open from Python or an AI agent.
+site_url: https://junyeong-nero.github.io/kitsune/
+repo_url: https://github.com/junyeong-nero/kitsune
+repo_name: junyeong-nero/kitsune
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: deep orange
+      toggle:
+        icon: material/weather-night
+        name: Dark mode
+    - scheme: slate
+      primary: deep orange
+      toggle:
+        icon: material/weather-sunny
+        name: Light mode
+  features:
+    - navigation.sections
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+
+markdown_extensions:
+  - admonition
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight
+  - pymdownx.superfences
+  # index.md pulls in README.md so the home page and the README stay in sync.
+  - pymdownx.snippets:
+      check_paths: true
+
+# Maintainer-only pages: kept in the repo, left out of the site.
+exclude_docs: |
+  releasing.md
+  recording-the-demo.md
+  positioning.md
+
+# Some pages link to source files outside docs/ (../src, ../extension); don't warn on those.
+validation:
+  links:
+    not_found: info
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Installation: installation.md
+      - Guide: guide.md
+      - FAQ: faq.md
+  - Reference:
+      - Tool list: tool-list.md
+      - API reference: api-reference.md
+      - Python API: python-api.md
+      - Checkpoint and resume: checkpoint-resume.md
+  - Scraping playbooks:
+      - scraping-playbooks/README.md
+      - Amazon: scraping-playbooks/amazon.md
+      - Best Buy: scraping-playbooks/bestbuy.md
+      - B&H Photo Video: scraping-playbooks/bhphotovideo.md
+      - eBay: scraping-playbooks/ebay.md
+      - Newegg: scraping-playbooks/newegg.md
+  - About:
+      - Philosophy: philosophy.md
