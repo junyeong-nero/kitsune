@@ -2,6 +2,7 @@
 // #348: an action's delta snapshot waits for the page's reaction. At least SETTLE_MIN_MS after
 // the action, until the page has been quiet for SETTLE_QUIET_MS and the requests the action
 // started are done, capped. Real time, scaled by the background's own constants.
+// #460: a plain field write (settleState floor=false) has no minimum in a visible tab.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
@@ -18,8 +19,9 @@ const REQUEST_CAP = constant('SETTLE_REQUEST_CAP_MS');
 // and a request the action starts that ends after requestMs.
 // navigation: { loadMs } the action loads another document that completes after loadMs;
 // { requestOnly: true } it starts a main-frame request that loads nothing (a download).
+// floor: what the content script's settleState says (#460); absent, as from an older one, by default.
 function harness({ mutatesUntil = 0, requestMs = null, watching = true, unchanged = false, hidden = false,
-  navigation = null } = {}) {
+  navigation = null, floor } = {}) {
   let actionAt = null;
   const sent = [];
   const tab = { id: 7, status: 'complete', url: 'https://shop.test/list', title: 'List' };
@@ -66,7 +68,8 @@ function harness({ mutatesUntil = 0, requestMs = null, watching = true, unchange
           if (navigation?.keepsDocument && context.tabLoads.get(7)?.complete) return { watching: true, elapsedMs: 9999, quietMs: 9999 };
           const elapsedMs = Date.now() - actionAt;
           const last = Math.min(elapsedMs, mutatesUntil);
-          return { watching: true, elapsedMs, quietMs: elapsedMs - last, mutations: 1, hidden };
+          return { watching: true, elapsedMs, quietMs: elapsedMs - last, mutations: 1, hidden,
+            ...(floor === undefined ? {} : { floor }) };
         },
       },
     },
@@ -108,6 +111,32 @@ async function testRequestsTheActionStartedAreWaitedFor() {
   await h.context.handleCommand({ action: 'click', selector: '#save', tabId: 7 });
   within(h.snapshotAt(), CAP + 300, CAP + 300 + 150, 'pending request');
   assert.equal(h.context.settleRequests.has(7), false, 'the request watch ends with the action');
+}
+
+async function testPlainFieldWritesSkipTheMinimum() {
+  // #460: a plain fill ends once the page is quiet, well before the minimum.
+  const plain = harness({ floor: false });
+  await plain.context.handleCommand({ action: 'fill', selector: '#name', value: 'Ada', tabId: 7 });
+  within(plain.snapshotAt(), QUIET, QUIET + 100, 'plain fill');
+  assert.ok(plain.snapshotAt() < MIN - 150, `plain fill ${plain.snapshotAt()} is well under ${MIN}`);
+  // A change it makes is still waited for, and so are the requests it started.
+  const changed = harness({ floor: false, mutatesUntil: 100 });
+  await changed.context.handleCommand({ action: 'fill', selector: '#name', value: 'Ada', tabId: 7 });
+  within(changed.snapshotAt(), 100 + QUIET, 100 + QUIET + 100, 'plain fill with a change');
+  const requested = harness({ floor: false, requestMs: 600 });
+  await requested.context.handleCommand({ action: 'selectOption', selector: '#plan', value: 'pro', tabId: 7 });
+  within(requested.snapshotAt(), 600, 600 + 150, 'plain select with a pending request');
+  // A hidden tab keeps its minimum: Firefox throttles the page's timers there.
+  const hidden = harness({ floor: false, hidden: true });
+  await hidden.context.handleCommand({ action: 'fill', selector: '#name', value: 'Ada', tabId: 7 });
+  within(hidden.snapshotAt(), HIDDEN_MIN, HIDDEN_MIN + 150, 'plain fill in a hidden tab');
+  // A field that keeps the floor (a combobox, typing slowly) still sees a 300 ms debounced list.
+  const debounced = harness({ floor: true, mutatesUntil: 300 });
+  await debounced.context.handleCommand({ action: 'fill', selector: '#city', value: 'Al', tabId: 7 });
+  within(debounced.snapshotAt(), 300 + QUIET, 300 + QUIET + 150, 'debounced combobox list');
+  const floored = harness({ floor: true });
+  await floored.context.handleCommand({ action: 'type', selector: '#q', text: 'Al', tabId: 7 });
+  within(floored.snapshotAt(), MIN, MIN + 150, 'typing slowly');
 }
 
 async function testCaps() {
@@ -181,6 +210,7 @@ async function testANavigatingClickReportsTheNewPage() {
   await testHiddenTabsWaitForThrottledTimers();
   await testLateChangeIsWaitedFor();
   await testRequestsTheActionStartedAreWaitedFor();
+  await testPlainFieldWritesSkipTheMinimum();
   await testCaps();
   await testNoWatchOrNoSnapshotDoesNotWait();
   await testNoVisibleChangeAndKeepBaseline();

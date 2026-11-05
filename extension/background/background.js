@@ -1234,6 +1234,13 @@ async function handleCommand(command) {
 // autocomplete waits 300 ms). In a hidden tab Firefox delays page timers to at least 1 s
 // (dom.min_background_timeout_value), so a 250 ms timer fires after about 1000 ms there; the
 // minimum is then SETTLE_HIDDEN_MIN_MS.
+// A plain field write has no minimum in a visible tab (#460): a fill (browser_type without
+// slowly, browser_fill_form), select or check of a native field without role=combobox,
+// aria-autocomplete or a list attribute ends after SETTLE_QUIET_MS once its requests are done.
+// The content script says so in settleState (floor=false). Typing slowly, keys, clicks, other
+// actions and such fields keep SETTLE_MIN_MS, and so does a browser_fill_form call when any of
+// its fields keeps it. A debounced reaction on a plain field (a filter box) may then come after
+// the delta.
 const SETTLE_MIN_MS = 400;
 const SETTLE_HIDDEN_MIN_MS = 1100;
 const SETTLE_QUIET_MS = 150;
@@ -1266,7 +1273,7 @@ async function settleAfterAction(tabId, pending, params) {
       // A page that navigated away or does not answer has nothing to wait for here.
       if (!state?.watching) return;
       const busy = pending.size > 0;
-      const min = state.hidden ? SETTLE_HIDDEN_MIN_MS : SETTLE_MIN_MS;
+      const min = state.hidden ? SETTLE_HIDDEN_MIN_MS : state.floor === false ? 0 : SETTLE_MIN_MS;
       if (!busy && state.elapsedMs >= min && state.quietMs >= SETTLE_QUIET_MS) return;
       if (Date.now() - start >= (busy ? SETTLE_REQUEST_CAP_MS : SETTLE_CAP_MS)) return;
       await new Promise(resolve => setTimeout(resolve, SETTLE_POLL_MS));

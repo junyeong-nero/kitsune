@@ -134,5 +134,56 @@ async function testFormFill() {
   assert.deepEqual([small.checked, medium.checked], [false, true]);
 }
 
-testFormFill().then(() => console.log('Form fill checks passed'))
+// #460: settleState tells the background whether the action keeps the settle floor.
+async function testSettleFloor() {
+  const field = (attrs = {}) => Object.assign(new Element('INPUT', attrs), { type: 'text', value: '' });
+  const plan = new SelectElement(['free', 'pro']);
+  const agree = Object.assign(new Element('INPUT'), { type: 'checkbox', checked: false });
+  const elements = { '#name': field(), '#none': field({ 'aria-autocomplete': 'none' }),
+    '#city': field({ role: 'combobox' }), '#tags': field({ 'aria-autocomplete': 'list' }),
+    '#color': field({ list: 'colors' }), '#plan': plan, '#agree': agree };
+  let listener;
+  const context = vm.createContext({
+    console, crypto: webcrypto, Event, CSS: { escape: x => x },
+    HTMLInputElement: class {}, HTMLTextAreaElement: class {},
+    window: { getComputedStyle: () => ({ display: 'block', visibility: 'visible' }) },
+    document: { body: {}, querySelector: selector => elements[selector] || null, querySelectorAll: () => [] },
+    browser: { runtime: {
+      onMessage: { addListener: fn => { listener = fn; } },
+      sendMessage: () => Promise.resolve(null),
+    } },
+  });
+  vm.runInContext(fs.readFileSync('extension/content/content.js', 'utf8'), context);
+  const send = msg => new Promise(resolve => listener(msg, {}, result => resolve(JSON.parse(JSON.stringify(result)))));
+  // ok=false: the action may fail in this DOM, which has no keyboard events; its watch still started.
+  const floorAfter = async (msg, settle = { deltaBaseline: true }, ok = true) => {
+    const result = await send({ ...msg, ...settle });
+    if (ok) assert.equal(result.ok, true, JSON.stringify(msg));
+    return (await send({ action: 'settleState' })).floor;
+  };
+
+  // Plain field writes: fill without slowly, a native select, a check.
+  assert.equal(await floorAfter({ action: 'fill', selector: '#name', value: 'Ada' }), false);
+  assert.equal(await floorAfter({ action: 'fill', selector: '#none', value: 'Ada' }), false, 'aria-autocomplete=none');
+  assert.equal(await floorAfter({ action: 'selectOption', selector: '#plan', value: 'pro' }), false);
+  assert.equal(await floorAfter({ action: 'checkBox', selector: '#agree', checked: true }), false);
+  // Fields whose reaction is likely debounced, typing and keys keep it.
+  for (const selector of ['#city', '#tags', '#color']) {
+    assert.equal(await floorAfter({ action: 'fill', selector, value: 'Al' }), true, selector);
+  }
+  assert.equal(await floorAfter({ action: 'type', selector: '#name', text: 'Al' }, undefined, false), true, 'typing slowly');
+  assert.equal(await floorAfter({ action: 'keypress', selector: '#name', key: 'a' }, undefined, false), true, 'a key');
+
+  // browser_fill_form: the first field records the baseline, the last one settles. A field that
+  // needs the floor keeps it for the whole call; the next call's baseline starts over.
+  assert.equal((await send({ action: 'fill', selector: '#city', value: 'Seoul', deltaBaseline: true })).ok, true);
+  assert.equal((await send({ action: 'fill', selector: '#name', value: 'Ada' })).ok, true);
+  assert.equal(await floorAfter({ action: 'checkBox', selector: '#agree', checked: false }, { settleWatch: true }), true,
+    'mixed fields');
+  assert.equal((await send({ action: 'fill', selector: '#name', value: 'Grace', deltaBaseline: true })).ok, true);
+  assert.equal(await floorAfter({ action: 'selectOption', selector: '#plan', value: 'free' }, { settleWatch: true }),
+    false, 'plain fields');
+}
+
+testFormFill().then(testSettleFloor).then(() => console.log('Form fill checks passed'))
   .catch(error => { console.error(error); process.exitCode = 1; });

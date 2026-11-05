@@ -573,9 +573,10 @@
       }
       // A delta post-action snapshot is diffed against the page right before the action runs.
       // The baseline always records text lines: a delta lists text the action made appear (#348).
+      const act = PLAIN_FIELD_ACTIONS.has(msg.action) ? () => noteFieldWrite(handler()) : handler;
       const run = msg.deltaBaseline
-        ? () => { takeActionBaseline(true); startSettleWatch(); return handler(); }
-        : msg.settleWatch ? () => { startSettleWatch(); return handler(); } : handler;
+        ? () => { takeActionBaseline(true); lateFieldWrite = false; startSettleWatch(msg.action); return act(); }
+        : msg.settleWatch ? () => { startSettleWatch(msg.action); return act(); } : act;
       if (msg.wait && (POINTER_WAIT_ACTIONS.has(msg.action) || VALUE_WAIT_ACTIONS.has(msg.action))) {
         waitForActionable(msg).then(failure => failure || run())
           .then(respond).catch(e => respond(errorResult(e)));
@@ -912,6 +913,22 @@
   // anywhere (up to SETTLE_ADDED_LIMIT; more set changed) and edits inside an editor (changed).
   let settleWatch = null;
   const SETTLE_ADDED_LIMIT = 200;
+  // The settle floor (#460): settleState says floor=false when the action is a fill, select or
+  // check of a native field without autocomplete markup, and the background then skips its
+  // minimum wait. Typing, keys, clicks and a field with role=combobox, aria-autocomplete or a
+  // datalist (list) keep it: their reaction is often debounced and changes nothing until it
+  // fires. lateFieldWrite: a field written since the delta baseline has such markup, so
+  // browser_fill_form's last field keeps the floor when an earlier one needs it.
+  const PLAIN_FIELD_ACTIONS = new Set(['fill', 'selectOption', 'checkBox']);
+  let lateFieldWrite = false;
+
+  function noteFieldWrite(result) {
+    const el = lastActedElement;
+    const autocomplete = (el?.getAttribute('aria-autocomplete') || 'none').trim().toLowerCase();
+    if (!el || !FILL_TAGS.includes(el.tagName) || /(^|\s)combobox(\s|$)/i.test(el.getAttribute('role') || '') ||
+        autocomplete !== 'none' || el.hasAttribute('list')) lateFieldWrite = true;
+    return result;
+  }
 
   function noteSettleRecords(watch, records) {
     for (const record of records) {
@@ -932,9 +949,9 @@
     return watch.changed || watch.added.some(node => node.isConnected);
   }
 
-  function startSettleWatch() {
+  function startSettleWatch(action) {
     stopSettleWatch();
-    const watch = { start: Date.now(), last: Date.now(), mutations: 0, added: [], changed: false };
+    const watch = { action, start: Date.now(), last: Date.now(), mutations: 0, added: [], changed: false };
     // Absent in vm test harnesses.
     if (typeof MutationObserver === 'function') {
       watch.observer = new MutationObserver(records => {
@@ -962,7 +979,8 @@
     if (!settleWatch) return { watching: false };
     const now = Date.now();
     return { watching: true, elapsedMs: now - settleWatch.start, quietMs: now - settleWatch.last,
-      mutations: settleWatch.mutations, hidden: !!document.hidden };
+      mutations: settleWatch.mutations, hidden: !!document.hidden,
+      floor: lateFieldWrite || !PLAIN_FIELD_ACTIONS.has(settleWatch.action) };
   }
 
   function takeActionBaseline(withText) {
