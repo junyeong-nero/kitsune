@@ -29,12 +29,16 @@ from mcp.client.stdio import stdio_client
 
 import real_browser_harness as harness
 from test_real_browser import CONTROL_SCRIPT, ExtensionControl
+from test_real_browser_trusted_ownership import USER_CLICKS, USER_INPUT_WINDOW_S, USER_TYPES, USER_TYPING_IDLE_S
+from kitsune.task_modes import OWNER_HEADER, USER_TABS_HEADER
 
 CLIENT_NAME = "Kitsune E2E Handoff Client"
 OWNER_ID = "e2e-handoff-owner"
 OTHER_CLIENT_NAME = "Kitsune E2E Other Client"
 OTHER_OWNER_ID = "e2e-handoff-other"
 REASON = "Fill in the form on this page"
+# The middle of a form-X page's field, in CSS px of the page.
+FIELD_POINT = (150, 20)
 SESSION_TIMEOUT = 90
 # The extension's browser-first window before the client fallback (background.js HANDOFF_BROWSER_MS).
 BROWSER_FALLBACK_SECONDS = 30
@@ -47,6 +51,17 @@ USER_OPENS = """(async () => {
   win.gBrowser.addTab(%s, {triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
                            inBackground: true});
   return true;
+})()"""
+# The user switches to the tab at url.
+USER_SHOWS = """(async () => {
+  for (const win of Services.wm.getEnumerator('navigator:browser')) {
+    const tab = win.gBrowser.tabs.find(t => t.linkedBrowser.currentURI.spec === %s);
+    if (tab) {
+      win.gBrowser.selectedTab = tab;
+      return true;
+    }
+  }
+  return false;
 })()"""
 CLOSE_TABS_AT = """(async () => {
   for (const win of Services.wm.getEnumerator('navigator:browser')) {
@@ -161,12 +176,15 @@ POPUP_CLOSES = """(async () => {
 
 class _Pages(BaseHTTPRequestHandler):
     """A titled page whose button counts its clicks in the title. An opens-X page also opens
-    opened-X in a new tab as it loads, with no input."""
+    opened-X in a new tab as it loads, with no input. A form-X page starts with a field at the
+    page's top left (FIELD_POINT)."""
 
     def do_GET(self):
         name = self.path.strip("/") or "index"
         opens = f"<script>window.open('/opened-{name[6:]}')</script>" if name.startswith("opens-") else ""
-        body = (f"<title>Handoff {name}</title><p>{name} page</p>"
+        field = ("<input id=field style='position:absolute;left:0;top:0;width:300px;height:40px'>"
+                 "<p style=height:60px></p>" if name.startswith("form-") else "")
+        body = (f"<title>Handoff {name}</title>{field}<p>{name} page</p>"
                 "<button id=act onclick=\"document.title='acted:' + (window.actions=(window.actions||0)+1)\">"
                 f"Act</button>{opens}").encode()
         self.send_response(200)
@@ -383,6 +401,46 @@ class RealBrowserHandoffTests(harness.RealBrowserTestCase):
         self.assertIs(listed.get("owned"), True, listed)
         self.assert_acted(clicked, url, 1)
         self.assertEqual(prompts, [], "neither the handoff nor the write asked the client")
+
+    def writable_focus(self, url):
+        """Another client's focus on the field of the tab at url, with user tabs writable: refused
+        only while the user is using the tab, and a no-op on the focused field otherwise."""
+        headers = {**self.bridge.auth(), "Content-Type": "application/json", OWNER_HEADER: OTHER_OWNER_ID,
+                   USER_TABS_HEADER: "writable"}
+        status, _, text = harness._request(self.bridge.http_port, "POST", "/api/focus", headers, self.bridge.host,
+                                           json.dumps({"tabId": self.tab(url)["id"], "selector": "#field"}),
+                                           timeout=30)
+        self.assertEqual(status, 200, text)
+        return json.loads(text)
+
+    def test_approval_releases_the_users_draft_in_the_handed_off_tab(self):
+        # #456 (benchmark tp-handoff-01): the user types into a form in their tab, keeps the field
+        # focused and hands the tab over; the approved agent's write is not refused as typing.
+        url = self.user_tab("form-draft")
+        self.assertTrue(self.parent(USER_SHOWS % json.dumps(url)))
+        time.sleep(0.5)  # the shown page takes the user's input once it is painted
+        self.assertTrue(self.parent(USER_CLICKS % (json.dumps(url), *FIELD_POINT, 0, "null")))
+        self.assertTrue(self.parent(USER_TYPES % (json.dumps(url), json.dumps(list("Ada")), "null")))
+        typed_at = time.monotonic()
+        self.wait_for(lambda: '[value="Ada"]' in self.call("/api/snapshot", {"tabId": self.tab(url)["id"]})["snapshot"],
+                      "the user's typing did not reach the field")
+        time.sleep(max(0, typed_at + USER_INPUT_WINDOW_S + 0.3 - time.monotonic()))
+        held = self.writable_focus(url)
+        self.assert_error(held, "user_active", True)
+        self.assertEqual(held["state"]["reason"], "typing", held)
+
+        async def scenario(session):
+            granted = await self.approved(session, url)
+            # The open popup has the focus; the user closes it, and the page and its field have it again.
+            await asyncio.to_thread(self.parent, POPUP_CLOSES % json.dumps(harness.EXTENSION_ID))
+            await asyncio.sleep(0.3)
+            written = time.monotonic()
+            return granted, written, await session.write(url)
+
+        granted, written, clicked = self.run_session(scenario, answers=[])
+        self.assertEqual(granted, (False, {"ok": True, "tabId": self.tab(url)["id"], "owned": True}))
+        self.assertLess(written - typed_at, USER_TYPING_IDLE_S - 1, "the write came before the idle limit")
+        self.assert_acted(clicked, url, 1)
 
     def test_popup_decline_leaves_the_tab_read_only(self):
         url = self.user_tab("decline")

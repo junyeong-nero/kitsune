@@ -70,9 +70,10 @@ async function main() {
   page.document.activeElement = page.field;
   page.input('keydown', page.field);
   page.field.value = 'draft';
-  page.tick(60000);
+  page.tick(3000);
   assert.deepEqual(await page.send({ action: 'userActivity' }),
-    { active: true, state: { reason: 'typing', field: 'input' } }, 'the value is never read out');
+    { active: true, state: { reason: 'typing', field: 'input', sinceMs: 3000, windowMs: 10000 } },
+    'the value is never read out');
   page.document.focused = false;  // the user switched to another tab or app
   assert.deepEqual(await page.send({ action: 'userActivity' }), { active: false, pageFocused: false });
   page.document.focused = true;
@@ -88,6 +89,30 @@ async function main() {
   assert.deepEqual(await page.send({ action: 'userActivity' }), { active: false, pageFocused: true }, 'focus left the field');
   page.document.activeElement = page.field;  // #397: the agent's command focuses it again
   assert.deepEqual(await page.send({ action: 'userActivity' }), { active: false, pageFocused: true }, 'released typing stays released');
+
+  // #456: a focused draft holds the tab for 10 s after the user's last trusted input, not forever.
+  page.input('keydown', page.field);
+  page.tick(9000);
+  page.input('wheel', page.button);  // any input of the user's keeps the draft
+  page.tick(9999);
+  assert.deepEqual(await page.send({ action: 'userActivity' }),
+    { active: true, state: { reason: 'typing', field: 'input', sinceMs: 9999, windowMs: 10000 } });
+  page.tick(1);
+  assert.deepEqual(await page.send({ action: 'userActivity' }), { active: false, pageFocused: true }, 'idle draft');
+  page.input('mousedown', page.button);
+  page.tick(3000);
+  assert.deepEqual(await page.send({ action: 'userActivity' }), { active: false, pageFocused: true },
+    'input outside the field does not hold the released draft again');
+  page.input('keydown', page.field);
+  page.tick(3000);
+  assert.equal((await page.send({ action: 'userActivity' })).state?.reason, 'typing', 'the next keydown counts');
+  // #456: the user approved a handoff of the tab; their later typing counts again.
+  assert.deepEqual(await page.send({ action: 'releaseUserDraft' }), { ok: true });
+  assert.deepEqual(await page.send({ action: 'userActivity' }), { active: false, pageFocused: true }, 'released draft');
+  page.input('keydown', page.field);
+  assert.equal((await page.send({ action: 'userActivity' })).state?.reason, 'input', 'the input window is unchanged');
+  page.tick(3000);
+  assert.equal((await page.send({ action: 'userActivity' })).state?.reason, 'typing', 'later typing counts');
 
   // Editors and fields in shadow roots (seen as their custom-element host) count too.
   for (const [el, text] of [[page.editor, 'textContent'], [page.host, null]]) {

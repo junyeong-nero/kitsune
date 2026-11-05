@@ -381,10 +381,16 @@
   // using. Only trusted input counts: Kitsune's own DOM events are synthetic (isTrusted false),
   // and the trusted OS click of browser_trusted_click follows its screenPoint, which opens a
   // window for its pointer events and for key presses of the modifiers it holds. Typing counts
-  // while the field the user typed into keeps focus in a focused document and is not empty.
-  // Values are never read out.
+  // while the field the user typed into keeps focus in a focused document and is not empty, for
+  // at most USER_TYPING_IDLE_MS after the user's last trusted input. Values are never read out.
   const USER_INPUT_EVENTS = ['keydown', 'mousedown', 'pointerdown', 'touchstart', 'wheel', 'paste'];
   const USER_INPUT_WINDOW_MS = 3000;
+  // A focused draft no user input touched for 10 s no longer holds the tab (#456): the user who
+  // left text in a field and stopped (a half-filled form handed off, a comment typed in the agent's
+  // tab) otherwise blocks every write until they leave the field. 10 s is over three input windows,
+  // which covers a pause to think or read mid-sentence, and is the same bound as a user navigation
+  // (background.js USER_NAVIGATION_WINDOW_MS), so a retrying agent gets through within seconds.
+  const USER_TYPING_IDLE_MS = 10000;
   const AGENT_TRUSTED_CLICK_MS = 2000;
   let lastUserInput = null;   // { at, type }
   let userTypedField = null;  // the editable element (as the document sees it) the user last typed into
@@ -430,11 +436,15 @@
         windowMs: USER_INPUT_WINDOW_MS } };
     }
     const field = userTypedField;
-    if (field?.isConnected && field === document.activeElement && document.hasFocus() && hasUserContent(field)) {
-      return { active: true, state: { reason: 'typing', field: field.tagName.toLowerCase() } };
+    const idleMs = lastUserInput ? now - lastUserInput.at : Infinity;
+    if (field?.isConnected && field === document.activeElement && document.hasFocus() && hasUserContent(field) &&
+        idleMs < USER_TYPING_IDLE_MS) {
+      return { active: true, state: { reason: 'typing', field: field.tagName.toLowerCase(), sinceMs: idleMs,
+        windowMs: USER_TYPING_IDLE_MS } };
     }
-    // Released (focus left the field, or it is empty): the agent's own later focus or text there
-    // is not the user's draft. Only document focus loss keeps the field for when focus returns.
+    // Released (focus left the field, it is empty, or the user left it idle): the agent's own later
+    // focus or text there is not the user's draft. Only document focus loss keeps the field for
+    // when focus returns.
     if (field && document.hasFocus()) userTypedField = null;
     // pageFocused: focus is in this page or one of its frames, for child frames' drafts (frame-input.js).
     return { active: false, pageFocused: document.hasFocus() };
@@ -506,6 +516,8 @@
       'focusState':            () => focusState(msg.selector, msg.first),
       'agentInput':            () => agentInput(msg.ms),
       'userActivity':          () => userActivity(),
+      // The user approved handing this tab to an agent (#456): their draft no longer holds it.
+      'releaseUserDraft':      () => { userTypedField = null; return { ok: true }; },
       'captureMeasure':        () => captureMeasure(msg.selector),
       'captureScrollIntoView': () => captureScrollIntoView(msg.selector, msg.block),
       'captureScroll':         () => captureScroll(msg.to, msg.by, msg.left),

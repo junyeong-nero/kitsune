@@ -21,8 +21,10 @@ const { harness } = require('./shared_browser.cjs');
       const result = await h.send({ tabId, ...command });
       assert.equal(result.code, 'user_active', command.action);
       assert.equal(result.retryable, true);
-      // The server instructions leave the retry to this hint (#405).
-      assert.match(result.hint, /Retry in a few seconds/, command.action);
+      // The server instructions leave the retry to this hint (#405); for typing it says what
+      // releases the pause, since waiting alone ends it only after the idle limit (#456).
+      assert.match(result.hint, /Retry after the remaining time/, command.action);
+      assert.match(result.hint, /no input for 10 s .*leaves the field.*approves handing you the tab/, command.action);
       assert.equal(h.calls.length, effects, 'no mutation before busy refusal');
     }
     const inventory = await h.send({ action: 'getTabs' });
@@ -43,6 +45,7 @@ const { harness } = require('./shared_browser.cjs');
       const effects = h.calls.length;
       const result = await h.send(command);
       assert.equal(result.code, 'user_active', command.action + ' checks the other affected tab');
+      assert.match(result.hint, /Retry in a few seconds/, 'other reasons keep the general hint');
       assert.equal(result.state.tabId, second);
       assert.equal(h.calls.length, effects);
     }
