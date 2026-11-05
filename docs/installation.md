@@ -222,7 +222,7 @@ and a full diagnosis. Then [try a first task](try-it.md).
 Pin a released version with `==`:
 
 ```bash
-claude mcp add --scope user kitsune -- uvx --from kitsune-browser-mcp==0.7.2 kitsune
+claude mcp add --scope user kitsune -- uvx --from kitsune-browser-mcp==0.7.3 kitsune
 ```
 
 Releases are listed on [PyPI](https://pypi.org/project/kitsune-browser-mcp/#history)
