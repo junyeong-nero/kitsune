@@ -429,7 +429,8 @@ not right after dispatch. The bridge waits:
   (`browser_type` without `slowly`, `browser_fill_form`), select or check of a native field
   without `role=combobox`, `aria-autocomplete` or a `list` attribute. Typing slowly, keys,
   clicks and fields with that markup keep it, and so does a `browser_fill_form` call when any
-  of its fields does;
+  of its fields does. A `browser_press_key` the page handled (`prevented: true`) drops it once
+  the page has changed (#475); a key that changed nothing yet keeps it;
 - until the page has made no DOM change for 150 ms, counting changes in same-origin frames and
   shadow roots;
 - until the XHR/fetch, script and frame requests the tab started after the action are done.

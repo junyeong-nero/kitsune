@@ -2,6 +2,7 @@
 // #311: fill sets an ARIA slider or spinbutton without a native input by pressing arrow keys
 // until aria-valuenow is the value, and fails with value_not_reached when it is not reached;
 // keypress takes a bounded repeat; not_fillable on a slider names the keyboard alternative.
+// #475: a key the slider handled drops the settle floor once its change has landed.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
@@ -16,13 +17,25 @@ class KeyboardEvent extends Event {
 
 const document = { body: null, activeElement: null };
 
+// The settle watch's observer (#475): an attribute set on an element is a mutation it sees.
+const observers = new Set();
+class MutationObserver {
+  constructor(callback) { this.callback = callback; }
+  observe() { observers.add(this); }
+  takeRecords() { return []; }
+  disconnect() { observers.delete(this); }
+}
+
 class Element extends EventTarget {
   constructor(tagName, attrs = {}) {
     super();
     Object.assign(this, { tagName, attrs, isConnected: true, keys: [], focused: 0 });
   }
   getAttribute(key) { return this.attrs[key] ?? null; }
-  setAttribute(key, value) { this.attrs[key] = String(value); }
+  setAttribute(key, value) {
+    this.attrs[key] = String(value);
+    for (const observer of observers) queueMicrotask(() => observer.callback([{ type: 'attributes', target: this }]));
+  }
   hasAttribute(key) { return key in this.attrs; }
   matches() { return false; }
   closest() { return null; }
@@ -65,7 +78,7 @@ function page(elements, clock = Date) {
   document.body = new Element('BODY');
   document.activeElement = document.body;
   const context = vm.createContext({
-    console, crypto: webcrypto, Event, KeyboardEvent, MessageChannel, CSS: { escape: x => x }, Date: clock,
+    console, crypto: webcrypto, Event, KeyboardEvent, MessageChannel, MutationObserver, CSS: { escape: x => x }, Date: clock,
     HTMLInputElement: class {}, HTMLTextAreaElement: class {},
     window: { getComputedStyle: () => ({ display: 'block', visibility: 'visible' }) },
     document: Object.assign(document, {
@@ -283,6 +296,45 @@ async function testKeypressRepeat() {
   assert.equal(missing.pressed, undefined);
 }
 
+// #475: settleState's floor after a key with a delta: dropped once a key the page handled
+// (prevented) has changed the page, kept while its change has not landed or when the page did
+// not take the key.
+async function testHandledKeySettleFloor() {
+  const widget = slider();
+  // A sortable whose reaction is debounced: it takes the key, and changes nothing until later.
+  const debounced = new Element('DIV', { role: 'option', tabindex: '0' });
+  debounced.addEventListener('keydown', event => { event.preventDefault(); });
+  const send = page({ '#slider': widget, '#sortable': debounced });
+  const floorAfter = async (msg, settle = { deltaBaseline: true }) => {
+    const result = await send({ ...msg, ...settle });
+    const before = (await send({ action: 'settleState' })).floor;
+    await nextTask();
+    return { result, before, after: (await send({ action: 'settleState' })).floor };
+  };
+
+  const handled = await floorAfter({ action: 'keypress', selector: '#slider', key: 'ArrowLeft' });
+  assert.equal(handled.result.prevented, true);
+  assert.deepEqual([handled.before, handled.after], [true, false], 'the slider rendered its new value');
+  assert.equal(widget.attrs['aria-valuenow'], '49');
+  const repeated = await floorAfter({ action: 'keypress', selector: '#slider', key: 'ArrowLeft', repeat: 3 });
+  assert.equal(repeated.result.prevented, true);
+  assert.equal(repeated.after, false, 'repeat');
+  // browser_fill_form's keepBaseline: a key that only starts its watch.
+  assert.equal((await floorAfter({ action: 'keypress', selector: '#slider', key: 'ArrowRight' },
+    { settleWatch: true })).after, false, 'settleWatch');
+
+  // Taken, but no change yet: the floor stays for a debounced reaction.
+  const pending = await floorAfter({ action: 'keypress', selector: '#sortable', key: ' ' });
+  assert.equal(pending.result.prevented, true);
+  assert.equal(pending.after, true, 'no mutation yet');
+  // A key the page did not take keeps it, even when something changed meanwhile.
+  const unhandled = await floorAfter({ action: 'keypress', selector: '#slider', key: 'a' });
+  assert.equal(unhandled.result.prevented, undefined);
+  widget.setAttribute('data-hint', 'shown');
+  await nextTask();
+  assert.equal((await send({ action: 'settleState' })).floor, true, 'not prevented');
+}
+
 (async () => {
   await testFillReachesTheValue();
   await testKeyPairs();
@@ -290,5 +342,6 @@ async function testKeypressRepeat() {
   await testWhatFillRefuses();
   await testNativeRangeKeepsItsValueSetter();
   await testKeypressRepeat();
+  await testHandledKeySettleFloor();
 })().then(() => console.log('ARIA slider checks passed'))
   .catch(error => { console.error(error); process.exitCode = 1; });

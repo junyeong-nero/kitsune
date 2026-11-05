@@ -3,6 +3,7 @@
 // the action, until the page has been quiet for SETTLE_QUIET_MS and the requests the action
 // started are done, capped. Real time, scaled by the background's own constants.
 // #460: a plain field write (settleState floor=false) has no minimum in a visible tab.
+// #475: nor has a key the page handled once its change has landed (floor=false from then on).
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
@@ -19,7 +20,8 @@ const REQUEST_CAP = constant('SETTLE_REQUEST_CAP_MS');
 // and a request the action starts that ends after requestMs.
 // navigation: { loadMs } the action loads another document that completes after loadMs;
 // { requestOnly: true } it starts a main-frame request that loads nothing (a download).
-// floor: what the content script's settleState says (#460); absent, as from an older one, by default.
+// floor: what the content script's settleState says (#460); absent, as from an older one, by default;
+// a function of elapsedMs when it changes during the settle (#475).
 function harness({ mutatesUntil = 0, requestMs = null, watching = true, unchanged = false, hidden = false,
   navigation = null, floor } = {}) {
   let actionAt = null;
@@ -69,7 +71,7 @@ function harness({ mutatesUntil = 0, requestMs = null, watching = true, unchange
           const elapsedMs = Date.now() - actionAt;
           const last = Math.min(elapsedMs, mutatesUntil);
           return { watching: true, elapsedMs, quietMs: elapsedMs - last, mutations: 1, hidden,
-            ...(floor === undefined ? {} : { floor }) };
+            ...(floor === undefined ? {} : { floor: typeof floor === 'function' ? floor(elapsedMs) : floor }) };
         },
       },
     },
@@ -137,6 +139,27 @@ async function testPlainFieldWritesSkipTheMinimum() {
   const floored = harness({ floor: true });
   await floored.context.handleCommand({ action: 'type', selector: '#q', text: 'Al', tabId: 7 });
   within(floored.snapshotAt(), MIN, MIN + 150, 'typing slowly');
+}
+
+async function testHandledKeysSkipTheMinimumOnceChanged() {
+  // #475: an arrow key on an ARIA slider or a keyboard sortable renders in the next task; the
+  // content script drops the floor from that mutation on, and the delta follows it by QUIET.
+  const slider = harness({ mutatesUntil: 20, floor: elapsedMs => elapsedMs < 20 });
+  await slider.context.handleCommand({ action: 'keypress', key: 'ArrowLeft', tabId: 7 });
+  within(slider.snapshotAt(), 20 + QUIET, 20 + QUIET + 100, 'handled key');
+  assert.ok(slider.snapshotAt() < MIN - 150, `handled key ${slider.snapshotAt()} is well under ${MIN}`);
+  // A key that only starts a debounced change has no mutation yet, so it keeps the minimum...
+  const started = harness({ floor: true });
+  await started.context.handleCommand({ action: 'keypress', key: ' ', tabId: 7 });
+  within(started.snapshotAt(), MIN, MIN + 150, 'debounced key');
+  // ...and its change, once it lands, is waited for.
+  const debounced = harness({ mutatesUntil: 300, floor: elapsedMs => elapsedMs < 300 });
+  await debounced.context.handleCommand({ action: 'keypress', key: ' ', tabId: 7 });
+  within(debounced.snapshotAt(), 300 + QUIET, 300 + QUIET + 150, 'debounced change');
+  // A hidden tab keeps its minimum.
+  const hidden = harness({ mutatesUntil: 20, floor: false, hidden: true });
+  await hidden.context.handleCommand({ action: 'keypress', key: 'ArrowLeft', tabId: 7 });
+  within(hidden.snapshotAt(), HIDDEN_MIN, HIDDEN_MIN + 150, 'handled key in a hidden tab');
 }
 
 async function testCaps() {
@@ -211,6 +234,7 @@ async function testANavigatingClickReportsTheNewPage() {
   await testLateChangeIsWaitedFor();
   await testRequestsTheActionStartedAreWaitedFor();
   await testPlainFieldWritesSkipTheMinimum();
+  await testHandledKeysSkipTheMinimumOnceChanged();
   await testCaps();
   await testNoWatchOrNoSnapshotDoesNotWait();
   await testNoVisibleChangeAndKeepBaseline();

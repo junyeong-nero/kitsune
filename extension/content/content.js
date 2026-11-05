@@ -586,7 +586,8 @@
       }
       // A delta post-action snapshot is diffed against the page right before the action runs.
       // The baseline always records text lines: a delta lists text the action made appear (#348).
-      const act = PLAIN_FIELD_ACTIONS.has(msg.action) ? () => noteFieldWrite(handler()) : handler;
+      const act = PLAIN_FIELD_ACTIONS.has(msg.action) ? () => noteFieldWrite(handler())
+        : msg.action === 'keypress' ? () => noteKeyHandled(settleWatch, handler()) : handler;
       const run = msg.deltaBaseline
         ? () => { takeActionBaseline(true); lateFieldWrite = false; startSettleWatch(msg.action); return act(); }
         : msg.settleWatch ? () => { startSettleWatch(msg.action); return act(); } : act;
@@ -935,8 +936,24 @@
   // datalist (list) keep it: their reaction is often debounced and changes nothing until it
   // fires. lateFieldWrite: a field written since the delta baseline has such markup, so
   // browser_fill_form's last field keeps the floor when an earlier one needs it.
+  // A key the page handled (#475) drops the floor once the watch has seen a mutation: its result
+  // has prevented (a page handler took the key, as an ARIA slider or a keyboard sortable does)
+  // and its change has landed, so the background ends the settle after SETTLE_QUIET_MS. A key
+  // whose debounced reaction has not changed anything yet, or that changes nothing, keeps it.
   const PLAIN_FIELD_ACTIONS = new Set(['fill', 'selectOption', 'checkBox']);
   let lateFieldWrite = false;
+
+  // keyHandled on the keypress's own watch; a repeated press resolves later.
+  function noteKeyHandled(watch, result) {
+    if (typeof result?.then === 'function') return result.then(done => noteKeyHandled(watch, done));
+    if (result?.prevented && watch?.action === 'keypress') watch.keyHandled = true;
+    return result;
+  }
+
+  function settleFloor(watch) {
+    if (PLAIN_FIELD_ACTIONS.has(watch.action)) return lateFieldWrite;
+    return !(watch.keyHandled && watch.mutations > 0);
+  }
 
   function noteFieldWrite(result) {
     const el = lastActedElement;
@@ -996,7 +1013,7 @@
     const now = Date.now();
     return { watching: true, elapsedMs: now - settleWatch.start, quietMs: now - settleWatch.last,
       mutations: settleWatch.mutations, hidden: !!document.hidden,
-      floor: lateFieldWrite || !PLAIN_FIELD_ACTIONS.has(settleWatch.action) };
+      floor: settleFloor(settleWatch) };
   }
 
   function takeActionBaseline(withText) {
