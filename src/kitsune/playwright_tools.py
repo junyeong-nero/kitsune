@@ -550,7 +550,9 @@ def browser_navigate(url: str, confirm_token: str | None = None, tab_id: int | N
 
 @_core
 def browser_navigate_back(tab_id: int | None = None, confirm_token: str | None = None) -> dict:
-    return k.browser_back(tab_id=_current_tab if tab_id is None else tab_id, confirm_token=confirm_token)
+    # pageText: the result carries a small page's text, as browser_navigate's does (#448).
+    return k._post_action("/api/back", k._request_body({"pageText": True}, _current_tab if tab_id is None else tab_id,
+                                                        confirm_token=confirm_token))
 
 
 def _successful_static(entry: dict) -> bool:
@@ -710,6 +712,10 @@ def browser_select_option(target: str, values: list[str], element: str | None = 
     return _select(target, values, element, confirm_token)
 
 
+# How long action=new url= waits for the page to load: kitsune.tools.browser_tabs' default.
+NEW_TAB_TIMEOUT_MS = 15000
+
+
 @_core
 def browser_tabs(action: str, index: float | None = None, url: str | None = None,
                  confirm_token: str | None = None, tab_id: int | None = None, reason: str | None = None) -> dict:
@@ -725,8 +731,14 @@ def browser_tabs(action: str, index: float | None = None, url: str | None = None
     if action == "list":
         return _tab_list(permission_hint=True)
     if action == "new":
-        # The new tab's index replaces the bridge's tabId, which no core tool takes.
-        result = k.browser_tabs("new", url=url, wait=url is not None, confirm_token=confirm_token)
+        # The new tab's index replaces the bridge's tabId, which no core tool takes. With a url, it waits
+        # for the load, and pageText makes the result carry a small page's text as browser_navigate's (#448).
+        if url is None:
+            result = k.browser_tabs("new", confirm_token=confirm_token)
+        else:
+            body = {"url": url, "wait": True, "timeout": NEW_TAB_TIMEOUT_MS, "pageText": True}
+            result = k._post("/api/new-tab", k._request_body(body, confirm_token=confirm_token),
+                             timeout=NEW_TAB_TIMEOUT_MS / 1000 + 10)
         if not isinstance(result.get("tabId"), int):
             return result
         _current_tab = result["tabId"]

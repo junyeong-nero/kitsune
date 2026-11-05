@@ -446,6 +446,13 @@ characters) as before. A short notice or confirmation page then needs no `browse
   "snapshot": "- heading \"Hollow Knight Silksong\" [ref=e91] [level=1]\n…" }
 ```
 
+The core `browser_tabs action=new url=…` and `browser_navigate_back` results carry the same
+readable snapshot when the page fits 2,000 characters (#448); a larger page adds nothing, so
+their result is as before. Back waits for the page it loads, as an action that navigates does:
+up to 1 s for the load to start and 10 s for it to finish. A back still loading by then carries
+no snapshot, and one that starts no load (no history, a same-document entry) reads the page as it
+is. `browser_tabs action=new` without a url opens `about:blank` and carries nothing.
+
 **A snapshot that repeats a full action result (#384).** Agents often send `browser_snapshot`
 in the same turn as an action, before reading its result, so a page that result already carried
 would be sent twice. The core `browser_snapshot` without `target`, `depth`, `boxes` or `filename`
@@ -462,7 +469,8 @@ and the refs' range:
 That result's snapshot and refs describe the page. This applies only:
 
 - after a full snapshot (`navigated`, `browser_navigate`, `browser_submit_form`, `snapshot:
-  "full"`), not a delta, a truncated snapshot or `navigation_pending`;
+  "full"`, or the page text of `browser_tabs action=new url=…` and `browser_navigate_back`,
+  #448), not a delta, a truncated snapshot or `navigation_pending`;
 - to the first such snapshot of the same tab after it; any other page action on the tab ends it;
 - to the caller that got that result: the same client (its owner id) and handoff session. Any
   other caller never saw it and gets the page (#442);
@@ -3526,6 +3534,13 @@ single reads (see `browser_wait_for`); a zero timeout performs one immediate che
   it also carries `code: "navigation_stalled"`, `retryable: false`, and the recovery `hint` of
   [`new_tab_stalled`](#post-apinew-tab) (#366). A requested `about:` URL never gets this code.
 
+### POST /api/back
+`{ "tabId": 1 }` goes back in the tab's history and returns `{ "ok": true, "tabId": 1 }` once
+dispatched. `"pageText": true`, an internal flag the core `browser_navigate_back` sends, waits
+for the page it loads and adds the page's readable `snapshot` when it fits 2,000 characters
+(see [Post-action snapshots](#post-action-snapshots), #448). With
+`KITSUNE_POST_ACTION_SNAPSHOT=0` the flag does nothing.
+
 ### POST /api/new-tab
 `{ "url": "https://example.com" }` — url optional, defaults to about:blank.
 Opens an agent-owned tab in the background (it is not shown; see
@@ -3538,6 +3553,9 @@ On timeout the tab stays open and the result is
 `{ "ok": false, "timedOut": true, "tabId": 123, "url": "...", "status": "loading" }`.
 While Zen's first-run welcome screen is open, the browser keeps reporting a loaded tab's URL as
 `about:blank` (#360); the wait then asks the page, and `url` is the page's own URL.
+With `wait`, `"pageText": true`, an internal flag the core `browser_tabs action=new url=…` sends,
+adds the loaded page's readable `snapshot` when it fits 2,000 characters, as a `browser_navigate`
+result has it (#448); a larger page, a timeout or `KITSUNE_POST_ACTION_SNAPSHOT=0` adds nothing.
 
 If the wait times out with the tab still `about:blank` / `complete`, and the page cannot confirm
 a loaded destination, the result also carries `code: "new_tab_stalled"`, `retryable: false`, and

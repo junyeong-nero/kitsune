@@ -77,6 +77,9 @@ INFINITE_PAGE = """<!doctype html><meta charset="utf-8"><title>infinite</title>
 </script>"""
 # A completed HTTP 200 document that is genuinely empty.
 EMPTY_PAGE = '<!doctype html><meta charset="utf-8"><title>empty</title><body></body>'
+# Past the 2,000 characters within which a navigation's result carries the page's text (#401).
+LONG_PAGE = '<!doctype html><meta charset="utf-8"><title>long</title>' + "".join(
+    f"<p>Paragraph {n}: {'terms and conditions ' * 40}</p>" for n in range(4))
 results_released = threading.Event()
 
 
@@ -89,7 +92,8 @@ class _Site(BaseHTTPRequestHandler):
                 f"<title>second</title><p>second page</p>".encode() if self.path == "/second" else
                 ASYNC_PAGE.encode() if self.path == "/async" else
                 INFINITE_PAGE.encode() if self.path == "/infinite" else
-                EMPTY_PAGE.encode() if self.path == "/empty" else PAGE.encode())
+                EMPTY_PAGE.encode() if self.path == "/empty" else
+                LONG_PAGE.encode() if self.path == "/long" else PAGE.encode())
         self.send_response(200)
         self.send_header("Content-Type", "application/json" if self.path.startswith("/api/") else "text/html")
         self.send_header("Content-Length", str(len(body)))
@@ -140,6 +144,7 @@ class RealBrowserPlaywrightToolTests(harness.RealBrowserTestCase):
         self.assertTrue(result["tabs"][result["index"]]["current"], result)
         tab = playwright_tools._current_tab
         self.addCleanup(self.call, "/api/close-tab", {"tabId": tab})
+        self.opened = result
         return tab
 
     def text(self, expected):
@@ -155,8 +160,9 @@ class RealBrowserPlaywrightToolTests(harness.RealBrowserTestCase):
         self.assertEqual([entry["title"] for entry in current], ["pw tools"], listed)
         self.assertTrue(current[0]["owned"])
 
-        snapshot = self.tool("browser_snapshot", {})["snapshot"]
-        self.assertRegex(snapshot, r'button "Go" \[ref=e\d+\]')
+        # The small page is in the browser_tabs result (#448), which the snapshot after it names.
+        self.assertEqual(self.tool("browser_snapshot", {}).get("unchanged_since"), "browser_tabs")
+        self.assertRegex(self.opened["snapshot"], r'button "Go" \[ref=e\d+\]')
         boxed = self.tool("browser_snapshot", {"boxes": True})["snapshot"]
         self.assertRegex(boxed, r'(?m)button "Go" \[ref=e\d+\]( \[[^\]]*\])? \[box=\d+,\d+,\d+,\d+\]$')
         found = self.tool("browser_find", {"text": "go"})
@@ -167,6 +173,32 @@ class RealBrowserPlaywrightToolTests(harness.RealBrowserTestCase):
         self.tool("browser_navigate_back", {})
         self.text("idle")
         self.assertEqual(self.call("/api/page-info", {"tabId": tab})["title"], "pw tools")
+
+    def test_tabs_new_and_navigate_back_carry_a_small_page_text(self):
+        # #448: as browser_navigate's does (#401), so the browser_snapshot that follows answers unchanged_since.
+        opened = self.tool("browser_tabs", {"action": "new", "url": self.site.origin + "/second"})
+        self.addCleanup(self.call, "/api/close-tab", {"tabId": playwright_tools._current_tab})
+        self.assertIn('- text "second page"', opened["snapshot"])
+        self.assertEqual(self.tool("browser_snapshot", {})["snapshot"], "unchanged since the browser_tabs result")
+        self.tool("browser_navigate", {"url": self.site.origin + "/long"})
+        back = self.tool("browser_navigate_back", {})
+        self.assertIn('- text "second page"', back["snapshot"])
+        repeated = self.tool("browser_snapshot", {})
+        self.assertEqual((repeated["snapshot"], repeated["unchanged_since"]),
+                         ("unchanged since the browser_navigate_back result", "browser_navigate_back"))
+        # A same-document back starts no load: the page is read as it is.
+        self.tool("browser_navigate", {"url": self.site.origin + "/second#more"})
+        self.assertIn('- text "second page"', self.tool("browser_navigate_back", {})["snapshot"])
+        # A larger page is not carried, and the snapshot after it returns the page.
+        self.tool("browser_navigate", {"url": self.site.origin + "/long"})
+        self.tool("browser_navigate", {"url": self.site.origin + "/second"})
+        back = self.tool("browser_navigate_back", {})
+        self.assertNotIn("snapshot", back)
+        self.assertIn("Paragraph 3", self.tool("browser_snapshot", {})["snapshot"])
+        large = self.tool("browser_tabs", {"action": "new", "url": self.site.origin + "/long"})
+        self.addCleanup(self.call, "/api/close-tab", {"tabId": playwright_tools._current_tab})
+        self.assertNotIn("snapshot", large)
+        self.assertNotIn("unchanged_since", self.tool("browser_snapshot", {}))
 
     def test_find_load_more_loads_an_infinite_list_until_the_item_appears(self):
         # #404: one browser_find loads batch after batch, where hovering the last item loads one per call.
@@ -218,8 +250,7 @@ class RealBrowserPlaywrightToolTests(harness.RealBrowserTestCase):
 
     def test_pointer_keyboard_and_form_tools(self):
         self.open_current()
-        snapshot = self.tool("browser_snapshot", {})["snapshot"]
-        name = self.ref(snapshot, r'textbox "Name"')
+        name = self.ref(self.opened["snapshot"], r'textbox "Name"')
 
         self.tool("browser_type", {"target": name, "text": "hello", "submit": True})
         self.text("entered hello")
