@@ -86,6 +86,7 @@ class RealBrowserKeyDefaultTests(harness.RealBrowserTestCase):
         result = self.tool("browser_tabs", {"action": "new", "url": self.site.origin + "/"})
         self.addCleanup(self.call, "/api/close-tab", {"tabId": playwright_tools._current_tab})
         self.assertTrue(result["tabs"][result["index"]]["current"], result)
+        self.opened = result
 
     def tool(self, name, arguments=None):
         """A core tool call's JSON result through FastMCP, against this class's bridge."""
@@ -142,7 +143,8 @@ class RealBrowserKeyDefaultTests(harness.RealBrowserTestCase):
         self.assertEqual(seen["result"], "Backspace")
 
     def test_type_with_submit_submits_the_form_by_enter(self):
-        snapshot = self.tool("browser_snapshot", {})["snapshot"]
+        # The small page is in the browser_tabs result (#448); a browser_snapshot would say unchanged_since.
+        snapshot = self.opened["snapshot"]
         for label, form in (("Search", "search"), ("Solo", "solo")):
             with self.subTest(form=form):
                 ref = re.search(rf'textbox "{label}" \[ref=(e\d+)\]', snapshot).group(1)

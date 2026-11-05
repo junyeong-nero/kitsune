@@ -27,6 +27,12 @@ function harness(pages = { 7: {}, 8: {} }) {
     dispatchCommand: async params => {
       // A link click loads another document (#349).
       if (params.action === 'click' && params.selector === 'a') context.tabLoads.set(params.tabId, { complete: true });
+      // A new tab is tab 8; a back loads another document unless backLoads is false (#448).
+      if (params.action === 'newTab') return { ok: true, tabId: 8, url: pages[8].url, status: 'complete', ...context.newTabResult };
+      if (params.action === 'goBack') {
+        if (context.backLoads !== false) context.tabLoads.set(params.tabId, { complete: true });
+        return { ok: true, tabId: params.tabId };
+      }
       if (params.action !== 'getSnapshot') return { ok: true };
       reads.push(params);
       const page = pages[params.tabId];
@@ -101,6 +107,74 @@ async function testANavigationCarriesTheTextOfASmallPage() {
     h.pages[7].action);
 }
 
+// #448: the core browser_tabs action=new url= (newTab with wait) and browser_navigate_back send pageText,
+// and their result carries a small page's text as browser_navigate's does, under their own tool's name.
+async function testTabsNewAndBackCarryTheTextOfASmallPage() {
+  const notice = '- heading "Notice" [ref=e9] [level=1]\n- text "Open 13:00–18:00 on 2027-06-12."';
+  const compact = '- heading "Notice" [ref=e9] [level=1]';
+  const h = harness({ 7: { action: compact, read: notice }, 8: { action: compact, read: notice } });
+  const a = { ownerId: 'claude-101' };
+  const opened = await h.context.handleCommand({ action: 'newTab', url: 'https://shop.test/orders', wait: true, pageText: true, ...a });
+  assert.deepEqual({ ...opened }, { ok: true, tabId: 8, url: 'https://shop.test/orders', status: 'complete', snapshot: notice });
+  assert.deepEqual(h.context.postActionReads.map(read => [read.tabId, read.text, read.maxChars, read.observation]),
+    [[8, true, 2000, 'browser_tabs']]);
+  assert.equal((await h.snapshot({ tabId: 8 })).snapshot, notice, 'another caller gets the page');
+  assert.deepEqual({ ...await h.snapshot({ tabId: 8, ...a }) }, { snapshot: 'unchanged since the browser_tabs result (refs e9)',
+    unchanged_since: 'browser_tabs', url: 'https://shop.test/orders', title: 'Orders', readyState: 'complete' });
+  const back = await h.context.handleCommand({ action: 'goBack', tabId: 7, pageText: true, ...a });
+  assert.deepEqual({ ...back }, { ok: true, tabId: 7, snapshot: notice });
+  assert.equal((await h.snapshot({ tabId: 7, ...a })).snapshot, 'unchanged since the browser_navigate_back result (refs e9)');
+  // A back that starts no load (no history, a same-document entry) reads the page as it is, after
+  // ACTION_NAVIGATION_START_MS.
+  h.context.backLoads = false;
+  const started = Date.now();
+  assert.equal((await h.context.handleCommand({ action: 'goBack', tabId: 7, pageText: true })).snapshot, notice);
+  assert.ok(Date.now() - started >= 1000, 'waited for a load to start');
+  assert.equal((await h.snapshot({ tabId: 7 })).unchanged_since, 'browser_navigate_back');
+}
+
+// Without pageText, without a load wait, for a page past NAVIGATION_TEXT_LIMIT, for a back still loading,
+// or with post-action snapshots off, the result is as before #448, and nothing answers unchanged_since.
+async function testTabsNewAndBackOtherwiseKeepTheirResult() {
+  const h = harness();
+  const asBefore = async (params, expected, label) => {
+    // A back drops the record of the result before it, as any page action does.
+    if (params.action === 'goBack') await h.context.handleCommand({ action: 'navigate', url: 'https://shop.test/orders', tabId: 7 });
+    h.context.postActionReads.length = 0;
+    assert.deepEqual({ ...await h.context.handleCommand(params) }, expected, label);
+    if (!label.startsWith('too large')) assert.equal(h.context.postActionReads.length, 0, label);
+    const next = await h.snapshot({ tabId: params.tabId ?? 8 });
+    assert.equal(next.snapshot, h.pages[params.tabId ?? 8].read, label);
+    assert.equal(next.unchanged_since, undefined, label);
+  };
+  const opened = { ok: true, tabId: 8, url: 'https://shop.test/orders', status: 'complete' };
+  const newTab = { action: 'newTab', url: 'https://shop.test/orders', wait: true };
+  await asBefore({ ...newTab }, opened, 'newTab without pageText');
+  await asBefore({ ...newTab, wait: false, pageText: true }, opened, 'newTab without wait');
+  await asBefore({ ...newTab, pageText: true, includeSnapshot: false }, opened, 'newTab, snapshots off');
+  h.context.newTabResult = { ok: false, timedOut: true };
+  await asBefore({ ...newTab, pageText: true }, { ...opened, ok: false, timedOut: true }, 'newTab timed out');
+  delete h.context.newTabResult;
+  h.context.backLoads = false;
+  const started = Date.now();
+  await asBefore({ action: 'goBack', tabId: 7 }, { ok: true, tabId: 7 }, 'goBack without pageText');
+  assert.ok(Date.now() - started < 500, 'a back without pageText does not wait for a load');
+  await asBefore({ action: 'goBack', tabId: 7, pageText: true, includeSnapshot: false }, { ok: true, tabId: 7 },
+    'goBack, snapshots off');
+  h.context.backLoads = true;
+  h.pages[7].read = PAGE + `\n- text "${'x'.repeat(2000)}"`;
+  h.pages[8].read = h.pages[7].read;
+  await asBefore({ ...newTab, pageText: true }, opened, 'too large newTab');
+  assert.deepEqual(h.context.postActionReads.map(read => [read.text, read.maxChars]), [[true, 2000]]);
+  await asBefore({ action: 'goBack', tabId: 7, pageText: true }, { ok: true, tabId: 7 }, 'too large goBack');
+  assert.deepEqual(h.context.postActionReads.map(read => [read.text, read.maxChars]), [[true, 2000]]);
+  h.pages[7].read = h.pages[8].read = PAGE;
+  const wait = h.context.waitForActionNavigation;
+  h.context.waitForActionNavigation = async () => 'pending';
+  await asBefore({ action: 'goBack', tabId: 7, pageText: true }, { ok: true, tabId: 7 }, 'goBack still loading');
+  h.context.waitForActionNavigation = wait;
+}
+
 async function testOnlyAfterAFullUntruncatedResult() {
   const h = harness();
   // A delta-only result.
@@ -171,6 +245,8 @@ async function testScopedSnapshotsReturnThePage() {
 (async () => {
   await testASnapshotAfterAFullActionResultIsUnchanged();
   await testANavigationCarriesTheTextOfASmallPage();
+  await testTabsNewAndBackCarryTheTextOfASmallPage();
+  await testTabsNewAndBackOtherwiseKeepTheirResult();
   await testOnlyAfterAFullUntruncatedResult();
   await testOnlyTheSameTabDocumentAndText();
   await testOnlyTheCallerThatGotTheActionResult();

@@ -1006,6 +1006,10 @@ const FULL_SNAPSHOT_ACTIONS = new Set(['submitForm', 'navigate']);
 // text lines, when that fits this budget (#401); a larger page keeps the compact snapshot. It is
 // then the snapshot a following browser_snapshot reads, which answers unchanged_since (#400).
 const NAVIGATION_TEXT_LIMIT = 2000;
+// The core browser_tabs action=new url= (a newTab with wait) and browser_navigate_back send pageText
+// (#448): their result then carries the page's readable snapshot as browser_navigate's does, under
+// the tool named here, when it fits NAVIGATION_TEXT_LIMIT. A larger page leaves the result as it was.
+const PAGE_TEXT_ACTIONS = new Map([['newTab', 'browser_tabs'], ['goBack', 'browser_navigate_back']]);
 // ── Repeated snapshots (#384) ──
 // tabId -> { tool, snapshot, load, url, caller } of the tab's last action result when it carried a
 // whole, untruncated snapshot (not a delta). The next whole-page snapshot that asks (skipUnchanged),
@@ -1201,6 +1205,8 @@ async function handleCommand(command) {
     if (params.toRef) params.to = params.toRef;
   }
   const withSnapshot = POST_SNAPSHOT_ACTIONS.has(params.action) && params.includeSnapshot !== false;
+  const pageText = PAGE_TEXT_ACTIONS.has(params.action) && params.pageText === true &&
+    params.includeSnapshot !== false && (params.action !== 'newTab' || !!params.wait);
   const deltaSnapshot = withSnapshot && params.snapshot !== 'full' && !FULL_SNAPSHOT_ACTIONS.has(params.action);
   // The content script records the delta's baseline right before it acts. keepBaseline: diff
   // against the baseline an earlier action recorded (deltaBaseline without a snapshot), as
@@ -1236,7 +1242,7 @@ async function handleCommand(command) {
   const touched = touches ? params.tabId : null;
   if (touched != null) touchStart(touched);
   try {
-    const result = await runCommand(params, { withSnapshot, deltaSnapshot, textSnapshot, tracksOpenedTabs });
+    const result = await runCommand(params, { withSnapshot, deltaSnapshot, textSnapshot, tracksOpenedTabs, pageText });
     if (['screenPoint', 'agentInput', 'focusState'].includes(params.action)) return tabAdmissionError(params) || result;
     return repeatSnapshot && params.tabId != null ? await unchangedSince(params.tabId, actionCaller(params), result) : result;
   } catch (e) {
@@ -1357,7 +1363,9 @@ async function runCommand(params, options) {
   }
 }
 
-async function runCommandSettled(params, { withSnapshot, deltaSnapshot, textSnapshot, tracksOpenedTabs }, watch) {
+async function runCommandSettled(params, { withSnapshot, deltaSnapshot, textSnapshot, tracksOpenedTabs, pageText }, watch) {
+  // The load a goBack starts, which its page text waits for like an action that navigates (#349).
+  const back = pageText && params.action === 'goBack' ? { loadBefore: tabLoads.get(params.tabId) } : null;
   const result = await dispatchCommand(params);
   let navigation = null;
   if (watch && result && !result.error && result.ok !== false) {
@@ -1398,8 +1406,7 @@ async function runCommandSettled(params, { withSnapshot, deltaSnapshot, textSnap
       };
       let snapshot = null;
       if ((params.action === 'navigate' || navigation) && !params.snapshotText) {
-        const readable = await forwardToContent('getSnapshot', { ...request, maxChars: NAVIGATION_TEXT_LIMIT, text: true });
-        if (!readable.error && !readable.truncated) snapshot = readable;
+        snapshot = await navigationTextSnapshot(request);
       }
       snapshot ??= await forwardToContent('getSnapshot', request);
       if (snapshot.error) result.snapshot_error = snapshot.error;
@@ -1427,6 +1434,14 @@ async function runCommandSettled(params, { withSnapshot, deltaSnapshot, textSnap
       }
     } catch (e) { result.snapshot_error = e.message; }
   }
+  if (pageText && result && !result.error && result.ok !== false) {
+    const tabId = params.action === 'newTab' ? result.tabId : params.tabId;
+    // A back still loading after ACTION_NAVIGATION_WAIT_MS has no page to read yet; one that started
+    // no load (no history, a same-document entry) reads the page as it is.
+    if (!back || await waitForActionNavigation(tabId, back, params) !== 'pending') {
+      await carryPageText(tabId, PAGE_TEXT_ACTIONS.get(params.action), result, actionCaller(params));
+    }
+  }
   if (blankLink && params.tabId != null) await openBlockedLink(params.tabId, blankLink, result, params.ownerId, params);
   // A middle or Ctrl/Cmd click's link opens like a popup-blocked one; a cancelled click is the page's.
   if (newTabLink && !newTabLink.prevented && params.tabId != null) {
@@ -1450,6 +1465,27 @@ async function tabUrl(tabId) {
   } catch {
     return null;
   }
+}
+
+// The readable snapshot, with its text lines, of a page a navigation loaded when the whole page fits
+// NAVIGATION_TEXT_LIMIT (#401); null for a larger page.
+async function navigationTextSnapshot(request) {
+  const readable = await forwardToContent('getSnapshot', { ...request, maxChars: NAVIGATION_TEXT_LIMIT, text: true });
+  return readable.error || readable.truncated ? null : readable;
+}
+
+// A pageText result (see PAGE_TEXT_ACTIONS) with the page tool's snapshot, which a following
+// browser_snapshot of the same page answers with unchanged_since (#384).
+async function carryPageText(tabId, tool, result, caller) {
+  try {
+    const snapshot = await navigationTextSnapshot({ tabId, focusLastAction: false, observation: tool });
+    if (!snapshot) return;
+    result.snapshot = snapshot.snapshot;
+    if (snapshot.hint) result.snapshot_hint = snapshot.hint;
+    if (snapshot.visibilityState) result.visibilityState = snapshot.visibilityState;
+    if (snapshot.needs_user) result.needs_user = snapshot.needs_user;
+    if (snapshot.snapshot) await recordActionPage(tabId, tool, snapshot.snapshot, caller);
+  } catch {}
 }
 
 async function recordActionPage(tabId, tool, snapshot, caller) {

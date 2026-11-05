@@ -119,8 +119,12 @@ class AdapterTests(unittest.TestCase):
         self.post.return_value = {"ok": True, "tabId": 11}
         self.get.return_value = {"tabs": [*tabs["tabs"], {"id": 11, "title": "D", "url": "https://d/", "owned": True}]}
         playwright_tools.browser_tabs("new", url="https://d/")
-        self.assertEqual(self.posted()[-1][1]["url"], "https://d/")
-        self.assertIs(self.posted()[-1][1]["wait"], True)
+        # #448: with a url, new waits for the load and asks for the small page's text.
+        self.assertEqual(self.posted()[-1], ("/api/new-tab", {"url": "https://d/", "wait": True, "timeout": 15000,
+                                                              "pageText": True}))
+        self.assertEqual(playwright_tools._current_tab, 11)
+        playwright_tools.browser_tabs("new")
+        self.assertEqual(self.posted()[-1], ("/api/new-tab", {"url": "about:blank"}))
         self.assertEqual(playwright_tools._current_tab, 11)
 
         self.post.return_value = {"ok": True}
@@ -600,6 +604,8 @@ class AdapterTests(unittest.TestCase):
         playwright_tools.browser_navigate_back(tab_id=9)
         self.assertEqual([(endpoint, body.get("tabId")) for endpoint, body in self.posted()],
                          [("/api/navigate", 4), ("/api/navigate", 9), ("/api/back", 4), ("/api/back", 9)])
+        # #448: back asks for the small page's text, as browser_navigate's result carries it (#401).
+        self.assertEqual(self.posted()[-1], ("/api/back", {"pageText": True, "tabId": 9}))
         for name in ("browser_navigate", "browser_navigate_back"):
             self.assertNotIn("tab_id", playwright_tools.SCHEMAS[name]["inputSchema"]["properties"])
 

@@ -55,6 +55,17 @@ class TabResultTests(unittest.TestCase):
                 {"index": 2, "title": "D", "url": "https://d/", "current": True, "owned": True}]})
         self.assertEqual(playwright_tools._current_tab, 11)
 
+    def test_new_with_a_url_carries_the_page_text(self):
+        # #448: like browser_navigate's (#401), the extension's pageText snapshot of a small page is in the result.
+        bridge = self.post.side_effect
+        self.post.side_effect = lambda endpoint, data, timeout=15: (
+            {**bridge(endpoint, data), "snapshot": '- text "Open 13:00–18:00"'} if endpoint == "/api/new-tab"
+            else bridge(endpoint, data))
+        result = playwright_tools.browser_tabs("new", url="https://d/")
+        self.assertEqual((result["snapshot"], result["index"]), ('- text "Open 13:00–18:00"', 2))
+        endpoint, body = self.post.call_args.args
+        self.assertEqual((endpoint, body["pageText"]), ("/api/new-tab", True))
+
     def test_select_returns_the_tabs_with_the_current_marker(self):
         self.assertEqual(playwright_tools.browser_tabs("select", index=1), {
             "ok": True, "index": 1, "tabs": [
