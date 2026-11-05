@@ -346,6 +346,16 @@ Snapshots in one tab do not affect refs in another tab. Pass `tab_id` when more
 than one tab is in use: a ref sent to the wrong tab fails as `other_document` and
 never acts on another element.
 
+A ref can fail as `other_document` because it came from another tab or because its tab
+has since started loading another document. If a snapshot line listed that ref and the
+targeted tab's page (the whole page, as `browser_find` reads it) lists exactly one element
+with that line's role and name, `state.same_element` is `{ref, role, name}` for that
+element and the hint names it: `The same textbox "Reply" here is e14; retry with it.`
+Nothing is sent to that element. The page there can differ from the one the ref came
+from, so retry with its ref only if it is the element you meant. With no or several such
+elements, a page listing a readable cross-origin frame, or no answer within 2 s, the error
+is unchanged.
+
 After an action, use the refs in its `snapshot`. `target_ref` is the ref of
 the acted-on element (absent for `browser_navigate`, or when that element is gone),
 so a follow-up such as `browser_keypress(key="Enter", ref=target_ref)` needs no
@@ -366,6 +376,8 @@ Recovering without repeating a consequential action:
 - For `stale_ref`, `state.reason` distinguishes `element_removed`, `not_in_snapshot`
   (unknown/unissued alias) and `other_document`. Observe the intended tab/document
   again and select its current node; do not infer that a replacement is the old node.
+  An `other_document` error's `state.same_element`, when present, already names the one
+  element there with the same role and name.
   Newer observations alone do not cause stale refs; no `latestObservation` or
   `currentRef` substitution is needed or returned.
 - To get refs after a successful write, use its `snapshot`/`target_ref` (with
@@ -391,7 +403,10 @@ afterwards the delta lists the acted-on target and every line that record lacks:
 newly shown elements (an opened menu's options, a toast, autocomplete suggestions) and
 elements whose name, value or state changed. A popup the action opened is listed even when
 it is not rendered, marked `[not_rendered]` (see [Opened popups](#opened-popups)). Unchanged parts of the page, such as a
-header above the target, are left out; removed elements are not listed. A delta is
+header above the target, are left out. An element the record lists that is now detached or
+hidden (a closed dialog, a hidden listbox) is named in one line after the rest, with the ref
+the agent already has for it, if any: `- removed: dialog "알림 설정" [ref=e4]`. What was under it
+is not listed (#457). A delta is
 capped at 4,000 characters like a full snapshot (`snapshot_truncated`); when truncated,
 `snapshot_hint` gives scope guidance, including when the target/context did not fit
 and `target_ref` was omitted. A same-document URL or title change (`history.pushState`)
@@ -403,25 +418,30 @@ adds `url` or `title`:
   "snapshot": "- main \"\" [ref=e40]\n  - button \"Review type\" [ref=e41] [expanded=true]\n  - listbox \"Review type\" [ref=e90]\n    - option \"Negative\" [ref=e91]" }
 ```
 
-An empty delta means nothing visible changed apart from removals. Use `expect` to
-verify an outcome, or `browser_snapshot` for the whole page.
+An empty delta means nothing visible changed. Use `expect` to verify an outcome, or
+`browser_snapshot` for the whole page.
 
 **Waiting for the page (#348).** A delta is taken once the page has reacted to the action,
 not right after dispatch. The bridge waits:
 
 - at least 400 ms after the action (1.1 s in a hidden tab, where Firefox delays page timers to
-  at least 1 s);
+  at least 1 s). In a visible tab a plain field write has no minimum (#460): a fill
+  (`browser_type` without `slowly`, `browser_fill_form`), select or check of a native field
+  without `role=combobox`, `aria-autocomplete` or a `list` attribute. Typing slowly, keys,
+  clicks and fields with that markup keep it, and so does a `browser_fill_form` call when any
+  of its fields does;
 - until the page has made no DOM change for 150 ms, counting changes in same-origin frames and
   shadow roots;
 - until the XHR/fetch, script and frame requests the tab started after the action are done.
 
 It waits at most 1.5 s, or 4 s while such requests are pending. This covers confirmations,
-status lines and autocomplete lists that render a moment later, including debounced ones. A
+status lines and autocomplete lists that render a moment later, including debounced ones
+(a debounced reaction to a plain field write, such as a filter box, may come after the delta). A
 delta also lists text the action made appear anywhere on the page as `text` lines (for
 example `- text "Saved."`), also when the snapshot is otherwise compact. In a run of similar
 items, up to 20 items that are new since the delta's baseline are listed even past the first
 five that a snapshot shows, so the next batch of an infinite list is named, not only counted. When the delta found
-no new or changed line and the URL and title are the same, the result adds
+no new, changed or removed line and the URL and title are the same, the result adds
 `no_visible_change: true`, unless during the wait the page added an element (still attached when
 the delta is read) or an editor's content changed, which a delta may not show, or a request the
 wait watches is still pending (#385). A change that comes after the wait is not seen: use `expect` or
@@ -446,6 +466,13 @@ characters) as before. A short notice or confirmation page then needs no `browse
   "snapshot": "- heading \"Hollow Knight Silksong\" [ref=e91] [level=1]\n…" }
 ```
 
+The core `browser_tabs action=new url=…` and `browser_navigate_back` results carry the same
+readable snapshot when the page fits 2,000 characters (#448); a larger page adds nothing, so
+their result is as before. Back waits for the page it loads, as an action that navigates does:
+up to 1 s for the load to start and 10 s for it to finish. A back still loading by then carries
+no snapshot, and one that starts no load (no history, a same-document entry) reads the page as it
+is. `browser_tabs action=new` without a url opens `about:blank` and carries nothing.
+
 **A snapshot that repeats a full action result (#384).** Agents often send `browser_snapshot`
 in the same turn as an action, before reading its result, so a page that result already carried
 would be sent twice. The core `browser_snapshot` without `target`, `depth`, `boxes` or `filename`
@@ -462,7 +489,8 @@ and the refs' range:
 That result's snapshot and refs describe the page. This applies only:
 
 - after a full snapshot (`navigated`, `browser_navigate`, `browser_submit_form`, `snapshot:
-  "full"`), not a delta, a truncated snapshot or `navigation_pending`;
+  "full"`, or the page text of `browser_tabs action=new url=…` and `browser_navigate_back`,
+  #448), not a delta, a truncated snapshot or `navigation_pending`;
 - to the first such snapshot of the same tab after it; any other page action on the tab ends it;
 - to the caller that got that result: the same client (its owner id) and handoff session. Any
   other caller never saw it and gets the page (#442);
@@ -555,7 +583,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `key_denied` | `browser_trusted_press_key` was asked for a chord that closes, quits or leaves the browser (`Meta+Q`, `Meta+W`, `Meta+Tab`, ...); nothing was pressed | false |
 | `not_actionable` | An [actionability wait](#actionability-wait) timed out on a target that exists but never rendered (`state.reason: "not_rendered"`, `timeoutMs`, `elapsed`); nothing was dispatched | true |
 | `unsupported_selector` | The shared target resolver rejected unsupported/invalid syntax (see [Target selectors](#target-selectors)) before dispatch; `state.selector` echoes the selector and `hint` lists accepted forms. Applies to actions, scoped snapshots and element screenshots | false |
-| `stale_ref` | The ref is no longer valid; `state.reason` is `element_removed`, `not_in_snapshot` (unknown/unissued ref), or `other_document` (the tab navigated, or the ref came from another tab) | true |
+| `stale_ref` | The ref is no longer valid; `state.reason` is `element_removed`, `not_in_snapshot` (unknown/unissued ref), or `other_document` (the tab navigated, or the ref came from another tab; `state.same_element` then names the one element there with the ref's role and name, if exactly one) | true |
 | `navigating` | The tab is loading: a `not_found`/`stale_ref` while loading (`state.cause`), or the page unloaded while handling the command. Also a page that refused the content script within 5 s of a wake or reload without an error status, or whose 2xx response arrived only while the command waited for it: it may be an old document about to be replaced | true before dispatch; false for writes after |
 | `tab_closed` | The target tab no longer exists | true |
 | `tab_unloaded` | The tab is discarded and its page cannot be reached; use `browser_wake_tab`. Reads wake it themselves (#449), so writes report it | true |
@@ -1371,7 +1399,10 @@ after approval preserves ownership. A decline returns `needs_user` with
 `state.decision="declined"` and recommends an agent-created tab.
 
 A successful handoff is `owned` for this requesting session, including DOM/browser writes
-without further handoff prompts (ordinary policy checks and `user_active` still apply). The popup
+without further handoff prompts (ordinary policy checks and `user_active` still apply). Approval
+releases text the user left in a focused field of the tab or its frames, so a half-filled form
+they hand over does not refuse the agent's writes with `user_active` `typing`; the 3 s `input`
+window still applies, and the user's later typing in a field counts again (#456). The popup
 lists handed-off tabs by client and provides **Take back**. Taking back immediately revokes
 permission without changing the user's view. It does not undo an action already sent to
 the page. Other clients' tabs, including handoffs to another simultaneous session
@@ -1587,12 +1618,16 @@ and `state.reason`:
 | `state.reason` | The user is | Window |
 |---|---|---|
 | `input` | giving the page trusted input: `keydown`, `mousedown`, `pointerdown`, `touchstart`, `wheel` or `paste` (`state.input`, `state.sinceMs`, `state.windowMs`) | 3 s after the last such event |
-| `typing` | typing in a field: the input, textarea, editor or custom element (a shadow-root field shows as its host) that last got a trusted `keydown` or `paste` still has focus, holds content, and its document has focus (`state.field` is its tag; the value is never read out) | while all of that holds |
+| `typing` | typing in a field: the input, textarea, editor or custom element (a shadow-root field shows as its host) that last got a trusted `keydown` or `paste` still has focus, holds content, and its document has focus (`state.field` is its tag; the value is never read out; `state.sinceMs` since the document's last trusted input, `state.windowMs`) | while all of that holds, at most 10 s after the last such input |
 | `navigating` | loading a new document in the tab they see (address bar, back button, a link), and no agent command on the tab started it (`state.sinceMs`) | while it loads, at most 10 s |
 
 On your own tab, wait a few seconds and retry. Input does not transfer ownership.
-Typing releases when the field loses focus or is emptied; merely pausing between keys
-in a focused, nonempty field does not release it. Once a check has seen the release, the
+Typing releases when the field loses focus or is emptied, when the user gives its
+document no trusted input for 10 s (#456), or when the user approves a
+[handoff](#requesting-and-returning-a-tab) of the tab, which releases the drafts of the
+tab's top document and child frames. The 10 s limit is more than three input windows, long
+enough that a pause to think mid-sentence keeps the draft, and matches the bound on a user
+navigation. For `typing` the hint names these releases instead of only asking for a retry. Once a check has seen the release, the
 field counts again only after the user's next trusted `keydown` or `paste` in it, so the
 agent's own focus or text there does not hold the tab. Checked actions: click, double-click, type/fill/editable, select, check,
 keypress, submit, form fill, hover, scroll, drag, focus, blur, JavaScript, upload,
@@ -2616,19 +2651,22 @@ text; subtree text is used only when at most 80 characters and five elements lon
 
 Consecutive composite siblings (children containing elements, or list items) with
 identical tag/role/input-type structure show the first five items, followed by
-`- … N more similar items; snapshot e14 to list all`. Names, IDs and classes do not
+`- … N more similar items; snapshot e14 to list all`. A marker always hides at least three
+items: a run of up to seven is listed in full, and a run of eight shows five items and
+`- … 3 more similar items`. Names, IDs and classes do not
 affect the signature. Leaf controls such as toolbar buttons are not collapsed. Hidden
 items are excluded from grouping; collapsed items get no new refs from this snapshot. The
 marker's ref (`e14`) names the items' container (a `tbody`, list or grid, which may have no
 line of its own): a snapshot scoped to that container, by this ref or a selector, lists up
-to 100 consecutive similar items of its own. Past that it shows
+to 100 consecutive similar items of its own, or all of up to 102. Past that it shows
 `- … N more similar items; use browser_find to locate a specific one`. Runs nested deeper
 inside it still collapse after five items, each with its own marker. The core
 `browser_find` searches every item, collapsed or not (it reads HTTP `/api/snapshot` with
 `"collapse": false`), and its matches carry refs that actions accept. Post-action snapshots
 additionally keep the acted-on target's item, even beyond the first five, and return its
-`target_ref`; a delta lists a run's marker after any of the run's lines it lists, or when
-the number of collapsed items changed. Character-limit
+`target_ref` (a marker between listed items also hides at least three); a delta lists a
+run's marker after any of the run's lines it lists, or when the number of collapsed items
+changed. Character-limit
 truncation prioritizes the acted-on target and its ancestor context when that complete
 block fits. If it cannot fit, target_ref is omitted and truncation guidance says so.
 
@@ -3526,6 +3564,13 @@ single reads (see `browser_wait_for`); a zero timeout performs one immediate che
   it also carries `code: "navigation_stalled"`, `retryable: false`, and the recovery `hint` of
   [`new_tab_stalled`](#post-apinew-tab) (#366). A requested `about:` URL never gets this code.
 
+### POST /api/back
+`{ "tabId": 1 }` goes back in the tab's history and returns `{ "ok": true, "tabId": 1 }` once
+dispatched. `"pageText": true`, an internal flag the core `browser_navigate_back` sends, waits
+for the page it loads and adds the page's readable `snapshot` when it fits 2,000 characters
+(see [Post-action snapshots](#post-action-snapshots), #448). With
+`KITSUNE_POST_ACTION_SNAPSHOT=0` the flag does nothing.
+
 ### POST /api/new-tab
 `{ "url": "https://example.com" }` — url optional, defaults to about:blank.
 Opens an agent-owned tab in the background (it is not shown; see
@@ -3538,6 +3583,9 @@ On timeout the tab stays open and the result is
 `{ "ok": false, "timedOut": true, "tabId": 123, "url": "...", "status": "loading" }`.
 While Zen's first-run welcome screen is open, the browser keeps reporting a loaded tab's URL as
 `about:blank` (#360); the wait then asks the page, and `url` is the page's own URL.
+With `wait`, `"pageText": true`, an internal flag the core `browser_tabs action=new url=…` sends,
+adds the loaded page's readable `snapshot` when it fits 2,000 characters, as a `browser_navigate`
+result has it (#448); a larger page, a timeout or `KITSUNE_POST_ACTION_SNAPSHOT=0` adds nothing.
 
 If the wait times out with the tab still `about:blank` / `complete`, and the page cannot confirm
 a loaded destination, the result also carries `code: "new_tab_stalled"`, `retryable: false`, and

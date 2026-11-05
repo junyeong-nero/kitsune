@@ -381,10 +381,16 @@
   // using. Only trusted input counts: Kitsune's own DOM events are synthetic (isTrusted false),
   // and the trusted OS click of browser_trusted_click follows its screenPoint, which opens a
   // window for its pointer events and for key presses of the modifiers it holds. Typing counts
-  // while the field the user typed into keeps focus in a focused document and is not empty.
-  // Values are never read out.
+  // while the field the user typed into keeps focus in a focused document and is not empty, for
+  // at most USER_TYPING_IDLE_MS after the user's last trusted input. Values are never read out.
   const USER_INPUT_EVENTS = ['keydown', 'mousedown', 'pointerdown', 'touchstart', 'wheel', 'paste'];
   const USER_INPUT_WINDOW_MS = 3000;
+  // A focused draft no user input touched for 10 s no longer holds the tab (#456): the user who
+  // left text in a field and stopped (a half-filled form handed off, a comment typed in the agent's
+  // tab) otherwise blocks every write until they leave the field. 10 s is over three input windows,
+  // which covers a pause to think or read mid-sentence, and is the same bound as a user navigation
+  // (background.js USER_NAVIGATION_WINDOW_MS), so a retrying agent gets through within seconds.
+  const USER_TYPING_IDLE_MS = 10000;
   const AGENT_TRUSTED_CLICK_MS = 2000;
   let lastUserInput = null;   // { at, type }
   let userTypedField = null;  // the editable element (as the document sees it) the user last typed into
@@ -430,11 +436,15 @@
         windowMs: USER_INPUT_WINDOW_MS } };
     }
     const field = userTypedField;
-    if (field?.isConnected && field === document.activeElement && document.hasFocus() && hasUserContent(field)) {
-      return { active: true, state: { reason: 'typing', field: field.tagName.toLowerCase() } };
+    const idleMs = lastUserInput ? now - lastUserInput.at : Infinity;
+    if (field?.isConnected && field === document.activeElement && document.hasFocus() && hasUserContent(field) &&
+        idleMs < USER_TYPING_IDLE_MS) {
+      return { active: true, state: { reason: 'typing', field: field.tagName.toLowerCase(), sinceMs: idleMs,
+        windowMs: USER_TYPING_IDLE_MS } };
     }
-    // Released (focus left the field, or it is empty): the agent's own later focus or text there
-    // is not the user's draft. Only document focus loss keeps the field for when focus returns.
+    // Released (focus left the field, it is empty, or the user left it idle): the agent's own later
+    // focus or text there is not the user's draft. Only document focus loss keeps the field for
+    // when focus returns.
     if (field && document.hasFocus()) userTypedField = null;
     // pageFocused: focus is in this page or one of its frames, for child frames' drafts (frame-input.js).
     return { active: false, pageFocused: document.hasFocus() };
@@ -491,6 +501,7 @@
       'openedPopup':           () => takeOpenedPopup(),
       'fill':                  () => fillFieldSafe(msg.selector, msg.value, msg.first),
       'find':                  () => findElements(msg.query),
+      'sameElement':           () => sameElement(msg.label),
       // @kitsune-dev-only:start
       'executeJS':             () => executeJS(msg.code, msg.selector),
       'waitForResult':         () => waitForResult(msg.code, msg.timeout, msg.pollInterval),
@@ -506,6 +517,8 @@
       'focusState':            () => focusState(msg.selector, msg.first),
       'agentInput':            () => agentInput(msg.ms),
       'userActivity':          () => userActivity(),
+      // The user approved handing this tab to an agent (#456): their draft no longer holds it.
+      'releaseUserDraft':      () => { userTypedField = null; return { ok: true }; },
       'captureMeasure':        () => captureMeasure(msg.selector),
       'captureScrollIntoView': () => captureScrollIntoView(msg.selector, msg.block),
       'captureScroll':         () => captureScroll(msg.to, msg.by, msg.left),
@@ -573,9 +586,10 @@
       }
       // A delta post-action snapshot is diffed against the page right before the action runs.
       // The baseline always records text lines: a delta lists text the action made appear (#348).
+      const act = PLAIN_FIELD_ACTIONS.has(msg.action) ? () => noteFieldWrite(handler()) : handler;
       const run = msg.deltaBaseline
-        ? () => { takeActionBaseline(true); startSettleWatch(); return handler(); }
-        : msg.settleWatch ? () => { startSettleWatch(); return handler(); } : handler;
+        ? () => { takeActionBaseline(true); lateFieldWrite = false; startSettleWatch(msg.action); return act(); }
+        : msg.settleWatch ? () => { startSettleWatch(msg.action); return act(); } : act;
       if (msg.wait && (POINTER_WAIT_ACTIONS.has(msg.action) || VALUE_WAIT_ACTIONS.has(msg.action))) {
         waitForActionable(msg).then(failure => failure || run())
           .then(respond).catch(e => respond(errorResult(e)));
@@ -892,6 +906,9 @@
   // A run of similar siblings shows its first COLLAPSED_ITEM_LIMIT items. A snapshot scoped to
   // their container shows up to SCOPED_ITEM_LIMIT of its own; browser_find searches the rest.
   const COLLAPSED_ITEM_LIMIT = 5;
+  // A marker costs about as much as one item's line (#458): items it would hide fewer than
+  // COLLAPSE_MIN_HIDDEN of are listed instead, so a run of up to 7 is listed in full.
+  const COLLAPSE_MIN_HIDDEN = 3;
   const NEW_ITEM_LIMIT = 20;
   const SCOPED_ITEM_LIMIT = 100;
 
@@ -912,6 +929,22 @@
   // anywhere (up to SETTLE_ADDED_LIMIT; more set changed) and edits inside an editor (changed).
   let settleWatch = null;
   const SETTLE_ADDED_LIMIT = 200;
+  // The settle floor (#460): settleState says floor=false when the action is a fill, select or
+  // check of a native field without autocomplete markup, and the background then skips its
+  // minimum wait. Typing, keys, clicks and a field with role=combobox, aria-autocomplete or a
+  // datalist (list) keep it: their reaction is often debounced and changes nothing until it
+  // fires. lateFieldWrite: a field written since the delta baseline has such markup, so
+  // browser_fill_form's last field keeps the floor when an earlier one needs it.
+  const PLAIN_FIELD_ACTIONS = new Set(['fill', 'selectOption', 'checkBox']);
+  let lateFieldWrite = false;
+
+  function noteFieldWrite(result) {
+    const el = lastActedElement;
+    const autocomplete = (el?.getAttribute('aria-autocomplete') || 'none').trim().toLowerCase();
+    if (!el || !FILL_TAGS.includes(el.tagName) || /(^|\s)combobox(\s|$)/i.test(el.getAttribute('role') || '') ||
+        autocomplete !== 'none' || el.hasAttribute('list')) lateFieldWrite = true;
+    return result;
+  }
 
   function noteSettleRecords(watch, records) {
     for (const record of records) {
@@ -932,9 +965,9 @@
     return watch.changed || watch.added.some(node => node.isConnected);
   }
 
-  function startSettleWatch() {
+  function startSettleWatch(action) {
     stopSettleWatch();
-    const watch = { start: Date.now(), last: Date.now(), mutations: 0, added: [], changed: false };
+    const watch = { action, start: Date.now(), last: Date.now(), mutations: 0, added: [], changed: false };
     // Absent in vm test harnesses.
     if (typeof MutationObserver === 'function') {
       watch.observer = new MutationObserver(records => {
@@ -962,7 +995,8 @@
     if (!settleWatch) return { watching: false };
     const now = Date.now();
     return { watching: true, elapsedMs: now - settleWatch.start, quietMs: now - settleWatch.last,
-      mutations: settleWatch.mutations, hidden: !!document.hidden };
+      mutations: settleWatch.mutations, hidden: !!document.hidden,
+      floor: lateFieldWrite || !PLAIN_FIELD_ACTIONS.has(settleWatch.action) };
   }
 
   function takeActionBaseline(withText) {
@@ -976,7 +1010,8 @@
   // observation: the tool whose call took this snapshot (an action's post-action snapshot).
   // mode: 'full'; 'baseline' records actionBaseline and returns no snapshot; 'delta' lists only
   // the target and the lines that changed since the baseline, adding refs to the current
-  // document's refs. A delta without a baseline (another document) is full.
+  // document's refs. A delta without a baseline (another document) is full. 'labels' returns
+  // the walk's element entries and changes no observation or action state.
   // collapse=false lists every item of repeated sibling runs (core browser_find searches them).
   // Viewport-relative CSS-pixel bounding box as x,y,width,height.
   function boxOf(el) {
@@ -1004,7 +1039,7 @@
     const full = mode === 'full' || (mode === 'delta' && !baseline);
     let target = null;
     let changedDuringWatch = false;
-    if (mode !== 'baseline') {
+    if (mode === 'full' || mode === 'delta') {
       actionBaseline = null;
       changedDuringWatch = mode === 'delta' && settleWatchChanged(settleWatch);
       stopSettleWatch();
@@ -1012,6 +1047,10 @@
       target = focusLastAction && lastActedElement?.isConnected ? lastActedElement : null;
       lastActedElement = null;
     }
+    // A whole-page delta names removed elements by the refs the agent has for them, which pruning
+    // drops for detached ones (#457).
+    const baselineRefs = baseline && !selector
+      ? new Map([...baseline.lines.keys()].map(el => [el, elementRefs.get(el)])) : null;
     pruneRefMap();
     // Lines whose ref is assigned once a delta is selected are measured with this stand-in.
     const pendingRef = `s${refGeneration}e${refCounter}`;
@@ -1282,8 +1321,10 @@
         if (normalize(plain)) {
           const clipped = text.length > TEXT_LINE_LIMIT ? text.slice(0, TEXT_LINE_LIMIT) + '…' : text;
           const signature = `text ${JSON.stringify(clipped)}`;
+          // A removed text line is named cut like an editor's value (#457).
+          const label = `text ${JSON.stringify(text.length > 160 ? clean(text) + '…' : text)}`;
           append({ line: `${'  '.repeat(Math.min(childDepth, 12))}- ${signature}`,
-            parent, interactive: false, source: el, signature });
+            parent, interactive: false, source: el, signature, label });
         }
       }
       if (maxDepth != null && domDepth >= maxDepth) return;
@@ -1326,12 +1367,23 @@
         // A delta lists up to NEW_ITEM_LIMIT items that are new since its baseline past the
         // collapse (#350): an infinite list's next batch is what the action loaded.
         let newItems = 0;
+        const listed = [];
         for (let i = start; i < end; i++) {
-          runItems.add(children[i]);
           const listNew = i - start >= shown && !!baseline?.items && !baseline.items.has(children[i]) &&
             newItems < NEW_ITEM_LIMIT;
           if (listNew) newItems++;
-          if (i - start < shown || targetAncestors.has(children[i]) || listNew) {
+          listed.push(i - start < shown || targetAncestors.has(children[i]) || listNew);
+        }
+        // Each marker hides at least COLLAPSE_MIN_HIDDEN items (#458), also between listed ones.
+        for (let i = 0; i < listed.length;) {
+          let next = i;
+          while (next < listed.length && !listed[next]) next++;
+          if (next - i < COLLAPSE_MIN_HIDDEN) listed.fill(true, i, next);
+          i = next + 1;
+        }
+        for (let i = start; i < end; i++) {
+          runItems.add(children[i]);
+          if (listed[i - start]) {
             flushOmitted();
             visit(children[i], childDepth, parent, domDepth + 1, named);
           } else omitted++;
@@ -1341,16 +1393,21 @@
       }
     }
     visit(root, 0);
+    if (mode === 'labels') return entries.filter(entry => entry.el);
 
     const record = () => {
       const signatures = new Map();
+      // Each element's first role or text line, and the element of the line it is under: what a
+      // delta names when the element is gone (#457).
+      const lines = new Map();
       for (const entry of entries) {
         const el = entry.el || entry.source;
         if (!el) continue;
         if (!signatures.has(el)) signatures.set(el, new Set());
         signatures.get(el).add(entry.signature);
+        if (entry.label && !lines.has(el)) lines.set(el, { label: entry.label, parent: entries[entry.parent]?.el });
       }
-      return { signatures, items: runItems, url: window.location?.href, title: document.title, withText };
+      return { signatures, lines, items: runItems, url: window.location?.href, title: document.title, withText };
     };
     if (mode === 'baseline') {
       actionBaseline = record();
@@ -1436,7 +1493,7 @@
     }
     if (baseline) {
       // The target, then lines the baseline lacks (new or newly shown elements, changed names,
-      // states or text) in document order, each under its ancestors. Removals are not listed.
+      // states or text) in document order, each under its ancestors, then removals.
       if (targetIndex >= 0) keepTarget();
       const changedFrames = new Set(keepRefs.map(ref => Object.hasOwn(refMap, ref) ? refMap[ref] : null));
       const changed = [];
@@ -1450,14 +1507,31 @@
       });
       const listed = [...changed, ...frameLines].sort((a, b) => a - b);
       for (const i of listed) keep(i);
-      unchanged = !changed.length;
+      // A baseline line whose element is detached or no longer shown (the walk did not reach it)
+      // is a change too (#457): one line names the top element of each removed part, without
+      // what was under it, so a closed dialog is not no_visible_change.
+      const removed = [];
+      if (baselineRefs) {
+        for (const [el, { label, parent }] of baseline.lines) {
+          if (metadata.has(el) || (parent && !metadata.has(parent))) continue;
+          const ref = baselineRefs.get(el);
+          removed.push(`- removed: ${label}${ref ? ` [ref=${ref}]` : ''}`);
+        }
+      }
+      unchanged = !changed.length && !removed.length;
       // A collapse marker follows the listed items of its run.
       entries.forEach((entry, i) => {
         if (entry.run === undefined || kept.has(i)) return;
         for (let j = entry.run; j < i; j++) if (kept.has(j)) return add(i);
       });
-      selected = entries.filter((_, i) => kept.has(i));
-      truncated = listed.some(i => !kept.has(i));
+      const removedShown = [];
+      for (const line of removed) {
+        if (used + line.length + 1 > limit + 1) break;
+        used += line.length + 1;
+        removedShown.push({ line });
+      }
+      selected = [...entries.filter((_, i) => kept.has(i)), ...removedShown];
+      truncated = listed.some(i => !kept.has(i)) || removedShown.length < removed.length;
       // Refs add to the current generation; an element that already has one keeps it.
       // A collapse marker's ref names its container (source).
       for (const entry of selected) {
@@ -1579,6 +1653,16 @@
       } : {}),
       ...withNeedsUser(),
     };
+  }
+
+  // The one element a whole-page snapshot would list with this `role "name"` (label), for a
+  // ref from another document (#459). A readable cross-origin frame's elements are not seen
+  // here, so a page listing one has no answer, as has a label with no or several elements.
+  function sameElement(label) {
+    const entries = getSnapshot(undefined, false, null, null, false, undefined, 'labels', false, false);
+    if (entries.some(entry => entry.frameId)) return {};
+    const matches = entries.filter(entry => entry.label === label);
+    return matches.length === 1 ? { ref: issueRef(matches[0].el) } : {};
   }
 
   // ── Find Elements ──
@@ -4145,7 +4229,7 @@
   // Synchronous reads that share one cache; action handlers are left out, because
   // page handlers they trigger can change the text they report afterwards.
   const REDACTION_CACHED_READS = new Set(['getSnapshot', 'getAccessibilityTree', 'getFormFields', 'find',
-    'query', 'getHTML', 'getReadability', 'getMarkdown', 'explainSelector']);
+    'sameElement', 'query', 'getHTML', 'getReadability', 'getMarkdown', 'explainSelector']);
 
   function withRedactionCache(read) {
     if (redactionCache) return read();

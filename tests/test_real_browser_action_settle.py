@@ -49,6 +49,20 @@ document.getElementById('tags').addEventListener('input', e => {
     "/stall": """<!doctype html><title>stall</title><ul id=items><li>#1</li></ul>
 <button onclick="fetch('/stall-items').then(r => r.text()).then(t => {
   document.getElementById('items').insertAdjacentHTML('beforeend', t); })">더 보기</button>""",
+    # ui-modal (#457): "저장" closes the dialog by setting hidden on its backdrop.
+    "/modal": """<!doctype html><meta charset="utf-8"><title>modal</title><h1>설정</h1>
+<div class=dialog-backdrop><div role=dialog aria-labelledby=dialog-title><h2 id=dialog-title>알림 설정</h2>
+<label><input type=checkbox role=switch> 이메일 알림</label>
+<button onclick="document.querySelector('.dialog-backdrop').hidden = true">저장</button></div></div>""",
+    # ui-autocomplete (#457): an option sets the input's value and hides the listbox. The agent
+    # has typed the whole name, so the value stays the same.
+    "/pick": """<!doctype html><meta charset="utf-8"><title>pick</title><label>도시 <input id=city value=부천></label>
+<ul id=cities role=listbox aria-label="도시 목록"><li role=option>부천</li><li role=option>부평</li></ul><script>
+for (const option of document.querySelectorAll('[role=option]')) option.onclick = () => {
+  document.getElementById('city').value = option.textContent;
+  document.getElementById('cities').hidden = true;
+};
+</script>""",
     "/still": """<!doctype html><title>still</title><button onclick="void 0">아무 일 없음</button>
 <form><label>이메일 <input name=email></label><label><input type=checkbox name=weekly> 주간 소식</label></form>""",
 }
@@ -135,6 +149,21 @@ class RealBrowserActionSettleTests(harness.RealBrowserTestCase):
         _, quick = self.act("/api/click", {"tabId": tab, "ref": self.ref(tab, 'button "아무 일 없음"'),
                                            "includeSnapshot": False})
         self.assertLess(quick, 0.5)
+
+    def test_a_closed_dialog_is_named_as_removed(self):
+        tab = self.open_tab(f"{self.site.origin}/modal")
+        dialog = self.ref(tab, 'dialog "알림 설정"')
+        result, _ = self.act("/api/click", {"tabId": tab, "ref": self.ref(tab, 'button "저장"')})
+        self.assertTrue(result.get("snapshot_delta"), result)
+        self.assertEqual(result["snapshot"], f'- removed: dialog "알림 설정" [ref={dialog}]')
+        self.assertNotIn("no_visible_change", result)
+
+    def test_choosing_the_typed_option_names_the_listbox_as_removed(self):
+        tab = self.open_tab(f"{self.site.origin}/pick")
+        listbox = self.ref(tab, 'listbox "도시 목록"')
+        result, _ = self.act("/api/click", {"tabId": tab, "ref": self.ref(tab, 'option "부천"')})
+        self.assertEqual(result["snapshot"], f'- removed: listbox "도시 목록" [ref={listbox}]')
+        self.assertNotIn("no_visible_change", result)
 
     def test_an_editor_shows_its_text_and_typing_into_it_is_a_change(self):
         tab = self.open_tab(f"{self.site.origin}/memo")

@@ -356,6 +356,9 @@ async function approveHandoff(request) {
   } catch {
     return finishHandoff(request, handoffError());
   }
+  // Approving is the user's decision to let the agent act in the tab: a draft they left focused
+  // there (a half-filled form they hand over) must not refuse what they approved (#456).
+  await releaseUserDrafts(request.tabId);
   if (!valid()) {
     return finishHandoff(request, handoffError());
   }
@@ -654,6 +657,20 @@ async function frameUserActivity(tabId, pageFocused = false) {
   return null;
 }
 
+// Forgets the user's draft in the tab's top document and in each child frame that reported input
+// (only those can hold one), so it no longer counts as typing; the next trusted keydown or paste
+// in a field counts again. Queries wait at most 250 ms, as frameUserActivity's do.
+async function releaseUserDrafts(tabId) {
+  const frameIds = [TOP_FRAME.frameId, ...(frameUserInputs.get(tabId)?.keys() || [])];
+  await Promise.all(frameIds.map(frameId => {
+    let timer;
+    return Promise.race([
+      browser.tabs.sendMessage(tabId, { action: 'releaseUserDraft' }, { frameId }).catch(() => null),
+      new Promise(resolve => { timer = setTimeout(resolve, 250, null); }),
+    ]).finally(() => clearTimeout(timer));
+  }));
+}
+
 async function userActivity(tabId) {
   const tab = await browser.tabs.get(tabId).catch(() => null);
   if (!tab) return null;
@@ -687,6 +704,11 @@ async function guardedTabId(action, params) {
   return (await browser.tabs.query({ windowId, active: true }).catch(() => []))[0]?.id ?? null;
 }
 
+// What releases a typing pause, which waiting alone ends only after the idle limit (#456).
+const USER_TYPING_HINT = 'The user has text in a focused field of this tab (state.field); nothing was done. ' +
+  'It is released once the user gives the page no input for 10 s (state.windowMs; state.sinceMs have ' +
+  'passed), leaves the field, or approves handing you the tab (browser_tabs action=request, for a tab you ' +
+  'do not own). Retry after the remaining time, work in a tab you opened, or ask the user to leave the field.';
 async function userActiveError(tabId, windowId = null) {
   const ids = new Set([tabId]);
   if (windowId != null) {
@@ -694,7 +716,9 @@ async function userActiveError(tabId, windowId = null) {
   }
   for (const id of ids) {
     const state = id != null && await userActivity(id);
-    if (state) return tabError(`The user is using tab ${id}; nothing was done`, 'user_active', state);
+    if (!state) continue;
+    const error = tabError(`The user is using tab ${id}; nothing was done`, 'user_active', state);
+    return state.reason === 'typing' ? { ...error, hint: USER_TYPING_HINT } : error;
   }
   return null;
 }
@@ -982,6 +1006,10 @@ const FULL_SNAPSHOT_ACTIONS = new Set(['submitForm', 'navigate']);
 // text lines, when that fits this budget (#401); a larger page keeps the compact snapshot. It is
 // then the snapshot a following browser_snapshot reads, which answers unchanged_since (#400).
 const NAVIGATION_TEXT_LIMIT = 2000;
+// The core browser_tabs action=new url= (a newTab with wait) and browser_navigate_back send pageText
+// (#448): their result then carries the page's readable snapshot as browser_navigate's does, under
+// the tool named here, when it fits NAVIGATION_TEXT_LIMIT. A larger page leaves the result as it was.
+const PAGE_TEXT_ACTIONS = new Map([['newTab', 'browser_tabs'], ['goBack', 'browser_navigate_back']]);
 // ── Repeated snapshots (#384) ──
 // tabId -> { tool, snapshot, load, url, caller } of the tab's last action result when it carried a
 // whole, untruncated snapshot (not a delta). The next whole-page snapshot that asks (skipUnchanged),
@@ -1177,6 +1205,8 @@ async function handleCommand(command) {
     if (params.toRef) params.to = params.toRef;
   }
   const withSnapshot = POST_SNAPSHOT_ACTIONS.has(params.action) && params.includeSnapshot !== false;
+  const pageText = PAGE_TEXT_ACTIONS.has(params.action) && params.pageText === true &&
+    params.includeSnapshot !== false && (params.action !== 'newTab' || !!params.wait);
   const deltaSnapshot = withSnapshot && params.snapshot !== 'full' && !FULL_SNAPSHOT_ACTIONS.has(params.action);
   // The content script records the delta's baseline right before it acts. keepBaseline: diff
   // against the baseline an earlier action recorded (deltaBaseline without a snapshot), as
@@ -1212,7 +1242,7 @@ async function handleCommand(command) {
   const touched = touches ? params.tabId : null;
   if (touched != null) touchStart(touched);
   try {
-    const result = await runCommand(params, { withSnapshot, deltaSnapshot, textSnapshot, tracksOpenedTabs });
+    const result = await runCommand(params, { withSnapshot, deltaSnapshot, textSnapshot, tracksOpenedTabs, pageText });
     if (['screenPoint', 'agentInput', 'focusState'].includes(params.action)) return tabAdmissionError(params) || result;
     return repeatSnapshot && params.tabId != null ? await unchangedSince(params.tabId, actionCaller(params), result) : result;
   } catch (e) {
@@ -1234,6 +1264,13 @@ async function handleCommand(command) {
 // autocomplete waits 300 ms). In a hidden tab Firefox delays page timers to at least 1 s
 // (dom.min_background_timeout_value), so a 250 ms timer fires after about 1000 ms there; the
 // minimum is then SETTLE_HIDDEN_MIN_MS.
+// A plain field write has no minimum in a visible tab (#460): a fill (browser_type without
+// slowly, browser_fill_form), select or check of a native field without role=combobox,
+// aria-autocomplete or a list attribute ends after SETTLE_QUIET_MS once its requests are done.
+// The content script says so in settleState (floor=false). Typing slowly, keys, clicks, other
+// actions and such fields keep SETTLE_MIN_MS, and so does a browser_fill_form call when any of
+// its fields keeps it. A debounced reaction on a plain field (a filter box) may then come after
+// the delta.
 const SETTLE_MIN_MS = 400;
 const SETTLE_HIDDEN_MIN_MS = 1100;
 const SETTLE_QUIET_MS = 150;
@@ -1266,7 +1303,7 @@ async function settleAfterAction(tabId, pending, params) {
       // A page that navigated away or does not answer has nothing to wait for here.
       if (!state?.watching) return;
       const busy = pending.size > 0;
-      const min = state.hidden ? SETTLE_HIDDEN_MIN_MS : SETTLE_MIN_MS;
+      const min = state.hidden ? SETTLE_HIDDEN_MIN_MS : state.floor === false ? 0 : SETTLE_MIN_MS;
       if (!busy && state.elapsedMs >= min && state.quietMs >= SETTLE_QUIET_MS) return;
       if (Date.now() - start >= (busy ? SETTLE_REQUEST_CAP_MS : SETTLE_CAP_MS)) return;
       await new Promise(resolve => setTimeout(resolve, SETTLE_POLL_MS));
@@ -1326,7 +1363,9 @@ async function runCommand(params, options) {
   }
 }
 
-async function runCommandSettled(params, { withSnapshot, deltaSnapshot, textSnapshot, tracksOpenedTabs }, watch) {
+async function runCommandSettled(params, { withSnapshot, deltaSnapshot, textSnapshot, tracksOpenedTabs, pageText }, watch) {
+  // The load a goBack starts, which its page text waits for like an action that navigates (#349).
+  const back = pageText && params.action === 'goBack' ? { loadBefore: tabLoads.get(params.tabId) } : null;
   const result = await dispatchCommand(params);
   let navigation = null;
   if (watch && result && !result.error && result.ok !== false) {
@@ -1367,8 +1406,7 @@ async function runCommandSettled(params, { withSnapshot, deltaSnapshot, textSnap
       };
       let snapshot = null;
       if ((params.action === 'navigate' || navigation) && !params.snapshotText) {
-        const readable = await forwardToContent('getSnapshot', { ...request, maxChars: NAVIGATION_TEXT_LIMIT, text: true });
-        if (!readable.error && !readable.truncated) snapshot = readable;
+        snapshot = await navigationTextSnapshot(request);
       }
       snapshot ??= await forwardToContent('getSnapshot', request);
       if (snapshot.error) result.snapshot_error = snapshot.error;
@@ -1396,6 +1434,14 @@ async function runCommandSettled(params, { withSnapshot, deltaSnapshot, textSnap
       }
     } catch (e) { result.snapshot_error = e.message; }
   }
+  if (pageText && result && !result.error && result.ok !== false) {
+    const tabId = params.action === 'newTab' ? result.tabId : params.tabId;
+    // A back still loading after ACTION_NAVIGATION_WAIT_MS has no page to read yet; one that started
+    // no load (no history, a same-document entry) reads the page as it is.
+    if (!back || await waitForActionNavigation(tabId, back, params) !== 'pending') {
+      await carryPageText(tabId, PAGE_TEXT_ACTIONS.get(params.action), result, actionCaller(params));
+    }
+  }
   if (blankLink && params.tabId != null) await openBlockedLink(params.tabId, blankLink, result, params.ownerId, params);
   // A middle or Ctrl/Cmd click's link opens like a popup-blocked one; a cancelled click is the page's.
   if (newTabLink && !newTabLink.prevented && params.tabId != null) {
@@ -1419,6 +1465,27 @@ async function tabUrl(tabId) {
   } catch {
     return null;
   }
+}
+
+// The readable snapshot, with its text lines, of a page a navigation loaded when the whole page fits
+// NAVIGATION_TEXT_LIMIT (#401); null for a larger page.
+async function navigationTextSnapshot(request) {
+  const readable = await forwardToContent('getSnapshot', { ...request, maxChars: NAVIGATION_TEXT_LIMIT, text: true });
+  return readable.error || readable.truncated ? null : readable;
+}
+
+// A pageText result (see PAGE_TEXT_ACTIONS) with the page tool's snapshot, which a following
+// browser_snapshot of the same page answers with unchanged_since (#384).
+async function carryPageText(tabId, tool, result, caller) {
+  try {
+    const snapshot = await navigationTextSnapshot({ tabId, focusLastAction: false, observation: tool });
+    if (!snapshot) return;
+    result.snapshot = snapshot.snapshot;
+    if (snapshot.hint) result.snapshot_hint = snapshot.hint;
+    if (snapshot.visibilityState) result.visibilityState = snapshot.visibilityState;
+    if (snapshot.needs_user) result.needs_user = snapshot.needs_user;
+    if (snapshot.snapshot) await recordActionPage(tabId, tool, snapshot.snapshot, caller);
+  } catch {}
 }
 
 async function recordActionPage(tabId, tool, snapshot, caller) {
@@ -2789,10 +2856,13 @@ async function withFrameTrees(tabId, response, scope, maxDepth, limit = DOM_TREE
 
 // Public refs never reuse an index. Keep the generation-qualified ref private so the
 // content script can still reject refs from another document or an earlier injection.
+// short -> { tabId, ref, label }: label is the `role "name"` of the ref's snapshot line, which
+// another document's same element is matched by (#459).
 const shortRefs = new Map();
 const publicRefs = new Map();
 // Retired aliases still answer other_document, not not_in_snapshot; bounded, oldest first.
-const retiredShortRefs = new Set();
+// short -> its label.
+const retiredShortRefs = new Map();
 const RETIRED_SHORT_REFS_MAX = 4096;
 // Retire aliases with their document/tab, without resetting the persisted monotonic counter.
 function pruneShortRefs(tabId) {
@@ -2802,9 +2872,9 @@ function pruneShortRefs(tabId) {
     if (entry.tabId !== tabId) continue;
     shortRefs.delete(short);
     publicRefs.delete(`${tabId}:${entry.ref}`);
-    retiredShortRefs.add(short);
+    retiredShortRefs.set(short, entry.label);
   }
-  for (const short of retiredShortRefs) {
+  for (const short of retiredShortRefs.keys()) {
     if (retiredShortRefs.size <= RETIRED_SHORT_REFS_MAX) break;
     retiredShortRefs.delete(short);
   }
@@ -2819,7 +2889,7 @@ function leadingShortRef(value) {
 }
 const REF_RESULT_ACTIONS = new Set([
   'getSnapshot', 'getAccessibilityTree', 'getFormFields', 'find', 'waitForElement',
-  'waitForText', 'getIframes', 'submitForm', 'openedPopup',
+  'waitForText', 'getIframes', 'submitForm', 'openedPopup', 'sameElement',
 ]);
 let nextShortRef = null;
 let shortRefEnd = 0n;
@@ -2856,11 +2926,42 @@ function expandShortRefs(params, tabId) {
     const { ref, rest } = leadingShortRef(params[key]) || {};
     if (!ref) continue;
     const entry = shortRefs.get(ref);
-    if (!entry) return { error: shortRefError(ref, retiredShortRefs.has(ref) ? 'other_document' : 'not_in_snapshot') };
-    if (entry.tabId !== tabId) return { error: shortRefError(ref, 'other_document') };
+    if (!entry) {
+      return { error: shortRefError(ref, retiredShortRefs.has(ref) ? 'other_document' : 'not_in_snapshot'),
+        label: retiredShortRefs.get(ref) };
+    }
+    if (entry.tabId !== tabId) return { error: shortRefError(ref, 'other_document'), label: entry.label };
     expanded[key] = entry.ref + rest;
   }
   return { params: expanded };
+}
+
+// A ref from another document whose snapshot line is known (label): when the targeted tab's
+// page lists exactly one element with the same `role "name"`, the error names its ref, so the
+// agent can retry without another snapshot (#459). The page there can differ from the one the
+// agent read, so the agent decides: nothing is sent to that element. A lookup that fails or
+// takes longer than SAME_ELEMENT_TIMEOUT_MS leaves the error as it was.
+const SAME_ELEMENT_TIMEOUT_MS = 2000;
+async function withSameElement(tabId, error, label, authorization) {
+  let timer;
+  try {
+    const deadline = Date.now() + SAME_ELEMENT_TIMEOUT_MS;
+    const lookup = (async () => {
+      await ensureContentScript(tabId, deadline, 0, authorization);
+      return browser.tabs.sendMessage(tabId, { action: 'sameElement', label }, TOP_FRAME);
+    })();
+    const found = await Promise.race([lookup,
+      new Promise(resolve => { timer = setTimeout(() => resolve(null), SAME_ELEMENT_TIMEOUT_MS); })]);
+    if (typeof found?.ref !== 'string') return error;
+    const { ref } = await compactContentRefs('sameElement', found, tabId, {});
+    const role = label.slice(0, label.indexOf(' "'));
+    return { ...error, hint: `${error.hint} The same ${label} here is ${ref}; retry with it.`,
+      state: { ...error.state, same_element: { ref, role, name: JSON.parse(label.slice(role.length + 1)) } } };
+  } catch {
+    return error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // The owned ref follows the JSON-quoted name. Ref-like text inside that name or a
@@ -2965,6 +3066,11 @@ function compactContentRefs(action, response, tabId, params) {
         return [key, url && ['http:', 'https:'].includes(url.protocol) ? redactHistoryUrl(item) : undefined];
       }
       if (key === 'snapshot' && typeof item === 'string') {
+        // Each line's `role "name"` stays with its alias (#459); aliases exist on the converting pass.
+        for (const [, label, ref] of item.matchAll(/^ *- ([^"\n]+ "(?:[^"\\]|\\.)*") \[ref=(s\d+e\d+)\]/gm)) {
+          const entry = shortRefs.get(convert(ref));
+          if (entry) entry.label = label;
+        }
         const snapshot = item.replace(/^( *- \/url: )("(?:[^"\\\r\n]|\\.)*")$/gm,
           (_, prefix, encoded) => prefix + JSON.stringify(redactSnapshotUrl(JSON.parse(encoded))));
         return [key, snapshot.replace(/\[ref=(s\d+e\d+)\]/g, (_, ref) => `[ref=${convert(ref)}]`)
@@ -3031,7 +3137,12 @@ async function forwardToContent(action, params) {
     }
 
     const expanded = expandShortRefs(params, tabId);
-    if (expanded.error) return await withTabState(tabId, expanded.error);
+    if (expanded.error) {
+      // A discarded tab is not woken for a write's error.
+      const error = expanded.label && !state.discarded
+        ? await withSameElement(tabId, expanded.error, expanded.label, params) : expanded.error;
+      return await withTabState(tabId, error);
+    }
     const frameId = targetFrame(tabId, expanded.params);
     try {
       await ensureContentScript(tabId, Infinity, frameId, params);

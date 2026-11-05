@@ -48,6 +48,8 @@ Detachment/replacement, frame-document retirement, navigation or content reinjec
 invalidates the old identity. Indexes are never reused across observations or tabs;
 after an extension reload, take a new snapshot. A stale ref reports `element_removed`,
 `not_in_snapshot` (never issued/unknown), or `other_document` in `state.reason`.
+An `other_document` error names the one element of the targeted page with the ref's role
+and name, if there is exactly one, in `state.same_element`; nothing is done to it.
 Take a new scoped observation of the intended tab; never repeat a write merely to
 refresh refs. Earlier attached refs remain usable without another observation.
 
@@ -58,7 +60,8 @@ could not fit). `target_ref`, when included, is the acted-on element's ref for a
 follow-up action.
 For click, type, fill, select, check and keypress it is a delta (`snapshot_delta: true`):
 only the target and what the action changed or revealed, such as an opened menu's
-options, anchored there instead of at the page top; earlier refs stay valid. A click or
+options, anchored there instead of at the page top, and a `- removed: …` line for each part it
+closed or removed, such as a dialog (#457); earlier refs stay valid. A click or
 hover that opens a menu, listbox or dialog also returns `opened_popup`: its ref, the ref of
 the control that opened it (`opened_by`) and its items' refs, also when a background tab
 did not paint it (`rendered: false`; see

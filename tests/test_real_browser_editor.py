@@ -76,8 +76,10 @@ class RealBrowserEditorTests(harness.RealBrowserTestCase):
         self.addCleanup(self.call, "/api/close-tab", {"tabId": playwright_tools._current_tab})
         self.assertTrue(result["tabs"][result["index"]]["current"], result)
 
-        # One textbox for the editor; the line div, span and br are not textboxes (#256).
-        snapshot = self.tool("browser_snapshot", {})["snapshot"]
+        # One textbox for the editor; the line div, span and br are not textboxes (#256). The small page
+        # is in the browser_tabs result (#448), which the snapshot after it names.
+        self.assertEqual(self.tool("browser_snapshot", {}).get("unchanged_since"), "browser_tabs")
+        snapshot = result["snapshot"]
         textboxes = re.findall(r'textbox "[^"]*" \[ref=(e\d+)\]', snapshot)
         self.assertEqual(len(textboxes), 1, snapshot)
         ref = textboxes[0]

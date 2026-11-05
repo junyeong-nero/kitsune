@@ -28,7 +28,8 @@ Alternatively, `browser_tabs action=request` with an `index` or `tab_id` and a `
 asks for a [session-scoped handoff](api-reference.md#requesting-and-returning-a-tab). Approval is browser-first
 (the toolbar popup), then client fallback after 30 seconds. A grant permits DOM/browser
 operations, **not trusted/native OS input**; it does not select or activate the tab.
-The user can **Take back** in the popup; session end or bridge/extension disconnection
+Approving also releases text you left in a focused field of that tab, so the agent can
+finish a form you started there. The user can **Take back** in the popup; session end or bridge/extension disconnection
 also returns it. Agent-created tabs keep their persistent ownership. Other clients'
 tabs cannot be transferred.
 
@@ -41,7 +42,8 @@ run only while the tab is not shown, and put its scroll position back afterwards
 tab you are looking at they are refused.
 The `current` marker always identifies the agent's current tab, regardless of ownership;
 selection is not an ownership grant. On an owned tab, trusted user input still pauses
-writes with the existing retryable `user_active` response.
+writes with the existing retryable `user_active` response. Text you leave in a focused
+field pauses them until you leave the field or give the page no input for 10 s.
 
 **User-tab setting:** `KITSUNE_USER_TABS` accepts `read-only` (the default) or
 `writable`, ignoring surrounding whitespace and letter case. With `writable`, this
