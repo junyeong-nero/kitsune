@@ -176,6 +176,41 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(playwright_tools.browser_click(target="e3"), clicked)
         self.assertEqual(tools.browser_click(ref="e3", tab_id=3), clicked)
 
+    def test_other_document_hints_name_tab_id_for_kitsune_tools_only(self):
+        # #474: the extension's hints offer tab_id, which Kitsune's own tools take and the core tools do not.
+        # The rewrite matches the extension's wording: shortRefError's, then STALE_REF_HINTS'.
+        for (offered, _), source in zip(playwright_tools._OTHER_DOCUMENT_HINTS,
+                                        ("background/background.js", "content/content.js")):
+            self.assertIn(offered, (ROOT / "extension" / source).read_text(encoding="utf-8"))
+        background = ("The ref belongs to another document: the tab navigated or a different tab is targeted. "
+                      "Take a new browser_snapshot of the intended tab (select it with browser_tabs, or pass tab_id).")
+        content = ("The ref belongs to another document: the tab navigated or a different tab is targeted. "
+                   "Pass tab_id and take a new browser_snapshot.")
+        same = ' The same textbox "Memo" here is e15; retry with it.'
+        for hint in (background, background + same, content):
+            stale = {"error": "stale ref, call browser_snapshot again", "code": "stale_ref", "retryable": True,
+                     "hint": hint, "state": {"reason": "other_document", "ref": "e7", "tabId": 3}}
+            self.post.return_value = stale
+            for name, call in (("core browser_click", lambda: playwright_tools.browser_click(target="e7")),
+                               ("core browser_type", lambda: playwright_tools.browser_type(target="e7", text="hi")),
+                               ("core browser_snapshot", lambda: playwright_tools.browser_snapshot(target="e7"))):
+                with self.subTest(name, hint=hint):
+                    result = call()
+                    self.assertNotIn("tab_id", result["hint"])
+                    self.assertIn("(select it with browser_tabs).", result["hint"])
+                    self.assertEqual(result["hint"].endswith(same), hint.endswith(same), result["hint"])
+                    self.assertEqual({**result, "hint": hint}, stale)
+            for name, call in (("browser_click", lambda: tools.browser_click(ref="e7", tab_id=3)),
+                               ("browser_type", lambda: tools.browser_type(ref="e7", text="hi", tab_id=3)),
+                               ("browser_snapshot", lambda: tools.browser_snapshot(ref="e7", tab_id=3))):
+                with self.subTest(name, hint=hint):
+                    self.assertEqual(call(), stale)
+        # Other stale refs keep their hints.
+        removed = {"error": "stale ref, call browser_snapshot again", "code": "stale_ref", "retryable": True,
+                   "hint": "The element was removed; pass tab_id.", "state": {"reason": "element_removed"}}
+        self.post.return_value = removed
+        self.assertEqual(playwright_tools.browser_click(target="e7"), removed)
+
     def test_inline_snapshot_truncation_names_core_tools_only(self):
         marker = "- … truncated; scope with selector, ref or max_depth"
         self.post.return_value = {"snapshot": '- link "Desk 1" [ref=e1]\n  - /url: "https://a/1"\n' + marker,

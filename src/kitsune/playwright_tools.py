@@ -17,6 +17,8 @@ one, reads act on the user's active tab and the MCP server refuses writes and na
 (no_current_tab, kitsune.tools._on_current_tab). browser_navigate and browser_navigate_back
 also take a tab_id that playwright_tools.json does not publish, like confirm_token, and
 browser_press_key a repeat count (1-100) that the extension presses within one request.
+The core tools take no other tab_id, so a stale_ref other_document hint in their results names
+browser_tabs only (#474).
 
 browser_click and browser_hover add opened_popup to their result when they open a menu, listbox
 or dialog, also one a background tab did not paint, with its items' refs (#329). Like repeat,
@@ -33,6 +35,7 @@ Relative file names resolve against KITSUNE_OUTPUT_DIR, else the MCP client's fi
 else the MCP server's working directory.
 """
 
+import functools
 import json
 import os
 import re
@@ -70,9 +73,34 @@ _MODIFIERS = {"Alt": "alt", "Control": "ctrl", "Meta": "meta", "Shift": "shift",
               "ControlOrMeta": "meta" if sys.platform == "darwin" else "ctrl"}
 
 
+# The extension's other_document hints offer tab_id, which Kitsune's own tools take and the core tools
+# do not (#474): core results name browser_tabs only. The first is background.js shortRefError's,
+# the second content.js STALE_REF_HINTS'.
+_OTHER_DOCUMENT_HINTS = (
+    ("(select it with browser_tabs, or pass tab_id)", "(select it with browser_tabs)"),
+    ("Pass tab_id and take a new browser_snapshot.",
+     "Take a new browser_snapshot of the intended tab (select it with browser_tabs)."),
+)
+
+
+def _core_hint(result):
+    """result with an other_document stale_ref hint that names browser_tabs and not tab_id (#474)."""
+    if not (isinstance(result, dict) and result.get("code") == "stale_ref" and isinstance(result.get("hint"), str)
+            and isinstance(result.get("state"), dict) and result["state"].get("reason") == "other_document"):
+        return result
+    hint = result["hint"]
+    for offered, core in _OTHER_DOCUMENT_HINTS:
+        hint = hint.replace(offered, core)
+    return {**result, "hint": hint}
+
+
 def _core(function):
-    _TOOLS.append(function)
-    return function
+    @functools.wraps(function)
+    def call(*args, **kwargs):
+        return _core_hint(function(*args, **kwargs))
+
+    _TOOLS.append(call)
+    return call
 
 
 def register(tools):
