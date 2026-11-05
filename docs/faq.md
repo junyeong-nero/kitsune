@@ -29,8 +29,8 @@ Chromium extension MCP such as [Browser MCP](https://github.com/BrowserMCP/mcp) 
 
 ## Which agents can use it?
 
-Any MCP client that runs local stdio servers. The README has setup for Claude Code, Codex, Pi,
-OpenCode, Claude Desktop and Cursor: [MCP setup](https://github.com/junyeong-nero/kitsune#mcp-setup).
+Any MCP client that runs local stdio servers. The installation page has setup for Claude Code, Codex, Pi,
+OpenCode, Claude Desktop and Cursor: [Register the MCP server](installation.md#1-register-the-mcp-server).
 
 ## Will the agent take over the tab I'm using?
 
@@ -53,7 +53,7 @@ Yes, in three ways that combine:
   bridge accepts. Draft fills supported fields but has no click or submit tools. See
   [Task modes](tools.md#task-modes).
 - `KITSUNE_CAPS` enables tool groups; the default is the 25 core tools, `browser_resume` and `browser_ask_user`. Groups that read personal
-  data (`storage`, `history`) must be named. See [Choosing tools](https://github.com/junyeong-nero/kitsune#choosing-tools).
+  data (`storage`, `history`) must be named. See [Tools, capabilities and modes](tools.md).
 - [Ask-before-act](your-tabs.md#ask-before-act) holds submits, payment pages, JavaScript and cookie
   access until you approve.
 
