@@ -391,7 +391,10 @@ afterwards the delta lists the acted-on target and every line that record lacks:
 newly shown elements (an opened menu's options, a toast, autocomplete suggestions) and
 elements whose name, value or state changed. A popup the action opened is listed even when
 it is not rendered, marked `[not_rendered]` (see [Opened popups](#opened-popups)). Unchanged parts of the page, such as a
-header above the target, are left out; removed elements are not listed. A delta is
+header above the target, are left out. An element the record lists that is now detached or
+hidden (a closed dialog, a hidden listbox) is named in one line after the rest, with the ref
+the agent already has for it, if any: `- removed: dialog "알림 설정" [ref=e4]`. What was under it
+is not listed (#457). A delta is
 capped at 4,000 characters like a full snapshot (`snapshot_truncated`); when truncated,
 `snapshot_hint` gives scope guidance, including when the target/context did not fit
 and `target_ref` was omitted. A same-document URL or title change (`history.pushState`)
@@ -403,8 +406,8 @@ adds `url` or `title`:
   "snapshot": "- main \"\" [ref=e40]\n  - button \"Review type\" [ref=e41] [expanded=true]\n  - listbox \"Review type\" [ref=e90]\n    - option \"Negative\" [ref=e91]" }
 ```
 
-An empty delta means nothing visible changed apart from removals. Use `expect` to
-verify an outcome, or `browser_snapshot` for the whole page.
+An empty delta means nothing visible changed. Use `expect` to verify an outcome, or
+`browser_snapshot` for the whole page.
 
 **Waiting for the page (#348).** A delta is taken once the page has reacted to the action,
 not right after dispatch. The bridge waits:
@@ -421,7 +424,7 @@ delta also lists text the action made appear anywhere on the page as `text` line
 example `- text "Saved."`), also when the snapshot is otherwise compact. In a run of similar
 items, up to 20 items that are new since the delta's baseline are listed even past the first
 five that a snapshot shows, so the next batch of an infinite list is named, not only counted. When the delta found
-no new or changed line and the URL and title are the same, the result adds
+no new, changed or removed line and the URL and title are the same, the result adds
 `no_visible_change: true`, unless during the wait the page added an element (still attached when
 the delta is read) or an editor's content changed, which a delta may not show, or a request the
 wait watches is still pending (#385). A change that comes after the wait is not seen: use `expect` or

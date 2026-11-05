@@ -110,7 +110,8 @@ could not fit). `target_ref`, when included, is the acted-on element's ref for a
 follow-up action.
 For click, type, fill, select, check and keypress it is a delta (`snapshot_delta: true`):
 only the target and what the action changed or revealed, such as an opened menu's
-options, anchored there instead of at the page top; earlier refs stay valid. A click or
+options, anchored there instead of at the page top, and a `- removed: …` line for each part it
+closed or removed, such as a dialog (#457); earlier refs stay valid. A click or
 hover that opens a menu, listbox or dialog also returns `opened_popup`: its ref, the ref of
 the control that opened it (`opened_by`) and its items' refs, also when a background tab
 did not paint it (`rendered: false`; see
