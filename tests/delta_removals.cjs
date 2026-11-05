@@ -2,6 +2,8 @@
 // #457: a delta counts a line whose element is gone or no longer shown as a change, and names
 // the top element of each removed part in one line, so closing a dialog or a listbox is not
 // no_visible_change. The pages follow the gallery's ui-modal and ui-autocomplete.
+// #471: removals under one parent line fold into one line when there are more than a few, so a
+// re-rendered region (ui-datepicker month, ui-table page) is not listed line by line.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
@@ -86,7 +88,32 @@ const listbox = h('UL', { role: 'listbox', 'aria-label': '도시 목록' }, ...[
 const notice = h('DIV', { role: 'dialog', 'aria-label': '쿠키 안내' }, '쿠키를 사용합니다.',
   button('확인', () => notice.remove()));
 const still = button('아무 일 없음', () => {});
-const document = { body: h('BODY', {}, h('MAIN', {}, h('H1', {}, '설정'), city, listbox, still), backdrop, notice),
+// #471: regions that re-render as a flat run of siblings under a parent line that stays.
+// ui-datepicker: "›" replaces June's 30 day buttons with July's 31.
+const days = (month, count) => Array.from({ length: count },
+  (_, i) => button(`2027년 ${month}월 ${i + 1}일`, () => {}));
+const calendar = h('DIV', { role: 'region', 'aria-label': '달력' }, ...days(6, 30));
+const nextMonth = button('›', () => {
+  calendar.children.forEach(day => day.remove());
+  days(7, 31).forEach(day => { day.parentElement = calendar; calendar.childNodes.push(day); });
+});
+// ui-table: a page button replaces 5 rows of a checkbox and a name.
+const rows = names => names.map(name => h('DIV', {},
+  new Element('INPUT', { 'aria-label': `${name} 선택` }, [], { type: 'checkbox', checked: false, value: 'on' }),
+  h('DIV', {}, name)));
+const table = h('DIV', { role: 'region', 'aria-label': '상품 목록' },
+  ...rows(['무선 마우스', '키보드', '모니터', '웹캠', '헤드셋']));
+const pageTwo = button('2', () => {
+  table.children.forEach(row => row.remove());
+  rows(['외장 SSD', '허브', '스피커', '마이크', '태블릿'])
+    .forEach(row => { row.parentElement = table; table.childNodes.push(row); });
+});
+// Three tags whose clear button removes them: few removals stay listed one by one.
+const tags = h('DIV', { role: 'region', 'aria-label': '태그' },
+  ...['음악', '영화', '여행'].map(name => button(`${name} 태그 삭제`, () => {})));
+const clearTags = button('태그 모두 삭제', () => tags.children.forEach(tag => tag.remove()));
+const document = { body: h('BODY', {}, h('MAIN', {}, h('H1', {}, '설정'), city, listbox, still), backdrop, notice,
+  calendar, nextMonth, table, pageTwo, tags, clearTags),
   title: 'gallery', getElementById: () => null, querySelector: () => null, querySelectorAll: () => [] };
 
 let listener;
@@ -167,6 +194,29 @@ const removedLines = snapshot => snapshot.split('\n').filter(line => line.starts
   // 5. What is gone is not named again by the next action.
   const again = await command({ action: 'click', selector: refOf(page.snapshot, 'button "아무 일 없음"') });
   assert.equal(again.no_visible_change, true, JSON.stringify(again));
+
+  // 6. ui-datepicker month switch (#471): the 30 old days fold into one line naming the first
+  // and the parent's ref, and the delta lists the 31 new days untruncated.
+  const switched = await command({ action: 'click', selector: refOf(page.snapshot, 'button "›"') });
+  assert.equal('no_visible_change' in switched, false, JSON.stringify(switched));
+  assert.equal('snapshot_truncated' in switched, false, JSON.stringify(switched));
+  assert.deepEqual(removedLines(switched.snapshot), [`- removed: button "2027년 6월 1일" ` +
+    `[ref=${refOf(page.snapshot, 'button "2027년 6월 1일"')}] … and 29 more under region ` +
+    `[ref=${refOf(page.snapshot, 'region "달력"')}]`]);
+  assert.match(switched.snapshot, /button "2027년 7월 31일"/);
+
+  // 7. ui-table page click: the old rows' checkboxes and names fold into one line.
+  const paged = await command({ action: 'click', selector: refOf(page.snapshot, 'button "2"') });
+  assert.equal('no_visible_change' in paged, false, JSON.stringify(paged));
+  assert.deepEqual(removedLines(paged.snapshot), [`- removed: checkbox "무선 마우스 선택" ` +
+    `[ref=${refOf(page.snapshot, 'checkbox "무선 마우스 선택"')}] … and 9 more under region ` +
+    `[ref=${refOf(page.snapshot, 'region "상품 목록"')}]`]);
+  assert.match(paged.snapshot, /checkbox "외장 SSD 선택"/);
+
+  // 8. Three removals under one parent are each named as before.
+  const cleared = await command({ action: 'click', selector: refOf(page.snapshot, 'button "태그 모두 삭제"') });
+  assert.deepEqual(removedLines(cleared.snapshot), ['음악', '영화', '여행'].map(name =>
+    `- removed: button "${name} 태그 삭제" [ref=${refOf(page.snapshot, `button "${name} 태그 삭제"`)}]`));
   console.log('delta removal tests passed');
 })().catch(error => {
   console.error(error);
