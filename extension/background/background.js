@@ -2789,10 +2789,13 @@ async function withFrameTrees(tabId, response, scope, maxDepth, limit = DOM_TREE
 
 // Public refs never reuse an index. Keep the generation-qualified ref private so the
 // content script can still reject refs from another document or an earlier injection.
+// short -> { tabId, ref, label }: label is the `role "name"` of the ref's snapshot line, which
+// another document's same element is matched by (#459).
 const shortRefs = new Map();
 const publicRefs = new Map();
 // Retired aliases still answer other_document, not not_in_snapshot; bounded, oldest first.
-const retiredShortRefs = new Set();
+// short -> its label.
+const retiredShortRefs = new Map();
 const RETIRED_SHORT_REFS_MAX = 4096;
 // Retire aliases with their document/tab, without resetting the persisted monotonic counter.
 function pruneShortRefs(tabId) {
@@ -2802,9 +2805,9 @@ function pruneShortRefs(tabId) {
     if (entry.tabId !== tabId) continue;
     shortRefs.delete(short);
     publicRefs.delete(`${tabId}:${entry.ref}`);
-    retiredShortRefs.add(short);
+    retiredShortRefs.set(short, entry.label);
   }
-  for (const short of retiredShortRefs) {
+  for (const short of retiredShortRefs.keys()) {
     if (retiredShortRefs.size <= RETIRED_SHORT_REFS_MAX) break;
     retiredShortRefs.delete(short);
   }
@@ -2819,7 +2822,7 @@ function leadingShortRef(value) {
 }
 const REF_RESULT_ACTIONS = new Set([
   'getSnapshot', 'getAccessibilityTree', 'getFormFields', 'find', 'waitForElement',
-  'waitForText', 'getIframes', 'submitForm', 'openedPopup',
+  'waitForText', 'getIframes', 'submitForm', 'openedPopup', 'sameElement',
 ]);
 let nextShortRef = null;
 let shortRefEnd = 0n;
@@ -2856,11 +2859,42 @@ function expandShortRefs(params, tabId) {
     const { ref, rest } = leadingShortRef(params[key]) || {};
     if (!ref) continue;
     const entry = shortRefs.get(ref);
-    if (!entry) return { error: shortRefError(ref, retiredShortRefs.has(ref) ? 'other_document' : 'not_in_snapshot') };
-    if (entry.tabId !== tabId) return { error: shortRefError(ref, 'other_document') };
+    if (!entry) {
+      return { error: shortRefError(ref, retiredShortRefs.has(ref) ? 'other_document' : 'not_in_snapshot'),
+        label: retiredShortRefs.get(ref) };
+    }
+    if (entry.tabId !== tabId) return { error: shortRefError(ref, 'other_document'), label: entry.label };
     expanded[key] = entry.ref + rest;
   }
   return { params: expanded };
+}
+
+// A ref from another document whose snapshot line is known (label): when the targeted tab's
+// page lists exactly one element with the same `role "name"`, the error names its ref, so the
+// agent can retry without another snapshot (#459). The page there can differ from the one the
+// agent read, so the agent decides: nothing is sent to that element. A lookup that fails or
+// takes longer than SAME_ELEMENT_TIMEOUT_MS leaves the error as it was.
+const SAME_ELEMENT_TIMEOUT_MS = 2000;
+async function withSameElement(tabId, error, label, authorization) {
+  let timer;
+  try {
+    const deadline = Date.now() + SAME_ELEMENT_TIMEOUT_MS;
+    const lookup = (async () => {
+      await ensureContentScript(tabId, deadline, 0, authorization);
+      return browser.tabs.sendMessage(tabId, { action: 'sameElement', label }, TOP_FRAME);
+    })();
+    const found = await Promise.race([lookup,
+      new Promise(resolve => { timer = setTimeout(() => resolve(null), SAME_ELEMENT_TIMEOUT_MS); })]);
+    if (typeof found?.ref !== 'string') return error;
+    const { ref } = await compactContentRefs('sameElement', found, tabId, {});
+    const role = label.slice(0, label.indexOf(' "'));
+    return { ...error, hint: `${error.hint} The same ${label} here is ${ref}; retry with it.`,
+      state: { ...error.state, same_element: { ref, role, name: JSON.parse(label.slice(role.length + 1)) } } };
+  } catch {
+    return error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // The owned ref follows the JSON-quoted name. Ref-like text inside that name or a
@@ -2965,6 +2999,11 @@ function compactContentRefs(action, response, tabId, params) {
         return [key, url && ['http:', 'https:'].includes(url.protocol) ? redactHistoryUrl(item) : undefined];
       }
       if (key === 'snapshot' && typeof item === 'string') {
+        // Each line's `role "name"` stays with its alias (#459); aliases exist on the converting pass.
+        for (const [, label, ref] of item.matchAll(/^ *- ([^"\n]+ "(?:[^"\\]|\\.)*") \[ref=(s\d+e\d+)\]/gm)) {
+          const entry = shortRefs.get(convert(ref));
+          if (entry) entry.label = label;
+        }
         const snapshot = item.replace(/^( *- \/url: )("(?:[^"\\\r\n]|\\.)*")$/gm,
           (_, prefix, encoded) => prefix + JSON.stringify(redactSnapshotUrl(JSON.parse(encoded))));
         return [key, snapshot.replace(/\[ref=(s\d+e\d+)\]/g, (_, ref) => `[ref=${convert(ref)}]`)
@@ -3031,7 +3070,12 @@ async function forwardToContent(action, params) {
     }
 
     const expanded = expandShortRefs(params, tabId);
-    if (expanded.error) return await withTabState(tabId, expanded.error);
+    if (expanded.error) {
+      // A discarded tab is not woken for a write's error.
+      const error = expanded.label && !state.discarded
+        ? await withSameElement(tabId, expanded.error, expanded.label, params) : expanded.error;
+      return await withTabState(tabId, error);
+    }
     const frameId = targetFrame(tabId, expanded.params);
     try {
       await ensureContentScript(tabId, Infinity, frameId, params);

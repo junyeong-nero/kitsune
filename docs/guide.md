@@ -100,6 +100,8 @@ Detachment/replacement, frame-document retirement, navigation or content reinjec
 invalidates the old identity. Indexes are never reused across observations or tabs;
 after an extension reload, take a new snapshot. A stale ref reports `element_removed`,
 `not_in_snapshot` (never issued/unknown), or `other_document` in `state.reason`.
+An `other_document` error names the one element of the targeted page with the ref's role
+and name, if there is exactly one, in `state.same_element`; nothing is done to it.
 Take a new scoped observation of the intended tab; never repeat a write merely to
 refresh refs. Earlier attached refs remain usable without another observation.
 

@@ -377,6 +377,24 @@ class RealBrowserActionRaceTests(harness.RealBrowserTestCase):
         self.assert_hits("focus-a", 1)
         self.assert_hits("focus-b", 0, settle=0)
 
+    def test_ref_from_another_tab_names_the_same_element_there_without_clicking_it(self):
+        # #459: the agent read one tab and acts in another tab showing the same page.
+        first = self.open_tab(self.site.url("copy"))
+        second = self.open_tab(self.site.url("copy"))
+        ref = self.snapshot_ref(first, "Act copy")
+
+        result = self.call("/api/click", {"ref": ref, "tabId": second})
+        self.assert_error(result, "stale_ref", True)
+        self.assertEqual(result["state"]["reason"], "other_document")
+        same = result["state"]["same_element"]
+        self.assertEqual((same["role"], same["name"]), ("button", "Act copy"))
+        self.assertIn(f'The same button "Act copy" here is {same["ref"]}; retry with it.', result["hint"])
+        self.assert_hits("copy", 0)
+
+        self.assertEqual(self.snapshot_ref(second, "Act copy"), same["ref"])
+        self.assert_ok(self.call("/api/click", {"ref": same["ref"], "tabId": second}))
+        self.assert_hits("copy", 1)
+
     # ── Dynamic forms and delayed content ──
 
     def test_rerendered_form_field_ref_fails_as_element_removed(self):
