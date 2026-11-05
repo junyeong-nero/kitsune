@@ -346,6 +346,16 @@ Snapshots in one tab do not affect refs in another tab. Pass `tab_id` when more
 than one tab is in use: a ref sent to the wrong tab fails as `other_document` and
 never acts on another element.
 
+A ref can fail as `other_document` because it came from another tab or because its tab
+has since started loading another document. If a snapshot line listed that ref and the
+targeted tab's page (the whole page, as `browser_find` reads it) lists exactly one element
+with that line's role and name, `state.same_element` is `{ref, role, name}` for that
+element and the hint names it: `The same textbox "Reply" here is e14; retry with it.`
+Nothing is sent to that element. The page there can differ from the one the ref came
+from, so retry with its ref only if it is the element you meant. With no or several such
+elements, a page listing a readable cross-origin frame, or no answer within 2 s, the error
+is unchanged.
+
 After an action, use the refs in its `snapshot`. `target_ref` is the ref of
 the acted-on element (absent for `browser_navigate`, or when that element is gone),
 so a follow-up such as `browser_keypress(key="Enter", ref=target_ref)` needs no
@@ -366,6 +376,8 @@ Recovering without repeating a consequential action:
 - For `stale_ref`, `state.reason` distinguishes `element_removed`, `not_in_snapshot`
   (unknown/unissued alias) and `other_document`. Observe the intended tab/document
   again and select its current node; do not infer that a replacement is the old node.
+  An `other_document` error's `state.same_element`, when present, already names the one
+  element there with the same role and name.
   Newer observations alone do not cause stale refs; no `latestObservation` or
   `currentRef` substitution is needed or returned.
 - To get refs after a successful write, use its `snapshot`/`target_ref` (with
@@ -563,7 +575,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `key_denied` | `browser_trusted_press_key` was asked for a chord that closes, quits or leaves the browser (`Meta+Q`, `Meta+W`, `Meta+Tab`, ...); nothing was pressed | false |
 | `not_actionable` | An [actionability wait](#actionability-wait) timed out on a target that exists but never rendered (`state.reason: "not_rendered"`, `timeoutMs`, `elapsed`); nothing was dispatched | true |
 | `unsupported_selector` | The shared target resolver rejected unsupported/invalid syntax (see [Target selectors](#target-selectors)) before dispatch; `state.selector` echoes the selector and `hint` lists accepted forms. Applies to actions, scoped snapshots and element screenshots | false |
-| `stale_ref` | The ref is no longer valid; `state.reason` is `element_removed`, `not_in_snapshot` (unknown/unissued ref), or `other_document` (the tab navigated, or the ref came from another tab) | true |
+| `stale_ref` | The ref is no longer valid; `state.reason` is `element_removed`, `not_in_snapshot` (unknown/unissued ref), or `other_document` (the tab navigated, or the ref came from another tab; `state.same_element` then names the one element there with the ref's role and name, if exactly one) | true |
 | `navigating` | The tab is loading: a `not_found`/`stale_ref` while loading (`state.cause`), or the page unloaded while handling the command. Also a page that refused the content script within 5 s of a wake or reload without an error status, or whose 2xx response arrived only while the command waited for it: it may be an old document about to be replaced | true before dispatch; false for writes after |
 | `tab_closed` | The target tab no longer exists | true |
 | `tab_unloaded` | The tab is discarded and its page cannot be reached; use `browser_wake_tab`. Reads wake it themselves (#449), so writes report it | true |

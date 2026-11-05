@@ -19,11 +19,14 @@ class Element {
   getBoundingClientRect() { return { x: 0, y: 0, width: 100, height: 30 }; }
 }
 
-function content() {
-  const button = new Element('BUTTON', 'Act');
+// buttons: the names of the page's buttons; the first is `button`. frame: the page also shows
+// a cross-origin frame its own content script reads.
+function content(buttons = ['Act'], { frame = false } = {}) {
+  const [button, ...others] = buttons.map(name => new Element('BUTTON', name));
   const input = Object.assign(new Element('INPUT', '', { 'aria-label': 'Email' }),
     { type: 'text', value: '', id: 'email' });
-  const body = new Element('BODY', '', {}, [button, input]);
+  const frames = frame ? [Object.assign(new Element('IFRAME'), { contentDocument: null })] : [];
+  const body = new Element('BODY', '', {}, [button, ...others, input, ...frames]);
   let listener;
   const context = vm.createContext({
     console, URL, crypto: webcrypto, setTimeout,
@@ -35,7 +38,7 @@ function content() {
         : selector === 'button' || selector === '#act' ? [button] : [],
     },
     browser: { runtime: { onMessage: { addListener: fn => { listener = fn; } },
-      sendMessage: () => Promise.resolve(null) } },
+      sendMessage: () => Promise.resolve(null), getFrameId: () => 5 } },
   });
   const install = () => vm.runInContext(fs.readFileSync('extension/content/content.js', 'utf8'), context);
   install();
@@ -46,7 +49,7 @@ function content() {
 function background(documents, stored = {}) {
   const sent = [];
   const context = vm.createContext({
-    console, URL, Map, Set, Promise,
+    console, URL, Map, Set, Promise, setTimeout, clearTimeout,
     browser: { storage: { local: {
       get: async () => ({ ...stored }),
       set: async value => { Object.assign(stored, value); },
@@ -63,12 +66,61 @@ function background(documents, stored = {}) {
   const source = fs.readFileSync('extension/background/background.js', 'utf8');
   vm.runInContext(fs.readFileSync('extension/background/history.js', 'utf8'), context);
   vm.runInContext(source.slice(source.indexOf('const MISSING_CONTENT_RECEIVER'), source.indexOf('async function getActiveTabId')), context);
-  return { sent, stored,
+  return { sent, stored, context,
     send: (action, params = {}) => context.forwardToContent(action, { tabId: 1, ...params })
       .then(result => JSON.parse(JSON.stringify(result))) };
 }
 
 const buttonRef = result => result.snapshot.match(/button "Act" \[ref=(e\d+)\]/)[1];
+
+// #459: a ref from another document names the element its snapshot line showed. When the
+// targeted page lists exactly one element with that role and name, the error offers its ref.
+// Nothing is sent to that element, and the error is otherwise unchanged.
+async function sameElementOffers() {
+  const docs = { 1: content(), 2: content(), 3: content(['Act', 'Act']), 4: content(['Other']),
+    5: { send: async () => { throw new Error('Receiving end does not exist.'); } },
+    6: { send: () => new Promise(() => {}) }, 7: content(['Act'], { frame: true }) };
+  const s = background(docs);
+  const act = buttonRef(await s.send('getSnapshot'));
+  const otherDocument = (ref, tabId) => ({ error: 'stale ref, call browser_snapshot again', code: 'stale_ref',
+    retryable: true, hint: 'The ref belongs to another document: the tab navigated or a different tab is ' +
+      'targeted. Take a new browser_snapshot of the intended tab (select it with browser_tabs, or pass tab_id).',
+    state: { reason: 'other_document', ref, tabId } });
+  let before = s.sent.length;
+  const offered = await s.send('focusElement', { selector: act, tabId: 2 });
+  const same = offered.state.same_element?.ref;
+  assert.match(same, /^e\d+$/);
+  assert.notEqual(same, act);
+  const plain = otherDocument(act, 2);
+  assert.deepEqual(offered, { ...plain, hint: `${plain.hint} The same button "Act" here is ${same}; retry with it.`,
+    state: { reason: 'other_document', ref: act, same_element: { ref: same, role: 'button', name: 'Act' }, tabId: 2 } });
+  assert.deepEqual(s.sent.slice(before).map(msg => [msg.tabId, msg.action]), [[2, 'sameElement']]);
+  assert.equal(docs[2].button.focused, undefined, 'the matched element is not acted on');
+  // The offered ref is the one a snapshot of that tab lists, and acts there.
+  assert.equal(buttonRef(await s.send('getSnapshot', { tabId: 2 })), same);
+  assert.equal((await s.send('focusElement', { selector: same, tabId: 2 })).ok, true);
+  assert.equal(docs[2].button.focused, true);
+  // Two matches, none, a failed or unanswered lookup, or a page with a readable cross-origin
+  // frame: the error stays as it was, and nothing but the lookup reaches the page.
+  for (const tabId of [3, 4, 5, 6, 7]) {
+    before = s.sent.length;
+    assert.deepEqual(await s.send('focusElement', { selector: act, tabId }), otherDocument(act, tabId), `tab ${tabId}`);
+    assert.deepEqual(s.sent.slice(before).map(msg => msg.action), ['sameElement']);
+    if (docs[tabId].button) assert.equal(docs[tabId].button.focused, undefined);
+  }
+  // A retired alias keeps its label: the navigated tab's new document has the same button.
+  s.context.pruneShortRefs(1);
+  docs[1] = content();
+  const navigated = await s.send('focusElement', { selector: act, tabId: 1 });
+  assert.equal(navigated.state.reason, 'other_document');
+  assert.equal(navigated.state.same_element.role, 'button');
+  assert.equal(navigated.state.same_element.ref, buttonRef(await s.send('getSnapshot', { tabId: 1 })));
+  // A ref no snapshot line showed has no role and name to match: no lookup.
+  const unlisted = background({ 1: content(), 2: content() });
+  const field = (await unlisted.send('getFormFields')).fields[0].ref;
+  assert.deepEqual(await unlisted.send('focusElement', { selector: field, tabId: 2 }), otherDocument(field, 2));
+  assert.equal(unlisted.sent.some(msg => msg.action === 'sameElement'), false);
+}
 
 async function main() {
   const documents = { 1: content(), 2: content() };
@@ -309,6 +361,8 @@ async function main() {
   Object.defineProperty(unwritable, 'shortRefEnd', { enumerable: true,
     get: () => '0', set: () => { throw new Error('storage unavailable'); } });
   await assert.rejects(background(documents, unwritable).send('getAccessibilityTree'), /storage unavailable/);
+
+  await sameElementOffers();
   console.log('short refs: ok');
 }
 

@@ -491,6 +491,7 @@
       'openedPopup':           () => takeOpenedPopup(),
       'fill':                  () => fillFieldSafe(msg.selector, msg.value, msg.first),
       'find':                  () => findElements(msg.query),
+      'sameElement':           () => sameElement(msg.label),
       // @kitsune-dev-only:start
       'executeJS':             () => executeJS(msg.code, msg.selector),
       'waitForResult':         () => waitForResult(msg.code, msg.timeout, msg.pollInterval),
@@ -997,7 +998,8 @@
   // observation: the tool whose call took this snapshot (an action's post-action snapshot).
   // mode: 'full'; 'baseline' records actionBaseline and returns no snapshot; 'delta' lists only
   // the target and the lines that changed since the baseline, adding refs to the current
-  // document's refs. A delta without a baseline (another document) is full.
+  // document's refs. A delta without a baseline (another document) is full. 'labels' returns
+  // the walk's element entries and changes no observation or action state.
   // collapse=false lists every item of repeated sibling runs (core browser_find searches them).
   // Viewport-relative CSS-pixel bounding box as x,y,width,height.
   function boxOf(el) {
@@ -1025,7 +1027,7 @@
     const full = mode === 'full' || (mode === 'delta' && !baseline);
     let target = null;
     let changedDuringWatch = false;
-    if (mode !== 'baseline') {
+    if (mode === 'full' || mode === 'delta') {
       actionBaseline = null;
       changedDuringWatch = mode === 'delta' && settleWatchChanged(settleWatch);
       stopSettleWatch();
@@ -1379,6 +1381,7 @@
       }
     }
     visit(root, 0);
+    if (mode === 'labels') return entries.filter(entry => entry.el);
 
     const record = () => {
       const signatures = new Map();
@@ -1638,6 +1641,16 @@
       } : {}),
       ...withNeedsUser(),
     };
+  }
+
+  // The one element a whole-page snapshot would list with this `role "name"` (label), for a
+  // ref from another document (#459). A readable cross-origin frame's elements are not seen
+  // here, so a page listing one has no answer, as has a label with no or several elements.
+  function sameElement(label) {
+    const entries = getSnapshot(undefined, false, null, null, false, undefined, 'labels', false, false);
+    if (entries.some(entry => entry.frameId)) return {};
+    const matches = entries.filter(entry => entry.label === label);
+    return matches.length === 1 ? { ref: issueRef(matches[0].el) } : {};
   }
 
   // ── Find Elements ──
@@ -4204,7 +4217,7 @@
   // Synchronous reads that share one cache; action handlers are left out, because
   // page handlers they trigger can change the text they report afterwards.
   const REDACTION_CACHED_READS = new Set(['getSnapshot', 'getAccessibilityTree', 'getFormFields', 'find',
-    'query', 'getHTML', 'getReadability', 'getMarkdown', 'explainSelector']);
+    'sameElement', 'query', 'getHTML', 'getReadability', 'getMarkdown', 'explainSelector']);
 
   function withRedactionCache(read) {
     if (redactionCache) return read();
