@@ -13,12 +13,14 @@ to that daemon by itself once both are installed.
 - [Prerequisites](#prerequisites)
 - [1. Register the MCP server](#1-register-the-mcp-server)
 - [2. Install the browser extension](#2-install-the-browser-extension)
+- [3. Check the connection](#3-check-the-connection)
 - [Pinning a version](#pinning-a-version)
 - [Upgrading](#upgrading)
 - [Automatic extension updates](#automatic-extension-updates)
 - [Extension and server compatibility](#extension-and-server-compatibility)
-- [Troubleshooting](#troubleshooting)
-- [Development setup from a checkout](#development-setup-from-a-checkout)
+
+Setup problems are covered in [Troubleshooting](troubleshooting.md#setup-and-installation).
+To run Kitsune from a checkout, see [Development](development.md).
 
 ## Prerequisites
 
@@ -45,7 +47,7 @@ that name.
 
 On macOS, `browser_trusted_click` (needed for example to open "Continue with Google"
 popups) needs `uvx --from 'kitsune-browser-mcp[macos]' kitsune` or `brew install cliclick`,
-plus Accessibility permission; see [Sign-in popups](guide.md#sign-in-popups-oauthsso).
+plus Accessibility permission; see [Sign-in popups](troubleshooting.md#sign-in-popups-oauthsso).
 
 Optionally, warm the cache and check the install before you register it:
 
@@ -107,8 +109,8 @@ configuration instructions instead.
 
 Edit the client's JSON config, for example
 `~/Library/Application Support/Claude/claude_desktop_config.json` (Claude Desktop
-on macOS), `~/.cursor/mcp.json` (Cursor), or `~/.pi/agent/mcp.json` (Pi's built-in
-MCP support). Merge the entry with any existing servers:
+on macOS), `~/.cursor/mcp.json` or `.cursor/mcp.json` (Cursor), or `~/.pi/agent/mcp.json` or
+`.pi/mcp.json` (Pi's built-in MCP support). Merge the entry with any existing servers:
 
 ```json
 {
@@ -208,6 +210,13 @@ Use this for `browser_evaluate`, or to run an unreleased commit.
 Both builds use the same add-on ID. While a developer build is loaded, it
 replaces the signed one; after a browser restart the signed build is back.
 
+## 3. Check the connection
+
+Restart the agent and ask it to list your tabs (`browser_tabs` with
+`action: "list"`). An error's `hint` says what to fix; with
+`KITSUNE_CAPS=core,admin`, `browser_status` reports `"extension_connected": true`
+and a full diagnosis. Then [try a first task](try-it.md).
+
 ## Pinning a version
 
 Pin a released version with `==`:
@@ -235,6 +244,8 @@ the extension from the same ref:
 
 ## Upgrading
 
+### Server
+
 - **Unpinned PyPI** (`--from kitsune-browser-mcp`): uvx keeps using the cached
   version. To move to the newest release, refresh it once, then restart or
   reconnect the MCP client (in Claude Code, `/mcp`):
@@ -255,19 +266,69 @@ the extension from the same ref:
   `pip install --force-reinstall --no-deps kitsune-browser`. The same holds after
   `pip uninstall kitsune-browser-mcp` in an environment that kept 0.6.0. uv and uvx
   are not affected.
+- **A checkout**: run `git pull`, then `uv sync`.
 
-After the server is upgraded, the next MCP connection detects that the running
-bridge has a different `build` and replaces it automatically. This briefly
-interrupts all clients sharing that bridge; set `KITSUNE_NO_BRIDGE_RESTART=1` in
-the MCP server environment to opt out. Then update the extension to the same
-version: the signed build updates itself (see
-[Automatic extension updates](#automatic-extension-updates)); for 0.2.0, or to
-update right away, install the new release's XPI the same way as the first time
+### Bridge
+
+Reconnect or restart the MCP server after upgrading it. It compares the running
+bridge's `build` (package version plus a source hash, including extension JS/JSON in a
+checkout) with its own and automatically restarts an outdated bridge. This briefly
+interrupts all clients sharing that bridge. Set `KITSUNE_NO_BRIDGE_RESTART=1` in the
+**MCP server's environment** to opt out of automatic replacement. You can also stop it
+explicitly; the next MCP connection starts a fresh daemon:
+
+```bash
+uvx --from kitsune-browser-mcp kitsune-bridge status  # JSON; includes bridge_version and build
+uvx --from kitsune-browser-mcp kitsune-bridge stop
+```
+
+From a checkout, use `uv run kitsune-bridge status` / `stop` instead.
+Plain `kitsune-bridge` (or `kitsune-bridge start`) still runs the daemon
+in the foreground. `status` and `stop` never start a daemon. All commands use
+the same `KITSUNE_HOME`, token, and port environment settings as the server.
+
+Shutdown uses a token-authenticated endpoint, with a verified, locked PID file
+as the termination fallback; it never uses a broad `pkill`. Very old daemons
+that have neither the shutdown endpoint nor a PID file require a **one-time
+manual stop of the specific old bridge process**. Kitsune reports this instead
+of guessing a PID or launching another daemon over it. After that, automatic
+replacement and `kitsune-bridge stop` work normally.
+
+### Extension
+
+Update the extension to the same version as the server: the signed build updates
+itself (see [Automatic extension updates](#automatic-extension-updates)); for 0.2.0,
+or to update right away, install the new release's XPI the same way as the first time
 (it replaces the old version and keeps no separate copy). For the developer
-build, load the new release and click **Reload** on Kitsune in `about:debugging`.
-A bridge restart does not reload the extension's code. Reload open tabs if their
-content scripts are still outdated. See [Updating Kitsune](guide.md#updating-kitsune) for
-bridge lifecycle details.
+build, load the new release and click **Reload** on Kitsune in `about:debugging`
+(or load the updated `manifest.json` again). A bridge restart reconnects the
+extension but does **not** reload its browser-side code; reload it explicitly after
+extension updates, and reload existing tabs if their content scripts are still
+outdated. `browser_status` reports a developer build whose files changed after it
+was loaded as `extension_version_mismatch` (`state.reason: "stale_developer_build"`).
+
+Then reconnect the MCP client again if needed (in Claude Code, use `/mcp` to
+reconnect Kitsune), and call `browser_status`. Check `extension_connected`,
+`bridge_version`, and `build`.
+
+### Idle shutdown (opt-in)
+
+By default the shared bridge keeps running until it is stopped. To have it exit
+when no client has used it for a while, set `KITSUNE_BRIDGE_IDLE_TIMEOUT` (in
+seconds) in the **MCP server's environment**, or run the daemon yourself with
+`kitsune-bridge start --idle-timeout SECONDS`. `0` (the default) disables it.
+
+- Every HTTP call to the bridge counts as activity; MCP servers make one per tool
+  call. The extension's WebSocket connection does not count.
+- The timer only runs while nothing is in flight: no HTTP request, no command
+  waiting on the extension, and no `browser_keep_alive` loop. Call
+  `browser_keep_alive_stop` when you no longer need one, or the bridge never
+  goes idle.
+- The next tool call from any client starts a fresh bridge automatically.
+  While an idle bridge is exiting, a client that needs one waits for it to finish
+  instead of racing it.
+- The bridge is shared, so the first MCP server that starts it decides the
+  timeout; the setting in other clients takes effect the next time they start it.
 
 ## Automatic extension updates
 
@@ -311,64 +372,3 @@ then arrive automatically. The developer build never updates itself.
 - Browsers: Gecko 142+ (Firefox 142+, Zen 1.23+, LibreWolf). Firefox release
   and beta builds install only signed extensions, which is why the developer build
   is a temporary add-on.
-
-## Troubleshooting
-
-| Symptom | Check |
-|---|---|
-| Client reports the server failed to start or `uvx` was not found | Use the full path from `which uvx` (GUI apps). Run the `kitsune-bridge status` command above in a terminal to see uv's error |
-| First start times out in the client | Run the `kitsune-bridge status` command once to fill the uv cache, then reconnect |
-| uv cannot find `kitsune-browser-mcp` | Check that PyPI is reachable (or your configured index mirrors it) |
-| uv cannot fetch a `git+https://` source | Check that `git` is installed and on the client's `PATH`, and that GitHub is reachable |
-| An upgrade is not picked up | Restart the MCP client; then refresh with `uvx --refresh …` (see [Upgrading](#upgrading)) |
-| The bridge restarts every time a different client starts | Clients use different sources or refs (see [compatibility](#extension-and-server-compatibility)) |
-| `extension_connected: false` | Extension installed and enabled in `about:addons`? With the developer build, the browser restarted, so the temporary add-on is gone? |
-| A tool says it needs the developer extension build | The signed build cannot run agent-supplied JavaScript; load the [developer build](#developer-build) |
-| Stop or inspect the bridge | `uvx --from kitsune-browser-mcp kitsune-bridge status` (or `stop`) with the same source as your clients |
-
-See the guide's [Troubleshooting](guide.md#troubleshooting) table for bridge,
-token, and page errors.
-
-## Development setup from a checkout
-
-```bash
-git clone https://github.com/junyeong-nero/kitsune ~/workspace/kitsune
-cd ~/workspace/kitsune
-uv sync
-```
-
-Register the checkout instead of the PyPI package so the client runs your
-working tree directly:
-
-```bash
-claude mcp add --scope user kitsune -- uv run --directory ~/workspace/kitsune kitsune
-```
-
-In JSON or TOML configs, use `"command": "uv"` with
-`["run", "--directory", "/Users/you/workspace/kitsune", "kitsune"]`. Load the
-extension from the checkout's `extension/manifest.json` (that is the developer
-build). To try the signed variant locally, build it and load
-`build/extension-signed/manifest.json` the same way:
-
-```bash
-uv run python scripts/build_extension.py signed
-```
-
-To test the installed-package path of a branch, build both packages and run the server
-from their wheels; rebuild after you edit files:
-
-```bash
-uv build --all-packages
-uvx --from dist/kitsune_browser_mcp-<version>-py3-none-any.whl \
-    --with dist/kitsune_browser-<version>-py3-none-any.whl kitsune
-```
-
-(`uvx --from ./packages/kitsune-browser-mcp kitsune` instead runs the working tree's
-code, which uv installs editable.)
-
-Run the tests from the repository root:
-
-```bash
-uv run python -m unittest discover -s tests -q
-for test in tests/*.cjs; do node "$test"; done
-```

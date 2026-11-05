@@ -13,7 +13,7 @@ By default Kitsune publishes Playwright MCP's 25 core tools with the same names,
 schemas, so prompts written for Playwright MCP carry over. On shared-browser tasks it kept the
 user's tab in front in 23 of 24 tasks, against 2 of 24 for Playwright MCP, which was not designed
 to share a browser with a person. See the [benchmark](https://github.com/junyeong-nero/kitsune-benchmark/tree/main/docs/results)
-and [Positioning](positioning.md).
+and [Positioning](https://github.com/junyeong-nero/kitsune/blob/main/docs/positioning.md).
 
 ## How is it different from Mozilla's Firefox DevTools MCP?
 
@@ -42,7 +42,7 @@ and other clients' tabs are read-only by default, whether viewed or in the backg
 navigation, scrolling and closing fail immediately with `user_tab_read_only`, without a prompt.
 The agent should open its own tab first.
 Trusted input still pauses writes on an agent tab with `user_active`. For the permission
-opt-out, see [Protecting your tabs](guide.md#protecting-your-tabs). OS-level clicks and
+opt-out, see [Protecting your tabs](your-tabs.md#protecting-your-tabs). OS-level clicks and
 popups that sites open can still take focus; see [Shared browser](api-reference.md#shared-browser).
 
 ## Can I limit what the agent does?
@@ -51,10 +51,10 @@ Yes, in three ways that combine:
 
 - `KITSUNE_MODE=read`, `draft` or `act` limits both the tools the agent sees and the requests the
   bridge accepts. Draft fills supported fields but has no click or submit tools. See
-  [Task modes](guide.md#task-modes).
+  [Task modes](tools.md#task-modes).
 - `KITSUNE_CAPS` enables tool groups; the default is the 25 core tools, `browser_resume` and `browser_ask_user`. Groups that read personal
   data (`storage`, `history`) must be named. See [Choosing tools](https://github.com/junyeong-nero/kitsune#choosing-tools).
-- [Ask-before-act](guide.md#ask-before-act) holds submits, payment pages, JavaScript and cookie
+- [Ask-before-act](your-tabs.md#ask-before-act) holds submits, payment pages, JavaScript and cookie
   access until you approve.
 
 ## How do I approve a held action?
@@ -66,7 +66,7 @@ asks in the browser first, then falls back to the client. For ask-before-act on 
 the tab; Approve runs that one call, and the agent never sees the approval. Clients without
 elicitation fall back to a confirmation token (`confirm_token`): the agent should ask you, then
 repeat the call with it. Either way the bridge's audit log records how each write was approved.
-See [Approving held actions](guide.md#approving-held-actions).
+See [Approving held actions](your-tabs.md#approving-held-actions).
 
 ## What happens when the agent needs me?
 
@@ -74,7 +74,7 @@ For a sign-in, a CAPTCHA, a button that ignores the agent's clicks or a choice o
 make, the agent asks you with `browser_ask_user`: in the client's prompt (Done or Can't) where
 it has elicitation, else in its reply. In the reply case, for a sign-in or CAPTCHA Kitsune sees
 on the tab, `browser_resume` waits until it is gone, so you need not tell the agent you are done. See
-[When the agent needs you](guide.md#when-the-agent-needs-you).
+[When the agent needs you](your-tabs.md#when-the-agent-needs-you).
 
 ## Is it safe to give an agent my browser?
 
@@ -84,7 +84,7 @@ injection: a page can contain text that steers the agent. Approval in the client
 clients without elicitation, proves a second step, not that a person approved. Use a dedicated
 browser profile, give it only the accounts the task needs, and have the agent ask you before it
 sends, buys or deletes anything. See
-[Security](guide.md#security).
+[Security](security.md).
 
 ## Does my data leave my machine?
 
@@ -101,7 +101,7 @@ restart. See [Installation](installation.md#2-install-the-browser-extension).
 ## Which platforms are supported?
 
 macOS and Linux. Windows has not been tested since the fork. OS-level trusted clicks work on
-macOS, Windows and Linux under X11, not Wayland. See [Requirements](guide.md#requirements).
+macOS, Windows and Linux under X11, not Wayland. See [Requirements](installation.md#prerequisites).
 
 ## Why can't the agent open "Continue with Google" and other sign-in popups?
 
@@ -115,7 +115,7 @@ the button, then continue in the popup or tab that opens; this keeps your pointe
 `uvx --from 'kitsune-browser-mcp[macos]' kitsune` or `brew install cliclick`, Accessibility
 permission for the app running the bridge, and `kitsune-bridge stop` so the next start picks the change up.
 The bridge runs with the Python and `PATH` of whichever MCP server started it first. See
-[Sign-in popups (OAuth/SSO)](guide.md#sign-in-popups-oauthsso).
+[Sign-in popups (OAuth/SSO)](troubleshooting.md#sign-in-popups-oauthsso).
 
 ## Is this the same project as kitsune-mcp?
 

@@ -15,7 +15,6 @@ extra, and the commands: `kitsune` starts the server (also named `kitsune-browse
 claude mcp add --scope user kitsune -- uvx --from kitsune-browser-mcp kitsune
 ```
 
-[MCP setup](https://github.com/junyeong-nero/kitsune#mcp-setup) covers the other clients, and
-[Installation](https://github.com/junyeong-nero/kitsune/blob/main/docs/installation.md) the
-browser extension. To drive the browser from your own Python code, install kitsune-browser
-instead ([Python API](https://github.com/junyeong-nero/kitsune/blob/main/docs/python-api.md)).
+[Installation](https://junyeong-nero.github.io/kitsune/installation/) covers the other clients
+and the browser extension. To drive the browser from your own Python code, install
+kitsune-browser instead ([Python API](https://junyeong-nero.github.io/kitsune/python-api/)).

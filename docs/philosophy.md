@@ -43,4 +43,4 @@ every call. A larger catalog is a cost, not a feature.
 
 ---
 
-For market context and competitor comparison, see [Positioning](positioning.md).
+For market context and competitor comparison, see [Positioning](https://github.com/junyeong-nero/kitsune/blob/main/docs/positioning.md).

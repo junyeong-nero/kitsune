@@ -44,12 +44,12 @@ is not connected. It returns a `Browser`.
 | Argument | Default | Effect |
 | --- | --- | --- |
 | `mode` | `"act"` | `"read"` or `"draft"` restricts requests as [`KITSUNE_MODE`](api-reference.md#task-modes) does for MCP |
-| `user_tabs` | unset (`read-only`) | `writable` allows this client to write user tabs. See [User-tab setting](guide.md#protecting-your-tabs) |
+| `user_tabs` | unset (`read-only`) | `writable` allows this client to write user tabs. See [User-tab setting](your-tabs.md#protecting-your-tabs) |
 | `confirm` | `None` | A function that decides on actions ask-before-act holds; see [Ask-before-act](#ask-before-act) |
 | `replace_bridge` | `False` | `True` replaces a running bridge of another build |
 
 `KITSUNE_HTTP_PORT`, `KITSUNE_TOKEN` and `KITSUNE_HOME` choose the bridge, as for the
-MCP server ([Configuration](guide.md#configuration)).
+MCP server ([Configuration](configuration.md)).
 
 A script and your MCP clients share the bridge, so they should run the same Kitsune
 version from the same source. A bridge of another build raises `ConnectionFailed`

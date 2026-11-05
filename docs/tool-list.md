@@ -1,11 +1,11 @@
 # Tool list
 
-Current tools defined in [tools.py](../src/kitsune/tools.py) and
-[playwright_tools.py](../src/kitsune/playwright_tools.py) and registered by
-[server.py](../src/kitsune/server.py), grouped by capability. The
+Current tools defined in [tools.py](https://github.com/junyeong-nero/kitsune/blob/main/src/kitsune/tools.py) and
+[playwright_tools.py](https://github.com/junyeong-nero/kitsune/blob/main/src/kitsune/playwright_tools.py) and registered by
+[server.py](https://github.com/junyeong-nero/kitsune/blob/main/src/kitsune/server.py), grouped by capability. The
 default `KITSUNE_CAPS=core` exposes the 27 `core` tools:
 [Playwright MCP](https://github.com/microsoft/playwright-mcp)'s 25 core tools with the same
-definitions ([Core tools](guide.md#core-tools)), `browser_resume` and `browser_ask_user`. `KITSUNE_CAPS=all`
+definitions ([Core tools](tools.md#core-tools)), `browser_resume` and `browser_ask_user`. `KITSUNE_CAPS=all`
 exposes all 97. Set a
 comma-separated list to enable selected groups, for example
 `KITSUNE_CAPS=core,browse,read`. The `storage` and `history` groups are not part of `all`:
@@ -13,11 +13,11 @@ they read personal data and must be named, as in `KITSUNE_CAPS=all,storage,histo
 Calling a tool that is not published returns `tool_not_published` naming the setting
 ([API reference](api-reference.md#mcp-tool-surface)). With `KITSUNE_PUBLISH` set to fewer
 groups, `tools/list` starts with those and the gateway tools below reach the rest
-([Finding tools without a restart](guide.md#finding-tools-without-a-restart)).
+([Finding tools without a restart](tools.md#finding-tools-without-a-restart)).
 
 These counts describe the default `KITSUNE_MODE=act`. `KITSUNE_MODE=read|draft`
 further intersects the capability surface and enforces the same limits on bridge calls;
-see [Task modes](guide.md#task-modes). With `core`:
+see [Task modes](tools.md#task-modes). With `core`:
 
 - `read` (9): `browser_tab_list`, `browser_navigate`, `browser_snapshot`, `browser_find`,
   `browser_wait_for`, `browser_console_messages`, `browser_network_requests`,
