@@ -356,6 +356,9 @@ async function approveHandoff(request) {
   } catch {
     return finishHandoff(request, handoffError());
   }
+  // Approving is the user's decision to let the agent act in the tab: a draft they left focused
+  // there (a half-filled form they hand over) must not refuse what they approved (#456).
+  await releaseUserDrafts(request.tabId);
   if (!valid()) {
     return finishHandoff(request, handoffError());
   }
@@ -654,6 +657,20 @@ async function frameUserActivity(tabId, pageFocused = false) {
   return null;
 }
 
+// Forgets the user's draft in the tab's top document and in each child frame that reported input
+// (only those can hold one), so it no longer counts as typing; the next trusted keydown or paste
+// in a field counts again. Queries wait at most 250 ms, as frameUserActivity's do.
+async function releaseUserDrafts(tabId) {
+  const frameIds = [TOP_FRAME.frameId, ...(frameUserInputs.get(tabId)?.keys() || [])];
+  await Promise.all(frameIds.map(frameId => {
+    let timer;
+    return Promise.race([
+      browser.tabs.sendMessage(tabId, { action: 'releaseUserDraft' }, { frameId }).catch(() => null),
+      new Promise(resolve => { timer = setTimeout(resolve, 250, null); }),
+    ]).finally(() => clearTimeout(timer));
+  }));
+}
+
 async function userActivity(tabId) {
   const tab = await browser.tabs.get(tabId).catch(() => null);
   if (!tab) return null;
@@ -687,6 +704,11 @@ async function guardedTabId(action, params) {
   return (await browser.tabs.query({ windowId, active: true }).catch(() => []))[0]?.id ?? null;
 }
 
+// What releases a typing pause, which waiting alone ends only after the idle limit (#456).
+const USER_TYPING_HINT = 'The user has text in a focused field of this tab (state.field); nothing was done. ' +
+  'It is released once the user gives the page no input for 10 s (state.windowMs; state.sinceMs have ' +
+  'passed), leaves the field, or approves handing you the tab (browser_tabs action=request, for a tab you ' +
+  'do not own). Retry after the remaining time, work in a tab you opened, or ask the user to leave the field.';
 async function userActiveError(tabId, windowId = null) {
   const ids = new Set([tabId]);
   if (windowId != null) {
@@ -694,7 +716,9 @@ async function userActiveError(tabId, windowId = null) {
   }
   for (const id of ids) {
     const state = id != null && await userActivity(id);
-    if (state) return tabError(`The user is using tab ${id}; nothing was done`, 'user_active', state);
+    if (!state) continue;
+    const error = tabError(`The user is using tab ${id}; nothing was done`, 'user_active', state);
+    return state.reason === 'typing' ? { ...error, hint: USER_TYPING_HINT } : error;
   }
   return null;
 }

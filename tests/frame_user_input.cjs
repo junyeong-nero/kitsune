@@ -34,7 +34,7 @@ function harness() {
     storage: { local: { get: async () => ({}), set: async () => {} } },
   };
   class WebSocket { constructor() { this.readyState = 1; } send() {} }
-  const context = vm.createContext({ browser, WebSocket, URL,
+  const context = vm.createContext({ browser, WebSocket, URL, crypto: webcrypto,
     Date: class extends Date { static now() { return now; } },
     console: { log() {}, error() {} },
     setTimeout: (fn, delay, ...args) => {
@@ -245,7 +245,7 @@ async function frameActivityTransitions() {
     assert.equal((await h.busy()).sinceMs, 2999);
     h.tick(1);
     assert.equal((await h.busy()).reason, 'typing', 'typing outlives the input window');
-    h.tick(60000);
+    h.tick(5000);
     const forwarded = h.forwarded.length;
     for (const action of ['type', 'navigate', 'closeTab', 'agentInput', 'screenPoint', 'focusState']) {
       const result = await h.command({ action, text: 'agent', selector: 'input', url: 'https://new.test/' });
@@ -411,6 +411,52 @@ async function focusMovedWithinThePage() {
   assert.equal((await h.busy())?.reason, 'typing', 'an unanswered top frame does not release the draft');
 }
 
+// #456: a focused draft holds the tab until the user leaves it idle for 10 s, or until they approve
+// handing the tab to an agent, in the top document and in child frames alike.
+async function draftReleases() {
+  const idle = harness(), child = idle.frame();
+  const field = { tagName: 'INPUT', value: 'user draft', isConnected: true };
+  child.document.activeElement = field;
+  child.input('keydown', 'x', true, field);
+  idle.tick(3000);
+  assert.deepEqual(await idle.busy(), { tabId: 1, url: 'https://parent.test/', reason: 'typing', field: 'input',
+    sinceMs: 3000, windowMs: 10000 });
+  idle.tick(6999);
+  const refused = await idle.command({ action: 'type', text: 'agent' });
+  assert.equal(refused.code, 'user_active', 'within the idle limit');
+  // The hint says what releases the pause, not only to retry.
+  for (const release of [/no input for 10 s/, /leaves the field/, /approves handing you the tab \(browser_tabs action=request/]) {
+    assert.match(refused.hint, release);
+  }
+  idle.tick(1);
+  assert.equal(await idle.busy(), null, 'an idle draft no longer holds the tab');
+  assert.equal((await idle.command({ action: 'type', text: 'agent' })).ok, true);
+
+  for (const where of ['top', 'frame']) {
+    const h = harness(), page = h.frame({ top: true }), framed = h.frame({ url: 'https://other.test/frame' });
+    const doc = where === 'top' ? page : framed;
+    const draft = { tagName: 'TEXTAREA', value: 'user draft', isConnected: true };
+    doc.document.activeElement = draft;
+    doc.input('keydown', 'x', true, draft);
+    h.tick(3000);
+    assert.equal((await h.busy())?.reason, 'typing', `${where}: the draft holds the tab`);
+    h.context.disownAgentTab(1);  // the user's tab, which they hand over
+    const session = { ownerId: 'client-a', sessionId: 'session-a' };
+    await h.context.dispatchCommand({ action: 'openHandoffSession', clientName: 'Client A', ...session });
+    const pending = h.context.dispatchCommand({ action: 'requestTab', tabId: 1, reason: 'Finish the form', ...session });
+    await new Promise(resolve => setImmediate(resolve));
+    const [request] = h.context.handoffPopup().requests;
+    assert.equal((await h.context.handoffDecision(request.id, 'approve')).ok, true);
+    assert.equal((await pending).ok, true);
+    assert.equal(await h.busy(), null, `${where}: the approval released the draft`);
+    assert.equal((await h.command({ action: 'type', text: 'agent', ...session })).ok, true);
+    doc.input('keydown', 'y', true, draft);
+    assert.equal((await h.busy())?.reason, 'input', 'the input window is unchanged');
+    h.tick(3000);
+    assert.equal((await h.busy())?.reason, 'typing', `${where}: the user's later typing counts again`);
+  }
+}
+
 (async () => {
   await genuineFrameInput();
   await startupAndDuplicateInjection();
@@ -418,5 +464,6 @@ async function focusMovedWithinThePage() {
   await failedPreparationAndSenderValidation();
   await frameActivityTransitions();
   await focusMovedWithinThePage();
+  await draftReleases();
   console.log('frame_user_input: ok');
 })().catch(error => { console.error(error); process.exit(1); });

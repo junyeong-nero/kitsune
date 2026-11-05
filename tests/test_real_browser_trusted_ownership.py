@@ -35,6 +35,8 @@ OTHER_OWNER = "e2e-trusted-ownership-other"
 # extension/background/background.js USER_OPENED_TAB_WINDOW_MS and content.js USER_INPUT_WINDOW_MS.
 USER_OPENED_TAB_WINDOW_MS = 1000
 USER_INPUT_WINDOW_S = 3
+# content.js USER_TYPING_IDLE_MS: a focused draft holds the tab this long after the user's last input (#456).
+USER_TYPING_IDLE_S = 10
 # background.js USER_NAVIGATION_WINDOW_MS and AGENT_EFFECT_GRACE_MS: a load that starts within the
 # grace after an agent command on the tab is the agent's.
 USER_NAVIGATION_WINDOW_S = 10
@@ -479,6 +481,36 @@ class RealBrowserTrustedOwnershipTests(harness.RealBrowserTestCase):
         tab = self.wait_for(lambda: (t := self.tabs()[agent])["url"] == self.site.origin + "/next" and t,
                             "the agent's navigation did not load")
         self.assertIs(tab["owned"], True)
+
+    def test_user_typing_pauses_the_agent_for_at_most_10_s_after_the_users_last_input(self):
+        # #456 (benchmark tp-busy-01): the user types into the agent's tab and stops, and the field
+        # keeps focus. The pause ends without the user leaving the field.
+        agent, url = self.shown_agent_tab("/form")
+        typed_at = self.user_typed(url, "hi", "hi")
+        time.sleep(max(0, typed_at + USER_INPUT_WINDOW_S + 0.3 - time.monotonic()))
+        refused = []
+        while (result := self.call("/api/type", {"tabId": agent, "selector": "#field", "text": "x",
+                                                 "clear": False})).get("code") == "user_active":
+            self.assert_user_active(result, ("typing",))
+            self.assertEqual((result["state"]["field"], result["state"]["windowMs"]),
+                             ("input", USER_TYPING_IDLE_S * 1000), result)
+            for release in ("no input for 10 s", "leaves the field", "browser_tabs action=request"):
+                self.assertIn(release, result["hint"])
+            refused.append(result["state"]["sinceMs"])
+            self.assertLess(time.monotonic(), typed_at + USER_TYPING_IDLE_S + 1.5, refused)
+            time.sleep(0.2)
+        self.assert_ok(result)
+        self.assertTrue(refused, "the agent's write was never refused")
+        self.assertGreater(max(refused), (USER_TYPING_IDLE_S - 1) * 1000, refused)
+        sys.stderr.write(f"\n#456 typing: last refusal at sinceMs {max(refused)}\n")
+        events = self.events()
+        typed = next(e for e in events if not e["trusted"] and e["type"] == "input")
+        self.assertEqual((typed["value"], typed["focused"]), ("hix", "field"), events)
+        self.assertEqual([e for e in events if e["type"] == "blur" and e["seq"] < typed["seq"]], [],
+                         "the field kept focus until the agent's write")
+        for result in self.agent_writes(agent):
+            self.assert_ok(result)
+        self.assertIs(self.tabs()[agent]["owned"], True)
 
     def test_user_typing_releases_when_the_user_empties_the_field(self):
         agent, url = self.shown_agent_tab("/form")

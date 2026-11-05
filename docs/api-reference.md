@@ -1391,7 +1391,10 @@ after approval preserves ownership. A decline returns `needs_user` with
 `state.decision="declined"` and recommends an agent-created tab.
 
 A successful handoff is `owned` for this requesting session, including DOM/browser writes
-without further handoff prompts (ordinary policy checks and `user_active` still apply). The popup
+without further handoff prompts (ordinary policy checks and `user_active` still apply). Approval
+releases text the user left in a focused field of the tab or its frames, so a half-filled form
+they hand over does not refuse the agent's writes with `user_active` `typing`; the 3 s `input`
+window still applies, and the user's later typing in a field counts again (#456). The popup
 lists handed-off tabs by client and provides **Take back**. Taking back immediately revokes
 permission without changing the user's view. It does not undo an action already sent to
 the page. Other clients' tabs, including handoffs to another simultaneous session
@@ -1607,12 +1610,16 @@ and `state.reason`:
 | `state.reason` | The user is | Window |
 |---|---|---|
 | `input` | giving the page trusted input: `keydown`, `mousedown`, `pointerdown`, `touchstart`, `wheel` or `paste` (`state.input`, `state.sinceMs`, `state.windowMs`) | 3 s after the last such event |
-| `typing` | typing in a field: the input, textarea, editor or custom element (a shadow-root field shows as its host) that last got a trusted `keydown` or `paste` still has focus, holds content, and its document has focus (`state.field` is its tag; the value is never read out) | while all of that holds |
+| `typing` | typing in a field: the input, textarea, editor or custom element (a shadow-root field shows as its host) that last got a trusted `keydown` or `paste` still has focus, holds content, and its document has focus (`state.field` is its tag; the value is never read out; `state.sinceMs` since the document's last trusted input, `state.windowMs`) | while all of that holds, at most 10 s after the last such input |
 | `navigating` | loading a new document in the tab they see (address bar, back button, a link), and no agent command on the tab started it (`state.sinceMs`) | while it loads, at most 10 s |
 
 On your own tab, wait a few seconds and retry. Input does not transfer ownership.
-Typing releases when the field loses focus or is emptied; merely pausing between keys
-in a focused, nonempty field does not release it. Once a check has seen the release, the
+Typing releases when the field loses focus or is emptied, when the user gives its
+document no trusted input for 10 s (#456), or when the user approves a
+[handoff](#requesting-and-returning-a-tab) of the tab, which releases the drafts of the
+tab's top document and child frames. The 10 s limit is more than three input windows, long
+enough that a pause to think mid-sentence keeps the draft, and matches the bound on a user
+navigation. For `typing` the hint names these releases instead of only asking for a retry. Once a check has seen the release, the
 field counts again only after the user's next trusted `keydown` or `paste` in it, so the
 agent's own focus or text there does not hold the tab. Checked actions: click, double-click, type/fill/editable, select, check,
 keypress, submit, form fill, hover, scroll, drag, focus, blur, JavaScript, upload,
