@@ -4,5 +4,6 @@ __pycache__/
 dist/
 web-ext-artifacts/
 build/
+site/
 *.xpi
 kitsune-extension-*.zip

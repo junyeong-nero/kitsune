@@ -48,6 +48,9 @@ kitsune-bridge = "kitsune.bridge:run"
 [dependency-groups]
 # A checkout runs the MCP server and every test: `uv run kitsune`, `uv run python -m unittest`.
 dev = ["kitsune-browser-mcp"]
+docs = [
+    "mkdocs-material>=9.5",
+]
 
 [tool.uv.workspace]
 members = ["packages/kitsune-browser-mcp"]

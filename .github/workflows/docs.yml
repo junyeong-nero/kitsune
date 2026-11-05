@@ -1,0 +1,33 @@
+# Builds the docs site with MkDocs and publishes it to the gh-pages branch, which GitHub
+# Pages serves at https://junyeong-nero.github.io/kitsune/.
+# Preview locally with `uv run --group docs mkdocs serve`.
+name: Docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "README.md"
+      - "mkdocs.yml"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: docs
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898729+github-actions[bot]@users.noreply.github.com"
+      - run: uv run --only-group docs mkdocs gh-deploy --force
