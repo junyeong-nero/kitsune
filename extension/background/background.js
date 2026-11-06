@@ -1271,6 +1271,9 @@ async function handleCommand(command) {
 // actions and such fields keep SETTLE_MIN_MS, and so does a browser_fill_form call when any of
 // its fields keeps it. A debounced reaction on a plain field (a filter box) may then come after
 // the delta.
+// A key the page handled has no minimum either once its change has landed (#475): the key's
+// result has prevented and the settle watch saw mutations, so it ends after SETTLE_QUIET_MS.
+// A key with no mutation yet (a debounced reaction) or no visible change keeps SETTLE_MIN_MS.
 const SETTLE_MIN_MS = 400;
 const SETTLE_HIDDEN_MIN_MS = 1100;
 const SETTLE_QUIET_MS = 150;
