@@ -1,0 +1,2340 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Drive the Firefox, Zen, or LibreWolf browser you already have open from Python or an AI agent.">
+      
+      
+      
+        <link rel="canonical" href="https://junyeong-nero.github.io/kitsune/python-api/">
+      
+      
+        <link rel="prev" href="../configuration/">
+      
+      
+        <link rel="next" href="../checkpoint-resume/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.0">
+    
+    
+      
+        <title>Python API - Kitsune</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.57a0d79d.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.fb2fffe2.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="deep-orange" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#python-api" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Kitsune" class="md-header__button md-logo" aria-label="Kitsune" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Kitsune
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Python API
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="deep-orange" data-md-color-accent="indigo"  aria-label="Dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="deep-orange" data-md-color-accent="indigo"  aria-label="Light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/junyeong-nero/kitsune" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    junyeong-nero/kitsune
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Kitsune" class="md-nav__button md-logo" aria-label="Kitsune" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Kitsune
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/junyeong-nero/kitsune" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    junyeong-nero/kitsune
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../try-it/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Try it
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Concepts
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../how-it-works/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    How it works
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../your-tabs/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Your tabs and approvals
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tools, capabilities and modes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../security/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guides
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Python API
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Python API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#connecting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Connecting
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#tabs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tabs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reading" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reading
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#inspecting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Inspecting
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#acting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Acting
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#waiting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Waiting
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#batches-parallel-tabs-and-workflows" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Batches, parallel tabs and workflows
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#browser-data" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Browser data
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#errors" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Errors
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ask-before-act" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Ask-before-act
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-bridge" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The bridge
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#any-other-route" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Any other route
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../checkpoint-resume/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Checkpoint and resume
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tool-list/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tool list
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Help
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Help
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../troubleshooting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../faq/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    FAQ
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Scraping playbooks
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Scraping playbooks
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scraping-playbooks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Kitsune Scraping Playbooks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scraping-playbooks/amazon/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Amazon
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scraping-playbooks/bestbuy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Best Buy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scraping-playbooks/bhphotovideo/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    B&H Photo Video
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scraping-playbooks/ebay/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    eBay
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scraping-playbooks/newegg/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Newegg
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    About
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    About
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../benchmark/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmark and comparison
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../philosophy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Philosophy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Contributing
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../development/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#connecting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Connecting
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#tabs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tabs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reading" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reading
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#inspecting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Inspecting
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#acting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Acting
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#waiting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Waiting
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#batches-parallel-tabs-and-workflows" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Batches, parallel tabs and workflows
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#browser-data" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Browser data
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#errors" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Errors
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ask-before-act" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Ask-before-act
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-bridge" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The bridge
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#any-other-route" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Any other route
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="python-api">Python API<a class="headerlink" href="#python-api" title="Permanent link">&para;</a></h1>
+<p>The <code>kitsune</code> package drives the browser you already have open from Python, through
+the same extension and bridge as the MCP server. The two have different jobs:</p>
+<ul>
+<li><strong>The MCP server</strong> gives an agent a small, curated tool surface. <code>KITSUNE_CAPS</code>,
+  <code>KITSUNE_PUBLISH</code> and <code>KITSUNE_MODE</code> limit what it sees and what the bridge
+  accepts from it.</li>
+<li><strong>The Python API</strong> reaches every capability of the extension and bridge, for
+  scripts and for your own agent frameworks. Its requests carry no capability
+  header, so every group is available, <code>storage</code> and <code>history</code> included.</li>
+</ul>
+<p>Both are clients of one shared bridge, and the bridge's
+<a href="../api-reference/#shared-browser">shared-browser rules</a> hold for both: tabs open in
+the background, writes wait while you are using a tab, your own tabs close only with
+your approval, and sensitive fields are redacted. Ask-before-act, when it is on,
+holds the same actions.</p>
+<div class="highlight"><pre><span></span><code>pip<span class="w"> </span>install<span class="w"> </span>kitsune-browser<span class="w">      </span><span class="c1"># or: uv add kitsune-browser</span>
+</code></pre></div>
+<p>kitsune-browser is the code; the MCP server's package, kitsune-browser-mcp, installs it
+with the <code>mcp</code> extra. Keep a script on the version your MCP clients run, since they share
+one bridge (<a href="#connecting">Connecting</a>). It needs the Kitsune extension installed in
+Firefox, Zen or LibreWolf (<a href="../installation/">Installation</a>).</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">kitsune</span>
+
+<span class="n">browser</span> <span class="o">=</span> <span class="n">kitsune</span><span class="o">.</span><span class="n">connect</span><span class="p">()</span>                        <span class="c1"># starts the bridge if none runs</span>
+<span class="n">tab</span> <span class="o">=</span> <span class="n">browser</span><span class="o">.</span><span class="n">new_tab</span><span class="p">(</span><span class="s2">"https://news.ycombinator.com"</span><span class="p">)</span>   <span class="c1"># a background tab you don't see</span>
+<span class="k">for</span> <span class="n">link</span> <span class="ow">in</span> <span class="n">tab</span><span class="o">.</span><span class="n">query</span><span class="p">(</span><span class="s2">".titleline &gt; a"</span><span class="p">,</span> <span class="n">fields</span><span class="o">=</span><span class="p">[</span><span class="s2">"text"</span><span class="p">,</span> <span class="s2">"href"</span><span class="p">],</span> <span class="n">limit</span><span class="o">=</span><span class="mi">3</span><span class="p">):</span>
+    <span class="nb">print</span><span class="p">(</span><span class="n">link</span><span class="p">[</span><span class="s2">"text"</span><span class="p">],</span> <span class="n">link</span><span class="p">[</span><span class="s2">"href"</span><span class="p">])</span>
+<span class="n">tab</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
+</code></pre></div>
+<h2 id="connecting">Connecting<a class="headerlink" href="#connecting" title="Permanent link">&para;</a></h2>
+<p><code>kitsune.connect()</code> starts the shared bridge if none runs, waits for the extension
+to reconnect to a bridge it started, and raises <code>ConnectionFailed</code> if the extension
+is not connected. It returns a <code>Browser</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Argument</th>
+<th>Default</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>mode</code></td>
+<td><code>"act"</code></td>
+<td><code>"read"</code> or <code>"draft"</code> restricts requests as <a href="../api-reference/#task-modes"><code>KITSUNE_MODE</code></a> does for MCP</td>
+</tr>
+<tr>
+<td><code>user_tabs</code></td>
+<td>unset (<code>read-only</code>)</td>
+<td><code>writable</code> allows this client to write user tabs. See <a href="../your-tabs/#protecting-your-tabs">User-tab setting</a></td>
+</tr>
+<tr>
+<td><code>confirm</code></td>
+<td><code>None</code></td>
+<td>A function that decides on actions ask-before-act holds; see <a href="#ask-before-act">Ask-before-act</a></td>
+</tr>
+<tr>
+<td><code>replace_bridge</code></td>
+<td><code>False</code></td>
+<td><code>True</code> replaces a running bridge of another build</td>
+</tr>
+</tbody>
+</table>
+<p><code>KITSUNE_HTTP_PORT</code>, <code>KITSUNE_TOKEN</code> and <code>KITSUNE_HOME</code> choose the bridge, as for the
+MCP server (<a href="../configuration/">Configuration</a>).</p>
+<p>A script and your MCP clients share the bridge, so they should run the same Kitsune
+version from the same source. A bridge of another build raises <code>ConnectionFailed</code>
+with code <code>bridge_version_mismatch</code> and keeps running. The MCP server would replace
+it, but replacing a bridge drops its clients' keep-alives, intercepts and resume
+checkpoints, so the Python API does that only with <code>replace_bridge=True</code> (or after
+<code>kitsune-bridge stop</code>).</p>
+<h2 id="tabs">Tabs<a class="headerlink" href="#tabs" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th><code>Browser</code> method</th>
+<th>Returns</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>tabs()</code></td>
+<td>Every open tab: <code>id</code>, <code>url</code>, <code>title</code>, <code>active</code>, <code>windowId</code>, <code>index</code>, <code>owned</code> (this client owns it)</td>
+</tr>
+<tr>
+<td><code>new_tab(url="about:blank", wait=True, timeout=15000)</code></td>
+<td>A <code>Tab</code> for a new background tab. A load past <code>timeout</code> ms raises <code>TimedOut</code>; the tab stays open, with its id in <code>error.result["tabId"]</code></td>
+</tr>
+<tr>
+<td><code>tab(tab_id)</code></td>
+<td>A <code>Tab</code> for an existing tab</td>
+</tr>
+<tr>
+<td><code>active_tab()</code></td>
+<td>The tab you are viewing. With several windows, each has one: it raises <code>ambiguous_target</code>, and you pick one from <code>tabs()</code></td>
+</tr>
+</tbody>
+</table>
+<p>A <code>Tab</code> sends its id with every request, so it acts on that tab whether or not you are
+viewing it.</p>
+<table>
+<thead>
+<tr>
+<th><code>Tab</code> method</th>
+<th>Does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>close(force=False)</code></td>
+<td>Close this client's tab; user and other clients' tabs are refused with <code>user_tab_read_only</code> by default. <code>force</code> disarms <code>beforeunload</code></td>
+</tr>
+<tr>
+<td><code>show()</code></td>
+<td>Switch your view to the tab; call it only when you want that</td>
+</tr>
+<tr>
+<td><code>wake()</code></td>
+<td>Reload a tab the browser discarded and wait until the page answers</td>
+</tr>
+<tr>
+<td><code>duplicate()</code></td>
+<td>A <code>Tab</code> for a background copy</td>
+</tr>
+<tr>
+<td><code>pin(pinned=True)</code>, <code>mute(muted=True)</code>, <code>zoom()</code>, <code>set_zoom(factor)</code></td>
+<td>Tab state</td>
+</tr>
+<tr>
+<td><code>move(window_id=None, index=-1)</code>, <code>detach()</code>, <code>resize_window(width, height)</code></td>
+<td>Place the tab, give it a window of its own, or resize its window</td>
+</tr>
+<tr>
+<td><code>tag(name)</code></td>
+<td>Name the tab; <code>browser.tags.tab(name)</code> finds it, <code>.list()</code> and <code>.remove(name)</code> manage names</td>
+</tr>
+</tbody>
+</table>
+<p><code>browser.windows</code> has <code>list()</code>, <code>create(url=None, incognito=False)</code>, <code>close(window_id)</code>
+and <code>focus(window_id)</code>, which takes your focus. Closing or focusing a window with user
+or other clients' tabs is refused by default. <code>browser.pool</code> keeps reusable background tabs: <code>create(size, url)</code>,
+<code>acquire()</code> for a <code>Tab</code>, <code>release(tab)</code>.</p>
+<h2 id="reading">Reading<a class="headerlink" href="#reading" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th><code>Tab</code> method</th>
+<th>Returns</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>text()</code></td>
+<td>The visible text, as <code>str</code></td>
+</tr>
+<tr>
+<td><code>snapshot(target=None, max_depth=None, text=False)</code></td>
+<td>The accessibility-style tree with element refs (<code>e12</code>), as <code>str</code> (<a href="../api-reference/#browser_snapshottab_idnone-selectornone-refnone-max_depthnone-textfalse">Snapshots</a>)</td>
+</tr>
+<tr>
+<td><code>markdown(target=None)</code></td>
+<td>The page, or one subtree, as Markdown</td>
+</tr>
+<tr>
+<td><code>html(target)</code></td>
+<td>One element's <code>outerHTML</code> (<code>"html"</code> for the whole page)</td>
+</tr>
+<tr>
+<td><code>query(selector, fields=None, limit=50)</code></td>
+<td>Fields of every element matching a CSS selector, as a list</td>
+</tr>
+<tr>
+<td><code>find(query)</code></td>
+<td>Elements matching a description such as <code>"login button"</code>, best first, each with a <code>ref</code></td>
+</tr>
+<tr>
+<td><code>forms()</code></td>
+<td>Every form field with its label and value</td>
+</tr>
+<tr>
+<td><code>links(internal_only=False)</code></td>
+<td>The page's links</td>
+</tr>
+<tr>
+<td><code>info()</code></td>
+<td>URL, title, <code>readyState</code>, sizes, scroll position and recent dialogs</td>
+</tr>
+<tr>
+<td><code>screenshot(path=None, target=None, full_page=False, format="png")</code></td>
+<td>PNG or JPEG bytes, also written to <code>path</code>. No capture shows the tab</td>
+</tr>
+<tr>
+<td><code>evaluate(function, target=None)</code></td>
+<td>The JSON value a JavaScript function returns, for example <code>evaluate("() =&gt; document.title")</code> or <code>evaluate("el =&gt; el.value", "e3")</code>. Needs the developer extension build</td>
+</tr>
+<tr>
+<td><code>dom(target=None, max_depth=None)</code></td>
+<td>The accessibility tree of interactive elements, as nested dicts</td>
+</tr>
+<tr>
+<td><code>images()</code>, <code>iframes()</code></td>
+<td>The page's images and frames, as lists</td>
+</tr>
+<tr>
+<td><code>meta()</code>, <code>structured_data()</code>, <code>readability()</code></td>
+<td>Meta tags and <code>&lt;link&gt;</code>s; JSON-LD, Open Graph and Twitter cards; the main article</td>
+</tr>
+</tbody>
+</table>
+<p>Sensitive values read redacted, as for the MCP tools
+(<a href="../api-reference/#sensitive-field-redaction">Sensitive-field redaction</a>). When the
+bridge cuts a read at its size cap (page text at 20,000 characters, HTML at 100 KB,
+Markdown at 80 KB), the method warns with a <code>UserWarning</code>; read a part of the page
+with a <code>target</code> instead.</p>
+<p><code>evaluate</code> runs in the extension's content-script world, not in the page's: it sees the
+page's DOM, and reaches the page's own JavaScript globals only through
+<code>window.wrappedJSObject</code>, so <code>evaluate("() =&gt; window.wrappedJSObject.appState")</code>.</p>
+<h2 id="inspecting">Inspecting<a class="headerlink" href="#inspecting" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th><code>Tab</code> method</th>
+<th>Returns</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>bounds(target)</code></td>
+<td>An element's box, the viewport and page sizes, and <code>inView</code></td>
+</tr>
+<tr>
+<td><code>computed_style(target, properties=None)</code></td>
+<td>Computed CSS, a common set of properties by default</td>
+</tr>
+<tr>
+<td><code>explain_selector(selector)</code></td>
+<td>How many elements a CSS selector matches, samples, and more specific suggestions</td>
+</tr>
+<tr>
+<td><code>full_page_metrics()</code></td>
+<td>Document size, viewport, scroll position and device pixel ratio</td>
+</tr>
+<tr>
+<td><code>highlight(target)</code>, <code>clear_highlight()</code></td>
+<td>Outline an element on the page</td>
+</tr>
+<tr>
+<td><code>watch_console(enabled=True)</code>, <code>console_logs(since=None, level=None)</code></td>
+<td>Record the page's console, then read the messages</td>
+</tr>
+<tr>
+<td><code>network.start()</code>, <code>.requests(since=0)</code>, <code>.stop()</code>, <code>.clear()</code>, <code>.resources()</code></td>
+<td>The page's requests from its resource timing (no headers or bodies); <code>resources()</code> needs no <code>start()</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>browser.intercept</code> blocks or redirects requests in every tab: <code>add(patterns, effect="block")</code>
+with URL regexes, <code>rules()</code>, <code>log()</code> and <code>clear()</code>.</p>
+<h2 id="acting">Acting<a class="headerlink" href="#acting" title="Permanent link">&para;</a></h2>
+<p>Targets are a ref from <code>snapshot()</code> or <code>find()</code>, CSS, or one of the
+<a href="../api-reference/#target-selectors">Playwright-style selectors</a> such as
+<code>text=Save</code> or <code>role=button[name="Save"]</code>. A write's selector must match one
+element: otherwise it raises <code>ambiguous_target</code> and nothing runs, and <code>first=True</code>
+acts on the first match (<a href="../api-reference/#strict-selectors">Strict selectors</a>).</p>
+<table>
+<thead>
+<tr>
+<th><code>Tab</code> method</th>
+<th>Does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>navigate(url)</code>, <code>back()</code>, <code>forward()</code>, <code>reload(bypass_cache=False)</code></td>
+<td>Navigate the tab</td>
+</tr>
+<tr>
+<td><code>click(target, button=None, modifiers=None, hold_ms=0)</code>, <code>double_click(target)</code>, <code>hover(target, duration_ms=0, steps=None)</code></td>
+<td>Pointer events (synthetic) on the target; <code>hold_ms</code> (0-10000) holds a click's press for long-press controls, and <code>duration_ms</code> (0-10000) or <code>steps</code> (1-50) keep a hover moving across the target for hover-intent controls (<a href="../api-reference/#post-apiclick">POST /api/click</a>, <a href="../api-reference/#post-apihover">POST /api/hover</a>)</td>
+</tr>
+<tr>
+<td><code>fill(target, value)</code></td>
+<td>Replace a field's or editor's value</td>
+</tr>
+<tr>
+<td><code>type(target, text, clear=False)</code></td>
+<td>Type with key events</td>
+</tr>
+<tr>
+<td><code>fill_form(fields)</code></td>
+<td>Fill several fields; each key is a CSS selector, name, label or placeholder</td>
+</tr>
+<tr>
+<td><code>press(key, target=None, modifiers=None, text=None)</code></td>
+<td>Press <code>"Enter"</code>, <code>"ArrowDown"</code>, <code>"a"</code>, ... with modifiers such as <code>{"ctrl": True}</code></td>
+</tr>
+<tr>
+<td><code>select_option(target, value, by_text=False)</code></td>
+<td>Choose an <code>&lt;option&gt;</code></td>
+</tr>
+<tr>
+<td><code>check(target, checked=True)</code>, <code>uncheck(target)</code></td>
+<td>Set a checkbox or radio button</td>
+</tr>
+<tr>
+<td><code>scroll(direction="down", amount=500, target=None)</code></td>
+<td>Scroll the target or the window</td>
+</tr>
+<tr>
+<td><code>submit_form(target=None)</code></td>
+<td>Submit a form</td>
+</tr>
+<tr>
+<td><code>handle_dialogs(accept=True, prompt_text=None)</code></td>
+<td>Answer this tab's future dialogs; <code>None</code> leaves them to you again</td>
+</tr>
+<tr>
+<td><code>focus(target)</code>, <code>blur(target=None)</code></td>
+<td>Move focus</td>
+</tr>
+<tr>
+<td><code>drag(source, destination)</code></td>
+<td>HTML5 drag events, else pointer events (<code>via</code> says which)</td>
+</tr>
+<tr>
+<td><code>insert(target, text, html=False, clear=False)</code></td>
+<td>Insert text into an editor, input or textarea, appending unless <code>clear</code>; <code>html=True</code> (developer build) inserts HTML into an editor</td>
+</tr>
+<tr>
+<td><code>upload_files(paths, target=None)</code>, <code>drop(target, paths=None, data=None)</code></td>
+<td>Put local files into a file input, or drop files and data on an element</td>
+</tr>
+<tr>
+<td><code>trusted_click(target=None, x=0, y=0, coordinate_space="viewport", restore_pointer=True, button="left", click_count=1, modifiers=None, hold_ms=0)</code></td>
+<td>A click with the real OS pointer, for pages that ignore synthetic clicks; <code>button="right"</code>/<code>"middle"</code>, <code>click_count=2</code>, <code>modifiers=["Shift", ...]</code> and <code>hold_ms</code> (a long press) choose the click. It moves your cursor for the click, then back unless <code>restore_pointer=False</code>, and may show the tab for the click (<a href="../api-reference/#browser_trusted_clickselector-x0-y0-coordinate_spaceviewport-focusfalse-tab_idnone-firstfalse-restore_pointertrue-buttonleft-click_count1-modifiersnone-hold_ms0"><code>browser_trusted_click</code></a>)</td>
+</tr>
+</tbody>
+</table>
+<p>Actions return the bridge's result. <code>ok: True</code> only means the action was dispatched.
+To check what happened, pass <code>expect</code>, for example <code>expect={"url_changed": True}</code> or
+<code>expect={"text": "Saved"}</code>; an unmet outcome raises <code>KitsuneError</code> with code
+<code>outcome_not_observed</code> (<a href="../api-reference/#action-outcomes">Action outcomes</a>). Pointer
+and typing actions also take <code>wait=True</code> to wait up to <code>timeout</code> ms for their target
+first (<a href="../api-reference/#actionability-wait">Actionability wait</a>). Tabs an action opened
+are in its <code>opened_tabs</code>; open them with <code>browser.tab(id)</code>. A menu, listbox or dialog that
+<code>click</code>, <code>double_click</code> or <code>hover</code> opened is in its <code>opened_popup</code>
+(<a href="../api-reference/#opened-popups">Opened popups</a>).</p>
+<h2 id="waiting">Waiting<a class="headerlink" href="#waiting" title="Permanent link">&para;</a></h2>
+<p><code>tab.wait_for(...)</code> waits up to <code>timeout</code> ms (default 10000) for exactly one
+condition and raises <code>TimedOut</code> if it does not hold:</p>
+<table>
+<thead>
+<tr>
+<th>Condition</th>
+<th>Holds when</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>target=</code></td>
+<td>the element is visible</td>
+</tr>
+<tr>
+<td><code>text=</code>, <code>text_gone=</code></td>
+<td>the rendered page text contains, or no longer contains, the literal text. Names from placeholders and <code>aria-label</code>s are not page text</td>
+</tr>
+<tr>
+<td><code>url=</code>, <code>title=</code></td>
+<td>the tab's URL or title matches a JavaScript regex; survives navigation</td>
+</tr>
+<tr>
+<td><code>js=</code></td>
+<td>an expression returns a non-empty result (developer build only)</td>
+</tr>
+<tr>
+<td><code>network_idle=True</code></td>
+<td>no new resource loaded for 500 ms</td>
+</tr>
+</tbody>
+</table>
+<h2 id="batches-parallel-tabs-and-workflows">Batches, parallel tabs and workflows<a class="headerlink" href="#batches-parallel-tabs-and-workflows" title="Permanent link">&para;</a></h2>
+<p><code>browser.batch(commands, tab=None)</code> runs <a href="../api-reference/#post-apibatch">batch commands</a>
+in one request, <code>browser.parallel(sequences)</code> runs one sequence per tab concurrently,
+and <code>browser.workflow(name, variables)</code> runs a named workflow (<code>browser.workflows()</code>
+lists them). A failed command does not raise: each one's outcome is in <code>results</code> and
+<code>progress</code> (<a href="../api-reference/#container-progress">Container progress</a>). A call that
+did not finish <code>ok</code> returns <code>call</code> and <code>resume_token</code> for <code>browser.resume(...)</code>
+(<a href="../checkpoint-resume/">Checkpoint and resume</a>). <code>browser.retry(command, max_attempts=3)</code>
+repeats one command while it fails retryably.</p>
+<p>For several tabs, <code>browser.keep_alive(tabs)</code> stops the browser's tab unloader from
+discarding them until <code>stop_keep_alive()</code>, <code>browser.broadcast(tabs, command)</code> runs one
+command in each, and <code>browser.sync_barrier(tabs, predicate)</code> waits until a JavaScript
+predicate holds in all of them.</p>
+<h2 id="browser-data">Browser data<a class="headerlink" href="#browser-data" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Returns</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>tab.local_storage</code>, <code>tab.session_storage</code>: <code>.get(key)</code>, <code>.set(key, value)</code>, <code>.remove(key)</code>, <code>.clear()</code>, <code>.items()</code></td>
+<td>The page's storage</td>
+</tr>
+<tr>
+<td><code>browser.cookies.get(url=None, name=None, domain=None)</code></td>
+<td>Matching cookies</td>
+</tr>
+<tr>
+<td><code>browser.cookies.set(url, name, value, domain=None, path=None, secure=False)</code>, <code>.remove(url, name)</code>, <code>.clear(url=None, domain=None)</code></td>
+<td>The bridge's result</td>
+</tr>
+<tr>
+<td><code>browser.clipboard.read()</code>, <code>.write(text)</code></td>
+<td>The system clipboard</td>
+</tr>
+<tr>
+<td><code>browser.downloads.start(url, filename=None)</code>, <code>.list(query=None)</code>, <code>.cancel(download_id)</code></td>
+<td>A download id, the latest downloads</td>
+</tr>
+<tr>
+<td><code>browser.sessions.save(name, urls=None)</code>, <code>.load(name)</code>, <code>.list()</code>, <code>.delete(name)</code></td>
+<td>Cookies, and the localStorage of <code>urls</code>' origins, saved to disk by the bridge</td>
+</tr>
+<tr>
+<td><code>browser.clear_browsing_data(types, since=None)</code></td>
+<td>Remove the named kinds of data, such as <code>["cache"]</code>. <code>types</code> is required: without it the extension would also remove cookies, history and saved passwords</td>
+</tr>
+<tr>
+<td><code>browser.history.search(query="", since=None, limit=20)</code></td>
+<td>Visited pages, newest first; <code>since</code> is a <code>datetime</code> (naive is local time)</td>
+</tr>
+<tr>
+<td><code>browser.history.visits(url)</code></td>
+<td>The visits to one URL from <code>search</code></td>
+</tr>
+<tr>
+<td><code>browser.bookmarks.search(query="", limit=20)</code></td>
+<td>Matching bookmarks</td>
+</tr>
+</tbody>
+</table>
+<p>With ask-before-act on, page storage, cookies, the clipboard and downloads raise
+<code>ConfirmationRequired</code> for every operation, reads included
+(<a href="../api-reference/#ask-before-act">Ask-before-act</a>).</p>
+<p>History and bookmarks need a browser permission that only you can grant, once, with
+<strong>Allow history and bookmarks</strong> on Kitsune's options page (about:addons → Kitsune →
+Options); until then they raise <code>permission_required</code>. Results stay inside the
+bridge's history scope (<a href="../api-reference/#history-and-bookmarks">History and bookmarks</a>).</p>
+<h2 id="errors">Errors<a class="headerlink" href="#errors" title="Permanent link">&para;</a></h2>
+<p>A failed result raises a <code>KitsuneError</code>. Its <code>code</code>, <code>retryable</code>, <code>hint</code> and <code>state</code>
+are the <a href="../api-reference/#action-errors">action error</a> fields, and <code>result</code> is the
+whole reply. Branch on <code>code</code>, not on the message. <code>retryable=False</code> means a write may
+already have taken effect: check the page before repeating it. <code>needs_user</code> is the
+exception: nothing ran, and only you can let it go on.</p>
+<table>
+<thead>
+<tr>
+<th>Exception</th>
+<th>Raised for</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ConfirmationRequired</code></td>
+<td>An action that needs your approval (<code>needs_user</code> with <code>state.reason</code> <code>approval</code>, and a token), with <code>token</code>, <code>expires_in</code>, <code>message</code> and <code>detail</code>: <code>confirmation_required</code> (ask-before-act, with <code>hold_reason</code>), or <code>user_tab</code> (closing a user tab, from a v0.7.1 extension)</td>
+</tr>
+<tr>
+<td><code>ConnectionFailed</code> (also a <code>ConnectionError</code>)</td>
+<td>The bridge or extension was not reached or dropped the request: the <a href="../api-reference/#connection-diagnosis">connection codes</a>, <code>bridge_disconnected</code> and <code>bridge_version_mismatch</code></td>
+</tr>
+<tr>
+<td><code>TimedOut</code> (also a <code>TimeoutError</code>)</td>
+<td><code>timeout</code>, a page load that timed out, and a wait that ran out</td>
+</tr>
+<tr>
+<td><code>KitsuneError</code></td>
+<td>Every other failure, such as <code>stale_ref</code>, <code>ambiguous_target</code> or <code>outcome_not_observed</code></td>
+</tr>
+</tbody>
+</table>
+<p>Warnings that accompany a success (<code>warning</code>) do not raise.</p>
+<p>Until #376 these approvals had their own codes, <code>confirmation_required</code> and <code>user_tab</code>.
+They are now <code>code</code> <code>needs_user</code>, with the old code in <code>state.detail</code> (<code>error.detail</code>), and
+an ask-before-act hold's reason in <code>state.holdReason</code> (<code>error.hold_reason</code>, before:
+<code>state.reason</code>). <code>ConfirmationRequired</code> is raised for both
+shapes. A <code>needs_user</code> without a token, as in read and draft modes
+(<code>state.approvable: false</code>), raises a plain <code>KitsuneError</code>: nothing can approve it there.</p>
+<h2 id="ask-before-act">Ask-before-act<a class="headerlink" href="#ask-before-act" title="Permanent link">&para;</a></h2>
+<p>Some actions need your approval, and nothing runs until you give it: with
+<a href="../api-reference/#ask-before-act">ask-before-act</a> on, the bridge holds submits, payment
+pages, JavaScript and cookie access (<code>detail</code> <code>confirmation_required</code>). User-tab writes
+instead fail immediately with <code>user_tab_read_only</code>; approval tokens do not override tab
+permissions. Actions needing approval raise
+<code>ConfirmationRequired</code>; <code>error.message</code> is a short request to show you. Repeat the call
+with <code>confirm=error.token</code> within
+<code>error.expires_in</code> seconds, or let <code>connect(confirm=...)</code> decide: the function gets the
+error, and when it returns <code>True</code> the action is sent once more with its token. In a
+script, that function can ask you, so the approval comes from a person. The Python API has
+no MCP elicitation, so it always gets the token, and the bridge's
+<a href="../api-reference/#audit-log">audit log</a> records these approvals with <code>approval: "token"</code>:</p>
+<div class="highlight"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">ask</span><span class="p">(</span><span class="n">held</span><span class="p">):</span>
+    <span class="k">return</span> <span class="nb">input</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">held</span><span class="si">}</span><span class="s2"> -- allow? [y/N] "</span><span class="p">)</span><span class="o">.</span><span class="n">strip</span><span class="p">()</span><span class="o">.</span><span class="n">lower</span><span class="p">()</span> <span class="o">==</span> <span class="s2">"y"</span>
+
+<span class="n">browser</span> <span class="o">=</span> <span class="n">kitsune</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span><span class="n">confirm</span><span class="o">=</span><span class="n">ask</span><span class="p">)</span>
+</code></pre></div>
+<h2 id="the-bridge">The bridge<a class="headerlink" href="#the-bridge" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th><code>Browser</code> method</th>
+<th>Returns</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>status()</code>, <code>version()</code>, <code>health()</code></td>
+<td>Connection state with its <a href="../api-reference/#connection-diagnosis">diagnosis</a>, versions, and the bridge's own state</td>
+</tr>
+<tr>
+<td><code>logs(limit=200)</code>, <code>audit(limit=100, since=None)</code></td>
+<td>The bridge's log lines; every client's commands from its <a href="../api-reference/#audit-log">audit log</a></td>
+</tr>
+<tr>
+<td><code>scheduler()</code></td>
+<td>Command scopes, pending commands and tab locks</td>
+</tr>
+<tr>
+<td><code>policy.get()</code>, <code>policy.set(allow=None, deny=None, readonly=None, ask=None, ask_urls=None, ...)</code></td>
+<td>The bridge's policy, for every client; a locked ask-before-act stays on</td>
+</tr>
+<tr>
+<td><code>cache(action="status", seconds=None)</code>, <code>reload_extension()</code></td>
+<td>The read cache; reload the extension</td>
+</tr>
+</tbody>
+</table>
+<h2 id="any-other-route">Any other route<a class="headerlink" href="#any-other-route" title="Permanent link">&para;</a></h2>
+<p><code>browser.request(route, body=None, timeout=15)</code> sends any
+<a href="../api-reference/#http-bridge-endpoints">bridge route</a>: GET without a body, POST with
+one. It raises the same errors and applies <code>confirm</code>. Tab routes take <code>tabId</code> in the
+body, for example <code>browser.request("/api/full-page-metrics", {"tabId": tab.id})</code>.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "search.suggest", "search.highlight", "content.code.copy"], "search": "../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.c21346df.min.js"></script>
+      
+    
+  </body>
+</html>

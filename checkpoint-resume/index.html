@@ -1,0 +1,2075 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Drive the Firefox, Zen, or LibreWolf browser you already have open from Python or an AI agent.">
+      
+      
+      
+        <link rel="canonical" href="https://junyeong-nero.github.io/kitsune/checkpoint-resume/">
+      
+      
+        <link rel="prev" href="../python-api/">
+      
+      
+        <link rel="next" href="../tool-list/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.0">
+    
+    
+      
+        <title>Checkpoint and resume - Kitsune</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.57a0d79d.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.fb2fffe2.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="deep-orange" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#checkpoint-and-resume" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Kitsune" class="md-header__button md-logo" aria-label="Kitsune" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Kitsune
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Checkpoint and resume
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="deep-orange" data-md-color-accent="indigo"  aria-label="Dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="deep-orange" data-md-color-accent="indigo"  aria-label="Light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/junyeong-nero/kitsune" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    junyeong-nero/kitsune
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Kitsune" class="md-nav__button md-logo" aria-label="Kitsune" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Kitsune
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/junyeong-nero/kitsune" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    junyeong-nero/kitsune
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../try-it/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Try it
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Concepts
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../how-it-works/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    How it works
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../your-tabs/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Your tabs and approvals
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tools, capabilities and modes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../security/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guides
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../python-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Python API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Checkpoint and resume
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Checkpoint and resume
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#checkpoints" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Checkpoints
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#browser_resume" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        browser_resume
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="browser_resume">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#step-paths" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step paths
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-each-step-does" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What each step does
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#workflows" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Workflows
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#parallel" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Parallel
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#errors" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Errors
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#audit-log" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Audit log
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#direct-calls" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Direct calls
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#without-browser_resume" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Without browser_resume
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tool-list/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tool list
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Help
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Help
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../troubleshooting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../faq/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    FAQ
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Scraping playbooks
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Scraping playbooks
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scraping-playbooks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Kitsune Scraping Playbooks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scraping-playbooks/amazon/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Amazon
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scraping-playbooks/bestbuy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Best Buy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scraping-playbooks/bhphotovideo/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    B&H Photo Video
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scraping-playbooks/ebay/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    eBay
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scraping-playbooks/newegg/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Newegg
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    About
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    About
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../benchmark/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmark and comparison
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../philosophy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Philosophy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Contributing
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../development/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#checkpoints" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Checkpoints
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#browser_resume" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        browser_resume
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="browser_resume">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#step-paths" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step paths
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-each-step-does" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What each step does
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#workflows" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Workflows
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#parallel" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Parallel
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#errors" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Errors
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#audit-log" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Audit log
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#direct-calls" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Direct calls
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#without-browser_resume" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Without browser_resume
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="checkpoint-and-resume">Checkpoint and resume<a class="headerlink" href="#checkpoint-and-resume" title="Permanent link">&para;</a></h1>
+<p>A <code>browser_batch</code>, <code>browser_parallel</code> or <code>browser_workflow</code> call that did not finish
+<code>ok</code> can be continued with <code>browser_resume</code> (#33, #115), and so can a direct call that
+stopped on <code>needs_user</code> (<a href="#direct-calls">Direct calls</a>, #376). One rule holds throughout:
+<strong>resuming never sends a write again after it ran <code>ok</code>, and sends a write whose outcome
+is <code>unknown</code> again only after the caller observed that it did not take effect.</strong></p>
+<h2 id="checkpoints">Checkpoints<a class="headerlink" href="#checkpoints" title="Permanent link">&para;</a></h2>
+<p>A container call whose <code>status</code> is not <code>ok</code> (<code>unknown</code>, <code>held</code>, <code>failed</code> or <code>skipped</code>,
+including a <code>container_timeout</code>) keeps a checkpoint. Its response adds two fields to
+<code>results</code>, <code>progress</code>, <code>status</code> and <code>summary</code> (<a href="../api-reference/#container-progress">Container progress</a>):</p>
+<div class="highlight"><pre><span></span><code><span class="p">{</span><span class="w"> </span><span class="nt">"results"</span><span class="p">:</span><span class="w"> </span><span class="p">[{</span><span class="w"> </span><span class="nt">"ok"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="w"> </span><span class="p">},</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">"error"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Command timed out after 30s"</span><span class="p">,</span><span class="w"> </span><span class="nt">"code"</span><span class="p">:</span><span class="w"> </span><span class="s2">"timeout"</span><span class="p">,</span><span class="w"> </span><span class="nt">"retryable"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="w"> </span><span class="p">}],</span>
+<span class="w">  </span><span class="nt">"progress"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="nt">"index"</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="nt">"action"</span><span class="p">:</span><span class="w"> </span><span class="s2">"click"</span><span class="p">,</span><span class="w"> </span><span class="nt">"tabId"</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span><span class="w"> </span><span class="nt">"status"</span><span class="p">:</span><span class="w"> </span><span class="s2">"ok"</span><span class="w"> </span><span class="p">},</span>
+<span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="nt">"index"</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="nt">"action"</span><span class="p">:</span><span class="w"> </span><span class="s2">"submitForm"</span><span class="p">,</span><span class="w"> </span><span class="nt">"tabId"</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span><span class="w"> </span><span class="nt">"status"</span><span class="p">:</span><span class="w"> </span><span class="s2">"unknown"</span><span class="w"> </span><span class="p">},</span>
+<span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="nt">"index"</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="nt">"action"</span><span class="p">:</span><span class="w"> </span><span class="s2">"pageText"</span><span class="p">,</span><span class="w"> </span><span class="nt">"tabId"</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span><span class="w"> </span><span class="nt">"status"</span><span class="p">:</span><span class="w"> </span><span class="s2">"skipped"</span><span class="w"> </span><span class="p">}],</span>
+<span class="w">  </span><span class="nt">"status"</span><span class="p">:</span><span class="w"> </span><span class="s2">"unknown"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"summary"</span><span class="p">:</span><span class="w"> </span><span class="s2">"3 commands: 1 ok, 1 unknown, 1 skipped. ..."</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"call"</span><span class="p">:</span><span class="w"> </span><span class="mi">42</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"resume_token"</span><span class="p">:</span><span class="w"> </span><span class="s2">"x3J..."</span><span class="w"> </span><span class="p">}</span>
+</code></pre></div>
+<ul>
+<li><code>call</code> is the audit call id of the container (<a href="../api-reference/#audit-log">Audit log</a>).
+  <code>resume_token</code> is random (<code>secrets</code>, 24 bytes). Resuming needs both, so knowing a
+  call id from the audit log is not enough.</li>
+<li>Checkpoints live in bridge memory only. They are never written to disk or to the
+  audit log, and a bridge restart loses them. The bridge keeps at most 20 (the oldest
+  is dropped first). Each expires 30 minutes after its call ended.</li>
+<li>A checkpoint holds the call's commands (typed values included), results and step
+  records, and only a hash of the token. All of it is dropped on expiry, when the
+  checkpoint is pushed out by newer ones, when a resume finishes <code>ok</code> or stops on an
+  internal error, and on bridge shutdown.</li>
+<li>A call that finished <code>ok</code> has no checkpoint and no <code>call</code>/<code>resume_token</code> fields.</li>
+</ul>
+<h2 id="browser_resume">browser_resume<a class="headerlink" href="#browser_resume" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code>browser_resume(call, resume_token, observed=None, wait=120)
+</code></pre></div>
+<p>The tool is in the <code>core</code> capability group (#376; it was in <code>automation</code>), so the default
+<code>KITSUNE_CAPS=core</code> has it. For a container call it sends POST <code>/api/resume</code> with
+<code>{"call", "resume_token", "observed"}</code>, a route of both <code>core</code> and <code>automation</code>; <code>wait</code> is
+not used. A direct call's checkpoint is resumed by the MCP server itself
+(<a href="#direct-calls">Direct calls</a>).</p>
+<p>The response has the shape of the original call: <code>results</code>, <code>progress</code>, <code>status</code> and
+<code>summary</code> for every command, plus <code>workflow</code> and <code>steps</code> for a workflow. If the
+resumed call still did not finish <code>ok</code>, the response carries the same <code>call</code> and a
+new <code>resume_token</code>, and the old token stops working. The checkpoint is replaced and
+expires 30 minutes after this resume. If it finished <code>ok</code>, the checkpoint is dropped.</p>
+<p>A resume has a fixed 300 s deadline, because the MCP server cannot see the stored
+commands. That applies even when the original batch allowed longer waits. At the
+deadline it stops like any container (<code>container_timeout</code>), and the response
+carries a new checkpoint. The tool waits past the deadline plus the settle time, so
+the partial report arrives.</p>
+<h3 id="step-paths">Step paths<a class="headerlink" href="#step-paths" title="Permanent link">&para;</a></h3>
+<p>Steps are named by their <code>progress</code> path:</p>
+<table>
+<thead>
+<tr>
+<th>Path</th>
+<th>Step</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>"2"</code></td>
+<td>top-level command 2 of a batch or workflow</td>
+</tr>
+<tr>
+<td><code>"0.1.3"</code></td>
+<td>step 3 of sequence 1 of the <code>parallel</code> at command 0 (<code>progress[0].sequences[1][3]</code>)</td>
+</tr>
+<tr>
+<td><code>"1.2"</code></td>
+<td>step 2 of the <code>sequence</code> at command 1</td>
+</tr>
+</tbody>
+</table>
+<p>Paths nest: <code>"0.1.3.0"</code> is step 0 of a <code>sequence</code> at that parallel step.</p>
+<h3 id="what-each-step-does">What each step does<a class="headerlink" href="#what-each-step-does" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Last record</th>
+<th>Resume</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ok</code></td>
+<td>Not sent again; its stored result is reused. Its <code>progress</code> record adds <code>resumed: "kept"</code>. Exception: an <code>ok</code> read inside a <code>sequence</code> runs again when a later step of that sequence that will run uses its result through <code>${$N...}</code>, so that step reads fresh state</td>
+</tr>
+<tr>
+<td><code>skipped</code></td>
+<td>Sent: it never started</td>
+</tr>
+<tr>
+<td><code>failed</code></td>
+<td>Sent again (<code>retryable: true</code>, or nothing was dispatched)</td>
+</tr>
+<tr>
+<td><code>held</code></td>
+<td>Sent again through ask-before-act, so it stays held while ask mode is on and the call stops there. After confirming it with a direct call, report it <code>"applied"</code></td>
+</tr>
+<tr>
+<td><code>unknown</code> read</td>
+<td>Sent again</td>
+</tr>
+<tr>
+<td><code>unknown</code> write</td>
+<td>Refused until <code>observed</code> reports it: <code>"not_applied"</code> sends it again, <code>"applied"</code> marks it <code>ok</code> without sending it</td>
+</tr>
+</tbody>
+</table>
+<p>Writes are the bridge's <a href="../api-reference/#action-errors">write actions</a>, plus
+anything that runs agent JavaScript (<code>js</code>, <code>waitForResult</code>, <code>syncBarrier</code>, an
+<code>if</code>/<code>while</code> condition), cookies, page storage, the clipboard, downloads and
+<code>broadcast</code>. <code>navigate</code>, <code>newTab</code>, <code>closeTab</code> and <code>switchTab</code> count as writes:
+sending them again could reset a form, duplicate a tab or close the wrong one.</p>
+<p><code>sequence</code> and <code>parallel</code> commands are resumed step by step. Other blocks (<code>if</code>,
+<code>while</code>, <code>try</code>, <code>retry</code>, <code>broadcast</code>) are resumed as one step. If one of them is not
+<code>ok</code> but a write in it already ran <code>ok</code> (for example the <code>click</code> before a failing
+<code>find</code> in a <code>try</code>, or the condition of an <code>if</code> whose branch failed), it is never sent
+again. It accepts only <code>"applied"</code>, and resume refuses until the caller gives it.</p>
+<p><code>observed</code> maps step paths to <code>"applied"</code> or <code>"not_applied"</code>. It is accepted only for
+<code>unknown</code>, <code>held</code> and <code>failed</code> steps. For a <code>failed</code> or <code>held</code> step, <code>"not_applied"</code>
+does the same as leaving it out. There is no default for an <code>unknown</code> write. Every
+entry is checked before anything is sent.</p>
+<p>Every resumed step goes through the current policy again: read-only mode, the URL
+allow and deny lists and <a href="../api-reference/#ask-before-act">ask-before-act</a>. A
+confirmation token is never honored inside a resume. A step reported <code>"applied"</code> is
+not sent, so nothing reaches the page.</p>
+<p>A resumed batch keeps <code>stopOnWarning</code>, but does not stop again at a step it kept. A
+batch or <code>sequence</code> still stops at a held step. Steps after the stop that ran <code>ok</code>
+earlier stay <code>ok</code> (<code>resumed: "kept"</code>) in <code>progress</code> and in the next checkpoint.</p>
+<h3 id="workflows">Workflows<a class="headerlink" href="#workflows" title="Permanent link">&para;</a></h3>
+<p>A workflow checkpoint keeps the SHA-256 hash of the workflow file it ran. If the file
+changed or is gone, the resume is refused with <code>workflow_changed</code> and nothing is sent.
+A resume runs the stored commands, so changing the variables is not possible.</p>
+<p>A batch or workflow checkpoint also keeps the call's default tab (<code>tabId</code>, by default the
+current tab of the MCP server that ran it). Resumed steps that name no tab run there, even
+if the agent has opened or selected another tab since.</p>
+<h3 id="parallel">Parallel<a class="headerlink" href="#parallel" title="Permanent link">&para;</a></h3>
+<p>Each sequence of a resumed <code>parallel</code> continues from its own records: a sequence that
+finished <code>ok</code> sends nothing, the others continue concurrently. The sequences keep the
+tab claims they made in the first run, including tabs claimed through <code>${$N.tabId}</code>.
+Before the sequences start, each one with steps left is refused, with each of those
+steps failing and none sent, when:</p>
+<ul>
+<li><code>tab_closed</code>: a tab its remaining steps act on was closed (checked with <code>getTabs</code>).
+  A closed tab is never replaced. If the tabs cannot be listed, the sequence is
+  refused with that error.</li>
+<li><code>tab_owned</code>: another sequence of this <code>parallel</code> claimed a tab it writes.</li>
+<li><code>tab_claimed</code>: another call's <code>parallel</code> that is in progress writes one of its tabs
+  (<code>state.call</code>).</li>
+</ul>
+<p>The other sequences resume as usual. A refused sequence keeps its records, so a later
+resume can try it again.</p>
+<h3 id="errors">Errors<a class="headerlink" href="#errors" title="Permanent link">&para;</a></h3>
+<p>Every error below except <code>resume_failed</code> sends nothing and leaves the checkpoint as
+it was.</p>
+<table>
+<thead>
+<tr>
+<th><code>code</code></th>
+<th>HTTP</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>checkpoint_not_found</code></td>
+<td>404</td>
+<td>No checkpoint for <code>call</code>: it finished <code>ok</code>, expired, was pushed out, is being resumed by another request, stopped on an internal error, or the bridge restarted</td>
+</tr>
+<tr>
+<td><code>resume_token_invalid</code></td>
+<td>403</td>
+<td><code>resume_token</code> does not match the checkpoint's latest token</td>
+</tr>
+<tr>
+<td><code>workflow_changed</code></td>
+<td>409</td>
+<td>The workflow file changed since the call (<code>state.workflow</code>)</td>
+</tr>
+<tr>
+<td><code>observed_invalid</code></td>
+<td>400</td>
+<td><code>observed</code> names a step that is <code>ok</code>, <code>skipped</code>, a <code>sequence</code>/<code>parallel</code> block or does not exist, or gives a value the step does not accept (<code>state.steps</code>: <code>step</code>, <code>reason</code>, <code>accepts</code>)</td>
+</tr>
+<tr>
+<td><code>observed_required</code></td>
+<td>400</td>
+<td>A step needs an observation (<code>state.steps</code>: <code>step</code>, <code>action</code>, <code>tabId</code>, <code>status</code>, <code>accepts</code>)</td>
+</tr>
+<tr>
+<td><code>resume_failed</code></td>
+<td>200</td>
+<td>The resume stopped on an internal error. <code>progress</code> reports what ran, steps in progress may have taken effect, and the checkpoint is dropped</td>
+</tr>
+</tbody>
+</table>
+<p>A direct call's resume adds <code>current_tab_changed</code> and answers <code>observed_invalid</code> and
+<code>resume_token_invalid</code> itself (<a href="#direct-calls">Direct calls</a>).</p>
+<p>The per-sequence <code>tab_closed</code>, <code>tab_owned</code> and <code>tab_claimed</code> errors appear in
+<code>results</code> like other step errors. No error or audit entry contains the resume token,
+typed values, JavaScript or stored results.</p>
+<h3 id="audit-log">Audit log<a class="headerlink" href="#audit-log" title="Permanent link">&para;</a></h3>
+<p>Resumed steps are audited like other container steps, with
+<code>parent: {call, path, resumed: true}</code>. <code>call</code> is the original call's id. Typed values
+stay redacted and JavaScript bodies are dropped
+(<a href="../api-reference/#audit-log">Audit log</a>). A step reported <code>"applied"</code> gets one entry
+with <code>params.observed: "applied"</code> and <code>params.sent: false</code>. Steps kept from the first
+run get no new entry. The token never appears in the audit log or the bridge log.</p>
+<h2 id="direct-calls">Direct calls<a class="headerlink" href="#direct-calls" title="Permanent link">&para;</a></h2>
+<p>A direct tool call that stops on <code>needs_user</code> and was not resolved in the call keeps a
+checkpoint (#376), except for tab handoff requests: an ask-before-act hold on a client
+without elicitation, or one whose
+<a href="../api-reference/#approval-prompts">approval prompt</a> was declined, dismissed or got no answer
+in time, and a <a href="../api-reference/#browser_ask_userreason-message-tab_idnone"><code>browser_ask_user</code></a>
+request (below). Its result adds <code>call</code> and <code>resume_token</code>, and its hint says what <code>browser_resume</code>
+does with it:</p>
+<div class="highlight"><pre><span></span><code><span class="p">{</span><span class="w"> </span><span class="nt">"error"</span><span class="p">:</span><span class="w"> </span><span class="s2">"The action needs approval; nothing was done"</span><span class="p">,</span><span class="w"> </span><span class="nt">"code"</span><span class="p">:</span><span class="w"> </span><span class="s2">"needs_user"</span><span class="p">,</span><span class="w"> </span><span class="nt">"retryable"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"state"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">"reason"</span><span class="p">:</span><span class="w"> </span><span class="s2">"approval"</span><span class="p">,</span><span class="w"> </span><span class="nt">"detail"</span><span class="p">:</span><span class="w"> </span><span class="s2">"confirmation_required"</span><span class="p">,</span><span class="w"> </span><span class="nt">"decision"</span><span class="p">:</span><span class="w"> </span><span class="s2">"declined"</span><span class="p">,</span><span class="w"> </span><span class="nt">"approval"</span><span class="p">:</span><span class="w"> </span><span class="s2">"elicitation"</span><span class="p">,</span><span class="w"> </span><span class="nt">"…"</span><span class="p">:</span><span class="w"> </span><span class="s2">"…"</span><span class="w"> </span><span class="p">},</span>
+<span class="w">  </span><span class="nt">"call"</span><span class="p">:</span><span class="w"> </span><span class="mi">57</span><span class="p">,</span><span class="w"> </span><span class="nt">"resume_token"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Qk9…"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"hint"</span><span class="p">:</span><span class="w"> </span><span class="s2">"The held action did not run: the user declined it … browser_resume(call, resume_token) asks them again …"</span><span class="w"> </span><span class="p">}</span>
+</code></pre></div>
+<ul>
+<li><code>call</code> is the audit call id the bridge gave the held request: its audit entry carries it
+  as <code>call</code> (<a href="../api-reference/#audit-log">Audit log</a>), so it never names a container call.
+  A resume that is still pending keeps the same <code>call</code> and returns a new <code>resume_token</code>; the
+  hold it made again has an audit entry with its own <code>call</code>.</li>
+<li>The MCP server that made the call keeps the checkpoint, under the rules for container
+  checkpoints: in memory only, at most 20 (the oldest is dropped first), each expiring 30
+  minutes after its call or its last resume, with only a SHA-256 hash of the token. It holds
+  the tool, its arguments (without <code>confirm_token</code>), the held result without its confirm token,
+  and the current tab the call ran on. It is dropped when a resume no longer stops on
+  <code>needs_user</code>. It is lost when that MCP server restarts, and another MCP client cannot
+  resume it: the bridge answers <code>checkpoint_not_found</code>, and the agent calls the tool again.</li>
+<li>Holds that cannot be approved get no checkpoint: read and draft modes (<code>state.approvable:
+  false</code>), and tools without <code>confirm_token</code>. Container results never get a direct checkpoint.
+  <a href="../api-reference/#requesting-and-returning-a-tab">Tab handoff requests</a> also have no resume
+  checkpoint: repeat the exact request with its valid confirm token, or make a fresh request.</li>
+</ul>
+<p><code>browser_resume(call, resume_token, wait=120)</code> runs the tool again with its stored
+arguments, from the held request:</p>
+<ul>
+<li><strong>Nothing of the call that ran <code>ok</code> is sent again.</strong> The call restarts at the held
+  request: <code>browser_fill_form</code> does not fill the fields before the held one again, and
+  <code>browser_type(submit=true)</code> held at its Enter presses Enter without typing the text again
+  (the bridge names the held request in <code>state.action</code>). Every other tool that takes
+  <code>confirm_token</code> sends one write per call.</li>
+<li><strong>A resume grants nothing a new call would not.</strong> The held request goes through the
+  current policy again, including ask-before-act and tab permissions. User-tab writes
+  are read-only by default; a resume cannot grant ownership. If the hold no longer applies,
+  the call runs without an approval, as calling the tool again would at that moment.</li>
+<li><strong>A resume never waits for a hold to lift.</strong> On a client with elicitation, a request held
+  again is asked about in the approval prompt, which stays open up to <code>wait</code> seconds (at most
+  the token's 120 s less 5 s); <code>wait=0</code> asks nothing. Without elicitation the hold is checked
+  once and the resume returns at once: <code>needs_user</code> again with a fresh confirm token and a
+  new <code>resume_token</code>. Switching the user's view does not change tab permissions.</li>
+<li><code>wait</code> is 0 to 300 seconds (default 120); larger values are capped at 300. While the
+  prompt is open, a call that sent a <code>progressToken</code> gets a progress notification every 10 s.
+  The MCP server waits itself, between bridge requests, so no bridge request outlasts its own
+  timeout; a client's tool-call timeout must allow <code>wait</code> plus the call itself.</li>
+<li>The result is the tool's own result. Approved, declined (<code>state.decision: "declined"</code>) and
+  unanswered (<code>"cancelled"</code>) work as in the call. While it still stops on <code>needs_user</code>, it
+  carries the same <code>call</code> and a new <code>resume_token</code>, and the old token stops working.</li>
+<li>A stop the page resolves has a check in <code>kitsune.server.PAGE_STATE_CHECKS</code>, which the
+  resume polls every second for up to <code>wait</code> seconds before it runs the call again. While the
+  check fails, the resume returns the stop again with a new <code>resume_token</code>, and nothing is
+  sent. <code>sign_in</code> and <code>human_check</code> are checked by the tab's
+  <a href="../api-reference/#needs_user-hints"><code>needs_user</code> hint</a> (<code>/api/needs-user</code>): resolved once the
+  tab no longer shows one with that reason. A failed read is not resolved.</li>
+</ul>
+<p><code>browser_ask_user</code> keeps a checkpoint when there is something to wait for:</p>
+<ul>
+<li><strong>With elicitation</strong>, when the prompt was dismissed or got no answer in time
+  (<code>state.decision: "cancelled"</code>), not when the user answered Can't. The resume asks the user
+  again in the client's prompt, for up to <code>wait</code> seconds (at most 120), and returns the answer
+  as the call would; <code>wait=0</code> asks nothing.</li>
+<li><strong>Without elicitation</strong>, when it asks about <code>sign_in</code> or <code>human_check</code> and the tab showed
+  that hint as it asked (<code>state.evidence</code>). The resume waits for the hint to be gone from the
+  tab, then returns <code>{"ok": true, "answer": "done", "via": "page", …}</code>. Without such a hint
+  there is nothing to watch, so the result has no <code>resume_token</code>: the agent asks in its reply.</li>
+<li>The request itself never reaches the page, so a resume sends nothing to it either.</li>
+</ul>
+<p>Errors of a direct call's resume send nothing and keep the checkpoint:</p>
+<table>
+<thead>
+<tr>
+<th><code>code</code></th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>current_tab_changed</code></td>
+<td>The call acts on the current tab, and the agent made another tab current since (<code>state.tabId</code>, <code>state.currentTab</code>). Make that tab current again with <code>browser_tabs</code> select, or call the tool again</td>
+</tr>
+<tr>
+<td><code>observed_invalid</code></td>
+<td><code>observed</code> was given: a direct call has no steps to observe</td>
+</tr>
+<tr>
+<td><code>resume_token_invalid</code></td>
+<td><code>resume_token</code> does not match the call's latest token</td>
+</tr>
+</tbody>
+</table>
+<p>A resume whose call fails another way (its target is gone, the tab closed) returns that
+error, and the checkpoint is gone: check the page and call the tool again.</p>
+<h2 id="without-browser_resume">Without browser_resume<a class="headerlink" href="#without-browser_resume" title="Permanent link">&para;</a></h2>
+<p>After a container's checkpoint is gone, resume by hand. Send a new batch that starts at
+the first record that is not <code>ok</code>, after observing the page for any <code>unknown</code> record.
+After a direct call's checkpoint is gone, call the tool again.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "search.suggest", "search.highlight", "content.code.copy"], "search": "../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.c21346df.min.js"></script>
+      
+    
+  </body>
+</html>

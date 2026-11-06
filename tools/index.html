@@ -1,0 +1,1880 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Drive the Firefox, Zen, or LibreWolf browser you already have open from Python or an AI agent.">
+      
+      
+      
+        <link rel="canonical" href="https://junyeong-nero.github.io/kitsune/tools/">
+      
+      
+        <link rel="prev" href="../your-tabs/">
+      
+      
+        <link rel="next" href="../security/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.0">
+    
+    
+      
+        <title>Tools, capabilities and modes - Kitsune</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.57a0d79d.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.fb2fffe2.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="deep-orange" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#tools-capabilities-and-modes" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Kitsune" class="md-header__button md-logo" aria-label="Kitsune" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Kitsune
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Tools, capabilities and modes
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="deep-orange" data-md-color-accent="indigo"  aria-label="Dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="deep-orange" data-md-color-accent="indigo"  aria-label="Light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/junyeong-nero/kitsune" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    junyeong-nero/kitsune
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Kitsune" class="md-nav__button md-logo" aria-label="Kitsune" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Kitsune
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/junyeong-nero/kitsune" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    junyeong-nero/kitsune
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../try-it/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Try it
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Concepts
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../how-it-works/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    How it works
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../your-tabs/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Your tabs and approvals
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tools, capabilities and modes
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tools, capabilities and modes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#finding-tools-without-a-restart" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Finding tools without a restart
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#core-tools" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Core tools
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#task-modes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Task modes
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../security/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guides
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../python-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Python API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../checkpoint-resume/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Checkpoint and resume
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tool-list/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tool list
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Help
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Help
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../troubleshooting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../faq/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    FAQ
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Scraping playbooks
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Scraping playbooks
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scraping-playbooks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Kitsune Scraping Playbooks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scraping-playbooks/amazon/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Amazon
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scraping-playbooks/bestbuy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Best Buy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scraping-playbooks/bhphotovideo/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    B&H Photo Video
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scraping-playbooks/ebay/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    eBay
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scraping-playbooks/newegg/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Newegg
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    About
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    About
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../benchmark/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmark and comparison
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../philosophy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Philosophy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Contributing
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../development/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#finding-tools-without-a-restart" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Finding tools without a restart
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#core-tools" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Core tools
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#task-modes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Task modes
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="tools-capabilities-and-modes">Tools, capabilities and modes<a class="headerlink" href="#tools-capabilities-and-modes" title="Permanent link">&para;</a></h1>
+<p>By default Kitsune publishes the 25 tools of <a href="https://github.com/microsoft/playwright-mcp">Playwright MCP</a>'s
+default capabilities, with the same names, descriptions, input schemas and annotations, as
+its <code>core</code> capability group (see <a href="#core-tools">Core tools</a>), with Kitsune's <code>browser_resume</code>,
+which continues a call that stopped for you, and <code>browser_ask_user</code>, with which the agent asks
+you for what it cannot do (#376). Kitsune's other tools are in the other
+groups. Set <code>KITSUNE_CAPS</code> in the MCP server environment before starting it;
+restart the MCP client after changing it. The comma-separated list selects exactly those
+groups (include <code>core</code> to retain the default tools). <code>all</code> enables all 97 tools in every
+group except <code>storage</code> and <code>history</code>, which read personal data and must be named
+(<code>KITSUNE_CAPS=all,storage,history</code>). Whitespace and case are ignored; unknown group names
+fail at startup.</p>
+<div class="highlight"><pre><span></span><code><span class="k">[mcp_servers.kitsune.env]</span>
+<span class="n">KITSUNE_CAPS</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"core,browse,read"</span>
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Group</th>
+<th>Tools for</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>browse</code></td>
+<td>Scrolling, forward navigation, checkboxes, focus, form submits, real mouse clicks</td>
+</tr>
+<tr>
+<td><code>read</code></td>
+<td>Page text and Markdown, forms, DOM, links, images, metadata</td>
+</tr>
+<tr>
+<td><code>inspect</code></td>
+<td>Element bounds, computed styles, selector checks, highlights</td>
+</tr>
+<tr>
+<td><code>tabs</code></td>
+<td>Pinning, muting, zoom, windows, tab tags, keep-alive</td>
+</tr>
+<tr>
+<td><code>automation</code></td>
+<td>Batches, retries, workflows, parallel tabs, and resuming an interrupted batch</td>
+</tr>
+<tr>
+<td><code>network</code></td>
+<td>Downloads, request interception and capture</td>
+</tr>
+<tr>
+<td><code>admin</code></td>
+<td>Connection status, logs, audit, cache, policy</td>
+</tr>
+<tr>
+<td><code>storage</code>, <code>history</code></td>
+<td>Cookies, page storage, clipboard and saved sessions; history and bookmarks. These read personal data, so <code>all</code> leaves them out and you name them yourself</td>
+</tr>
+</tbody>
+</table>
+<p>The <a href="../tool-list/">tool list</a> names every tool in each group.</p>
+<p>Earlier releases' <code>devtools</code>, <code>parallel</code>, <code>windows</code> and <code>session</code> groups are gone, and
+naming them fails at startup. <code>devtools</code> became <code>browse</code>, <code>read</code>, <code>inspect</code>, <code>admin</code> and
+(<code>browser_workflows</code>, <code>browser_workflow</code>) <code>automation</code>; <code>parallel</code> became <code>automation</code>
+and, for tab tags and keep-alive, <code>tabs</code>; <code>windows</code> joined <code>tabs</code>; <code>session</code> joined
+<code>storage</code>, which <code>all</code> no longer includes.</p>
+<p>A tool left out by <code>KITSUNE_CAPS</code> is absent from <code>tools/list</code>, and clients usually say
+nothing about it. Calling it anyway returns an MCP error with
+<code>code: "tool_not_published"</code> whose <code>hint</code> names the setting that publishes it, for
+example <code>KITSUNE_CAPS=browse,core</code> for <code>browser_scroll</code>. <code>browser_status</code> (<code>admin</code>)
+reports this server's <code>mcp_tools</code>: the enabled <code>caps</code>, how many known tools are
+<code>unpublished</code>, and its audit <code>client</code> and tab <code>owner</code> ids.</p>
+<p>The bridge enforces the groups too. The MCP server sends its enabled groups with every
+request, and the bridge refuses a route or a container step (of <code>browser_batch</code>,
+<code>browser_parallel</code>, <code>browser_retry</code>, <code>browser_broadcast</code>, <code>browser_workflow</code> or
+<code>browser_resume</code>) that belongs to another group with <code>code: "capability_restricted"</code>.
+So <code>automation</code> runs only commands of the groups you enabled: with
+<code>KITSUNE_CAPS=core,automation</code>, a batch <code>cookies</code> step is refused until you add
+<code>storage</code>, and a workflow needs the groups of its steps. Like task modes, this limits
+what an agent can do through this MCP server; it is not a boundary against other local
+programs that hold the bridge token.</p>
+<h2 id="finding-tools-without-a-restart">Finding tools without a restart<a class="headerlink" href="#finding-tools-without-a-restart" title="Permanent link">&para;</a></h2>
+<p><code>KITSUNE_CAPS</code> decides which tools this server runs. <code>KITSUNE_PUBLISH</code> decides which of
+them <code>tools/list</code> shows when a session starts; unset, it is <code>KITSUNE_CAPS</code>, so nothing
+changes. Set it to fewer groups to keep the list small and let the agent reach the rest
+in the same connection:</p>
+<div class="highlight"><pre><span></span><code><span class="k">[mcp_servers.kitsune.env]</span>
+<span class="n">KITSUNE_CAPS</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"all"</span>
+<span class="n">KITSUNE_PUBLISH</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"core"</span>
+</code></pre></div>
+<p>With Claude Code:</p>
+<div class="highlight"><pre><span></span><code>claude<span class="w"> </span>mcp<span class="w"> </span>add<span class="w"> </span>--scope<span class="w"> </span>user<span class="w"> </span>kitsune<span class="w"> </span>-e<span class="w"> </span><span class="nv">KITSUNE_CAPS</span><span class="o">=</span>all<span class="w"> </span>-e<span class="w"> </span><span class="nv">KITSUNE_PUBLISH</span><span class="o">=</span>core<span class="w"> </span>--<span class="w"> </span>uvx<span class="w"> </span>--from<span class="w"> </span>kitsune-browser-mcp<span class="w"> </span>kitsune
+</code></pre></div>
+<p><code>tools/list</code> then has the 27 core tools and three gateway tools:</p>
+<ul>
+<li><code>browser_tools_search(query, limit=5)</code> finds the tools this server runs but does not
+  list, best match first, each with its full description, input schema and annotations.
+  An empty query lists their names by group.</li>
+<li><code>browser_tools_call(name, arguments)</code> runs one and returns its own result, images
+  included, and its error status.</li>
+<li><code>browser_tools_publish(names)</code> adds tools, or whole groups, to this session's
+  <code>tools/list</code> and sends <code>notifications/tools/list_changed</code>; clients that refresh on it
+  can then call them directly.</li>
+</ul>
+<p><code>KITSUNE_PUBLISH</code> takes the group names <code>KITSUNE_CAPS</code> does, and only groups
+<code>KITSUNE_CAPS</code> enables: naming another one fails at startup. The gateway tools appear
+only when some enabled tool is not published.</p>
+<p>The gateway never runs more than a direct call could. It finds and runs only tools
+<code>KITSUNE_CAPS</code> and <code>KITSUNE_MODE</code> permit: <code>all</code> still leaves out <code>storage</code> and
+<code>history</code> unless named, and a name it does not permit gets the same <code>tool_not_published</code>
+as a direct call. A call through <code>browser_tools_call</code> takes the direct call's path, so
+argument validation, the task mode, confirmation tokens, protected user tabs, redaction
+and file name roots apply the same way, and its audit entries record
+<code>via: {"gateway": "browser_tools_call", "tool": …}</code>. Your client's permission prompt may
+show only <code>browser_tools_call</code> and its conservative annotations (destructive,
+open-world), not the tool it runs, so do not rely on per-tool client prompts for these
+calls. <code>browser_tools_publish</code> changes only that session's list, never what the server
+permits or another session's list. Clients differ in whether they act on
+<code>notifications/tools/list_changed</code>; the notification is not proof that the model sees
+the new tools, and <code>browser_tools_call</code> works either way.</p>
+<p>This reaches tools that are already installed. Changing <code>KITSUNE_CAPS</code> or upgrading
+Kitsune still needs a restart.</p>
+<p>The Kitsune-owned tools take <code>tab_id</code> to target background tabs; without it they act on
+the <a href="#core-tools">current tab</a> like the core tools. They share an action
+contract (<code>ref</code>, <code>wait</code>, <code>expect</code>, <code>confirm_token</code>, <code>first</code>; <code>confirm_token</code> is the
+<a href="../your-tabs/#approving-held-actions">approval</a> fallback for clients without elicitation) documented on
+<code>browser_check</code>; see the <a href="../api-reference/">API reference</a> and the
+<a href="../tool-list/">tool list</a>.</p>
+<p>Every tool includes MCP annotations. The core tools carry Playwright MCP's; the
+Kitsune-owned ones have a human-readable title and read-only, destructive, idempotent,
+and open-world hints, annotated for their most dangerous operation. Clients can use
+these hints to inform permission prompts; enforcement depends on the client. The hints
+are not enforced policy. The bridge enforces task-mode limits and <code>browser_set_policy</code>
+(<code>readonly</code>, <code>allow</code>/<code>deny</code>, and <a href="../api-reference/#ask-before-act">ask-before-act</a>).</p>
+<h2 id="core-tools">Core tools<a class="headerlink" href="#core-tools" title="Permanent link">&para;</a></h2>
+<p>The <code>core</code> tools other than <code>browser_resume</code> and <code>browser_ask_user</code> are Playwright MCP's, published verbatim from
+<code>src/kitsune/playwright_tools.json</code> (captured from <code>@playwright/mcp</code> with
+<code>node scripts/update_playwright_tools.mjs</code>), so a client or prompt written for Playwright
+MCP works unchanged. They drive your own browser through the Kitsune extension and return
+Kitsune's compact JSON results, not Playwright's Markdown. Where the two differ:</p>
+<ul>
+<li><strong>Current tab.</strong> Tools act on the tab <code>browser_tabs</code> <code>new</code> or <code>select</code> made current;
+  <code>select</code> does not switch your view. It takes any tab, yours and other clients' too, so
+  the agent can read it; on a tab it cannot write, the result says <code>read_only: true</code>. Kitsune's own tools called without <code>tab_id</code>, and
+  <code>browser_batch</code>, <code>browser_retry</code> and <code>browser_workflow</code> commands that name no <code>tabId</code>,
+  act on the current tab too. Until there is one, reads act on the active tab, and writes
+  and navigations that name no tab return <code>no_current_tab</code> without sending anything
+  (<a href="../api-reference/#no-current-tab">No current tab</a>). An MCP server that restarts starts
+  without a current tab; its <code>no_current_tab</code> then lists the open tabs its MCP client
+  opened before, the most recent first, in <code>state.ownTabs</code>, and the hint names that tab,
+  so the agent can pass it as <code>tab_id</code> (to a core tool, which takes none, the hint names its
+  <code>browser_tabs</code> index to select). The server does not pick one itself:
+  the tab may belong to an earlier conversation. Persistent ownership survives bridge/extension
+  restarts and browser session restore for the same client id; handed-off tabs return when
+  their session ends (<a href="../api-reference/#tab-owners">Tab owners</a>). A tab a batch or
+  workflow <code>newTab</code> opens, or an action on the
+  current tab opens (a click on a <code>target=_blank</code> link, for example), becomes current,
+  and the result names it in <code>current_tab</code>.
+  <code>browser_navigate</code> and <code>browser_navigate_back</code> also accept a <code>tab_id</code> that Playwright
+  MCP's schema does not list. <code>index</code> is the position
+  in <code>browser_tabs</code> <code>list</code>, which also marks <code>active</code> and agent-<code>owned</code> tabs, and the
+  <code>current</code> one regardless of ownership. Selection does not grant ownership
+  (<a href="../your-tabs/#protecting-your-tabs">Protecting your tabs</a>). <code>new</code>,
+  <code>select</code> and <code>close</code> return the tabs after the change in the same form; <code>new</code> returns
+  the new tab's <code>index</code>.
+  <code>browser_close</code> closes the current tab, never the browser; closing a user or other
+  client's tab is refused with <code>user_tab_read_only</code> by default.</li>
+<li><strong>Targets.</strong> <code>target</code> is a snapshot ref (<code>e12</code>) or a CSS selector. Actions require one
+  actionable match (else <code>ambiguous_target</code>). Actions and scoped snapshots also accept a
+  subset of Playwright selectors: <code>text=</code> (also <code>/regex/</code>), <code>role=…[name="…"]</code> (also
+  <code>[name=/regex/]</code>), <code>internal:text=</code>, <code>internal:role=</code>, <code>internal:label=</code>, <code>:has-text()</code>,
+  <code>:text-is()</code>, <code>:text()</code>, <code>:visible</code>, CSS lists, <code>&gt;&gt;</code> chains (also starting at a ref, as in
+  <code>e12 &gt;&gt; xpath=..</code>), <code>nth=N</code> and <code>xpath=</code> (refused on pages holding redacted content); see
+  <a href="../api-reference/#target-selectors">Target selectors</a>. Unsupported forms return
+  <code>unsupported_selector</code> with a hint, not a retryable missing target. Element screenshots
+  use the same resolver and capture the exact selected node, including inside shadow roots. Refs
+  survive newer observations while their nodes remain attached in the same document; navigation or replacement nodes require new refs.</li>
+<li><strong>Snapshots.</strong> Default core snapshots include redacted static text and resolved HTTP(S) link
+  URLs (same-origin ones as paths; a link repeating the previous sibling link's URL, or, first
+  under its parent, the page's, has no <code>/url</code> line). Returned inline they are capped at 12,000 characters, cut between blocks so a
+  product card or paragraph is never split (a long navigation, banner or footer outside
+  <code>main</code> is shown as its line and a <code>… not shown</code> marker until <code>main</code> is listed), with
+  <code>truncated: true</code> and a hint toward
+  <code>browser_find</code>, a scoped <code>target</code> or <code>filename</code> (which saves the whole snapshot; see
+  <a href="../api-reference/#browser_snapshottab_idnone-selectornone-refnone-max_depthnone-textfalse"><code>browser_snapshot</code></a>).
+  Existing line clipping, structural
+  collapsing and depth rules still apply: past the fifth of a run of similar items the
+  snapshot shows <code>- … N more similar items; snapshot e14 to list all</code> when that hides at
+  least three items (a run of up to seven is listed in full), and a snapshot
+  with <code>target</code> <code>e14</code> (the items' container) lists up to 100 of them. <code>browser_find</code>
+  searches collapsed items too. In the full toolset, <code>text=False</code> is compact
+  and <code>text=True</code> enables explicitly bounded readable output (12,000 final public chars).
+  Explicit HTTP <code>maxChars</code> and post-action limits also apply after URL redaction; scoped
+  snapshots remain useful for large pages.</li>
+<li><strong>Sliders and repeated keys.</strong> <code>browser_fill_form</code> <code>type: "slider"</code> and <code>browser_type</code> (without
+  <code>slowly</code>) set a native <code>&lt;input type=range&gt;</code> directly. An ARIA slider or spinbutton (<code>role=slider</code>
+  or <code>spinbutton</code> with a numeric <code>aria-valuenow</code> and no native input, the usual custom widget)
+  is set as a user would: the extension focuses it and presses arrow keys (<code>Home</code>/<code>End</code> for an
+  end) until its <code>aria-valuenow</code> is the value, all in one call, and returns the final <code>value</code>.
+  If the value
+  is outside <code>aria-valuemin</code>/<code>aria-valuemax</code>, the call fails with <code>value_not_reached</code> before
+  any key; if it is not reached (the steps skip it, the widget stops moving, or 1,000 keys
+  or 20 s run out) it fails the same way with <code>state.value</code>
+  (<a href="../api-reference/#action-errors">Action errors</a>). <code>browser_press_key</code> also accepts a
+  <code>repeat</code> count (1–100) that Playwright MCP's schema does not list; the extension presses
+  the key that many times in one call, a task apart.</li>
+<li><strong>Dialogs.</strong> <code>browser_handle_dialog</code> sets how the current tab answers its next dialogs
+  (Firefox answers dialogs synchronously, so one already open cannot be answered).</li>
+<li><strong>Uploads and drops.</strong> A synthetic click opens no file chooser, so <code>browser_file_upload</code>
+  fills the file input last clicked (or the input inside it, else the page's only file
+  input). <code>browser_drop</code> fires <code>dragenter</code>/<code>dragover</code>/<code>drop</code> with the files and data.</li>
+<li><strong>JavaScript.</strong> <code>browser_evaluate</code> needs the developer extension build and runs in the
+  content-script context; the result is JSON-parsed.</li>
+<li><strong>Console and network.</strong> <code>browser_console_messages</code> starts capture on first use, so
+  earlier messages are missed. <code>browser_network_requests</code> lists the page's resource
+  timing entries since it loaded; there are no headers or bodies, so
+  <code>browser_network_request</code> with <code>part</code> answers <code>not_supported</code>.</li>
+<li><strong>Screenshots.</strong> <code>browser_take_screenshot</code> returns an inline image; <code>filename</code> saves
+  PNG or JPEG. <code>type</code> chooses the encoding; otherwise <code>.jpg</code>/<code>.jpeg</code> filenames infer JPEG,
+  with PNG as the default. Other formats answer <code>not_supported</code>; <code>scale</code> is ignored.</li>
+<li><strong>Not supported.</strong> <code>browser_emulate_media</code> and <code>browser_run_code_unsafe</code> are listed but
+  answer <code>not_supported</code> (<code>retryable: false</code>): an extension cannot override CSS media
+  features, and there is no Playwright page to run code against.</li>
+<li><strong>File names.</strong> A relative <code>filename</code> is resolved against <code>KITSUNE_OUTPUT_DIR</code> if
+  set, else the first <code>file://</code> root the MCP client lists (MCP <code>roots</code>, asked for on each
+  call with a <code>filename</code>; no answer within 5 seconds counts as none), else the MCP
+  server's working directory. Absolute names and <code>~</code> are used as given. <code>saved_to</code> is the
+  absolute path written.</li>
+</ul>
+<p>Ask-before-act holds still apply. On a client with elicitation the MCP server asks the
+user and repeats a held call itself (see <a href="../your-tabs/#approving-held-actions">Approving held actions</a>).
+The core schemas have no <code>confirm_token</code>, the fallback for clients without elicitation; the
+tools accept it anyway, so on such a client, after the user approves a held action, an agent
+can repeat the call with <code>confirm_token</code> from the <code>needs_user</code> error.</p>
+<h2 id="task-modes">Task modes<a class="headerlink" href="#task-modes" title="Permanent link">&para;</a></h2>
+<p>Set <code>KITSUNE_MODE=read|draft|act</code> in the MCP server environment and restart the client.
+The default is <code>act</code>, preserving the existing tool surface and bridge policy. Mode names
+ignore case and surrounding whitespace; unknown names fail at startup.</p>
+<div class="highlight"><pre><span></span><code><span class="k">[mcp_servers.kitsune.env]</span>
+<span class="n">KITSUNE_MODE</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"read"</span>
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th>Published tools and enforced limits</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>read</code></td>
+<td>Read tools plus navigation to HTTP(S) pages (or <code>about:blank</code>) and scrolling. <code>browser_tab_list</code> replaces the multi-action <code>browser_tabs</code>; with <code>new_tab</code> it opens a background tab that later calls act on. It cannot close or select tabs. No clicks, field writes, JavaScript, submits, confirmations or screenshots/file writes.</td>
+</tr>
+<tr>
+<td><code>draft</code></td>
+<td>Read surface plus <code>browser_type</code>, <code>browser_select_option</code>, <code>browser_fill_form</code> and, with the <code>browse</code> group, <code>browser_check</code>. Fills plain text only; no click/keypress/submit/dialog confirmation or JavaScript. Ask-before-act is forced: sensitive fields, payment-like pages and uninspectable targets are refused before filling, without a confirmation token.</td>
+</tr>
+<tr>
+<td><code>act</code></td>
+<td>Existing behavior, including the independently configured ask-before-act policy.</td>
+</tr>
+</tbody>
+</table>
+<p>Modes intersect with <code>KITSUNE_CAPS</code>; they never enable a disabled group. With the
+default <code>core</code> group, <code>read</code> publishes eight tools: list-only tabs, navigate, snapshot,
+find, wait for text, console messages and the network request list and details.
+<code>draft</code> adds type, select-option and fill-form. Page text, forms and DOM need the
+<code>read</code> group, and scrolling the <code>browse</code> group. Extra enabled groups contribute only
+their read tools. The personal-data <code>storage</code> and <code>history</code> groups still require
+explicit opt-in.</p>
+<p>Restricted surfaces use first-paragraph descriptions and omit <code>confirm_token</code>, the approval
+fallback for clients without elicitation: they cannot approve.
+Calling an unpublished tool by name returns <code>tool_not_published</code> with the mode setting
+needed to publish it; <code>browser_status.mcp_tools.mode</code> identifies a restricted server.
+The <a href="#finding-tools-without-a-restart">gateway tools</a> are listed in every mode and reach
+only the tools the mode permits.
+The bridge enforces the mode on every request, including calls made by name or directly
+over HTTP. A restricted request cannot change policy, run containers or resume an act
+call. Draft form-fill inspects every target before writing any field.</p>
+<p>Modes are per MCP client: a read client cannot loosen its mode by calling
+<code>browser_set_policy</code>, and does not change another client's policy on the shared daemon.
+The bridge's existing URL/readonly/locked-ask policy can tighten the mode further.
+Use an <code>act</code> client or the browser itself for a sensitive action. Modes limit agent
+commands, not page scripts: navigation can still trigger site behavior and field events
+can autosave a draft. They are not an incognito session or an application-level sandbox.
+Exact token counts and research/account-lookup task measurements belong to
+kitsune-benchmark; character-size guards in this repo are not token measurements.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "search.suggest", "search.highlight", "content.code.copy"], "search": "../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.c21346df.min.js"></script>
+      
+    
+  </body>
+</html>
