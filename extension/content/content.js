@@ -1422,7 +1422,9 @@
         if (!el) continue;
         if (!signatures.has(el)) signatures.set(el, new Set());
         signatures.get(el).add(entry.signature);
-        if (entry.label && !lines.has(el)) lines.set(el, { label: entry.label, parent: entries[entry.parent]?.el });
+        if (entry.label && !lines.has(el)) {
+          lines.set(el, { label: entry.label, role: entry.role, parent: entries[entry.parent]?.el });
+        }
       }
       return { signatures, lines, items: runItems, url: window.location?.href, title: document.title, withText };
     };
@@ -1526,13 +1528,29 @@
       for (const i of listed) keep(i);
       // A baseline line whose element is detached or no longer shown (the walk did not reach it)
       // is a change too (#457): one line names the top element of each removed part, without
-      // what was under it, so a closed dialog is not no_visible_change.
+      // what was under it, so a closed dialog is not no_visible_change. Removals under one parent
+      // line fold into one line (#471) when that hides at least COLLAPSE_MIN_HIDDEN of them: a
+      // re-rendered region is a run of removed siblings.
       const removed = [];
       if (baselineRefs) {
-        for (const [el, { label, parent }] of baseline.lines) {
-          if (metadata.has(el) || (parent && !metadata.has(parent))) continue;
+        const refSuffix = el => {
           const ref = baselineRefs.get(el);
-          removed.push(`- removed: ${label}${ref ? ` [ref=${ref}]` : ''}`);
+          return ref ? ` [ref=${ref}]` : '';
+        };
+        const byParent = new Map();
+        for (const [el, { parent }] of baseline.lines) {
+          if (metadata.has(el) || (parent && !metadata.has(parent))) continue;
+          if (!byParent.has(parent)) byParent.set(parent, []);
+          byParent.get(parent).push(el);
+        }
+        for (const [parent, els] of byParent) {
+          if (els.length - 1 < COLLAPSE_MIN_HIDDEN) {
+            for (const el of els) removed.push(`- removed: ${baseline.lines.get(el).label}${refSuffix(el)}`);
+            continue;
+          }
+          const under = parent ? ` under ${baseline.lines.get(parent).role}${refSuffix(parent)}` : '';
+          removed.push(`- removed: ${baseline.lines.get(els[0]).label}${refSuffix(els[0])}` +
+            ` … and ${els.length - 1} more${under}`);
         }
       }
       unchanged = !changed.length && !removed.length;

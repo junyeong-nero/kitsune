@@ -406,7 +406,10 @@ it is not rendered, marked `[not_rendered]` (see [Opened popups](#opened-popups)
 header above the target, are left out. An element the record lists that is now detached or
 hidden (a closed dialog, a hidden listbox) is named in one line after the rest, with the ref
 the agent already has for it, if any: `- removed: dialog "알림 설정" [ref=e4]`. What was under it
-is not listed (#457). A delta is
+is not listed (#457). More than three removals under one parent line, such as a re-rendered
+table page or calendar month, fold into one line that names the first and counts the rest with
+the parent's ref: `- removed: button "2027년 6월 1일" [ref=e9] … and 29 more under main [ref=e2]`
+(#471). A delta is
 capped at 4,000 characters like a full snapshot (`snapshot_truncated`); when truncated,
 `snapshot_hint` gives scope guidance, including when the target/context did not fit
 and `target_ref` was omitted. A same-document URL or title change (`history.pushState`)
