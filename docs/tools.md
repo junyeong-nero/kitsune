@@ -150,6 +150,8 @@ Kitsune's compact JSON results, not Playwright's Markdown. Where the two differ:
   ([Protecting your tabs](your-tabs.md#protecting-your-tabs)). `new`,
   `select` and `close` return the tabs after the change in the same form; `new` returns
   the new tab's `index`.
+  `close` takes `index` or `tab_id`, else the current tab; without one it returns
+  `no_current_tab` (#481). `tab_id` is refused for `list`, `new` and `select`.
   `browser_close` closes the current tab, never the browser; closing a user or other
   client's tab is refused with `user_tab_read_only` by default.
 - **Targets.** `target` is a snapshot ref (`e12`) or a CSS selector. Actions require one

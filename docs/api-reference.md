@@ -1736,7 +1736,9 @@ tab without a `tabId` (`state.action`; an `if` or `while` condition is JavaScrip
 tab). A `browser_workflow` without `tab_id` is always refused: its steps live in a file on
 the bridge and cannot be inspected first, so even a workflow that only reads needs a tab.
 Reads (snapshots, screenshots, page text, tab lists, console and network reads, waits)
-still act on the active tab, and `browser_tabs` close keeps its own rule (above).
+still act on the active tab. `browser_tabs` close (and `browser_close`) without `index` or
+`tab_id` and without a current tab is also refused with `no_current_tab`, with
+`state: {"tool": "browser_tabs", "action": "close"}`, instead of closing the active tab (#481).
 
 When this MCP client has open tabs of its own ([Tab owners](#tab-owners)), for example
 the tab it worked in before its MCP server restarted, the refusal adds
