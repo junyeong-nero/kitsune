@@ -233,6 +233,46 @@ class TabResultTests(unittest.TestCase):
         self.assertEqual(playwright_tools.browser_close(), {"ok": True, "tabs": []})
         self.assertIsNone(playwright_tools._current_tab)
 
+    def test_close_by_tab_id_closes_that_tab_not_the_current_one(self):
+        # #481: open A and B (B current), close tab_id=A: A closes, B stays open and current.
+        self.open = [_tab(3, "User", active=True), _tab(20, "A", owned=True), _tab(21, "B", owned=True)]
+        playwright_tools._current_tab = 21
+        result = playwright_tools.browser_tabs("close", tab_id=20)
+        self.assertEqual(self.post.call_args.args[0:2], ("/api/close-tab", {"tabId": 20}))
+        self.assertEqual([tab["title"] for tab in result["tabs"]], ["User", "B"])
+        self.assertEqual(playwright_tools._current_tab, 21)
+
+        # An unknown tab_id, or one with index, closes nothing.
+        self.post.reset_mock()
+        self.assertEqual(playwright_tools.browser_tabs("close", tab_id=20)["code"], "not_found")
+        self.assertEqual(playwright_tools.browser_tabs("close", tab_id=21, index=1)["code"], "invalid_argument")
+        self.post.assert_not_called()
+
+    def test_tabless_close_after_the_current_tab_closed_never_targets_the_users_tab(self):
+        # #481: once the current tab is closed, a close naming no tab is refused, not sent to the active tab.
+        self.open = [_tab(3, "User", active=True), _tab(20, "A", owned=True)]
+        playwright_tools._current_tab = 20
+        playwright_tools.browser_tabs("close")
+        self.assertIsNone(playwright_tools._current_tab)
+        self.post.reset_mock()
+        for close in (lambda: playwright_tools.browser_tabs("close"), playwright_tools.browser_close):
+            result = close()
+            self.assertEqual((result["code"], result["retryable"], result["state"]),
+                             ("no_current_tab", False, {"tool": "browser_tabs", "action": "close"}))
+        self.post.assert_not_called()
+        self.assertEqual([tab["id"] for tab in self.open], [3])
+
+    def test_tab_id_is_refused_where_it_is_not_supported(self):
+        # #481: an ignored tab_id would act on another tab than the one named.
+        playwright_tools._current_tab = 8
+        for action in ("list", "new", "select"):
+            with self.subTest(action=action):
+                result = playwright_tools.browser_tabs(action, index=0, tab_id=3)
+                self.assertEqual((result["code"], result["retryable"]), ("invalid_argument", False))
+                self.assertIn(f"action={action}", result["error"])
+        self.post.assert_not_called()
+        self.assertEqual(playwright_tools._current_tab, 8)
+
     def test_results_match_list(self):
         for action, arguments in (("new", {"url": "https://d/"}), ("select", {"index": 1}), ("close", {"index": 1})):
             with self.subTest(action=action):

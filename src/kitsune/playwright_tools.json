@@ -869,7 +869,7 @@
       "description": "Tab index (close defaults to current).",
       "type": "number"
      },
-     "tab_id": {"type": "integer", "description": "request: ID instead of index."},
+     "tab_id": {"type": "integer", "description": "close, request: ID instead of index."},
      "confirm_token": {"type": "string", "description": "request: approval token."},
      "reason": {"type": "string", "description": "request: reason shown to user."},
      "url": {

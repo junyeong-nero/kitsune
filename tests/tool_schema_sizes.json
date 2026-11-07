@@ -163,9 +163,9 @@
   "browser_tabs": {
     "description": 33,
     "firstParagraph": 33,
-    "inputSchema": 570,
-    "total": 759,
-    "firstParagraphTotal": 759
+    "inputSchema": 577,
+    "total": 766,
+    "firstParagraphTotal": 766
   },
   "browser_take_screenshot": {
     "description": 125,

@@ -756,6 +756,10 @@ def browser_tabs(action: str, index: float | None = None, url: str | None = None
             if error:
                 return error
         return k.browser_tabs("request", tab_id=tab_id, reason=reason, confirm_token=confirm_token)
+    if tab_id is not None and action != "close":
+        # Ignoring it would act on another tab than the one named (#481).
+        return {"error": f"tab_id is not supported for action={action}; only close and request take it",
+                "code": "invalid_argument", "retryable": False}
     if action == "list":
         return _tab_list(permission_hint=True)
     if action == "new":
@@ -789,21 +793,28 @@ def browser_tabs(action: str, index: float | None = None, url: str | None = None
                 "action=request."))
         return _with_tab_list(result)
     if action == "close":
+        if index is not None and tab_id is not None:
+            return {"error": "close takes index or tab_id, not both", "code": "invalid_argument",
+                    "retryable": False}
         if index is not None:
             tab_id, error = _tab_at(index)
             if error:
                 return error
-        elif _current_tab is not None:
-            tab_id = _current_tab
-        else:
+        elif tab_id is not None:
             result = _tabs()
             if k._failed(result):
                 return result
-            active = [tab["id"] for tab in result.get("tabs") or [] if tab.get("active")]
-            if len(active) != 1:
-                return {"error": "Several windows have an active tab; pass index", "code": "ambiguous_target",
-                        "retryable": False}
-            tab_id = active[0]
+            if all(tab.get("id") != tab_id for tab in result.get("tabs") or []):
+                return {"error": f"Tab id {tab_id} not found", "code": "not_found", "retryable": False,
+                        "hint": "Use an index from browser_tabs action=list."}
+        elif _current_tab is not None:
+            tab_id = _current_tab
+        else:
+            # Never the window's active tab, usually the user's (#481, #303).
+            return {"error": "close names no tab and there is no current tab, so nothing was closed",
+                    "code": "no_current_tab", "retryable": False,
+                    "hint": "Pass index from browser_tabs action=list to close a tab.",
+                    "state": {"tool": "browser_tabs", "action": "close"}}
         result = k.browser_tabs("close", tab_id=tab_id, confirm_token=confirm_token)
         if not k._failed(result):
             _clicked.pop(tab_id, None)
