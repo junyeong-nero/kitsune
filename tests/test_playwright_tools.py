@@ -131,9 +131,10 @@ class AdapterTests(unittest.TestCase):
         playwright_tools.browser_close()
         self.assertEqual(self.posted()[-1], ("/api/close-tab", {"tabId": 11}))
         self.assertIsNone(playwright_tools._current_tab)
-        # Without a current tab, close takes the active tab.
-        playwright_tools.browser_tabs("close")
-        self.assertEqual(self.posted()[-1], ("/api/close-tab", {"tabId": 3}))
+        # Without a current tab, close refuses rather than closing the user's active tab (#481).
+        self.post.reset_mock()
+        self.assertEqual(playwright_tools.browser_tabs("close")["code"], "no_current_tab")
+        self.post.assert_not_called()
 
     def test_a_current_tab_that_closed_is_forgotten(self):
         playwright_tools._current_tab = 99
