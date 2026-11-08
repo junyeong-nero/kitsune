@@ -2393,6 +2393,12 @@
     return Object.getOwnPropertyDescriptor(proto, 'value')?.set;
   }
 
+  // A single-line input's value setter strips line breaks, running the lines together. Replace
+  // each with a space first, as Firefox does when a user pastes into one (#484).
+  function singleLineValue(el, text) {
+    return el.tagName === 'INPUT' && typeof text === 'string' ? text.replace(/\r\n|\r|\n/g, ' ') : text;
+  }
+
   // ── Type ──
   function typeText(selector, text, clear, first) {
     const host = resolveTarget(selector, null, { first });
@@ -2414,7 +2420,8 @@
     }
 
     el.focus();
-    
+    text = singleLineValue(el, text);
+
     // Use native value setter to properly trigger React/Vue state
     const setter = nativeValueSetter(el);
     if (setter) setter.call(el, clear ? text : el.value + text);
@@ -2671,10 +2678,11 @@
       // Use native setter to trigger React/Vue/custom element state
       target.focus();
       const setter = nativeValueSetter(target);
+      const text = singleLineValue(target, String(value));
       if (setter) {
-        setter.call(target, String(value));
+        setter.call(target, text);
       } else {
-        target.value = String(value);
+        target.value = text;
       }
       target.dispatchEvent(new Event('input', { bubbles: true }));
       target.dispatchEvent(new Event('change', { bubbles: true }));
@@ -5571,8 +5579,9 @@
         } else {
           el.focus();
           const setter = nativeValueSetter(el);
-          if (setter) setter.call(el, String(value));
-          else el.value = String(value);
+          const text = singleLineValue(el, String(value));
+          if (setter) setter.call(el, text);
+          else el.value = text;
           el.dispatchEvent(new Event('input', { bubbles: true }));
           el.dispatchEvent(new Event('change', { bubbles: true }));
           results[key] = { ok: true, tag: el.tagName.toLowerCase() };
