@@ -197,6 +197,18 @@ def _with_tab_list(result: dict) -> dict:
     return result if k._failed(listed) else {**result, **listed}
 
 
+def _with_current_tab(result: dict) -> dict:
+    """An action's result with the current tab, as list returns it, and the tab count, not the whole list (#488).
+
+    A failed listing leaves the result as it is: the action itself already happened.
+    """
+    listed = _tab_list()
+    if k._failed(listed):
+        return result
+    current = next((tab for tab in listed["tabs"] if tab.get("current")), None)
+    return {**result, **({"tab": current} if current else {}), "tab_count": len(listed["tabs"])}
+
+
 def _listed_tab(index) -> tuple[dict | None, dict | None]:
     """(the listed tab, None) for a browser_tabs index, else (None, error)."""
     result = _tabs()
@@ -774,9 +786,8 @@ def browser_tabs(action: str, index: float | None = None, url: str | None = None
         if not isinstance(result.get("tabId"), int):
             return result
         _current_tab = result["tabId"]
-        result = _with_tab_list({key: value for key, value in result.items() if key != "tabId"})
-        index = [tab["index"] for tab in result.get("tabs", ()) if tab.get("current")]
-        return {**result, "index": index[0]} if index else result
+        result = _with_current_tab({key: value for key, value in result.items() if key != "tabId"})
+        return {**result, "index": result["tab"]["index"]} if "tab" in result else result
     if action == "select":
         if index is None:
             return {"error": "index is required for action=select"}
@@ -791,7 +802,7 @@ def browser_tabs(action: str, index: float | None = None, url: str | None = None
                 f"Reads work on tab {int(index)}, but this client cannot write it. To write, open your own tab "
                 f"with browser_tabs action=new url={tab.get('url')}, or request this one with browser_tabs "
                 "action=request."))
-        return _with_tab_list(result)
+        return _with_current_tab(result)
     if action == "close":
         if index is not None and tab_id is not None:
             return {"error": "close takes index or tab_id, not both", "code": "invalid_argument",

@@ -3599,7 +3599,7 @@ result has it (#448); a larger page, a timeout or `KITSUNE_POST_ACTION_SNAPSHOT=
 If the wait times out with the tab still `about:blank` / `complete`, and the page cannot confirm
 a loaded destination, the result also carries `code: "new_tab_stalled"`, `retryable: false`, and
 a `hint` saying that retrying will not fix it (#366). The tab already exists: `tabId` is retained (the core
-`browser_tabs` returns its `index` and tab list instead). Do not repeat creation or navigation:
+`browser_tabs` returns its `index` and `tab` instead). Do not repeat creation or navigation:
 the browser needs an update, a restart or another fix first. A browser left running after an
 on-disk update is one possible cause; check
 [`browser_status(diagnostics=true)`](#browser-build-diagnostics) for build mismatch evidence. Tell the
