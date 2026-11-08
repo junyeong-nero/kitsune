@@ -185,5 +185,60 @@ async function testSettleFloor() {
     false, 'plain fields');
 }
 
-testFormFill().then(testSettleFloor).then(() => console.log('Form fill checks passed'))
+// Mirrors the DOM: a single-line input's value sanitization strips line breaks.
+class TextInputElement extends Element {
+  constructor() {
+    super('INPUT');
+    Object.assign(this, { type: 'text', _value: '' });
+  }
+  get value() { return this._value; }
+  set value(value) { this._value = String(value).replace(/[\r\n]/g, ''); }
+}
+
+// #484: line breaks typed or filled into a single-line input become spaces, as Playwright MCP
+// stores them; a textarea keeps them.
+async function testLineBreaks() {
+  const input = new TextInputElement();
+  const area = Object.assign(new Element('TEXTAREA'), { value: '' });
+  const elements = { '#input': input, '#area': area };
+  let listener;
+  const context = vm.createContext({
+    console, crypto: webcrypto, Event, CSS: { escape: x => x },
+    KeyboardEvent: class extends Event {},
+    HTMLInputElement: class {}, HTMLTextAreaElement: class {},
+    window: { getComputedStyle: () => ({ display: 'block', visibility: 'visible' }) },
+    document: { body: {}, querySelector: selector => elements[selector] || null, querySelectorAll: () => [] },
+    browser: { runtime: {
+      onMessage: { addListener: fn => { listener = fn; } },
+      sendMessage: () => Promise.resolve(null),
+    } },
+  });
+  vm.runInContext(fs.readFileSync('extension/content/content.js', 'utf8'), context);
+  const send = msg => new Promise(resolve => listener(msg, {}, result => resolve(JSON.parse(JSON.stringify(result)))));
+  const reset = () => { input.value = ''; area.value = ''; };
+
+  for (const [name, write] of [
+    ['browser_type slowly', (selector, text) => send({ action: 'type', selector, text, clear: true })],
+    ['browser_type fill', (selector, value) => send({ action: 'fill', selector, value })],
+    ['browser_fill_form', (selector, value) => send({ action: 'formFill', fields: { [selector]: value } })],
+  ]) {
+    reset();
+    const typed = await write('#input', 'a\nb');
+    assert.equal(typed.error, undefined, `${name}: ${JSON.stringify(typed)}`);
+    assert.equal(input.value, 'a b', `${name} replaces a line break in an input with a space`);
+    reset();
+    await write('#input', 'a\r\nb\rc\n\nd');
+    assert.equal(input.value, 'a b c  d', `${name} replaces each \\r\\n, \\r or \\n with one space`);
+    reset();
+    await write('#area', 'a\nb');
+    assert.equal(area.value, 'a\nb', `${name} keeps a line break in a textarea`);
+  }
+
+  reset();
+  input.value = 'x';
+  await send({ action: 'type', selector: '#input', text: '\ny', clear: false });
+  assert.equal(input.value, 'x y', 'appending to an input replaces the line break too');
+}
+
+testFormFill().then(testSettleFloor).then(testLineBreaks).then(() => console.log('Form fill checks passed'))
   .catch(error => { console.error(error); process.exitCode = 1; });
