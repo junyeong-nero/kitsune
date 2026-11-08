@@ -1171,12 +1171,17 @@
         interactive: children.reduce((sum, child) => sum + child.interactive, 0),
         native: children.reduce((sum, child) => sum + child.native, 0),
       };
+      metadata.set(el, data);
+      const interactive = isSnapshotControl(el);
+      // The only control in el's subtree, below el: a one-option menu's option (#483).
+      const onlyControl = data.interactive === 1 ? children.find(child => child.interactive).control : null;
       // One native descendant or two custom controls makes a generic click handler
-      // a delegation wrapper, not a separate button. Explicit roles remain intact.
+      // a delegation wrapper, not a separate button; so does one custom control that
+      // carries the wrapper's own name (#483). Explicit roles remain intact.
       data.wrapper = !nativeTags.has(el.tagName) && !el.getAttribute('role') &&
         !el.isContentEditable && el.contentEditable !== 'true' &&
-        (data.native > 0 || data.interactive >= 2);
-      const interactive = isSnapshotControl(el);
+        (data.native > 0 || data.interactive >= 2 ||
+          (interactive && !!onlyControl && nameOf(el, true) === nameOf(onlyControl, true)));
       const role = el.getAttribute('role') || landmarks[el.tagName] ||
         (/^H[1-6]$/.test(el.tagName) ? 'heading' : inferRole(el));
       data.image = !interactive && isImage(el) && !!nameOf(el, false);
@@ -1189,9 +1194,9 @@
           data.canvas || data.namedTarget ||
           semanticRoles.has(role) || el === target || (withText && hasOwnText(el)) ||
           (FRAME_TAGS.has(el.tagName) && hasArea(el)) || shownPopups.has(el));
+      data.control = interactive ? el : onlyControl;
       data.interactive += interactive ? 1 : 0;
       data.native += nativeTags.has(el.tagName) ? 1 : 0;
-      metadata.set(el, data);
       return data;
     }
     measure(root, 0, false, rootInPopup);
