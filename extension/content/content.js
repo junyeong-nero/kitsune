@@ -3615,9 +3615,9 @@
   // A tab passed as a target (tab:1, tab=1, tab 1), to read another tab (#473).
   const TAB_TARGET = /^tab\s*[:=#]?\s*(\d+)$/i;
 
-  function unsupportedSelector(selector, reason) {
+  function unsupportedSelector(selector, reason, hint = UNSUPPORTED_SELECTOR_HINT) {
     return new ActionError(`Unsupported selector: ${reason}`, { code: 'unsupported_selector', retryable: false,
-      hint: UNSUPPORTED_SELECTOR_HINT, state: { selector } });
+      hint, state: { selector } });
   }
 
   // A native CSS failure: invalid syntax can never match, so it is not a retryable not_found.
@@ -3628,11 +3628,12 @@
       : 'it is not valid CSS');
   }
 
-  // A target that names a tab, not an element; null for any other selector.
+  // A target that names a tab, not an element; null for any other selector. Its hint is the
+  // step that reads the tab, not the selector forms, which do not apply to a tab (#487).
   function tabTargetError(selector) {
     const tab = TAB_TARGET.exec(selector.trim());
-    return tab && unsupportedSelector(selector, `this names a tab, not an element: browser_tabs action=select ` +
-      `index=${Number(tab[1])} makes it current for reads without changing the user's view; then call browser_snapshot`);
+    return tab && unsupportedSelector(selector, 'this names a tab, not an element', `browser_tabs action=select ` +
+      `index=${Number(tab[1])} makes it current for reads without changing the user's view; then call browser_snapshot.`);
   }
 
   // The index after the string, (…) or […] group that opens at text[i]. As in CSS, the end of

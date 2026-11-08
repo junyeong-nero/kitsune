@@ -427,9 +427,9 @@ async function testUnsupportedSyntaxIsNotRetryable() {
     'id=p1': /id= selector engine/,
     'checkbox "마이크 선택"': /snapshot line/,
     // #473: a tab passed as a target, to read another tab.
-    'tab:1': /names a tab, not an element: browser_tabs action=select index=1 makes it current/,
-    'Tab=2': /names a tab, not an element: browser_tabs action=select index=2 makes it current/,
-    'tab 3': /names a tab, not an element: browser_tabs action=select index=3 makes it current/,
+    'tab:1': /names a tab, not an element$/,
+    'Tab=2': /names a tab, not an element$/,
+    'tab 3': /names a tab, not an element$/,
     'tab:x': /not valid CSS/,
     'tab=x': /tab= selector engine/,
     '저장': /not an element name/,
@@ -443,7 +443,14 @@ async function testUnsupportedSyntaxIsNotRetryable() {
     assert.equal(result.code, 'unsupported_selector', `${selector}: ${JSON.stringify(result)}`);
     assert.equal(result.retryable, false, selector);
     assert.match(result.error, reason, selector);
-    assert.match(result.hint, /text=.*role=.*>> chains/, selector);
+    // #487: a tab's hint is the step that reads it, not the selector forms.
+    const tab = /^tab\W*(\d)$/i.exec(selector);
+    if (tab) {
+      assert.match(result.hint, new RegExp(`^browser_tabs action=select index=${tab[1]} makes it current`), selector);
+      assert.doesNotMatch(result.hint, /text=|role=|>>|xpath=/, selector);
+    } else {
+      assert.match(result.hint, /text=.*role=.*>> chains/, selector);
+    }
     assert.equal(result.state.selector, selector);
     const capture = await send({ action: 'markScreenshotTarget', selector });
     assert.equal(capture.code, 'unsupported_selector', selector);
@@ -465,7 +472,8 @@ async function testUnsupportedSyntaxIsNotRetryable() {
   assert.equal((await send({ action: 'getBounds', selector: 'text=/(/' })).code, 'unsupported_selector');
   const snapshot = await send({ action: 'getSnapshot', selector: 'tab:1' });
   assert.equal(snapshot.code, 'unsupported_selector', JSON.stringify(snapshot));
-  assert.match(snapshot.error, /names a tab, not an element: browser_tabs action=select index=1 .*then call browser_snapshot/);
+  assert.match(snapshot.error, /names a tab, not an element$/);
+  assert.match(snapshot.hint, /^browser_tabs action=select index=1 .*then call browser_snapshot\.$/);
 }
 
 const byId = (dom, id) => [dom.html, ...dom.html.descendants()].find(el => el.id === id);
