@@ -189,8 +189,8 @@ class UserTabsReadOnlyTests(unittest.TestCase):
                     self.assertEqual((selected["ok"], selected["index"], selected["read_only"]), (True, index, True),
                                      selected)
                     self.assertIn("browser_tabs action=new", selected["hint"])
-                    self.assertTrue(selected["tabs"][index]["current"])
-                    self.assertNotIn("owned", selected["tabs"][index])
+                    self.assertEqual((selected["tab"]["index"], selected["tab"]["current"]), (index, True))
+                    self.assertNotIn("owned", selected["tab"])
                     self.assertEqual(playwright_tools._current_tab, tab_id)
                     self.assertNotEqual(self.extension.commands[-1]["action"], "switchTab")
                     read = core("read-only", None, tool=playwright_tools.browser_snapshot)
@@ -206,8 +206,8 @@ class UserTabsReadOnlyTests(unittest.TestCase):
             self.assertEqual((selected["ok"], selected["index"]), (True, 0), selected)
             self.assertNotIn("hint", selected)
             self.assertNotIn("read_only", selected)
-            self.assertEqual(selected["tabs"][0], {"index": 0, "title": None, "url": "https://user.example/one",
-                                                   "current": True, "active": True})
+            self.assertEqual(selected["tab"], {"index": 0, "title": None, "url": "https://user.example/one",
+                                               "current": True, "active": True})
             self.assertEqual(playwright_tools._current_tab, 1)
             self.assertNotIn("hint", core("writable", "list"))
             listed = core("read-only", "list")
@@ -218,14 +218,14 @@ class UserTabsReadOnlyTests(unittest.TestCase):
             opened = core("read-only", "new")
             self.assertNotIn("hint", opened)
             own = opened["index"]
-            self.assertEqual({key: opened["tabs"][own].get(key) for key in ("current", "owned")},
-                             {"current": True, "owned": True})
+            self.assertEqual({key: opened["tab"].get(key) for key in ("index", "current", "owned")},
+                             {"index": own, "current": True, "owned": True})
             self.assertTrue(core("read-only", "select", index=0)["read_only"])
             selected = core("read-only", "select", index=own)
             self.assertNotIn("hint", selected)
             self.assertNotIn("read_only", selected)
-            self.assertEqual({key: selected["tabs"][own].get(key) for key in ("current", "owned")},
-                             {"current": True, "owned": True})
+            self.assertEqual({key: selected["tab"].get(key) for key in ("index", "current", "owned")},
+                             {"index": own, "current": True, "owned": True})
             self.assertNotIn("hint", core("read-only", "list"))
 
     @unittest.skipUnless(shutil.which("node"), "actual background integration needs node")

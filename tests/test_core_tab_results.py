@@ -2,6 +2,7 @@
 and select of any tab, read-only where this client cannot write it (#449).
 
 new reports the new tab's index (the index every other action takes), not the bridge's tabId.
+new and select return the tab they made current and the tab count, not the whole list (#488).
 """
 import unittest
 from unittest.mock import patch
@@ -47,12 +48,11 @@ class TabResultTests(unittest.TestCase):
                                   "action": data["writeAction"]}}
         return {"ok": True}
 
-    def test_new_returns_its_index_and_the_tabs(self):
+    def test_new_returns_its_index_and_tab_and_the_tab_count(self):
         self.assertEqual(playwright_tools.browser_tabs("new", url="https://d/"), {
-            "ok": True, "url": "https://d/", "status": "complete", "index": 2, "tabs": [
-                {"index": 0, "title": "A", "url": "https://a/", "active": True},
-                {"index": 1, "title": "B", "url": "https://b/", "owned": True},
-                {"index": 2, "title": "D", "url": "https://d/", "current": True, "owned": True}]})
+            "ok": True, "url": "https://d/", "status": "complete", "index": 2,
+            "tab": {"index": 2, "title": "D", "url": "https://d/", "current": True, "owned": True},
+            "tab_count": 3})
         self.assertEqual(playwright_tools._current_tab, 11)
 
     def test_new_with_a_url_carries_the_page_text(self):
@@ -66,11 +66,22 @@ class TabResultTests(unittest.TestCase):
         endpoint, body = self.post.call_args.args
         self.assertEqual((endpoint, body["pageText"]), ("/api/new-tab", True))
 
-    def test_select_returns_the_tabs_with_the_current_marker(self):
+    def test_select_returns_the_selected_tab_and_the_tab_count(self):
         self.assertEqual(playwright_tools.browser_tabs("select", index=1), {
-            "ok": True, "index": 1, "tabs": [
-                {"index": 0, "title": "A", "url": "https://a/", "active": True},
-                {"index": 1, "title": "B", "url": "https://b/", "current": True, "owned": True}]})
+            "ok": True, "index": 1,
+            "tab": {"index": 1, "title": "B", "url": "https://b/", "current": True, "owned": True},
+            "tab_count": 2})
+
+    def test_new_and_select_leave_out_the_tab_list(self):
+        # #488: the list was most of each result's characters; action=list still returns it.
+        for action, arguments in (("new", {"url": "https://d/"}), ("select", {"index": 0}), ("new", {})):
+            with self.subTest(action=action, arguments=arguments):
+                result = playwright_tools.browser_tabs(action, **arguments)
+                listed = playwright_tools.browser_tabs("list")["tabs"]
+                self.assertNotIn("tabs", result)
+                self.assertEqual(result["tab_count"], len(listed))
+                self.assertEqual(result["tab"], listed[result["index"]])
+                self.assertTrue(result["tab"]["current"])
 
     def test_select_on_a_handed_off_tab_lists_it_current_without_hint(self):
         # #399: once a handoff is approved, select makes the user's tab current and no longer read-only.
@@ -80,9 +91,9 @@ class TabResultTests(unittest.TestCase):
                          {"ok": True, "tabId": 3, "owned": True})
         self.assertEqual(playwright_tools._current_tab, 8, "a request does not select")
         self.assertEqual(playwright_tools.browser_tabs("select", index=0), {
-            "ok": True, "index": 0, "tabs": [
-                {"index": 0, "title": "A", "url": "https://a/", "current": True, "active": True, "owned": True},
-                {"index": 1, "title": "B", "url": "https://b/", "owned": True}]})
+            "ok": True, "index": 0,
+            "tab": {"index": 0, "title": "A", "url": "https://a/", "current": True, "active": True, "owned": True},
+            "tab_count": 2})
         self.assertEqual(playwright_tools._current_tab, 3)
         self.assertEqual([call.args[0] for call in self.post.call_args_list], ["/api/request-tab"])
         self.assertNotIn("hint", playwright_tools.browser_tabs("list"))
@@ -95,9 +106,9 @@ class TabResultTests(unittest.TestCase):
                 with self.subTest(current=current):
                     playwright_tools._current_tab = current
                     self.assertEqual(playwright_tools.browser_tabs("select", index=0), {
-                        "ok": True, "index": 0, "tabs": [
-                            {"index": 0, "title": "A", "url": "https://a/", "current": True, "active": True},
-                            {"index": 1, "title": "B", "url": "https://b/", "owned": True}]})
+                        "ok": True, "index": 0,
+                        "tab": {"index": 0, "title": "A", "url": "https://a/", "current": True, "active": True},
+                        "tab_count": 2})
                     self.assertEqual(playwright_tools._current_tab, 3)
 
     def test_select_makes_a_user_or_other_client_tab_current_read_only(self):
@@ -116,9 +127,9 @@ class TabResultTests(unittest.TestCase):
                             "hint": "Reads work on tab 0, but this client cannot write it. To write, open your own "
                                     "tab with browser_tabs action=new url=https://a/, or request this one with "
                                     "browser_tabs action=request.",
-                            "tabs": [{"index": 0, "title": "A", "url": "https://a/", "current": True,
-                                      **({"active": True} if active else {})},
-                                     {"index": 1, "title": "B", "url": "https://b/", "owned": True}]})
+                            "tab": {"index": 0, "title": "A", "url": "https://a/", "current": True,
+                                    **({"active": True} if active else {})},
+                            "tab_count": 2})
                         self.assertEqual(playwright_tools._current_tab, 3)
                         self.post.assert_not_called()
                     self.assertTrue(playwright_tools.browser_tabs("list")["hint"].startswith(
@@ -177,7 +188,7 @@ class TabResultTests(unittest.TestCase):
             for action, arguments in (("list", {}), ("select", {"index": 0})):
                 result = playwright_tools.browser_tabs(action, **arguments)
                 self.assertNotIn("hint", result)
-                self.assertTrue(result["tabs"][0]["current"])
+                self.assertTrue((result["tab"] if action == "select" else result["tabs"][0])["current"])
 
     def test_no_current_or_stale_current_has_no_hint(self):
         for current in (None, 99):
@@ -277,7 +288,11 @@ class TabResultTests(unittest.TestCase):
         for action, arguments in (("new", {"url": "https://d/"}), ("select", {"index": 1}), ("close", {"index": 1})):
             with self.subTest(action=action):
                 result = playwright_tools.browser_tabs(action, **arguments)
-                self.assertEqual(result["tabs"], playwright_tools.browser_tabs("list")["tabs"])
+                listed = playwright_tools.browser_tabs("list")["tabs"]
+                if action == "close":
+                    self.assertEqual(result["tabs"], listed)
+                else:
+                    self.assertEqual((result["tab"], result["tab_count"]), (listed[result["index"]], len(listed)))
                 self.assertNotIn("tabId", result)
 
     def test_a_failed_action_has_no_tab_list(self):
@@ -285,7 +300,7 @@ class TabResultTests(unittest.TestCase):
         self.post.return_value = {"error": "user_tab", "code": "user_tab"}
         self.assertEqual(playwright_tools.browser_tabs("close", index=0), {"error": "user_tab", "code": "user_tab"})
         self.post.return_value = {"error": "confirmation_required", "code": "confirmation_required"}
-        self.assertNotIn("tabs", playwright_tools.browser_tabs("new", url="https://d/"))
+        self.assertNotIn("tab", playwright_tools.browser_tabs("new", url="https://d/"))
 
     def test_a_timed_out_new_tab_is_current_and_listed(self):
         self.post.side_effect = None
@@ -309,7 +324,7 @@ class TabResultTests(unittest.TestCase):
         self.assertEqual(result["hint"], self.post.return_value["hint"])
         self.assertEqual(result["index"], 2)
         self.assertEqual(playwright_tools._current_tab, 11)
-        self.assertEqual(result["tabs"][2], {
+        self.assertEqual(result["tab"], {
             "index": 2, "title": "example.com", "url": "about:blank", "owned": True, "current": True,
         })
         self.assertNotIn("tabId", result)
