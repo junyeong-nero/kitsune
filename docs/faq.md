@@ -61,19 +61,19 @@ Yes, in three ways that combine:
 
 An ask-before-act hold returns `needs_user` and does not run the held action (#376).
 User-tab writes are refused without prompting; an explicit [handoff request](api-reference.md#requesting-and-returning-a-tab)
-asks in the browser first, then falls back to the client. For ask-before-act on an MCP client with elicitation
-(Claude Code, Codex), the client asks you in its own prompt, naming the action, its target and
-the tab; Approve runs that one call, and the agent never sees the approval. Clients without
-elicitation fall back to a confirmation token (`confirm_token`): the agent should ask you, then
+asks in the browser and, on a client with elicitation, in the client at once. For ask-before-act on an MCP
+client with elicitation (Claude Code, Codex), the client asks you in its own prompt, naming the action, its
+target and the tab; Accept (Continue in pi; Approve in Codex) runs that one call, and the agent
+never sees the approval. Clients without elicitation fall back to a confirmation token (`confirm_token`): the agent should ask you, then
 repeat the call with it. Either way the bridge's audit log records how each write was approved.
 See [Approving held actions](your-tabs.md#approving-held-actions).
 
 ## What happens when the agent needs me?
 
 For a sign-in, a CAPTCHA, a button that ignores the agent's clicks or a choice only you can
-make, the agent asks you with `browser_ask_user`: in the client's prompt (Done or Can't) where
-it has elicitation, else in its reply. In the reply case, for a sign-in or CAPTCHA Kitsune sees
-on the tab, `browser_resume` waits until it is gone, so you need not tell the agent you are done. See
+make, the agent asks you with `browser_ask_user`: in the client's prompt (Accept when done, or
+Decline; Done or Can't in Codex) where it has elicitation, else in its reply. In the reply case,
+for a sign-in or CAPTCHA Kitsune sees on the tab, `browser_resume` waits until it is gone, so you need not tell the agent you are done. See
 [When the agent needs you](your-tabs.md#when-the-agent-needs-you).
 
 ## Is it safe to give an agent my browser?

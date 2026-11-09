@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import anyio
 from mcp import types
-from test_elicitation_approval import AGENT_TAB, ElicitationTestCase, FakeExtension
+from test_elicitation_approval import AGENT_TAB, CODEX, ElicitationTestCase, FakeExtension
 
 from kitsune import bridge, playwright_tools, server
 
@@ -55,9 +55,9 @@ class AskUserTestCase(ElicitationTestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-    def ask(self, answer_with=None, **arguments):
+    def ask(self, answer_with=None, client=None, **arguments):
         return self.call("browser_ask_user", {"reason": "other", "message": "Which seat do you want?", **arguments},
-                         answer_with)
+                         answer_with, client=client)
 
     def resume(self, payload, answer_with=None, **arguments):
         return self.call("browser_resume", {"call": payload["call"], "resume_token": payload["resume_token"],
@@ -145,22 +145,28 @@ class WithoutElicitationTests(AskUserTestCase):
 
 class ElicitationTests(AskUserTestCase):
     def test_done_in_the_prompt_returns_the_answer(self):
-        result, payload = self.ask(answer("Done"))
-        self.assertFalse(result.isError, payload)
-        self.assertEqual(payload, {"ok": True, "answer": "done", "via": "elicitation", "reason": "other",
-                                   "tabId": AGENT_TAB, "hint": "Check the page (browser_snapshot) before going on."})
-        (prompt,) = self.prompts
-        self.assertEqual(prompt.requestedSchema, server.ASK_USER_SCHEMA)
-        # The message is the agent's, labeled so, with the tab it is about.
-        self.assertEqual(prompt.message.split("\n"), [
-            "The agent asks: Which seat do you want?", "Tab: Sign in - https://shop.example/login",
-            "Done tells the agent you did it; Can't tells it you could not."])
-        self.assertEqual(server._direct_checkpoints, {})
+        # One step (the client's Accept is Done), but on Codex, which chooses Done in a field (#494).
+        for client, respond, schema, last in (
+                (None, answer(), server.ONE_STEP_SCHEMA,
+                 "Accept or Continue tells the agent you did it; Decline tells it you could not."),
+                (CODEX, answer("Done"), server.ASK_USER_SCHEMA,
+                 "Done tells the agent you did it; Can't tells it you could not.")):
+            with self.subTest(client=client):
+                result, payload = self.ask(respond, client)
+                self.assertFalse(result.isError, payload)
+                self.assertEqual(payload, {"ok": True, "answer": "done", "via": "elicitation", "reason": "other",
+                                           "tabId": AGENT_TAB, "hint": "Check the page (browser_snapshot) before going on."})
+                (prompt,) = self.prompts
+                self.assertEqual(prompt.requestedSchema, schema)
+                # The message is the agent's, labeled so, with the tab it is about.
+                self.assertEqual(prompt.message.split("\n"), [
+                    "The agent asks: Which seat do you want?", "Tab: Sign in - https://shop.example/login", last])
+                self.assertEqual(server._direct_checkpoints, {})
 
     def test_cant_or_a_declined_prompt_is_the_users_answer(self):
-        for respond in (answer("Can't"), answer(action="decline")):
-            with self.subTest():
-                result, payload = self.ask(respond)
+        for respond, client in ((answer("Can't"), CODEX), (answer(action="decline"), None)):
+            with self.subTest(client=client):
+                result, payload = self.ask(respond, client)
                 self.assertTrue(result.isError)
                 self.assertEqual((payload["code"], payload["state"]["decision"]), ("needs_user", "declined"))
                 self.assertEqual(payload["hint"], server.REQUEST_HINTS["declined"])

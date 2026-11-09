@@ -24,6 +24,8 @@ from kitsune.task_modes import APPROVAL_HEADER, APPROVER_HEADER
 
 USER_TAB, AGENT_TAB = 4, 9
 TOKEN_SHAPED = re.compile(r"[A-Za-z0-9_-]{32}")
+# Codex's clientInfo: its prompts keep a field to choose in (#494); other clients' are one step.
+CODEX = types.Implementation(name="codex-mcp-client", version="0.163.0")
 
 
 class FakeExtension:
@@ -109,9 +111,9 @@ class ElicitationTestCase(unittest.TestCase):
         status, result = handler.send_json.call_args.args
         return Mock(status_code=status, json=Mock(return_value=result))
 
-    def call(self, name, arguments, answer=None, progress=None, protocol=types.LATEST_PROTOCOL_VERSION):
+    def call(self, name, arguments, answer=None, progress=None, protocol=types.LATEST_PROTOCOL_VERSION, client=None):
         """Call a tool from a client that elicits with answer(params) -> ElicitResult, or without elicitation,
-        on the protocol version the client asks for."""
+        on the protocol version the client asks for; client is its clientInfo (the SDK's by default)."""
         self.prompts = []
 
         async def elicit(context, params):
@@ -120,8 +122,8 @@ class ElicitationTestCase(unittest.TestCase):
 
         async def run():
             async with create_connected_server_and_client_session(
-                    server.mcp, elicitation_callback=elicit if answer else None) as client:
-                result = await client.call_tool(name, arguments, progress_callback=progress)
+                    server.mcp, elicitation_callback=elicit if answer else None, client_info=client) as session:
+                result = await session.call_tool(name, arguments, progress_callback=progress)
                 await anyio.sleep(0.1)  # a cancelled prompt's late reply reaches the server before it closes
                 return result
 
@@ -193,9 +195,13 @@ class ApprovalElicitationTests(ElicitationTestCase):
                 self.approve(protocol)
                 self.assertEqual(negotiated[-1], protocol)
 
-    def approve(self, protocol):
+    def test_codex_chooses_approve_in_a_field(self):
+        self.approve(types.LATEST_PROTOCOL_VERSION, CODEX)
+
+    def approve(self, protocol, client=None):
         result, payload = self.call("browser_click", {"target": "#send", "element": "Send button"},
-                                    answer_with("accept", "Approve"), protocol=protocol)
+                                    answer_with("accept", "Approve" if client else None), protocol=protocol,
+                                    client=client)
         self.assertFalse(result.isError, payload)
         self.assertIs(payload.get("ok"), True, payload)
         held, repeat = self.clicks()
@@ -212,11 +218,13 @@ class ApprovalElicitationTests(ElicitationTestCase):
         # description is labeled as the agent's.
         prompt = self.prompts[0]
         self.assertEqual(prompt.mode, "form")
-        self.assertEqual(prompt.requestedSchema, server.APPROVAL_SCHEMA)
+        # One step (the client's Accept approves), but on Codex, which chooses Approve in a field (#494).
+        self.assertEqual(prompt.requestedSchema, server.APPROVAL_SCHEMA if client else server.ONE_STEP_SCHEMA)
+        approve = "Approve" if client else "Accept or Continue"
         for part in ("Allow the agent's click? It clicks a submit control (Pay).", "Tool: browser_click",
                      "Target: #send\nAgent's description of the target: Send button\n",
                      "Tab: https://shop.example/cart", "Held because ask-before-act: it clicks a submit control (Pay).",
-                     "Approve runs this action once; Decline leaves it undone."):
+                     f"{approve} runs this action once; Decline leaves it undone."):
             self.assertIn(part, prompt.message)
         self.assertNotIn("Arguments:", prompt.message)
         # The audit log records how the write was approved.
@@ -271,11 +279,13 @@ class ApprovalElicitationTests(ElicitationTestCase):
         self.assertEqual(len(self.clicks()), 1, "nothing was repeated")
 
     def test_decline_and_cancel_return_needs_user_without_a_token(self):
-        for answer, decision in ((answer_with("decline"), "declined"), (answer_with("cancel"), "cancelled"),
-                                 (answer_with("accept", "Decline"), "declined"), (answer_with("accept"), "cancelled")):
-            with self.subTest(decision=decision):
+        for answer, decision, client in ((answer_with("decline"), "declined", None),
+                                         (answer_with("cancel"), "cancelled", None),
+                                         (answer_with("accept", "Decline"), "declined", CODEX),
+                                         (answer_with("accept"), "cancelled", CODEX)):
+            with self.subTest(decision=decision, client=client):
                 self.requests.clear()
-                result, payload = self.call("browser_click", {"target": "#send"}, answer)
+                result, payload = self.call("browser_click", {"target": "#send"}, answer, client=client)
                 self.assertTrue(result.isError)
                 self.assertEqual((payload["code"], payload["retryable"]), ("needs_user", False))
                 state = payload["state"]
@@ -383,7 +393,7 @@ class AskBeforeActElicitationTests(ElicitationTestCase):
         self.assertEqual(self.extension.actions("click"), [], "nothing ran")
         self.assertNoToken()
         self.assertIn("Held because ask-before-act: it clicks a submit control (Pay).", self.prompts[0].message)
-        self.assertIn("Approve runs this action once; Decline leaves it undone.", self.prompts[0].message)
+        self.assertIn("Accept or Continue runs this action once; Decline leaves it undone.", self.prompts[0].message)
 
     def test_each_held_request_of_a_call_is_asked_about_once(self):
         # browser_type(submit) on a payment-like page: its text and then its Enter are held; the second
@@ -423,10 +433,10 @@ class AskBeforeActElicitationTests(ElicitationTestCase):
         self.assertNoToken()
         # Declined at the second field: the first stays filled, and no token is reported as rejected.
         self.extension.sent.clear()
-        answers = iter(("Approve", "Decline"))
+        answers = iter(("accept", "decline"))
 
         async def approve_then_decline(params):
-            return types.ElicitResult(action="accept", content={"decision": next(answers)})
+            return types.ElicitResult(action=next(answers))
 
         result, payload = self.call("browser_fill_form", {"fields": fields}, approve_then_decline)
         self.assertEqual((payload["code"], payload["state"]["decision"], payload["filled"]),

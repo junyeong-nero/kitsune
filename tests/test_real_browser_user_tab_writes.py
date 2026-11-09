@@ -242,7 +242,8 @@ class RealBrowserUserTabWriteTests(harness.RealBrowserTestCase):
         self.parent(handoff.POPUP_CLOSES % json.dumps(harness.EXTENSION_ID))
 
     async def approved(self, session, client, url):
-        """client requests the tab at url and the user approves it in the popup."""
+        """client requests the tab at url and the user approves it in the popup. The client's prompt about
+        it (#494), declined at once, is the client's policy, not the user's answer; it is no write's prompt."""
         index = (await session.listed(url))["index"]
         pending = asyncio.ensure_future(session.tool("browser_tabs", {"action": "request", "index": index,
                                                                       "reason": REASON}))
@@ -250,6 +251,9 @@ class RealBrowserUserTabWriteTests(harness.RealBrowserTestCase):
         error, granted, _ = await pending
         self.assertFalse(error, granted)
         self.assertIs(granted.get("owned"), True, granted)
+        (prompt,) = session.prompts
+        self.assertIn(f"{client[1]} requests this tab: {REASON}", prompt)
+        session.prompts.clear()
 
     async def taken_back(self, session, client, url):
         """The user takes back the tab at url that client holds."""
