@@ -1,6 +1,7 @@
 // Run with: node tests/collapsed_items.cjs (no browser or npm dependencies).
 // Items a snapshot collapses into "- … N more similar items" stay reachable (#237): the steps
-// of the issue on gallery ui-table, a table of 8 rows per page whose 8th row is 마이크.
+// of the issue on gallery ui-table, here a table of 12 rows per page whose 12th row is 마이크 (with
+// 8 rows, the 3 hidden ones are short enough to be listed, #485).
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
@@ -31,18 +32,20 @@ const h = (tagName, attrs, ...nodes) => new Element(tagName, attrs, nodes);
 
 const PAGES = [
   [['노트북 거치대', 12], ['무선 마우스', 30], ['기계식 키보드', 8], ['USB 허브', 15], ['모니터 암', 7],
-    ['웹캠', 9], ['헤드셋', 11], ['마이크', 3]],
+    ['웹캠', 9], ['헤드셋', 11], ['스탠드 조명', 13], ['노트', 20], ['펜 꽂이', 18], ['서류함', 16], ['마이크', 3]],
   [['스피커', 2], ['마우스패드', 40], ['케이블 정리함', 6], ['노트북 파우치', 14], ['손목 받침대', 22],
-    ['태블릿 펜', 4], ['독 스테이션', 10], ['HDMI 케이블', 25]],
+    ['태블릿 펜', 4], ['독 스테이션', 10], ['멀티탭', 9], ['C타입 젠더', 33], ['보조 배터리', 12], ['책상 매트', 17],
+    ['HDMI 케이블', 25]],
 ];
 const checkboxes = [];
-const rows = PAGES[0].map(([name, stock]) => {
+const makeRow = ([name, stock]) => {
   const checkbox = new Element('INPUT', { 'aria-label': `${name} 선택` }, [],
     { type: 'checkbox', checked: false, value: 'on' });
   checkboxes.push(checkbox);
   return h('TR', {}, h('TD', {}, checkbox), h('TD', {}, name), h('TD', {}, '사무용품'), h('TD', {}, '₩10,000'),
     h('TD', {}, String(stock)));
-});
+};
+const rows = PAGES[0].map(makeRow);
 function showPage(page) {
   PAGES[page].forEach(([name, stock], i) => {
     checkboxes[i].attrs['aria-label'] = `${name} 선택`;
@@ -55,7 +58,7 @@ const header = h('TR', {}, ...['선택', '상품', '분류', '가격', '재고']
 const pager = [1, 2, 3].map(page => new Element('BUTTON', {}, [String(page)], {
   value: '', onEvent: event => { if (event.type === 'keydown' && event.key === 'Enter') showPage(page - 1); },
 }));
-// Adds a 9th row past the five shown: only the run's hidden count changes.
+// Adds a 13th row past the five shown: only the run's hidden count changes.
 function addRow() {
   const checkbox = new Element('INPUT', { 'aria-label': '추가 상품 선택' }, [], { type: 'checkbox', checked: false, value: 'on' });
   const row = h('TR', {}, h('TD', {}, checkbox), h('TD', {}, '추가 상품'), h('TD', {}, '사무용품'), h('TD', {}, '₩10,000'),
@@ -69,15 +72,20 @@ const addButton = new Element('BUTTON', {}, ['행 추가'], {
 });
 const main = h('MAIN', {}, h('H1', {}, '재고 관리'), h('TABLE', {}, h('THEAD', {}, header), tbody),
   h('NAV', {}, ...pager, addButton));
-// A 250-row log, a 102-row log, seven groups of eight items each, and lists of 6, 7 and 8 items.
+// A 250-row log, a 102-row log, seven groups of eight long items each, lists of 6, 7 and 8 long
+// items, a list of 8 short items, and an 8-row table like the issue's (#485).
+const filler = ' ' + '설명'.repeat(100);
 const logRows = (length, label) => Array.from({ length }, (_, i) => h('TR', {}, h('TD', {}, `${label} ${i + 1}`), h('TD', {}, '기록')));
 const big = h('TBODY', {}, ...logRows(250, '행'));
 const log = h('TBODY', {}, ...logRows(102, '줄'));
 const groups = h('SECTION', {}, ...Array.from({ length: 7 }, (_, g) => h('DIV', {}, h('H2', {}, `그룹 ${g + 1}`),
-  h('UL', {}, ...Array.from({ length: 8 }, (_, i) => h('LI', {}, h('DIV', {}, `항목 ${g + 1}-${i + 1}`)))))));
+  h('UL', {}, ...Array.from({ length: 8 }, (_, i) => h('LI', {}, h('DIV', {}, `항목 ${g + 1}-${i + 1}${filler}`)))))));
 const shortLists = h('SECTION', {}, ...[6, 7, 8].map(length => h('UL', {},
-  ...Array.from({ length }, (_, i) => h('LI', {}, h('DIV', {}, `목록 ${length}-${i + 1}`))))));
-const body = h('BODY', {}, main, h('ASIDE', {}, h('TABLE', {}, big), h('TABLE', {}, log), groups, shortLists));
+  ...Array.from({ length }, (_, i) => h('LI', {}, h('DIV', {}, `목록 ${length}-${i + 1}${filler}`))))));
+const smallList = h('UL', {}, ...Array.from({ length: 8 }, (_, i) => h('LI', {}, h('DIV', {}, `짧은 ${i + 1}`))));
+const smallTable = h('TBODY', {}, ...PAGES[1].slice(0, 8).map(([name, stock]) => makeRow([`작은 ${name}`, stock])));
+const body = h('BODY', {}, main, h('ASIDE', {}, h('TABLE', {}, big), h('TABLE', {}, log), groups, shortLists,
+  smallList, h('TABLE', {}, smallTable)));
 
 let listener;
 const content = vm.createContext({
@@ -89,7 +97,7 @@ const content = vm.createContext({
   window: { getComputedStyle: () => ({ display: 'block', visibility: 'visible', getPropertyValue: () => '' }) },
   document: { body, title: 'ui-table',
     getElementById: () => null,
-    querySelector: selector => ({ main, tbody, 'tbody tr:nth-child(8)': rows[7], '#big': big, '#log': log, '#groups': groups,
+    querySelector: selector => ({ main, tbody, 'tbody tr:nth-child(12)': rows[11], '#big': big, '#log': log, '#groups': groups,
       '#short-lists': shortLists })[selector] || null,
     querySelectorAll: () => [],
   },
@@ -123,34 +131,35 @@ const send = (action, params = {}) => background.forwardToContent(action, { tabI
 const command = params => background.handleCommand({ tabId: 1, ...params })
   .then(result => JSON.parse(JSON.stringify(result)));
 const MARKER = /^ *- … (\d+) more similar items; snapshot (e\d+) to list all$/m;
-const rowLines = snapshot => snapshot.split('\n').filter(line => line.includes('checkbox "'));
+// The main table's rows; the small table's are named 작은 ….
+const rowLines = snapshot => snapshot.split('\n').filter(line => line.includes('checkbox "') && !line.includes('"작은 '));
 
 (async () => {
   // 1. The full page shows rows 1–5 and a marker that names the rows' container by ref.
   const page = await send('getSnapshot');
   assert.deepEqual(rowLines(page.snapshot).map(line => line.match(/"(.+) 선택"/)[1]), PAGES[0].slice(0, 5).map(([name]) => name));
   const [, omitted, scopeRef] = page.snapshot.match(MARKER);
-  assert.equal(omitted, '3');
+  assert.equal(omitted, '7');
   assert.doesNotMatch(page.snapshot, /마이크/);
   assert.match(page.snapshot, /- button "1" \[ref=e\d+\]/, 'the marker is followed by the rest of the page');
 
   // 2. browser_find reads the snapshot without collapse: 마이크 has refs that actions take.
   const found = await send('getSnapshot', { collapse: false });
   assert.doesNotMatch(found.snapshot, /more similar items/);
-  assert.equal(rowLines(found.snapshot).length, 8);
+  assert.equal(rowLines(found.snapshot).length, 12);
   const matches = found.snapshot.split('\n').filter(line => line.includes('마이크'));
   assert.deepEqual(matches.map(line => line.trim().replace(/\[ref=e\d+\]/, '[ref]')),
     ['- checkbox "마이크 선택" [ref] [value="on" checked=false]', '- text "마이크"']);
   const micRef = matches[0].match(/\[ref=(e\d+)\]/)[1];
   assert.equal((await send('checkBox', { selector: micRef, checked: true })).ok, true);
-  assert.equal(checkboxes[7].checked, true);
-  checkboxes[7].checked = false;
+  assert.equal(checkboxes[11].checked, true);
+  checkboxes[11].checked = false;
 
   // 3. A snapshot scoped to the container lists every row: by the marker's ref, or tbody.
   for (const scope of [{ ref: scopeRef }, { selector: 'tbody' }]) {
     const scoped = await send('getSnapshot', scope);
     assert.doesNotMatch(scoped.snapshot, /more similar items/, JSON.stringify(scope));
-    assert.equal(rowLines(scoped.snapshot).length, 8, JSON.stringify(scope));
+    assert.equal(rowLines(scoped.snapshot).length, 12, JSON.stringify(scope));
     assert.ok(scoped.snapshot.includes(`checkbox "마이크 선택" [ref=${micRef}]`), 'refs are kept');
     assert.match(scoped.snapshot, /- text "3"/);
     assert.doesNotMatch(scoped.snapshot, /재고 관리|button "1"/, 'only the container');
@@ -160,7 +169,7 @@ const rowLines = snapshot => snapshot.split('\n').filter(line => line.includes('
   assert.equal(above.snapshot.match(MARKER)[2], scopeRef);
 
   // 4. One row's own selector still shows it.
-  const row = await send('getSnapshot', { selector: 'tbody tr:nth-child(8)' });
+  const row = await send('getSnapshot', { selector: 'tbody tr:nth-child(12)' });
   assert.ok(row.snapshot.includes(`checkbox "마이크 선택" [ref=${micRef}]`));
 
   // After paging, the delta lists the five visible rows of the new page and keeps the marker.
@@ -168,7 +177,7 @@ const rowLines = snapshot => snapshot.split('\n').filter(line => line.includes('
   const paged = await command({ action: 'keypress', ref: two, key: 'Enter' });
   assert.equal(paged.snapshot_delta, true);
   assert.deepEqual(rowLines(paged.snapshot).map(line => line.match(/"(.+) 선택"/)[1]), PAGES[1].slice(0, 5).map(([name]) => name));
-  assert.deepEqual(paged.snapshot.match(MARKER).slice(1), ['3', scopeRef]);
+  assert.deepEqual(paged.snapshot.match(MARKER).slice(1), ['7', scopeRef]);
   assert.ok(paged.snapshot.trimEnd().split('\n').findIndex(line => MARKER.test(line)) >
     paged.snapshot.split('\n').findIndex(line => line.includes('손목 받침대')), 'the marker follows its rows');
   assert.equal(rowLines((await send('getSnapshot', { ref: scopeRef })).snapshot).at(-1).match(/"(.+) 선택"/)[1], 'HDMI 케이블');
@@ -225,6 +234,14 @@ const rowLines = snapshot => snapshot.split('\n').filter(line => line.includes('
     assert.deepEqual(shortMarkers.map(line => line.match(MARKER)[1]), ['3']);
     assert.doesNotMatch(snapshot, /목록 8-6/);
   }
+
+  // Items whose lines total at most COLLAPSE_MAX_LISTED_CHARS (600) are listed instead (#485):
+  // eight short items, and an 8-row table like the issue's ui-table page, whose 3 hidden rows
+  // took a request to expand.
+  const small = page.snapshot.slice(page.snapshot.lastIndexOf('\n', page.snapshot.indexOf('짧은 1')));
+  assert.equal(small.split('\n').filter(line => line.includes('- text "짧은 ')).length, 8, small);
+  assert.equal(small.split('\n').filter(line => line.includes('checkbox "작은 ')).length, 8, small);
+  assert.doesNotMatch(small, /more similar items/);
 
   console.log('Collapsed item checks passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

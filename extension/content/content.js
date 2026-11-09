@@ -910,6 +910,9 @@
   // A marker costs about as much as one item's line (#458): items it would hide fewer than
   // COLLAPSE_MIN_HIDDEN of are listed instead, so a run of up to 7 is listed in full.
   const COLLAPSE_MIN_HIDDEN = 3;
+  // Items whose lines total at most COLLAPSE_MAX_LISTED_CHARS are listed instead of collapsed
+  // (#485): reading a few short rows costs less than a request to expand them.
+  const COLLAPSE_MAX_LISTED_CHARS = 600;
   const NEW_ITEM_LIMIT = 20;
   const SCOPED_ITEM_LIMIT = 100;
 
@@ -1246,6 +1249,35 @@
     }
     // Every child the walk considered for a run of similar items, listed or collapsed.
     const runItems = new Set();
+    // Set while fitsListed measures items: their lines are taken back afterwards.
+    let measuring = false;
+    // Whether children's lines, visited as listed items under parent, total at most
+    // COLLAPSE_MAX_LISTED_CHARS as the agent reads them: a ref's generation prefix is private.
+    // The walk's state is restored, so they can be visited again.
+    const privateRefPrefix = `s${refGeneration}`.length;
+    function fitsListed(children, depth, parent, domDepth, named) {
+      const mark = entries.length, startSize = size, startCounter = refCounter, wasMeasuring = measuring;
+      const last = lastChild.get(parent);
+      measuring = true;
+      let cost = 0;
+      for (const child of children) {
+        const from = entries.length;
+        visit(child, depth, parent, domDepth, named);
+        for (let i = from; i < entries.length; i++) {
+          cost += entries[i].line.length + 1 - (entries[i].head ? privateRefPrefix : 0);
+        }
+        if (cost > COLLAPSE_MAX_LISTED_CHARS) break;
+      }
+      const fits = cost <= COLLAPSE_MAX_LISTED_CHARS;
+      measuring = wasMeasuring;
+      entries.length = mark;
+      size = startSize;
+      refCounter = startCounter;
+      for (const key of lastChild.keys()) if (key >= mark) lastChild.delete(key);
+      if (last === undefined) lastChild.delete(parent);
+      else lastChild.set(parent, last);
+      return fits;
+    }
     // named: an ancestor control or heading already shows this text as its name.
     function visit(el, depth, parent = -1, domDepth = 0, named = false) {
       if (!metadata.has(el) || (maxDepth != null && domDepth > maxDepth)) return;
@@ -1400,11 +1432,14 @@
         for (let i = 0; i < listed.length;) {
           let next = i;
           while (next < listed.length && !listed[next]) next++;
-          if (next - i < COLLAPSE_MIN_HIDDEN) listed.fill(true, i, next);
+          if (next - i < COLLAPSE_MIN_HIDDEN ||
+              fitsListed(children.slice(start + i, start + next), childDepth, parent, domDepth + 1, named)) {
+            listed.fill(true, i, next);
+          }
           i = next + 1;
         }
         for (let i = start; i < end; i++) {
-          runItems.add(children[i]);
+          if (!measuring) runItems.add(children[i]);
           if (listed[i - start]) {
             flushOmitted();
             visit(children[i], childDepth, parent, domDepth + 1, named);

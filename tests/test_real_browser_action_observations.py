@@ -44,7 +44,7 @@ const row = i => `<li><span>계약서 #${i}</span> <button>계약서 #${i} 저�
 let next = 1;
 const load = n => { document.getElementById('rows').insertAdjacentHTML('beforeend',
   Array.from({length: n}, () => row(next++)).join('')); };
-load(8);
+load(20);
 document.getElementById('more').addEventListener('mouseenter', () => setTimeout(() => load(10), 100));
 </script>""",
 }
@@ -164,7 +164,7 @@ class RealBrowserActionObservationTests(harness.RealBrowserTestCase):
         first = self.call("/api/snapshot", {"tabId": tab})["snapshot"]
         self.assertIn("more similar items", first)
         loaded = self.assert_ok(self.call("/api/hover", {"tabId": tab, "selector": "#more"}))
-        for i in range(9, 19):
+        for i in range(21, 31):
             self.assertIn(f'button "계약서 #{i} 저장"', loaded["snapshot"])
         self.assertNotIn('button "계약서 #1 저장"', loaded["snapshot"], "only what changed")
 

@@ -175,7 +175,8 @@ Kitsune's compact JSON results, not Playwright's Markdown. Where the two differ:
   Existing line clipping, structural
   collapsing and depth rules still apply: past the fifth of a run of similar items the
   snapshot shows `- … N more similar items; snapshot e14 to list all` when that hides at
-  least three items (a run of up to seven is listed in full), and a snapshot
+  least three items whose lines total more than 600 characters (a run of up to seven, or
+  of short items, is listed in full), and a snapshot
   with `target` `e14` (the items' container) lists up to 100 of them. `browser_find`
   searches collapsed items too. In the full toolset, `text=False` is compact
   and `text=True` enables explicitly bounded readable output (12,000 final public chars).
