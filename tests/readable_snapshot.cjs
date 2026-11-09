@@ -219,14 +219,15 @@ const field = (tagName, attrs, props) => new Element(tagName, attrs, [], props);
   }
 
   // Repeated cards still collapse; prose siblings with inline links and text lists do not.
-  const cards = Array.from({ length: 10 }, (_, i) => h('ARTICLE', {}, h('H2', {}, `Product ${i}`), h('BUTTON', {}, `Buy ${i}`)));
+  // Twenty cards, so the hidden ones are past COLLAPSE_MAX_LISTED_CHARS (#485).
+  const cards = Array.from({ length: 20 }, (_, i) => h('ARTICLE', {}, h('H2', {}, `Product ${i}`), h('BUTTON', {}, `Buy ${i}`)));
   const prose = Array.from({ length: 8 }, (_, i) => h('P', {}, `Fact ${i} with `, h('A', {}, `link ${i}`)));
   const items = Array.from({ length: 8 }, (_, i) => h('LI', {}, `Item ${i}`));
   body.childNodes = body.children = [h('SECTION', {}, ...cards), h('DIV', {}, ...prose), h('UL', {}, ...items)];
   body.children.forEach(child => { child.parentElement = body; });
   const repetitive = await send({ action: 'getSnapshot', text: true });
-  assert.match(repetitive.snapshot, /- … 5 more similar items/);
-  assert.doesNotMatch(repetitive.snapshot, /Product [5-9]/);
+  assert.match(repetitive.snapshot, /- … 15 more similar items/);
+  assert.doesNotMatch(repetitive.snapshot, /Product ([5-9]|1\d)/);
   assert.match(repetitive.snapshot, /- text "Fact 7 with link 7"/);
   assert.match(repetitive.snapshot, /link "link 7" \[ref=/);
   assert.match(repetitive.snapshot, /- text "Item 7"/);

@@ -379,8 +379,11 @@ async function testContent() {
   }
   assert.doesNotMatch(names, /Hidden in the control name|Direct name/);
 
+  // A long description, so three hidden cards are past COLLAPSE_MAX_LISTED_CHARS (#485) and
+  // still collapse.
+  const description = 'detail '.repeat(17).trim();
   const cards = Array.from({ length: 12 }, (_, i) => new Element('ARTICLE', '', {}, [
-    new Element('H2', `Product ${i}`), new Element('BUTTON', `Buy ${i}`),
+    new Element('H2', `Product ${i}`), new Element('BUTTON', `Buy ${i}`), new Element('P', description),
   ]));
   const catalog = new Element('MAIN', '', {}, [new Element('H1', 'Catalog'), new Element('SECTION', '', {}, cards)]);
   const outside = new Element('BUTTON', 'Outside catalog');
@@ -450,7 +453,7 @@ async function testContent() {
   // browser_dom takes the same subtree scope; the bridge sends max_depth as depth.
   const domCard = await send({ action: 'getAccessibilityTree', depth: 6, selector: '#card-8' });
   assert.equal(domCard.tree.tag, 'article');
-  assert.deepEqual(domCard.tree.children.map(node => node.text), ['Product 8', 'Buy 8']);
+  assert.deepEqual(domCard.tree.children.map(node => node.text), ['Product 8', 'Buy 8', description]);
   assert.doesNotMatch(JSON.stringify(domCard), /Catalog|Outside/);
   assert.equal(domCard.truncated, undefined);
   const domCatalog = await send({ action: 'getAccessibilityTree', depth: 0, selector: '#catalog' });
