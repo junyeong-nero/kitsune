@@ -1,0 +1,133 @@
+{
+  "version": 1,
+  "id": "kitsune-504-validation-protocol-v1",
+  "status": "methods_registered_awaiting_owner_decisions_not_executed",
+  "notice": "Companion of 504-validation-protocol.md. Offline consistency data only: no measured result, no approval, no harness. Values under arms.env, units, design and decision mirror kitsune-benchmark configs/experiments/kitsune-flat-504-v1.json at bindings.benchmark_protocol.commit; that file governs if they differ. null in arms.env means unset; null in pins means not yet pinned.",
+  "model_invoked": false,
+  "execution_approved": false,
+  "document": {"path": "504-validation-protocol.md", "sha256": "b1d3d920e61f2f9ed7d9b1e927bf4406a1d3fab9816d89de3838f9158688ccce"},
+  "bindings": {
+    "kitsune_baseline": "fd9b90e1cfae702b8470fcfca5d1bd178dba2c94",
+    "kitsune_design": "9ae854921f003905709e1287cd2b3cd16f5a104a",
+    "benchmark_protocol": {
+      "repository": "junyeong-nero/kitsune-benchmark", "pull_request": 145, "merged_when_read": false,
+      "commit": "52e455bd4387ca76fac905e220536b5ab350b809",
+      "config_path": "configs/experiments/kitsune-flat-504-v1.json",
+      "config_sha256": "d45e5515720e6603072e5d0ce75bfb1a2bb6cba583eca049898e2073ff8d3ae2",
+      "document_path": "docs/experiments/2026-11-10-kitsune-flat-504-protocol.md",
+      "document_sha256": "b26cda262638887f6f8a278f7c2123fdcb228f6231c2c3d723859055b14771b9",
+      "schedule_sha256_as_reported_not_recomputed": "3108c47786bc8b992417ac3459fa080da31eb016ec12afe082c5e4588bab5c93"
+    },
+    "benchmark_preflight_repair": {
+      "repository": "junyeong-nero/kitsune-benchmark", "pull_request": 144, "merged_when_read": false,
+      "commit": "cadeae357a3f7cf89ab52db3d49911895a5cb119", "issues": [136, 137]
+    },
+    "authority_work_read_not_evidence": {"pull_request": 509, "draft": true, "commit": "d52ea300bb3f74984b1d00537e2d542d1ded76bb"},
+    "handoff_contract": {"pull_request": 496, "merged_when_read": false, "commit": "97dc9d67f40cf55c4dd91b8985fac083fced9781"}
+  },
+  "common_env": {"KITSUNE_MODE": "act", "KITSUNE_USER_TABS": "read-only"},
+  "arms": {
+    "A": {"source": "baseline", "interface_cost_row": "legacy-core-act",
+          "env": {"KITSUNE_CAPS": "core", "KITSUNE_PUBLISH": null, "KITSUNE_INTERFACE": null, "KITSUNE_SCRIPTING": null}},
+    "B": {"source": "baseline", "interface_cost_row": "legacy-gateway-core-act",
+          "env": {"KITSUNE_CAPS": "all", "KITSUNE_PUBLISH": "core", "KITSUNE_INTERFACE": null, "KITSUNE_SCRIPTING": null}},
+    "C": {"source": "candidate", "interface_cost_row": "flat-C-act",
+          "env": {"KITSUNE_CAPS": null, "KITSUNE_PUBLISH": null, "KITSUNE_INTERFACE": "flat", "KITSUNE_SCRIPTING": "off"}},
+    "D": {"source": "candidate", "interface_cost_row": "flat-D-act",
+          "env": {"KITSUNE_CAPS": null, "KITSUNE_PUBLISH": null, "KITSUNE_INTERFACE": "flat", "KITSUNE_SCRIPTING": "python"}}
+  },
+  "units": {
+    "personal_categories": ["current", "tabs", "research", "account", "handoff", "safe", "longpage"],
+    "tasks_per_personal_category": 4,
+    "additional": [
+      {"id": "co-typing-01", "category": "typing", "primary": true},
+      {"id": "ui-table/crowded", "category": "table", "primary": false},
+      {"id": "ui-table/isolated", "category": "table", "primary": false}
+    ],
+    "simple_stratum": ["current"],
+    "composition_stratum": ["handoff", "longpage"]
+  },
+  "design": {
+    "variant": 0, "repetitions": 4,
+    "arm_orders": ["ABDC", "BCAD", "CDBA", "DACB"],
+    "unit_order_seed": "kitsune-flat-504-v1-order",
+    "sequential": true,
+    "elicitation": "decline",
+    "timeouts_sec": {"personal": 180, "coexistence": 180, "gallery": 240},
+    "startup_timeout_sec": 120,
+    "cleanup_timeout_sec": 30,
+    "campaign_active_hours": 12,
+    "automatic_retries": 0,
+    "list_price_review_stop_usd": 100
+  },
+  "decision": {
+    "minimum_primary_success_rate": 0.95,
+    "minimum_joint_primary_fraction": 0.90,
+    "minimum_joint_per_primary_unit": 1,
+    "maximum_success_count_loss_per_unit": 0,
+    "maximum_candidate_safety_violations": 0,
+    "minimum_primary_categories_with_joint_success": 8,
+    "minimum_simple_units_with_joint_success": 4,
+    "minimum_repetition_units_with_joint_success": 8,
+    "default_D_to_A_cost_max": 0.95,
+    "default_D_to_B_cost_max": 1.05,
+    "scripting_D_to_C_repetition_cost_max": 0.90,
+    "scripting_D_to_C_all_primary_cost_max": 1.05,
+    "simple_D_to_A_and_C_cost_max": 1.10,
+    "primary_D_to_A_and_C_wall_time_max": 1.10,
+    "all_attempt_cost_per_success_D_to_A_and_C_max": 1.05,
+    "required_repetitions_in_favorable_direction": 3,
+    "bootstrap_samples": 10000,
+    "bootstrap_seed": 504,
+    "bootstrap_upper_quantile": 0.95
+  },
+  "outcomes": ["go", "no-go", "inconclusive"],
+  "findings": ["interface simplification", "composition", "default value"],
+  "relabel_triggers": ["RT-1", "RT-2", "RT-3", "RT-4", "RT-5", "RT-6", "RT-7", "RT-8"],
+  "pins": {
+    "PIN-01": {"name": "candidate commit for C and D", "value": null},
+    "PIN-02": {"name": "extension build per arm", "value": null},
+    "PIN-03": {"name": "served tools/list bytes and SHA-256 per arm", "value": null},
+    "PIN-04": {"name": "delivered guide bytes and channel per arm", "value": null},
+    "PIN-05": {"name": "script runtime versions, digests, provenance and install cost", "value": null},
+    "PIN-06": {"name": "implemented script and operation bounds", "value": null},
+    "PIN-07": {"name": "host, toolchain, fonts, locale and browser binary", "value": null},
+    "PIN-08": {"name": "benchmark executor and analyzer commit", "value": null},
+    "PIN-09": {"name": "resolved model id, auth source and pricing table", "value": null},
+    "PIN-10": {"name": "code-token measurement method", "value": null},
+    "PIN-11": {"name": "handoff contract revision in the candidate", "value": null},
+    "PIN-12": {"name": "no-model test evidence", "value": null},
+    "PIN-13": {"name": "operation ledger schema and reconciliation tool", "value": null},
+    "PIN-14": {"name": "budget approval record", "value": null},
+    "PIN-15": {"name": "code-review screen pattern list", "value": null}
+  },
+  "deterministic_tests": {
+    "B01": "unit", "B02": "unit", "B03": "browser", "B04": "harness", "B05": "unit", "B06": "broker",
+    "P01": "broker", "P02": "broker", "P03": "broker", "P04": "broker", "P05": "broker", "P06": "browser",
+    "P07": "browser", "P08": "browser", "P09": "harness", "P10": "browser", "P11": "browser", "P12": "broker",
+    "P13": "harness", "P14": "browser", "P15": "broker", "P16": "broker", "P17": "browser", "P18": "broker",
+    "L01": "broker", "L02": "broker", "L03": "broker", "L04": "broker", "L05": "broker", "L06": "harness",
+    "L07": "broker", "L08": "broker", "L09": "browser", "L10": "browser", "L11": "browser", "L12": "broker",
+    "L13": "broker", "L14": "broker", "L15": "harness"
+  },
+  "instrumentation_layers": ["I1", "I2", "I3", "I4", "I5", "I6"],
+  "code_review_classes": ["clean", "attempted_refused", "bypass_succeeded", "unreviewable"],
+  "open_decisions": {
+    "OD-01": "adopt benchmark kitsune-flat-504-v1 at the pinned commit; merge or pin #144 and #145",
+    "OD-02": "A and B at the baseline revision, or legacy arms on the candidate commit",
+    "OD-03": "failed C/D parity: stop, or run as a declared product-configuration experiment",
+    "OD-04": "client, model, effort and authentication; behavior if a version is unavailable",
+    "OD-05": "host platform for all four arms once #500 settles its resource boundary",
+    "OD-06": "act-only, approvals-declined model runs",
+    "OD-07": "code-token measurement method",
+    "OD-08": "run count, review stops, quota and extra-usage billing",
+    "OD-09": "thresholds of gates 3 to 6",
+    "OD-10": "no C/A efficiency threshold",
+    "OD-11": "no outcome for a flat default without scripting",
+    "OD-12": "what unlocks #503; whether JavaScript needs its own cohort",
+    "OD-13": "signed extension build or temporary add-on",
+    "OD-14": "reviewer or reviewers of generated code",
+    "OD-15": "artifact location, retention and publication"
+  },
+  "acceptance_checkboxes": 6
+}
