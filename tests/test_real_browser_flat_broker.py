@@ -1,4 +1,4 @@
-"""FlatBroker tabs, navigation, read, find and page actions in a real private browser.
+"""FlatBroker tabs, navigation, read, find, waits, screenshots and page actions in a real private browser.
 
 Opt-in, built on tests/real_browser_harness.py (temporary add-on, not the signed build).
 The broker is a trusted host object here: nothing is reached through MCP or a worker.
@@ -53,10 +53,22 @@ STATE = ("JSON.stringify({events: document.getElementById('log').textContent.spl
          "agree: document.getElementById('agree').checked, y: Math.round(window.scrollY)})")
 
 
+# The page changes 1.5 s after it loads: text, a new button and the title.
+WAITS = """<!doctype html><title>Waiting</title><h1>Waits</h1><p id="status">Loading</p>
+<a id="go" href="/one">Go</a>
+<script>setTimeout(() => {
+  document.getElementById('status').textContent = 'Saved';
+  const late = document.createElement('button');
+  late.id = 'late'; late.textContent = 'Late'; late.onclick = () => { document.title = 'Clicked'; };
+  document.body.appendChild(late);
+  document.title = 'Done (1)';
+}, 1500);</script>"""
+
+
 class _Page(BaseHTTPRequestHandler):
     def do_GET(self):
         name = self.path.strip("/") or "root"
-        body = {"form": FORM, "actions": ACTIONS}.get(name, f"<title>{name}</title><h1>{name}</h1>").encode()
+        body = {"form": FORM, "actions": ACTIONS, "waits": WAITS}.get(name, f"<title>{name}</title><h1>{name}</h1>").encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html")
         self.send_header("Content-Length", str(len(body)))
@@ -101,6 +113,135 @@ class RealBrowserFlatBrokerTests(harness.RealBrowserTestCase):
 
     def test_page_actions_through_the_broker(self):
         asyncio.run(self.action_scenario())
+
+    def test_waits_through_the_broker(self):
+        asyncio.run(self.wait_scenario())
+
+    def test_screenshots_through_the_broker(self):
+        asyncio.run(self.screenshot_scenario())
+
+    async def screenshot_scenario(self):
+        owner = "e2e-flat-shooter"
+        broker = await FlatBroker.connect(CallerAuthority("e2e-flat-shot", owner, "act"))
+        before_tabs = set(self.native())
+        opened = await broker.call("browser_tabs", {"action": "open", "url": self.page.origin + "/actions"})
+        tab = opened.result["tab_id"]
+        native_id = (set(self.native()) - before_tabs).pop()
+
+        def scroll_y():
+            return json.loads(self.as_owner(owner, "/api/js", {"tabId": native_id, "code": STATE})["result"])["y"]
+
+        async def shoot(**arguments):
+            reply = await broker.call("browser_screenshot", {"tab_id": tab, **arguments})
+            self.assertEqual((reply.result["ok"], reply.result["outcome"]), (True, "observed"), reply.result)
+            image, = reply.images
+            self.assertEqual(reply.result["data"], {"tab_id": tab, "image": image.handle, "mime_type": image.mime_type,
+                                                    "bytes": len(image.data)})
+            self.assertLessEqual(len(image.data), 8 * 1024 * 1024)
+            self.assertNotIn("base64", json.dumps(reply.result))
+            return image
+
+        def png_size(image):
+            self.assertEqual((image.mime_type, image.data[:8]), ("image/png", b"\x89PNG\r\n\x1a\n"))
+            return int.from_bytes(image.data[16:20], "big"), int.from_bytes(image.data[20:24], "big")
+
+        self.assertTrue((await broker.call("browser_scroll", {"tab_id": tab, "amount_px": 300})).result["ok"])
+        self.assertEqual(scroll_y(), 300)
+        view_w, view_h = png_size(await shoot())
+        self.assertGreater(min(view_w, view_h), 100)
+        refs = dict(re.findall(r'- (\w+ "[^"]*") \[ref=(e\d+)\]',
+                               (await broker.call("browser_read", {"tab_id": tab})).result["data"]["content"]))
+        by_ref = png_size(await shoot(scope="element", target={"ref": refs['button "Increment"']}))
+        by_selector = png_size(await shoot(scope="element", target={"selector": "#inc"}))
+        self.assertEqual(by_ref, by_selector)
+        self.assertLess(by_ref[0], view_w)
+        self.assertLess(by_ref[1], view_h)
+        # The page is far taller than the window: the full-page image is too, whatever its encoding.
+        full = await shoot(scope="full_page")
+        self.assertIn(full.mime_type, {"image/png", "image/jpeg"})
+        if full.mime_type == "image/png":
+            self.assertGreater(png_size(full)[1], view_h * 2)
+        # Element and full-page captures scroll the page while they work, and put it back.
+        self.assertEqual(scroll_y(), 300)
+
+        for arguments, code in (({"scope": "element", "target": {"ref": "e424242"}}, "stale_ref"),
+                                ({"scope": "element", "target": {"selector": "#missing"}}, "not_found")):
+            with self.subTest(arguments=arguments):
+                reply = await broker.call("browser_screenshot", {"tab_id": tab, **arguments})
+                self.assert_failed(reply, code, "not_dispatched")
+                self.assertEqual(reply.images, ())
+        # A full-page capture would scroll the tab the user is looking at: refused, nothing captured.
+        user = next(t["tab_id"] for t in (await broker.call("browser_tabs", {})).result["data"]["tabs"] if t["active"])
+        refused = await broker.call("browser_screenshot", {"tab_id": user, "scope": "full_page"})
+        self.assert_failed(refused, "user_tab_read_only", "not_dispatched")
+        self.assertEqual(refused.images, ())
+        reader = await FlatBroker.connect(CallerAuthority("e2e-flat-shot-ro", owner, "read"))
+        handle = next(t["tab_id"] for t in (await reader.call("browser_tabs", {})).result["data"]["tabs"]
+                      if t["url"].endswith("/actions"))
+        self.assert_failed(await reader.call("browser_screenshot", {"tab_id": handle}), "mode_restricted", "not_dispatched")
+        self.assertEqual(scroll_y(), 300)
+        self.assertTrue((await broker.call("browser_tabs", {"action": "close", "tab_id": tab})).result["ok"])
+
+    async def wait_scenario(self):
+        broker = await FlatBroker.connect(CallerAuthority("e2e-flat-wait", "e2e-flat-waiter", "act"))
+        before_tabs = set(self.native())
+        opened = await broker.call("browser_tabs", {"action": "open", "url": self.page.origin + "/waits"})
+        tab = opened.result["tab_id"]
+        native_id = (set(self.native()) - before_tabs).pop()
+
+        async def wait(condition, timeout_ms=8000, caller=broker, handle=tab):
+            return await caller.call("browser_wait", {"tab_id": handle, "condition": condition, "timeout_ms": timeout_ms})
+
+        def assert_met(reply, kind):
+            self.assertEqual((reply.result["ok"], reply.result["outcome"], reply.result["data"]["kind"]),
+                             (True, "observed", kind), reply.result)
+
+        def assert_unmet(reply):
+            self.assertEqual((reply.result["ok"], reply.result["error"]["code"], reply.result["outcome"],
+                              reply.result["error"]["retryable"]), (False, "condition_unmet", "observed", True),
+                             reply.result)
+
+        # The page still says Loading: the text wait is met by a later read, not by the first.
+        saved = await wait({"kind": "text", "value": "Saved"})
+        assert_met(saved, "text")
+        self.assertNotIn("already_present", saved.result["data"])
+        self.assertGreater(len(saved.receipt["commands"]), 1)
+        self.assertTrue(all(c["action"] == "waitForText" and c["tab_id"] == native_id for c in saved.receipt["commands"]))
+        self.assertIs((await wait({"kind": "text", "value": "Saved"})).result["data"]["already_present"], True)
+        assert_met(await wait({"kind": "text_gone", "value": "Loading"}), "text_gone")
+        started = time.monotonic()
+        assert_unmet(await wait({"kind": "text", "value": "Never shown"}, 700))
+        self.assertLess(time.monotonic() - started, 3)
+
+        # Title and URL are literal: a pattern that would match as a regular expression does not.
+        assert_met(await wait({"kind": "title", "value": "Done (1)"}), "title")
+        assert_unmet(await wait({"kind": "title", "value": "Done .1."}, 700))
+        assert_unmet(await wait({"kind": "title", "value": "Done"}, 700))
+
+        # The element a target wait found can be acted on by its ref.
+        late = await wait({"kind": "target", "target": {"selector": "#late"}})
+        assert_met(late, "target")
+        clicked = await broker.call("browser_click", {"tab_id": tab, "target": {"ref": late.result["data"]["ref"]}})
+        self.assertTrue(clicked.result["ok"], clicked.result)
+        assert_met(await wait({"kind": "title", "value": "Clicked"}), "title")
+        assert_unmet(await wait({"kind": "target", "target": {"selector": "#never"}}, 700))
+
+        self.assertTrue((await broker.call("browser_click", {"tab_id": tab, "target": {"selector": "#go"}})).result["ok"])
+        assert_met(await wait({"kind": "url", "value": self.page.origin + "/one"}), "url")
+        assert_unmet(await wait({"kind": "url", "value": self.page.origin + "/o.e"}, 700))
+        assert_unmet(await wait({"kind": "url", "value": self.page.origin + "/"}, 700))
+        assert_met(await wait({"kind": "network_idle"}, 8000), "network_idle")
+        self.assertEqual(self.native()[native_id]["url"], self.page.origin + "/one")
+
+        # Read mode waits for text only; the user's tab can be watched, not changed.
+        reader = await FlatBroker.connect(CallerAuthority("e2e-flat-wait-ro", "e2e-flat-waiter", "read"))
+        handle = next(t["tab_id"] for t in (await reader.call("browser_tabs", {})).result["data"]["tabs"]
+                      if t["url"].endswith("/one"))
+        assert_met(await wait({"kind": "text", "value": "one"}, 3000, reader, handle), "text")
+        for condition in ({"kind": "url", "value": self.page.origin + "/one"}, {"kind": "network_idle"},
+                          {"kind": "target", "target": {"selector": "h1"}}):
+            self.assert_failed(await wait(condition, 700, reader, handle), "mode_restricted", "not_dispatched")
+        self.assertTrue((await broker.call("browser_tabs", {"action": "close", "tab_id": tab})).result["ok"])
 
     def test_a_ref_spelled_as_a_selector_is_not_a_way_around_the_ref_registry(self):
         asyncio.run(self.ref_selector_scenario())

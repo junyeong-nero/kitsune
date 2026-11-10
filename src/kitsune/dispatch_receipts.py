@@ -10,7 +10,10 @@ MAX_NATIVE_COMMANDS = 128
 RECEIPT_ROUTES = frozenset({"/api/tabs", "/api/new-tab", "/api/close-tab", "/api/navigate",
                             "/api/back", "/api/forward", "/api/reload-tab", "/api/snapshot",
                             "/api/click", "/api/double-click", "/api/fill", "/api/type", "/api/select-option",
-                            "/api/check", "/api/keypress", "/api/hover", "/api/drag", "/api/scroll"})
+                            "/api/check", "/api/keypress", "/api/hover", "/api/drag", "/api/scroll",
+                            "/api/wait-for-text", "/api/wait-for-element", "/api/wait-for-url",
+                            "/api/wait-for-title", "/api/wait-for-network-idle",
+                            "/api/screenshot", "/api/element-screenshot", "/api/full-page-screenshot"})
 
 
 class DispatchReceipt:

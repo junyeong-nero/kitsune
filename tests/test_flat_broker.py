@@ -5,6 +5,7 @@ extension is scripted, so this is not a browser pass, and the broker is not yet
 reachable from MCP or a worker.
 """
 import asyncio
+import base64
 import json
 import tempfile
 import threading
@@ -26,6 +27,12 @@ from test_bridge_security import Bridge, _free_port, _request
 from test_tab_inventory_bridge import EXTENSION_ORIGIN
 
 DROP = object()  # close the extension connection instead of replying
+PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32  # a PNG signature; the broker does not decode pixels
+JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 32
+
+
+def data_url(mime, data):
+    return f"data:{mime};base64," + base64.b64encode(data).decode()
 PAGE_ACTIONS = {"click", "doubleClick", "fill", "type", "selectOption", "checkBox", "keypress", "hover", "drag", "scroll"}
 
 
@@ -243,8 +250,7 @@ class FlatBrokerWireTests(unittest.IsolatedAsyncioTestCase):
         foreign = await self.handle(other)
         goto = {"tab_id": handle, "url": "https://next.test/"}
         for name, arguments, code in (
-                ("browser_screenshot", {"tab_id": handle}, "operation_unavailable"),
-                ("browser_wait", {"tab_id": handle, "condition": {"kind": "network_idle"}}, "operation_unavailable"),
+                ("browser_ask_user", {"reason": "other", "message": "Decide"}, "operation_unavailable"),
                 ("browser_request_tab", {"tab_id": handle}, "operation_unavailable"),
                 ("browser_query", {"tab_id": handle, "selector": "a"}, "operation_unavailable"),
                 ("browser_click", {"tab_id": handle, "target": {"selector": "#go"}, "first": True}, "invalid_arguments"),
@@ -366,11 +372,15 @@ class FlatBrokerWireTests(unittest.IsolatedAsyncioTestCase):
     ])
 
     def assert_ref(self, reply, usable):
-        # An issued ref reaches the (still missing) wait adapter; any other is refused before it.
-        self.assert_failed(reply, "operation_unavailable" if usable else "stale_ref", "not_dispatched")
+        # An issued ref reaches the extension (the scripted hover answers ok); any other is refused before it.
+        if usable:
+            self.assertTrue(reply.result["ok"], reply.result)
+        else:
+            self.assert_failed(reply, "stale_ref", "not_dispatched")
+            self.assertIsNone(reply.receipt)
 
     async def probe(self, broker, handle, ref):
-        return await broker.call("browser_wait", {"tab_id": handle, "condition": {"kind": "target", "target": {"ref": ref}}})
+        return await broker.call("browser_hover", {"tab_id": handle, "target": {"ref": ref}})
 
     async def test_read_returns_a_full_bounded_snapshot_and_issues_only_its_refs(self):
         extension = self.extension()
@@ -775,6 +785,243 @@ class FlatBrokerWireTests(unittest.IsolatedAsyncioTestCase):
         plain = await broker.call("browser_click", {"tab_id": handle, "target": {"ref": "e4"}})
         self.assertEqual(plain.result["data"], {"tab_id": handle})
 
+    async def test_each_wait_is_one_typed_bounded_condition(self):
+        extension, broker, handle = await self.acting()
+        state = {"met": True}
+
+        def answer(extra):
+            return lambda command: ({"ok": True, "elapsed": 12, **extra} if state["met"] else
+                                    {"ok": False, "elapsed": command.get("timeout", 0), "error": "Timed out"})
+
+        extension.behavior.update(
+            waitForText=answer({"text": "page text", "secret": "x"}), waitForUrl=answer({"url": "https://x.test/"}),
+            waitForTitle=answer({"title": "Secret title"}), waitForNetworkIdle=answer({"resourceCount": 3}),
+            waitForElement=answer({"found": True, "ref": "e77", "text": "Secret label", "tag": "button"}))
+        cases = (
+            ({"kind": "text", "value": "Saved"}, "waitForText", {"text": "Saved"}, {}),
+            ({"kind": "text_gone", "value": "Loading"}, "waitForText", {"text_gone": "Loading"}, {}),
+            ({"kind": "target", "target": {"selector": "#done"}}, "waitForElement", {"selector": "#done"}, {"ref": "e77"}),
+            ({"kind": "target", "target": {"ref": "e4"}}, "waitForElement", {"ref": "e4"}, {"ref": "e77"}),
+            ({"kind": "url", "value": "https://a.test/p?q=(1)"}, "waitForUrl",
+             {"pattern": "^https:\\/\\/a\\.test\\/p\\?q=\\(1\\)$"}, {}),
+            ({"kind": "title", "value": "Done. [1]"}, "waitForTitle", {"pattern": "^Done\\. \\[1\\]$"}, {}),
+            ({"kind": "network_idle"}, "waitForNetworkIdle", {}, {}))
+        for met in (True, False):
+            state["met"] = met
+            for condition, action, expected, extra in cases:
+                with self.subTest(met=met, condition=condition):
+                    reply = await broker.call("browser_wait", {"tab_id": handle, "condition": condition,
+                                                               "timeout_ms": 200})
+                    command = extension.last(action)
+                    for key, value in {"tabId": 9, **expected}.items():
+                        self.assertEqual(command[key], value)
+                    for key in ("code", "predicate", "idleMs", "new_only", "first"):
+                        self.assertNotIn(key, command)
+                    if met:
+                        data = dict(reply.result["data"])
+                        # The bridge times a polled wait itself; text met by its first read was already there.
+                        self.assertIs(type(data.pop("elapsed_ms")), int)
+                        self.assertEqual(data.pop("already_present", None), True if condition["kind"] == "text" else None)
+                        self.assertEqual(data, {"tab_id": handle, "kind": condition["kind"], **extra})
+                        self.assertEqual((reply.result["ok"], reply.result["outcome"]), (True, "observed"))
+                    else:
+                        self.assert_observed_unmet(reply)
+        # Page text, titles and URLs the extension echoes are not copied into the result.
+        self.assertNotIn("Secret", json.dumps(reply.result))
+        # The element a met target wait found is a target of this session from then on.
+        self.assert_ref(await self.probe(broker, handle, "e77"), True)
+
+    def assert_observed_unmet(self, reply):
+        self.assertEqual((reply.result["ok"], reply.result["error"]["code"], reply.result["outcome"],
+                          reply.result["error"]["retryable"], reply.result["data"]),
+                         (False, "condition_unmet", "observed", True, {}), reply.result)
+
+    async def test_text_waits_poll_real_reads_until_the_deadline(self):
+        extension, broker, handle = await self.acting("read")
+        reads = []
+
+        def text(command):
+            reads.append(command)
+            met = len(reads) >= 3
+            return {"ok": met, "text": command.get("text"), "elapsed": 0, **({} if met else {"error": "Timed out after 0ms"})}
+
+        extension.behavior["waitForText"] = text
+        waited = await broker.call("browser_wait", {"tab_id": handle, "condition": {"kind": "text", "value": "Saved"},
+                                                    "timeout_ms": 5000})
+        self.assertEqual((waited.result["ok"], waited.result["outcome"], len(reads)), (True, "observed", 3), waited.result)
+        self.assertNotIn("already_present", waited.result["data"])
+        self.assertEqual([c["action"] for c in waited.receipt["commands"]], ["waitForText"] * 3)
+        self.assertTrue(all(command["timeout"] == 0 for command in reads), "each poll is one page read")
+        reads.clear()
+        extension.behavior["waitForText"] = lambda command: {"ok": True, "text": "Saved", "elapsed": 0}
+        present = await broker.call("browser_wait", {"tab_id": handle, "condition": {"kind": "text", "value": "Saved"}})
+        self.assertIs(present.result["data"]["already_present"], True)
+        extension.behavior["waitForText"] = lambda command: {"ok": False, "elapsed": 0, "error": "Timed out after 0ms"}
+        started = time.monotonic()
+        unmet = await broker.call("browser_wait", {"tab_id": handle, "condition": {"kind": "text_gone", "value": "Busy"},
+                                                   "timeout_ms": 600})
+        self.assert_observed_unmet(unmet)
+        self.assertLess(time.monotonic() - started, 2.5, "the wait ends at its own deadline")
+        self.assertLessEqual(len(unmet.receipt["commands"]), 8)
+        self.assertIs(unmet.receipt["limited"], False)
+
+    async def test_waits_respect_mode_refs_and_the_bridges_fixed_allowances(self):
+        extension, broker, handle = await self.acting()
+        sent = len(extension.actions())
+        for condition, timeout, code in (
+                ({"kind": "target", "target": {"ref": "e99"}}, 1000, "stale_ref"),
+                ({"kind": "target", "target": {"selector": "e4"}}, 1000, "invalid_arguments"),
+                ({"kind": "target", "target": {"selector": "#x"}}, 30001, "unsupported_variant"),
+                ({"kind": "network_idle"}, 25001, "unsupported_variant"),
+                ({"kind": "url", "value": "https://a.test/", "regex": True}, 1000, "invalid_arguments"),
+                ({"kind": "script", "code": "return true"}, 1000, "invalid_arguments"),
+                ({"kind": "text", "value": "x"}, 60001, "invalid_arguments")):
+            with self.subTest(condition=condition):
+                reply = await broker.call("browser_wait", {"tab_id": handle, "condition": condition, "timeout_ms": timeout})
+                self.assert_failed(reply, code, "not_dispatched")
+                self.assertIsNone(reply.receipt)
+        self.assertEqual(len(extension.actions()), sent)
+        for mode in ("read", "draft"):
+            _, limited, limited_handle = await self.acting(mode, extension)
+            for condition in ({"kind": "target", "target": {"selector": "#x"}}, {"kind": "url", "value": "https://a.test/"},
+                              {"kind": "title", "value": "x"}, {"kind": "network_idle"}):
+                self.assert_failed(await limited.call("browser_wait", {"tab_id": limited_handle, "condition": condition}),
+                                   "mode_restricted", "not_dispatched")
+        self.assertEqual(len([a for a in extension.actions() if a.startswith("waitFor")]), 0)
+
+    async def test_a_wait_that_fails_or_gets_no_answer_is_not_called_unmet(self):
+        extension, broker, handle = await self.acting()
+        wait = {"tab_id": handle, "condition": {"kind": "url", "value": "https://a.test/"}, "timeout_ms": 300}
+        for native, code in (({"error": "Tab closed while waiting for url"}, "browser_operation_failed"),
+                             ({"ok": False, "error": "refused", "code": "made_up"}, "browser_operation_failed"),
+                             ({"error": "loading", "code": "navigating"}, "navigating")):
+            with self.subTest(native=native):
+                extension.behavior["waitForUrl"] = lambda command, native=native: native
+                reply = await broker.call("browser_wait", wait)
+                self.assertEqual((reply.result["error"]["code"], reply.result["outcome"],
+                                  reply.result["error"]["retryable"]), (code, "dispatched", True), reply.result)
+        extension.behavior["waitForUrl"] = lambda command: time.sleep(4) or {"ok": True}
+        silent = await broker.call("browser_wait", wait)
+        self.assertEqual((silent.result["ok"], silent.result["error"]["code"], silent.result["error"]["retryable"]),
+                         (False, "timeout", True), silent.result)
+        self.assertIn(silent.result["outcome"], {"unknown", "dispatched"})
+        await asyncio.sleep(4.2)  # the scripted extension answers its commands in order
+
+    async def test_screenshots_return_a_validated_image_beside_the_result(self):
+        extension, broker, handle = await self.acting()
+        capture = {"dataUrl": data_url("image/png", PNG), "url": "https://agent.test/?token=secret",
+                   "title": "Secret title", "width": 1280, "height": 720}
+        for action in ("screenshot", "elementScreenshot", "fullPageScreenshot"):
+            extension.behavior[action] = lambda command: dict(capture)
+        for arguments, action, expected in (
+                ({}, "screenshot", {}),
+                ({"scope": "element", "target": {"ref": "e4"}}, "elementScreenshot", {"ref": "e4"}),
+                ({"scope": "element", "target": {"selector": "#save"}}, "elementScreenshot", {"selector": "#save"}),
+                ({"scope": "full_page"}, "fullPageScreenshot", {})):
+            with self.subTest(arguments=arguments):
+                reply = await broker.call("browser_screenshot", {"tab_id": handle, **arguments})
+                self.assertEqual((reply.result["ok"], reply.result["outcome"]), (True, "observed"), reply.result)
+                image, = reply.images
+                self.assertEqual((image.mime_type, image.data), ("image/png", PNG))
+                self.assertRegex(image.handle, r"^i_[0-9a-f]{32}$")
+                self.assertEqual(reply.result["data"], {"tab_id": handle, "image": image.handle,
+                                                        "mime_type": "image/png", "bytes": len(PNG)})
+                command = extension.last(action)
+                sent = {k: v for k, v in command.items() if k not in {"id", "action", "ownerId", "includeSnapshot"}}
+                self.assertEqual(sent, {"tabId": 9, "imagePreview": True, **expected})
+                self.assertEqual(reply.receipt["commands"][-1]["action"], action)
+        # Neither the image bytes nor the page's URL and title are in the JSON result.
+        text = json.dumps(reply.result)
+        for absent in ("Secret", "token=secret", base64.b64encode(PNG).decode()[:16], "dataUrl"):
+            self.assertNotIn(absent, text)
+        extension.behavior["screenshot"] = lambda command: {"dataUrl": data_url("image/jpeg", JPEG)}
+        jpeg = await broker.call("browser_screenshot", {"tab_id": handle})
+        self.assertEqual((jpeg.images[0].mime_type, jpeg.result["data"]["mime_type"]), ("image/jpeg", "image/jpeg"))
+
+    async def test_a_capture_that_is_not_a_bounded_image_is_never_delivered_as_one(self):
+        extension, broker, handle = await self.acting()
+        shot = {"tab_id": handle}
+        for native in ({"dataUrl": data_url("image/png", JPEG)}, {"dataUrl": data_url("image/svg+xml", b"<svg/>")},
+                       {"dataUrl": data_url("text/html", b"<script>")}, {"dataUrl": "data:image/png;base64,@@@@"},
+                       {"dataUrl": "data:image/png," + "A" * 40}, {"dataUrl": "https://evil.test/x.png"},
+                       {"dataUrl": None}, {"dataUrl": ["x"]}, {"saved_to": "/tmp/x.png", "filename": "x.png"}, {}):
+            with self.subTest(native=str(native)[:60]):
+                extension.behavior["screenshot"] = lambda command, native=native: native
+                reply = await broker.call("browser_screenshot", shot)
+                self.assert_failed(reply, "invalid_bridge_response", "dispatched")
+                self.assertEqual(reply.images, ())
+        with patch.object(flat_broker, "MAX_IMAGE_BYTES", 24):
+            extension.behavior["screenshot"] = lambda command: {"dataUrl": data_url("image/png", PNG)}
+            large = await broker.call("browser_screenshot", shot)
+            self.assert_failed(large, "output_limited", "dispatched")
+            self.assertEqual((large.images, large.result["truncated"]), ((), True))
+        extension.behavior["screenshot"] = lambda command: {"dataUrl": data_url("image/png", PNG + b"\x00" * 2_000_000)}
+        flooded = await broker.call("browser_screenshot", shot)
+        self.assert_failed(flooded, "bridge_response_limit", "unknown")
+        self.assertEqual(flooded.images, ())
+
+    async def test_replies_of_unexpected_shapes_fail_the_call_instead_of_raising(self):
+        extension, broker, handle = await self.acting()
+        shapes = ([], "text", 7, None, True, {"ok": True, "tabId": {"x": 1}, "opened_tabs": [None, 3, {"tabId": []}],
+                                              "warning": [], "snapshot": 5, "tabs": "x", "ref": 9, "elapsed": "soon",
+                                              "dataUrl": {"x": 1}, "url": [], "title": {}, "status": 3})
+        calls = (("browser_tabs", {}), ("browser_tabs", {"action": "open"}), ("browser_navigate", {"url": "https://x.test/"}),
+                 ("browser_read", {}), ("browser_find", {"text": "x"}), ("browser_click", {"target": {"ref": "e4"}}),
+                 ("browser_wait", {"condition": {"kind": "target", "target": {"selector": "#x"}}, "timeout_ms": 200}),
+                 ("browser_wait", {"condition": {"kind": "title", "value": "x"}, "timeout_ms": 200}),
+                 ("browser_screenshot", {}), ("browser_screenshot", {"scope": "full_page"}))
+        natives = {"browser_tabs": ("getTabs", "newTab"), "browser_navigate": ("navigate",), "browser_read": ("getSnapshot",),
+                   "browser_find": ("getSnapshot",), "browser_click": ("click",),
+                   "browser_wait": ("waitForElement", "waitForTitle"),
+                   "browser_screenshot": ("screenshot", "fullPageScreenshot")}
+        for shape in shapes:
+            for name, arguments in calls:
+                with self.subTest(shape=str(shape)[:40], name=name, arguments=arguments):
+                    for action in natives[name]:
+                        extension.behavior[action] = lambda command, shape=shape: shape
+                    needs_tab = not (name == "browser_tabs")
+                    reply = await broker.call(name, {**({"tab_id": handle} if needs_tab else {}), **arguments})
+                    self.assertIn(reply.result["ok"], (True, False))
+                    json.dumps(reply.result)
+                    if not reply.result["ok"]:
+                        self.assertIn(reply.result["outcome"], {"not_dispatched", "dispatched", "unknown", "observed"})
+            for action in ("getTabs", "newTab", "navigate", "getSnapshot", "click", "waitForElement", "waitForTitle",
+                           "screenshot", "fullPageScreenshot"):
+                extension.behavior.pop(action, None)
+            extension.behavior["getSnapshot"] = lambda command: {"snapshot": self.SNAPSHOT}
+            handle = await self.handle(broker)
+            await broker.call("browser_read", {"tab_id": handle})
+
+    async def test_screenshot_refusals_and_failures(self):
+        extension, broker, handle = await self.acting()
+        sent = len(extension.actions())
+        for arguments, code in (({"scope": "element"}, "invalid_arguments"),
+                                ({"target": {"ref": "e4"}}, "invalid_arguments"),
+                                ({"scope": "full_page", "target": {"selector": "#x"}}, "invalid_arguments"),
+                                ({"scope": "element", "target": {"ref": "e99"}}, "stale_ref"),
+                                ({"filename": "/tmp/x.png"}, "invalid_arguments"),
+                                ({"format": "jpeg"}, "invalid_arguments"), ({"save_to": "~/x.png"}, "invalid_arguments")):
+            with self.subTest(arguments=arguments):
+                reply = await broker.call("browser_screenshot", {"tab_id": handle, **arguments})
+                self.assert_failed(reply, code, "not_dispatched")
+        for mode in ("read", "draft"):
+            _, limited, limited_handle = await self.acting(mode, extension)
+            self.assert_failed(await limited.call("browser_screenshot", {"tab_id": limited_handle}),
+                               "mode_restricted", "not_dispatched")
+        self.assertFalse({"screenshot", "elementScreenshot", "fullPageScreenshot"} & set(extension.actions()[sent:]))
+        # A viewport capture is a read; an element or full-page capture scrolls the page first.
+        failure = {"error": "captureTab failed", "code": "made_up"}
+        for scope, action, outcome, retryable in (("viewport", "screenshot", "dispatched", True),
+                                                  ("full_page", "fullPageScreenshot", "unknown", False)):
+            extension.behavior[action] = lambda command: failure
+            reply = await broker.call("browser_screenshot", {"tab_id": handle, "scope": scope})
+            self.assertEqual((reply.result["error"]["code"], reply.result["outcome"], reply.result["error"]["retryable"]),
+                             ("browser_operation_failed", outcome, retryable), reply.result)
+        extension.behavior["fullPageScreenshot"] = lambda command: {
+            "error": "Tab 9 is read-only", "code": "user_tab_read_only", "retryable": False}
+        self.assert_failed(await broker.call("browser_screenshot", {"tab_id": handle, "scope": "full_page"}),
+                           "user_tab_read_only", "not_dispatched")
+
     async def test_open_that_times_out_names_the_created_tab(self):
         extension = self.extension()
         extension.behavior["newTab"] = lambda command: {
@@ -887,6 +1134,14 @@ class ReceiptTests(unittest.TestCase):
         self.assertEqual(outcome("replied", complete=False), "unknown")
         # Another command's reply (a preparatory read) is not this action's dispatch.
         self.assertEqual(outcome("replied", action="closeTab"), "not_dispatched")
+        # A polled wait: a read cut off at the deadline does not make the answered ones unknown.
+        receipt = self.envelope(requested=3, commands=[
+            {"sequence": i, "action": "waitForText", "state": state, "finished": True, "tab_id": 9}
+            for i, state in enumerate(("replied", "replied", "dispatched"), 1)])["receipt"]
+        self.assertEqual(flat_broker._outcome(receipt, "waitForText", read=True), "dispatched")
+        self.assertEqual(flat_broker._outcome(receipt, "waitForText"), "unknown")
+        receipt["commands"] = [{**command, "state": "dispatched"} for command in receipt["commands"]]
+        self.assertEqual(flat_broker._outcome(receipt, "waitForText", read=True), "unknown")
 
     def test_receipt_counts_queued_work_and_stops_at_its_limit(self):
         receipt = DispatchReceipt("c_1")

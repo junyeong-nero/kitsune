@@ -1,8 +1,8 @@
 """First shared native adapters, intentionally not registered as MCP/worker APIs yet.
 
-Tabs, navigation, read, find and the synthetic page actions are implemented here. All
-other admitted operations fail closed until their image, wait, approval and resume
-contracts are implemented.
+Tabs, navigation, read, find, wait, screenshot and the synthetic page actions are
+implemented here. All other admitted operations fail closed until their approval and
+resume contracts are implemented.
 
 Outcomes come from the bridge's dispatch receipt, never from extension/page fields:
 a reply to a write is `dispatched`, not application success. Cancelling or timing
@@ -11,6 +11,8 @@ out a call does not stop a request the bridge already accepted.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 from contextvars import ContextVar
 from dataclasses import dataclass
 import json
@@ -41,7 +43,8 @@ MAX_MATCH_PATH = 3
 _REQUEST = ContextVar("kitsune_flat_request", default=None)
 _IMPLEMENTED = frozenset({"browser_tabs", "browser_navigate", "browser_read", "browser_find",
                           "browser_click", "browser_input", "browser_select", "browser_check",
-                          "browser_press", "browser_hover", "browser_drag", "browser_scroll"})
+                          "browser_press", "browser_hover", "browser_drag", "browser_scroll",
+                          "browser_wait", "browser_screenshot"})
 _NATIVE_ERRORS = frozenset({"mode_restricted", "user_tab_read_only", "user_active", "needs_user",
                             "stale_connection", "invalid_tab_id", "tab_closed", "timeout",
                             "extension_disconnected", "native_operation_limit",
@@ -63,7 +66,22 @@ _KEY_MODIFIERS = {"Shift": "shift", "Control": "ctrl", "Alt": "alt", "Meta": "me
 _WARNINGS = frozenset({"hidden_or_covered", "popup_blocked"})
 _STALE_REF_REASONS = frozenset({"element_removed", "not_in_snapshot", "other_document"})
 # Reads change nothing: a failed one is safe to repeat and never an unknown write.
-_READS = frozenset({"getTabs", "getSnapshot"})
+_WAITS = frozenset({"waitForText", "waitForElement", "waitForUrl", "waitForTitle", "waitForNetworkIdle"})
+# A viewport capture changes nothing. Element and full-page captures scroll the page and put
+# it back, so a failed one is treated like a failed page action.
+_CAPTURES = frozenset({"screenshot", "elementScreenshot", "fullPageScreenshot"})
+_READS = frozenset({"getTabs", "getSnapshot", "screenshot"}) | _WAITS
+# The extension is asked for its inline preview (about 1 MB of base64 at most), as the existing
+# screenshot tool is; the decoded limit is the contract's and is checked whatever arrives.
+MAX_IMAGE_REPLY_BYTES = 2 * 1024 * 1024
+MAX_IMAGE_BYTES = 8 * 1024 * 1024
+_IMAGE_SIGNATURES = {"image/png": b"\x89PNG\r\n\x1a\n", "image/jpeg": b"\xff\xd8\xff"}
+# The bridge's own allowance for these two waits is fixed, so longer ones cannot be honoured.
+MAX_TARGET_WAIT_MS = 30_000
+MAX_IDLE_WAIT_MS = 25_000
+# A polled wait is at most this many page reads, within a receipt's command limit.
+MAX_WAIT_READS = 100
+_REGEX_SPECIAL = re.compile(r"[\\^$.*+?()\[\]{}|/]")
 _RETRYABLE_READ_ERRORS = frozenset({"timeout", "bridge_disconnected", "bridge_unavailable", "navigating",
                                     "content_unavailable", "browser_operation_failed"})
 _NAVIGATIONS = frozenset({"navigate", "goBack", "goForward", "reloadTabBrowser"})
@@ -87,11 +105,40 @@ def _request_headers():
 
 
 @dataclass(frozen=True)
+class BrokerImage:
+    handle: str  # names the image in result.data; not a path and not usable as a URL
+    mime_type: str
+    data: bytes
+
+
+@dataclass(frozen=True)
 class BrokerReply:
-    # Only result may be delivered to an agent. receipt is coordinator-owned evidence;
-    # future MCP/worker adapters must not accept a caller-supplied BrokerReply.
+    # result, and images as real image content, may be delivered to an agent. receipt is
+    # coordinator-owned evidence; future MCP/worker adapters must not accept a caller-supplied
+    # BrokerReply. Limits across several images (a run's four, 16 MiB) belong to the runner.
     result: dict
     receipt: dict | None
+    images: tuple[BrokerImage, ...] = ()
+
+
+def _image(native):
+    """The validated image of a capture reply; ValueError if it is not one, None if too large."""
+    url = native.get("dataUrl")
+    if not isinstance(url, str):
+        raise ValueError("Not an image data URL")
+    mime, separator, encoded = url.partition(";base64,")
+    mime = mime.removeprefix("data:")
+    if not separator or mime not in _IMAGE_SIGNATURES:
+        raise ValueError("Not an image data URL")
+    if len(encoded) > MAX_IMAGE_BYTES * 4 // 3 + 4:
+        return None
+    try:
+        data = base64.b64decode(encoded, validate=True)
+    except binascii.Error:
+        raise ValueError("Invalid image encoding") from None
+    if not data.startswith(_IMAGE_SIGNATURES[mime]):
+        raise ValueError("Image content does not match its type")
+    return BrokerImage("i_" + secrets.token_hex(16), mime, data) if len(data) <= MAX_IMAGE_BYTES else None
 
 
 def _failure(call, name, code, outcome="not_dispatched", *, tab_id=None, retryable=False, state=None):
@@ -137,15 +184,40 @@ def _receipt(envelope, call):
     return receipt
 
 
-def _outcome(receipt, action):
+def _outcome(receipt, action, read=False):
     if not receipt["complete"]:
         return "unknown"
     commands = [item for item in receipt["commands"] if item["action"] == action]
     if not commands or all(item["state"] == "not_dispatched" for item in commands):
         return "not_dispatched"
+    if read:
+        # A polled wait is several reads; one cut off at its deadline changed nothing.
+        return "dispatched" if any(item["state"] == "replied" for item in commands) else "unknown"
     if any(item["state"] in {"unknown", "dispatched"} for item in commands):
         return "unknown"
     return "dispatched"  # a reply is not proof of application success
+
+
+def _wait_request(values):
+    """(native action, route, body) of one typed wait; never a page predicate or a regex of the caller's."""
+    condition, timeout = values["condition"], values["timeout_ms"]
+    kind = condition["kind"]
+    polled = {"timeout": timeout, "pollInterval": max(100, -(-timeout // MAX_WAIT_READS))}
+    if kind in {"text", "text_gone"}:
+        return "waitForText", "/api/wait-for-text", {kind: condition["value"], **polled}
+    if kind == "target":
+        if timeout > MAX_TARGET_WAIT_MS:
+            raise OperationRefused("unsupported_variant", "A target wait is limited to 30 s for now")
+        return "waitForElement", "/api/wait-for-element", {**condition["target"], **polled}
+    if kind in {"url", "title"}:
+        # Literal equality: the extension takes a regular expression, so the value is escaped.
+        pattern = "^" + _REGEX_SPECIAL.sub(lambda match: "\\" + match[0], condition["value"]) + "$"
+        action, path = (("waitForUrl", "/api/wait-for-url") if kind == "url" else
+                        ("waitForTitle", "/api/wait-for-title"))
+        return action, path, {"pattern": pattern, "timeout": timeout}
+    if timeout > MAX_IDLE_WAIT_MS:
+        raise OperationRefused("unsupported_variant", "A network_idle wait is limited to 25 s for now")
+    return "waitForNetworkIdle", "/api/wait-for-network-idle", {"timeout": timeout}
 
 
 def _page_action(name, values):
@@ -271,6 +343,16 @@ class FlatBroker:
             # As the core browser_find: static prose and every item of a repeated run.
             body = {"tabId": admitted.tab.native_id, "maxChars": FIND_SNAPSHOT_CHARS, "collapse": False}
             return "getSnapshot", "POST", "/api/snapshot", body, timeout, MAX_FIND_REPLY_BYTES
+        if admitted.operation.name == "browser_screenshot":
+            action, path = {"viewport": ("screenshot", "/api/screenshot"),
+                            "element": ("elementScreenshot", "/api/element-screenshot"),
+                            "full_page": ("fullPageScreenshot", "/api/full-page-screenshot")}[values["scope"]]
+            # No format, scale or file path: the image comes back inline or not at all.
+            body = {"tabId": admitted.tab.native_id, "imagePreview": True, **values.get("target", {})}
+            return action, "POST", path, body, timeout, MAX_IMAGE_REPLY_BYTES
+        if admitted.operation.name == "browser_wait":
+            action, path, body = _wait_request(values)
+            return action, "POST", path, {"tabId": admitted.tab.native_id, **body}, timeout, MAX_BRIDGE_REPLY_BYTES
         if admitted.operation.name != "browser_navigate":
             action, path, body = _page_action(admitted.operation.name, values)
             body.update(tabId=admitted.tab.native_id, includeSnapshot=False)
@@ -314,7 +396,33 @@ class FlatBroker:
         self.session.issue_refs(admitted.tab.handle, _line_refs(delivered))
         return data, "observed", cut
 
+    def _wait_data(self, admitted, native, action):
+        """A met wait: the condition was observed. Page text, titles and URLs are not echoed."""
+        data = {"tab_id": admitted.tab.handle, "kind": admitted.operation.arguments()["condition"]["kind"]}
+        elapsed = native.get("elapsed")
+        if type(elapsed) in (int, float) and 0 <= elapsed < 10**7:
+            data["elapsed_ms"] = int(elapsed)
+        if native.get("already_present") is True:
+            data["already_present"] = True  # the text was there when the wait began
+        if action == "waitForElement" and isinstance(native.get("ref"), str):
+            # The element the wait found becomes a target of this session, like a read's refs.
+            self.session.issue_refs(admitted.tab.handle, [native["ref"]])
+            data["ref"] = native["ref"]
+        return data, "observed", False
+
     def _data(self, admitted, native, action):
+        if action in _CAPTURES:
+            image = _image(native)
+            if image is None:
+                raise OperationRefused("output_limited", "The image exceeds the decoded size limit")
+            # The page's URL and title in the reply are not copied; the image is the observation.
+            return {"tab_id": admitted.tab.handle, "image": image.handle, "mime_type": image.mime_type,
+                    "bytes": len(image.data)}, "observed", False, image
+        return (*self._plain_data(admitted, native, action), None)
+
+    def _plain_data(self, admitted, native, action):
+        if action in _WAITS:
+            return self._wait_data(admitted, native, action)
         if action == "getSnapshot":
             return self._page_data(admitted, native)
         if action == "getTabs":
@@ -404,7 +512,7 @@ class FlatBroker:
                     return BrokerReply(_failure(call, public_name, code, outcome, tab_id=tab_handle,
                                                 retryable=read and code in _RETRYABLE_READ_ERRORS), None)
                 receipt = _receipt(envelope, call)
-                outcome = _outcome(receipt, action)
+                outcome = _outcome(receipt, action, read)
                 if action in _NAVIGATIONS and outcome != "not_dispatched":
                     # A new document: its refs are new, even where the page looks the same.
                     self.session.forget_refs(tab_handle)
@@ -413,6 +521,11 @@ class FlatBroker:
                         or native.get("error") or native.get("ok") is False):
                     code = native.get("code") if isinstance(native, dict) else None
                     code = code if isinstance(code, str) and code in _NATIVE_ERRORS else "browser_operation_failed"
+                    if (action in _WAITS and outcome == "dispatched" and receipt["complete"] and not receipt["limited"]
+                            and isinstance(native, dict) and native.get("ok") is False and "code" not in native):
+                        # The wait ran to its deadline and the page answered: the condition did not hold.
+                        return BrokerReply(_failure(call, public_name, "condition_unmet", "observed",
+                                                    tab_id=tab_handle, retryable=True), receipt)
                     if isinstance(native, dict) and native.get("timedOut") is True:
                         code = "timeout"
                     state = {}
@@ -421,7 +534,7 @@ class FlatBroker:
                             state["reason"] = native["state"]["reason"]
                         self.session.forget_refs(tab_handle, admitted.refs)
                     refused = outcome == "dispatched" and code in (
-                        _PAGE_REFUSED_BEFORE_ACTING if action in _PAGE_ACTIONS else _REFUSED_BEFORE_ACTING)
+                        _PAGE_REFUSED_BEFORE_ACTING if action in _PAGE_ACTIONS | _CAPTURES else _REFUSED_BEFORE_ACTING)
                     if code == "tab_closed" and outcome == "dispatched" and tab_handle is not None:
                         self.session.closed_tab(tab_handle)  # the extension observed that it is gone
                     if code in {"stale_connection", "tab_closed"} and tab_handle is not None:
@@ -443,19 +556,20 @@ class FlatBroker:
                                                 retryable=read and code in _RETRYABLE_READ_ERRORS), receipt)
                 if outcome != "dispatched":
                     raise ValueError("Success without a completed native dispatch")
-                if not read and native.get("ok") is not True:
+                if not read and action not in _CAPTURES and native.get("ok") is not True:
                     raise ValueError("Missing native action acknowledgement")
-                data, outcome, cut = self._data(admitted, native, action)
+                data, outcome, cut, image = self._data(admitted, native, action)
                 result = {"ok": True, "call": call, "operation": name, "outcome": outcome,
                           "data": data, "truncated": cut}
                 if tab_handle is not None or action == "newTab":
                     result["tab_id"] = tab_handle or data["tab_id"]
                 if len(json.dumps(result, ensure_ascii=False, allow_nan=False).encode("utf-8")) > MAX_RESULT_BYTES:
-                    result = _failure(call, name, "output_limited", outcome, tab_id=result.get("tab_id"))
-                return BrokerReply(result, receipt)
+                    result, image = _failure(call, name, "output_limited", outcome, tab_id=result.get("tab_id")), None
+                return BrokerReply(result, receipt, (image,) if image else ())
             except OperationRefused as error:
                 return BrokerReply(_failure(call, public_name, error.code, outcome, tab_id=tab_handle), receipt)
-            except (ValueError, TypeError, UnicodeError):
+            except (ValueError, TypeError, UnicodeError, AttributeError, KeyError, IndexError):
+                # A reply of an unexpected shape is a failed call, never an exception to the caller.
                 return BrokerReply(_failure(call, public_name, "invalid_bridge_response", outcome, tab_id=tab_handle), receipt)
             # Cancellation intentionally propagates. It does NOT cancel a to_thread HTTP
             # request or prove the browser stopped; remote lifecycle cancellation is pending.
