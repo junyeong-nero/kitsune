@@ -2,6 +2,7 @@
 
     uv run python scripts/toolset_inventory.py          # counts, not a proposed tool count
     uv run python scripts/toolset_inventory.py --json   # entries and implementation signatures
+    uv run python scripts/toolset_inventory.py --check-map  # require an explicit disposition for every entry
 
 This reports registrations, not only the default tools/list. Python constructors,
 namespace attributes and exception classes are not operations; their developer-only
@@ -55,6 +56,10 @@ def collect():
         "tools": {name: {"group": spec.group, "modes": sorted(spec.modes) if spec.modes else None,
                           "implementation_signature": str(inspect.signature(spec.function))}
                   for name, spec in tools.TOOLS.items()},
+        "legacy_python": {name: {"signature": str(inspect.signature(function))}
+                          for name, function in vars(tools).items()
+                          if name.startswith("browser_") and inspect.isfunction(function)
+                          and function.__module__ == tools.__name__},
         "gateway": {}, "python": {}, "http": {}, "container": {},
     }
     server = ast.parse((ROOT / "src/kitsune/server.py").read_text())
@@ -90,13 +95,55 @@ def collect():
     return {surface: dict(sorted(entries.items())) for surface, entries in inventory.items()}
 
 
+def mapping_errors(inventory, mapping):
+    """No fallback categories: new, duplicate and stale entries require explicit review."""
+    errors = []
+    assigned = {surface: {} for surface in inventory}
+    group_ids = set()
+    for group in mapping["groups"]:
+        group_id = group["id"]
+        if group_id in group_ids:
+            errors.append(f"duplicate group: {group_id}")
+        group_ids.add(group_id)
+        if group.get("destination") not in {"direct", "composition", "operator", "deprecate"}:
+            errors.append(f"invalid destination: {group_id}")
+        for field in ("replacement", "rationale", "coverage_loss"):
+            if not isinstance(group.get(field), str) or not group[field].strip():
+                errors.append(f"missing {field}: {group_id}")
+        if not group.get("entries") or not any(group["entries"].values()):
+            errors.append(f"empty group: {group_id}")
+        for surface, names in group["entries"].items():
+            if surface not in inventory:
+                errors.append(f"unknown surface: {surface}")
+                continue
+            for name in names:
+                if name in assigned[surface]:
+                    errors.append(f"duplicate entry: {surface}:{name}")
+                assigned[surface][name] = group_id
+                if name not in inventory[surface]:
+                    errors.append(f"stale entry: {surface}:{name}")
+    for surface, entries in inventory.items():
+        for name in entries.keys() - assigned[surface].keys():
+            errors.append(f"unmapped entry: {surface}:{name}")
+    return sorted(errors)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--json", action="store_true", help="print every entry; no files are written")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--json", action="store_true", help="print every entry; no files are written")
+    mode.add_argument("--check-map", action="store_true", help="validate the explicit #499 disposition map")
     args = parser.parse_args()
     inventory = collect()
-    print(json.dumps(inventory if args.json else {name: len(entries) for name, entries in inventory.items()},
-                     indent=2, ensure_ascii=False))
+    output = inventory if args.json else {name: len(entries) for name, entries in inventory.items()}
+    errors = []
+    if args.check_map:
+        mapping = json.loads((ROOT / "docs/design/499-capability-map.json").read_text())
+        errors = mapping_errors(inventory, mapping)
+        output = {"counts": output, "groups": len(mapping["groups"]), "errors": errors}
+    print(json.dumps(output, indent=2, ensure_ascii=False))
+    if errors:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

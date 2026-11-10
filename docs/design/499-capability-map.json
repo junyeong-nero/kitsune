@@ -1,0 +1,604 @@
+{
+  "version": 1,
+  "status": "proposal; no runtime registrations change",
+  "groups": [
+    {
+      "id": "tabs",
+      "destination": "direct",
+      "replacement": "browser_tabs: list/open/close; SDK tabs/new_tab/close_tab with explicit tab-id variables instead of a required Browser.tab wrapper",
+      "rationale": "Background agent tabs, inventory and explicit identities are ordinary work, not discovery. The same owner/session supplies every interface.",
+      "coverage_loss": "No implicit current tab, index targeting, force-close or raw navigation bypass. Legacy select/focus behavior stays operator-only; close requires a tab id. These are deliberate compatibility differences, not equivalent schemas.",
+      "entries": {
+        "tools": ["browser_tabs", "browser_tab_list", "browser_close"],
+        "python": ["Browser.tabs", "Browser.tab", "Browser.new_tab", "Tab.close"],
+        "http": ["GET /api/tabs", "POST /api/tabs", "POST /api/new-tab", "POST /api/close-tab"],
+        "container": ["tabs", "newTab", "closeTab"]
+      }
+    },
+    {
+      "id": "navigation",
+      "destination": "direct",
+      "replacement": "browser_navigate: goto/back/forward/reload; SDK navigate/back/forward/reload",
+      "rationale": "One navigation family with an explicit tab; history traversal is not an arbitrary operation dispatcher. Wait and URL policy are shared.",
+      "coverage_loss": "No bypass-cache or raw URL override in the pilot. Back/forward/reload remain act-only; goto does not authorize navigating a user-owned tab.",
+      "entries": {
+        "tools": ["browser_navigate", "browser_navigate_back", "browser_forward", "browser_reload_tab"],
+        "python": ["Tab.navigate", "Tab.back", "Tab.forward", "Tab.reload"],
+        "http": ["POST /api/navigate", "POST /api/back", "POST /api/forward", "POST /api/reload-tab"],
+        "container": ["navigate", "goBack", "goForward", "reloadTabBrowser"]
+      }
+    },
+    {
+      "id": "page-observation",
+      "destination": "direct",
+      "replacement": "browser_read(format=snapshot|text); SDK read",
+      "rationale": "Reading page structure/text with URL/title and live refs is the normal next step. Full bounded observations are the default; no implicit delta cache crosses scripts.",
+      "coverage_loss": "The pilot does not reproduce every legacy DOM/layout option or write snapshots to arbitrary paths. Page metadata accompanies the read; legacy raw DOM tree serialization remains in the trusted API.",
+      "entries": {
+        "tools": ["browser_snapshot", "browser_page_info", "browser_page_text", "browser_dom"],
+        "python": ["Tab.snapshot", "Tab.info", "Tab.text", "Tab.dom"],
+        "http": ["GET /api/snapshot", "POST /api/snapshot", "GET /api/page-info", "POST /api/page-info", "GET /api/page-text", "POST /api/page-text", "POST /api/page-text-by-tab-id", "GET /api/dom", "POST /api/dom"],
+        "container": ["snapshot", "pageInfo", "pageText", "pageTextByTabId", "dom"]
+      }
+    },
+    {
+      "id": "find",
+      "destination": "direct",
+      "replacement": "browser_find(text); SDK find; explicit scroll/read loops for load-more",
+      "rationale": "A bounded literal search returns matching context and valid targets without requiring code or the whole page in model context.",
+      "coverage_loss": "Regex, arbitrary file output and automatic load-more are not pilot parameters. Regex over already-authorized read text is code composition. Scroll loops retain each scroll's ownership/activity checks and do not promise the legacy hidden-tab scroll restoration behavior.",
+      "entries": {
+        "tools": ["browser_find"],
+        "python": ["Tab.find"],
+        "http": ["POST /api/find"],
+        "container": ["find"]
+      }
+    },
+    {
+      "id": "query",
+      "destination": "direct",
+      "replacement": "browser_query(selector, fields, limit); SDK query",
+      "rationale": "Typed, allowlisted field projections support repeated table/form reading without granting page evaluation. The broker redacts values before code sees them.",
+      "coverage_loss": "Only the documented field allowlist is supported; arbitrary property access and unbounded extraction are not. Unsupported fields fail explicitly rather than being silently omitted.",
+      "entries": {
+        "tools": ["browser_query"],
+        "python": ["Tab.query"],
+        "http": ["POST /api/query"],
+        "container": ["query"]
+      }
+    },
+    {
+      "id": "specialized-projections",
+      "destination": "composition",
+      "replacement": "browser_query/read, then ordinary filtering of fields/links/images/meta; existing detailed extractors remain developer APIs",
+      "rationale": "The recurring table/form/link work uses the same authorized projections in direct and script paths. Parsing results does not require a second browser helper catalog.",
+      "coverage_loss": "Not byte/schema-equivalent to legacy forms, images, links or metadata extraction. Rich helper-specific fields, form inference and internal_only convenience are not all reproduced by the pilot. Use the trusted API when exact legacy output is required.",
+      "entries": {
+        "tools": ["browser_forms", "browser_links", "browser_images", "browser_meta"],
+        "python": ["Tab.forms", "Tab.links", "Tab.images", "Tab.meta"],
+        "http": ["GET /api/forms", "POST /api/forms", "POST /api/links", "POST /api/images", "POST /api/meta"],
+        "container": ["forms", "getLinks", "getImages", "getMeta"]
+      }
+    },
+    {
+      "id": "rich-extraction",
+      "destination": "operator",
+      "replacement": "Existing trusted HTML, Markdown, readability, JSON-LD and iframe APIs; ordinary pilot reading uses browser_read/query",
+      "rationale": "Retain exact specialized extraction contracts outside the delegated pilot rather than pretend a text read replaces them. No evidence of zero value is claimed.",
+      "coverage_loss": "The pilot has no exact HTML serialization, article extraction, Markdown formatting, structured-data extractor or frame enumeration/selection API. This coverage gap must appear in #504 and default-migration review.",
+      "entries": {
+        "tools": ["browser_html", "browser_markdown", "browser_readability", "browser_structured_data", "browser_iframes"],
+        "python": ["Tab.html", "Tab.markdown", "Tab.readability", "Tab.structured_data", "Tab.iframes"],
+        "http": ["POST /api/html", "POST /api/markdown", "POST /api/readability", "POST /api/structured-data", "POST /api/iframes"],
+        "container": ["getHTML", "getMarkdown", "getReadability", "getStructuredData", "getIframes"]
+      }
+    },
+    {
+      "id": "click",
+      "destination": "direct",
+      "replacement": "browser_click(button, click_count); SDK click",
+      "rationale": "Ordinary single/double synthetic clicks remain direct. Strict resolution and actionability do not choose the first ambiguous match.",
+      "coverage_loss": "No coordinate click, first-match override or long-press parameter in the pilot. Modifier keys are explicit; OS-level input is a different operator capability, never a silent fallback.",
+      "entries": {
+        "tools": ["browser_click"],
+        "python": ["Tab.click", "Tab.double_click"],
+        "http": ["POST /api/click", "POST /api/double-click"],
+        "container": ["click", "doubleClick"]
+      }
+    },
+    {
+      "id": "input",
+      "destination": "direct",
+      "replacement": "browser_input(mode=replace|type, text); SDK input",
+      "rationale": "Replace a value or type plain text into an explicitly targeted field/editor. No submit flag turns a draft operation into a commit.",
+      "coverage_loss": "HTML insertion, caret-specific legacy insertion options, forced first-match and implicit Enter submission are not pilot features. Plain-text editor replacement/typing remains supported; rich HTML stays developer-only.",
+      "entries": {
+        "tools": ["browser_type"],
+        "python": ["Tab.type", "Tab.fill", "Tab.insert"],
+        "http": ["POST /api/type", "POST /api/fill", "POST /api/set-editable-content"],
+        "container": ["type", "fill", "setEditableContent"]
+      }
+    },
+    {
+      "id": "form-composition",
+      "destination": "composition",
+      "replacement": "Sequential browser_input/select/check calls, or the same operations in a Python/JS loop",
+      "rationale": "Draft filling is composition of typed operations with per-field attribution. Neither interface has an implicit submit or atomic transaction claim.",
+      "coverage_loss": "Legacy bulk name/label inference, the first flag and a single bulk response schema are not retained. Partial completion remains visible per operation and completed fields must not be replayed blindly.",
+      "entries": {
+        "tools": ["browser_fill_form"],
+        "python": ["Tab.fill_form"],
+        "http": ["POST /api/form-fill"],
+        "container": ["formFill"]
+      }
+    },
+    {
+      "id": "select",
+      "destination": "direct",
+      "replacement": "browser_select(values, by=value|label); SDK select",
+      "rationale": "Explicit option selection covers draft forms without page JavaScript or submit.",
+      "coverage_loss": "Strict target matching is mandatory. Duplicate option labels are ambiguous, not an instruction to take the first option.",
+      "entries": {
+        "tools": ["browser_select_option"],
+        "python": ["Tab.select_option"],
+        "http": ["POST /api/select-option"],
+        "container": ["selectOption"]
+      }
+    },
+    {
+      "id": "check",
+      "destination": "direct",
+      "replacement": "browser_check(checked); SDK check",
+      "rationale": "A typed checked-state operation is usable in draft mode without disguising it as an unrestricted click.",
+      "coverage_loss": "No first-match or checkbox-to-generic-click fallback. Unsupported control kinds return an error.",
+      "entries": {
+        "tools": ["browser_check"],
+        "python": ["Tab.check", "Tab.uncheck"],
+        "http": ["POST /api/check"],
+        "container": ["checkBox"]
+      }
+    },
+    {
+      "id": "key",
+      "destination": "direct",
+      "replacement": "browser_press(target, key, modifiers); SDK press",
+      "rationale": "Keyboard interaction is distinct from text drafting and remains act-only. It names a target, not whichever element the user focused.",
+      "coverage_loss": "No implicit focused-element target, combined arbitrary text insertion or OS-level keyboard shortcut. The pilot uses synthetic page input only.",
+      "entries": {
+        "tools": ["browser_press_key"],
+        "python": ["Tab.press"],
+        "http": ["POST /api/keypress"],
+        "container": ["keypress"]
+      }
+    },
+    {
+      "id": "hover",
+      "destination": "direct",
+      "replacement": "browser_hover(target); SDK hover",
+      "rationale": "Menus and hover controls are ordinary interactions; a screenshot does not replace the ability to open them.",
+      "coverage_loss": "The pilot omits custom pointer trajectories, duration and step counts. Trusted pointer motion is not used as a fallback.",
+      "entries": {
+        "tools": ["browser_hover"],
+        "python": ["Tab.hover"],
+        "http": ["POST /api/hover"],
+        "container": ["hover"]
+      }
+    },
+    {
+      "id": "drag",
+      "destination": "direct",
+      "replacement": "browser_drag(source, destination); SDK drag",
+      "rationale": "Target-to-target drag keeps an ordinary interaction out of page-evaluation scripts and names both endpoints in one tab.",
+      "coverage_loss": "No screen coordinates, arbitrary data/file drop or trusted OS drag in the pilot. Both targets must resolve uniquely in the same live document.",
+      "entries": {
+        "tools": ["browser_drag"],
+        "python": ["Tab.drag"],
+        "http": ["POST /api/drag"],
+        "container": ["drag"]
+      }
+    },
+    {
+      "id": "scroll",
+      "destination": "direct",
+      "replacement": "browser_scroll(direction, amount_px, target?); SDK scroll",
+      "rationale": "Scrolling is a bounded, observable page operation. Restricted-mode visibility does not override user-activity or tab-ownership checks.",
+      "coverage_loss": "No first-match override or hidden loadMore authorization bypass. An absent target means the named tab's viewport, never another tab.",
+      "entries": {
+        "tools": ["browser_scroll"],
+        "python": ["Tab.scroll"],
+        "http": ["POST /api/scroll"],
+        "container": ["scroll"]
+      }
+    },
+    {
+      "id": "wait",
+      "destination": "direct",
+      "replacement": "browser_wait for text/text_gone/target/url/title/network_idle; SDK wait with the same typed condition",
+      "rationale": "Bounded observation waits are preferable to arbitrary sleep or script-evaluated page predicates. Each underlying route retains its task-mode restriction.",
+      "coverage_loss": "JavaScript predicates are explicitly excluded; Tab.wait_for(js=...) remains a trusted developer operation. Fixed sleep is local bounded code composition, not evidence of completion. Pilot URL/title waits use literal equality, not legacy regex semantics; legacy pattern waits remain in the trusted API.",
+      "entries": {
+        "tools": ["browser_wait_for"],
+        "python": ["Tab.wait_for"],
+        "http": ["POST /api/wait-for-text", "POST /api/wait-for-element", "POST /api/wait-for-url", "POST /api/wait-for-title", "POST /api/wait-for-network-idle"],
+        "container": ["waitForElement", "waitForUrl", "waitForTitle", "waitForNetworkIdle"]
+      }
+    },
+    {
+      "id": "screenshot",
+      "destination": "direct",
+      "replacement": "browser_screenshot(scope=viewport|element|full_page); SDK screenshot plus image selection for the parent response",
+      "rationale": "Images must remain usable images in MCP responses and have explicit tab/capture provenance. A script receives a bounded image handle, not host filesystem authority.",
+      "coverage_loss": "No arbitrary output path or raw base64-as-text return in the delegated API. Read/draft retain the existing screenshot prohibition. Captures that would reveal/switch a user tab remain held or refused.",
+      "entries": {
+        "tools": ["browser_take_screenshot"],
+        "python": ["Tab.screenshot"],
+        "http": ["GET /api/screenshot", "POST /api/screenshot", "POST /api/element-screenshot", "POST /api/full-page-screenshot"],
+        "container": ["screenshot", "elementScreenshot", "fullPageScreenshot"]
+      }
+    },
+    {
+      "id": "ask-user",
+      "destination": "direct",
+      "replacement": "browser_ask_user(reason, message, tab_id?); SDK ask_user",
+      "rationale": "Sign-in, CAPTCHA, trusted input and user decisions are normal handoff, not failures to be bypassed by code. Only the external approval/user channel supplies authority.",
+      "coverage_loss": "A user answer is not proof a page operation succeeded. Re-observe the named tab before continuing. Script text cannot mark approval accepted.",
+      "entries": {
+        "tools": ["browser_ask_user"],
+        "http": ["POST /api/ask-user"]
+      }
+    },
+    {
+      "id": "request-tab",
+      "destination": "direct",
+      "replacement": "browser_request_tab(tab_id); SDK request_tab, integrated with #496",
+      "rationale": "Requesting use of a user tab is a separate scoped handoff, not a global writable-user-tabs flag. Existing approval provenance must be retained.",
+      "coverage_loss": "No self-grant, ownership spoof, permanent user-tab takeover or approval secret in arguments. The final #496 contract is a dependency, not duplicated implementation.",
+      "entries": {
+        "http": ["POST /api/request-tab"]
+      }
+    },
+    {
+      "id": "resume",
+      "destination": "direct",
+      "replacement": "browser_resume(call, resume_token); SDK resume for a held flat leaf operation; legacy container resume stays in the legacy path",
+      "rationale": "Recovery is rare but essential. Resume refers to a trusted stored operation, rechecks current authority and does not mean rerun the script or resend completed effects.",
+      "coverage_loss": "No agent-supplied observed=not_applied override for an unknown write; no persistent Python instruction pointer. Old container checkpoints cannot cross into a broader flat context. Expired/revoked checkpoints fail without dispatch.",
+      "entries": {
+        "tools": ["browser_resume"],
+        "python": ["Browser.resume"],
+        "http": ["POST /api/resume"]
+      }
+    },
+    {
+      "id": "sequential-code",
+      "destination": "composition",
+      "replacement": "Bounded ordinary Python/JS sequential calls, loops, branches, try/except and local waits; direct calls remain available without scripts",
+      "rationale": "Use the host language, not another workflow DSL. Conditional logic works on authorized results without page evaluation. Every leaf call has independent trusted attribution.",
+      "coverage_loss": "No JSON-template substitution language, container DSL compatibility or atomicity. Retry templates are for safe observations/pre-dispatch refusals only; unknown or successful writes are never automatically replayed. Old container APIs remain on the finite legacy path.",
+      "entries": {
+        "tools": ["browser_batch", "browser_retry"],
+        "python": ["Browser.batch", "Browser.retry"],
+        "http": ["POST /api/batch", "POST /api/retry"],
+        "container": ["sequence", "if", "while", "try", "retry", "sleep"]
+      }
+    },
+    {
+      "id": "fanout",
+      "destination": "composition",
+      "replacement": "Sequential loops over explicit tab ids; legacy broadcast remains available to trusted developers",
+      "rationale": "Multi-tab research needs explicit identities, not concurrency in the initial Python pilot.",
+      "coverage_loss": "The pilot does not preserve concurrent fanout latency or timing semantics. This is not an equivalent performance replacement for broadcast.",
+      "entries": {
+        "tools": ["browser_broadcast"],
+        "python": ["Browser.broadcast"],
+        "http": ["POST /api/broadcast"],
+        "container": ["broadcast"]
+      }
+    },
+    {
+      "id": "parallel",
+      "destination": "operator",
+      "replacement": "Existing trusted parallel API; sequential flat/SDK calls for the pilot",
+      "rationale": "Concurrency and conflict/ownership scheduling are deliberately outside the initial runner contract, not hidden in a generic escape hatch.",
+      "coverage_loss": "No delegated parallel API or concurrent SDK calls. The ordinary language cannot bypass the broker's single in-flight operation limit.",
+      "entries": {
+        "tools": ["browser_parallel"],
+        "python": ["Browser.parallel"],
+        "container": ["parallel"]
+      }
+    },
+    {
+      "id": "named-workflows",
+      "destination": "operator",
+      "replacement": "Existing named workflows in the trusted/legacy interface; explicitly authored code for supported operation sequences",
+      "rationale": "A new runner is not a durable workflow engine or a catalog of recipes. Preserve existing named workflows rather than silently translate their semantics.",
+      "coverage_loss": "No delegated workflow discovery/execution, stored variable interpolation or durable checkpoints. Code alternatives must state their own bounds and partial effects.",
+      "entries": {
+        "tools": ["browser_workflow", "browser_workflows"],
+        "python": ["Browser.workflow", "Browser.workflows"],
+        "http": ["GET /api/workflows", "POST /api/workflow"]
+      }
+    },
+    {
+      "id": "page-evaluation",
+      "destination": "operator",
+      "replacement": "Existing explicitly trusted developer page-JavaScript API; typed read/query/wait and local code for the pilot",
+      "rationale": "Host-language composition is not permission to execute page JavaScript, inspect raw sensitive values or inject HTML. Ordinary operations must work with the signed extension.",
+      "coverage_loss": "No delegated evaluate/js predicate/syncBarrier or custom page code in the pilot. There is no silent fallback to eval when a selector or typed operation is unsupported.",
+      "entries": {
+        "tools": ["browser_evaluate", "browser_sync_barrier"],
+        "python": ["Tab.evaluate", "Browser.sync_barrier"],
+        "http": ["POST /api/js", "POST /api/wait-for-result", "POST /api/sync-barrier"],
+        "container": ["js", "waitForResult", "syncBarrier"]
+      }
+    },
+    {
+      "id": "trusted-input",
+      "destination": "operator",
+      "replacement": "Existing explicitly approved trusted-input API; browser_ask_user(reason=trusted_input) for the delegated pilot",
+      "rationale": "OS pointer/keyboard actions can affect the user's workspace and are not safe automatic substitutes for synthetic DOM interaction.",
+      "coverage_loss": "No autonomous OS-level input in the candidate. Pages that require trusted input need human handoff or an explicitly operated legacy path; benchmark coverage must disclose this.",
+      "entries": {
+        "tools": ["browser_trusted_click", "browser_trusted_type", "browser_trusted_press_key", "browser_trusted_drag"],
+        "python": ["Tab.trusted_click"],
+        "http": ["POST /api/trusted-click", "POST /api/trusted-type", "POST /api/trusted-press-key", "POST /api/trusted-drag"],
+        "container": ["trustedClick"]
+      }
+    },
+    {
+      "id": "file-input",
+      "destination": "operator",
+      "replacement": "Existing trusted upload/drop API with file authority; user handoff for the pilot",
+      "rationale": "A page file input does not grant access to arbitrary host paths. A secure artifact-import capability is separate from the first composition pilot.",
+      "coverage_loss": "No delegated upload, file drop or arbitrary MIME-data drop in the pilot. This includes existing supported browser_drop; it is not mislabeled not_supported.",
+      "entries": {
+        "tools": ["browser_file_upload", "browser_drop"],
+        "python": ["Tab.upload_files", "Tab.drop"],
+        "http": ["POST /api/upload-file"]
+      }
+    },
+    {
+      "id": "dialog-policy",
+      "destination": "operator",
+      "replacement": "Existing trusted future-dialog policy API; user handoff for the pilot",
+      "rationale": "The current API configures future alert/confirm/prompt handling; it is not a one-shot response to a currently displayed dialog. Do not silently change that contract into auto-approval.",
+      "coverage_loss": "No delegated future-dialog policy in the pilot. Native modal handling may require the user; page dialogs never stand in for Kitsune approval.",
+      "entries": {
+        "tools": ["browser_handle_dialog"],
+        "python": ["Tab.handle_dialogs"],
+        "http": ["POST /api/handle-dialog"]
+      }
+    },
+    {
+      "id": "focus-submit-media",
+      "destination": "operator",
+      "replacement": "Existing trusted focus/blur/submit/media helpers; explicit ordinary click/press only when that is the intended task action",
+      "rationale": "Focus, synthetic form submission and media control have distinct side effects. They must not be falsely advertised as exact replacements by a generic click.",
+      "coverage_loss": "No dedicated focus/blur, programmatic form submit or media playback API in the pilot. A caller may choose an actual submit button/Enter in act mode, but equivalence is not assumed.",
+      "entries": {
+        "tools": ["browser_focus", "browser_blur", "browser_submit_form"],
+        "python": ["Tab.focus", "Tab.blur", "Tab.submit_form"],
+        "http": ["POST /api/focus", "POST /api/blur", "POST /api/submit-form"],
+        "container": ["focusElement", "blurElement", "submitForm", "media"]
+      }
+    },
+    {
+      "id": "click-wait",
+      "destination": "composition",
+      "replacement": "browser_click followed by browser_wait/read, with explicit dispatched/observed handling",
+      "rationale": "Waiting does not repeat the click. The common ledger retains the click outcome if the following observation times out.",
+      "coverage_loss": "Two composed calls do not reproduce the legacy combined navigation listener's race/timing semantics. Fast transient navigations may need an explicit final URL observation; a timeout is never permission to click again.",
+      "entries": {
+        "tools": ["browser_click_and_wait_navigation"],
+        "http": ["POST /api/click-and-wait-navigation"],
+        "container": ["clickAndWaitNavigation"]
+      }
+    },
+    {
+      "id": "visual-inspection",
+      "destination": "operator",
+      "replacement": "Existing trusted bounds/style/selector/metrics/highlight APIs; normal pilot read/find/screenshot for observations",
+      "rationale": "Exact layout diagnostics and visual overlays are retained, but not expanded into a second inspection catalog in the first pilot.",
+      "coverage_loss": "Screenshots do not replace computed CSS, box metrics or selector explanations. The pilot has no highlight mutation or layout metrics API.",
+      "entries": {
+        "tools": ["browser_bounds", "browser_computed_style", "browser_explain_selector", "browser_full_page_metrics", "browser_highlight"],
+        "python": ["Tab.bounds", "Tab.computed_style", "Tab.explain_selector", "Tab.full_page_metrics", "Tab.highlight", "Tab.clear_highlight"],
+        "http": ["POST /api/bounds", "POST /api/computed-style", "POST /api/explain-selector", "POST /api/full-page-metrics", "POST /api/highlight", "POST /api/clear-highlight"],
+        "container": ["getBounds", "getComputedStyle", "explainSelector", "fullPageMetrics", "highlight"]
+      }
+    },
+    {
+      "id": "window-and-tab-management",
+      "destination": "operator",
+      "replacement": "Existing trusted window/focus/pin/mute/move/zoom APIs; pilot uses explicit background tab ids",
+      "rationale": "User workspace/window manipulation and implicit selected-tab state are different from ordinary background research. Benchmark viewport setup belongs to the fixture operator, not an extra D-only SDK.",
+      "coverage_loss": "No delegated window create/close/focus/resize, tab select/move/detach/duplicate/pin/mute or zoom controls. Tab inventory retains safe window/ownership metadata; it is not full window inventory.",
+      "entries": {
+        "tools": ["browser_windows", "browser_create_window", "browser_close_window", "browser_focus_window", "browser_resize", "browser_move_tab", "browser_detach_tab", "browser_duplicate_tab", "browser_pin_tab", "browser_mute_tab", "browser_get_zoom", "browser_set_zoom"],
+        "python": ["Windows.list", "Windows.create", "Windows.close", "Windows.focus", "Browser.active_tab", "Tab.show", "Tab.resize_window", "Tab.move", "Tab.detach", "Tab.duplicate", "Tab.pin", "Tab.mute", "Tab.zoom", "Tab.set_zoom"],
+        "http": ["POST /api/windows", "POST /api/create-window", "POST /api/close-window", "POST /api/focus-window", "POST /api/resize-window", "POST /api/switch-tab", "POST /api/move-tab", "POST /api/detach-tab", "POST /api/duplicate-tab", "POST /api/pin-tab", "POST /api/mute-tab", "POST /api/get-zoom", "POST /api/set-zoom"],
+        "container": ["getWindows", "createWindow", "closeWindow", "focusWindow", "resizeWindow", "switchTab", "moveTab", "detachTab", "duplicateTab", "pinTab", "muteTab", "getZoom", "setZoom"]
+      }
+    },
+    {
+      "id": "tab-liveness",
+      "destination": "operator",
+      "replacement": "Existing trusted wake/keep-alive API; ordinary operation errors diagnose a discarded/unavailable tab",
+      "rationale": "Long-running background liveness is separate lifecycle management, not a reason to make initial scripts persistent daemons.",
+      "coverage_loss": "No delegated wake or persistent keep-alive service. The pilot cannot promise legacy anti-unload behavior.",
+      "entries": {
+        "tools": ["browser_wake_tab", "browser_keep_alive", "browser_keep_alive_stop"],
+        "python": ["Tab.wake", "Browser.keep_alive", "Browser.stop_keep_alive"],
+        "http": ["POST /api/wake-tab", "POST /api/keep-alive", "POST /api/keep-alive-stop"],
+        "container": ["wakeTab"]
+      }
+    },
+    {
+      "id": "tags-and-pools",
+      "destination": "operator",
+      "replacement": "Existing trusted tags/pools; ordinary local dictionaries of returned tab ids for bounded code",
+      "rationale": "Local naming is composition; shared pools and persistent cross-call tags have additional lifetime/ownership semantics that must not be smuggled into a fresh script scope.",
+      "coverage_loss": "No delegated global tags, pool resizing/acquisition/release or persistent local variables. Successive calls explicitly pass retained tab ids.",
+      "entries": {
+        "tools": ["browser_tag_tab", "browser_resolve_tag", "browser_list_tags", "browser_untag_tab", "browser_tab_pool", "browser_pool_acquire", "browser_pool_release"],
+        "python": ["Tab.tag", "Tags.tab", "Tags.list", "Tags.remove", "Pool.create", "Pool.acquire", "Pool.release"],
+        "http": ["POST /api/tag-tab", "POST /api/resolve-tag", "GET /api/list-tags", "POST /api/list-tags", "POST /api/untag-tab", "POST /api/tab-pool", "POST /api/pool-acquire", "POST /api/pool-release"]
+      }
+    },
+    {
+      "id": "console-and-network-observation",
+      "destination": "operator",
+      "replacement": "Existing trusted console/resource-timing capture APIs, with existing redaction/mode/cap ceilings",
+      "rationale": "Debug capture can be valuable, but is not required by the six initial workflow examples. Low use is not evidence of no value; retain and disclose it.",
+      "coverage_loss": "No delegated console buffer, request-detail/resource-timing or capture control API in the pilot. This is a diagnostic-coverage reduction, not an equivalently expressive replacement.",
+      "entries": {
+        "tools": ["browser_console_messages", "browser_network_requests", "browser_network_request", "browser_capture_network"],
+        "python": ["Tab.console_logs", "Tab.watch_console", "Network.start", "Network.stop", "Network.clear", "Network.requests", "Network.resources"],
+        "http": ["POST /api/console-logs", "POST /api/watch-console", "POST /api/capture-network"],
+        "container": ["consoleLogs", "watchConsole", "captureNetwork"]
+      }
+    },
+    {
+      "id": "network-mutation",
+      "destination": "operator",
+      "replacement": "Existing explicitly operated interception API",
+      "rationale": "Request interception changes browser/network behavior and is not ordinary DOM composition.",
+      "coverage_loss": "No delegated interception rules or log access; no mock-route backend or network client is introduced.",
+      "entries": {
+        "tools": ["browser_intercept"],
+        "python": ["Intercept.add", "Intercept.rules", "Intercept.clear", "Intercept.log"],
+        "http": ["POST /api/intercept"],
+        "container": ["intercept"]
+      }
+    },
+    {
+      "id": "downloads",
+      "destination": "operator",
+      "replacement": "Existing trusted download start/list/cancel API",
+      "rationale": "Browser-wide download records and host output paths require an explicit authority/output design, not an arbitrary path argument in delegated code.",
+      "coverage_loss": "No delegated download management or download-history access in the pilot. Normal page clicks may still initiate site downloads; that is a browser side effect and not permission to read saved files.",
+      "entries": {
+        "tools": ["browser_downloads"],
+        "python": ["Downloads.start", "Downloads.list", "Downloads.cancel"],
+        "http": ["POST /api/downloads"],
+        "container": ["downloads"]
+      }
+    },
+    {
+      "id": "storage",
+      "destination": "operator",
+      "replacement": "Existing explicitly granted storage/cookie APIs outside the delegated pilot",
+      "rationale": "Cookie/page-storage contents are sensitive. Neither an act mode nor a scripting language supplies the named-only storage grant.",
+      "coverage_loss": "No delegated cookie or local/session-storage read/write API, even if legacy storage is enabled. Operators needing it retain the explicit legacy/developer path; removing KITSUNE_CAPS must never turn it on implicitly.",
+      "entries": {
+        "tools": ["browser_cookies", "browser_storage"],
+        "python": ["Cookies.get", "Cookies.set", "Cookies.remove", "Cookies.clear", "PageStorage.get", "PageStorage.set", "PageStorage.items", "PageStorage.remove", "PageStorage.clear"],
+        "http": ["POST /api/cookies", "POST /api/storage"],
+        "container": ["cookies", "storageOp"]
+      }
+    },
+    {
+      "id": "clipboard",
+      "destination": "operator",
+      "replacement": "Existing explicitly granted clipboard API outside the delegated pilot",
+      "rationale": "The system clipboard is user data and a cross-application output channel; it is not temporary script storage.",
+      "coverage_loss": "No delegated clipboard reads or writes; local script variables are not a clipboard replacement.",
+      "entries": {
+        "tools": ["browser_clipboard"],
+        "python": ["Clipboard.read", "Clipboard.write"],
+        "http": ["POST /api/clipboard"],
+        "container": ["clipboard"]
+      }
+    },
+    {
+      "id": "history",
+      "destination": "operator",
+      "replacement": "Existing explicitly granted history/bookmark lookup APIs outside the delegated pilot",
+      "rationale": "History and bookmarks are named-only personal context; they must not become ambient access when the visible catalog shrinks.",
+      "coverage_loss": "No delegated history search, visits or bookmark search. Tab inventory and page reading are not substitutes for historical personal context.",
+      "entries": {
+        "tools": ["browser_history_search", "browser_history_visits", "browser_bookmarks_search"],
+        "python": ["History.search", "History.visits", "Bookmarks.search"],
+        "http": ["POST /api/history-search", "POST /api/history-visits", "POST /api/bookmarks-search"]
+      }
+    },
+    {
+      "id": "saved-sessions-and-clearing",
+      "destination": "operator",
+      "replacement": "Existing explicitly operated saved-session and browsing-data APIs",
+      "rationale": "Saving/loading personal state and deleting browser data are separate privileged lifecycle operations, not fresh SDK session handles.",
+      "coverage_loss": "No delegated persistent session snapshots or browsing-data deletion. A flat session id identifies a caller context; it does not expose saved cookies or restore a browser profile.",
+      "entries": {
+        "tools": ["browser_save_session", "browser_load_session", "browser_list_sessions", "browser_delete_session", "browser_clear_browsing_data"],
+        "python": ["Sessions.save", "Sessions.load", "Sessions.list", "Sessions.delete", "Browser.clear_browsing_data"],
+        "http": ["POST /api/save-session", "POST /api/load-session", "GET /api/list-sessions", "POST /api/list-sessions", "POST /api/delete-session", "POST /api/clear-browsing-data"],
+        "container": ["clearBrowsingData"]
+      }
+    },
+    {
+      "id": "operator-diagnostics",
+      "destination": "operator",
+      "replacement": "Existing status/version/health/log/audit/scheduler/policy/cache/lifecycle APIs; sanitized diagnosis in ordinary errors",
+      "rationale": "The agent needs actionable connection errors, not authority to read every client's audit log, reset cache/policy or restart the shared daemon. Preserve exact diagnostics for operators.",
+      "coverage_loss": "No delegated global logs/audit/scheduler, policy get/set, cache reset, daemon shutdown or extension reload. Ordinary error diagnosis must still identify unavailable/mismatched connections.",
+      "entries": {
+        "tools": ["browser_status", "browser_health", "browser_logs", "browser_audit", "browser_scheduler", "browser_get_policy", "browser_set_policy", "browser_cache", "browser_reload_extension"],
+        "python": ["Browser.status", "Browser.version", "Browser.health", "Browser.logs", "Browser.audit", "Browser.scheduler", "Browser.cache", "Browser.reload_extension", "Policy.get", "Policy.set"],
+        "http": ["GET /", "GET /api/status", "GET /api/version", "GET /api/health", "POST /api/health", "GET /api/logs", "POST /api/logs", "GET /api/audit", "POST /api/audit", "GET /api/scheduler", "POST /api/scheduler", "GET /api/get-policy", "POST /api/get-policy", "POST /api/set-policy", "POST /api/cache", "POST /api/reload-extension", "POST /api/shutdown"],
+        "container": ["reloadExtension"]
+      }
+    },
+    {
+      "id": "internal-handoff-and-observation-transport",
+      "destination": "operator",
+      "replacement": "Trusted broker/server/extension transport only; direct request_tab/ask_user and image blocks are the public interfaces",
+      "rationale": "Activity accounting, preflight write checks, handoff-channel binding and the screenshot viewer are enforcement/transport plumbing, not delegated browser primitives.",
+      "coverage_loss": "No raw access to these routes from code. A preflight check never becomes authorization for a later write; the actual operation rechecks authority.",
+      "entries": {
+        "http": ["GET /api/handoff-session", "POST /api/mcp-activity", "POST /api/needs-user", "POST /api/tab-write-check", "GET /view"]
+      }
+    },
+    {
+      "id": "developer-connection",
+      "destination": "operator",
+      "replacement": "Existing trusted kitsune.connect and Browser.request, outside the worker; injected session-bound typed SDK inside it",
+      "rationale": "These APIs intentionally construct connections and expose raw routes. They cannot be made a delegated authority boundary by hiding names or importing a smaller module.",
+      "coverage_loss": "No delegated connect/reconnect/replace_bridge, raw client/headers/routes, confirm callbacks or credential access. Existing trusted Python API remains source-compatible and is not claimed sandboxed.",
+      "entries": {
+        "python": ["connect", "Browser.request"]
+      }
+    },
+    {
+      "id": "gateway",
+      "destination": "deprecate",
+      "replacement": "One flat published tool-set and a fixed SDK guide; finite explicit legacy surface for search/call/publish clients",
+      "rationale": "Ordinary work must not require catalog discovery/publication or tools/list_changed support. Documentation lookup is not a renamed gateway.",
+      "coverage_loss": "Legacy search/call/publish protocols do not work against the flat interface. Old visibility/cap settings require explicit migration or selection of the legacy surface, never silent widening.",
+      "entries": {
+        "gateway": ["browser_tools_search", "browser_tools_call", "browser_tools_publish"]
+      }
+    },
+    {
+      "id": "unsupported-compatibility",
+      "destination": "deprecate",
+      "replacement": "Remove unsupported compatibility stubs from the flat surface; bounded browser_script is not Playwright run_code",
+      "rationale": "These two entries already return not_supported. Carrying them as apparent capabilities misleads agents and adds schema cost without coverage.",
+      "coverage_loss": "No working feature is removed by dropping the stubs. CSS media emulation and arbitrary Playwright page code remain unsupported; page evaluation is not granted as a replacement.",
+      "entries": {
+        "tools": ["browser_emulate_media", "browser_run_code_unsafe"]
+      }
+    },
+    {
+      "id": "legacy-python-functions",
+      "destination": "operator",
+      "replacement": "Each existing kitsune.tools browser_* function remains a trusted legacy Python entry point; the injected SDK exposes only the typed operation subset above",
+      "rationale": "The documented low-level module has 104 callable functions, including nine names absent from tools.TOOLS. Their signatures differ from the MCP adapters. Inventory them explicitly instead of pretending registry membership covers the Python API.",
+      "coverage_loss": "No direct import/call of this module inside delegated code. Its raw parameters, global connection state and approval/token handling are not the new SDK contract. Exact legacy functionality remains outside the worker with its existing restrictions.",
+      "entries": {
+        "legacy_python": [
+          "browser_ask_user", "browser_audit", "browser_back", "browser_batch", "browser_blur", "browser_bookmarks_search", "browser_bounds", "browser_broadcast", "browser_cache", "browser_capture_network", "browser_check", "browser_clear_browsing_data", "browser_click", "browser_click_and_wait_navigation", "browser_clipboard", "browser_close_window", "browser_computed_style", "browser_console_logs", "browser_cookies", "browser_create_window", "browser_delete_session", "browser_detach_tab", "browser_dom", "browser_double_click", "browser_downloads", "browser_drag", "browser_duplicate_tab", "browser_explain_selector", "browser_find", "browser_focus", "browser_focus_window", "browser_form_fill", "browser_forms", "browser_forward", "browser_full_page_metrics", "browser_get_policy", "browser_get_zoom", "browser_handle_dialog", "browser_health", "browser_highlight", "browser_history_search", "browser_history_visits", "browser_hover", "browser_html", "browser_iframes", "browser_images", "browser_intercept", "browser_js", "browser_keep_alive", "browser_keep_alive_stop", "browser_keypress", "browser_links", "browser_list_sessions", "browser_list_tags", "browser_load_session", "browser_logs", "browser_markdown", "browser_meta", "browser_move_tab", "browser_mute_tab", "browser_navigate", "browser_page_info", "browser_page_text", "browser_parallel", "browser_pin_tab", "browser_pool_acquire", "browser_pool_release", "browser_query", "browser_readability", "browser_reload_extension", "browser_reload_tab", "browser_resolve_tag", "browser_resume", "browser_retry", "browser_save_session", "browser_scheduler", "browser_screenshot", "browser_scroll", "browser_select_option", "browser_set_policy", "browser_set_zoom", "browser_snapshot", "browser_status", "browser_storage", "browser_structured_data", "browser_submit_form", "browser_sync_barrier", "browser_tab_list", "browser_tab_pool", "browser_tabs", "browser_tag_tab", "browser_trusted_click", "browser_trusted_drag", "browser_trusted_press_key", "browser_trusted_type", "browser_type", "browser_untag_tab", "browser_upload_file", "browser_wait_for", "browser_wake_tab", "browser_watch_console", "browser_windows", "browser_workflow", "browser_workflows"
+        ]
+      }
+    }
+  ]
+}

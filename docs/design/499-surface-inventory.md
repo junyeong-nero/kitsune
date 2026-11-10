@@ -1,14 +1,18 @@
 # #499: existing public operation inventory
 
-Status: inventory foundation, **not an approved final surface or a completed
-migration map**. Parent: #498. This branch builds on the prerequisite test repair
-in PR #505; the product revision being inventoried is `fd9b90e`.
+Status: inventory and disposition proposal, **not an approved final surface or
+completed #499 design**. Parent: #498. This branch builds on the prerequisite test
+repair in PR #505; the product revision being inventoried is `fd9b90e`.
+
+The [explicit capability map](499-capability-map.json) and
+[shared contract proposal](499-flat-contract.md) accompany this inventory.
 
 ## Reproduce without a browser
 
 ```sh
 uv run --locked python scripts/toolset_inventory.py
 uv run --locked python scripts/toolset_inventory.py --json
+uv run --locked python scripts/toolset_inventory.py --check-map
 uv run --locked python -m unittest discover -s tests -p test_toolset_inventory.py -v
 ```
 
@@ -24,20 +28,28 @@ At the product baseline:
 | Surface | Entries | Identity and coverage |
 | --- | ---: | --- |
 | `tools` | 109 | Every `tools.TOOLS` entry, including mode-specific `browser_tab_list` and compatibility-only unsupported tools |
+| `legacy_python` | 104 | Documented low-level `kitsune.tools` functions, including nine names not present in the tool registry |
 | `gateway` | 3 | Search, call and publish registrations; separate from capability groups |
 | `python` | 129 | `connect` and public methods declared by the Browser/Tab and namespace classes in `browser.py` |
 | `http` | 140 | Each registered `GET path` and `POST path`, including aliases and capability-exempt routes |
 | `container` | 88 | Caller-facing batch action aliases plus bridge-handled control flow |
 
-These 469 entries are **not 469 distinct browser capabilities**. Multiple tools,
+These 573 entries are **not 573 distinct browser capabilities**. Multiple tools,
 SDK methods, HTTP verbs and container aliases implement the same behavior. Counts
 are not a tool-count target, context cost, token measurement, or workload evidence.
+The first foundation commit (`dff9c9d`) counted 469 entries; source review then found
+the documented low-level Python functions were not fully represented by the MCP
+registry. Adding their distinct signatures corrects inventory scope, not product
+behavior or a benchmark baseline.
 
-The six inventory tests check complete registration sets, HTTP policy-table
-coverage, developer escape hatches and sensitive namespaces, container aliases,
-CLI output and a registration shape change that requires manual review. The
-extractor must fail visibly if the registration syntax changes beyond what it
-understands; it must not silently drop a new entry to keep the catalog smaller.
+The ten inventory/mapping tests check registration sets, HTTP policy-table
+coverage, both Python surfaces, sensitive escape hatches, container aliases, CLI
+output, registration-shape changes and explicit dispositions. Every entry is
+assigned once across 48 groups, each with a replacement, rationale and coverage
+loss. New, duplicated or stale entries fail; there is no fallback classification.
+This proves name coverage, not behavioral equivalence or implemented support.
+The extractor must fail visibly if registration syntax changes beyond what it
+understands; it must not silently drop an entry to keep the catalog smaller.
 
 ## Interpretation rules for the disposition map
 
@@ -57,11 +69,17 @@ understands; it must not silently drop a new entry to keep the catalog smaller.
   Constructors, namespace attributes and exception classes are not separate
   operation entries. The contract must still explicitly address `Browser`/`Tab`
   construction, access to the client, handle lifetime and error semantics.
-- Public `kitsune.tools` functions are included under `tools`, not counted again
-  as a third Python implementation. CLI/daemon administration remains an operator
-  concern; inventorying an HTTP route does not propose adding a direct tool for it.
+- Public `kitsune.tools` functions are separately counted under `legacy_python`.
+  Their signatures are not necessarily the MCP adapter signatures. In particular,
+  `browser_js`, `browser_screenshot`, `browser_form_fill`, `browser_upload_file`,
+  `browser_back`, `browser_double_click`, `browser_keypress`, `browser_console_logs`
+  and `browser_watch_console` are not registry names. CLI/daemon administration
+  remains an operator concern; listing a route does not propose a direct tool.
 
-## Decisions this exposes, not yet resolves
+## Design questions exposed by the inventory
+
+The [contract proposal](499-flat-contract.md) now records decisions and explicit
+implementation gates for these questions; none is a claim of runtime enforcement.
 
 1. The default 27-tool surface is not the coverage baseline. Storage/history,
    rare handoff/recovery operations and mode-specific tools must have explicit
@@ -93,11 +111,18 @@ also passed. No product/extension source changed, and no new browser or model
 run was needed for the read-only extractor. The separate baseline's real-browser
 evidence remains in [498-baseline.md](498-baseline.md).
 
+Follow-up mapping validation passed all ten focused tests, all 70 Node harnesses,
+and isolated full discovery (1,259 tests, 235 skips, zero failures/errors). The
+[validation log](499-validation.md) retains the unsuccessful isolation attempt,
+its diagnostic cause, the corrected invocation and full results. Use that isolated
+invocation for future full unit runs; an ordinary environment can leave existing
+unmocked activity reporting pointed at the user's default bridge.
+
 ## Remaining #499 acceptance work
 
-- Assign **every entry** a concrete destination and rationale, with checks for
-  unclassified, duplicated and stale mapping entries. Grouping entries that share
-  a rationale is acceptable; a catch-all that masks new capabilities is not.
+- Review the completed explicit disposition map against the concrete schemas and
+  examples. Name coverage is green, but exact behavioral gaps must remain visible;
+  mapping an API to an operator is not proof the delegated pilot replaces it.
 - Specify concrete direct schemas, Python signatures and intended JS counterparts,
   including intentional gaps. Define mode/grant exposure, explicit tab targeting,
   session/ref lifetime, strict matching, deadlines, images, output bounds,

@@ -1,5 +1,7 @@
 """The #499 design inventory accounts for registrations, not only today's default list."""
 import ast
+from copy import deepcopy
+import inspect
 import json
 from pathlib import Path
 import subprocess
@@ -9,7 +11,7 @@ from unittest.mock import patch
 
 from kitsune import tools
 from kitsune.capabilities import ACTION_GROUPS, OPEN_ROUTES, ROUTE_GROUPS
-from scripts.toolset_inventory import _batch_actions, collect
+from scripts.toolset_inventory import _batch_actions, collect, mapping_errors
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -26,6 +28,15 @@ class ToolsetInventoryTests(unittest.TestCase):
                          {"browser_tools_search", "browser_tools_call", "browser_tools_publish"})
         self.assertEqual(self.inventory["tools"]["browser_tab_list"]["modes"], ["draft", "read"])
         self.assertIn("browser_run_code_unsafe", self.inventory["tools"], "unsupported public entries still count")
+
+    def test_legacy_python_helpers_are_not_confused_with_registered_tools(self):
+        expected = {name for name, function in vars(tools).items()
+                    if name.startswith("browser_") and inspect.isfunction(function)
+                    and function.__module__ == tools.__name__}
+        self.assertEqual(set(self.inventory["legacy_python"]), expected)
+        for name in ("browser_js", "browser_screenshot", "browser_form_fill", "browser_upload_file"):
+            self.assertIn(name, self.inventory["legacy_python"])
+            self.assertNotIn(name, self.inventory["tools"])
 
     def test_http_methods_and_capability_exempt_routes_are_not_lost(self):
         routes = self.inventory["http"]
@@ -60,6 +71,29 @@ class ToolsetInventoryTests(unittest.TestCase):
         tree = ast.parse("BATCH_ACTION_MAP = {**{name: 'different' for name in ('click',)}}")
         with self.assertRaisesRegex(ValueError, "Review changed"):
             _batch_actions(tree)
+
+    def test_explicit_dispositions_cover_every_surface_once(self):
+        mapping = json.loads((ROOT / "docs/design/499-capability-map.json").read_text())
+        self.assertEqual(mapping_errors(self.inventory, mapping), [])
+
+    def test_mapping_has_no_catch_all_for_new_or_stale_entries(self):
+        mapping = json.loads((ROOT / "docs/design/499-capability-map.json").read_text())
+        inventory = deepcopy(self.inventory)
+        inventory["http"]["POST /api/new-operation"] = {}
+        mapping["groups"][0]["entries"]["tools"].extend(["browser_tabs", "removed_tool"])
+        self.assertEqual(mapping_errors(inventory, mapping), [
+            "duplicate entry: tools:browser_tabs",
+            "stale entry: tools:removed_tool",
+            "unmapped entry: http:POST /api/new-operation",
+        ])
+
+    def test_mapping_requires_rationale_replacement_and_coverage_loss(self):
+        mapping = json.loads((ROOT / "docs/design/499-capability-map.json").read_text())
+        mapping["groups"][0].update(destination="unspecified", rationale="", replacement="", coverage_loss="")
+        self.assertEqual(mapping_errors(self.inventory, mapping), [
+            "invalid destination: tabs", "missing coverage_loss: tabs",
+            "missing rationale: tabs", "missing replacement: tabs",
+        ])
 
     def test_cli_summary_matches_entries(self):
         result = subprocess.run([sys.executable, str(ROOT / "scripts/toolset_inventory.py")],
