@@ -1,7 +1,7 @@
 # #499: existing public operation inventory
 
-Status: inventory and disposition proposal, **not an approved final surface or
-completed #499 design**. Parent: #498. This branch builds on the prerequisite test
+Status: inventory and disposition proposal with design-stage self-review;
+**not implemented or approved for default rollout**. Parent: #498. This branch builds on the prerequisite test
 repair in PR #505; the product revision being inventoried is `fd9b90e`.
 
 The [explicit capability map](499-capability-map.json) and
@@ -118,21 +118,14 @@ its diagnostic cause, the corrected invocation and full results. Use that isolat
 invocation for future full unit runs; an ordinary environment can leave existing
 unmocked activity reporting pointed at the user's default bridge.
 
-## Remaining #499 acceptance work
+## Companion design evidence
 
-- Review the completed explicit disposition map against the concrete schemas and
-  examples. Name coverage is green, but exact behavioral gaps must remain visible;
-  mapping an API to an operator is not proof the delegated pilot replaces it.
-- Specify concrete direct schemas, Python signatures and intended JS counterparts,
-  including intentional gaps. Define mode/grant exposure, explicit tab targeting,
-  session/ref lifetime, strict matching, deadlines, images, output bounds,
-  dispatched/observed/unknown outcomes and recovery.
-- Supply paired examples for read, draft, multi-tab research, repeated work,
-  screenshots and user handoff. Avoid another generic dispatcher or workflow DSL.
-- Measure the actual default/gateway definitions and instructions, proposed
-  definitions and delivered SDK guide. Report character and tokenizer quantities
-  separately, without claiming an efficiency improvement before #504.
-- Record design review findings, migration constraints and implementation blockers.
+Concrete schemas, Python/intended-JS declarations, the six paired examples,
+interface measurements and the acceptance-to-evidence review are linked from
+[499-flat-contract.md](499-flat-contract.md) and [499-review.md](499-review.md).
+Name coverage is green, but mapping an API to an operator is not proof the
+candidate replaces it. The review retains exact coverage losses and all runtime,
+benchmark, migration and approval gates.
 
 No product behavior, default, registration or developer SDK changed in this
 inventory foundation. This document alone does not satisfy #499 or authorize the

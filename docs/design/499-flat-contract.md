@@ -1,6 +1,6 @@
 # #499: flat tools and a shared delegated operation contract
 
-**Status: proposal under review; not implemented or approved for default rollout.**
+**Status: design-stage self-review complete; not implemented or approved for default rollout.**
 Parent #498; draft PR #506. Runtime isolation belongs to #500, execution to #501,
 opt-in exposure to #502, comparison to #504, and later JS support to #503.
 
@@ -57,7 +57,7 @@ All operation time budgets are integer **milliseconds**. Unless noted, the
 proposed `timeout_ms` default is 10,000, accepted range 1–60,000; the enclosing
 run's remaining deadline can reduce it, never extend it.
 
-| Direct tool | Python operation/signature sketch | Purpose/defaults |
+| Direct tool | SDK operation (resolved wire defaults) | Purpose/defaults |
 | --- | --- | --- |
 | `browser_tabs` | `tabs()`; `new_tab(url="about:blank", timeout_ms=15000)`; `close_tab(tab_id=T, timeout_ms=10000)` | `action=list` by default; `open` is background; `close` must name T |
 | `browser_navigate` | `navigate(tab_id=T, url=..., timeout_ms=15000)`; `back`, `forward`, `reload` with T | `action=goto`; other actions take no URL; completion means declared load observation, not application success |
@@ -98,9 +98,23 @@ parameters are keyword-only except the JS options object. Unknown keys,
 including `headers`, `confirm`, `mode` on non-input operations, `first`, `filename`
 and `policy`, are rejected before dispatch rather than ignored or forwarded.
 
-This table is a signature sketch, not yet the acceptance-complete concrete schema
-artifact. The exact JSON Schemas, full SDK signature file and paired validated
-examples are still required before this design is review-ready.
+The concrete input schemas are in [499-flat-schemas.json](499-flat-schemas.json),
+with reusable local definitions expanded into self-contained published schemas by
+`scripts/flat_contract.py`. Read/draft branches are narrowed before publication;
+C and D differ only by the outer runner definition. No runtime is registered.
+Exact Python signatures are in [499-sdk.pyi](499-sdk.pyi), intended JS signatures
+in [499-sdk.d.ts](499-sdk.d.ts). Python None omits an optional field; the table
+shows resolved wire defaults, not literal Python sentinel defaults. Top/bottom
+scrolls forbid amount_px; cardinal scrolls default to 500. JSON null is not an
+alternative spelling of omission.
+
+The [six paired examples](499-examples.json) specify identical public preconditions,
+direct requests, Python programs and synthetic replies/output. Tests compare
+normalized request traces, mode/argument constraints and signature defaults,
+parse the JS declarations, and show the repeated-work example stops on truncation
+or an unknown write. They are **offline design tests**, not browser conformance,
+a sandbox, implemented JS support or benchmark evidence. The handoff example
+uses an explicitly external synthetic event between two fresh programs.
 
 ## 3. Startup mode and authority
 
@@ -253,8 +267,10 @@ shorter approval expiry always wins.
   image handle with `emit_image(handle)` for the enclosing result. It cannot ask
   the broker to open an arbitrary host path or decode a self-supplied base64 blob
   as a trusted screenshot. Image handles live for the enclosing run/response.
-- Proposed per-outer-call image bounds: four images, 8 MiB each, 16 MiB total.
-  Oversize/omitted images have explicit metadata; no broken image or opaque
+- Proposed per-outer-call image bounds: four images, 8 MiB each, 16 MiB total
+  measured as decoded image bytes; base64/transport overhead is separate and any
+  smaller client limit also applies. Oversize/omitted images have explicit metadata;
+  no broken image or opaque
   base64 text is substituted. Optional resizing must be explicit and reported,
   not silently used to make benchmark outputs smaller.
 - Proposed script bounds: 32 KiB source, 16 KiB combined selected JSON/stdout/stderr,
@@ -284,9 +300,10 @@ not retrospective adjustment to improve a benchmark result.
 Use a direct tool for one observation/action, a short sequence with decisions that
 need model judgment, or handoff. Use code for repeated authorized operations,
 branching on returned data and filtering a large result before returning it.
-The SDK guide is supplied with the scripting configuration; finding/publishing a
-hidden catalog is never necessary. C receives the same browser-operation guide as
-D; only D's code/runtime guidance is additional. Guides, definitions and generated
+The [SDK guide](499-sdk-guide.md) is supplied with the scripting configuration;
+finding/publishing a hidden catalog is never necessary. C receives the same
+[browser-operation guide](499-agent-guide.md) as D; only D's code/runtime guidance
+is additional. Guides, definitions and generated
 code are separate context-cost lines, not hidden setup.
 
 Proposed startup selection for the implementation stage:
@@ -344,16 +361,16 @@ Source review has already corrected/clarified:
    worker's host/credential boundary and describe limits against independent
    same-user local processes; no runtime is selected by tool-count preference.
 
-Remaining review-ready work for #499:
+The [interface cost report](499-interface-costs.md) measures complete definitions,
+like-field projections, both supplied guides and authored example code. In particular,
+D's initial character sum is larger than legacy core in every mode; no universal
+saving is inferred. Conservative readOnlyHint values are explicit, not authority.
+The actual runtime binding must preserve or review/re-measure any metadata changes.
 
-- Concrete machine-validated schemas, SDK signatures and paired examples; verify
-  every proposed name/default against this contract and the disposition map.
-- Actual default/gateway/flat/SDK-guide footprint measurements, clearly labeled as
-  characters/bytes until an approved model tokenizer is specified.
-- An acceptance-to-evidence table and a final contradiction/adversarial review.
-
-Current artifact checks and regression evidence, including the failed and corrected
-unit-isolation attempts, are recorded in [499-validation.md](499-validation.md).
+[The acceptance/review record](499-review.md) maps every #499 acceptance item to
+artifacts and states the scope of the self-review and offline checks. Current
+regression evidence, including the failed and corrected unit-isolation attempts,
+is recorded in [499-validation.md](499-validation.md).
 
 Implementation gates (not evidence of completed implementation): #504 protocol
 must precede product implementation/model runs; #500 must establish isolation and

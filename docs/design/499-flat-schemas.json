@@ -1,0 +1,186 @@
+{
+  "version": 1,
+  "status": "design fixture, not runtime registration",
+  "$defs": {
+    "tab": {"type": "string", "pattern": "^t_[A-Za-z0-9_-]+$", "maxLength": 128, "description": "Opaque tab id from this session, not an index or backend integer."},
+    "selector": {"type": "string", "minLength": 1, "maxLength": 4096},
+    "target": {"oneOf": [
+      {"type": "object", "properties": {"ref": {"type": "string", "pattern": "^e[0-9]+$", "maxLength": 128}}, "required": ["ref"], "additionalProperties": false},
+      {"type": "object", "properties": {"selector": {"$ref": "#/$defs/selector"}}, "required": ["selector"], "additionalProperties": false}
+    ]},
+    "timeout": {"type": "integer", "minimum": 1, "maximum": 60000, "default": 10000},
+    "navigation_timeout": {"type": "integer", "minimum": 1, "maximum": 60000, "default": 15000},
+    "url": {"type": "string", "minLength": 1, "maxLength": 8192, "description": "URL or a URL alias issued in this session; current URL policy still applies."},
+    "modifiers": {"type": "array", "items": {"enum": ["Shift", "Control", "Alt", "Meta"]}, "uniqueItems": true, "maxItems": 4, "default": []},
+    "condition": {"oneOf": [
+      {"type": "object", "properties": {"kind": {"const": "text"}, "value": {"type": "string", "minLength": 1, "maxLength": 4096}}, "required": ["kind", "value"], "additionalProperties": false},
+      {"type": "object", "properties": {"kind": {"const": "text_gone"}, "value": {"type": "string", "minLength": 1, "maxLength": 4096}}, "required": ["kind", "value"], "additionalProperties": false},
+      {"type": "object", "properties": {"kind": {"const": "target"}, "target": {"$ref": "#/$defs/target"}}, "required": ["kind", "target"], "additionalProperties": false},
+      {"type": "object", "properties": {"kind": {"const": "url"}, "value": {"$ref": "#/$defs/url"}}, "required": ["kind", "value"], "additionalProperties": false},
+      {"type": "object", "properties": {"kind": {"const": "title"}, "value": {"type": "string", "minLength": 1, "maxLength": 4096}}, "required": ["kind", "value"], "additionalProperties": false},
+      {"type": "object", "properties": {"kind": {"const": "network_idle"}}, "required": ["kind"], "additionalProperties": false}
+    ]}
+  },
+  "tools": [
+    {
+      "name": "browser_tabs", "annotations": {"readOnlyHint": false}, "description": "List session tab handles, open a background owned tab, or close an explicit tab. Never selects a global current tab.",
+      "modes": ["read", "draft", "act"],
+      "sdk": {"tabs": {"action": "list"}, "new_tab": {"action": "open"}, "close_tab": {"action": "close"}},
+      "inputSchema": {"type": "object", "oneOf": [
+        {"type": "object", "properties": {"action": {"const": "list", "default": "list"}}, "additionalProperties": false},
+        {"type": "object", "properties": {"action": {"const": "open"}, "url": {"$ref": "#/$defs/url", "default": "about:blank"}, "timeout_ms": {"$ref": "#/$defs/navigation_timeout"}}, "required": ["action"], "additionalProperties": false},
+        {"type": "object", "properties": {"action": {"const": "close"}, "tab_id": {"$ref": "#/$defs/tab"}, "timeout_ms": {"$ref": "#/$defs/timeout"}}, "required": ["action", "tab_id"], "additionalProperties": false}
+      ]}
+    },
+    {
+      "name": "browser_navigate", "annotations": {"readOnlyHint": false}, "description": "Navigate the named tab and observe its load within the budget. Goto needs a URL; history/reload are act-only. A load is not application success.",
+      "modes": ["read", "draft", "act"],
+      "sdk": {"navigate": {"action": "goto"}, "back": {"action": "back"}, "forward": {"action": "forward"}, "reload": {"action": "reload"}},
+      "inputSchema": {"type": "object", "oneOf": [
+        {"type": "object", "properties": {"action": {"const": "goto", "default": "goto"}, "tab_id": {"$ref": "#/$defs/tab"}, "url": {"$ref": "#/$defs/url"}, "timeout_ms": {"$ref": "#/$defs/navigation_timeout"}}, "required": ["tab_id", "url"], "additionalProperties": false},
+        {"type": "object", "properties": {"action": {"enum": ["back", "forward", "reload"]}, "tab_id": {"$ref": "#/$defs/tab"}, "timeout_ms": {"$ref": "#/$defs/navigation_timeout"}}, "required": ["action", "tab_id"], "additionalProperties": false}
+      ]}
+    },
+    {
+      "name": "browser_read", "annotations": {"readOnlyHint": true}, "description": "Read a bounded full snapshot with live refs, or rendered text, from an explicit tab/scope. Reports document identity and truncation; never an implicit delta.",
+      "modes": ["read", "draft", "act"], "sdk": {"read": {}},
+      "inputSchema": {"type": "object", "properties": {
+        "tab_id": {"$ref": "#/$defs/tab"}, "format": {"enum": ["snapshot", "text"], "default": "snapshot"},
+        "target": {"$ref": "#/$defs/target"}, "max_chars": {"type": "integer", "minimum": 1, "maximum": 12000, "default": 12000}, "timeout_ms": {"$ref": "#/$defs/timeout"}
+      }, "required": ["tab_id"], "additionalProperties": false}
+    },
+    {
+      "name": "browser_query", "annotations": {"readOnlyHint": true}, "description": "Read allowlisted, redacted fields from matching elements. Multiple matches are intended; limits and missing fields are explicit. No page evaluation.",
+      "modes": ["read", "draft", "act"], "sdk": {"query": {}},
+      "inputSchema": {"type": "object", "properties": {
+        "tab_id": {"$ref": "#/$defs/tab"}, "selector": {"$ref": "#/$defs/selector"},
+        "fields": {"type": "array", "items": {"enum": ["ref", "text", "href", "src", "name", "value", "checked", "type", "content", "role", "label"]}, "uniqueItems": true, "minItems": 1, "maxItems": 11, "default": ["text"]},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50}, "timeout_ms": {"$ref": "#/$defs/timeout"}
+      }, "required": ["tab_id", "selector"], "additionalProperties": false}
+    },
+    {
+      "name": "browser_find", "annotations": {"readOnlyHint": true}, "description": "Find literal case-insensitive text in the named tab's authorized snapshot. Return bounded matching context and live targets; no automatic scrolling.",
+      "modes": ["read", "draft", "act"], "sdk": {"find": {}},
+      "inputSchema": {"type": "object", "properties": {
+        "tab_id": {"$ref": "#/$defs/tab"}, "text": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}, "timeout_ms": {"$ref": "#/$defs/timeout"}
+      }, "required": ["tab_id", "text"], "additionalProperties": false}
+    },
+    {
+      "name": "browser_click", "annotations": {"readOnlyHint": false}, "description": "Synthetic click on one actionable target. Double-click supports left button without modifiers. A dispatch receipt is not task success; no OS-input fallback.",
+      "modes": ["act"], "sdk": {"click": {}},
+      "inputSchema": {"type": "object", "properties": {
+        "tab_id": {"$ref": "#/$defs/tab"}, "target": {"$ref": "#/$defs/target"},
+        "button": {"enum": ["left", "middle", "right"], "default": "left"}, "click_count": {"type": "integer", "enum": [1, 2], "default": 1},
+        "modifiers": {"$ref": "#/$defs/modifiers"}, "timeout_ms": {"$ref": "#/$defs/timeout"}
+      }, "required": ["tab_id", "target"], "additionalProperties": false,
+        "allOf": [{"if": {"properties": {"click_count": {"const": 2}}, "required": ["click_count"]}, "then": {"properties": {"button": {"const": "left"}, "modifiers": {"maxItems": 0}}}}]
+      }
+    },
+    {
+      "name": "browser_input", "annotations": {"readOnlyHint": false}, "description": "Replace a field/editor value or type plain text into an explicit target. Draft-capable; no HTML or submit flag. Website autosave is not prevented.",
+      "modes": ["draft", "act"], "sdk": {"input": {}},
+      "inputSchema": {"type": "object", "properties": {
+        "tab_id": {"$ref": "#/$defs/tab"}, "target": {"$ref": "#/$defs/target"}, "text": {"type": "string", "maxLength": 32768},
+        "mode": {"enum": ["replace", "type"], "default": "replace"}, "timeout_ms": {"$ref": "#/$defs/timeout"}
+      }, "required": ["tab_id", "target", "text"], "additionalProperties": false}
+    },
+    {
+      "name": "browser_select", "annotations": {"readOnlyHint": false}, "description": "Select explicit values or unique labels in one select control. Multiple values require a multiple-select control. Never submits the form.",
+      "modes": ["draft", "act"], "sdk": {"select": {}},
+      "inputSchema": {"type": "object", "properties": {
+        "tab_id": {"$ref": "#/$defs/tab"}, "target": {"$ref": "#/$defs/target"},
+        "values": {"type": "array", "items": {"type": "string", "maxLength": 4096}, "minItems": 1, "maxItems": 100, "uniqueItems": true},
+        "by": {"enum": ["value", "label"], "default": "value"}, "timeout_ms": {"$ref": "#/$defs/timeout"}
+      }, "required": ["tab_id", "target", "values"], "additionalProperties": false}
+    },
+    {
+      "name": "browser_check", "annotations": {"readOnlyHint": false}, "description": "Set one checkbox/radio control's checked state. Draft-capable; strict targeting, no generic click fallback.",
+      "modes": ["draft", "act"], "sdk": {"check": {}},
+      "inputSchema": {"type": "object", "properties": {
+        "tab_id": {"$ref": "#/$defs/tab"}, "target": {"$ref": "#/$defs/target"}, "checked": {"type": "boolean", "default": true}, "timeout_ms": {"$ref": "#/$defs/timeout"}
+      }, "required": ["tab_id", "target"], "additionalProperties": false}
+    },
+    {
+      "name": "browser_press", "annotations": {"readOnlyHint": false}, "description": "Send a synthetic page key to one explicit target. Act-only, including Enter; never the user's globally focused control or OS keyboard.",
+      "modes": ["act"], "sdk": {"press": {}},
+      "inputSchema": {"type": "object", "properties": {
+        "tab_id": {"$ref": "#/$defs/tab"}, "target": {"$ref": "#/$defs/target"}, "key": {"type": "string", "minLength": 1, "maxLength": 64},
+        "modifiers": {"$ref": "#/$defs/modifiers"}, "timeout_ms": {"$ref": "#/$defs/timeout"}
+      }, "required": ["tab_id", "target", "key"], "additionalProperties": false}
+    },
+    {
+      "name": "browser_hover", "annotations": {"readOnlyHint": false}, "description": "Hover one actionable target with synthetic page input; strict matching, no trusted pointer fallback.",
+      "modes": ["act"], "sdk": {"hover": {}},
+      "inputSchema": {"type": "object", "properties": {
+        "tab_id": {"$ref": "#/$defs/tab"}, "target": {"$ref": "#/$defs/target"}, "timeout_ms": {"$ref": "#/$defs/timeout"}
+      }, "required": ["tab_id", "target"], "additionalProperties": false}
+    },
+    {
+      "name": "browser_drag", "annotations": {"readOnlyHint": false}, "description": "Drag between two unique actionable targets in the same named tab/document. No file/data drop or OS drag.",
+      "modes": ["act"], "sdk": {"drag": {}},
+      "inputSchema": {"type": "object", "properties": {
+        "tab_id": {"$ref": "#/$defs/tab"}, "source": {"$ref": "#/$defs/target"}, "destination": {"$ref": "#/$defs/target"}, "timeout_ms": {"$ref": "#/$defs/timeout"}
+      }, "required": ["tab_id", "source", "destination"], "additionalProperties": false}
+    },
+    {
+      "name": "browser_scroll", "annotations": {"readOnlyHint": false}, "description": "Scroll an explicit tab's viewport or one target. Amount is CSS pixels; top/bottom use no amount. Ownership/activity checks still apply in read mode.",
+      "modes": ["read", "draft", "act"], "sdk": {"scroll": {}},
+      "inputSchema": {"type": "object", "properties": {
+        "tab_id": {"$ref": "#/$defs/tab"}, "direction": {"enum": ["up", "down", "left", "right", "top", "bottom"], "default": "down"},
+        "amount_px": {"type": "integer", "minimum": 1, "maximum": 10000, "default": 500}, "target": {"$ref": "#/$defs/target"}, "timeout_ms": {"$ref": "#/$defs/timeout"}
+      }, "required": ["tab_id"], "additionalProperties": false,
+        "allOf": [{"if": {"properties": {"direction": {"enum": ["top", "bottom"]}}, "required": ["direction"]}, "then": {"not": {"required": ["amount_px"]}}}]
+      }
+    },
+    {
+      "name": "browser_wait", "annotations": {"readOnlyHint": true}, "description": "Observe one bounded condition; no JavaScript predicate or action retry. Text is a literal substring; URL/title are literal equality. Quiet network is not application success.",
+      "modes": ["read", "draft", "act"], "sdk": {"wait": {}},
+      "inputSchema": {"type": "object", "properties": {
+        "tab_id": {"$ref": "#/$defs/tab"}, "condition": {"$ref": "#/$defs/condition"}, "timeout_ms": {"$ref": "#/$defs/timeout"}
+      }, "required": ["tab_id", "condition"], "additionalProperties": false}
+    },
+    {
+      "name": "browser_screenshot", "annotations": {"readOnlyHint": false}, "description": "Capture the explicit tab as a real image, subject to ownership/activity and output limits. Element scope requires a target. No arbitrary file path or base64-text substitute.",
+      "modes": ["act"], "sdk": {"screenshot": {}},
+      "inputSchema": {"type": "object", "properties": {
+        "tab_id": {"$ref": "#/$defs/tab"}, "scope": {"enum": ["viewport", "element", "full_page"], "default": "viewport"}, "target": {"$ref": "#/$defs/target"}, "timeout_ms": {"$ref": "#/$defs/timeout"}
+      }, "required": ["tab_id"], "additionalProperties": false,
+        "allOf": [{"if": {"properties": {"scope": {"const": "element"}}, "required": ["scope"]}, "then": {"required": ["target"]}, "else": {"not": {"required": ["target"]}}}]
+      }
+    },
+    {
+      "name": "browser_request_tab", "annotations": {"readOnlyHint": false}, "description": "Ask the external user channel for scoped use of a named user-owned tab. This request never approves itself; current mode, policy and revocation still apply.",
+      "modes": ["act"], "sdk": {"request_tab": {}},
+      "inputSchema": {"type": "object", "properties": {
+        "tab_id": {"$ref": "#/$defs/tab"}, "timeout_ms": {"$ref": "#/$defs/timeout"}
+      }, "required": ["tab_id"], "additionalProperties": false}
+    },
+    {
+      "name": "browser_ask_user", "annotations": {"readOnlyHint": true}, "description": "Ask the user to sign in, pass a human check, provide trusted input or decide. Name the tab for page work. A reply is not proof the page operation succeeded.",
+      "modes": ["read", "draft", "act"], "sdk": {"ask_user": {}},
+      "inputSchema": {"type": "object", "properties": {
+        "reason": {"enum": ["sign_in", "human_check", "trusted_input", "other"]}, "message": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "tab_id": {"$ref": "#/$defs/tab"}, "timeout_ms": {"$ref": "#/$defs/timeout"}
+      }, "required": ["reason", "message"], "additionalProperties": false,
+        "allOf": [{"if": {"properties": {"reason": {"enum": ["sign_in", "human_check", "trusted_input"]}}}, "then": {"required": ["tab_id"]}}]
+      }
+    },
+    {
+      "name": "browser_resume", "annotations": {"readOnlyHint": false}, "description": "Resume one held flat operation after external approval, rechecking authority and expiry. Does not replay scripts, completed effects, unknown writes or legacy containers.",
+      "modes": ["act"], "sdk": {"resume": {}},
+      "inputSchema": {"type": "object", "properties": {
+        "call": {"type": "string", "minLength": 1, "maxLength": 128}, "resume_token": {"type": "string", "minLength": 1, "maxLength": 256},
+        "wait_ms": {"type": "integer", "minimum": 0, "maximum": 120000, "default": 30000}
+      }, "required": ["call", "resume_token"], "additionalProperties": false}
+    },
+    {
+      "name": "browser_script", "annotations": {"readOnlyHint": false}, "description": "Compose the same authorized browser operations using bounded sequential Python. browser, emit and emit_image are injected. No connect, page eval, host access, parallel calls or persistent state. See the supplied SDK guide.",
+      "modes": ["read", "draft", "act"], "sdk": {},
+      "inputSchema": {"type": "object", "properties": {
+        "language": {"enum": ["python"], "default": "python"}, "code": {"type": "string", "minLength": 1, "maxLength": 32768, "description": "At most 32 KiB UTF-8 source; top-level await is supported."},
+        "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 120000, "default": 30000}
+      }, "required": ["code"], "additionalProperties": false}
+    }
+  ]
+}

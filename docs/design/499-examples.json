@@ -1,0 +1,81 @@
+{
+  "version": 1,
+  "notice": "Offline design examples, not benchmark tasks or browser tests. Existing tab handles and selectors in context were already observed in the same session and are supplied identically to both interfaces. Replies are synthetic. Scripts never approve themselves.",
+  "cases": [
+    {
+      "id": "read-page", "mode": "read",
+      "context": "t_article is an already-listed tab. Prefer the one direct read; the script is shown only to specify parity and selected output.",
+      "direct": [
+        {"tool": "browser_read", "arguments": {"tab_id": "t_article"}, "reply": {"outcome": "observed", "data": {"url": "https://example.test/article", "title": "Article", "document": "doc_article_1", "snapshot": "- heading Article\n- paragraph A bounded example."}}}
+      ],
+      "python": ["result = await browser.read(tab_id='t_article')\nemit(result['data'])\n"],
+      "expected_emits": [{"url": "https://example.test/article", "title": "Article", "document": "doc_article_1", "snapshot": "- heading Article\n- paragraph A bounded example."}],
+      "expected_images": []
+    },
+    {
+      "id": "fill-draft", "mode": "draft",
+      "context": "t_form is owned. The previously read fixture identifies #name, #country and #subscribe uniquely. Fill only; never submit. Actual website autosave is outside the meaning of draft mode.",
+      "direct": [
+        {"tool": "browser_input", "arguments": {"tab_id": "t_form", "target": {"selector": "#name"}, "text": "Ada"}, "reply": {}},
+        {"tool": "browser_select", "arguments": {"tab_id": "t_form", "target": {"selector": "#country"}, "values": ["US"]}, "reply": {}},
+        {"tool": "browser_check", "arguments": {"tab_id": "t_form", "target": {"selector": "#subscribe"}, "checked": true}, "reply": {}},
+        {"tool": "browser_query", "arguments": {"tab_id": "t_form", "selector": "#name, #country, #subscribe", "fields": ["name", "value", "checked"]}, "reply": {"outcome": "observed", "data": {"items": [{"name": "name", "value": "Ada", "checked": null}, {"name": "country", "value": "US", "checked": null}, {"name": "subscribe", "value": "on", "checked": true}], "more": false}}}
+      ],
+      "python": ["await browser.input(tab_id='t_form', target={'selector': '#name'}, text='Ada')\nawait browser.select(tab_id='t_form', target={'selector': '#country'}, values=['US'])\nawait browser.check(tab_id='t_form', target={'selector': '#subscribe'}, checked=True)\nobserved = await browser.query(tab_id='t_form', selector='#name, #country, #subscribe', fields=['name', 'value', 'checked'])\nemit({'observed': observed['data'], 'truncated': observed['truncated']})\n"],
+      "expected_emits": [{"observed": {"items": [{"name": "name", "value": "Ada", "checked": null}, {"name": "country", "value": "US", "checked": null}, {"name": "subscribe", "value": "on", "checked": true}], "more": false}, "truncated": false}],
+      "expected_images": []
+    },
+    {
+      "id": "multi-tab-research", "mode": "read",
+      "context": "Open the two task-supplied public URLs in background tabs, sequentially. Operator/user cleanup is separate because read mode cannot close tabs. Returned handles, not indices, bind each read.",
+      "direct": [
+        {"tool": "browser_tabs", "arguments": {"action": "open", "url": "https://example.test/alpha"}, "reply": {"outcome": "observed", "data": {"tab_id": "t_alpha"}}},
+        {"tool": "browser_read", "arguments": {"tab_id": "t_alpha", "format": "text"}, "reply": {"outcome": "observed", "data": {"title": "Alpha", "url": "https://example.test/alpha", "document": "doc_alpha_1", "text": "Alpha: 10 units."}}},
+        {"tool": "browser_tabs", "arguments": {"action": "open", "url": "https://example.test/beta"}, "reply": {"outcome": "observed", "data": {"tab_id": "t_beta"}}},
+        {"tool": "browser_read", "arguments": {"tab_id": "t_beta", "format": "text"}, "reply": {"outcome": "observed", "data": {"title": "Beta", "url": "https://example.test/beta", "document": "doc_beta_1", "text": "Beta: 12 units."}}}
+      ],
+      "python": ["pages = []\nfor url in ['https://example.test/alpha', 'https://example.test/beta']:\n    opened = await browser.new_tab(url=url)\n    tab_id = opened['data']['tab_id']\n    page = await browser.read(tab_id=tab_id, format='text')\n    pages.append({'tab_id': tab_id, 'text': page['data']['text'], 'truncated': page['truncated']})\nemit(pages)\n"],
+      "expected_emits": [[{"tab_id": "t_alpha", "text": "Alpha: 10 units.", "truncated": false}, {"tab_id": "t_beta", "text": "Beta: 12 units.", "truncated": false}]],
+      "expected_images": []
+    },
+    {
+      "id": "repeated-table-form", "mode": "draft",
+      "context": "t_rows is owned. Its observed table has two quantity inputs. Query fresh refs/values, increment each numeric draft value once, then independently read the values. Truncation or a later stale/unknown write stops the example; it never retries the loop.",
+      "direct": [
+        {"tool": "browser_query", "arguments": {"tab_id": "t_rows", "selector": "#rows input.quantity", "fields": ["ref", "value"]}, "reply": {"outcome": "observed", "data": {"items": [{"ref": "e20", "value": "2"}, {"ref": "e21", "value": "5"}], "more": false}}},
+        {"tool": "browser_input", "arguments": {"tab_id": "t_rows", "target": {"ref": "e20"}, "text": "3"}, "reply": {}},
+        {"tool": "browser_input", "arguments": {"tab_id": "t_rows", "target": {"ref": "e21"}, "text": "6"}, "reply": {}},
+        {"tool": "browser_query", "arguments": {"tab_id": "t_rows", "selector": "#rows input.quantity", "fields": ["value"]}, "reply": {"outcome": "observed", "data": {"items": [{"value": "3"}, {"value": "6"}], "more": false}}}
+      ],
+      "python": ["before = await browser.query(tab_id='t_rows', selector='#rows input.quantity', fields=['ref', 'value'])\nif before['truncated'] or before['data']['more'] is not False:\n    raise ValueError('Read a narrower table before changing any value')\nrows = before['data']['items']\nif not all(row['value'].isascii() and row['value'].isdigit() for row in rows):\n    raise ValueError('A value is redacted or not an unsigned integer')\nfor row in rows:\n    await browser.input(tab_id='t_rows', target={'ref': row['ref']}, text=str(int(row['value']) + 1))\nafter = await browser.query(tab_id='t_rows', selector='#rows input.quantity', fields=['value'])\nemit({'observed': after['data'], 'truncated': after['truncated']})\n"],
+      "expected_emits": [{"observed": {"items": [{"value": "3"}, {"value": "6"}], "more": false}, "truncated": false}],
+      "expected_images": []
+    },
+    {
+      "id": "screenshot", "mode": "act",
+      "context": "t_visual is an already-listed, owned tab. Direct output includes ImageContent; the equivalent script explicitly selects that image. Prefer the direct tool for this one capture.",
+      "direct": [
+        {"tool": "browser_screenshot", "arguments": {"tab_id": "t_visual"}, "reply": {"outcome": "observed", "data": {"image": "img_fixture", "mime_type": "image/png", "width": 800, "height": 600, "document": "doc_visual_1"}}}
+      ],
+      "python": ["capture = await browser.screenshot(tab_id='t_visual')\nemit_image(capture['data']['image'])\n"],
+      "expected_emits": [], "expected_images": ["img_fixture"]
+    },
+    {
+      "id": "user-tab-handoff", "mode": "act",
+      "context": "The task identifies the account tab by its exact URL. First program returns a held continuation. Only after an external user approval does the caller start the second fresh program, using the exact returned call/token. The synthetic approval event below is not code granting authority, nor evidence #496 is implemented.",
+      "external_events": [{"before_program": 1, "event": "user approved the scoped tab request"}],
+      "direct": [
+        {"tool": "browser_tabs", "arguments": {"action": "list"}, "reply": {"outcome": "observed", "data": {"tabs": [{"tab_id": "t_user", "url": "https://example.test/account", "title": "Account", "owned": false}]}}},
+        {"tool": "browser_request_tab", "arguments": {"tab_id": "t_user"}, "reply": {"ok": false, "call": "c_held", "outcome": "not_dispatched", "data": {"resume_token": "r_fixture", "expires_in_ms": 120000}, "error": {"code": "needs_user", "message": "User approval required", "retryable": false, "hint": "Wait for external approval; do not self-approve", "state": {"tab_id": "t_user"}}}},
+        {"tool": "browser_resume", "arguments": {"call": "c_held", "resume_token": "r_fixture"}, "requires_external_event": true, "reply": {"outcome": "observed", "data": {"approved": true}}},
+        {"tool": "browser_read", "arguments": {"tab_id": "t_user"}, "reply": {"outcome": "observed", "data": {"title": "Account", "url": "https://example.test/account", "document": "doc_user_1", "snapshot": "- heading Account\n- button Edit profile [ref=e30]"}}}
+      ],
+      "python": [
+        "listed = await browser.tabs()\nmatches = [tab for tab in listed['data']['tabs'] if tab['url'] == 'https://example.test/account']\nif len(matches) != 1:\n    raise ValueError('Choose one unambiguous user tab')\ntry:\n    await browser.request_tab(tab_id=matches[0]['tab_id'])\nexcept BrowserOperationError as error:\n    if error.result['error']['code'] != 'needs_user':\n        raise\n    emit({'call': error.result['call'], 'resume_token': error.result['data']['resume_token']})\n",
+        "# Fresh invocation only AFTER external approval; substitute the actual returned values.\nawait browser.resume(call='c_held', resume_token='r_fixture')\npage = await browser.read(tab_id='t_user')\nemit(page['data'])\n"
+      ],
+      "expected_emits": [{"call": "c_held", "resume_token": "r_fixture"}, {"title": "Account", "url": "https://example.test/account", "document": "doc_user_1", "snapshot": "- heading Account\n- button Edit profile [ref=e30]"}],
+      "expected_images": []
+    }
+  ]
+}

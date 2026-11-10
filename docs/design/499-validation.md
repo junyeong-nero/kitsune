@@ -30,10 +30,16 @@ approval must not treat an operator-only feature as equivalent candidate coverag
 | Isolation attempt with custom HTTP **and WS** environment | 1,259 tests; 235 skips; **4 failures**; 178.992 s | Invalid diagnostic precondition for several existing unit tests; retained below |
 | Corrected isolated focused run | `test_action_errors.py`: **24 passed**, 0.136 s | Same tests/product code; correct WS diagnostic configuration |
 | Corrected isolated full run | **1,259 tests; 235 skips; zero failures/errors**, 177.972 s | Temporary HOME/KITSUNE_HOME, test token, reserved non-listening HTTP port |
-| Node | **70 harnesses passed** | No extension source changes |
+| Final schema/signature/footprint review | **24 focused tests passed** | 10 inventory + 11 design + 3 footprint checks |
+| Final isolated full run | **1,273 tests; 235 skips; zero failures/errors**, 179.240 s | Same safe unit invocation; includes the 14 new design/measurement tests |
+| Node | **70 harnesses passed**, including final rerun | No extension source changes |
 | Diff checks | `git diff --check` passed; no `src/` or `extension/` diff from prerequisite branch | Design/test tooling only |
 
-Elapsed times are diagnostics, not benchmark comparisons. Opt-in skips are not
+Final environment: Python 3.12.6, jsonschema 4.26.0, Node v26.12.0. The intended
+JS declaration syntax check uses Node's stripTypeScriptTypes (Node 22.13+; the
+release workflow selects Node 22). This is not implemented JS execution support.
+The final Python and Node runs were concurrent; elapsed times are diagnostics,
+not benchmark comparisons. Opt-in skips are not
 real-browser passes. No new browser or model run was needed for these artifacts;
 the prior real-browser baseline is in [498-baseline.md](498-baseline.md).
 

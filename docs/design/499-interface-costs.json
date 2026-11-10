@@ -1,0 +1,24 @@
+{
+  "units": "characters, except count; not tokens or model-run costs",
+  "rows": {
+    "legacy-core-act": {"count": 27, "definitions": 21747, "name_description_inputSchema": 18796, "instructions": 537, "sdk": 0, "sum": 22284},
+    "legacy-core-read": {"count": 9, "definitions": 7117, "name_description_inputSchema": 6076, "instructions": 286, "sdk": 0, "sum": 7403},
+    "legacy-core-draft": {"count": 12, "definitions": 9977, "name_description_inputSchema": 8629, "instructions": 286, "sdk": 0, "sum": 10263},
+    "legacy-gateway-core-act": {"count": 30, "definitions": 24100, "name_description_inputSchema": 20767, "instructions": 537, "sdk": 0, "sum": 24637},
+    "legacy-gateway-only-act": {"count": 3, "definitions": 2353, "name_description_inputSchema": 1971, "instructions": 537, "sdk": 0, "sum": 2890},
+    "flat-C-act": {"count": 18, "definitions": 18163, "name_description_inputSchema": 17502, "instructions": 1928, "sdk": 0, "sum": 20091},
+    "flat-D-act": {"count": 19, "definitions": 18819, "name_description_inputSchema": 18121, "instructions": 1928, "sdk": 3396, "sum": 24143},
+    "flat-C-read": {"count": 8, "definitions": 7005, "name_description_inputSchema": 6714, "instructions": 1928, "sdk": 0, "sum": 8933},
+    "flat-D-read": {"count": 9, "definitions": 7661, "name_description_inputSchema": 7333, "instructions": 1928, "sdk": 3396, "sum": 12985},
+    "flat-C-draft": {"count": 11, "definitions": 9901, "name_description_inputSchema": 9499, "instructions": 1928, "sdk": 0, "sum": 11829},
+    "flat-D-draft": {"count": 12, "definitions": 10557, "name_description_inputSchema": 10118, "instructions": 1928, "sdk": 3396, "sum": 15881}
+  },
+  "sha256": {
+    "499-flat-schemas.json": "17ea8bb7453491a8704a68b551e9ced09227b5ee5a010a8674344ba459018289",
+    "499-agent-guide.md": "e0e82c824aec91c0f4cf7ca799904d399b5494b6c13ae99024a6a3ee3b35c129",
+    "499-sdk-guide.md": "462d6cc3551bb39e375e3368d40830632cb7bc0c6ad24798fd474dc152e1ae74",
+    "499-sdk.pyi": "6a587d1eeee2ef80cd67965cce70166d920702b2d788db14c0c1d91b9fd042c8",
+    "499-sdk.d.ts": "20d7735d650e72c4cb39b51e14a0d27e4413a9f2c586067d3ca2fd4f6971c514",
+    "499-examples.json": "3faa38df470a24e7979f45ba861d27a7130e60175983f1afb08792c4840fb3b4"
+  }
+}
