@@ -1,0 +1,282 @@
+"""First shared native adapters, intentionally not registered as MCP/worker APIs yet.
+
+Only tabs and navigation are implemented here. All other admitted operations fail
+closed until their ref, image, approval and receipt contracts are implemented.
+
+Outcomes come from the bridge's dispatch receipt, never from extension/page fields:
+a reply to a write is `dispatched`, not application success. Cancelling or timing
+out a call does not stop a request the bridge already accepted.
+"""
+from __future__ import annotations
+
+import asyncio
+from contextvars import ContextVar
+from dataclasses import dataclass
+import json
+import secrets
+
+from .bridge_client import BridgeClient
+from .connection_binding import CONNECTION_HEADER, ConnectionBinding
+from .dispatch_receipts import MAX_NATIVE_COMMANDS, RECEIPT_HEADER, RECEIPT_VERSION
+from .flat_operations import OperationRefused
+from .flat_session import CallerAuthority, FlatSession
+from .version import BRIDGE_BUILD
+
+
+MAX_BRIDGE_REPLY_BYTES = 256 * 1024
+MAX_RESULT_BYTES = 64 * 1024
+MAX_TITLE_CHARS = 256
+MAX_URL_CHARS = 2048
+# The bridge answers its own bounded waits first; this only covers transport.
+TRANSPORT_GRACE_SECONDS = 2
+# (verified connection, call id) of the admitted request running in this context.
+_REQUEST = ContextVar("kitsune_flat_request", default=None)
+_IMPLEMENTED = frozenset({"browser_tabs", "browser_navigate"})
+_NATIVE_ERRORS = frozenset({"mode_restricted", "user_tab_read_only", "user_active", "needs_user",
+                            "stale_connection", "invalid_tab_id", "tab_closed", "timeout",
+                            "extension_disconnected", "native_operation_limit"})
+# The extension's admission (tabWriteError) answers these before it calls a browser API.
+# True of the single-call tab/navigation actions here; a multi-step action must not reuse it.
+_REFUSED_BEFORE_ACTING = frozenset({"user_tab_read_only", "user_active", "tab_closed", "invalid_tab_id"})
+# Client-side failures without a bridge receipt, and whether the request can have run.
+_TRANSPORT_ERRORS = {"bridge_unavailable": "not_dispatched", "token_mismatch": "not_dispatched",
+                     "timeout": "unknown", "bridge_disconnected": "unknown", "bridge_response_limit": "unknown"}
+
+
+def _request_headers():
+    context = _REQUEST.get()
+    if context is None:
+        raise RuntimeError("Native flat request outside an admitted call")
+    connection, call = context
+    return {CONNECTION_HEADER: connection.header_value(), RECEIPT_HEADER: call}
+
+
+@dataclass(frozen=True)
+class BrokerReply:
+    # Only result may be delivered to an agent. receipt is coordinator-owned evidence;
+    # future MCP/worker adapters must not accept a caller-supplied BrokerReply.
+    result: dict
+    receipt: dict | None
+
+
+def _failure(call, name, code, outcome="not_dispatched", *, tab_id=None):
+    result = {"ok": False, "call": call, "operation": name, "outcome": outcome,
+              "data": {}, "truncated": code == "output_limited",
+              "error": {"code": code, "message": "The browser operation did not complete",
+                        "retryable": False, "hint": "Inspect current state; do not blindly replay a write.", "state": {}}}
+    if tab_id is not None:
+        result["tab_id"] = tab_id
+    return result
+
+
+def _receipt(envelope, call):
+    """Accept only the bounded, bridge-owned envelope for this particular request."""
+    if not isinstance(envelope, dict) or set(envelope) != {"result", "receipt"}:
+        raise ValueError("Missing dispatch envelope")
+    receipt = envelope["receipt"]
+    if not isinstance(receipt, dict) or set(receipt) != {"version", "call", "requested", "limited", "complete", "commands"}:
+        raise ValueError("Invalid dispatch receipt")
+    commands = receipt["commands"]
+    if (receipt["version"] != RECEIPT_VERSION or receipt["call"] != call
+            or type(receipt["requested"]) is not int or receipt["requested"] < 0
+            or type(receipt["complete"]) is not bool or type(receipt["limited"]) is not bool
+            or not isinstance(commands, list) or len(commands) > MAX_NATIVE_COMMANDS):
+        raise ValueError("Invalid dispatch receipt")
+    if receipt["requested"] != len(commands) + int(receipt["limited"]):
+        raise ValueError("Incomplete native command count")
+    for index, command in enumerate(commands, 1):
+        if (not isinstance(command, dict) or not {"sequence", "action", "state", "finished"} <= command.keys()
+                or command.keys() - {"sequence", "action", "state", "finished", "tab_id"}
+                or type(command["sequence"]) is not int or command["sequence"] != index
+                or not isinstance(command["action"], str) or not 1 <= len(command["action"]) <= 64
+                or command["state"] not in {"not_dispatched", "unknown", "dispatched", "replied"}
+                or type(command["finished"]) is not bool):
+            raise ValueError("Invalid native command receipt")
+        if "tab_id" in command and (type(command["tab_id"]) is not int or not 0 < command["tab_id"] < 2**53):
+            raise ValueError("Invalid native target receipt")
+    if receipt["complete"] and any(not command["finished"] for command in commands):
+        raise ValueError("Unfinished native work declared complete")
+    return receipt
+
+
+def _outcome(receipt, action):
+    if not receipt["complete"]:
+        return "unknown"
+    commands = [item for item in receipt["commands"] if item["action"] == action]
+    if not commands or all(item["state"] == "not_dispatched" for item in commands):
+        return "not_dispatched"
+    if any(item["state"] in {"unknown", "dispatched"} for item in commands):
+        return "unknown"
+    return "dispatched"  # a reply is not proof of application success
+
+
+class FlatBroker:
+    def __init__(self, authority: CallerAuthority):
+        self.session = FlatSession(authority)
+        self._lock = asyncio.Lock()
+        self._bootstrap = self._client(authority)
+        self._transport = self._client(authority, _request_headers)
+
+    @staticmethod
+    def _client(authority, extra_headers=None):
+        # The adapter allowlist is narrower than these legacy capability groups.
+        # Both clients are trusted host objects and must never enter the worker.
+        client = BridgeClient(caps={"core", "browse", "tabs"}, mode=authority.mode,
+                              user_tabs=authority.user_tabs, replace_bridge=False, extra_headers=extra_headers)
+        client.client_id, client.owner_id = authority.client_id, authority.owner_id
+        return client
+
+    @classmethod
+    async def connect(cls, authority: CallerAuthority):
+        broker = cls(authority)
+        await broker._refresh_connection()
+        return broker
+
+    async def _refresh_connection(self):
+        # No startup/replacement or developer fallback, even when an old bridge answers.
+        status = await asyncio.to_thread(self._bootstrap.request, "GET", "/api/status", start_bridge=False,
+                                         max_response_bytes=MAX_BRIDGE_REPLY_BYTES, timeout=5)
+        if (not isinstance(status, dict) or status.get("build") != BRIDGE_BUILD
+                or status.get("dispatch_receipts") != RECEIPT_VERSION
+                or (status.get("diagnosis") or {}).get("code") != "connected"):
+            raise OperationRefused("bridge_not_ready", "A matching connected receipt-capable bridge is required")
+        try:
+            self.session.bind(ConnectionBinding.from_status(status))
+        except ValueError:
+            raise OperationRefused("bridge_not_ready", "Invalid connection identity") from None
+
+    @staticmethod
+    def _native_request(admitted):
+        values = admitted.operation.arguments()
+        timeout = values.get("timeout_ms", 10000)
+        if admitted.operation.name == "browser_tabs":
+            action = values["action"]
+            if action == "list":
+                return "getTabs", "GET", "/api/tabs", None, timeout
+            if action == "open":
+                return "newTab", "POST", "/api/new-tab", {
+                    "url": values["url"], "wait": True, "timeout": timeout, "includeSnapshot": False}, timeout
+            return "closeTab", "POST", "/api/close-tab", {"tabId": admitted.tab.native_id}, timeout
+        action, path = {"goto": ("navigate", "/api/navigate"), "back": ("goBack", "/api/back"),
+                        "forward": ("goForward", "/api/forward"), "reload": ("reloadTabBrowser", "/api/reload-tab")}[values["action"]]
+        # The extension's own load wait for navigate is fixed (15 s) and history/reload have
+        # none: timeout_ms bounds this call's wait for the reply, not the native action.
+        body = {"tabId": admitted.tab.native_id, "includeSnapshot": False}
+        if values["action"] == "goto":
+            body["url"] = values["url"]
+        return action, "POST", path, body, timeout
+
+    def _data(self, admitted, native, action):
+        if action == "getTabs":
+            tabs = native.get("tabs")
+            if not isinstance(tabs, list) or native.get("truncated"):
+                raise ValueError("Incomplete tab inventory")
+            if any(not isinstance(tab, dict) or not isinstance(tab.get("url"), str)
+                   or not isinstance(tab.get("title"), str) for tab in tabs):
+                raise ValueError("Invalid tab inventory")
+            records = self.session.refresh_tabs(admitted.connection, [tab.get("id") for tab in tabs])
+            listed, cut = [], False
+            for tab, record in zip(tabs, records):
+                entry = {"tab_id": record.handle, "url": tab["url"][:MAX_URL_CHARS],
+                         "title": tab["title"][:MAX_TITLE_CHARS],
+                         "owned": tab.get("owned") is True, "active": tab.get("active") is True}
+                if len(tab["url"]) > MAX_URL_CHARS or len(tab["title"]) > MAX_TITLE_CHARS:
+                    entry["truncated"] = cut = True
+                listed.append(entry)
+            return {"tabs": listed, "tab_count": len(listed)}, "observed", cut
+        # Do not copy snapshots/refs, approval tokens, native ids or arbitrary extension fields.
+        if action == "newTab":
+            record = self.session.opened_tab(admitted.connection, native.get("tabId"))
+            data, cut = {"tab_id": record.handle}, False
+            for key in ("url", "status"):
+                if key in native:
+                    if not isinstance(native[key], str):
+                        raise ValueError("Invalid open observation")
+                    data[key] = native[key][:MAX_URL_CHARS]
+                    cut = cut or len(native[key]) > MAX_URL_CHARS
+            return data, "observed" if native.get("status") == "complete" else "dispatched", cut
+        if action == "closeTab":
+            self.session.closed_tab(admitted.tab.handle)
+        # navigate echoes the requested URL, not where the tab landed: not an observation.
+        return {"tab_id": admitted.tab.handle}, "dispatched", False
+
+    async def call(self, name, arguments) -> BrokerReply:
+        call = "c_" + secrets.token_hex(16)
+        # Unknown/untrusted names must not become unbounded or non-JSON receipt metadata.
+        public_name = name if isinstance(name, str) and len(name) <= 64 else "unknown"
+        receipt, outcome, tab_handle = None, "not_dispatched", None
+        async with self._lock:
+            try:
+                admitted = self.session.admit(name, arguments)
+                if name not in _IMPLEMENTED:
+                    raise OperationRefused("operation_unavailable", "The native adapter is not implemented yet")
+                if name == "browser_tabs" and admitted.operation.arguments()["action"] == "list":
+                    # An explicit new inventory may establish a new connection; no action is replayed.
+                    await self._refresh_connection()
+                    admitted = self.session.admit(name, admitted.operation.arguments())
+                self.session.recheck(admitted)
+                tab_handle = admitted.tab.handle if admitted.tab is not None else None
+                action, method, path, body, timeout = self._native_request(admitted)
+                token = _REQUEST.set((admitted.connection, call))
+                try:
+                    outcome = "unknown"  # from this point an HTTP attempt may reach the browser
+                    kwargs = {} if body is None else {"json": body}
+                    envelope = await asyncio.to_thread(
+                        self._transport.request, method, path, start_bridge=False,
+                        max_response_bytes=MAX_BRIDGE_REPLY_BYTES,
+                        timeout=timeout / 1000 + TRANSPORT_GRACE_SECONDS, **kwargs)
+                finally:
+                    _REQUEST.reset(token)
+                code = envelope.get("code") if isinstance(envelope, dict) and "receipt" not in envelope else None
+                if code in _TRANSPORT_ERRORS:
+                    outcome = _TRANSPORT_ERRORS[code]
+                    if code == "bridge_disconnected" and (envelope.get("state") or {}).get("requestSent") is False:
+                        outcome = "not_dispatched"
+                    return BrokerReply(_failure(call, public_name, code, outcome, tab_id=tab_handle), None)
+                receipt = _receipt(envelope, call)
+                outcome = _outcome(receipt, action)
+                native = envelope["result"]
+                if (not receipt["complete"] or receipt["limited"] or not isinstance(native, dict)
+                        or native.get("error") or native.get("ok") is False):
+                    code = native.get("code") if isinstance(native, dict) else None
+                    code = code if isinstance(code, str) and code in _NATIVE_ERRORS else "browser_operation_failed"
+                    if isinstance(native, dict) and native.get("timedOut") is True:
+                        code = "timeout"
+                    refused = outcome == "dispatched" and code in _REFUSED_BEFORE_ACTING
+                    if code == "tab_closed" and refused and tab_handle is not None:
+                        self.session.closed_tab(tab_handle)  # the extension observed that it is gone
+                    if code in {"stale_connection", "tab_closed"} and tab_handle is not None:
+                        code = "stale_tab_handle"
+                    if refused:
+                        outcome = "not_dispatched"
+                    # Any other failed action that received a reply may still have changed the page.
+                    elif outcome == "dispatched":
+                        outcome = "unknown"
+                        if action == "newTab" and isinstance(native, dict):
+                            # The tab exists though its load was not observed: name it, so the
+                            # caller inspects or closes it instead of opening another.
+                            try:
+                                tab_handle = self.session.opened_tab(admitted.connection, native.get("tabId")).handle
+                                outcome = "dispatched"
+                            except (OperationRefused, ValueError):
+                                pass
+                    return BrokerReply(_failure(call, public_name, code, outcome, tab_id=tab_handle), receipt)
+                if outcome != "dispatched":
+                    raise ValueError("Success without a completed native dispatch")
+                if action != "getTabs" and native.get("ok") is not True:
+                    raise ValueError("Missing native action acknowledgement")
+                data, outcome, cut = self._data(admitted, native, action)
+                result = {"ok": True, "call": call, "operation": name, "outcome": outcome,
+                          "data": data, "truncated": cut}
+                if tab_handle is not None or action == "newTab":
+                    result["tab_id"] = tab_handle or data["tab_id"]
+                if len(json.dumps(result, ensure_ascii=False, allow_nan=False).encode("utf-8")) > MAX_RESULT_BYTES:
+                    result = _failure(call, name, "output_limited", outcome, tab_id=result.get("tab_id"))
+                return BrokerReply(result, receipt)
+            except OperationRefused as error:
+                return BrokerReply(_failure(call, public_name, error.code, outcome, tab_id=tab_handle), receipt)
+            except (ValueError, TypeError, UnicodeError):
+                return BrokerReply(_failure(call, public_name, "invalid_bridge_response", outcome, tab_id=tab_handle), receipt)
+            # Cancellation intentionally propagates. It does NOT cancel a to_thread HTTP
+            # request or prove the browser stopped; remote lifecycle cancellation is pending.
+            # The bridge's own scheduler, not this lock, serializes a later call behind it.

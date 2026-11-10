@@ -62,6 +62,7 @@ except ImportError:
 
 from . import bridge_control, browser_diagnostics
 from .connection_binding import CONNECTION_HEADER, ConnectionBinding
+from .dispatch_receipts import DispatchReceipt, RECEIPT_HEADER, RECEIPT_ROUTES, RECEIPT_VERSION
 from .capabilities import (ACTION_GROUPS, CAPS_HEADER, LOAD_MORE_SCROLL_GROUPS, OPEN_ROUTES, ROUTE_GROUPS,
                            caps_refusal, header_caps, scroll_groups)
 from .task_modes import (
@@ -131,6 +132,7 @@ AUTH_TOKEN = _load_or_create_token()
 # from aliasing a new bridge's numerically identical extension generation/tab ids.
 BRIDGE_INSTANCE = secrets.token_hex(16)
 _connection_binding = contextvars.ContextVar("kitsune_connection_binding", default=None)
+_dispatch_receipt = contextvars.ContextVar("kitsune_dispatch_receipt", default=None)
 extension_ws = None  # WebSocket connection to extension
 extension_ws_generation = 0
 extension_info = {}  # {"version", "build", "sourceHash", "manifestHash"} from hello, "browser" from state
@@ -2923,6 +2925,8 @@ async def ws_handler(websocket):
             if cmd_id and cmd_id in pending_commands:
                 future = pending_commands[cmd_id]["future"]
                 if not future.done():
+                    # Unlike the result a disconnect fills in below, this one came from the extension.
+                    pending_commands[cmd_id]["replied"] = True
                     future.set_result(data.get("result", {}))
             else:
                 _log(f"← Extension: {json.dumps(data)[:200]}")
@@ -3186,6 +3190,20 @@ def _with_own_tabs(result, own_only):
 
 
 async def _send_to_extension_raw(action, params=None, timeout=30):
+    receipt = _dispatch_receipt.get()
+    if receipt is None:
+        return await _send_to_extension_impl(action, params, timeout)
+    record = receipt.begin(action, params)
+    if record is None:
+        return {"error": "Native command budget exhausted", "code": "native_operation_limit",
+                "retryable": False, "dispatched": False}
+    try:
+        return await _send_to_extension_impl(action, params, timeout, receipt, record)
+    finally:
+        receipt.finish(record)
+
+
+async def _send_to_extension_impl(action, params=None, timeout=30, receipt=None, record=None):
     """Send a command over the active extension WebSocket without scheduling."""
     global command_counter
 
@@ -3243,7 +3261,7 @@ async def _send_to_extension_raw(action, params=None, timeout=30):
     }
     
     future = asyncio.get_running_loop().create_future()
-    pending_commands[cmd_id] = {
+    pending = pending_commands[cmd_id] = {
         "future": future,
         "ws": ws,
         "action": action,
@@ -3258,8 +3276,15 @@ async def _send_to_extension_raw(action, params=None, timeout=30):
                 return invalid
             if extension_ws is not ws:
                 return _disconnected_error("Extension reconnected before command could be sent", action, sent=False)
+            if receipt is not None:
+                # A send that raises may still have written bytes: never call it not-dispatched.
+                receipt.mark(record, "unknown")
             await ws.send(json.dumps(command))
+            if receipt is not None:
+                receipt.mark(record, "dispatched")
         result = await asyncio.wait_for(future, timeout=timeout)
+        if receipt is not None and pending.get("replied"):
+            receipt.mark(record, "replied")
         if action == "closeTab" and not (isinstance(result, dict) and result.get("error")):
             _cleanup_tab_scheduler_state(params.get("tabId"))
         # An extension of another version may not know the action; nothing ran.
@@ -4927,6 +4952,13 @@ class BridgeHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self.refuse(400, {"error": str(exc), "code": "invalid_connection_binding", "retryable": False})
             return
+        receipt_values = [value for key, value in self.headers.items() if key.lower() == RECEIPT_HEADER.lower()]
+        if receipt_values and (len(receipt_values) != 1 or not _CLIENT_ID.fullmatch(receipt_values[0])
+                               or binding is None or path not in RECEIPT_ROUTES):
+            self.refuse(400, {"error": "Dispatch receipts require a bound supported route and one valid call id",
+                              "code": "invalid_receipt_request", "retryable": False})
+            return
+        receipt_token = _dispatch_receipt.set(DispatchReceipt(receipt_values[0]) if receipt_values else None)
         binding_token = _connection_binding.set(binding)
         token = _task_mode.set(mode)
         caps_token = _client_caps.set(caps)
@@ -4980,6 +5012,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             _client_caps.reset(caps_token)
             _task_mode.reset(token)
             _connection_binding.reset(binding_token)
+            _dispatch_receipt.reset(receipt_token)
 
     def do_GET(self):
         if not self.authorized():
@@ -5158,6 +5191,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "bridge_version": BRIDGE_VERSION,
             "build": BRIDGE_BUILD,
             "bridge_instance": BRIDGE_INSTANCE,
+            "dispatch_receipts": RECEIPT_VERSION,
             "extension_generation": extension_ws_generation,
             "scheduler": _scheduler_snapshot(),
             "keep_alive_tabs": _active_keep_alive_tabs(),
@@ -6031,6 +6065,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self.send_json(code, data)
 
     def send_json(self, code, data):
+        receipt = _dispatch_receipt.get()
+        if receipt is not None:
+            # Never merge extension/page-supplied fields into trusted evidence.
+            data = {"result": data, "receipt": receipt.snapshot()}
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
@@ -6043,6 +6081,18 @@ class BridgeHandler(BaseHTTPRequestHandler):
     
     def run_async(self, coro, timeout=35):
         """Run async coroutine from sync HTTP handler."""
+        receipt = _dispatch_receipt.get()
+        if receipt is not None:
+            # Count work while still queued, before it reaches the native send wrapper.
+            # A handler timeout must not claim nothing can run after its HTTP reply.
+            receipt.task_started()
+            original = coro
+            async def tracked():
+                try:
+                    return await original
+                finally:
+                    receipt.task_finished()
+            coro = tracked()
         return asyncio.run_coroutine_threadsafe(coro, loop).result(timeout=timeout)
     
     def log_message(self, format, *args):

@@ -185,6 +185,28 @@ def _port_conflict(port: int, reason: str, message: str) -> dict:
             "state": {"port": port, "reason": reason}}
 
 
+def _bounded_request(method, url, *, max_bytes, headers, **kwargs):
+    """Read a bounded, uncompressed wire body; never allocate a decompressed response first."""
+    headers = {key: value for key, value in headers.items() if key.lower() != "accept-encoding"}
+    headers["Accept-Encoding"] = "identity"
+    with httpx.stream(method, url, headers=headers, **kwargs) as response:
+        if response.headers.get("Content-Encoding", "identity").lower() != "identity":
+            return {"error": "Compressed bridge responses are not accepted by this bounded client",
+                    "code": "invalid_bridge_response", "retryable": False}
+        length = response.headers.get("Content-Length")
+        if length is not None and (not length.isascii() or not length.isdecimal()
+                                   or len(length) > 20 or int(length) > max_bytes):
+            return {"error": "Bridge response exceeds its wire limit or has an invalid length",
+                    "code": "bridge_response_limit", "retryable": False}
+        body = bytearray()
+        for chunk in response.iter_raw(chunk_size=min(65536, max_bytes + 1)):
+            if len(body) + len(chunk) > max_bytes:
+                return {"error": "Bridge response exceeds its wire limit",
+                        "code": "bridge_response_limit", "retryable": False}
+            body.extend(chunk)
+        return httpx.Response(response.status_code, headers=response.headers, content=bytes(body))
+
+
 class BridgeClient:
     """Bridge requests that carry one caller's capability groups, task mode and user-tab protection.
 
@@ -370,9 +392,15 @@ class BridgeClient:
             time.sleep(0.3)
         self._extension_wait_until = 0.0
 
-    def request(self, method: str, endpoint: str, start_bridge: bool = True, **kwargs) -> dict:
-        """start_bridge=False sends only to a bridge that already runs: it neither starts one nor
-        waits for the extension to reach a bridge this client started."""
+    def request(self, method: str, endpoint: str, start_bridge: bool = True,
+                max_response_bytes: int | None = None, **kwargs) -> dict:
+        """start_bridge=False neither starts a bridge nor waits for its extension.
+
+        max_response_bytes opts into bounded, uncompressed response-body capture. It
+        is a transport limit, not proof a failed POST had no effects. Legacy default: unbounded.
+        """
+        if max_response_bytes is not None and (type(max_response_bytes) is not int or max_response_bytes < 1):
+            raise ValueError("max_response_bytes must be a positive integer")
         for attempt in range(2):
             if endpoint.split("?", 1)[0] != "/api/status" and start_bridge:  # report the extension as it is
                 self.await_extension()
@@ -392,8 +420,14 @@ class BridgeClient:
                 permission_names = (USER_TABS_HEADER.lower(), USER_TABS_HEADER.lower().encode("ascii"))
                 headers = {key: value for key, value in headers.items() if key.lower() not in permission_names}
                 headers[USER_TABS_HEADER] = self.user_tabs
-                r = httpx.request(method, f"{BRIDGE}{endpoint}", headers=headers,
-                                  verify=bridge_control.tls_context(), **kwargs)
+                if max_response_bytes is None:
+                    r = httpx.request(method, f"{BRIDGE}{endpoint}", headers=headers,
+                                      verify=bridge_control.tls_context(), **kwargs)
+                else:
+                    r = _bounded_request(method, f"{BRIDGE}{endpoint}", headers=headers,
+                                         max_bytes=max_response_bytes, verify=bridge_control.tls_context(), **kwargs)
+                    if isinstance(r, dict):
+                        return r
                 if r.status_code == 401:
                     return _token_mismatch()
                 try:
