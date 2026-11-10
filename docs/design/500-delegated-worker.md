@@ -124,8 +124,10 @@ the broker's call id, outcome, error code and the bridge's receipt.
 6. **Approval.** A held action cannot be continued (`browser_resume`,
    `browser_request_tab`, `browser_ask_user` have no adapter), so #496 is not
    yet coordinated beyond "the script cannot approve itself".
-7. **Audit linkage.** The bridge's audit log does not yet carry the flat call id
-   or run id.
+7. **Audit linkage.** Follow-up [500-audit-linkage.md](500-audit-linkage.md) adds
+   the flat call ID to existing bridge audit entries and verifies the join from
+   settled script ledger entries. Run IDs, in-flight/late receipt linkage and
+   complete audit coverage are still missing.
 8. **Signed extension.** All browser evidence uses the temporary-add-on harness.
 9. **The guest reports its own end.** `completed` versus `runtime_error` is the
    guest's account of its program. It decides no outcome.

@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from kitsune import bridge, task_modes
 from kitsune.bridge_client import BridgeClient
+from kitsune.dispatch_receipts import DispatchReceipt
 
 TYPED = "fixture-typed-value-0000"
 REDACTED = bridge.AUDIT_REDACTED
@@ -23,6 +24,26 @@ class AuditRedactionTests(unittest.TestCase):
     def audited(self, action, params, ok=True, error=None, ms=12.7):
         bridge._audit(action, params, ok, error, ms)
         return self.log[-1]
+
+    def test_flat_audit_link_is_separate_from_hold_and_container_ids(self):
+        receipt = bridge._dispatch_receipt.set(DispatchReceipt("c_trusted"))
+        hold = bridge._direct_hold.set({"call": "legacy_hold"})
+        parent = bridge._audit_parent.set({"call": "container_call", "path": []})
+        try:
+            entry = self.audited("fill", {"value": TYPED, "flat_call": "c_body"})
+            self.assertEqual(entry["flat_call"], "c_trusted")
+            self.assertEqual(entry["parent"]["call"], "container_call")
+            self.assertNotIn("call", entry)
+            self.assertNotIn(TYPED, json.dumps(entry))
+            bridge._audit_parent.reset(parent)
+            parent = bridge._audit_parent.set(None)
+            entry = self.audited("click", {})
+            self.assertEqual((entry["flat_call"], entry["call"]), ("c_trusted", "legacy_hold"))
+        finally:
+            bridge._audit_parent.reset(parent)
+            bridge._direct_hold.reset(hold)
+            bridge._dispatch_receipt.reset(receipt)
+        self.assertNotIn("flat_call", self.audited("click", {"flat_call": "c_body"}))
 
     def test_typed_values_are_redacted_and_targets_kept(self):
         for action, params, typed_key in [

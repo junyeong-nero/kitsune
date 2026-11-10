@@ -1657,6 +1657,11 @@ def _audit(action, params, ok, error, ms, **fields):
         "ms": int(ms),
         **fields,
     }
+    receipt = _dispatch_receipt.get()
+    if receipt is not None:
+        # Correlation from the validated request context, never body/page output.
+        # Keep the existing held/container call identifiers in their own fields.
+        entry["flat_call"] = receipt.call
     parent = _audit_parent.get()
     if parent is not None:
         entry["parent"] = parent

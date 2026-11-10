@@ -206,6 +206,36 @@ class FlatBrokerWireTests(unittest.IsolatedAsyncioTestCase):
         # Handles and call ids, never the backend integers.
         self.assertNotIn("tabId", json.dumps([listed.result, opened.result, closed.result]))
 
+    async def test_flat_audit_links_concurrent_clients_without_leaking_values_or_context(self):
+        extension = self.extension()
+        first = await self.connect()
+        second = await FlatBroker.connect(CallerAuthority("other-client", "other-owner", "act"))
+        handles = await asyncio.gather(self.handle(first), self.handle(second))
+        # Arbitrary page reply fields must not replace coordinator-owned attribution.
+        extension.behavior["fill"] = lambda command: {"ok": True, "flat_call": "c_page", "call": "c_page"}
+        replies = await asyncio.gather(*(
+            broker.call("browser_input", {"tab_id": handle, "target": {"selector": "#name"},
+                                          "text": "private-fill-value"})
+            for broker, handle in zip((first, second), handles)))
+        self.assertTrue(all(reply.result["ok"] for reply in replies), replies)
+        # A later legacy request has no receipt context, even if its body claims one.
+        status, _, text = _request(self.bridge.http_port, "POST", "/api/fill", self.bridge.auth(),
+                                   self.bridge.host, json.dumps({"tabId": 9, "selector": "#name",
+                                                               "value": "private-fill-value", "flat_call": "c_body"}))
+        self.assertEqual(status, 200, text)
+        status, _, text = _request(self.bridge.http_port, "GET", "/api/audit", self.bridge.auth(), self.bridge.host)
+        self.assertEqual(status, 200, text)
+        entries = [entry for entry in json.loads(text)["entries"] if entry["action"] == "fill"]
+        self.assertEqual(len(entries), 3)
+        by_call = {entry["flat_call"]: entry for entry in entries if "flat_call" in entry}
+        self.assertEqual(set(by_call), {reply.result["call"] for reply in replies})
+        for reply, client, owner in zip(replies, ("flat-client", "other-client"), ("flat-owner", "other-owner")):
+            entry = by_call[reply.receipt["call"]]
+            self.assertEqual((entry["client"], entry["owner"], entry["ok"]), (client, owner, True))
+        self.assertNotIn("flat_call", entries[-1])
+        self.assertNotIn("private-fill-value", text)
+        self.assertNotIn("c_page", text)
+
     async def test_read_mode_is_refused_by_the_broker_and_by_the_bridge(self):
         extension = self.extension()
         broker = await self.connect("read")
@@ -692,6 +722,13 @@ class FlatBrokerWireTests(unittest.IsolatedAsyncioTestCase):
             self.assert_failed(held, "needs_user", "not_dispatched")
             self.assertEqual(held.result["error"]["state"], {})
             self.assertNotIn("click", [command["action"] for command in held.receipt["commands"]])
+            status, _, audit = _request(self.bridge.http_port, "GET", "/api/audit", self.bridge.auth(), self.bridge.host)
+            self.assertEqual(status, 200, audit)
+            entry = json.loads(audit)["entries"][-1]
+            self.assertEqual((entry["flat_call"], entry["action"], entry["ok"]),
+                             (held.result["call"], "click", False))
+            self.assertEqual(entry["params"]["confirmation"], "required")
+            self.assertNotIn("confirmToken", audit)
         # The bridge issued a token to this client's request; none of it reaches the caller.
         text = json.dumps(held.result)
         for secret in ("confirmToken", "confirm_token", "expiresInSeconds", "Pay now"):

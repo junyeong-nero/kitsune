@@ -90,6 +90,17 @@ except NameError:
     emit((await browser.hover(tab_id={handle!r}, target={{"ref": "e4"}}))["outcome"])
 ''')
         self.assertEqual(again.emitted, "dispatched")
+        # Join the trusted ledger to the bridge audit; stdout and emitted values
+        # are not involved. Reads without existing audit entries are not invented.
+        status, _, text = _request(self.bridge.http_port, "GET", "/api/audit", self.bridge.auth(), self.bridge.host)
+        self.assertEqual(status, 200, text)
+        entries = json.loads(text)["entries"]
+        for ledger_entry, action in ((result.ledger[1], "click"), (again.ledger[0], "hover")):
+            matching = [entry for entry in entries if entry.get("flat_call") == ledger_entry["call"]]
+            self.assertEqual(len(matching), 1, matching)
+            self.assertEqual((matching[0]["action"], matching[0]["client"], matching[0]["owner"]),
+                             (action, "script-client", "script-owner"))
+            self.assertEqual(ledger_entry["receipt"]["call"], matching[0]["flat_call"])
 
     async def test_a_script_cannot_widen_its_mode_forge_policy_or_use_another_sessions_handles(self):
         reader = await self.broker("read")
