@@ -12,6 +12,14 @@ group except `storage` and `history`, which read personal data and must be named
 (`KITSUNE_CAPS=all,storage,history`). Whitespace and case are ignored; unknown group names
 fail at startup.
 
+For trusted local Python composition on macOS, opt in with `KITSUNE_SCRIPTING=1`
+to add `browser_run_python` independently of tool publication groups. It runs
+ordinary Python with host file/network access, **not in a sandbox**. The supplied
+browser API keeps this client's browser grants; those grants do not constrain
+arbitrary local code. See [Python scripting](python-api.md#python-scripting-through-mcp).
+The minimal default tool-set transition is tracked in #515; existing defaults are
+unchanged here.
+
 ```toml
 [mcp_servers.kitsune.env]
 KITSUNE_CAPS = "core,browse,read"

@@ -1110,6 +1110,32 @@ if GATEWAY:
     PUBLISHED_TOOLS |= GATEWAY_TOOLS
 
 
+async def browser_run_python(
+    code: Annotated[str, Field(description="Python code. Use the supplied browser; assign a JSON result or print selected output.",
+                               min_length=1, max_length=64000)],
+    timeout: Annotated[float, Field(description="Execution deadline in seconds, including browser calls.", gt=0, le=120)] = 30,
+) -> CallToolResult:
+    """Run trusted local Python with host file/network access; this is not a sandbox.
+    browser uses this client's session and browser permissions; tab is the current MCP
+    selection (None before selection). browser.tabs(), browser.tab(id), browser.new_tab(url);
+    tab.snapshot(), fill(target, value), query(selector, fields=["text", "href"]).
+    Variables reset each call; tabs persist. Scripts do not change the MCP selection.
+    Print selected output or assign JSON-compatible result. 16 KB output/result, 100 API calls.
+    A failed API call stops execution, even if caught. Earlier writes remain; never replay
+    the whole script. Use direct tools for approval and screenshots. help(tab.query) shows
+    a method's signature; docs/python-api.md has the API reference.
+    """
+    from .script_runner import run_python
+    result = await run_python(code, _client, timeout=timeout, tab_id=playwright_tools._current_tab)
+    return CallToolResult(content=[_compact_json(result)], isError=_failed(result))
+
+
+# Explicit local-code execution opt-in. Existing tool lists stay unchanged until #515.
+if os.environ.get("KITSUNE_SCRIPTING") == "1":
+    mcp.tool(annotations=ToolAnnotations(title="Run Python", **DESTRUCTIVE))(browser_run_python)
+    PUBLISHED_TOOLS.add("browser_run_python")
+
+
 # FastMCP logs at INFO through Rich, so every tool call printed a line from the MCP server and
 # one from httpx: about 0.6 ms of CPU together (#298). Their warnings and errors still show.
 PER_CALL_LOGGERS = ("mcp.server.lowlevel.server", "httpx")

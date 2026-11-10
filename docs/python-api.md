@@ -78,8 +78,60 @@ Do not call `connect()` to attach to an MCP session: it creates a separate devel
 client with unrestricted capability groups. `Browser` itself neither limits Python's
 host access nor prevents code from modifying its client. It is an API wrapper, not a
 script sandbox. A scripting host owns the execution boundary and approval channel;
-an agent-supplied `confirm=lambda _: True` is not user approval. This section describes
-host integration, not an already-available MCP script tool (tracked in #514).
+an agent-supplied `confirm=lambda _: True` is not user approval. The
+[MCP scripting tool](#python-scripting-through-mcp) uses a host-mediated transport
+rather than giving the worker the actual `BridgeClient`.
+
+## Python scripting through MCP
+
+On macOS, set `KITSUNE_SCRIPTING=1` in the MCP server environment and restart the
+client to add `browser_run_python(code, timeout=30)`. It is **off by default**.
+This opt-in permits ordinary local Python execution: **not a sandbox**, including
+host files, environment, imports, subprocesses and network access. Only enable it
+for a client you trust with local code execution. `KITSUNE_MODE` and `KITSUNE_CAPS`
+restrict the supplied browser transport, not arbitrary Python or independent
+connections made by the code. No new runtime installation is needed: it uses the
+MCP server's Python interpreter.
+
+```python
+# code passed to browser_run_python, after opening/selecting a tab with direct tools
+for target, value in {"#name": "Ada", "#note": "Please review."}.items():
+    tab.fill(target, value)
+result = tab.forms()
+```
+
+- `browser` is the Python API, forwarding each request through the MCP host's
+  existing client/session. **Do not call `kitsune.connect()`** to reuse that session.
+- `tab` is the current MCP selection at invocation start, or `None` before selection.
+  Use `browser.new_tab(url)` or `browser.tab(id)` for other tabs; obtain actual IDs
+  from `browser.tabs()`, not the indexes of the legacy direct tab list. Scripts do
+  not change the MCP selection.
+- Every invocation has fresh Python variables and a temporary working directory,
+  removed on exit. Browser tabs persist. Ordinary synchronous Python is supported;
+  there is no persistent REPL or top-level `await`.
+- Use `print(...)` or assign JSON-compatible `result`. The response contains
+  `output`, optional `result` and a short `operations` list. Intermediate page
+  results are not automatically returned to the model. Use direct screenshot tools
+  for image content; Python screenshot bytes are not JSON results.
+- Limits: 64,000 UTF-8 bytes of code; 16,000 bytes shared by printed output and the
+  selected result; 100 mediated API calls; a 30-second default deadline, at most
+  120 seconds. Internal browser replies are capped at 2 MiB. Operation metadata and
+  a bounded failed-operation summary accompany the output.
+- A failed API call stops the invocation even if Python catches exceptions. Its
+  failure is returned without approval/resume tokens. Ask for approval through a
+  direct tool, then explicitly run only the remaining work—never replay the script.
+- Timeout/cancellation kills and reaps the worker process group. An already-sent
+  bridge command can still finish; an `unknown` operation needs a fresh page read
+  before another write. `ok` in the operation list means the API call succeeded,
+  not proof of every intended page effect. Host access or deliberately detached
+  processes are outside these browser/lifecycle guarantees.
+
+The bridge must already be running (normal MCP startup starts it). The scripting
+transport does not start/restart a bridge or retry a request. To disable the tool,
+unset `KITSUNE_SCRIPTING` and restart the MCP client; existing direct tools are
+unchanged. Keep guidance short: `help(browser.new_tab)` or `help(tab.query)` in a
+script prints that method's signature/docstring on demand; the tables below give
+the broader reference.
 
 ## Composition in ordinary Python
 
