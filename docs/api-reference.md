@@ -444,7 +444,17 @@ status lines and autocomplete lists that render a moment later, including deboun
 delta also lists text the action made appear anywhere on the page as `text` lines (for
 example `- text "Saved."`), also when the snapshot is otherwise compact. In a run of similar
 items, up to 20 items that are new since the delta's baseline are listed even past the first
-five that a snapshot shows, so the next batch of an infinite list is named, not only counted. When the delta found
+five that a snapshot shows, so the next batch of an infinite list is named, not only counted. A delta
+in which a list grew at its end and still ends in a loading indicator adds `snapshot_hint`: "This
+list loads more as it scrolls; browser_find text=… load_more=true scrolls until a match appears."
+(#486), on every qualifying delta. This heuristic requires at least two newly appended items
+following an existing sibling with the same structure. The loading indicator must have a different
+structure and be the list's last child or the element immediately after the list. It must contain
+no interactive controls and have `aria-busy="true"`, be a progress bar (`role="progressbar"`,
+`<progress>`), or have normalized text of at most 40 characters ending in `…` or `...`
+(for example, "불러오는 중…"). A fresh or entirely replaced list, a full snapshot, and an interactive
+Load more button do not trigger this hint. A truncated delta keeps the truncation hint instead.
+When the delta found
 no new, changed or removed line and the URL and title are the same, the result adds
 `no_visible_change: true`, unless during the wait the page added an element (still attached when
 the delta is read) or an editor's content changed, which a delta may not show, or a request the

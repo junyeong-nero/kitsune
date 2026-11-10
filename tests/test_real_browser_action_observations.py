@@ -167,6 +167,8 @@ class RealBrowserActionObservationTests(harness.RealBrowserTestCase):
         for i in range(21, 31):
             self.assertIn(f'button "계약서 #{i} 저장"', loaded["snapshot"])
         self.assertNotIn('button "계약서 #1 저장"', loaded["snapshot"], "only what changed")
+        # #486: the list grew above its loading sentinel, so the delta names browser_find's load_more.
+        self.assertIn("load_more=true", loaded.get("snapshot_hint", ""), loaded)
 
     def test_wait_for_time_returns_what_changed_since_the_agent_last_looked(self):
         tab = self.open_tab(f"{self.site.origin}/infinite")

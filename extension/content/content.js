@@ -915,6 +915,13 @@
   const COLLAPSE_MAX_LISTED_CHARS = 600;
   const NEW_ITEM_LIMIT = 20;
   const SCOPED_ITEM_LIMIT = 100;
+  // A delta that shows a list growing at its end, above a loading indicator, names the core
+  // browser_find's load_more (#486): a hover or scroll loads one batch per request. An indicator
+  // holds no control and is busy (aria-busy), a progress bar, or a text of at most
+  // LOADING_TEXT_LIMIT characters that ends in an ellipsis ("불러오는 중…", "Loading...").
+  const LOAD_MORE_HINT = 'This list loads more as it scrolls; browser_find text=… load_more=true ' +
+    'scrolls until a match appears.';
+  const LOADING_TEXT_LIMIT = 40;
 
   // What a delta snapshot is diffed against: the page's snapshot lines (without refs) per
   // element, url and title, recorded right before an action (takeActionBaseline).
@@ -1251,6 +1258,38 @@
     const runItems = new Set();
     // Set while fitsListed measures items: their lines are taken back afterwards.
     let measuring = false;
+    // Whether a delta's walk found a list that loads more (LOAD_MORE_HINT).
+    let loadsMore = false;
+    function loadingIndicator(el) {
+      if (metadata.get(el).interactive) return false;
+      if (el.getAttribute('aria-busy') === 'true' || el.getAttribute('role') === 'progressbar' ||
+          el.tagName === 'PROGRESS') return true;
+      const text = normalize(redactedText(el));
+      return text.length <= LOADING_TEXT_LIMIT && /(?:…|\.\.\.)$/.test(text);
+    }
+    // Whether el's children (those the walk lists) grew at their end since the baseline and end
+    // in a loading indicator: two or more items new since the baseline (one is an ordinary
+    // addition) follow one it has, all of its shape (signature), and the element shown after
+    // them, in el or right after el, is an indicator of another shape. The indicator may be el's
+    // last child, so the items are also read without it.
+    function endsLoading(el, children) {
+      const shape = child => metadata.get(child).signature;
+      const shownAfter = (node, parent) => {
+        const shown = childrenAcrossFrames(parent).filter(child => metadata.has(child));
+        const at = shown.indexOf(node);
+        return at < 0 ? null : shown[at + 1];
+      };
+      for (const end of [children.length, children.length - 1]) {
+        let old = end - 1;
+        while (old >= 0 && !baseline.items.has(children[old])) old--;
+        if (old < 0 || end - 1 - old < 2 ||
+            children.slice(old + 1, end).some(item => shape(item) !== shape(children[old]))) continue;
+        const parent = flatParent(el);
+        const indicator = shownAfter(children[end - 1], el) || (parent && shownAfter(el, parent));
+        return !!indicator && shape(indicator) !== shape(children[old]) && loadingIndicator(indicator);
+      }
+      return false;
+    }
     // Whether children's lines, visited as listed items under parent, total at most
     // COLLAPSE_MAX_LISTED_CHARS as the agent reads them: a ref's generation prefix is private.
     // The walk's state is restored, so they can be visited again.
@@ -1383,6 +1422,9 @@
       }
       if (maxDepth != null && domDepth >= maxDepth) return;
       const children = childrenAcrossFrames(el).filter(child => metadata.get(child)?.useful);
+      if (baseline?.items && !measuring && !loadsMore) {
+        try { loadsMore = endsLoading(el, children); } catch {}  // a hint never fails the read it comes with
+      }
       // Only composite children / list items collapse: a toolbar of leaf controls
       // should remain fully discoverable. Text, IDs and classes are not structure.
       // In text mode, siblings with only inline content are prose, not cards.
@@ -1725,6 +1767,7 @@
         ...(document.title !== baseline.title ? { title: document.title } : {}),
         ...(unchanged && !changedDuringWatch && window.location?.href === baseline.url &&
           document.title === baseline.title ? { unchanged: true } : {}),
+        ...(loadsMore ? { hint: LOAD_MORE_HINT } : {}),
       } : {}),
       ...withNeedsUser(),
     };
