@@ -133,3 +133,48 @@ Page actions (click, input, select, check, press, hover, drag, scroll, wait),
 screenshot and images, `browser_query`, `request_tab`/`ask_user`/`resume` with
 #496 approval, revocation of an in-flight call, audit linkage of flat call ids,
 MCP registration, and the WASI worker with its IPC and negative tests.
+
+## Correction (2026-11-11): a ref spelled as a selector bypassed the registry
+
+Found while reading the wait routes, after `9b4a09c` and `dde7cca` were pushed.
+
+**The defect.** The extension reads a selector whose first `>>` part is a ref as
+that ref: the public `e12`, the private `s1e2`, the legacy `r12`, with surrounding
+JavaScript whitespace, alone or starting a chain (`e12 >> xpath=..`). The registry
+checked only `ref` targets. A session could therefore pass
+`{"selector": "e12"}` and act on an element whose ref it was never given.
+
+**Reproduced in a real browser before the fix.** Session A read a page and got the
+ref of a button. Session B, which had read nothing, sent that ref as a selector in
+five spellings. Three of them clicked the button (the page recorded three clicks);
+the plain `ref` form was refused as intended.
+
+**Scope.** The extension still bound the ref to its tab and document, so this did
+not reach another tab or a replaced document, and a write to the user's tab was
+still refused. What it skipped was the session check. The broker is not registered
+in MCP and no worker reaches it, so no agent could have used it.
+
+**The fix.** Argument validation refuses a selector target whose first part is a
+ref (`invalid_arguments`, before any request), for every operation that takes a
+target, source, destination or condition target. Text arguments (`browser_find`,
+text waits) are unaffected.
+
+**Evidence.**
+
+| Check | Result |
+| --- | --- |
+| Real browser before the fix | failed: 3 clicks reached the page |
+| Real browser after the fix | 4 broker scenarios passed; all five spellings `invalid_arguments`, no receipt, zero clicks |
+| Admission tests | 13 ref spellings × 6 operations refused; 14 look-alike selectors still accepted |
+| Isolated Python discovery | 1,354 tests / 241 skips / zero failures or errors, 213.620 s |
+
+Full real-browser discovery was not rerun for this validation-only change; it is
+due with the next checkpoint. Retained homes: `/tmp/kitsune-500-refsel-red.DDWUE3`
+(failing run), `/tmp/kitsune-500-refsel-green.Q2KL76`,
+`/tmp/kitsune-500-refsel-full.aPIAVt`.
+
+The rule mirrors the extension's parsing (`leadingShortRef` in `background.js`,
+`REF_SELECTOR` and `parseSelectorPart` in `content.js`). If the extension gains
+another ref spelling, this validation must follow; a test that derives the
+spellings from the extension source would make that automatic and does not exist
+yet.

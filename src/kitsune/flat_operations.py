@@ -7,6 +7,7 @@ metadata. The script runner is deliberately not a leaf operation.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError, field_validator, model_validator
@@ -41,8 +42,22 @@ class RefTarget(Arguments):
     ref: Annotated[str, Field(pattern=r"^e[0-9]+$", max_length=128)]
 
 
+# The extension reads a selector whose first `>>` part is a ref (public e12, private s1e2,
+# legacy r12) as that ref, after trimming JavaScript whitespace. A ref is only ever a `ref`
+# target, which the session checks; spelled as a selector it would skip that check.
+_JS_SPACE = "\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
+_REF_SELECTOR = re.compile(rf"[{_JS_SPACE}]*(?:e[0-9]+|s[0-9]+e[0-9]+|r[0-9]+)[{_JS_SPACE}]*(?:>>|\Z)")
+
+
 class SelectorTarget(Arguments):
     selector: Selector
+
+    @field_validator("selector")
+    @classmethod
+    def not_a_ref(cls, value):
+        if _REF_SELECTOR.match(value):
+            raise ValueError("A ref is passed as ref, not as a selector")
+        return value
 
 
 Target = Union[RefTarget, SelectorTarget]

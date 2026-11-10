@@ -79,6 +79,27 @@ class FlatOperationAdmissionTests(unittest.TestCase):
         self.assert_invalid("browser_click", {**TARGET, "modifiers": ["Shift", "Shift"]})
         self.assert_invalid("browser_select", {**TARGET, "values": ["one", "one"]})
 
+    def test_a_selector_that_the_extension_would_read_as_a_ref_is_refused(self):
+        # background.js leadingShortRef and content.js REF_SELECTOR/parseSelectorPart.
+        for selector in ("e12", " e12", "e12\n", "\ufeffe12", "\u00a0e12\u3000", "e0", "s17e4", "r3",
+                         "e12 >> xpath=..", "e12>>css=button", "e12 >>", "s17e4 >> nth=0", "r3\t>> text=Save"):
+            for name, arguments in (
+                    ("browser_click", {**TAB, "target": {"selector": selector}}),
+                    ("browser_read", {**TAB, "target": {"selector": selector}}),
+                    ("browser_drag", {**TAB, "source": {"ref": "e1"}, "destination": {"selector": selector}}),
+                    ("browser_drag", {**TAB, "source": {"selector": selector}, "destination": {"ref": "e1"}}),
+                    ("browser_wait", {**TAB, "condition": {"kind": "target", "target": {"selector": selector}}}),
+                    ("browser_screenshot", {**TAB, "scope": "element", "target": {"selector": selector}})):
+                with self.subTest(selector=selector, name=name):
+                    self.assert_invalid(name, arguments)
+        # Selectors that only resemble one stay selectors, and text is never a selector.
+        for selector in ("e12 > span", "e12 span", "e12.item", "em", "e", "E12", "section e12", "#e12", "x >> e12",
+                         "text=e12", '"e12"', "e12a", "s17", "re3"):
+            with self.subTest(selector=selector):
+                validate_operation("browser_click", {**TAB, "target": {"selector": selector}}, mode="act")
+        validate_operation("browser_find", {**TAB, "text": "e12"}, mode="act")
+        validate_operation("browser_wait", {**TAB, "condition": {"kind": "text", "value": "e12"}}, mode="act")
+
     def test_explicit_null_raw_tab_ids_and_scalar_coercion_are_refused(self):
         for value in (None, 9, True, "9", ""):
             self.assert_invalid("browser_read", {"tab_id": value})

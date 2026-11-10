@@ -102,6 +102,38 @@ class RealBrowserFlatBrokerTests(harness.RealBrowserTestCase):
     def test_page_actions_through_the_broker(self):
         asyncio.run(self.action_scenario())
 
+    def test_a_ref_spelled_as_a_selector_is_not_a_way_around_the_ref_registry(self):
+        asyncio.run(self.ref_selector_scenario())
+
+    async def ref_selector_scenario(self):
+        # The extension reads a selector that starts with a ref as that ref. A session that was
+        # never given the ref must not reach its element by spelling it as a selector.
+        owner = "e2e-flat-refsel"
+        reader = await FlatBroker.connect(CallerAuthority("e2e-flat-refsel-a", owner, "act"))
+        other = await FlatBroker.connect(CallerAuthority("e2e-flat-refsel-b", owner, "act"))
+        before_tabs = set(self.native())
+        opened = await reader.call("browser_tabs", {"action": "open", "url": self.page.origin + "/actions"})
+        native_id = (set(self.native()) - before_tabs).pop()
+        content = (await reader.call("browser_read", {"tab_id": opened.result["tab_id"]})).result["data"]["content"]
+        ref = re.search(r'button "Increment" \[ref=(e\d+)\]', content)[1]
+        tab = next(t["tab_id"] for t in (await other.call("browser_tabs", {})).result["data"]["tabs"]
+                   if t["url"].endswith("/actions"))
+        self.assert_failed(await other.call("browser_click", {"tab_id": tab, "target": {"ref": ref}}),
+                           "stale_ref", "not_dispatched")
+        for selector in (ref, f"  {ref} ", f"\ufeff{ref}", f"{ref} >> xpath=.", f"{ref}>>css=*"):
+            with self.subTest(selector=selector):
+                reply = await other.call("browser_click", {"tab_id": tab, "target": {"selector": selector}})
+                self.assert_failed(reply, "invalid_arguments", "not_dispatched")
+                self.assertIsNone(reply.receipt)
+        events = json.loads(self.as_owner(owner, "/api/js", {"tabId": native_id, "code": STATE})["result"])["events"]
+        self.assertEqual(events, [], "no click reached the page")
+        # An ordinary selector still works for that session, and so does the ref for its own.
+        self.assertTrue((await other.call("browser_click", {"tab_id": tab, "target": {"selector": "#inc"}})).result["ok"])
+        self.assertTrue((await reader.call("browser_click", {"tab_id": opened.result["tab_id"],
+                                                             "target": {"ref": ref}})).result["ok"])
+        self.assertTrue((await reader.call("browser_tabs", {"action": "close",
+                                                            "tab_id": opened.result["tab_id"]})).result["ok"])
+
     def as_owner(self, owner, path, body):
         """A legacy request of the same owner: the harness's own client may not write the broker's tabs."""
         status, _, text = harness._request(

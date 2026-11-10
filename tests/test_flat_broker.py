@@ -613,6 +613,10 @@ class FlatBrokerWireTests(unittest.IsolatedAsyncioTestCase):
         sent = len(extension.actions())
         for name, arguments, code in (
                 ("browser_click", {"target": {"ref": "e99"}}, "stale_ref"),
+                # A ref spelled as a selector would skip the session's ref check in the extension.
+                ("browser_click", {"target": {"selector": "e99"}}, "invalid_arguments"),
+                ("browser_click", {"target": {"selector": " e4 >> xpath=.."}}, "invalid_arguments"),
+                ("browser_drag", {"source": {"ref": "e3"}, "destination": {"selector": "e77"}}, "invalid_arguments"),
                 ("browser_input", {"target": {"ref": "e6"}, "text": "x"}, "stale_ref"),
                 ("browser_drag", {"source": {"ref": "e3"}, "destination": {"ref": "e77"}}, "stale_ref"),
                 ("browser_select", {"target": {"ref": "e3"}, "values": ["a", "b"]}, "unsupported_variant"),
