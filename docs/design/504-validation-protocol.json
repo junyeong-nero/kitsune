@@ -5,7 +5,7 @@
   "notice": "Companion of 504-validation-protocol.md. Offline consistency data only: no measured result, no approval, no harness. Values under arms.env, units, design and decision mirror kitsune-benchmark configs/experiments/kitsune-flat-504-v1.json at bindings.benchmark_protocol.commit; that file governs if they differ. null in arms.env means unset; null in pins means not yet pinned.",
   "model_invoked": false,
   "execution_approved": false,
-  "document": {"path": "504-validation-protocol.md", "sha256": "b1d3d920e61f2f9ed7d9b1e927bf4406a1d3fab9816d89de3838f9158688ccce"},
+  "document": {"path": "504-validation-protocol.md", "sha256": "e1d6b95e767aa7216806acce5fac72a7c04e850a59324f3c858d72055965796d"},
   "bindings": {
     "kitsune_baseline": "fd9b90e1cfae702b8470fcfca5d1bd178dba2c94",
     "kitsune_design": "9ae854921f003905709e1287cd2b3cd16f5a104a",

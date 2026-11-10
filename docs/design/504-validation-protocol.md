@@ -595,7 +595,8 @@ Limits, stated in the report:
 
 - Reading and pattern matching are not confinement. A reviewer can miss a
   bypass. The boundary is sections 10 and 11; review is a second check.
-- Only D produces programs, so the reviewer cannot be blind to the arm.
+- D produces Python scripts; A and B can produce page JavaScript and container
+  payloads. Their different interfaces prevent reliable blinding to the arm.
 - `ui-table` grades come from page JavaScript. The flat candidate offers no page
   evaluation, but A and B do, so a successful reward forgery there is possible
   and is an incident, not a success.
