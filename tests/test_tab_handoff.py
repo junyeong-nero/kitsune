@@ -14,6 +14,8 @@ from unittest.mock import AsyncMock, PropertyMock, patch
 
 import anyio
 from mcp import ClientSession, types
+from mcp.server.session import ServerSession
+from mcp.shared.exceptions import McpError
 from mcp.shared.memory import create_client_server_memory_streams, create_connected_server_and_client_session
 from websockets.sync.client import connect
 from websockets.exceptions import ConnectionClosed
@@ -76,6 +78,86 @@ class PendingHandoffExtension(HandoffExtension):
                             "error": "Session ended", "code": "needs_user", "state": {"decision": "cancelled"}}}))
                         self.pending = None
                     ws.send(json.dumps({"id": command["id"], "result": {"ok": True}}))
+        except ConnectionClosed:
+            pass
+
+
+OWNED = {"ok": True, "tabId": 1, "owned": True}
+
+
+def not_handed_off(decision):
+    return {"error": "The tab was not handed off", "code": "needs_user", "retryable": False,
+            "state": {"reason": "approval", "detail": "tab_handoff", "decision": decision}, "hint": "own tab"}
+
+
+class TogetherExtension(HandoffExtension):
+    """requestTab as background.js answers a client that asks the user too (#494): the token at once
+    (together), then a wait that the popup's answer (popup, popup_delay s after the wait) or the client's
+    answer (the token, or the token and a decision) settles."""
+    def __init__(self, bridge):
+        self.popup, self.popup_delay = None, 0.3
+        self.waiting, self.settled = None, False
+        super().__init__(bridge)
+
+    def reset(self, popup, popup_delay=0.3):
+        with self.lock:
+            self.popup, self.popup_delay = popup, popup_delay
+            self.waiting, self.settled = None, False
+            self.commands.clear()
+
+    def requests(self):
+        with self.lock:
+            return [c for c in self.commands if c["action"] == "requestTab"]
+
+    def _reply(self, command, result):
+        with self.lock:
+            self.ws.send(json.dumps({"id": command["id"], "result": result}))
+
+    def _settle(self, result):
+        """The request's answer: the wait returns it; True if it had none."""
+        with self.lock:
+            waiting, first = self.waiting, not self.settled
+            self.waiting, self.settled = None, True
+        if first and waiting is not None:
+            self._reply(waiting, result)
+        return first
+
+    def _answer(self, command):
+        with self.lock:
+            self.commands.append(command)
+        if command["action"] != "requestTab":
+            return {"ok": True}
+        if command.get("wait"):
+            with self.lock:
+                if self.settled:  # the client's answer came first: background.js has no request left
+                    return not_handed_off("cancelled")
+                self.waiting = command
+            if self.popup is not None:
+                timer = threading.Timer(self.popup_delay, self._settle, (self.popup,))
+                timer.daemon = True
+                timer.start()
+            return None  # the answer settles it
+        if command.get("confirmToken"):
+            result = not_handed_off(command["decision"]) if "decision" in command else OWNED
+            return result if self._settle(result) else not_handed_off("cancelled")
+        return {"error": "Tab handoff needs approval", "code": "needs_user", "retryable": False, "state": {
+            "reason": "approval", "detail": "tab_handoff", "action": "requestTab", "tabId": 1, "title": "Page",
+            "url": "https://user.example/", "message": "Client A requests this tab: work", "confirmToken": "test-token",
+            "expiresInSeconds": 120, "approval": "token", "together": True}}
+
+    def _serve(self, ws_port, connected):
+        try:
+            with connect(f"ws://127.0.0.1:{ws_port}", origin=EXTENSION_ORIGIN, open_timeout=5) as ws:
+                self.ws = ws
+                ws.send(json.dumps({"type": "hello", "version": "0.0.0-test", "build": "test"}))
+                connected.set()
+                for message in ws:
+                    command = json.loads(message)
+                    with self.lock:
+                        self.actions.append(command["action"])
+                    result = self._answer(command)
+                    if result is not None:
+                        self._reply(command, result)
         except ConnectionClosed:
             pass
 
@@ -213,7 +295,24 @@ time.sleep(60)
                 self.assertEqual(command["ownerId"], client.owner_id, "worker retains transport ContextVars")
         anyio.run(run)
 
+    def test_a_pending_request_holds_no_other_command(self):
+        # #494: a request waiting for the user holds no scheduler lease, so a global command (and the tab
+        # commands queued behind it) does not wait for the answer.
+        self.extension.close()
+        self.extension = PendingHandoffExtension(self.bridge)
+        self.addCleanup(self.extension.close)
+        self.channel()
+        threading.Thread(target=self.request, args=({"tabId": 1, "reason": "work"},), daemon=True).start()
+        self.assertTrue(self.extension.requested.wait(3))
+        started = time.monotonic()
+        status, _, _ = _request(self.bridge.http_port, "POST", "/api/new-tab", headers=self.headers,
+                                host=self.bridge.host, body=json.dumps({"url": "about:blank"}))
+        self.assertEqual(status, 200)
+        self.assertLess(time.monotonic() - started, 1, "the new tab waited for the user's answer")
+
     def test_connected_mcp_browser_answers_and_client_fallbacks(self):
+        # An extension that predates #494 ignores together: it asks in the browser first, then returns the
+        # token, which the client's prompt approves.
         async def run():
             for decision, elicits in (("browser-approved", True), ("browser-declined", True),
                                       ("approved", True), ("declined", True), ("token", False)):
@@ -230,7 +329,7 @@ time.sleep(60)
                 self.extension.request_result = result
                 async def answer(context, params):
                     prompts.append(params)
-                    return types.ElicitResult(action="accept", content={"decision": "Decline" if decision == "declined" else "Approve"})
+                    return types.ElicitResult(action="decline" if decision == "declined" else "accept")
                 with patch.object(bridge_client, "BRIDGE", "http://" + self.bridge.host), \
                         patch.object(bridge_client, "_headers", return_value=self.bridge.auth()), \
                         patch.object(client, "await_extension"), patch.object(server, "_client", client), \
@@ -242,6 +341,9 @@ time.sleep(60)
                         value = json.loads(response.content[0].text)
                         self.assertNotIn("resume_token", value)
                         self.assertEqual(len(prompts), 1 if decision in {"approved", "declined"} else 0)
+                        request = next(c for c in self.extension.commands if c["action"] == "requestTab")
+                        self.assertEqual(request.get("together"), True if elicits else None)
+                        self.extension.commands.clear()
                         if decision == "token":
                             listed = await mcp_client.list_tools()
                             schema = next(t.inputSchema for t in listed.tools if t.name == "browser_tabs")
@@ -254,6 +356,86 @@ time.sleep(60)
                             self.assertNotIn("confirmToken", value["state"])
                         else:
                             self.assertTrue(value["owned"])
+        anyio.run(run)
+
+    def test_with_elicitation_the_browser_and_the_client_ask_at_once(self):
+        self.extension.close()
+        self.extension = TogetherExtension(self.bridge)
+        self.addCleanup(self.extension.close)
+
+        async def request(popup, answer, delay=0.0, popup_delay=0.3, cancel=False):
+            """browser_tabs request: the popup answers popup after popup_delay s (None: never), the client's
+            prompt answers after delay s (None: accept after 1 s, too late); cancel: the client cancels the
+            call first. The result (None when cancelled), the client's answers, and whether the server
+            closed the client's prompt."""
+            self.extension.reset(popup, popup_delay)
+            client = bridge_client.BridgeClient(caps={"core"}, approver=True)
+            closed = []
+            send_notification = ServerSession.send_notification
+
+            async def recording(session, notification, related_request_id=None):
+                closed.append(isinstance(notification.root, types.CancelledNotification))
+                await send_notification(session, notification, related_request_id)
+
+            async def elicit(context, params):
+                self.assertEqual(params.requestedSchema, server.ONE_STEP_SCHEMA)
+                self.assertIn("Client A requests this tab: work", params.message)
+                self.assertIn("Tab: Page - https://user.example/", params.message)
+                if cancel:
+                    await mcp.send_notification(types.ClientNotification(types.CancelledNotification(
+                        params=types.CancelledNotificationParams(requestId=call_id))))
+                # The SDK's client reads nothing else meanwhile, so a late answer stands for an open prompt.
+                await anyio.sleep(1 if answer is None else delay)
+                return types.ElicitResult(action=answer or "accept")
+
+            with patch.object(bridge_client, "BRIDGE", "http://" + self.bridge.host), \
+                    patch.object(bridge_client, "_headers", return_value=self.bridge.auth()), \
+                    patch.object(client, "await_extension"), patch.object(server, "_client", client), \
+                    patch.object(tools, "client", client), patch.object(ServerSession, "send_notification", recording):
+                async with create_connected_server_and_client_session(server.mcp, elicitation_callback=elicit) as mcp:
+                    with anyio.fail_after(10):
+                        call_id = mcp._request_id
+                        try:
+                            response = await mcp.call_tool("browser_tabs", {"action": "request", "tab_id": 1,
+                                                                           "reason": "work"})
+                        except McpError:
+                            response = None
+                        # The client's answer can reach the extension before the popup's wait does; a
+                        # cancelled call's answer comes after the client is told.
+                        while not any(c.get("wait") for c in self.extension.requests()) or (
+                                cancel and not any("decision" in c for c in self.extension.requests())):
+                            await anyio.sleep(0.01)
+                    await anyio.sleep(0.1)  # a closed prompt's late reply reaches the server before it closes
+            value = None
+            if response is not None:
+                self.assertNotIn("test-token", response.content[0].text, "the model never sees the token")
+                value = json.loads(response.content[0].text)
+                self.assertIs(response.isError, not value.get("ok"))
+            first, *rest = self.extension.requests()
+            (wait,) = [c for c in rest if c.get("wait")]
+            answers = [c for c in rest if not c.get("wait")]
+            self.assertEqual((first.get("together"), first.get("confirmToken")), (True, None))
+            self.assertEqual((wait["confirmToken"], wait["wait"], wait["tabId"], wait["reason"]),
+                             ("test-token", True, 1, "work"))
+            return value, [a.get("decision", "approve") for a in answers], any(closed)
+
+        async def run():
+            # The popup answers first: the client's prompt closes, and nothing answers for the client.
+            self.assertEqual(await request(OWNED, None), (OWNED, [], True))
+            declined, answers, closed = await request(not_handed_off("declined"), None)
+            self.assertEqual((declined["state"]["decision"], answers, closed), ("declined", [], True))
+            # The client's prompt answers first: Accept hands the tab off, the popup's wait returns.
+            self.assertEqual(await request(None, "accept"), (OWNED, ["approve"], False))
+            with patch.object(server, "CLIENT_POLICY_SECONDS", 0.1):
+                for answer, decision in (("decline", "declined"), ("cancel", "cancelled")):
+                    value, answers, _ = await request(None, answer, delay=0.2)
+                    self.assertEqual((value["state"]["decision"], answers), (decision, [decision]))
+            # A decline at once is the client's policy, not the user's: the popup keeps asking.
+            value, answers, _ = await request(OWNED, "decline", popup_delay=0.5)
+            self.assertEqual((value, answers), (OWNED, []))
+            # A cancelled call stops the popup's prompt too.
+            value, answers, _ = await request(None, "accept", delay=0.2, cancel=True)
+            self.assertEqual((value, answers), (None, ["cancelled"]))
         anyio.run(run)
 
     def test_simultaneous_owner_sessions_and_restricted_mode(self):

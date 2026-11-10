@@ -1395,9 +1395,20 @@ A handoff does not grant trusted/native OS-input capability.
 The Kitsune toolbar badge marks pending requests. Its popup shows the client name,
 tab title, URL, and the agent's reason, with **Approve handoff** and **Decline**. These
 labels are untrusted text, not page HTML or executable links. Only the extension popup
-can answer: a page/content script cannot spoof it. A browser answer completes the call
-without a client prompt. No answer for **30 seconds** retires that browser prompt and
-falls back to MCP elicitation. Without elicitation the result contains a 120-second
+can answer: a page/content script cannot spoof it.
+
+On an MCP client with elicitation (#494), the popup and the client's prompt ask at once,
+for up to 120 seconds, and the first answer counts. The extension returns the request's
+confirm token at once, to the MCP server only: the server asks in the client's prompt and
+waits for the popup's answer, and the popup lists the request from then on. A popup answer
+closes the client's prompt. Accept in the client's prompt hands the tab off. Decline or
+dismissing it declines the request, and the popup's prompt closes too. A decline or dismissal
+the client returns within 1 second is not the user's: it is the client's policy (Codex with
+`approval_policy = "never"` declines every prompt) or a hook. Then, as when the client's prompt
+fails, the popup alone answers until the request expires. A cancelled call ends the request.
+
+Other callers are asked in the browser first: a browser answer completes the call, and no
+answer for **30 seconds** retires that browser prompt. The result then contains a 120-second
 confirm token: ask the user and repeat the identical request with `confirm_token`.
 Tokens are one-use and bound to the session, tab, document and reason. Reordering an
 index must never authorize a different tab; if the repeat no longer targets the original
@@ -1418,7 +1429,9 @@ of the same stable owner, cannot be requested/transferred: they remain read-only
 Browser/content mutations retain their original admission and recheck it at dispatch,
 including readiness retries and every admitted tab of a window operation. Taking back
 and granting again does not revive an older command. Browser approval claims the request
-and retires the 30-second timer before storage work, so it cannot also trigger elicitation.
+and retires the 30-second timer before storage work, so it cannot also trigger the fallback;
+the first approval, in the popup or with the token, claims it from the other.
+A waiting request holds no scheduler lease: other commands, on that tab or global, run meanwhile.
 **Handoffs are DOM/browser-only, not full native-input capability.** Trusted OS click
 (including double-click, held click and leaving the pointer for hover menus), drag, type
 and press-key are refused on handed-off tabs before focus, page preparation or OS scheduling.
@@ -2050,18 +2063,22 @@ A direct call held by [ask-before-act](#ask-before-act) (`needs_user` with
 `state.reason: "approval"`) is approved through MCP elicitation when the client supports it
 (#376). The same fallback handles a v0.7.1 extension's `user_tab` close holds;
 current user-tab writes are refused without prompting. Explicit [handoff requests](#requesting-and-returning-a-tab)
-ask in the browser first, then use client approval after 30 seconds, and do not offer resume checkpoints.
+ask in the browser and the client's prompt at once, and do not offer resume checkpoints.
 The client declares the `elicitation` capability (form mode, protocol 2025-06-18 or
 later) at initialize; Claude Code (2.1.76 and later) and Codex do.
 
-1. The MCP server asks the client to ask the user, in form mode with one choice, Approve or
-   Decline. The prompt names the request (`state.message`), the tool, the target the call acts
-   on (its ref or selector), the call's `element` labeled as the agent's description of it, the
-   call's other arguments (text, URL, function, field values, `submit`; cut at 500 characters),
-   the tab's title and URL where the result has them, and why it was held (`state.detail`, and
-   the ask-before-act description).
-2. On Approve, the MCP server repeats the identical call once with the token. The model never
-   receives the token, so it cannot approve itself. The repeat's result is the call's result.
+1. The MCP server asks the client to ask the user, in form mode. The prompt is one step
+   (#494), a form without fields (`requestedSchema` `{"type": "object", "properties": {}}`)
+   that the client's own Accept approves (Continue in pi) and Decline declines. Codex
+   (`clientInfo.name` `codex-mcp-client`) gets one field to choose in instead, Approve or
+   Decline: it auto-accepts a form without fields when its permission prompts are
+   auto-approved, and declines one with a required field. The prompt names the request
+   (`state.message`), the tool, the target the call acts on (its ref or selector), the call's
+   `element` labeled as the agent's description of it, the call's other arguments (text, URL,
+   function, field values, `submit`; cut at 500 characters), the tab's title and URL where the
+   result has them, and why it was held (`state.detail`, and the ask-before-act description).
+2. On Accept (Approve), the MCP server repeats the identical call once with the token. The
+   model never receives the token, so it cannot approve itself. The repeat's result is the call's result.
    The repeat starts at the held request: requests of the call that ran before it are not sent
    again (the text of `browser_type(submit=true)` when its Enter was held, the fields
    `browser_fill_form` filled before the held one). If a later request of the repeat is held
@@ -3306,7 +3323,9 @@ an audio puzzle). `message` is addressed to the user (at most 1,000 characters a
 request (`askUser`, without the message).
 
 - **On a client with elicitation** the MCP server asks the user in the client's prompt,
-  labeled as the agent's request and naming the tab, with Done and Can't, for up to 120 s:
+  labeled as the agent's request and naming the tab, for up to 120 s. The prompt is one step
+  (#494): the client's Accept (Continue in pi) answers Done, its Decline Can't. Codex chooses
+  Done or Can't in a field, as for [approval prompts](#approval-prompts):
 
   ```json
   { "ok": true, "answer": "done", "via": "elicitation", "reason": "sign_in", "tabId": 12,
@@ -3345,7 +3364,7 @@ An agent needs the user to sign in to a shop (#376).
    `"needs_user": { "reason": "sign_in", "message": "Sign in on this page.", … }`. Nothing was
    held for it, and the agent cannot sign in, so it asks:
    `browser_ask_user(reason="sign_in", message="Sign in to your shop account, please.", tab_id=12)`.
-3. On a client with elicitation the user signs in and answers Done in the client's prompt:
+3. On a client with elicitation the user signs in and answers Done (Accept) in the client's prompt:
    `{ "ok": true, "answer": "done", "via": "elicitation", "reason": "sign_in", "tabId": 12, … }`.
    Without elicitation the result is `needs_user` (`state.reason: "agent_request"`), with
    `call` and `resume_token` since the tab shows the sign-in hint (`state.evidence`). The agent tells the user `state.message`, then calls

@@ -230,10 +230,10 @@ class AskBeforeActResumeTests(ResumeTestCase):
         self.extension.url = "https://shop.example/checkout"
         fields = [{"name": name, "type": "textbox", "target": f"#{name}", "value": value}
                   for name, value in (("card", "4242"), ("expiry", "12/30"), ("cvc", "123"), ("zip", "10001"))]
-        answers = iter(("Approve", "Decline"))
+        answers = iter(("accept", "decline"))
 
         async def approve_then_decline(params):
-            return types.ElicitResult(action="accept", content={"decision": next(answers)})
+            return types.ElicitResult(action=next(answers))
 
         result, payload = self.call("browser_fill_form", {"fields": fields}, approve_then_decline)
         self.assertEqual((payload["code"], payload["filled"]), ("needs_user", ["card"]))

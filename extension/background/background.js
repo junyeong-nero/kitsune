@@ -290,7 +290,10 @@ function markAgentTab(tabId, ownerId = null) {
 let handoffTransportEpoch = 0;
 const handoffSessions = new Map();
 const handoffs = new Map();
+// A request's phase: 'browser' (the popup asks; after HANDOFF_BROWSER_MS, the client), 'client' (its
+// confirm token approves it), 'both' (the popup and the client's prompt ask at once, #494), 'approving'.
 const handoffRequests = new Map();
+const popupAsks = request => request.phase === 'browser' || request.phase === 'both';
 const HANDOFF_BROWSER_MS = 30000;
 const HANDOFF_TOKEN_MS = 120000;
 const handoffHint = 'Work in a tab of your own (browser_tabs action=new), or ask again with browser_tabs action=request.';
@@ -302,7 +305,7 @@ function handoffError(decision = 'cancelled') {
     state: { reason: 'approval', detail: 'tab_handoff', decision }, hint: handoffHint };
 }
 function handoffBadge() {
-  const count = [...handoffRequests.values()].filter(r => r.phase === 'browser').length;
+  const count = [...handoffRequests.values()].filter(popupAsks).length;
   browser.browserAction?.setBadgeText({ text: count ? String(count) : '' });
 }
 function finishHandoff(request, result, keep = false) {
@@ -342,7 +345,7 @@ function clearHandoffs() {
 async function approveHandoff(request) {
   // Claim the answer before storage yields: neither another answer nor the 30s fallback
   // may settle this request while approval is in progress.
-  if (!['browser', 'client'].includes(request.phase)) return handoffError();
+  if (!['browser', 'client', 'both'].includes(request.phase)) return handoffError();
   request.phase = 'approving';
   clearTimeout(request.timer);
   handoffBadge();
@@ -371,15 +374,20 @@ async function approveHandoff(request) {
   invalidateHandoff(request.tabId);
   return { ok: true, tabId: request.tabId, owned: true };
 }
-function handoffFallback(request) {
-  if (handoffRequests.get(request.id) !== request || request.phase !== 'browser') return;
+// The client's turn (phase 'client'): the result hands it the confirm token, which approves the request
+// until HANDOFF_TOKEN_MS.
+function handoffHeld(request) {
   request.phase = 'client';
-  const result = { error: 'Tab handoff needs approval', code: 'needs_user', retryable: false,
+  return { error: 'Tab handoff needs approval', code: 'needs_user', retryable: false,
     state: { reason: 'approval', detail: 'tab_handoff', action: 'requestTab', tabId: request.tabId,
       title: request.title, url: request.url, message: `${request.clientName} requests this tab: ${request.reason}`,
-      confirmToken: request.id, expiresInSeconds: HANDOFF_TOKEN_MS / 1000, approval: 'token' },
+      confirmToken: request.id, expiresInSeconds: HANDOFF_TOKEN_MS / 1000, approval: 'token',
+      ...(request.together ? { together: true } : {}) },
     hint: 'Ask the user, then repeat the identical request with confirm_token; otherwise work in your own tab.' };
-  finishHandoff(request, result, true);
+}
+function handoffFallback(request) {
+  if (handoffRequests.get(request.id) !== request || request.phase !== 'browser') return;
+  finishHandoff(request, handoffHeld(request), true);
   request.timer = setTimeout(() => finishHandoff(request, handoffError()), HANDOFF_TOKEN_MS);
 }
 async function requestTab(params) {
@@ -395,9 +403,21 @@ async function requestTab(params) {
   if (!tab || handoffSessions.get(params.sessionId) !== session) return handoffError();
   if (params.confirmToken) {
     const request = handoffRequests.get(params.confirmToken);
-    if (!request || request.phase !== 'client' || request.sessionId !== params.sessionId ||
+    if (!request || !['client', 'both'].includes(request.phase) || request.sessionId !== params.sessionId ||
         request.ownerId !== params.ownerId || request.tabId !== params.tabId || request.reason !== params.reason ||
         request.url !== tab.url) return handoffError();
+    if (params.wait === true) {
+      // The MCP server waits for the popup's answer to a request it asks about too (together): the popup
+      // asks from now on, so no answer comes before it is waited for.
+      if (!request.together || request.phase !== 'client') return handoffError();
+      request.phase = 'both';
+      handoffBadge();
+      return new Promise(resolve => { request.resolve = resolve; });
+    }
+    // The user declined or dismissed the client's prompt: the popup stops asking too.
+    if (params.decision != null) {
+      return finishHandoff(request, handoffError(params.decision === 'declined' ? 'declined' : 'cancelled'));
+    }
     return approveHandoff(request);
   }
   if (ownsTab(tab.id, params.ownerId, params.sessionId)) return { ok: true, tabId: tab.id, owned: true };
@@ -408,11 +428,18 @@ async function requestTab(params) {
   for (const request of handoffRequests.values()) {
     if (request.tabId === tab.id && request.sessionId === params.sessionId) finishHandoff(request, handoffError());
   }
+  const request = { id: crypto.randomUUID(), sessionId: params.sessionId, ownerId: params.ownerId,
+    clientName: session.clientName, tabId: tab.id, title: tab.title || '', url: tab.url,
+    reason: params.reason, phase: 'browser', together: params.together === true };
+  handoffRequests.set(request.id, request);
+  // A client that asks the user itself gets the token at once, then waits for the popup's answer (#494).
+  if (request.together) {
+    const held = handoffHeld(request);
+    request.timer = setTimeout(() => finishHandoff(request, handoffError()), HANDOFF_TOKEN_MS);
+    return held;
+  }
   return new Promise(resolve => {
-    const request = { id: crypto.randomUUID(), sessionId: params.sessionId, ownerId: params.ownerId,
-      clientName: session.clientName, tabId: tab.id, title: tab.title || '', url: tab.url,
-      reason: params.reason, phase: 'browser', resolve };
-    handoffRequests.set(request.id, request);
+    request.resolve = resolve;
     request.timer = setTimeout(() => handoffFallback(request), HANDOFF_BROWSER_MS);
     handoffBadge();
   });
@@ -420,12 +447,12 @@ async function requestTab(params) {
 function handoffPopup() {
   const publicRecord = r => ({ id: r.id, tabId: r.tabId, clientName: r.clientName,
     title: r.title, url: r.url, reason: r.reason });
-  return { requests: [...handoffRequests.values()].filter(r => r.phase === 'browser').map(publicRecord),
+  return { requests: [...handoffRequests.values()].filter(popupAsks).map(publicRecord),
     tabs: [...handoffs.values()].map(publicRecord) };
 }
 function handoffDecision(id, decision) {
   const request = handoffRequests.get(id);
-  if (!request || request.phase !== 'browser') return handoffError();
+  if (!request || !popupAsks(request)) return handoffError();
   return decision === 'approve' ? approveHandoff(request) : finishHandoff(request, handoffError('declined'));
 }
 

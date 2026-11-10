@@ -1,4 +1,5 @@
-// #396: browser-first approval, deterministic timers, ephemeral ownership and popup isolation.
+// #396: browser-first approval, deterministic timers, ephemeral ownership and popup isolation;
+// #494: the popup and the client's prompt at once for a client that asks the user itself.
 const assert = require('node:assert/strict');
 const { harness } = require('./shared_browser.cjs');
 
@@ -105,6 +106,52 @@ async function main() {
   await h.remove(2);
   assert.equal((await closing).code, 'needs_user');
   assert.equal((await decide(closingPrompt.id)).code, 'needs_user');
+  // #494: a client that asks the user itself gets the token at once; the popup asks once it waits, and
+  // the first answer, in the popup or the client's prompt, settles the wait.
+  const together = async () => {
+    const held = await request(a, 1, { together: true });
+    assert.equal(held.state.together, true);
+    assert.equal(held.state.expiresInSeconds, 120);
+    assert.deepEqual((await popup()).requests, [], 'the popup asks once the client waits');
+    const token = held.state.confirmToken;
+    assert.equal((await request(a, 1, { confirmToken: token, wait: true, reason: 'different' })).code, 'needs_user');
+    const waiting = request(a, 1, { confirmToken: token, wait: true });
+    await h.tick(0);
+    assert.deepEqual((await popup()).requests.map(r => r.id), [token]);
+    assert.equal((await request(a, 1, { confirmToken: token, wait: true })).code, 'needs_user', 'one wait');
+    return { token, waiting };
+  };
+  let asked = await together();
+  await decide(asked.token);
+  assert.equal((await asked.waiting).ok, true, 'the popup answered');
+  assert.equal((await request(a, 1, { confirmToken: asked.token })).code, 'needs_user', 'the token is spent');
+  await h.popup({ action: 'takeBackHandoff', tabId: 1 });
+  asked = await together();
+  assert.equal((await request(a, 1, { confirmToken: asked.token })).ok, true, 'the client answered');
+  assert.equal((await asked.waiting).ok, true);
+  assert.deepEqual((await popup()).requests, []);
+  await h.popup({ action: 'takeBackHandoff', tabId: 1 });
+  for (const decision of ['declined', 'cancelled']) {
+    asked = await together();
+    assert.equal((await request(a, 1, { confirmToken: asked.token, decision })).state.decision, decision);
+    assert.equal((await asked.waiting).state.decision, decision);
+    assert.deepEqual((await popup()).requests, [], 'the client declined: the popup stops asking');
+    assert.equal((await decide(asked.token)).code, 'needs_user');
+  }
+  asked = await together();
+  await decide(asked.token, 'decline');
+  assert.equal((await asked.waiting).state.decision, 'declined');
+  assert.equal((await request(a, 1, { confirmToken: asked.token })).code, 'needs_user', 'the client cannot approve then');
+  asked = await together();
+  await h.tick(120000);
+  assert.equal((await asked.waiting).state.decision, 'cancelled', 'expired');
+  const unasked = request(a, 1);  // without together: browser first, and its prompt is not waited for
+  await h.tick(0);
+  assert.equal((await request(a, 1, { confirmToken: (await popup()).requests[0].id, wait: true })).code, 'needs_user');
+  await h.tick(30000);
+  const late = (await unasked).state.confirmToken;
+  assert.equal((await request(a, 1, { confirmToken: late, wait: true })).code, 'needs_user');
+  assert.equal(await owned(a), false);
   assert.equal(fallback.call, undefined);
   assert.equal(fallback.resume_token, undefined);
   assert.doesNotMatch(fallback.hint, /browser_resume/);

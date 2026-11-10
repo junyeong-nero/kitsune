@@ -13,6 +13,7 @@ import functools
 import inspect
 import math
 import sys
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime
 from time import sleep as _sleep
@@ -444,6 +445,11 @@ def _tab_list(result: dict, window_fields: bool) -> dict:
     return {**result, "tabs": shown}
 
 
+# Set by the MCP server on a client with elicitation (#494): a handoff request returns its confirm token at
+# once, so the server asks in the client's prompt while the toolbar popup asks too.
+handoff_together: ContextVar[bool] = ContextVar("kitsune_handoff_together", default=False)
+
+
 def browser_tabs(
     action: Literal["list", "new", "close", "select", "request"] = "list",
     tab_id: Annotated[int | None, Field(description="close/select/request (required).")] = None,
@@ -466,15 +472,16 @@ def browser_tabs(
     list is always a fresh read; owned=true marks this MCP client's tabs (including inherited
     tabs); mine=true excludes pool tabs; windowId/index only with several windows or
     window_fields. close/select refuse user and other clients' tabs (user_tab_read_only).
-    request asks for a session-scoped handoff (reason required), browser first then client after 30s.
+    request asks for a session-scoped handoff (reason required): browser and client prompt at once with
+    elicitation, else browser first then client after 30s.
     select switches the user's view: only when the user asks.
     Options of other actions are ignored.
     """
     if action == "request":
         if tab_id is None or not reason or not reason.strip() or len(reason) > 1000:
             return {"error": "request requires tab_id and a reason of 1–1000 characters"}
-        return _post("/api/request-tab", _request_body({"tabId": tab_id, "reason": reason},
-                                                      confirm_token=confirm_token), timeout=45)
+        body = {"tabId": tab_id, "reason": reason, **({"together": True} if handoff_together.get() else {})}
+        return _post("/api/request-tab", _request_body(body, confirm_token=confirm_token), timeout=45)
     if action == "list":
         result = _tab_list(_get("/api/tabs"), window_fields)
         if include_active and not _failed(result):
