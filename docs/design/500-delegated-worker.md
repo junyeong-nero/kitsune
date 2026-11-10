@@ -271,5 +271,11 @@ Set `KITSUNE_E2E_SCRIPT_RUNTIME` to its path and use the isolation wrappers of
 | IPC | Bounded, strict, tested against malformed and forged frames. |
 | Actual authority | Verified through the real entry point for the fourteen implemented operations; approval/resume not yet (item 6). |
 
-Nothing here is a reason to stop under those conditions, and nothing here makes
-the candidate ready to enable. Items 1 to 3 need a decision before #502.
+**Gate correction (2026-11-11):** the earlier conclusion that no condition required
+stopping, with items 1 to 3 deferred until #502, was too broad. Whole-engine
+resource enforcement is a #500 condition and is not established by the macOS
+watchdog. Publication remains gated. The user approved Linux cgroup v2 boundary
+investigation, not an installation or a weaker acceptance criterion; see
+[500-linux-cgroup-investigation.md](500-linux-cgroup-investigation.md). Runtime
+provenance and the declared same-user/engine trust boundary also remain explicit
+candidate gates.
