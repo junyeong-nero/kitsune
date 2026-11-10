@@ -35,7 +35,9 @@ function harness(onClick = () => {}) {
       .then(result => JSON.parse(JSON.stringify(result))),
     // Gecko creates a link's tab on about:blank and commits its URL afterwards.
     open: (id, openerTabId, url = 'about:blank') => {
-      tabs[id] = { id, url, status: 'loading', active: false, openerTabId };
+      // Model Firefox's native container inheritance; Kitsune must leave this tab alone (#495).
+      tabs[id] = { id, url, status: 'loading', active: false, openerTabId,
+        cookieStoreId: tabs[openerTabId]?.cookieStoreId || 'firefox-default' };
       onCreated.emit({ ...tabs[id] });
     },
     commit: (id, url) => {
@@ -201,6 +203,7 @@ async function main() {
     ok: true, opened_tabs: [{ tabId: 4, url: 'https://example.com/ok2' }],
   });
   assert.deepEqual(allowed.created, []);
+  assert.equal(allowed.tabs[4].cookieStoreId, 'firefox-container-1');
   allowed.assertClean();
 
   // A tab the browser opens within the wait is not duplicated either.
@@ -371,6 +374,8 @@ async function main() {
   const popupOpened = harness(h => { h.open(4, 1, oauth); return { ok: true, scriptPopup: { url: oauth } }; });
   assert.deepEqual(await popupOpened.send({ action: 'click', tabId: 1, selector: '#google' }),
     { ok: true, opened_tabs: [{ tabId: 4, url: oauth }] });
+  assert.deepEqual(popupOpened.created, [], 'window.open is not replaced with an explicit newTab');
+  assert.equal(popupOpened.tabs[4].cookieStoreId, 'firefox-container-1');
   const covered = harness(() => ({ ok: true, warning: { code: 'hidden_or_covered' }, scriptPopup: { url: oauth } }));
   assert.deepEqual(await covered.send({ action: 'click', tabId: 1, selector: '#google' }),
     { ok: true, warning: { code: 'hidden_or_covered' } });

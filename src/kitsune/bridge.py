@@ -3094,13 +3094,32 @@ async def send_to_extension(action, params=None, timeout=30):
         params,
         lambda: _send_to_extension_raw(action, params=params, timeout=timeout),
     )
-    _remember_outcome(action, params, result)
+    # The tab an older extension opened outside its container is still its client's.
     _note_tab_openers(action, params, result)
+    result = _container_ignored(action, params, result)
+    _remember_outcome(action, params, result)
     if isinstance(result, dict) and result.get("code") == "user_tab":
         # The held action, so a repeat of a tool call that sent several knows which one was held (#376).
         result = {**result, "state": {"action": action, **(result.get("state") or {})}}
         result = _needs_approval(result, _refusal_message(action, result))
     return _described_needs_user(result)
+
+
+def _container_ignored(action, params, result):
+    """A newTab's result, or the error for an extension older than container (#495).
+
+    Such an extension ignores container and opens the tab in the default store; one that knows it
+    names the tab's cookieStoreId in the result. The tab stays open, and its client's (state.tabId).
+    """
+    if (action != "newTab" or not params.get("container") or not isinstance(result, dict)
+            or type(result.get("tabId")) is not int or "cookieStoreId" in result):
+        return result
+    return _action_error(
+        "The extension opened the tab without its container; it is older than this bridge",
+        "extension_version_mismatch", retryable=False,
+        hint="Update and reload the Kitsune extension. The tab (state.tabId) is open in the default store, "
+             "not in the container; close it.",
+        reason="container_unsupported", tabId=result["tabId"], container=params["container"])
 
 
 def _note_tab_openers(action, params, result):

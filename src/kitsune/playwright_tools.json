@@ -875,7 +875,8 @@
      "url": {
       "description": "new: URL.",
       "type": "string"
-     }
+     },
+     "container": {"type": "string", "description": "new: cookieStoreId."}
     },
     "required": [
      "action"

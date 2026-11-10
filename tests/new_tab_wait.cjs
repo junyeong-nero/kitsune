@@ -63,10 +63,12 @@ function harness(onCreate = () => {}, page = null) {
     tabs: {
       onCreated: event(), onUpdated, onRemoved,
       query: async () => tab ? [{ ...tab }] : [],
-      create: async ({ url, active }) => {
-        h.creates.push({ url, active });
+      create: async props => {
+        const { url, active, cookieStoreId = 'firefox-default' } = props;
+        h.creates.push({ ...props });
         // Gecko creates the tab on about:blank and navigates it afterwards.
-        tab = { id: 9, url: 'about:blank', title: '', status: 'complete', active, windowId: 1, index: 0 };
+        tab = { id: 9, url: 'about:blank', title: '', status: 'complete', active, windowId: 1, index: 0,
+          cookieStoreId };
         await onCreate(h, url);
         return { ...tab };
       },
@@ -270,6 +272,28 @@ async function main() {
     ok: false, timedOut: true, tabId: 9, url: 'about:blank', status: 'loading',
   });
   loadingBlank.assertClean();
+
+  // #495: the store echo survives a real load wait, timeout and inert-tab diagnosis, so the
+  // bridge does not mistake these replies for an old extension that ignored container.
+  for (const outcome of ['loaded', 'timeout', 'stalled']) {
+    const container = 'firefox-container-1';
+    const h = harness(outcome === 'stalled' ? () => {} : (h, url) => h.update({ status: 'loading', url }));
+    const pending = start(h, { action: 'newTab', url: 'https://example.com/container',
+      container, wait: true, timeout: 1000 });
+    await h.tick(50);
+    if (outcome === 'loaded') h.update({ status: 'complete' });
+    await h.tick(1000);
+    assert.equal(pending.settled, true);
+    const result = await pending.result;
+    assert.equal(result.cookieStoreId, container);
+    assert.equal(result.ok, outcome === 'loaded');
+    if (outcome === 'stalled') {
+      const { cookieStoreId, ...stalled } = result;
+      assertStalled(stalled);
+    }
+    assert.deepEqual(h.creates, [{ url: 'https://example.com/container', active: false, cookieStoreId: container }]);
+    h.assertClean();
+  }
 
   console.log('new_tab_wait: all tests passed');
 }

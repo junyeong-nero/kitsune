@@ -603,9 +603,10 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `bridge_disconnected` | From the MCP server: the bridge closed the connection before its reply. `state.requestSent` is `false` when the request could not be sent in full, so the command did not run | true if not sent; false for writes (MCP: POST) after |
 | `token_mismatch` | The bridge rejected the MCP server's token (`state.port`, `state.tokenSource`) | true |
 | `port_conflict` | A port is held by another program, answers but not as a Kitsune bridge, or differs from the extension's (`state.port`, `state.reason`) | true |
-| `extension_version_mismatch` | The extension does not know the command, and its version differs from the bridge's (`state.extensionVersion`, `state.bridgeVersion`) or it is a developer build edited but not reloaded (`state.reason: "stale_developer_build"`). Also `browser_press_key` with `repeat` on an extension older than `repeat`: it pressed the key once and ignored the count (`state.reason: "repeat_unsupported"`, `state.pressed: 1`, `retryable: false`). Likewise `browser_click` with `hold_ms` clicked without holding (`"hold_unsupported"`, `retryable: false`), and `browser_hover` with `duration_ms` or `steps` moved once (`"sustained_hover_unsupported"`, `state.moves: 1`, `retryable: false`) | true, except `repeat_unsupported`, `hold_unsupported` and `sustained_hover_unsupported` |
+| `extension_version_mismatch` | The extension does not know the command, and its version differs from the bridge's (`state.extensionVersion`, `state.bridgeVersion`) or it is a developer build edited but not reloaded (`state.reason: "stale_developer_build"`). Also `browser_press_key` with `repeat` on an extension older than `repeat`: it pressed the key once and ignored the count (`state.reason: "repeat_unsupported"`, `state.pressed: 1`, `retryable: false`). Likewise `browser_click` with `hold_ms` clicked without holding (`"hold_unsupported"`, `retryable: false`), and `browser_hover` with `duration_ms` or `steps` moved once (`"sustained_hover_unsupported"`, `state.moves: 1`, `retryable: false`), and a new tab with `container` opened in the default store (`"container_unsupported"`, `state.tabId`, `retryable: false`; see [Firefox containers](#firefox-containers)) | true, except `repeat_unsupported`, `hold_unsupported`, `sustained_hover_unsupported` and `container_unsupported` |
 | `browser_window_unavailable` | No active tab: the extension sees no normal window it can use | true |
 | `host_permission_denied` | Firefox does not let Kitsune script the tab's site (`state.reason`: `not_granted`, `restricted_domain`) | true |
+| `container_unavailable` | A new tab's `container` cannot be used (`state.container`, `state.reason`; see [Firefox containers](#firefox-containers)). No tab was opened, in that container or in the default store | true |
 | `permission_required` | A [history or bookmark lookup](#history-and-bookmarks) needs an optional browser permission the user has not granted (`state.permission`: `history` or `bookmarks`). Only the user can grant it, on Kitsune's options page; the agent cannot. Also returned, with a reload hint, when the permission is granted but the running extension has not picked it up. `browser_trusted_type`, `browser_trusted_press_key` and `browser_trusted_drag` return it when the bridge lacks macOS Accessibility permission; nothing was sent | false |
 | `needs_user` | Nothing ran: only the user can let the call go on (#376). `state.reason: "approval"`: it needs the user's approval, and `state.detail` is the code it replaces (below). `state.message` is a short request to show the user. On an MCP client with elicitation the MCP server asks the user itself and the result has no token (see [Approval prompts](#approval-prompts)); elsewhere, the fallback for clients without elicitation, a direct call's `state.confirmToken` runs it once the user approves. `state.approvable` is `false` in read and draft modes, which cannot approve, and `state.approval` says how it can be approved (`token`, `elicitation`). `state.reason: "agent_request"`: [`browser_ask_user`](#browser_ask_userreason-message-tab_idnone) asks the user, and `state.detail` is what it asks for. A resumable direct call's result also has `call`, the audit call id of the hold, and, from the MCP server when the user did not resolve it in the call, `resume_token` for [`browser_resume`](checkpoint-resume.md#direct-calls). Explicit [handoff requests](#requesting-and-returning-a-tab) use `state.detail: "tab_handoff"` and have no resume checkpoint. What Kitsune sees only the user can do on a page (`sign_in`, `human_check`, `trusted_input`) is never this error, but a [`needs_user` hint](#needs_user-hints) on the result. See the [end-to-end example](#example-needs_user-end-to-end) | false |
 | `user_active` | The user is using the tab (`state.reason`: `input`, `typing`, `navigating`); the write or navigation did not run (see [User activity](#user-activity)) | true |
@@ -1288,6 +1289,57 @@ an agent action. If the opener received trusted user input in the **1 s before
 creation (inclusive)**, the new tab belongs to the user instead. Synthetic events
 and Kitsune's recognized OS input do not count. Input does not change the opener's
 ownership. The agent window's synced copies inherit its owner as well.
+
+#### Firefox containers
+
+Firefox, Zen and LibreWolf keep each container's (contextual identity's) cookies and logins
+apart. `browser_tabs` new, `POST /api/new-tab` and a batch or workflow `newTab` open their
+tab in the default store unless `container` specifies a container (#495):
+
+```json
+{ "action": "newTab", "url": "https://mail.example/", "container": "firefox-container-1" }
+```
+
+- `container` is the container's `cookieStoreId` (`firefox-container-<n>`; `firefox-default`
+  is the default store). `browser_tabs` list (`GET /api/tabs`) shows `cookieStoreId` on each
+  tab that is in a container, and no such field on a tab in the default store, so the id of a
+  container can be read from a tab the user opened in it. The core `browser_tabs` new and
+  select results show it on their `tab` the same way.
+- A container name (`Personal`) is not resolved in this build and returns
+  `container_unavailable`. Names need Firefox's `contextualIdentities` permission, which cannot
+  be an optional permission; as a required one it switches container tabs on for every user
+  and keeps them on while the extension is enabled, so the manifest does not ask for it. The
+  extension resolves a name whenever `browser.contextualIdentities` is present.
+- A new tab without `container` does not inherit the container of the current tab or of any
+  other tab. A tab a page opens from a tab in a container (a `target=_blank` link,
+  `window.open`, the [link fallback](#popup-blocked-links), a duplicate) is in that container,
+  as the browser does it.
+- A container that cannot be used never falls back to the default store: nothing opens and
+  the result is
+
+```json
+{ "error": "This Kitsune build cannot resolve container names; no tab was opened",
+  "code": "container_unavailable", "retryable": true,
+  "hint": "Pass a cookieStoreId (firefox-container-<n>) as container; browser_tabs action=list shows it on each tab that is in a container.",
+  "state": { "container": "Personal", "reason": "names_unsupported" } }
+```
+
+| `state.reason` | When |
+|---|---|
+| `names_unsupported` | `container` is not a `cookieStoreId` and the extension has no `browser.contextualIdentities` |
+| `not_found` | No container has that name (names match exactly, with case) |
+| `ambiguous` | Several containers have that name; `state.matches` lists their `cookieStoreId`s |
+| `rejected` | The browser refused it, and `error` has its message: no container has that `cookieStoreId`, containers are switched off, or the new tab would open in a private window, which takes no container |
+
+A result for a tab opened with `container` names the tab's `cookieStoreId`
+(`{ "ok": true, "tabId": 123, "cookieStoreId": "firefox-container-1" }`; the core `browser_tabs`
+shows it on `tab` instead). An extension older than `container` ignores it and opens the tab
+in the default store. The bridge reports that as `extension_version_mismatch` with
+`state.reason: "container_unsupported"` and `retryable: false`: the tab is open, its id is
+`state.tabId`, and it should be closed.
+
+A tab the agent opens in a container is the agent's own, so it can write there with that
+container's logins. Kitsune has no per-container allow or deny list.
 
 #### Tab permissions
 
@@ -2516,7 +2568,7 @@ call keeps its original default tab. A default `tabId` that is not a tab id is r
 with `invalid_tab_id` before anything runs.
 A closed tab is never replaced: commands on it fail with `tab_closed`.
 
-### `browser_tabs(action="list", tab_id=None, url=None, force=False, raw=False, wait=False, timeout=15000, window_fields=False, include_active=False)`
+### `browser_tabs(action="list", tab_id=None, url=None, force=False, raw=False, wait=False, timeout=15000, window_fields=False, include_active=False, container=None)`
 
 Replaces `browser_new_tab`, `browser_close_tab`, and `browser_switch_tab`.
 `action` is `list`, `new`, `close`, or `select`. List uses GET `/api/tabs`;
@@ -2533,7 +2585,9 @@ the first read take one call. A failed page read is returned as `active_page` be
 inventory. New opens the tab in the
 background and returns immediately unless
 `wait=True`, which waits up to `timeout` ms for the page to load and returns
-the actual URL and load status. Close follows [Tab permissions](#tab-permissions): a
+the actual URL and load status. `container` opens the new tab
+in that [Firefox container](#firefox-containers), named by its `cookieStoreId`; list shows
+`cookieStoreId` on each tab that is in one. Close follows [Tab permissions](#tab-permissions): a
 tab this client may not write is refused with `user_tab_read_only`. A
 v0.7.1 extension instead refuses a tab the agent did not open with `needs_user` (`user_tab`) until
 the user approves it (in the client's prompt, or with `confirm_token` on a client without
@@ -3479,6 +3533,8 @@ All open browser tabs.
 ```json
 { "tabs": [{ "id": 1, "url": "...", "title": "...", "active": true, "windowId": 1, "index": 0, "owned": true, "mine": true }] }
 ```
+A tab in a [Firefox container](#firefox-containers) also has `cookieStoreId`
+(`"firefox-container-1"`); a tab in the default store has no such field.
 `mine: true` marks the tabs the request's `X-Kitsune-Owner` opened. POST with
 `{ "mine": true }` returns only those, the most recently opened first (see
 [Tab owners](#tab-owners)).
@@ -3606,6 +3662,9 @@ for the page it loads and adds the page's readable `snapshot` when it fits 2,000
 `{ "url": "https://example.com" }` — url optional, defaults to about:blank.
 Opens an agent-owned tab in the background (it is not shown; see
 [Shared browser](#shared-browser)). Returns `{ "ok": true, "tabId": 123 }` immediately.
+`"container": "firefox-container-1"` opens it in that [Firefox container](#firefox-containers)
+and adds `"cookieStoreId"` to the result; one that cannot be used returns
+`container_unavailable` and opens nothing.
 
 `{ "url": "https://example.com", "wait": true, "timeout": 15000 }` waits up to
 `timeout` ms (default 15000) for the load and returns

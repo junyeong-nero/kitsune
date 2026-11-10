@@ -160,6 +160,11 @@ Kitsune's compact JSON results, not Playwright's Markdown. Where the two differ:
   `index`, the `tab` they made current in that form, and `tab_count` (#488).
   `close` takes `index` or `tab_id`, else the current tab; without one it returns
   `no_current_tab` (#481). `tab_id` is refused for `list`, `new` and `select`.
+  `new` takes `container`, the `cookieStoreId` of a Firefox container
+  (`firefox-container-1`), and opens the tab there; without it the tab is in the default
+  store, whatever the current tab. `list` shows `cookieStoreId` on each tab that is in a
+  container. A container name is not accepted
+  ([Firefox containers](api-reference.md#firefox-containers), #495).
   `browser_close` closes the current tab, never the browser; closing a user or other
   client's tab is refused with `user_tab_read_only` by default.
 - **Targets.** `target` is a snapshot ref (`e12`) or a CSS selector. Actions require one
