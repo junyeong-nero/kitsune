@@ -1,7 +1,8 @@
 """First shared native adapters, intentionally not registered as MCP/worker APIs yet.
 
-Tabs, navigation, read and find are implemented here. All other admitted operations
-fail closed until their ref, image, approval and receipt contracts are implemented.
+Tabs, navigation, read, find and the synthetic page actions are implemented here. All
+other admitted operations fail closed until their image, wait, approval and resume
+contracts are implemented.
 
 Outcomes come from the bridge's dispatch receipt, never from extension/page fields:
 a reply to a write is `dispatched`, not application success. Cancelling or timing
@@ -38,12 +39,28 @@ MAX_MATCH_LINE_CHARS = 400
 MAX_MATCH_PATH = 3
 # (verified connection, call id) of the admitted request running in this context.
 _REQUEST = ContextVar("kitsune_flat_request", default=None)
-_IMPLEMENTED = frozenset({"browser_tabs", "browser_navigate", "browser_read", "browser_find"})
+_IMPLEMENTED = frozenset({"browser_tabs", "browser_navigate", "browser_read", "browser_find",
+                          "browser_click", "browser_input", "browser_select", "browser_check",
+                          "browser_press", "browser_hover", "browser_drag", "browser_scroll"})
 _NATIVE_ERRORS = frozenset({"mode_restricted", "user_tab_read_only", "user_active", "needs_user",
                             "stale_connection", "invalid_tab_id", "tab_closed", "timeout",
                             "extension_disconnected", "native_operation_limit",
                             "stale_ref", "not_found", "unsupported_selector", "restricted_page",
-                            "tab_unloaded", "navigating", "content_unavailable"})
+                            "tab_unloaded", "navigating", "content_unavailable",
+                            "ambiguous_target", "not_actionable"})
+# Native page actions, which run in the page's content script.
+_PAGE_ACTIONS = frozenset({"click", "doubleClick", "fill", "type", "selectOption", "checkBox", "keypress",
+                           "hover", "drag", "scroll"})
+# Those whose content script waits (wait/timeout) for the target before it dispatches.
+_WAITS_FOR_TARGET = _PAGE_ACTIONS - {"scroll"}
+# A page action answers these before it sends the page an event: ownership and activity
+# admission in the background, target resolution and the actionability wait in the content
+# script. tab_closed is not among them: a click can close its own tab.
+_PAGE_REFUSED_BEFORE_ACTING = frozenset({"user_tab_read_only", "user_active", "invalid_tab_id", "stale_ref",
+                                         "ambiguous_target", "not_found", "unsupported_selector",
+                                         "not_actionable"})
+_KEY_MODIFIERS = {"Shift": "shift", "Control": "ctrl", "Alt": "alt", "Meta": "meta"}
+_WARNINGS = frozenset({"hidden_or_covered", "popup_blocked"})
 _STALE_REF_REASONS = frozenset({"element_removed", "not_in_snapshot", "other_document"})
 # Reads change nothing: a failed one is safe to repeat and never an unknown write.
 _READS = frozenset({"getTabs", "getSnapshot"})
@@ -129,6 +146,41 @@ def _outcome(receipt, action):
     if any(item["state"] in {"unknown", "dispatched"} for item in commands):
         return "unknown"
     return "dispatched"  # a reply is not proof of application success
+
+
+def _page_action(name, values):
+    """(native action, route, body) of a page action; never `first`, coordinates or OS input."""
+    target = values.get("target", {})  # exactly {"ref": ...} or {"selector": ...}
+    if name == "browser_click":
+        if values["click_count"] == 2:  # admitted only as a left double-click without modifiers
+            return "doubleClick", "/api/double-click", dict(target)
+        return "click", "/api/click", {**target, "button": values["button"], "modifiers": values["modifiers"]}
+    if name == "browser_input":
+        if values["mode"] == "replace":
+            return "fill", "/api/fill", {**target, "value": values["text"]}
+        return "type", "/api/type", {**target, "text": values["text"], "clear": False}
+    if name == "browser_select":
+        # The extension matches several values by value, then by text, and a label by its first
+        # match. Neither is the contract's strict choice, so only one exact value is sent.
+        if values["by"] != "value" or len(values["values"]) != 1:
+            raise OperationRefused("unsupported_variant", "Only one option value can be selected for now")
+        return "selectOption", "/api/select-option", {**target, "value": values["values"][0], "byText": False}
+    if name == "browser_check":
+        return "checkBox", "/api/check", {**target, "checked": values["checked"]}
+    if name == "browser_press":
+        return "keypress", "/api/keypress", {
+            **target, "key": values["key"], "modifiers": {_KEY_MODIFIERS[m]: True for m in values["modifiers"]}}
+    if name == "browser_hover":
+        return "hover", "/api/hover", dict(target)
+    if name == "browser_drag":
+        source, destination = values["source"], values["destination"]
+        return "drag", "/api/drag", {
+            **({"ref": source["ref"]} if "ref" in source else {"from": source["selector"]}),
+            **({"toRef": destination["ref"]} if "ref" in destination else {"to": destination["selector"]})}
+    body = {**target, "direction": values["direction"]}
+    if "amount_px" in values:
+        body["amount"] = values["amount_px"]
+    return "scroll", "/api/scroll", body
 
 
 def _line_refs(lines):
@@ -219,6 +271,13 @@ class FlatBroker:
             # As the core browser_find: static prose and every item of a repeated run.
             body = {"tabId": admitted.tab.native_id, "maxChars": FIND_SNAPSHOT_CHARS, "collapse": False}
             return "getSnapshot", "POST", "/api/snapshot", body, timeout, MAX_FIND_REPLY_BYTES
+        if admitted.operation.name != "browser_navigate":
+            action, path, body = _page_action(admitted.operation.name, values)
+            body.update(tabId=admitted.tab.native_id, includeSnapshot=False)
+            if action in _WAITS_FOR_TARGET:
+                # The page waits this long for the target, then acts once; it is not a retry.
+                body.update(wait=True, timeout=timeout)
+            return action, "POST", path, body, timeout, MAX_BRIDGE_REPLY_BYTES
         action, path = {"goto": ("navigate", "/api/navigate"), "back": ("goBack", "/api/back"),
                         "forward": ("goForward", "/api/forward"), "reload": ("reloadTabBrowser", "/api/reload-tab")}[values["action"]]
         # The extension's own load wait for navigate is fixed (15 s) and history/reload have
@@ -288,8 +347,24 @@ class FlatBroker:
             return data, "observed" if native.get("status") == "complete" else "dispatched", cut
         if action == "closeTab":
             self.session.closed_tab(admitted.tab.handle)
-        # navigate echoes the requested URL, not where the tab landed: not an observation.
-        return {"tab_id": admitted.tab.handle}, "dispatched", False
+        data = {"tab_id": admitted.tab.handle}
+        if action in _PAGE_ACTIONS:
+            # Tabs the action opened get handles; a tab that cannot is found by listing tabs.
+            opened = native.get("opened_tabs") if isinstance(native.get("opened_tabs"), list) else []
+            handles = []
+            for tab in opened[:8]:
+                try:
+                    handles.append({"tab_id": self.session.opened_tab(admitted.connection, tab.get("tabId")).handle})
+                except (OperationRefused, ValueError, AttributeError):
+                    pass
+            if handles:
+                data["opened_tabs"] = handles
+            warning = native.get("warning")
+            if isinstance(warning, dict) and warning.get("code") in _WARNINGS:
+                data["warning"] = warning["code"]
+        # A reply means the events were sent, not that the page did what was wanted; navigate
+        # echoes the requested URL, not where the tab landed.
+        return data, "dispatched", False
 
     async def call(self, name, arguments) -> BrokerReply:
         call = "c_" + secrets.token_hex(16)
@@ -345,8 +420,9 @@ class FlatBroker:
                         if native["state"].get("reason") in _STALE_REF_REASONS:
                             state["reason"] = native["state"]["reason"]
                         self.session.forget_refs(tab_handle, admitted.refs)
-                    refused = outcome == "dispatched" and code in _REFUSED_BEFORE_ACTING
-                    if code == "tab_closed" and refused and tab_handle is not None:
+                    refused = outcome == "dispatched" and code in (
+                        _PAGE_REFUSED_BEFORE_ACTING if action in _PAGE_ACTIONS else _REFUSED_BEFORE_ACTING)
+                    if code == "tab_closed" and outcome == "dispatched" and tab_handle is not None:
                         self.session.closed_tab(tab_handle)  # the extension observed that it is gone
                     if code in {"stale_connection", "tab_closed"} and tab_handle is not None:
                         code = "stale_tab_handle"

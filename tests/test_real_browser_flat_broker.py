@@ -1,4 +1,4 @@
-"""FlatBroker tabs, navigation, read and find in a real private browser.
+"""FlatBroker tabs, navigation, read, find and page actions in a real private browser.
 
 Opt-in, built on tests/real_browser_harness.py (temporary add-on, not the signed build).
 The broker is a trusted host object here: nothing is reached through MCP or a worker.
@@ -28,10 +28,35 @@ FORM = """<!doctype html><title>Orders</title><h1>Orders</h1>
 <ul>""" + "".join(f"<li><a href='/item/{i}'>Item {i}</a></li>" for i in range(12)) + "</ul>"
 
 
+# Every control records what reached it, so effects are read back from the page itself.
+ACTIONS = """<!doctype html><title>Actions</title><h1>Actions</h1>
+<button id="inc" onclick="log('click')">Increment</button>
+<button id="ctx" oncontextmenu="log('context'); return false">Context</button>
+<button id="dbl" ondblclick="log('dbl')">Double</button>
+<input id="name" aria-label="Name" value="old">
+<input id="pw" aria-label="Secret" type="password" value="">
+<select id="country" aria-label="Country" onchange="log('country=' + this.value)">
+<option value="kr">Korea</option><option value="jp">Japan</option></select>
+<label><input type="checkbox" id="agree" onchange="log('agree=' + this.checked)"> Agree</label>
+<input id="keys" aria-label="Keys" onkeydown="log('key=' + (event.ctrlKey ? 'ctrl+' : '') + event.key)">
+<div id="hover" role="button" tabindex="0" onmouseover="log('hover')">Hover me</div>
+<div id="src" draggable="true">Drag me</div>
+<div id="dst" ondragover="event.preventDefault()" ondrop="log('drop')">Drop here</div>
+<a id="blank" href="/opened" target="_blank">Open in a new tab</a>
+<div style="height: 4000px"></div>
+<pre id="log" hidden></pre>
+<script>function log(entry) { document.getElementById('log').textContent += entry + '\\n'; }</script>"""
+# The content script cannot see the page's own variables, so the log is an element.
+STATE = ("JSON.stringify({events: document.getElementById('log').textContent.split('\\n').filter(Boolean), "
+         "name: document.getElementById('name').value, "
+         "pw: document.getElementById('pw').value, country: document.getElementById('country').value, "
+         "agree: document.getElementById('agree').checked, y: Math.round(window.scrollY)})")
+
+
 class _Page(BaseHTTPRequestHandler):
     def do_GET(self):
         name = self.path.strip("/") or "root"
-        body = (FORM if name == "form" else f"<title>{name}</title><h1>{name}</h1>").encode()
+        body = {"form": FORM, "actions": ACTIONS}.get(name, f"<title>{name}</title><h1>{name}</h1>").encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html")
         self.send_header("Content-Length", str(len(body)))
@@ -73,6 +98,107 @@ class RealBrowserFlatBrokerTests(harness.RealBrowserTestCase):
 
     def test_read_and_find_through_the_broker(self):
         asyncio.run(self.read_scenario())
+
+    def test_page_actions_through_the_broker(self):
+        asyncio.run(self.action_scenario())
+
+    def as_owner(self, owner, path, body):
+        """A legacy request of the same owner: the harness's own client may not write the broker's tabs."""
+        status, _, text = harness._request(
+            self.bridge.http_port, "POST", path,
+            {**self.bridge.auth(), OWNER_HEADER: owner, "Content-Type": "application/json"},
+            self.bridge.host, json.dumps(body), timeout=30)
+        self.assertEqual(status, 200, text)
+        return json.loads(text)
+
+    async def action_scenario(self):
+        owner = "e2e-flat-actor"
+        broker = await FlatBroker.connect(CallerAuthority("e2e-flat-act", owner, "act"))
+        before_tabs = set(self.native())
+        opened = await broker.call("browser_tabs", {"action": "open", "url": self.page.origin + "/actions"})
+        tab = opened.result["tab_id"]
+        native_id = (set(self.native()) - before_tabs).pop()
+
+        def state():
+            return json.loads(self.as_owner(owner, "/api/js", {"tabId": native_id, "code": STATE})["result"])
+
+        async def act(name, **arguments):
+            reply = await broker.call(name, {"tab_id": tab, **arguments})
+            self.assertEqual((reply.result["ok"], reply.result["outcome"]), (True, "dispatched"), reply.result)
+            self.assertEqual(reply.receipt["commands"][-1]["tab_id"], native_id)
+            return reply
+
+        read = await broker.call("browser_read", {"tab_id": tab})
+        refs = dict(re.findall(r'- (\w+ "[^"]*") \[ref=(e\d+)\]', read.result["data"]["content"]))
+        self.assertEqual(state(), {"events": [], "name": "old", "pw": "", "country": "kr", "agree": False, "y": 0})
+
+        await act("browser_click", target={"ref": refs['button "Increment"']})
+        await act("browser_click", target={"selector": "#ctx"}, button="right")
+        await act("browser_click", target={"ref": refs['button "Double"']}, click_count=2)
+        self.assertEqual(state()["events"], ["click", "context", "dbl"])
+        await act("browser_input", target={"ref": refs['textbox "Name"']}, text="Ada")
+        self.assertEqual(state()["name"], "Ada")
+        await act("browser_input", target={"selector": "#name"}, text=" L", mode="type")
+        self.assertEqual(state()["name"], "Ada L")
+        await act("browser_select", target={"selector": "#country"}, values=["jp"])
+        await act("browser_check", target={"selector": "#agree"})
+        await act("browser_check", target={"selector": "#agree"}, checked=False)
+        await act("browser_press", target={"selector": "#keys"}, key="Enter", modifiers=["Control"])
+        await act("browser_hover", target={"ref": refs['button "Hover me"']})
+        await act("browser_drag", source={"selector": "#src"}, destination={"selector": "#dst"})
+        await act("browser_scroll", amount_px=400)
+        after = state()
+        self.assertEqual(after["events"][3:], ["country=jp", "agree=true", "agree=false", "key=ctrl+Enter", "hover", "drop"])
+        self.assertEqual((after["country"], after["agree"], after["y"]), ("jp", False, 400))
+        await act("browser_scroll", direction="top")
+        self.assertEqual(state()["y"], 0)
+
+        # Refusals change nothing: an ambiguous or missing target, an unissued ref, the user's tab.
+        user = next(t["tab_id"] for t in (await broker.call("browser_tabs", {})).result["data"]["tabs"] if t["active"])
+        for name, arguments, code in (
+                ("browser_click", {"tab_id": tab, "target": {"selector": "button"}}, "ambiguous_target"),
+                ("browser_click", {"tab_id": tab, "target": {"selector": "#missing"}, "timeout_ms": 300}, "not_found"),
+                ("browser_input", {"tab_id": tab, "target": {"selector": "#missing"}, "text": "x", "timeout_ms": 300},
+                 "not_found"),
+                ("browser_click", {"tab_id": tab, "target": {"ref": "e424242"}}, "stale_ref"),
+                ("browser_select", {"tab_id": tab, "target": {"selector": "#country"}, "values": ["Korea"],
+                                    "by": "label"}, "unsupported_variant"),
+                ("browser_click", {"tab_id": user, "target": {"selector": "body"}}, "user_tab_read_only"),
+                ("browser_scroll", {"tab_id": user}, "user_tab_read_only")):
+            with self.subTest(name=name, arguments=arguments):
+                self.assert_failed(await broker.call(name, arguments), code, "not_dispatched")
+        self.assertEqual(state(), {**after, "y": 0})
+
+        # A draft caller of the same owner may fill an ordinary field, never a sensitive one, and may not click.
+        drafter = await FlatBroker.connect(CallerAuthority("e2e-flat-draft", owner, "draft"))
+        draft_tab = next(t["tab_id"] for t in (await drafter.call("browser_tabs", {})).result["data"]["tabs"]
+                         if t["url"].endswith("/actions"))
+        filled = await drafter.call("browser_input", {"tab_id": draft_tab, "target": {"selector": "#name"}, "text": "Draft"})
+        self.assertEqual((filled.result["ok"], filled.result["outcome"]), (True, "dispatched"), filled.result)
+        self.assertEqual(filled.receipt["commands"][-1]["action"], "fill")
+        secret = await drafter.call("browser_input", {"tab_id": draft_tab, "target": {"selector": "#pw"}, "text": "hunter2"})
+        self.assert_failed(secret, "mode_restricted", "not_dispatched")
+        self.assertNotIn("fill", [command["action"] for command in secret.receipt["commands"]])
+        self.assert_failed(await drafter.call("browser_click", {"tab_id": draft_tab, "target": {"selector": "#inc"}}),
+                           "mode_restricted", "not_dispatched")
+        reader = await FlatBroker.connect(CallerAuthority("e2e-flat-ro2", owner, "read"))
+        read_tab = next(t["tab_id"] for t in (await reader.call("browser_tabs", {})).result["data"]["tabs"]
+                        if t["url"].endswith("/actions"))
+        self.assert_failed(await reader.call("browser_input", {"tab_id": read_tab, "target": {"selector": "#name"},
+                                                               "text": "x"}), "mode_restricted", "not_dispatched")
+        scrolled = await reader.call("browser_scroll", {"tab_id": read_tab, "amount_px": 250})
+        self.assertEqual((scrolled.result["ok"], scrolled.result["outcome"]), (True, "dispatched"), scrolled.result)
+        self.assertEqual(state(), {**after, "name": "Draft", "y": 250})
+
+        # A target=_blank link: the tab the click opened gets a handle of this session.
+        link = await broker.call("browser_click", {"tab_id": tab, "target": {"selector": "#blank"}})
+        self.assertEqual((link.result["ok"], link.result["outcome"]), (True, "dispatched"), link.result)
+        popups = link.result["data"].get("opened_tabs", [])
+        self.assertEqual(len(popups), 1, link.result)
+        popup = await broker.call("browser_read", {"tab_id": popups[0]["tab_id"], "format": "text"})
+        self.assertEqual(popup.result["data"]["url"], self.page.origin + "/opened", popup.result)
+        for handle in (popups[0]["tab_id"], tab):
+            self.assertTrue((await broker.call("browser_tabs", {"action": "close", "tab_id": handle})).result["ok"])
 
     async def read_scenario(self):
         form = self.page.origin + "/form"
