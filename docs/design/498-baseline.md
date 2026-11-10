@@ -103,18 +103,17 @@ obsolete tests.
   unpublished tools; the old expectation computes 69. A repair must test the
   actual catalog and valid attribution, not ignore these fields indiscriminately.
 
-## Benchmark prerequisites not yet validated
+## Benchmark prerequisites at the initial baseline
 
-Benchmark issues #136 and #137 remain open:
+Benchmark issues #136 and #137 were open at the initial baseline:
 
 - #136: native coexistence reference code requests a snapshot after `tabs new`
   already supplied it, then cannot use an `unchanged_since` response as a tree.
 - #137: native viewport setup navigates a user-owned tab rather than seeding
   through the user channel.
 
-Their opt-in reproductions were **not** part of the 410-test default run above
-and have not yet been executed in this goal. They must be resolved or their
-validation scope explicitly bounded before #504 relies on those checks.
+Their opt-in reproductions were **not** part of the 410-test default run above.
+They were subsequently reproduced and repaired separately, as recorded below.
 
 ## Approved repair and revalidation
 
@@ -149,10 +148,43 @@ The original failed run remains part of the record, not replaced by the green
 rerun. Node harnesses and the schema baseline above are unchanged by these
 Python test-only edits.
 
-## Gate
+## Benchmark repair and revalidation
 
-Kitsune's non-OS-input real-browser regression is now green on the separate
-prerequisite test branch. The overall baseline milestone remains **in progress**
-until benchmark #136/#137 are reproduced and addressed or explicitly bounded.
-Keep these repairs separate from #498's product redesign; no model comparison,
-default switch, merge or release is authorized by this regression result.
+The approved follow-up reproduced #136's two missing-ref failures and #137's
+three viewport setup errors before making changes. Benchmark commit `cadeae3`
+on `test/136-137-native-preflight` repairs the test setup, not production harness
+code, frozen tasks, fixtures, graders or permissions:
+
+- Reuse a full snapshot returned by a tab action instead of treating an
+  `unchanged_since` response as a fresh tree; test fallback and Markdown behavior.
+- Seed viewport fixtures through the existing user channel, assert the initial
+  tabs remain user-owned, and read in an owned/current helper tab.
+- Require these native checks in future release preflights with a dated addendum.
+
+Validation: default discovery 412 tests / 18 skips / zero failures; the two new
+helper tests and Kitsune/Playwright coexistence/viewport tests all passed (eight
+tests). Both Kitsune coexistence tests and all three viewport subtests also
+passed against v0.7.2 (`28ca61c`) and `ad04bac`. The expected 1280×635 and
+1280×720 content viewports were measured again with DPR 1.
+
+Full evidence and commands:
+[benchmark native preflight report](https://github.com/junyeong-nero/kitsune-benchmark/blob/cadeae3/docs/results/2026-11-10-native-preflight.md).
+
+## Gate and delivery
+
+The baseline milestone is verified on the two separate prerequisite branches:
+
+- [Kitsune PR #505](https://github.com/junyeong-nero/kitsune/pull/505): repairs #497
+  and the related stale real-browser expectations; product source unchanged.
+- [Benchmark PR #144](https://github.com/junyeong-nero/kitsune-benchmark/pull/144):
+  repairs #136/#137 and records current/older-version compatibility evidence.
+
+Neither PR has been merged by this work. Future contract/candidate branches must
+include or explicitly depend on these test repairs; merely using unchanged
+`main` would reintroduce the known baseline failures. The ten Kitsune OS-input
+opt-in skips and the remaining benchmark opt-in coverage are not claimed as
+validated by default discovery.
+
+Next is #499's inventory/shared-contract design and #504's pre-registered
+comparison protocol. No model comparison, product default switch, merge or
+release is authorized by these no-model regression results.
