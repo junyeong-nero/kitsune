@@ -5,6 +5,10 @@ trusted developer API change. Work is isolated in a separate worktree based on
 #499 (`9ae8549`); model comparisons remain unapproved. #504 methods are in
 kitsune-benchmark PR #145 (`52e455b`).
 
+The operator subsequently approved a private CPython/WASI experiment. Its
+[15 passing feasibility tests, artifact pins and limitations](500-wasi-feasibility.md)
+are recorded separately; they do not complete #500 or approve production adoption.
+
 ## Trust model before implementation
 
 Proposed separation (to validate, not an enforcement claim):
@@ -177,7 +181,7 @@ The first two have profile/fixture files and tool-console evidence; later runs
 also write `report.json`. Later corrections do not erase the earlier failed
 observations.
 
-## Current decision gate
+## Native decision gate (before the approved WASI experiment)
 
 **Do not ship this native probe as the bounded runner.** It demonstrated useful
 host-access denials, but it has no validated hard memory boundary, uses deprecated
@@ -203,6 +207,12 @@ Options needing an operator decision before new environment/dependency work:
 3. Pause while an appropriate environment or alternative enforceable mechanism is
    supplied. Do not substitute unrestricted Python or weaken the threat model.
 
+The operator selected option 1 with an explicit private-experiment-only scope.
+Wasmtime now exists in that separate temporary environment, not the project/global
+environment. See [the WASI follow-up](500-wasi-feasibility.md) and
+[approval/artifact manifest](500-wasi-artifacts.json). The native runner remains
+unselected; the WASI results do not retroactively validate it.
+
 #500 remains **in progress**. Direct/delegated policy parity, forged fields/raw
 routes/new unrestricted connections, grant revocation, self-approval/expiry,
 credential reuse, receipt integrity/redaction and browser lifecycle tests have
@@ -210,9 +220,10 @@ credential reuse, receipt integrity/redaction and browser lifecycle tests have
 those acceptance items. #501/#502 implementation and all later gates remain
 unstarted; #504's preregistered methods are unchanged.
 
-Checkpoint validation: Python AST syntax (3.10 grammar), source/report hash and
+Native-checkpoint validation: Python AST syntax (3.10 grammar), source/report hash and
 observation consistency assertions, and staged `git diff --check` passed. Full
 Python/Node/real-browser regression was **not rerun** at this investigation-only
 checkpoint; these observations are not a replacement for the required runtime
-conformance/regressions. Only this document and the standalone probe were added;
+conformance/regressions. At that checkpoint only this document and the native
+probe were added. The WASI follow-up adds its own documentation/manifest/probe;
 no `src/` or `extension/` file changed.

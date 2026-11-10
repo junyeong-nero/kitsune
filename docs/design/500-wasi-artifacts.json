@@ -1,0 +1,79 @@
+{
+  "status": "approved_private_feasibility_experiment_not_a_selected_runner",
+  "approval": {
+    "decision": "CPython/WASI 실험 승인 (Recommended)",
+    "scope": "Official engine/interpreter artifacts in a new private environment, pinned versions/digests, file/network/memory enforcement and SDK compatibility probes",
+    "excludes": ["system-wide installation", "model execution", "production adoption", "merge", "release"]
+  },
+  "experiment_root": "/tmp/kitsune-500-wasi.PW7dxU",
+  "build_parallelism": 2,
+  "sources": {
+    "cpython_commit": "5e58eaad7c58df58dfa8ea549c87996e01dd1077",
+    "cpython_tag": "v3.15.2",
+    "wasmtime_py_commit": "44f51d639fa1d68295fb112075ce175918a9cd52",
+    "wasmtime_commit": "c307ec81de02852d815e9849f7c89d955c03c30d",
+    "note": "GitHub reports the inspected CPython tag and wasmtime-py commit unsigned. HTTPS publisher digests pin downloaded bytes; this alone is not signature verification. Unofficial CPython/WASI prebuilt releases are not used. Build official CPython source using its Platforms/WASI procedures and supported SDK 33."
+  },
+  "artifacts": [
+    {
+      "role": "host_engine_python_wheel",
+      "name": "wasmtime-50.0.1-py3-none-macosx_11_0_arm64.whl",
+      "url": "https://files.pythonhosted.org/packages/5d/c1/e8782c8c8756235bea9dcc7cef2a35d3691c0f573eed415ccbf871cd6b3e/wasmtime-50.0.1-py3-none-macosx_11_0_arm64.whl",
+      "sha256": "ff4fc58ed3cbdb919d056accd4d280be13962a542754aaefd8a9b4654efa9bd9",
+      "size": 8096649,
+      "digest_source": "https://pypi.org/pypi/wasmtime/50.0.1/json"
+    },
+    {
+      "role": "build_only_engine_cli",
+      "name": "wasmtime-v50.0.1-aarch64-macos.tar.xz",
+      "url": "https://github.com/bytecodealliance/wasmtime/releases/download/v50.0.1/wasmtime-v50.0.1-aarch64-macos.tar.xz",
+      "sha256": "960e5216c7ebd7e9b45e6561d15821b8b801b7d54aee28c7b91921aeb30c65c8",
+      "size": 9463036,
+      "digest_source": "https://api.github.com/repos/bytecodealliance/wasmtime/releases/tags/v50.0.1"
+    },
+    {
+      "role": "build_only_compiler",
+      "name": "wasi-sdk-33.0-arm64-macos.tar.gz",
+      "url": "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-33/wasi-sdk-33.0-arm64-macos.tar.gz",
+      "sha256": "85c997a2665ead91673b5bb88b7d0df3fc8900df3bfa244f720d478187bbdc78",
+      "size": 181708059,
+      "digest_source": "https://api.github.com/repos/WebAssembly/wasi-sdk/releases/tags/wasi-sdk-33"
+    },
+    {
+      "role": "official_interpreter_source",
+      "name": "Python-3.15.2.tar.xz",
+      "url": "https://www.python.org/ftp/python/3.15.2/Python-3.15.2.tar.xz",
+      "sha256": "8b5536d280142ecf6cdfe15d12a21ba1c65e300bbf7b28a8d0cdb849575797de",
+      "size": 27960396,
+      "digest_source": "https://www.python.org/ftp/python/3.15.2/Python-3.15.2.tar.xz.sigstore",
+      "signature_verified": false
+    }
+  ],
+  "artifact_integrity_checked": true,
+  "engine_installed_in_private_environment": true,
+  "interpreter_built": true,
+  "built_interpreter": {
+    "path": "/tmp/kitsune-500-wasi.PW7dxU/Python-3.15.2/cross-build/wasm32-wasip1/python.wasm",
+    "sha256": "ee0b8197c2dbed91d951be35644ac36afa676de326a2ce38a5ba95551c8f89ae",
+    "size": 32498958,
+    "distribution_status": "locally built from official source; not an official prebuilt WASI release",
+    "guest_prefix": "/runtime",
+    "build_helper_python": "3.13.5",
+    "engine_host_python": "3.12.14",
+    "build_logs": ["cpython-wasi-4fpxjr12.log", "cpython-wasi-_eb4vugn.log", "cpython-wasi-009nkmw2.log", "cpython-wasi-n8qccb3s.log"],
+    "initial_smoke": "Real WASI guest ran Python 3.15.2, math.isqrt(81)=9 and JSON using only a read-only stdlib preopen. 40 MiB linear memory under a 128 MiB store limit. Missing lib-dynload directory warned; no authority conformance claim."
+  },
+  "guest_feasibility": {
+    "tests_passed": 15,
+    "skips": 0,
+    "seconds": 19.545,
+    "report": "/private/tmp/kitsune-500-wasi.PW7dxU/wasi-probe-20261110T165752.json",
+    "report_sha256": "5eb469f584800a053681be84a8eb4f8b115065c1817ec53d121b69128f5fbbd8",
+    "probe_sha256": "5fc6c3633ade5c7e9a11c4576bc4b3735f1555bf07fb14653c6ad5e6dfa48919",
+    "limits": "Guest linear memory, not total host RSS; ASCII capture only; real pipe fixture is not a browser SDK/broker conformance test",
+    "evidence_document": "500-wasi-feasibility.md"
+  },
+  "delegated_authority_conformance_passed": false,
+  "production_enabled": false,
+  "model_executed": false
+}
