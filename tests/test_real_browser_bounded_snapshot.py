@@ -92,7 +92,8 @@ class RealBrowserBoundedSnapshotTests(harness.RealBrowserTestCase):
 
     def core(self, name, **arguments):
         """A core tool's JSON result through FastMCP, against this class's bridge."""
-        with patch.object(tools, "_post", lambda endpoint, data, timeout=15: self.call(endpoint, data)):
+        with patch.object(tools, "_post", lambda endpoint, data, timeout=15: self.call(endpoint, data)), \
+                patch.object(server._client, "post", lambda endpoint, data, **kwargs: self.call(endpoint, data)):
             result = asyncio.run(server.mcp.call_tool(name, arguments))
         self.assertFalse(result.isError, result.content)
         return json.loads(result.content[0].text)
