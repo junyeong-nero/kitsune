@@ -13,7 +13,8 @@ RECEIPT_ROUTES = frozenset({"/api/tabs", "/api/new-tab", "/api/close-tab", "/api
                             "/api/check", "/api/keypress", "/api/hover", "/api/drag", "/api/scroll",
                             "/api/wait-for-text", "/api/wait-for-element", "/api/wait-for-url",
                             "/api/wait-for-title", "/api/wait-for-network-idle",
-                            "/api/screenshot", "/api/element-screenshot", "/api/full-page-screenshot"})
+                            "/api/screenshot", "/api/element-screenshot", "/api/full-page-screenshot",
+                            "/api/ask-user"})
 
 
 class DispatchReceipt:

@@ -159,6 +159,38 @@ emit({{name: code_of(result) for name, result in attempts.items()}})
         status, _, text = _request(self.bridge.http_port, "GET", "/api/get-policy", self.bridge.auth(), self.bridge.host)
         self.assertEqual((status, json.loads(text).get("ask")), (200, False), text)
 
+    async def test_help_request_is_a_stop_not_a_user_answer_or_permission(self):
+        broker = await self.broker("read")
+        handle = await self.handle(broker)
+        before = len(self.extension.actions())
+        result = await run_script(broker, self.runtime, f'''
+answers = []
+try:
+    await browser.ask_user(reason="other", message="Please help; this is not approval.")
+except BrowserOperationError as error:
+    answers.append(error.result)
+try:
+    await browser.click(tab_id={handle!r}, target={{"selector": "#save"}})
+except BrowserOperationError as error:
+    answers.append(error.result)
+emit(answers)
+''')
+        self.assertEqual(result.status, "completed", result)
+        self.assertEqual(self.outcomes(result), [("browser_ask_user", "not_dispatched", "needs_user"),
+                                                ("browser_click", "not_dispatched", "mode_restricted")])
+        self.assertEqual(result.emitted[0]["error"]["state"], {
+            "reason": "agent_request", "detail": "other", "message": "Please help; this is not approval."})
+        self.assertEqual(result.emitted[0]["data"], {})
+        self.assertNotIn("resume_token", json.dumps(result.emitted))
+        self.assertEqual(len(self.extension.actions()), before)
+        status, _, text = _request(self.bridge.http_port, "GET", "/api/audit", self.bridge.auth(), self.bridge.host)
+        self.assertEqual(status, 200, text)
+        entry = json.loads(text)["entries"][-1]
+        self.assertEqual((entry["action"], entry["flat_call"], entry["ok"]),
+                         ("askUser", result.ledger[0]["call"], False))
+        self.assertNotIn("approval", entry)
+        self.assertNotIn("Please help", text)
+
     async def test_a_held_action_cannot_be_approved_by_the_script(self):
         broker = await self.broker()
         handle = await self.handle(broker)

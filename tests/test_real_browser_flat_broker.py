@@ -120,6 +120,33 @@ class RealBrowserFlatBrokerTests(harness.RealBrowserTestCase):
     def test_waits_through_the_broker(self):
         asyncio.run(self.wait_scenario())
 
+    def test_user_help_is_a_stop_without_page_effects_or_approval(self):
+        asyncio.run(self.help_scenario())
+
+    async def help_scenario(self):
+        owner = "e2e-flat-help"
+        broker = await FlatBroker.connect(CallerAuthority("e2e-flat-help-a", owner, "act"))
+        before_tabs = set(self.native())
+        opened = await broker.call("browser_tabs", {"action": "open", "url": self.page.origin + "/actions"})
+        self.assertTrue(opened.result["ok"], opened.result)
+        handle = opened.result["tab_id"]
+        native_id, = set(self.native()) - before_tabs
+        before = json.loads(self.as_owner(owner, "/api/js", {"tabId": native_id, "code": STATE})["result"])
+        tabs_before_help = self.native()
+        reply = await broker.call("browser_ask_user", {
+            "reason": "other", "message": "Please check this page.", "tab_id": handle})
+        self.assert_failed(reply, "needs_user", "not_dispatched")
+        self.assertEqual(reply.result["error"]["state"], {
+            "reason": "agent_request", "detail": "other", "message": "Please check this page."})
+        self.assertEqual(reply.result["data"], {})
+        self.assertEqual([command["action"] for command in reply.receipt["commands"]], ["getPageInfo"])
+        after = json.loads(self.as_owner(owner, "/api/js", {"tabId": native_id, "code": STATE})["result"])
+        self.assertEqual(after, before)
+        self.assertEqual({i: (t["url"], t["active"]) for i, t in self.native().items()},
+                         {i: (t["url"], t["active"]) for i, t in tabs_before_help.items()})
+        closed = await broker.call("browser_tabs", {"action": "close", "tab_id": handle})
+        self.assertTrue(closed.result["ok"], closed.result)
+
     @unittest.skipUnless(os.environ.get("KITSUNE_E2E_SCRIPT_RUNTIME"), "KITSUNE_E2E_SCRIPT_RUNTIME is not set")
     def test_a_delegated_script_drives_the_browser_through_the_broker(self):
         asyncio.run(self.script_scenario())

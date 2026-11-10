@@ -1,7 +1,7 @@
 """First shared native adapters, intentionally not registered as MCP/worker APIs yet.
 
-Tabs, navigation, read, find, wait, screenshot and the synthetic page actions are
-implemented here. All other admitted operations fail closed until their approval and
+Tabs, navigation, read, find, wait, screenshot, user-help stops and the synthetic
+page actions are implemented here. All other admitted operations fail closed until their approval and
 resume contracts are implemented.
 
 Outcomes come from the bridge's dispatch receipt, never from extension/page fields:
@@ -44,7 +44,7 @@ _REQUEST = ContextVar("kitsune_flat_request", default=None)
 _IMPLEMENTED = frozenset({"browser_tabs", "browser_navigate", "browser_read", "browser_find",
                           "browser_click", "browser_input", "browser_select", "browser_check",
                           "browser_press", "browser_hover", "browser_drag", "browser_scroll",
-                          "browser_wait", "browser_screenshot"})
+                          "browser_wait", "browser_screenshot", "browser_ask_user"})
 _NATIVE_ERRORS = frozenset({"mode_restricted", "user_tab_read_only", "user_active", "needs_user",
                             "stale_connection", "invalid_tab_id", "tab_closed", "timeout",
                             "extension_disconnected", "native_operation_limit",
@@ -81,6 +81,8 @@ MAX_TARGET_WAIT_MS = 30_000
 MAX_IDLE_WAIT_MS = 25_000
 # A polled wait is at most this many page reads, within a receipt's command limit.
 MAX_WAIT_READS = 100
+# The existing bridge trims longer help requests. Refuse rather than silently truncate.
+MAX_HELP_MESSAGE_CHARS = 1000
 _REGEX_SPECIAL = re.compile(r"[\\^$.*+?()\[\]{}|/]")
 _RETRYABLE_READ_ERRORS = frozenset({"timeout", "bridge_disconnected", "bridge_unavailable", "navigating",
                                     "content_unavailable", "browser_operation_failed"})
@@ -333,6 +335,15 @@ class FlatBroker:
                     "includeSnapshot": False}, timeout, MAX_BRIDGE_REPLY_BYTES
             return ("closeTab", "POST", "/api/close-tab", {"tabId": admitted.tab.native_id}, timeout,
                     MAX_BRIDGE_REPLY_BYTES)
+        if admitted.operation.name == "browser_ask_user":
+            if not values["message"].strip():
+                raise OperationRefused("invalid_arguments", "A help request must not be blank")
+            if len(values["message"]) > MAX_HELP_MESSAGE_CHARS:
+                raise OperationRefused("unsupported_variant", "Help requests are limited to 1000 characters for now")
+            body = {"reason": values["reason"], "message": values["message"]}
+            if admitted.tab is not None:
+                body["tabId"] = admitted.tab.native_id
+            return "askUser", "POST", "/api/ask-user", body, timeout, MAX_BRIDGE_REPLY_BYTES
         if admitted.operation.name == "browser_read":
             # A full snapshot: never sinceObservation/skipUnchanged, so never a delta. Only the
             # text form carries static prose, and only it reports the document's url and title.
@@ -517,6 +528,23 @@ class FlatBroker:
                     # A new document: its refs are new, even where the page looks the same.
                     self.session.forget_refs(tab_handle)
                 native = envelope["result"]
+                if (action == "askUser" and receipt["complete"] and not receipt["limited"]
+                        and isinstance(native, dict) and native.get("code") == "needs_user"):
+                    values = admitted.operation.arguments()
+                    state = native.get("state")
+                    if (not isinstance(state, dict) or state.get("reason") != "agent_request"
+                            or state.get("detail") != values["reason"]
+                            or any(command["action"] != "getPageInfo" for command in receipt["commands"])):
+                        raise ValueError("Invalid user-help stop")
+                    # No prompt was answered and no approval was given. Copy the admitted
+                    # request, never page-supplied URL/title/evidence or a native hold token.
+                    result = _failure(call, name, "needs_user", "not_dispatched", tab_id=tab_handle,
+                                      state={"reason": "agent_request", "detail": values["reason"],
+                                             "message": values["message"]})
+                    result["error"].update(message="The agent needs the user's help",
+                                           hint="Ask the user with this message and wait for their answer. "
+                                                "This result is not approval; no continuation is available yet.")
+                    return BrokerReply(result, receipt)
                 if (not receipt["complete"] or receipt["limited"] or not isinstance(native, dict)
                         or native.get("error") or native.get("ok") is False):
                     code = native.get("code") if isinstance(native, dict) else None
