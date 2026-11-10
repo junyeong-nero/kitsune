@@ -58,6 +58,77 @@ it, but replacing a bridge drops its clients' keep-alives, intercepts and resume
 checkpoints, so the Python API does that only with `replace_bridge=True` (or after
 `kitsune-bridge stop`).
 
+## Reusing a host's client
+
+An application that already owns a `BridgeClient` can wrap it without creating
+another connection or changing its authority:
+
+```python
+from kitsune import Browser
+
+browser = Browser(existing_client)  # host code: the same client used by its direct tools
+```
+
+This keeps that client's owner/client IDs, live handoff session, capability groups,
+mode and user-tab setting. Creating another `Browser(existing_client)` does not
+create another browser session. Pass explicit tab IDs from `browser.tabs()` or
+`new_tab()`; wrapping a client does not select a global current tab.
+
+Do not call `connect()` to attach to an MCP session: it creates a separate developer
+client with unrestricted capability groups. `Browser` itself neither limits Python's
+host access nor prevents code from modifying its client. It is an API wrapper, not a
+script sandbox. A scripting host owns the execution boundary and approval channel;
+an agent-supplied `confirm=lambda _: True` is not user approval. This section describes
+host integration, not an already-available MCP script tool (tracked in #514).
+
+## Composition in ordinary Python
+
+The existing API already covers navigation, reads, page actions, screenshots, waits,
+inspection and browser data. The tables below are the reference; no separate tool
+catalog lookup is needed. Use normal loops and conditions instead of a batch/workflow
+language when writing Python.
+
+Read an owned background tab:
+
+```python
+tab = browser.new_tab("https://example.com/")
+try:
+    print(tab.info()["title"])
+    print(tab.text())
+finally:
+    tab.close()
+```
+
+Fill a draft in an explicitly chosen, authorized tab without submitting it:
+
+```python
+tab = browser.tab(draft_tab_id)
+for target, value in {"#name": "Ada", "#note": "Please review this draft."}.items():
+    tab.fill(target, value)
+print(tab.forms())  # observe the final values, not only successful dispatches
+```
+
+Filter a bounded set of results and return only what is useful:
+
+```python
+tab = browser.tab(results_tab_id)
+links = tab.query("main a[href]", fields=["text", "href"], limit=100)
+selected = [link for link in links if "Python" in link.get("text", "")]
+print(selected[:10])
+```
+
+If the query was truncated, it warns: these are matches **within the returned
+subset**, not a complete page search. Narrow the selector or increase `limit` when
+needed. Permission failures and other failed calls raise `KitsuneError` and stop an
+uncaught loop; earlier writes remain applied. Do not restart the whole loop after a
+timeout or disconnect—observe the affected page before deciding what is left to do.
+
+Less-frequent features such as `tab.readability()`, `tab.network.resources()`,
+`tab.local_storage`, `browser.cookies` and `browser.history` already have Python
+methods. Availability does not grant permission: a host's capability/mode limits
+still apply. #515 will record the final MCP-to-Python mapping before changing the
+default tool list; this API work does not change that list or remove any tools.
+
 ## Tabs
 
 | `Browser` method | Returns |
@@ -93,7 +164,7 @@ or other clients' tabs is refused by default. `browser.pool` keeps reusable back
 | `snapshot(target=None, max_depth=None, text=False)` | The accessibility-style tree with element refs (`e12`), as `str` ([Snapshots](api-reference.md#browser_snapshottab_idnone-selectornone-refnone-max_depthnone-textfalse)) |
 | `markdown(target=None)` | The page, or one subtree, as Markdown |
 | `html(target)` | One element's `outerHTML` (`"html"` for the whole page) |
-| `query(selector, fields=None, limit=50)` | Fields of every element matching a CSS selector, as a list |
+| `query(selector, fields=None, limit=50)` | Fields of matching elements up to `limit`, as a list; warns if results are truncated |
 | `find(query)` | Elements matching a description such as `"login button"`, best first, each with a `ref` |
 | `forms()` | Every form field with its label and value |
 | `links(internal_only=False)` | The page's links |

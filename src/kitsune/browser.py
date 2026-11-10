@@ -103,7 +103,12 @@ def connect(*, mode: str = "act", user_tabs: str | None = None, confirm=None,
 
 
 class Browser:
-    """The user's browser: its tabs, command containers and browser-wide data. Get one with connect()."""
+    """The user's browser: its tabs, command containers and browser-wide data.
+
+    connect() creates a developer-controlled client. Hosts that already have a BridgeClient
+    can pass it directly to reuse its identity, session and permission headers, without
+    connecting again. This wrapper is not a sandbox for code with access to that client.
+    """
 
     def __init__(self, client: BridgeClient, *, confirm=None):
         self.client = client
@@ -592,7 +597,11 @@ class Tab:
         body = {"selector": selector, "limit": limit}
         if fields:
             body["fields"] = fields
-        return self._request("/api/query", body)["items"]
+        result = self._request("/api/query", body)
+        if result.get("truncated"):
+            warnings.warn("Query results were truncated; narrow the selector or increase limit",
+                          stacklevel=2)
+        return result["items"]
 
     def html(self, target: str) -> str:
         """The outerHTML of one element ("html" for the whole page), with sensitive values redacted."""

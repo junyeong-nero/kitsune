@@ -183,6 +183,16 @@ class TabRequestTests(BridgeTestCase):
             warnings.simplefilter("error")
             self.tab.snapshot()
 
+    def test_query_warns_when_filtering_an_incomplete_result(self):
+        self.reply("/api/query", {"items": [{"text": "first"}], "count": 1, "total": 3, "truncated": True})
+        with self.assertWarnsRegex(UserWarning, "Query results were truncated"):
+            self.assertEqual(self.tab.query("a", fields=["text"], limit=1), [{"text": "first"}])
+        self.assertEqual(len(self.bridge.requests), 1, "do not fetch or replay automatically")
+        self.reply("/api/query", {"items": [], "count": 0, "total": 0, "truncated": False})
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            self.assertEqual(self.tab.query("a"), [])
+
     def test_snapshot_rejects_a_bad_depth_before_sending(self):
         for depth in (-1, 1.5, True):
             with self.subTest(depth=depth), self.assertRaises(ValueError):
@@ -666,6 +676,66 @@ class McpParityTests(BridgeTestCase):
                 sent = self.sent(library_call)
                 self.assertTrue(sent)
                 self.assertEqual(sent, self.sent(mcp_call))
+
+
+class SharedClientTests(BridgeTestCase):
+    """An API wrapper reuses its host's transport; it does not establish another session."""
+
+    def test_wrapping_an_existing_client_does_not_connect_or_replace_it(self):
+        client = BridgeClient(caps={"core"}, mode="draft", approver=True)
+        with patch.object(BridgeClient, "__init__") as create, \
+                patch.object(client, "ensure_bridge") as ensure:
+            browser = kitsune.Browser(client)
+        create.assert_not_called()
+        ensure.assert_not_called()
+        self.assertIs(browser.client, client)
+        self.assertIsNone(browser.confirm)
+        self.assertEqual(self.bridge.requests, [])
+
+    def test_api_and_direct_calls_keep_the_same_identity_and_limits(self):
+        client = BridgeClient(caps={"core"}, mode="draft", approver=True)
+        client._handoff_secret = "test-session"
+        with patch.object(tools, "client", client):
+            tools.browser_type(selector="#name", text="Ada", clear=True, tab_id=7)
+            direct = self.bridge.last
+            # A new wrapper can be used for each script without creating another client/session.
+            for _ in range(2):
+                kitsune.Browser(client).tab(7).type("#name", "Ada", clear=True)
+                scripted = self.bridge.last
+                self.assertEqual((scripted.route, scripted.body, scripted.headers),
+                                 (direct.route, direct.body, direct.headers))
+        headers = self.bridge.last.headers
+        self.assertEqual(headers[capabilities.CAPS_HEADER], "core")
+        self.assertEqual(headers[task_modes.MODE_HEADER], "draft")
+        self.assertEqual(headers[task_modes.USER_TABS_HEADER], "read-only")
+        self.assertEqual(headers[task_modes.CLIENT_HEADER], client.client_id)
+        self.assertEqual(headers[task_modes.OWNER_HEADER], client.owner_id)
+        self.assertEqual(headers[task_modes.SESSION_HEADER], "test-session")
+
+    def test_raw_requests_keep_the_hosts_capability_and_mode_headers(self):
+        client = BridgeClient(caps={"core"}, mode="read")
+        browser = kitsune.Browser(client)
+        refusal = {"error": "Capability not enabled", "code": "capability_restricted", "retryable": False}
+        self.reply("/api/cookies", refusal)
+        for call in (lambda: browser.cookies.get(),
+                     lambda: browser.request("/api/cookies", {"op": "get"})):
+            with self.subTest(call=call), self.assertRaises(kitsune.KitsuneError) as raised:
+                call()
+            self.assertEqual(raised.exception.result, refusal)
+            self.assertEqual(self.bridge.last.headers[capabilities.CAPS_HEADER], "core")
+            self.assertEqual(self.bridge.last.headers[task_modes.MODE_HEADER], "read")
+        self.assertEqual(len(self.bridge.requests), 2, "a refusal is not retried")
+
+    def test_a_partial_python_loop_stops_on_the_first_failed_write(self):
+        browser = kitsune.Browser(BridgeClient(caps={"core"}, mode="draft"))
+        failed = {"error": "Connection lost after dispatch", "code": "bridge_disconnected",
+                  "retryable": False, "state": {"requestSent": True}}
+        self.reply("/api/fill", [{"ok": True}, failed])
+        with self.assertRaises(kitsune.ConnectionFailed) as raised:
+            for target in ("#first", "#second", "#third"):
+                browser.tab(7).fill(target, "draft")
+        self.assertEqual(raised.exception.result, failed)
+        self.assertEqual([request.body["selector"] for request in self.bridge.requests], ["#first", "#second"])
 
 
 class CapabilityTests(BridgeTestCase):

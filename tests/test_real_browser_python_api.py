@@ -8,7 +8,7 @@ import re
 from unittest.mock import patch
 
 import kitsune
-from kitsune import bridge_client, bridge_control
+from kitsune import bridge_client, bridge_control, tools
 import real_browser_harness as harness
 
 PAGE = """<!doctype html><title>Python API</title>
@@ -90,6 +90,34 @@ class RealBrowserPythonApiTests(harness.RealBrowserTestCase):
         self.assertTrue(self.tab.screenshot().startswith(b"\x89PNG"))
         batch = self.browser.batch([{"action": "pageText"}], tab=self.tab)
         self.assertIn("Saved Ada", batch["results"][0]["text"])
+
+    def test_query_reports_that_a_filtered_subset_is_incomplete(self):
+        with self.assertWarnsRegex(UserWarning, "Query results were truncated"):
+            values = self.tab.query("#size option", fields=["value"], limit=1)
+        self.assertEqual([item["value"] for item in values], ["s"])
+        self.assertEqual([item["value"] for item in self.tab.query("#size option", fields=["value"], limit=2)],
+                         ["s", "l"])
+
+    def test_host_client_is_shared_without_widening_permissions(self):
+        client = bridge_client.BridgeClient(caps={"core", "read", "browse"}, mode="draft")
+        browser = kitsune.Browser(client)
+        tab = browser.new_tab(self.site.origin + "/")
+        self.addCleanup(self.browser.tab(tab.id).close)
+        with patch.object(tools, "client", client):
+            self.assertTrue(tools.browser_type(selector="#name", text="Direct", clear=True, tab_id=tab.id)["ok"])
+        self.assertEqual(next(field["value"] for field in tab.forms() if field.get("name") == "name"), "Direct")
+        kitsune.Browser(client).tab(tab.id).fill("#name", "Python")
+        self.assertEqual(next(field["value"] for field in tab.forms() if field.get("name") == "name"), "Python")
+        self.assertTrue(next(item["owned"] for item in browser.tabs() if item["id"] == tab.id))
+
+        # Draft rejects cookies before checking caps; act isolates the capability check.
+        with patch.object(client, "mode", "act"), self.assertRaises(kitsune.KitsuneError) as raised:
+            browser.cookies.get()
+        self.assertEqual(raised.exception.code, "capability_restricted")
+        with self.assertRaises(kitsune.KitsuneError) as raised:
+            tab.submit_form("#order")
+        self.assertEqual(raised.exception.code, "mode_restricted")
+        self.assertEqual(self.browser.tab(tab.id).info()["title"], "Python API", "the refused submit did not navigate")
 
     def test_storage_console_tabs_windows_and_tags(self):
         self.tab.local_storage.set("theme", "dark")
