@@ -61,6 +61,7 @@ except ImportError:
     sys.exit("websockets is not installed. Reinstall kitsune with its dependencies.")
 
 from . import bridge_control, browser_diagnostics
+from .connection_binding import CONNECTION_HEADER, ConnectionBinding
 from .capabilities import (ACTION_GROUPS, CAPS_HEADER, LOAD_MORE_SCROLL_GROUPS, OPEN_ROUTES, ROUTE_GROUPS,
                            caps_refusal, header_caps, scroll_groups)
 from .task_modes import (
@@ -126,6 +127,10 @@ def _load_or_create_token():
 AUTH_TOKEN = _load_or_create_token()
 
 # ── State ──
+# Generation counters restart with the process; this non-secret id prevents old tab handles
+# from aliasing a new bridge's numerically identical extension generation/tab ids.
+BRIDGE_INSTANCE = secrets.token_hex(16)
+_connection_binding = contextvars.ContextVar("kitsune_connection_binding", default=None)
 extension_ws = None  # WebSocket connection to extension
 extension_ws_generation = 0
 extension_info = {}  # {"version", "build", "sourceHash", "manifestHash"} from hello, "browser" from state
@@ -3084,6 +3089,17 @@ def _disconnected_error(message, action, sent=True):
     )
 
 
+def _check_connection_binding():
+    expected = _connection_binding.get()
+    if expected is not None and (expected.bridge_instance != BRIDGE_INSTANCE
+                                 or expected.extension_generation != extension_ws_generation
+                                 or extension_ws is None):
+        return {"error": "The bound bridge/extension connection is no longer active",
+                "code": "stale_connection", "retryable": False, "dispatched": False,
+                "hint": "Acquire a fresh connection and tab handles; do not replay an uncertain write."}
+    return None
+
+
 async def send_to_extension(action, params=None, timeout=30):
     """Send command to extension and wait for response."""
     params = dict(params or {})
@@ -3203,6 +3219,8 @@ async def _send_to_extension_raw(action, params=None, timeout=30):
     elif post_action_snapshot == "full":
         params.setdefault("snapshot", "full")
     ws = extension_ws
+    if invalid := _check_connection_binding():
+        return invalid
     if not ws:
         return _disconnected_error(
             "Kitsune extension not connected. Open Firefox or Zen and make sure the Kitsune extension is loaded.",
@@ -3235,6 +3253,9 @@ async def _send_to_extension_raw(action, params=None, timeout=30):
     
     try:
         async with _get_ws_send_lock():
+            # HTTP admission and scheduler admission are not a lease on a connection.
+            if invalid := _check_connection_binding():
+                return invalid
             if extension_ws is not ws:
                 return _disconnected_error("Extension reconnected before command could be sent", action, sent=False)
             await ws.send(json.dumps(command))
@@ -4898,6 +4919,15 @@ class BridgeHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self.refuse(400, {"error": str(exc), "code": "invalid_user_tabs", "retryable": False})
             return
+        try:
+            bindings = [value for key, value in self.headers.items() if key.lower() == CONNECTION_HEADER.lower()]
+            if len(bindings) > 1:
+                raise ValueError(f"{CONNECTION_HEADER} must occur at most once")
+            binding = ConnectionBinding.from_header(bindings[0]) if bindings else None
+        except ValueError as exc:
+            self.refuse(400, {"error": str(exc), "code": "invalid_connection_binding", "retryable": False})
+            return
+        binding_token = _connection_binding.set(binding)
         token = _task_mode.set(mode)
         caps_token = _client_caps.set(caps)
         writable = _user_tabs_writable.set(permission == "writable")
@@ -4920,6 +4950,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
             identity = None
         handoff_token = _handoff_identity.set(identity)
         try:
+            if invalid := _check_connection_binding():
+                self.refuse(409, invalid)
+                return
             if not permits_route(mode, path):
                 self.refuse(403, _mode_error(path))
                 return
@@ -4946,6 +4979,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             _user_tabs_writable.reset(writable)
             _client_caps.reset(caps_token)
             _task_mode.reset(token)
+            _connection_binding.reset(binding_token)
 
     def do_GET(self):
         if not self.authorized():
@@ -5123,6 +5157,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "screenshot_dir": SCREENSHOT_DIR,
             "bridge_version": BRIDGE_VERSION,
             "build": BRIDGE_BUILD,
+            "bridge_instance": BRIDGE_INSTANCE,
             "extension_generation": extension_ws_generation,
             "scheduler": _scheduler_snapshot(),
             "keep_alive_tabs": _active_keep_alive_tabs(),
