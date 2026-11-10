@@ -126,7 +126,8 @@ class RealBrowserPlaywrightToolTests(harness.RealBrowserTestCase):
     def call_tool(self, name, arguments=None):
         """(isError, content) of a core tool call through FastMCP, against this class's bridge."""
         with patch.object(tools, "_get", self.call), \
-                patch.object(tools, "_post", lambda endpoint, data, timeout=15: self.call(endpoint, data)):
+                patch.object(tools, "_post", lambda endpoint, data, timeout=15: self.call(endpoint, data)), \
+                patch.object(server._client, "post", lambda endpoint, data, **kwargs: self.call(endpoint, data)):
             result = asyncio.run(server.mcp.call_tool(name, arguments or {}))
         if isinstance(result, list):  # image results are a content list
             return False, result
@@ -141,7 +142,8 @@ class RealBrowserPlaywrightToolTests(harness.RealBrowserTestCase):
 
     def open_current(self, path="/"):
         result = self.tool("browser_tabs", {"action": "new", "url": self.site.origin + path})
-        self.assertTrue(result["tabs"][result["index"]]["current"], result)
+        self.assertEqual(result["tab"]["index"], result["index"], result)
+        self.assertTrue(result["tab"]["current"], result)
         tab = playwright_tools._current_tab
         self.addCleanup(self.call, "/api/close-tab", {"tabId": tab})
         self.opened = result

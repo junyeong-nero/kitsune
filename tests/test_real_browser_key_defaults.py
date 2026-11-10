@@ -85,13 +85,15 @@ class RealBrowserKeyDefaultTests(harness.RealBrowserTestCase):
         playwright_tools._current_tab = None
         result = self.tool("browser_tabs", {"action": "new", "url": self.site.origin + "/"})
         self.addCleanup(self.call, "/api/close-tab", {"tabId": playwright_tools._current_tab})
-        self.assertTrue(result["tabs"][result["index"]]["current"], result)
+        self.assertEqual(result["tab"]["index"], result["index"], result)
+        self.assertTrue(result["tab"]["current"], result)
         self.opened = result
 
     def tool(self, name, arguments=None):
         """A core tool call's JSON result through FastMCP, against this class's bridge."""
         with patch.object(tools, "_get", self.call), \
-                patch.object(tools, "_post", lambda endpoint, data, timeout=15: self.call(endpoint, data)):
+                patch.object(tools, "_post", lambda endpoint, data, timeout=15: self.call(endpoint, data)), \
+                patch.object(server._client, "post", lambda endpoint, data, **kwargs: self.call(endpoint, data)):
             result = asyncio.run(server.mcp.call_tool(name, arguments or {}))
         content = json.loads(result.content[0].text)
         self.assertFalse(result.isError, (name, content))

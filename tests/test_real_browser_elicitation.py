@@ -69,7 +69,10 @@ async def _calls(env, url, calls, answers, observe, *, new_tab=False):
             opened = await session.call_tool("browser_tabs", {"action": "new", "url": url})
             if opened.isError:
                 raise AssertionError(opened.content[0].text)
-            (tab,) = [tab for tab in _payload(opened)["tabs"] if tab.get("url") == url]
+            payload = _payload(opened)
+            tab = payload["tab"]
+            if tab.get("url") != url or tab.get("index") != payload["index"]:
+                raise AssertionError(f"new tab has the wrong URL or index: {payload}")
             if not tab.get("owned") or not tab.get("current"):
                 raise AssertionError(f"new tab is not owned and current: {tab}")
         else:

@@ -57,7 +57,8 @@ class RealBrowserEditorTests(harness.RealBrowserTestCase):
     def call_tool(self, name, arguments=None):
         """(isError, JSON result) of a core tool call through FastMCP, against this class's bridge."""
         with patch.object(tools, "_get", self.call), \
-                patch.object(tools, "_post", lambda endpoint, data, timeout=15: self.call(endpoint, data)):
+                patch.object(tools, "_post", lambda endpoint, data, timeout=15: self.call(endpoint, data)), \
+                patch.object(server._client, "post", lambda endpoint, data, **kwargs: self.call(endpoint, data)):
             result = asyncio.run(server.mcp.call_tool(name, arguments or {}))
         return result.isError, json.loads(result.content[0].text)
 
@@ -74,7 +75,8 @@ class RealBrowserEditorTests(harness.RealBrowserTestCase):
     def test_fill_through_the_editor_textbox_ref(self):
         result = self.tool("browser_tabs", {"action": "new", "url": self.site.origin + "/"})
         self.addCleanup(self.call, "/api/close-tab", {"tabId": playwright_tools._current_tab})
-        self.assertTrue(result["tabs"][result["index"]]["current"], result)
+        self.assertEqual(result["tab"]["index"], result["index"], result)
+        self.assertTrue(result["tab"]["current"], result)
 
         # One textbox for the editor; the line div, span and br are not textboxes (#256). The small page
         # is in the browser_tabs result (#448), which the snapshot after it names.

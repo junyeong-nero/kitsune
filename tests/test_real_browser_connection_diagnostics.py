@@ -22,6 +22,7 @@ import time
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+from kitsune import tools
 import real_browser_harness as harness
 from test_real_browser import ExtensionControl
 
@@ -252,7 +253,7 @@ class RealBrowserConnectionDiagnosisTests(_DiagnosisTestCase):
     def test_mcp_status_reports_tool_surface_and_unpublished_tool_names_its_setting(self):
         self.wait_for_diagnosis("connected")
         # The MCP server uses this class's bridge; its build matches, so it is not replaced.
-        env = {**self.bridge.env, "KITSUNE_CAPS": "core,admin"}
+        env = {**self.bridge.env, "KITSUNE_CAPS": "core,admin", "KITSUNE_OWNER_ID": "e2e-status-client"}
         names, status, cookies = asyncio.run(asyncio.wait_for(_mcp_status_and_unpublished(env), MCP_SESSION_TIMEOUT))
 
         self.assertIn("browser_status", names)
@@ -261,9 +262,10 @@ class RealBrowserConnectionDiagnosisTests(_DiagnosisTestCase):
         status = json.loads(status.content[0].text)
         self.assertTrue(status["extension_connected"], status)
         self.assertEqual(status["diagnosis"], {"code": "connected"}, status)
-        # 104 known tools (93 in `all` plus the named-only storage and history); core and admin publish 33.
+        known = {name for name, spec in tools.TOOLS.items() if spec.modes is None or "act" in spec.modes}
         self.assertRegex(status["mcp_tools"].pop("client"), r"^\d+-[0-9a-f]{6}$")
-        self.assertEqual(status["mcp_tools"], {"caps": ["admin", "core"], "unpublished": 104 - len(names)})
+        self.assertEqual(status["mcp_tools"], {"caps": ["admin", "core"], "unpublished": len(known - set(names)),
+                                              "owner": "e2e-status-client"})
 
         self.assertTrue(cookies.isError, cookies)
         cookies = json.loads(cookies.content[0].text)

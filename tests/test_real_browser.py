@@ -130,11 +130,11 @@ PAGES = {
   item.addEventListener('pointermove', move);
   item.addEventListener('pointerup', up);
 }});</script>""",
-    # #137: review filters below a 150-link header. The toggle shows the options and pushes a
-    # URL; an option click selects it. Home reports clicks.
+    # #137: review filters below a 150-link header. Long labels keep its snapshot above 12k even
+    # with compact same-origin URLs. The toggle shows options and pushes a URL; Home reports clicks.
     "reviews": """<header><button id="home" onclick="fetch('/hit?page={name}')">Home</button>
 <script>for (let i = 0; i < 150; i++) document.currentScript.before(Object.assign(document.createElement('a'),
-  {{ href: '/store-' + i, textContent: 'Store link ' + i }}));</script></header>
+  {{ href: '/store-' + i, textContent: 'Store link ' + i + ' catalog, community, and support' }}));</script></header>
 <main><h2>Reviews</h2><div role="region" aria-label="Review filters">
 <button id="toggle" aria-expanded="false" onclick="this.setAttribute('aria-expanded', 'true');
   document.getElementById('options').hidden = false; history.pushState(null, '', '?filter=open')">Review type</button>
