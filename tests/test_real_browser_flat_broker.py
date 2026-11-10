@@ -7,13 +7,16 @@ What the browser did is read through the harness's own bridge requests, not the 
 import asyncio
 from http.server import BaseHTTPRequestHandler
 import json
+import os
 import re
 import time
+import unittest
 from unittest.mock import patch
 
 from kitsune import bridge_client
 from kitsune.flat_broker import FlatBroker
 from kitsune.flat_session import CallerAuthority
+from kitsune.script_runner import ScriptRuntime, run_script
 from kitsune.task_modes import OWNER_HEADER
 import real_browser_harness as harness
 from test_real_browser_shared_browser import USER_NAVIGATES
@@ -116,6 +119,79 @@ class RealBrowserFlatBrokerTests(harness.RealBrowserTestCase):
 
     def test_waits_through_the_broker(self):
         asyncio.run(self.wait_scenario())
+
+    @unittest.skipUnless(os.environ.get("KITSUNE_E2E_SCRIPT_RUNTIME"), "KITSUNE_E2E_SCRIPT_RUNTIME is not set")
+    def test_a_delegated_script_drives_the_browser_through_the_broker(self):
+        asyncio.run(self.script_scenario())
+
+    async def script_scenario(self):
+        owner = "e2e-flat-script"
+        runtime = ScriptRuntime.from_manifest(os.environ["KITSUNE_E2E_SCRIPT_RUNTIME"])
+        broker = await FlatBroker.connect(CallerAuthority("e2e-flat-script-a", owner, "act"))
+        listed = await broker.call("browser_tabs", {})
+        user = next(t["tab_id"] for t in listed.result["data"]["tabs"] if t["active"])
+        user_native = next(i for i, t in self.native().items() if t["active"])
+        user_url = self.native()[user_native]["url"]
+        before_tabs = set(self.native())
+        result = await run_script(broker, runtime, f'''
+opened = await browser.new_tab(url={self.page.origin + "/actions"!r})
+tab = opened["tab_id"]
+page = await browser.read(tab_id=tab)
+refs = {{}}
+for line in page["data"]["content"].splitlines():
+    if "[ref=" in line:
+        refs[line.split('"')[1]] = line.split("[ref=")[1].split("]")[0]
+await browser.input(tab_id=tab, target={{"ref": refs["Name"]}}, text="Script")
+for attempt in range(3):
+    await browser.click(tab_id=tab, target={{"ref": refs["Increment"]}})
+await browser.select(tab_id=tab, target={{"selector": "#country"}}, values=["jp"])
+found = await browser.find(tab_id=tab, text="drop here")
+refused = {{}}
+for name, call in (("user tab", lambda: browser.navigate(tab_id={user!r}, url={self.page.origin + "/one"!r})),
+                   ("ambiguous", lambda: browser.click(tab_id=tab, target={{"selector": "button"}})),
+                   ("made-up ref", lambda: browser.click(tab_id=tab, target={{"ref": "e424242"}}))):
+    try:
+        await call()
+        refused[name] = "ok"
+    except BrowserOperationError as error:
+        refused[name] = [error.result["error"]["code"], error.result["outcome"]]
+def reach():
+    import socket
+    return socket.create_connection(("127.0.0.1", {self.bridge.http_port}), timeout=2)
+try:
+    reach()
+    refused["bridge"] = "REACHED"
+except BaseException as error:
+    refused["bridge"] = type(error).__name__
+shot = await browser.screenshot(tab_id=tab, scope="element", target={{"ref": refs["Increment"]}})
+emit_image(shot["data"]["image"])
+print("clicked", 3)
+emit({{"tab": tab, "matches": found["data"]["count"], "refused": refused, "image": shot["data"]["image"]}})
+''')
+        self.assertEqual((result.status, result.error, result.stdout), ("completed", None, "clicked 3\n"), result)
+        native_id = (set(self.native()) - before_tabs).pop()
+        state = json.loads(self.as_owner(owner, "/api/js", {"tabId": native_id, "code": STATE})["result"])
+        # What the page itself recorded, read through a separate request.
+        self.assertEqual((state["name"], state["events"], state["country"]),
+                         ("Script", ["click", "click", "click", "country=jp"], "jp"))
+        self.assertEqual(result.emitted["refused"], {
+            "user tab": ["user_tab_read_only", "not_dispatched"], "ambiguous": ["ambiguous_target", "not_dispatched"],
+            "made-up ref": ["stale_ref", "not_dispatched"], "bridge": result.emitted["refused"]["bridge"]})
+        self.assertNotEqual(result.emitted["refused"]["bridge"], "REACHED")
+        self.assertEqual(self.native()[user_native]["url"], user_url)
+        image, = result.images
+        self.assertEqual((image.handle, image.mime_type, image.data[:8]),
+                         (result.emitted["image"], "image/png", b"\x89PNG\r\n\x1a\n"))
+        # The coordinator's ledger, not the script's output, says what happened.
+        self.assertEqual([(e["operation"], e["outcome"]) for e in result.ledger], [
+            ("browser_tabs", "observed"), ("browser_read", "observed"), ("browser_input", "dispatched"),
+            ("browser_click", "dispatched"), ("browser_click", "dispatched"), ("browser_click", "dispatched"),
+            ("browser_select", "dispatched"), ("browser_find", "observed"), ("browser_navigate", "not_dispatched"),
+            ("browser_click", "not_dispatched"), ("browser_click", "not_dispatched"), ("browser_screenshot", "observed")])
+        self.assertTrue(all(e["receipt"]["commands"][-1]["tab_id"] == native_id for e in result.ledger[2:8]))
+        # The handle the script was given works for a direct call afterwards.
+        closed = await broker.call("browser_tabs", {"action": "close", "tab_id": result.emitted["tab"]})
+        self.assertTrue(closed.result["ok"], closed.result)
 
     def test_screenshots_through_the_broker(self):
         asyncio.run(self.screenshot_scenario())
