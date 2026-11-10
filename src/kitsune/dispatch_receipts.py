@@ -8,7 +8,7 @@ MAX_NATIVE_COMMANDS = 128
 # Only awaited, non-container routes. Extend deliberately with each reviewed adapter;
 # detached keep-alives/containers must not report a completed receipt for future work.
 RECEIPT_ROUTES = frozenset({"/api/tabs", "/api/new-tab", "/api/close-tab", "/api/navigate",
-                            "/api/back", "/api/forward", "/api/reload-tab"})
+                            "/api/back", "/api/forward", "/api/reload-tab", "/api/snapshot"})
 
 
 class DispatchReceipt:

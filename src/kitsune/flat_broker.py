@@ -1,7 +1,7 @@
 """First shared native adapters, intentionally not registered as MCP/worker APIs yet.
 
-Only tabs and navigation are implemented here. All other admitted operations fail
-closed until their ref, image, approval and receipt contracts are implemented.
+Tabs, navigation, read and find are implemented here. All other admitted operations
+fail closed until their ref, image, approval and receipt contracts are implemented.
 
 Outcomes come from the bridge's dispatch receipt, never from extension/page fields:
 a reply to a write is `dispatched`, not application success. Cancelling or timing
@@ -13,6 +13,7 @@ import asyncio
 from contextvars import ContextVar
 from dataclasses import dataclass
 import json
+import re
 import secrets
 
 from .bridge_client import BridgeClient
@@ -29,12 +30,29 @@ MAX_TITLE_CHARS = 256
 MAX_URL_CHARS = 2048
 # The bridge answers its own bounded waits first; this only covers transport.
 TRANSPORT_GRACE_SECONDS = 2
+# browser_find searches an uncollapsed snapshot larger than a read returns. JSON escapes a
+# non-ASCII character as up to 12 bytes on the wire, so its reply limit is separate.
+FIND_SNAPSHOT_CHARS = 150_000
+MAX_FIND_REPLY_BYTES = 2 * 1024 * 1024
+MAX_MATCH_LINE_CHARS = 400
+MAX_MATCH_PATH = 3
 # (verified connection, call id) of the admitted request running in this context.
 _REQUEST = ContextVar("kitsune_flat_request", default=None)
-_IMPLEMENTED = frozenset({"browser_tabs", "browser_navigate"})
+_IMPLEMENTED = frozenset({"browser_tabs", "browser_navigate", "browser_read", "browser_find"})
 _NATIVE_ERRORS = frozenset({"mode_restricted", "user_tab_read_only", "user_active", "needs_user",
                             "stale_connection", "invalid_tab_id", "tab_closed", "timeout",
-                            "extension_disconnected", "native_operation_limit"})
+                            "extension_disconnected", "native_operation_limit",
+                            "stale_ref", "not_found", "unsupported_selector", "restricted_page",
+                            "tab_unloaded", "navigating", "content_unavailable"})
+_STALE_REF_REASONS = frozenset({"element_removed", "not_in_snapshot", "other_document"})
+# Reads change nothing: a failed one is safe to repeat and never an unknown write.
+_READS = frozenset({"getTabs", "getSnapshot"})
+_RETRYABLE_READ_ERRORS = frozenset({"timeout", "bridge_disconnected", "bridge_unavailable", "navigating",
+                                    "content_unavailable", "browser_operation_failed"})
+_NAVIGATIONS = frozenset({"navigate", "goBack", "goForward", "reloadTabBrowser"})
+# The ref of a snapshot line, after its JSON-quoted name (as background.js snapshotLineRef):
+# ref-like text inside a quoted name or value is page data, never a target.
+_LINE_REF = re.compile(r'^ *- [^"\n]+ "(?:[^"\\]|\\.)*" \[ref=(e[0-9]{1,127})\](?= |$)')
 # The extension's admission (tabWriteError) answers these before it calls a browser API.
 # True of the single-call tab/navigation actions here; a multi-step action must not reuse it.
 _REFUSED_BEFORE_ACTING = frozenset({"user_tab_read_only", "user_active", "tab_closed", "invalid_tab_id"})
@@ -59,11 +77,14 @@ class BrokerReply:
     receipt: dict | None
 
 
-def _failure(call, name, code, outcome="not_dispatched", *, tab_id=None):
+def _failure(call, name, code, outcome="not_dispatched", *, tab_id=None, retryable=False, state=None):
     result = {"ok": False, "call": call, "operation": name, "outcome": outcome,
               "data": {}, "truncated": code == "output_limited",
               "error": {"code": code, "message": "The browser operation did not complete",
-                        "retryable": False, "hint": "Inspect current state; do not blindly replay a write.", "state": {}}}
+                        "retryable": retryable,
+                        "hint": "This read changed nothing; it can be repeated." if retryable else
+                                "Inspect current state; do not blindly replay a write.",
+                        "state": state or {}}}
     if tab_id is not None:
         result["tab_id"] = tab_id
     return result
@@ -110,6 +131,34 @@ def _outcome(receipt, action):
     return "dispatched"  # a reply is not proof of application success
 
 
+def _line_refs(lines):
+    return [match[1] for match in map(_LINE_REF.match, lines) if match]
+
+
+def _find_matches(snapshot, text, limit):
+    """(matches, total): snapshot lines containing text, case-insensitively and literally."""
+    lines = snapshot.split("\n")
+    needle = text.casefold()
+    matches, total, stack = [], 0, []
+    for line in lines:
+        body = line.lstrip(" ")
+        indent = len(line) - len(body)
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
+        # A truncation or collapse marker is the protocol's text, not the page's.
+        if needle in line.casefold() and not body.startswith("- …"):
+            total += 1
+            if len(matches) < limit:
+                match = {"line": body[:MAX_MATCH_LINE_CHARS]}
+                if path := [parent[:MAX_MATCH_LINE_CHARS] for _, parent in stack[-MAX_MATCH_PATH:]]:
+                    match["path"] = path
+                if refs := _line_refs([match["line"]]):
+                    match["ref"] = refs[0]
+                matches.append(match)
+        stack.append((indent, body))
+    return matches, total
+
+
 class FlatBroker:
     def __init__(self, authority: CallerAuthority):
         self.session = FlatSession(authority)
@@ -147,16 +196,29 @@ class FlatBroker:
 
     @staticmethod
     def _native_request(admitted):
+        """(native action, method, route, body, timeout ms, reply byte limit) of an admitted call."""
         values = admitted.operation.arguments()
         timeout = values.get("timeout_ms", 10000)
         if admitted.operation.name == "browser_tabs":
             action = values["action"]
             if action == "list":
-                return "getTabs", "GET", "/api/tabs", None, timeout
+                return "getTabs", "GET", "/api/tabs", None, timeout, MAX_BRIDGE_REPLY_BYTES
             if action == "open":
                 return "newTab", "POST", "/api/new-tab", {
-                    "url": values["url"], "wait": True, "timeout": timeout, "includeSnapshot": False}, timeout
-            return "closeTab", "POST", "/api/close-tab", {"tabId": admitted.tab.native_id}, timeout
+                    "url": values["url"], "wait": True, "timeout": timeout,
+                    "includeSnapshot": False}, timeout, MAX_BRIDGE_REPLY_BYTES
+            return ("closeTab", "POST", "/api/close-tab", {"tabId": admitted.tab.native_id}, timeout,
+                    MAX_BRIDGE_REPLY_BYTES)
+        if admitted.operation.name == "browser_read":
+            # A full snapshot: never sinceObservation/skipUnchanged, so never a delta. Only the
+            # text form carries static prose, and only it reports the document's url and title.
+            body = {"tabId": admitted.tab.native_id, "maxChars": values["max_chars"],
+                    "text": values["format"] == "text", **values.get("target", {})}
+            return "getSnapshot", "POST", "/api/snapshot", body, timeout, MAX_BRIDGE_REPLY_BYTES
+        if admitted.operation.name == "browser_find":
+            # As the core browser_find: static prose and every item of a repeated run.
+            body = {"tabId": admitted.tab.native_id, "maxChars": FIND_SNAPSHOT_CHARS, "collapse": False}
+            return "getSnapshot", "POST", "/api/snapshot", body, timeout, MAX_FIND_REPLY_BYTES
         action, path = {"goto": ("navigate", "/api/navigate"), "back": ("goBack", "/api/back"),
                         "forward": ("goForward", "/api/forward"), "reload": ("reloadTabBrowser", "/api/reload-tab")}[values["action"]]
         # The extension's own load wait for navigate is fixed (15 s) and history/reload have
@@ -164,9 +226,38 @@ class FlatBroker:
         body = {"tabId": admitted.tab.native_id, "includeSnapshot": False}
         if values["action"] == "goto":
             body["url"] = values["url"]
-        return action, "POST", path, body, timeout
+        return action, "POST", path, body, timeout, MAX_BRIDGE_REPLY_BYTES
+
+    def _page_data(self, admitted, native):
+        """browser_read and browser_find results from one full snapshot reply."""
+        values = admitted.operation.arguments()
+        snapshot = native.get("snapshot")
+        if (not isinstance(snapshot, str) or native.get("delta") or native.get("unchanged")
+                or "unchanged_since" in native):
+            raise ValueError("Not a full snapshot")
+        cut = native.get("truncated") is True
+        data = {"tab_id": admitted.tab.handle}
+        for key, limit in (("url", MAX_URL_CHARS), ("title", MAX_TITLE_CHARS)):
+            if isinstance(native.get(key), str):
+                data[key] = native[key][:limit]
+        if admitted.operation.name == "browser_find":
+            matches, total = _find_matches(snapshot, values["text"], values["limit"])
+            data.update(matches=matches, count=total)
+            delivered = [line for match in matches for line in (match["line"], *match.get("path", ()))]
+            cut = cut or total > len(matches)
+        else:
+            if len(snapshot) > values["max_chars"]:
+                # The extension bounds the snapshot; keep whole lines if it ever does not.
+                snapshot, cut = snapshot[:values["max_chars"] + 1].rpartition("\n")[0], True
+            data.update(format=values["format"], content=snapshot)
+            delivered = snapshot.split("\n")
+        # Only refs in what this caller receives become its targets for this tab.
+        self.session.issue_refs(admitted.tab.handle, _line_refs(delivered))
+        return data, "observed", cut
 
     def _data(self, admitted, native, action):
+        if action == "getSnapshot":
+            return self._page_data(admitted, native)
         if action == "getTabs":
             tabs = native.get("tabs")
             if not isinstance(tabs, list) or native.get("truncated"):
@@ -216,14 +307,15 @@ class FlatBroker:
                     admitted = self.session.admit(name, admitted.operation.arguments())
                 self.session.recheck(admitted)
                 tab_handle = admitted.tab.handle if admitted.tab is not None else None
-                action, method, path, body, timeout = self._native_request(admitted)
+                action, method, path, body, timeout, reply_limit = self._native_request(admitted)
+                read = action in _READS
                 token = _REQUEST.set((admitted.connection, call))
                 try:
                     outcome = "unknown"  # from this point an HTTP attempt may reach the browser
                     kwargs = {} if body is None else {"json": body}
                     envelope = await asyncio.to_thread(
                         self._transport.request, method, path, start_bridge=False,
-                        max_response_bytes=MAX_BRIDGE_REPLY_BYTES,
+                        max_response_bytes=reply_limit,
                         timeout=timeout / 1000 + TRANSPORT_GRACE_SECONDS, **kwargs)
                 finally:
                     _REQUEST.reset(token)
@@ -232,9 +324,15 @@ class FlatBroker:
                     outcome = _TRANSPORT_ERRORS[code]
                     if code == "bridge_disconnected" and (envelope.get("state") or {}).get("requestSent") is False:
                         outcome = "not_dispatched"
-                    return BrokerReply(_failure(call, public_name, code, outcome, tab_id=tab_handle), None)
+                    if action in _NAVIGATIONS and outcome != "not_dispatched":
+                        self.session.forget_refs(tab_handle)
+                    return BrokerReply(_failure(call, public_name, code, outcome, tab_id=tab_handle,
+                                                retryable=read and code in _RETRYABLE_READ_ERRORS), None)
                 receipt = _receipt(envelope, call)
                 outcome = _outcome(receipt, action)
+                if action in _NAVIGATIONS and outcome != "not_dispatched":
+                    # A new document: its refs are new, even where the page looks the same.
+                    self.session.forget_refs(tab_handle)
                 native = envelope["result"]
                 if (not receipt["complete"] or receipt["limited"] or not isinstance(native, dict)
                         or native.get("error") or native.get("ok") is False):
@@ -242,6 +340,11 @@ class FlatBroker:
                     code = code if isinstance(code, str) and code in _NATIVE_ERRORS else "browser_operation_failed"
                     if isinstance(native, dict) and native.get("timedOut") is True:
                         code = "timeout"
+                    state = {}
+                    if code == "stale_ref" and isinstance(native.get("state"), dict):
+                        if native["state"].get("reason") in _STALE_REF_REASONS:
+                            state["reason"] = native["state"]["reason"]
+                        self.session.forget_refs(tab_handle, admitted.refs)
                     refused = outcome == "dispatched" and code in _REFUSED_BEFORE_ACTING
                     if code == "tab_closed" and refused and tab_handle is not None:
                         self.session.closed_tab(tab_handle)  # the extension observed that it is gone
@@ -249,8 +352,8 @@ class FlatBroker:
                         code = "stale_tab_handle"
                     if refused:
                         outcome = "not_dispatched"
-                    # Any other failed action that received a reply may still have changed the page.
-                    elif outcome == "dispatched":
+                    # Any other failed write that received a reply may still have changed the page.
+                    elif outcome == "dispatched" and not read:
                         outcome = "unknown"
                         if action == "newTab" and isinstance(native, dict):
                             # The tab exists though its load was not observed: name it, so the
@@ -260,10 +363,11 @@ class FlatBroker:
                                 outcome = "dispatched"
                             except (OperationRefused, ValueError):
                                 pass
-                    return BrokerReply(_failure(call, public_name, code, outcome, tab_id=tab_handle), receipt)
+                    return BrokerReply(_failure(call, public_name, code, outcome, tab_id=tab_handle, state=state,
+                                                retryable=read and code in _RETRYABLE_READ_ERRORS), receipt)
                 if outcome != "dispatched":
                     raise ValueError("Success without a completed native dispatch")
-                if action != "getTabs" and native.get("ok") is not True:
+                if not read and native.get("ok") is not True:
                     raise ValueError("Missing native action acknowledgement")
                 data, outcome, cut = self._data(admitted, native, action)
                 result = {"ok": True, "call": call, "operation": name, "outcome": outcome,

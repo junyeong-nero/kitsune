@@ -237,7 +237,8 @@ class FlatBrokerWireTests(unittest.IsolatedAsyncioTestCase):
         goto = {"tab_id": handle, "url": "https://next.test/"}
         for name, arguments, code in (
                 ("browser_click", {"tab_id": handle, "target": {"selector": "#go"}}, "operation_unavailable"),
-                ("browser_read", {"tab_id": handle}, "operation_unavailable"),
+                ("browser_query", {"tab_id": handle, "selector": "a"}, "operation_unavailable"),
+                ("browser_read", {"tab_id": handle, "target": {"ref": "e1"}}, "stale_ref"),
                 ("browser_evaluate", {}, "unknown_operation"), ("browser_script", {"code": "1"}, "unknown_operation"),
                 ("/api/set-policy", {}, "unknown_operation"),
                 ("browser_navigate", {**goto, "headers": {"X-Kitsune-Mode": "act"}}, "invalid_arguments"),
@@ -341,6 +342,208 @@ class FlatBrokerWireTests(unittest.IsolatedAsyncioTestCase):
         # The handle was retired on the extension's observation: the next use never reaches it.
         self.assert_failed(await broker.call("browser_navigate", goto), "stale_tab_handle", "not_dispatched")
         self.assertEqual(extension.actions().count("navigate"), sent)
+
+    SNAPSHOT = "\n".join([
+        '- heading "Orders" [ref=e1] [level=1]',
+        '- text "Prose naming [ref=e99] and Save"',
+        '- form "" [ref=e2]',
+        '  - textbox "Name" [ref=e3] [value="[ref=e98]"]',
+        '  - button "Save" [ref=e4]',
+        '- link "Next" [ref=e5]',
+        '  - /url: "/next?token=[redacted]"',
+    ])
+
+    def assert_ref(self, reply, usable):
+        # An issued ref reaches the (still missing) click adapter; any other is refused before it.
+        self.assert_failed(reply, "operation_unavailable" if usable else "stale_ref", "not_dispatched")
+
+    async def click(self, broker, handle, ref):
+        return await broker.call("browser_click", {"tab_id": handle, "target": {"ref": ref}})
+
+    async def test_read_returns_a_full_bounded_snapshot_and_issues_only_its_refs(self):
+        extension = self.extension()
+        extension.behavior["getSnapshot"] = lambda command: {
+            "snapshot": self.SNAPSHOT, "url": "https://agent.test/", "title": "Orders", "readyState": "complete",
+            "confirmToken": "secret-token", "needs_user": {"x": 1}}
+        broker = await self.connect("read")
+        other = await self.connect("read")
+        handle, foreign = await self.handle(broker), await self.handle(other)
+        user = await self.handle(broker, "https://user.test/")
+
+        read = await broker.call("browser_read", {"tab_id": handle})
+        self.assertEqual(read.result, {
+            "ok": True, "call": read.result["call"], "operation": "browser_read", "outcome": "observed",
+            "truncated": False, "tab_id": handle,
+            "data": {"tab_id": handle, "url": "https://agent.test/", "title": "Orders", "format": "snapshot",
+                     "content": self.SNAPSHOT}})
+        self.assertEqual(read.receipt["commands"],
+                         [{"sequence": 1, "action": "getSnapshot", "state": "replied", "finished": True, "tab_id": 9}])
+        command = extension.last("getSnapshot")
+        self.assertEqual((command["tabId"], command["maxChars"], command["text"]), (9, 12000, False))
+        for key in ("sinceObservation", "skipUnchanged", "selector", "ref"):
+            self.assertNotIn(key, command)
+
+        act = await self.connect()
+        act_handle = await self.handle(act)
+        await act.call("browser_read", {"tab_id": act_handle})
+        for ref in ("e1", "e2", "e3", "e4", "e5"):
+            self.assert_ref(await self.click(act, act_handle, ref), True)
+        # Ref-like text in a quoted name or value is page data; other tabs and sessions got nothing.
+        for ref in ("e99", "e98", "e6"):
+            self.assert_ref(await self.click(act, act_handle, ref), False)
+        self.assert_ref(await self.click(act, await self.handle(act, "https://user.test/"), "e4"), False)
+        unread = await self.connect()
+        self.assert_ref(await self.click(unread, await self.handle(unread), "e4"), False)
+        self.assert_failed(await broker.call("browser_read", {"tab_id": foreign}), "invalid_tab_handle", "not_dispatched")
+
+        # Reading is not a write: the user's tab is readable, and a scope is passed through.
+        scoped = await broker.call("browser_read", {"tab_id": user, "format": "text", "max_chars": 500,
+                                                    "target": {"selector": "form"}})
+        self.assertEqual((scoped.result["ok"], scoped.result["data"]["format"]), (True, "text"))
+        command = extension.last("getSnapshot")
+        self.assertEqual((command["tabId"], command["maxChars"], command["text"], command["selector"]),
+                         (7, 500, True, "form"))
+        by_ref = await broker.call("browser_read", {"tab_id": handle, "target": {"ref": "e2"}})
+        self.assertTrue(by_ref.result["ok"], by_ref.result)
+        self.assertEqual(extension.last("getSnapshot")["ref"], "e2")
+        self.assertNotIn("secret-token", json.dumps([read.result, scoped.result]))
+
+    async def test_read_refuses_deltas_and_bounds_what_the_extension_returns(self):
+        extension = self.extension()
+        broker = await self.connect()
+        handle = await self.handle(broker)
+        for extra in ({"delta": True}, {"unchanged": True}, {"unchanged_since": "browser_click"},
+                      {"snapshot": None}, {"snapshot": ["- x"]}):
+            with self.subTest(extra=extra):
+                extension.behavior["getSnapshot"] = lambda command, extra=extra: {"snapshot": self.SNAPSHOT, **extra}
+                reply = await broker.call("browser_read", {"tab_id": handle})
+                self.assert_failed(reply, "invalid_bridge_response", "dispatched")
+        self.assert_ref(await self.click(broker, handle, "e4"), False)
+
+        extension.behavior["getSnapshot"] = lambda command: {"snapshot": self.SNAPSHOT, "truncated": True}
+        marked = await broker.call("browser_read", {"tab_id": handle})
+        self.assertEqual((marked.result["ok"], marked.result["truncated"]), (True, True))
+        # An extension that ignores maxChars is still bounded, at a line boundary.
+        extension.behavior["getSnapshot"] = lambda command: {"snapshot": self.SNAPSHOT}
+        cut = await broker.call("browser_read", {"tab_id": handle, "max_chars": 120})
+        content = cut.result["data"]["content"]
+        self.assertEqual((cut.result["truncated"], content), (True, "\n".join(self.SNAPSHOT.split("\n")[:3])))
+        fresh = await self.connect()
+        fresh_handle = await self.handle(fresh)
+        await fresh.call("browser_read", {"tab_id": fresh_handle, "max_chars": 120})
+        self.assert_ref(await self.click(fresh, fresh_handle, "e2"), True)
+        self.assert_ref(await self.click(fresh, fresh_handle, "e4"), False)  # cut off: never delivered
+
+        # The largest read (12,000 four-byte characters) fits the 64 KiB result limit.
+        extension.behavior["getSnapshot"] = lambda command: {"snapshot": "\U0001F98A" * 12000}
+        largest = await broker.call("browser_read", {"tab_id": handle})
+        self.assertEqual((largest.result["ok"], len(largest.result["data"]["content"])), (True, 12000))
+
+    async def test_refs_end_at_a_brokered_navigation_and_stale_refs_are_reported(self):
+        extension = self.extension()
+        extension.behavior["getSnapshot"] = lambda command: {"snapshot": self.SNAPSHOT}
+        broker = await self.connect()
+        handle = await self.handle(broker)
+        for arguments in ({"url": "https://next.test/"}, {"action": "back"}, {"action": "forward"},
+                          {"action": "reload"}):
+            with self.subTest(arguments=arguments):
+                await broker.call("browser_read", {"tab_id": handle})
+                self.assert_ref(await self.click(broker, handle, "e4"), True)
+                self.assertTrue((await broker.call("browser_navigate", {"tab_id": handle, **arguments})).result["ok"])
+                self.assert_ref(await self.click(broker, handle, "e4"), False)
+        # A navigation the bridge refused before sending changed no document.
+        await broker.call("browser_read", {"tab_id": handle})
+        _request(self.bridge.http_port, "POST", "/api/set-policy", self.bridge.auth(), self.bridge.host,
+                 json.dumps({"deny": [r"blocked\.test"]}))
+        self.assert_failed(await broker.call("browser_navigate", {"tab_id": handle, "url": "https://blocked.test/"}),
+                           "browser_operation_failed", "not_dispatched")
+        self.assert_ref(await self.click(broker, handle, "e4"), True)
+
+        # The page replaced its document itself: the extension reports it, and the ref is forgotten.
+        extension.behavior["getSnapshot"] = lambda command: {
+            "error": "stale ref, call browser_snapshot again", "code": "stale_ref", "retryable": True,
+            "state": {"reason": "other_document", "ref": command.get("ref"), "confirmToken": "secret"}}
+        stale = await broker.call("browser_read", {"tab_id": handle, "target": {"ref": "e2"}})
+        self.assert_failed(stale, "stale_ref", "dispatched")
+        self.assertEqual(stale.result["error"]["state"], {"reason": "other_document"})
+        self.assert_failed(await broker.call("browser_read", {"tab_id": handle, "target": {"ref": "e2"}}),
+                           "stale_ref", "not_dispatched")
+        self.assert_ref(await self.click(broker, handle, "e4"), True)
+
+    async def test_find_is_a_literal_bounded_search_of_one_snapshot(self):
+        extension = self.extension()
+        marker = "- … 12 more similar items; snapshot e2 to list all"
+        extension.behavior["getSnapshot"] = lambda command: {
+            "snapshot": self.SNAPSHOT + "\n" + marker, "url": "https://agent.test/", "title": "Orders"}
+        broker = await self.connect("read")
+        handle = await self.handle(broker)
+        found = await broker.call("browser_find", {"tab_id": handle, "text": "SAVE"})
+        self.assertEqual((found.result["ok"], found.result["outcome"], found.result["truncated"]), (True, "observed", False))
+        self.assertEqual(found.result["data"], {
+            "tab_id": handle, "url": "https://agent.test/", "title": "Orders", "count": 2, "matches": [
+                {"line": '- text "Prose naming [ref=e99] and Save"'},
+                {"line": '- button "Save" [ref=e4]', "ref": "e4", "path": ['- form "" [ref=e2]']}]})
+        command = extension.last("getSnapshot")
+        self.assertEqual((command["tabId"], command["maxChars"], command["collapse"]), (9, 150000, False))
+        self.assertNotIn("text", command)
+
+        act = await self.connect()
+        act_handle = await self.handle(act)
+        first = await act.call("browser_find", {"tab_id": act_handle, "text": "e", "limit": 1})
+        self.assertEqual((first.result["data"]["count"], len(first.result["data"]["matches"]),
+                          first.result["truncated"]), (7, 1, True))
+        self.assert_ref(await self.click(act, act_handle, "e1"), True)
+        self.assert_ref(await self.click(act, act_handle, "e4"), False)  # matched, but not returned
+        await act.call("browser_find", {"tab_id": act_handle, "text": "save"})
+        for ref, usable in (("e4", True), ("e2", True), ("e99", False), ("e5", False)):
+            self.assert_ref(await self.click(act, act_handle, ref), usable)
+
+        for text, count in ((".*", 0), ("[REF=E4]", 1), ("token=[redacted]", 1), ("more similar", 0), ("absent", 0)):
+            with self.subTest(text=text):
+                reply = await broker.call("browser_find", {"tab_id": handle, "text": text})
+                self.assertEqual((reply.result["ok"], reply.result["data"]["count"]), (True, count), reply.result)
+        url = await broker.call("browser_find", {"tab_id": handle, "text": "/next"})
+        self.assertEqual(url.result["data"]["matches"], [
+            {"line": '- /url: "/next?token=[redacted]"', "path": ['- link "Next" [ref=e5]']}])
+
+        # Larger than a read may return, and non-ASCII (escaped on the wire), within the find limits.
+        big = "\n".join(f'- link "항목 {i} {"가" * 60}" [ref=e{i}]' for i in range(1000, 2500))
+        extension.behavior["getSnapshot"] = lambda command: {"snapshot": big, "truncated": True}
+        large = await broker.call("browser_find", {"tab_id": handle, "text": "항목 24", "limit": 100})
+        self.assertEqual((large.result["ok"], large.result["data"]["count"], large.result["truncated"]),
+                         (True, 100, True), large.result.get("error"))
+        extension.behavior["getSnapshot"] = lambda command: {"snapshot": "- text \"" + "가" * 400000 + "\""}
+        flooded = await broker.call("browser_find", {"tab_id": handle, "text": "x"})
+        # Repeating it would meet the same limit.
+        self.assert_failed(flooded, "bridge_response_limit", "unknown")
+
+    async def test_a_failed_read_is_repeatable_and_never_an_unknown_write(self):
+        extension = self.extension()
+        broker = await self.connect()
+        handle = await self.handle(broker)
+        for native, code, retryable in (
+                ({"error": "Selector not found: #x", "code": "not_found", "retryable": True}, "not_found", False),
+                ({"error": "Unsupported selector", "code": "unsupported_selector"}, "unsupported_selector", False),
+                ({"error": "Cannot access browser internal page", "code": "restricted_page"}, "restricted_page", False),
+                ({"error": "loading", "code": "navigating"}, "navigating", True),
+                ({"error": "boom", "code": "made_up_by_the_page"}, "browser_operation_failed", True)):
+            with self.subTest(code=code):
+                extension.behavior["getSnapshot"] = lambda command, native=native: native
+                for name, arguments in (("browser_read", {}), ("browser_find", {"text": "x"})):
+                    reply = await broker.call(name, {"tab_id": handle, **arguments})
+                    self.assertEqual((reply.result["error"]["code"], reply.result["outcome"],
+                                      reply.result["error"]["retryable"]), (code, "dispatched", retryable))
+        extension.behavior["getSnapshot"] = lambda command: {"error": "Tab 9 no longer exists", "code": "tab_closed"}
+        gone = await broker.call("browser_read", {"tab_id": handle})
+        self.assertEqual((gone.result["error"]["code"], gone.result["outcome"]), ("stale_tab_handle", "not_dispatched"))
+
+        handle = await self.handle(broker)
+        extension.behavior["getSnapshot"] = lambda command: time.sleep(3) or {"snapshot": self.SNAPSHOT}
+        slow = await broker.call("browser_read", {"tab_id": handle, "timeout_ms": 50})
+        self.assertEqual((slow.result["error"]["code"], slow.result["outcome"], slow.result["error"]["retryable"]),
+                         ("timeout", "unknown", True))
+        self.assertIsNone(slow.receipt)
+        self.assert_ref(await self.click(broker, handle, "e4"), False)  # the late reply issued nothing
 
     async def test_open_that_times_out_names_the_created_tab(self):
         extension = self.extension()

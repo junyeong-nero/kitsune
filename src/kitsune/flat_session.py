@@ -19,6 +19,10 @@ from .task_modes import CLIENT_ID_PATTERN
 # Includes tombstones so closed handles never silently become valid again. Exhaustion
 # fails closed; the coordinator must end the session, not evict/reuse old handles.
 MAX_SESSION_TAB_HANDLES = 4096
+# Refs remembered per live tab. Beyond it the oldest are forgotten, which only refuses
+# them (stale_ref): the caller reads the tab again.
+MAX_TAB_REFS = 4096
+_REF = re.compile(r"e[0-9]{1,127}")
 
 
 @dataclass(frozen=True)
@@ -53,6 +57,7 @@ class AdmittedOperation:
     connection: ConnectionBinding
     tab: BoundTab | None
     _issuer: object
+    refs: tuple[str, ...] = ()
 
 
 class FlatSession:
@@ -64,6 +69,8 @@ class FlatSession:
         self._connection = None
         self._issued: dict[str, BoundTab] = {}
         self._live: dict[int, BoundTab] = {}
+        # tab handle -> refs this session was given for that tab, oldest first.
+        self._refs: dict[str, dict[str, None]] = {}
 
     @property
     def authority(self):
@@ -78,6 +85,7 @@ class FlatSession:
         with self._lock:
             self._revoked = True
             self._live.clear()
+            self._refs.clear()
 
     def bind(self, connection: ConnectionBinding):
         """Install verified transport identity without pretending to have read a tab list."""
@@ -88,6 +96,7 @@ class FlatSession:
             if connection != self._connection:
                 self._connection = connection
                 self._live.clear()
+                self._refs.clear()
 
     @staticmethod
     def _native_id(value):
@@ -126,6 +135,8 @@ class FlatSession:
             # Validation/budget checks precede all mutation: failure must not retire live handles.
             self._connection = connection
             self._live = {native_id: existing[native_id] for native_id in ids if native_id in existing}
+            kept = {record.handle for record in self._live.values()}
+            self._refs = {handle: refs for handle, refs in self._refs.items() if handle in kept}
             return tuple(self._live.get(native_id) or self._new_tab(native_id) for native_id in ids)
 
     def opened_tab(self, connection: ConnectionBinding, native_id: int) -> BoundTab:
@@ -145,6 +156,40 @@ class FlatSession:
             self._require_live()
             record = self._resolve(handle)
             del self._live[record.native_id]
+            self._refs.pop(handle, None)
+
+    def issue_refs(self, handle: str, refs):
+        """Remember refs a trusted read returned to this caller for this tab.
+
+        Only the coordinator calls this, with refs parsed from protocol fields of a
+        result it is about to deliver. A ref names a node of one document; the
+        extension still rejects it after that document is replaced.
+        """
+        refs = list(refs)
+        if any(not isinstance(ref, str) or not _REF.fullmatch(ref) for ref in refs):
+            raise ValueError("Invalid ref")
+        with self._lock:
+            self._require_live()
+            known = self._refs.setdefault(self._resolve(handle).handle, {})
+            for ref in refs:
+                known.pop(ref, None)  # most recently returned last
+                known[ref] = None
+            for ref in list(known)[:max(0, len(known) - MAX_TAB_REFS)]:
+                del known[ref]
+
+    def forget_refs(self, handle: str, refs=None):
+        """Drop a tab's refs (all of them after a navigation the coordinator dispatched)."""
+        with self._lock:
+            if refs is None:
+                self._refs.pop(handle, None)
+            else:
+                for ref in refs:
+                    self._refs.get(handle, {}).pop(ref, None)
+
+    def _require_refs(self, tab: BoundTab | None, refs):
+        known = self._refs.get(tab.handle, {}) if tab is not None else {}
+        if any(ref not in known for ref in refs):
+            raise OperationRefused("stale_ref", "This ref was not returned to this caller for this tab; read it again")
 
     def _resolve(self, handle: str) -> BoundTab:
         record = self._issued.get(handle) if isinstance(handle, str) else None
@@ -167,7 +212,12 @@ class FlatSession:
             tab = self._resolve(values["tab_id"]) if "tab_id" in values else None
             if name == "browser_tabs" and values["action"] == "open" and len(self._issued) >= MAX_SESSION_TAB_HANDLES:
                 raise OperationRefused("session_handle_limit", "This session exhausted its tab handle budget")
-            return AdmittedOperation(operation, self._authority, self._connection, tab, self._issuer)
+            # Every ref-bearing argument of the contract: a new one must be listed here.
+            targets = [values.get(key) for key in ("target", "source", "destination")]
+            targets.append((values.get("condition") or {}).get("target"))
+            refs = tuple(target["ref"] for target in targets if isinstance(target, dict) and "ref" in target)
+            self._require_refs(tab, refs)
+            return AdmittedOperation(operation, self._authority, self._connection, tab, self._issuer, refs)
 
     def recheck(self, admitted: AdmittedOperation):
         """Revalidate an admitted operation after queueing; never silently retarget it.
@@ -183,3 +233,4 @@ class FlatSession:
                 raise OperationRefused("stale_connection", "The admitted connection has changed")
             if admitted.tab is not None:
                 self._resolve(admitted.tab.handle)
+            self._require_refs(admitted.tab, admitted.refs)
