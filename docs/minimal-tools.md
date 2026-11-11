@@ -27,16 +27,18 @@ of which direct tools `KITSUNE_PUBLISH` lists. `browser.tabs()` returns tab dict
 not `Tab` objects; wrap a chosen page tab dict with `browser.tab(t["id"])`.
 
 `read`/`draft` still omit disallowed direct tools and use `browser_tab_list` instead
-of `browser_tabs`. `KITSUNE_CAPS` remains the browser authority limit; `all` still
-excludes `storage` and `history`. `KITSUNE_PUBLISH`, if explicitly set, can narrow
-which retained direct tools are listed. Scripting itself requires its separate
-local-code opt-in and does not widen the supplied browser transport's grants.
+of `browser_tabs`. With scripting enabled and `KITSUNE_CAPS` unset, the supplied
+browser API defaults to `all`: page text, queries, forms and scrolling work without
+extra configuration. `all` still excludes `storage` and `history`, which must be
+named explicitly. These grants do not expand the 14-tool MCP list.
 
-For example, `KITSUNE_CAPS=core,browse,read` lets Python use ordinary page text,
-queries, forms and scrolling in addition to core operations. Merely enabling
-scripting does **not** add those groups. Additional authorized groups enable their
-Python APIs without expanding the minimal MCP list. There is no search/call/publish
-step or dynamic tool publication in this surface.
+An explicit `KITSUNE_CAPS` value always wins, including an empty value. For example,
+`KITSUNE_CAPS=core` preserves the former scripting limit, while `core,browse,read`
+allows ordinary page reading and scrolling without the other groups. User-tab
+protection, task modes and approval policies are unchanged. `KITSUNE_PUBLISH`, if
+explicitly set, can narrow which retained direct tools are listed. Scripting remains
+an explicit local-code opt-in. There is no search/call/publish step or dynamic tool
+publication in this surface; without scripting the default grants remain `core`.
 
 ## Moving less-frequent tools to Python
 
@@ -113,7 +115,7 @@ The suite-log SHA-256 is
 The existing `kitsune_benchmark.tool_usage.calls_from_events` collector was reused
 for deduplicating calls; counts agree with the existing per-tool report.
 
-Actual `tools/list` size in `act` mode with `core` enabled (compact JSON characters,
+Actual `tools/list` size in `act` mode with explicit `KITSUNE_CAPS=core` (compact JSON characters,
 including the Python tool's short API guide):
 
 | Surface | Tools | Definitions | Server instructions | Combined |

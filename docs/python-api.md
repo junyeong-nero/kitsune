@@ -103,9 +103,11 @@ result = tab.snapshot()
 
 - `browser` is the Python API, forwarding each request through the MCP host's
   existing client/session. **Do not call `kitsune.connect()`** to reuse that session.
-  Default `core` grants include snapshot and common actions; methods such as
-  `query`, `text` and `forms` need the `read` grant. Configure additional grants
-  explicitly, e.g. `KITSUNE_CAPS=core,browse,read`, rather than bypassing the client.
+  With scripting enabled and `KITSUNE_CAPS` unset, grants default to `all`, so
+  `query`, `text`, `forms` and scrolling work alongside core operations. `storage`
+  and `history` still need explicit grants. An explicit `KITSUNE_CAPS` is respected;
+  use `core` for the former limit or `core,browse,read` for page actions and reading
+  only. User-tab protection, modes and approvals still apply; do not bypass the client.
 - `tab` is the current MCP selection at invocation start, or `None` before selection.
   Use `browser.new_tab(url)` or `browser.tab(id)` for other tabs. `browser.tabs()`
   returns `list[dict]` with `id`, `url`, `title`, etc., not `Tab` objects: for a chosen

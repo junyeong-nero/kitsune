@@ -52,14 +52,41 @@ print(json.dumps(asyncio.run(main())))
 
 class ScriptMcpTests(unittest.TestCase):
     def probe(self, enabled, mode="act", caps="core", publish=None):
-        env = {**os.environ, "KITSUNE_SCRIPTING": "1" if enabled else "0", "KITSUNE_MODE": mode,
-               "KITSUNE_CAPS": caps, "KITSUNE_PUBLISH": caps if publish is None else publish}
+        env = {key: value for key, value in os.environ.items()
+               if key not in {"KITSUNE_SCRIPTING", "KITSUNE_CAPS", "KITSUNE_PUBLISH"}}
+        env["KITSUNE_MODE"] = mode
+        if enabled is not None:
+            env["KITSUNE_SCRIPTING"] = "1" if enabled else "0"
+        if caps is not None:
+            env["KITSUNE_CAPS"] = caps
+        if publish is not None:
+            env["KITSUNE_PUBLISH"] = publish
         reply = subprocess.run([sys.executable, "-c", PROBE], env=env, capture_output=True, text=True, timeout=30)
         self.assertEqual(reply.returncode, 0, reply.stderr)
         return json.loads(reply.stdout)
 
     def test_local_code_execution_requires_explicit_opt_in(self):
-        self.assertNotIn("browser_run_python", self.probe(False)["tools"])
+        for enabled in (None, False):
+            result = self.probe(enabled, caps=None)
+            self.assertNotIn("browser_run_python", result["tools"])
+            self.assertEqual(result["caps"], "core")
+
+    def test_scripting_defaults_to_all_without_expanding_the_minimal_list(self):
+        result = self.probe(True, caps=None)
+        self.assertEqual(result["caps"], "admin,automation,browse,core,inspect,network,read,tabs")
+        self.assertEqual(set(result["tools"]), set(self.probe(True, caps="core")["tools"]))
+        self.assertEqual(len(result["tools"]), 14)
+        self.assertIn("tab.query(", result["description"])
+        self.assertNotIn("storage", result["caps"])
+        self.assertNotIn("history", result["caps"])
+
+    def test_scripting_default_still_respects_explicit_empty_caps_and_restricted_modes(self):
+        self.assertEqual(self.probe(True, caps="")["caps"], "")
+        for mode in ("read", "draft"):
+            result = self.probe(True, mode=mode, caps=None)
+            self.assertEqual(result["mode"], mode)
+            self.assertNotIn("browser_click", result["tools"])
+            self.assertIn("browser_tab_list", result["tools"])
 
     def test_minimal_list_has_fourteen_tools_without_discovery_or_publication(self):
         expected = {"browser_tabs", "browser_navigate", "browser_snapshot", "browser_find", "browser_click",

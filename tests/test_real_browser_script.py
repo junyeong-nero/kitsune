@@ -18,8 +18,12 @@ class RealBrowserScriptTests(harness.RealBrowserTestCase):
         super().setUpClass()
 
     async def scenario(self, mode, run, caps):
-        env = {**self.bridge.env, "KITSUNE_SCRIPTING": "1", "KITSUNE_CAPS": caps,
-               "KITSUNE_PUBLISH": caps, "KITSUNE_MODE": mode, "KITSUNE_OWNER_ID": "script-smoke"}
+        env = {**self.bridge.env, "KITSUNE_SCRIPTING": "1",
+               "KITSUNE_MODE": mode, "KITSUNE_OWNER_ID": "script-smoke"}
+        for key in ("KITSUNE_CAPS", "KITSUNE_PUBLISH"):
+            env.pop(key, None)
+        if caps is not None:
+            env["KITSUNE_CAPS"] = caps
         params = StdioServerParameters(command=sys.executable, args=["-m", "kitsune.server"], env=env)
         async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
             await session.initialize()
@@ -42,10 +46,25 @@ class RealBrowserScriptTests(harness.RealBrowserTestCase):
             self.addCleanup(self.call, "/api/close-tab", {"tabId": tab_id})
             await run(session, tab_id)
 
-    def run_scenario(self, mode, run, caps="core,read,browse"):
+    def run_scenario(self, mode, run, caps=None):
         asyncio.run(asyncio.wait_for(self.scenario(mode, run, caps), 60))
 
-    def test_default_core_guide_reads_tab_dicts_without_granting_query(self):
+    def test_default_caps_allow_python_read_and_scroll_with_fourteen_tools(self):
+        async def run(session, tab_id):
+            listed = await session.list_tools()
+            self.assertEqual(len(listed.tools), 14)
+            scripted = await session.call_tool("browser_run_python", {"code":
+                "result = {'text': tab.text(), 'title': tab.info()['title'], "
+                "'scroll': tab.scroll('down', 100), 'query': tab.query('h1', fields=['text'])}"})
+            self.assertFalse(scripted.isError, scripted)
+            result = json.loads(scripted.content[0].text)["result"]
+            self.assertIn("Orders", result["text"])
+            self.assertEqual(result["title"], "Python API")
+            self.assertTrue(result["scroll"]["ok"])
+            self.assertEqual(result["query"][0]["text"], "Orders")
+        self.run_scenario("act", run)
+
+    def test_explicit_core_guide_reads_tab_dicts_without_granting_query(self):
         async def run(session, tab_id):
             listed = await session.list_tools()
             description = next(tool.description for tool in listed.tools if tool.name == "browser_run_python")

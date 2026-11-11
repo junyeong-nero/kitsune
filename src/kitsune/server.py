@@ -523,8 +523,10 @@ def _enables(caps: frozenset, group: str) -> bool:
     return group in enabled_groups(caps)
 
 
-# The groups whose tools this server runs (#227: authorization, not just tools/list).
-ENABLED_CAPS = _caps("KITSUNE_CAPS", os.environ.get("KITSUNE_CAPS", "core"))
+SCRIPTING = os.environ.get("KITSUNE_SCRIPTING") == "1"
+# Scripting keeps a small tool list while enabling ordinary Python browser operations by default.
+# Explicit caps still win; `all` excludes storage/history. Legacy remains core-only.
+ENABLED_CAPS = _caps("KITSUNE_CAPS", os.environ.get("KITSUNE_CAPS", "all" if SCRIPTING else "core"))
 # The authorized groups tools/list publishes when a session starts; by default all of them.
 # The rest stay reachable through the gateway tools.
 PUBLISHED_CAPS = (_caps("KITSUNE_PUBLISH", os.environ["KITSUNE_PUBLISH"]) if "KITSUNE_PUBLISH" in os.environ
@@ -536,7 +538,6 @@ if _unauthorized_caps:
 
 MODE = task_mode(os.environ.get("KITSUNE_MODE"))
 USER_TABS = user_tabs(os.environ.get("KITSUNE_USER_TABS"))
-SCRIPTING = os.environ.get("KITSUNE_SCRIPTING") == "1"
 # Frequent actions plus user handoff/recovery. read/draft use browser_tab_list instead of browser_tabs.
 # Selection evidence and Python replacements: docs/minimal-tools.md (#515).
 MINIMAL_TOOLS = frozenset({
