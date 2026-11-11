@@ -191,7 +191,7 @@ shows which direct tools move to these APIs when scripting is enabled.
 | `Browser` method | Returns |
 | --- | --- |
 | `tabs()` | `list[dict]`, not `Tab` objects: `id`, `url`, `title`, `active`, `windowId`, `index`, `owned` (this client owns it), and `cookieStoreId` when it is in a [Firefox container](api-reference.md#firefox-containers). Wrap a chosen dict with `browser.tab(t["id"])` |
-| `new_tab(url="about:blank", wait=True, timeout=15000)` | A `Tab` for a new background tab. A load past `timeout` ms raises `TimedOut`; the tab stays open, with its id in `error.result["tabId"]` |
+| `new_tab(url="about:blank", wait=True, timeout=15000, container=None)` | A `Tab` for a new background tab. A load past `timeout` ms raises `TimedOut`; the tab stays open, with its id in `error.result["tabId"]`. `container`, a container's `cookieStoreId`, opens it in that [Firefox container](api-reference.md#firefox-containers) |
 | `tab(tab_id)` | A `Tab` for an existing tab |
 | `active_tab()` | The tab you are viewing. With several windows, each has one: it raises `ambiguous_target`, and you pick one from `tabs()` |
 

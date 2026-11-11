@@ -118,8 +118,8 @@ including the Python tool's short API guide):
 
 | Surface | Tools | Definitions | Server instructions | Combined |
 | --- | ---: | ---: | ---: | ---: |
-| Legacy, scripting off | 27 | 21,747 | 537 | 22,284 |
-| Minimal, scripting on | 14 | 12,589 | 564 | 13,153 |
+| Legacy, scripting off | 27 | 21,813 | 537 | 22,350 |
+| Minimal, scripting on | 14 | 12,655 | 564 | 13,219 |
 
 That is about 42% fewer definition characters, or 41% including instructions.
 These are **not model tokens**. Generated Python, on-demand help and task results

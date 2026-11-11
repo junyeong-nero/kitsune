@@ -11,8 +11,10 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from kitsune import bridge, playwright_tools, tools
+from kitsune import bridge, playwright_tools, script_runner, tools
 from test_container_progress import ContainerTests
+from test_python_api import BridgeTestCase
+from test_script_runner import Client
 
 PERSONAL = "firefox-container-1"
 UNAVAILABLE = {"error": "This Kitsune build cannot resolve container names; no tab was opened",
@@ -115,6 +117,33 @@ class CoreTabContainerTests(unittest.TestCase):
     def test_core_schema_publishes_container(self):
         properties = playwright_tools.SCHEMAS["browser_tabs"]["inputSchema"]["properties"]
         self.assertEqual(properties["container"], {"type": "string", "description": "new: cookieStoreId."})
+
+
+class PythonNewTabContainerTests(BridgeTestCase):
+    def test_new_tab_sends_the_container_and_tabs_keep_cookie_store_id(self):
+        self.browser.new_tab("https://d/", container=PERSONAL)
+        self.assertEqual(self.bridge.last.body, {"url": "https://d/", "container": PERSONAL,
+                                                 "wait": True, "timeout": 15000})
+        self.browser.new_tab(wait=False, container=PERSONAL)
+        self.assertEqual(self.bridge.last.body, {"url": "about:blank", "container": PERSONAL})
+        self.browser.new_tab("https://d/", wait=False)
+        self.assertEqual(self.bridge.last.body, {"url": "https://d/"})
+        self.reply("/api/tabs", {"tabs": [{"id": 3}, {"id": 8, "cookieStoreId": PERSONAL}]})
+        self.assertEqual([tab.get("cookieStoreId") for tab in self.browser.tabs()], [None, PERSONAL])
+
+
+class ScriptNewTabContainerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_script_opens_a_tab_in_the_container_of_a_listed_tab(self):
+        # browser_run_python: the tab dicts name the container, and new_tab forwards it to the host's client.
+        client = Client({"/api/tabs": {"tabs": [{"id": 8, "cookieStoreId": PERSONAL}]},
+                         "/api/new-tab": {"ok": True, "tabId": 11, "cookieStoreId": PERSONAL}})
+        code = ("store = browser.tabs()[0]['cookieStoreId']\n"
+                "result = browser.new_tab('https://d/', container=store).id")
+        result = await script_runner.run_python(code, client)
+        self.assertEqual(result.get("result"), 11, result)
+        self.assertEqual(client.calls[1][:2], ("POST", "/api/new-tab"))
+        self.assertEqual(client.calls[1][2]["json"], {"url": "https://d/", "container": PERSONAL,
+                                                      "wait": True, "timeout": 15000})
 
 
 class BridgeNewTabContainerTests(ContainerTests):

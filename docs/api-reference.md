@@ -1293,8 +1293,9 @@ ownership. The agent window's synced copies inherit its owner as well.
 #### Firefox containers
 
 Firefox, Zen and LibreWolf keep each container's (contextual identity's) cookies and logins
-apart. `browser_tabs` new, `POST /api/new-tab` and a batch or workflow `newTab` open their
-tab in the default store unless `container` specifies a container (#495):
+apart. `browser_tabs` new, `POST /api/new-tab`, a batch or workflow `newTab` and the Python
+`Browser.new_tab` open their tab in the default store unless `container` specifies a container
+(#495):
 
 ```json
 { "action": "newTab", "url": "https://mail.example/", "container": "firefox-container-1" }
