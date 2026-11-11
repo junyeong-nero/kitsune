@@ -69,7 +69,9 @@ async def _calls(env, url, calls, answers, observe, *, new_tab=False):
             opened = await session.call_tool("browser_tabs", {"action": "new", "url": url})
             if opened.isError:
                 raise AssertionError(opened.content[0].text)
-            (tab,) = [tab for tab in _payload(opened)["tabs"] if tab.get("url") == url]
+            tab = _payload(opened).get("tab") or {}  # The current tab, not the whole list (#488).
+            if tab.get("url") != url:
+                raise AssertionError(f"new tab is not at {url}: {tab}")
             if not tab.get("owned") or not tab.get("current"):
                 raise AssertionError(f"new tab is not owned and current: {tab}")
         else:
