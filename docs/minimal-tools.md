@@ -21,7 +21,10 @@ In `act` mode with `core` enabled, the list is 14 tools:
 Use a direct tool for a simple action; use Python for loops, conditions, filtering
 and less-frequent operations. `browser_run_python` supplies `browser` and the current
 MCP-selected `tab`, so `tab.hover("#menu")` needs no index-to-ID conversion.
-`help(tab.hover)` prints a method's signature/docstring when needed.
+`help(tab.hover)` prints a method's signature/docstring when needed. The Python
+tool's guide lists examples for the enabled capability groups and mode, regardless
+of which direct tools `KITSUNE_PUBLISH` lists. `browser.tabs()` returns tab dicts,
+not `Tab` objects; wrap a chosen page tab dict with `browser.tab(t["id"])`.
 
 `read`/`draft` still omit disallowed direct tools and use `browser_tab_list` instead
 of `browser_tabs`. `KITSUNE_CAPS` remains the browser authority limit; `all` still
@@ -116,9 +119,9 @@ including the Python tool's short API guide):
 | Surface | Tools | Definitions | Server instructions | Combined |
 | --- | ---: | ---: | ---: | ---: |
 | Legacy, scripting off | 27 | 21,747 | 537 | 22,284 |
-| Minimal, scripting on | 14 | 12,439 | 564 | 13,003 |
+| Minimal, scripting on | 14 | 12,589 | 564 | 13,153 |
 
-That is about 43% fewer definition characters, or 42% including instructions.
+That is about 42% fewer definition characters, or 41% including instructions.
 These are **not model tokens**. Generated Python, on-demand help and task results
 are additional costs; no end-to-end token saving has been measured. The local
 checks cover functionality, permission refusals and lifecycle, not a controlled

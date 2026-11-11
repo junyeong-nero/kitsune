@@ -14,6 +14,8 @@ from kitsune import server
 def request(method, route, **kwargs):
     if route == "/api/tabs":
         return {"tabs": [{"id": 7}]}
+    if route == "/api/snapshot":
+        return {"snapshot": '- heading "Example"'}
     if route == "/api/click":
         return {"error": "Write needs user help", "code": "needs_user", "call": 1,
                 "state": {"reason": "user_active", "tabId": 7}}
@@ -29,8 +31,12 @@ async def main():
                                                              ensure_ascii=False, separators=(",", ":"))) for tool in listed.tools),
                       "instructions_chars": len(server.mcp._mcp_server.instructions)}
             if "browser_run_python" in names:
-                result["schema"] = next(tool.inputSchema for tool in listed.tools if tool.name == "browser_run_python")
+                tool = next(tool for tool in listed.tools if tool.name == "browser_run_python")
+                result.update(schema=tool.inputSchema, description=tool.description)
                 ok = await session.call_tool("browser_run_python", {"code": "result = browser.tabs()"})
+                snapshots = await session.call_tool("browser_run_python", {
+                    "code": 'result = [browser.tab(t["id"]).snapshot() for t in browser.tabs()]'})
+                result["snapshots"] = json.loads(snapshots.content[0].text)
                 failed = await session.call_tool("browser_run_python", {"code": "browser.tab(7).click('#send')"})
                 invalid = await session.call_tool("browser_run_python", {"code": "pass", "timeout": 0})
                 moved = await session.call_tool("browser_hover", {"target": "#item"})
@@ -76,6 +82,34 @@ class ScriptMcpTests(unittest.TestCase):
         self.assertEqual(result["tools"], ["browser_run_python"])
         self.assertEqual(result["caps"], "core,read")
         self.assertEqual(self.probe(True)["caps"], "core")
+
+    def test_python_guide_names_only_methods_allowed_by_caps_and_mode(self):
+        for caps in ("core", "core,read", "read", "all", ""):
+            for mode in ("act", "read", "draft"):
+                with self.subTest(caps=caps, mode=mode):
+                    description = self.probe(True, mode=mode, caps=caps)["description"]
+                    core = "core" in caps or caps == "all"
+                    read = "read" in caps or caps == "all"
+                    self.assertEqual("browser.tabs()" in description, core)
+                    self.assertEqual("browser.new_tab(url)" in description, core)
+                    self.assertEqual(".snapshot()" in description, core)
+                    self.assertEqual("tab.fill(target, value)" in description, core and mode != "read")
+                    self.assertEqual("tab.query(" in description, read)
+                    self.assertNotIn("help(tab.query)", description)
+
+    def test_python_guide_uses_execution_caps_not_publication_caps(self):
+        description = self.probe(True, caps="core,read", publish="read")["description"]
+        self.assertIn("browser.tabs()", description)
+        self.assertIn("tab.query(", description)
+
+    def test_python_guide_explains_tab_dicts_and_the_snapshot_example_works(self):
+        result = self.probe(True)
+        self.assertIn("list[dict]", result["description"])
+        self.assertIn("id, url, title", result["description"])
+        self.assertIn('browser.tab(t["id"]).snapshot()', result["description"])
+        self.assertTrue(result["snapshots"]["ok"], result["snapshots"])
+        self.assertEqual(result["snapshots"]["result"], ['- heading "Example"'])
+        self.assertEqual(result["ok"]["result"], [{"id": 7}], "tabs() must keep returning JSON-compatible dicts")
 
     def test_mcp_reports_results_errors_and_never_checkpoints_the_whole_script(self):
         result = self.probe(True)

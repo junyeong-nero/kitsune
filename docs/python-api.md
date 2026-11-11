@@ -107,9 +107,10 @@ result = tab.snapshot()
   `query`, `text` and `forms` need the `read` grant. Configure additional grants
   explicitly, e.g. `KITSUNE_CAPS=core,browse,read`, rather than bypassing the client.
 - `tab` is the current MCP selection at invocation start, or `None` before selection.
-  Use `browser.new_tab(url)` or `browser.tab(id)` for other tabs; obtain actual IDs
-  from `browser.tabs()`, not the indexes of the legacy direct tab list. Scripts do
-  not change the MCP selection.
+  Use `browser.new_tab(url)` or `browser.tab(id)` for other tabs. `browser.tabs()`
+  returns `list[dict]` with `id`, `url`, `title`, etc., not `Tab` objects: for a chosen
+  page tab dict `t`, use `browser.tab(t["id"]).snapshot()`. These are actual tab IDs,
+  not the indexes of the legacy direct tab list. Scripts do not change the MCP selection.
 - Every invocation has fresh Python variables and a temporary working directory,
   removed on exit. Browser tabs persist. Ordinary synchronous Python is supported;
   there is no persistent REPL or top-level `await`.
@@ -189,7 +190,7 @@ shows which direct tools move to these APIs when scripting is enabled.
 
 | `Browser` method | Returns |
 | --- | --- |
-| `tabs()` | Every open tab: `id`, `url`, `title`, `active`, `windowId`, `index`, `owned` (this client owns it) |
+| `tabs()` | `list[dict]`, not `Tab` objects: `id`, `url`, `title`, `active`, `windowId`, `index`, `owned` (this client owns it). Wrap a chosen dict with `browser.tab(t["id"])` |
 | `new_tab(url="about:blank", wait=True, timeout=15000)` | A `Tab` for a new background tab. A load past `timeout` ms raises `TimedOut`; the tab stays open, with its id in `error.result["tabId"]` |
 | `tab(tab_id)` | A `Tab` for an existing tab |
 | `active_tab()` | The tab you are viewing. With several windows, each has one: it raises `ambiguous_target`, and you pick one from `tabs()` |
