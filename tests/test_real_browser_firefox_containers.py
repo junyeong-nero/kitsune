@@ -1,7 +1,12 @@
 """#495: explicit container routing and cookie isolation in a private real browser."""
+import asyncio
 from http.server import BaseHTTPRequestHandler
+import os
 import unittest
+from unittest.mock import patch
 
+import kitsune
+from kitsune import bridge_client, bridge_control, script_runner
 import real_browser_harness as harness
 
 
@@ -64,6 +69,45 @@ class RealBrowserFirefoxContainerTests(harness.RealBrowserTestCase):
         self.assertNotIn("cookieStoreId", inventory[default["tabId"]])
         self.assertIn("container-cookie-present", self.call("/api/snapshot", {"tabId": same["tabId"]})["snapshot"])
         self.assertIn("container-cookie-absent", self.call("/api/snapshot", {"tabId": default["tabId"]})["snapshot"])
+
+    def connect_python_api(self):
+        # Point the library at this class's bridge, as KITSUNE_HTTP_PORT and KITSUNE_TOKEN would.
+        url = f"http://127.0.0.1:{self.bridge.http_port}"
+        token = self.bridge.auth()["Authorization"].removeprefix("Bearer ")
+        for patcher in (patch.object(bridge_client, "BRIDGE", url), patch.object(bridge_control, "BRIDGE", url),
+                        patch.object(bridge_client, "HTTP_PORT", self.bridge.http_port),
+                        patch.dict(os.environ, {"KITSUNE_TOKEN": token})):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return kitsune.connect()
+
+    def python_new_tab(self, browser, path, container=None):
+        tab = browser.new_tab(self.site.origin + path, container=container)
+        self.addCleanup(self.call, "/api/close-tab", {"tabId": tab.id})
+        return tab
+
+    def test_python_new_tab_and_script_open_tabs_in_the_container(self):
+        browser = self.connect_python_api()
+        seeded = self.python_new_tab(browser, "/set", self.store)
+        same = self.python_new_tab(browser, "/read", self.store)
+        default = self.python_new_tab(browser, "/read")
+        listed = {tab["id"]: tab for tab in browser.tabs()}
+        self.assertEqual(listed[seeded.id]["cookieStoreId"], self.store)
+        self.assertEqual(listed[same.id]["cookieStoreId"], self.store)
+        self.assertNotIn("cookieStoreId", listed[default.id])
+        self.assertIn("container-cookie-present", same.text())
+        self.assertIn("container-cookie-absent", default.text())
+
+        # browser_run_python runs scripts with the MCP server's client; here the library's own client.
+        code = (f"store = next(t for t in browser.tabs() if t['id'] == {seeded.id})['cookieStoreId']\n"
+                f"tab = browser.new_tab({self.site.origin + '/read'!r}, container=store)\n"
+                "listed = next(t for t in browser.tabs() if t['id'] == tab.id)\n"
+                "result = {'id': tab.id, 'store': listed.get('cookieStoreId'), 'text': tab.text()}")
+        result = asyncio.run(script_runner.run_python(code, browser.client))
+        self.assertTrue(result.get("ok"), result)
+        self.addCleanup(self.call, "/api/close-tab", {"tabId": result["result"]["id"]})
+        self.assertEqual(result["result"]["store"], self.store)
+        self.assertIn("container-cookie-present", result["result"]["text"])
 
     def test_unavailable_name_and_id_do_not_open_a_default_tab(self):
         before = {tab["id"] for tab in self.call("/api/tabs")["tabs"]}
