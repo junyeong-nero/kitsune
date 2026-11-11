@@ -214,6 +214,12 @@ class KitsuneMCP(FastMCP):
             except Exception:
                 return CallToolResult(content=[_compact_json({"error": "Could not establish a live handoff session",
                                                               "code": "session_required"})], isError=True)
+            # With elicitation the extension returns the confirm token at once, for _handoff (#494).
+            together = tools.handoff_together.set(_elicits(self.session()))
+            try:
+                return await super().call_tool(name, arguments)
+            finally:
+                tools.handoff_together.reset(together)
         if name in playwright_tools.SCHEMAS and (arguments or {}).get("filename"):
             # Relative file names resolve against the client's workspace root (#225).
             root = playwright_tools.client_root.set(await first_client_root(self.get_context()))
@@ -244,6 +250,9 @@ class KitsuneMCP(FastMCP):
                 return result
             if not _held_with_token(held) or not repeatable:
                 return _with_payload(result, _without_tokens(held))
+            if held["state"].get("together"):
+                # A handoff request that the toolbar popup asks about too (#494).
+                return await self._handoff(session, name, arguments, held)
             if _hold_key(held) in approved:
                 # The page or tab changed since the user approved it: ask again on a new call.
                 return _with_payload(result, _unapproved(held, None, UNMATCHED_APPROVAL_HINT))
@@ -265,6 +274,50 @@ class KitsuneMCP(FastMCP):
                 playwright_tools.repeat_hold.reset(hold)
                 _approval_repeat.reset(repeat)
 
+    async def _handoff(self, session, name, arguments, held):
+        """The answer to a handoff request that the toolbar popup and the client's prompt ask about at once
+        (#494): the first the user gives. held is the extension's needs_user with the request's confirm
+        token, which the model never sees; the popup asks once this server waits for its answer.
+
+        Accept (Approve) in the client's prompt hands the tab off; Decline or dismissing it declines the
+        request, which closes the popup's prompt too. A prompt that failed, or a decline or dismissal within
+        CLIENT_POLICY_SECONDS (the client's policy or a hook, not the user), leaves the popup to answer until
+        the token expires. An answer in the popup closes the client's prompt."""
+        request = self._mcp_server.request_context
+        state = held["state"]
+        body = {"tabId": state["tabId"], "reason": arguments.get("reason"), "confirmToken": state["confirmToken"]}
+
+        def post(timeout, start_bridge=True, **extra):
+            return anyio.to_thread.run_sync(functools.partial(
+                tools._post, "/api/request-tab", {**body, **extra}, timeout=timeout, start_bridge=start_bridge),
+                abandon_on_cancel=True)
+
+        outcome = None
+        try:
+            async with anyio.create_task_group() as group:
+                async def popup():
+                    nonlocal outcome
+                    outcome = await post(HANDOFF_WAIT_SECONDS, wait=True)
+                    group.cancel_scope.cancel()  # closes the client's prompt
+
+                group.start_soon(popup)
+                asked = anyio.current_time()
+                decision = await _ask_user(session, request, name, arguments, state, failed=None)
+                if decision == "approved" or (decision is not None
+                                              and anyio.current_time() - asked >= CLIENT_POLICY_SECONDS):
+                    answered = await post(45, **({} if decision == "approved" else {"decision": decision}))
+                    if answered.get("ok"):
+                        outcome = answered
+                        group.cancel_scope.cancel()
+                    # Else the request had an answer already, or this decline is it: the popup's wait returns it.
+                elif _sends_progress(request):
+                    group.start_soon(_keep_alive, session, request, "Waiting for the user's answer in the browser")
+        finally:
+            if outcome is None:  # the call was cancelled: the popup stops asking
+                with anyio.CancelScope(shield=True):
+                    await post(10, start_bridge=False, decision="cancelled")
+        return CallToolResult(content=[_compact_json(_without_tokens(outcome))], isError=_failed(outcome))
+
     async def _answered(self, session, result, ask_seconds=None):
         """result of browser_ask_user on a client with elicitation: the user's answer in the client's prompt
         (#376). Done is ok with answer "done"; Can't, a dismissed prompt or none within ASK_USER_SECONDS
@@ -277,9 +330,11 @@ class KitsuneMCP(FastMCP):
         seconds = ASK_USER_SECONDS if ask_seconds is None else min(ask_seconds, ASK_USER_SECONDS)
         if seconds <= 0:
             return _with_payload(result, {**asked, "hint": UNASKED_REQUEST_HINT})
-        answer = await _elicit(session, self._mcp_server.request_context, _request_message(state), ASK_USER_SCHEMA,
-                               seconds, "Waiting for the user", "prompt")
-        decision = _choice(answer, "answer", {"Done": "done", "Can't": "declined"})
+        one_step = _one_step(session)
+        answer = await _elicit(session, self._mcp_server.request_context, _request_message(state, one_step),
+                               ONE_STEP_SCHEMA if one_step else ASK_USER_SCHEMA, seconds,
+                               "Waiting for the user", "prompt")
+        decision = _choice(answer, "answer", {"Done": "done", "Can't": "declined"}, "done" if one_step else None)
         if decision == "done":
             return CallToolResult(content=[_compact_json(_user_done(state, "elicitation"))])
         return _with_payload(result, {**asked, "state": {**state, "decision": decision},
@@ -517,8 +572,8 @@ def _mcp_errors(function):
         @functools.wraps(function)
         async def tabs_call(*args, **kwargs):
             if kwargs.get("action", args[0] if args else "list") == "request":
-                # The browser prompt waits 30s. Keep MCP EOF/cancellation runnable so lifespan
-                # teardown can revoke the session while this bounded HTTP request is outstanding.
+                # Without elicitation the browser prompt waits 30s. Keep MCP EOF/cancellation runnable so
+                # lifespan teardown can revoke the session while this bounded HTTP request is outstanding.
                 return await anyio.to_thread.run_sync(functools.partial(call, *args, **kwargs),
                                                      abandon_on_cancel=True)
             return call(*args, **kwargs)
@@ -544,6 +599,19 @@ ELICITATION_PROGRESS_SECONDS = 10
 APPROVAL_ARGUMENTS_CHARS = 500
 APPROVAL_SCHEMA = {"type": "object", "required": ["decision"], "properties": {
     "decision": {"type": "string", "title": "Decision", "enum": ["Approve", "Decline"]}}}
+# A one-step prompt (#494): the client's own Accept answers Approve (or Done), its Decline Decline (or
+# Can't). Its answers are named so on every client: Accept is Continue in pi.
+ONE_STEP_SCHEMA = {"type": "object", "properties": {}}
+ONE_STEP_ACCEPT = "Accept or Continue"
+# Clients whose prompts keep a field to choose in. Codex auto-accepts a prompt without fields when its
+# permission prompts are auto-approved (approval_policy never with full access, or a tool set to always
+# allow) and declines one with a required field; it submits that field with one Enter.
+FIELD_PROMPT_CLIENTS = {"codex-mcp-client"}
+# A decline or dismissal the client returns this soon is not the user's: the client's policy (Codex with
+# approval_policy never declines every prompt) or a hook. The toolbar popup keeps asking (#494).
+CLIENT_POLICY_SECONDS = 1
+# How long _handoff waits for the toolbar popup's answer: bridge.HANDOFF_WAIT_SECONDS and a margin.
+HANDOFF_WAIT_SECONDS = 135
 DECISION_HINTS = {
     "declined": "The held action did not run: the user declined it in the approval prompt. Do not repeat it; "
                 "ask the user what to do instead, or work in a tab of your own.",
@@ -570,6 +638,13 @@ def _elicits(session) -> bool:
     elicitation = getattr(params.capabilities, "elicitation", None) if params is not None else None
     return (hasattr(session, "elicit_form") and elicitation is not None
             and (getattr(elicitation, "form", None) is not None or getattr(elicitation, "url", None) is None))
+
+
+def _one_step(session) -> bool:
+    """Whether the client's prompts are one step (ONE_STEP_SCHEMA): every client not in FIELD_PROMPT_CLIENTS."""
+    params = session.client_params
+    info = getattr(params, "clientInfo", None) if params is not None else None
+    return getattr(info, "name", None) not in FIELD_PROMPT_CLIENTS
 
 
 def _json_payload(result, marker='"confirmToken"') -> dict | None:
@@ -629,10 +704,10 @@ def _unapproved(held: dict, decision: str | None, hint: str) -> dict:
     return _without_tokens({**held, "state": state, "hint": hint})
 
 
-def _approval_message(name: str, arguments: dict, state: dict) -> str:
+def _approval_message(name: str, arguments: dict, state: dict, one_step: bool = False) -> str:
     """The prompt: what the call does, to which element and tab, with which arguments, and why it was
     held. The model's element description is labeled as the agent's: only the ref or selector is
-    what the call acts on."""
+    what the call acts on. one_step names the client's Accept instead of the Approve choice."""
     params = state.get("params") if isinstance(state.get("params"), dict) else {}
     target = next((str(value) for value in (arguments.get("target"), arguments.get("ref"), arguments.get("selector"),
                                             params.get("ref"), params.get("selector")) if value), None)
@@ -651,11 +726,12 @@ def _approval_message(name: str, arguments: dict, state: dict) -> str:
     lines += [f"Arguments: {rest}"] if rest != "{}" else []
     lines += [f"Tab: {tab}"] if tab else []
     lines += [f"Held because {why}."]
+    approve = ONE_STEP_ACCEPT if one_step else "Approve"
     if state.get("detail") == "tab_handoff":
-        lines += ["Approve hands this tab to this client until you take it back in the Kitsune popup or the session ends. "
-                  "Later writes need no handoff prompt; Decline leaves the tab yours."]
+        lines += [f"{approve} hands this tab to this client until you take it back in the Kitsune popup or the "
+                  "session ends. Later writes need no handoff prompt; Decline leaves the tab yours."]
         return "\n".join(lines)
-    lines += ["Approve runs this action once; Decline leaves it undone."]
+    lines += [f"{approve} runs this action once; Decline leaves it undone."]
     return "\n".join(lines)
 
 
@@ -708,30 +784,40 @@ async def _elicit(session, request, message: str, schema: dict, seconds: float, 
     return answer
 
 
-def _choice(answer, field: str, choices: dict) -> str:
-    """What a prompt's answer chose: choices[its field's value], "declined" or "cancelled"."""
-    if answer is None or answer.action == "cancel":
+def _choice(answer, field: str, choices: dict, accepted: str | None = None, failed: str | None = "cancelled"):
+    """What a prompt's answer chose: accepted on a one-step prompt (accepted given), else choices[its field's
+    value]; "declined", "cancelled" (dismissed) or failed (no answer)."""
+    if answer is None:
+        return failed
+    if answer.action == "cancel":
         return "cancelled"
     if answer.action == "decline":
         return "declined"
+    if accepted is not None:
+        return accepted
     return choices.get((answer.content or {}).get(field), "cancelled")
 
 
-async def _ask_user(session, request, name: str, arguments: dict, state: dict, limit=None) -> str:
-    """Ask the user about a held call: "approved", "declined" or "cancelled" (dismissed, failed or
-    unanswered until the token's expiresInSeconds less ELICITATION_MARGIN_SECONDS, or limit seconds)."""
+async def _ask_user(session, request, name: str, arguments: dict, state: dict, limit=None,
+                    failed: str | None = "cancelled"):
+    """Ask the user about a held call: "approved", "declined", "cancelled" (dismissed), or failed when the
+    prompt failed or got no answer until the token's expiresInSeconds less ELICITATION_MARGIN_SECONDS, or
+    limit seconds."""
     seconds = max(1, (state.get("expiresInSeconds") or 0) - ELICITATION_MARGIN_SECONDS)
     if limit is not None:
         seconds = min(seconds, limit)
-    answer = await _elicit(session, request, _approval_message(name, arguments, state), APPROVAL_SCHEMA, seconds,
+    one_step = _one_step(session)
+    answer = await _elicit(session, request, _approval_message(name, arguments, state, one_step),
+                           ONE_STEP_SCHEMA if one_step else APPROVAL_SCHEMA, seconds,
                            "Waiting for the user's approval", "approval prompt")
-    return _choice(answer, "decision", {"Approve": "approved", "Decline": "declined"})
+    return _choice(answer, "decision", {"Approve": "approved", "Decline": "declined"},
+                   "approved" if one_step else None, failed)
 
 
 # ── browser_ask_user (#376, docs/api-reference.md#browser_ask_userreason-message-tab_idnone) ──
 # The bridge answers browser_ask_user with a needs_user stop (reason agent_request). On a client with
-# form elicitation the server asks the user in the client's prompt, Done or Can't (_answered); without
-# it the stop returns at once, for the agent to ask in its reply.
+# form elicitation the server asks the user in the client's prompt, Done (Accept) or Can't (Decline)
+# (_answered); without it the stop returns at once, for the agent to ask in its reply.
 ASK_USER_SECONDS = RESUME_WAIT_SECONDS
 ASK_USER_SCHEMA = {"type": "object", "required": ["answer"], "properties": {
     "answer": {"type": "string", "title": "Answer", "enum": ["Done", "Can't"]}}}
@@ -744,11 +830,13 @@ UNASKED_REQUEST_HINT = ("browser_resume asked nothing with wait=0. Resume with a
                         "client's prompt.")
 
 
-def _request_message(state: dict) -> str:
-    """The prompt: the agent's message, labeled as the agent's, and its tab."""
+def _request_message(state: dict, one_step: bool = False) -> str:
+    """The prompt: the agent's message, labeled as the agent's, and its tab. one_step names the client's
+    Accept and Decline instead of the Done and Can't choices."""
     tab = " - ".join(str(state[key]) for key in ("title", "url") if state.get(key))
     lines = [f"The agent asks: {state.get('message')}"] + ([f"Tab: {tab}"] if tab else [])
-    return "\n".join(lines + ["Done tells the agent you did it; Can't tells it you could not."])
+    done, cannot = (ONE_STEP_ACCEPT, "Decline") if one_step else ("Done", "Can't")
+    return "\n".join(lines + [f"{done} tells the agent you did it; {cannot} tells it you could not."])
 
 
 def _user_done(state: dict, via: str) -> dict:

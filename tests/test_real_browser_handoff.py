@@ -8,6 +8,10 @@ script, so popup.js sends its real messages. The popup is opened programmaticall
 by a toolbar click, and nothing looks at its pixels. popup.html loaded in a tab is not
 an equivalent: background.js answers handoff messages only from a page outside a tab.
 
+A client with elicitation is asked in its prompt together with the popup (#494). Its prompt
+answered at once (answers=[] dismisses every prompt) is the client's policy, not the user's
+answer, so the popup answers.
+
 User tabs are opened by the browser itself, not by the agent. Every MCP server shares
 one stable KITSUNE_OWNER_ID, so a later session is the same client in a new session,
 except the second client of the two-client test, which has an owner id of its own. The
@@ -400,7 +404,8 @@ class RealBrowserHandoffTests(harness.RealBrowserTestCase):
         self.assertEqual(granted, (False, {"ok": True, "tabId": self.tab(url)["id"], "owned": True}))
         self.assertIs(listed.get("owned"), True, listed)
         self.assert_acted(clicked, url, 1)
-        self.assertEqual(prompts, [], "neither the handoff nor the write asked the client")
+        (prompt,) = prompts
+        self.assertIn(f"{CLIENT_NAME} requests this tab: {REASON}", prompt["message"], "the write asked nothing")
 
     def writable_focus(self, url):
         """Another client's focus on the field of the tab at url, with user tabs writable: refused
@@ -458,7 +463,7 @@ class RealBrowserHandoffTests(harness.RealBrowserTestCase):
         self.assertEqual((declined["state"]["detail"], declined["state"]["decision"]), ("tab_handoff", "declined"))
         self.assertIn("Work in a tab of your own (browser_tabs action=new)", declined["hint"])
         self.assertNotIn("confirmToken", json.dumps(declined))
-        self.assertEqual(prompts, [])
+        self.assertEqual(len(prompts), 1, "the client was asked about the handoff only")
         self.assertNotIn("owned", listed)
         self.assert_read_only(write)
         self.assertEqual(self.tab(url)["title"], "Handoff decline")
@@ -553,27 +558,52 @@ class RealBrowserHandoffTests(harness.RealBrowserTestCase):
         self.assert_card(card, url, "Tab access request", ["Decline", "Approve handoff"])
         self.assert_badge("1")
 
-    def test_unanswered_browser_prompt_falls_back_to_client_elicitation(self):
-        url = self.user_tab("fallback-elicitation")
+    def client_answers(self, name, answer):
+        """The user answers the client's prompt with answer while the popup asks too (#494): what the
+        prompt said and when, whether the popup asked meanwhile, and the request's result, the popup
+        afterwards, and the tab's ownership and a write."""
+        url = self.user_tab(name)
+
+        def popup_asks():
+            asked = (self.wait_for_card(url, "Tab access request"), self.badge())
+            time.sleep(1.5)  # the user reads the prompt: an answer this late is theirs, not the client's policy
+            return asked
 
         async def scenario(session):
             start = time.monotonic()
-            pending = asyncio.ensure_future(session.request(url))
-            await asyncio.to_thread(self.wait_for_unanswered_request, url)
-            granted = await pending
-            return start, granted, await session.index(url), await session.write(url), session.prompts
+            result = await session.request(url)
+            return (start, result, await asyncio.to_thread(self.retired_cards, url), await session.index(url),
+                    await session.write(url), session.prompts)
 
-        start, granted, listed, acted, prompts = self.run_session(
-            scenario, answers=[("accept", "Approve")], observe=lambda: (self.retired_cards(url), self.badge()))
+        start, result, retired, listed, write, prompts = self.run_session(scenario, answers=[answer],
+                                                                         observe=popup_asks)
         (prompt,) = prompts
-        self.assertGreaterEqual(prompt["at"] - start, BROWSER_FALLBACK_SECONDS - 1, "the browser had 30 s first")
-        self.assertEqual(prompt["observed"], ([], {"text": "", "shown": ""}),
-                         "the browser prompt and its badge retired before the client asked")
-        for part in (f"{CLIENT_NAME} requests this tab: {REASON}", f"Tab: Handoff fallback-elicitation - {url}"):
+        self.assertLess(prompt["at"] - start, 5, "the client asked at once, not after the popup's 30 s")
+        card, badge = prompt["observed"]
+        self.assert_card(card, url, "Tab access request", ["Decline", "Approve handoff"])
+        self.assertEqual(badge, {"text": "1", "shown": "1"}, "the popup asked too")
+        for part in (f"{CLIENT_NAME} requests this tab: {REASON}", f"Tab: Handoff {name} - {url}",
+                     "Accept or Continue hands this tab to this client"):
             self.assertIn(part, prompt["message"])
+        self.assertNotIn("Tab access request", [card["label"] for card in retired],
+                         "the client's answer retired the popup's prompt")
+        self.assert_badge("")
+        return url, result, listed, write
+
+    def test_the_client_asks_with_the_popup_and_its_accept_hands_the_tab_off(self):
+        url, granted, listed, acted = self.client_answers("client-accept", ("accept", None))
         self.assertEqual(granted, (False, {"ok": True, "tabId": self.tab(url)["id"], "owned": True}))
         self.assertIs(listed.get("owned"), True, listed)
         self.assert_acted(acted, url, 1)
+
+    def test_a_decline_in_the_client_declines_the_popups_request_too(self):
+        url, (error, declined), listed, write = self.client_answers("client-decline", ("decline", None))
+        self.assertTrue(error, declined)
+        self.assert_error(declined, "needs_user", False)
+        self.assertEqual((declined["state"]["detail"], declined["state"]["decision"]), ("tab_handoff", "declined"))
+        self.assertNotIn("confirmToken", json.dumps(declined))
+        self.assertNotIn("owned", listed)
+        self.assert_read_only(write)
 
     def test_unanswered_browser_prompt_falls_back_to_a_confirm_token_without_elicitation(self):
         url = self.user_tab("fallback-token")
@@ -791,4 +821,6 @@ class RealBrowserHandoffTests(harness.RealBrowserTestCase):
         self.assert_card(theirs_card, theirs, "Handed off", ["Take back"], client=OTHER_CLIENT_NAME)
         self.assert_acted(acted, mine, 1)
         self.assert_acted(other_acted, theirs, 1)
-        self.assertEqual(prompts, [])
+        # Each client was asked about its own request only: the refused one asked nobody.
+        self.assertEqual([p["message"].split("\n")[0] for p in prompts],
+                         [f"{CLIENT_NAME} requests this tab: {REASON}", f"{OTHER_CLIENT_NAME} requests this tab: {REASON}"])

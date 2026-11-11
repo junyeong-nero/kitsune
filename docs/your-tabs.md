@@ -2,9 +2,10 @@
 
 - **Your tabs.** Writes to your tabs fail at once with `user_tab_read_only`, without a prompt.
   The agent opens its own tab instead, or asks for yours with a reason. You see the request in
-  the toolbar popup (its badge shows a count) and approve or decline it there; after 30 seconds
-  the agent's client asks you instead. An approved tab is the agent's until you press
-  **Take back** or its session ends. It does not give the agent your real mouse or keyboard.
+  the toolbar popup (its badge shows a count) and, on a client with elicitation, in the client's
+  prompt at the same time; answer in either and the other closes. Without elicitation the client
+  is asked only after 30 seconds without an answer in the popup. An approved tab is the agent's
+  until you press **Take back** or its session ends. It does not give the agent your real mouse or keyboard.
   To let the agent write to your tabs without asking, set `KITSUNE_USER_TABS=writable`
   ([Protecting your tabs](#protecting-your-tabs)).
 - **Risky actions.** With the opt-in [ask-before-act](#ask-before-act)
@@ -25,8 +26,9 @@ scrolling, hovering, focusing, navigation, reload and close fail immediately wit
 `state.tabId`, `state.index` (the `browser_tabs list` index) and `state.action`.
 Open the URL in a tab of the agent's own (`browser_tabs action=new`) before writing.
 Alternatively, `browser_tabs action=request` with an `index` or `tab_id` and a `reason`
-asks for a [session-scoped handoff](api-reference.md#requesting-and-returning-a-tab). Approval is browser-first
-(the toolbar popup), then client fallback after 30 seconds. A grant permits DOM/browser
+asks for a [session-scoped handoff](api-reference.md#requesting-and-returning-a-tab). On a client with elicitation
+the toolbar popup and the client's prompt ask at once and the first answer counts; otherwise approval is
+browser-first, then a confirm token after 30 seconds. A grant permits DOM/browser
 operations, **not trusted/native OS input**; it does not select or activate the tab.
 Approving also releases text you left in a focused field of that tab, so the agent can
 finish a form you started there. The user can **Take back** in the popup; session end or bridge/extension disconnection
@@ -81,7 +83,8 @@ reads only fields, frames and URLs for this, never the page's wording, and holds
 it: the agent may still type into a sign-in form you asked it to fill.
 
 When the agent cannot go on, it asks you with `browser_ask_user`. On a client with
-elicitation you answer in the client's prompt: Done, or Can't. Otherwise the agent asks you in
+elicitation you answer in the client's prompt: Accept (Continue in pi) once you are done, or
+Decline if you can't; Codex asks you to choose Done or Can't. Otherwise the agent asks you in
 its reply; for a sign-in or CAPTCHA Kitsune sees on the tab, it can call `browser_resume`, which
 waits until the sign-in or CAPTCHA is gone from the tab, so you need not tell it you are done.
 Details are in the [API reference](api-reference.md#browser_ask_userreason-message-tab_idnone).
@@ -130,13 +133,13 @@ KITSUNE_ASK_BEFORE_ACT = "1"
 When ask-before-act holds a call for your approval, it returns `needs_user` with
 `state.reason` `approval`, and the held action does not run. User-tab writes instead fail
 with `user_tab_read_only`, without prompting. An explicit [handoff request](api-reference.md#requesting-and-returning-a-tab)
-asks in the browser first, then falls back to the client. For ask-before-act, approval works as follows:
+asks in the browser and, with elicitation, in the client at once. For ask-before-act, approval works as follows:
 
 - **Clients with elicitation** (Claude Code, Codex): Kitsune asks you in the client's own
   prompt, naming the action, its target, the call's arguments, the tab and why it was held.
-  The agent's description of the target is labeled as the agent's. Approve, and Kitsune
-  runs that one call; the agent never sees a token, so it cannot approve itself. Decline or
-  dismiss it, and the agent gets `needs_user` with `state.decision` `declined` or
+  The agent's description of the target is labeled as the agent's. Accept (Continue in pi;
+  in Codex, choose Approve), and Kitsune runs that one call; the agent never sees a token, so
+  it cannot approve itself. Decline or dismiss it, and the agent gets `needs_user` with `state.decision` `declined` or
   `cancelled`. The prompt closes unanswered 5 seconds before the approval would expire.
   If you change your mind, the agent calls `browser_resume`, which asks you again and
   continues the call where it was held.

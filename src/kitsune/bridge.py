@@ -206,6 +206,9 @@ _handoff_lifecycle = contextvars.ContextVar("kitsune_handoff_lifecycle", default
 _handoff_identity = contextvars.ContextVar("kitsune_handoff_identity", default=None)
 _handoff_sessions = {}
 _handoff_sessions_lock = Lock()
+# How long requestTab with wait waits for the popup's answer: the request's token lifetime
+# (background.js HANDOFF_TOKEN_MS, 120 s) and a margin (#494).
+HANDOFF_WAIT_SECONDS = 125
 
 
 def _close_handoff_channels(websocket):
@@ -459,7 +462,9 @@ def _browser_not_at_point(x, y, process="", focused=None, wait=0.0, target_windo
         time.sleep(0.1)
 
 
-_NO_SCHEDULE_ACTIONS = {"ping", "getTabs", "getWindows"}
+# requestTab changes no page and waits for the user (popup approvals already run outside the scheduler):
+# holding a tab's lease that long would stall every global command and the tab commands behind it (#494).
+_NO_SCHEDULE_ACTIONS = {"ping", "getTabs", "getWindows", "requestTab"}
 _GLOBAL_SCOPE_ACTIONS = {
     "screenshot", "switchTab", "restoreActiveTab", "newTab", "closeTab", "trustedClick", "trustedType",
     "trustedPressKey", "trustedDrag",
@@ -5438,10 +5443,12 @@ class BridgeHandler(BaseHTTPRequestHandler):
         if problem := _check_policy("requestTab", body):
             self.send_json(403, problem)
             return
-        # This action has its own browser-first approval. Generic ask-before-act must not preempt it.
+        # This action has its own approval. Generic ask-before-act must not preempt it.
+        # wait: the MCP server waits for the popup's answer, until the request's token expires (#494).
+        timeout = HANDOFF_WAIT_SECONDS if body.get("wait") is True else 40
         self.send_json(200, self.run_async(send_to_extension("requestTab", {
-            key: body[key] for key in ("tabId", "reason", "confirmToken") if key in body
-        }, timeout=40), timeout=45))
+            key: body[key] for key in ("tabId", "reason", "confirmToken", "together", "wait", "decision") if key in body
+        }, timeout=timeout), timeout=timeout + 5))
 
     def handle_handoff_session(self):
         secret = self.headers.get(SESSION_HEADER) or ""
