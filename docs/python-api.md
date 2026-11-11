@@ -85,7 +85,8 @@ rather than giving the worker the actual `BridgeClient`.
 ## Python scripting through MCP
 
 On macOS, set `KITSUNE_SCRIPTING=1` in the MCP server environment and restart the
-client to add `browser_run_python(code, timeout=30)`. It is **off by default**.
+client to select the [minimal tool-set](minimal-tools.md), including
+`browser_run_python(code, timeout=30)`. It is **off by default**.
 This opt-in permits ordinary local Python execution: **not a sandbox**, including
 host files, environment, imports, subprocesses and network access. Only enable it
 for a client you trust with local code execution. `KITSUNE_MODE` and `KITSUNE_CAPS`
@@ -97,11 +98,14 @@ MCP server's Python interpreter.
 # code passed to browser_run_python, after opening/selecting a tab with direct tools
 for target, value in {"#name": "Ada", "#note": "Please review."}.items():
     tab.fill(target, value)
-result = tab.forms()
+result = tab.snapshot()
 ```
 
 - `browser` is the Python API, forwarding each request through the MCP host's
   existing client/session. **Do not call `kitsune.connect()`** to reuse that session.
+  Default `core` grants include snapshot and common actions; methods such as
+  `query`, `text` and `forms` need the `read` grant. Configure additional grants
+  explicitly, e.g. `KITSUNE_CAPS=core,browse,read`, rather than bypassing the client.
 - `tab` is the current MCP selection at invocation start, or `None` before selection.
   Use `browser.new_tab(url)` or `browser.tab(id)` for other tabs; obtain actual IDs
   from `browser.tabs()`, not the indexes of the legacy direct tab list. Scripts do
@@ -128,8 +132,8 @@ result = tab.forms()
 
 The bridge must already be running (normal MCP startup starts it). The scripting
 transport does not start/restart a bridge or retry a request. To disable the tool,
-unset `KITSUNE_SCRIPTING` and restart the MCP client; existing direct tools are
-unchanged. Keep guidance short: `help(browser.new_tab)` or `help(tab.query)` in a
+unset `KITSUNE_SCRIPTING` and restart the MCP client; this restores the legacy
+direct tool list. Keep guidance short: `help(browser.new_tab)` or `help(tab.query)` in a
 script prints that method's signature/docstring on demand; the tables below give
 the broader reference.
 
@@ -178,8 +182,8 @@ timeout or disconnect—observe the affected page before deciding what is left t
 Less-frequent features such as `tab.readability()`, `tab.network.resources()`,
 `tab.local_storage`, `browser.cookies` and `browser.history` already have Python
 methods. Availability does not grant permission: a host's capability/mode limits
-still apply. #515 will record the final MCP-to-Python mapping before changing the
-default tool list; this API work does not change that list or remove any tools.
+still apply. The [minimal surface mapping](minimal-tools.md#moving-less-frequent-tools-to-python)
+shows which direct tools move to these APIs when scripting is enabled.
 
 ## Tabs
 

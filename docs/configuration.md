@@ -5,7 +5,7 @@
 | `KITSUNE_CAPS` | `core` | Comma-separated [capability groups](tools.md); `all` enables every group except `storage` and `history`, which read personal data and must be named |
 | `KITSUNE_PUBLISH` | `KITSUNE_CAPS` | Groups of the enabled tools that `tools/list` shows when a session starts; the others stay reachable through the gateway tools. See [Finding tools without a restart](tools.md#finding-tools-without-a-restart) |
 | `KITSUNE_MODE` | `act` | Task surface and per-request policy: `read`, `draft`, or `act`. See [Task modes](tools.md#task-modes) |
-| `KITSUNE_SCRIPTING` | Unset (off) | Set to `1` to add `browser_run_python` on macOS. Grants trusted local Python execution with host file/network access, **not a sandbox**; browser modes/caps apply only to its supplied browser API. See [Python scripting](python-api.md#python-scripting-through-mcp) |
+| `KITSUNE_SCRIPTING` | Unset (off) | Set to `1` to select the [minimal tool-set](minimal-tools.md) with `browser_run_python` on macOS. Grants trusted local Python execution with host file/network access, **not a sandbox**; browser modes/caps apply only to its supplied browser API. See [Python scripting](python-api.md#python-scripting-through-mcp) |
 | `KITSUNE_HOME` | `~/.kitsune` | Data directory (0700) |
 | `KITSUNE_HTTP_PORT` | `47651` | Bridge HTTP API |
 | `KITSUNE_WS_PORT` | `47652` | Extension WebSocket. Change `WS_URL` in `extension/background/background.js` too |

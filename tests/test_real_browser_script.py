@@ -24,7 +24,10 @@ class RealBrowserScriptTests(harness.RealBrowserTestCase):
         async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
             await session.initialize()
             listed = await session.list_tools()
-            self.assertIn("browser_run_python", [tool.name for tool in listed.tools])
+            names = {tool.name for tool in listed.tools}
+            self.assertIn("browser_run_python", names)
+            self.assertNotIn("browser_forms", names)
+            self.assertNotIn("browser_hover", names)
             if mode == "act":
                 opened = await session.call_tool("browser_tabs", {"action": "new", "url": self.site.origin})
                 self.assertFalse(opened.isError, opened)
@@ -52,10 +55,9 @@ class RealBrowserScriptTests(harness.RealBrowserTestCase):
             scripted = await session.call_tool("browser_run_python", {"code": code})
             self.assertFalse(scripted.isError, scripted)
             self.assertEqual(json.loads(scripted.content[0].text)["result"], ["Grace"])
-            observed = await session.call_tool("browser_forms", {"tab_id": tab_id})
+            observed = await session.call_tool("browser_snapshot", {})
             self.assertFalse(observed.isError, observed)
-            fields = json.loads(observed.content[0].text)["fields"]
-            self.assertEqual(next(field["value"] for field in fields if field.get("name") == "name"), "Grace")
+            self.assertIn("Grace", json.loads(observed.content[0].text)["snapshot"])
 
             next_call = await session.call_tool("browser_run_python", {
                 "code": f"result = {{'fresh': 'name' not in globals(), 'title': browser.tab({tab_id}).info()['title']}}"})
