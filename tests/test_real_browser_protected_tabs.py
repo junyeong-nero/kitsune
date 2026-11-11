@@ -122,15 +122,15 @@ class RealBrowserProtectedTabTests(harness.RealBrowserTestCase):
             self.assertFalse(any(t.get("current") for t in self.core_tabs("read-only", "list")["tabs"]))
             selected = self.assert_ok(self.core_tabs("read-only", "select", index=index))
             self.assertIs(selected["read_only"], True, selected)
-            self.assertTrue(selected["tabs"][index].get("current"), selected)
+            self.assertEqual((selected["tab"]["index"], selected["tab"].get("current")), (index, True), selected)
             self.assertEqual(playwright_tools._current_tab, user)
 
             # The kitsune-benchmark setup: a writable client selects the user's tab and waits for current.
             selected = self.assert_ok(self.core_tabs("writable", "select", index=index))
             self.assertNotIn("hint", selected)
             self.assertNotIn("read_only", selected)
-            self.assertTrue(selected["tabs"][index].get("current"), selected)
-            self.assertNotIn("owned", selected["tabs"][index])
+            self.assertEqual((selected["tab"]["index"], selected["tab"].get("current")), (index, True), selected)
+            self.assertNotIn("owned", selected["tab"])
             self.assertEqual(playwright_tools._current_tab, user)
             listed = self.core_tabs("read-only", "list")
             self.assertTrue(listed["tabs"][index].get("current"), listed)
@@ -142,15 +142,16 @@ class RealBrowserProtectedTabTests(harness.RealBrowserTestCase):
             self.assertNotEqual(own, user, opened)
             self.addCleanup(self.call, "/api/close-tab", {"tabId": own})
             self.assertNotIn("hint", opened)
-            self.assertEqual({key: opened["tabs"][opened["index"]].get(key) for key in ("current", "owned")},
+            self.assertEqual({key: opened["tab"].get(key) for key in ("current", "owned")},
                              {"current": True, "owned": True})
             # Indices are positions: the new tab can shift the user's tab.
-            index = next(t["index"] for t in opened["tabs"] if t["url"] == start)
+            index = next(t["index"] for t in self.core_tabs("read-only", "list")["tabs"] if t["url"] == start)
             self.assertIs(self.assert_ok(self.core_tabs("read-only", "select", index=index))["read_only"], True)
             self.assertEqual(playwright_tools._current_tab, user)
             selected = self.assert_ok(self.core_tabs("read-only", "select", index=opened["index"]))
             self.assertNotIn("hint", selected)
-            self.assertTrue(selected["tabs"][opened["index"]].get("current"), selected)
+            self.assertEqual((selected["tab"]["index"], selected["tab"].get("current")), (opened["index"], True),
+                             selected)
             self.assertNotIn("hint", self.core_tabs("read-only", "list"))
         user_tab = next(t for t in self.call("/api/tabs")["tabs"] if t["id"] == user)
         self.assertEqual((user_tab["url"], user_tab["active"], user_tab["owned"]), (start, True, False),

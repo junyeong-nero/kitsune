@@ -141,7 +141,7 @@ class RealBrowserPlaywrightToolTests(harness.RealBrowserTestCase):
 
     def open_current(self, path="/"):
         result = self.tool("browser_tabs", {"action": "new", "url": self.site.origin + path})
-        self.assertTrue(result["tabs"][result["index"]]["current"], result)
+        self.assertTrue(result["tab"]["current"], result)
         tab = playwright_tools._current_tab
         self.addCleanup(self.call, "/api/close-tab", {"tabId": tab})
         self.opened = result
