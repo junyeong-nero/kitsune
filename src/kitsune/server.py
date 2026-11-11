@@ -1226,13 +1226,12 @@ async def browser_run_python(
 ) -> CallToolResult:
     """Run trusted local Python with host file/network access; this is not a sandbox.
     browser uses this client's session and browser permissions; tab is the current MCP
-    selection (None before selection). browser.tabs(), browser.tab(id), browser.new_tab(url);
-    tab.snapshot(), fill(target, value), query(selector, fields=["text", "href"]).
+    selection (None before selection). browser.tab(id) wraps an existing tab ID.
     Variables reset each call; tabs persist. Scripts do not change the MCP selection.
     Print selected output or assign JSON-compatible result. 16 KB output/result, 100 API calls.
     A failed API call stops execution, even if caught. Earlier writes remain; never replay
-    the whole script. Use direct tools for approval and screenshots. help(tab.query) shows
-    a method's signature; docs/python-api.md has the API reference.
+    the whole script. Use direct tools for approval and screenshots. Use help on a method
+    for its signature; docs/python-api.md has the API reference.
     """
     from .script_runner import run_python
     result = await run_python(code, _client, timeout=timeout, tab_id=playwright_tools._current_tab)
@@ -1241,7 +1240,18 @@ async def browser_run_python(
 
 # Explicit local-code execution opt-in selects the minimal surface; legacy remains the default.
 if SCRIPTING:
-    mcp.tool(annotations=ToolAnnotations(title="Run Python", **DESTRUCTIVE))(browser_run_python)
+    # Advertise examples the supplied client can run, not merely methods the Python API has (#519/#520).
+    description = inspect.cleandoc(browser_run_python.__doc__)
+    description += f" Enabled groups: {','.join(sorted(enabled_groups(ENABLED_CAPS))) or 'none'}; mode: {MODE}."
+    if _enables(ENABLED_CAPS, "core"):
+        description += (' browser.tabs() returns list[dict] (id, url, title, ...), not Tab objects. '
+                        'For a chosen page tab dict t, use browser.tab(t["id"]).snapshot(). '
+                        'browser.new_tab(url) returns a Tab.')
+        if MODE != "read":
+            description += " tab.fill(target, value) fills a field."
+    if _enables(ENABLED_CAPS, "read"):
+        description += ' tab.query(selector, fields=["text", "href"]) reads matching elements.'
+    mcp.tool(description=description, annotations=ToolAnnotations(title="Run Python", **DESTRUCTIVE))(browser_run_python)
     PUBLISHED_TOOLS.add("browser_run_python")
 
 
