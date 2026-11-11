@@ -38,8 +38,11 @@ SNAPSHOT = Path(__file__).resolve().parent.parent / "tests" / "tool_schema_sizes
 # browser_resume and browser_ask_user (#376). The core budgets sit just above their size (about 60
 # characters, about 4% of Kitsune's two tools, after #405 trimmed those to 1,377 characters), so a
 # refresh of that file that grows it needs a deliberate raise that shows what Playwright's growth costs.
-TOTAL_BUDGETS = {"core": 21_800}
-FIRST_PARAGRAPH_BUDGETS = {"core": 21_800}
+# #495 raised both from 21,800 to 21,820: browser_tabs publishes `container` (a Firefox container's
+# cookieStoreId for action=new) with the description "new: cookieStoreId.", 66 characters, which put
+# the core tools at 21,813. Without the description (30 characters) the old budget still holds.
+TOTAL_BUDGETS = {"core": 21_820}
+FIRST_PARAGRAPH_BUDGETS = {"core": 21_820}
 TOOL_BUDGET = 3_000  # any single core tool, full view
 # Characters of the server instructions in each KITSUNE_MODE with the default read-only
 # user-tab permission, which makes them longest. Each has about 5% headroom (#405), well within

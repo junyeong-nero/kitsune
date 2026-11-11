@@ -1894,7 +1894,9 @@ async function getOpenTabs(ownerId = null, sessionId = null) {
       ownershipByClient: true,
       tabs: tabs.map(t => ({
         id: t.id, url: t.url, title: t.title,
-        active: t.active, windowId: t.windowId, index: t.index, owned: ownsTab(t.id, ownerId, sessionId)
+        active: t.active, windowId: t.windowId, index: t.index, owned: ownsTab(t.id, ownerId, sessionId),
+        // The tab's Firefox container (#495); a tab in the default store has no field.
+        ...(t.cookieStoreId && t.cookieStoreId !== 'firefox-default' ? { cookieStoreId: t.cookieStoreId } : {}),
       }))
     };
   } catch (e) {
@@ -2038,15 +2040,63 @@ const STALLED_TAB_HINT = 'Retrying will not fix this: the browser needs an updat
   + 'or fix it another way. Do not retry until they say it is fixed. '
   + 'A pending browser update is one possible cause, not a confirmed diagnosis.';
 
+// Firefox containers (contextual identities, #495). tabs.create takes a container's cookieStoreId
+// with the cookies permission. A container name needs browser.contextualIdentities, whose
+// permission cannot be optional and is not in the manifest, so a name is refused while the API is
+// absent. A container that cannot be used is an error: the tab never opens in the default store instead.
+const COOKIE_STORE_ID = /^firefox-(?:default|private|container-\d+)$/;
+const CONTAINER_HINT = 'Pass a cookieStoreId (firefox-container-<n>) as container; browser_tabs action=list ' +
+  'shows it on each tab that is in a container.';
+function containerError(container, reason, message, state = {}) {
+  return { error: `${message}; no tab was opened`, code: 'container_unavailable', retryable: true,
+    hint: CONTAINER_HINT, state: { container, reason, ...state } };
+}
+const containerRejected = (container, e) =>
+  containerError(container, 'rejected', `Could not open a tab in container "${container}": ${e.message}`);
+// newTab's container as { cookieStoreId }, or the error result.
+async function containerStore(container) {
+  if (COOKIE_STORE_ID.test(container)) return { cookieStoreId: container };
+  if (!browser.contextualIdentities?.query) {
+    return containerError(container, 'names_unsupported', 'This Kitsune build cannot resolve container names');
+  }
+  let named;
+  try {
+    named = await browser.contextualIdentities.query({ name: container });
+  } catch (e) {
+    return containerRejected(container, e);
+  }
+  if (named.length === 1) return { cookieStoreId: named[0].cookieStoreId };
+  return named.length
+    ? containerError(container, 'ambiguous', `Several containers are named "${container}"`,
+      { matches: named.map(identity => identity.cookieStoreId) })
+    : containerError(container, 'not_found', `No container is named "${container}"`);
+}
+
 // Opens an agent-owned tab in the background. Immediate by default. With wait, resolves once the
 // tab loads (or the timeout passes, leaving the tab open) and reports the actual URL, so
-// redirects are visible.
-async function createTab(url, { wait = false, timeout = 15000, ownerId = null } = {}) {
+// redirects are visible. container (a cookieStoreId or a container name) opens it in that
+// Firefox container; without one it opens in the default store, whatever tab the caller works in.
+async function createTab(url, { wait = false, timeout = 15000, ownerId = null, container = null } = {}) {
   try {
     const target = url || 'about:blank';
-    const tab = await browser.tabs.create({ url: target, active: false });
+    const createData = { url: target, active: false };
+    if (container != null && container !== '') {
+      container = String(container);
+      const resolved = await containerStore(container);
+      if (resolved.error) return resolved;
+      createData.cookieStoreId = resolved.cookieStoreId;
+    }
+    let tab;
+    try {
+      tab = await browser.tabs.create(createData);
+    } catch (e) {
+      if (!createData.cookieStoreId) throw e;
+      return containerRejected(container, e);
+    }
     markAgentTab(tab.id, ownerId);
-    if (!wait) return { ok: true, tabId: tab.id };
+    // Named in the result only for a container: it tells the bridge that container was not ignored.
+    const store = createData.cookieStoreId ? { cookieStoreId: tab.cookieStoreId || createData.cookieStoreId } : {};
+    if (!wait) return { ok: true, tabId: tab.id, ...store };
     // A new tab has no previous document, so any non-about: 'complete' is the destination.
     const loaded = target.startsWith('about:')
       || await waitForTabLoad(tab.id, () => {}, { reload: true, timeout });
@@ -2055,7 +2105,7 @@ async function createTab(url, { wait = false, timeout = 15000, ownerId = null } 
       && await loadedPageUrl(tab.id) || current.url;
     const result = {
       ok: loaded, ...(loaded ? {} : { timedOut: true }),
-      tabId: tab.id, url: shownUrl, status: current.status,
+      tabId: tab.id, url: shownUrl, status: current.status, ...store,
     };
     // #366: an old browser process after an on-disk update can create inert blank tabs.
     // This is an observed symptom, not proof of an update mismatch. Keep the created id

@@ -178,7 +178,9 @@ def _tab_list(permission_hint: bool = False) -> dict:
     listed = {"tabs": [{"index": i, "title": tab.get("title"), "url": tab.get("url"),
                         **({"current": True} if tab.get("id") == _current_tab else {}),
                         **({"active": True} if tab.get("active") else {}),
-                        **({"owned": True} if tab.get("owned") else {})}
+                        **({"owned": True} if tab.get("owned") else {}),
+                        # Its Firefox container (#495); a tab in the default store has none.
+                        **({"cookieStoreId": tab["cookieStoreId"]} if tab.get("cookieStoreId") else {})}
                        for i, tab in enumerate(result.get("tabs") or [])]}
     if permission_hint and _current_tab is not None:
         current = next((tab for tab in listed["tabs"] if tab.get("current")), None)
@@ -758,7 +760,8 @@ NEW_TAB_TIMEOUT_MS = 15000
 
 @_core
 def browser_tabs(action: str, index: float | None = None, url: str | None = None,
-                 confirm_token: str | None = None, tab_id: int | None = None, reason: str | None = None) -> dict:
+                 confirm_token: str | None = None, tab_id: int | None = None, reason: str | None = None,
+                 container: str | None = None) -> dict:
     global _current_tab
     if action == "request":
         if (index is None) == (tab_id is None):
@@ -777,16 +780,20 @@ def browser_tabs(action: str, index: float | None = None, url: str | None = None
     if action == "new":
         # The new tab's index replaces the bridge's tabId, which no core tool takes. With a url, it waits
         # for the load, and pageText makes the result carry a small page's text as browser_navigate's (#448).
+        # container is the Firefox container to open it in (#495); the current tab's is not inherited.
         if url is None:
-            result = k.browser_tabs("new", confirm_token=confirm_token)
+            result = k.browser_tabs("new", confirm_token=confirm_token, container=container)
         else:
-            body = {"url": url, "wait": True, "timeout": NEW_TAB_TIMEOUT_MS, "pageText": True}
+            body = {"url": url, "wait": True, "timeout": NEW_TAB_TIMEOUT_MS, "pageText": True,
+                    **({"container": container} if container else {})}
             result = k._post("/api/new-tab", k._request_body(body, confirm_token=confirm_token),
                              timeout=NEW_TAB_TIMEOUT_MS / 1000 + 10)
         if not isinstance(result.get("tabId"), int):
             return result
         _current_tab = result["tabId"]
-        result = _with_current_tab({key: value for key, value in result.items() if key != "tabId"})
+        # The tab names its container itself, so the bridge's cookieStoreId is left out too.
+        result = _with_current_tab({key: value for key, value in result.items()
+                                    if key not in ("tabId", "cookieStoreId")})
         return {**result, "index": result["tab"]["index"]} if "tab" in result else result
     if action == "select":
         if index is None:

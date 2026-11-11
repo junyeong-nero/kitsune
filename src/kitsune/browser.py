@@ -149,7 +149,10 @@ class Browser:
         return self.request("/api/status?diagnostics=true" if diagnostics else "/api/status")
 
     def tabs(self) -> list[dict]:
-        """Every open tab: id, url, title, active, windowId, index, and owned for this client's tabs (including opener inheritance)."""
+        """Every open tab: id, url, title, active, windowId, index, and owned for this client's tabs (including opener inheritance).
+
+        A tab in a Firefox container also has its cookieStoreId (#495).
+        """
         return self.request("/api/tabs")["tabs"]
 
     def tab(self, tab_id: int) -> "Tab":
@@ -166,13 +169,15 @@ class Browser:
         return Tab(self, active[0])
 
     def new_tab(self, url: str = "about:blank", *, wait: bool = True, timeout: int = 15000,
-                confirm: str | None = None) -> "Tab":
+                confirm: str | None = None, container: str | None = None) -> "Tab":
         """Open url in a background tab that the user does not see, which a client owns.
 
         wait=True waits up to timeout ms for the load; a load that does not finish raises
         TimedOut and leaves the tab open, with its id in error.result["tabId"].
+        container is a Firefox container's cookieStoreId (firefox-container-1), as tabs() shows it,
+        to open the tab in (#495); without it the tab is in the default store.
         """
-        body = _with_confirm({"url": url}, confirm)
+        body = _with_confirm({"url": url, **({"container": container} if container else {})}, confirm)
         if not wait:
             return Tab(self, self.request("/api/new-tab", body)["tabId"])
         if timeout <= 0:

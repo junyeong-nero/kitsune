@@ -465,6 +465,9 @@ def browser_tabs(
     window_fields: bool = False,
     include_active: Annotated[bool, Field(
         description="list: add active_page, the active tab's browser_snapshot(text=True).")] = False,
+    container: Annotated[str | None, Field(
+        description="new: the Firefox container's cookieStoreId (firefox-container-1), as list shows it; "
+                    "default no container.")] = None,
 ) -> dict:
     """List, open, close, or select tabs; new opens a background tab (act on it with tab_id)
     and returns its tabId.
@@ -491,6 +494,8 @@ def browser_tabs(
         body = {"url": url if url is not None else "about:blank"}
         if raw:
             body["raw"] = True
+        if container:
+            body["container"] = container
         _request_body(body, confirm_token=confirm_token)
         if not wait:
             return _post("/api/new-tab", body)
