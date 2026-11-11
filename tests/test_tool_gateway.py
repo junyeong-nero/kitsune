@@ -99,7 +99,7 @@ GATEWAY = {"browser_tools_search", "browser_tools_call", "browser_tools_publish"
 
 
 def environment(caps, publish=None, mode=None, **extra):
-    env = {**os.environ, "KITSUNE_CAPS": caps, "KITSUNE_TOKEN": "test-token", **extra}
+    env = {**os.environ, "KITSUNE_CAPS": caps, "KITSUNE_TOKEN": "test-token", "KITSUNE_SCRIPTING": "0", **extra}
     for name, value in (("KITSUNE_PUBLISH", publish), ("KITSUNE_MODE", mode)):
         env.pop(name, None)
         if value is not None:

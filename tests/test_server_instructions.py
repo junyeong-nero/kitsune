@@ -13,7 +13,7 @@ print(json.dumps(server.mcp._mcp_server.create_initialization_options().instruct
 
 def instructions(mode, **settings):
     env = {**{k: v for k, v in os.environ.items() if k != "KITSUNE_USER_TABS"},
-           "KITSUNE_MODE": mode, **settings}
+           "KITSUNE_MODE": mode, "KITSUNE_SCRIPTING": "0", **settings}
     result = subprocess.run([sys.executable, "-c", SCRIPT], env=env, text=True, capture_output=True, check=True)
     return json.loads(result.stdout)
 

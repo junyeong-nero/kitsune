@@ -27,8 +27,9 @@ class ToolsRegistryTests(unittest.TestCase):
 from kitsune import server, tools
 print(json.dumps({"registered": list(asyncio.run(server.mcp.all_tools())), "defined": list(tools.TOOLS),
                   "unpublished": list(server.UNPUBLISHED_TOOLS)}))"""
-        for env in ({}, {"KITSUNE_CAPS": "all,storage,history", "KITSUNE_PUBLISH": "core"},
-                    {"KITSUNE_CAPS": "all", "KITSUNE_MODE": "read"}):
+        for env in ({"KITSUNE_SCRIPTING": "0"},
+                    {"KITSUNE_CAPS": "all,storage,history", "KITSUNE_PUBLISH": "core", "KITSUNE_SCRIPTING": "0"},
+                    {"KITSUNE_CAPS": "all", "KITSUNE_MODE": "read", "KITSUNE_SCRIPTING": "0"}):
             with self.subTest(env=env):
                 result = json.loads(_run(code, env))
                 gateway = [name for name in result["registered"] if name in server.GATEWAY_TOOLS]

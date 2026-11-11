@@ -37,7 +37,7 @@ PROBES = ["x", "not-an-enum-value", "", 0, 1, -1, 1.5, True, False, None,
 
 def listings(caps="all,storage") -> dict:
     """Listings of the Kitsune-owned tools (not the Playwright core tools)."""
-    env = {**os.environ, "KITSUNE_CAPS": caps}
+    env = {**os.environ, "KITSUNE_CAPS": caps, "KITSUNE_SCRIPTING": "0"}
     result = subprocess.run([sys.executable, "-c", DUMP], env=env,
                             capture_output=True, text=True, check=True)
     return {stage: {name: tool for name, tool in tools.items() if name not in playwright_tools.SCHEMAS}

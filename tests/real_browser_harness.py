@@ -71,11 +71,13 @@ import shutil
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
 import unittest
 from unittest import util
+from unittest.mock import patch
 
 import real_browser_failure_artifacts
 from test_bridge_security import Bridge, _free_port, _request
@@ -313,6 +315,12 @@ class RealBrowserTestCase(unittest.TestCase):
         cls.bridge = Bridge(str(home))
         # Compare the loaded build with the copy the browser runs, not the repository's extension/.
         cls.bridge.env["KITSUNE_EXTENSION_DIR"] = str(Path(temp.name, "extension"))
+        # MCP servers started from this env exercise the legacy direct tools unless a suite sets 1 (#525).
+        cls.bridge.env["KITSUNE_SCRIPTING"] = "0"
+        if "kitsune.server" in sys.modules:  # a suite calling the in-process server's direct tools
+            scripting = patch.object(sys.modules["kitsune.server"], "SCRIPTING", False)
+            scripting.start()
+            cls.addClassCleanup(scripting.stop)
         cls.addClassCleanup(cls.bridge.stop)
         if artifacts:
             artifacts.watch_bridge(cls.bridge)

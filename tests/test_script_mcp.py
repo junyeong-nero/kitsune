@@ -52,14 +52,30 @@ print(json.dumps(asyncio.run(main())))
 
 class ScriptMcpTests(unittest.TestCase):
     def probe(self, enabled, mode="act", caps="core", publish=None):
-        env = {**os.environ, "KITSUNE_SCRIPTING": "1" if enabled else "0", "KITSUNE_MODE": mode,
-               "KITSUNE_CAPS": caps, "KITSUNE_PUBLISH": caps if publish is None else publish}
+        """enabled None leaves KITSUNE_SCRIPTING unset."""
+        env = {key: value for key, value in os.environ.items() if key != "KITSUNE_SCRIPTING"}
+        if enabled is not None:
+            env["KITSUNE_SCRIPTING"] = "1" if enabled else "0"
+        env.update(KITSUNE_MODE=mode, KITSUNE_CAPS=caps, KITSUNE_PUBLISH=caps if publish is None else publish)
         reply = subprocess.run([sys.executable, "-c", PROBE], env=env, capture_output=True, text=True, timeout=30)
         self.assertEqual(reply.returncode, 0, reply.stderr)
         return json.loads(reply.stdout)
 
-    def test_local_code_execution_requires_explicit_opt_in(self):
-        self.assertNotIn("browser_run_python", self.probe(False)["tools"])
+    def test_minimal_surface_is_the_default_and_zero_keeps_the_legacy_list(self):
+        # #525: unset selects the minimal surface; KITSUNE_SCRIPTING=0 is the legacy opt-out.
+        self.assertEqual(set(self.probe(None)["tools"]), set(self.probe(True)["tools"]))
+        legacy = self.probe(False)["tools"]
+        self.assertNotIn("browser_run_python", legacy)
+        self.assertIn("browser_hover", legacy)
+
+    def test_other_values_are_refused_at_startup(self):
+        for value in ("true", "yes", "2"):
+            with self.subTest(value=value):
+                env = {**os.environ, "KITSUNE_SCRIPTING": value}
+                reply = subprocess.run([sys.executable, "-c", "import kitsune.server"], env=env,
+                                       capture_output=True, text=True, timeout=30)
+                self.assertNotEqual(reply.returncode, 0)
+                self.assertIn("KITSUNE_SCRIPTING must be 0 or 1", reply.stderr)
 
     def test_minimal_list_has_fourteen_tools_without_discovery_or_publication(self):
         expected = {"browser_tabs", "browser_navigate", "browser_snapshot", "browser_find", "browser_click",
@@ -71,6 +87,7 @@ class ScriptMcpTests(unittest.TestCase):
                 result = self.probe(True, caps=caps)
                 self.assertEqual(set(result["tools"]), expected)
                 self.assertEqual(result["moved"]["code"], "tool_moved_to_python")
+                self.assertIn("KITSUNE_SCRIPTING=0", result["moved"]["hint"])
                 self.assertEqual(result["gateway"]["code"], "tool_moved_to_python")
 
     def test_minimal_definitions_and_instructions_are_smaller_with_the_script_guide_included(self):

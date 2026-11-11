@@ -241,7 +241,7 @@ class KitsuneMCP(FastMCP):
             return _error_result(
                 f"{name} is not in the minimal tool-set", "tool_moved_to_python", retryable=False,
                 hint="Use browser_run_python with the Python browser API; help(browser) or help(tab) lists methods. "
-                     "Unset KITSUNE_SCRIPTING and restart the client to use the legacy tool-set.",
+                     "Set KITSUNE_SCRIPTING=0 and restart the client to use the legacy tool-set.",
                 state={"tool": name})
         if MODE != "act" and (arguments or {}).get("confirm_token") is not None:
             return CallToolResult(content=[_compact_json({
@@ -536,7 +536,15 @@ if _unauthorized_caps:
 
 MODE = task_mode(os.environ.get("KITSUNE_MODE"))
 USER_TABS = user_tabs(os.environ.get("KITSUNE_USER_TABS"))
-SCRIPTING = os.environ.get("KITSUNE_SCRIPTING") == "1"
+def _scripting(value: str | None) -> bool:
+    """The minimal surface with browser_run_python unless KITSUNE_SCRIPTING=0 selects the legacy one (#525)."""
+    normalized = (value or "1").strip() or "1"
+    if normalized not in {"0", "1"}:
+        raise ValueError(f"KITSUNE_SCRIPTING must be 0 or 1, not {value!r}")
+    return normalized == "1"
+
+
+SCRIPTING = _scripting(os.environ.get("KITSUNE_SCRIPTING"))
 # Frequent actions plus user handoff/recovery. read/draft use browser_tab_list instead of browser_tabs.
 # Selection evidence and Python replacements: docs/minimal-tools.md (#515).
 MINIMAL_TOOLS = frozenset({
@@ -1294,7 +1302,7 @@ async def browser_run_python(
     return CallToolResult(content=[_compact_json(result)], isError=_failed(result))
 
 
-# Explicit local-code execution opt-in selects the minimal surface; legacy remains the default.
+# The minimal surface with local Python is the default; KITSUNE_SCRIPTING=0 keeps the legacy list (#525).
 if SCRIPTING:
     # Advertise examples the supplied client can run, not merely methods the Python API has (#519/#520).
     description = inspect.cleandoc(browser_run_python.__doc__)

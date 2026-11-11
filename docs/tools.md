@@ -12,13 +12,13 @@ group except `storage` and `history`, which read personal data and must be named
 (`KITSUNE_CAPS=all,storage,history`). Whitespace and case are ignored; unknown group names
 fail at startup.
 
-For trusted local Python composition on macOS, opt in with `KITSUNE_SCRIPTING=1`
-to select the [14-tool minimal surface](minimal-tools.md), including
-`browser_run_python`. Less-frequent operations use the Python API; gateway
-search/call/publish is absent. Python has host file/network access, **not a sandbox**.
-The supplied browser API keeps this client's browser grants; those grants do not
-constrain arbitrary local code. See [Python scripting](python-api.md#python-scripting-through-mcp).
-Without this opt-in, the legacy tools and configuration described below are unchanged.
+By default the server publishes the [14-tool minimal surface](minimal-tools.md),
+including `browser_run_python` for trusted local Python composition.
+Less-frequent operations use the Python API; gateway search/call/publish is absent.
+Python has host file/network access, **not a sandbox**. The supplied browser API
+keeps this client's browser grants; those grants do not constrain arbitrary local
+code. See [Python scripting](python-api.md#python-scripting-through-mcp).
+Set `KITSUNE_SCRIPTING=0` to use the legacy direct tools and configuration described below.
 
 ```toml
 [mcp_servers.kitsune.env]

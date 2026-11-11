@@ -15,7 +15,7 @@ from kitsune.bridge import _parse_workflow
 
 class ToolSurfaceTests(unittest.TestCase):
     def registered(self, caps):
-        env = {**os.environ, "KITSUNE_CAPS": caps}
+        env = {**os.environ, "KITSUNE_CAPS": caps, "KITSUNE_SCRIPTING": "0"}
         result = subprocess.run(
             [sys.executable, "-c", "import asyncio,json; from kitsune.server import mcp; "
              "print(json.dumps([t.name for t in asyncio.run(mcp.list_tools())]))"],
@@ -64,9 +64,10 @@ class ToolSurfaceTests(unittest.TestCase):
                         <= self.registered("admin"))
         self.assertTrue({"browser_windows", "browser_tag_tab", "browser_keep_alive"} <= self.registered("tabs"))
 
-    def test_default_registration(self):
+    def test_legacy_registration(self):
         with patch.dict(os.environ):
             os.environ.pop("KITSUNE_CAPS", None)
+            os.environ["KITSUNE_SCRIPTING"] = "0"
             self.assertEqual(self.registered_default(),
                              set(playwright_tools.SCHEMAS) | {"browser_resume", "browser_ask_user"})
 

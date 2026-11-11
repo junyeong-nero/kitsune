@@ -7,7 +7,7 @@ import unittest
 
 
 def list_tools(caps="core") -> dict:
-    env = {**os.environ, "KITSUNE_CAPS": caps}
+    env = {**os.environ, "KITSUNE_CAPS": caps, "KITSUNE_SCRIPTING": "0"}
     result = subprocess.run(
         [sys.executable, "-c", "import asyncio,json; from kitsune.server import mcp; print(json.dumps("
          "{t.name: t.model_dump(mode='json', exclude_none=True) for t in asyncio.run(mcp.list_tools())}))"],
@@ -34,7 +34,7 @@ print(json.dumps({"calls": {name: call(name) for name in sys.argv[1:]}, "mcp_too
 
 
 def unpublished(caps, *names) -> dict:
-    env = {**os.environ, "KITSUNE_CAPS": caps, "KITSUNE_OWNER_ID": "owner-171"}
+    env = {**os.environ, "KITSUNE_CAPS": caps, "KITSUNE_OWNER_ID": "owner-171", "KITSUNE_SCRIPTING": "0"}
     result = subprocess.run([sys.executable, "-c", UNPUBLISHED_SCRIPT, *names],
                             env=env, capture_output=True, text=True, check=True)
     return json.loads(result.stdout)
