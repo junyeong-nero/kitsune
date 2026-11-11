@@ -15,6 +15,13 @@ What it does not protect against:
 - **Prompt injection.** A page the agent reads can contain instructions. The
   agent acts with every account you are logged into.
 - **Local processes** running as your user can read the token.
+- **Opt-in Python scripting.** `KITSUNE_SCRIPTING=1` exposes `browser_run_python`,
+  which executes ordinary local Python with host file/network/environment access.
+  It is not a sandbox. Its supplied browser API uses the MCP client's permissions,
+  but code can deliberately bypass that API, read local credentials or create its
+  own connection. Mode/capability settings are not confinement for that code.
+  Enable it only for clients trusted with local code execution; its timeout/output
+  limits are lifecycle controls, not OS resource or security boundaries.
 - **Sensitive page data.** A connected agent can read page content and execute
   JavaScript in pages. Structural read tools (`browser_snapshot`, `browser_forms`,
   `browser_dom`, `browser_query`, `browser_html`, `browser_find`) redact

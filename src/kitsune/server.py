@@ -181,6 +181,12 @@ class KitsuneMCP(FastMCP):
         # A known tool this configuration leaves out names its setting instead of "Unknown tool" (#171).
         if name in UNPUBLISHED_TOOLS:
             return CallToolResult(content=[_compact_json(_unpublished_tool(name))], isError=True)
+        if SCRIPTING and name not in MINIMAL_TOOLS and (name in TOOL_GROUPS or name in GATEWAY_TOOLS):
+            return _error_result(
+                f"{name} is not in the minimal tool-set", "tool_moved_to_python", retryable=False,
+                hint="Use browser_run_python with the Python browser API; help(browser) or help(tab) lists methods. "
+                     "Unset KITSUNE_SCRIPTING and restart the client to use the legacy tool-set.",
+                state={"tool": name})
         if MODE != "act" and (arguments or {}).get("confirm_token") is not None:
             return CallToolResult(content=[_compact_json({
                 "error": f"{MODE} mode does not permit confirmation", "code": "mode_restricted",
@@ -419,6 +425,14 @@ if _unauthorized_caps:
 
 MODE = task_mode(os.environ.get("KITSUNE_MODE"))
 USER_TABS = user_tabs(os.environ.get("KITSUNE_USER_TABS"))
+SCRIPTING = os.environ.get("KITSUNE_SCRIPTING") == "1"
+# Frequent actions plus user handoff/recovery. read/draft use browser_tab_list instead of browser_tabs.
+# Selection evidence and Python replacements: docs/minimal-tools.md (#515).
+MINIMAL_TOOLS = frozenset({
+    "browser_tabs", "browser_tab_list", "browser_navigate", "browser_snapshot", "browser_find",
+    "browser_click", "browser_type", "browser_fill_form", "browser_select_option", "browser_press_key",
+    "browser_wait_for", "browser_take_screenshot", "browser_ask_user", "browser_resume", "browser_run_python",
+})
 # Sent at initialize, and resent by clients with every model request. The core tools keep
 # Playwright MCP's descriptions, which cannot say that the browser is shared with its user; without
 # this, agents avoid `select` to spare the user's view and work around background tabs instead of
@@ -442,6 +456,11 @@ mcp._mcp_server.instructions = (
        if permits_tool(MODE, "browser_tabs") else
        "browser_tab_list new_tab opens a background current tab. Until new_tab (an MCP restart clears "
        "current), reads use the viewed tab and writes/navigation need tab_id. Need the user? browser_ask_user."))
+if SCRIPTING:
+    mcp._mcp_server.instructions = mcp._mcp_server.instructions.replace(
+        "Batch/workflow newTab and tabs opened from current become current. ", "")
+    mcp._mcp_server.instructions += " Use browser_run_python for other operations and composition; scripts do not change selection."
+
 # The tool browser_tools_call is running; its bridge requests name it for the audit log.
 _gateway_call: ContextVar[str | None] = ContextVar("kitsune_gateway_call", default=None)
 _mcp_call_active: ContextVar[bool] = ContextVar("kitsune_mcp_call_active", default=False)
@@ -954,7 +973,9 @@ def _unlisted_tools() -> set[str]:
 
 
 # The gateway exists only when it reaches something tools/list does not already show.
-GATEWAY = bool(_unlisted_tools())
+if SCRIPTING:
+    PUBLISHED_TOOLS.intersection_update(MINIMAL_TOOLS)
+GATEWAY = not SCRIPTING and bool(_unlisted_tools())
 
 
 def _gateway_error(error: str, code: str, hint: str, **state) -> CallToolResult:
@@ -1108,6 +1129,32 @@ if GATEWAY:
     mcp.tool(annotations=ToolAnnotations(title="Publish tools", readOnlyHint=False, destructiveHint=False,
                                          idempotentHint=True, openWorldHint=False))(browser_tools_publish)
     PUBLISHED_TOOLS |= GATEWAY_TOOLS
+
+
+async def browser_run_python(
+    code: Annotated[str, Field(description="Python code. Use the supplied browser; assign a JSON result or print selected output.",
+                               min_length=1, max_length=64000)],
+    timeout: Annotated[float, Field(description="Execution deadline in seconds, including browser calls.", gt=0, le=120)] = 30,
+) -> CallToolResult:
+    """Run trusted local Python with host file/network access; this is not a sandbox.
+    browser uses this client's session and browser permissions; tab is the current MCP
+    selection (None before selection). browser.tabs(), browser.tab(id), browser.new_tab(url);
+    tab.snapshot(), fill(target, value), query(selector, fields=["text", "href"]).
+    Variables reset each call; tabs persist. Scripts do not change the MCP selection.
+    Print selected output or assign JSON-compatible result. 16 KB output/result, 100 API calls.
+    A failed API call stops execution, even if caught. Earlier writes remain; never replay
+    the whole script. Use direct tools for approval and screenshots. help(tab.query) shows
+    a method's signature; docs/python-api.md has the API reference.
+    """
+    from .script_runner import run_python
+    result = await run_python(code, _client, timeout=timeout, tab_id=playwright_tools._current_tab)
+    return CallToolResult(content=[_compact_json(result)], isError=_failed(result))
+
+
+# Explicit local-code execution opt-in selects the minimal surface; legacy remains the default.
+if SCRIPTING:
+    mcp.tool(annotations=ToolAnnotations(title="Run Python", **DESTRUCTIVE))(browser_run_python)
+    PUBLISHED_TOOLS.add("browser_run_python")
 
 
 # FastMCP logs at INFO through Rich, so every tool call printed a line from the MCP server and

@@ -58,6 +58,133 @@ it, but replacing a bridge drops its clients' keep-alives, intercepts and resume
 checkpoints, so the Python API does that only with `replace_bridge=True` (or after
 `kitsune-bridge stop`).
 
+## Reusing a host's client
+
+An application that already owns a `BridgeClient` can wrap it without creating
+another connection or changing its authority:
+
+```python
+from kitsune import Browser
+
+browser = Browser(existing_client)  # host code: the same client used by its direct tools
+```
+
+This keeps that client's owner/client IDs, live handoff session, capability groups,
+mode and user-tab setting. Creating another `Browser(existing_client)` does not
+create another browser session. Pass explicit tab IDs from `browser.tabs()` or
+`new_tab()`; wrapping a client does not select a global current tab.
+
+Do not call `connect()` to attach to an MCP session: it creates a separate developer
+client with unrestricted capability groups. `Browser` itself neither limits Python's
+host access nor prevents code from modifying its client. It is an API wrapper, not a
+script sandbox. A scripting host owns the execution boundary and approval channel;
+an agent-supplied `confirm=lambda _: True` is not user approval. The
+[MCP scripting tool](#python-scripting-through-mcp) uses a host-mediated transport
+rather than giving the worker the actual `BridgeClient`.
+
+## Python scripting through MCP
+
+On macOS, set `KITSUNE_SCRIPTING=1` in the MCP server environment and restart the
+client to select the [minimal tool-set](minimal-tools.md), including
+`browser_run_python(code, timeout=30)`. It is **off by default**.
+This opt-in permits ordinary local Python execution: **not a sandbox**, including
+host files, environment, imports, subprocesses and network access. Only enable it
+for a client you trust with local code execution. `KITSUNE_MODE` and `KITSUNE_CAPS`
+restrict the supplied browser transport, not arbitrary Python or independent
+connections made by the code. No new runtime installation is needed: it uses the
+MCP server's Python interpreter.
+
+```python
+# code passed to browser_run_python, after opening/selecting a tab with direct tools
+for target, value in {"#name": "Ada", "#note": "Please review."}.items():
+    tab.fill(target, value)
+result = tab.snapshot()
+```
+
+- `browser` is the Python API, forwarding each request through the MCP host's
+  existing client/session. **Do not call `kitsune.connect()`** to reuse that session.
+  Default `core` grants include snapshot and common actions; methods such as
+  `query`, `text` and `forms` need the `read` grant. Configure additional grants
+  explicitly, e.g. `KITSUNE_CAPS=core,browse,read`, rather than bypassing the client.
+- `tab` is the current MCP selection at invocation start, or `None` before selection.
+  Use `browser.new_tab(url)` or `browser.tab(id)` for other tabs; obtain actual IDs
+  from `browser.tabs()`, not the indexes of the legacy direct tab list. Scripts do
+  not change the MCP selection.
+- Every invocation has fresh Python variables and a temporary working directory,
+  removed on exit. Browser tabs persist. Ordinary synchronous Python is supported;
+  there is no persistent REPL or top-level `await`.
+- Use `print(...)` or assign JSON-compatible `result`. The response contains
+  `output`, optional `result` and a short `operations` list. Intermediate page
+  results are not automatically returned to the model. Use direct screenshot tools
+  for image content; Python screenshot bytes are not JSON results.
+- Limits: 64,000 UTF-8 bytes of code; 16,000 bytes shared by printed output and the
+  selected result; 100 mediated API calls; a 30-second default deadline, at most
+  120 seconds. Internal browser replies are capped at 2 MiB. Operation metadata and
+  a bounded failed-operation summary accompany the output.
+- A failed API call stops the invocation even if Python catches exceptions. Its
+  failure is returned without approval/resume tokens. Ask for approval through a
+  direct tool, then explicitly run only the remaining work—never replay the script.
+- Timeout/cancellation kills and reaps the worker process group. An already-sent
+  bridge command can still finish; an `unknown` operation needs a fresh page read
+  before another write. `ok` in the operation list means the API call succeeded,
+  not proof of every intended page effect. Host access or deliberately detached
+  processes are outside these browser/lifecycle guarantees.
+
+The bridge must already be running (normal MCP startup starts it). The scripting
+transport does not start/restart a bridge or retry a request. To disable the tool,
+unset `KITSUNE_SCRIPTING` and restart the MCP client; this restores the legacy
+direct tool list. Keep guidance short: `help(browser.new_tab)` or `help(tab.query)` in a
+script prints that method's signature/docstring on demand; the tables below give
+the broader reference.
+
+## Composition in ordinary Python
+
+The existing API already covers navigation, reads, page actions, screenshots, waits,
+inspection and browser data. The tables below are the reference; no separate tool
+catalog lookup is needed. Use normal loops and conditions instead of a batch/workflow
+language when writing Python.
+
+Read an owned background tab:
+
+```python
+tab = browser.new_tab("https://example.com/")
+try:
+    print(tab.info()["title"])
+    print(tab.text())
+finally:
+    tab.close()
+```
+
+Fill a draft in an explicitly chosen, authorized tab without submitting it:
+
+```python
+tab = browser.tab(draft_tab_id)
+for target, value in {"#name": "Ada", "#note": "Please review this draft."}.items():
+    tab.fill(target, value)
+print(tab.forms())  # observe the final values, not only successful dispatches
+```
+
+Filter a bounded set of results and return only what is useful:
+
+```python
+tab = browser.tab(results_tab_id)
+links = tab.query("main a[href]", fields=["text", "href"], limit=100)
+selected = [link for link in links if "Python" in link.get("text", "")]
+print(selected[:10])
+```
+
+If the query was truncated, it warns: these are matches **within the returned
+subset**, not a complete page search. Narrow the selector or increase `limit` when
+needed. Permission failures and other failed calls raise `KitsuneError` and stop an
+uncaught loop; earlier writes remain applied. Do not restart the whole loop after a
+timeout or disconnect—observe the affected page before deciding what is left to do.
+
+Less-frequent features such as `tab.readability()`, `tab.network.resources()`,
+`tab.local_storage`, `browser.cookies` and `browser.history` already have Python
+methods. Availability does not grant permission: a host's capability/mode limits
+still apply. The [minimal surface mapping](minimal-tools.md#moving-less-frequent-tools-to-python)
+shows which direct tools move to these APIs when scripting is enabled.
+
 ## Tabs
 
 | `Browser` method | Returns |
@@ -93,7 +220,7 @@ or other clients' tabs is refused by default. `browser.pool` keeps reusable back
 | `snapshot(target=None, max_depth=None, text=False)` | The accessibility-style tree with element refs (`e12`), as `str` ([Snapshots](api-reference.md#browser_snapshottab_idnone-selectornone-refnone-max_depthnone-textfalse)) |
 | `markdown(target=None)` | The page, or one subtree, as Markdown |
 | `html(target)` | One element's `outerHTML` (`"html"` for the whole page) |
-| `query(selector, fields=None, limit=50)` | Fields of every element matching a CSS selector, as a list |
+| `query(selector, fields=None, limit=50)` | Fields of matching elements up to `limit`, as a list; warns if results are truncated |
 | `find(query)` | Elements matching a description such as `"login button"`, best first, each with a `ref` |
 | `forms()` | Every form field with its label and value |
 | `links(internal_only=False)` | The page's links |
