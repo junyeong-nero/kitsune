@@ -102,13 +102,69 @@ def _published_schema(schema: dict) -> dict:
         for name, parameter in schema["properties"].items()}}
 
 
+# Shorter parameter descriptions for the retained core tools on the KITSUNE_SCRIPTING surface only (#521):
+# inputSchema is most of its definition characters. Names, types, enums, required and defaults stay
+# Playwright MCP's; None drops a description. The legacy list stays verbatim. Per-tool entries win.
+_SCRIPTING_DESCRIPTIONS: dict[str, dict[str, str | None]] = {
+    "*": {"element": "Element description for the approval prompt",
+          "target": "Snapshot ref or unique selector",
+          "filename": "Save to this workspace-relative file instead"},
+    "browser_find": {"text": "Case-insensitive substring; text or regex, not both",
+                     "regex": 'Case-sensitive regex; "/x/i" adds flags'},
+    "browser_fill_form": {"fields": None, "name": "Field name", "type": None,
+                          "value": "checkbox: true/false; combobox: option text"},
+    "browser_type": {"text": None, "submit": "Press Enter after",
+                     "slowly": "Type one character at a time, for key handlers"},
+    "browser_press_key": {"key": "Key name or character, e.g. ArrowLeft or a"},
+    "browser_navigate": {"url": None},
+    "browser_take_screenshot": {"type": "Default: from filename, else png",
+                                "filename": "Workspace-relative file; default page-{timestamp} in the output dir",
+                                "fullPage": "Full scrollable page; not with target",
+                                "scale": "css pixels (smaller) or device pixels"},
+    "browser_snapshot": {"depth": "Max tree depth",
+                         "boxes": "Add [box=x,y,width,height], viewport CSS pixels"},
+    "browser_click": {"doubleClick": None, "button": None, "modifiers": None},
+    "browser_select_option": {"values": "Option values to select"},
+    "browser_wait_for": {"time": "Seconds, at most 30", "text": "Text to appear",
+                         "textGone": "Text to disappear"},
+}
+
+
+def _scripting_schema(name: str, schema: dict) -> dict:
+    """schema with _SCRIPTING_DESCRIPTIONS applied to its parameters, nested ones too, and no $schema."""
+    texts = {**_SCRIPTING_DESCRIPTIONS["*"], **_SCRIPTING_DESCRIPTIONS.get(name, {})}
+
+    def shorten(subschema):
+        if not isinstance(subschema, dict):
+            return subschema
+        result = {keyword: value for keyword, value in subschema.items() if keyword != "$schema"}
+        if isinstance(result.get("properties"), dict):
+            properties = {}
+            for parameter, value in result["properties"].items():
+                value = shorten(value)
+                if parameter in texts:
+                    value = {k: v for k, v in value.items() if k != "description"}
+                    if texts[parameter] is not None:
+                        value["description"] = texts[parameter]
+                properties[parameter] = value
+            result["properties"] = properties
+        if "items" in result:
+            result["items"] = shorten(result["items"])
+        return result
+
+    return shorten(schema)
+
+
 def _listed(tool):
-    """A registered tool as tools/list publishes it: the core tools verbatim, restricted in read/draft."""
+    """A registered tool as tools/list publishes it: the core tools verbatim, restricted in read/draft
+    and with shorter parameter descriptions on the scripting surface."""
     playwright = playwright_tools.SCHEMAS.get(tool.name)
     if playwright:
         description = playwright["description"]
         # A deep copy: the mode filter below edits the schema, which SCHEMAS must keep.
         schema = json.loads(json.dumps(playwright["inputSchema"]))
+        if SCRIPTING:
+            schema = _scripting_schema(tool.name, schema)
         tool = tool.model_copy(update={"annotations": ToolAnnotations(**playwright["annotations"])})
     else:
         description = inspect.cleandoc(tool.description) if tool.description else tool.description

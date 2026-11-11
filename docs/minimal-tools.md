@@ -119,9 +119,13 @@ including the Python tool's short API guide):
 | Surface | Tools | Definitions | Server instructions | Combined |
 | --- | ---: | ---: | ---: | ---: |
 | Legacy, scripting off | 27 | 21,747 | 537 | 22,284 |
-| Minimal, scripting on | 14 | 12,589 | 564 | 13,153 |
+| Minimal, scripting on | 14 | 9,647 | 564 | 10,211 |
 
-That is about 42% fewer definition characters, or 41% including instructions.
+That is about 56% fewer definition characters, or 54% including instructions.
+On this surface only, the retained Playwright tools publish shorter parameter
+descriptions and no `$schema` (#521); their names, types, enums, required
+parameters and defaults are unchanged, and the legacy list stays verbatim. Before
+that change the minimal definitions were 12,589 characters.
 These are **not model tokens**. Generated Python, on-demand help and task results
 are additional costs; no end-to-end token saving has been measured. The local
 checks cover functionality, permission refusals and lifecycle, not a controlled

@@ -29,7 +29,8 @@ async def main():
             result = {"tools": names, "caps": server._client.caps, "mode": server._client.mode,
                       "definition_chars": sum(len(json.dumps(tool.model_dump(mode="json", exclude_none=True),
                                                              ensure_ascii=False, separators=(",", ":"))) for tool in listed.tools),
-                      "instructions_chars": len(server.mcp._mcp_server.instructions)}
+                      "instructions_chars": len(server.mcp._mcp_server.instructions),
+                      "schemas": {tool.name: tool.inputSchema for tool in listed.tools}}
             if "browser_run_python" in names:
                 tool = next(tool for tool in listed.tools if tool.name == "browser_run_python")
                 result.update(schema=tool.inputSchema, description=tool.description)
@@ -76,6 +77,24 @@ class ScriptMcpTests(unittest.TestCase):
         legacy, minimal = self.probe(False), self.probe(True)
         self.assertLess(minimal["definition_chars"] + minimal["instructions_chars"],
                         legacy["definition_chars"] + legacy["instructions_chars"])
+
+    def test_scripting_shortens_only_core_parameter_descriptions(self):
+        from kitsune import playwright_tools
+
+        def structure(schema):
+            if isinstance(schema, dict):
+                return {keyword: structure(value) for keyword, value in schema.items()
+                        if keyword not in ("description", "$schema")}
+            return schema
+
+        legacy, minimal = self.probe(False)["schemas"], self.probe(True)["schemas"]
+        shared = set(minimal) & set(playwright_tools.SCHEMAS)
+        self.assertEqual(len(shared), 11)
+        for name in shared:
+            with self.subTest(tool=name):
+                self.assertEqual(legacy[name], playwright_tools.SCHEMAS[name]["inputSchema"], "legacy stays verbatim")
+                self.assertEqual(structure(minimal[name]), structure(legacy[name]))
+                self.assertLess(len(json.dumps(minimal[name])), len(json.dumps(legacy[name])))
 
     def test_explicit_caps_and_publication_limits_are_not_broadened(self):
         result = self.probe(True, caps="core,read", publish="read")
