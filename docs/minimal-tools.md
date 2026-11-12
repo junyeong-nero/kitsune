@@ -1,9 +1,10 @@
-# Code-first tools + Python (experiment)
+# Code-first tools + Python
 
-This branch experiments with six default tools instead of 0.8.0's fourteen.
-It is not a released or measured efficiency improvement. The API and browser engine
-are unchanged; ordinary reads, actions and waits now use Python, with direct tools
-for user control, images and recovery. This is the default tool-set on this branch. It **permits trusted local Python execution**:
+The default on `main` is six tools instead of 0.8.0's fourteen; this change is not
+part of the 0.8.0 release. A smaller catalog does not guarantee lower end-to-end
+token use or latency. The API and browser engine are unchanged; ordinary reads,
+actions and waits use Python, with direct tools for user control, images and recovery.
+This tool-set **permits trusted local Python execution**:
 it is not a sandbox, and scripts have ordinary host file/network access. See
 [execution and trust limits](python-api.md#python-scripting-through-mcp).
 Set `KITSUNE_SCRIPTING=0` in the MCP server environment and restart the client to
@@ -76,8 +77,8 @@ still cannot submit tokens. The script as a whole is never checkpointed or resum
 
 ## Historical fourteen-tool selection (#515)
 
-The following evidence describes the released fourteen-tool surface, not this
-six-tool experiment. A fresh end-to-end comparison is required before changing defaults.
+The following historical evidence describes 0.8.0's fourteen-tool surface, not the
+six-tool default. It explains the previous selection, not the performance of code-first.
 
 Offline review of the existing [main `ad04bac` cohort](https://github.com/junyeong-nero/kitsune-benchmark/blob/52e455bd4387ca76fac905e220536b5ab350b809/docs/results/2026-11-08-main-ad04bac.md):
 **167 Kitsune runs, 60 distinct task IDs, 1,272 agent calls**. Count unique assistant
@@ -138,6 +139,6 @@ descriptions and no `$schema` (#521); their names, types, enums, required
 parameters and defaults are unchanged, and the legacy list stays verbatim. Before
 that change the minimal definitions were 12,589 characters.
 These are **not model tokens**. Generated Python, on-demand help and task results
-are additional costs; no end-to-end token saving has been measured. The local
-checks cover functionality, permission refusals and lifecycle, not a controlled
-efficiency claim.
+are additional costs; this historical schema-size comparison did not measure
+end-to-end token savings. Its local checks cover functionality, permission refusals
+and lifecycle, not a controlled efficiency claim.

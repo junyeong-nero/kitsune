@@ -626,7 +626,8 @@ class ServerToolTests(unittest.TestCase):
             post.assert_called_with("/api/set-policy", {"ask": True, "askUrls": ["checkout"]})
 
     def test_annotations_are_unchanged_hints(self):
-        tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
+        # Annotations remain on registered tools even when default discovery omits them.
+        tools = asyncio.run(server.mcp.all_tools())
         self.assertTrue(tools["browser_tabs"].annotations.destructiveHint)
         self.assertFalse(tools["browser_click"].annotations.readOnlyHint)
 

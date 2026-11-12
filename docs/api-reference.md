@@ -6,8 +6,8 @@ Base URL: `http://127.0.0.1:47651`
 
 The MCP server registers all 108 tools for every client (#525). The groups `core`,
 `browse`, `read`, `inspect`, `tabs`, `automation`, `network`, `admin`, `storage` and
-`history` only sort them. `tools/list` shows the 14-tool [minimal surface](minimal-tools.md)
-by default, or with `KITSUNE_SCRIPTING=0` the `core` group and the
+`history` only sort them. On `main`, `tools/list` shows the 6-tool [code-first surface](minimal-tools.md)
+by default (0.8.0 has fourteen), or with `KITSUNE_SCRIPTING=0` the `core` group and the
 [tool gateway](#tool-gateway). See [Tools](tools.md) for the complete tool list per group.
 
 **The `core` group is Playwright MCP's 25 core tools and Kitsune's
@@ -36,7 +36,7 @@ Playwright's replace (`browser_keypress`, `browser_js`, `browser_screenshot`, `b
 `browser_console_logs`, `browser_double_click`, and Kitsune's own signatures of the
 shared names) are no longer MCP tools; their sections document the bridge commands.
 
-On this branch's experimental code-first surface, old direct names remain callable
+On the code-first surface, old direct names remain callable
 but are not advertised. `browser_tools_call(name)` describes a direct recovery tool;
 supplying `arguments` executes it. Search/publication still return `tool_moved_to_python`.
 

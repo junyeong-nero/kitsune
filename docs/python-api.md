@@ -79,7 +79,7 @@ rather than giving the worker the actual `BridgeClient`.
 
 ## Python scripting through MCP
 
-The experimental [code-first tool-set](minimal-tools.md) uses
+The default [code-first tool-set](minimal-tools.md) on `main` uses
 `browser_run_python(code, timeout=30)` for ordinary reads, actions and waits; `KITSUNE_SCRIPTING=0` in the MCP server
 environment selects the legacy direct tools without it.
 It permits ordinary local Python execution: **not a sandbox**, including
