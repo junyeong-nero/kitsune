@@ -9,12 +9,14 @@ silently dropped.
 
 | Setting | Tools in `tools/list` | The other tools |
 | --- | --- | --- |
-| Default (`KITSUNE_SCRIPTING` unset or `1`) | 14: the [minimal surface](minimal-tools.md) | Python API methods in `browser_run_python` |
+| Default (`KITSUNE_SCRIPTING` unset or `1`) | 6: the experimental [code-first surface](minimal-tools.md) | Python API; direct recovery via `browser_tools_call` |
 | `KITSUNE_SCRIPTING=0` | 30: the 27 `core` tools and 3 gateway tools | [Gateway](#finding-tools-without-a-restart) search, call and publish |
 
-By default the server publishes the [14-tool minimal surface](minimal-tools.md),
+On this experimental branch the server publishes the [6-tool code-first surface](minimal-tools.md),
 including `browser_run_python` for trusted local Python composition.
-Less-frequent operations use the Python API; gateway search/call/publish is absent.
+Ordinary reads, inputs and waits use Python. `browser_tools_call(name)` describes a direct
+recovery tool; supplying `arguments` executes it. Search and publication are absent.
+Old direct names remain callable for compatibility but are not advertised.
 Python has host file/network access, **not a sandbox**. See
 [Python scripting](python-api.md#python-scripting-through-mcp).
 

@@ -15,6 +15,7 @@ import time
 import anyio
 
 from .errors import failed
+from .tool_approvals import ROUTE_TOOLS
 
 CODE_LIMIT = 64000
 OUTPUT_LIMIT = 16000  # UTF-8 bytes, shared by printed output and the selected result
@@ -134,7 +135,11 @@ async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
                     reply = _without_tokens(reply)
                     if failed(reply):
                         if reply.get("code") == "needs_user":
-                            reply["hint"] = "Use a direct tool for user help or approval, then a new call for the remaining work."
+                            if route in ROUTE_TOOLS:
+                                reply["recovery_tool"] = ROUTE_TOOLS[route]
+                            reply["hint"] = ("Use browser_tools_call(name=recovery_tool) to inspect the direct tool, "
+                                             "then execute only the held operation with arguments for approval/help. "
+                                             "Earlier script operations remain done; never replay them.")
                         if len(json.dumps(reply, ensure_ascii=False).encode("utf-8")) > OUTPUT_LIMIT:
                             reply = {"error": str(reply.get("error", "Browser operation failed"))[:1000],
                                      "code": str(reply.get("code", ""))[:100], "truncated": True}
@@ -182,5 +187,5 @@ async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
     if not result.get("ok"):
         result.update(ok=False, retryable=False,
                       hint="Earlier operations may have taken effect. Inspect the page; do not replay the whole script. "
-                           "Use direct tools for user approval, then make an explicit new call for the remaining work.")
+                           "Use browser_tools_call for direct approval/recovery, then a new script for remaining work.")
     return {**result, "output": output.decode("utf-8", "ignore"), "operations": operations}

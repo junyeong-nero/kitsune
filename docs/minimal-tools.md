@@ -1,6 +1,9 @@
-# Minimal tools + Python
+# Code-first tools + Python (experiment)
 
-This is the default tool-set (#525). It **permits trusted local Python execution**:
+This branch experiments with six default tools instead of 0.8.0's fourteen.
+It is not a released or measured efficiency improvement. The API and browser engine
+are unchanged; ordinary reads, actions and waits now use Python, with direct tools
+for user control, images and recovery. This is the default tool-set on this branch. It **permits trusted local Python execution**:
 it is not a sandbox, and scripts have ordinary host file/network access. See
 [execution and trust limits](python-api.md#python-scripting-through-mcp).
 Set `KITSUNE_SCRIPTING=0` in the MCP server environment and restart the client to
@@ -9,17 +12,19 @@ selects this tool-set; any other value fails at startup.
 
 ## Direct tools
 
-The list is 14 tools:
+The list is six tools:
 
-- `browser_tabs`, `browser_navigate`
-- `browser_snapshot`, `browser_find`
-- `browser_click`, `browser_type`, `browser_fill_form`, `browser_select_option`
-- `browser_press_key`, `browser_wait_for`, `browser_take_screenshot`
-- `browser_ask_user`, `browser_resume`
-- `browser_run_python`
+- `browser_run_python`: ordinary reads, inputs, waits, conditions and filtering
+- `browser_tabs`: selection, handoff and tab lifecycle
+- `browser_take_screenshot`: return images to the model
+- `browser_ask_user`, `browser_resume`: human help and direct-call continuation
+- `browser_tools_call`: inspect/execute one direct operation for approval or recovery
 
-Use a direct tool for a simple action; use Python for loops, conditions, filtering
-and less-frequent operations. `browser_run_python` supplies `browser` and the current
+Use Python for simple actions too: `result = tab.scroll('down', 700)`.
+Group only actions whose targets are already known, then return the observation
+needed for the next decision, e.g. `result = tab.snapshot(text=True)`. Do not guess
+refs or force an unknown workflow into one script. Read method-level help rather
+than the whole API when one signature is missing. `browser_run_python` supplies `browser` and the current
 MCP-selected `tab`, so `tab.hover("#menu")` needs no index-to-ID conversion.
 `help(tab.hover)` prints a method's signature/docstring when needed. The Python
 tool's guide lists examples of the calls agents got wrong. `browser.tabs()` returns tab dicts,
@@ -27,8 +32,8 @@ not `Tab` objects; wrap a chosen page tab dict with `browser.tab(t["id"])`.
 
 Every Python method is available (#525): page text, queries, forms, scrolling,
 cookies and history included. Approvals and the user-tab protection apply to its
-browser requests as to direct calls. There is no search/call/publish step or dynamic
-tool publication in this surface.
+browser requests as to direct calls. There is no search/publish step or dynamic
+tool publication. The recovery dispatcher is not the ordinary browsing loop.
 
 ## Moving less-frequent tools to Python
 
@@ -54,15 +59,25 @@ Other groups also stay off this MCP list: their existing Python methods are in t
 Methods return the existing bridge/API results;
 this is not a schema-compatible replacement for every old MCP result.
 
-A call by an old tool name reports `tool_moved_to_python`. A tool the user requires approval for
-is asked about mid-script and its request sent again once allowed
-([Tools that need your approval](your-tabs.md#tools-that-need-your-approval)). Other approval
-stops (ask-before-act, handoffs) stop the script and never replay completed work. Use a retained direct action to ask for approval where possible;
-for an approval-gated operation with no suitable retained direct tool, use the
-legacy surface or a developer-written, user-mediated Python program. Automatic
-script approval/resume is not part of this minimal version.
+Old direct tool names remain callable for compatibility, with unchanged validation
+and approval handling; `tools/list` is discovery, not an authorization boundary.
+Clients that require advertised names can use `browser_tools_call`.
 
-## Why these tools (#515)
+A tool the user requires approval for is asked about mid-script and its request sent
+again once allowed ([tool approvals](your-tabs.md#tools-that-need-your-approval)).
+Other approval stops end the script and never replay completed work. A held operation
+reports `failed_operation.recovery_tool`: call `browser_tools_call` with that name and
+**omit arguments** to inspect its schema without acting. Then supply an argument object
+to execute only the held operation through the existing direct approval path. An explicit
+`{}` executes a no-argument tool; it is not a schema lookup. Handoffs use `browser_tabs`.
+After recovery, inspect the page and run only remaining work in a new script.
+Non-eliciting clients retain the direct tool's explicit confirm-token fallback; scripts
+still cannot submit tokens. The script as a whole is never checkpointed or resumed.
+
+## Historical fourteen-tool selection (#515)
+
+The following evidence describes the released fourteen-tool surface, not this
+six-tool experiment. A fresh end-to-end comparison is required before changing defaults.
 
 Offline review of the existing [main `ad04bac` cohort](https://github.com/junyeong-nero/kitsune-benchmark/blob/52e455bd4387ca76fac905e220536b5ab350b809/docs/results/2026-11-08-main-ad04bac.md):
 **167 Kitsune runs, 60 distinct task IDs, 1,272 agent calls**. Count unique assistant

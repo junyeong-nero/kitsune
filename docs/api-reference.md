@@ -36,8 +36,9 @@ Playwright's replace (`browser_keypress`, `browser_js`, `browser_screenshot`, `b
 `browser_console_logs`, `browser_double_click`, and Kitsune's own signatures of the
 shared names) are no longer MCP tools; their sections document the bridge commands.
 
-On the minimal surface a call to a tool it moved to Python returns `tool_moved_to_python`
-with a hint naming `browser_run_python`.
+On this branch's experimental code-first surface, old direct names remain callable
+but are not advertised. `browser_tools_call(name)` describes a direct recovery tool;
+supplying `arguments` executes it. Search/publication still return `tool_moved_to_python`.
 
 `browser_status` adds `mcp_tools` to the bridge status: this MCP server's `surface`
 (`minimal` or `legacy`), its audit `client` id and its tab `owner` id
