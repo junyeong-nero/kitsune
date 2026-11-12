@@ -8,6 +8,9 @@
 | First start times out in the client | Run `uvx --from kitsune-browser-mcp kitsune-bridge status` once to fill the uv cache, then reconnect |
 | uv cannot find `kitsune-browser-mcp` | Check that PyPI is reachable (or your configured index mirrors it) |
 | uv cannot fetch a `git+https://` source | Check that `git` is installed and on the client's `PATH`, and that GitHub is reachable |
+| After upgrading to 0.8.0 the server fails to start with `Remove KITSUNE_CAPS from the MCP server environment` (or `KITSUNE_PUBLISH`, `KITSUNE_MODE`) | Those settings were removed: delete them from your MCP client's configuration and restart it. Every tool is available now; choose which ones wait for your approval in the extension's options ([Your tabs and approvals](your-tabs.md)) |
+| A tool call waits, or returns `needs_user` with `state.detail: "tool_approval"` | You require approval for that tool: answer in the Kitsune toolbar popup (or the client's prompt). Uncheck it under [Tools that need your approval](your-tabs.md#tools-that-need-your-approval) to stop being asked |
+| A tool the agent used before now reports `tool_moved_to_python` | 0.8.0's default list is the [minimal surface](minimal-tools.md): the agent uses `browser_run_python` for it. `KITSUNE_SCRIPTING=0` restores the legacy list |
 | An upgrade is not picked up | Restart the MCP client; then refresh with `uvx --refresh …` (see [Upgrading](installation.md#upgrading)) |
 | The bridge restarts every time a different client starts | Clients use different sources or refs (see [compatibility](installation.md#extension-and-server-compatibility)) |
 | `extension_connected: false` | Extension installed and enabled in `about:addons`? With the developer build, the browser restarted, so the temporary add-on is gone? |

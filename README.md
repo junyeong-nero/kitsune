@@ -72,7 +72,7 @@ before using sensitive accounts.
 The full documentation is at **[junyeong-nero.github.io/kitsune](https://junyeong-nero.github.io/kitsune/)**:
 
 - [Installation](https://junyeong-nero.github.io/kitsune/installation/): every MCP client, version pinning, upgrades
-- [Your tabs and approvals](https://junyeong-nero.github.io/kitsune/your-tabs/): what the agent may do to your tabs, and how you approve
+- [Your tabs and approvals](https://junyeong-nero.github.io/kitsune/your-tabs/): what limits the agent: protected tabs, per-tool approvals, ask-before-act
 - [Tools](https://junyeong-nero.github.io/kitsune/tools/): the minimal and legacy tool lists, and the tool groups
 - [Python API](https://junyeong-nero.github.io/kitsune/python-api/): drive the browser from your own scripts with `pip install kitsune-browser`
 - [Troubleshooting](https://junyeong-nero.github.io/kitsune/troubleshooting/) ·

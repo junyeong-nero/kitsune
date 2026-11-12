@@ -1,10 +1,16 @@
 # Tools
 
 Every tool is available to every client (#525): there are no capability groups or task
-modes to configure. Which actions need your approval is set in the Kitsune extension's
-options. `KITSUNE_CAPS`, `KITSUNE_PUBLISH` and `KITSUNE_MODE` were removed; a
+modes to configure. Which tools need your approval is set in the Kitsune extension's
+options; [Your tabs and approvals](your-tabs.md) lists every check that limits the agent.
+`KITSUNE_CAPS`, `KITSUNE_PUBLISH` and `KITSUNE_MODE` were removed in 0.8.0; a
 configuration that still sets one fails at startup, so the limit it expected is not
 silently dropped.
+
+| Setting | Tools in `tools/list` | The other tools |
+| --- | --- | --- |
+| Default (`KITSUNE_SCRIPTING` unset or `1`) | 14: the [minimal surface](minimal-tools.md) | Python API methods in `browser_run_python` |
+| `KITSUNE_SCRIPTING=0` | 30: the 27 `core` tools and 3 gateway tools | [Gateway](#finding-tools-without-a-restart) search, call and publish |
 
 By default the server publishes the [14-tool minimal surface](minimal-tools.md),
 including `browser_run_python` for trusted local Python composition.
