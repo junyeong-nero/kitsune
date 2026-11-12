@@ -583,7 +583,7 @@ class RealBrowserHandoffTests(harness.RealBrowserTestCase):
         self.assert_card(card, url, "Tab access request", ["Decline", "Approve handoff"])
         self.assertEqual(badge, {"text": "1", "shown": "1"}, "the popup asked too")
         for part in (f"{CLIENT_NAME} requests this tab: {REASON}", f"Tab: Handoff {name} - {url}",
-                     "Accept or Continue hands this tab to this client"):
+                     "Approve hands this tab to this client"):
             self.assertIn(part, prompt["message"])
         self.assertNotIn("Tab access request", [card["label"] for card in retired],
                          "the client's answer retired the popup's prompt")
@@ -591,7 +591,7 @@ class RealBrowserHandoffTests(harness.RealBrowserTestCase):
         return url, result, listed, write
 
     def test_the_client_asks_with_the_popup_and_its_accept_hands_the_tab_off(self):
-        url, granted, listed, acted = self.client_answers("client-accept", ("accept", None))
+        url, granted, listed, acted = self.client_answers("client-accept", ("accept", "Approve"))
         self.assertEqual(granted, (False, {"ok": True, "tabId": self.tab(url)["id"], "owned": True}))
         self.assertIs(listed.get("owned"), True, listed)
         self.assert_acted(acted, url, 1)

@@ -1341,7 +1341,7 @@ On an MCP client with elicitation (#494), the popup and the client's prompt ask 
 for up to 120 seconds, and the first answer counts. The extension returns the request's
 confirm token at once, to the MCP server only: the server asks in the client's prompt and
 waits for the popup's answer, and the popup lists the request from then on. A popup answer
-closes the client's prompt. Accept in the client's prompt hands the tab off. Decline or
+closes the client's prompt. Choosing Approve in the client's required decision field hands the tab off. Decline or
 dismissing it declines the request, and the popup's prompt closes too. A decline or dismissal
 the client returns within 1 second is not the user's: it is the client's policy (Codex with
 `approval_policy = "never"` declines every prompt) or a hook. Then, as when the client's prompt
@@ -2004,17 +2004,16 @@ ask in the browser and the client's prompt at once, and do not offer resume chec
 The client declares the `elicitation` capability (form mode, protocol 2025-06-18 or
 later) at initialize; Claude Code (2.1.76 and later) and Codex do.
 
-1. The MCP server asks the client to ask the user, in form mode. The prompt is one step
-   (#494), a form without fields (`requestedSchema` `{"type": "object", "properties": {}}`)
-   that the client's own Accept approves (Continue in pi) and Decline declines. Codex
-   (`clientInfo.name` `codex-mcp-client`) gets one field to choose in instead, Approve or
-   Decline: it auto-accepts a form without fields when its permission prompts are
-   auto-approved, and declines one with a required field. The prompt names the request
+1. The MCP server asks the client to ask the user, in form mode. Every client receives a
+   required `decision` field with Approve or Decline choices (#534). A bare Accept response
+   or a missing or invalid decision never approves the request. This avoids treating an
+   automatically accepted empty form as approval, but cannot establish human involvement
+   if a client automatically supplies a valid decision. The prompt names the request
    (`state.message`), the tool, the target the call acts on (its ref or selector), the call's
    `element` labeled as the agent's description of it, the call's other arguments (text, URL,
    function, field values, `submit`; cut at 500 characters), the tab's title and URL where the
    result has them, and why it was held (`state.detail`, and the ask-before-act description).
-2. On Accept (Approve), the MCP server repeats the identical call once with the token. The
+2. On an explicit Approve decision, the MCP server repeats the identical call once with the token. The
    model never receives the token, so it cannot approve itself. The repeat's result is the call's result.
    The repeat starts at the held request: requests of the call that ran before it are not sent
    again (the text of `browser_type(submit=true)` when its Enter was held, the fields

@@ -244,15 +244,31 @@ class McpApprovalTests(ElicitationTestCase):
     def test_the_clients_prompt_allows_the_call(self):
         async def allow(params):
             self.assertIn("browser_cookies", params.message)
+            self.assertEqual(params.requestedSchema, server.TOOL_APPROVAL_SCHEMA)
             return types.ElicitResult(action="accept", content={"decision": "Allow once"})
 
-        result, payload = self.call("browser_cookies", {"op": "get", "url": "https://a.test/"}, allow, client=CODEX)
+        result, payload = self.call("browser_cookies", {"op": "get", "url": "https://a.test/"}, allow)
         self.assertFalse(result.isError, payload)
         self.assertEqual(len(self.cookies()), 1)
         self.assertEqual(len(self.prompts), 1)
         decided = [params for action, params in self.extension.sent if action == "toolApproval" and "decision" in params]
         self.assertEqual(decided[0]["decision"], "once")
         self.assertNotIn("tok", self.text, "the model never sees the token")
+
+    def test_bare_accept_does_not_allow_the_tool(self):
+        self.extension.popup = {"error": "declined", "code": "needs_user",
+                                "state": {"reason": "approval", "detail": "tool_approval",
+                                          "tool": "browser_cookies", "decision": "declined"}}
+
+        async def auto_accept(params):
+            self.assertEqual(params.requestedSchema, server.TOOL_APPROVAL_SCHEMA)
+            return types.ElicitResult(action="accept")
+
+        result, _ = self.call("browser_cookies", {"op": "get", "url": "https://a.test/"}, auto_accept)
+        self.assertTrue(result.isError)
+        self.assertEqual(self.cookies(), [])
+        self.assertFalse(any("decision" in params for action, params in self.extension.sent
+                             if action == "toolApproval"))
 
     def test_the_popup_answers_first(self):
         self.extension.popup = {"ok": True, "tool": "browser_cookies", "scope": "session"}
