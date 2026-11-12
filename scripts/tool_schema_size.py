@@ -60,6 +60,7 @@ def first_paragraph(description: str) -> str:
 def measure() -> dict:
     """Sizes of every core tool."""
     os.environ["KITSUNE_CAPS"] = "core"
+    os.environ["KITSUNE_SCRIPTING"] = "0"  # the legacy surface these budgets cover (#525)
     from kitsune.server import mcp
 
     tools = {}
@@ -81,7 +82,7 @@ def measure_instructions() -> dict:
     instructions are built at import from the environment, so each mode imports the server anew."""
     env = {key: value for key, value in os.environ.items() if key != "KITSUNE_USER_TABS"}
     script = "from kitsune import server; print(len(server.mcp._mcp_server.instructions))"
-    return {mode: int(subprocess.run([sys.executable, "-c", script], env={**env, "KITSUNE_MODE": mode},
+    return {mode: int(subprocess.run([sys.executable, "-c", script], env={**env, "KITSUNE_MODE": mode, "KITSUNE_SCRIPTING": "0"},
                                      capture_output=True, text=True, check=True).stdout)
             for mode in INSTRUCTIONS_BUDGETS}
 

@@ -84,12 +84,12 @@ rather than giving the worker the actual `BridgeClient`.
 
 ## Python scripting through MCP
 
-On macOS, set `KITSUNE_SCRIPTING=1` in the MCP server environment and restart the
-client to select the [minimal tool-set](minimal-tools.md), including
-`browser_run_python(code, timeout=30)`. It is **off by default**.
-This opt-in permits ordinary local Python execution: **not a sandbox**, including
-host files, environment, imports, subprocesses and network access. Only enable it
-for a client you trust with local code execution. `KITSUNE_MODE` and `KITSUNE_CAPS`
+The default [minimal tool-set](minimal-tools.md) includes
+`browser_run_python(code, timeout=30)`; `KITSUNE_SCRIPTING=0` in the MCP server
+environment selects the legacy direct tools without it.
+It permits ordinary local Python execution: **not a sandbox**, including
+host files, environment, imports, subprocesses and network access. Set
+`KITSUNE_SCRIPTING=0` for a client you do not trust with local code execution. `KITSUNE_MODE` and `KITSUNE_CAPS`
 restrict the supplied browser transport, not arbitrary Python or independent
 connections made by the code. No new runtime installation is needed: it uses the
 MCP server's Python interpreter.
@@ -133,7 +133,7 @@ result = tab.snapshot()
 
 The bridge must already be running (normal MCP startup starts it). The scripting
 transport does not start/restart a bridge or retry a request. To disable the tool,
-unset `KITSUNE_SCRIPTING` and restart the MCP client; this restores the legacy
+set `KITSUNE_SCRIPTING=0` and restart the MCP client; this restores the legacy
 direct tool list. Keep guidance short: `help(browser.new_tab)` or `help(tab.query)` in a
 script prints that method's signature/docstring on demand; the tables below give
 the broader reference.

@@ -90,7 +90,7 @@ asyncio.run(main())
 class CurrentTabToolTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        env = {**os.environ, "KITSUNE_CAPS": "all,storage", "KITSUNE_PUBLISH": "core"}
+        env = {**os.environ, "KITSUNE_CAPS": "all,storage", "KITSUNE_PUBLISH": "core", "KITSUNE_SCRIPTING": "0"}
         result = subprocess.run([sys.executable, "-c", CALLS], env=env, capture_output=True, text=True)
         if result.returncode:
             raise AssertionError(result.stderr[-3000:])
@@ -237,7 +237,7 @@ asyncio.run(main())
 class AdoptedTabToolTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        env = {**os.environ, "KITSUNE_CAPS": "all", "KITSUNE_PUBLISH": "core"}
+        env = {**os.environ, "KITSUNE_CAPS": "all", "KITSUNE_PUBLISH": "core", "KITSUNE_SCRIPTING": "0"}
         result = subprocess.run([sys.executable, "-c", ADOPT_CALLS], env=env, capture_output=True, text=True)
         if result.returncode:
             raise AssertionError(result.stderr[-3000:])

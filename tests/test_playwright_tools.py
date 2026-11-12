@@ -22,8 +22,9 @@ print(json.dumps([t.model_dump(mode="json", exclude_none=True) for t in asyncio.
 
 
 class PublishedSurfaceTests(unittest.TestCase):
-    def test_default_tools_list_is_playwright_mcp_verbatim(self):
-        env = {key: value for key, value in os.environ.items() if not key.startswith("KITSUNE_")}
+    def test_legacy_tools_list_is_playwright_mcp_verbatim(self):
+        env = {**{key: value for key, value in os.environ.items() if not key.startswith("KITSUNE_")},
+               "KITSUNE_SCRIPTING": "0"}
         listed = json.loads(subprocess.run([sys.executable, "-c", LIST_SCRIPT], env=env, text=True,
                                            capture_output=True, check=True).stdout)
         # Kitsune's browser_resume and browser_ask_user are the core tools Playwright MCP does not have (#376).
@@ -745,7 +746,8 @@ class AdapterTests(unittest.TestCase):
         self.post.assert_not_called()
         for name in ("duration_ms", "steps"):
             self.assertNotIn(name, playwright_tools.SCHEMAS["browser_hover"]["inputSchema"]["properties"])
-        result = asyncio.run(server.mcp.call_tool("browser_hover", {"target": "e5", "duration_ms": 400}))
+        with patch.object(server, "SCRIPTING", False):  # browser_hover is a legacy direct tool (#525)
+            result = asyncio.run(server.mcp.call_tool("browser_hover", {"target": "e5", "duration_ms": 400}))
         self.assertFalse(result.isError)
         # An extension older than duration_ms hovers once and answers without moves.
         self.post.return_value = {"ok": True, "tag": "div"}

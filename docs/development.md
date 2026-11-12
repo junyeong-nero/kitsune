@@ -64,7 +64,7 @@ when the `core` total grows past `TOTAL_BUDGETS` or `FIRST_PARAGRAPH_BUDGETS`, o
 single tool past `TOOL_BUDGET`, or the server instructions of a mode past
 `INSTRUCTIONS_BUDGETS`; raise a budget only deliberately. The `core` tools are
 Playwright MCP's, published verbatim, and `tests/test_playwright_tools.py` checks the
-default `tools/list` against `src/kitsune/playwright_tools.json`. The Kitsune-owned tools'
+legacy (`KITSUNE_SCRIPTING=0`) `tools/list` against `src/kitsune/playwright_tools.json`. The Kitsune-owned tools'
 published input schemas omit the `title` keywords pydantic generates (`KitsuneMCP.list_tools`), and
 `tests/test_tool_schema_titles.py` checks that they still accept and reject the same
 arguments. They also publish an optional parameter whose default is null as its plain

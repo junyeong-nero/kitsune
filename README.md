@@ -32,10 +32,10 @@ Chromium or WebDriver to install.
   Kitsune's toolbar popup. You can take the tab back at any time. The popup also shows whether
   the agent is connected, and closes all of the agent's tabs with one click. Tabs the agent
   leaves idle close by themselves after five minutes (you can change this in the popup).
-- **The tools are familiar.** The agent starts with Playwright MCP's 25 core tools, under the
-  same names, plus `browser_ask_user` and `browser_resume` for when it needs you. Prompts written
-  for Playwright MCP work unchanged. More tools (page text, forms, batches, downloads, …) stay off
-  until you allow them.
+- **The tool list is small.** The agent starts with 14 tools: the most-used Playwright MCP tools
+  under the same names, `browser_ask_user` and `browser_resume` for when it needs you, and
+  `browser_run_python` (trusted local Python, not a sandbox) for everything else.
+  `KITSUNE_SCRIPTING=0` restores the legacy list of Playwright MCP's 25 core tools.
 - **You decide how much to hand over.** `KITSUNE_MODE=read`, `draft` or `act` limits what the
   agent can do. In draft mode it can fill in forms but cannot click or submit.
 

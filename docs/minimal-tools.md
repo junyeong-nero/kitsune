@@ -1,11 +1,11 @@
 # Minimal tools + Python
 
-Set `KITSUNE_SCRIPTING=1` in the MCP server environment and restart the client.
-This selects the minimal tool-set **and permits trusted local Python execution**.
-It is not a sandbox: scripts have ordinary host file/network access. See
+This is the default tool-set (#525). It **permits trusted local Python execution**:
+it is not a sandbox, and scripts have ordinary host file/network access. See
 [execution and trust limits](python-api.md#python-scripting-through-mcp).
-Unset the variable (or set `0`) and restart to return to the unchanged legacy list.
-Existing users are not switched automatically.
+Set `KITSUNE_SCRIPTING=0` in the MCP server environment and restart the client to
+return to the legacy direct tool list without `browser_run_python`. Unset or `1`
+selects this tool-set; any other value fails at startup.
 
 ## Direct tools
 
@@ -29,8 +29,8 @@ not `Tab` objects; wrap a chosen page tab dict with `browser.tab(t["id"])`.
 `read`/`draft` still omit disallowed direct tools and use `browser_tab_list` instead
 of `browser_tabs`. `KITSUNE_CAPS` remains the browser authority limit; `all` still
 excludes `storage` and `history`. `KITSUNE_PUBLISH`, if explicitly set, can narrow
-which retained direct tools are listed. Scripting itself requires its separate
-local-code opt-in and does not widen the supplied browser transport's grants.
+which retained direct tools are listed. Scripting does not widen the supplied
+browser transport's grants.
 
 For example, `KITSUNE_CAPS=core,browse,read` lets Python use ordinary page text,
 queries, forms and scrolling in addition to core operations. Merely enabling

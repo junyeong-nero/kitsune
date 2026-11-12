@@ -448,7 +448,9 @@ class AskBeforeActElicitationTests(ElicitationTestCase):
     def test_a_container_held_step_loses_its_token(self):
         # Containers never confirm a step; the held step's token would approve its direct call.
         # browser_batch is in the automation group, which this server's KITSUNE_CAPS (core) leaves out.
-        for patcher in (patch.dict(server.UNPUBLISHED_TOOLS), patch.object(server._client, "caps", "automation,core")):
+        # It is a legacy direct tool, not on the default minimal surface (#525).
+        for patcher in (patch.dict(server.UNPUBLISHED_TOOLS), patch.object(server._client, "caps", "automation,core"),
+                        patch.object(server, "SCRIPTING", False)):
             patcher.start()
             self.addCleanup(patcher.stop)
         del server.UNPUBLISHED_TOOLS["browser_batch"]

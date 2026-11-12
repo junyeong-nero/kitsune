@@ -18,7 +18,7 @@ _spec.loader.exec_module(tool_schema_size)
 
 
 def run_script(*args) -> str:
-    env = {**os.environ, "KITSUNE_CAPS": "core"}
+    env = {**os.environ, "KITSUNE_CAPS": "core", "KITSUNE_SCRIPTING": "0"}
     return subprocess.run([sys.executable, str(SCRIPT), *args],
                           env=env, capture_output=True, text=True, check=True).stdout
 

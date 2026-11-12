@@ -41,7 +41,7 @@ LOCAL_TOOLS = {"browser_network_request"}
 
 
 def catalog(mode, caps="core"):
-    env = {**os.environ, "KITSUNE_MODE": mode, "KITSUNE_CAPS": caps}
+    env = {**os.environ, "KITSUNE_MODE": mode, "KITSUNE_CAPS": caps, "KITSUNE_SCRIPTING": "0"}
     result = subprocess.run([sys.executable, "-c", CATALOG], env=env, text=True, capture_output=True, check=True)
     return json.loads(result.stdout)
 
