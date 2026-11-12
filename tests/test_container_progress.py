@@ -495,7 +495,6 @@ class ContainerDeadlineTests(ContainerTests):
                 patch.object(bridge.BridgeHandler, "log_message"), \
                 patch.object(bridge, "ALLOWED_HOSTS", {f"127.0.0.1:{port}"}), \
                 patch.object(bridge_client, "BRIDGE", f"http://127.0.0.1:{port}"), \
-                patch.object(server._client, "caps", "automation,core"), \
                 patch.dict(os.environ, {"KITSUNE_TOKEN": token}), \
                 patch.object(server._client, "ensure_bridge") as ensure, \
                 patch.object(waits, "CONTAINER_MIN_DEADLINE_SECONDS", 0.5), \

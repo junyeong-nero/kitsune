@@ -9,7 +9,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, call, patch
 
-from kitsune import bridge, capabilities, tools
+from kitsune import bridge, tools
 
 WINDOW = {"left": 0, "top": 0, "width": 1920, "height": 1080}
 START = {"screenX": 140, "screenY": 300, "viewportX": 140, "viewportY": 220, "zoom": 1, "title": "Brightness",
@@ -266,7 +266,6 @@ class SurfaceTests(unittest.TestCase):
                                      timeout=40)
         self.assertEqual(tools.TOOLS["browser_trusted_drag"].group, "browse")
         self.assertIn("browser_trusted_drag", tools.TAB_WRITE_TOOLS)
-        self.assertEqual(capabilities.ROUTE_GROUPS["/api/trusted-drag"], frozenset({"browse"}))
 
     def test_it_is_a_page_write_that_ask_mode_and_read_only_mode_hold(self):
         self.assertIn("trustedDrag", bridge.WRITE_ACTIONS)

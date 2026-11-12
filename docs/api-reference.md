@@ -4,13 +4,11 @@ Base URL: `http://127.0.0.1:47651`
 
 ## MCP tool surface
 
-`KITSUNE_CAPS=core` is the default; `KITSUNE_CAPS=all` registers
-97 tools. The groups are `core`, `browse`, `read`, `inspect`, `tabs`, `automation`,
-`network`, `admin`, `storage`, and `history`. A comma list selects those groups only.
-`all` enables every group except `storage` and `history`, which read personal data and
-must be named (`KITSUNE_CAPS=all,storage,history`); see
-[History and bookmarks](#history-and-bookmarks).
-See [Tools and capabilities](tools.md) for the complete tool list per group.
+The MCP server registers all 108 tools for every client (#525). The groups `core`,
+`browse`, `read`, `inspect`, `tabs`, `automation`, `network`, `admin`, `storage` and
+`history` only sort them. `tools/list` shows the 14-tool [minimal surface](minimal-tools.md)
+by default, or with `KITSUNE_SCRIPTING=0` the `core` group and the
+[tool gateway](#tool-gateway). See [Tools](tools.md) for the complete tool list per group.
 
 **The `core` group is Playwright MCP's 25 core tools and Kitsune's
 [`browser_resume`](#browser_resumecall-resume_token-observednone-wait120) and
@@ -38,61 +36,26 @@ Playwright's replace (`browser_keypress`, `browser_js`, `browser_screenshot`, `b
 `browser_console_logs`, `browser_double_click`, and Kitsune's own signatures of the
 shared names) are no longer MCP tools; their sections document the bridge commands.
 
-A call to a known tool that this configuration does not publish returns an MCP
-error (`isError`) instead of FastMCP's `Unknown tool`. Its `hint` names the
-settings that publish it; restart the MCP client after changing them:
+On the minimal surface a call to a tool it moved to Python returns `tool_moved_to_python`
+with a hint naming `browser_run_python`.
 
-```json
-{ "error": "browser_scroll is not published by this MCP server", "code": "tool_not_published",
-  "retryable": false,
-  "hint": "Set KITSUNE_CAPS=browse,core in the MCP server environment, then restart the MCP client.",
-  "state": { "group": "browse", "caps": ["core"] } }
-```
-
-`browser_status` adds `mcp_tools` to the bridge status: this MCP server's enabled
-`caps`, the count of known tools it leaves `unpublished`, its audit `client` id and
-its tab `owner` id ([Tab owners](#tab-owners)), for example
-`{"caps": ["core"], "unpublished": 79, "client": "48213-9f2c1a", "owner": "claude-48190"}`. With the [tool gateway](#tool-gateway) it also
-has the `publish` groups and how many enabled tools are `unlisted` when a session
-starts. The bridge is shared by every MCP server, so `GET /api/status` does not have it.
+`browser_status` adds `mcp_tools` to the bridge status: this MCP server's `surface`
+(`minimal` or `legacy`), its audit `client` id and its tab `owner` id
+([Tab owners](#tab-owners)), for example
+`{"surface": "minimal", "client": "48213-9f2c1a", "owner": "claude-48190"}`. On the legacy
+surface it also has how many tools are `unlisted` when a session starts. The bridge is
+shared by every MCP server, so `GET /api/status` does not have it.
 MCP tool names and parameters are separate from HTTP endpoint names and JSON
-command actions. Task-mode requests restrict the bridge routes too (below).
-
-### Capability enforcement
-
-The MCP server sends its enabled groups (`all` expanded) in `X-Kitsune-Caps` on every
-bridge request. The bridge maps every route and every container action to the groups
-whose tools use it (`src/kitsune/capabilities.py`) and refuses the others. A route is
-refused with HTTP 403; a container step (`batch`, `parallel`, `retry`, `broadcast`,
-`if`/`while`/`try`/`sequence` blocks, workflow and resumed steps) fails with the same
-error as its result, and its [progress](#container-progress) status is `failed`:
-
-```json
-{ "error": "cookies needs the storage capability", "code": "capability_restricted",
-  "retryable": false,
-  "hint": "Enable that group in this MCP server's KITSUNE_CAPS, then restart the MCP client.",
-  "state": { "groups": ["storage"], "caps": ["automation", "core"] } }
-```
-
-Container routes need `automation`, and each step needs its own action's group;
-actions the core tools also use (navigate, click, type, check, waits, screenshots, `js`, ...)
-are `core`. `/api/scroll` is `browse` (`browser_scroll`), except a request whose body has
-`loadMore: true`, which `core` may also post: the scrolls of the core `browser_find`'s
-`load_more` (#447). The bridge reads the body to tell them apart, so a `core` client's
-`/api/scroll` without `loadMore: true` is still `capability_restricted`, and container
-`scroll` steps need `browse` with or without it. `/`, `/api/status`, `/api/version` and
-`/view` are open to every client.
-An unknown group in the header returns 400 `invalid_caps`. Requests without the header,
-such as the `kitsune-bridge` command's, are not restricted.
+command actions. Every route and container step is open to every client; the
+`X-Kitsune-Caps` and `X-Kitsune-Mode` headers of older clients are ignored.
 
 ### Tool gateway
 
-With `KITSUNE_PUBLISH` set to fewer groups than `KITSUNE_CAPS` enables, `tools/list`
-starts with the published groups plus three gateway tools, and the server advertises
-`tools.listChanged`. They reach only tools `KITSUNE_CAPS` and `KITSUNE_MODE` permit. See
+On the legacy surface (`KITSUNE_SCRIPTING=0`) `tools/list` starts with the `core` group
+plus three gateway tools, and the server advertises `tools.listChanged`. See
 [Finding tools without a restart](tools.md#finding-tools-without-a-restart).
 
-`browser_tools_search(query, limit=5)` ranks the enabled tools that `tools/list` did not
+`browser_tools_search(query, limit=5)` ranks the tools that `tools/list` did not
 show at session start against the query words (name matches count most, then group
 names, then descriptions; words many tools share count less). `limit` is 1 to 10.
 
@@ -106,64 +69,14 @@ names, then descriptions; words many tools share count less). `limit` is 1 to 10
 match, or `query: ""`, `tools` is empty and `groups` maps each group to its tool names.
 
 `browser_tools_call(name, arguments={})` runs the tool through the same path as a direct
-call and returns that call's result: its content (text, images) and `isError`. A name
-the server does not permit returns the direct call's `tool_not_published`; an unknown
+call and returns that call's result: its content (text, images) and `isError`. An unknown
 name returns `unknown_tool`; a gateway tool returns `invalid_argument`. Its bridge
 requests carry `X-Kitsune-Gateway-Tool`, which [audit entries](#audit-log) record.
 
-`browser_tools_publish(names)` takes tool and group names and adds the permitted tools
-among them to this session's `tools/list`, then sends `notifications/tools/list_changed`.
+`browser_tools_publish(names)` takes tool and group names and adds those tools to this
+session's `tools/list`, then sends `notifications/tools/list_changed`.
 It returns `{"published": [...], "notified": bool}`; names already listed are a no-op.
-Any name it cannot add, unknown or not permitted alike, refuses the whole call with
-`tool_not_published` and `state.names`.
-
-### Task modes
-
-`KITSUNE_MODE=read|draft|act` selects both the MCP surface and per-request bridge
-limits. Default: `act` (unchanged behavior). Case and surrounding whitespace are
-ignored; invalid modes fail at MCP startup. Modes intersect with the capability
-groups, including the named-only storage and history groups.
-
-- `read`: read tools plus `browser_navigate` and `browser_scroll` (scroll needs
-  `browse`). `browser_tab_list(new_tab=None)` replaces `browser_tabs`: it returns the
-  same compact tab inventory as `browser_tabs(action="list")`. With `new_tab`, an
-  HTTP(S) URL (or `about:blank`), it first opens that URL in a background tab, waits
-  for the load and returns its `tabId`, final `url` and `status` with the inventory;
-  later calls without `tab_id` act on that tab, as after `browser_tabs` new (#270). It
-  cannot close or select tabs, and it never switches the user's view. Screenshots are
-  excluded because they can write files.
-- `draft`: read plus type/select-option/fill-form/check (check needs `browse`).
-  Plain-text editor writes only. Forces ask-before-act checks; a sensitive field,
-  payment-like page or uninspectable target returns `mode_restricted` before dispatch.
-  Form-fill preflights the entire target set, sending only field keys for inspection.
-- Neither restricted mode permits click, submit, keypress, dialog confirmation,
-  agent JavaScript, policy changes, container calls or resume. No confirmation tokens
-  are issued or accepted. Navigate and new tabs permit HTTP(S) or `about:blank`, not
-  script, data or local-file URLs. User tabs are read-only in every mode by default:
-  writes return `user_tab_read_only` without a token. Open an owned background tab
-  with `browser_tab_list(new_tab=...)` before writing.
-  Existing global URL/readonly/ask policy can tighten this.
-
-Restricted `tools/list` descriptions use their first paragraph, and schemas omit
-`confirm_token`, the approval fallback for clients without elicitation: these modes cannot
-approve. Calling an excluded name returns the existing `tool_not_published`
-MCP error, with `KITSUNE_MODE=draft` or `KITSUNE_MODE=act` in its hint, together with
-any required caps changes. The error's `state` and `browser_status.mcp_tools`
-include `mode` when restricted. `act` definitions and status fields are unchanged.
-
-The MCP server sends `X-Kitsune-Mode: read|draft` on **every** bridge request. No header
-means `act`. The bridge validates the header, canonicalizes route aliases before
-checking access, and carries the mode through async dispatch without changing the
-shared policy. A denied route/action answers HTTP 403 with
-`{"error":"…", "code":"mode_restricted", "retryable":false, "hint":"…"}`; an invalid
-header answers HTTP 400 with `code: "invalid_mode"`. `GET/POST /api/get-policy`
-reports the shared policy plus the effective `mode`, `ask` and `confirmAllowed:false`
-for restricted requests. Another authenticated client can still use act; this is
-not a separate authentication boundary. Keep the bridge token private.
-
-See [Task modes](tools.md#task-modes) for configuration, the eight-tool read
-surface and site-event/autosave limitations. Exact token and task-success measurements
-are external kitsune-benchmark work, not inferred from compact JSON character counts.
+Any unknown name refuses the whole call with `tool_not_published` and `state.names`.
 
 ### Element targets
 
@@ -567,11 +480,11 @@ only `error`. MCP tools return these failures with `isError: true` (see
   `false` means a write may already have taken effect (a submit, message, payment
   or deletion can be behind any click or keypress); inspect the page before acting again.
   The exceptions are `error_page`, `ambiguous_target`, `needs_user`,
-  `permission_required`, `unsupported_platform`, `capability_restricted`, `mode_restricted` and
+  `permission_required`, `unsupported_platform` and
   `unknown_action`: nothing reached the page, and repeating cannot succeed until the tab
   navigates, the target is named uniquely, the user approves the close, navigation or action or
-  grants the permission, the bridge runs where the tool is implemented, the client's
-  `KITSUNE_CAPS` or `KITSUNE_MODE` permits the action, or the step names a batch action.
+  grants the permission, the bridge runs where the tool is implemented, or the step names a
+  batch action.
 - `hint`: a short recovery step. `state`: the current state that explains the
   failure, where available (for page targets: `tabId`, `url`, `status`).
 
@@ -607,7 +520,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `browser_window_unavailable` | No active tab: the extension sees no normal window it can use | true |
 | `host_permission_denied` | Firefox does not let Kitsune script the tab's site (`state.reason`: `not_granted`, `restricted_domain`) | true |
 | `permission_required` | A [history or bookmark lookup](#history-and-bookmarks) needs an optional browser permission the user has not granted (`state.permission`: `history` or `bookmarks`). Only the user can grant it, on Kitsune's options page; the agent cannot. Also returned, with a reload hint, when the permission is granted but the running extension has not picked it up. `browser_trusted_type`, `browser_trusted_press_key` and `browser_trusted_drag` return it when the bridge lacks macOS Accessibility permission; nothing was sent | false |
-| `needs_user` | Nothing ran: only the user can let the call go on (#376). `state.reason: "approval"`: it needs the user's approval, and `state.detail` is the code it replaces (below). `state.message` is a short request to show the user. On an MCP client with elicitation the MCP server asks the user itself and the result has no token (see [Approval prompts](#approval-prompts)); elsewhere, the fallback for clients without elicitation, a direct call's `state.confirmToken` runs it once the user approves. `state.approvable` is `false` in read and draft modes, which cannot approve, and `state.approval` says how it can be approved (`token`, `elicitation`). `state.reason: "agent_request"`: [`browser_ask_user`](#browser_ask_userreason-message-tab_idnone) asks the user, and `state.detail` is what it asks for. A resumable direct call's result also has `call`, the audit call id of the hold, and, from the MCP server when the user did not resolve it in the call, `resume_token` for [`browser_resume`](checkpoint-resume.md#direct-calls). Explicit [handoff requests](#requesting-and-returning-a-tab) use `state.detail: "tab_handoff"` and have no resume checkpoint. What Kitsune sees only the user can do on a page (`sign_in`, `human_check`, `trusted_input`) is never this error, but a [`needs_user` hint](#needs_user-hints) on the result. See the [end-to-end example](#example-needs_user-end-to-end) | false |
+| `needs_user` | Nothing ran: only the user can let the call go on (#376). `state.reason: "approval"`: it needs the user's approval, and `state.detail` is the code it replaces (below). `state.message` is a short request to show the user. On an MCP client with elicitation the MCP server asks the user itself and the result has no token (see [Approval prompts](#approval-prompts)); elsewhere, the fallback for clients without elicitation, a direct call's `state.confirmToken` runs it once the user approves. `state.approval` says how it can be approved (`token`, `elicitation`). `state.reason: "agent_request"`: [`browser_ask_user`](#browser_ask_userreason-message-tab_idnone) asks the user, and `state.detail` is what it asks for. A resumable direct call's result also has `call`, the audit call id of the hold, and, from the MCP server when the user did not resolve it in the call, `resume_token` for [`browser_resume`](checkpoint-resume.md#direct-calls). Explicit [handoff requests](#requesting-and-returning-a-tab) use `state.detail: "tab_handoff"` and have no resume checkpoint. What Kitsune sees only the user can do on a page (`sign_in`, `human_check`, `trusted_input`) is never this error, but a [`needs_user` hint](#needs_user-hints) on the result. See the [end-to-end example](#example-needs_user-end-to-end) | false |
 | `user_active` | The user is using the tab (`state.reason`: `input`, `typing`, `navigating`); the write or navigation did not run (see [User activity](#user-activity)) | true |
 | `outcome_not_observed` | The action was dispatched, but the outcome given in `expect` did not happen in time (see [Action outcomes](#action-outcomes)) | false for writes |
 | `user_tab_read_only` | A user or other client owns the target; nothing ran and no prompt is offered. `state.tabId`, `state.index`, `state.action`; open an owned tab before writing (see [Tab permissions](#tab-permissions)) | false |
@@ -637,7 +550,7 @@ below comes only from a v0.7.1 extension. A `reason` the old `state` carried mov
   "state": { "reason": "approval", "detail": "confirmation_required", "holdReason": "submit_control",
              "action": "click", "description": "clicks a submit control (Pay)", "tabId": 12,
              "url": "https://shop.example/cart", "params": { "selector": "#pay", "tabId": 12 },
-             "message": "Allow the agent's click? It clicks a submit control (Pay).", "approvable": true,
+             "message": "Allow the agent's click? It clicks a submit control (Pay).",
              "confirmToken": "…", "expiresInSeconds": 120, "approval": "token" } }
 ```
 
@@ -1004,7 +917,7 @@ means the tab could not be read within the allowance. A hint that needs a read t
 allowance had no time for (an opened tab, a click target still visible) is left out. For `browser_click`, when the clicked element (the result's `target_ref`, or
 the request's ref or selector if no post-action snapshot was taken) is still visible
 after the wait, the hint adds that the page may accept only trusted input and that
-`browser_trusted_click` (in the `browse` capability) is the alternative, and the result
+`browser_trusted_click` (in the `browse` group) is the alternative, and the result
 has a [`needs_user` hint](#needs_user-hints) (`trusted_input`, `evidence.target_visible`) for
 asking the user to click it; the code stays `outcome_not_observed`. That is a
 possibility, not a diagnosis: the page may also be slow, or expect something else.
@@ -1484,7 +1397,7 @@ values, defaults and invalid-value errors.
 Tab permissions do **not** sandbox browser/account-wide side effects: cookie changes,
 clipboard writes, downloads/cancellation, clearing browsing data and the global network
 interception rules can still affect shared state. They have no concrete tab target and
-remain subject to their existing capabilities, task-mode and optional ask-before-act policy.
+remain subject to approvals and the optional ask-before-act policy.
 Interception is a global blocking webRequest listener, not a safe read or a tab-local rule.
 In contrast, dialog policies and page storage have concrete tab targets and are guarded.
 A v0.7.1 extension's `user_tab` refusal to close a user tab is still turned into a
@@ -1576,14 +1489,14 @@ close idle pool tabs too.
 
 Navigation, back, forward and reload follow [Tab permissions](#tab-permissions), just
 like clicks and writes: a user tab is refused without a prompt. This replaces the
-old navigation-only approval hold. Read-only clients can open their own background
-tab with `browser_tab_list(new_tab=...)`.
+old navigation-only approval hold. Agents open their own background tab with
+`browser_tabs action=new`.
 
 #### Agent windows
 
 Agent work stays in background tabs of the user's window. Only an explicit
 `browser_create_window` or `browser_detach_tab` (batch `createWindow`, `detachTab`) opens a
-window; these tools are in the `tabs` capability, which the default tools leave out.
+window; these tools are in the `tabs` group, which the default tool lists do not show.
 Nothing else calls `windows.create`. A popup window that a page opens on an agent action is
 the page's own (see [Never taking focus](#never-taking-focus)).
 
@@ -1704,8 +1617,7 @@ reports trusted user activity. No approval can lift a write refused as `user_tab
 
 #### No current tab
 
-The MCP server's current tab is the one `browser_tabs` new or select (or
-`browser_tab_list` new_tab) last made current, or a tab it adopted (below). It lives in the MCP server process, so a
+The MCP server's current tab is the one `browser_tabs` new or select last made current, or a tab it adopted (below). It lives in the MCP server process, so a
 restarted or reconnected server starts without one (#303). Until it has one, a write or
 navigation that names no tab is refused before anything is sent, instead of going to the
 tab the user is viewing:
@@ -1717,8 +1629,7 @@ tab the user is viewing:
   "state": { "tool": "browser_scroll" } }
 ```
 
-The hint names only tools the MCP server publishes (#448). In the read and draft modes, which
-publish `browser_tab_list` instead of `browser_tabs`, it says `browser_tab_list new_tab`. The core
+The hint names only tools the MCP server publishes (#448). The core
 tools' schemas, Playwright MCP's, list no `tab_id`, so a core tool's hint does not offer one: it
 says to open a tab with `browser_tabs action=new url=<url>` or select one of the agent's own
 tabs. When exactly one tab is active (one browser window), that hint also names it by its
@@ -1768,8 +1679,7 @@ hint names the first one (#325):
 
 A core tool's hint names that tab by its index instead (`Tab 3 is ...: to keep working in it,
 browser_tabs action=select index=3.`), and the tab the user is viewing only when it is another
-tab. In the read and draft modes a core tool's refusal offers no tabs: nothing they publish
-makes another tab current.
+tab.
 
 None of them becomes current: the MCP client may have opened it for an earlier
 conversation, so the agent decides. The MCP server asks only a bridge that already runs,
@@ -1865,7 +1775,7 @@ In ask mode the bridge holds:
 | `downloads` | `browser_downloads` (every op: `download`, `list`, `cancel`) |
 | `payment_url` | Navigation, new tabs, or new windows whose URL matches an `askUrls` pattern |
 | `payment_page` | Page actions (click, type/fill, form fill, select, check, keypress, drag, submit, upload, dialog policy, JavaScript) on a tab whose current URL matches `askUrls` |
-| `cross_origin_frame` | Page actions (as for `payment_page`) whose target ref is inside a cross-origin frame ([Frames](#frames)): another site's page, such as an embedded payment form, sign-in widget or chat. The description names the frame's origin and path, or `origin unknown` when the frame does not answer. It takes precedence over the other target reasons. In draft mode, typing keeps the draft rules (`sensitive_field`) |
+| `cross_origin_frame` | Page actions (as for `payment_page`) whose target ref is inside a cross-origin frame ([Frames](#frames)): another site's page, such as an embedded payment form, sign-in widget or chat. The description names the frame's origin and path, or `origin unknown` when the frame does not answer. It takes precedence over the other target reasons. |
 | `payment_frame` | The same, when the frame's origin and path match an `askUrls` pattern |
 | `unknown_outcome` | Repeating a write whose identical previous attempt ended `retryable: false` (a timeout or disconnect after sending, see [Action errors](#action-errors)) |
 | `uninspectable_target` | A click or Enter whose target the bridge could not inspect (for example, an extension older than this bridge, or a screen-coordinate trusted click). Inspection fails closed |
@@ -1896,7 +1806,7 @@ hold reason is `state.holdReason` (see [Action errors](#action-errors)):
              "expiresInSeconds": 120, "approval": "token", "action": "click",
              "holdReason": "submit_control", "description": "clicks a submit control (Place order)",
              "tabId": 7, "url": "https://shop.example/cart", "params": { "ref": "e12" },
-             "message": "Allow the agent's click? It clicks a submit control (Place order).", "approvable": true } }
+             "message": "Allow the agent's click? It clicks a submit control (Place order)." } }
 ```
 
 On an MCP client with elicitation, the MCP server asks the user and repeats the call once
@@ -2318,10 +2228,10 @@ Every history and bookmark lookup is recorded, refused ones included, with its
 ### History and bookmarks
 
 Opt-in, read-only lookup of the user's browsing history and bookmarks (#140), so an
-agent can find "the page I looked at yesterday" and follow the user's trail. Two
-switches must both be on, and the browser's is the user's alone:
+agent can find "the page I looked at yesterday" and follow the user's trail. The
+browser's permission is the user's alone:
 
-1. **The user's browser permission.** `history` and `bookmarks` are
+**The user's browser permission.** `history` and `bookmarks` are
    `optional_permissions` in the extension manifest, not granted at install. The
    user grants them on Kitsune's options page (about:addons → Kitsune → Options,
    or Preferences): the **Allow history and bookmarks** button calls
@@ -2330,8 +2240,6 @@ switches must both be on, and the browser's is the user's alone:
    about:addons, takes them back. No bridge command requests a permission, so the
    agent can never grant it. Without the grant, every lookup returns
    `permission_required` (`retryable: false`) with a hint naming the options page.
-2. **The `history` capability group.** Off by default, and `KITSUNE_CAPS=all` leaves
-   it out: name it, as in `KITSUNE_CAPS=core,history`.
 
 | Tool | Returns |
 |---|---|
@@ -2438,7 +2346,7 @@ never ran:
 | `status` | Meaning |
 |---|---|
 | `ok` | The command ran without an error. Like any result, this means dispatched, not that the outcome happened (see [Action outcomes](#action-outcomes)) |
-| `failed` | It returned an error that is safe to repeat (`retryable: true`, unclassified errors, `error_page`, `ambiguous_target`, `needs_user` other than an ask-before-act hold, `permission_required`, the pre-dispatch refusals `capability_restricted`, `mode_restricted` and `unknown_action`, or `ok: false`) |
+| `failed` | It returned an error that is safe to repeat (`retryable: true`, unclassified errors, `error_page`, `ambiguous_target`, `needs_user` other than an ask-before-act hold, `permission_required`, the pre-dispatch refusal `unknown_action`, or `ok: false`) |
 | `held` | [Ask-before-act](#ask-before-act) held it (`needs_user`, `confirmation_required`); nothing ran |
 | `unknown` | It may have taken effect: an error with `retryable: false`, or it was in progress at the container's deadline. Observe the page before acting again |
 | `skipped` | It never started: an earlier step stopped the container (a held step, `stopOnWarning`, a failed workflow step) or the deadline passed |
@@ -2629,9 +2537,7 @@ page stopped changing or may load more on another call. A list that loads throug
 `IntersectionObserver` may not load in a background tab, which Firefox may not deliver its
 callbacks to (nor those of a hover). Scrolling writes the tab, so without a
 current tab `load_more` returns `no_current_tab` (`state.action: "scroll"`), and a held or
-failed scroll is returned as it is. Its scrolls carry `loadMore: true`, so they run under
-the default `KITSUNE_CAPS=core`, which does not enable `browser_scroll`'s `/api/scroll` (#447;
-see [Capability enforcement](#capability-enforcement)). On a current tab this client cannot
+failed scroll is returned as it is. Its scrolls carry `loadMore: true` (#447). On a current tab this client cannot
 write (#449), it runs only while the tab is not shown: the extension admits `loadMore: true`
 scrolls there, and find scrolls each scrolled target back by what it scrolled before
 returning; on the shown tab it returns `user_tab_read_only`.
@@ -3315,7 +3221,7 @@ the response also has `call` and a new `resume_token`. See
 
 ### `browser_ask_user(reason, message, tab_id=None)`
 
-`core` group, and published in every [task mode](#task-modes) (#376). Asks the user for what the
+`core` group, and published on both tool lists (#376). Asks the user for what the
 agent cannot do or Kitsune cannot see: `reason` is `sign_in`, `human_check` (a CAPTCHA or
 verification), `trusted_input` (a control that ignores synthetic clicks) or `other` (a choice,
 an audio puzzle). `message` is addressed to the user (at most 1,000 characters are kept);

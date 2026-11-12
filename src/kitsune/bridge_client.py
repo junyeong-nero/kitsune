@@ -21,8 +21,7 @@ from urllib.parse import quote
 
 from . import bridge_control
 from .bridge_control import BRIDGE, HTTP_PORT, LOG_FILE, TOKEN_FILE, WS_PORT, headers as _headers
-from .capabilities import CAPS_HEADER
-from .task_modes import (SESSION_HEADER, CLIENT_NAME_HEADER, APPROVER_HEADER, CLIENT_HEADER, CLIENT_ID_PATTERN, MODE_HEADER,
+from .task_modes import (SESSION_HEADER, CLIENT_NAME_HEADER, APPROVER_HEADER, CLIENT_HEADER, CLIENT_ID_PATTERN,
                          OWNER_HEADER, USER_TABS_HEADER, user_tabs as parse_user_tabs)
 from .version import BRIDGE_BUILD
 
@@ -186,14 +185,12 @@ def _port_conflict(port: int, reason: str, message: str) -> dict:
 
 
 class BridgeClient:
-    """Bridge requests that carry one caller's capability groups, task mode and user-tab protection.
+    """Bridge requests that carry one caller's identity and user-tab protection.
 
     user_tabs="writable" permits writes on user tabs; the default is "read-only".
     user_active still applies.
 
-    caps are the groups the bridge lets these requests use: it refuses routes and container steps
-    of other groups (#230). caps=None sends no caps header, so the bridge refuses no group; caps
-    has no default, so each caller chooses. extra_headers, if set, returns headers to add to each
+    extra_headers, if set, returns headers to add to each
     request, such as the tool a gateway call runs. ensure_bridge replaces a running bridge of
     another build unless replace_bridge is False; then it reports bridge_version_mismatch.
     client_id, sent in CLIENT_HEADER, tells this client's commands apart in the bridge's audit
@@ -204,10 +201,8 @@ class BridgeClient:
     token repeats (#376); it is never shown.
     """
 
-    def __init__(self, *, caps, mode: str = "act", user_tabs: str | None = None,
+    def __init__(self, *, user_tabs: str | None = None,
                  extra_headers=None, replace_bridge: bool = True, approver: bool = False):
-        self.caps = None if caps is None else ",".join(sorted(caps))
-        self.mode = mode
         self.user_tabs = parse_user_tabs(user_tabs)
         self.extra_headers = extra_headers
         self.replace_bridge = replace_bridge
@@ -232,9 +227,7 @@ class BridgeClient:
             async def channel():
                 try:
                     headers = {**_headers(), CLIENT_HEADER: self.client_id, OWNER_HEADER: self.owner_id,
-                               SESSION_HEADER: secret, CLIENT_NAME_HEADER: quote(client_name[:200]), MODE_HEADER: self.mode}
-                    if self.caps is not None:
-                        headers[CAPS_HEADER] = self.caps
+                               SESSION_HEADER: secret, CLIENT_NAME_HEADER: quote(client_name[:200])}
                     async with httpx.AsyncClient(verify=bridge_control.tls_context(), timeout=None) as client:
                         async with client.stream("GET", f"{BRIDGE}/api/handoff-session", headers=headers) as response:
                             response.raise_for_status()
@@ -380,12 +373,8 @@ class BridgeClient:
                 headers = {**_headers(), CLIENT_HEADER: self.client_id, OWNER_HEADER: self.owner_id}
                 if self._handoff_secret is not None:
                     headers[SESSION_HEADER] = self._handoff_secret
-                if self.caps is not None:
-                    headers[CAPS_HEADER] = self.caps
                 if self._approver is not None:
                     headers[APPROVER_HEADER] = self._approver
-                if self.mode != "act":
-                    headers[MODE_HEADER] = self.mode
                 if self.extra_headers:
                     headers.update(self.extra_headers())
                 # HTTP names are case-insensitive: no extra spelling may precede our permission.

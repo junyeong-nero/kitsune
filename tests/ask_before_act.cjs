@@ -116,16 +116,7 @@ async function testContentDescribeTarget() {
     assert.doesNotMatch(JSON.stringify(result), /secret query|hunter2/);
   }
   assert.equal((await describe('#missing')).code, 'not_found');
-
-  // Draft mode inspects single fields and the whole fuzzy-fill target set before writing.
-  assert.equal((await describe('#password', { draftFill: true })).sensitive, true);
-  assert.equal((await describe('#search', { draftFill: true })).sensitive, false);
-  assert.deepEqual(await send({ action: 'describeTarget', fieldKeys: ['#search', '#password'] }),
-    { ok: true, sensitive: true });
-  assert.deepEqual(await send({ action: 'describeTarget', fieldKeys: ['#search'] }),
-    { ok: true, sensitive: false });
-  assert.equal((await send({ action: 'describeTarget', fieldKeys: ['#missing'] })).code, 'not_found');
-  assert.equal(password.value, 'hunter2', 'preflight never fills a sensitive field');
+  assert.equal(password.value, 'hunter2', 'inspection never fills a field');
 }
 
 // Labels neither submitLabel nor consequentialLabel match, on buttons and links alike.

@@ -11,9 +11,9 @@ print(json.dumps(server.mcp._mcp_server.create_initialization_options().instruct
 '''
 
 
-def instructions(mode, **settings):
+def instructions(**settings):
     env = {**{k: v for k, v in os.environ.items() if k != "KITSUNE_USER_TABS"},
-           "KITSUNE_MODE": mode, "KITSUNE_SCRIPTING": "0", **settings}
+           "KITSUNE_SCRIPTING": "0", **settings}
     result = subprocess.run([sys.executable, "-c", SCRIPT], env=env, text=True, capture_output=True, check=True)
     return json.loads(result.stdout)
 
@@ -21,12 +21,11 @@ def instructions(mode, **settings):
 class ServerInstructionsTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.texts = {(mode, setting): instructions(mode, KITSUNE_USER_TABS=setting)
-                     for mode in ("act", "read", "draft") for setting in ("read-only", "writable")}
+        cls.texts = {setting: instructions(KITSUNE_USER_TABS=setting) for setting in ("read-only", "writable")}
 
-    def test_permission_rule_in_every_mode_recovery_left_to_hints(self):
-        for (mode, setting), text in self.texts.items():
-            with self.subTest(mode=mode, setting=setting):
+    def test_permission_rule_recovery_left_to_hints(self):
+        for setting, text in self.texts.items():
+            with self.subTest(setting=setting):
                 self.assertIn("browser_ask_user", text)
                 self.assertIn("an MCP restart clears current", text)
                 self.assertIn("reads use the viewed tab and writes/navigation need tab_id", text)
@@ -42,10 +41,10 @@ class ServerInstructionsTests(unittest.TestCase):
                                       "needs_user", "user_active", "user_tab_read_only", "no_current_tab"):
                     self.assertNotIn(left_to_hints, text)
 
-    def test_act_mode_explains_background_current_tabs_and_handoff(self):
+    def test_explains_background_current_tabs_and_handoff(self):
         for setting in ("read-only", "writable"):
             with self.subTest(setting=setting):
-                text = self.texts["act", setting]
+                text = self.texts[setting]
                 self.assertIn("browser_tabs new opens a background current tab", text)
                 self.assertIn("select makes any tab current without switching the user's view", text)
                 self.assertIn("Until new/select", text)
@@ -59,18 +58,7 @@ class ServerInstructionsTests(unittest.TestCase):
         # #446: the aliases no longer opt out, so the instructions still state the read-only rule.
         for setting in ("KITSUNE_HOLD_VIEWED_TAB", "KITSUNE_PROTECT_USER_TABS"):
             with self.subTest(setting=setting):
-                self.assertIn("Every tab is readable", instructions("act", **{setting: "0"}))
-
-    def test_restricted_modes_do_not_advertise_unavailable_tab_actions(self):
-        for mode in ("read", "draft"):
-            for setting in ("read-only", "writable"):
-                with self.subTest(mode=mode, setting=setting):
-                    text = self.texts[mode, setting]
-                    self.assertIn("browser_tab_list new_tab opens a background current tab", text)
-                    self.assertIn("Until new_tab", text)
-                    self.assertIn("Need the user? browser_ask_user.", text)
-                    for unavailable in ("browser_tabs", "handoff", "Prefer page controls"):
-                        self.assertNotIn(unavailable, text)
+                self.assertIn("Every tab is readable", instructions(**{setting: "0"}))
 
 
 if __name__ == "__main__":

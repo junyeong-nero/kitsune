@@ -29,7 +29,7 @@ every call. A larger catalog is a cost, not a feature.
 **We do:**
 
 - Keep the default surface small and make each tool's contract precise.
-- Enforce delegation limits (`read`, `draft`, `act`) in the system, not in
+- Enforce delegation limits (approvals, protected user tabs) in the system, not in
   prompts.
 - Report what happened—dispatched, observed, or unknown—and leave the
   decision to the agent.

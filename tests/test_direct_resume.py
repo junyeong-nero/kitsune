@@ -202,10 +202,9 @@ class CheckpointStoreTests(unittest.TestCase):
             self.assertEqual(server._direct_checkpoints, {})
 
     def test_only_direct_stops_the_user_can_resolve_are_resumable(self):
-        held = {"code": "needs_user", "call": 3, "state": {"reason": "approval", "approvable": True}}
+        held = {"code": "needs_user", "call": 3, "state": {"reason": "approval"}}
         self.assertTrue(server.mcp._resumable("browser_click", held))
         for name, payload in (
-                ("browser_click", {**held, "state": {"reason": "approval", "approvable": False}}),  # read, draft
                 ("browser_snapshot", held),  # takes no confirm token
                 ("browser_click", {**held, "call": None}),
                 ("browser_click", {**held, "resume_token": "x"}),

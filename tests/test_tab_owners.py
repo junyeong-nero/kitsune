@@ -130,7 +130,7 @@ class OwnerIdTests(unittest.TestCase):
 
     def test_each_request_sends_the_owner_next_to_the_client(self):
         bridge_client.os.environ["KITSUNE_OWNER_ID"] = OWNER
-        first, restarted = BridgeClient(caps=None), BridgeClient(caps=None)
+        first, restarted = BridgeClient(), BridgeClient()
         self.assertEqual((first.owner_id, restarted.owner_id), (OWNER, OWNER))
         self.assertNotEqual(first.client_id, restarted.client_id)
         response = Mock(status_code=200, json=Mock(return_value={"ok": True}))
@@ -142,7 +142,7 @@ class OwnerIdTests(unittest.TestCase):
                          (OWNER, first.client_id))
 
     def test_a_request_that_must_not_start_a_bridge_neither_starts_nor_waits_for_one(self):
-        client = BridgeClient(caps=None)
+        client = BridgeClient()
         with patch("kitsune.bridge_client.httpx.request", side_effect=bridge_client.httpx.ConnectError("refused")), \
                 patch.object(BridgeClient, "ensure_bridge") as ensure, \
                 patch.object(BridgeClient, "await_extension") as wait:
@@ -552,7 +552,6 @@ class CoreToolRefusalTests(unittest.TestCase):
         self.assertEqual(result["state"], {"tool": "browser_type"})
         hint = result["hint"]
         self.assertNotIn("tab_id", hint, "the core schemas list no tab_id")
-        self.assertNotIn("browser_tab_list", hint, "act mode publishes browser_tabs instead")
         self.assertIn("browser_tabs action=new url=<url>", hint)
         self.assertLess(hint.index("action=new"), hint.index("action=select"))
 
@@ -567,7 +566,7 @@ class CoreToolRefusalTests(unittest.TestCase):
         self.assertNotIn("tab_id", result["hint"])
 
     def test_a_writable_viewed_tab_is_offered_to_select(self):
-        result, _ = self.refuse([self.USER], client=Mock(mode="act", user_tabs="writable"))
+        result, _ = self.refuse([self.USER], client=Mock(user_tabs="writable"))
         self.assertTrue(result["hint"].endswith(
             "The user is viewing tab 0 (https://user.test/form); browser_tabs action=select index=0 makes it current."))
 
@@ -589,25 +588,9 @@ class CoreToolRefusalTests(unittest.TestCase):
         self.assertEqual(self.refuse([self.USER, {**self.USER, "id": 8}])[0], unchanged)
         self.assertEqual(self.refuse(RuntimeError("bridge gone")), (unchanged, [{"mine": True}]))
 
-    def test_without_browser_tabs_the_hint_offers_browser_tab_list(self):
-        for mode in ("draft", "read"):
-            with self.subTest(mode=mode):
-                result, posts = self.refuse([self.USER, self.OWN], client=Mock(mode=mode, user_tabs="read-only"))
-                self.assertEqual(posts, [], "no core tool it publishes reaches another tab")
-                self.assertEqual(result["hint"], "Nothing was dispatched. browser_type acts on the current tab: "
-                                                 "open a tab of your own with browser_tab_list new_tab=<url> and "
-                                                 "work there.")
-                # Kitsune's own tools take tab_id, and only browser_tab_list opens tabs.
-                with patch.object(tools, "client", Mock(mode=mode)):
-                    own = tools._no_current_tab("browser_scroll", {})["hint"]
-                self.assertIn("Pass tab_id", own)
-                self.assertIn("browser_tab_list new_tab", own)
-                self.assertNotIn("browser_tabs", own)
-
     def test_kitsune_own_tools_keep_tab_id_and_tab_ids(self):
         hint = tools._no_current_tab("browser_scroll", {})["hint"]
         self.assertIn("Pass tab_id", hint)
-        self.assertNotIn("browser_tab_list", hint, "act mode publishes browser_tabs instead")
         self.assertNotIn("browser_navigate", hint, "the core tools' unlisted tab_id is not offered")
 
 

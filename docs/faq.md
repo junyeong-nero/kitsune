@@ -47,13 +47,12 @@ popups that sites open can still take focus; see [Shared browser](api-reference.
 
 ## Can I limit what the agent does?
 
-Yes, in three ways that combine:
+Yes, in ways that combine. Every tool is available (#525), so the limits are approvals:
 
-- `KITSUNE_MODE=read`, `draft` or `act` limits both the tools the agent sees and the requests the
-  bridge accepts. Draft fills supported fields but has no click or submit tools. See
-  [Task modes](tools.md#task-modes).
-- `KITSUNE_CAPS` enables tool groups; the default is the 25 core tools, `browser_resume` and `browser_ask_user`. Groups that read personal
-  data (`storage`, `history`) must be named. See [Tools, capabilities and modes](tools.md).
+- In the extension's options, choose which tools wait for your approval before they run;
+  cookies, page storage, the clipboard and history do by default.
+- Your tabs stay read-only to the agent unless you set `KITSUNE_USER_TABS=writable`; see
+  [Protecting your tabs](your-tabs.md#protecting-your-tabs).
 - [Ask-before-act](your-tabs.md#ask-before-act) holds submits, payment pages, JavaScript and cookie
   access until you approve.
 

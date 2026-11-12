@@ -36,8 +36,8 @@ Chromium or WebDriver to install.
   under the same names, `browser_ask_user` and `browser_resume` for when it needs you, and
   `browser_run_python` (trusted local Python, not a sandbox) for everything else.
   `KITSUNE_SCRIPTING=0` restores the legacy list of Playwright MCP's 25 core tools.
-- **You decide how much to hand over.** `KITSUNE_MODE=read`, `draft` or `act` limits what the
-  agent can do. In draft mode it can fill in forms but cannot click or submit.
+- **You decide what needs your approval.** Every tool is available, and you choose in the
+  extension's options which actions wait for your OK first.
 
 ## Get started
 
@@ -73,7 +73,7 @@ The full documentation is at **[junyeong-nero.github.io/kitsune](https://junyeon
 
 - [Installation](https://junyeong-nero.github.io/kitsune/installation/): every MCP client, version pinning, upgrades
 - [Your tabs and approvals](https://junyeong-nero.github.io/kitsune/your-tabs/): what the agent may do to your tabs, and how you approve
-- [Tools, capabilities and modes](https://junyeong-nero.github.io/kitsune/tools/): `KITSUNE_CAPS`, `KITSUNE_PUBLISH` and `KITSUNE_MODE`
+- [Tools](https://junyeong-nero.github.io/kitsune/tools/): the minimal and legacy tool lists, and the tool groups
 - [Python API](https://junyeong-nero.github.io/kitsune/python-api/): drive the browser from your own scripts with `pip install kitsune-browser`
 - [Troubleshooting](https://junyeong-nero.github.io/kitsune/troubleshooting/) ·
   [FAQ](https://junyeong-nero.github.io/kitsune/faq/) ·

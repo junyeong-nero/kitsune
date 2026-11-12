@@ -437,20 +437,6 @@ class CrossOriginFrameTests(AskBeforeActTestCase):
         self.extension.frame = None
         self.assertEqual(self.forward("click", {"ref": "s1e5"}), (200, {"ok": True}))
 
-    def test_draft_mode_keeps_its_fill_rules_inside_frames(self):
-        self.extension.frame = {"url": "https://widget.example/chat"}
-        token = bridge._task_mode.set("draft")
-        try:
-            self.extension.target = {"ok": True, "tag": "input", "sensitive": True}
-            status, result = self.forward("fill", {"ref": "s1e6", "value": "4111"})
-            self.assertEqual((status, result["code"], result["state"]["reason"]),
-                             (403, "mode_restricted", "sensitive_field"))
-            self.extension.target = {"ok": True, "tag": "input", "sensitive": False}
-            self.assertEqual(self.forward("fill", {"ref": "s1e6", "value": "hi"}), (200, {"ok": True}))
-        finally:
-            bridge._task_mode.reset(token)
-        self.assertEqual(self.extension.actions(), ["fill"])
-
 
 class NoAutoConfirmTests(AskBeforeActTestCase):
     def test_batch_never_honors_tokens_and_stops_at_held_step(self):

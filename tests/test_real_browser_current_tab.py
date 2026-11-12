@@ -85,9 +85,8 @@ class RealBrowserCurrentTabTests(harness.RealBrowserTestCase):
         self.assertEqual(self.scroll_y(self.user), 0)
 
     def test_mcp_tools_act_on_the_tab_the_core_tools_opened(self):
-        env = {**self.bridge.env, "KITSUNE_CAPS": "all", "KITSUNE_PUBLISH": "core"}
         text, batch, closed = asyncio.run(asyncio.wait_for(
-            _mcp_calls(env, self.site.origin + "/mcp"), MCP_SESSION_TIMEOUT))
+            _mcp_calls(self.bridge.env, self.site.origin + "/mcp"), MCP_SESSION_TIMEOUT))
         self.assertIn("mcp page", text["text"])
         self.assertEqual(batch["status"], "ok", batch)
         info = batch["results"][1]

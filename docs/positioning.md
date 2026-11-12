@@ -121,7 +121,7 @@ surface. They support the use case but should not be presented as unique to
 Kitsune.
 
 Kitsune's product story should instead be supported by its current shared-browser
-rules, restricted task modes, observation/action contracts, connection lifecycle,
+rules, per-tool approvals, observation/action contracts, connection lifecycle,
 and uncertain-outcome recovery. These are implementation choices to evaluate,
 not claims that no other project could implement them.
 
@@ -150,20 +150,13 @@ uses heuristics and is forgotten on extension/browser restart. Confirmation toke
 are not an independent human-approval channel. Do not promise “never interrupts
 the user” or treat ownership as a security boundary.
 
-### 2. Bounded delegation: read, draft, act
+### 2. Bounded delegation: approvals
 
-`KITSUNE_MODE=read|draft|act` restricts both the tool surface and bridge requests:
-
-| Mode | User intent | Important qualification |
-| --- | --- | --- |
-| `read` | Inspect and research | Navigation is allowed; this is not a guarantee that every website access has no side effects |
-| `draft` | Fill supported fields without click/submit tools | Websites may autosave input; this is not a transactional sandbox |
-| `act` | Perform enabled interactions | Default mode; ask-before-act is configured separately |
-
-This makes delegation more concrete than a prompt saying “please do not submit.”
-The restricted modes intersect with the enabled capability groups; they do not
-silently enable missing tools. See [Task modes](tools.md#task-modes) and
-[the explicit policy map](../src/kitsune/task_modes.py).
+Every tool is available (#525); the user chooses in the extension's options which
+tools wait for approval before they run, and the bridge holds them, Python scripts'
+requests included. This makes delegation more concrete than a prompt saying “please
+do not submit.” It is not a sandbox: websites may autosave input or react to
+navigation, and approval settings do not confine `browser_run_python`'s host Python.
 
 Ask-before-act, sensitive-field redaction, and redacted audit values complement
 these controls. However, ask-before-act is off by default, its second call does
@@ -174,7 +167,7 @@ injection or makes a full personal profile safe to expose. Follow the
 ### 3. Recovery that distinguishes uncertainty from failure
 
 An interrupted container can record which steps succeeded, never started, failed,
-were held, or have an unknown outcome. With the optional `automation` capability,
+were held, or have an unknown outcome. With the `automation` tools,
 `browser_resume` does not resend successful writes. An unknown write requires an
 observation that it was applied or not applied before continuation. Parallel
 resumption checks tab availability/claims, workflows are checked for changes,
@@ -239,9 +232,8 @@ equivalent coverage merely because it can click, inspect network data, or run JS
 
 ### Setup and configuration complexity
 
-Users may need to understand server/bridge/extension versions, capability groups
-(`KITSUNE_CAPS`), the published subset and gateway (`KITSUNE_PUBLISH`), task modes,
-and ask-before-act. The signed extension is convenient for ongoing installation,
+Users may need to understand server/bridge/extension versions, the minimal and
+legacy tool lists (`KITSUNE_SCRIPTING`), approvals and ask-before-act. The signed extension is convenient for ongoing installation,
 but agent-supplied JavaScript requires the temporary developer build. The current
 manifest requires Firefox 142+ and broad extension permissions; hiding MCP tools
 does not reduce those installation permissions.
@@ -251,13 +243,12 @@ See [Installation](installation.md) and [Configuration](configuration.md).
 
 ### Default experience versus advanced promises
 
-The default `KITSUNE_CAPS=core` surface is Playwright MCP's 25 core tools and Kitsune's
-`browser_resume` and `browser_ask_user`. Kitsune's other groups, including batch/parallel in `automation`, are enabled with
-`KITSUNE_CAPS`; `KITSUNE_PUBLISH` can keep them out of the initial tool list behind
-the gateway tools. Restricted task modes and ask-before-act are opt-in. Do not
-advertise every advanced workflow as available immediately after the default setup.
-Show the required configuration beside the example, and distinguish an instruction
-in natural language from an enforced mode.
+The default surface is the 14-tool minimal list; less-frequent operations, including
+batch/parallel, run through `browser_run_python`. `KITSUNE_SCRIPTING=0` lists
+Playwright MCP's 25 core tools, `browser_resume` and `browser_ask_user`, with the
+gateway tools for the rest. Ask-before-act is opt-in. Show the required configuration
+beside the example, and distinguish an instruction in natural language from an
+enforced approval.
 
 ### Measured token efficiency, not general superiority
 
@@ -328,7 +319,7 @@ A more representative demo is:
 
 1. The user continues writing in one tab.
 2. The agent researches three sources in background tabs without taking that view.
-3. The agent prepares a form draft in an authorized service under draft mode.
+3. The agent prepares a form draft in an authorized service; submitting waits for approval.
 4. The user reviews and performs the final submission.
 
 Use disposable accounts and a controlled form; show the configuration and any
@@ -377,7 +368,7 @@ recommendation merely to obtain a smaller memory number.
 - “Parallel workflows and Zen unloader handling are unique Kitsune inventions.”
 - “Mozilla's MCP is only for debugging.”
 - “Extension control is undetectable or bypasses anti-bot protection.”
-- “Read/draft modes, redaction, or confirmation tokens make account access safe.”
+- “Approvals, redaction, or confirmation tokens make account access safe.”
 - “Kitsune never steals focus or interferes with user input.”
 - “Resume guarantees exactly-once execution or survives a daemon restart.”
 - “Kitsune is faster, cheaper, or more memory-efficient” without matched evidence.

@@ -1,4 +1,4 @@
-"""#227: authorized tools outside KITSUNE_PUBLISH are found, called and listed without a restart."""
+"""#227: on the legacy surface, tools outside the core group are found, called and listed without a restart."""
 import json
 import os
 import subprocess
@@ -98,13 +98,8 @@ asyncio.run(main())
 GATEWAY = {"browser_tools_search", "browser_tools_call", "browser_tools_publish"}
 
 
-def environment(caps, publish=None, mode=None, **extra):
-    env = {**os.environ, "KITSUNE_CAPS": caps, "KITSUNE_TOKEN": "test-token", "KITSUNE_SCRIPTING": "0", **extra}
-    for name, value in (("KITSUNE_PUBLISH", publish), ("KITSUNE_MODE", mode)):
-        env.pop(name, None)
-        if value is not None:
-            env[name] = value
-    return env
+def environment(**extra):
+    return {**os.environ, "KITSUNE_TOKEN": "test-token", "KITSUNE_SCRIPTING": "0", **extra}
 
 
 def run(script, env, *args):
@@ -139,34 +134,12 @@ def payload(result):
     return json.loads(result["content"][0]["text"])
 
 
-class DefaultSurfaceTests(unittest.TestCase):
-    def test_without_publish_the_surface_and_capabilities_are_unchanged(self):
-        for caps in ("core", "all", "all,storage,history"):
-            with self.subTest(caps=caps):
-                result = run(CAPABILITY, environment(caps))
-                self.assertFalse(result["listChanged"])
-                self.assertFalse(set(result["listed"]) & GATEWAY)
-
-    def test_publishing_every_authorized_group_adds_no_gateway(self):
-        result = run(CAPABILITY, environment("core,browse", "browse,core"))
-        self.assertFalse(result["listChanged"])
-        self.assertFalse(set(result["listed"]) & GATEWAY)
-
-    def test_publish_must_name_authorized_groups(self):
-        for publish, message in (("core,browse", "KITSUNE_PUBLISH names groups KITSUNE_CAPS does not enable: browse"),
-                                 ("devtools", "Unknown KITSUNE_PUBLISH: devtools")):
-            result = subprocess.run([sys.executable, "-c", "import kitsune.server"],
-                                    env=environment("core", publish), capture_output=True, text=True)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn(message, result.stderr)
-
-
 class GatewayTests(unittest.TestCase):
-    """KITSUNE_CAPS authorizes core, browse, read and admin; tools/list starts with core."""
+    """The legacy surface: tools/list starts with the core group and the gateway reaches the rest."""
 
     @classmethod
     def setUpClass(cls):
-        cls.env = environment("core,browse,read,admin", "core", KITSUNE_USER_TABS="writable")
+        cls.env = environment(KITSUNE_USER_TABS="writable")
         cls.capability = run(CAPABILITY, cls.env)
 
     def test_capability_and_initial_list(self):
@@ -219,9 +192,9 @@ class GatewayTests(unittest.TestCase):
         # A relative file name resolves in the client's root either way.
         self.assertEqual(payload(snapshot)["saved_to"], os.path.join(result["root"], "page.md"))
 
-    def test_unknown_unauthorized_and_recursive_names(self):
+    def test_unknown_and_recursive_names_and_personal_data_tools(self):
         result = sessions(self.env, [
-            via("browser_cookies"), call("browser_cookies"),
+            via("browser_cookies", {"op": "get"}), call("browser_cookies", {"op": "get"}),
             via("browser_nope"),
             via("browser_tools_call", {"name": "browser_scroll"}),
             via("browser_tools_publish", {"names": ["browse"]}),
@@ -230,8 +203,9 @@ class GatewayTests(unittest.TestCase):
             call("browser_tools_search", {"query": "scroll", "limit": 11}),
         ])
         gateway_cookies, direct_cookies, unknown, recursive, publish, search, overview, limit = result["results"]
-        self.assertEqual(gateway_cookies, direct_cookies)
-        self.assertEqual(payload(direct_cookies)["code"], "tool_not_published")
+        # #525: storage and history tools are available like every other group.
+        self.assertEqual(without_gateway_header(gateway_cookies), without_gateway_header(direct_cookies))
+        self.assertFalse(direct_cookies["isError"])
         self.assertEqual((unknown["isError"], payload(unknown)["code"]), (True, "unknown_tool"))
         for refused in (recursive, publish):
             self.assertTrue(refused["isError"])
@@ -240,9 +214,10 @@ class GatewayTests(unittest.TestCase):
         found = payload(search)
         names = {tool["name"] for tool in found["tools"]} | {
             name for tools in found.get("groups", {}).values() for name in tools}
-        self.assertFalse(names & {"browser_cookies", "browser_storage", "browser_clipboard", "browser_history_search"})
+        self.assertTrue(names & {"browser_cookies", "browser_storage", "browser_clipboard", "browser_history_search"})
         groups = payload(overview)["groups"]
-        self.assertEqual(set(groups), {"browse", "read", "admin"})
+        self.assertEqual(set(groups), {"browse", "read", "inspect", "tabs", "automation", "network", "admin",
+                                       "storage", "history"})
         self.assertFalse(set().union(*groups.values()) & GATEWAY)
         self.assertEqual(payload(limit)["code"], "invalid_argument")
 
@@ -259,61 +234,26 @@ class GatewayTests(unittest.TestCase):
             call("browser_scroll", {"direction": "down", "tab_id": 3}, session="b"),
         ])
         published, listed_a, listed_b, again, storage, unknown, search_a, search_b, direct_b = result["results"]
+        self.assertFalse(storage["isError"])
+        self.assertIn("browser_cookies", payload(storage)["published"])
         added = payload(published)
         self.assertEqual(set(added["published"]), {
             "browser_scroll", "browser_forward", "browser_check", "browser_focus", "browser_blur",
             "browser_submit_form", "browser_click_and_wait_navigation", "browser_trusted_click",
             "browser_trusted_drag", "browser_trusted_type", "browser_trusted_press_key", "browser_page_text"})
         self.assertTrue(added["notified"])
-        self.assertEqual(result["notes"], {"a": ["ToolListChangedNotification"], "b": []})
+        # The first call and the storage group's each notify; nothing reaches session b.
+        self.assertEqual(result["notes"], {"a": ["ToolListChangedNotification"] * 2, "b": []})
         self.assertTrue(set(added["published"]) <= set(listed_a))
         self.assertEqual(listed_b, result["listed"])
         # Listed tools, at session start or by the earlier call, add nothing and send no notification.
         self.assertEqual((payload(again)["published"], payload(again)["notified"]), ([], False))
-        for refused in (storage, unknown):
-            self.assertTrue(refused["isError"])
-            self.assertEqual(payload(refused)["code"], "tool_not_published")
-        # Unknown and unauthorized names get the same answer.
-        self.assertEqual(payload(storage)["error"].split(": ")[0], payload(unknown)["error"].split(": ")[0])
+        self.assertTrue(unknown["isError"])
+        self.assertEqual(payload(unknown)["code"], "tool_not_published")
         self.assertTrue(payload(search_a)["tools"][0]["listed"])
         self.assertFalse(payload(search_b)["tools"][0]["listed"])
-        # Authorized tools stay callable directly in any session, listed or not.
+        # Tools stay callable directly in any session, listed or not.
         self.assertFalse(direct_b["isError"])
-
-
-class GatewayModeTests(unittest.TestCase):
-    def test_read_mode_limits_apply_through_the_gateway(self):
-        env = environment("core,browse,read", "core", mode="read")
-        result = sessions(env, [
-            call("browser_tools_search", {"query": "click submit form check focus", "limit": 10}),
-            via("browser_click", {"target": "e1"}), call("browser_click", {"target": "e1"}),
-            via("browser_scroll", {"direction": "down", "confirm_token": "x"}),
-            call("browser_scroll", {"direction": "down", "confirm_token": "x"}),
-            via("browser_scroll", {"direction": "down", "tab_id": 3}),
-        ])
-        search, gateway_click, direct_click, gateway_token, direct_token, scroll = result["results"]
-        names = {tool["name"] for tool in payload(search)["tools"]}
-        self.assertFalse(names & {"browser_click", "browser_submit_form", "browser_check", "browser_focus",
-                                  "browser_trusted_click"})
-        self.assertEqual(gateway_click, direct_click)
-        self.assertIn("KITSUNE_MODE=act", payload(direct_click)["hint"])
-        self.assertEqual(gateway_token, direct_token)
-        self.assertEqual(payload(direct_token)["code"], "mode_restricted")
-        self.assertFalse(scroll["isError"])
-        self.assertEqual(scroll["requests"][0]["headers"][task_modes.MODE_HEADER], "read")
-        self.assertIn("browser_tools_call", result["listed"])
-
-    def test_all_leaves_personal_data_groups_unauthorized(self):
-        env = environment("all", "core")
-        result = sessions(env, [
-            call("browser_tools_search", {"query": "", "limit": 10}),
-            via("browser_cookies"), via("browser_history_search", {"query": "x"}),
-            call("browser_tools_publish", {"names": ["storage", "history"]}),
-        ])
-        overview, cookies, history, publish = result["results"]
-        self.assertFalse({"storage", "history"} & set(payload(overview)["groups"]))
-        for refused in (cookies, history, publish):
-            self.assertEqual(payload(refused)["code"], "tool_not_published")
 
 
 class GatewayAuditTests(AskBeforeActTestCase):

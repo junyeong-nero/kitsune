@@ -6,7 +6,7 @@
 
 Tool definitions are resent with every model request, so their size is per-request
 context (#88, #31). Sizes are characters of compact JSON (no whitespace, non-ASCII
-kept) for every core tool (KITSUNE_CAPS=core), which are Playwright MCP's core tools:
+kept) for every core tool of the legacy surface (KITSUNE_SCRIPTING=0), which are Playwright MCP's core tools:
 `total` is the whole definition as listed by tools/list, `description` and `inputSchema`
 are those fields alone. Characters are not tokenizer counts. Some clients send only the
 first paragraph of each description (#135), so `firstParagraph` is that part of the
@@ -15,7 +15,7 @@ tests/test_tool_schema_size.py fails when the sizes differ from tests/tool_schem
 so every change to the definitions shows up in review as a snapshot diff, and when a
 total or a single tool grows past its budget below, in either view, which only a
 deliberate bump raises. The server instructions are resent with every request too, so
-the table ends with their size in each mode, and the test fails when one grows past
+the table ends with their size, and the test fails when they grow past
 INSTRUCTIONS_BUDGETS (#386).
 """
 
@@ -41,11 +41,11 @@ SNAPSHOT = Path(__file__).resolve().parent.parent / "tests" / "tool_schema_sizes
 TOTAL_BUDGETS = {"core": 21_800}
 FIRST_PARAGRAPH_BUDGETS = {"core": 21_800}
 TOOL_BUDGET = 3_000  # any single core tool, full view
-# Characters of the server instructions in each KITSUNE_MODE with the default read-only
-# user-tab permission, which makes them longest. Each has about 5% headroom (#405), well within
-# v0.7.1's 747 characters. Do not drop permission/recovery rules to fit: a rule may leave the
-# instructions only when the result that needs it says it in its hint.
-INSTRUCTIONS_BUDGETS = {"act": 590, "read": 335, "draft": 335}
+# Characters of the legacy server instructions with the default read-only user-tab permission,
+# which makes them longest. About 5% headroom (#405), well within v0.7.1's 747 characters. Do not
+# drop permission/recovery rules to fit: a rule may leave the instructions only when the result
+# that needs it says it in its hint.
+INSTRUCTIONS_BUDGETS = {"legacy": 590}
 
 
 def _compact(value) -> int:
@@ -59,12 +59,13 @@ def first_paragraph(description: str) -> str:
 
 def measure() -> dict:
     """Sizes of every core tool."""
-    os.environ["KITSUNE_CAPS"] = "core"
     os.environ["KITSUNE_SCRIPTING"] = "0"  # the legacy surface these budgets cover (#525)
-    from kitsune.server import mcp
+    from kitsune.server import GATEWAY_TOOLS, mcp
 
     tools = {}
     for tool in asyncio.run(mcp.list_tools()):
+        if tool.name in GATEWAY_TOOLS:
+            continue
         definition = tool.model_dump(mode="json", exclude_none=True)
         first = first_paragraph(definition.get("description", ""))
         tools[tool.name] = {
@@ -78,17 +79,16 @@ def measure() -> dict:
 
 
 def measure_instructions() -> dict:
-    """Characters of the server instructions in each mode of INSTRUCTIONS_BUDGETS. The
-    instructions are built at import from the environment, so each mode imports the server anew."""
+    """Characters of the legacy server instructions. They are built at import from the environment,
+    so this imports the server anew."""
     env = {key: value for key, value in os.environ.items() if key != "KITSUNE_USER_TABS"}
     script = "from kitsune import server; print(len(server.mcp._mcp_server.instructions))"
-    return {mode: int(subprocess.run([sys.executable, "-c", script], env={**env, "KITSUNE_MODE": mode, "KITSUNE_SCRIPTING": "0"},
-                                     capture_output=True, text=True, check=True).stdout)
-            for mode in INSTRUCTIONS_BUDGETS}
+    return {"legacy": int(subprocess.run([sys.executable, "-c", script], env={**env, "KITSUNE_SCRIPTING": "0"},
+                                         capture_output=True, text=True, check=True).stdout)}
 
 
 def instructions_over_budget(sizes: dict) -> list[str]:
-    """Modes whose instructions exceed INSTRUCTIONS_BUDGETS."""
+    """Instructions that exceed INSTRUCTIONS_BUDGETS."""
     return [f"instructions ({mode}): {size} > budget {INSTRUCTIONS_BUDGETS[mode]}"
             for mode, size in sizes.items() if size > INSTRUCTIONS_BUDGETS[mode]]
 

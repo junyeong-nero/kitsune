@@ -93,7 +93,7 @@ DIAGNOSIS_TIMEOUT = 15
 MCP_SESSION_TIMEOUT = 30
 
 
-async def _mcp_status_and_unpublished(env):
+async def _mcp_status_and_unlisted(env):
     """Over stdio, the published tool names, browser_status, and a browser_cookies call."""
     server = StdioServerParameters(command=sys.executable, args=["-m", "kitsune.server"], env=env)
     async with stdio_client(server) as (read, write), ClientSession(read, write) as session:
@@ -249,27 +249,25 @@ class RealBrowserConnectionDiagnosisTests(_DiagnosisTestCase):
         # A refused page is not a missing site permission for the whole extension.
         self.assertEqual(self.bridge.status()["diagnosis"], {"code": "connected"})
 
-    def test_mcp_status_reports_tool_surface_and_unpublished_tool_names_its_setting(self):
+    def test_mcp_status_reports_tool_surface_and_unlisted_tools_still_run(self):
         self.wait_for_diagnosis("connected")
-        # The MCP server uses this class's bridge; its build matches, so it is not replaced.
-        env = {**self.bridge.env, "KITSUNE_CAPS": "core,admin"}
-        names, status, cookies = asyncio.run(asyncio.wait_for(_mcp_status_and_unpublished(env), MCP_SESSION_TIMEOUT))
+        # The MCP server uses this class's bridge (the legacy surface); its build matches, so it is not replaced.
+        names, status, cookies = asyncio.run(asyncio.wait_for(_mcp_status_and_unlisted(self.bridge.env),
+                                                              MCP_SESSION_TIMEOUT))
 
-        self.assertIn("browser_status", names)
+        self.assertNotIn("browser_status", names)
         self.assertNotIn("browser_cookies", names)
         self.assertFalse(status.isError, status)
         status = json.loads(status.content[0].text)
         self.assertTrue(status["extension_connected"], status)
         self.assertEqual(status["diagnosis"], {"code": "connected"}, status)
-        # 104 known tools (93 in `all` plus the named-only storage and history); core and admin publish 33.
         self.assertRegex(status["mcp_tools"].pop("client"), r"^\d+-[0-9a-f]{6}$")
-        self.assertEqual(status["mcp_tools"], {"caps": ["admin", "core"], "unpublished": 104 - len(names)})
+        status["mcp_tools"].pop("owner")
+        # 108 known tools (#525: every group); the legacy list shows the 27 core and 3 gateway tools.
+        self.assertEqual(status["mcp_tools"], {"surface": "legacy", "unlisted": 108 - 27})
+        self.assertEqual(len(names), 30)
 
-        self.assertTrue(cookies.isError, cookies)
-        cookies = json.loads(cookies.content[0].text)
-        self.assert_error(cookies, "tool_not_published", False)
-        self.assertIn("KITSUNE_CAPS=admin,core,storage", cookies["hint"])
-        self.assertEqual(cookies["state"], {"group": "storage", "caps": ["admin", "core"]})
+        self.assertFalse(cookies.isError, cookies)
 
 
 class RealBrowserBridgeStartTests(_DiagnosisTestCase):

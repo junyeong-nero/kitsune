@@ -365,7 +365,7 @@ class UserTabsReadOnlyTests(unittest.TestCase):
         with patch.object(bridge_client, "BRIDGE", f"http://{self.bridge.host}"), \
                 patch.object(bridge_client, "_headers", self.bridge.auth):
             for name in ("x-kitsune-user-tabs", "X-KITSUNE-USER-TABS", "x-KiTsUnE-uSeR-TaBs"):
-                client = bridge_client.BridgeClient(caps=None, user_tabs="read-only",
+                client = bridge_client.BridgeClient(user_tabs="read-only",
                                                     extra_headers=lambda: {name: "writable"})
                 result = client.request("POST", "/api/click", start_bridge=False, json={"tabId": 1})
                 # A duplicate would be HTTP 400; the request must reach read-only admission.

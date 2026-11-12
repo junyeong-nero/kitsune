@@ -121,13 +121,6 @@ class WithoutElicitationTests(AskUserTestCase):
         self.assertEqual(payload["state"]["evidence"], {"widget": "recaptcha"})
         self.assertIn("resume_token", payload)
 
-    def test_without_browser_resume_there_is_no_resume_token(self):
-        self.extension.hint = SIGN_IN
-        with patch.dict(server.UNPUBLISHED_TOOLS, {"browser_resume": ("core", ["KITSUNE_MODE=act"])}):
-            result, payload = self.ask(reason="sign_in")
-        self.assertEqual(payload["state"]["evidence"], {"field": "password"})
-        self.assertNotIn("resume_token", payload)
-
     def test_a_closed_tab_is_reported_and_nothing_is_asked(self):
         result, payload = self.ask(tab_id=99)
         self.assertEqual(payload["code"], "tab_closed")

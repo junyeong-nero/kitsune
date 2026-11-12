@@ -8,7 +8,7 @@ import time
 import unittest
 from unittest.mock import Mock, patch
 
-from kitsune import bridge, task_modes
+from kitsune import bridge
 from test_ask_before_act import AskBeforeActTestCase
 
 TAB = 7
@@ -97,30 +97,6 @@ class DirectAdmissionTests(AskBeforeActTestCase):
         self.assertEqual(self.audit(), [("saveSession", False, denied["error"]),
                                         ("loadSession", False, denied["error"]),
                                         ("loadSession", False, "URL not in allowlist: https://other.example/")])
-
-    def test_read_and_draft_modes_refuse_these_requests_over_direct_http(self):
-        self.save_bundle()
-        for mode in ("read", "draft"):
-            token = bridge._task_mode.set(mode)
-            try:
-                for route, body, action in (JS_FULL, WAIT_FOR_RESULT, SYNC_BARRIER, SAVE_SESSION, LOAD_SESSION):
-                    with self.subTest(mode=mode, action=action):
-                        status, result = self.call(route, body)
-                        self.assertEqual((status, result["code"]), (403, "mode_restricted"))
-            finally:
-                bridge._task_mode.reset(token)
-            handler = self.handler({})
-            handler.headers = {task_modes.MODE_HEADER: mode}
-            route = Mock()
-            for path in ("/api/js", "/api/wait-for-result", "/api/sync-barrier", "/api/save-session",
-                         "/api/load-session", "/api/saveSession", "/api/loadSession"):
-                with self.subTest(mode=mode, path=path):
-                    handler.path = path
-                    handler._dispatch({bridge._API_ALIASES.get(path, path): route})
-                    self.assertEqual(handler.send_json.call_args.args[1]["code"], "mode_restricted")
-            route.assert_not_called()
-        self.assertEqual(self.extension.sent, [])
-        self.assertEqual(self.audit(), [])
 
 
 class TrustedClickTimeoutTests(AskBeforeActTestCase):

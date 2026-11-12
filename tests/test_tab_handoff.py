@@ -235,7 +235,7 @@ time.sleep(60)
 
     def test_bridge_client_channel_close_and_extension_loss(self):
         async def run():
-            client = bridge_client.BridgeClient(caps={"core"}, approver=True)
+            client = bridge_client.BridgeClient(approver=True)
             with patch.object(bridge_client, "BRIDGE", "http://" + self.bridge.host), \
                     patch.object(bridge_client, "_headers", return_value=self.bridge.auth()), \
                     patch.object(client, "await_extension"):
@@ -259,7 +259,7 @@ time.sleep(60)
         self.addCleanup(self.extension.close)
 
         async def run():
-            client = bridge_client.BridgeClient(caps={"core"}, approver=True)
+            client = bridge_client.BridgeClient(approver=True)
             call_finished = asyncio.Event()
             async def call(mcp_client):
                 try:
@@ -316,7 +316,7 @@ time.sleep(60)
         async def run():
             for decision, elicits in (("browser-approved", True), ("browser-declined", True),
                                       ("approved", True), ("declined", True), ("token", False)):
-                client = bridge_client.BridgeClient(caps={"core"}, approver=True)
+                client = bridge_client.BridgeClient(approver=True)
                 prompts = []
                 held = {"error": "approval", "code": "needs_user", "state": {"reason": "approval",
                         "detail": "tab_handoff", "tabId": 1, "confirmToken": "test-token", "expiresInSeconds": 120}}
@@ -369,7 +369,7 @@ time.sleep(60)
             call first. The result (None when cancelled), the client's answers, and whether the server
             closed the client's prompt."""
             self.extension.reset(popup, popup_delay)
-            client = bridge_client.BridgeClient(caps={"core"}, approver=True)
+            client = bridge_client.BridgeClient(approver=True)
             closed = []
             send_notification = ServerSession.send_notification
 
@@ -438,7 +438,7 @@ time.sleep(60)
             self.assertEqual((value, answers), (None, ["cancelled"]))
         anyio.run(run)
 
-    def test_simultaneous_owner_sessions_and_restricted_mode(self):
+    def test_simultaneous_owner_sessions(self):
         first, response = self.channel()
         second_headers = {**self.headers, SESSION_HEADER: "b" * 64, CLIENT_HEADER: "process-b"}
         self.channel(second_headers)
@@ -446,8 +446,6 @@ time.sleep(60)
         first.close()
         self.wait_for("endHandoffSession")
         self.assertEqual(self.request({"tabId": 1, "reason": "work"}, second_headers)[0], 200)
-        self.assertEqual(self.request({"tabId": 1, "reason": "work"},
-                                     {**second_headers, "X-Kitsune-Mode": "read"})[0], 403)
 
 
 class HandoffFacadeTests(unittest.TestCase):

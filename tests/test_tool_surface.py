@@ -14,22 +14,17 @@ from kitsune.bridge import _parse_workflow
 
 
 class ToolSurfaceTests(unittest.TestCase):
-    def registered(self, caps):
-        env = {**os.environ, "KITSUNE_CAPS": caps, "KITSUNE_SCRIPTING": "0"}
-        result = subprocess.run(
-            [sys.executable, "-c", "import asyncio,json; from kitsune.server import mcp; "
-             "print(json.dumps([t.name for t in asyncio.run(mcp.list_tools())]))"],
-            env=env, capture_output=True, text=True, check=True,
-        )
-        return set(json.loads(result.stdout))
+    def registered(self, group):
+        return {name for name, of in server.TOOL_GROUPS.items() if of == group}
 
     def test_registration(self):
         core = self.registered("core")
-        all_tools = self.registered("all")
+        all_tools = set(server.TOOL_GROUPS)
         # The core group is Playwright MCP's core tools, browser_resume and browser_ask_user (#376).
         self.assertEqual(core, set(playwright_tools.SCHEMAS) | {"browser_resume", "browser_ask_user"})
         self.assertEqual(len(core), 27)
-        self.assertEqual(len(all_tools), 97)
+        # #525: every tool is registered; the groups only sort them.
+        self.assertEqual(len(all_tools), 108)
         removed = {
             "browser_page_text_by_tab_id", "browser_fill", "browser_set_editable_content",
             "browser_new_tab", "browser_close_tab", "browser_switch_tab",
@@ -41,20 +36,12 @@ class ToolSurfaceTests(unittest.TestCase):
             "browser_upload_file", "browser_console_logs", "browser_watch_console", "browser_double_click",
         }
         self.assertFalse(all_tools & removed)
-        # `all` enables every group except storage and history, which read personal data and must be
-        # named (#140).
-        self.assertEqual(server.NAMED_ONLY_GROUPS, {"storage", "history"})
         storage = {"browser_cookies", "browser_storage", "browser_clipboard", "browser_clear_browsing_data",
                    "browser_save_session", "browser_load_session", "browser_list_sessions", "browser_delete_session"}
         history = {"browser_history_search", "browser_history_visits", "browser_bookmarks_search"}
         self.assertEqual(self.registered("storage"), storage)
         self.assertEqual(self.registered("history"), history)
-        self.assertFalse(all_tools & (storage | history))
-        self.assertEqual(self.registered("all,storage,history"), all_tools | storage | history)
-        groups = [self.registered(g) for g in server.CAPABILITY_GROUPS - server.NAMED_ONLY_GROUPS]
-        self.assertEqual(set.union(*groups), all_tools)
-        self.assertEqual(sum(map(len, groups)), len(all_tools))
-        self.assertEqual(self.registered(" CORE, automation "), core | self.registered("automation"))
+        self.assertEqual(set(server.TOOL_GROUPS.values()), tools.GROUPS)
         self.assertTrue({"browser_scheduler", "browser_batch", "browser_retry", "browser_tab_pool",
                          "browser_parallel", "browser_broadcast", "browser_sync_barrier",
                          "browser_workflow"} <= self.registered("automation"))
@@ -66,10 +53,10 @@ class ToolSurfaceTests(unittest.TestCase):
 
     def test_legacy_registration(self):
         with patch.dict(os.environ):
-            os.environ.pop("KITSUNE_CAPS", None)
             os.environ["KITSUNE_SCRIPTING"] = "0"
             self.assertEqual(self.registered_default(),
-                             set(playwright_tools.SCHEMAS) | {"browser_resume", "browser_ask_user"})
+                             set(playwright_tools.SCHEMAS) | {"browser_resume", "browser_ask_user"}
+                             | server.GATEWAY_TOOLS)
 
     def registered_default(self):
         result = subprocess.check_output(

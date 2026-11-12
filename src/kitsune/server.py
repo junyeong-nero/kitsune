@@ -1,8 +1,7 @@
 """
 Kitsune MCP server.
 Publishes Kitsune's agent tools (kitsune.tools) as MCP tools for the Kitsune browser extension
-(Firefox, Zen and other Gecko browsers), within its KITSUNE_CAPS, KITSUNE_PUBLISH and
-KITSUNE_MODE. Starts the shared bridge daemon on demand.
+(Firefox, Zen and other Gecko browsers). Starts the shared bridge daemon on demand.
 """
 
 import functools
@@ -34,10 +33,9 @@ from mcp.types import (CallToolResult, CancelledNotification, CancelledNotificat
 from pydantic import Field, ValidationError
 
 from . import playwright_tools, tools
-from .capabilities import CAPABILITY_GROUPS, NAMED_ONLY_GROUPS, enabled_groups
 from .bridge_client import BridgeClient
 from .errors import failed as _failed  # whether a tool's own result reports failure
-from .task_modes import APPROVAL_HEADER, GATEWAY_TOOL_HEADER, permits_tool, task_mode, user_tabs
+from .task_modes import APPROVAL_HEADER, GATEWAY_TOOL_HEADER, user_tabs
 from .tools import DESTRUCTIVE, _on_current_tab
 from .waits import RESUME_WAIT_SECONDS, resume_wait_seconds
 
@@ -156,12 +154,12 @@ def _scripting_schema(name: str, schema: dict) -> dict:
 
 
 def _listed(tool):
-    """A registered tool as tools/list publishes it: the core tools verbatim, restricted in read/draft
-    and with shorter parameter descriptions on the scripting surface."""
+    """A registered tool as tools/list publishes it: the core tools verbatim, with shorter
+    parameter descriptions on the scripting surface."""
     playwright = playwright_tools.SCHEMAS.get(tool.name)
     if playwright:
         description = playwright["description"]
-        # A deep copy: the mode filter below edits the schema, which SCHEMAS must keep.
+        # A deep copy, which SCHEMAS must not share.
         schema = json.loads(json.dumps(playwright["inputSchema"]))
         if SCRIPTING:
             schema = _scripting_schema(tool.name, schema)
@@ -169,11 +167,6 @@ def _listed(tool):
     else:
         description = inspect.cleandoc(tool.description) if tool.description else tool.description
         schema = _published_schema(tool.inputSchema)
-    if MODE != "act":
-        description = description.split("\n\n", 1)[0] if description else description
-        schema["properties"].pop("confirm_token", None)
-        if tool.name == "browser_navigate":
-            description = "Navigate a tab to a URL to read it."
     return tool.model_copy(update={"description": description, "inputSchema": schema})
 
 
@@ -187,8 +180,9 @@ class KitsuneMCP(FastMCP):
     supported Python (only 3.13+ strips docstring indentation at compile time, #130).
     Calls are still validated against the registered pydantic argument models.
 
-    Every authorized tool is registered; tools/list shows the ones KITSUNE_PUBLISH selects,
-    the gateway tools and the ones browser_tools_publish added for the session (#227).
+    Every tool is registered; tools/list shows the published ones (the minimal tool-set, or the
+    legacy core group with the gateway tools) and the ones browser_tools_publish added for the
+    session (#227).
     """
 
     def __init__(self, *args, **kwargs):
@@ -234,19 +228,12 @@ class KitsuneMCP(FastMCP):
                     pass
 
     async def _call_tool(self, name, arguments):
-        # A known tool this configuration leaves out names its setting instead of "Unknown tool" (#171).
-        if name in UNPUBLISHED_TOOLS:
-            return CallToolResult(content=[_compact_json(_unpublished_tool(name))], isError=True)
         if SCRIPTING and name not in MINIMAL_TOOLS and (name in TOOL_GROUPS or name in GATEWAY_TOOLS):
             return _error_result(
                 f"{name} is not in the minimal tool-set", "tool_moved_to_python", retryable=False,
                 hint="Use browser_run_python with the Python browser API; help(browser) or help(tab) lists methods. "
                      "Set KITSUNE_SCRIPTING=0 and restart the client to use the legacy tool-set.",
                 state={"tool": name})
-        if MODE != "act" and (arguments or {}).get("confirm_token") is not None:
-            return CallToolResult(content=[_compact_json({
-                "error": f"{MODE} mode does not permit confirmation", "code": "mode_restricted",
-                "retryable": False})], isError=True)
         if name == "browser_resume":
             resumed = await self._resume_direct(arguments or {})
             if resumed is not None:
@@ -416,17 +403,15 @@ class KitsuneMCP(FastMCP):
 
     def _resumable(self, name, payload, call=None, elicits=False) -> bool:
         """Whether payload is a direct call's needs_user that browser_resume can continue: an approval
-        hold of a tool that takes a confirm token, outside read and draft, a stop the page resolves
-        (_page_reason), or browser_ask_user's stop the user did not answer Can't to, with elicitation.
-        A container's result, one that already has a resume_token, or any where browser_resume is not
-        published (read and draft) is not."""
+        hold of a tool that takes a confirm token, a stop the page resolves (_page_reason), or
+        browser_ask_user's stop the user did not answer Can't to, with elicitation.
+        A container's result or one that already has a resume_token is not."""
         state = payload.get("state")
         if (payload.get("code") != "needs_user" or not isinstance(state, dict) or "resume_token" in payload
-                or "browser_resume" in UNPUBLISHED_TOOLS
                 or type(payload.get("call") if call is None else call) is not int):
             return False
         if state.get("reason") == "approval":
-            return state.get("approvable") is not False and self._repeatable(name)
+            return self._repeatable(name)
         if state.get("reason") == "agent_request" and (name != "browser_ask_user" or state.get("decision") == "declined"):
             return False
         return (elicits and state.get("reason") == "agent_request") or _page_reason(state) is not None
@@ -510,31 +495,14 @@ async def _session_lifespan(server):
 mcp = KitsuneMCP("Kitsune", lifespan=_session_lifespan)
 
 
-def _caps(setting: str, value: str) -> frozenset:
-    caps = frozenset(cap.strip().lower() for cap in value.split(",") if cap.strip())
-    unknown = caps - CAPABILITY_GROUPS - {"all"}
-    if unknown:
-        raise ValueError(f"Unknown {setting}: {', '.join(sorted(unknown))}")
-    return caps
+# Removed in #525: every tool is available, and the user chooses which need approval in the extension.
+# A configuration that still sets one expects a limit this server no longer applies, so it fails to start.
+_REMOVED_SETTINGS = [name for name in ("KITSUNE_CAPS", "KITSUNE_PUBLISH", "KITSUNE_MODE") if name in os.environ]
+if _REMOVED_SETTINGS:
+    raise ValueError(f"Remove {', '.join(_REMOVED_SETTINGS)} from the MCP server environment: Kitsune no longer "
+                     "has capability groups or task modes (#525). Every tool is available; approvals are set "
+                     "in the Kitsune extension's options.")
 
-
-def _enables(caps: frozenset, group: str) -> bool:
-    """`all` enables every group except NAMED_ONLY_GROUPS."""
-    return group in enabled_groups(caps)
-
-
-# The groups whose tools this server runs (#227: authorization, not just tools/list).
-ENABLED_CAPS = _caps("KITSUNE_CAPS", os.environ.get("KITSUNE_CAPS", "core"))
-# The authorized groups tools/list publishes when a session starts; by default all of them.
-# The rest stay reachable through the gateway tools.
-PUBLISHED_CAPS = (_caps("KITSUNE_PUBLISH", os.environ["KITSUNE_PUBLISH"]) if "KITSUNE_PUBLISH" in os.environ
-                  else ENABLED_CAPS)
-_unauthorized_caps = {cap for cap in PUBLISHED_CAPS - {"all"} if not _enables(ENABLED_CAPS, cap)}
-if _unauthorized_caps:
-    raise ValueError(f"KITSUNE_PUBLISH names groups KITSUNE_CAPS does not enable: "
-                     f"{', '.join(sorted(_unauthorized_caps))}")
-
-MODE = task_mode(os.environ.get("KITSUNE_MODE"))
 USER_TABS = user_tabs(os.environ.get("KITSUNE_USER_TABS"))
 def _scripting(value: str | None) -> bool:
     """The minimal surface with browser_run_python unless KITSUNE_SCRIPTING=0 selects the legacy one (#525)."""
@@ -545,10 +513,10 @@ def _scripting(value: str | None) -> bool:
 
 
 SCRIPTING = _scripting(os.environ.get("KITSUNE_SCRIPTING"))
-# Frequent actions plus user handoff/recovery. read/draft use browser_tab_list instead of browser_tabs.
+# Frequent actions plus user handoff/recovery.
 # Selection evidence and Python replacements: docs/minimal-tools.md (#515).
 MINIMAL_TOOLS = frozenset({
-    "browser_tabs", "browser_tab_list", "browser_navigate", "browser_snapshot", "browser_find",
+    "browser_tabs", "browser_navigate", "browser_snapshot", "browser_find",
     "browser_click", "browser_type", "browser_fill_form", "browser_select_option", "browser_press_key",
     "browser_wait_for", "browser_take_screenshot", "browser_ask_user", "browser_resume", "browser_run_python",
 })
@@ -566,15 +534,12 @@ mcp._mcp_server.instructions = (
     "Shared browser. "
     + ("Every tab is readable; writes, scroll, hover and focus need your own tab. "
        if USER_TABS == "read-only" else "")
-    + ("browser_tabs request asks the user to hand over a tab (DOM writes, no native input). "
-       "browser_tabs new opens a background current tab; select makes any tab current without switching "
-       "the user's view. "
-       "Until new/select (an MCP restart clears current), reads use the viewed tab and writes/navigation "
-       "need tab_id. Batch/workflow newTab and tabs opened from current become current. "
-       "Prefer page controls, else browser_ask_user, to hand a step to the user."
-       if permits_tool(MODE, "browser_tabs") else
-       "browser_tab_list new_tab opens a background current tab. Until new_tab (an MCP restart clears "
-       "current), reads use the viewed tab and writes/navigation need tab_id. Need the user? browser_ask_user."))
+    + "browser_tabs request asks the user to hand over a tab (DOM writes, no native input). "
+      "browser_tabs new opens a background current tab; select makes any tab current without switching "
+      "the user's view. "
+      "Until new/select (an MCP restart clears current), reads use the viewed tab and writes/navigation "
+      "need tab_id. Batch/workflow newTab and tabs opened from current become current. "
+      "Prefer page controls, else browser_ask_user, to hand a step to the user.")
 if SCRIPTING:
     mcp._mcp_server.instructions = mcp._mcp_server.instructions.replace(
         "Batch/workflow newTab and tabs opened from current become current. ", "")
@@ -584,13 +549,10 @@ if SCRIPTING:
 _gateway_call: ContextVar[str | None] = ContextVar("kitsune_gateway_call", default=None)
 _mcp_call_active: ContextVar[bool] = ContextVar("kitsune_mcp_call_active", default=False)
 
-# Every known tool (core and Kitsune-owned) -> its capability group.
+# Every known tool (core and Kitsune-owned) -> its group.
 TOOL_GROUPS: dict[str, str] = {}
-# Known tools left out by caps or mode, which no call can run: name -> (group, settings that
-# publish it).
-UNPUBLISHED_TOOLS: dict[str, tuple[str, list[str]]] = {}
-# Tools tools/list publishes to every session: the authorized tools of PUBLISHED_CAPS, and the
-# gateway tools when other authorized tools are not published.
+# Tools tools/list publishes to every session: the minimal tool-set, or the legacy core group and
+# the gateway tools.
 PUBLISHED_TOOLS: set[str] = set()
 # Tools browser_tools_publish added to a session's tools/list; never shared between sessions.
 _SESSION_TOOLS: "weakref.WeakKeyDictionary[object, set[str]]" = weakref.WeakKeyDictionary()
@@ -598,15 +560,6 @@ _SESSION_TOOLS: "weakref.WeakKeyDictionary[object, set[str]]" = weakref.WeakKeyD
 
 def session_tools(session) -> set[str]:
     return _SESSION_TOOLS.get(session, set()) if session is not None else set()
-
-
-def _unpublished_tool(name: str) -> dict:
-    group, settings = UNPUBLISHED_TOOLS[name]
-    return {"error": f"{name} is not published by this MCP server", "code": "tool_not_published",
-            "retryable": False,
-            "hint": f"Set {' and '.join(settings)} in the MCP server environment, then restart the MCP client.",
-            "state": {"group": group, "caps": sorted(ENABLED_CAPS),
-                      **({"mode": MODE} if MODE != "act" else {})}}
 
 
 def _compact_json(result) -> TextContent:
@@ -1044,29 +997,19 @@ async def first_client_root(context) -> Path | None:
 
 
 def _register(spec: tools.ToolSpec, function=None) -> None:
-    """Register a tool of kitsune.tools only when its startup capability and mode permit it.
+    """Register a tool of kitsune.tools; the legacy surface publishes the core group.
 
-    `all` enables every group except NAMED_ONLY_GROUPS; modes narrow every group.
     Only the MCP registration marks failures as errors, runs an omitted tab_id on the current
     tab and refuses tab writes without one (no_current_tab); Python callers of kitsune.tools get
     the plain function. function replaces the tool's own
     (browser_status adds this server's tool surface).
-    Tools left out go to UNPUBLISHED_TOOLS with the settings that would publish them.
-    A registered tool outside PUBLISHED_CAPS is left out of tools/list, not of calls.
+    A registered tool outside tools/list stays reachable through the gateway.
     """
     name = spec.function.__name__
     TOOL_GROUPS[name] = spec.group
-    settings = []
-    if not _enables(ENABLED_CAPS, spec.group):
-        settings.append("KITSUNE_CAPS=" + ",".join(sorted(ENABLED_CAPS | {spec.group})))
-    if not permits_tool(MODE, name):
-        settings.append("KITSUNE_MODE=" + ("draft" if permits_tool("draft", name) else "act"))
-    if settings:
-        UNPUBLISHED_TOOLS[name] = (spec.group, settings)
-        return
     annotations = ToolAnnotations(**spec.annotations) if spec.annotations else None
     mcp.tool(annotations=annotations)(_mcp_errors(_on_current_tab(function or spec.function)))
-    if _enables(PUBLISHED_CAPS, spec.group):
+    if spec.group == "core":
         PUBLISHED_TOOLS.add(name)
 
 
@@ -1078,50 +1021,39 @@ def _gateway_headers() -> dict:
             **({APPROVAL_HEADER: "elicitation"} if _approval_repeat.get() else {})}
 
 
-# Every tool's bridge request carries this server's client and owner ids, caps, mode, user-tab protection
+# Every tool's bridge request carries this server's client and owner ids, user-tab protection
 # and approver secret.
-_client = tools.client = BridgeClient(caps=enabled_groups(ENABLED_CAPS), mode=MODE,
-                                      user_tabs=USER_TABS,
-                                      extra_headers=_gateway_headers, approver=True)
+_client = tools.client = BridgeClient(user_tabs=USER_TABS, extra_headers=_gateway_headers, approver=True)
 
 
 @functools.wraps(tools.browser_status)
 def browser_status(diagnostics: bool = False) -> dict:
     result = tools.browser_status(diagnostics=diagnostics)
     # This server's tool surface (#171).
-    result["mcp_tools"] = {"caps": sorted(ENABLED_CAPS), "unpublished": len(UNPUBLISHED_TOOLS),
+    result["mcp_tools"] = {"surface": "minimal" if SCRIPTING else "legacy",
                            "client": _client.client_id, "owner": _client.owner_id,
-                           **({"publish": sorted(PUBLISHED_CAPS), "unlisted": len(_unlisted_tools())}
-                              if GATEWAY else {}),
-                           **({"mode": MODE} if MODE != "act" else {})}
+                           **({"unlisted": len(_unlisted_tools())} if GATEWAY else {})}
     return result
 
 
-# Kitsune's own tools in kitsune.tools' order, then the core group. A tool with modes belongs to
-# those modes only: read and draft publish browser_tab_list instead of browser_tabs.
+# Kitsune's own tools in kitsune.tools' order, then the core group.
 for _spec in tools.TOOLS.values():
-    if _spec.modes is None or MODE in _spec.modes:
-        _register(_spec, browser_status if _spec.function is tools.browser_status else None)
+    _register(_spec, browser_status if _spec.function is tools.browser_status else None)
 
 
 # ── Tool gateway (#227) ──
-# With KITSUNE_PUBLISH narrower than KITSUNE_CAPS, tools/list starts small and these tools
-# reach the other authorized tools in the same connection. They find and run only registered
-# tools of TOOL_GROUPS, through the same call_tool a direct call takes, so validation, mode,
-# confirmation, protected tabs, redaction and output roots apply alike. Clients may show only
+# On the legacy surface tools/list starts with the core group and these tools reach the other
+# tools in the same connection. They find and run only registered tools of TOOL_GROUPS, through
+# the same call_tool a direct call takes, so validation, confirmation, protected tabs, redaction and output roots apply alike. Clients may show only
 # the gateway's name and annotations in their prompts: they are not the security boundary.
 
 GATEWAY_TOOLS = frozenset({"browser_tools_search", "browser_tools_call", "browser_tools_publish"})
 SEARCH_LIMIT = 10
 
 
-def _authorized_tools() -> set[str]:
-    return set(TOOL_GROUPS) - set(UNPUBLISHED_TOOLS)
-
-
 def _unlisted_tools() -> set[str]:
-    """Authorized tools tools/list leaves out when a session starts."""
-    return _authorized_tools() - PUBLISHED_TOOLS
+    """Tools tools/list leaves out when a session starts."""
+    return set(TOOL_GROUPS) - PUBLISHED_TOOLS
 
 
 # The gateway exists only when it reaches something tools/list does not already show.
@@ -1180,7 +1112,7 @@ async def browser_tools_search(
                                             '"" lists the tools by group.')],
     limit: Annotated[int, Field(description=f"Most tools to return, 1 to {SEARCH_LIMIT}.")] = 5,
 ) -> CallToolResult:
-    """Find tools this server permits but does not list, with the schemas to call them.
+    """Find tools this server has but does not list, with the schemas to call them.
 
     Best matches of the query against tool names, groups and descriptions come first, each
     with its full description, input schema and annotations; `listed` tells whether this
@@ -1210,10 +1142,10 @@ async def browser_tools_call(
     name: Annotated[str, Field(description="Tool name, as browser_tools_search returns it.")],
     arguments: Annotated[dict | None, Field(description="The tool's arguments, as its input schema describes.")] = None,
 ) -> CallToolResult:
-    """Run a tool this server permits, listed or not, exactly as a direct call to it would.
+    """Run a tool this server has, listed or not, exactly as a direct call to it would.
 
     Returns that tool's own result: its content (text or images) and error status. Its
-    argument validation, task mode, confirmation tokens and every other policy apply as
+    argument validation, confirmation tokens and every other policy apply as
     they do to a direct call; the audit log records that the call came through here.
     """
     if name in GATEWAY_TOOLS:
@@ -1221,7 +1153,7 @@ async def browser_tools_call(
                               f"Call {name} directly.")
     if name not in TOOL_GROUPS:
         return _gateway_error(f"Unknown tool: {name}", "unknown_tool",
-                              "browser_tools_search lists the tools this server permits.")
+                              "browser_tools_search lists the tools this server has.")
     token = _gateway_call.set(name)
     try:
         result = await mcp.call_tool(name, arguments or {})
@@ -1238,11 +1170,11 @@ async def browser_tools_call(
 async def browser_tools_publish(
     names: Annotated[list[str], Field(description="Tool names and/or group names.")],
 ) -> CallToolResult:
-    """Add permitted tools, or every permitted tool of a group, to this session's tools/list.
+    """Add tools, or every tool of a group, to this session's tools/list.
 
     Sends notifications/tools/list_changed. Clients that do not refresh their tool list on
     it keep the old one: call the tools with browser_tools_call instead. Other sessions'
-    lists and what this server permits do not change.
+    lists do not change.
     """
     session = mcp.session()
     if session is None:
@@ -1251,17 +1183,16 @@ async def browser_tools_publish(
     unlisted = _unlisted_tools()
     requested, refused = set(), []
     for entry in names:
-        if entry in CAPABILITY_GROUPS and _enables(ENABLED_CAPS, entry):
+        if entry in tools.GROUPS:
             requested |= {name for name in unlisted if TOOL_GROUPS[name] == entry}
         elif entry in unlisted:
             requested.add(entry)
         elif entry not in PUBLISHED_TOOLS:  # already listed tools need nothing
             refused.append(entry)
     if refused:
-        # Unknown and unauthorized names are refused alike, so the answer reveals no catalog.
         return _gateway_error(f"Not tools or groups this server can add to tools/list: {', '.join(refused)}",
                               "tool_not_published",
-                              "browser_tools_search lists the tools this server permits.", names=refused)
+                              "browser_tools_search lists the tools this server has.", names=refused)
     shown = _SESSION_TOOLS.setdefault(session, set())
     added = sorted(requested - shown)
     shown |= requested
@@ -1304,17 +1235,12 @@ async def browser_run_python(
 
 # The minimal surface with local Python is the default; KITSUNE_SCRIPTING=0 keeps the legacy list (#525).
 if SCRIPTING:
-    # Advertise examples the supplied client can run, not merely methods the Python API has (#519/#520).
+    # Examples of the calls agents got wrong (#519/#520).
     description = inspect.cleandoc(browser_run_python.__doc__)
-    description += f" Enabled groups: {','.join(sorted(enabled_groups(ENABLED_CAPS))) or 'none'}; mode: {MODE}."
-    if _enables(ENABLED_CAPS, "core"):
-        description += (' browser.tabs() returns list[dict] (id, url, title, ...), not Tab objects. '
-                        'For a chosen page tab dict t, use browser.tab(t["id"]).snapshot(). '
-                        'browser.new_tab(url) returns a Tab.')
-        if MODE != "read":
-            description += " tab.fill(target, value) fills a field."
-    if _enables(ENABLED_CAPS, "read"):
-        description += ' tab.query(selector, fields=["text", "href"]) reads matching elements.'
+    description += (' browser.tabs() returns list[dict] (id, url, title, ...), not Tab objects. '
+                    'For a chosen page tab dict t, use browser.tab(t["id"]).snapshot(). '
+                    'browser.new_tab(url) returns a Tab. tab.fill(target, value) fills a field. '
+                    'tab.query(selector, fields=["text", "href"]) reads matching elements.')
     mcp.tool(description=description, annotations=ToolAnnotations(title="Run Python", **DESTRUCTIVE))(browser_run_python)
     PUBLISHED_TOOLS.add("browser_run_python")
 

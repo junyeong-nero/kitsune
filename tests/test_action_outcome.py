@@ -578,7 +578,6 @@ class TrustedClickHintTests(unittest.TestCase):
         self.assertTrue(result["hint"].startswith("The command was dispatched but the expected"))
         self.assertIn("may", result["hint"])
         self.assertIn("browser_trusted_click", result["hint"])
-        self.assertIn("the browse capability", result["hint"])
         # #376: a hint for the user too, which keeps the failure as it was.
         self.assertEqual(result["needs_user"], {
             "reason": "trusted_input", "message": "Click it yourself: the page ignored the agent's click.",

@@ -1,10 +1,9 @@
 """Kitsune's agent tools: the browser_* functions the MCP server publishes, without MCP code.
 
 Each tool maps its arguments onto a bridge request and returns the bridge's JSON result; a
-failure is a result with error, not an exception. tool() records each tool's capability group,
-annotation hints and, for a few, the task modes it belongs to, in TOOLS in definition order;
-the core group (kitsune.playwright_tools) follows Kitsune's own. kitsune.server registers them
-on FastMCP and decides which its KITSUNE_CAPS and KITSUNE_MODE publish.
+failure is a result with error, not an exception. tool() records each tool's group and
+annotation hints in TOOLS in definition order; the core group (kitsune.playwright_tools)
+follows Kitsune's own. kitsune.server registers them on FastMCP and decides which tools/list shows.
 
 The tools send their requests through `client`, the BridgeClient the MCP server sets.
 """
@@ -23,9 +22,7 @@ from pydantic import Field
 
 from . import playwright_tools
 from .bridge_client import BridgeClient
-from .capabilities import CAPABILITY_GROUPS
 from .errors import failed as _failed  # whether a tool's own result reports failure
-from .task_modes import permits_tool
 from .waits import (
     ACTION_REQUEST_SECONDS, NAVIGATE_REQUEST_SECONDS, RESUME_DEADLINE_SECONDS, RESUME_MAX_WAIT_SECONDS,
     RESUME_WAIT_SECONDS, WORKFLOW_DEADLINE_SECONDS, action_request_seconds, batch_deadline_seconds,
@@ -43,30 +40,33 @@ IDEMPOTENT_ACT = {**ACT, "idempotentHint": True}
 DESTRUCTIVE = {**ACT, "destructiveHint": True}
 
 
+# Tool groups: how the legacy surface lists tools (core) and the gateway finds the others by topic.
+GROUPS = frozenset({"core", "browse", "read", "inspect", "tabs", "automation", "network", "admin",
+                    "storage", "history"})
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     """A tool as tool() recorded it."""
     function: Callable
     group: str
     annotations: dict | None  # MCP ToolAnnotations fields
-    modes: frozenset | None  # the task modes that publish the tool; None: every mode
 
 
 # Every tool by name, in definition order.
 TOOLS: dict[str, ToolSpec] = {}
 
 
-def tool(group: str, annotations: dict | None = None, *, modes=None):
-    """Record a tool of a capability group (kitsune.capabilities) with its annotation hints.
+def tool(group: str, annotations: dict | None = None):
+    """Record a tool of a group (GROUPS) with its annotation hints.
 
-    modes, if given, are the only task modes whose MCP server publishes the tool. The function
-    is returned unchanged: Python callers get the plain function.
+    The function is returned unchanged: Python callers get the plain function.
     """
-    if group not in CAPABILITY_GROUPS:
-        raise ValueError(f"Unknown tool capability group: {group}")
+    if group not in GROUPS:
+        raise ValueError(f"Unknown tool group: {group}")
 
     def decorate(function):
-        TOOLS[function.__name__] = ToolSpec(function, group, annotations, frozenset(modes) if modes else None)
+        TOOLS[function.__name__] = ToolSpec(function, group, annotations)
         return function
 
     return decorate
@@ -121,28 +121,16 @@ def _tabless_step_write(step) -> str | None:
     return next(filter(None, map(_tabless_step_write, nested)), None)
 
 
-def _publishes_browser_tabs() -> bool:
-    """Whether this MCP server publishes browser_tabs (act mode), not browser_tab_list (read, draft)."""
-    return permits_tool(getattr(client, "mode", "act"), "browser_tabs")
-
-
 def _no_current_tab_hint(name: str) -> str:
     """How the agent gets a tab for name without a current tab, with the tools it is published with (#448).
 
     Kitsune's own tools take tab_id. The core tools' schemas, Playwright MCP's, list none: they act on
     the current tab only.
     """
-    act = _publishes_browser_tabs()
     if name in playwright_tools.SCHEMAS:
-        if not act:
-            return (f"Nothing was dispatched. {name} acts on the current tab: open a tab of your own with "
-                    "browser_tab_list new_tab=<url> and work there.")
         return (f"Nothing was dispatched. {name} acts on the current tab: open a tab of your own with "
                 "browser_tabs action=new url=<url> and work there, or make one of your tabs current with "
                 "browser_tabs action=select; user and other clients' tabs stay read-only.")
-    if not act:
-        return ("Nothing was dispatched. Pass tab_id, or open a tab of your own with browser_tab_list new_tab "
-                "and work there; user and other clients' tabs stay read-only.")
     return ("Nothing was dispatched. Pass tab_id, or open a tab of your own with browser_tabs action=new and "
             "work there. browser_tabs action=select makes any tab current for reads; user and other clients' "
             "tabs stay read-only.")
@@ -207,12 +195,9 @@ def _offering_own_tabs(refusal: dict) -> dict:
 
     A core tool takes no tab_id, so its hint names tabs by their browser_tabs index, and also the
     tab the user is viewing when exactly one tab is active (#448): its refs came from a snapshot of
-    that tab, which is read-only unless this client may write it. Without browser_tabs (read and
-    draft modes) a core tool reaches no other tab, so its refusal stays as it is.
+    that tab, which is read-only unless this client may write it.
     """
     core = refusal["state"]["tool"] in playwright_tools.SCHEMAS
-    if core and not _publishes_browser_tabs():
-        return refusal
     mine = _quick_tab_list({"mine": True})
     if mine is None:
         return refusal
@@ -508,29 +493,6 @@ def browser_tabs(
             _request_body(body, confirm_token=confirm_token)
         return _post("/api/close-tab" if action == "close" else "/api/switch-tab", body)
     return {"error": "action must be list, new, close, select, or request"}
-
-
-def browser_tab_list(
-    new_tab: Annotated[str | None, Field(
-        description="http(s) URL to open first in a new background tab, which later tools act on.")] = None,
-) -> dict:
-    """List open tabs with IDs, titles and URLs; new_tab opens a background tab first and
-    returns its tabId. Does not close tabs or switch the user's view.
-    """
-    # read and draft publish this instead of browser_tabs. A tab of its own lets a restricted
-    # agent read any page without navigating the user's read-only tabs.
-    if new_tab is None:
-        return _tab_list(_get("/api/tabs"), False)
-    opened = browser_tabs("new", url=new_tab, wait=True)
-    if not isinstance(opened.get("tabId"), int):
-        return opened
-    playwright_tools._current_tab = opened["tabId"]
-    listed = _tab_list(_get("/api/tabs"), False)
-    tab = {key: opened[key] for key in ("tabId", "url", "status") if key in opened}
-    return {**tab, **({} if _failed(listed) else {"tabs": listed.get("tabs")})}
-
-
-tool("core", annotations=dict(title="List or open browser tabs", **ACT), modes=("read", "draft"))(browser_tab_list)
 
 
 @tool("read", annotations=dict(title="Page info", **READ))
@@ -2066,8 +2028,7 @@ def browser_get_policy() -> dict:
 # ════════════════════════════════════════════════════════════════════
 #  History and bookmarks (#140) — docs/api-reference.md#history-and-bookmarks
 # ════════════════════════════════════════════════════════════════════
-# Off unless KITSUNE_CAPS names history, and the user must also allow it on the extension's
-# options page. The bridge applies the history scope from its policy.
+# Off unless the user allows it on the extension's options page. The bridge applies the history scope from its policy.
 
 def _epoch_ms(since: str) -> int | None:
     """Epoch milliseconds of an ISO 8601 date or datetime (local time without an offset)."""

@@ -89,8 +89,7 @@ def raise_for(result):
         return result
     code = result.get("code")
     state = result.get("state") or {}
-    # read and draft refuse user tabs without a token (state.approvable false): those cannot be approved.
-    # The codes needs_user replaced (state.detail) are still accepted.
+    # A refusal without a token cannot be approved. The codes needs_user replaced (state.detail) are still accepted.
     approval = (code == "needs_user" and state.get("reason") == "approval") or code in APPROVAL_DETAILS
     if approval and state.get("confirmToken"):
         raise ConfirmationRequired(result)
