@@ -94,14 +94,14 @@ MCP_SESSION_TIMEOUT = 30
 
 
 async def _mcp_status_and_unlisted(env):
-    """Over stdio, the published tool names, browser_status, and a browser_cookies call."""
+    """Over stdio, the published tool names, browser_status, and a call of the unlisted browser_get_policy."""
     server = StdioServerParameters(command=sys.executable, args=["-m", "kitsune.server"], env=env)
     async with stdio_client(server) as (read, write), ClientSession(read, write) as session:
         await session.initialize()
         names = {tool.name for tool in (await session.list_tools()).tools}
         status = await session.call_tool("browser_status", {})
-        cookies = await session.call_tool("browser_cookies", {"op": "get"})
-    return names, status, cookies
+        unlisted = await session.call_tool("browser_get_policy", {})
+    return names, status, unlisted
 
 
 async def _mcp_first_tab(env, url, on_initialized):
@@ -252,11 +252,11 @@ class RealBrowserConnectionDiagnosisTests(_DiagnosisTestCase):
     def test_mcp_status_reports_tool_surface_and_unlisted_tools_still_run(self):
         self.wait_for_diagnosis("connected")
         # The MCP server uses this class's bridge (the legacy surface); its build matches, so it is not replaced.
-        names, status, cookies = asyncio.run(asyncio.wait_for(_mcp_status_and_unlisted(self.bridge.env),
+        names, status, unlisted = asyncio.run(asyncio.wait_for(_mcp_status_and_unlisted(self.bridge.env),
                                                               MCP_SESSION_TIMEOUT))
 
         self.assertNotIn("browser_status", names)
-        self.assertNotIn("browser_cookies", names)
+        self.assertNotIn("browser_get_policy", names)
         self.assertFalse(status.isError, status)
         status = json.loads(status.content[0].text)
         self.assertTrue(status["extension_connected"], status)
@@ -267,7 +267,7 @@ class RealBrowserConnectionDiagnosisTests(_DiagnosisTestCase):
         self.assertEqual(status["mcp_tools"], {"surface": "legacy", "unlisted": 108 - 27})
         self.assertEqual(len(names), 30)
 
-        self.assertFalse(cookies.isError, cookies)
+        self.assertFalse(unlisted.isError, unlisted)
 
 
 class RealBrowserBridgeStartTests(_DiagnosisTestCase):

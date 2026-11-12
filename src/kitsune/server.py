@@ -35,7 +35,7 @@ from pydantic import Field, ValidationError
 from . import playwright_tools, tools
 from .bridge_client import BridgeClient
 from .errors import failed as _failed  # whether a tool's own result reports failure
-from .task_modes import APPROVAL_HEADER, GATEWAY_TOOL_HEADER, user_tabs
+from .task_modes import APPROVAL_HEADER, CALL_HEADER, GATEWAY_TOOL_HEADER, TOOL_HEADER, user_tabs
 from .tools import DESTRUCTIVE, _on_current_tab
 from .waits import RESUME_WAIT_SECONDS, resume_wait_seconds
 
@@ -214,9 +214,15 @@ class KitsuneMCP(FastMCP):
     async def call_tool(self, name, arguments):
         nested = _mcp_call_active.get()
         token = _mcp_call_active.set(True)
+        # The bridge checks the user's per-tool approvals against the tool and its call (#525).
+        tool = _current_tool.set(name)
+        call = None if nested else _current_call.set(secrets.token_hex(8))
         try:
             return await self._call_tool(name, arguments)
         finally:
+            if call is not None:
+                _current_call.reset(call)
+            _current_tool.reset(tool)
             _mcp_call_active.reset(token)
             if not nested:
                 # One completed MCP call, not each bridge command, gateway dispatch or approval retry.
@@ -239,7 +245,20 @@ class KitsuneMCP(FastMCP):
             if resumed is not None:
                 return resumed
         tab = playwright_tools._current_tab
+        if name == "browser_run_python":
+            # It sends no request of its own before the script runs, so it asks first.
+            refused = await self.tool_approval(name, arguments or {})
+            if refused is not None:
+                return CallToolResult(content=[_compact_json(refused)], isError=True)
         result = await self._run_tool(name, arguments)
+        held = _json_payload(result, '"tool_approval"')
+        if held is not None and (held.get("state") or {}).get("detail") == "tool_approval" \
+                and "decision" not in held["state"]:
+            # The bridge sent nothing: once the user allows the tool, the call runs as if first made.
+            refused = await self.tool_approval(held["state"].get("tool") or name, arguments or {})
+            if refused is not None:
+                return CallToolResult(content=[_compact_json(refused)], isError=True)
+            result = await self._run_tool(name, arguments)
         session = self.session()
         elicits = session is not None and _elicits(session)
         if isinstance(result, CallToolResult) and elicits:
@@ -316,6 +335,60 @@ class KitsuneMCP(FastMCP):
             finally:
                 playwright_tools.repeat_hold.reset(hold)
                 _approval_repeat.reset(repeat)
+
+    async def tool_approval(self, tool, arguments):
+        """None once the user allowed tool for this call, or it needs no approval (#525); else the refusal.
+
+        The toolbar popup asks; on a client with elicitation the client's prompt asks at once too, and the
+        first answer counts (as for handoffs, #494). Allow for this session lasts until the bridge restarts."""
+        session = self.session()
+        try:
+            request = self._mcp_server.request_context
+        except LookupError:
+            request = None
+        elicits = session is not None and request is not None and _elicits(session)
+        summary = json.dumps({key: value for key, value in arguments.items() if key != "confirm_token"},
+                             ensure_ascii=False, default=str)[:APPROVAL_ARGUMENTS_CHARS]
+        body = {"tool": tool, "summary": summary}
+
+        def post(timeout, start_bridge=True, **extra):
+            return anyio.to_thread.run_sync(functools.partial(
+                tools._post, "/api/tool-approval", {**body, **extra}, timeout=timeout, start_bridge=start_bridge),
+                abandon_on_cancel=True)
+
+        first = await post(40 if elicits else HANDOFF_WAIT_SECONDS, together=elicits)
+        if first.get("ok") is True:
+            return None
+        state = first.get("state") if isinstance(first.get("state"), dict) else {}
+        token = state.get("confirmToken")
+        if not (elicits and token):
+            return _without_tokens(first)
+        body["confirmToken"] = token
+        outcome = None
+        try:
+            async with anyio.create_task_group() as group:
+                async def popup():
+                    nonlocal outcome
+                    outcome = await post(HANDOFF_WAIT_SECONDS, wait=True)
+                    group.cancel_scope.cancel()  # closes the client's prompt
+
+                group.start_soon(popup)
+                asked = anyio.current_time()
+                decision = await _ask_tool(session, request, tool, summary, state)
+                if decision in ("once", "session") or (decision is not None
+                                                     and anyio.current_time() - asked >= CLIENT_POLICY_SECONDS):
+                    answered = await post(45, decision=decision)
+                    if answered.get("ok"):
+                        outcome = answered
+                        group.cancel_scope.cancel()
+                    # Else the popup's wait returns the answer this decline gave, or the one it had already.
+                elif _sends_progress(request):
+                    group.start_soon(_keep_alive, session, request, "Waiting for the user's answer in the browser")
+        finally:
+            if outcome is None:  # the call was cancelled: the popup stops asking
+                with anyio.CancelScope(shield=True):
+                    await post(10, start_bridge=False, decision="cancelled")
+        return None if isinstance(outcome, dict) and outcome.get("ok") is True else _without_tokens(outcome or first)
 
     async def _handoff(self, session, name, arguments, held):
         """The answer to a handoff request that the toolbar popup and the client's prompt ask about at once
@@ -548,6 +621,9 @@ if SCRIPTING:
 # The tool browser_tools_call is running; its bridge requests name it for the audit log.
 _gateway_call: ContextVar[str | None] = ContextVar("kitsune_gateway_call", default=None)
 _mcp_call_active: ContextVar[bool] = ContextVar("kitsune_mcp_call_active", default=False)
+# The MCP tool being called (the innermost, through the gateway) and the outermost call's random id.
+_current_tool: ContextVar[str | None] = ContextVar("kitsune_current_tool", default=None)
+_current_call: ContextVar[str | None] = ContextVar("kitsune_current_call", default=None)
 
 # Every known tool (core and Kitsune-owned) -> its group.
 TOOL_GROUPS: dict[str, str] = {}
@@ -831,6 +907,27 @@ async def _ask_user(session, request, name: str, arguments: dict, state: dict, l
                    "approved" if one_step else None, failed)
 
 
+# Per-tool approvals (#525): Allow once, Allow for this session, or Decline.
+TOOL_APPROVAL_SCHEMA = {"type": "object", "required": ["decision"], "properties": {
+    "decision": {"type": "string", "title": "Decision",
+                 "enum": ["Allow once", "Allow for this session", "Decline"]}}}
+
+
+async def _ask_tool(session, request, tool: str, summary: str, state: dict):
+    """Ask the user to allow tool: "once", "session", "declined", "cancelled", or None (no answer)."""
+    seconds = max(1, (state.get("expiresInSeconds") or 0) - ELICITATION_MARGIN_SECONDS)
+    one_step = _one_step(session)
+    lines = [f"Allow the agent to use {tool}?", f"Arguments: {summary}" if summary not in ("", "{}") else None,
+             "You require approval for this tool in the Kitsune extension's options.",
+             f"{ONE_STEP_ACCEPT} allows it for this call; Decline does not run it." if one_step else
+             "Allow for this session also allows its later calls from this client."]
+    answer = await _elicit(session, request, "\n".join(line for line in lines if line),
+                           ONE_STEP_SCHEMA if one_step else TOOL_APPROVAL_SCHEMA, seconds,
+                           "Waiting for the user's approval", "approval prompt")
+    return _choice(answer, "decision", {"Allow once": "once", "Allow for this session": "session",
+                                        "Decline": "declined"}, "once" if one_step else None, None)
+
+
 # ── browser_ask_user (#376, docs/api-reference.md#browser_ask_userreason-message-tab_idnone) ──
 # The bridge answers browser_ask_user with a needs_user stop (reason agent_request). On a client with
 # form elicitation the server asks the user in the client's prompt, Done (Accept) or Can't (Decline)
@@ -1016,8 +1113,9 @@ def _register(spec: tools.ToolSpec, function=None) -> None:
 def _gateway_headers() -> dict:
     """Name the tool browser_tools_call runs on its bridge requests, for the audit log, and the repeat
     of a call the user approved in the client's prompt."""
-    name = _gateway_call.get()
+    name, tool, call = _gateway_call.get(), _current_tool.get(), _current_call.get()
     return {**({GATEWAY_TOOL_HEADER: name} if name else {}),
+            **({TOOL_HEADER: tool} if tool else {}), **({CALL_HEADER: call} if call else {}),
             **({APPROVAL_HEADER: "elicitation"} if _approval_repeat.get() else {})}
 
 
@@ -1229,7 +1327,13 @@ async def browser_run_python(
     for its signature; docs/python-api.md has the API reference.
     """
     from .script_runner import run_python
-    result = await run_python(code, _client, timeout=timeout, tab_id=playwright_tools._current_tab)
+    async def approve(tool):
+        # A script request the user's per-tool approval refused (#525): ask, then send it again.
+        refused = await mcp.tool_approval(tool, {"via": "browser_run_python"})
+        return True if refused is None else refused
+
+    result = await run_python(code, _client, timeout=timeout, tab_id=playwright_tools._current_tab,
+                              approve=approve)
     return CallToolResult(content=[_compact_json(result)], isError=_failed(result))
 
 

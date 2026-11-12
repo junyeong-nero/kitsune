@@ -51,6 +51,7 @@
   }],
   "background": {
     "scripts": [
+      "background/tool-approvals.js",
       "background/background.js",
       "background/history.js"
     ]

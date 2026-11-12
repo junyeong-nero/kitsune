@@ -8,6 +8,10 @@
   until you press **Take back** or its session ends. It does not give the agent your real mouse or keyboard.
   To let the agent write to your tabs without asking, set `KITSUNE_USER_TABS=writable`
   ([Protecting your tabs](#protecting-your-tabs)).
+- **Tools you choose.** Every tool is available to the agent; the ones you check in Kitsune's
+  options page wait for your OK first ([Tools that need your approval](#tools-that-need-your-approval)).
+  By default these are the tools that read cookies, page storage, the clipboard, saved sessions
+  and history.
 - **Risky actions.** With the opt-in [ask-before-act](#ask-before-act)
   policy, submitting forms, payment pages, JavaScript and cookie access need your approval.
   Claude Code and Codex ask you in their own prompt, so the approval never passes through the
@@ -88,6 +92,29 @@ Decline if you can't; Codex asks you to choose Done or Can't. Otherwise the agen
 its reply; for a sign-in or CAPTCHA Kitsune sees on the tab, it can call `browser_resume`, which
 waits until the sign-in or CAPTCHA is gone from the tab, so you need not tell it you are done.
 Details are in the [API reference](api-reference.md#browser_ask_userreason-message-tab_idnone).
+
+## Tools that need your approval
+
+Open about:addons → Kitsune → Options. Under **Tools that need your approval**, every Kitsune tool
+is listed by group; a checked tool waits for your answer before it runs (#525). By default the
+`storage` and `history` tools are checked; `browser_run_python` (the agent's local Python) is not.
+**Restore defaults** and **Uncheck all** reset the list. The extension sends the list to the bridge
+when it connects and whenever you change it.
+
+When the agent calls a checked tool, nothing runs yet. The toolbar popup shows a card (its badge
+counts it) with the client, the tool and its arguments; on a client with elicitation, the client's
+prompt asks at the same time, and the first answer counts:
+
+- **Allow once** runs that call.
+- **Allow for this session** also allows that client's later calls of the tool, until the bridge
+  restarts.
+- **Decline** leaves it unrun; the agent is told not to repeat it.
+
+The same check applies when the tool's work runs inside a `browser_run_python` script (the script
+waits for your answer, and the time does not count against its deadline) or as a step of a batch
+or workflow (the popup alone asks, for up to 30 seconds). It applies to agents' MCP servers only:
+your own scripts with the Python API are not asked. It is not a sandbox: `browser_run_python` runs
+ordinary local Python, which can reach the bridge without asking.
 
 ## Ask-before-act
 

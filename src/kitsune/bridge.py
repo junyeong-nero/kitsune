@@ -61,9 +61,10 @@ except ImportError:
     sys.exit("websockets is not installed. Reinstall kitsune with its dependencies.")
 
 from . import bridge_control, browser_diagnostics
+from . import tool_approvals
 from .task_modes import (
-    APPROVAL_HEADER, APPROVER_HEADER, CLIENT_HEADER, CLIENT_ID_PATTERN, GATEWAY_TOOL_HEADER,
-    OWNER_HEADER, SESSION_HEADER, CLIENT_NAME_HEADER, USER_TABS_HEADER, user_tabs,
+    APPROVAL_HEADER, APPROVER_HEADER, CALL_HEADER, CLIENT_HEADER, CLIENT_ID_PATTERN, GATEWAY_TOOL_HEADER,
+    OWNER_HEADER, SESSION_HEADER, CLIENT_NAME_HEADER, TOOL_HEADER, USER_TABS_HEADER, user_tabs,
 )
 from .version import BRIDGE_BUILD, PACKAGE_VERSION, SOURCE_ROOT, extension_manifest_hash, extension_source_hash
 from .waits import (
@@ -230,6 +231,81 @@ _TAB_NAVIGATIONS = {"navigate", "goBack", "goForward"}
 
 def _ask_enabled():
     return _policy["ask"]
+
+
+# ── Per-tool approvals (#525, src/kitsune/tool_approvals.py) ──
+# The tools the user marked in the extension's options; the extension sends them when it connects
+# and when they change, and until then the default holds. Only an MCP server's request (it sends
+# APPROVER_HEADER) is checked. An approval lasts for one MCP call (CALL_HEADER) or, when the user
+# chose so, for the client (CLIENT_HEADER) until the bridge restarts.
+_approval_tools = set(tool_approvals.DEFAULT_TOOLS)
+_call_approvals = {}      # (call id, tool) -> expiry (time.time())
+_session_approvals = set()  # (client id, tool)
+CALL_APPROVAL_SECONDS = 15 * 60
+# How long a container step waits for the toolbar popup's answer before it fails unrun.
+STEP_APPROVAL_SECONDS = 30
+_TOOL_NAME_PATTERN = _re.compile(r"browser_[a-z0-9_]{1,64}")
+# Per request: whether an MCP server sent it, its call id and the tool its header names.
+_checks_approvals = contextvars.ContextVar("kitsune_checks_approvals", default=False)
+_call_id = contextvars.ContextVar("kitsune_call_id", default=None)
+
+
+def _set_approval_tools(names):
+    if isinstance(names, list) and all(isinstance(name, str) and _TOOL_NAME_PATTERN.fullmatch(name)
+                                       for name in names):
+        _approval_tools.clear()
+        _approval_tools.update(names)
+
+
+def _tool_needs_approval(tool):
+    """Whether this request must ask the user before tool runs."""
+    if not tool or not _checks_approvals.get() or tool not in _approval_tools:
+        return False
+    if (_client_id.get(), tool) in _session_approvals:
+        return False
+    expiry = _call_approvals.get((_call_id.get(), tool))
+    return not (expiry and expiry > time.time())
+
+
+def _record_tool_approval(tool, result):
+    """Remember the user's Allow (result ok, scope once or session) for this call or client."""
+    if not isinstance(result, dict) or result.get("ok") is not True:
+        return
+    now = time.time()
+    for key in [key for key, expiry in _call_approvals.items() if expiry <= now]:
+        del _call_approvals[key]
+    if _call_id.get() and len(_call_approvals) < 1000:
+        _call_approvals[(_call_id.get(), tool)] = now + CALL_APPROVAL_SECONDS
+    if result.get("scope") == "session" and _client_id.get() and len(_session_approvals) < 1000:
+        _session_approvals.add((_client_id.get(), tool))
+
+
+def _tool_approval_error(tool, decision=None):
+    """The refusal of a request whose tool needs the user's approval: nothing was sent."""
+    return {"error": f"{tool} needs the user's approval", "code": "needs_user", "retryable": False,
+            "state": {"reason": "approval", "detail": "tool_approval", "tool": tool,
+                      **({"decision": decision} if decision else {})},
+            "hint": ("Nothing ran. The user requires approval for this tool in the Kitsune extension; the MCP "
+                     "server asks them. Without an answer, ask the user to allow it in the Kitsune toolbar popup."
+                     if decision is None else
+                     "Nothing ran: the user did not allow this tool. Do not repeat it; ask the user what to do instead.")}
+
+
+def _approval_client_name():
+    identity = _handoff_identity.get()
+    return (identity or {}).get("clientName") or _owner_id.get() or _client_id.get() or "An agent"
+
+
+async def _ask_tool_in_browser(tool, summary=""):
+    """A container step's approval: the toolbar popup asks, up to STEP_APPROVAL_SECONDS. None when allowed."""
+    result = await _send_to_extension_raw("toolApproval", {
+        "tool": tool, "summary": summary[:500], "clientName": _approval_client_name(),
+        "clientId": _client_id.get(), "timeoutMs": STEP_APPROVAL_SECONDS * 1000}, timeout=STEP_APPROVAL_SECONDS + 5)
+    if isinstance(result, dict) and result.get("ok") is True:
+        _record_tool_approval(tool, result)
+        return None
+    decision = ((result or {}).get("state") or {}).get("decision") if isinstance(result, dict) else None
+    return _tool_approval_error(tool, decision or "cancelled")
 
 
 _policy = {"allow": [], "deny": [], "readonly": False,
@@ -2875,6 +2951,10 @@ async def ws_handler(websocket):
                 if extension_ws is websocket:
                     extension_info["runtime"] = browser_diagnostics.browser_info(data.get("info"))
                 continue
+            if data.get("type") == "approvals":
+                if extension_ws is websocket:
+                    _set_approval_tools(data.get("tools"))
+                continue
 
             if cmd_id and cmd_id in pending_commands:
                 future = pending_commands[cmd_id]["future"]
@@ -4538,6 +4618,11 @@ async def run_command(cmd):
         if action not in BATCH_ACTION_MAP and action not in CONTAINER_ACTIONS:
             return _unknown_action_error(action)
         effective_action = BATCH_ACTION_MAP.get(action, action)
+        step_tool = tool_approvals.ACTION_TOOLS.get(effective_action)
+        if _tool_needs_approval(step_tool):
+            refused = await _ask_tool_in_browser(step_tool, json.dumps(params, default=str)[:500])
+            if refused:
+                return refused
         tab_err = _check_step_tab(effective_action, params)
         if tab_err:
             return tab_err
@@ -4881,7 +4966,15 @@ class BridgeHandler(BaseHTTPRequestHandler):
         if identity and (identity["client"] != _client_id.get() or identity["ownerId"] != _owner_id.get()):
             identity = None
         handoff_token = _handoff_identity.set(identity)
+        checks = _checks_approvals.set(bool(self.headers.get(APPROVER_HEADER)))
+        call = self.headers.get(CALL_HEADER) or ""
+        call_token = _call_id.set(call if _CLIENT_ID.fullmatch(call) else None)
         try:
+            header_tool = self.headers.get(TOOL_HEADER) or ""
+            tool = tool_approvals.request_tool(path, header_tool if _TOOL_NAME.fullmatch(header_tool) else None)
+            if path in routes and _tool_needs_approval(tool):
+                self.refuse(403, _tool_approval_error(tool))
+                return
             handler = routes.get(path)
             if handler:
                 handler()
@@ -4889,6 +4982,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
             else:
                 self.refuse(404, {"error": "Not found"})
         finally:
+            _call_id.reset(call_token)
+            _checks_approvals.reset(checks)
             _handoff_identity.reset(handoff_token)
             _owner_id.reset(owner_token)
             _client_id.reset(client_token)
@@ -4951,6 +5046,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "/api/clear-highlight": self.handle_clear_highlight,
             "/api/close-tab": self.handle_close_tab,
             "/api/request-tab": self.handle_request_tab,
+            "/api/tool-approval": self.handle_tool_approval,
             "/api/switch-tab": self.handle_switch_tab,
             "/api/new-tab": self.handle_new_tab,
             "/api/wait-for-element": self.handle_wait_for_element,
@@ -5394,6 +5490,26 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.send_json(200, self.run_async(send_to_extension("requestTab", {
             key: body[key] for key in ("tabId", "reason", "confirmToken", "together", "wait", "decision") if key in body
         }, timeout=timeout), timeout=timeout + 5))
+
+    def handle_tool_approval(self):
+        """An MCP server asks the user to allow a tool (#525). Without confirmToken: {ok, required: false}
+        when no approval is needed, else the extension's answer; together returns a confirm token at once
+        for the server, which asks in the client's prompt too and then waits (wait) or answers (decision)."""
+        body = self.read_body()
+        tool = body.get("tool")
+        if not isinstance(tool, str) or not _TOOL_NAME_PATTERN.fullmatch(tool):
+            self.send_json(400, {"error": "tool must be a tool name", "code": "invalid_argument", "retryable": False})
+            return
+        if "confirmToken" not in body and not _tool_needs_approval(tool):
+            self.send_json(200, {"ok": True, "required": False})
+            return
+        params = {key: body[key] for key in ("confirmToken", "wait", "decision", "together") if key in body}
+        params.update(tool=tool, summary=str(body.get("summary") or "")[:500], clientName=_approval_client_name(),
+                      clientId=_client_id.get())
+        timeout = HANDOFF_WAIT_SECONDS if body.get("wait") is True or not body.get("together") else 40
+        result = self.run_async(_send_to_extension_raw("toolApproval", params, timeout=timeout), timeout=timeout + 5)
+        _record_tool_approval(tool, result)
+        self.send_json(200, result)
 
     def handle_handoff_session(self):
         secret = self.headers.get(SESSION_HEADER) or ""

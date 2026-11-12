@@ -242,7 +242,7 @@ async function popupLoadsAndSavesIdleSettings() {
           set: async value => writes.push(value.agentTabIdleMinutes),
         } },
         runtime: { sendMessage: async ({ action }) => action === 'handoffs'
-          ? { requests: [], tabs: [] } : { count: 0 } },
+          ? { requests: [], tabs: [] } : action === 'toolApprovals' ? [] : { count: 0 } },
       },
       setInterval() {},
     });

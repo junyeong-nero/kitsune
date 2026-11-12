@@ -54,8 +54,10 @@ Other groups also stay off this MCP list: their existing Python methods are in t
 Methods return the existing bridge/API results;
 this is not a schema-compatible replacement for every old MCP result.
 
-A call by an old tool name reports `tool_moved_to_python`. Scripts stop at approval and never replay
-completed work. Use a retained direct action to ask for approval where possible;
+A call by an old tool name reports `tool_moved_to_python`. A tool the user requires approval for
+is asked about mid-script and its request sent again once allowed
+([Tools that need your approval](your-tabs.md#tools-that-need-your-approval)). Other approval
+stops (ask-before-act, handoffs) stop the script and never replay completed work. Use a retained direct action to ask for approval where possible;
 for an approval-gated operation with no suitable retained direct tool, use the
 legacy surface or a developer-written, user-mediated Python program. Automatic
 script approval/resume is not part of this minimal version.

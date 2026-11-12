@@ -305,7 +305,8 @@ function handoffError(decision = 'cancelled') {
     state: { reason: 'approval', detail: 'tab_handoff', decision }, hint: handoffHint };
 }
 function handoffBadge() {
-  const count = [...handoffRequests.values()].filter(popupAsks).length;
+  const count = [...handoffRequests.values()].filter(popupAsks).length +
+    [...toolApprovalRequests.values()].filter(toolPopupAsks).length;
   browser.browserAction?.setBadgeText({ text: count ? String(count) : '' });
 }
 function finishHandoff(request, result, keep = false) {
@@ -455,6 +456,93 @@ function handoffDecision(id, decision) {
   if (!request || !popupAsks(request)) return handoffError();
   return decision === 'approve' ? approveHandoff(request) : finishHandoff(request, handoffError('declined'));
 }
+
+// == Per-tool approvals (#525, tool-approvals.js) ==
+// The bridge asks before a tool the user marked in the options page runs. A request's phase, as for
+// handoffs: 'browser' (the popup asks while the bridge waits), 'client' (the MCP server holds the
+// token and asks in its client's prompt), 'both' (both ask; the first answer counts, #494).
+// Allow once covers that MCP call, Allow for this session the client's later calls too (the bridge
+// keeps both).
+const toolApprovalRequests = new Map();
+const toolPopupAsks = request => request.phase === 'browser' || request.phase === 'both';
+const TOOL_APPROVAL_TOKEN_MS = 120000;
+const TOOL_NAME = /^browser_[a-z0-9_]{1,64}$/;
+function toolApprovalError(tool, decision = 'cancelled') {
+  return { error: `${tool} was not allowed`, code: 'needs_user', retryable: false,
+    state: { reason: 'approval', detail: 'tool_approval', tool, decision },
+    hint: 'Nothing ran: the user did not allow this tool. Do not repeat it; ask the user what to do instead.' };
+}
+function finishToolApproval(request, result) {
+  clearTimeout(request.timer);
+  toolApprovalRequests.delete(request.id);
+  request.resolve?.(result);
+  request.resolve = null;
+  handoffBadge();
+  return result;
+}
+function decideToolApproval(request, decision) {
+  if (decision === 'once' || decision === 'session') {
+    return finishToolApproval(request, { ok: true, tool: request.tool, scope: decision });
+  }
+  return finishToolApproval(request, toolApprovalError(request.tool, decision === 'declined' ? 'declined' : 'cancelled'));
+}
+function toolApproval(params) {
+  const tool = params.tool;
+  if (typeof tool !== 'string' || !TOOL_NAME.test(tool)) {
+    return { error: 'tool must be a tool name', code: 'invalid_argument', retryable: false };
+  }
+  if (params.confirmToken) {
+    const request = toolApprovalRequests.get(params.confirmToken);
+    if (!request || request.tool !== tool || request.clientId !== (params.clientId ?? null) ||
+        !['client', 'both'].includes(request.phase)) return toolApprovalError(tool);
+    if (params.wait === true) {
+      // The MCP server waits for the popup's answer while its client's prompt asks too.
+      if (request.phase !== 'client') return toolApprovalError(tool);
+      request.phase = 'both';
+      handoffBadge();
+      return new Promise(resolve => { request.resolve = resolve; });
+    }
+    return decideToolApproval(request, params.decision);
+  }
+  if (toolApprovalRequests.size >= 64) return toolApprovalError(tool);
+  const request = { id: crypto.randomUUID(), tool, clientId: params.clientId ?? null,
+    clientName: String(params.clientName || 'An agent').slice(0, 200), summary: String(params.summary || '').slice(0, 500),
+    phase: 'browser' };
+  toolApprovalRequests.set(request.id, request);
+  if (params.together === true) {
+    request.phase = 'client';
+    request.timer = setTimeout(() => finishToolApproval(request, toolApprovalError(tool)), TOOL_APPROVAL_TOKEN_MS);
+    return { error: `${tool} needs the user's approval`, code: 'needs_user', retryable: false,
+      state: { reason: 'approval', detail: 'tool_approval', tool, confirmToken: request.id,
+        expiresInSeconds: TOOL_APPROVAL_TOKEN_MS / 1000, approval: 'token', together: true },
+      hint: 'The MCP server asks the user.' };
+  }
+  const ms = Number.isFinite(params.timeoutMs) ? Math.min(params.timeoutMs, TOOL_APPROVAL_TOKEN_MS) : TOOL_APPROVAL_TOKEN_MS;
+  return new Promise(resolve => {
+    request.resolve = resolve;
+    request.timer = setTimeout(() => finishToolApproval(request, toolApprovalError(tool)), ms);
+    handoffBadge();
+  });
+}
+function toolApprovalPopup() {
+  return [...toolApprovalRequests.values()].filter(toolPopupAsks)
+    .map(r => ({ id: r.id, tool: r.tool, clientName: r.clientName, summary: r.summary }));
+}
+function toolApprovalDecision(id, decision) {
+  const request = toolApprovalRequests.get(id);
+  if (!request || !toolPopupAsks(request)) return toolApprovalError('the tool');
+  return decideToolApproval(request, decision === 'decline' ? 'declined' : decision);
+}
+function clearToolApprovals() {
+  for (const request of toolApprovalRequests.values()) finishToolApproval(request, toolApprovalError(request.tool));
+}
+async function sendApprovalTools() {
+  const tools = await approvalTools();
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'approvals', tools }));
+}
+browser.storage?.onChanged?.addListener((changes, area) => {
+  if (area === 'local' && APPROVAL_TOOLS_KEY in changes) sendApprovalTools().catch(() => {});
+});
 
 // == Agent tab cleanup (docs/api-reference.md#agent-tab-cleanup) ==
 // Agents that never close their tabs leave them piling up. The toolbar popup closes the agent's
@@ -762,6 +850,8 @@ browser.runtime.onMessage.addListener((msg, sender) => {
     if (msg.action === 'handoffs') return Promise.resolve(handoffPopup());
     if (msg.action === 'handoffDecision') return Promise.resolve(handoffDecision(msg.id, msg.decision));
     if (msg.action === 'takeBackHandoff') return Promise.resolve(takeBackHandoff(msg.tabId));
+    if (msg.action === 'toolApprovals') return Promise.resolve(toolApprovalPopup());
+    if (msg.action === 'toolApprovalDecision') return Promise.resolve(toolApprovalDecision(msg.id, msg.decision));
   }
   if (fromPopup && msg.action === 'agentTabCount') return agentTabCount();
   if (fromPopup && msg.action === 'closeAgentTabs') return closeAgentTabs();
@@ -850,6 +940,7 @@ function connect() {
       ws.send(JSON.stringify({ type: 'hello', version: browser.runtime.getManifest().version, build: KITSUNE_BUILD,
         sourceHash, manifestHash, popupUsage: true }));
       sendBrowserState();
+      sendApprovalTools().catch(() => {});
       sendBrowserInfo(socket);
       startHeartbeat();
       injectAllTabs(); // Inject content scripts into all existing tabs
@@ -867,7 +958,7 @@ function connect() {
         console.log('[Kitsune] <<', command.action, cmdId);
         
         await agentTabsRestored;
-        if (ws !== socket && ['openHandoffSession', 'requestTab'].includes(command.action)) return;
+        if (ws !== socket && ['openHandoffSession', 'requestTab', 'toolApproval'].includes(command.action)) return;
         const result = await handleCommand(command);
         
         if (ws && ws.readyState === WebSocket.OPEN) {
@@ -929,6 +1020,7 @@ for (const event of [browser.windows?.onCreated, browser.windows?.onRemoved,
 function cleanup() {
   popupUsage = { calls: null, lastActivity: null };
   clearHandoffs();
+  clearToolApprovals();
   stopHeartbeat();
   if (ws) {
     try { ws.close(); } catch {}
@@ -1657,6 +1749,7 @@ async function dispatchCommand(command) {
       return { ok: true };
     case 'endHandoffSession': return endHandoffSession(params.sessionId);
     case 'requestTab': return await requestTab(params);
+    case 'toolApproval': return await toolApproval(params);
     case 'getTabs':      return await getOpenTabs(params.ownerId, params.sessionId);
     case 'waitForUrl':   return await waitForTabProperty('url', params);
     case 'waitForTitle': return await waitForTabProperty('title', params);

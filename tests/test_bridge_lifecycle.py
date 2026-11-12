@@ -449,7 +449,7 @@ class BridgeVersionTests(unittest.TestCase):
             root = Path(temp)
             package = root / "src" / "kitsune"
             package.mkdir(parents=True)
-            for name in ("bridge.py", "bridge_control.py", "task_modes.py", "version.py"):
+            for name in ("bridge.py", "bridge_control.py", "task_modes.py", "tool_approvals.py", "version.py"):
                 (package / name).write_text("original")
             extension = root / "extension"
             extension.mkdir()
