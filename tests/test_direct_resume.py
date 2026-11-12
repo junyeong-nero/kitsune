@@ -232,7 +232,7 @@ class AskBeforeActResumeTests(ResumeTestCase):
         answers = iter(("accept", "decline"))
 
         async def approve_then_decline(params):
-            return types.ElicitResult(action=next(answers))
+            return types.ElicitResult(action=next(answers), content={"decision": "Approve"})
 
         result, payload = self.call("browser_fill_form", {"fields": fields}, approve_then_decline)
         self.assertEqual((payload["code"], payload["filled"]), ("needs_user", ["card"]))

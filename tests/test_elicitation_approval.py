@@ -195,12 +195,30 @@ class ApprovalElicitationTests(ElicitationTestCase):
                 self.approve(protocol)
                 self.assertEqual(negotiated[-1], protocol)
 
-    def test_codex_chooses_approve_in_a_field(self):
-        self.approve(types.LATEST_PROTOCOL_VERSION, CODEX)
+    def test_all_clients_choose_approve_in_a_field(self):
+        for name in ("codex-mcp-client", "claude-code", "opencode", "unknown-client"):
+            with self.subTest(client=name):
+                self.requests.clear()
+                self.extension.sent.clear()
+                bridge._audit_log.clear()
+                self.approve(types.LATEST_PROTOCOL_VERSION, types.Implementation(name=name, version="test"))
+
+    def test_bare_accept_and_invalid_decisions_never_approve(self):
+        for name in ("codex-mcp-client", "claude-code", "opencode", "unknown-client"):
+            for decision in (None, "", "invalid"):
+                with self.subTest(client=name, decision=decision):
+                    self.requests.clear()
+                    self.extension.sent.clear()
+                    result, payload = self.call("browser_click", {"target": "#send"},
+                                                answer_with("accept", decision),
+                                                client=types.Implementation(name=name, version="test"))
+                    self.assertTrue(result.isError)
+                    self.assertEqual(payload["state"]["decision"], "cancelled")
+                    self.assertEqual(self.extension.actions("click"), [])
 
     def approve(self, protocol, client=None):
         result, payload = self.call("browser_click", {"target": "#send", "element": "Send button"},
-                                    answer_with("accept", "Approve" if client else None), protocol=protocol,
+                                    answer_with("accept", "Approve"), protocol=protocol,
                                     client=client)
         self.assertFalse(result.isError, payload)
         self.assertIs(payload.get("ok"), True, payload)
@@ -218,9 +236,9 @@ class ApprovalElicitationTests(ElicitationTestCase):
         # description is labeled as the agent's.
         prompt = self.prompts[0]
         self.assertEqual(prompt.mode, "form")
-        # One step (the client's Accept approves), but on Codex, which chooses Approve in a field (#494).
-        self.assertEqual(prompt.requestedSchema, server.APPROVAL_SCHEMA if client else server.ONE_STEP_SCHEMA)
-        approve = "Approve" if client else "Accept or Continue"
+        # Every client must submit an explicit approval decision.
+        self.assertEqual(prompt.requestedSchema, server.APPROVAL_SCHEMA)
+        approve = "Approve"
         for part in ("Allow the agent's click? It clicks a submit control (Pay).", "Tool: browser_click",
                      "Target: #send\nAgent's description of the target: Send button\n",
                      "Tab: https://shop.example/cart", "Held because ask-before-act: it clicks a submit control (Pay).",
@@ -393,7 +411,7 @@ class AskBeforeActElicitationTests(ElicitationTestCase):
         self.assertEqual(self.extension.actions("click"), [], "nothing ran")
         self.assertNoToken()
         self.assertIn("Held because ask-before-act: it clicks a submit control (Pay).", self.prompts[0].message)
-        self.assertIn("Accept or Continue runs this action once; Decline leaves it undone.", self.prompts[0].message)
+        self.assertIn("Approve runs this action once; Decline leaves it undone.", self.prompts[0].message)
 
     def test_each_held_request_of_a_call_is_asked_about_once(self):
         # browser_type(submit) on a payment-like page: its text and then its Enter are held; the second
@@ -436,7 +454,7 @@ class AskBeforeActElicitationTests(ElicitationTestCase):
         answers = iter(("accept", "decline"))
 
         async def approve_then_decline(params):
-            return types.ElicitResult(action=next(answers))
+            return types.ElicitResult(action=next(answers), content={"decision": "Approve"})
 
         result, payload = self.call("browser_fill_form", {"fields": fields}, approve_then_decline)
         self.assertEqual((payload["code"], payload["state"]["decision"], payload["filled"]),

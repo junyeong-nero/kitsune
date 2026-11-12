@@ -187,8 +187,8 @@ asks in the browser and, with elicitation, in the client at once. For ask-before
 
 - **Clients with elicitation** (Claude Code, Codex): Kitsune asks you in the client's own
   prompt, naming the action, its target, the call's arguments, the tab and why it was held.
-  The agent's description of the target is labeled as the agent's. Accept (Continue in pi;
-  in Codex, choose Approve), and Kitsune runs that one call; the agent never sees a token, so
+  The agent's description of the target is labeled as the agent's. Choose Approve in the
+  required decision field on any client, and Kitsune runs that one call; the agent never sees a token, so
   it cannot approve itself. Decline or dismiss it, and the agent gets `needs_user` with `state.decision` `declined` or
   `cancelled`. The prompt closes unanswered 5 seconds before the approval would expire.
   If you change your mind, the agent calls `browser_resume`, which asks you again and

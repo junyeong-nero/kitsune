@@ -402,7 +402,7 @@ class KitsuneMCP(FastMCP):
         (#494): the first the user gives. held is the extension's needs_user with the request's confirm
         token, which the model never sees; the popup asks once this server waits for its answer.
 
-        Accept (Approve) in the client's prompt hands the tab off; Decline or dismissing it declines the
+        An explicit Approve in the client's prompt hands the tab off; Decline or dismissing it declines the
         request, which closes the popup's prompt too. A prompt that failed, or a decline or dismissal within
         CLIENT_POLICY_SECONDS (the client's policy or a hook, not the user), leaves the popup to answer until
         the token expires. An answer in the popup closes the client's prompt."""
@@ -706,11 +706,11 @@ ELICITATION_PROGRESS_SECONDS = 10
 APPROVAL_ARGUMENTS_CHARS = 500
 APPROVAL_SCHEMA = {"type": "object", "required": ["decision"], "properties": {
     "decision": {"type": "string", "title": "Decision", "enum": ["Approve", "Decline"]}}}
-# A one-step prompt (#494): the client's own Accept answers Approve (or Done), its Decline Decline (or
-# Can't). Its answers are named so on every client: Accept is Continue in pi.
+# Completion prompts only (#494): the client's own Accept answers Done, its Decline Can't.
+# Approval prompts always require an explicit decision field, regardless of client identity.
 ONE_STEP_SCHEMA = {"type": "object", "properties": {}}
 ONE_STEP_ACCEPT = "Accept or Continue"
-# Clients whose prompts keep a field to choose in. Codex auto-accepts a prompt without fields when its
+# Clients whose completion prompts keep a field to choose in. Codex auto-accepts a prompt without fields when its
 # permission prompts are auto-approved (approval_policy never with full access, or a tool set to always
 # allow) and declines one with a required field; it submits that field with one Enter.
 FIELD_PROMPT_CLIENTS = {"codex-mcp-client"}
@@ -811,10 +811,10 @@ def _unapproved(held: dict, decision: str | None, hint: str) -> dict:
     return _without_tokens({**held, "state": state, "hint": hint})
 
 
-def _approval_message(name: str, arguments: dict, state: dict, one_step: bool = False) -> str:
+def _approval_message(name: str, arguments: dict, state: dict) -> str:
     """The prompt: what the call does, to which element and tab, with which arguments, and why it was
     held. The model's element description is labeled as the agent's: only the ref or selector is
-    what the call acts on. one_step names the client's Accept instead of the Approve choice."""
+    what the call acts on."""
     params = state.get("params") if isinstance(state.get("params"), dict) else {}
     target = next((str(value) for value in (arguments.get("target"), arguments.get("ref"), arguments.get("selector"),
                                             params.get("ref"), params.get("selector")) if value), None)
@@ -833,7 +833,7 @@ def _approval_message(name: str, arguments: dict, state: dict, one_step: bool = 
     lines += [f"Arguments: {rest}"] if rest != "{}" else []
     lines += [f"Tab: {tab}"] if tab else []
     lines += [f"Held because {why}."]
-    approve = ONE_STEP_ACCEPT if one_step else "Approve"
+    approve = "Approve"
     if state.get("detail") == "tab_handoff":
         lines += [f"{approve} hands this tab to this client until you take it back in the Kitsune popup or the "
                   "session ends. Later writes need no handoff prompt; Decline leaves the tab yours."]
@@ -913,12 +913,10 @@ async def _ask_user(session, request, name: str, arguments: dict, state: dict, l
     seconds = max(1, (state.get("expiresInSeconds") or 0) - ELICITATION_MARGIN_SECONDS)
     if limit is not None:
         seconds = min(seconds, limit)
-    one_step = _one_step(session)
-    answer = await _elicit(session, request, _approval_message(name, arguments, state, one_step),
-                           ONE_STEP_SCHEMA if one_step else APPROVAL_SCHEMA, seconds,
+    answer = await _elicit(session, request, _approval_message(name, arguments, state),
+                           APPROVAL_SCHEMA, seconds,
                            "Waiting for the user's approval", "approval prompt")
-    return _choice(answer, "decision", {"Approve": "approved", "Decline": "declined"},
-                   "approved" if one_step else None, failed)
+    return _choice(answer, "decision", {"Approve": "approved", "Decline": "declined"}, failed=failed)
 
 
 def _first_answer(answered: dict, lost: list) -> dict | None:
@@ -947,16 +945,15 @@ TOOL_APPROVAL_SCHEMA = {"type": "object", "required": ["decision"], "properties"
 async def _ask_tool(session, request, tool: str, summary: str, state: dict):
     """Ask the user to allow tool: "once", "session", "declined", "cancelled", or None (no answer)."""
     seconds = max(1, (state.get("expiresInSeconds") or 0) - ELICITATION_MARGIN_SECONDS)
-    one_step = _one_step(session)
     lines = [f"Allow the agent to use {tool}?", f"Arguments: {summary}" if summary not in ("", "{}") else None,
              "You require approval for this tool in the Kitsune extension's options.",
-             f"{ONE_STEP_ACCEPT} allows it for this call; Decline does not run it." if one_step else
+             "Allow once allows it for this call; Decline does not run it.",
              "Allow for this session also allows its later calls from this client."]
     answer = await _elicit(session, request, "\n".join(line for line in lines if line),
-                           ONE_STEP_SCHEMA if one_step else TOOL_APPROVAL_SCHEMA, seconds,
+                           TOOL_APPROVAL_SCHEMA, seconds,
                            "Waiting for the user's approval", "approval prompt")
     return _choice(answer, "decision", {"Allow once": "once", "Allow for this session": "session",
-                                        "Decline": "declined"}, "once" if one_step else None, None)
+                                        "Decline": "declined"}, failed=None)
 
 
 # ── browser_ask_user (#376, docs/api-reference.md#browser_ask_userreason-message-tab_idnone) ──

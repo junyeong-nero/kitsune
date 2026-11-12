@@ -329,7 +329,8 @@ time.sleep(60)
                 self.extension.request_result = result
                 async def answer(context, params):
                     prompts.append(params)
-                    return types.ElicitResult(action="decline" if decision == "declined" else "accept")
+                    return types.ElicitResult(action="decline" if decision == "declined" else "accept",
+                                             content={"decision": "Approve"})
                 with patch.object(bridge_client, "BRIDGE", "http://" + self.bridge.host), \
                         patch.object(bridge_client, "_headers", return_value=self.bridge.auth()), \
                         patch.object(client, "await_extension"), patch.object(server, "_client", client), \
@@ -363,7 +364,7 @@ time.sleep(60)
         self.extension = TogetherExtension(self.bridge)
         self.addCleanup(self.extension.close)
 
-        async def request(popup, answer, delay=0.0, popup_delay=0.3, cancel=False):
+        async def request(popup, answer, delay=0.0, popup_delay=0.3, cancel=False, decision="Approve"):
             """browser_tabs request: the popup answers popup after popup_delay s (None: never), the client's
             prompt answers after delay s (None: accept after 1 s, too late); cancel: the client cancels the
             call first. The result (None when cancelled), the client's answers, and whether the server
@@ -378,7 +379,7 @@ time.sleep(60)
                 await send_notification(session, notification, related_request_id)
 
             async def elicit(context, params):
-                self.assertEqual(params.requestedSchema, server.ONE_STEP_SCHEMA)
+                self.assertEqual(params.requestedSchema, server.APPROVAL_SCHEMA)
                 self.assertIn("Client A requests this tab: work", params.message)
                 self.assertIn("Tab: Page - https://user.example/", params.message)
                 if cancel:
@@ -386,7 +387,8 @@ time.sleep(60)
                         params=types.CancelledNotificationParams(requestId=call_id))))
                 # The SDK's client reads nothing else meanwhile, so a late answer stands for an open prompt.
                 await anyio.sleep(1 if answer is None else delay)
-                return types.ElicitResult(action=answer or "accept")
+                return types.ElicitResult(action=answer or "accept",
+                                         content={"decision": decision} if decision is not None else None)
 
             with patch.object(bridge_client, "BRIDGE", "http://" + self.bridge.host), \
                     patch.object(bridge_client, "_headers", return_value=self.bridge.auth()), \
@@ -427,8 +429,12 @@ time.sleep(60)
             self.assertEqual(await request(OWNED, None), (OWNED, [], True))
             declined, answers, closed = await request(not_handed_off("declined"), None)
             self.assertEqual((declined["state"]["decision"], answers, closed), ("declined", [], True))
-            # The client's prompt answers first: Accept hands the tab off, the popup's wait returns.
+            # The client's explicit Approve hands the tab off, the popup's wait returns.
             self.assertEqual(await request(None, "accept"), (OWNED, ["approve"], False))
+            # Empty/invalid automatic accepts do not grant access; the popup can still decline.
+            for decision in (None, "", "invalid"):
+                value, answers, _ = await request(not_handed_off("declined"), "accept", decision=decision)
+                self.assertEqual((value["state"]["decision"], answers), ("declined", []))
             with patch.object(server, "CLIENT_POLICY_SECONDS", 0.1):
                 for answer, decision in (("decline", "declined"), ("cancel", "cancelled")):
                     value, answers, _ = await request(None, answer, delay=0.2)
