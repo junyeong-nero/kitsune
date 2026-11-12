@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="820" viewBox="0 0 1200 820" role="img" aria-labelledby="title desc">
+  <title id="title">Kitsune: less context, closer to one-tool browsers</title>
+  <desc id="desc">Input tokens on 13 MiniWoB task/repeat cells successful for all five arms. Kitsune legacy 785,115; Playwright 781,019; Kitsune default 514,964; ego lite 458,052; Aside 361,014. Default uses 34% fewer input tokens than Playwright and closes 83% of the legacy-to-ego gap and 64% of the legacy-to-Aside gap. Small exhibition, not an equal-environment leaderboard.</desc>
+  <defs>
+    <linearGradient id="bg" x2="1" y2="1"><stop stop-color="#091f23"/><stop offset="1" stop-color="#10483f"/></linearGradient>
+    <linearGradient id="fox"><stop stop-color="#f58b42"/><stop offset="1" stop-color="#ffc36d"/></linearGradient>
+  </defs>
+  <rect width="1200" height="820" rx="28" fill="url(#bg)"/>
+  <g font-family="Arial, Helvetica, sans-serif">
+    <rect x="48" y="38" width="310" height="32" rx="16" fill="#173c39" stroke="#46635a"/>
+    <circle cx="66" cy="54" r="5" fill="#b8d89d"/>
+    <text x="82" y="60" fill="#c9ddba" font-size="14" letter-spacing="2">KITSUNE / MEASURED CONTEXT</text>
+    <text x="48" y="124" fill="#fff0d6" font-size="39" font-weight="700">Less context. Closing the gap.</text>
+    <text x="48" y="158" fill="#b5ccc1" font-size="18">Same 13 solved task/repeat cells · cumulative input tokens · lower is better</text>
+    <g transform="translate(1090 48)">
+      <path d="M0 0 L25 12 L50 0 L45 35 L25 53 L5 35 Z" fill="url(#fox)"/>
+      <path d="M5 24 L25 36 L45 24 L39 39 L25 53 L11 39 Z" fill="#fff0d6"/>
+      <path d="M20 39 L30 39 L25 45 Z" fill="#09272a"/>
+    </g>
+    <g>
+      <rect x="48" y="190" width="352" height="112" rx="16" fill="#173b36" stroke="#627b5c"/>
+      <text x="70" y="240" fill="#ffb463" font-size="40" font-weight="700">34% less</text>
+      <text x="70" y="274" fill="#fff0d6" font-size="17">input vs Playwright MCP</text>
+      <rect x="416" y="190" width="352" height="112" rx="16" fill="#143731" stroke="#3a5e52"/>
+      <text x="438" y="240" fill="#ffb463" font-size="40" font-weight="700">83% closer</text>
+      <text x="438" y="274" fill="#fff0d6" font-size="17">legacy-to-ego lite input gap closed</text>
+      <rect x="784" y="190" width="368" height="112" rx="16" fill="#143731" stroke="#3a5e52"/>
+      <text x="806" y="240" fill="#ffb463" font-size="40" font-weight="700">64% closer</text>
+      <text x="806" y="274" fill="#fff0d6" font-size="17">legacy-to-Aside input gap closed</text>
+    </g>
+    <g stroke="#34554d" stroke-width="1">
+      <path d="M280 343 V642 M480 343 V642 M680 343 V642 M880 343 V642 M1080 343 V642"/>
+    </g>
+    <g font-size="19" fill="#d3ded0">
+      <text x="48" y="378">Kitsune legacy</text>
+      <text x="48" y="436">Playwright MCP</text>
+      <text x="48" y="494" fill="#ffbb73" font-weight="700">Kitsune default</text>
+      <text x="48" y="552">ego lite</text>
+      <text x="48" y="610">Aside</text>
+    </g>
+    <!-- Scale: 1 SVG unit = 1,000 input tokens. All bars start at zero. -->
+    <rect x="280" y="353" width="785.115" height="36" rx="5" fill="#526f66"/>
+    <rect x="280" y="411" width="781.019" height="36" rx="5" fill="#718e81"/>
+    <rect x="280" y="469" width="514.964" height="36" rx="5" fill="url(#fox)"/>
+    <rect x="280" y="527" width="458.052" height="36" rx="5" fill="#abd19d"/>
+    <rect x="280" y="585" width="361.014" height="36" rx="5" fill="#c6dcb0"/>
+    <g font-size="18" font-weight="700" fill="#fff0d6">
+      <text x="1080" y="378">785k</text>
+      <text x="1076" y="436">781k</text>
+      <text x="810" y="494" fill="#ffbb73">515k</text>
+      <text x="754" y="552">458k</text>
+      <text x="657" y="610">361k</text>
+    </g>
+    <g font-size="14" fill="#a5bdb0" text-anchor="middle">
+      <text x="280" y="661">0</text><text x="480" y="661">200k</text><text x="680" y="661">400k</text><text x="880" y="661">600k</text><text x="1080" y="661">800k</text>
+    </g>
+    <path d="M48 687 H1152" stroke="#3b5b50"/>
+    <g font-size="16" fill="#bfd1c3">
+      <text x="48" y="718">MiniWoB exhibition · Opus 5.5 · 2026-11-12 · Kitsune 79eb955 (pre-release 0.8.0 code)</text>
+      <text x="48" y="746">Input includes cache hits, not billed cost. Gap closed = (legacy − default) / (legacy − competitor).</text>
+      <text x="48" y="774">Unequal browser environments; vendor page-JS use. Not a full-suite or safety ranking. See linked report.</text>
+    </g>
+  </g>
+</svg>
