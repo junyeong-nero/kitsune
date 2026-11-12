@@ -68,6 +68,27 @@ class TableTests(unittest.TestCase):
         self.assertIsNone(tool_approvals.request_tool("/api/tool-approval", "browser_cookies"))
 
 
+class FirstAnswerTests(unittest.TestCase):
+    """Which answer counts when the popup's wait and the client's answer both come back (#494, #525)."""
+
+    def refusal(self, decision):
+        return {"error": "x", "code": "needs_user", "state": {"decision": decision}}
+
+    def test_the_clients_answer_counts_over_a_wait_it_settled(self):
+        allowed = {"ok": True, "scope": "once"}
+        self.assertEqual(server._first_answer(allowed, [self.refusal("cancelled")]), allowed)
+        self.assertEqual(server._first_answer(self.refusal("declined"), [self.refusal("cancelled")]),
+                         self.refusal("declined"))
+
+    def test_a_popup_decline_given_first_stands(self):
+        self.assertEqual(server._first_answer(self.refusal("cancelled"), [self.refusal("declined")]),
+                         self.refusal("declined"))
+
+    def test_a_request_the_popup_settled_waits_for_the_popups_answer(self):
+        self.assertIsNone(server._first_answer(self.refusal("cancelled"), []))
+        self.assertEqual(server._first_answer(self.refusal("declined"), []), self.refusal("declined"))
+
+
 class BridgeApprovalTests(AskBeforeActTestCase):
     ask = False
 

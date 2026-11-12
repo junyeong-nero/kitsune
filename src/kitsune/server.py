@@ -365,11 +365,16 @@ class KitsuneMCP(FastMCP):
             return _without_tokens(first)
         body["confirmToken"] = token
         outcome = None
+        answering, lost = False, []
         try:
             async with anyio.create_task_group() as group:
                 async def popup():
                     nonlocal outcome
-                    outcome = await post(HANDOFF_WAIT_SECONDS, wait=True)
+                    result = await post(HANDOFF_WAIT_SECONDS, wait=True)
+                    if answering and not result.get("ok"):
+                        lost.append(result)  # the client's answer, on its way, settles it
+                        return
+                    outcome = result
                     group.cancel_scope.cancel()  # closes the client's prompt
 
                 group.start_soon(popup)
@@ -377,11 +382,13 @@ class KitsuneMCP(FastMCP):
                 decision = await _ask_tool(session, request, tool, summary, state)
                 if decision in ("once", "session") or (decision is not None
                                                      and anyio.current_time() - asked >= CLIENT_POLICY_SECONDS):
+                    answering = True
                     answered = await post(45, decision=decision)
-                    if answered.get("ok"):
-                        outcome = answered
+                    if (first_answer := _first_answer(answered, lost)) is None:
+                        answering = False  # the popup's open wait returns the answer that settled it
+                    else:
+                        outcome = first_answer
                         group.cancel_scope.cancel()
-                    # Else the popup's wait returns the answer this decline gave, or the one it had already.
                 elif _sends_progress(request):
                     group.start_soon(_keep_alive, session, request, "Waiting for the user's answer in the browser")
         finally:
@@ -409,11 +416,16 @@ class KitsuneMCP(FastMCP):
                 abandon_on_cancel=True)
 
         outcome = None
+        answering, lost = False, []
         try:
             async with anyio.create_task_group() as group:
                 async def popup():
                     nonlocal outcome
-                    outcome = await post(HANDOFF_WAIT_SECONDS, wait=True)
+                    result = await post(HANDOFF_WAIT_SECONDS, wait=True)
+                    if answering and not result.get("ok"):
+                        lost.append(result)  # the client's answer, on its way, settles it
+                        return
+                    outcome = result
                     group.cancel_scope.cancel()  # closes the client's prompt
 
                 group.start_soon(popup)
@@ -421,11 +433,13 @@ class KitsuneMCP(FastMCP):
                 decision = await _ask_user(session, request, name, arguments, state, failed=None)
                 if decision == "approved" or (decision is not None
                                               and anyio.current_time() - asked >= CLIENT_POLICY_SECONDS):
+                    answering = True
                     answered = await post(45, **({} if decision == "approved" else {"decision": decision}))
-                    if answered.get("ok"):
-                        outcome = answered
+                    if (first_answer := _first_answer(answered, lost)) is None:
+                        answering = False  # the popup's open wait returns the answer that settled it
+                    else:
+                        outcome = first_answer
                         group.cancel_scope.cancel()
-                    # Else the request had an answer already, or this decline is it: the popup's wait returns it.
                 elif _sends_progress(request):
                     group.start_soon(_keep_alive, session, request, "Waiting for the user's answer in the browser")
         finally:
@@ -905,6 +919,23 @@ async def _ask_user(session, request, name: str, arguments: dict, state: dict, l
                            "Waiting for the user's approval", "approval prompt")
     return _choice(answer, "decision", {"Approve": "approved", "Decline": "declined"},
                    "approved" if one_step else None, failed)
+
+
+def _first_answer(answered: dict, lost: list) -> dict | None:
+    """The result once the client's answer reached the extension (#494, #525); None to take the popup's.
+
+    Either side's reply can come back first. The popup's wait returning "cancelled" only means the
+    client's answer settled the request, which answered reports (an approval, or the decline it
+    gave); a decline the user gave in the popup first stands. answered "cancelled" while the popup's
+    wait is still open means the popup settled it: that wait returns its answer (None)."""
+    if answered.get("ok"):
+        return answered
+    popup = lost[0] if lost else None
+    if popup is not None and (popup.get("state") or {}).get("decision") not in (None, "cancelled"):
+        return popup
+    if popup is None and (answered.get("state") or {}).get("decision") == "cancelled":
+        return None
+    return answered
 
 
 # Per-tool approvals (#525): Allow once, Allow for this session, or Decline.

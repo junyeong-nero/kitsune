@@ -401,8 +401,9 @@ time.sleep(60)
                         except McpError:
                             response = None
                         # The client's answer can reach the extension before the popup's wait does; a
-                        # cancelled call's answer comes after the client is told.
-                        while not any(c.get("wait") for c in self.extension.requests()) or (
+                        # cancelled call's answer comes after the client is told, and a call cancelled
+                        # before the popup's wait was sent sends none: its answer ends the request alone.
+                        while (not cancel and not any(c.get("wait") for c in self.extension.requests())) or (
                                 cancel and not any("decision" in c for c in self.extension.requests())):
                             await anyio.sleep(0.01)
                     await anyio.sleep(0.1)  # a closed prompt's late reply reaches the server before it closes
@@ -412,11 +413,13 @@ time.sleep(60)
                 value = json.loads(response.content[0].text)
                 self.assertIs(response.isError, not value.get("ok"))
             first, *rest = self.extension.requests()
-            (wait,) = [c for c in rest if c.get("wait")]
+            waits = [c for c in rest if c.get("wait")]
             answers = [c for c in rest if not c.get("wait")]
             self.assertEqual((first.get("together"), first.get("confirmToken")), (True, None))
-            self.assertEqual((wait["confirmToken"], wait["wait"], wait["tabId"], wait["reason"]),
-                             ("test-token", True, 1, "work"))
+            self.assertEqual(len(waits), 1 if not cancel else len(waits[:1]))
+            for wait in waits:
+                self.assertEqual((wait["confirmToken"], wait["wait"], wait["tabId"], wait["reason"]),
+                                 ("test-token", True, 1, "work"))
             return value, [a.get("decision", "approve") for a in answers], any(closed)
 
         async def run():
