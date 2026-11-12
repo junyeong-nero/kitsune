@@ -185,6 +185,25 @@ function assertNotFillable(result, label, tag, reason) {
     assert.deepEqual(scripts, [], 'no page script is injected');
   }
 
+  // #539: restrictions belong to the resolved field, not just its web-component host.
+  for (const restriction of ['readOnly', 'disabled']) {
+    const { body, fields } = fixture();
+    Object.assign(fields.closed, { type: 'text', [restriction]: true });
+    const { send } = page(body);
+    for (const message of [
+      { action: 'fill', selector: '#closed', value: 'wrong' },
+      { action: 'type', selector: '#closed', text: 'wrong', clear: true },
+      { action: 'setEditableContent', selector: '#closed', value: 'wrong', format: 'text', clear: true },
+      { action: 'formFill', fields: { '#closed': 'wrong' } },
+    ]) {
+      const result = await send(message);
+      assert.equal((result.results?.['#closed'] || result).code, 'not_editable');
+      assert.equal(fields.closed.value, '');
+      assert.deepEqual(fields.closed.events, []);
+      assert.equal(fields.closed.focused, undefined);
+    }
+  }
+
   // A field that cannot be reached fails as not_fillable with its reason, and nothing changes.
   {
     const { body, hosts, fields } = fixture();

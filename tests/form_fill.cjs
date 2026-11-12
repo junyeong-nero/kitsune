@@ -240,5 +240,59 @@ async function testLineBreaks() {
   assert.equal(input.value, 'x y', 'appending to an input replaces the line break too');
 }
 
-testFormFill().then(testSettleFloor).then(testLineBreaks).then(() => console.log('Form fill checks passed'))
+// #539: native value setters must not bypass the page's editing restrictions.
+async function testRestrictedFields() {
+  const field = (tagName, props = {}) => Object.assign(new Element(tagName), {
+    type: 'text', value: 'before', focused: 0,
+    focus() { this.focused++; },
+    matches(selector) { return selector === ':disabled' && (this.disabled || this.inDisabledFieldset); },
+  }, props);
+  const elements = {
+    '#readonly': field('INPUT', { readOnly: true }),
+    '#area': field('TEXTAREA', { readOnly: true }),
+    '#disabled': field('INPUT', { disabled: true }),
+    '#fieldset': field('INPUT', { inDisabledFieldset: true }),
+    '#editable': field('INPUT'),
+    '#ignored': field('INPUT', { type: 'range', readOnly: true }),
+  };
+  let listener;
+  const context = vm.createContext({
+    console, crypto: webcrypto, Event, CSS: { escape: x => x },
+    KeyboardEvent: class extends Event {},
+    HTMLInputElement: class {}, HTMLTextAreaElement: class {},
+    window: { getComputedStyle: () => ({ display: 'block', visibility: 'visible' }) },
+    document: { body: {}, querySelector: selector => elements[selector] || null, querySelectorAll: () => [] },
+    browser: { runtime: { onMessage: { addListener: fn => { listener = fn; } },
+      sendMessage: () => Promise.resolve(null) } },
+  });
+  vm.runInContext(fs.readFileSync('extension/content/content.js', 'utf8'), context);
+  const send = msg => new Promise(resolve => listener(msg, {}, result => resolve(JSON.parse(JSON.stringify(result)))));
+  const writes = [
+    selector => send({ action: 'fill', selector, value: 'after' }),
+    selector => send({ action: 'type', selector, text: 'after', clear: true }),
+    selector => send({ action: 'setEditableContent', selector, value: 'after', format: 'text', clear: true }),
+    async selector => (await send({ action: 'formFill', fields: { [selector]: 'after' } })).results[selector],
+  ];
+  for (const selector of ['#readonly', '#area', '#disabled', '#fieldset']) {
+    const el = elements[selector];
+    for (const write of writes) {
+      const result = await write(selector);
+      assert.equal(result.code, 'not_editable', `${selector}: ${JSON.stringify(result)}`);
+      assert.equal(result.retryable, false);
+      assert.equal(result.state.reason, el.readOnly ? 'readonly' : 'disabled');
+      assert.equal(el.value, 'before');
+      assert.equal(el.focused, 0);
+      assert.deepEqual(el.events, []);
+    }
+  }
+  const mixed = await send({ action: 'formFill', fields: { '#readonly': 'wrong', '#editable': 'Ada' } });
+  assert.equal(mixed.error, undefined, 'keep per-field partial success semantics');
+  assert.equal(mixed.results['#readonly'].code, 'not_editable');
+  assert.equal(elements['#editable'].value, 'Ada');
+  assert.deepEqual(elements['#editable'].events, ['input', 'change']);
+  assert.equal((await send({ action: 'fill', selector: '#ignored', value: '5' })).ok, true,
+    'readonly does not apply to range inputs');
+}
+
+testFormFill().then(testSettleFloor).then(testLineBreaks).then(testRestrictedFields).then(() => console.log('Form fill checks passed'))
   .catch(error => { console.error(error); process.exitCode = 1; });

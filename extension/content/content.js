@@ -2448,6 +2448,8 @@
     if (!['INPUT', 'TEXTAREA'].includes(el.tagName) && !isEditableRegion(el)) {
       return notFillable(el, 'input or textarea');
     }
+    const refused = refuseFieldWrite(el);
+    if (refused) return refused;
     lastActedElement = lastFilledField = el;
 
     // In an editor, type at the caret if it is in el, else at the end; clear replaces el's content.
@@ -2487,6 +2489,8 @@
 
     const target = getEditableTarget(el);
     if (!target) return { error: 'Element is not editable' };
+    const refused = refuseFieldWrite(target);
+    if (refused) return refused;
     lastFilledField = target;
 
     // Read before focus(), which can move the caret to the start of the editor.
@@ -2669,6 +2673,20 @@
   }
 
   const FILL_TAGS = ['INPUT', 'TEXTAREA', 'SELECT'];
+  const READONLY_INPUT_TYPES = new Set(['text', 'search', 'url', 'tel', 'email', 'password',
+    'date', 'month', 'week', 'time', 'datetime-local', 'number']);
+
+  // Value setters do not enforce HTML editing restrictions. Check the resolved native field
+  // before focus, events or mutation; :disabled includes an enclosing disabled fieldset.
+  function refuseFieldWrite(el) {
+    if (!FILL_TAGS.includes(el.tagName)) return null;
+    const readonly = el.readOnly && (el.tagName === 'TEXTAREA' || READONLY_INPUT_TYPES.has(el.type));
+    const reason = el.disabled || el.matches?.(':disabled') ? 'disabled' : readonly ? 'readonly' : null;
+    if (!reason) return null;
+    return { ...actionError(`Field is ${reason}`, 'not_editable',
+      'Use the page controls (for example a date picker) or an editable field; do not force a value into this field.',
+      { tag: el.tagName.toLowerCase(), reason }), retryable: false };
+  }
 
   // fields: what the action looks for, e.g. 'input, textarea or select'.
   // state.reason: 'no_field', or 'shadow_depth' when shadow roots nest deeper than shadowField searches.
@@ -2706,6 +2724,8 @@
       if (role && ariaNumber(el, 'aria-valuenow') != null) return fillAriaRange(el, role, value);
       return notFillable(el, 'input, textarea, select or editor');
     }
+    const refused = refuseFieldWrite(target);
+    if (refused) return refused;
     lastActedElement = lastFilledField = target;
 
     if (target.type === 'checkbox' || target.type === 'radio') {
@@ -5589,6 +5609,8 @@
       const field = getFillTarget(el);
       if (!FILL_TAGS.includes(field.tagName)) { results[key] = notFillable(el, 'input, textarea or select'); continue; }
       el = field;
+      const refused = refuseFieldWrite(el);
+      if (refused) { results[key] = refused; continue; }
       try {
         if (el.tagName === 'SELECT') {
           // Assigning an unknown value would silently clear the selection.
