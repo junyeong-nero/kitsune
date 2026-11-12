@@ -40,10 +40,13 @@ async def main():
                 result["snapshots"] = json.loads(snapshots.content[0].text)
                 failed = await session.call_tool("browser_run_python", {"code": "browser.tab(7).click('#send')"})
                 invalid = await session.call_tool("browser_run_python", {"code": "pass", "timeout": 0})
-                moved = await session.call_tool("browser_hover", {"target": "#item"})
+                described = await session.call_tool("browser_tools_call", {"name": "browser_click"})
+                recovered = await session.call_tool("browser_tools_call", {
+                    "name": "browser_click", "arguments": {"target": "#send"}})
                 gateway = await session.call_tool("browser_tools_publish", {"names": ["browser_hover"]})
                 result.update(ok=json.loads(ok.content[0].text), failed=json.loads(failed.content[0].text),
-                              moved=json.loads(moved.content[0].text), gateway=json.loads(gateway.content[0].text),
+                              described=json.loads(described.content[0].text),
+                              recovered=json.loads(recovered.content[0].text), gateway=json.loads(gateway.content[0].text),
                               statuses=[ok.isError, failed.isError, invalid.isError])
             return result
 print(json.dumps(asyncio.run(main())))
@@ -76,15 +79,14 @@ class ScriptMcpTests(unittest.TestCase):
                 self.assertNotEqual(reply.returncode, 0)
                 self.assertIn("KITSUNE_SCRIPTING must be 0 or 1", reply.stderr)
 
-    def test_minimal_list_has_fourteen_tools_without_discovery_or_publication(self):
-        expected = {"browser_tabs", "browser_navigate", "browser_snapshot", "browser_find", "browser_click",
-                    "browser_type", "browser_fill_form", "browser_select_option", "browser_press_key",
-                    "browser_wait_for", "browser_take_screenshot", "browser_ask_user", "browser_resume",
-                    "browser_run_python"}
+    def test_code_first_list_has_six_tools_with_direct_recovery_but_no_publication(self):
+        expected = {"browser_tabs", "browser_take_screenshot", "browser_ask_user", "browser_resume",
+                    "browser_run_python", "browser_tools_call"}
         result = self.probe(True)
         self.assertEqual(set(result["tools"]), expected)
-        self.assertEqual(result["moved"]["code"], "tool_moved_to_python")
-        self.assertIn("KITSUNE_SCRIPTING=0", result["moved"]["hint"])
+        self.assertEqual(result["described"]["name"], "browser_click")
+        self.assertIn("target", result["described"]["inputSchema"]["properties"])
+        self.assertNotIn("inputSchema", result["recovered"])
         self.assertEqual(result["gateway"]["code"], "tool_moved_to_python")
 
     def test_minimal_definitions_and_instructions_are_smaller_with_the_script_guide_included(self):
@@ -103,7 +105,7 @@ class ScriptMcpTests(unittest.TestCase):
 
         legacy, minimal = self.probe(False)["schemas"], self.probe(True)["schemas"]
         shared = set(minimal) & set(playwright_tools.SCHEMAS)
-        self.assertEqual(len(shared), 11)
+        self.assertEqual(len(shared), 2)
         for name in shared:
             with self.subTest(tool=name):
                 self.assertEqual(legacy[name], playwright_tools.SCHEMAS[name]["inputSchema"], "legacy stays verbatim")
@@ -122,8 +124,9 @@ class ScriptMcpTests(unittest.TestCase):
 
     def test_python_guide_names_the_methods_agents_got_wrong(self):
         description = self.probe(True)["description"]
-        for example in ("browser.tabs()", "browser.new_tab(url)", ".snapshot()", "tab.fill(target, value)",
-                        "tab.query("):
+        for example in ("browser.tabs()", "browser.new_tab(url)", ".snapshot(text=True)", "tab.fill(target, value)",
+                        "tab.query(", "tab.scroll(", "tab.hover(", "tab.drag(", "tab.press(", "tab.wait_for(",
+                        "browser_tools_call", "NOT a sandbox"):
             self.assertIn(example, description)
         self.assertNotIn("help(tab.query)", description)
 
@@ -131,7 +134,7 @@ class ScriptMcpTests(unittest.TestCase):
         result = self.probe(True)
         self.assertIn("list[dict]", result["description"])
         self.assertIn("id, url, title", result["description"])
-        self.assertIn('browser.tab(t["id"]).snapshot()', result["description"])
+        self.assertIn('browser.tab(t["id"]).snapshot(text=True)', result["description"])
         self.assertTrue(result["snapshots"]["ok"], result["snapshots"])
         self.assertEqual(result["snapshots"]["result"], ['- heading "Example"'])
         self.assertEqual(result["ok"]["result"], [{"id": 7}], "tabs() must keep returning JSON-compatible dicts")

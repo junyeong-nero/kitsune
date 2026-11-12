@@ -167,6 +167,9 @@ def _listed(tool):
     else:
         description = inspect.cleandoc(tool.description) if tool.description else tool.description
         schema = _published_schema(tool.inputSchema)
+        if SCRIPTING and tool.name == "browser_tools_call":
+            schema["properties"]["name"]["description"] = "Existing direct tool name, e.g. browser_click"
+            schema["properties"]["arguments"]["description"] = "Omit to inspect its schema; supply an object to execute"
     return tool.model_copy(update={"description": description, "inputSchema": schema})
 
 
@@ -234,11 +237,13 @@ class KitsuneMCP(FastMCP):
                     pass
 
     async def _call_tool(self, name, arguments):
-        if SCRIPTING and name not in MINIMAL_TOOLS and (name in TOOL_GROUPS or name in GATEWAY_TOOLS):
+        # Keep old direct calls compatible; listing is discovery, not authorization. Clients that
+        # require listed tools can use the recovery dispatcher, with the identical approval path.
+        if SCRIPTING and name in GATEWAY_TOOLS and name != "browser_tools_call":
             return _error_result(
-                f"{name} is not in the minimal tool-set", "tool_moved_to_python", retryable=False,
-                hint="Use browser_run_python with the Python browser API; help(browser) or help(tab) lists methods. "
-                     "Set KITSUNE_SCRIPTING=0 and restart the client to use the legacy tool-set.",
+                f"{name} is not in the code-first tool-set", "tool_moved_to_python", retryable=False,
+                hint="Use browser_run_python for browser operations. browser_tools_call(name) describes a "
+                     "direct recovery tool. KITSUNE_SCRIPTING=0 restores legacy discovery/publication.",
                 state={"tool": name})
         if name == "browser_resume":
             resumed = await self._resume_direct(arguments or {})
@@ -600,12 +605,11 @@ def _scripting(value: str | None) -> bool:
 
 
 SCRIPTING = _scripting(os.environ.get("KITSUNE_SCRIPTING"))
-# Frequent actions plus user handoff/recovery.
-# Selection evidence and Python replacements: docs/minimal-tools.md (#515).
+# Experimental code-first surface: composition plus user control, images and direct recovery.
+# The legacy opt-out remains unchanged. See docs/minimal-tools.md.
 MINIMAL_TOOLS = frozenset({
-    "browser_tabs", "browser_navigate", "browser_snapshot", "browser_find",
-    "browser_click", "browser_type", "browser_fill_form", "browser_select_option", "browser_press_key",
-    "browser_wait_for", "browser_take_screenshot", "browser_ask_user", "browser_resume", "browser_run_python",
+    "browser_tabs", "browser_take_screenshot", "browser_ask_user", "browser_resume",
+    "browser_run_python", "browser_tools_call",
 })
 # Sent at initialize, and resent by clients with every model request. The core tools keep
 # Playwright MCP's descriptions, which cannot say that the browser is shared with its user; without
@@ -630,7 +634,10 @@ mcp._mcp_server.instructions = (
 if SCRIPTING:
     mcp._mcp_server.instructions = mcp._mcp_server.instructions.replace(
         "Batch/workflow newTab and tabs opened from current become current. ", "")
-    mcp._mcp_server.instructions += " Use browser_run_python for other operations and composition; scripts do not change selection."
+    mcp._mcp_server.instructions += (
+        " Use browser_run_python for reads, input and waits. Group known actions and return only the next "
+        "needed observation; inspect before choosing unknown targets. Scripts do not change selection. "
+        "Use browser_tools_call only for direct recovery/approval, not the ordinary browsing loop.")
 
 # The tool browser_tools_call is running; its bridge requests name it for the audit log.
 _gateway_call: ContextVar[str | None] = ContextVar("kitsune_gateway_call", default=None)
@@ -1279,7 +1286,12 @@ async def browser_tools_call(
                               f"Call {name} directly.")
     if name not in TOOL_GROUPS:
         return _gateway_error(f"Unknown tool: {name}", "unknown_tool",
-                              "browser_tools_search lists the tools this server has.")
+                              "Use an existing direct tool name; help on the Python method describes its operation."
+                              if SCRIPTING else "browser_tools_search lists the tools this server has.")
+    if SCRIPTING and arguments is None:
+        tool = (await mcp.all_tools())[name]
+        return CallToolResult(content=[_compact_json(tool.model_dump(
+            mode="json", exclude_none=True, include={"name", "description", "inputSchema", "annotations"}))])
     token = _gateway_call.set(name)
     try:
         result = await mcp.call_tool(name, arguments or {})
@@ -1338,6 +1350,14 @@ if GATEWAY:
     mcp.tool(annotations=ToolAnnotations(title="Publish tools", readOnlyHint=False, destructiveHint=False,
                                          idempotentHint=True, openWorldHint=False))(browser_tools_publish)
     PUBLISHED_TOOLS |= GATEWAY_TOOLS
+elif SCRIPTING:
+    mcp.tool(description=(
+        "Recover one operation after a Python script stops for user approval/help. "
+        "Pass an existing direct tool name alone to inspect its schema; pass arguments ({} for no args) "
+        "to execute it with normal validation, approvals and error handling. Never replay completed "
+        "script work. Use browser_run_python for ordinary reads, actions and waits."),
+        annotations=ToolAnnotations(title="Recover a browser operation", **DESTRUCTIVE))(browser_tools_call)
+    PUBLISHED_TOOLS.add("browser_tools_call")
 
 
 async def browser_run_python(
@@ -1345,14 +1365,32 @@ async def browser_run_python(
                                min_length=1, max_length=64000)],
     timeout: Annotated[float, Field(description="Execution deadline in seconds, including browser calls.", gt=0, le=120)] = 30,
 ) -> CallToolResult:
-    """Run trusted local Python with host file/network access; this is not a sandbox.
-    browser uses this client's session and browser permissions; tab is the current MCP
-    selection (None before selection). browser.tab(id) wraps an existing tab ID.
-    Variables reset each call; tabs persist. Scripts do not change the MCP selection.
-    Print selected output or assign JSON-compatible result. 16 KB output/result, 100 API calls.
-    A failed API call stops execution, even if caught. Earlier writes remain; never replay
-    the whole script. Use direct tools for approval and screenshots. Use help on a method
-    for its signature; docs/python-api.md has the API reference.
+    """Browse with Python: read, click, scroll, hover, drag, type, fill and wait in one call.
+    Trusted local Python with host file/network access, NOT a sandbox. The supplied browser
+    uses this client's session and permissions. No imports or kitsune.connect() are needed.
+    Variables reset each call; tabs persist. tab is the MCP-selected Tab (None before selection).
+    browser.tabs() returns list[dict] (id, url, title, owned); browser.tab(id) wraps a tab ID,
+    NOT a list index. browser.new_tab(url) returns a Tab; scripts do not change MCP selection.
+    Return JSON via result or print selected output. Group actions whose targets are already
+    known, then read the needed result once. Do not guess refs or replay a failed script.
+
+    Common API (targets are snapshot refs like e12 or unique selectors, not DOM ref attributes):
+    tab.snapshot(text=True) includes visible instructions and labels; scope with target='e12'.
+    tab.query(selector, fields=['text', 'href'], limit=20); tab.text(); tab.forms(); tab.info().
+    tab.click(target); tab.double_click(target); tab.hover(target); tab.drag(source, destination).
+    tab.scroll('down', 700, target=None) scrolls window or element; also up/left/right/top/bottom.
+    tab.fill(target, value) replaces; tab.type(target, text) appends with key events.
+    tab.fill_form({'#name': 'Ada'}); tab.check(target, True); tab.select_option(target, value).
+    tab.press('Enter', target=None, modifiers={'ctrl': True}); tab.navigate(url); tab.back().
+    tab.wait_for(text='Done', timeout=10000) or target/url/text_gone (one condition, timeout in ms).
+    Example after selecting a tab: tab.fill('e12', 'Ada'); tab.click('e15'); result = tab.snapshot(text=True).
+    help(tab.scroll) prints a specific method's signature. Prefer this API over page evaluate.
+
+    Limits: 16 KB output/result, 100 API calls, fresh variables, no top-level await.
+    A failed API call stops even if caught; earlier writes remain. For needs_user use the
+    failed operation's direct tool via browser_tools_call, then run ONLY remaining work.
+    Never put confirm/resume tokens in scripts. Use browser_tabs for handoff and selection,
+    browser_ask_user for human help, and browser_take_screenshot for images.
     """
     from .script_runner import run_python
     async def approve(tool):
@@ -1367,12 +1405,8 @@ async def browser_run_python(
 
 # The minimal surface with local Python is the default; KITSUNE_SCRIPTING=0 keeps the legacy list (#525).
 if SCRIPTING:
-    # Examples of the calls agents got wrong (#519/#520).
     description = inspect.cleandoc(browser_run_python.__doc__)
-    description += (' browser.tabs() returns list[dict] (id, url, title, ...), not Tab objects. '
-                    'For a chosen page tab dict t, use browser.tab(t["id"]).snapshot(). '
-                    'browser.new_tab(url) returns a Tab. tab.fill(target, value) fills a field. '
-                    'tab.query(selector, fields=["text", "href"]) reads matching elements.')
+    description += ' For a page dict t from browser.tabs(), use browser.tab(t["id"]).snapshot(text=True).'
     mcp.tool(description=description, annotations=ToolAnnotations(title="Run Python", **DESTRUCTIVE))(browser_run_python)
     PUBLISHED_TOOLS.add("browser_run_python")
 

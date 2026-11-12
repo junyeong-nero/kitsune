@@ -1,6 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="820" viewBox="0 0 1200 820" role="img" aria-labelledby="title desc">
-  <title id="title">Kitsune: less context, closer to one-tool browsers</title>
-  <desc id="desc">Input tokens on 13 MiniWoB task/repeat cells successful for all five arms. Kitsune legacy 785,115; Playwright 781,019; Kitsune default 514,964; ego lite 458,052; Aside 361,014. Default uses 34% fewer input tokens than Playwright and closes 83% of the legacy-to-ego gap and 64% of the legacy-to-Aside gap. Small exhibition, not an equal-environment leaderboard.</desc>
+  <title id="title">Kitsune: input tokens in the expanded four-way comparison</title>
+  <desc id="desc">Total input tokens, including cache, across the same 46 condition/repeat cells per arm: Kitsune 6-tool code-first 5,730,439; Kitsune previous 14-tool default 5,901,946; Aside 5,923,875; EgoLite 7,775,055. All four arms completed 46 of 46 attempts. Six-tool Kitsune uses 2.9% less input than 14-tool Kitsune, 3.3% less than Aside, and 26.3% less than EgoLite. Its adjusted elapsed time is 4.8% higher than 14-tool Kitsune and 6.6% higher than Aside. Requested model: gpt-6.1-sol, medium, through Codex. Input is not billed cost; browser environments and permissions differ. This is not a general speed or safety ranking.</desc>
+  <!-- Source: kitsune-benchmark 0c694d4a74fc1d0fba9d05c9c7a139aa5e697ce2,
+       docs/results/2026-11-13-expanded-four-way-codex.md, all 184 attempts.
+       Kitsune runtime pins: f5c7a0f (6 tools), 47dafa2 (14 tools). -->
   <defs>
     <linearGradient id="bg" x2="1" y2="1"><stop stop-color="#091f23"/><stop offset="1" stop-color="#10483f"/></linearGradient>
     <linearGradient id="fox"><stop stop-color="#f58b42"/><stop offset="1" stop-color="#ffc36d"/></linearGradient>
@@ -10,8 +13,8 @@
     <rect x="48" y="38" width="310" height="32" rx="16" fill="#173c39" stroke="#46635a"/>
     <circle cx="66" cy="54" r="5" fill="#b8d89d"/>
     <text x="82" y="60" fill="#c9ddba" font-size="14" letter-spacing="2">KITSUNE / MEASURED CONTEXT</text>
-    <text x="48" y="124" fill="#fff0d6" font-size="39" font-weight="700">Less context. Closing the gap.</text>
-    <text x="48" y="158" fill="#b5ccc1" font-size="18">Same 13 solved task/repeat cells · cumulative input tokens · lower is better</text>
+    <text x="48" y="124" fill="#fff0d6" font-size="39" font-weight="700">Less input. Broader tasks.</text>
+    <text x="48" y="158" fill="#b5ccc1" font-size="18">23 conditions × 2 repeats × 4 arms · 46/46 task successes per arm</text>
     <g transform="translate(1090 48)">
       <path d="M0 0 L25 12 L50 0 L45 35 L25 53 L5 35 Z" fill="url(#fox)"/>
       <path d="M5 24 L25 36 L45 24 L39 39 L25 53 L11 39 Z" fill="#fff0d6"/>
@@ -19,46 +22,47 @@
     </g>
     <g>
       <rect x="48" y="190" width="352" height="112" rx="16" fill="#173b36" stroke="#627b5c"/>
-      <text x="70" y="240" fill="#ffb463" font-size="40" font-weight="700">34% less</text>
-      <text x="70" y="274" fill="#fff0d6" font-size="17">input vs Playwright MCP</text>
+      <text x="70" y="240" fill="#ffb463" font-size="40" font-weight="700">2.9% less</text>
+      <text x="70" y="274" fill="#fff0d6" font-size="17">input vs Kitsune's previous 14 tools</text>
       <rect x="416" y="190" width="352" height="112" rx="16" fill="#143731" stroke="#3a5e52"/>
-      <text x="438" y="240" fill="#ffb463" font-size="40" font-weight="700">83% closer</text>
-      <text x="438" y="274" fill="#fff0d6" font-size="17">legacy-to-ego lite input gap closed</text>
+      <text x="438" y="240" fill="#ffb463" font-size="40" font-weight="700">3.3% less</text>
+      <text x="438" y="274" fill="#fff0d6" font-size="17">input vs Aside</text>
       <rect x="784" y="190" width="368" height="112" rx="16" fill="#143731" stroke="#3a5e52"/>
-      <text x="806" y="240" fill="#ffb463" font-size="40" font-weight="700">64% closer</text>
-      <text x="806" y="274" fill="#fff0d6" font-size="17">legacy-to-Aside input gap closed</text>
+      <text x="806" y="240" fill="#ffb463" font-size="40" font-weight="700">26.3% less</text>
+      <text x="806" y="274" fill="#fff0d6" font-size="17">input vs EgoLite</text>
     </g>
+    <text x="280" y="333" fill="#b5ccc1" font-size="15">Total input tokens (cache included) · lower is better</text>
     <g stroke="#34554d" stroke-width="1">
-      <path d="M280 343 V642 M480 343 V642 M680 343 V642 M880 343 V642 M1080 343 V642"/>
+      <path d="M280 347 V608 M480 347 V608 M680 347 V608 M880 347 V608 M1080 347 V608"/>
     </g>
     <g font-size="19" fill="#d3ded0">
-      <text x="48" y="378">Kitsune legacy</text>
-      <text x="48" y="436">Playwright MCP</text>
-      <text x="48" y="494" fill="#ffbb73" font-weight="700">Kitsune default</text>
-      <text x="48" y="552">ego lite</text>
-      <text x="48" y="610">Aside</text>
+      <text x="48" y="378" fill="#ffbb73" font-weight="700">Kitsune (6 tools)</text>
+      <text x="48" y="442">Kitsune (14 tools)</text>
+      <text x="48" y="506">Aside</text>
+      <text x="48" y="570">EgoLite</text>
     </g>
-    <!-- Scale: 1 SVG unit = 1,000 input tokens. All bars start at zero. -->
-    <rect x="280" y="353" width="785.115" height="36" rx="5" fill="#526f66"/>
-    <rect x="280" y="411" width="781.019" height="36" rx="5" fill="#718e81"/>
-    <rect x="280" y="469" width="514.964" height="36" rx="5" fill="url(#fox)"/>
-    <rect x="280" y="527" width="458.052" height="36" rx="5" fill="#abd19d"/>
-    <rect x="280" y="585" width="361.014" height="36" rx="5" fill="#c6dcb0"/>
+    <!-- Scale: 1 SVG unit = 10,000 input tokens. All bars start at zero. -->
+    <g id="input-bars">
+      <rect id="input-kitsune-code-first" x="280" y="353" width="573.0439" height="36" rx="5" fill="url(#fox)"/>
+      <rect id="input-kitsune-default" x="280" y="417" width="590.1946" height="36" rx="5" fill="#718e81"/>
+      <rect id="input-aside" x="280" y="481" width="592.3875" height="36" rx="5" fill="#c6dcb0"/>
+      <rect id="input-ego" x="280" y="545" width="777.5055" height="36" rx="5" fill="#abd19d"/>
+    </g>
     <g font-size="18" font-weight="700" fill="#fff0d6">
-      <text x="1080" y="378">785k</text>
-      <text x="1076" y="436">781k</text>
-      <text x="810" y="494" fill="#ffbb73">515k</text>
-      <text x="754" y="552">458k</text>
-      <text x="657" y="610">361k</text>
+      <text x="868" y="378" fill="#ffbb73">5.730M</text>
+      <text x="885" y="442">5.902M</text>
+      <text x="887" y="506">5.924M</text>
+      <text x="1073" y="570">7.775M</text>
     </g>
     <g font-size="14" fill="#a5bdb0" text-anchor="middle">
-      <text x="280" y="661">0</text><text x="480" y="661">200k</text><text x="680" y="661">400k</text><text x="880" y="661">600k</text><text x="1080" y="661">800k</text>
+      <text x="280" y="631">0</text><text x="480" y="631">2M</text><text x="680" y="631">4M</text><text x="880" y="631">6M</text><text x="1080" y="631">8M</text>
     </g>
-    <path d="M48 687 H1152" stroke="#3b5b50"/>
+    <path d="M48 653 H1152" stroke="#3b5b50"/>
     <g font-size="16" fill="#bfd1c3">
-      <text x="48" y="718">MiniWoB exhibition · Opus 5.5 · 2026-11-12 · Kitsune 79eb955 (pre-release 0.8.0 code)</text>
-      <text x="48" y="746">Input includes cache hits, not billed cost. Gap closed = (legacy − default) / (legacy − competitor).</text>
-      <text x="48" y="774">Unequal browser environments; vendor page-JS use. Not a full-suite or safety ranking. See linked report.</text>
+      <text x="48" y="686">Codex · gpt-6.1-sol · medium · 2026-11-13 · personal + isolated/crowded UI · 184 attempts</text>
+      <text x="48" y="714">Input is not billed cost. 6-tool adjusted time: +4.8% vs 14-tool Kitsune; +6.6% vs Aside.</text>
+      <text x="48" y="742">Task-dependent: Aside uses less input in 36/46 paired cells vs 6-tool Kitsune, despite the aggregate.</text>
+      <text x="48" y="770">Engines, profiles, permissions and viewports differ. Not a general speed or safety ranking.</text>
     </g>
   </g>
 </svg>

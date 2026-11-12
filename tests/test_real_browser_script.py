@@ -44,7 +44,7 @@ class RealBrowserScriptTests(harness.RealBrowserTestCase):
             listed = await session.list_tools()
             description = next(tool.description for tool in listed.tools if tool.name == "browser_run_python")
             self.assertIn("list[dict]", description)
-            example = 'browser.tab(t["id"]).snapshot()'
+            example = 'browser.tab(t["id"]).snapshot(text=True)'
             self.assertIn(example, description)
             # Read the fixture's page, not browser-owned about:blank or welcome tabs.
             code = f't = next(t for t in browser.tabs() if t["id"] == {tab_id})\nresult = {example}'
@@ -102,6 +102,22 @@ class RealBrowserScriptTests(harness.RealBrowserTestCase):
             fields = self.call("/api/forms", {"tabId": tab_id})["fields"]
             self.assertEqual(next(field["value"] for field in fields if field.get("name") == "name"), "Keep this draft")
             self.assertEqual(self.call("/api/page-info", {"tabId": tab_id})["title"], "Python API")
+            self.assertEqual(result["failed_operation"]["recovery_tool"], "browser_submit_form")
+            described = await session.call_tool("browser_tools_call", {"name": "browser_submit_form"})
+            self.assertIn("inputSchema", json.loads(described.content[0].text))
+            arguments = {"selector": "#order", "tab_id": tab_id}
+            held = await session.call_tool("browser_tools_call", {
+                "name": "browser_submit_form", "arguments": arguments})
+            self.assertTrue(held.isError, held)
+            token = json.loads(held.content[0].text)["state"]["confirmToken"]
+            # Disposable fixture: exercise the non-eliciting client's explicit approval step.
+            submitted = await session.call_tool("browser_tools_call", {
+                "name": "browser_submit_form", "arguments": {**arguments, "confirm_token": token}})
+            self.assertFalse(submitted.isError, submitted)
+            done = await session.call_tool("browser_run_python", {
+                "code": "tab.wait_for(title='Done'); result = tab.info()['url']"})
+            self.assertFalse(done.isError, done)
+            self.assertIn("name=Keep+this+draft", json.loads(done.content[0].text)["result"])
         try:
             self.run_scenario(run)
         finally:

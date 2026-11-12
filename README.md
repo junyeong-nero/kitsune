@@ -31,21 +31,22 @@ I wanted browser automation that worked alongside me, not in my way.
 - **Keep working while the agent works.** Agent-created tabs open in the background. Selecting a tab for the agent doesn't switch the tab you see.
 - **Your tabs stay yours.** By default, the agent can read your tabs but cannot type, navigate, scroll or close them. It must request a handoff before changing one; you approve and can take it back.
 - **Stay in Firefox, Zen or LibreWolf.** Reuse your existing sessions without opening a separate Chrome browser or installing WebDriver.
-- **Spend context on the task, not the tool catalog.** Just 14 tools up front, with Python for more involved work. See the scoped input-token comparison below.
+- **A small tool surface.** Six tools on `main`, with Python for browser actions and direct controls for user help and recovery. The 0.8.0 release has 14.
 
 Kitsune is designed to reduce interruptions, not eliminate them: site-opened popups and
 OS-level trusted input can still move focus. See the
 [shared-browser limits](https://junyeong-nero.github.io/kitsune/api-reference/#shared-browser).
 
-## Less context. Closing the gap.
+## Less input. Broader tasks.
 
-**34% fewer input tokens than Playwright MCP** on 13 jointly solved MiniWoB runs—
-closer to ego lite and Aside, without switching browsers.
+**The 6-tool Kitsune used the least total input in this four-way comparison.**
+23 personal and UI conditions, two repeats; all four configurations completed **46/46 attempts**.
 
-[![Input tokens on 13 jointly solved MiniWoB cells: Kitsune legacy 785k, Playwright MCP 781k, Kitsune default 515k, ego lite 458k, Aside 361k. Lower is better.](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/benchmark-efficiency.svg)](https://github.com/junyeong-nero/kitsune-benchmark)
+[![Cache-inclusive input on the same 46 condition/repeat cells per arm: Kitsune 6-tool 5,730,439; Kitsune previous 14-tool 5,901,946; Aside 5,923,875; EgoLite 7,775,055. Lower is better; all four arms succeeded on 46/46 attempts.](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/benchmark-efficiency.svg)](https://junyeong-nero.github.io/kitsune/benchmark/)
 
-<sub>Small exhibition; browser environments differ. Input tokens, not billed cost.
-<a href="https://github.com/junyeong-nero/kitsune-benchmark">Results, methodology and limitations → kitsune-benchmark</a></sub>
+<sub>Codex gpt-6.1-sol, medium. Input includes cache, not billed cost. Browser environments and permissions differ.
+6-tool adjusted time was 4.8% higher than 14-tool Kitsune and 6.6% higher than Aside; results vary by task.
+<a href="https://junyeong-nero.github.io/kitsune/benchmark/">Results, methodology and limitations →</a></sub>
 
 ## Get started
 

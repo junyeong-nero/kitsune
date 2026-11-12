@@ -1,12 +1,70 @@
 # Benchmark and comparison
 
-## Smaller tool surface: five-way MiniWoB comparison
+## Expanded four-way comparison: 184 attempts
+
+The 2026-11-13 comparison covers **23 conditions × two repeats × four arms**: seven personal
+browser conditions, ten isolated UI conditions and six crowded UI conditions. Every arm completed
+**46/46 raw task successes**, with complete input and timing records. All-attempt and joint-success
+comparisons therefore use the same 46 condition/repeat cells; no failed cell is excluded.
+
+![Cache-inclusive input on the same 46 cells: Kitsune 6-tool 5,730,439; Kitsune 14-tool 5,901,946; Aside 5,923,875; EgoLite 7,775,055. All four arms completed 46/46 attempts.](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/benchmark-efficiency.svg)
+
+### Input and elapsed time
+
+| Arm | Raw task success | Input including cache | Raw elapsed, s | Adjusted elapsed, s |
+| --- | ---: | ---: | ---: | ---: |
+| Kitsune 6-tool code-first | 46/46 | **5,730,439** | 1,396.084 | 1,324.975 |
+| Kitsune previous 14-tool default | 46/46 | 5,901,946 | 1,333.899 | 1,264.414 |
+| Aside | 46/46 | 5,923,875 | 1,444.198 | **1,242.744** |
+| EgoLite | 46/46 | 7,775,055 | 1,627.307 | 1,478.044 |
+
+Six-tool Kitsune uses **2.9% less total input than 14-tool Kitsune**, **3.3% less than Aside** and
+**26.3% less than EgoLite**. These are aggregate cache-inclusive input tokens, not billed cost or
+subscription-quota savings. Monetary cost and model-request counts are unavailable for this cohort.
+
+Less input does not mean faster: six-tool adjusted elapsed is **4.8% higher than 14-tool Kitsune**
+and **6.6% higher than Aside**, and **10.4% lower than EgoLite**. Raw six-tool elapsed is 4.7% higher
+than 14-tool Kitsune. The predeclared adjustment subtracts measured relay setup and post-call
+inventory, not actual agent actions, images or approval delays. Both time columns sum individual
+agent runs, not whole-experiment wall time or isolated browser-operation latency.
+
+### Conditions and limits
+
+- Codex CLI 0.163.0, requested `gpt-6.1-sol`, medium reasoning, ChatGPT subscription. The same
+  requested model and settings apply to all 184 attempts. Traces do not independently attest the
+  backend model identity. This is a separate cohort from the older Opus studies below.
+- Kitsune runtime pins: `f5c7a0f85aefd89e621e73665e33d33d79d50676` (six tools) and
+  `47dafa20a3fddc697a7d991e15d39e4b0232c10d` (14 tools). Both already support Python; this is not
+  Python versus no Python. The six-tool runtime was subsequently adopted on `main` in
+  [#538](https://github.com/junyeong-nero/kitsune/pull/538), unchanged from the measured candidate;
+  it is not part of the 0.8.0 release.
+- Aside CLI/native MCP 1.26.1107.24, app 1.0.1022.1, one `repl` tool. EgoLite CLI/app 0.6.2.9,
+  one `run_script` tool with the predeclared image-attachment bridge. No Playwright or MiniWoB arm
+  was run in this cohort, and no historical results are pooled into the chart.
+- Two repeats of variant 0, sequential rotated arm order. Personal limit 180 s, gallery 240 s;
+  Kitsune MCP limit 45 s, vendor envelope 130 s around native 120 s scripts. No replacements,
+  harness retries, missing final usage, quota stops or outcome-based tuning.
+- Kitsune used fresh private Firefox and user-seeded read-only personal tabs. Aside/Ego used
+  installed browser profiles and harness-created accessible tabs. Browser engines, effective
+  viewports, profiles and ownership protections are **not equivalent**.
+- Results vary by task and recovery outliers. Aside uses less input in **36/46 paired cells**
+  versus six-tool Kitsune despite its higher aggregate total. Six-tool input beats the old
+  default in only **16/46 cells**. Two repeats do not establish statistical superiority.
+- The model runs made **zero handoff or approval-recovery calls**. Passing task/safety grades
+  do not establish human-approval coverage, equivalent user-tab protection or confinement.
+  Python/Node remain trusted host runtimes, not sandboxes.
+
+Source: `kitsune-benchmark/docs/results/2026-11-13-expanded-four-way-codex.md`, report/audit commit
+`0c694d4a74fc1d0fba9d05c9c7a139aa5e697ce2`, execution commit
+`e5db230a78ad006cfb8a12fbee6621b087a03e07`. The figures and limitations are reproduced here so the
+README comparison does not depend on access to the benchmark repository. The older interrupted
+85/120 Opus A/B remains separate and incomplete; the new results do not replace its timeout.
+
+## Earlier comparison: five-way MiniWoB
 
 The 2026-11-12 exhibition compares Kitsune's default and legacy surfaces on the **same source
 revision**, alongside Playwright MCP, ego lite and Aside. It is seven tasks with two repeats per
 arm (70 attempts), not a completed standard-lite suite or an equal-environment leaderboard.
-
-![Input tokens on the same 13 jointly successful task/repeat cells](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/benchmark-efficiency.svg)
 
 ### Shared successful cells
 
@@ -54,8 +112,8 @@ historical releases. It is not a claim of equivalent performance in every dimens
 
 Source: `kitsune-benchmark/docs/results/2026-11-12-five-way-main-79eb955.md`, sections
 “All-attempt totals” and “Matched efficiency, not success-blind totals”; benchmark execution
-commit `d75bbff586890f0857e6d947189ad0895fd7edf2`. The figures and limitations above are reproduced
-here so the README comparison does not depend on access to the benchmark repository.
+commit `d75bbff586890f0857e6d947189ad0895fd7edf2`. These historical figures are retained separately
+and are not part of the current README chart.
 
 ## Earlier benchmark: v0.7.2
 
