@@ -39,6 +39,29 @@ Chromium or WebDriver to install.
 - **You decide what needs your approval.** Every tool is available, and you choose in the
   extension's options which actions wait for your OK first.
 
+## Less context. Closing the gap.
+
+**34% fewer input tokens than Playwright MCP** on the same 13 MiniWoB task/repeat cells
+solved by all five arms. Kitsune's 14-tool default also closes **83% of the input-token gap
+to ego lite** and **64% of the gap to Aside**, compared with its own 30-tool legacy surface
+on the same source revision—not a comparison across different releases.
+
+[![Input tokens on 13 jointly solved MiniWoB cells: Kitsune legacy 785k, Playwright MCP 781k, Kitsune default 515k, ego lite 458k, Aside 361k. Lower is better.](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/benchmark-efficiency.svg)](https://junyeong-nero.github.io/kitsune/benchmark/#smaller-tool-surface-five-way-miniwob-comparison)
+
+**Nearer to one-tool browsers, without giving up the browser you already use.**
+On that common set, Kitsune uses **12% more input than ego lite** and **43% more than Aside**—
+they still lead on input. Across all 14 attempts per arm, Kitsune default, legacy, Playwright
+and Aside each solved **14/14**; ego lite solved **13/14**. The chart excludes that failed
+cell from **every** arm, rather than counting an early failure as a token saving.
+
+<sub>Measured 2026-11-12 with Claude Opus 5.5 (medium), Kitsune <code>79eb955</code>
+(pre-release 0.8.0 code), Playwright MCP 0.0.83, ego lite 0.6.2.9 and Aside CLI 1.26.1107.24.
+Seven tasks × two repeats: a small exhibition, not a full-suite leaderboard. Input includes
+cache hits, not billed cost. Kitsune made zero Python calls here: this measures the smaller
+tool/prompt surface, not Python batching. Browser engines/profiles differ; page-JS code was
+emitted in eight ego attempts and one Aside attempt. No equal-environment, safety or general
+speed claim. <a href="https://junyeong-nero.github.io/kitsune/benchmark/#smaller-tool-surface-five-way-miniwob-comparison">Numbers, methodology and limitations →</a></sub>
+
 ## Get started
 
 1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/).
