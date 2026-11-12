@@ -49,8 +49,8 @@ field pauses them until you leave the field or give the page no input for 10 s.
 
 **User-tab setting:** `KITSUNE_USER_TABS` accepts `read-only` (the default) or
 `writable`, ignoring surrounding whitespace and letter case. With `writable`, this
-client may write user and other clients' tabs without changing ownership; `user_active`,
-task-mode limits and ask-before-act still apply. Invalid explicit values (including an
+client may write user and other clients' tabs without changing ownership; `user_active`
+and ask-before-act still apply. Invalid explicit values (including an
 empty string) stop MCP startup with a configuration error, rather than weakening protection.
 Python uses `kitsune.connect(user_tabs="writable")`; it does not read this environment
 setting. Omitting `user_tabs` means read-only.

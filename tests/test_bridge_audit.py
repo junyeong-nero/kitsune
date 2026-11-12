@@ -220,7 +220,7 @@ class AuditClientTests(unittest.TestCase):
                 self.assertIsNone(bridge._client_id.get())
 
     def test_each_bridge_client_sends_its_own_id(self):
-        first, second = BridgeClient(caps=None), BridgeClient(caps=None)
+        first, second = BridgeClient(), BridgeClient()
         self.assertRegex(first.client_id, rf"^{os.getpid()}-[0-9a-f]{{6}}$")
         self.assertNotEqual(first.client_id, second.client_id)
         response = Mock(status_code=200, json=Mock(return_value={"ok": True}))

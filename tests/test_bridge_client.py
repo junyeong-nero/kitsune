@@ -26,20 +26,12 @@ class BridgeClientTests(unittest.TestCase):
                       "print(json.dumps(sorted(m for m in sys.modules if m.split('.')[0] == 'mcp')))")
         self.assertEqual(json.loads(loaded), [])
 
-    def test_caps_have_no_default(self):
-        # Requests without the caps header are not restricted to any group.
-        with self.assertRaises(TypeError):
-            BridgeClient()
-        self.assertEqual(BridgeClient(caps={"tabs", "core"}).caps, "core,tabs")
-
     def test_mcp_server_client_takes_the_server_settings(self):
         code = ("import json; from kitsune import server; client = server._client; "
-                "print(json.dumps([client.caps, client.mode, client.user_tabs]))")
+                "print(json.dumps(client.user_tabs))")
         # User tabs are read-only unless KITSUNE_USER_TABS=writable (#398).
-        for env, settings in (({}, ["core", "act", "read-only"]),
-                              ({"KITSUNE_USER_TABS": "read-only"}, ["core", "act", "read-only"]),
-                              ({"KITSUNE_CAPS": "core,tabs", "KITSUNE_MODE": "draft",
-                                "KITSUNE_USER_TABS": "writable"}, ["core,tabs", "draft", "writable"])):
+        for env, settings in (({}, "read-only"), ({"KITSUNE_USER_TABS": "read-only"}, "read-only"),
+                              ({"KITSUNE_USER_TABS": "writable"}, "writable")):
             with self.subTest(env=env):
                 self.assertEqual(json.loads(_run(code, env)), settings)
 
@@ -83,7 +75,7 @@ class BridgeTlsContextTests(unittest.TestCase):
         self.addCleanup(bridge_control.tls_context.cache_clear)
 
     def test_requests_do_not_build_a_tls_context_per_call(self):
-        client = BridgeClient(caps={"core"})
+        client = BridgeClient()
         with patch("ssl.create_default_context", wraps=ssl.create_default_context) as created:
             for _ in range(3):
                 self.assertEqual(client.get("/api/tabs"), {"tabs": []})

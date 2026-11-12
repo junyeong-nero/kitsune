@@ -218,7 +218,7 @@ class StatusDiagnosticsTests(unittest.TestCase):
             request.assert_called_once_with("/api/status?diagnostics=true")
 
     def test_diagnostics_status_does_not_wait_for_extension_reconnection(self):
-        client = BridgeClient(caps=None)
+        client = BridgeClient()
         with patch.object(client, "await_extension") as wait, patch("kitsune.bridge_client.httpx.request") as request:
             request.return_value.status_code = 200
             request.return_value.json.return_value = {"diagnosis": {"code": "extension_disconnected"}}

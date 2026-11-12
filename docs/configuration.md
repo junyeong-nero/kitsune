@@ -2,10 +2,7 @@
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `KITSUNE_CAPS` | `core` | Comma-separated [capability groups](tools.md); `all` enables every group except `storage` and `history`, which read personal data and must be named |
-| `KITSUNE_PUBLISH` | `KITSUNE_CAPS` | Groups of the enabled tools that `tools/list` shows when a session starts; the others stay reachable through the gateway tools. See [Finding tools without a restart](tools.md#finding-tools-without-a-restart) |
-| `KITSUNE_MODE` | `act` | Task surface and per-request policy: `read`, `draft`, or `act`. See [Task modes](tools.md#task-modes) |
-| `KITSUNE_SCRIPTING` | `1` | `1` (or unset) selects the [minimal tool-set](minimal-tools.md) with `browser_run_python`: trusted local Python execution with host file/network access, **not a sandbox**; browser modes/caps apply only to its supplied browser API. `0` selects the legacy direct tool list without Python; other values fail at startup. See [Python scripting](python-api.md#python-scripting-through-mcp) |
+| `KITSUNE_SCRIPTING` | `1` | `1` (or unset) selects the [minimal tool-set](minimal-tools.md) with `browser_run_python`: trusted local Python execution with host file/network access, **not a sandbox**. `0` selects the legacy direct tool list without Python, with the [gateway tools](tools.md#finding-tools-without-a-restart) for the rest; other values fail at startup. See [Python scripting](python-api.md#python-scripting-through-mcp) |
 | `KITSUNE_HOME` | `~/.kitsune` | Data directory (0700) |
 | `KITSUNE_HTTP_PORT` | `47651` | Bridge HTTP API |
 | `KITSUNE_WS_PORT` | `47652` | Extension WebSocket. Change `WS_URL` in `extension/background/background.js` too |
@@ -21,6 +18,11 @@
 | `KITSUNE_HISTORY_DENY_DOMAINS` | Unset (none) | Bridge: comma-separated domains (with subdomains) the `history` tools never return; wins over the allow list |
 | `KITSUNE_HISTORY_MAX_DAYS` | `30` | Bridge: how many days back the `history` tools may look. `browser_set_policy` can only tighten these three |
 | `KITSUNE_POST_ACTION_SNAPSHOT` | Enabled (deltas) | Set to `0` in the bridge daemon environment and restart it to disable automatic post-action snapshots, `full` to return full snapshots instead of [deltas](api-reference.md#post-action-snapshots), or `text` to add readable text lines to them |
+
+`KITSUNE_CAPS`, `KITSUNE_PUBLISH` and `KITSUNE_MODE` were removed (#525): every tool is
+available, and approvals are set in the extension's options. The MCP server refuses to start
+while one is set, so a limit it expected is not silently dropped; remove it from the MCP
+server environment.
 
 `~/.kitsune/` holds:
 

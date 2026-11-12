@@ -67,7 +67,7 @@ claude mcp add --scope user kitsune -- uvx --from kitsune-browser-mcp kitsune
 
 `--scope user` makes Kitsune available in every project. Leave it out to register
 it only for the current project (`local` scope). Pass environment variables
-with `-e`, for example `-e KITSUNE_CAPS=core,network` before the `--`.
+with `-e`, for example `-e KITSUNE_SCRIPTING=0` before the `--`.
 
 ### Codex CLI
 
@@ -84,7 +84,7 @@ args = ["--from", "kitsune-browser-mcp", "kitsune"]
 
 # Optional
 [mcp_servers.kitsune.env]
-KITSUNE_CAPS = "core,network"
+KITSUNE_SCRIPTING = "0"
 ```
 
 ### Pi
@@ -123,7 +123,7 @@ on macOS), `~/.cursor/mcp.json` or `.cursor/mcp.json` (Cursor), or `~/.pi/agent/
 }
 ```
 
-Add an `"env": {"KITSUNE_CAPS": "core,network"}` object next to `args` to set
+Add an `"env": {"KITSUNE_SCRIPTING": "0"}` object next to `args` to set
 environment variables.
 
 ### OpenCode
@@ -169,8 +169,8 @@ for the **same version** as the server. There are two builds:
 The signed build cannot run JavaScript supplied by the agent, because Mozilla's
 [add-on policies](https://extensionworkshop.com/documentation/publish/add-on-policies/)
 forbid executing code that is not part of the signed package. Those tools return
-an error that names the developer build. `browser_status` (in the `admin` group,
-`KITSUNE_CAPS=core,admin`) reports which build is connected (`extension_build`:
+an error that names the developer build. `browser_status` reports which build is
+connected (`extension_build`:
 `signed` or `dev`).
 
 ### Signed build (recommended)
@@ -213,8 +213,8 @@ replaces the signed one; after a browser restart the signed build is back.
 ## 3. Check the connection
 
 Restart the agent and ask it to list your tabs (`browser_tabs` with
-`action: "list"`). An error's `hint` says what to fix; with
-`KITSUNE_CAPS=core,admin`, `browser_status` reports `"extension_connected": true`
+`action: "list"`). An error's `hint` says what to fix; `browser_status` reports
+`"extension_connected": true`
 and a full diagnosis. Then [try a first task](try-it.md).
 
 ## Pinning a version

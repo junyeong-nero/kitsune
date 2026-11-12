@@ -1,29 +1,26 @@
-# Tools, capabilities and modes
+# Tools
 
-By default Kitsune publishes the 25 tools of [Playwright MCP](https://github.com/microsoft/playwright-mcp)'s
-default capabilities, with the same names, descriptions, input schemas and annotations, as
-its `core` capability group (see [Core tools](#core-tools)), with Kitsune's `browser_resume`,
-which continues a call that stopped for you, and `browser_ask_user`, with which the agent asks
-you for what it cannot do (#376). Kitsune's other tools are in the other
-groups. Set `KITSUNE_CAPS` in the MCP server environment before starting it;
-restart the MCP client after changing it. The comma-separated list selects exactly those
-groups (include `core` to retain the default tools). `all` enables all 97 tools in every
-group except `storage` and `history`, which read personal data and must be named
-(`KITSUNE_CAPS=all,storage,history`). Whitespace and case are ignored; unknown group names
-fail at startup.
+Every tool is available to every client (#525): there are no capability groups or task
+modes to configure. Which actions need your approval is set in the Kitsune extension's
+options. `KITSUNE_CAPS`, `KITSUNE_PUBLISH` and `KITSUNE_MODE` were removed; a
+configuration that still sets one fails at startup, so the limit it expected is not
+silently dropped.
 
 By default the server publishes the [14-tool minimal surface](minimal-tools.md),
 including `browser_run_python` for trusted local Python composition.
 Less-frequent operations use the Python API; gateway search/call/publish is absent.
-Python has host file/network access, **not a sandbox**. The supplied browser API
-keeps this client's browser grants; those grants do not constrain arbitrary local
-code. See [Python scripting](python-api.md#python-scripting-through-mcp).
-Set `KITSUNE_SCRIPTING=0` to use the legacy direct tools and configuration described below.
+Python has host file/network access, **not a sandbox**. See
+[Python scripting](python-api.md#python-scripting-through-mcp).
 
-```toml
-[mcp_servers.kitsune.env]
-KITSUNE_CAPS = "core,browse,read"
-```
+With `KITSUNE_SCRIPTING=0` the server publishes the legacy list instead: the 25 tools of
+[Playwright MCP](https://github.com/microsoft/playwright-mcp)'s default capabilities, with
+the same names, descriptions, input schemas and annotations, as its `core` group (see
+[Core tools](#core-tools)), with Kitsune's `browser_resume`, which continues a call that
+stopped for you, and `browser_ask_user`, with which the agent asks you for what it cannot
+do (#376), plus the [gateway tools](#finding-tools-without-a-restart) that reach the other
+groups' tools.
+
+The groups only sort the tools:
 
 | Group | Tools for |
 | --- | --- |
@@ -34,53 +31,16 @@ KITSUNE_CAPS = "core,browse,read"
 | `automation` | Batches, retries, workflows, parallel tabs, and resuming an interrupted batch |
 | `network` | Downloads, request interception and capture |
 | `admin` | Connection status, logs, audit, cache, policy |
-| `storage`, `history` | Cookies, page storage, clipboard and saved sessions; history and bookmarks. These read personal data, so `all` leaves them out and you name them yourself |
+| `storage`, `history` | Cookies, page storage, clipboard and saved sessions; history and bookmarks. History lookups also need the user to allow them in the extension's options |
 
-The [tool list](tool-list.md) names every tool in each group.
-
-Earlier releases' `devtools`, `parallel`, `windows` and `session` groups are gone, and
-naming them fails at startup. `devtools` became `browse`, `read`, `inspect`, `admin` and
-(`browser_workflows`, `browser_workflow`) `automation`; `parallel` became `automation`
-and, for tab tags and keep-alive, `tabs`; `windows` joined `tabs`; `session` joined
-`storage`, which `all` no longer includes.
-
-A tool left out by `KITSUNE_CAPS` is absent from `tools/list`, and clients usually say
-nothing about it. Calling it anyway returns an MCP error with
-`code: "tool_not_published"` whose `hint` names the setting that publishes it, for
-example `KITSUNE_CAPS=browse,core` for `browser_scroll`. `browser_status` (`admin`)
-reports this server's `mcp_tools`: the enabled `caps`, how many known tools are
-`unpublished`, and its audit `client` and tab `owner` ids.
-
-The bridge enforces the groups too. The MCP server sends its enabled groups with every
-request, and the bridge refuses a route or a container step (of `browser_batch`,
-`browser_parallel`, `browser_retry`, `browser_broadcast`, `browser_workflow` or
-`browser_resume`) that belongs to another group with `code: "capability_restricted"`.
-So `automation` runs only commands of the groups you enabled: with
-`KITSUNE_CAPS=core,automation`, a batch `cookies` step is refused until you add
-`storage`, and a workflow needs the groups of its steps. Like task modes, this limits
-what an agent can do through this MCP server; it is not a boundary against other local
-programs that hold the bridge token.
+The [tool list](tool-list.md) names every tool in each group. `browser_status` (`admin`)
+reports this server's `mcp_tools`: the `surface` (`minimal` or `legacy`), on the legacy
+surface how many tools are `unlisted`, and its audit `client` and tab `owner` ids.
 
 ## Finding tools without a restart
 
-`KITSUNE_CAPS` decides which tools this server runs. `KITSUNE_PUBLISH` decides which of
-them `tools/list` shows when a session starts; unset, it is `KITSUNE_CAPS`, so nothing
-changes. Set it to fewer groups to keep the list small and let the agent reach the rest
-in the same connection:
-
-```toml
-[mcp_servers.kitsune.env]
-KITSUNE_CAPS = "all"
-KITSUNE_PUBLISH = "core"
-```
-
-With Claude Code:
-
-```bash
-claude mcp add --scope user kitsune -e KITSUNE_CAPS=all -e KITSUNE_PUBLISH=core -- uvx --from kitsune-browser-mcp kitsune
-```
-
-`tools/list` then has the 27 core tools and three gateway tools:
+On the legacy surface (`KITSUNE_SCRIPTING=0`) `tools/list` has the 27 core tools and
+three gateway tools, which reach every other tool in the same connection:
 
 - `browser_tools_search(query, limit=5)` finds the tools this server runs but does not
   list, best match first, each with its full description, input schema and annotations.
@@ -91,26 +51,18 @@ claude mcp add --scope user kitsune -e KITSUNE_CAPS=all -e KITSUNE_PUBLISH=core 
   `tools/list` and sends `notifications/tools/list_changed`; clients that refresh on it
   can then call them directly.
 
-`KITSUNE_PUBLISH` takes the group names `KITSUNE_CAPS` does, and only groups
-`KITSUNE_CAPS` enables: naming another one fails at startup. The gateway tools appear
-only when some enabled tool is not published.
-
-The gateway never runs more than a direct call could. It finds and runs only tools
-`KITSUNE_CAPS` and `KITSUNE_MODE` permit: `all` still leaves out `storage` and
-`history` unless named, and a name it does not permit gets the same `tool_not_published`
-as a direct call. A call through `browser_tools_call` takes the direct call's path, so
-argument validation, the task mode, confirmation tokens, protected user tabs, redaction
+The gateway never runs more than a direct call could. A call through `browser_tools_call`
+takes the direct call's path, so argument validation, confirmation tokens, protected user
+tabs, redaction
 and file name roots apply the same way, and its audit entries record
 `via: {"gateway": "browser_tools_call", "tool": …}`. Your client's permission prompt may
 show only `browser_tools_call` and its conservative annotations (destructive,
 open-world), not the tool it runs, so do not rely on per-tool client prompts for these
-calls. `browser_tools_publish` changes only that session's list, never what the server
-permits or another session's list. Clients differ in whether they act on
-`notifications/tools/list_changed`; the notification is not proof that the model sees
-the new tools, and `browser_tools_call` works either way.
+calls. `browser_tools_publish` changes only that session's list, never another session's.
+Clients differ in whether they act on `notifications/tools/list_changed`; the notification
+is not proof that the model sees the new tools, and `browser_tools_call` works either way.
 
-This reaches tools that are already installed. Changing `KITSUNE_CAPS` or upgrading
-Kitsune still needs a restart.
+This reaches tools that are already installed. Upgrading Kitsune still needs a restart.
 
 The Kitsune-owned tools take `tab_id` to target background tabs; without it they act on
 the [current tab](#core-tools) like the core tools. They share an action
@@ -123,7 +75,7 @@ Every tool includes MCP annotations. The core tools carry Playwright MCP's; the
 Kitsune-owned ones have a human-readable title and read-only, destructive, idempotent,
 and open-world hints, annotated for their most dangerous operation. Clients can use
 these hints to inform permission prompts; enforcement depends on the client. The hints
-are not enforced policy. The bridge enforces task-mode limits and `browser_set_policy`
+are not enforced policy. The bridge enforces `browser_set_policy`
 (`readonly`, `allow`/`deny`, and [ask-before-act](api-reference.md#ask-before-act)).
 
 ## Core tools
@@ -230,47 +182,3 @@ user and repeats a held call itself (see [Approving held actions](your-tabs.md#a
 The core schemas have no `confirm_token`, the fallback for clients without elicitation; the
 tools accept it anyway, so on such a client, after the user approves a held action, an agent
 can repeat the call with `confirm_token` from the `needs_user` error.
-
-## Task modes
-
-Set `KITSUNE_MODE=read|draft|act` in the MCP server environment and restart the client.
-The default is `act`, preserving the existing tool surface and bridge policy. Mode names
-ignore case and surrounding whitespace; unknown names fail at startup.
-
-```toml
-[mcp_servers.kitsune.env]
-KITSUNE_MODE = "read"
-```
-
-| Mode | Published tools and enforced limits |
-|---|---|
-| `read` | Read tools plus navigation to HTTP(S) pages (or `about:blank`) and scrolling. `browser_tab_list` replaces the multi-action `browser_tabs`; with `new_tab` it opens a background tab that later calls act on. It cannot close or select tabs. No clicks, field writes, JavaScript, submits, confirmations or screenshots/file writes. |
-| `draft` | Read surface plus `browser_type`, `browser_select_option`, `browser_fill_form` and, with the `browse` group, `browser_check`. Fills plain text only; no click/keypress/submit/dialog confirmation or JavaScript. Ask-before-act is forced: sensitive fields, payment-like pages and uninspectable targets are refused before filling, without a confirmation token. |
-| `act` | Existing behavior, including the independently configured ask-before-act policy. |
-
-Modes intersect with `KITSUNE_CAPS`; they never enable a disabled group. With the
-default `core` group, `read` publishes eight tools: list-only tabs, navigate, snapshot,
-find, wait for text, console messages and the network request list and details.
-`draft` adds type, select-option and fill-form. Page text, forms and DOM need the
-`read` group, and scrolling the `browse` group. Extra enabled groups contribute only
-their read tools. The personal-data `storage` and `history` groups still require
-explicit opt-in.
-
-Restricted surfaces use first-paragraph descriptions and omit `confirm_token`, the approval
-fallback for clients without elicitation: they cannot approve.
-Calling an unpublished tool by name returns `tool_not_published` with the mode setting
-needed to publish it; `browser_status.mcp_tools.mode` identifies a restricted server.
-The [gateway tools](#finding-tools-without-a-restart) are listed in every mode and reach
-only the tools the mode permits.
-The bridge enforces the mode on every request, including calls made by name or directly
-over HTTP. A restricted request cannot change policy, run containers or resume an act
-call. Draft form-fill inspects every target before writing any field.
-
-Modes are per MCP client: a read client cannot loosen its mode by calling
-`browser_set_policy`, and does not change another client's policy on the shared daemon.
-The bridge's existing URL/readonly/locked-ask policy can tighten the mode further.
-Use an `act` client or the browser itself for a sensitive action. Modes limit agent
-commands, not page scripts: navigation can still trigger site behavior and field events
-can autosave a draft. They are not an incognito session or an application-level sandbox.
-Exact token counts and research/account-lookup task measurements belong to
-kitsune-benchmark; character-size guards in this repo are not token measurements.

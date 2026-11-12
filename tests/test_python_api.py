@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 import warnings
 
 import kitsune
-from kitsune import bridge_client, capabilities, playwright_tools, server, task_modes, tools
+from kitsune import bridge_client, playwright_tools, server, task_modes, tools
 from kitsune.bridge_client import BridgeClient
 from kitsune.browser import Browser, Tab
 from kitsune.errors import raise_for
@@ -90,7 +90,7 @@ class BridgeTestCase(unittest.TestCase):
                         patch.dict(os.environ, {"KITSUNE_TOKEN": "test-token"})):
             patcher.start()
             self.addCleanup(patcher.stop)
-        self.browser = Browser(BridgeClient(caps=None))
+        self.browser = Browser(BridgeClient())
         self.tab = self.browser.tab(7)
 
     def reply(self, route, result):
@@ -297,7 +297,7 @@ class ErrorTests(BridgeTestCase):
               "code": "outcome_not_observed", "retryable": False}, kitsune.KitsuneError),
             ({"error": "Confirmation required: submit", "code": "needs_user", "retryable": False,
               "state": {"reason": "approval", "detail": "confirmation_required", "holdReason": "submit",
-                        "message": "Allow the agent's submitForm? It submits a form.", "approvable": True,
+                        "message": "Allow the agent's submitForm? It submits a form.",
                         "confirmToken": "tok", "expiresInSeconds": 120, "approval": "token"}},
              kitsune.ConfirmationRequired),
             ({"error": "Kitsune extension not connected", "code": "extension_disconnected", "retryable": True},
@@ -332,7 +332,7 @@ class ErrorTests(BridgeTestCase):
                         "state": {"reason": "sign_in", **state}},
                        {"error": "held", "code": "user_viewing", "retryable": False, "state": state},
                        {"error": "held", "code": "needs_user", "retryable": False,
-                        "state": {"reason": "approval", "detail": "user_tab", "approvable": False}}):
+                        "state": {"reason": "approval", "detail": "user_tab"}}):
             with self.subTest(state=result["state"]), self.assertRaises(kitsune.KitsuneError) as raised:
                 raise_for(result)
             self.assertIs(type(raised.exception), kitsune.KitsuneError)
@@ -403,9 +403,8 @@ class ErrorTests(BridgeTestCase):
         self.reply("/api/close-tab", [refused, {"ok": True}])
         self.assertEqual(self.tab.close(), {"ok": True})
         self.assertEqual(self.bridge.last.body, {"tabId": 7, "confirmToken": "tok"})
-        # read and draft refuse without a token, which nothing can approve.
-        self.reply("/api/close-tab", [{**refused, "state": {"reason": "approval", "detail": "user_tab", "tabId": 7,
-                                                             "approvable": False}}])
+        # A refusal without a token cannot be approved.
+        self.reply("/api/close-tab", [{**refused, "state": {"reason": "approval", "detail": "user_tab", "tabId": 7}}])
         with self.assertRaises(kitsune.KitsuneError) as raised:
             self.tab.close()
         self.assertIs(type(raised.exception), kitsune.KitsuneError)
@@ -429,16 +428,15 @@ class ConnectTests(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-    def test_requests_carry_no_caps_header_and_the_chosen_restrictions(self):
+    def test_requests_carry_the_chosen_user_tab_permission(self):
         browser = kitsune.connect()
         browser.tab(7).text()
         headers = self.bridge.last.headers
-        self.assertNotIn(capabilities.CAPS_HEADER, headers)
-        self.assertNotIn(task_modes.MODE_HEADER, headers)
+        self.assertNotIn("X-Kitsune-Caps", headers)
+        self.assertNotIn("X-Kitsune-Mode", headers)
         self.assertEqual(headers[task_modes.USER_TABS_HEADER], "read-only")
-        kitsune.connect(mode="draft", user_tabs="writable").tab(7).text()
-        headers = self.bridge.last.headers
-        self.assertEqual((headers[task_modes.MODE_HEADER], headers[task_modes.USER_TABS_HEADER]), ("draft", "writable"))
+        kitsune.connect(user_tabs="writable").tab(7).text()
+        self.assertEqual(self.bridge.last.headers[task_modes.USER_TABS_HEADER], "writable")
         kitsune.connect(user_tabs="read-only").tab(7).text()
         self.assertEqual(self.bridge.last.headers[task_modes.USER_TABS_HEADER], "read-only")
         with self.assertRaises(ValueError):
@@ -447,8 +445,8 @@ class ConnectTests(unittest.TestCase):
         for alias in ("protect_user_tabs", "hold_viewed_tab"):
             with self.subTest(alias=alias), self.assertRaises(TypeError):
                 kitsune.connect(**{alias: False})
-        with self.assertRaises(ValueError):
-            kitsune.connect(mode="unsafe")
+        with self.assertRaises(TypeError):  # task modes were removed (#525)
+            kitsune.connect(mode="read")
 
     def test_connect_waits_for_the_extension_before_reading_its_status(self):
         # A bridge that connect() started answers before the extension reconnects (#258).
@@ -682,7 +680,7 @@ class SharedClientTests(BridgeTestCase):
     """An API wrapper reuses its host's transport; it does not establish another session."""
 
     def test_wrapping_an_existing_client_does_not_connect_or_replace_it(self):
-        client = BridgeClient(caps={"core"}, mode="draft", approver=True)
+        client = BridgeClient(approver=True)
         with patch.object(BridgeClient, "__init__") as create, \
                 patch.object(client, "ensure_bridge") as ensure:
             browser = kitsune.Browser(client)
@@ -693,7 +691,7 @@ class SharedClientTests(BridgeTestCase):
         self.assertEqual(self.bridge.requests, [])
 
     def test_api_and_direct_calls_keep_the_same_identity_and_limits(self):
-        client = BridgeClient(caps={"core"}, mode="draft", approver=True)
+        client = BridgeClient(approver=True)
         client._handoff_secret = "test-session"
         with patch.object(tools, "client", client):
             tools.browser_type(selector="#name", text="Ada", clear=True, tab_id=7)
@@ -705,29 +703,13 @@ class SharedClientTests(BridgeTestCase):
                 self.assertEqual((scripted.route, scripted.body, scripted.headers),
                                  (direct.route, direct.body, direct.headers))
         headers = self.bridge.last.headers
-        self.assertEqual(headers[capabilities.CAPS_HEADER], "core")
-        self.assertEqual(headers[task_modes.MODE_HEADER], "draft")
         self.assertEqual(headers[task_modes.USER_TABS_HEADER], "read-only")
         self.assertEqual(headers[task_modes.CLIENT_HEADER], client.client_id)
         self.assertEqual(headers[task_modes.OWNER_HEADER], client.owner_id)
         self.assertEqual(headers[task_modes.SESSION_HEADER], "test-session")
 
-    def test_raw_requests_keep_the_hosts_capability_and_mode_headers(self):
-        client = BridgeClient(caps={"core"}, mode="read")
-        browser = kitsune.Browser(client)
-        refusal = {"error": "Capability not enabled", "code": "capability_restricted", "retryable": False}
-        self.reply("/api/cookies", refusal)
-        for call in (lambda: browser.cookies.get(),
-                     lambda: browser.request("/api/cookies", {"op": "get"})):
-            with self.subTest(call=call), self.assertRaises(kitsune.KitsuneError) as raised:
-                call()
-            self.assertEqual(raised.exception.result, refusal)
-            self.assertEqual(self.bridge.last.headers[capabilities.CAPS_HEADER], "core")
-            self.assertEqual(self.bridge.last.headers[task_modes.MODE_HEADER], "read")
-        self.assertEqual(len(self.bridge.requests), 2, "a refusal is not retried")
-
     def test_a_partial_python_loop_stops_on_the_first_failed_write(self):
-        browser = kitsune.Browser(BridgeClient(caps={"core"}, mode="draft"))
+        browser = kitsune.Browser(BridgeClient())
         failed = {"error": "Connection lost after dispatch", "code": "bridge_disconnected",
                   "retryable": False, "state": {"requestSent": True}}
         self.reply("/api/fill", [{"ok": True}, failed])

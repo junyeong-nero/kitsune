@@ -17,17 +17,18 @@ import jsonschema
 
 from kitsune import playwright_tools, server
 
-# FastMCP.list_tools is the unstripped listing; mcp.list_tools is what tools/list publishes.
+# FastMCP.list_tools is the unstripped listing; mcp.all_tools is every tool as tools/list would publish it.
 DUMP = """
 import asyncio, json
 from mcp.server.fastmcp import FastMCP
-from kitsune.server import mcp
+from kitsune.server import GATEWAY_TOOLS, mcp
 
 def dump(tools):
-    return {tool.name: tool.model_dump(mode="json", exclude_none=True) for tool in tools}
+    return {tool.name: tool.model_dump(mode="json", exclude_none=True) for tool in tools
+            if tool.name not in GATEWAY_TOOLS}
 
 print(json.dumps({"generated": dump(asyncio.run(FastMCP.list_tools(mcp))),
-                  "published": dump(asyncio.run(mcp.list_tools()))}))
+                  "published": dump(asyncio.run(mcp.all_tools()).values())}))
 """
 
 # Argument values of every JSON type, plus an enum miss; each is tried for each parameter.
@@ -35,9 +36,9 @@ PROBES = ["x", "not-an-enum-value", "", 0, 1, -1, 1.5, True, False, None,
           {}, {"a": 1}, [], ["x"], [1], [{"selector": "#a", "value": "b"}]]
 
 
-def listings(caps="all,storage") -> dict:
-    """Listings of the Kitsune-owned tools (not the Playwright core tools)."""
-    env = {**os.environ, "KITSUNE_CAPS": caps, "KITSUNE_SCRIPTING": "0"}
+def listings() -> dict:
+    """Listings of the Kitsune-owned tools (not the Playwright core tools or the gateway)."""
+    env = {**os.environ, "KITSUNE_SCRIPTING": "0"}
     result = subprocess.run([sys.executable, "-c", DUMP], env=env,
                             capture_output=True, text=True, check=True)
     return {stage: {name: tool for name, tool in tools.items() if name not in playwright_tools.SCHEMAS}
@@ -112,8 +113,8 @@ class ToolSchemaTitleTests(unittest.TestCase):
         cls.generated, cls.published = listing["generated"], listing["published"]
 
     def test_every_tool_is_compared(self):
-        # `all` (94) plus the named-only storage group (8).
-        self.assertEqual(len(self.published), 105 - len(playwright_tools.SCHEMAS))
+        # Every registered tool (#525), less Playwright MCP's.
+        self.assertEqual(len(self.published), 108 - len(playwright_tools.SCHEMAS))
         self.assertEqual(set(self.published), set(self.generated))
 
     def test_only_title_keywords_are_removed(self):

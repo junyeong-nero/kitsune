@@ -136,19 +136,19 @@ class UserTabSettingsTests(unittest.TestCase):
                     patch.object(bridge_client.httpx, "request") as request:
                 request.return_value.status_code = 200
                 request.return_value.json.return_value = {"ok": True}
-                client = BridgeClient(caps=None, **options)
+                client = BridgeClient(**options)
                 for _ in range(3):
                     client.request("GET", "/api/status", start_bridge=False)
                 self.assertEqual(client.user_tabs, expected)
                 self.assertEqual(stderr.getvalue(), "")
                 self.assertEqual(request.call_args.kwargs["headers"][task_modes.USER_TABS_HEADER], expected)
         with self.assertRaises(ValueError):
-            BridgeClient(caps=None, user_tabs="invalid")
+            BridgeClient(user_tabs="invalid")
 
     def test_removed_sdk_aliases_are_not_arguments(self):
         for name in ("protect_user_tabs", "hold_viewed_tab"):
             with self.subTest(name=name), self.assertRaises(TypeError):
-                BridgeClient(caps=None, **{name: False})
+                BridgeClient(**{name: False})
 
     def test_permission_header_is_authoritative_over_extra_headers(self):
         def request(method, url, headers, **kwargs):
@@ -169,7 +169,7 @@ class UserTabSettingsTests(unittest.TestCase):
             for extra in [*({name: opposite} for name in spellings), dict.fromkeys(spellings, opposite)]:
                 with self.subTest(permission=permission, extra=extra), \
                         patch.object(bridge_client.httpx, "request", side_effect=request):
-                    client = BridgeClient(caps=None, user_tabs=permission, extra_headers=lambda: extra)
+                    client = BridgeClient(user_tabs=permission, extra_headers=lambda: extra)
                     self.assertEqual(client.request("GET", "/api/status", start_bridge=False), {"ok": True})
                 self.assertFalse(bridge._user_tabs_writable.get(), "permission escaped request scope")
 

@@ -20,24 +20,11 @@
       },
       "environmentVariables": [
         {
-          "name": "KITSUNE_MODE",
-          "description": "Task surface and per-request policy: read, draft, or act",
+          "name": "KITSUNE_SCRIPTING",
+          "description": "1 (default): the minimal tool list with browser_run_python (trusted local Python, not a sandbox); 0: the legacy direct tool list",
           "format": "string",
-          "choices": ["read", "draft", "act"],
-          "default": "act",
-          "isRequired": false
-        },
-        {
-          "name": "KITSUNE_CAPS",
-          "description": "Comma-separated capability groups to enable; all enables every group except storage and history",
-          "format": "string",
-          "default": "core",
-          "isRequired": false
-        },
-        {
-          "name": "KITSUNE_PUBLISH",
-          "description": "Groups listed when a session starts; other enabled tools stay reachable through the gateway tools",
-          "format": "string",
+          "choices": ["0", "1"],
+          "default": "1",
           "isRequired": false
         },
         {

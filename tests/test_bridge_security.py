@@ -250,9 +250,8 @@ class BridgeHttpSecurityTests(unittest.TestCase):
     def test_early_responses_arrive_whole_after_a_large_body(self):
         # #235: answering before the body was read reset the connection instead of sending the JSON.
         auth = {**self.bridge.auth(), "Content-Type": "application/json"}
-        cases = {"capability": ("/api/cookies", {**auth, "X-Kitsune-Caps": "core"}, 403, "capability_restricted"),
-                 "mode": ("/api/click", {**auth, "X-Kitsune-Mode": "read"}, 403, "mode_restricted"),
-                 "invalid caps": ("/api/click", {**auth, "X-Kitsune-Caps": "devtools"}, 400, "invalid_caps"),
+        cases = {"invalid user tabs": ("/api/click", {**auth, "X-Kitsune-User-Tabs": "bogus"}, 400,
+                                       "invalid_user_tabs"),
                  "unknown route": ("/api/does-not-exist", auth, 404, None),
                  "unauthenticated": ("/api/click", {"Content-Type": "application/json"}, 401, None),
                  "unread by the handler": ("/api/health", auth, 200, None)}
@@ -274,7 +273,7 @@ class BridgeHttpSecurityTests(unittest.TestCase):
 
     def test_tokenless_view_body_over_the_limit_is_not_read(self):
         # /view skips the token check, so its body is limited like an unauthenticated one.
-        for name, extra, status in (("view", "", b"200"), ("invalid mode", "X-Kitsune-Mode: bogus\r\n", b"400")):
+        for name, extra, status in (("view", "", b"200"), ("invalid user tabs", "X-Kitsune-User-Tabs: bogus\r\n", b"400")):
             with self.subTest(name=name), \
                     socket.create_connection(("127.0.0.1", self.bridge.http_port), timeout=1) as sock:
                 sock.sendall(f"GET /view?src=a.png HTTP/1.1\r\nHost: {self.bridge.host}\r\n{extra}"

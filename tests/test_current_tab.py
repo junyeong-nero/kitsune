@@ -90,7 +90,7 @@ asyncio.run(main())
 class CurrentTabToolTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        env = {**os.environ, "KITSUNE_CAPS": "all,storage", "KITSUNE_PUBLISH": "core", "KITSUNE_SCRIPTING": "0"}
+        env = {**os.environ, "KITSUNE_SCRIPTING": "0"}
         result = subprocess.run([sys.executable, "-c", CALLS], env=env, capture_output=True, text=True)
         if result.returncode:
             raise AssertionError(result.stderr[-3000:])
@@ -110,7 +110,6 @@ class CurrentTabToolTests(unittest.TestCase):
         else:
             self.assertIn("pass tab_id", result["hint"].lower())
             self.assertIn("browser_tabs action=new", result["hint"])
-        self.assertNotIn("browser_tab_list", result["hint"], "act mode publishes browser_tabs instead")
         # New comes first; select makes any tab current, but only for reads under the default policy (#449).
         self.assertLess(result["hint"].index("action=new"), result["hint"].index("action=select"))
         self.assertIn("read-only", result["hint"])
@@ -237,7 +236,7 @@ asyncio.run(main())
 class AdoptedTabToolTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        env = {**os.environ, "KITSUNE_CAPS": "all", "KITSUNE_PUBLISH": "core", "KITSUNE_SCRIPTING": "0"}
+        env = {**os.environ, "KITSUNE_SCRIPTING": "0"}
         result = subprocess.run([sys.executable, "-c", ADOPT_CALLS], env=env, capture_output=True, text=True)
         if result.returncode:
             raise AssertionError(result.stderr[-3000:])
@@ -279,7 +278,7 @@ class AdoptedTabToolTests(unittest.TestCase):
 class TabWriteClassificationTests(unittest.TestCase):
     def test_steps_that_write_a_tab_are_the_bridges(self):
         # Every name a container step may use, by the action it runs.
-        names = set(bridge.BATCH_ACTION_MAP) | set(bridge.ACTION_GROUPS)
+        names = set(bridge.BATCH_ACTION_MAP) | bridge.CONTAINER_ACTIONS
         writes = {name for name in names if bridge.BATCH_ACTION_MAP.get(name, name) not in bridge._TABLESS_ACTIONS
                   and bridge._claims_tab(bridge.BATCH_ACTION_MAP.get(name, name))}
         self.assertEqual(tools.TAB_WRITE_STEPS, writes)

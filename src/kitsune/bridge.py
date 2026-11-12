@@ -61,11 +61,9 @@ except ImportError:
     sys.exit("websockets is not installed. Reinstall kitsune with its dependencies.")
 
 from . import bridge_control, browser_diagnostics
-from .capabilities import (ACTION_GROUPS, CAPS_HEADER, LOAD_MORE_SCROLL_GROUPS, OPEN_ROUTES, ROUTE_GROUPS,
-                           caps_refusal, header_caps, scroll_groups)
 from .task_modes import (
     APPROVAL_HEADER, APPROVER_HEADER, CLIENT_HEADER, CLIENT_ID_PATTERN, GATEWAY_TOOL_HEADER,
-    MODE_HEADER, OWNER_HEADER, SESSION_HEADER, CLIENT_NAME_HEADER, USER_TABS_HEADER, permits_action, permits_route, task_mode, user_tabs,
+    OWNER_HEADER, SESSION_HEADER, CLIENT_NAME_HEADER, USER_TABS_HEADER, user_tabs,
 )
 from .version import BRIDGE_BUILD, PACKAGE_VERSION, SOURCE_ROOT, extension_manifest_hash, extension_source_hash
 from .waits import (
@@ -181,7 +179,6 @@ _log_buffer = []  # mirrors bridge stdout lines
 _LOG_MAX = 5000
 # Ask-before-act is opt-in. askUrls are payment-like URL patterns it guards (case-insensitive).
 DEFAULT_ASK_URLS = [r"checkout", r"payment", r"billing", r"/pay\b", r"purchase", r"/order"]
-_task_mode = contextvars.ContextVar("kitsune_task_mode", default="act")
 # The calling client's authoritative user-tab permission (#398).
 _user_tabs_writable = contextvars.ContextVar("kitsune_user_tabs_writable", default=False)
 # A request's {"approver", "claim", "via"} (#376): the hash of its APPROVER_HEADER, whether APPROVAL_HEADER
@@ -193,8 +190,6 @@ _direct_hold = contextvars.ContextVar("kitsune_direct_hold", default=None)
 # A container call's default tab (#232): its steps that name no tabId run there instead of the
 # extension's active tab.
 _default_tab = contextvars.ContextVar("kitsune_default_tab", default=None)
-# The calling client's capability groups (#230); None (no header) leaves every group open.
-_client_caps = contextvars.ContextVar("kitsune_client_caps", default=None)
 # The tool a client's browser_tools_call runs (#227), which audit entries record.
 _gateway_tool = contextvars.ContextVar("kitsune_gateway_tool", default=None)
 _TOOL_NAME = _re.compile(r"browser_[a-z0-9_]{1,64}")
@@ -233,13 +228,8 @@ _container_new_tabs = contextvars.ContextVar("kitsune_container_new_tabs", defau
 _TAB_NAVIGATIONS = {"navigate", "goBack", "goForward"}
 
 
-def _mode_error(operation):
-    return {"error": f"{_task_mode.get()} mode refuses {operation}", "code": "mode_restricted",
-            "retryable": False, "hint": "Restart this MCP client with KITSUNE_MODE=act to perform this action."}
-
-
 def _ask_enabled():
-    return _policy["ask"] or _task_mode.get() == "draft"
+    return _policy["ask"]
 
 
 _policy = {"allow": [], "deny": [], "readonly": False,
@@ -1699,13 +1689,11 @@ _REPEAT_UNSAFE_ACTIONS = WRITE_ACTIONS | {"uploadCommit", "focusElement", "blurE
 # because the command names several targets (ambiguous_target) or its target selector failed
 # to parse or validate before anything was dispatched (unsupported_selector), until the user
 # approves closing their tab (needs_user; a v0.7.1 extension's user_tab), until the user grants a
-# browser permission (permission_required), or until the client's KITSUNE_CAPS or KITSUNE_MODE
-# permits it or the container step names a batch action (capability_restricted, mode_restricted,
-# unknown_action).
+# browser permission (permission_required), or until the container step names a batch action
+# (unknown_action).
 _PERSISTENT_FAILURE_CODES = {"error_page", "ambiguous_target", "unsupported_selector", "needs_user", "user_tab",
                              "user_tab_read_only", "invalid_tab_id", "invalid_window_id", "window_unavailable",
-                             "invalid_coordinates", "permission_required", "capability_restricted",
-                             "mode_restricted", "unknown_action"}
+                             "invalid_coordinates", "permission_required", "unknown_action"}
 
 
 def _url_matches(pattern, url, flags=0):
@@ -1749,18 +1737,6 @@ def _check_policy(action, params):
     """Return error dict if action/url violates current policy, else None."""
     if invalid := _normalize_tab_target(params) or _normalize_window_target(action, params):
         return invalid
-    if not permits_action(_task_mode.get(), action):
-        return _mode_error(action)
-    if _task_mode.get() != "act":
-        if (params or {}).get("confirmToken") is not None:
-            return _mode_error("confirmation")
-        if action in {"navigate", "newTab"}:
-            from urllib.parse import urlsplit
-            url = (params or {}).get("url", "about:blank" if action == "newTab" else "")
-            if urlsplit(url).scheme.lower() not in {"http", "https"} and url != "about:blank":
-                return _mode_error("navigation outside http(s) or about:blank")
-        if action == "setEditableContent" and (params or {}).get("format", "text") != "text":
-            return _mode_error("HTML insertion")
     # Agent JavaScript (an if/while condition, waitForResult, syncBarrier) is refused like js.
     if _policy["readonly"] and (action in WRITE_ACTIONS or action in _ASK_JS_ACTIONS):
         # Read-only ops on cookies/storage/etc. are still allowed; tighten if needed.
@@ -1949,8 +1925,8 @@ async def _history_lookup(action, body):
 # A refusal only the user's approval lifts returns code needs_user with state.reason "approval"
 # and the code it replaces in state.detail: user_tab (a v0.7.1 extension's refusal
 # to close a user tab, mapped in send_to_extension) or confirmation_required (ask-before-act). A
-# reason the old state carried moves to state.holdReason. state.approvable is false in read and
-# draft, which cannot confirm; state.approval is "token" where a confirm token approves it. A
+# reason the old state carried moves to state.holdReason. state.approval is "token" where a
+# confirm token approves it. A
 # direct request's hold takes an audit call id (call), which the MCP server's direct-call checkpoint
 # goes by (docs/checkpoint-resume.md).
 APPROVAL_DETAILS = ("user_tab", "confirmation_required")
@@ -1982,8 +1958,7 @@ def _needs_approval(result, message):
         state["holdReason"] = state.pop("reason")
     call = _hold_call()
     return {**result, "code": "needs_user", "retryable": False,
-            "state": {"reason": "approval", "detail": result["code"], **state, "message": message,
-                      "approvable": _task_mode.get() == "act"},
+            "state": {"reason": "approval", "detail": result["code"], **state, "message": message},
             **({"call": call} if call is not None else {})}
 
 
@@ -2200,10 +2175,6 @@ def _spend_confirm_token(token, binding):
 
 async def _describe_target(params, inspect):
     target = {key: params[key] for key in ("tabId", "selector", "ref", "key", "first") if params.get(key) is not None}
-    if _task_mode.get() == "draft" and inspect:
-        target["draftFill"] = True
-        if isinstance(params.get("fields"), dict):
-            target["fieldKeys"] = list(params["fields"])
     coords = params.get("coords") or ({"x": params["x"], "y": params["y"]} if "x" in params and "y" in params else None)
     if coords and not target.get("selector") and not target.get("ref"):
         target["coords"] = coords
@@ -2247,9 +2218,7 @@ async def _held_reason(action, params):
     if action in _ASK_TAB_ACTIONS:
         submit_key = action == "keypress" and params.get("key") in {"Enter", "Return"}
         screen = action == "trustedClick" and (params.get("coordinateSpace") or params.get("space")) == "screen"
-        draft_fill = _task_mode.get() == "draft" and action in {
-            "type", "fill", "setEditableContent", "formFill", "selectOption", "checkBox"}
-        inspect = ((action in _ASK_CLICK_ACTIONS or submit_key) and not screen) or draft_fill
+        inspect = (action in _ASK_CLICK_ACTIONS or submit_key) and not screen
         described = await _describe_target(params, inspect)
         if isinstance(described, dict) and described.get("code") == "ambiguous_target":
             return described
@@ -2261,14 +2230,10 @@ async def _held_reason(action, params):
                     _coerce_tab_id(params.get("tabId")), None)
         tab_id, url_now = described.get("tabId"), described.get("url")
         target = described.get("target") or {}
-        if draft_fill and not isinstance(target.get("sensitive"), bool):
-            return "uninspectable_target", "fills a target without sensitive-field inspection", tab_id, url_now
-        if draft_fill and target.get("sensitive"):
-            reason, description = "sensitive_field", "fills a sensitive field"
         # A target inside a cross-origin frame (#343) is another site's page: an embedded
-        # payment form, sign-in widget or chat. Draft fills keep the draft rules above.
+        # payment form, sign-in widget or chat.
         frame = described.get("frame")
-        if reason is None and isinstance(frame, dict) and not draft_fill:
+        if reason is None and isinstance(frame, dict):
             frame_url = frame.get("url") if isinstance(frame.get("url"), str) else ""
             if pattern := _ask_url_match(frame_url):
                 reason, description = "payment_frame", f"acts inside a payment-like frame ({pattern}): {frame_url}"
@@ -2347,10 +2312,6 @@ async def _ask_before_act(action, params, *, direct):
     if isinstance(held, dict):
         return held
     reason, description, tab_id, url = held
-    if _task_mode.get() != "act":
-        return {**_mode_error(description), "state": {"mode": _task_mode.get(), "reason": reason},
-                "hint": "Nothing ran. Leave this sensitive action to the user, or restart with KITSUNE_MODE=act "
-                        "and follow the ask-before-act policy."}
     # A user_tab approval (_take_user_tab_approval) is not part of the call the user approves here,
     # so a token issued before it still confirms the call after it.
     binding = _confirmation_binding(action, {k: v for k, v in params.items() if k != "userTabApproved"}, tab_id)
@@ -3697,7 +3658,7 @@ async def _dispatch_with_expectation(action, params, spec, timeout):
         hint = result["warning"]["hint"]
     elif action == "click" and await _click_target_visible(tab_id, params, result, diagnosis_left()):
         hint += (" The clicked element is still visible: the page may accept only trusted input, "
-                 "and browser_trusted_click (needs the browse capability) is the alternative.")
+                 "and browser_trusted_click is the alternative.")
         # This click's hint replaces the page's (#376).
         result["needs_user"] = _needs_user_hint("trusted_input", {"target_visible": True})
     error = f"Expected outcome not observed within {spec['timeout']}ms"
@@ -3821,6 +3782,22 @@ def _wrap_image_url(body):
 # ══════════════════════════════════════════════
 
 
+# Every extension action a container step may run and the actions the bridge runs itself.
+CONTAINER_ACTIONS = frozenset({
+    "blurElement", "broadcast", "captureNetwork", "checkBox", "clearBrowsingData", "click", "clickAndWaitNavigation",
+    "clipboard", "closeTab", "closeWindow", "consoleLogs", "cookies", "createWindow", "detachTab", "doubleClick",
+    "downloads", "drag", "duplicateTab", "elementScreenshot", "executeJS", "explainSelector", "fill", "find",
+    "focusElement", "focusWindow", "formFill", "fullPageMetrics", "fullPageScreenshot", "getAccessibilityTree",
+    "getBounds", "getComputedStyle", "getFormFields", "getHTML", "getIframes", "getImages", "getLinks",
+    "getMarkdown", "getMeta", "getPageInfo", "getPageText", "getPageTextFromTab", "getReadability", "getSnapshot",
+    "getStructuredData", "getTabs", "getWindows", "getZoom", "goBack", "goForward", "highlight", "hover", "if",
+    "intercept", "keypress", "media", "moveTab", "muteTab", "navigate", "newTab", "parallel", "pinTab", "query",
+    "reloadExtension", "reloadTabBrowser", "resizeWindow", "retry", "screenshot", "scroll", "selectOption",
+    "sequence", "setEditableContent", "setZoom", "sleep", "storageOp", "submitForm", "switchTab", "syncBarrier",
+    "trustedClick", "try", "type", "waitForElement", "waitForNetworkIdle", "waitForResult", "waitForTitle",
+    "waitForUrl", "wakeTab", "watchConsole", "while",
+})
+
 # Action name -> extension action name (for simple forwarding); most keep their name.
 BATCH_ACTION_MAP = {
     'js': 'executeJS', 'pageInfo': 'getPageInfo', 'pageText': 'getPageText',
@@ -3843,7 +3820,7 @@ BATCH_ACTION_MAP = {
 # Names a batch step may use: BATCH_ACTION_MAP's and the actions the bridge runs itself, not the
 # extension actions the map's aliases forward to.
 _BATCH_ACTION_NAMES = sorted(set(BATCH_ACTION_MAP) | (
-    set(ACTION_GROUPS) - {name for alias, name in BATCH_ACTION_MAP.items() if alias != name}))
+    set(CONTAINER_ACTIONS) - {name for alias, name in BATCH_ACTION_MAP.items() if alias != name}))
 
 
 def _unknown_action_error(action):
@@ -4558,12 +4535,9 @@ async def run_command(cmd):
         if action == 'find' and 'query' not in params and 'selector' in params:
             params['query'] = params.pop('selector')
 
-        if action not in BATCH_ACTION_MAP and action not in ACTION_GROUPS:
+        if action not in BATCH_ACTION_MAP and action not in CONTAINER_ACTIONS:
             return _unknown_action_error(action)
         effective_action = BATCH_ACTION_MAP.get(action, action)
-        caps_err = caps_refusal(_client_caps.get(), effective_action, ACTION_GROUPS.get(effective_action))
-        if caps_err:
-            return caps_err
         tab_err = _check_step_tab(effective_action, params)
         if tab_err:
             return tab_err
@@ -4881,16 +4855,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
     def _dispatch(self, routes):
         path = self.canonical_path()
         try:
-            mode = task_mode(self.headers.get(MODE_HEADER))
-        except ValueError as exc:
-            self.refuse(400, {"error": str(exc), "code": "invalid_mode", "retryable": False})
-            return
-        try:
-            caps = header_caps(self.headers.get(CAPS_HEADER))
-        except ValueError as exc:
-            self.refuse(400, {"error": str(exc), "code": "invalid_caps", "retryable": False})
-            return
-        try:
             permissions = [value for key, value in self.headers.items() if key.lower() == USER_TABS_HEADER.lower()]
             if len(permissions) > 1:
                 raise ValueError(f"{USER_TABS_HEADER} must occur at most once")
@@ -4898,8 +4862,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self.refuse(400, {"error": str(exc), "code": "invalid_user_tabs", "retryable": False})
             return
-        token = _task_mode.set(mode)
-        caps_token = _client_caps.set(caps)
         writable = _user_tabs_writable.set(permission == "writable")
         direct_hold = _direct_hold.set({"call": None})
         approver = self.headers.get(APPROVER_HEADER) or ""
@@ -4920,16 +4882,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
             identity = None
         handoff_token = _handoff_identity.set(identity)
         try:
-            if not permits_route(mode, path):
-                self.refuse(403, _mode_error(path))
-                return
-            # /api/scroll's groups depend on its body (scroll_groups): every group that may post it
-            # passes here, and handle_scroll checks the body.
-            groups = LOAD_MORE_SCROLL_GROUPS if path == "/api/scroll" else ROUTE_GROUPS.get(path)
-            refused = None if path in OPEN_ROUTES else caps_refusal(caps, path, groups)
-            if refused and path in routes:
-                self.refuse(403, refused)
-                return
             handler = routes.get(path)
             if handler:
                 handler()
@@ -4944,8 +4896,6 @@ class BridgeHandler(BaseHTTPRequestHandler):
             _request_approval.reset(approval)
             _direct_hold.reset(direct_hold)
             _user_tabs_writable.reset(writable)
-            _client_caps.reset(caps_token)
-            _task_mode.reset(token)
 
     def do_GET(self):
         if not self.authorized():
@@ -5372,12 +5322,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self._send_extension_action("setEditableContent", self.read_body())
     
     def handle_scroll(self):
-        body = self.read_body()
-        refused = caps_refusal(_client_caps.get(), "/api/scroll", scroll_groups(body))
-        if refused:
-            self.send_json(403, refused)
-            return
-        self._send_extension_action("scroll", body)
+        self._send_extension_action("scroll", self.read_body())
     
     def handle_hover(self):
         self._send_extension_action("hover", self.read_body())
@@ -5756,10 +5701,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.send_json(200, {"ok": True, "policy": dict(_policy)})
 
     def handle_get_policy(self):
-        policy = dict(_policy)
-        if _task_mode.get() != "act":
-            policy.update(mode=_task_mode.get(), ask=_ask_enabled(), confirmAllowed=False)
-        self.send_json(200, policy)
+        self.send_json(200, dict(_policy))
 
     def handle_history_lookup(self, action):
         self.send_json(200, self.run_async(_history_lookup(action, self.read_body()), timeout=40))

@@ -18,7 +18,7 @@ _spec.loader.exec_module(tool_schema_size)
 
 
 def run_script(*args) -> str:
-    env = {**os.environ, "KITSUNE_CAPS": "core", "KITSUNE_SCRIPTING": "0"}
+    env = {**os.environ, "KITSUNE_SCRIPTING": "0"}
     return subprocess.run([sys.executable, str(SCRIPT), *args],
                           env=env, capture_output=True, text=True, check=True).stdout
 
@@ -62,20 +62,20 @@ class ToolSchemaSizeTests(unittest.TestCase):
 
     def test_instructions_within_budget(self):
         sizes = tool_schema_size.measure_instructions()
-        self.assertEqual(set(sizes), {"act", "read", "draft"})
+        self.assertEqual(set(sizes), {"legacy"})
         self.assertEqual(tool_schema_size.instructions_over_budget(sizes), [],
                          "The server instructions grew past their budget (#386); they are resent with every model "
                          "request. Trim them, or raise INSTRUCTIONS_BUDGETS in scripts/tool_schema_size.py "
                          "deliberately.")
 
-    def test_act_instruction_budget_does_not_exceed_v071(self):
-        self.assertLessEqual(tool_schema_size.INSTRUCTIONS_BUDGETS["act"], 747)
+    def test_instruction_budget_does_not_exceed_v071(self):
+        self.assertLessEqual(tool_schema_size.INSTRUCTIONS_BUDGETS["legacy"], 747)
 
     def test_instructions_budget_catches_growth(self):
         budgets = tool_schema_size.INSTRUCTIONS_BUDGETS
         self.assertEqual(tool_schema_size.instructions_over_budget(budgets), [])
-        self.assertEqual(tool_schema_size.instructions_over_budget({**budgets, "act": budgets["act"] + 1}),
-                         [f"instructions (act): {budgets['act'] + 1} > budget {budgets['act']}"])
+        self.assertEqual(tool_schema_size.instructions_over_budget({**budgets, "legacy": budgets["legacy"] + 1}),
+                         [f"instructions (legacy): {budgets['legacy'] + 1} > budget {budgets['legacy']}"])
 
 
 if __name__ == "__main__":

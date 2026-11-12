@@ -3,7 +3,7 @@
 Opt-in and built on tests/real_browser_harness.py, which documents how to run it. Unlike
 test_real_browser_user_tab_reads, the tools run in real MCP servers over stdio (as in
 test_real_browser_elicitation), so their requests go through the server's BridgeClient with its
-client and owner ids, caps and user-tab headers. Each client declares elicitation and records
+client and owner ids and user-tab headers. Each client declares elicitation and records
 every prompt it gets, and the toolbar popup is read at the end: a write held for approval would
 prompt or add a card there.
 
@@ -42,9 +42,6 @@ import test_real_browser_user_tab_reads as reads
 SESSION_TIMEOUT = 150
 # A refusal answers without waiting for anything: no prompt, approval or page wait.
 REFUSAL_SECONDS = 5
-# Published to the MCP servers: the core tools, Kitsune's page actions (browse), tab tools such as
-# browser_reload_tab (tabs), and browser_batch and browser_workflow (automation).
-CAPS = "core,browse,tabs,automation"
 AGENT, OTHER = ("e2e-user-tab-writes-agent", "Kitsune E2E Agent"), ("e2e-user-tab-writes-other", "Kitsune E2E Other")
 REASON = "Check the form on this page"
 SCROLL_X, SCROLL_Y = 300, 900
@@ -157,7 +154,7 @@ async def _mcp(env, client):
         return types.ElicitResult(action="decline")
 
     server = StdioServerParameters(command=sys.executable, args=["-m", "kitsune.server"],
-                                   env=dict(env, KITSUNE_OWNER_ID=owner, KITSUNE_CAPS=CAPS))
+                                   env=dict(env, KITSUNE_OWNER_ID=owner))
     async with stdio_client(server) as (read, write), ClientSession(
             read, write, elicitation_callback=elicit,
             client_info=types.Implementation(name=name, version="1")) as session:

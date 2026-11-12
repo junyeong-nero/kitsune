@@ -544,7 +544,7 @@
       'keypress':              () => pressKey(msg.selector, msg.key, msg.modifiers, msg.text, msg.first, msg.repeat),
       'doubleClick':           () => withPopupWatch(doubleClick(msg.selector, msg.first, msg.modifiers)),
       'submitForm':            () => submitForm(msg.selector, msg.first),
-      'describeTarget':        () => describeTarget(msg.selector, msg.coords, msg.key, msg.first, msg.fieldKeys, msg.draftFill),
+      'describeTarget':        () => describeTarget(msg.selector, msg.coords, msg.key, msg.first),
       'formFill':              () => formFill(msg.fields, msg.first),
       'media':                 () => controlMedia(msg.selector, msg.op, msg.time, msg.first),
       'drag':                  () => dragElement(msg.from, msg.to, msg.first),
@@ -5436,12 +5436,7 @@
   // a form, is a button labeled like a submit or payment, or is a button or link labeled like
   // a send, transfer, delete or account change. Resolves the target the way click/keypress
   // do and reports no field values.
-  function describeTarget(selector, coords, key, first, fieldKeys, draftFill) {
-    if (fieldKeys) {
-      const fields = fieldKeys.map(key => resolveFormField(key, first));
-      if (fields.some(field => !field)) return notFound();
-      return { ok: true, sensitive: fields.some(field => isSensitiveField(getFillTarget(field))) };
-    }
+  function describeTarget(selector, coords, key, first) {
     let el = selector || coords ? resolveTarget(selector, coords, { first, pointer: !key })
       : (activeElement() || document.body);
     if (!el) return notFound();
@@ -5459,7 +5454,7 @@
     const link = !button && ((tag === 'a' && !!control.hasAttribute?.('href')) || role === 'link');
     const label = button || link ? controlLabel(control, buttonInput)
       : String(control.getAttribute?.('aria-label') || redactedText(control) || '').trim();
-    return { ok: true, tag, type, ...(draftFill ? { sensitive: isSensitiveField(fillDestination(el)) } : {}),
+    return { ok: true, tag, type,
       inForm: !!control.form, submits: submitControl || enterSubmits,
       submitLabel: button && isSubmitLabel(label), consequentialLabel: (button || link) && isConsequentialLabel(label),
       text: label.slice(0, 80) };

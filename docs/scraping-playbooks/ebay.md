@@ -72,8 +72,7 @@ after `navigate`, in a background tab, without scrolling.
 ]
 ```
 
-Run it with `browser_batch` (`automation` group). `navigate` is `core` and
-`query` is `read`, for example `KITSUNE_CAPS=core,automation,read`. Pass
+Run it with `browser_batch` (`automation` group). Pass
 `limit` to cover the page size (`browser_query` defaults to 50). No step
 needs the developer build.
 

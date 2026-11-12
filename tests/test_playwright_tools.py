@@ -27,8 +27,10 @@ class PublishedSurfaceTests(unittest.TestCase):
                "KITSUNE_SCRIPTING": "0"}
         listed = json.loads(subprocess.run([sys.executable, "-c", LIST_SCRIPT], env=env, text=True,
                                            capture_output=True, check=True).stdout)
-        # Kitsune's browser_resume and browser_ask_user are the core tools Playwright MCP does not have (#376).
-        kitsune = ["browser_resume", "browser_ask_user"]
+        # Kitsune's browser_resume and browser_ask_user are the core tools Playwright MCP does not have (#376);
+        # the gateway reaches the other groups (#525).
+        kitsune = ["browser_resume", "browser_ask_user", "browser_tools_search", "browser_tools_call",
+                   "browser_tools_publish"]
         self.assertEqual([tool["name"] for tool in listed if tool["name"] not in playwright_tools.SCHEMAS], kitsune)
         self.assertEqual([tool for tool in listed if tool["name"] not in kitsune], VENDORED["tools"])
 

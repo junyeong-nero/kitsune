@@ -98,8 +98,8 @@ class RealBrowserPythonApiTests(harness.RealBrowserTestCase):
         self.assertEqual([item["value"] for item in self.tab.query("#size option", fields=["value"], limit=2)],
                          ["s", "l"])
 
-    def test_host_client_is_shared_without_widening_permissions(self):
-        client = bridge_client.BridgeClient(caps={"core", "read", "browse"}, mode="draft")
+    def test_host_client_is_shared(self):
+        client = bridge_client.BridgeClient()
         browser = kitsune.Browser(client)
         tab = browser.new_tab(self.site.origin + "/")
         self.addCleanup(self.browser.tab(tab.id).close)
@@ -109,15 +109,6 @@ class RealBrowserPythonApiTests(harness.RealBrowserTestCase):
         kitsune.Browser(client).tab(tab.id).fill("#name", "Python")
         self.assertEqual(next(field["value"] for field in tab.forms() if field.get("name") == "name"), "Python")
         self.assertTrue(next(item["owned"] for item in browser.tabs() if item["id"] == tab.id))
-
-        # Draft rejects cookies before checking caps; act isolates the capability check.
-        with patch.object(client, "mode", "act"), self.assertRaises(kitsune.KitsuneError) as raised:
-            browser.cookies.get()
-        self.assertEqual(raised.exception.code, "capability_restricted")
-        with self.assertRaises(kitsune.KitsuneError) as raised:
-            tab.submit_form("#order")
-        self.assertEqual(raised.exception.code, "mode_restricted")
-        self.assertEqual(self.browser.tab(tab.id).info()["title"], "Python API", "the refused submit did not navigate")
 
     def test_storage_console_tabs_windows_and_tags(self):
         self.tab.local_storage.set("theme", "dark")

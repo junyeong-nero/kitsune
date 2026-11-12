@@ -19,7 +19,7 @@ What it does not protect against:
   which executes ordinary local Python with host file/network/environment access.
   It is not a sandbox. Its supplied browser API uses the MCP client's permissions,
   but code can deliberately bypass that API, read local credentials or create its
-  own connection. Mode/capability settings are not confinement for that code.
+  own connection. Approval settings are not confinement for that code.
   For a client not trusted with local code execution, set `KITSUNE_SCRIPTING=0`
   (the legacy direct tools, without it); its timeout/output
   limits are lifecycle controls, not OS resource or security boundaries.
@@ -43,12 +43,11 @@ What it does not protect against:
   `browser_storage` and `browser_clipboard` values) with `"[redacted]"`; see
   [Audit log](api-reference.md#audit-log). The page and the MCP client's own
   transcript still see whatever the agent sent.
-- **Cookies, page storage, saved sessions and the clipboard.** Off unless you name
-  the `storage` capability group; `KITSUNE_CAPS=all` leaves it out. Its tools read and
-  write the cookies that keep you logged in, page storage and the system clipboard:
-  enable it only for agents you trust with your accounts.
-- **History and bookmarks.** Off unless you enable the `history` capability group
-  *and* allow it on Kitsune's options page (about:addons → Kitsune → Options);
+- **Cookies, page storage, saved sessions and the clipboard.** Every client can call
+  these tools (#525); by default the extension's options require your approval before
+  they run. They read and write the cookies that keep you logged in, page storage and
+  the system clipboard: lift the approval only for agents you trust with your accounts.
+- **History and bookmarks.** Off unless you allow it on Kitsune's options page (about:addons → Kitsune → Options);
   revoke it there or in the add-on's Permissions tab. Lookups return only URLs,
   titles, visit times and bookmark folders inside the bridge's history scope
   (by default the last 30 days), with token-like URL values replaced by
@@ -67,11 +66,11 @@ autofill is browser-controlled; whether an autofilled value is accessible depend
 on what the browser makes available to the page. Test it only with disposable
 credentials, and never paste real secrets into bug reports.
 
-Capability groups bound what an agent can reach through one MCP server, and the bridge
-checks them on every request, container steps included. They are not a sandbox: the
+Every tool is available to every MCP client (#525); approvals, the user-tab protection
+and `browser_set_policy` are what the bridge checks. They are not a sandbox: the
 `kitsune-bridge` command and other local programs with the token are not restricted.
 
 Recommended: use a separate browser profile that only has the accounts the
-agent needs, and keep banking, mail and work SSO out of it. Enable only the
-capability groups you need, review the agent's actions, and treat saved sessions,
+agent needs, and keep banking, mail and work SSO out of it. Require approval for the
+actions you want to see first, review the agent's actions, and treat saved sessions,
 screenshots, and tool logs as potentially sensitive.

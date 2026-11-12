@@ -46,7 +46,7 @@ asyncio.run(main())
 
 class OpenedPopupToolTests(unittest.TestCase):
     def test_core_click_and_hover_return_opened_popup(self):
-        env = {**os.environ, "KITSUNE_CAPS": "all", "KITSUNE_PUBLISH": "core", "KITSUNE_SCRIPTING": "0"}
+        env = {**os.environ, "KITSUNE_SCRIPTING": "0"}
         run = subprocess.run([sys.executable, "-c", CALLS, json.dumps(POPUP)], env=env, capture_output=True,
                              text=True)
         if run.returncode:

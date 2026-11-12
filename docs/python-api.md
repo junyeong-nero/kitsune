@@ -3,12 +3,9 @@
 The `kitsune` package drives the browser you already have open from Python, through
 the same extension and bridge as the MCP server. The two have different jobs:
 
-- **The MCP server** gives an agent a small, curated tool surface. `KITSUNE_CAPS`,
-  `KITSUNE_PUBLISH` and `KITSUNE_MODE` limit what it sees and what the bridge
-  accepts from it.
+- **The MCP server** gives an agent a small, curated tool surface.
 - **The Python API** reaches every capability of the extension and bridge, for
-  scripts and for your own agent frameworks. Its requests carry no capability
-  header, so every group is available, `storage` and `history` included.
+  scripts and for your own agent frameworks, `storage` and `history` included.
 
 Both are clients of one shared bridge, and the bridge's
 [shared-browser rules](api-reference.md#shared-browser) hold for both: tabs open in
@@ -43,7 +40,6 @@ is not connected. It returns a `Browser`.
 
 | Argument | Default | Effect |
 | --- | --- | --- |
-| `mode` | `"act"` | `"read"` or `"draft"` restricts requests as [`KITSUNE_MODE`](api-reference.md#task-modes) does for MCP |
 | `user_tabs` | unset (`read-only`) | `writable` allows this client to write user tabs. See [User-tab setting](your-tabs.md#protecting-your-tabs) |
 | `confirm` | `None` | A function that decides on actions ask-before-act holds; see [Ask-before-act](#ask-before-act) |
 | `replace_bridge` | `False` | `True` replaces a running bridge of another build |
@@ -69,13 +65,12 @@ from kitsune import Browser
 browser = Browser(existing_client)  # host code: the same client used by its direct tools
 ```
 
-This keeps that client's owner/client IDs, live handoff session, capability groups,
-mode and user-tab setting. Creating another `Browser(existing_client)` does not
+This keeps that client's owner/client IDs, live handoff session and user-tab setting. Creating another `Browser(existing_client)` does not
 create another browser session. Pass explicit tab IDs from `browser.tabs()` or
 `new_tab()`; wrapping a client does not select a global current tab.
 
 Do not call `connect()` to attach to an MCP session: it creates a separate developer
-client with unrestricted capability groups. `Browser` itself neither limits Python's
+client of its own. `Browser` itself neither limits Python's
 host access nor prevents code from modifying its client. It is an API wrapper, not a
 script sandbox. A scripting host owns the execution boundary and approval channel;
 an agent-supplied `confirm=lambda _: True` is not user approval. The
@@ -89,9 +84,9 @@ The default [minimal tool-set](minimal-tools.md) includes
 environment selects the legacy direct tools without it.
 It permits ordinary local Python execution: **not a sandbox**, including
 host files, environment, imports, subprocesses and network access. Set
-`KITSUNE_SCRIPTING=0` for a client you do not trust with local code execution. `KITSUNE_MODE` and `KITSUNE_CAPS`
-restrict the supplied browser transport, not arbitrary Python or independent
-connections made by the code. No new runtime installation is needed: it uses the
+`KITSUNE_SCRIPTING=0` for a client you do not trust with local code execution.
+Approvals and the user-tab protection apply to the supplied browser transport, not
+to arbitrary Python or independent connections made by the code. No new runtime installation is needed: it uses the
 MCP server's Python interpreter.
 
 ```python
@@ -103,9 +98,7 @@ result = tab.snapshot()
 
 - `browser` is the Python API, forwarding each request through the MCP host's
   existing client/session. **Do not call `kitsune.connect()`** to reuse that session.
-  Default `core` grants include snapshot and common actions; methods such as
-  `query`, `text` and `forms` need the `read` grant. Configure additional grants
-  explicitly, e.g. `KITSUNE_CAPS=core,browse,read`, rather than bypassing the client.
+  Every method is available (#525).
 - `tab` is the current MCP selection at invocation start, or `None` before selection.
   Use `browser.new_tab(url)` or `browser.tab(id)` for other tabs. `browser.tabs()`
   returns `list[dict]` with `id`, `url`, `title`, etc., not `Tab` objects: for a chosen
@@ -182,8 +175,7 @@ timeout or disconnect—observe the affected page before deciding what is left t
 
 Less-frequent features such as `tab.readability()`, `tab.network.resources()`,
 `tab.local_storage`, `browser.cookies` and `browser.history` already have Python
-methods. Availability does not grant permission: a host's capability/mode limits
-still apply. The [minimal surface mapping](minimal-tools.md#moving-less-frequent-tools-to-python)
+methods. The [minimal surface mapping](minimal-tools.md#moving-less-frequent-tools-to-python)
 shows which direct tools move to these APIs when scripting is enabled.
 
 ## Tabs
@@ -368,8 +360,8 @@ Until #376 these approvals had their own codes, `confirmation_required` and `use
 They are now `code` `needs_user`, with the old code in `state.detail` (`error.detail`), and
 an ask-before-act hold's reason in `state.holdReason` (`error.hold_reason`, before:
 `state.reason`). `ConfirmationRequired` is raised for both
-shapes. A `needs_user` without a token, as in read and draft modes
-(`state.approvable: false`), raises a plain `KitsuneError`: nothing can approve it there.
+shapes. A `needs_user` approval without a token raises a plain `KitsuneError`: nothing can
+approve it there.
 
 ## Ask-before-act
 

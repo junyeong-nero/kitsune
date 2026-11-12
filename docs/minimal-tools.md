@@ -22,21 +22,13 @@ Use a direct tool for a simple action; use Python for loops, conditions, filteri
 and less-frequent operations. `browser_run_python` supplies `browser` and the current
 MCP-selected `tab`, so `tab.hover("#menu")` needs no index-to-ID conversion.
 `help(tab.hover)` prints a method's signature/docstring when needed. The Python
-tool's guide lists examples for the enabled capability groups and mode, regardless
-of which direct tools `KITSUNE_PUBLISH` lists. `browser.tabs()` returns tab dicts,
+tool's guide lists examples of the calls agents got wrong. `browser.tabs()` returns tab dicts,
 not `Tab` objects; wrap a chosen page tab dict with `browser.tab(t["id"])`.
 
-`read`/`draft` still omit disallowed direct tools and use `browser_tab_list` instead
-of `browser_tabs`. `KITSUNE_CAPS` remains the browser authority limit; `all` still
-excludes `storage` and `history`. `KITSUNE_PUBLISH`, if explicitly set, can narrow
-which retained direct tools are listed. Scripting does not widen the supplied
-browser transport's grants.
-
-For example, `KITSUNE_CAPS=core,browse,read` lets Python use ordinary page text,
-queries, forms and scrolling in addition to core operations. Merely enabling
-scripting does **not** add those groups. Additional authorized groups enable their
-Python APIs without expanding the minimal MCP list. There is no search/call/publish
-step or dynamic tool publication in this surface.
+Every Python method is available (#525): page text, queries, forms, scrolling,
+cookies and history included. Approvals and the user-tab protection apply to its
+browser requests as to direct calls. There is no search/call/publish step or dynamic
+tool publication in this surface.
 
 ## Moving less-frequent tools to Python
 
@@ -59,11 +51,10 @@ step or dynamic tool publication in this surface.
 Other groups also stay off this MCP list: their existing Python methods are in the
 [API reference](python-api.md), such as `tab.query`, `tab.readability`,
 `tab.computed_style`, `browser.windows`, `browser.cookies` and `browser.history`.
-Keep the same required grants. Methods return the existing bridge/API results;
+Methods return the existing bridge/API results;
 this is not a schema-compatible replacement for every old MCP result.
 
-A call by an old tool name reports `tool_moved_to_python` (or its existing
-capability/mode refusal if unauthorized). Scripts stop at approval and never replay
+A call by an old tool name reports `tool_moved_to_python`. Scripts stop at approval and never replay
 completed work. Use a retained direct action to ask for approval where possible;
 for an approval-gated operation with no suitable retained direct tool, use the
 legacy surface or a developer-written, user-mediated Python program. Automatic

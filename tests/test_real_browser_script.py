@@ -17,9 +17,8 @@ class RealBrowserScriptTests(harness.RealBrowserTestCase):
         cls.addClassCleanup(cls.site.stop)
         super().setUpClass()
 
-    async def scenario(self, mode, run, caps):
-        env = {**self.bridge.env, "KITSUNE_SCRIPTING": "1", "KITSUNE_CAPS": caps,
-               "KITSUNE_PUBLISH": caps, "KITSUNE_MODE": mode, "KITSUNE_OWNER_ID": "script-smoke"}
+    async def scenario(self, run):
+        env = {**self.bridge.env, "KITSUNE_SCRIPTING": "1", "KITSUNE_OWNER_ID": "script-smoke"}
         params = StdioServerParameters(command=sys.executable, args=["-m", "kitsune.server"], env=env)
         async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
             await session.initialize()
@@ -28,29 +27,23 @@ class RealBrowserScriptTests(harness.RealBrowserTestCase):
             self.assertIn("browser_run_python", names)
             self.assertNotIn("browser_forms", names)
             self.assertNotIn("browser_hover", names)
-            if mode == "act":
-                opened = await session.call_tool("browser_tabs", {"action": "new", "url": self.site.origin})
-                self.assertFalse(opened.isError, opened)
-                selected = await session.call_tool("browser_run_python", {"code": "result = tab.id"})
-                self.assertFalse(selected.isError, selected)
-                tab_id = json.loads(selected.content[0].text)["result"]
-            else:
-                opened = await session.call_tool("browser_tab_list", {"new_tab": self.site.origin})
-                self.assertFalse(opened.isError, opened)
-                tab_id = json.loads(opened.content[0].text)["tabId"]
+            opened = await session.call_tool("browser_tabs", {"action": "new", "url": self.site.origin})
+            self.assertFalse(opened.isError, opened)
+            selected = await session.call_tool("browser_run_python", {"code": "result = tab.id"})
+            self.assertFalse(selected.isError, selected)
+            tab_id = json.loads(selected.content[0].text)["result"]
             # The fixture's unrestricted operator channel cleans up even if the MCP session fails.
             self.addCleanup(self.call, "/api/close-tab", {"tabId": tab_id})
             await run(session, tab_id)
 
-    def run_scenario(self, mode, run, caps="core,read,browse"):
-        asyncio.run(asyncio.wait_for(self.scenario(mode, run, caps), 60))
+    def run_scenario(self, run):
+        asyncio.run(asyncio.wait_for(self.scenario(run), 60))
 
-    def test_default_core_guide_reads_tab_dicts_without_granting_query(self):
+    def test_guide_reads_tab_dicts_and_every_method_runs(self):
         async def run(session, tab_id):
             listed = await session.list_tools()
             description = next(tool.description for tool in listed.tools if tool.name == "browser_run_python")
             self.assertIn("list[dict]", description)
-            self.assertNotIn("tab.query", description)
             example = 'browser.tab(t["id"]).snapshot()'
             self.assertIn(example, description)
             # Read the fixture's page, not browser-owned about:blank or welcome tabs.
@@ -60,9 +53,9 @@ class RealBrowserScriptTests(harness.RealBrowserTestCase):
             self.assertIn("Orders", json.loads(snapshot.content[0].text)["result"])
             query = await session.call_tool("browser_run_python", {
                 "code": f'result = browser.tab({tab_id}).query("h1", fields=["text"])'})
-            self.assertTrue(query.isError, query)
-            self.assertEqual(json.loads(query.content[0].text)["failed_operation"]["code"], "capability_restricted")
-        self.run_scenario("act", run, caps="core")
+            # #525: no capability group limits the supplied browser API.
+            self.assertFalse(query.isError, query)
+        self.run_scenario(run)
 
     def test_direct_and_scripted_draft_share_the_tab_and_refuse_foreign_writes(self):
         foreign = self.open_tab(self.site.origin)
@@ -89,23 +82,7 @@ class RealBrowserScriptTests(harness.RealBrowserTestCase):
             fields = self.call("/api/forms", {"tabId": foreign})["fields"]
             self.assertEqual(next(field["value"] for field in fields if field.get("name") == "name"), "")
 
-            cookies = await session.call_tool("browser_run_python", {"code": "result = browser.cookies.get()"})
-            self.assertTrue(cookies.isError, cookies)
-            self.assertEqual(json.loads(cookies.content[0].text)["failed_operation"]["code"], "capability_restricted")
-
-        self.run_scenario("act", run)
-
-    def test_read_mode_refuses_scripted_writes(self):
-        async def run(session, tab_id):
-            read = await session.call_tool("browser_run_python", {"code": f"result = browser.tab({tab_id}).text()"})
-            self.assertFalse(read.isError, read)
-            self.assertIn("Orders", json.loads(read.content[0].text)["result"])
-            write = await session.call_tool("browser_run_python", {"code": f"browser.tab({tab_id}).fill('#name', 'wrong')"})
-            self.assertTrue(write.isError, write)
-            self.assertEqual(json.loads(write.content[0].text)["failed_operation"]["code"], "mode_restricted")
-            fields = self.call("/api/forms", {"tabId": tab_id})["fields"]
-            self.assertEqual(next(field["value"] for field in fields if field.get("name") == "name"), "")
-        self.run_scenario("read", run)
+        self.run_scenario(run)
 
     def test_approval_stop_keeps_the_draft_and_does_not_offer_script_replay(self):
         self.call("/api/set-policy", {"ask": True})
@@ -126,6 +103,6 @@ class RealBrowserScriptTests(harness.RealBrowserTestCase):
             self.assertEqual(next(field["value"] for field in fields if field.get("name") == "name"), "Keep this draft")
             self.assertEqual(self.call("/api/page-info", {"tabId": tab_id})["title"], "Python API")
         try:
-            self.run_scenario("act", run)
+            self.run_scenario(run)
         finally:
             self.call("/api/set-policy", {"ask": False})

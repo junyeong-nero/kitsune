@@ -10,7 +10,7 @@ focus or select nothing, and the explicitly writable opt-out's scroll shows they
 The core tools run through an MCP client session on this process's server (FastMCP validation
 and its approval elicitation). Their bridge requests go to the class's bridge as one client
 with the read-only user-tab permission and the server's tool-call headers, but not through the
-server's BridgeClient (no client id, approver secret or caps headers).
+server's BridgeClient (no client id or approver secret).
 They act on the agent's current tab, or on the shown tab while there is none. browser_tabs
 select refuses a user tab, so to read or write a background user tab through them the test makes
 that tab current directly; browser_tabs list then marks it current as for any other tab.

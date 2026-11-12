@@ -42,10 +42,9 @@ including a `container_timeout`) keeps a checkpoint. Its response adds two field
 browser_resume(call, resume_token, observed=None, wait=120)
 ```
 
-The tool is in the `core` capability group (#376; it was in `automation`), so the default
-`KITSUNE_CAPS=core` has it. For a container call it sends POST `/api/resume` with
-`{"call", "resume_token", "observed"}`, a route of both `core` and `automation`; `wait` is
-not used. A direct call's checkpoint is resumed by the MCP server itself
+The tool is in the `core` group (#376; it was in `automation`), so both the minimal and
+the legacy tool lists have it. For a container call it sends POST `/api/resume` with
+`{"call", "resume_token", "observed"}`; `wait` is not used. A direct call's checkpoint is resumed by the MCP server itself
 ([Direct calls](#direct-calls)).
 
 The response has the shape of the original call: `results`, `progress`, `status` and
@@ -195,8 +194,7 @@ does with it:
   and the current tab the call ran on. It is dropped when a resume no longer stops on
   `needs_user`. It is lost when that MCP server restarts, and another MCP client cannot
   resume it: the bridge answers `checkpoint_not_found`, and the agent calls the tool again.
-- Holds that cannot be approved get no checkpoint: read and draft modes (`state.approvable:
-  false`), and tools without `confirm_token`. Container results never get a direct checkpoint.
+- Holds that cannot be approved get no checkpoint: tools without `confirm_token`. Container results never get a direct checkpoint.
   [Tab handoff requests](api-reference.md#requesting-and-returning-a-tab) also have no resume
   checkpoint: repeat the exact request with its valid confirm token, or make a fresh request.
 

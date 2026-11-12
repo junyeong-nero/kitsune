@@ -387,8 +387,7 @@ def browser_find(text: str | None = None, regex: str | None = None, filename: st
         return matches
     if load_more and _current_tab is None:
         return k._offering_own_tabs(k._no_current_tab("browser_find", {"load_more": True}))
-    # load_more's scrolls carry loadMore: true, which the bridge admits under the core caps (#447) and the
-    # extension, on a tab this client cannot write, only while the tab is not shown; there find scrolls
+    # load_more's scrolls carry loadMore: true (#447), which the extension, on a tab this client cannot write, only while the tab is not shown; there find scrolls
     # the page back afterwards: how far it scrolled each target (#449).
     scrolled_back = None
     if load_more:

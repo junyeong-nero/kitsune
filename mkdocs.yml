@@ -56,7 +56,7 @@ nav:
   - Concepts:
       - How it works: how-it-works.md
       - Your tabs and approvals: your-tabs.md
-      - Tools, capabilities and modes: tools.md
+      - Tools: tools.md
       - Minimal tools + Python: minimal-tools.md
       - Security: security.md
   - Guides:
