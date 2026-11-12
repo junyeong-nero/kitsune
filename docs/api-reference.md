@@ -49,6 +49,32 @@ MCP tool names and parameters are separate from HTTP endpoint names and JSON
 command actions. Every route and container step is open to every client; the
 `X-Kitsune-Caps` and `X-Kitsune-Mode` headers of older clients are ignored.
 
+### Tool approvals
+
+Every tool is available; the user checks in the extension's options which ones need their
+approval (default: the `storage` and `history` tools), and the extension sends that list to the
+bridge (WebSocket message `{"type": "approvals", "tools": [...]}`; until it does, the default
+holds). See [Tools that need your approval](your-tabs.md#tools-that-need-your-approval).
+
+The MCP server sends `X-Kitsune-Tool` (the tool being called) and `X-Kitsune-Call` (a random id
+per MCP call) on its bridge requests. For an MCP server's request (it sends `X-Kitsune-Approver`)
+the bridge takes the tool from `X-Kitsune-Tool`, from the route for a `browser_run_python`
+script's request, and from the action for a container step (`src/kitsune/tool_approvals.py`).
+When that tool needs approval and was not allowed for this call or this client's session, a
+route answers HTTP 403 `needs_user` with `state.detail: "tool_approval"` and `state.tool`, and
+nothing is sent. The MCP server then asks the user and, once allowed, makes the call again (a
+script sends the refused request again). A container step asks the toolbar popup and waits up to
+30 seconds; unanswered or declined, it fails unrun. Requests without `X-Kitsune-Approver` (the
+Python API, `kitsune-bridge`) and requests outside a tool call are not checked.
+
+`POST /api/tool-approval {tool, summary}` answers `{"ok": true, "required": false}` when nothing is
+needed. Otherwise the extension asks: with `together: true` it returns a `needs_user` with a
+`confirmToken` at once, and the server then sends `{tool, confirmToken, wait: true}` (the popup's
+answer) or `{tool, confirmToken, decision}` (`once`, `session`, `declined`, `cancelled`: the
+client prompt's). Without `together` it waits for the popup. An allowed answer is
+`{"ok": true, "tool", "scope": "once" | "session"}`; the bridge then lets that call's requests
+through, and with `session` the client's later calls of the tool.
+
 ### Tool gateway
 
 On the legacy surface (`KITSUNE_SCRIPTING=0`) `tools/list` starts with the `core` group
@@ -543,6 +569,7 @@ below comes only from a v0.7.1 extension. A `reason` the old `state` carried mov
 |---|---|---|---|
 | `confirmation_required` | `confirmation_required` (`retryable: true`) | [Ask-before-act](#ask-before-act) held a sensitive action (`state.description`, `state.params`) | the hold reason (`submit_control`, `payment_page`, …) |
 | `user_tab` | `user_tab` | A v0.7.1 extension refused `browser_tabs` close on a tab the agent did not open, or `browser_close_window` on a window with one; it stays open (see [Agent-owned tabs](#agent-owned-tabs)) | none |
+| `tool_approval` | — | The user requires approval for `state.tool` ([Tool approvals](#tool-approvals)); nothing was sent. The MCP server asks the user itself; `state.decision` (`declined`, `cancelled`) is set when they did not allow it | none |
 
 ```json
 { "error": "Confirmation required: clicks a submit control (Pay)", "code": "needs_user", "retryable": false,

@@ -36,11 +36,14 @@ def _without_tokens(value):
     return value
 
 
-async def run_python(code, client, *, timeout=30, tab_id=None):
+async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
     """Fresh variables and process; preserve the host client and report every API call.
 
     Timeout/cancellation stops future mediated calls, not a bridge command already sent.
-    No failed call or script is retried. A failed API call stops even a catching script.
+    No failed call or script is retried. A failed API call stops even a catching script, except
+    a refusal for the user's per-tool approval (#525, nothing was sent): approve(tool) asks the
+    user, and on True the same request is sent again. The time the user takes does not count
+    against timeout.
     """
     if not isinstance(code, str) or not code.strip() or len(code.encode("utf-8")) > CODE_LIMIT:
         return {"error": f"code must be non-empty Python, at most {CODE_LIMIT} UTF-8 bytes",
@@ -77,6 +80,7 @@ async def run_python(code, client, *, timeout=30, tab_id=None):
                 append_output(chunk.decode("utf-8", "replace"))
 
         async def events():
+            nonlocal deadline
             await send({"code": code, "tab_id": tab_id})
             while line := await process.stdout.readline():
                 if len(line) > FRAME_LIMIT:
@@ -111,10 +115,21 @@ async def run_python(code, client, *, timeout=30, tab_id=None):
                     if body is not None and type(body.get("tabId")) is int:
                         entry["tab_id"] = body["tabId"]
                     operations.append(entry)
-                    reply = await asyncio.to_thread(
-                        client.request, method, route, start_bridge=False,
-                        timeout=min(seconds, max(0.001, deadline - time.monotonic())),
-                        **({"json": body} if method == "POST" else {}))
+                    while True:
+                        reply = await asyncio.to_thread(
+                            client.request, method, route, start_bridge=False,
+                            timeout=min(seconds, max(0.001, deadline - time.monotonic())),
+                            **({"json": body} if method == "POST" else {}))
+                        state = reply.get("state") if isinstance(reply, dict) else None
+                        if not (approve and isinstance(state, dict) and reply.get("code") == "needs_user"
+                                and state.get("detail") == "tool_approval" and "decision" not in state):
+                            break
+                        asked = time.monotonic()
+                        allowed = await approve(state.get("tool"))
+                        deadline += time.monotonic() - asked
+                        if allowed is not True:
+                            reply = allowed if isinstance(allowed, dict) else reply
+                            break
                     entry["status"] = "failed" if failed(reply) else "ok"
                     reply = _without_tokens(reply)
                     if failed(reply):
@@ -130,9 +145,22 @@ async def run_python(code, client, *, timeout=30, tab_id=None):
                     raise _Stop("script_protocol_error", "Unknown script message")
             raise _Stop("script_error", "Python exited without returning a result")
 
+        async def expire():
+            # The deadline moves while the user is asked to approve a tool.
+            while (left := deadline - time.monotonic()) > 0:
+                await asyncio.sleep(left)
+            raise asyncio.TimeoutError
+
         tasks = [asyncio.create_task(events()), asyncio.create_task(stderr())]
+        watchdog = asyncio.create_task(expire())
         try:
-            result, _ = await asyncio.wait_for(asyncio.gather(*tasks), max(0.001, deadline - time.monotonic()))
+            gathered = asyncio.gather(*tasks)
+            done, _ = await asyncio.wait({gathered, watchdog}, return_when=asyncio.FIRST_COMPLETED)
+            if gathered not in done:
+                gathered.cancel()
+                await asyncio.gather(gathered, return_exceptions=True)
+                watchdog.result()
+            result, _ = gathered.result()
         except asyncio.TimeoutError:
             result = {"error": "Python execution timed out", "code": "script_timeout"}
         except _Stop as stopped:
@@ -146,9 +174,9 @@ async def run_python(code, client, *, timeout=30, tab_id=None):
                     os.killpg(process.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
-                for task in tasks:
+                for task in (*tasks, watchdog):
                     task.cancel()
-                await asyncio.gather(*tasks, return_exceptions=True)
+                await asyncio.gather(*tasks, watchdog, return_exceptions=True)
                 await process.communicate()
 
     if not result.get("ok"):

@@ -251,8 +251,11 @@ async function optionsPage() {
   const element = id => (elements[id] ??= {
     id, hidden: false, disabled: false, textContent: '', listeners: {},
     addEventListener(type, fn) { this.listeners[type] = fn; },
+    replaceChildren() {}, append() {},
   });
   const browser = {
+    // The page's per-tool approvals (#525); tests/tool_approvals.cjs covers them.
+    storage: { local: { get: async () => ({}), set: async () => {} } },
     permissions: {
       contains: async ({ permissions }) => permissions.every(p => granted.has(p)),
       request: async ({ permissions }) => { requests.push([...permissions]); permissions.forEach(p => granted.add(p)); return true; },
@@ -260,8 +263,10 @@ async function optionsPage() {
       onAdded: event(), onRemoved: event(),
     },
   };
-  vm.runInContext(fs.readFileSync('extension/options/options.js', 'utf8'),
-    vm.createContext({ browser, document: { getElementById: element } }));
+  const optionsContext = vm.createContext({ browser, document: {
+    getElementById: element, createElement: () => ({ append() {}, addEventListener() {} }) } });
+  vm.runInContext(fs.readFileSync('extension/background/tool-approvals.js', 'utf8'), optionsContext);
+  vm.runInContext(fs.readFileSync('extension/options/options.js', 'utf8'), optionsContext);
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(requests, [], 'loading the page requests nothing');
   assert.equal(elements['history-status'].textContent, 'not allowed');

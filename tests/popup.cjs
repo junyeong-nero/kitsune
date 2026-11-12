@@ -15,7 +15,7 @@ function popup() {
   const elements = new Map();
   const messages = [];
   const responses = {};
-  const state = { connected: true, calls: 0, lastActivity: null, requests: [], tabs: [], count: 0 };
+  const state = { connected: true, calls: 0, lastActivity: null, requests: [], tabs: [], count: 0, toolApprovals: [] };
   let poll;
   const get = id => {
     if (!elements.has(id)) elements.set(id, new Element());
@@ -30,6 +30,8 @@ function popup() {
         if (responses[message.action]) return responses[message.action](message);
         if (message.action === 'popupStatus') return state;
         if (message.action === 'handoffs') return { requests: state.requests, tabs: state.tabs };
+        if (message.action === 'toolApprovals') return state.toolApprovals;
+        if (message.action === 'toolApprovalDecision') { state.toolApprovals = []; return { ok: true }; }
         if (message.action === 'handoffDecision') state.requests = [];
         if (message.action === 'takeBackHandoff') state.tabs = [];
         if (message.action === 'closeAgentTabs') { const closed = state.count; state.count = 0; return { closed }; }
@@ -113,6 +115,23 @@ async function testHandoffActionsAndSafeLabels() {
   }
 }
 
+async function testToolApprovalCards() {
+  // #525: a tool the user requires approval for asks here; agent-supplied text stays text.
+  for (const [label, decision] of [['Allow once', 'once'], ['Allow for this session', 'session'], ['Decline', 'decline']]) {
+    const h = popup();
+    const record = { id: 'a1', tool: 'browser_cookies', clientName: '<img onerror=alert(1)>', summary: '{"op":"get"}' };
+    h.state.toolApprovals = [record];
+    await h.poll();
+    const card = h.get('tool-approvals').children[0];
+    assert.deepEqual(card.children.slice(1, 4).map(el => el.textContent), [record.clientName, 'browser_cookies', '{"op":"get"}']);
+    assert.ok(card.children.every(el => !('innerHTML' in el)));
+    await card.children.at(-1).children.find(button => button.textContent === label).listeners.click();
+    assert.deepEqual(h.messages.find(msg => msg.action === 'toolApprovalDecision'),
+      { action: 'toolApprovalDecision', id: 'a1', decision });
+    assert.equal(h.get('tool-approvals').children.length, 0);
+  }
+}
+
 async function testBrowserTheme() {
   let theme = { colors: { popup: '#12221a', popup_text: '#e0eee5' }, properties: { color_scheme: 'dark' } };
   let updated;
@@ -166,6 +185,7 @@ function testFixedWidth() {
   await testUsageAndCleanup();
   await testPendingCleanupStaysDisabledAndRecovers();
   await testHandoffActionsAndSafeLabels();
+  await testToolApprovalCards();
   await testBrowserTheme();
   console.log('popup: ok');
 })().catch(error => { console.error(error); process.exit(1); });

@@ -109,6 +109,57 @@ async function showHandoffs() {
     }
   }
 }
+// Per-tool approvals (#525): a tool the user marked in the options page waits for an answer here.
+// Agent-supplied names and arguments are text only.
+let approvalState = '';
+let approvalBusy = 0;
+async function showToolApprovals() {
+  const requests = await browser.runtime.sendMessage({ action: 'toolApprovals' });
+  const serialized = JSON.stringify(requests);
+  if (approvalBusy || serialized === approvalState) return;
+  approvalState = serialized;
+  const root = document.getElementById('tool-approvals');
+  root.replaceChildren();
+  for (const record of requests) {
+    const section = document.createElement('section');
+    section.className = 'handoff';
+    for (const [tag, className, text] of [
+      ['p', 'handoff-label', 'Tool approval'],
+      ['p', 'handoff-client', record.clientName],
+      ['h3', '', record.tool],
+      ['p', 'handoff-reason', record.summary && record.summary !== '{}' ? record.summary : ''],
+    ]) {
+      const line = document.createElement(tag);
+      line.className = className;
+      line.textContent = text;
+      section.append(line);
+    }
+    const actions = document.createElement('div');
+    actions.className = 'actions';
+    for (const [decision, label] of [['decline', 'Decline'], ['session', 'Allow for this session'], ['once', 'Allow once']]) {
+      const button = document.createElement('button');
+      button.className = `button${decision === 'decline' ? ' button-text' : ''}`;
+      button.textContent = label;
+      button.addEventListener('click', async () => {
+        approvalBusy += 1;
+        for (const action of actions.children) action.disabled = true;
+        try {
+          await browser.runtime.sendMessage({ action: 'toolApprovalDecision', id: record.id, decision });
+        } catch {
+          resultLine.hidden = false;
+          resultLine.textContent = 'Could not answer the approval. Try again.';
+        } finally {
+          approvalBusy -= 1;
+        }
+        await showToolApprovals();
+      });
+      actions.append(button);
+    }
+    section.append(actions);
+    root.append(section);
+  }
+}
+showToolApprovals();
 showHandoffs();
 showUsage();
-setInterval(() => { showHandoffs(); showUsage(); showCount(); }, 1000);
+setInterval(() => { showToolApprovals(); showHandoffs(); showUsage(); showCount(); }, 1000);

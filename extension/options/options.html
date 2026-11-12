@@ -6,9 +6,25 @@
   <style>
     body { font: 14px/1.5 system-ui, sans-serif; margin: 1em; max-width: 40em; }
     button { margin-right: 0.5em; }
+    fieldset { margin: 0.5em 0; }
+    label { display: block; font-family: ui-monospace, monospace; font-size: 13px; }
   </style>
 </head>
 <body>
+  <h2>Tools that need your approval</h2>
+  <p>
+    Agents can use every Kitsune tool. A tool checked here waits until you allow it, in the
+    Kitsune toolbar popup or in the agent's own prompt: once, or for the rest of that agent's
+    session. Its use inside Python scripts and batches waits too. By default the tools that read
+    cookies, page storage, the clipboard, saved sessions and history are checked.
+  </p>
+  <p>
+    <button id="approval-defaults">Restore defaults</button>
+    <button id="approval-none">Uncheck all</button>
+    <span id="approval-saved" role="status"></span>
+  </p>
+  <div id="approval-tools"></div>
+
   <h2>History and bookmarks</h2>
   <p>
     Lets agents connected to Kitsune search your browsing history and bookmarks. They get
@@ -22,6 +38,7 @@
     <button id="revoke">Revoke</button>
   </p>
   <p id="error" hidden></p>
+  <script src="../background/tool-approvals.js"></script>
   <script src="options.js"></script>
 </body>
 </html>

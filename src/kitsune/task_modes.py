@@ -18,7 +18,11 @@ APPROVER_HEADER = "X-Kitsune-Approver"
 # "elicitation" on the repeat of a held call the user approved in the MCP client's prompt (#376). The
 # bridge records it only when the request's APPROVER_HEADER matches the one the token was issued to.
 APPROVAL_HEADER = "X-Kitsune-Approval"
-# The characters and length the bridge accepts in CLIENT_HEADER and OWNER_HEADER.
+# The MCP tool a request belongs to and that call's random id (#525): the bridge checks the user's
+# per-tool approvals against them (kitsune.tool_approvals).
+TOOL_HEADER = "X-Kitsune-Tool"
+CALL_HEADER = "X-Kitsune-Call"
+# The characters and length the bridge accepts in CLIENT_HEADER, OWNER_HEADER and CALL_HEADER.
 CLIENT_ID_PATTERN = r"[A-Za-z0-9._:-]{1,64}"
 
 

@@ -122,8 +122,8 @@ def via(name, arguments=None, session="a"):
 
 
 def without_gateway_header(result):
-    """result without the gateway header."""
-    dropped = {task_modes.GATEWAY_TOOL_HEADER}
+    """result without the gateway header and the call id (#525), which differ for every call."""
+    dropped = {task_modes.GATEWAY_TOOL_HEADER, task_modes.CALL_HEADER}
     requests = [{**request, "headers": {key: value for key, value in request["headers"].items()
                                         if key not in dropped}}
                 for request in result["requests"]]

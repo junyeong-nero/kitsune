@@ -118,6 +118,10 @@ result = tab.snapshot()
 - A failed API call stops the invocation even if Python catches exceptions. Its
   failure is returned without approval/resume tokens. Ask for approval through a
   direct tool, then explicitly run only the remaining work—never replay the script.
+  The exception is a tool the user requires approval for
+  ([Tools that need your approval](your-tabs.md#tools-that-need-your-approval)): nothing
+  was sent, so the script waits while the user is asked, then the request is sent again;
+  that wait does not count against the deadline. A decline stops the script as above.
 - Timeout/cancellation kills and reaps the worker process group. An already-sent
   bridge command can still finish; an `unknown` operation needs a fresh page read
   before another write. `ok` in the operation list means the API call succeeded,
