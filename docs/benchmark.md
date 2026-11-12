@@ -21,7 +21,7 @@ and the [full reports](https://github.com/junyeong-nero/kitsune-benchmark/tree/m
 
 | If you want to… | Consider |
 | --- | --- |
-| Hand tasks to an agent in the Firefox-family browser you are using, with background tabs and read/draft/act modes | **Kitsune** |
+| Hand tasks to an agent in the Firefox-family browser you are using, with background tabs and per-tool approvals | **Kitsune** |
 | Debug or profile pages in Firefox (debugger, profiler, deep protocol access) | [Mozilla Firefox DevTools MCP](https://github.com/mozilla/firefox-devtools-mcp), which attaches to a Firefox started with remote-debugging flags |
 | Test across Chromium, Firefox and WebKit in browsers it launches | [Playwright MCP](https://github.com/microsoft/playwright-mcp); Kitsune uses the same core tools, so prompts carry over |
 | Drive the Chrome you already use | A Chromium extension MCP such as [Browser MCP](https://github.com/BrowserMCP/mcp) |

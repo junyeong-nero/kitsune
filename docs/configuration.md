@@ -22,7 +22,7 @@
 `KITSUNE_CAPS`, `KITSUNE_PUBLISH` and `KITSUNE_MODE` were removed (#525): every tool is
 available, and approvals are set in the extension's options. The MCP server refuses to start
 while one is set, so a limit it expected is not silently dropped; remove it from the MCP
-server environment.
+server environment. [Your tabs and approvals](your-tabs.md) lists what limits the agent now.
 
 `~/.kitsune/` holds:
 

@@ -1,5 +1,28 @@
 # Your tabs and approvals
 
+Since 0.8.0 there are no capability groups or task modes: every tool is available to every
+agent. What the agent may do is decided by these checks, which combine:
+
+| Check | What it covers | Where you set it | Default |
+| --- | --- | --- | --- |
+| [Protected tabs](#protecting-your-tabs) | Writes to your tabs and other clients' tabs | `KITSUNE_USER_TABS` in the MCP server environment; per tab, a [handoff](api-reference.md#requesting-and-returning-a-tab) | Read-only, refused without a prompt |
+| [Tool approvals](#tools-that-need-your-approval) | Checked MCP tools, including supplied browser API calls inside Python scripts and batch steps | The extension's options page | Cookies, page storage, clipboard, browsing-data clearing, saved sessions, history and bookmarks |
+| [Ask-before-act](#ask-before-act) | Submits, payment pages, JavaScript, cookie access | `browser_set_policy(ask=True)` or `KITSUNE_ASK_BEFORE_ACT=1` | Off |
+| History permission | History and bookmark lookups | The extension's options page (browser permission) | Not granted |
+| `browser_set_policy` | URL allow/deny lists, read-only mode | The tool, or the bridge API | No limits |
+| `KITSUNE_SCRIPTING=0` | Removes `browser_run_python` (host Python) from the MCP server | The MCP server environment | Python available |
+
+None of these is a sandbox: `browser_run_python` runs ordinary local Python with your user's
+access, and any local program holding the bridge token can reach the bridge directly. Use a
+separate browser profile and the [security guide](security.md) for accounts that matter.
+
+**Upgrading from 0.7:** remove `KITSUNE_CAPS`, `KITSUNE_PUBLISH` and `KITSUNE_MODE` from your
+MCP client's configuration; the server refuses to start while one is set. Review the tools under
+[Tools that need your approval](#tools-that-need-your-approval), or enable
+[ask-before-act](#ask-before-act). These approval checks do not restore the old tool exclusions
+and are not equivalent to a `draft` mode. If you do not trust the agent with host Python,
+also set `KITSUNE_SCRIPTING=0`.
+
 - **Your tabs.** Writes to your tabs fail at once with `user_tab_read_only`, without a prompt.
   The agent opens its own tab instead, or asks for yours with a reason. You see the request in
   the toolbar popup (its badge shows a count) and, on a client with elicitation, in the client's

@@ -9,7 +9,7 @@ selects this tool-set; any other value fails at startup.
 
 ## Direct tools
 
-In `act` mode with `core` enabled, the list is 14 tools:
+The list is 14 tools:
 
 - `browser_tabs`, `browser_navigate`
 - `browser_snapshot`, `browser_find`
@@ -106,15 +106,18 @@ The suite-log SHA-256 is
 The existing `kitsune_benchmark.tool_usage.calls_from_events` collector was reused
 for deduplicating calls; counts agree with the existing per-tool report.
 
-Actual `tools/list` size in `act` mode with `core` enabled (compact JSON characters,
-including the Python tool's short API guide):
+Actual `tools/list` size in 0.8.0 (compact JSON characters, including the Python tool's
+short API guide):
 
 | Surface | Tools | Definitions | Server instructions | Combined |
 | --- | ---: | ---: | ---: | ---: |
-| Legacy, scripting off | 27 | 21,747 | 537 | 22,284 |
-| Minimal, scripting on | 14 | 9,647 | 564 | 10,211 |
+| Legacy (`KITSUNE_SCRIPTING=0`): 27 core + 3 gateway | 30 | 24,032 | 537 | 24,569 |
+| Legacy core tools alone (before 0.8.0's default listing) | 27 | 21,747 | 537 | 22,284 |
+| Minimal (default) | 14 | 9,688 | 564 | 10,252 |
 
-That is about 56% fewer definition characters, or 54% including instructions.
+The minimal list has about 60% fewer definition characters than the 0.8.0 legacy list,
+and 55% fewer than the core tools alone. Since 0.8.0 the legacy list always carries the
+gateway tools, because every other group's tools are available and reachable through them.
 On this surface only, the retained Playwright tools publish shorter parameter
 descriptions and no `$schema` (#521); their names, types, enums, required
 parameters and defaults are unchanged, and the legacy list stays verbatim. Before

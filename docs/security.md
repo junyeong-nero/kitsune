@@ -19,7 +19,9 @@ What it does not protect against:
   which executes ordinary local Python with host file/network/environment access.
   It is not a sandbox. Its supplied browser API uses the MCP client's permissions,
   but code can deliberately bypass that API, read local credentials or create its
-  own connection. Approval settings are not confinement for that code.
+  own connection. Approval settings are not confinement for that code; checking
+  `browser_run_python` in the extension's options requires approval before running a script,
+  unless you have already allowed that tool for the session.
   For a client not trusted with local code execution, set `KITSUNE_SCRIPTING=0`
   (the legacy direct tools, without it); its timeout/output
   limits are lifecycle controls, not OS resource or security boundaries.
@@ -56,7 +58,9 @@ What it does not protect against:
   URLs can still be personal: enable it only for agents you trust with them.
 - **Authenticated actions.** Existing sessions let the agent act as you on
   accessible sites. MCP annotations are client hints, not an approval system.
-  [Ask-before-act](your-tabs.md#ask-before-act) holds actions for your approval. In the client's prompt
+  [Tool approvals](your-tabs.md#tools-that-need-your-approval) hold the tools you check, and
+  [ask-before-act](your-tabs.md#ask-before-act) holds sensitive actions, for your approval.
+  Every tool is available since 0.8.0, so check the tools you want to see first. In the client's prompt
   (elicitation) the approval does not pass through the agent; the confirm token, the
   fallback for clients without elicitation, is an explicit second step, not human
   approval.

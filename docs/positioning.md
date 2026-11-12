@@ -45,14 +45,14 @@ The primary user is a developer, researcher, or power user who:
 - Already uses Claude Code, Codex, Pi, OpenCode, or another external MCP client.
 - Wants help with authorized browser tasks without adopting a different browser
   product or a second agent loop.
-- Wants to choose between reading, preparing a draft, and taking action.
+- Wants to choose which actions wait for their approval.
 
 ### Best-fit work
 
 | Task | Why Kitsune fits |
 | --- | --- |
 | Compare information across several pages | Explicit tab targets, background tabs, compact observations, and optional parallel sequences |
-| Prepare a form in an authorized account | Existing session access and a draft tool surface that excludes click and submit tools |
+| Prepare a form in an authorized account | Existing session access, and submits that wait for the user's approval (per-tool approvals or ask-before-act) |
 | Research while the user works in another tab | User-activity checks, background capture, and agent/user tab ownership rules |
 | Continue interrupted repeated work | Structured outcomes and checkpoint/resume rules that distinguish successful, unstarted, and uncertain writes |
 | Use several coding clients with one browser connection | Automatically started shared bridge behind local stdio MCP servers |
