@@ -79,8 +79,8 @@ rather than giving the worker the actual `BridgeClient`.
 
 ## Python scripting through MCP
 
-The default [minimal tool-set](minimal-tools.md) includes
-`browser_run_python(code, timeout=30)`; `KITSUNE_SCRIPTING=0` in the MCP server
+The default [code-first tool-set](minimal-tools.md) on `main` uses
+`browser_run_python(code, timeout=30)` for ordinary reads, actions and waits; `KITSUNE_SCRIPTING=0` in the MCP server
 environment selects the legacy direct tools without it.
 It permits ordinary local Python execution: **not a sandbox**, including
 host files, environment, imports, subprocesses and network access. Set
@@ -116,8 +116,10 @@ result = tab.snapshot()
   120 seconds. Internal browser replies are capped at 2 MiB. Operation metadata and
   a bounded failed-operation summary accompany the output.
 - A failed API call stops the invocation even if Python catches exceptions. Its
-  failure is returned without approval/resume tokens. Ask for approval through a
-  direct tool, then explicitly run only the remaining work—never replay the script.
+  failure is returned without approval/resume tokens. An approval stop names its
+  `recovery_tool`: inspect it with `browser_tools_call(name)`, then supply `arguments`
+  to execute only the held operation through direct approval. Explicitly run only
+  the remaining work in a new script—never replay the script.
   The exception is a tool the user requires approval for
   ([Tools that need your approval](your-tabs.md#tools-that-need-your-approval)): nothing
   was sent, so the script waits while the user is asked, then the request is sent again;
