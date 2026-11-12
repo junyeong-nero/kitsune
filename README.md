@@ -26,17 +26,18 @@ Your agent works in background tabs; your work stays in front.
 - **No fresh browser. No repeat logins.** Use your existing sessions. No Chromium or WebDriver to install.
 - **Delegate without stepping aside.** The agent researches in background tabs while you keep browsing.
 - **Your tabs stay yours.** The agent must ask before changing them. Approve, take back, and choose which tools need your OK.
-- **Less context spent on tools.** Just 14 tools up front, with Python for more involved work.
+- **A small tool surface.** Six tools on `main`, with Python for browser actions and direct controls for user help and recovery. The 0.8.0 release has 14.
 
-## Less context. Closing the gap.
+## Less input. Broader tasks.
 
-**34% fewer input tokens than Playwright MCP** on 13 jointly solved MiniWoB runs—
-closer to ego lite and Aside, without switching browsers.
+**The 6-tool Kitsune used the least total input in this four-way comparison.**
+23 personal and UI conditions, two repeats; all four configurations completed **46/46 attempts**.
 
-[![Input tokens on 13 jointly solved MiniWoB cells: Kitsune legacy 785k, Playwright MCP 781k, Kitsune default 515k, ego lite 458k, Aside 361k. Lower is better.](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/benchmark-efficiency.svg)](https://github.com/junyeong-nero/kitsune-benchmark)
+[![Cache-inclusive input on the same 46 condition/repeat cells per arm: Kitsune 6-tool 5,730,439; Kitsune previous 14-tool 5,901,946; Aside 5,923,875; EgoLite 7,775,055. Lower is better; all four arms succeeded on 46/46 attempts.](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/benchmark-efficiency.svg)](https://junyeong-nero.github.io/kitsune/benchmark/)
 
-<sub>Small exhibition; browser environments differ. Input tokens, not billed cost.
-<a href="https://github.com/junyeong-nero/kitsune-benchmark">Results, methodology and limitations → kitsune-benchmark</a></sub>
+<sub>Codex gpt-6.1-sol, medium. Input includes cache, not billed cost. Browser environments and permissions differ.
+6-tool adjusted time was 4.8% higher than 14-tool Kitsune and 6.6% higher than Aside; results vary by task.
+<a href="https://junyeong-nero.github.io/kitsune/benchmark/">Results, methodology and limitations →</a></sub>
 
 ## Get started
 
