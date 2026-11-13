@@ -8,9 +8,9 @@ script, so popup.js sends its real messages. The popup is opened programmaticall
 by a toolbar click, and nothing looks at its pixels. popup.html loaded in a tab is not
 an equivalent: background.js answers handoff messages only from a page outside a tab.
 
-A client with elicitation is asked in its prompt together with the popup (#494). Its prompt
-answered at once (answers=[] dismisses every prompt) is the client's policy, not the user's
-answer, so the popup answers.
+A client with elicitation is asked in its prompt together with the popup (#494). A bare
+protocol refusal (answers=[] cancels every prompt) has unknown provenance, so the popup
+can answer within the bounded handoff window (#540). A submitted Decline ends it at any speed.
 
 User tabs are opened by the browser itself, not by the agent. Every MCP server shares
 one stable KITSUNE_OWNER_ID, so a later session is the same client in a new session,
@@ -566,7 +566,6 @@ class RealBrowserHandoffTests(harness.RealBrowserTestCase):
 
         def popup_asks():
             asked = (self.wait_for_card(url, "Tab access request"), self.badge())
-            time.sleep(1.5)  # the user reads the prompt: an answer this late is theirs, not the client's policy
             return asked
 
         async def scenario(session):
@@ -597,13 +596,61 @@ class RealBrowserHandoffTests(harness.RealBrowserTestCase):
         self.assert_acted(acted, url, 1)
 
     def test_a_decline_in_the_client_declines_the_popups_request_too(self):
-        url, (error, declined), listed, write = self.client_answers("client-decline", ("decline", None))
+        url, (error, declined), listed, write = self.client_answers("client-decline", ("accept", "Decline"))
         self.assertTrue(error, declined)
         self.assert_error(declined, "needs_user", False)
         self.assertEqual((declined["state"]["detail"], declined["state"]["decision"]), ("tab_handoff", "declined"))
         self.assertNotIn("confirmToken", json.dumps(declined))
         self.assertNotIn("owned", listed)
         self.assert_read_only(write)
+
+    def test_immediate_explicit_decline_never_waits_for_popup_or_grants_ownership(self):
+        url = self.user_tab("immediate-decline")
+
+        async def scenario(session):
+            started = time.monotonic()
+            result = await session.request(url)
+            elapsed = time.monotonic() - started
+            return result, elapsed, await session.index(url), await session.write(url)
+
+        (error, result), elapsed, listed, write = self.run_session(scenario, answers=[("accept", "Decline")])
+        self.assertTrue(error, result)
+        self.assertEqual(result["state"]["decision"], "declined")
+        self.assertLess(elapsed, 5)
+        self.assertNotIn("confirmToken", json.dumps(result))
+        self.assertNotIn("owned", listed)
+        self.assertFalse(self.tab(url)["active"])
+        self.assert_read_only(write)
+        self.assertEqual(self.retired_cards(url), [])
+        self.assert_badge("")
+
+    def test_bare_decline_without_popup_responder_times_out_and_retires_request(self):
+        url = self.user_tab("policy-timeout")
+
+        async def scenario(session):
+            started = time.monotonic()
+            result = await asyncio.wait_for(session.request(url), 45)
+            elapsed = time.monotonic() - started
+            retired = await asyncio.to_thread(self.retired_cards, url)
+            listed, write = await session.index(url), await session.write(url)
+            again = await session.request(url)  # an explicit new test request, now explicitly declined
+            return result, elapsed, retired, listed, write, again
+
+        (error, result), elapsed, retired, listed, write, again = self.run_session(
+            scenario, answers=[("decline", None), ("accept", "Decline")])
+        self.assertTrue(error, result)
+        self.assertEqual((result["code"], result["retryable"]), ("needs_user", False))
+        self.assertEqual((result["state"]["decision"], result["state"]["waitTimedOut"]), ("cancelled", True))
+        self.assertNotIn("confirmToken", json.dumps(result))
+        self.assertGreaterEqual(elapsed, 29)
+        self.assertLess(elapsed, 40, "actual 30-second window fits the 45-second test client envelope")
+        self.assertEqual(retired, [])
+        self.assert_badge("")
+        self.assertNotIn("owned", listed)
+        self.assertFalse(self.tab(url)["active"])
+        self.assert_read_only(write)
+        self.assertEqual(self.tab(url)["title"], "Handoff policy-timeout")
+        self.assertEqual((again[0], again[1]["state"]["decision"]), (True, "declined"))
 
     def test_unanswered_browser_prompt_falls_back_to_a_confirm_token_without_elicitation(self):
         url = self.user_tab("fallback-token")
