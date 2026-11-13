@@ -146,6 +146,44 @@ class ScriptRunnerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertLessEqual(len(result["output"].encode()), script_runner.OUTPUT_LIMIT)
                 self.assertNotIn("result", result)
 
+    async def test_utf8_combined_output_boundary_is_not_a_character_budget(self):
+        # 7,998 printed bytes + 8,002 bytes for the JSON string, including its quotes.
+        for suffix, succeeds in (("xx", True), ("xxx", False)):
+            code = f"print('é' * 3999, end=''); result = '한' * 2666 + {suffix!r}"
+            result = await script_runner.run_python(code, Client())
+            self.assertEqual(result["ok"], succeeds, result)
+            self.assertEqual(result["output"], "é" * 3999)
+            if succeeds:
+                self.assertEqual(len(result["output"].encode()) +
+                                 len(json.dumps(result["result"], ensure_ascii=False).encode()), 16000)
+            else:
+                self.assertEqual(result["code"], "script_output_limit")
+                self.assertNotIn("result", result)
+        result = await script_runner.run_python("print('한' * 6000, end='')", Client())
+        self.assertEqual(result["code"], "script_output_limit")
+        self.assertEqual(result["output"], "한" * 5333, "do not expose a partial UTF-8 character")
+
+    async def test_observation_overflow_keeps_completed_writes_and_gives_scoped_recovery(self):
+        for observation in ("result = tab.text()", "print(tab.text())\ntab.fill('#draft', 'must not run')"):
+            with self.subTest(observation=observation):
+                client = Client({"/api/page-text": {"text": "한" * 6000},
+                                 "/api/query": {"items": [{"text": "Delivery: three days"}]}})
+                stopped = await script_runner.run_python("tab.fill('#draft', 'keep')\n" + observation,
+                                                         client, tab_id=7)
+                self.assertEqual(stopped["code"], "script_output_limit")
+                self.assertFalse(stopped["retryable"])
+                self.assertNotIn("result", stopped)
+                self.assertNotIn("resume_token", stopped)
+                self.assertEqual([route for _, route, _ in client.calls], ["/api/fill", "/api/page-text"])
+                self.assertEqual([op["status"] for op in stopped["operations"]], ["ok", "ok"])
+                for guidance in ("incomplete", "tab.snapshot", "tab.query", "coverage", "do not replay"):
+                    self.assertIn(guidance, stopped["hint"])
+                recovered = await script_runner.run_python(
+                    "result = tab.query('#delivery', fields=['text'], limit=1)", client, tab_id=7)
+                self.assertEqual(recovered["result"], [{"text": "Delivery: three days"}])
+                self.assertEqual([route for _, route, _ in client.calls],
+                                 ["/api/fill", "/api/page-text", "/api/query"], "only observe; never repeat the draft")
+
     async def test_operation_limit_stops_before_the_extra_call(self):
         client = Client({"/api/tabs": {"tabs": []}})
         with patch.object(script_runner, "OPERATION_LIMIT", 2):

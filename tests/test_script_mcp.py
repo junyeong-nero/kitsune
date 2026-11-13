@@ -128,7 +128,8 @@ class ScriptMcpTests(unittest.TestCase):
                         "tab.query(", "tab.scroll(", "tab.hover(", "tab.drag(", "tab.press(", "tab.wait_for(",
                         "browser_tools_call", "NOT a sandbox", "tab.find(query)", "not text/regex",
                         "max_depth=None", "no depth/boxes args", "CSS-only", "wait_for(target=...) accepts CSS/refs",
-                        "fields append, editors insert at caret", "omitted target uses focus, not the last target"):
+                        "fields append, editors insert at caret", "omitted target uses focus, not the last target",
+                        "16,000 UTF-8 bytes", "filter locally", "coverage"):
             self.assertIn(example, description)
         self.assertNotIn("help(tab.query)", description)
         self.assertNotIn("appends with key events", description)

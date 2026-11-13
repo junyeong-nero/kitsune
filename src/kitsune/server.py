@@ -1373,6 +1373,7 @@ async def browser_run_python(
     NOT a list index. browser.new_tab(url) returns a Tab; scripts do not change MCP selection.
     Return JSON via result or print selected output. Group actions whose targets are already
     known, then read the needed result once. Do not guess refs or replay a failed script.
+    Print/result share 16,000 UTF-8 bytes: scope reads, filter locally, return evidence with coverage.
 
     Action/scoped-snapshot targets: refs like e12 or supported selectors, not DOM ref attributes.
     tab.snapshot(target=None, max_depth=None, text=True) includes visible text; no depth/boxes args.
