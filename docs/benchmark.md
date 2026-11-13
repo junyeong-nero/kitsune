@@ -60,6 +60,12 @@ Source: `kitsune-benchmark/docs/results/2026-11-13-expanded-four-way-codex.md`, 
 README comparison does not depend on access to the benchmark repository. The older interrupted
 85/120 Opus A/B remains separate and incomplete; the new results do not replace its timeout.
 
+### Catalog size is not request-prefix usage
+
+The [offline six-tool catalog audit](six-tool-prefix-review.md) reassesses #521 against current
+`main` and the separately pinned pending guidance stack. It measures serialized definitions,
+not model-request tokens; the Codex cohort has no first-request-input or model-request count.
+
 ## Earlier comparison: five-way MiniWoB
 
 The 2026-11-12 exhibition compares Kitsune's default and legacy surfaces on the **same source
