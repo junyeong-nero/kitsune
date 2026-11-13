@@ -174,8 +174,8 @@ print(selected[:10])
 ```
 
 If the query was truncated, it warns: these are matches **within the returned
-subset**, not a complete page search. Narrow the selector or increase `limit` when
-needed. Permission failures and other failed calls raise `KitsuneError` and stop an
+subset**, not a complete page search. Narrow the selector or increase `limit` up to the
+500-row cap when needed; individual text/value snippets are also capped at 400 characters. Permission failures and other failed calls raise `KitsuneError` and stop an
 uncaught loop; earlier writes remain applied. Do not restart the whole loop after a
 timeout or disconnect—observe the affected page before deciding what is left to do.
 
@@ -242,6 +242,56 @@ Sensitive values read redacted, as for the MCP tools
 bridge cuts a read at its size cap (page text at 20,000 characters, HTML at 100 KB,
 Markdown at 80 KB), the method warns with a `UserWarning`; read a part of the page
 with a `target` instead.
+
+### Bounded long-page observations
+
+The scripting response has a **16,000-byte UTF-8 budget shared by printed output and the JSON
+result**, including result serialization, not a 16,000-character budget. Korean and other
+multibyte text can reach it well before a bridge read's character cap. Do not print the whole
+page and also return it. Intermediate reads stay local unless printed/returned; this lets you
+select evidence before sending it, but the bridge's own caps and 2 MiB internal-response limit
+still apply.
+
+Start with a known region or a bounded index of headings/links, not an unrestricted text dump:
+
+```python
+# Discover candidate sections from this page's navigation; not a full body-text search.
+links = tab.query("nav a[href]", fields=["text", "href"], limit=200)
+matches = [link for link in links if "delivery" in link.get("text", "").casefold()]
+result = {"scope": "navigation link text, first 200 rows",
+          "matches": matches[:5], "more_matches": len(matches) > 5}
+```
+
+Then read the section identified by an **observed** fragment/selector, for example a returned
+link to `#delivery` (do not invent the ID):
+
+```python
+result = {"scope": "#delivery subtree", "evidence": tab.snapshot("#delivery", text=True)}
+```
+
+Choose a smaller subtree or `max_depth` if that section is still large. Return the needed facts
+with their scope; if you slice/filter results further, disclose that restriction. A finite row
+limit alone does not guarantee every selected string fits the output budget.
+
+Coverage limits are separate:
+
+- Query is native CSS in the current document, not automatic shadow/frame traversal. It returns
+  at most 500 rows; a `UserWarning` reports omitted rows. Preserve that warning in the response.
+- Query `text` and `value` are snippets, clipped at 400 characters even when **no row warning**
+  occurs. A match may lie past that prefix. Use a scoped snapshot for detail; do not treat an
+  empty local filter as proof the whole page lacks the fact.
+- Snapshot depth, text/size caps and truncation markers limit the inspected subtree. Broader
+  coverage needs further scoped reads, not a claim that the current subset is complete.
+- `find(query)` ranks element descriptions (with its existing matching-CSS fast path); it is
+  not direct `browser_find(text=..., regex=...)`. See the argument distinctions below.
+
+On `script_output_limit`, output/result is **incomplete**, not a successful full observation.
+Read the operation statuses, then make a new **read-only** scoped observation. Completed writes
+remain applied; do not rerun the whole script, toggle a checkbox again, or repeat a save. A final
+`result` overflow is detected after Python finishes, so assignment to `result` does not stop any
+later statements. An `unknown` operation needs observation before deciding to write again.
+Approval recovery is separate from this read-size problem; do not use filesystem dumps, page
+JavaScript, or a larger/unbounded output limit as an escape hatch.
 
 ### Selector contract by method
 

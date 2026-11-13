@@ -598,7 +598,9 @@ class Tab:
         """Fields (text, href, value, src, alt, id, name by default) of elements matching native CSS.
 
         Current document only: no shadow/frame traversal, snapshot refs or Playwright forms
-        such as :has-text or text=. Filter a bounded result in Python for text matching.
+        such as :has-text or text=. At most 500 rows; text/value fields are clipped to 400
+        characters. A row-limit warning does not report those field clips. Filter locally,
+        but absence in returned snippets is not page-wide absence; scope a snapshot for detail.
         """
         body = {"selector": selector, "limit": limit}
         if fields:

@@ -188,4 +188,10 @@ async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
         result.update(ok=False, retryable=False,
                       hint="Earlier operations may have taken effect. Inspect the page; do not replay the whole script. "
                            "Use browser_tools_call for direct approval/recovery, then a new script for remaining work.")
+        if result.get("code") == "script_output_limit":
+            result["hint"] = ("Output/result is incomplete. Earlier operations may have taken effect; do not replay "
+                              "the whole script or completed writes. In a new read-only script, use "
+                              "tab.snapshot(target=..., max_depth=..., text=True) or "
+                              "tab.query(CSS, fields=[...], limit=...). Filter locally and return only needed "
+                              "evidence. Disclose coverage/truncation: no match in a subset is not page-wide absence.")
     return {**result, "output": output.decode("utf-8", "ignore"), "operations": operations}
