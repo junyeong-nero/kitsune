@@ -770,7 +770,9 @@ def browser_tabs(action: str, index: float | None = None, url: str | None = None
     if tab_id is not None and action != "close":
         # Ignoring it would act on another tab than the one named (#481).
         return {"error": f"tab_id is not supported for action={action}; only close and request take it",
-                "code": "invalid_argument", "retryable": False}
+                "code": "invalid_argument", "retryable": False,
+                "hint": "For select, pass index from browser_tabs action=list, not a tab ID. "
+                        "Python browser.tab(id) instead uses an actual ID from browser.tabs()."}
     if action == "list":
         return _tab_list(permission_hint=True)
     if action == "new":
@@ -789,7 +791,8 @@ def browser_tabs(action: str, index: float | None = None, url: str | None = None
         return {**result, "index": result["tab"]["index"]} if "tab" in result else result
     if action == "select":
         if index is None:
-            return {"error": "index is required for action=select"}
+            return {"error": "index is required for action=select", "code": "invalid_argument", "retryable": False,
+                    "hint": "Use index from browser_tabs action=list. A Python tab ID is not this list index."}
         tab, error = _listed_tab(index)
         if error:
             return error

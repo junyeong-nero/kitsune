@@ -315,7 +315,11 @@ function load(dom) {
   });
   vm.runInContext(fs.readFileSync('extension/content/content.js', 'utf8'), context);
   // Results come from the vm realm, so compare plain copies.
-  return msg => new Promise(resolve => listener(msg, {}, result => resolve(JSON.parse(JSON.stringify(result)))));
+  return msg => new Promise(resolve => {
+    let answered = false;
+    const pending = listener(msg, {}, result => { answered = true; resolve(JSON.parse(JSON.stringify(result))); });
+    assert.ok(pending || answered, `unhandled fixture action: ${msg.action}`);
+  });
 }
 
 const clicks = elements => elements.map(el => el.events.filter(type => type === 'click').length);
@@ -446,7 +450,8 @@ async function testUnsupportedSyntaxIsNotRetryable() {
     // #487: a tab's hint is the step that reads it, not the selector forms.
     const tab = /^tab\W*(\d)$/i.exec(selector);
     if (tab) {
-      assert.match(result.hint, new RegExp(`^browser_tabs action=select index=${tab[1]} makes it current`), selector);
+      assert.match(result.hint, /browser_tabs action=list, then action=select with an index from that list/, selector);
+      assert.doesNotMatch(result.hint, /index=\d+/, 'a tab-like target does not establish its list index');
       assert.doesNotMatch(result.hint, /text=|role=|>>|xpath=/, selector);
     } else {
       assert.match(result.hint, /text=.*role=.*>> chains/, selector);
@@ -473,7 +478,8 @@ async function testUnsupportedSyntaxIsNotRetryable() {
   const snapshot = await send({ action: 'getSnapshot', selector: 'tab:1' });
   assert.equal(snapshot.code, 'unsupported_selector', JSON.stringify(snapshot));
   assert.match(snapshot.error, /names a tab, not an element$/);
-  assert.match(snapshot.hint, /^browser_tabs action=select index=1 .*then call browser_snapshot\.$/);
+  assert.match(snapshot.hint, /action=list, then action=select with an index from that list; then call browser_snapshot/);
+  assert.match(snapshot.hint, /actual ID from browser\.tabs/);
 }
 
 const byId = (dom, id) => [dom.html, ...dom.html.descendants()].find(el => el.id === id);
@@ -763,6 +769,52 @@ async function testSelectorListsAndScopedMisses() {
   assert.equal(unsupported.code, 'unsupported_selector', JSON.stringify(unsupported));
 }
 
+async function testMethodSelectorContractMatrix() {
+  // #541: a valid action/snapshot selector is not automatically a query/wait selector.
+  const dom = page();
+  const send = load(dom);
+  const snapshot = (await send({ action: 'getSnapshot' })).snapshot;
+  const ref = /- button "2" \[ref=(s\d+e\d+)\]/.exec(snapshot)?.[1];
+  assert.ok(ref, snapshot);
+  const extended = ['button:text-is("2")', 'role=button[name="2"]', 'text="2"'];
+  for (const selector of ['#p2', ref, ...extended]) {
+    assert.equal((await send({ action: 'click', selector })).ok, true, selector);
+    const scoped = await send({ action: 'getSnapshot', selector });
+    assert.ok(!scoped.error, `${selector}: ${JSON.stringify(scoped)}`);
+    assert.match(scoped.snapshot, /button "2"/);
+  }
+  assert.deepEqual(clicks(dom.pages), [0, 5, 0]);
+  const extracted = await send({ action: 'query', selector: '#p2', fields: ['id'] });
+  assert.deepEqual(extracted.items, [{ tag: 'button', id: 'p2' }]);
+  // A ref is merely a CSS tag name to query, never a handle. Do not reinterpret valid CSS.
+  assert.deepEqual((await send({ action: 'query', selector: ref })).items, []);
+  for (const selector of ['#p2', ref]) {
+    const waited = await send({ action: 'waitForElement', selector, timeout: 0 });
+    assert.equal(waited.ok, true, JSON.stringify(waited));
+    assert.equal(waited.ref, ref);
+  }
+  for (const action of ['query', 'waitForElement']) {
+    for (const selector of [...extended, 'button:has-text("2")', '#p2 >> nth=0']) {
+      const rejected = await send({ action, selector, timeout: 0 });
+      assert.equal(rejected.code, 'unsupported_selector', `${action}: ${JSON.stringify(rejected)}`);
+      assert.equal(rejected.retryable, false);
+      assert.match(rejected.hint, /CSS/);
+      assert.match(rejected.hint, action === 'query' ? /tab\.query/ : /tab\.wait_for/);
+    }
+  }
+  assert.deepEqual(clicks(dom.pages), [0, 5, 0], 'rejected forms never click');
+
+  // Query stays in the current document; CSS waits and scoped snapshots see these other trees.
+  for (const fixture of [() => newsletterShadowPage('closed'), () => framePage(h('input', { id: 'email' }))]) {
+    const other = load(fixture());
+    assert.deepEqual((await other({ action: 'query', selector: '#email' })).items, []);
+    const waited = await other({ action: 'waitForElement', selector: '#email', timeout: 0 });
+    assert.equal(waited.ok, true, JSON.stringify(waited));
+    assert.ok(!(await other({ action: 'getSnapshot', selector: '#email' })).error);
+    assert.equal((await other({ action: 'click', selector: waited.ref })).ok, true);
+  }
+}
+
 async function testPlainCssIsUnchanged() {
   const dom = page();
   const send = load(dom);
@@ -783,6 +835,7 @@ async function testPlainCssIsUnchanged() {
   await testTextIsReadRedacted();
   await testUnsupportedSyntaxIsNotRetryable();
   await testPlainCssIsUnchanged();
+  await testMethodSelectorContractMatrix();
   await testImagesMatchByAlternativeName();
   await testRemainingPlaywrightForms();
   await testRefStartsChain();

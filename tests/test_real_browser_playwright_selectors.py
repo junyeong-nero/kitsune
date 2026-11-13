@@ -122,6 +122,31 @@ class RealBrowserPlaywrightSelectorTests(harness.RealBrowserTestCase):
                 self.assert_ok(self.call("/api/click", {"tabId": tab, "selector": selector, "includeSnapshot": False}))
                 self.assertEqual(self.state(tab)["clicked"], [target])
 
+    def test_selector_contract_matrix_uses_the_browser_css_parser(self):
+        tab = self.open_tab(self.page.origin + "/")
+        snapshot = self.call("/api/snapshot", {"tabId": tab})["snapshot"]
+        ref = re.search(r'- button "2" \[ref=(e\d+)\]', snapshot).group(1)
+        extended = ['button:text-is("2")', 'role=button[name="2"]', 'text="2"']
+        for selector in ["#p2", ref, *extended]:
+            self.assert_ok(self.call("/api/click", {"tabId": tab, "selector": selector, "includeSnapshot": False}))
+            scoped = self.call("/api/snapshot", {"tabId": tab, "selector": selector})
+            self.assertIn('button "2"', scoped.get("snapshot", ""), scoped)
+        for selector in ("#p2", ref):
+            self.assert_ok(self.call("/api/wait-for-element", {"tabId": tab, "selector": selector, "timeout": 100}))
+        query = self.call("/api/query", {"tabId": tab, "selector": "#p2", "fields": ["id"]})
+        self.assertEqual(query["items"], [{"tag": "button", "id": "p2"}])
+        self.assertEqual(self.call("/api/query", {"tabId": tab, "selector": ref})["items"], [])
+        for path, method in (("/api/query", "tab.query"), ("/api/wait-for-element", "tab.wait_for")):
+            for selector in [*extended, 'button:has-text("2")', "#p2 >> nth=0"]:
+                rejected = self.call(path, {"tabId": tab, "selector": selector, "timeout": 100})
+                self.assert_error(rejected, "unsupported_selector", False)
+                self.assertIn(method, rejected["hint"])
+                self.assertIn("CSS", rejected["hint"])
+        self.assertEqual(self.state(tab)["clicked"], ["p2"] * 5, "only the accepted actions clicked")
+        secret = self.call("/api/query", {"tabId": tab, "selector": "#pw", "fields": ["value"]})
+        self.assertNotIn("hunter2-secret", json.dumps(secret))
+        self.assertTrue(secret["items"][0]["hasValue"])
+
     def test_ambiguous_playwright_selectors_click_nothing(self):
         tab = self.open_tab(self.page.origin + "/")
         for selector in ('internal:role=button[name="2"i]', 'button:has-text("저장")'):

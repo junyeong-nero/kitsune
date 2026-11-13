@@ -1374,16 +1374,18 @@ async def browser_run_python(
     Return JSON via result or print selected output. Group actions whose targets are already
     known, then read the needed result once. Do not guess refs or replay a failed script.
 
-    Common API (targets are snapshot refs like e12 or unique selectors, not DOM ref attributes):
+    Action/scoped-snapshot targets: refs like e12 or supported selectors, not DOM ref attributes.
     tab.snapshot(target=None, max_depth=None, text=True) includes visible text; no depth/boxes args.
     tab.find(query) searches descriptions, not text/regex; filter scoped reads in Python for those.
-    tab.query(selector, fields=['text', 'href'], limit=20); tab.text(); tab.forms(); tab.info().
+    tab.query(selector, fields=['text', 'href'], limit=20) is CSS-only, current document; no refs.
+    tab.text(); tab.forms(); tab.info().
     tab.click(target); tab.double_click(target); tab.hover(target); tab.drag(source, destination).
     tab.scroll('down', 700, target=None) scrolls window or element; also up/left/right/top/bottom.
     tab.fill(target, value) replaces; tab.type(target, text) appends with key events.
     tab.fill_form({'#name': 'Ada'}); tab.check(target, True); tab.select_option(target, value).
     tab.press('Enter', target=None, modifiers={'ctrl': True}); tab.navigate(url); tab.back().
     tab.wait_for(text='Done', timeout=10000) or target/url/text_gone (one condition, timeout in ms).
+    wait_for(target=...) accepts CSS/refs, not :has-text or text=/role=; actions may use those.
     Example after selecting a tab: tab.fill('e12', 'Ada'); tab.click('e15'); result = tab.snapshot(text=True).
     help(tab.scroll) prints a specific method's signature. Prefer this API over page evaluate.
 

@@ -193,6 +193,27 @@ class TabRequestTests(BridgeTestCase):
             warnings.simplefilter("error")
             self.assertEqual(self.tab.query("a"), [])
 
+    def test_mcp_indices_and_python_ids_never_reinterpret_each_other(self):
+        # The MCP list's indices 0/1 refer to actual IDs 3/7, not to tabs 0/1.
+        with patch.object(tools, "client", self.browser.client), patch.object(playwright_tools, "_current_tab", None):
+            selected = playwright_tools.browser_tabs("select", index=1)
+            self.assertEqual(selected["index"], 1)
+            self.assertEqual(playwright_tools._current_tab, 7)
+            self.browser.tab(3).info()
+            self.assertEqual(self.bridge.last.body, {"tabId": 3})
+            self.assertEqual(playwright_tools._current_tab, 7)
+            self.assertEqual(self.browser.new_tab().id, 9)
+            self.assertEqual(playwright_tools._current_tab, 7, "Python creation does not change MCP selection")
+            self.assertNotIn("/api/switch-tab", [request.route for request in self.bridge.requests])
+            self.bridge.requests.clear()
+            for arguments in ({"tab_id": 3}, {}):
+                refused = playwright_tools.browser_tabs("select", **arguments)
+                self.assertEqual(refused["code"], "invalid_argument")
+                self.assertFalse(refused["retryable"])
+                self.assertIn("index", refused["hint"])
+                self.assertEqual(playwright_tools._current_tab, 7)
+            self.assertEqual(self.bridge.requests, [], "invalid selection must not touch any tab")
+
     def test_snapshot_rejects_a_bad_depth_before_sending(self):
         for depth in (-1, 1.5, True):
             with self.subTest(depth=depth), self.assertRaises(ValueError):
