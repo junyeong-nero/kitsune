@@ -91,6 +91,7 @@ class ScriptRunnerTests(unittest.IsolatedAsyncioTestCase):
         result = await script_runner.run_python("help(tab.find); help(tab.snapshot)", client, tab_id=7)
         self.assertTrue(result["ok"], result)
         self.assertIn("description", result["output"])
+        self.assertIn("CSS fast path", result["output"])
         self.assertIn("tab.bounds(target)", result["output"])
         self.assertEqual(client.calls, [])
         result = await script_runner.run_python("len(value='wrong')", client)

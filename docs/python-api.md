@@ -240,7 +240,7 @@ with a `target` instead.
 
 | Intent | Direct MCP tool | Python API |
 | --- | --- | --- |
-| Find snapshot text | `browser_find(text=..., regex=...)` | `tab.find(query)` instead ranks description matches, such as `"login button"`; it has no `text`/`regex` keywords |
+| Find snapshot text | `browser_find(text=..., regex=...)` | `tab.find(query)` has a best-effort CSS fast path, otherwise ranks description matches such as `"login button"`; it has no `text`/`regex` keywords |
 | Limit snapshot depth | `browser_snapshot(depth=...)` | `tab.snapshot(target=None, max_depth=..., text=False)`; `max_depth` and `text` are keyword-only |
 | Observe geometry | `browser_snapshot(boxes=True)` | No `boxes` argument; `tab.bounds(target)` reads one element's box |
 

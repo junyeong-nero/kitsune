@@ -586,9 +586,10 @@ class Tab:
     def find(self, query: str) -> list[dict]:
         """Elements matching a description such as "login button", best first, each with a ref.
 
-        query is a description, not CSS or a regex. Unlike direct MCP browser_find, there are
-        no text/regex arguments. For literal/regex search, filter a scoped snapshot or bounded
-        query result in Python; matches only cover that returned subset, not the whole page.
+        A matching CSS selector may use the existing CSS fast path; otherwise query words are
+        ranked as a description. This is not direct MCP browser_find's snapshot text/regex search:
+        there are no text/regex arguments. Filter a scoped snapshot or bounded query in Python
+        for those; matches only cover that returned subset, not the whole page.
         """
         return self._request("/api/find", {"query": query})["results"]
 
