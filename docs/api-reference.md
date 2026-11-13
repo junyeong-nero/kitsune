@@ -1339,15 +1339,29 @@ tab title, URL, and the agent's reason, with **Approve handoff** and **Decline**
 labels are untrusted text, not page HTML or executable links. Only the extension popup
 can answer: a page/content script cannot spoof it.
 
-On an MCP client with elicitation (#494), the popup and the client's prompt ask at once,
-for up to 120 seconds, and the first answer counts. The extension returns the request's
-confirm token at once, to the MCP server only: the server asks in the client's prompt and
-waits for the popup's answer, and the popup lists the request from then on. A popup answer
-closes the client's prompt. Choosing Approve in the client's required decision field hands the tab off. Decline or
-dismissing it declines the request, and the popup's prompt closes too. A decline or dismissal
-the client returns within 1 second is not the user's: it is the client's policy (Codex with
-`approval_policy = "never"` declines every prompt) or a hook. Then, as when the client's prompt
-fails, the popup alone answers until the request expires. A cancelled call ends the request.
+On an MCP client with elicitation (#494, #540), the popup and the client's prompt ask at once,
+with a **30-second concurrent response window**. The first valid answer counts. The extension
+returns the request's confirm token at once, to the MCP server only: the server asks in the client's
+prompt and waits for the popup's answer, and the popup lists the request from then on. A popup
+answer closes the client's prompt. Submitting **Approve** in the required decision field hands the
+tab off; submitting **Decline** ends the request and closes the popup, even if submitted immediately.
+
+A bare MCP `decline`/`cancel` (including the client's outer Decline/Esc), an invalid/empty accept,
+or failed elicitation is **not proof of a human decision or approval**. There is no timing-based
+classification: the popup remains answerable for the remainder of the same 30-second window,
+not an additional window. This preserves popup fallback for automatically declining clients.
+To refuse immediately, submit the form's Decline choice or use the popup's Decline.
+
+If no result is confirmed in that window, the server closes the client prompt and requests cancellation
+of the popup, allowing at most **5 additional seconds for cleanup** without starting another bridge.
+It returns `needs_user`, `retryable: false`, `state.decision="cancelled"`, and
+`state.waitTimedOut=true`, with no confirm token. This bounds the approval phase, not initial bridge
+setup or every possible client's request deadline. Progress notifications do not extend the window.
+Client cancellation also requests cleanup. Cancellation never grants permission, replays writes, or
+rolls back an explicit approval that raced with the deadline; check current tab ownership before
+continuing. If the bridge cannot receive cleanup, token expiry or session termination still retires
+its request. Do not loop on handoff: use an agent-owned tab or ask the user before requesting again.
+Per-tool approvals and ask-before-act keep their separate policies.
 
 Other callers are asked in the browser first: a browser answer completes the call, and no
 answer for **30 seconds** retires that browser prompt. The result then contains a 120-second

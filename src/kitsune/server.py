@@ -407,10 +407,10 @@ class KitsuneMCP(FastMCP):
         (#494): the first the user gives. held is the extension's needs_user with the request's confirm
         token, which the model never sees; the popup asks once this server waits for its answer.
 
-        An explicit Approve in the client's prompt hands the tab off; Decline or dismissing it declines the
-        request, which closes the popup's prompt too. A prompt that failed, or a decline or dismissal within
-        CLIENT_POLICY_SECONDS (the client's policy or a hook, not the user), leaves the popup to answer until
-        the token expires. An answer in the popup closes the client's prompt."""
+        A submitted Approve or Decline settles the request at any speed. A bare protocol decline/cancel
+        has unknown provenance, like a failed/invalid prompt: only the popup can answer it. The concurrent
+        wait is bounded by HANDOFF_RESPONSE_SECONDS, then the request is cancelled, never approved. An
+        answer in the popup closes the client's prompt; no timing heuristic identifies a human."""
         request = self._mcp_server.request_context
         state = held["state"]
         body = {"tabId": state["tabId"], "reason": arguments.get("reason"), "confirmToken": state["confirmToken"]}
@@ -423,34 +423,41 @@ class KitsuneMCP(FastMCP):
         outcome = None
         answering, lost = False, []
         try:
-            async with anyio.create_task_group() as group:
-                async def popup():
-                    nonlocal outcome
-                    result = await post(HANDOFF_WAIT_SECONDS, wait=True)
-                    if answering and not result.get("ok"):
-                        lost.append(result)  # the client's answer, on its way, settles it
-                        return
-                    outcome = result
-                    group.cancel_scope.cancel()  # closes the client's prompt
+            with anyio.move_on_after(HANDOFF_RESPONSE_SECONDS):
+                async with anyio.create_task_group() as group:
+                    async def popup():
+                        nonlocal outcome
+                        result = await post(HANDOFF_RESPONSE_SECONDS + HANDOFF_CLEANUP_SECONDS, wait=True)
+                        if answering and not result.get("ok"):
+                            lost.append(result)  # the client's answer, on its way, settles it
+                            return
+                        outcome = result
+                        group.cancel_scope.cancel()  # closes the client's prompt
 
-                group.start_soon(popup)
-                asked = anyio.current_time()
-                decision = await _ask_user(session, request, name, arguments, state, failed=None)
-                if decision == "approved" or (decision is not None
-                                              and anyio.current_time() - asked >= CLIENT_POLICY_SECONDS):
-                    answering = True
-                    answered = await post(45, **({} if decision == "approved" else {"decision": decision}))
-                    if (first_answer := _first_answer(answered, lost)) is None:
-                        answering = False  # the popup's open wait returns the answer that settled it
-                    else:
-                        outcome = first_answer
-                        group.cancel_scope.cancel()
-                elif _sends_progress(request):
-                    group.start_soon(_keep_alive, session, request, "Waiting for the user's answer in the browser")
+                    group.start_soon(popup)
+                    decision = await _ask_user(session, request, name, arguments, state,
+                                               failed=None, explicit_only=True)
+                    if decision is not None:
+                        answering = True
+                        answered = await post(45, **({} if decision == "approved" else {"decision": decision}))
+                        if (first_answer := _first_answer(answered, lost)) is None:
+                            answering = False  # the popup's open wait returns the answer that settled it
+                        else:
+                            outcome = first_answer
+                            group.cancel_scope.cancel()
+                    elif _sends_progress(request):
+                        group.start_soon(_keep_alive, session, request, "Waiting for the user's answer in the browser")
         finally:
-            if outcome is None:  # the call was cancelled: the popup stops asking
-                with anyio.CancelScope(shield=True):
-                    await post(10, start_bridge=False, decision="cancelled")
+            if outcome is None:  # deadline or client cancellation: retire the popup without a new bridge
+                with anyio.move_on_after(HANDOFF_CLEANUP_SECONDS, shield=True):
+                    await post(HANDOFF_CLEANUP_SECONDS, start_bridge=False, decision="cancelled")
+        if outcome is None:
+            outcome = _unapproved(held, "cancelled",
+                "No approval result was confirmed before the handoff wait ended. Cancellation was requested; "
+                "this is not approval or rollback of a racing explicit approval. Check the tab's current ownership; "
+                "work in your own tab, or ask the user before requesting handoff again.")
+            outcome["error"] = "Tab handoff wait timed out"
+            outcome["state"]["waitTimedOut"] = True
         return CallToolResult(content=[_compact_json(_without_tokens(outcome))], isError=_failed(outcome))
 
     async def _answered(self, session, result, ask_seconds=None):
@@ -721,11 +728,14 @@ ONE_STEP_ACCEPT = "Accept or Continue"
 # permission prompts are auto-approved (approval_policy never with full access, or a tool set to always
 # allow) and declines one with a required field; it submits that field with one Enter.
 FIELD_PROMPT_CLIENTS = {"codex-mcp-client"}
-# A decline or dismissal the client returns this soon is not the user's: the client's policy (Codex with
-# approval_policy never declines every prompt) or a hook. The toolbar popup keeps asking (#494).
+# Legacy per-tool approval heuristic (#494/#525); handoffs no longer infer provenance from timing (#540).
 CLIENT_POLICY_SECONDS = 1
-# How long _handoff waits for the toolbar popup's answer: bridge.HANDOFF_WAIT_SECONDS and a margin.
+# Per-tool popup wait: bridge.HANDOFF_WAIT_SECONDS and a margin. Not the handoff response budget.
 HANDOFF_WAIT_SECONDS = 135
+# Bound the handoff's concurrent prompts, including unsupported/policy-driven clients without a responder.
+# Cleanup has its own small bound and never starts a bridge or grants permission.
+HANDOFF_RESPONSE_SECONDS = 30
+HANDOFF_CLEANUP_SECONDS = 5
 DECISION_HINTS = {
     "declined": "The held action did not run: the user declined it in the approval prompt. Do not repeat it; "
                 "ask the user what to do instead, or work in a tab of your own.",
@@ -913,17 +923,22 @@ def _choice(answer, field: str, choices: dict, accepted: str | None = None, fail
 
 
 async def _ask_user(session, request, name: str, arguments: dict, state: dict, limit=None,
-                    failed: str | None = "cancelled"):
+                    failed: str | None = "cancelled", explicit_only: bool = False):
     """Ask the user about a held call: "approved", "declined", "cancelled" (dismissed), or failed when the
     prompt failed or got no answer until the token's expiresInSeconds less ELICITATION_MARGIN_SECONDS, or
-    limit seconds."""
+    limit seconds. explicit_only accepts a submitted field only; bare protocol refusals have no provenance."""
     seconds = max(1, (state.get("expiresInSeconds") or 0) - ELICITATION_MARGIN_SECONDS)
     if limit is not None:
         seconds = min(seconds, limit)
     answer = await _elicit(session, request, _approval_message(name, arguments, state),
                            APPROVAL_SCHEMA, seconds,
                            "Waiting for the user's approval", "approval prompt")
-    return _choice(answer, "decision", {"Approve": "approved", "Decline": "declined"}, failed=failed)
+    choices = {"Approve": "approved", "Decline": "declined"}
+    if explicit_only:
+        if answer is None or answer.action != "accept":
+            return failed
+        return choices.get((answer.content or {}).get("decision"), failed)
+    return _choice(answer, "decision", choices, failed=failed)
 
 
 def _first_answer(answered: dict, lost: list) -> dict | None:

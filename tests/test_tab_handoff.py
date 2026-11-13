@@ -48,6 +48,12 @@ class PendingHandoffExtension(HandoffExtension):
         self.timer = None
         super().__init__(bridge)
 
+    def close(self):
+        super().close()
+        if self.timer is not None:
+            self.timer.cancel()
+            self.timer.join(timeout=3)
+
     def _serve(self, ws_port, connected):
         try:
             with connect(f"ws://127.0.0.1:{ws_port}", origin=EXTENSION_ORIGIN, open_timeout=5) as ws:
@@ -387,13 +393,16 @@ time.sleep(60)
                         params=types.CancelledNotificationParams(requestId=call_id))))
                 # The SDK's client reads nothing else meanwhile, so a late answer stands for an open prompt.
                 await anyio.sleep(1 if answer is None else delay)
+                if answer == "error":
+                    raise McpError(types.ErrorData(code=-32603, message="Test client cannot ask"))
                 return types.ElicitResult(action=answer or "accept",
                                          content={"decision": decision} if decision is not None else None)
 
             with patch.object(bridge_client, "BRIDGE", "http://" + self.bridge.host), \
                     patch.object(bridge_client, "_headers", return_value=self.bridge.auth()), \
                     patch.object(client, "await_extension"), patch.object(server, "_client", client), \
-                    patch.object(tools, "client", client), patch.object(ServerSession, "send_notification", recording):
+                    patch.object(tools, "client", client), patch.object(ServerSession, "send_notification", recording), \
+                    patch.object(server, "HANDOFF_RESPONSE_SECONDS", 0.7, create=True):
                 async with create_connected_server_and_client_session(server.mcp, elicitation_callback=elicit) as mcp:
                     with anyio.fail_after(10):
                         call_id = mcp._request_id
@@ -409,6 +418,9 @@ time.sleep(60)
                                 cancel and not any("decision" in c for c in self.extension.requests())):
                             await anyio.sleep(0.01)
                     await anyio.sleep(0.1)  # a closed prompt's late reply reaches the server before it closes
+                    self.assertTrue((await mcp.list_tools()).tools, "subsequent MCP calls remain usable")
+                    listed = await mcp.call_tool("browser_tabs", {"action": "list"})
+                    self.assertFalse(listed.isError, listed)
             value = None
             if response is not None:
                 self.assertNotIn("test-token", response.content[0].text, "the model never sees the token")
@@ -425,6 +437,10 @@ time.sleep(60)
             return value, [a.get("decision", "approve") for a in answers], any(closed)
 
         async def run():
+            # #540: a submitted decision is explicit even when it arrives immediately.
+            for delay in (0, 0.2):
+                value, answers, _ = await request(None, "accept", delay=delay, decision="Decline")
+                self.assertEqual((value["state"]["decision"], answers), ("declined", ["declined"]))
             # The popup answers first: the client's prompt closes, and nothing answers for the client.
             self.assertEqual(await request(OWNED, None), (OWNED, [], True))
             declined, answers, closed = await request(not_handed_off("declined"), None)
@@ -435,13 +451,25 @@ time.sleep(60)
             for decision in (None, "", "invalid"):
                 value, answers, _ = await request(not_handed_off("declined"), "accept", decision=decision)
                 self.assertEqual((value["state"]["decision"], answers), ("declined", []))
-            with patch.object(server, "CLIENT_POLICY_SECONDS", 0.1):
-                for answer, decision in (("decline", "declined"), ("cancel", "cancelled")):
-                    value, answers, _ = await request(None, answer, delay=0.2)
-                    self.assertEqual((value["state"]["decision"], answers), (decision, [decision]))
-            # A decline at once is the client's policy, not the user's: the popup keeps asking.
-            value, answers, _ = await request(OWNED, "decline", popup_delay=0.5)
-            self.assertEqual((value, answers), (OWNED, []))
+            # Bare protocol refusals have no reliable provenance, regardless of response time.
+            for answer in ("decline", "cancel", "error"):
+                for delay in (0, 0.2):
+                    value, answers, _ = await request(OWNED, answer, delay=delay, popup_delay=0.5)
+                    self.assertEqual((value, answers), (OWNED, []))
+                started = time.monotonic()
+                value, answers, _ = await request(None, answer)
+                self.assertEqual((value["state"]["decision"], answers), ("cancelled", ["cancelled"]))
+                self.assertTrue(value["state"]["waitTimedOut"])
+                self.assertLess(time.monotonic() - started, 3, "unanswered fallback must be bounded")
+                self.assertTrue(self.extension.settled)
+                self.assertIsNone(self.extension.waiting, "no pending popup wait after timeout")
+            # A late explicit approval after the deadline is ignored and its prompt is closed.
+            value, answers, closed = await request(None, None)
+            self.assertEqual((value["state"]["waitTimedOut"], answers, closed), (True, ["cancelled"], True))
+            # Token expiry remains a refusal, not an approval or another timeout window.
+            value, answers, _ = await request(not_handed_off("cancelled"), "cancel")
+            self.assertEqual((value["state"]["decision"], answers), ("cancelled", []))
+            self.assertNotIn("waitTimedOut", value["state"])
             # A cancelled call stops the popup's prompt too.
             value, answers, _ = await request(None, "accept", delay=0.2, cancel=True)
             self.assertEqual((value, answers), (None, ["cancelled"]))
@@ -458,6 +486,40 @@ time.sleep(60)
 
 
 class HandoffFacadeTests(unittest.TestCase):
+    def test_handoff_timeout_also_bounds_cleanup_without_approval(self):
+        self.assertEqual((server.HANDOFF_RESPONSE_SECONDS, server.HANDOFF_CLEANUP_SECONDS), (30, 5))
+        held = {"error": "approval", "code": "needs_user", "retryable": False, "state": {
+            "reason": "approval", "detail": "tab_handoff", "tabId": 1, "confirmToken": "opaque"}}
+        release, calls = threading.Event(), []
+
+        def stalled_post(endpoint, body, **kwargs):
+            calls.append((endpoint, body, kwargs))
+            release.wait(5)  # a nonresponsive bridge must not hold the MCP task indefinitely
+            return {"error": "Bridge unavailable"}
+
+        async def run():
+            with patch.object(type(server.mcp._mcp_server), "request_context", new_callable=PropertyMock,
+                              return_value=SimpleNamespace(meta=None)), \
+                    patch.object(server, "_ask_user", new_callable=AsyncMock, return_value=None), \
+                    patch.object(server, "HANDOFF_RESPONSE_SECONDS", 0.05), \
+                    patch.object(server, "HANDOFF_CLEANUP_SECONDS", 0.05), \
+                    patch.object(tools, "_post", side_effect=stalled_post):
+                started = time.monotonic()
+                try:
+                    result = await server.mcp._handoff(None, "browser_tabs", {"reason": "work"}, held)
+                    self.assertLess(time.monotonic() - started, 1)
+                    self.assertTrue(result.isError)
+                    self.assertNotIn("opaque", result.content[0].text)
+                    state = json.loads(result.content[0].text)["state"]
+                    self.assertEqual((state["decision"], state["waitTimedOut"]), ("cancelled", True))
+                    self.assertEqual(len(calls), 2)
+                    self.assertTrue(calls[0][1]["wait"])
+                    self.assertEqual(calls[1][1]["decision"], "cancelled")
+                    self.assertFalse(calls[1][2]["start_bridge"])
+                finally:
+                    release.set()
+        anyio.run(run)
+
     def test_native_request_and_core_index_use_same_endpoint(self):
         with patch.object(tools, "_post", return_value={"ok": True}) as post:
             tools.browser_tabs("request", tab_id=5, reason="work", confirm_token="token")

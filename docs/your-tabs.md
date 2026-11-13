@@ -26,7 +26,10 @@ also set `KITSUNE_SCRIPTING=0`.
 - **Your tabs.** Writes to your tabs fail at once with `user_tab_read_only`, without a prompt.
   The agent opens its own tab instead, or asks for yours with a reason. You see the request in
   the toolbar popup (its badge shows a count) and, on a client with elicitation, in the client's
-  prompt at the same time; answer in either and the other closes. Without elicitation the client
+  prompt at the same time for up to 30 seconds. Submit the form's **Approve/Decline** choice or
+  answer in the popup; the other closes. The client's outer Decline/Esc has unknown provenance,
+  so the popup stays available for the remainder of that window. No confirmed result means a
+  cancelled request, with up to 5 seconds of cleanup, never automatic approval. Without elicitation the client
   is asked only after 30 seconds without an answer in the popup. An approved tab is the agent's
   until you press **Take back** or its session ends. It does not give the agent your real mouse or keyboard.
   To let the agent write to your tabs without asking, set `KITSUNE_USER_TABS=writable`
@@ -54,8 +57,9 @@ scrolling, hovering, focusing, navigation, reload and close fail immediately wit
 Open the URL in a tab of the agent's own (`browser_tabs action=new`) before writing.
 Alternatively, `browser_tabs action=request` with an `index` or `tab_id` and a `reason`
 asks for a [session-scoped handoff](api-reference.md#requesting-and-returning-a-tab). On a client with elicitation
-the toolbar popup and the client's prompt ask at once and the first answer counts; otherwise approval is
-browser-first, then a confirm token after 30 seconds. A grant permits DOM/browser
+the toolbar popup and the client's prompt ask at once within the same 30-second window; a submitted
+Approve/Decline choice or popup answer settles it. Otherwise approval is browser-first, then a confirm
+token after 30 seconds. A grant permits DOM/browser
 operations, **not trusted/native OS input**; it does not select or activate the tab.
 Approving also releases text you left in a focused field of that tab, so the agent can
 finish a form you started there. The user can **Take back** in the popup; session end or bridge/extension disconnection
