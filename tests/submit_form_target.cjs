@@ -21,7 +21,10 @@ class Element extends EventTarget {
   hasAttribute(key) { return key in this.attrs; }
   matches(selector) {
     return selector.split(',').map(s => s.trim()).some(s => {
-      const [, tag = '', id, type] = /^([a-z]*)(?:#([\w-]+))?(?:\[type="?(\w+)"?\])?$/.exec(s) || [];
+      if (s === ':disabled') return this.hasAttribute('disabled');
+      const match = /^([a-z]*)(?:#([\w-]+))?(?:\[type="?(\w+)"?\])?$/.exec(s);
+      if (!match) return false;
+      const [, tag = '', id, type] = match;
       return (!tag || this.tagName === tag.toUpperCase()) && (!id || this.attrs.id === id) &&
         (!type || this.attrs.type === type);
     });
