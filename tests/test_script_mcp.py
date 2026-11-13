@@ -127,9 +127,11 @@ class ScriptMcpTests(unittest.TestCase):
         for example in ("browser.tabs()", "browser.new_tab(url)", ".snapshot(text=True)", "tab.fill(target, value)",
                         "tab.query(", "tab.scroll(", "tab.hover(", "tab.drag(", "tab.press(", "tab.wait_for(",
                         "browser_tools_call", "NOT a sandbox", "tab.find(query)", "not text/regex",
-                        "max_depth=None", "no depth/boxes args", "CSS-only", "wait_for(target=...) accepts CSS/refs"):
+                        "max_depth=None", "no depth/boxes args", "CSS-only", "wait_for(target=...) accepts CSS/refs",
+                        "fields append, editors insert at caret", "omitted target uses focus, not the last target"):
             self.assertIn(example, description)
         self.assertNotIn("help(tab.query)", description)
+        self.assertNotIn("appends with key events", description)
 
     def test_python_guide_explains_tab_dicts_and_the_snapshot_example_works(self):
         result = self.probe(True)

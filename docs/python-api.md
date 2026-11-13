@@ -331,7 +331,7 @@ acts on the first match ([Strict selectors](api-reference.md#strict-selectors)).
 | `navigate(url)`, `back()`, `forward()`, `reload(bypass_cache=False)` | Navigate the tab |
 | `click(target, button=None, modifiers=None, hold_ms=0)`, `double_click(target)`, `hover(target, duration_ms=0, steps=None)` | Pointer events (synthetic) on the target; `hold_ms` (0-10000) holds a click's press for long-press controls, and `duration_ms` (0-10000) or `steps` (1-50) keep a hover moving across the target for hover-intent controls ([POST /api/click](api-reference.md#post-apiclick), [POST /api/hover](api-reference.md#post-apihover)) |
 | `fill(target, value)` | Replace a field's or editor's value |
-| `type(target, text, clear=False)` | Type with key events |
+| `type(target, text, clear=False)` | Append in input/textarea; insert at caret/selection in contenteditable (end if outside); `clear=True` replaces |
 | `fill_form(fields)` | Fill several fields; each key is a CSS selector, name, label or placeholder |
 | `press(key, target=None, modifiers=None, text=None)` | Press `"Enter"`, `"ArrowDown"`, `"a"`, ... with modifiers such as `{"ctrl": True}` |
 | `select_option(target, value, by_text=False)` | Choose an `<option>` |
@@ -341,7 +341,7 @@ acts on the first match ([Strict selectors](api-reference.md#strict-selectors)).
 | `handle_dialogs(accept=True, prompt_text=None)` | Answer this tab's future dialogs; `None` leaves them to you again |
 | `focus(target)`, `blur(target=None)` | Move focus |
 | `drag(source, destination)` | HTML5 drag events, else pointer events (`via` says which) |
-| `insert(target, text, html=False, clear=False)` | Insert text into an editor, input or textarea, appending unless `clear`; `html=True` (developer build) inserts HTML into an editor |
+| `insert(target, text, html=False, clear=False)` | Insert at an editor's caret (end if outside), or append in input/textarea; `clear=True` replaces; `html=True` needs the developer build |
 | `upload_files(paths, target=None)`, `drop(target, paths=None, data=None)` | Put local files into a file input, or drop files and data on an element |
 | `trusted_click(target=None, x=0, y=0, coordinate_space="viewport", restore_pointer=True, button="left", click_count=1, modifiers=None, hold_ms=0)` | A click with the real OS pointer, for pages that ignore synthetic clicks; `button="right"`/`"middle"`, `click_count=2`, `modifiers=["Shift", ...]` and `hold_ms` (a long press) choose the click. It moves your cursor for the click, then back unless `restore_pointer=False`, and may show the tab for the click ([`browser_trusted_click`](api-reference.md#browser_trusted_clickselector-x0-y0-coordinate_spaceviewport-focusfalse-tab_idnone-firstfalse-restore_pointertrue-buttonleft-click_count1-modifiersnone-hold_ms0)) |
 
@@ -354,6 +354,43 @@ first ([Actionability wait](api-reference.md#actionability-wait)). Tabs an actio
 are in its `opened_tabs`; open them with `browser.tab(id)`. A menu, listbox or dialog that
 `click`, `double_click` or `hover` opened is in its `opened_popup`
 ([Opened popups](api-reference.md#opened-popups)).
+
+### Editing and focus
+
+`fill` replaces; it is not an append operation. `type(clear=False)` has two existing paths:
+input/textarea append to the value, regardless of selection; contenteditable replaces the current
+selection or inserts at its caret, falling back to the target's end only when the selection is
+outside it. It is not per-character OS-native typing. For a caret-sensitive native-field edit, use
+`press` with a character (or its `text` argument), not `type`.
+
+```python
+# Replace a whole value.
+tab.fill("#name", "Ada")
+# Insert one character at the existing selection, without replacing the whole field.
+tab.press("X", target="#name")
+# Append to an editor explicitly; End alone is line-end, Control+End is content-end.
+tab.press("End", target="#note", modifiers={"ctrl": True})
+tab.type("#note", " Added sentence.")
+result = tab.snapshot("#note", text=True)  # inspect before deciding to save
+```
+
+`press(target=...)` dispatches to that element; it does **not** promise to focus a non-editable
+control. Without a target it uses current focus, not the previous key's target. A page rerender
+can replace the focused node and return focus to the body, even within one Python script. For a
+page whose keyboard sorting contract is Space/ArrowUp/Space, target each key with a stable, unique
+selector, then inspect the actual order:
+
+```python
+for key in ("Space", "ArrowUp", "Space"):
+    tab.press(key, target="#item-two")
+result = tab.query("#sortable button", fields=["id", "text"], limit=20)
+```
+
+This is not a generic sorting algorithm. Page handlers and `preventDefault` remain in charge;
+`ok` alone does not prove a move or edit. Check `effect`, `prevented` and `note`, and the actual
+text/order. A boundary key can correctly do nothing; an abbreviated reply is not evidence of a
+lost modifier. If a later observation fails, read the current state and continue unfinished work;
+do not replay an already-completed edit or save. No tab activation or OS-input workaround is needed.
 
 ## Waiting
 
