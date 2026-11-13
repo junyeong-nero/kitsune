@@ -1,0 +1,2362 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Drive the Firefox, Zen, or LibreWolf browser you already have open from Python or an AI agent.">
+      
+      
+      
+        <link rel="canonical" href="https://junyeong-nero.github.io/kitsune/installation/">
+      
+      
+        <link rel="prev" href="..">
+      
+      
+        <link rel="next" href="../try-it/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.0">
+    
+    
+      
+        <title>Installation - Kitsune</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.57a0d79d.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.fb2fffe2.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="deep-orange" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#installation" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Kitsune" class="md-header__button md-logo" aria-label="Kitsune" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Kitsune
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Installation
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="deep-orange" data-md-color-accent="indigo"  aria-label="Dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="deep-orange" data-md-color-accent="indigo"  aria-label="Light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/junyeong-nero/kitsune" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    junyeong-nero/kitsune
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Kitsune" class="md-nav__button md-logo" aria-label="Kitsune" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Kitsune
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/junyeong-nero/kitsune" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    junyeong-nero/kitsune
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#prerequisites" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Prerequisites
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#1-register-the-mcp-server" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Register the MCP server
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="1. Register the MCP server">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#claude-code" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Claude Code
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#codex-cli" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Codex CLI
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pi" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pi
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#claude-desktop-cursor-pi-and-other-mcpservers-clients" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Claude Desktop, Cursor, Pi, and other mcpServers clients
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#opencode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        OpenCode
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gui-apps-and-path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GUI apps and PATH
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-install-the-browser-extension" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Install the browser extension
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. Install the browser extension">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#signed-build-recommended" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Signed build (recommended)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#developer-build" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Developer build
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-check-the-connection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Check the connection
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pinning-a-version" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pinning a version
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#upgrading" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Upgrading
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Upgrading">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#server" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Server
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#bridge" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bridge
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#extension" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Extension
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#idle-shutdown-opt-in" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Idle shutdown (opt-in)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#automatic-extension-updates" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Automatic extension updates
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#extension-and-server-compatibility" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Extension and server compatibility
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../try-it/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Try it
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Concepts
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../how-it-works/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    How it works
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../your-tabs/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Your tabs and approvals
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tools
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../minimal-tools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Minimal tools + Python
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../security/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guides
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../python-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Python API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../checkpoint-resume/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Checkpoint and resume
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tool-list/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tool list
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Help
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Help
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../troubleshooting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../faq/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    FAQ
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Scraping playbooks
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Scraping playbooks
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scraping-playbooks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Kitsune Scraping Playbooks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scraping-playbooks/amazon/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Amazon
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scraping-playbooks/bestbuy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Best Buy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scraping-playbooks/bhphotovideo/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    B&H Photo Video
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scraping-playbooks/ebay/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    eBay
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scraping-playbooks/newegg/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Newegg
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    About
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    About
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../benchmark/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmark and comparison
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../philosophy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Philosophy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Contributing
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../development/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#prerequisites" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Prerequisites
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#1-register-the-mcp-server" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Register the MCP server
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="1. Register the MCP server">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#claude-code" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Claude Code
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#codex-cli" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Codex CLI
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pi" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pi
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#claude-desktop-cursor-pi-and-other-mcpservers-clients" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Claude Desktop, Cursor, Pi, and other mcpServers clients
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#opencode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        OpenCode
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gui-apps-and-path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GUI apps and PATH
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-install-the-browser-extension" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Install the browser extension
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. Install the browser extension">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#signed-build-recommended" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Signed build (recommended)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#developer-build" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Developer build
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-check-the-connection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Check the connection
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pinning-a-version" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pinning a version
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#upgrading" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Upgrading
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Upgrading">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#server" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Server
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#bridge" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bridge
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#extension" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Extension
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#idle-shutdown-opt-in" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Idle shutdown (opt-in)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#automatic-extension-updates" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Automatic extension updates
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#extension-and-server-compatibility" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Extension and server compatibility
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="installation">Installation<a class="headerlink" href="#installation" title="Permanent link">&para;</a></h1>
+<p>Kitsune has two parts that you install separately:</p>
+<ol>
+<li><strong>The MCP server.</strong> Your MCP client launches it over stdio. You register it
+   once with a command; uv downloads and runs it, so you do not need a checkout.</li>
+<li><strong>The browser extension.</strong> You install it in your browser yourself. The
+   browser asks for your approval, and nothing is installed silently.</li>
+</ol>
+<p>The server starts the shared bridge daemon on demand. The extension connects
+to that daemon by itself once both are installed.</p>
+<ul>
+<li><a href="#prerequisites">Prerequisites</a></li>
+<li><a href="#1-register-the-mcp-server">1. Register the MCP server</a></li>
+<li><a href="#2-install-the-browser-extension">2. Install the browser extension</a></li>
+<li><a href="#3-check-the-connection">3. Check the connection</a></li>
+<li><a href="#pinning-a-version">Pinning a version</a></li>
+<li><a href="#upgrading">Upgrading</a></li>
+<li><a href="#automatic-extension-updates">Automatic extension updates</a></li>
+<li><a href="#extension-and-server-compatibility">Extension and server compatibility</a></li>
+</ul>
+<p>Setup problems are covered in <a href="../troubleshooting/#setup-and-installation">Troubleshooting</a>.
+To run Kitsune from a checkout, see <a href="../development/">Development</a>.</p>
+<h2 id="prerequisites">Prerequisites<a class="headerlink" href="#prerequisites" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="https://docs.astral.sh/uv/getting-started/installation/">uv</a>, which provides <code>uvx</code>.
+  uv downloads a supported Python (3.10+) if none is installed.</li>
+<li>Git, only if you install from the Git source instead of PyPI
+  (see <a href="#pinning-a-version">Pinning a version</a>).</li>
+<li>A Firefox-family browser, Gecko 142+: Firefox 142+, Zen 1.23+, or LibreWolf.</li>
+<li>macOS or Linux. Windows is untested.</li>
+</ul>
+<h2 id="1-register-the-mcp-server">1. Register the MCP server<a class="headerlink" href="#1-register-the-mcp-server" title="Permanent link">&para;</a></h2>
+<p>Every client runs the same stdio command:</p>
+<div class="highlight"><pre><span></span><code>uvx --from kitsune-browser-mcp kitsune
+</code></pre></div>
+<p>The first start downloads Kitsune and its dependencies into the uv cache, which
+takes a few seconds. Later starts reuse the cached version until you upgrade
+(see <a href="#upgrading">Upgrading</a>). Kitsune is published on PyPI as
+<code>kitsune-browser-mcp</code>; <code>kitsune-mcp</code> is an unrelated project, so do not install
+that name.</p>
+<p>On macOS, <code>browser_trusted_click</code> (needed for example to open "Continue with Google"
+popups) needs <code>uvx --from 'kitsune-browser-mcp[macos]' kitsune</code> or <code>brew install cliclick</code>,
+plus Accessibility permission; see <a href="../troubleshooting/#sign-in-popups-oauthsso">Sign-in popups</a>.</p>
+<p>Optionally, warm the cache and check the install before you register it:</p>
+<div class="highlight"><pre><span></span><code>uvx<span class="w"> </span>--from<span class="w"> </span>kitsune-browser-mcp<span class="w"> </span>kitsune-bridge<span class="w"> </span>status
+</code></pre></div>
+<p>This prints <code>{"status": "stopped"}</code> (or the running bridge's status) and never
+starts a daemon. Running <code>kitsune</code> with <code>--help</code> does not print help: it is the
+MCP server itself, starts the bridge, and waits for an MCP client on stdin.</p>
+<h3 id="claude-code">Claude Code<a class="headerlink" href="#claude-code" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>claude<span class="w"> </span>mcp<span class="w"> </span>add<span class="w"> </span>--scope<span class="w"> </span>user<span class="w"> </span>kitsune<span class="w"> </span>--<span class="w"> </span>uvx<span class="w"> </span>--from<span class="w"> </span>kitsune-browser-mcp<span class="w"> </span>kitsune
+</code></pre></div>
+<p><code>--scope user</code> makes Kitsune available in every project. Leave it out to register
+it only for the current project (<code>local</code> scope). Pass environment variables
+with <code>-e</code>, for example <code>-e KITSUNE_SCRIPTING=0</code> before the <code>--</code>.</p>
+<h3 id="codex-cli">Codex CLI<a class="headerlink" href="#codex-cli" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>codex<span class="w"> </span>mcp<span class="w"> </span>add<span class="w"> </span>kitsune<span class="w"> </span>--<span class="w"> </span>uvx<span class="w"> </span>--from<span class="w"> </span>kitsune-browser-mcp<span class="w"> </span>kitsune
+</code></pre></div>
+<p>or in <code>~/.codex/config.toml</code>:</p>
+<div class="highlight"><pre><span></span><code><span class="k">[mcp_servers.kitsune]</span>
+<span class="n">command</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"uvx"</span>
+<span class="n">args</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">"--from"</span><span class="p">,</span><span class="w"> </span><span class="s2">"kitsune-browser-mcp"</span><span class="p">,</span><span class="w"> </span><span class="s2">"kitsune"</span><span class="p">]</span>
+
+<span class="c1"># Optional</span>
+<span class="k">[mcp_servers.kitsune.env]</span>
+<span class="n">KITSUNE_SCRIPTING</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"0"</span>
+</code></pre></div>
+<h3 id="pi">Pi<a class="headerlink" href="#pi" title="Permanent link">&para;</a></h3>
+<p>With <a href="https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/mcp.md">Pi's built-in MCP support</a>:</p>
+<div class="highlight"><pre><span></span><code>pi<span class="w"> </span>mcp<span class="w"> </span>add<span class="w"> </span>kitsune<span class="w"> </span>--<span class="w"> </span>uvx<span class="w"> </span>--from<span class="w"> </span>kitsune-browser-mcp<span class="w"> </span>kitsune
+pi<span class="w"> </span>mcp<span class="w"> </span>list
+</code></pre></div>
+<p>This writes user-level configuration to <code>~/.pi/agent/mcp.json</code>. Add <code>--local</code>
+before <code>kitsune</code> to write <code>.pi/mcp.json</code> in the current project instead; project
+configuration is loaded only after project trust is granted. In a running
+session, use <code>/reload</code> to pick up the change and <code>/mcp</code> to inspect the connection.</p>
+<p>You can also edit the JSON config directly using the <code>mcpServers</code> example below.
+If an MCP adapter extension overrides built-in MCP support, use that extension's
+configuration instructions instead.</p>
+<h3 id="claude-desktop-cursor-pi-and-other-mcpservers-clients">Claude Desktop, Cursor, Pi, and other <code>mcpServers</code> clients<a class="headerlink" href="#claude-desktop-cursor-pi-and-other-mcpservers-clients" title="Permanent link">&para;</a></h3>
+<p>Edit the client's JSON config, for example
+<code>~/Library/Application Support/Claude/claude_desktop_config.json</code> (Claude Desktop
+on macOS), <code>~/.cursor/mcp.json</code> or <code>.cursor/mcp.json</code> (Cursor), or <code>~/.pi/agent/mcp.json</code> or
+<code>.pi/mcp.json</code> (Pi's built-in MCP support). Merge the entry with any existing servers:</p>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"mcpServers"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">"kitsune"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">"command"</span><span class="p">:</span><span class="w"> </span><span class="s2">"uvx"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"args"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"--from"</span><span class="p">,</span><span class="w"> </span><span class="s2">"kitsune-browser-mcp"</span><span class="p">,</span><span class="w"> </span><span class="s2">"kitsune"</span><span class="p">]</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+<p>Add an <code>"env": {"KITSUNE_SCRIPTING": "0"}</code> object next to <code>args</code> to set
+environment variables.</p>
+<h3 id="opencode">OpenCode<a class="headerlink" href="#opencode" title="Permanent link">&para;</a></h3>
+<p>Edit <code>~/.config/opencode/opencode.json</code> (global) or <code>opencode.json</code> at a git repo
+root (project) by hand.</p>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"$schema"</span><span class="p">:</span><span class="w"> </span><span class="s2">"https://opencode.ai/config.json"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"mcp"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">"kitsune"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">"type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"local"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"command"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"uvx"</span><span class="p">,</span><span class="w"> </span><span class="s2">"--from"</span><span class="p">,</span><span class="w"> </span><span class="s2">"kitsune-browser-mcp"</span><span class="p">,</span><span class="w"> </span><span class="s2">"kitsune"</span><span class="p">],</span>
+<span class="w">      </span><span class="nt">"enabled"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+<h3 id="gui-apps-and-path">GUI apps and <code>PATH</code><a class="headerlink" href="#gui-apps-and-path" title="Permanent link">&para;</a></h3>
+<p>GUI apps such as Claude Desktop often do not inherit your shell <code>PATH</code>. If the
+client cannot find <code>uvx</code>, use the full path from <code>which uvx</code> as the command, for
+example <code>/Users/you/.local/bin/uvx</code>. Config files do not expand <code>~</code>.</p>
+<p>Several clients can be configured at once; they share one bridge daemon.
+Register them all with the same source and ref (see
+<a href="#extension-and-server-compatibility">compatibility</a>).</p>
+<h2 id="2-install-the-browser-extension">2. Install the browser extension<a class="headerlink" href="#2-install-the-browser-extension" title="Permanent link">&para;</a></h2>
+<p>The extension is not part of the Python package, so download it separately,
+for the <strong>same version</strong> as the server. There are two builds:</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Signed build (<code>kitsune-&lt;version&gt;.xpi</code>)</th>
+<th>Developer build (<code>kitsune-extension-dev-&lt;version&gt;.zip</code>)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Install</td>
+<td>Once; survives browser restarts</td>
+<td>Temporary add-on; load it again after every restart</td>
+</tr>
+<tr>
+<td>Signed by Mozilla</td>
+<td>Yes (self-distributed, not listed on AMO)</td>
+<td>No</td>
+</tr>
+<tr>
+<td><code>browser_evaluate</code>, JS conditions in <code>browser_sync_barrier</code> and batch <code>if</code>/<code>while</code>, HTML mode of editable typing, bundled workflows that use <code>js</code> steps</td>
+<td>Not available</td>
+<td>Available</td>
+</tr>
+<tr>
+<td>Everything else</td>
+<td>Available</td>
+<td>Available</td>
+</tr>
+</tbody>
+</table>
+<p>The signed build cannot run JavaScript supplied by the agent, because Mozilla's
+<a href="https://extensionworkshop.com/documentation/publish/add-on-policies/">add-on policies</a>
+forbid executing code that is not part of the signed package. Those tools return
+an error that names the developer build. <code>browser_status</code> reports which build is
+connected (<code>extension_build</code>:
+<code>signed</code> or <code>dev</code>).</p>
+<h3 id="signed-build-recommended">Signed build (recommended)<a class="headerlink" href="#signed-build-recommended" title="Permanent link">&para;</a></h3>
+<p>Signed XPIs are attached to releases from 0.2.0 on. For 0.1.0, use the developer
+build below.</p>
+<ol>
+<li>Download <code>kitsune-&lt;version&gt;.xpi</code> from
+   <a href="https://github.com/junyeong-nero/kitsune/releases">GitHub Releases</a>.</li>
+<li>Open <code>about:addons</code>, click the gear icon, choose <strong>Install Add-on From File…</strong>,
+   and select the XPI. Dragging the file onto a browser window also works.</li>
+<li>Approve the permission prompt. The browser asks every time; nothing is
+   installed silently.</li>
+<li>Restart or reconnect your MCP client and ask it to list your tabs (<code>browser_tabs</code>
+   with <code>action: "list"</code>). With <code>admin</code> enabled, <code>browser_status</code> should report
+   <code>"extension_connected": true</code> and <code>"extension_build": "signed"</code>.</li>
+</ol>
+<p>Signed builds released after 0.2.0 update themselves (see
+<a href="#automatic-extension-updates">Automatic extension updates</a>).</p>
+<h3 id="developer-build">Developer build<a class="headerlink" href="#developer-build" title="Permanent link">&para;</a></h3>
+<p>Use this for <code>browser_evaluate</code>, or to run an unreleased commit.</p>
+<ol>
+<li>Download <code>kitsune-extension-dev-&lt;version&gt;.zip</code> from
+   <a href="https://github.com/junyeong-nero/kitsune/releases">GitHub Releases</a> and unzip
+   it. For 0.1.0 the file is named <code>kitsune-extension-0.1.0.zip</code>. For an
+   unreleased commit, use the <code>extension/</code> folder of a repository ZIP or clone.</li>
+<li>Open <code>about:debugging#/runtime/this-firefox</code> and click
+   <strong>Load Temporary Add-on…</strong>.</li>
+<li>Select <code>manifest.json</code> from the unzipped folder (<code>extension/manifest.json</code>
+   in a repository ZIP or clone). In the macOS file dialog, press Cmd+Shift+G to
+   paste a path.</li>
+<li>With <code>admin</code> enabled, call <code>browser_status</code>; it should report
+   <code>"extension_build": "dev"</code>.</li>
+</ol>
+<p>Both builds use the same add-on ID. While a developer build is loaded, it
+replaces the signed one; after a browser restart the signed build is back.</p>
+<h2 id="3-check-the-connection">3. Check the connection<a class="headerlink" href="#3-check-the-connection" title="Permanent link">&para;</a></h2>
+<p>Restart the agent and ask it to list your tabs (<code>browser_tabs</code> with
+<code>action: "list"</code>). An error's <code>hint</code> says what to fix; <code>browser_status</code> reports
+<code>"extension_connected": true</code>
+and a full diagnosis. Then <a href="../try-it/">try a first task</a>.</p>
+<h2 id="pinning-a-version">Pinning a version<a class="headerlink" href="#pinning-a-version" title="Permanent link">&para;</a></h2>
+<p>Pin a released version with <code>==</code>:</p>
+<div class="highlight"><pre><span></span><code>claude<span class="w"> </span>mcp<span class="w"> </span>add<span class="w"> </span>--scope<span class="w"> </span>user<span class="w"> </span>kitsune<span class="w"> </span>--<span class="w"> </span>uvx<span class="w"> </span>--from<span class="w"> </span>kitsune-browser-mcp<span class="o">==</span><span class="m">0</span>.8.0<span class="w"> </span>kitsune
+</code></pre></div>
+<p>Releases are listed on <a href="https://pypi.org/project/kitsune-browser-mcp/#history">PyPI</a>
+and <a href="https://github.com/junyeong-nero/kitsune/releases">GitHub Releases</a>, which
+also carries the matching signed XPI and developer-build zip.</p>
+<p>To run a commit, tag, or branch that is not on PyPI, use the Git source with
+<code>@&lt;ref&gt;</code> (requires Git). The MCP server's package is in <code>packages/kitsune-browser-mcp</code>;
+uv builds the code it depends on, kitsune-browser, from the same ref:</p>
+<div class="highlight"><pre><span></span><code>claude<span class="w"> </span>mcp<span class="w"> </span>add<span class="w"> </span>--scope<span class="w"> </span>user<span class="w"> </span>kitsune<span class="w"> </span>--<span class="w"> </span>uvx<span class="w"> </span>--from<span class="w"> </span><span class="s2">"git+https://github.com/junyeong-nero/kitsune.git@&lt;ref&gt;#subdirectory=packages/kitsune-browser-mcp"</span><span class="w"> </span>kitsune
+</code></pre></div>
+<p>Without <code>@&lt;ref&gt;</code>, the Git source follows the latest default-branch commit. Get
+the extension from the same ref:
+<code>https://github.com/junyeong-nero/kitsune/archive/&lt;ref&gt;.zip</code>, or
+<code>git checkout &lt;ref&gt;</code> in a clone.</p>
+<h2 id="upgrading">Upgrading<a class="headerlink" href="#upgrading" title="Permanent link">&para;</a></h2>
+<h3 id="server">Server<a class="headerlink" href="#server" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Unpinned PyPI</strong> (<code>--from kitsune-browser-mcp</code>): uvx keeps using the cached
+  version. To move to the newest release, refresh it once, then restart or
+  reconnect the MCP client (in Claude Code, <code>/mcp</code>):
+  <div class="highlight"><pre><span></span><code>uvx<span class="w"> </span>--refresh<span class="w"> </span>--from<span class="w"> </span>kitsune-browser-mcp<span class="w"> </span>kitsune-bridge<span class="w"> </span>status
+</code></pre></div>
+  To check for a new release on every start instead, register
+  <code>--from kitsune-browser-mcp@latest</code>.</li>
+<li><strong>Pinned</strong> (<code>==&lt;version&gt;</code> or Git <code>@&lt;ref&gt;</code>): change the version in the client
+  config. For Claude Code, run <code>claude mcp remove --scope user kitsune</code>, then run
+  the <code>claude mcp add</code> command again with the new version.</li>
+<li><strong>Unpinned Git source</strong>: uv checks for the latest default-branch commit each
+  time the MCP server starts (observed with uv 0.7.20).</li>
+<li><strong>A pip install of 0.6.0 or earlier</strong>, such as a virtual environment for the Python API:
+  until 0.6.0 kitsune-browser-mcp held the code that kitsune-browser holds now. pip installs
+  kitsune-browser first and then removes the old kitsune-browser-mcp with the files they
+  share, so <code>import kitsune</code> fails afterwards. Restore them once with
+  <code>pip install --force-reinstall --no-deps kitsune-browser</code>. The same holds after
+  <code>pip uninstall kitsune-browser-mcp</code> in an environment that kept 0.6.0. uv and uvx
+  are not affected.</li>
+<li><strong>A checkout</strong>: run <code>git pull</code>, then <code>uv sync</code>.</li>
+</ul>
+<h3 id="bridge">Bridge<a class="headerlink" href="#bridge" title="Permanent link">&para;</a></h3>
+<p>Reconnect or restart the MCP server after upgrading it. It compares the running
+bridge's <code>build</code> (package version plus a source hash, including extension JS/JSON in a
+checkout) with its own and automatically restarts an outdated bridge. This briefly
+interrupts all clients sharing that bridge. Set <code>KITSUNE_NO_BRIDGE_RESTART=1</code> in the
+<strong>MCP server's environment</strong> to opt out of automatic replacement. You can also stop it
+explicitly; the next MCP connection starts a fresh daemon:</p>
+<div class="highlight"><pre><span></span><code>uvx<span class="w"> </span>--from<span class="w"> </span>kitsune-browser-mcp<span class="w"> </span>kitsune-bridge<span class="w"> </span>status<span class="w">  </span><span class="c1"># JSON; includes bridge_version and build</span>
+uvx<span class="w"> </span>--from<span class="w"> </span>kitsune-browser-mcp<span class="w"> </span>kitsune-bridge<span class="w"> </span>stop
+</code></pre></div>
+<p>From a checkout, use <code>uv run kitsune-bridge status</code> / <code>stop</code> instead.
+Plain <code>kitsune-bridge</code> (or <code>kitsune-bridge start</code>) still runs the daemon
+in the foreground. <code>status</code> and <code>stop</code> never start a daemon. All commands use
+the same <code>KITSUNE_HOME</code>, token, and port environment settings as the server.</p>
+<p>Shutdown uses a token-authenticated endpoint, with a verified, locked PID file
+as the termination fallback; it never uses a broad <code>pkill</code>. Very old daemons
+that have neither the shutdown endpoint nor a PID file require a <strong>one-time
+manual stop of the specific old bridge process</strong>. Kitsune reports this instead
+of guessing a PID or launching another daemon over it. After that, automatic
+replacement and <code>kitsune-bridge stop</code> work normally.</p>
+<h3 id="extension">Extension<a class="headerlink" href="#extension" title="Permanent link">&para;</a></h3>
+<p>Update the extension to the same version as the server: the signed build updates
+itself (see <a href="#automatic-extension-updates">Automatic extension updates</a>); for 0.2.0,
+or to update right away, install the new release's XPI the same way as the first time
+(it replaces the old version and keeps no separate copy). For the developer
+build, load the new release and click <strong>Reload</strong> on Kitsune in <code>about:debugging</code>
+(or load the updated <code>manifest.json</code> again). A bridge restart reconnects the
+extension but does <strong>not</strong> reload its browser-side code; reload it explicitly after
+extension updates, and reload existing tabs if their content scripts are still
+outdated. <code>browser_status</code> reports a developer build whose files changed after it
+was loaded as <code>extension_version_mismatch</code> (<code>state.reason: "stale_developer_build"</code>).</p>
+<p>Then reconnect the MCP client again if needed (in Claude Code, use <code>/mcp</code> to
+reconnect Kitsune), and call <code>browser_status</code>. Check <code>extension_connected</code>,
+<code>bridge_version</code>, and <code>build</code>.</p>
+<h3 id="idle-shutdown-opt-in">Idle shutdown (opt-in)<a class="headerlink" href="#idle-shutdown-opt-in" title="Permanent link">&para;</a></h3>
+<p>By default the shared bridge keeps running until it is stopped. To have it exit
+when no client has used it for a while, set <code>KITSUNE_BRIDGE_IDLE_TIMEOUT</code> (in
+seconds) in the <strong>MCP server's environment</strong>, or run the daemon yourself with
+<code>kitsune-bridge start --idle-timeout SECONDS</code>. <code>0</code> (the default) disables it.</p>
+<ul>
+<li>Every HTTP call to the bridge counts as activity; MCP servers make one per tool
+  call. The extension's WebSocket connection does not count.</li>
+<li>The timer only runs while nothing is in flight: no HTTP request, no command
+  waiting on the extension, and no <code>browser_keep_alive</code> loop. Call
+  <code>browser_keep_alive_stop</code> when you no longer need one, or the bridge never
+  goes idle.</li>
+<li>The next tool call from any client starts a fresh bridge automatically.
+  While an idle bridge is exiting, a client that needs one waits for it to finish
+  instead of racing it.</li>
+<li>The bridge is shared, so the first MCP server that starts it decides the
+  timeout; the setting in other clients takes effect the next time they start it.</li>
+</ul>
+<h2 id="automatic-extension-updates">Automatic extension updates<a class="headerlink" href="#automatic-extension-updates" title="Permanent link">&para;</a></h2>
+<p>The signed build checks
+<code>https://github.com/junyeong-nero/kitsune/releases/latest/download/updates.json</code>
+and installs the signed XPI of the latest release. This works from the release
+after 0.2.0 on: the 0.2.0 XPI has no update URL, so install the next release's
+XPI once by hand (see <a href="#signed-build-recommended">Signed build</a>); later releases
+then arrive automatically. The developer build never updates itself.</p>
+<ul>
+<li>The browser checks about once a day. To check now, open <code>about:addons</code>, click
+  the gear icon, and choose <strong>Check for Updates</strong>. Updates can be turned off per
+  add-on on Kitsune's page in <code>about:addons</code> (<strong>Allow automatic updates</strong>).</li>
+<li>A release's <code>updates.json</code> is published only after its server is on PyPI, but
+  uvx keeps using its cached server (see <a href="#upgrading">Upgrading</a>). Until you
+  refresh it, the extension can be newer than the server; <code>browser_status</code> then
+  reports an <code>extension_version</code> that differs from <code>bridge_version</code>.</li>
+<li>If you pin an older server version, turn off automatic updates for Kitsune and
+  install the matching XPI from that release.</li>
+</ul>
+<h2 id="extension-and-server-compatibility">Extension and server compatibility<a class="headerlink" href="#extension-and-server-compatibility" title="Permanent link">&para;</a></h2>
+<ul>
+<li>The server and the extension are developed in the same repository and are
+  only tested together at the same commit. Install both from the same release
+  (or ref).
+  There is no separate compatibility matrix yet.</li>
+<li><code>browser_status</code> reports the bridge's <code>bridge_version</code> (package version) and
+  <code>build</code> (package version plus a hash of the bridge code). An installed
+  package does not contain the extension, so its <code>build</code> does not change when
+  only extension files change. Reload the extension yourself after updating it.</li>
+<li>Use one install source for all clients. A checkout run
+  (<code>uv run --directory …</code>) also hashes the checkout's <code>extension/</code> files, so its
+  <code>build</code> differs from a <code>uvx</code> install of the same commit. If clients with
+  different builds share a bridge, each one replaces the bridge when it starts.
+  If you need to mix sources, set <code>KITSUNE_NO_BRIDGE_RESTART=1</code> in the MCP server
+  environments and manage the bridge with <code>kitsune-bridge stop</code>.</li>
+<li><code>browser_status</code> also reports the connected extension's <code>extension_version</code>
+  and <code>extension_build</code>. If <code>extension_version</code> differs from <code>bridge_version</code>,
+  upgrade the server (the signed extension updates itself, so it is usually the
+  newer one) or install the matching extension.</li>
+<li>Browsers: Gecko 142+ (Firefox 142+, Zen 1.23+, LibreWolf). Firefox release
+  and beta builds install only signed extensions, which is why the developer build
+  is a temporary add-on.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "search.suggest", "search.highlight", "content.code.copy"], "search": "../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.c21346df.min.js"></script>
+      
+    
+  </body>
+</html>

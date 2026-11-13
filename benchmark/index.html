@@ -1,0 +1,1995 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Drive the Firefox, Zen, or LibreWolf browser you already have open from Python or an AI agent.">
+      
+      
+      
+        <link rel="canonical" href="https://junyeong-nero.github.io/kitsune/benchmark/">
+      
+      
+        <link rel="prev" href="../scraping-playbooks/newegg/">
+      
+      
+        <link rel="next" href="../philosophy/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.0">
+    
+    
+      
+        <title>Benchmark and comparison - Kitsune</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.57a0d79d.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.fb2fffe2.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="deep-orange" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#benchmark-and-comparison" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Kitsune" class="md-header__button md-logo" aria-label="Kitsune" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Kitsune
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Benchmark and comparison
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="deep-orange" data-md-color-accent="indigo"  aria-label="Dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="deep-orange" data-md-color-accent="indigo"  aria-label="Light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/junyeong-nero/kitsune" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    junyeong-nero/kitsune
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Kitsune" class="md-nav__button md-logo" aria-label="Kitsune" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Kitsune
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/junyeong-nero/kitsune" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    junyeong-nero/kitsune
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../try-it/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Try it
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Concepts
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../how-it-works/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    How it works
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../your-tabs/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Your tabs and approvals
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tools
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../minimal-tools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Minimal tools + Python
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../security/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guides
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../python-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Python API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../checkpoint-resume/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Checkpoint and resume
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tool-list/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tool list
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Help
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Help
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../troubleshooting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../faq/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    FAQ
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Scraping playbooks
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Scraping playbooks
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scraping-playbooks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Kitsune Scraping Playbooks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scraping-playbooks/amazon/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Amazon
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scraping-playbooks/bestbuy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Best Buy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scraping-playbooks/bhphotovideo/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    B&H Photo Video
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scraping-playbooks/ebay/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    eBay
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scraping-playbooks/newegg/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Newegg
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    About
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    About
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmark and comparison
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmark and comparison
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#expanded-four-way-comparison-184-attempts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Expanded four-way comparison: 184 attempts
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Expanded four-way comparison: 184 attempts">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#input-and-elapsed-time" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Input and elapsed time
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#conditions-and-limits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Conditions and limits
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#catalog-size-is-not-request-prefix-usage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Catalog size is not request-prefix usage
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#earlier-comparison-five-way-miniwob" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Earlier comparison: five-way MiniWoB
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Earlier comparison: five-way MiniWoB">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#shared-successful-cells" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Shared successful cells
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#conditions-and-limits_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Conditions and limits
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#earlier-benchmark-v072" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Earlier benchmark: v0.7.2
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-is-it-different" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How is it different?
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../philosophy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Philosophy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Contributing
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../development/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#expanded-four-way-comparison-184-attempts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Expanded four-way comparison: 184 attempts
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Expanded four-way comparison: 184 attempts">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#input-and-elapsed-time" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Input and elapsed time
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#conditions-and-limits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Conditions and limits
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#catalog-size-is-not-request-prefix-usage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Catalog size is not request-prefix usage
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#earlier-comparison-five-way-miniwob" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Earlier comparison: five-way MiniWoB
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Earlier comparison: five-way MiniWoB">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#shared-successful-cells" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Shared successful cells
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#conditions-and-limits_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Conditions and limits
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#earlier-benchmark-v072" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Earlier benchmark: v0.7.2
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-is-it-different" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How is it different?
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="benchmark-and-comparison">Benchmark and comparison<a class="headerlink" href="#benchmark-and-comparison" title="Permanent link">&para;</a></h1>
+<h2 id="expanded-four-way-comparison-184-attempts">Expanded four-way comparison: 184 attempts<a class="headerlink" href="#expanded-four-way-comparison-184-attempts" title="Permanent link">&para;</a></h2>
+<p>The 2026-11-13 comparison covers <strong>23 conditions × two repeats × four arms</strong>: seven personal
+browser conditions, ten isolated UI conditions and six crowded UI conditions. Every arm completed
+<strong>46/46 raw task successes</strong>, with complete input and timing records. All-attempt and joint-success
+comparisons therefore use the same 46 condition/repeat cells; no failed cell is excluded.</p>
+<p><img alt="Cache-inclusive input on the same 46 cells: Kitsune 6-tool 5,730,439; Kitsune 14-tool 5,901,946; Aside 5,923,875; EgoLite 7,775,055. All four arms completed 46/46 attempts." src="https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/benchmark-efficiency.svg" /></p>
+<h3 id="input-and-elapsed-time">Input and elapsed time<a class="headerlink" href="#input-and-elapsed-time" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Arm</th>
+<th style="text-align: right;">Raw task success</th>
+<th style="text-align: right;">Input including cache</th>
+<th style="text-align: right;">Raw elapsed, s</th>
+<th style="text-align: right;">Adjusted elapsed, s</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Kitsune 6-tool code-first</td>
+<td style="text-align: right;">46/46</td>
+<td style="text-align: right;"><strong>5,730,439</strong></td>
+<td style="text-align: right;">1,396.084</td>
+<td style="text-align: right;">1,324.975</td>
+</tr>
+<tr>
+<td>Kitsune previous 14-tool default</td>
+<td style="text-align: right;">46/46</td>
+<td style="text-align: right;">5,901,946</td>
+<td style="text-align: right;">1,333.899</td>
+<td style="text-align: right;">1,264.414</td>
+</tr>
+<tr>
+<td>Aside</td>
+<td style="text-align: right;">46/46</td>
+<td style="text-align: right;">5,923,875</td>
+<td style="text-align: right;">1,444.198</td>
+<td style="text-align: right;"><strong>1,242.744</strong></td>
+</tr>
+<tr>
+<td>EgoLite</td>
+<td style="text-align: right;">46/46</td>
+<td style="text-align: right;">7,775,055</td>
+<td style="text-align: right;">1,627.307</td>
+<td style="text-align: right;">1,478.044</td>
+</tr>
+</tbody>
+</table>
+<p>Six-tool Kitsune uses <strong>2.9% less total input than 14-tool Kitsune</strong>, <strong>3.3% less than Aside</strong> and
+<strong>26.3% less than EgoLite</strong>. These are aggregate cache-inclusive input tokens, not billed cost or
+subscription-quota savings. Monetary cost and model-request counts are unavailable for this cohort.</p>
+<p>Less input does not mean faster: six-tool adjusted elapsed is <strong>4.8% higher than 14-tool Kitsune</strong>
+and <strong>6.6% higher than Aside</strong>, and <strong>10.4% lower than EgoLite</strong>. Raw six-tool elapsed is 4.7% higher
+than 14-tool Kitsune. The predeclared adjustment subtracts measured relay setup and post-call
+inventory, not actual agent actions, images or approval delays. Both time columns sum individual
+agent runs, not whole-experiment wall time or isolated browser-operation latency.</p>
+<h3 id="conditions-and-limits">Conditions and limits<a class="headerlink" href="#conditions-and-limits" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Codex CLI 0.163.0, requested <code>gpt-6.1-sol</code>, medium reasoning, ChatGPT subscription. The same
+  requested model and settings apply to all 184 attempts. Traces do not independently attest the
+  backend model identity. This is a separate cohort from the older Opus studies below.</li>
+<li>Kitsune runtime pins: <code>f5c7a0f85aefd89e621e73665e33d33d79d50676</code> (six tools) and
+  <code>47dafa20a3fddc697a7d991e15d39e4b0232c10d</code> (14 tools). Both already support Python; this is not
+  Python versus no Python. The six-tool runtime was subsequently adopted on <code>main</code> in
+  <a href="https://github.com/junyeong-nero/kitsune/pull/538">#538</a>, unchanged from the measured candidate;
+  it is not part of the 0.8.0 release.</li>
+<li>Aside CLI/native MCP 1.26.1107.24, app 1.0.1022.1, one <code>repl</code> tool. EgoLite CLI/app 0.6.2.9,
+  one <code>run_script</code> tool with the predeclared image-attachment bridge. No Playwright or MiniWoB arm
+  was run in this cohort, and no historical results are pooled into the chart.</li>
+<li>Two repeats of variant 0, sequential rotated arm order. Personal limit 180 s, gallery 240 s;
+  Kitsune MCP limit 45 s, vendor envelope 130 s around native 120 s scripts. No replacements,
+  harness retries, missing final usage, quota stops or outcome-based tuning.</li>
+<li>Kitsune used fresh private Firefox and user-seeded read-only personal tabs. Aside/Ego used
+  installed browser profiles and harness-created accessible tabs. Browser engines, effective
+  viewports, profiles and ownership protections are <strong>not equivalent</strong>.</li>
+<li>Results vary by task and recovery outliers. Aside uses less input in <strong>36/46 paired cells</strong>
+  versus six-tool Kitsune despite its higher aggregate total. Six-tool input beats the old
+  default in only <strong>16/46 cells</strong>. Two repeats do not establish statistical superiority.</li>
+<li>The model runs made <strong>zero handoff or approval-recovery calls</strong>. Passing task/safety grades
+  do not establish human-approval coverage, equivalent user-tab protection or confinement.
+  Python/Node remain trusted host runtimes, not sandboxes.</li>
+</ul>
+<p>Source: <code>kitsune-benchmark/docs/results/2026-11-13-expanded-four-way-codex.md</code>, report/audit commit
+<code>0c694d4a74fc1d0fba9d05c9c7a139aa5e697ce2</code>, execution commit
+<code>e5db230a78ad006cfb8a12fbee6621b087a03e07</code>. The figures and limitations are reproduced here so the
+README comparison does not depend on access to the benchmark repository. The older interrupted
+85/120 Opus A/B remains separate and incomplete; the new results do not replace its timeout.</p>
+<h3 id="catalog-size-is-not-request-prefix-usage">Catalog size is not request-prefix usage<a class="headerlink" href="#catalog-size-is-not-request-prefix-usage" title="Permanent link">&para;</a></h3>
+<p>The <a href="../six-tool-prefix-review/">offline six-tool catalog audit</a> reassesses #521 against current
+<code>main</code> and the separately pinned pending guidance stack. It measures serialized definitions,
+not model-request tokens; the Codex cohort has no first-request-input or model-request count.</p>
+<h2 id="earlier-comparison-five-way-miniwob">Earlier comparison: five-way MiniWoB<a class="headerlink" href="#earlier-comparison-five-way-miniwob" title="Permanent link">&para;</a></h2>
+<p>The 2026-11-12 exhibition compares Kitsune's default and legacy surfaces on the <strong>same source
+revision</strong>, alongside Playwright MCP, ego lite and Aside. It is seven tasks with two repeats per
+arm (70 attempts), not a completed standard-lite suite or an equal-environment leaderboard.</p>
+<h3 id="shared-successful-cells">Shared successful cells<a class="headerlink" href="#shared-successful-cells" title="Permanent link">&para;</a></h3>
+<p>Every row below uses the <strong>same 13 task/repeat cells successful for all five arms</strong>. The one
+cell ego failed is removed from every arm. Input includes cache hits; these are token totals,
+not billed cost or browser-action counts.</p>
+<table>
+<thead>
+<tr>
+<th>Arm</th>
+<th style="text-align: right;">Input tokens, shared 13 cells</th>
+<th style="text-align: right;">Raw success, all 14 attempts</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Kitsune legacy</td>
+<td style="text-align: right;">785,115</td>
+<td style="text-align: right;">14/14</td>
+</tr>
+<tr>
+<td>Playwright MCP</td>
+<td style="text-align: right;">781,019</td>
+<td style="text-align: right;">14/14</td>
+</tr>
+<tr>
+<td>Kitsune default</td>
+<td style="text-align: right;">514,964</td>
+<td style="text-align: right;">14/14</td>
+</tr>
+<tr>
+<td>ego lite</td>
+<td style="text-align: right;">458,052</td>
+<td style="text-align: right;">13/14</td>
+</tr>
+<tr>
+<td>Aside</td>
+<td style="text-align: right;">361,014</td>
+<td style="text-align: right;">14/14</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><strong>34.1% less input than Playwright:</strong> <code>1 − 514964 / 781019</code>.</li>
+<li><strong>82.6% of the legacy-to-ego input gap closed:</strong> <code>(785115 − 514964) / (785115 − 458052)</code>.</li>
+<li><strong>63.7% of the legacy-to-Aside input gap closed:</strong> <code>(785115 − 514964) / (785115 − 361014)</code>.</li>
+<li>Kitsune still uses <strong>12.4% more input than ego</strong> and <strong>42.6% more than Aside</strong> on this set.</li>
+</ul>
+<p>“Gap closed” compares default versus legacy on the same Kitsune commit, not progress across
+historical releases. It is not a claim of equivalent performance in every dimension.</p>
+<h3 id="conditions-and-limits_1">Conditions and limits<a class="headerlink" href="#conditions-and-limits_1" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Claude Code 2.1.303, Claude Opus 5.5 (<code>claude-opus-5-5</code>), medium reasoning, subscription.</li>
+<li>Kitsune <code>79eb95594eee57bf429c1594c883f1995294dbc8</code>: pre-release 0.8.0 code, not the final
+  release tag. Default: 14 tools; legacy: 30 tools, <code>KITSUNE_SCRIPTING=0</code>; no benchmark allowlist.</li>
+<li>Playwright MCP 0.0.83: 23 tools under the benchmark's standard UI allowlist. ego lite 0.6.2.9:
+  one <code>run_script</code> tool. Aside CLI/native MCP 1.26.1107.24 (app 1.0.1022.1): one <code>repl</code> tool.</li>
+<li>MiniWoB <code>33c3b4ddef8c6eb67c57a29663d844b1eda7e614</code>, seed 42. Tasks: <code>click-test-2</code>,
+  <code>click-checkboxes</code>, <code>enter-text</code>, <code>choose-list</code>, <code>login-user</code>, <code>use-autocomplete</code>, <code>book-flight</code>.
+  All planned attempts were scorable; no episode retries or replacements. ego failed <code>book-flight</code> r1.</li>
+<li>Kitsune made <strong>zero Python calls</strong>: this supports a smaller observed tool/prompt prefix,
+  not a measured Python batching benefit. Across the full 14-cell Kitsune-only comparison,
+  input fell 33.1%, but model requests rose 4.2% and MCP calls rose 2.3%.</li>
+<li>Kitsune/Playwright used fresh private headless Firefox. ego/Aside used installed warm browsers;
+  engines, profiles and effective viewports were not equal. No isolation equivalence is claimed.</li>
+<li>Page-JS code was emitted in eight ego attempts and one Aside attempt, including successful
+  attempts. These remain in the primary results; raw success is <strong>not</strong> strict UI-only compliance.
+  On pairwise successful cells excluding page-JS use, ego/default input was 0.905 (6 cells),
+  Aside/default 0.684 (13 cells). These smaller, selected subsets are not replacements for the chart.</li>
+<li>This small exhibition does not establish statistical superiority, approval safety, full-suite
+  performance, or general speed/cost savings.</li>
+</ul>
+<p>Source: <code>kitsune-benchmark/docs/results/2026-11-12-five-way-main-79eb955.md</code>, sections
+“All-attempt totals” and “Matched efficiency, not success-blind totals”; benchmark execution
+commit <code>d75bbff586890f0857e6d947189ad0895fd7edf2</code>. These historical figures are retained separately
+and are not part of the current README chart.</p>
+<h2 id="earlier-benchmark-v072">Earlier benchmark: v0.7.2<a class="headerlink" href="#earlier-benchmark-v072" title="Permanent link">&para;</a></h2>
+<p><img alt="Kitsune v0.7.2 vs Playwright MCP 0.0.83: kept the user's tab in front in 28 of 28 tasks vs 2 of 28; 0.56 to 0.97 times the cost on tasks both solved; Kitsune solved 96 of 98 tasks, Playwright MCP 98 of 98" src="https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/benchmark.png" /></p>
+<p>Same tasks, same model (Claude Opus 5.5), same tool allowlist, one run per task:</p>
+<ul>
+<li><strong>Your tab stays in front.</strong> While a user was in the browser, Kitsune v0.7.2 never moved their view in 28 tasks.
+  Playwright MCP, which was not built to share a browser with a person, moved it in 26.</li>
+<li><strong>It costs less.</strong> On the tasks both solved, Kitsune cost 0.56 to 0.97 times as much as Playwright MCP.</li>
+<li><strong>It solves about as many.</strong> Kitsune solved 96 of 98 tasks, Playwright MCP 98. Kitsune's two misses are one
+  task, "go back to the tab I was on", in two variants: the user's tab stayed in front, but the agent's own tab was
+  still its current tab, and that is what the grader checks.</li>
+</ul>
+<p>See the <a href="https://github.com/junyeong-nero/kitsune-benchmark/blob/main/docs/results/2026-11-04-opus-subscription-v0.7.2.md">v0.7.2 report</a>
+and the <a href="https://github.com/junyeong-nero/kitsune-benchmark/tree/main/docs/results">full reports</a>.
+<code>scripts/benchmark_chart.py</code> draws the chart from the report's numbers.</p>
+<h2 id="how-is-it-different">How is it different?<a class="headerlink" href="#how-is-it-different" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>If you want to…</th>
+<th>Consider</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Hand tasks to an agent in the Firefox-family browser you are using, with background tabs and per-tool approvals</td>
+<td><strong>Kitsune</strong></td>
+</tr>
+<tr>
+<td>Debug or profile pages in Firefox (debugger, profiler, deep protocol access)</td>
+<td><a href="https://github.com/mozilla/firefox-devtools-mcp">Mozilla Firefox DevTools MCP</a>, which attaches to a Firefox started with remote-debugging flags</td>
+</tr>
+<tr>
+<td>Test across Chromium, Firefox and WebKit in browsers it launches</td>
+<td><a href="https://github.com/microsoft/playwright-mcp">Playwright MCP</a>; Kitsune uses the same core tools, so prompts carry over</td>
+</tr>
+<tr>
+<td>Drive the Chrome you already use</td>
+<td>A Chromium extension MCP such as <a href="https://github.com/BrowserMCP/mcp">Browser MCP</a></td>
+</tr>
+</tbody>
+</table>
+<p>Kitsune connects through an extension and a local bridge, so Firefox needs no startup flags.
+Other Firefox extensions also reuse your logins; Kitsune focuses on sharing the browser with you
+while the agent works. <a href="https://github.com/junyeong-nero/kitsune/blob/main/docs/positioning.md">Positioning</a>
+has the full comparison.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "search.suggest", "search.highlight", "content.code.copy"], "search": "../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.c21346df.min.js"></script>
+      
+    
+  </body>
+</html>
