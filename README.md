@@ -11,11 +11,12 @@
 [![License: MIT](https://img.shields.io/github/license/junyeong-nero/kitsune)](https://github.com/junyeong-nero/kitsune/blob/main/LICENSE)
 [![Docs](https://img.shields.io/badge/docs-junyeong--nero.github.io%2Fkitsune-orange)](https://junyeong-nero.github.io/kitsune/)
 
-**Give your agent the browser you're already using. Keep working while it handles the busywork.**
+**Delegate browser tasks. Keep your browser yours.**
 
-Research products, compare pages, or fill forms—without signing in again or switching browsers.
-Kitsune connects Claude Code, Codex, Pi and other MCP clients to Firefox, Zen or LibreWolf.
-Your agent works in background tabs; your work stays in front.
+Kitsune connects Claude Code, Codex, Pi and other MCP clients to the Firefox, Zen or LibreWolf
+browser you already use. It's built for personal browser tasks—researching products, comparing
+pages, and drafting forms—rather than cross-browser testing. Your agent opens its own background
+tabs while you keep working in yours.
 
 ![Claude Code asks for the user's Wikipedia tab after researching in background tabs; the user approves in Kitsune's toolbar popup, the agent jumps the tab to the right section, and the user takes the tab back and closes the agent's tabs from the popup](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/demo-handoff.gif)
 
@@ -23,10 +24,18 @@ Your agent works in background tabs; your work stays in front.
 
 ## Why Kitsune?
 
-- **No fresh browser. No repeat logins.** Use your existing sessions. No Chromium or WebDriver to install.
-- **Delegate without stepping aside.** The agent researches in background tabs while you keep browsing.
-- **Your tabs stay yours.** The agent must ask before changing them. Approve, take back, and choose which tools need your OK.
+I built Kitsune after getting tired of switching back to my tab whenever my Playwright setup
+took focus, and opening Chrome for my agent when I already used a Firefox-based browser.
+I wanted browser automation that worked alongside me, not in my way.
+
+- **Keep working while the agent works.** Agent-created tabs open in the background. Selecting a tab for the agent doesn't switch the tab you see.
+- **Your tabs stay yours.** By default, the agent can read your tabs but cannot type, navigate, scroll or close them. It must request a handoff before changing one; you approve and can take it back.
+- **Stay in Firefox, Zen or LibreWolf.** Reuse your existing sessions without opening a separate Chrome browser or installing WebDriver.
 - **A small tool surface.** Six tools on `main`, with Python for browser actions and direct controls for user help and recovery. The 0.8.0 release has 14.
+
+Kitsune is designed to reduce interruptions, not eliminate them: site-opened popups and
+OS-level trusted input can still move focus. See the
+[shared-browser limits](https://junyeong-nero.github.io/kitsune/api-reference/#shared-browser).
 
 ## Less input. Broader tasks.
 
