@@ -838,7 +838,11 @@ class Tab:
 
     def type(self, target: str, text: str, *, clear: bool = False, wait: bool = False, timeout: int = 10000,
              expect: dict | None = None, first: bool = False, confirm: str | None = None) -> dict:
-        """Type text into a field or editor with key events, clearing it first if clear."""
+        """Append to input/textarea; insert at the caret/selection in contenteditable (end if outside).
+
+        clear=True replaces the content. This is not per-character native typing; use press
+        for caret-sensitive edits in native fields.
+        """
         return self._action("/api/type", {**_action_target(target), "text": text, "clear": clear}, wait=wait,
                             timeout=timeout, expect=expect, first=first, confirm=confirm)
 
@@ -859,6 +863,8 @@ class Tab:
               confirm: str | None = None) -> dict:
         """Press a key ("Enter", "ArrowDown", "a") on target, else on the focused element.
 
+        Targeting a non-editable control does not promise to focus it. Omitted target uses
+        current focus, not the last target; rerendering may replace a focused node.
         modifiers is {"ctrl"|"shift"|"alt"|"meta": True}; text also inserts it into an editable target.
         """
         body = {"key": key, **_scope(target)}

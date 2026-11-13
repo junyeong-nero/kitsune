@@ -1381,9 +1381,10 @@ async def browser_run_python(
     tab.text(); tab.forms(); tab.info().
     tab.click(target); tab.double_click(target); tab.hover(target); tab.drag(source, destination).
     tab.scroll('down', 700, target=None) scrolls window or element; also up/left/right/top/bottom.
-    tab.fill(target, value) replaces; tab.type(target, text) appends with key events.
+    tab.fill(target, value) replaces; tab.type(target, text): fields append, editors insert at caret.
     tab.fill_form({'#name': 'Ada'}); tab.check(target, True); tab.select_option(target, value).
-    tab.press('Enter', target=None, modifiers={'ctrl': True}); tab.navigate(url); tab.back().
+    tab.press('Enter', target=None, modifiers={'ctrl': True}); omitted target uses focus, not the last target.
+    tab.navigate(url); tab.back().
     tab.wait_for(text='Done', timeout=10000) or target/url/text_gone (one condition, timeout in ms).
     wait_for(target=...) accepts CSS/refs, not :has-text or text=/role=; actions may use those.
     Example after selecting a tab: tab.fill('e12', 'Ada'); tab.click('e15'); result = tab.snapshot(text=True).

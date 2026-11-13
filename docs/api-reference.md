@@ -2838,9 +2838,13 @@ Replaces `browser_fill` and `browser_set_editable_content`.
 
 | Mode | Behavior | Bridge endpoint |
 |---|---|---|
-| `type` | Type using events; `clear=True` clears first | `/api/type` |
+| `type` | Input/textarea append; contenteditable inserts at caret (end if outside); `clear=True` replaces | `/api/type` |
 | `fill` | Always replace the field value with native setter and input/change events; ignores `clear` | `/api/fill` |
-| `editable` | Insert plain text into contenteditable/input/textarea; append by default, replace with `clear=True` | `/api/set-editable-content` |
+| `editable` | Contenteditable inserts at caret (end if outside); input/textarea append; `clear=True` replaces | `/api/set-editable-content` |
+
+Input/textarea `type` and `editable` append to the value regardless of selection; use
+`browser_press_key` for caret-sensitive insertion. This is not per-character native typing.
+See also [Python editing and focus](python-api.md#editing-and-focus).
 
 In a `contenteditable` editor, `type` and `editable` insert at the caret when it is
 inside the target and otherwise at the end of the target, firing `beforeinput` and
