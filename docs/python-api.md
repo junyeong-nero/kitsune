@@ -236,6 +236,31 @@ bridge cuts a read at its size cap (page text at 20,000 characters, HTML at 100 
 Markdown at 80 KB), the method warns with a `UserWarning`; read a part of the page
 with a `target` instead.
 
+### Python and direct tool arguments are not aliases
+
+| Intent | Direct MCP tool | Python API |
+| --- | --- | --- |
+| Find snapshot text | `browser_find(text=..., regex=...)` | `tab.find(query)` has a best-effort CSS fast path, otherwise ranks description matches such as `"login button"`; it has no `text`/`regex` keywords |
+| Limit snapshot depth | `browser_snapshot(depth=...)` | `tab.snapshot(target=None, max_depth=..., text=False)`; `max_depth` and `text` are keyword-only |
+| Observe geometry | `browser_snapshot(boxes=True)` | No `boxes` argument; `tab.bounds(target)` reads one element's box |
+
+For literal/regex matching, filter a scoped read in ordinary Python rather than passing
+those arguments to `find`. For example, on a page with a `main` element:
+
+```python
+import re
+lines = tab.snapshot("main", text=True).splitlines()
+result = [line for line in lines if re.search(r"원|USD", line)][:10]
+```
+
+This searches only the returned subtree/lines, not necessarily the whole page; heed truncation
+warnings and narrow the read if needed. Do not print a full long-page snapshot to find one match.
+`help(tab.find)` and `help(tab.snapshot)` return the actual signatures and these distinctions locally,
+without a browser call. In `browser_run_python`, an unexpected-keyword `TypeError` for these two
+methods also includes their signature/docstring. The original error remains an error: no alias,
+automatic correction or retry is performed. Earlier successful writes remain done; observe the page
+and continue only the unfinished work, never replay the failed script.
+
 `evaluate` runs in the extension's content-script world, not in the page's: it sees the
 page's DOM, and reaches the page's own JavaScript globals only through
 `window.wrappedJSObject`, so `evaluate("() => window.wrappedJSObject.appState")`.
