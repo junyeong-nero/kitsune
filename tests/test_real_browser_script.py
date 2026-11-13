@@ -84,6 +84,26 @@ class RealBrowserScriptTests(harness.RealBrowserTestCase):
 
         self.run_scenario(run)
 
+    def test_argument_error_explains_python_api_and_preserves_completed_draft(self):
+        async def run(session, tab_id):
+            for index, call in enumerate(("tab.find(regex='.')", "tab.find(text='원')",
+                                          "tab.snapshot(boxes=True)", "tab.snapshot(depth=2)")):
+                draft = f"Keep draft {index}"
+                stopped = await session.call_tool("browser_run_python", {
+                    "code": f"tab.fill('#name', {draft!r})\n{call}\ntab.fill('#name', 'must not run')"})
+                self.assertTrue(stopped.isError, stopped)
+                payload = json.loads(stopped.content[0].text)
+                self.assertEqual(payload["code"], "script_error")
+                self.assertIn("Python API: Tab.", payload["output"])
+                self.assertEqual([entry["status"] for entry in payload["operations"]], ["ok"])
+                self.assertNotIn("resume_token", payload)
+                fields = self.call("/api/forms", {"tabId": tab_id})["fields"]
+                self.assertEqual(next(field["value"] for field in fields if field.get("name") == "name"), draft)
+            help_result = await session.call_tool("browser_run_python", {"code": "help(tab.find); help(tab.snapshot)"})
+            self.assertFalse(help_result.isError, help_result)
+            self.assertEqual(json.loads(help_result.content[0].text)["operations"], [])
+        self.run_scenario(run)
+
     def test_approval_stop_keeps_the_draft_and_does_not_offer_script_replay(self):
         self.call("/api/set-policy", {"ask": True})
 

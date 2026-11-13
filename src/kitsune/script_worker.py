@@ -3,11 +3,12 @@
 This is not a sandbox. Code has ordinary local Python host access.
 """
 import contextlib
+import inspect
 import json as json_module
 import sys
 import traceback
 
-from .browser import Browser
+from .browser import Browser, Tab
 
 _INPUT = sys.stdin
 _OUTPUT = sys.stdout
@@ -47,7 +48,15 @@ def main():
             exec(compile(request["code"], "<kitsune-script>", "exec"), namespace)
             _send({"event": "done", "result": namespace.get("result")})
         except BaseException as error:
-            _send({"event": "done", "error": "".join(traceback.format_exception_only(type(error), error)).strip()})
+            message = "".join(traceback.format_exception_only(type(error), error)).strip()
+            if isinstance(error, TypeError):
+                # #524: same-named direct tools use different arguments and semantics. Add local
+                # help, not aliases, browser calls or retries; keep the original exception visible.
+                for method in (Tab.find, Tab.snapshot):
+                    if str(error).startswith(f"{method.__qualname__}() got an unexpected keyword argument "):
+                        message += f"\nPython API: {method.__qualname__}{inspect.signature(method)}\n{inspect.getdoc(method)}"
+                        break
+            _send({"event": "done", "error": message})
 
 
 if __name__ == "__main__":

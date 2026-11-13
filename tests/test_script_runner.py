@@ -66,6 +66,38 @@ class ScriptRunnerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn(expected, result["output"])
                 self.assertFalse(result["retryable"])
 
+    async def test_direct_tool_keywords_explain_the_python_contract_without_replaying_writes(self):
+        cases = [("tab.find(regex='.')", "Tab.find", "description", "query"),
+                 ("tab.find(text='원')", "Tab.find", "description", "query"),
+                 ("tab.snapshot(boxes=True)", "Tab.snapshot", "tab.bounds(target)", "max_depth"),
+                 ("tab.snapshot(depth=2)", "Tab.snapshot", "max_depth", "text")]
+        for call, method, guidance, parameter in cases:
+            with self.subTest(call=call):
+                client = Client()
+                code = f"tab.fill('#draft', 'keep')\n{call}\ntab.fill('#draft', 'must not run')"
+                result = await script_runner.run_python(code, client, tab_id=7)
+                self.assertEqual(result["code"], "script_error")
+                self.assertFalse(result["retryable"])
+                self.assertIn("TypeError", result["output"])
+                self.assertIn(f"Python API: {method}(", result["output"])
+                self.assertIn(guidance, result["output"])
+                self.assertIn(parameter, result["output"])
+                self.assertEqual([route for _, route, _ in client.calls], ["/api/fill"])
+                self.assertEqual([entry["status"] for entry in result["operations"]], ["ok"])
+                self.assertIn("do not replay", result["hint"])
+
+    async def test_method_help_is_local_and_unrelated_type_errors_are_not_rewritten(self):
+        client = Client()
+        result = await script_runner.run_python("help(tab.find); help(tab.snapshot)", client, tab_id=7)
+        self.assertTrue(result["ok"], result)
+        self.assertIn("description", result["output"])
+        self.assertIn("tab.bounds(target)", result["output"])
+        self.assertEqual(client.calls, [])
+        result = await script_runner.run_python("len(value='wrong')", client)
+        self.assertEqual(result["code"], "script_error")
+        self.assertIn("TypeError", result["output"])
+        self.assertNotIn("Python API:", result["output"])
+
     async def test_failed_operation_stops_even_a_catching_script_and_removes_tokens(self):
         failure = {"code": "needs_user", "error": "Approval required", "retryable": False,
                    "state": {"reason": "approval", "confirmToken": "secret-token"}}

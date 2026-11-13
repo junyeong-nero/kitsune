@@ -1375,7 +1375,8 @@ async def browser_run_python(
     known, then read the needed result once. Do not guess refs or replay a failed script.
 
     Common API (targets are snapshot refs like e12 or unique selectors, not DOM ref attributes):
-    tab.snapshot(text=True) includes visible instructions and labels; scope with target='e12'.
+    tab.snapshot(target=None, max_depth=None, text=True) includes visible text; no depth/boxes args.
+    tab.find(query) searches descriptions, not text/regex; filter scoped reads in Python for those.
     tab.query(selector, fields=['text', 'href'], limit=20); tab.text(); tab.forms(); tab.info().
     tab.click(target); tab.double_click(target); tab.hover(target); tab.drag(source, destination).
     tab.scroll('down', 700, target=None) scrolls window or element; also up/left/right/top/bottom.

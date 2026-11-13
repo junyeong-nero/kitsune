@@ -569,7 +569,8 @@ class Tab:
 
         max_depth limits it below the root; text=True adds visible text lines (capped at
         12,000 characters). Refs survive later snapshots until the node is replaced or the tab
-        navigates.
+        navigates. Unlike the direct MCP snapshot tool, Python uses max_depth, not depth,
+        and has no boxes/filename arguments. Use tab.bounds(target) for one element's box.
         """
         if max_depth is not None and (type(max_depth) is not int or max_depth < 0):
             raise ValueError("max_depth must be a non-negative integer")
@@ -583,7 +584,12 @@ class Tab:
         return self._request("/api/forms")["fields"]
 
     def find(self, query: str) -> list[dict]:
-        """Elements matching a description such as "login button", best first, each with a ref."""
+        """Elements matching a description such as "login button", best first, each with a ref.
+
+        query is a description, not CSS or a regex. Unlike direct MCP browser_find, there are
+        no text/regex arguments. For literal/regex search, filter a scoped snapshot or bounded
+        query result in Python; matches only cover that returned subset, not the whole page.
+        """
         return self._request("/api/find", {"query": query})["results"]
 
     def query(self, selector: str, *, fields: list[str] | None = None, limit: int = 50) -> list[dict]:
