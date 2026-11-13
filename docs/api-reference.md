@@ -119,7 +119,12 @@ Existing positional selector arguments remain supported.
 
 Actions, scoped snapshots (`browser_snapshot`, `browser_dom`) and element screenshots
 resolve a target with one shared resolver. It accepts a ref, CSS (including shadow
-trees), and this subset of Playwright's selectors; it is not Playwright's engine:
+trees), and this subset of Playwright's selectors; it is not Playwright's engine.
+This is **not** the contract of every read: `tab.query(...)` accepts native CSS in the current
+document only (no refs or extended forms), while `tab.wait_for(target=...)` accepts native CSS
+or a ref, but not extended forms. Invalid CSS there returns `unsupported_selector` with a
+method-specific recovery hint. See the [method matrix](python-api.md#selector-contract-by-method).
+
 
 | Form | Matches |
 |---|---|
@@ -530,7 +535,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `unsupported_platform` | `browser_trusted_type`, `browser_trusted_press_key` or `browser_trusted_drag` on a platform other than macOS, or without pyobjc Quartz; nothing was sent | false |
 | `key_denied` | `browser_trusted_press_key` was asked for a chord that closes, quits or leaves the browser (`Meta+Q`, `Meta+W`, `Meta+Tab`, ...); nothing was pressed | false |
 | `not_actionable` | An [actionability wait](#actionability-wait) timed out on a target that exists but never rendered (`state.reason: "not_rendered"`, `timeoutMs`, `elapsed`); nothing was dispatched | true |
-| `unsupported_selector` | The shared target resolver rejected unsupported/invalid syntax (see [Target selectors](#target-selectors)) before dispatch; `state.selector` echoes the selector and `hint` lists accepted forms. Applies to actions, scoped snapshots and element screenshots | false |
+| `unsupported_selector` | Unsupported/invalid syntax was rejected before dispatch (see [Target selectors](#target-selectors)); `state.selector` echoes the selector and `hint` names that method's accepted forms. Actions, scoped snapshots and element screenshots use the shared target resolver; query and element waits reject invalid native CSS without accepting the resolver's extended forms | false |
 | `stale_ref` | The ref is no longer valid; `state.reason` is `element_removed`, `not_in_snapshot` (unknown/unissued ref), or `other_document` (the tab navigated, or the ref came from another tab; `state.same_element` then names the one element there with the ref's role and name, if exactly one) | true |
 | `navigating` | The tab is loading: a `not_found`/`stale_ref` while loading (`state.cause`), or the page unloaded while handling the command. Also a page that refused the content script within 5 s of a wake or reload without an error status, or whose 2xx response arrived only while the command waited for it: it may be an old document about to be replaced | true before dispatch; false for writes after |
 | `tab_closed` | The target tab no longer exists | true |

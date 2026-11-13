@@ -147,6 +147,7 @@ class Browser:
         return self.request("/api/tabs")["tabs"]
 
     def tab(self, tab_id: int) -> "Tab":
+        """Wrap an actual id from browser.tabs(), not an MCP list index; do not change MCP selection."""
         return Tab(self, tab_id)
 
     def active_tab(self) -> "Tab":
@@ -594,7 +595,11 @@ class Tab:
         return self._request("/api/find", {"query": query})["results"]
 
     def query(self, selector: str, *, fields: list[str] | None = None, limit: int = 50) -> list[dict]:
-        """Fields (text, href, value, src, alt, id, name by default) of every element matching a CSS selector."""
+        """Fields (text, href, value, src, alt, id, name by default) of elements matching native CSS.
+
+        Current document only: no shadow/frame traversal, snapshot refs or Playwright forms
+        such as :has-text or text=. Filter a bounded result in Python for text matching.
+        """
         body = {"selector": selector, "limit": limit}
         if fields:
             body["fields"] = fields
@@ -973,8 +978,10 @@ class Tab:
                  network_idle: bool = False, timeout: int = 10000, confirm: str | None = None) -> dict:
         """Wait up to timeout ms for exactly one condition, else raise TimedOut.
 
-        target: a visible element. text, text_gone: a literal substring of the rendered page
-        text (snapshot names from placeholders or aria-labels are not page text). url, title: a
+        target: a snapshot ref or native CSS for a visible element, not Playwright forms
+        (:has-text, text=, role=). CSS can search shadow roots and same-origin frames; it checks
+        the first match, not strict action ambiguity. text, text_gone: a literal substring of the
+        rendered page text (snapshot names from placeholders or aria-labels are not page text). url, title: a
         JavaScript regex on the tab, which survives navigation. js: an expression with a
         non-empty result (developer build only). network_idle: 500 ms without new resources.
         """

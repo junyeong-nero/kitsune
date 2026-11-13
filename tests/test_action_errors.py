@@ -226,7 +226,9 @@ class McpErrorResultTests(unittest.TestCase):
 
     def test_server_validation_and_ok_false_are_errors(self):
         self.assertMcpResult(self.call("browser_tabs", {"action": "select"}),
-                             {"error": "index is required for action=select"}, True)
+                             {"error": "index is required for action=select", "code": "invalid_argument",
+                              "retryable": False, "hint": "Use index from browser_tabs action=list. "
+                              "A Python tab ID is not this list index."}, True)
         timed_out = {"ok": False, "timedOut": True, "tabId": 9, "url": "https://example.com/"}
         # Core browser_tabs new reports the tab's index, not its tabId (#224).
         self.assertMcpResult(self.call("browser_tabs", {"action": "new", "url": "https://example.com/"}, timed_out),

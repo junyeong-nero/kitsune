@@ -194,7 +194,14 @@ shows which direct tools move to these APIs when scripting is enabled.
 | `active_tab()` | The tab you are viewing. With several windows, each has one: it raises `ambiguous_target`, and you pick one from `tabs()` |
 
 A `Tab` sends its id with every request, so it acts on that tab whether or not you are
-viewing it.
+viewing it. These identifiers are **not interchangeable**:
+
+- `browser_tabs(action="select", index=...)` uses a fresh index from **MCP** `browser_tabs(action="list")`.
+- Python `browser.tab(t["id"])` uses the actual **ID** from `browser.tabs()`. That dictionary's
+  `index` is browser tab-position metadata, not a substitute for the MCP list index.
+- Python wrapping, reading or creating a tab does not change MCP selection or activate a user tab.
+  The supplied `tab` is the selection at the start of that script; use the returned `Tab` from
+  `browser.new_tab(...)` explicitly. Never guess a selection index from a tab ID or `tab:...` string.
 
 | `Tab` method | Does |
 | --- | --- |
@@ -235,6 +242,37 @@ Sensitive values read redacted, as for the MCP tools
 bridge cuts a read at its size cap (page text at 20,000 characters, HTML at 100 KB,
 Markdown at 80 KB), the method warns with a `UserWarning`; read a part of the page
 with a `target` instead.
+
+### Selector contract by method
+
+| Method | Native CSS | Snapshot ref (`e12`) | Supported Playwright-style forms | Match scope / selection |
+| --- | --- | --- | --- | --- |
+| Actions such as `click`, `fill` | Yes | Yes | Yes, only the [documented subset](api-reference.md#target-selectors), e.g. `button:has-text("Save")` | Strict for writes: ambiguous actionable matches are refused |
+| `snapshot(target=...)` | Yes | Yes | Same subset | First matching subtree; this read is not a strict write |
+| `query(selector, ...)` | Yes | **No** | **No** | Current document only; bounded collection, not automatic shadow/frame traversal |
+| `wait_for(target=...)` | Yes | Yes | **No** | Waits for the first match to be visible, not strict action ambiguity |
+
+Action/scoped-snapshot CSS and element-wait CSS can search open/closed shadow roots and same-origin
+frames. Each CSS selector still matches within a single tree; combinators do not cross shadow roots.
+Do not assume CSS searches cross-origin frames. Use observed refs and the documented frame routing
+where supported. `query` intentionally keeps its current-document semantics; a ref-shaped string is
+just a CSS tag selector there, not an element handle. Returned values retain normal redaction.
+
+```python
+# A known unique button can be clicked/scoped using the supported extended form.
+result = tab.snapshot('button:has-text("Save")')
+# Query and element-wait use native CSS, or a ref for the wait only.
+rows = tab.query("main button", fields=["text"], limit=20)
+result = [row for row in rows if "Save" in row.get("text", "")]
+tab.wait_for(target="#save")
+# For visible page text, use the text condition, not target="text=Saved".
+tab.wait_for(text="Saved")
+```
+
+Invalid CSS in `query` or an element wait returns nonretryable `unsupported_selector` with a
+method-specific hint; it does not switch dialects, execute page JavaScript or retry. A write rejected
+as `ambiguous_target` dispatches nothing. `find(query)` is a separate element-search API, not a
+selector-dialect compatibility layer; see the argument/semantic distinctions below (#524).
 
 ### Python and direct tool arguments are not aliases
 
@@ -324,7 +362,7 @@ condition and raises `TimedOut` if it does not hold:
 
 | Condition | Holds when |
 | --- | --- |
-| `target=` | the element is visible |
+| `target=` | the first element matching native CSS, or a snapshot ref, is visible; no Playwright-style forms |
 | `text=`, `text_gone=` | the rendered page text contains, or no longer contains, the literal text. Names from placeholders and `aria-label`s are not page text |
 | `url=`, `title=` | the tab's URL or title matches a JavaScript regex; survives navigation |
 | `js=` | an expression returns a non-empty result (developer build only) |

@@ -3073,10 +3073,13 @@
       function poll() {
         let el;
         try {
-          // Preserve native CSS selector errors while resolving snapshot refs.
+          // Element waits accept CSS or refs, not the action resolver's extended forms.
           el = REF_SELECTOR.test(selector) ? resolveElement(selector) : deepQuerySelector(selector);
         } catch (e) {
-          resolve(errorResult(e));
+          resolve(errorResult(e?.name === 'SyntaxError' ? unsupportedSelector(selector,
+            'element waits accept CSS or a snapshot ref, not Playwright selector forms',
+            'Use tab.wait_for(target="#id") with CSS, or a snapshot ref; for literal page text use ' +
+            'tab.wait_for(text="Done"). :has-text and text=/role= forms are not element-wait selectors.') : e));
           return;
         }
         if (el && !isHidden(el)) {
@@ -3700,8 +3703,9 @@
   // step that reads the tab, not the selector forms, which do not apply to a tab (#487).
   function tabTargetError(selector) {
     const tab = TAB_TARGET.exec(selector.trim());
-    return tab && unsupportedSelector(selector, 'this names a tab, not an element', `browser_tabs action=select ` +
-      `index=${Number(tab[1])} makes it current for reads without changing the user's view; then call browser_snapshot.`);
+    return tab && unsupportedSelector(selector, 'this names a tab, not an element',
+      'Use browser_tabs action=list, then action=select with an index from that list; then call browser_snapshot. ' +
+      'Do not guess an index from this target. Python browser.tab(id) instead takes an actual ID from browser.tabs().');
   }
 
   // The index after the string, (…) or […] group that opens at text[i]. As in CSS, the end of
@@ -4542,7 +4546,12 @@
     if (!selector) return { error: 'queryElements requires selector' };
     if (valueSelectorBlocked(selector)) return { error: VALUE_SELECTOR_ERROR };
     let nodes;
-    try { nodes = document.querySelectorAll(selector); } catch (e) { return { error: 'Invalid selector: ' + e.message }; }
+    try { nodes = document.querySelectorAll(selector); } catch (e) {
+      return errorResult(e?.name === 'SyntaxError' ? unsupportedSelector(selector,
+        'query accepts native CSS only, not refs or Playwright selector forms',
+        'Use tab.query("#id", fields=["text"], limit=20) with CSS. For text matching, filter a scoped ' +
+        'snapshot or bounded query in Python; query does not resolve :has-text, text=/role= or snapshot refs.') : e);
+    }
     const cap = Math.min(limit || QUERY_LIMIT, QUERY_LIMIT);
     const want = (fields && fields.length) ? fields : DEFAULT_FIELDS;
     const items = [];

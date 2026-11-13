@@ -127,7 +127,7 @@ class ScriptMcpTests(unittest.TestCase):
         for example in ("browser.tabs()", "browser.new_tab(url)", ".snapshot(text=True)", "tab.fill(target, value)",
                         "tab.query(", "tab.scroll(", "tab.hover(", "tab.drag(", "tab.press(", "tab.wait_for(",
                         "browser_tools_call", "NOT a sandbox", "tab.find(query)", "not text/regex",
-                        "max_depth=None", "no depth/boxes args"):
+                        "max_depth=None", "no depth/boxes args", "CSS-only", "wait_for(target=...) accepts CSS/refs"):
             self.assertIn(example, description)
         self.assertNotIn("help(tab.query)", description)
 
