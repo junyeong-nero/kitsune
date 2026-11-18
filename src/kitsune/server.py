@@ -1383,7 +1383,8 @@ async def browser_run_python(
     """Browse with Python: read, click, scroll, hover, drag, type, fill and wait in one call.
     Trusted local Python with host file/network access, NOT a sandbox. The supplied browser
     uses this client's session and permissions. No imports or kitsune.connect() are needed.
-    Variables reset each call; tabs persist. tab is the MCP-selected Tab (None before selection).
+    Variables, functions and Tab handles persist across calls (reuse them; state_reset means
+    they were cleared). tab is reset each call to the MCP-selected Tab (None before selection).
     browser.tabs() returns list[dict] (id, url, title, owned); browser.tab(id) wraps a tab ID,
     NOT a list index. browser.new_tab(url) returns a Tab; scripts do not change MCP selection.
     Return JSON via result or print selected output. Group actions whose targets are already
@@ -1406,7 +1407,7 @@ async def browser_run_python(
     Example after selecting a tab: tab.fill('e12', 'Ada'); tab.click('e15'); result = tab.snapshot(text=True).
     help(tab.scroll) prints a specific method's signature. Prefer this API over page evaluate.
 
-    Limits: 16 KB output/result, 100 API calls, fresh variables, no top-level await.
+    Limits: 16 KB output/result, 100 API calls, no top-level await.
     A failed API call stops even if caught; earlier writes remain. For needs_user use the
     failed operation's direct tool via browser_tools_call, then run ONLY remaining work.
     Never put confirm/resume tokens in scripts. Use browser_tabs for handoff and selection,

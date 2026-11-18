@@ -50,11 +50,38 @@ class ScriptRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.calls, [])
         self.assertIs((await script_runner.run_python("result = tab is None", client))["result"], True)
 
-    async def test_variables_reset_between_calls(self):
+    async def test_variables_persist_between_calls_of_one_client(self):
         client = Client()
-        self.assertTrue((await script_runner.run_python("secret = 42", client))["ok"])
-        result = await script_runner.run_python("result = 'secret' in globals()", client)
-        self.assertIs(result["result"], False)
+        self.assertTrue((await script_runner.run_python("secret = 42\ndef twice(x): return 2 * x", client))["ok"])
+        result = await script_runner.run_python("result = twice(secret)", client)
+        self.assertEqual(result["result"], 84)
+        self.assertNotIn("state_reset", result)
+        # result itself and tab are per call; another client has its own variables.
+        self.assertNotIn("result", await script_runner.run_python("x = 1", client, tab_id=3))
+        self.assertIs((await script_runner.run_python("result = tab is None", client))["result"], True)
+        other = await script_runner.run_python("result = 'secret' in globals()", Client())
+        self.assertIs(other["result"], False)
+
+    async def test_script_errors_keep_variables_but_timeouts_reset_them(self):
+        client = Client()
+        await script_runner.run_python("kept = 1", client)
+        failed = await script_runner.run_python("1 / 0", client)
+        self.assertNotIn("state_reset", failed)
+        self.assertEqual((await script_runner.run_python("result = kept", client))["result"], 1)
+        timed_out = await script_runner.run_python("import time\ntime.sleep(5)", client, timeout=0.5)
+        self.assertEqual(timed_out["code"], "script_timeout")
+        self.assertIs(timed_out["state_reset"], True)
+        self.assertIs((await script_runner.run_python("result = 'kept' in globals()", client))["result"], False)
+
+    async def test_failed_operation_stops_a_catching_script_and_keeps_variables(self):
+        client = Client({"/api/page-text": {"error": "nope", "code": "stale_ref"}})
+        code = ("kept = 'yes'\ntry:\n    tab.text()\nexcept Exception:\n    pass\n"
+                "tab.text()  # must not reach the browser")
+        result = await script_runner.run_python(code, client, tab_id=7)
+        self.assertEqual(result["code"], "script_operation_failed")
+        self.assertNotIn("state_reset", result)
+        self.assertEqual(len(client.calls), 1)
+        self.assertEqual((await script_runner.run_python("result = kept", client))["result"], "yes")
 
     async def test_errors_and_non_json_results_are_reported(self):
         for code, expected in [("if", "SyntaxError"), ("1 / 0", "ZeroDivisionError"),

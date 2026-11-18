@@ -72,9 +72,9 @@ class RealBrowserScriptTests(harness.RealBrowserTestCase):
             self.assertIn("Grace", json.loads(observed.content[0].text)["snapshot"])
 
             next_call = await session.call_tool("browser_run_python", {
-                "code": f"result = {{'fresh': 'name' not in globals(), 'title': browser.tab({tab_id}).info()['title']}}"})
+                "code": f"result = {{'kept': name, 'title': browser.tab({tab_id}).info()['title']}}"})
             self.assertFalse(next_call.isError, next_call)
-            self.assertEqual(json.loads(next_call.content[0].text)["result"], {"fresh": True, "title": "Python API"})
+            self.assertEqual(json.loads(next_call.content[0].text)["result"], {"kept": "Grace", "title": "Python API"})
 
             refused = await session.call_tool("browser_run_python", {"code": f"browser.tab({foreign}).fill('#name', 'wrong')"})
             self.assertTrue(refused.isError, refused)

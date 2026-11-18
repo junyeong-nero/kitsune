@@ -1,5 +1,6 @@
-"""One trusted local Python invocation; browser requests go back to the MCP host.
+"""A persistent trusted local Python session; browser requests go back to the MCP host.
 
+One request per line; variables persist between requests until the host stops the process.
 This is not a sandbox. Code has ordinary local Python host access.
 """
 import contextlib
@@ -14,6 +15,10 @@ _INPUT = sys.stdin
 _OUTPUT = sys.stdout
 
 
+class _Stopped(BaseException):
+    """The host refused a browser request after a failed operation; `except Exception` cannot keep going."""
+
+
 def _send(message):
     _OUTPUT.write(json_module.dumps(message, ensure_ascii=False) + "\n")
     _OUTPUT.flush()
@@ -25,7 +30,10 @@ class _Client:
         line = _INPUT.readline()
         if not line:
             raise RuntimeError("The script host disconnected")
-        return json_module.loads(line)
+        reply = json_module.loads(line)
+        if reply == {"stop": True}:
+            raise _Stopped("A browser operation failed; the script was stopped")
+        return reply
 
 
 class _Output:
@@ -39,10 +47,17 @@ class _Output:
 
 
 def main():
-    request = json_module.loads(_INPUT.readline())
     browser = Browser(_Client())
-    namespace = {"__name__": "__main__", "browser": browser,
-                 "tab": browser.tab(request["tab_id"]) if request.get("tab_id") is not None else None}
+    namespace = {"__name__": "__main__", "browser": browser}
+    while line := _INPUT.readline():
+        _run(json_module.loads(line), browser, namespace)
+
+
+def _run(request, browser, namespace):
+    # Variables persist; browser, the MCP-selected tab and result are set afresh for each call.
+    namespace.pop("result", None)
+    namespace.update(browser=browser,
+                     tab=browser.tab(request["tab_id"]) if request.get("tab_id") is not None else None)
     with contextlib.redirect_stdout(_Output()), contextlib.redirect_stderr(_Output()):
         try:
             exec(compile(request["code"], "<kitsune-script>", "exec"), namespace)
