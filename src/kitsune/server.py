@@ -644,7 +644,8 @@ if SCRIPTING:
     mcp._mcp_server.instructions += (
         " Use browser_run_python for reads, input and waits. Group known actions and return only the next "
         "needed observation; inspect before choosing unknown targets. Scripts do not change selection "
-        "and do not need it: their tab defaults to the viewed tab, browser.tab(id) reaches the others. "
+        "and do not need it: their tab defaults to the viewed tab when it is yours, browser.tab(id) reaches the "
+        "others. "
         "Use browser_tools_call only for direct recovery/approval, not the ordinary browsing loop.")
 
 # The tool browser_tools_call is running; its bridge requests name it for the audit log.
@@ -1377,13 +1378,18 @@ elif SCRIPTING:
 
 
 def _viewed_tab_id() -> int | None:
-    """The one tab the user views, for a script's tab without an MCP selection; None if unclear."""
+    """The one tab the user views, for a script's tab without an MCP selection; None if unclear.
+
+    With read-only user tabs only a viewed tab this client owns qualifies: defaulting to the user's
+    tab made agents write there first and recover from user_tab_read_only (benchmark, +26% input)."""
     try:
         listed = _client.request("GET", "/api/tabs", start_bridge=False, timeout=5)
     except Exception:  # the script then reports tab None, as before
         return None
-    active = [tab.get("id") for tab in (listed or {}).get("tabs") or [] if tab.get("active")]
-    return active[0] if len(active) == 1 and type(active[0]) is int else None
+    active = [tab for tab in (listed or {}).get("tabs") or [] if tab.get("active")]
+    if len(active) != 1 or type(active[0].get("id")) is not int:
+        return None
+    return active[0]["id"] if active[0].get("owned") or USER_TABS != "read-only" else None
 
 
 async def browser_run_python(
@@ -1395,7 +1401,8 @@ async def browser_run_python(
     Trusted local Python with host file/network access, NOT a sandbox. The supplied browser
     uses this client's session and permissions. No imports or kitsune.connect() are needed.
     Variables reset each call; tabs persist. tab is the MCP-selected Tab, else the tab the user
-    views (None with several windows). Scripts need no browser_tabs list/select first:
+    views if it is yours (None for the user's tab or several windows). Scripts need no
+    browser_tabs list/select first:
     browser.tabs() lists tabs and browser.tab(id) reads or acts on any of them.
     browser.tabs() returns list[dict] (id, url, title, owned); browser.tab(id) wraps a tab ID,
     NOT a list index. browser.new_tab(url) returns a Tab; scripts do not change MCP selection.
