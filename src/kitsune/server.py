@@ -643,7 +643,8 @@ if SCRIPTING:
         "Batch/workflow newTab and tabs opened from current become current. ", "")
     mcp._mcp_server.instructions += (
         " Use browser_run_python for reads, input and waits. Group known actions and return only the next "
-        "needed observation; inspect before choosing unknown targets. Scripts do not change selection. "
+        "needed observation; inspect before choosing unknown targets. Scripts do not change selection "
+        "and do not need it: their tab defaults to the viewed tab, browser.tab(id) reaches the others. "
         "Use browser_tools_call only for direct recovery/approval, not the ordinary browsing loop.")
 
 # The tool browser_tools_call is running; its bridge requests name it for the audit log.
@@ -1375,6 +1376,16 @@ elif SCRIPTING:
     PUBLISHED_TOOLS.add("browser_tools_call")
 
 
+def _viewed_tab_id() -> int | None:
+    """The one tab the user views, for a script's tab without an MCP selection; None if unclear."""
+    try:
+        listed = _client.request("GET", "/api/tabs", start_bridge=False, timeout=5)
+    except Exception:  # the script then reports tab None, as before
+        return None
+    active = [tab.get("id") for tab in (listed or {}).get("tabs") or [] if tab.get("active")]
+    return active[0] if len(active) == 1 and type(active[0]) is int else None
+
+
 async def browser_run_python(
     code: Annotated[str, Field(description="Python code. Use the supplied browser; assign a JSON result or print selected output.",
                                min_length=1, max_length=64000)],
@@ -1383,7 +1394,9 @@ async def browser_run_python(
     """Browse with Python: read, click, scroll, hover, drag, type, fill and wait in one call.
     Trusted local Python with host file/network access, NOT a sandbox. The supplied browser
     uses this client's session and permissions. No imports or kitsune.connect() are needed.
-    Variables reset each call; tabs persist. tab is the MCP-selected Tab (None before selection).
+    Variables reset each call; tabs persist. tab is the MCP-selected Tab, else the tab the user
+    views (None with several windows). Scripts need no browser_tabs list/select first:
+    browser.tabs() lists tabs and browser.tab(id) reads or acts on any of them.
     browser.tabs() returns list[dict] (id, url, title, owned); browser.tab(id) wraps a tab ID,
     NOT a list index. browser.new_tab(url) returns a Tab; scripts do not change MCP selection.
     Return JSON via result or print selected output. Group actions whose targets are already
@@ -1403,13 +1416,13 @@ async def browser_run_python(
     tab.navigate(url); tab.back().
     tab.wait_for(text='Done', timeout=10000) or target/url/text_gone (one condition, timeout in ms).
     wait_for(target=...) accepts CSS/refs, not :has-text or text=/role=; actions may use those.
-    Example after selecting a tab: tab.fill('e12', 'Ada'); tab.click('e15'); result = tab.snapshot(text=True).
+    Example: tab.fill('e12', 'Ada'); tab.click('e15'); result = tab.snapshot(text=True).
     help(tab.scroll) prints a specific method's signature. Prefer this API over page evaluate.
 
     Limits: 16 KB output/result, 100 API calls, fresh variables, no top-level await.
     A failed API call stops even if caught; earlier writes remain. For needs_user use the
     failed operation's direct tool via browser_tools_call, then run ONLY remaining work.
-    Never put confirm/resume tokens in scripts. Use browser_tabs for handoff and selection,
+    Never put confirm/resume tokens in scripts. Use browser_tabs for handoff (request),
     browser_ask_user for human help, and browser_take_screenshot for images.
     """
     from .script_runner import run_python
@@ -1418,8 +1431,10 @@ async def browser_run_python(
         refused = await mcp.tool_approval(tool, {"via": "browser_run_python"})
         return True if refused is None else refused
 
-    result = await run_python(code, _client, timeout=timeout, tab_id=playwright_tools._current_tab,
-                              approve=approve)
+    tab_id = playwright_tools._current_tab
+    if tab_id is None:
+        tab_id = await anyio.to_thread.run_sync(_viewed_tab_id)
+    result = await run_python(code, _client, timeout=timeout, tab_id=tab_id, approve=approve)
     return CallToolResult(content=[_compact_json(result)], isError=_failed(result))
 
 
