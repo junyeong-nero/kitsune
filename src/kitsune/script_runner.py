@@ -23,6 +23,26 @@ OPERATION_LIMIT = 100
 FRAME_LIMIT = 2 * 1024 * 1024  # internal browser replies, not model-visible output
 
 
+# The last snapshot per client and scope (request body), across calls: scripts then see
+# only the changes (browser.Snapshot). Bounded; a missing entry shows the whole tree.
+_SNAPSHOTS: dict[tuple[int, str], tuple[object, str]] = {}  # the client is kept to rule out id reuse
+SNAPSHOT_MEMORY = 64
+
+
+def _remember_snapshot(client, body, reply):
+    text = reply.get("snapshot") if isinstance(reply, dict) else None
+    if not isinstance(text, str):
+        return reply
+    key = (id(client), json.dumps(body, sort_keys=True, ensure_ascii=False))
+    owner, previous = _SNAPSHOTS.pop(key, (None, None))
+    if owner is not client:
+        previous = None
+    _SNAPSHOTS[key] = (client, text)
+    while len(_SNAPSHOTS) > SNAPSHOT_MEMORY:
+        _SNAPSHOTS.pop(next(iter(_SNAPSHOTS)))
+    return {**reply, "previous_snapshot": previous} if previous is not None else reply
+
+
 class _Stop(Exception):
     def __init__(self, code, message, **details):
         self.result = {"error": message, "code": code, **details}
@@ -145,6 +165,8 @@ async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
                                      "code": str(reply.get("code", ""))[:100], "truncated": True}
                         raise _Stop("script_operation_failed", "A browser operation failed; the script was stopped",
                                     failed_operation=reply)
+                    if route == "/api/snapshot":
+                        reply = _remember_snapshot(client, body, reply)
                     await send(reply)
                 else:
                     raise _Stop("script_protocol_error", "Unknown script message")

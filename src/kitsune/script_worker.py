@@ -8,7 +8,7 @@ import json as json_module
 import sys
 import traceback
 
-from .browser import Browser, Tab
+from .browser import Browser, Snapshot, Tab
 
 _INPUT = sys.stdin
 _OUTPUT = sys.stdout
@@ -38,6 +38,17 @@ class _Output:
         pass
 
 
+def _shown(value):
+    """A result shows a snapshot as print() does: only its changes when the host had the previous one."""
+    if isinstance(value, Snapshot):
+        return str(value)
+    if isinstance(value, dict):
+        return {key: _shown(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_shown(item) for item in value]
+    return value
+
+
 def main():
     request = json_module.loads(_INPUT.readline())
     browser = Browser(_Client())
@@ -46,7 +57,7 @@ def main():
     with contextlib.redirect_stdout(_Output()), contextlib.redirect_stderr(_Output()):
         try:
             exec(compile(request["code"], "<kitsune-script>", "exec"), namespace)
-            _send({"event": "done", "result": namespace.get("result")})
+            _send({"event": "done", "result": _shown(namespace.get("result"))})
         except BaseException as error:
             message = "".join(traceback.format_exception_only(type(error), error)).strip()
             if isinstance(error, TypeError):

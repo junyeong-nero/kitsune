@@ -13,6 +13,7 @@ This module imports no MCP code.
 """
 
 import base64
+import difflib
 import json
 import re
 import warnings
@@ -68,6 +69,42 @@ def _cut(result: dict, what: str) -> dict:
         warnings.warn(f"{what} was cut at the bridge's size cap; read a part of the page with a target",
                       stacklevel=3)
     return result
+
+
+DIFF_SHARE = 0.7  # show changes only while they are shorter than this share of the tree
+
+
+class Snapshot(str):
+    """A snapshot's whole tree as a str: slicing, find and split see every line.
+
+    When the host remembered this scope's previous snapshot (browser_run_python), print()
+    and a script result show only the changed lines, if shorter. .full is the whole tree,
+    .diff the shown change text (None when the whole tree is shown).
+    """
+
+    def __new__(cls, text: str, previous: str | None = None):
+        snapshot = super().__new__(cls, text)
+        snapshot.diff = _snapshot_diff(previous, text)
+        return snapshot
+
+    @property
+    def full(self) -> str:
+        return str.__str__(self)
+
+    def __str__(self) -> str:
+        return self.full if self.diff is None else self.diff
+
+
+def _snapshot_diff(previous: str | None, text: str) -> str | None:
+    if not isinstance(previous, str):
+        return None
+    if previous == text:
+        return "[snapshot unchanged since this scope's previous snapshot; .full has the tree]"
+    lines = [line for line in difflib.unified_diff(previous.splitlines(), text.splitlines(), n=1, lineterm="")
+             if not line.startswith(("---", "+++"))]
+    shown = ("[changes since this scope's previous snapshot: + added, - removed, @@ hunks; "
+             ".full has the tree]\n" + "\n".join(lines))
+    return shown if len(shown) < DIFF_SHARE * len(text) else None
 
 
 def connect(*, user_tabs: str | None = None, confirm=None,
@@ -572,13 +609,16 @@ class Tab:
         12,000 characters). Refs survive later snapshots until the node is replaced or the tab
         navigates. Unlike the direct MCP snapshot tool, Python uses max_depth, not depth,
         and has no boxes/filename arguments. Use tab.bounds(target) for one element's box.
+        In browser_run_python, a repeated snapshot of the same scope prints and returns only
+        the changed lines; the returned Snapshot str (and .full) is still the whole tree.
         """
         if max_depth is not None and (type(max_depth) is not int or max_depth < 0):
             raise ValueError("max_depth must be a non-negative integer")
         body = {**_scope(target), "text": text}
         if max_depth is not None:
             body["maxDepth"] = max_depth
-        return _cut(self._request("/api/snapshot", body), "Snapshot")["snapshot"]
+        result = _cut(self._request("/api/snapshot", body), "Snapshot")
+        return Snapshot(result["snapshot"], result.get("previous_snapshot"))
 
     def forms(self) -> list[dict]:
         """Every form field with its label and value; sensitive values read redacted/hasValue instead."""

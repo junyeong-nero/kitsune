@@ -1405,6 +1405,8 @@ async def browser_run_python(
 
     Action/scoped-snapshot targets: refs like e12 or supported selectors, not DOM ref attributes.
     tab.snapshot(target=None, max_depth=None, text=True) includes visible text; no depth/boxes args.
+    A repeated snapshot of a scope prints/returns only changed lines (+/-) since its last one;
+    the str itself (and .full) is the whole tree for slicing and find.
     tab.find(query) searches descriptions, not text/regex; filter scoped reads in Python for those.
     tab.query(selector, fields=['text', 'href'], limit=20) is CSS-only, current document; no refs.
     tab.text(); tab.forms(); tab.info().
