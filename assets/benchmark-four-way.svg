@@ -1,0 +1,151 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="830" viewBox="0 0 1200 830" role="img" aria-labelledby="title desc">
+<title id="title">Four-way browser benchmark: 12 local tasks, Claude Code and Codex</title>
+<desc id="desc">Kitsune: passed 11/12 (Claude) and 10/12 (Codex), mean input 31k / 66k tokens, mean tool calls 3.2 / 2.9; Aside: passed 12/12 (Claude) and 12/12 (Codex), mean input 53k / 79k tokens, mean tool calls 4.7 / 4.8; EgoLite: passed 12/12 (Claude) and 11/12 (Codex), mean input 71k / 76k tokens, mean tool calls 4.0 / 3.5; Playwright MCP: passed 12/12 (Claude) and 10/12 (Codex), mean input 65k / 93k tokens, mean tool calls 7.1 / 5.9.</desc>
+<defs><linearGradient id="bg" x2="1" y2="1"><stop stop-color="#091f23"/><stop offset="1" stop-color="#10483f"/></linearGradient><linearGradient id="fox"><stop stop-color="#f58b42"/><stop offset="1" stop-color="#ffc36d"/></linearGradient></defs>
+<rect width="1200" height="830" rx="28" fill="url(#bg)"/>
+<g font-family="Arial, Helvetica, sans-serif">
+<rect x="48" y="38" width="372" height="32" rx="16" fill="#173c39" stroke="#46635a"/>
+<circle cx="66" cy="54" r="5" fill="#b8d89d"/>
+<text x="82" y="59.5" fill="#c9ddba" font-size="14" letter-spacing="2">KITSUNE BENCHMARK / FOUR-WAY</text>
+<text x="48" y="122" fill="#fff0d6" font-size="38" font-weight="700">Fewest tool calls. Least input.</text>
+<text x="48" y="156" fill="#b5ccc1" font-size="18">12 local web tasks × 4 browser tools × 2 agents · 96 attempts · graded by what the server received</text>
+<g transform="translate(1097.0 33.0) scale(1.25)">
+  <path fill="#f58b42" d="M5 26 7 6c.1-1 1.2-1.3 2-.6L19 14h10L39 5.4c.8-.7 1.9-.4 2 .6l2 20c.1.8-.2 1.5-.8 2L26 41.7a3.1 3.1 0 0 1-4 0L5.8 28a2.3 2.3 0 0 1-.8-2Z"/>
+  <path fill="#ffc36d" d="m9.6 9.6 6.4 5.6-7.3 3.2 0.9-8.8Z M38.4 9.6 32 15.2l7.3 3.2-.9-8.8Z"/>
+  <path fill="#fff0d6" d="M5.8 28 12 25l12 6 12-6 6.2 3L26 41.7a3.1 3.1 0 0 1-4 0Z"/>
+  <path fill="#09272a" d="M12.2 22.7c-.5-.5 0-1.3.7-1.1l5.4 1.6c.7.2.9 1.1.3 1.5l-1.3 1c-.4.3-.9.3-1.3 0Z M35.8 22.7c.5-.5 0-1.3-.7-1.1l-5.4 1.6c-.7.2-.9 1.1-.3 1.5l1.3 1c.4.3.9.3 1.3 0Z M21.1 31.1q2.9-1.2 5.8 0a1.1 1.1 0 0 1 .4 1.8l-2.4 2.4a1.3 1.3 0 0 1-1.8 0l-2.4-2.4a1.1 1.1 0 0 1 .4-1.8Z"/>
+</g>
+<rect x="520" y="196" width="36.0" height="16" rx="4" fill="#d3ded0"/>
+<text x="566" y="209" fill="#d3ded0" font-size="15">Claude Code · claude-opus-5-5</text>
+<rect x="890" y="196" width="36.0" height="16" rx="4" fill="#d3ded0" fill-opacity="0.38" stroke="#d3ded0" stroke-width="1.5"/>
+<text x="936" y="209" fill="#d3ded0" font-size="15">Codex · gpt-6.1-sol</text>
+<text x="324" y="209" fill="#a5bdb0" font-size="15">Top / bottom bar:</text>
+<text x="48" y="278" fill="#a5bdb0" font-size="13" font-weight="700" letter-spacing="1.2">TOOL</text>
+<g transform="translate(324 261) scale(0.916667)" fill="none" stroke="currentColor" stroke-opacity="1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" color="#a5bdb0">
+  <circle cx="12" cy="12" r="9"/>
+  <polyline points="8 12 11 15 16 9"/>
+</g><text x="354" y="278" fill="#a5bdb0" font-size="13" font-weight="700" letter-spacing="1.2">TASKS PASSED</text>
+<g transform="translate(520 261) scale(0.916667)" fill="none" stroke="currentColor" stroke-opacity="1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" color="#a5bdb0">
+  <ellipse cx="12" cy="6" rx="8" ry="3"/>
+  <path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6 M4 10c0 1.7 3.6 3 8 3s8-1.3 8-3 M4 14c0 1.7 3.6 3 8 3s8-1.3 8-3"/>
+</g><text x="550" y="278" fill="#a5bdb0" font-size="13" font-weight="700" letter-spacing="1.2">INPUT TOKENS / ATTEMPT</text>
+<g transform="translate(890 261) scale(0.916667)" fill="none" stroke="currentColor" stroke-opacity="1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" color="#a5bdb0">
+  <path d="M15.4 3.2a5.6 5.6 0 0 0-4.5 6.8l-7.3 7.3a2 2 0 0 0 2.8 2.8l7.4-7.3a5.6 5.6 0 0 0 6.7-4.5c.1-.6.1-1.2 0-1.8l-3 3-2.1-1.1-1.1-2.1 3-3c-.7-.2-1.3-.2-1.9-.1Z"/>
+</g><text x="920" y="278" fill="#a5bdb0" font-size="13" font-weight="700" letter-spacing="1.2">TOOL CALLS / ATTEMPT</text>
+<path d="M520 300 V636 M592.5 300 V636 M665 300 V636 M737.5 300 V636 M810 300 V636 M890 300 V636 M940 300 V636 M990 300 V636 M1040 300 V636 M1090 300 V636" stroke="#2f5149" stroke-width="1"/>
+<text x="520" y="656" fill="#a5bdb0" font-size="13" text-anchor="middle">0k</text>
+<text x="592.5" y="656" fill="#a5bdb0" font-size="13" text-anchor="middle">25k</text>
+<text x="665" y="656" fill="#a5bdb0" font-size="13" text-anchor="middle">50k</text>
+<text x="737.5" y="656" fill="#a5bdb0" font-size="13" text-anchor="middle">75k</text>
+<text x="810" y="656" fill="#a5bdb0" font-size="13" text-anchor="middle">100k</text>
+<text x="890" y="656" fill="#a5bdb0" font-size="13" text-anchor="middle">0</text>
+<text x="940" y="656" fill="#a5bdb0" font-size="13" text-anchor="middle">2</text>
+<text x="990" y="656" fill="#a5bdb0" font-size="13" text-anchor="middle">4</text>
+<text x="1040" y="656" fill="#a5bdb0" font-size="13" text-anchor="middle">6</text>
+<text x="1090" y="656" fill="#a5bdb0" font-size="13" text-anchor="middle">8</text>
+<rect x="32" y="304" width="1136" height="76" rx="14" fill="#f58b42" fill-opacity="0.07" stroke="#f58b42" stroke-opacity="0.35"/>
+<g transform="translate(44.666666666666664 322.0) scale(0.833333)">
+  <path fill="#f58b42" d="M5 26 7 6c.1-1 1.2-1.3 2-.6L19 14h10L39 5.4c.8-.7 1.9-.4 2 .6l2 20c.1.8-.2 1.5-.8 2L26 41.7a3.1 3.1 0 0 1-4 0L5.8 28a2.3 2.3 0 0 1-.8-2Z"/>
+  <path fill="#ffc36d" d="m9.6 9.6 6.4 5.6-7.3 3.2 0.9-8.8Z M38.4 9.6 32 15.2l7.3 3.2-.9-8.8Z"/>
+  <path fill="#fff0d6" d="M5.8 28 12 25l12 6 12-6 6.2 3L26 41.7a3.1 3.1 0 0 1-4 0Z"/>
+  <path fill="#09272a" d="M12.2 22.7c-.5-.5 0-1.3.7-1.1l5.4 1.6c.7.2.9 1.1.3 1.5l-1.3 1c-.4.3-.9.3-1.3 0Z M35.8 22.7c.5-.5 0-1.3-.7-1.1l-5.4 1.6c-.7.2-.9 1.1-.3 1.5l1.3 1c.4.3.9.3 1.3 0Z M21.1 31.1q2.9-1.2 5.8 0a1.1 1.1 0 0 1 .4 1.8l-2.4 2.4a1.3 1.3 0 0 1-1.8 0l-2.4-2.4a1.1 1.1 0 0 1 .4-1.8Z"/>
+</g>
+<text x="104" y="339.0" fill="#ffbb73" font-size="20" font-weight="700">Kitsune</text>
+<text x="104" y="359.0" fill="#a5bdb0" font-size="13">MCP · your Firefox</text>
+<rect x="324" y="319" width="64" height="20" rx="10" fill="#3b1f1d" stroke="#ef7a6a"/>
+<text x="356" y="334" fill="#ef7a6a" font-size="14" font-weight="700" text-anchor="middle">11/12</text>
+<text x="398" y="334" fill="#ef7a6a" font-size="12">1 fail</text>
+<rect x="520" y="319" width="89.7" height="20" rx="4" fill="url(#fox)"/>
+<text x="617.7" y="334" fill="#fff0d6" font-size="14" font-weight="700">31k</text>
+<rect x="890" y="319" width="79.2" height="20" rx="4" fill="url(#fox)"/>
+<text x="977.2" y="334" fill="#fff0d6" font-size="14" font-weight="700">3.2</text>
+<rect x="324" y="345" width="64" height="20" rx="10" fill="#3b1f1d" stroke="#ef7a6a"/>
+<text x="356" y="360" fill="#ef7a6a" font-size="14" font-weight="700" text-anchor="middle">10/12</text>
+<text x="398" y="360" fill="#ef7a6a" font-size="12">1 fail, 1 error</text>
+<rect x="520" y="345" width="190.3" height="20" rx="4" fill="url(#fox)" fill-opacity="0.38" stroke="url(#fox)" stroke-width="1.5"/>
+<text x="718.3" y="360" fill="#fff0d6" font-size="14" font-weight="700">66k</text>
+<rect x="890" y="345" width="72.9" height="20" rx="4" fill="url(#fox)" fill-opacity="0.38" stroke="url(#fox)" stroke-width="1.5"/>
+<text x="970.9" y="360" fill="#fff0d6" font-size="14" font-weight="700">2.9</text>
+<path d="M48 384 H1152" stroke="#2f5149" stroke-dasharray="2 4"/>
+<g transform="translate(44.666666666666664 406.0) scale(0.833333)">
+  <rect x="5" y="8" width="38" height="32" rx="5" fill="#c6dcb0"/>
+  <g fill="#09272a">
+    <rect x="8" y="17" width="32" height="20" rx="2"/>
+    <circle cx="12" cy="12.5" r="1.25"/>
+    <circle cx="16.5" cy="12.5" r="1.25"/>
+    <circle cx="21" cy="12.5" r="1.25"/>
+  </g>
+  <g fill="#fff0d6">
+    <path d="M15.6 22.3l6.4 4a1.2 1.2 0 0 1 0 2l-6.4 4a1.5 1.5 0 0 1-1.6-2.5l4-2.5-4-2.5a1.5 1.5 0 0 1 1.6-2.5Z"/>
+    <rect x="24" y="29.5" width="10" height="3" rx="1.5"/>
+  </g>
+</g>
+<text x="104" y="423.0" fill="#fff0d6" font-size="20" font-weight="700">Aside</text>
+<text x="104" y="443.0" fill="#a5bdb0" font-size="13">CLI REPL · your browser</text>
+<rect x="324" y="403" width="64" height="20" rx="10" fill="#173b36" stroke="#46635a"/>
+<text x="356" y="418" fill="#fff0d6" font-size="14" font-weight="700" text-anchor="middle">12/12</text>
+<rect x="520" y="403" width="154.0" height="20" rx="4" fill="#c6dcb0"/>
+<text x="682.0" y="418" fill="#fff0d6" font-size="14" font-weight="700">53k</text>
+<rect x="890" y="403" width="116.7" height="20" rx="4" fill="#c6dcb0"/>
+<text x="1014.7" y="418" fill="#fff0d6" font-size="14" font-weight="700">4.7</text>
+<rect x="324" y="429" width="64" height="20" rx="10" fill="#173b36" stroke="#46635a"/>
+<text x="356" y="444" fill="#fff0d6" font-size="14" font-weight="700" text-anchor="middle">12/12</text>
+<rect x="520" y="429" width="229.4" height="20" rx="4" fill="#c6dcb0" fill-opacity="0.38" stroke="#c6dcb0" stroke-width="1.5"/>
+<text x="757.4" y="444" fill="#fff0d6" font-size="14" font-weight="700">79k</text>
+<rect x="890" y="429" width="118.8" height="20" rx="4" fill="#c6dcb0" fill-opacity="0.38" stroke="#c6dcb0" stroke-width="1.5"/>
+<text x="1016.8" y="444" fill="#fff0d6" font-size="14" font-weight="700">4.8</text>
+<path d="M48 468 H1152" stroke="#2f5149" stroke-dasharray="2 4"/>
+<g transform="translate(44.666666666666664 490.0) scale(0.833333)">
+  <g fill="#718e81">
+    <path d="M18 7h20a5 5 0 0 1 5 5v16q0 2.5-2 4V16a7 7 0 0 0-7-7H14q1.5-2 4-2Z"/>
+    <path d="M14 11h20a5 5 0 0 1 5 5v16q0 2.5-2 4V20a7 7 0 0 0-7-7H10q1.5-2 4-2Z"/>
+    <rect x="5" y="15" width="30" height="26" rx="5"/>
+  </g>
+  <path fill="#fff0d6" d="M12.3 35.7a1.2 1.2 0 0 1 0-1.7l2.3-2.3C12.6 25.8 20 20 28 20c0 8-5.8 15.4-11.7 13.4L14 35.7a1.2 1.2 0 0 1-1.7 0Z"/>
+  <path fill="#718e81" d="m15.5 31.5 6.9-6.9a.7.7 0 0 1 1 1l-6.9 6.9Z"/>
+</g>
+<text x="104" y="507.0" fill="#fff0d6" font-size="20" font-weight="700">EgoLite</text>
+<text x="104" y="527.0" fill="#a5bdb0" font-size="13">CLI · your browser</text>
+<rect x="324" y="487" width="64" height="20" rx="10" fill="#173b36" stroke="#46635a"/>
+<text x="356" y="502" fill="#fff0d6" font-size="14" font-weight="700" text-anchor="middle">12/12</text>
+<rect x="520" y="487" width="207.0" height="20" rx="4" fill="#86b9a8"/>
+<text x="735.0" y="502" fill="#fff0d6" font-size="14" font-weight="700">71k</text>
+<rect x="890" y="487" width="100.0" height="20" rx="4" fill="#86b9a8"/>
+<text x="998.0" y="502" fill="#fff0d6" font-size="14" font-weight="700">4.0</text>
+<rect x="324" y="513" width="64" height="20" rx="10" fill="#3b1f1d" stroke="#ef7a6a"/>
+<text x="356" y="528" fill="#ef7a6a" font-size="14" font-weight="700" text-anchor="middle">11/12</text>
+<text x="398" y="528" fill="#ef7a6a" font-size="12">1 fail</text>
+<rect x="520" y="513" width="219.3" height="20" rx="4" fill="#86b9a8" fill-opacity="0.38" stroke="#86b9a8" stroke-width="1.5"/>
+<text x="747.3" y="528" fill="#fff0d6" font-size="14" font-weight="700">76k</text>
+<rect x="890" y="513" width="87.5" height="20" rx="4" fill="#86b9a8" fill-opacity="0.38" stroke="#86b9a8" stroke-width="1.5"/>
+<text x="985.5" y="528" fill="#fff0d6" font-size="14" font-weight="700">3.5</text>
+<path d="M48 552 H1152" stroke="#2f5149" stroke-dasharray="2 4"/>
+<g transform="translate(44.666666666666664 574.0) scale(0.833333)">
+  <path fill="#fff0d6" d="M10 7c4 0 8 3 14 3s10-3 14-3c2.4 0 4 1.8 4 4.2V17c0 12.7-8.1 24-18 24S6 29.7 6 17v-5.8C6 8.8 7.6 7 10 7Z"/>
+  <path fill="#09272a" d="M11.5 21c.3-3.5 6.2-4.6 9-1.4.8.9.1 2-1 1.8-2-.6-4.4-.3-6.5.8-.9.4-1.6-.3-1.5-1.2Z M36.5 21c-.3-3.5-6.2-4.6-9-1.4-.8.9-.1 2 1 1.8 2-.6 4.4-.3 6.5.8.9.4 1.6-.3 1.5-1.2Z M17 28.5c4.4 1.8 9.6 1.8 14 0 .9-.3 1.5.5 1 1.4-1.9 3.2-4.7 5.1-8 5.1s-6.1-1.9-8-5.1c-.5-.9.1-1.7 1-1.4Z"/>
+</g>
+<text x="104" y="591.0" fill="#fff0d6" font-size="20" font-weight="700">Playwright MCP</text>
+<text x="104" y="611.0" fill="#a5bdb0" font-size="13">MCP · isolated Firefox</text>
+<rect x="324" y="571" width="64" height="20" rx="10" fill="#173b36" stroke="#46635a"/>
+<text x="356" y="586" fill="#fff0d6" font-size="14" font-weight="700" text-anchor="middle">12/12</text>
+<rect x="520" y="571" width="189.0" height="20" rx="4" fill="#e7d9bd"/>
+<text x="717.0" y="586" fill="#fff0d6" font-size="14" font-weight="700">65k</text>
+<rect x="890" y="571" width="177.1" height="20" rx="4" fill="#e7d9bd"/>
+<text x="1075.1" y="586" fill="#fff0d6" font-size="14" font-weight="700">7.1</text>
+<rect x="324" y="597" width="64" height="20" rx="10" fill="#3b1f1d" stroke="#ef7a6a"/>
+<text x="356" y="612" fill="#ef7a6a" font-size="14" font-weight="700" text-anchor="middle">10/12</text>
+<text x="398" y="612" fill="#ef7a6a" font-size="12">2 error</text>
+<rect x="520" y="597" width="268.9" height="20" rx="4" fill="#e7d9bd" fill-opacity="0.38" stroke="#e7d9bd" stroke-width="1.5"/>
+<text x="796.9" y="612" fill="#fff0d6" font-size="14" font-weight="700">93k</text>
+<rect x="890" y="597" width="147.9" height="20" rx="4" fill="#e7d9bd" fill-opacity="0.38" stroke="#e7d9bd" stroke-width="1.5"/>
+<text x="1045.9" y="612" fill="#fff0d6" font-size="14" font-weight="700">5.9</text>
+<rect x="48" y="680" width="1104" height="64" rx="14" fill="#2a2320" fill-opacity="0.55" stroke="#ef7a6a" stroke-opacity="0.6"/>
+<g transform="translate(66 700) scale(1)" fill="none" stroke="currentColor" stroke-opacity="1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" color="#ef7a6a">
+  <path d="M10.7 4.4a1.5 1.5 0 0 1 2.6 0l7.4 13.9a1.5 1.5 0 0 1-1.3 2.2H4.6a1.5 1.5 0 0 1-1.3-2.2Z M12 9.5v4 M12 17h.01"/>
+</g>
+<text x="104" y="707" fill="#fff0d6" font-size="15"><tspan font-weight="700">Kitsune missed one task under both agents:</tspan> a native confirm() dialog blocked the click until it timed out.</text>
+<text x="104" y="729" fill="#d3ded0" font-size="14">Codex stalled until the 240 s timeout 3 times (Playwright 2, Kitsune 1) and wrongly reported success twice. Claude Code did neither.</text>
+<text x="48" y="776" fill="#bfd1c3" font-size="14">Means per attempt; input includes cache. CLI tool call = one ./browser script (can batch actions); MCP = one tool call.</text>
+<text x="48" y="798" fill="#bfd1c3" font-size="14">One repeat per task. Playwright ran an isolated headless Firefox; the others drove the operator’s browser. 2026-11-19.</text>
+</g>
+</svg>
