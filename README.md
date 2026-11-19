@@ -37,16 +37,17 @@ Kitsune is designed to reduce interruptions, not eliminate them: site-opened pop
 OS-level trusted input can still move focus. See the
 [shared-browser limits](https://junyeong-nero.github.io/kitsune/api-reference/#shared-browser).
 
-## Less input. Broader tasks.
+## Fewest tool calls. Least input.
 
-**The 6-tool Kitsune used the least total input in this four-way comparison.**
-23 personal and UI conditions, two repeats; all four configurations completed **46/46 attempts**.
+**Kitsune made the fewest tool calls and used the least input in a four-way comparison under two agents.**
+Aside, EgoLite, Playwright MCP and Kitsune on 12 local web tasks, under Claude Code and Codex: 96 attempts,
+graded by what the server received.
 
-[![Cache-inclusive input on the same 46 condition/repeat cells per arm: Kitsune 6-tool 5,730,439; Kitsune previous 14-tool 5,901,946; Aside 5,923,875; EgoLite 7,775,055. Lower is better; all four arms succeeded on 46/46 attempts.](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/benchmark-efficiency.svg)](https://junyeong-nero.github.io/kitsune/benchmark/)
+[![Four-way benchmark, 12 local tasks, 96 attempts. Mean input tokens per attempt, Claude Code / Codex: Kitsune 31k / 66k; Aside 53k / 79k; EgoLite 71k / 76k; Playwright MCP 65k / 93k. Mean tool calls: Kitsune 3.2 / 2.9; Aside 4.7 / 4.8; EgoLite 4.0 / 3.5; Playwright MCP 7.1 / 5.9. Passed: Kitsune 11/12 and 10/12; it missed a native confirm() dialog task under both agents.](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/benchmark-four-way.svg)](https://junyeong-nero.github.io/kitsune/benchmark/)
 
-<sub>Codex gpt-6.1-sol, medium. Input includes cache, not billed cost. Browser environments and permissions differ.
-6-tool adjusted time was 4.8% higher than 14-tool Kitsune and 6.6% higher than Aside; results vary by task.
-<a href="https://junyeong-nero.github.io/kitsune/benchmark/">Results, methodology and limitations →</a></sub>
+<sub>claude-opus-5-5 and gpt-6.1-sol, one attempt per task. Input includes cache, not billed cost. Kitsune missed one
+task under both agents: a native confirm() dialog blocked the click. Playwright MCP ran an isolated Firefox; the
+others used the operator's browser. <a href="https://junyeong-nero.github.io/kitsune/benchmark/">Results, methodology and limitations →</a></sub>
 
 ## Get started
 
