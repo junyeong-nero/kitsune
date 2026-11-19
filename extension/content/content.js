@@ -33,12 +33,28 @@
       W.onbeforeunload = null;
     };
     const state = { policy: { accept: null, prompt_text: null }, dialogs: [] };
-    const record = (type, message, defaultValue, response) => {
-      state.dialogs.push({ type, message: String(message ?? '').slice(0, 10000),
-        default_value: defaultValue, timestamp: Date.now(), response, pending: false });
+    // An agent's tab (#555) dismisses dialogs that no policy answers: no one would answer a native
+    // one there, and it would block the page. null until the background says; meanwhile a hidden
+    // tab counts as the agent's.
+    let agentTab = null;
+    const unattended = () => agentTab === true || (agentTab === null && W.document.visibilityState === 'hidden');
+    const answer = () => state.policy.accept ?? (unattended() ? false : null);
+    const record = (type, message, defaultValue, response, extra) => {
+      const entry = { type, message: String(message ?? '').slice(0, 10000),
+        default_value: defaultValue, timestamp: Date.now(), response, pending: false, ...extra };
+      state.dialogs.push(entry);
       if (state.dialogs.length > 100) state.dialogs.shift();
+      return entry;
     };
-    W.__kitsuneDialogSnapshot = expose(() => JSON.stringify(state));
+    const dismissed = () => state.policy.accept == null ? { auto_dismissed: true } : {};
+    // A native dialog is recorded while it is open, so it can be reported before anyone answers.
+    const ask = (type, message, defaultValue, native) => {
+      const entry = record(type, message, defaultValue, null, { pending: true });
+      try { entry.response = native(); } finally { entry.pending = false; }
+      return entry.response;
+    };
+    W.__kitsuneDialogSnapshot = expose(() => JSON.stringify({ ...state, default: unattended() ? 'dismiss' : 'native' }));
+    W.__kitsuneDialogAgentTab = expose(flag => { agentTab = flag === true; });
     W.__kitsuneDialogPolicy = expose((json) => {
       const previousAccept = state.policy.accept;
       state.policy = JSON.parse(json);
@@ -51,26 +67,22 @@
     });
     W.alert = expose((...args) => {
       // Preserve native argument conversion and blocking behavior in unmanaged tabs.
-      const answer = state.policy.accept == null ? nativeDialogs.alert.apply(W, args) : undefined;
-      record('alert', args[0], null, null);
-      return answer;
+      if (answer() == null) ask('alert', args[0], null, () => { nativeDialogs.alert.apply(W, args); return null; });
+      else record('alert', args[0], null, null, dismissed());
     });
     W.confirm = expose((...args) => {
-      const answer = state.policy.accept == null
-        ? nativeDialogs.confirm.apply(W, args) : state.policy.accept === true;
-      record('confirm', args[0], null, answer);
-      return answer;
+      const accept = answer();
+      if (accept == null) return ask('confirm', args[0], null, () => nativeDialogs.confirm.apply(W, args));
+      record('confirm', args[0], null, accept === true, dismissed());
+      return accept === true;
     });
     W.prompt = expose((...args) => {
       const defaultValue = args.length > 1 ? String(args[1]) : '';
-      let answer = null;
-      if (state.policy.accept == null) {
-        answer = nativeDialogs.prompt.apply(W, args);
-      } else if (state.policy.accept === true) {
-        answer = String(state.policy.prompt_text ?? defaultValue);
-      }
-      record('prompt', args[0], defaultValue, answer);
-      return answer;
+      const accept = answer();
+      if (accept == null) return ask('prompt', args[0], defaultValue, () => nativeDialogs.prompt.apply(W, args));
+      const response = accept === true ? String(state.policy.prompt_text ?? defaultValue) : null;
+      record('prompt', args[0], defaultValue, response, dismissed());
+      return response;
     });
     W.addEventListener('beforeunload', expose(() => {
       record('beforeunload', '', null, state.policy.accept === true ? 'leave' : 'native');
@@ -112,6 +124,15 @@
     if (!pageWindow.__kitsuneDialogPolicy) return dialogInfo();
     pageWindow.__kitsuneDialogPolicy(JSON.stringify({ accept: accept ?? null, prompt_text: accept == null ? null : promptText ?? null }));
     return { ok: true, ...dialogInfo() };
+  }
+  function setDialogAgentTab(agentTab) {
+    pageWindow.__kitsuneDialogAgentTab?.(agentTab === true);
+    return { ok: true };
+  }
+  // Dialogs recorded since a time (ms), for an action's result (#555).
+  function dialogsSince(since) {
+    const { dialogs } = dialogInfo();
+    return { dialogs: Array.isArray(dialogs) ? dialogs.filter(d => d?.timestamp >= since) : [] };
   }
   // Records the page's window.open calls so a synthetic click can report a popup that the popup
   // blocker refused (#304). The wrapper calls the original with the same this and arguments and
@@ -178,9 +199,11 @@
     return typeof result?.then === 'function' ? result.then(attach) : attach(result);
   }
 
-  // Restore the tab policy after navigation; native dialogs apply until this reply arrives.
-  browser.runtime.sendMessage({ action: 'getDialogPolicy' }).then(policy => {
-    if (policy) handleDialog(policy.accept, policy.prompt_text);
+  // Restore the tab policy and agent-tab default after navigation; until this reply arrives a
+  // hidden tab dismisses dialogs and a shown one keeps them native.
+  browser.runtime.sendMessage({ action: 'getDialogPolicy' }).then(reply => {
+    if (typeof reply?.agentTab === 'boolean') setDialogAgentTab(reply.agentTab);
+    if (reply?.policy) handleDialog(reply.policy.accept, reply.policy.prompt_text);
   }).catch(() => {});
 
   // Issued refs live for this document while their nodes stay attached.
@@ -471,6 +494,8 @@
       'settleState':           () => settleState(),
       'getPageInfo':           () => getPageInfo(),
       'handleDialog':          () => handleDialog(msg.accept, msg.prompt_text),
+      'setDialogAgentTab':     () => setDialogAgentTab(msg.agentTab),
+      'dialogsSince':          () => dialogsSince(Number(msg.since) || 0),
       'waitForText':           () => waitForText(msg.text, msg.text_gone, msg.timeout, msg.diagnose === true,
                                      msg.text_seen),
       'getPageText':           () => getPageText(msg.selector),

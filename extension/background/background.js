@@ -147,10 +147,18 @@ const isOwnershipValue = value => value?.v === 1 || (value?.v === 2 && validOwne
 function ownAgentTab(tabId, ownerId = null) {
   // Repeated bookkeeping cannot make a session grant persistent or native-input eligible.
   if (handoffs.has(tabId)) return;
+  if (!dialogAgentTab(tabId)) tellDialogAgentTab(tabId, true);
   agentTabs.add(tabId);
   agentTabOwners.set(tabId, validOwnerId(ownerId) ? ownerId : null);
   const value = agentTabOwners.get(tabId) == null ? { v: 1 } : { v: 2, owner: ownerId };
   browser.sessions?.setTabValue?.(tabId, AGENT_TAB_KEY, value).catch(() => {});
+}
+// The page's default for dialogs no policy answers (#555); a page that loads later asks (getDialogPolicy).
+// A tab the user handed over is still the user's: its dialogs stay native.
+const dialogAgentTab = tabId => agentTabs.has(tabId) && !handoffs.has(tabId);
+function tellDialogAgentTab(tabId, agentTab) {
+  Promise.resolve().then(() => browser.tabs.sendMessage(tabId, { action: 'setDialogAgentTab', agentTab }, TOP_FRAME))
+    .catch(() => {});
 }
 const trustedTabInput = new Map(); // tabId -> trusted content event's timestamp, not message arrival
 const USER_OPENED_TAB_WINDOW_MS = 1000;
@@ -218,6 +226,7 @@ async function prepareOwnershipKeys(params) {
 }
 // For a tab that stays open and goes back to the user.
 function disownAgentTab(tabId) {
+  if (dialogAgentTab(tabId)) tellDialogAgentTab(tabId, false);
   agentTabs.delete(tabId);
   agentTabOwners.delete(tabId);
   browser.sessions?.removeTabValue?.(tabId, AGENT_TAB_KEY).catch(() => {});
@@ -324,9 +333,10 @@ function invalidateHandoff(tabId) {
 }
 function takeBackHandoff(tabId) {
   invalidateHandoff(tabId);
-  if (handoffs.delete(tabId)) {
+  if (handoffs.has(tabId)) {
     // Synchronous permission revocation, with no browser activation or navigation.
     disownAgentTab(tabId);
+    handoffs.delete(tabId);
     trustedShownTabs.delete(tabId);
   }
   return { ok: true };
@@ -872,7 +882,8 @@ browser.runtime.onMessage.addListener((msg, sender) => {
     return Promise.resolve({ userInput });
   }
   if (msg.action === 'getDialogPolicy') {
-    return Promise.resolve(dialogPolicies.get(sender.tab?.id) || null);
+    const tabId = sender.tab?.id;
+    return agentTabsRestored.then(() => ({ policy: dialogPolicies.get(tabId) || null, agentTab: dialogAgentTab(tabId) }));
   }
   // A hidden tab's timers are throttled to 1 s, the background's are not (#351).
   if (msg.action === 'pointerPause') {
@@ -1488,6 +1499,7 @@ async function runCommand(params, options) {
 async function runCommandSettled(params, { withSnapshot, deltaSnapshot, textSnapshot, tracksOpenedTabs, pageText }, watch) {
   // The load a goBack starts, which its page text waits for like an action that navigates (#349).
   const back = pageText && params.action === 'goBack' ? { loadBefore: tabLoads.get(params.tabId) } : null;
+  const dialogsSince = Date.now();
   const result = await dispatchCommand(params);
   let navigation = null;
   if (watch && result && !result.error && result.ok !== false) {
@@ -1578,7 +1590,34 @@ async function runCommandSettled(params, { withSnapshot, deltaSnapshot, textSnap
       if (scriptPopup) scriptPopupBlocked(result, scriptPopup);
     }
   }
+  if (tracksOpenedTabs && params.tabId != null && result && typeof result === 'object') {
+    await addActionDialogs(params.tabId, dialogsSince, result);
+  }
   return result;
+}
+
+// Dialogs the page opened during an action (#555), also in a document it loaded. A dialog
+// Kitsune dismissed by default can be accepted only by a policy and a repeat of the action.
+const DIALOG_MESSAGE_LIMIT = 1000;
+const DISMISSED_DIALOG_HINT = 'Kitsune dismissed this dialog because no policy answers dialogs in an agent tab. ' +
+  'To accept it, call browser_handle_dialog(accept=true) and repeat the action.';
+function publicDialog(dialog) {
+  return { type: String(dialog.type), message: String(dialog.message ?? '').slice(0, DIALOG_MESSAGE_LIMIT),
+    ...(dialog.type === 'prompt' ? { default_value: dialog.default_value ?? null } : {}),
+    response: dialog.response ?? null, ...(dialog.pending ? { pending: true } : {}),
+    ...(dialog.auto_dismissed ? { auto_dismissed: true } : {}) };
+}
+async function pageDialogs(tabId, since) {
+  const reply = await Promise.resolve()
+    .then(() => browser.tabs.sendMessage(tabId, { action: 'dialogsSince', since }, TOP_FRAME)).catch(() => null);
+  return Array.isArray(reply?.dialogs)
+    ? reply.dialogs.filter(d => d && typeof d === 'object').slice(-20).map(publicDialog) : [];
+}
+async function addActionDialogs(tabId, since, result) {
+  const dialogs = await pageDialogs(tabId, since);
+  if (!dialogs.length) return;
+  result.dialogs = dialogs;
+  if (dialogs.some(d => d.auto_dismissed && d.type !== 'alert')) result.dialog_hint = DISMISSED_DIALOG_HINT;
 }
 
 async function tabUrl(tabId) {
@@ -3236,6 +3275,36 @@ function compactContentRefs(action, response, tabId, params) {
   return pending;
 }
 
+// A native dialog that is open blocks the page, so a command waiting on it would only time out
+// (#555). The page still answers messages meanwhile, so a reply slower than this checks for one.
+const OPEN_DIALOG_POLL_MS = 1000;
+async function withOpenDialogCheck(tabId, reply) {
+  let timer = null, done = false;
+  const open = new Promise(resolve => {
+    const poll = async () => {
+      const dialog = (await pageDialogs(tabId, 0)).findLast(d => d.pending);
+      if (done) return;
+      if (dialog) resolve(dialogOpenError(tabId, dialog));
+      else timer = setTimeout(poll, OPEN_DIALOG_POLL_MS);
+    };
+    timer = setTimeout(poll, OPEN_DIALOG_POLL_MS);
+  });
+  try {
+    return await Promise.race([reply, open]);
+  } finally {
+    done = true;
+    clearTimeout(timer);
+  }
+}
+function dialogOpenError(tabId, dialog) {
+  return { error: `A native ${dialog.type}() dialog is open in this tab and blocks the page`, code: 'dialog_open',
+    retryable: false,
+    hint: 'Kitsune cannot answer a dialog that is already open, and the command\'s effect depends on the ' +
+      'answer. Ask the user to answer it (browser_ask_user), then check the page with browser_snapshot ' +
+      'before repeating anything. browser_handle_dialog sets how later dialogs are answered.',
+    state: { tabId, dialog } };
+}
+
 async function forwardToContent(action, params) {
   const tabId = params.tabId || (await getActiveTabId());
   if (!tabId) return noActiveTab('No active tab found');
@@ -3289,7 +3358,7 @@ async function forwardToContent(action, params) {
     if (revoked) return revoked;
     let response;
     try {
-      response = await browser.tabs.sendMessage(tabId, message, { frameId });
+      response = await withOpenDialogCheck(tabId, browser.tabs.sendMessage(tabId, message, { frameId }));
     } catch (e) {
       const missingReceiver = e.message === MISSING_CONTENT_RECEIVER;
       // A wake's receiver can disappear after the ping. Only this error proves nothing

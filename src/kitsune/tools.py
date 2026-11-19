@@ -976,20 +976,21 @@ def browser_highlight(selector: str = "", tab_id: TabId = None, ref: str | None 
 def browser_handle_dialog(
     accept: Annotated[bool | None, Field(
         description="Auto-accept (true) or dismiss (false) future dialogs; null clears this tab's "
-                    "policy and restores native dialogs. True also disarms beforeunload like "
+                    "policy and restores the default. True also disarms beforeunload like "
                     "browser_tabs close with force; false leaves native beforeunload intact.")] = True,
     prompt_text: Annotated[str | None, Field(
         description="Answer for accepted prompts (default: the prompt's default value).")] = None,
     tab_id: TabId = None,
     confirm_token: str | None = None,
 ) -> dict:
-    """Set this tab's policy for future dialogs and return recent recorded dialogs; by
-    default dialogs use native UI and record the user's actual response.
+    """Set this tab's policy for future dialogs and return recent recorded dialogs. Without
+    a policy, an agent's tab dismisses dialogs (default: dismiss) and a user's tab shows them
+    natively (default: native). Page actions report the dialogs they caused in dialogs.
 
     Dialogs answer synchronously; this cannot change an already returned answer.
     History contains the last 100 dialogs in the current document. Policies survive
-    navigation, with native behavior until the policy is restored asynchronously.
-    Native dialogs and scripts holding original functions cannot be answered.
+    navigation, with the default until the policy is restored asynchronously.
+    An open native dialog (pending) and scripts holding original functions cannot be answered.
     """
     return _post("/api/handle-dialog", _request_body(
         {"accept": accept, "prompt_text": prompt_text}, tab_id, confirm_token=confirm_token))

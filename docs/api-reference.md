@@ -527,6 +527,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `content_unavailable` | The page's content script could not be injected or did not answer. `state.reason: "no_receiver"`: the injection succeeded but no ping from the current content script was answered within 0.5 s, so nothing was sent | true before dispatch; false for writes after |
 | `error_page` | A loaded `http(s)` page refused the content script: the browser shows its own document, such as an error response with an empty body. `state` adds `title` and, when the extension saw the response, `httpStatus`. Nothing was dispatched, but reads fail the same way until the tab navigates; for a 4xx/5xx status, `browser_page_text` instead returns an empty result (`text: ""`, `empty: true`, `httpStatus`, `tabId`, `url`, `title`) | false |
 | `extension_disconnected` | The extension is not connected, reconnected before sending, or disconnected while waiting (`state.connected`) | true if not sent; false for writes after |
+| `dialog_open` | A native alert/confirm/prompt is open in the tab and the command waited on it for over 1 s (see [Page dialogs](#page-dialogs)); `state.dialog` names it (`pending: true`). Only the user can answer it, and the command's effect depends on the answer | false |
 | `timeout` | The bridge sent the command but no reply arrived in time (`state.timeoutSeconds`); from the MCP server, the bridge did not answer. An element or text wait whose page reads all went unanswered within its `timeout` (see `browser_wait_for`) | false for writes (MCP: POST) |
 | `bridge_unavailable` | The MCP server cannot reach or start the bridge (`state.exitCode`, `state.logExcerpt` when it exited at startup; `state.reason`, `state.pid` when it runs but does not answer) | true |
 | `bridge_disconnected` | From the MCP server: the bridge closed the connection before its reply. `state.requestSent` is `false` when the request could not be sent in full, so the command did not run | true if not sent; false for writes (MCP: POST) after |
@@ -1085,6 +1086,33 @@ this warning. Not covered: `browser_press_key`, `browser_double_click`,
 for the navigation timeout and reports `navigation.timedOut` without this warning), and
 clicks on an element inside a same-origin frame, whose `window.open` is the frame's own
 and is not wrapped.
+
+### Page dialogs
+
+A page action (click, type, fill, key press, navigation and the other actions that report
+`opened_tabs`) adds `dialogs` to its result when the page called `alert`, `confirm` or
+`prompt` (or fired `beforeunload`) during it, in the document it acted in or one it loaded
+(#555). Each entry has `type`, `message` (up to 1,000 characters), `default_value` for a
+prompt, `response`, and `pending: true` while a native dialog is still open.
+
+Without a [dialog policy](#post-apihandle-dialog), an agent's tab dismisses dialogs, since no
+one would answer a native one there and it would block the page; a user's tab, including one
+handed to the agent, shows them natively. Until the page learns which it is, right after it
+loads, a hidden tab dismisses them. A dismissed dialog has `auto_dismissed: true`, and for a
+confirm or prompt the result adds
+`dialog_hint`: accept it with `browser_handle_dialog(accept=true)` and repeat the action.
+
+```json
+{ "ok": true, "no_visible_change": true, "dialogs": [
+  { "type": "confirm", "message": "Archive project beta?", "response": false, "auto_dismissed": true }
+], "dialog_hint": "Kitsune dismissed this dialog because no policy answers dialogs in an agent tab. ..." }
+```
+
+A native dialog blocks its page until someone answers it. A command that has waited more than
+1 s on a tab with an open native dialog fails with `dialog_open` instead of timing out. Kitsune
+cannot answer it: ask the user to, then check the page before repeating anything. Dialogs of
+a document the action left (an accepted confirm that submits a form) are not reported; the
+result's `navigated` describes the new page.
 
 ### Opened popups
 
@@ -3463,29 +3491,32 @@ Inline preview dimensions can be smaller than the original capture metadata.
 `{ "accept": true, "prompt_text": "answer", "tabId": 123 }`
 
 MCP tool: `browser_handle_dialog(accept=True, prompt_text=None, tab_id=None)`.
-Sets the tab's policy for subsequent dialogs and returns `{ok, policy, dialogs}`.
-By default, with no policy, original native alert/confirm/prompt functions run and
-the user's actual response is recorded. `beforeunload` also keeps native behavior.
-Only an explicitly configured policy auto-answers dialogs. Clear a policy with
+Sets the tab's policy for subsequent dialogs and returns `{ok, policy, default, dialogs}`.
+With no policy, `default` decides (see [Page dialogs](#page-dialogs)): `"dismiss"` in an
+agent's tab, which dismisses dialogs as `accept: false` would and records them with
+`auto_dismissed: true`; `"native"` in a user's tab, where the original native
+alert/confirm/prompt functions run and the user's actual response is recorded.
+`beforeunload` keeps native behavior in both. Clear a policy with
 `browser_handle_dialog(accept=None, tab_id=123)` or HTTP
-`{ "accept": null, "tabId": 123 }` to restore native pass-through.
+`{ "accept": null, "tabId": 123 }` to return to the default.
 Accepted prompts return `prompt_text` if supplied, otherwise the prompt's default;
 dismissed prompts return null and dismissed confirms return false. With a policy
 set, alerts return immediately; in native mode they wait for the user.
 Recent history is also included in `browser_page_info`:
 
 ```json
-{ "policy": { "accept": true, "prompt_text": "answer" }, "dialogs": [
+{ "policy": { "accept": true, "prompt_text": "answer" }, "default": "dismiss", "dialogs": [
   { "type": "prompt", "message": "Name?", "default_value": "Guest",
     "timestamp": 1792200000000, "response": "answer", "pending": false }
 ] }
 ```
 
 The page-world override records every intercepted invocation (last 100 per
-document). Answers are synchronous; `pending: false` means the user's native
-response or configured automatic answer was already returned, and a later tool
+document). A native dialog is recorded when it opens, with `pending: true` until the user
+answers it. Answers are synchronous; `pending: false` means the user's native
+response or automatic answer was already returned, and a later tool
 call cannot change it. Alert responses are null (no return value). Policies
-persist across navigation until tab closure or extension restart, with native behavior
+persist across navigation until tab closure or extension restart, with the default
 applying until asynchronous restoration completes. Clearing a policy also removes
 it from the per-tab policy store. Capture starts at
 `document_start` for new documents and on connection for existing tabs.

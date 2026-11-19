@@ -90,7 +90,9 @@ USER_LEAVES_PAGE = """(() => {
 PAGE_STATE = """(() => {
   const $ = id => document.getElementById(id);
   const active = document.activeElement, draft = $('draft');
-  const dialogs = window.__kitsuneDialogSnapshot ? JSON.parse(window.__kitsuneDialogSnapshot()) : null;
+  // The policy and history a write could change; the default (#555) follows who owns the tab.
+  const recorded = window.__kitsuneDialogSnapshot ? JSON.parse(window.__kitsuneDialogSnapshot()) : null;
+  const dialogs = recorded && { policy: recorded.policy, dialogs: recorded.dialogs };
   return {url: location.href, title: document.title, history: history.length,
           scroll: [window.scrollX, window.scrollY], active: active && (active.id || active.localName),
           selection: [draft.selectionStart, draft.selectionEnd, draft.selectionDirection],
