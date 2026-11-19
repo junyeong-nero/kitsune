@@ -4,41 +4,24 @@ Base URL: `http://127.0.0.1:47651`
 
 ## MCP tool surface
 
-The MCP server registers all 108 tools for every client (#525). The groups `core`,
-`browse`, `read`, `inspect`, `tabs`, `automation`, `network`, `admin`, `storage` and
-`history` only sort them. On `main`, `tools/list` shows the 6-tool [code-first surface](minimal-tools.md)
-by default (0.8.0 has fourteen), or with `KITSUNE_SCRIPTING=0` the `core` group and the
-[tool gateway](#tool-gateway). See [Tools](tools.md) for the complete tool list per group.
+Every client can call every tool; the groups only sort them. `tools/list` shows the
+[6 default tools](tools.md#default-tools), or with `KITSUNE_SCRIPTING=0` the
+[`core` group](tools.md#core-tools) and the [tool gateway](#tool-gateway). See
+[Tools](tools.md#tool-list) for every tool by group.
 
-**The `core` group is Playwright MCP's 25 core tools and Kitsune's
+The `core` group is Playwright MCP's 25 core tools, published verbatim from
+`src/kitsune/playwright_tools.json`, plus
 [`browser_resume`](#browser_resumecall-resume_token-observednone-wait120) and
-[`browser_ask_user`](#browser_ask_userreason-message-tab_idnone)** (#376). The 25
-are published verbatim from `src/kitsune/playwright_tools.json`: `browser_close`, `browser_resize`,
-`browser_console_messages`, `browser_handle_dialog`, `browser_emulate_media`,
-`browser_evaluate`, `browser_file_upload`, `browser_drop`, `browser_find`,
-`browser_fill_form`, `browser_press_key`, `browser_type`, `browser_navigate`,
-`browser_navigate_back`, `browser_network_requests`, `browser_network_request`,
-`browser_run_code_unsafe`, `browser_take_screenshot`, `browser_snapshot`,
-`browser_click`, `browser_drag`, `browser_hover`, `browser_select_option`,
-`browser_tabs`, `browser_wait_for`. Their arguments are Playwright's (`target` is a
-snapshot ref such as `e12`, a CSS selector or one of the
-[Playwright selector forms](#target-selectors) Kitsune resolves), they act on the current tab (writes
-without one fail, see [No current tab](#no-current-tab)), and
-`browser_emulate_media` and `browser_run_code_unsafe` answer `not_supported`; see
-[Core tools](tools.md#core-tools) for how each maps onto the extension. The tool
-sections below describe the Kitsune-owned tools and the bridge commands the core tools
-use; Kitsune's former `core` tools are in `read` (`browser_page_info`,
-`browser_page_text`, `browser_forms`, `browser_dom`, `browser_markdown`), `browse`
-(`browser_scroll`, `browser_check`, `browser_submit_form`, `browser_forward`), `admin`
-(`browser_status`) and `automation` (`browser_workflows`, `browser_workflow`). The ones
-Playwright's replace (`browser_keypress`, `browser_js`, `browser_screenshot`, `browser_back`,
-`browser_form_fill`, `browser_upload_file`, `browser_watch_console`,
-`browser_console_logs`, `browser_double_click`, and Kitsune's own signatures of the
-shared names) are no longer MCP tools; their sections document the bridge commands.
+[`browser_ask_user`](#browser_ask_userreason-message-tab_idnone). Core tools take
+Playwright's arguments (`target` is a ref, CSS or a [Playwright selector](#target-selectors))
+and act on the current tab ([No current tab](#no-current-tab)). The sections below describe
+the Kitsune-owned tools and the bridge commands behind the core tools; sections named after
+former tools (`browser_keypress`, `browser_js`, `browser_screenshot`, `browser_back`,
+`browser_form_fill`, `browser_upload_file`, `browser_watch_console`, `browser_console_logs`,
+`browser_double_click`) document their bridge commands.
 
-On the code-first surface, old direct names remain callable
-but are not advertised. `browser_tools_call(name)` describes a direct recovery tool;
-supplying `arguments` executes it. Search/publication still return `tool_moved_to_python`.
+On the default surface, unlisted names stay callable. `browser_tools_call(name)` describes a
+direct tool, and with `arguments` runs it; search and publication return `tool_moved_to_python`.
 
 `browser_status` adds `mcp_tools` to the bridge status: this MCP server's `surface`
 (`minimal` or `legacy`), its audit `client` id and its tab `owner` id
@@ -1843,9 +1826,8 @@ Any other value (for example a bare string `"checkout"`) returns `invalid_policy
 (HTTP 400), and none of the request is applied, in locked mode too.
 
 A held call returns `needs_user` (`confirmation_required`; HTTP 403 from the bridge) and
-does not run. Until #376 the code was `confirmation_required` with `retryable: true` and
-the hold reason in `state.reason`; now `retryable` is `false` like every `needs_user`, and the
-hold reason is `state.holdReason` (see [Action errors](#action-errors)):
+does not run. `retryable` is `false` and the hold reason is in `state.holdReason`
+(see [Action errors](#action-errors)):
 
 ```json
 { "error": "Confirmation required: clicks a submit control (Place order)",
