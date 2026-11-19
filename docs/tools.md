@@ -80,8 +80,9 @@ works unchanged, but results are Kitsune's compact JSON. Differences:
   the container ref to list them. `browser_find` searches collapsed items too.
 - **Sliders and keys.** `browser_fill_form` `type: "slider"` sets native and ARIA sliders.
   `browser_press_key` accepts an extra `repeat` (1–100).
-- **Dialogs.** `browser_handle_dialog` sets how the next dialogs are answered; one already open
-  cannot be.
+- **Dialogs.** Without a policy, an agent's tab dismisses dialogs and a user's tab shows them;
+  page actions report them in `dialogs`. `browser_handle_dialog` sets how the next dialogs are
+  answered; one already open cannot be (`dialog_open`).
 - **Uploads.** `browser_file_upload` fills the file input last clicked (or the page's only one).
 - **JavaScript.** `browser_evaluate` needs the developer build.
 - **Console and network.** Console capture starts on first use. Network requests come from

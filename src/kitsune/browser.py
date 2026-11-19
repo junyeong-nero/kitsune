@@ -907,8 +907,9 @@ class Tab:
 
     def handle_dialogs(self, accept: bool | None = True, prompt_text: str | None = None, *,
                        confirm: str | None = None) -> dict:
-        """Answer this tab's future alert/confirm/prompt dialogs: accept or dismiss them, or None to
-        leave them to the user again. Returns the policy and recent dialogs."""
+        """Answer this tab's future alert/confirm/prompt dialogs: accept or dismiss them, or None for
+        the default (an agent's tab dismisses them, a user's tab leaves them to the user). Returns
+        the policy and recent dialogs."""
         return self._request("/api/handle-dialog", _with_confirm({"accept": accept, "prompt_text": prompt_text}, confirm))
 
     def focus(self, target: str, *, first: bool = False, confirm: str | None = None) -> dict:
