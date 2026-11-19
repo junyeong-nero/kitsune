@@ -1,100 +1,44 @@
-# Kitsune Scraping Playbooks
+# Scraping playbooks
 
-> **🤖 AI INSTRUCTION — READ THIS FIRST**
->
-> Before writing any scraping batch sequence for a known site, check if a
-> playbook exists in this directory. Playbooks contain verified selectors,
-> working URL patterns, and documented workarounds from real scraping sessions.
-> Using a playbook avoids re-discovering the same failures from scratch.
->
-> **Available playbooks:**
-> - [`amazon.md`](./amazon.md) — Bot detection, scroll-then-extract pattern
-> - [`bestbuy.md`](./bestbuy.md) — Lazy loading, `scroll` (`scrollBy`) fix, correct 2026 selectors
-> - [`newegg.md`](./newegg.md) — Silent category redirects, use `/p/pl?d=` search URL
-> - [`bhphotovideo.md`](./bhphotovideo.md) — CSS Modules hashed classes, wildcard selector pattern
-> - [`ebay.md`](./ebay.md) — Hidden placeholder cards, `li.s-item` gone, one-selector-per-field extraction without JS
->
-> If a playbook doesn't exist for the target site, create one after you solve it.
->
-> Playbook steps are [`/api/batch`](../api-reference.md#post-apibatch) commands.
-> Run them with the `browser_batch` MCP tool (`automation` group; on the default
-> minimal surface, `browser.batch(...)` in `browser_run_python`). The
-> `js` and `waitForResult` actions need the developer extension build.
+Verified selectors, URL patterns and workarounds for sites that needed them. Check here before
+writing a scraping batch for a known site, and add a playbook when you solve a new one.
 
----
+Steps are [`/api/batch`](../api-reference.md#post-apibatch) commands: run them with
+`browser.batch(...)` in `browser_run_python`, or `browser_batch` on the legacy surface. `js` and
+`waitForResult` need the developer build.
 
-## Index
+| Site | Challenge | Fix | Playbook |
+|------|-----------|-----|----------|
+| Amazon | Bot detection on JS injection | Navigate normally, scroll, read the rendered DOM | [amazon.md](./amazon.md) |
+| Best Buy | Lazy loading | `scroll amount:800`, selector `.product-list-item` | [bestbuy.md](./bestbuy.md) |
+| Newegg | Category URLs silently redirect | Use the `/p/pl?d=keywords` search URL | [newegg.md](./newegg.md) |
+| B&H Photo | Hashed CSS Modules classes | `[class*="product_"]` wildcards + innerText parsing | [bhphotovideo.md](./bhphotovideo.md) |
+| eBay | `li.s-item` gone; hidden placeholder cards | `ul.srp-results > li.s-card` + one `query` per field | [ebay.md](./ebay.md) |
 
-### 🛒 E-commerce Sites
+## Common patterns
 
-| Site | Main Challenge | Key Fix | Playbook |
-|------|---------------|---------|---------|
-| **Amazon** | Bot detection on JS injection | Navigate normally, scroll, read rendered DOM only | [amazon.md](./amazon.md) |
-| **Best Buy** | Intersection-observer lazy loading | `scroll amount:800` + correct selector `.product-list-item` | [bestbuy.md](./bestbuy.md) |
-| **Newegg** | SubCategory URLs silently redirect | Use `/p/pl?d=keywords` search URL instead | [newegg.md](./newegg.md) |
-| **B&H Photo** | CSS Modules hashed class names | `[class*="product_"]` wildcard + innerText parsing | [bhphotovideo.md](./bhphotovideo.md) |
-| **eBay** | `li.s-item` returns 0; `li.s-card` adds 2 hidden placeholders | `ul.srp-results > li.s-card` + one `query` per field | [ebay.md](./ebay.md) |
+**Lazy loading.** Scroll about a viewport at a time, pausing for cards to render:
 
----
-
-## Common Patterns (Quick Reference)
-
-### Lazy-loading sites (Best Buy, B&H)
-Use `scroll` with `amount: 800` (pixels, roughly one viewport height) to trigger intersection
-observers. Repeat with sleeps between to let cards render:
 ```json
-{ "action": "scroll", "direction": "down", "amount": 800 },
-{ "action": "sleep", "ms": 1500 },
 { "action": "scroll", "direction": "down", "amount": 800 },
 { "action": "sleep", "ms": 1500 },
 { "action": "scroll", "direction": "down", "amount": 800 },
 { "action": "sleep", "ms": 2000 }
 ```
 
-### CSS Modules sites (B&H and any site with `word_hash` class names)
-Use `[class*="prefix_"]` wildcard selectors — the prefix before the underscore
-is stable across deploys. See [bhphotovideo.md](./bhphotovideo.md) for the full
-pattern and a class-discovery snippet in the appendix.
+**Hashed class names.** Use `[class*="prefix_"]`; the prefix before the underscore is stable.
 
-### Bot-detection sites (Amazon)
-- Use real browser navigation via `navigate` action only
-- Never use `fetch()` or XHR via the `js` action
-- Always scroll before extracting — let the page hydrate
-- Use `waitForElement` or `waitForResult` as your gate before extraction JS
+**Bot detection.** Use `navigate` only (no `fetch()` in `js`), scroll before extracting, and gate
+extraction with `waitForElement` or `waitForResult`.
 
-### Silent redirect detection (Newegg and others)
-Use `expectTitle` on the `navigate` action:
+**Silent redirects.** `expectTitle` on `navigate` returns a `warning` and `redirected: true` when
+the title doesn't match:
+
 ```json
 { "action": "navigate", "url": "https://...", "expectTitle": "gaming" }
 ```
-Returns `warning` and `redirected: true` if the page title doesn't contain
-the expected string. No need for manual `document.title` checks.
 
----
+## Adding a playbook
 
-## Adding a New Playbook
-
-When you solve a new site, create `docs/scraping-playbooks/SITENAME.md` with:
-1. **Problem** — what failed and why
-2. **Root Cause** — the technical reason
-3. **What Does NOT Work** — with code examples (saves future re-discovery)
-4. **What WORKS** — full working sequence with copy-pasteable JSON
-5. **Key Selectors** — table of verified selectors with a date stamp
-6. **Notes** — edge cases, expiry warnings, gotchas
-
-Then add a row to the table in this index file.
-
----
-
-## Contributing Playbooks
-
-Playbooks only help future agents and users if they're checked into the repo.
-After creating or updating a playbook:
-
-1. **Stage the files:** `git add docs/scraping-playbooks/`
-2. **Commit:** `git commit -m "playbook: add <sitename> scraping workaround"`
-3. **Push:** `git push`
-
-If you're an AI agent, ask the user to commit and push on your behalf.
-If you're a human contributor, please push your playbooks — they save everyone
-(including the AI) from re-discovering the same site-specific failures.
+Create `SITENAME.md` with: the problem, its root cause, what does not work, the working sequence
+(copy-pasteable JSON), a dated table of verified selectors, and notes. Then add a row above.

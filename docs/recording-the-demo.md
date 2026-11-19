@@ -1,12 +1,9 @@
 # Recording the README demo
 
 `assets/demo.gif` (scene `tokyo`) and `assets/demo-handoff.gif` (scene `handoff`) are real screen
-recordings: Claude Code in a terminal and a Zen window on a fresh profile, using the live websites.
-The scripts in `scripts/demo/` stage a scene, record it, and edit it into the GIF and an MP4 the way screen-recording editors such as Screen Studio
-do: idle stretches are sped up and an eased camera zooms in on what matters.
-
-The edit changes only time and framing. Every frame comes from the recording; nothing is drawn
-over the page or the terminal except the caption band and the speed badge below the picture.
+recordings of Claude Code and Zen on live sites. `scripts/demo/` stages, records and edits them:
+idle stretches are sped up and the camera zooms. Only time and framing change; nothing is drawn
+over the recording except captions and a speed badge.
 
 ## How it works
 
@@ -19,25 +16,21 @@ over the page or the terminal except the caption band and the speed badge below 
 | Edit | `scenes/SCENE.edit.json` | Camera views, the output-to-source time map and captions, written from that timeline |
 | Render | `render.py EDIT TAKE OUT.mp4 --cut full\|short` | Renders the MP4; `--preview DIR` saves one still per camera view first |
 
-The capture and the logs share one clock. AVFoundation stamps frames with `CLOCK_UPTIME_RAW`,
-and the take records the offset to wall time, so bridge audit entries and terminal output land
-on the right frame without a sync flash.
+The capture and the logs share one clock, so bridge actions and terminal output land on the right
+frame.
 
 ### The toolbar popup (scene `handoff`)
 
-The `handoff` scene also plays the user's part in Kitsune's toolbar popup. `popup.py` opens the popup the way a
-toolbar click does and clicks its buttons inside the popup page, through the browser's debugger, so `popup.js` sends
-its real messages. With `pin_action`, `stage.py up` pins the toolbar button, which Zen otherwise keeps in the
-extensions panel. `take.py` then follows the scene:
+`popup.py` plays the user's part in the toolbar popup, clicking its buttons through the browser's
+debugger. `pin_action` pins the toolbar button. `take.py` follows the scene:
 
 - `approve_handoff` `[wait, hold, after]`: when the button's badge shows a tab request, wait, open the popup, hold,
   click **Approve handoff**, hold again and close it.
 - `popup_after` `[hold, [[button, hold], ...], end]`: when the agent is done, open the popup, click each button in
   turn, close it and hold the last shot.
 
-The scene takes the tab back before it closes the agent's tabs: a handed-off tab counts as an agent tab, so
-**Close agent tabs** would close the user's tab too. Zen sometimes lays the popup out 32 px wide; `popup.py` closes
-and reopens such a popup until it keeps its width.
+Take the tab back before **Close agent tabs**, which would otherwise close the handed-off user tab.
+`popup.py` reopens the popup when Zen lays it out 32 px wide.
 
 ## Requirements
 

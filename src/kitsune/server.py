@@ -612,8 +612,7 @@ def _scripting(value: str | None) -> bool:
 
 
 SCRIPTING = _scripting(os.environ.get("KITSUNE_SCRIPTING"))
-# Experimental code-first surface: composition plus user control, images and direct recovery.
-# The legacy opt-out remains unchanged. See docs/minimal-tools.md.
+# Code-first surface: composition plus user control, images and direct recovery. See docs/tools.md.
 MINIMAL_TOOLS = frozenset({
     "browser_tabs", "browser_take_screenshot", "browser_ask_user", "browser_resume",
     "browser_run_python", "browser_tools_call",

@@ -1,21 +1,13 @@
 # Releasing
 
-Kitsune is published to PyPI as two distributions with one version, both from this
-repository:
+Two PyPI distributions share one version:
 
-- **`kitsune-browser`** (the repository root): the code, which is the import package `kitsune`
-  with the Python API, the agent tools, the bridge and, with its `mcp` extra, the MCP
-  server. It provides the `kitsune-bridge` command.
+- **`kitsune-browser`** (repository root): the `kitsune` package and the `kitsune-bridge` command.
 - **`kitsune-browser-mcp`** ([`packages/kitsune-browser-mcp`](../packages/kitsune-browser-mcp)):
-  no code of its own. It pins `kitsune-browser[mcp]` to its own version and provides the
-  `kitsune`, `kitsune-browser-mcp` and `kitsune-bridge` commands. MCP clients and the MCP
-  Registry install this one.
+  no code; pins `kitsune-browser[mcp]` and provides the `kitsune` commands. MCP clients install this.
 
-`kitsune-mcp` on PyPI is an unrelated project.
-
-Releases run from [`.github/workflows/release.yml`](../.github/workflows/release.yml)
-with [PyPI Trusted Publishing](https://docs.pypi.org/trusted-publishers/), so no
-API token is stored in the repository or in GitHub secrets.
+Releases run from [`.github/workflows/release.yml`](../.github/workflows/release.yml) with
+[PyPI Trusted Publishing](https://docs.pypi.org/trusted-publishers/); no API token is stored.
 
 ## One-time setup
 
@@ -30,10 +22,7 @@ API token is stored in the repository or in GitHub secrets.
    | Workflow name | `release.yml` |
    | Environment name | `pypi` |
 
-   The first successful publish creates the project and turns the pending
-   publisher into a normal one. `kitsune-browser-mcp` already has this publisher
-   (Your projects → kitsune-browser-mcp → Publishing); a new project needs the same
-   entry. One release publishes both, so both need it before the first tag.
+   Both projects need this publisher; `kitsune-browser-mcp` already has it.
 2. **TestPyPI (optional, recommended for the first release).** Repeat on
    <https://test.pypi.org> with environment name `testpypi`.
 3. **GitHub environments.** In the repository, open *Settings → Environments*
@@ -106,30 +95,15 @@ is broken, yank it on PyPI and release a new patch version.
 
 ## Extension updates
 
-The signed build's manifest sets `browser_specific_settings.gecko.update_url` to
-`https://github.com/junyeong-nero/kitsune/releases/latest/download/updates.json`.
-The `github-release` job writes that file with `scripts/update_manifest.py`: one
-entry for the release's version, the download link of its
-`kitsune-<version>.xpi`, the XPI's SHA-256 hash, and the manifest's
-`strict_min_version`
-([update manifest format](https://extensionworkshop.com/documentation/manage/updating-your-extension/)).
-Installed copies check about once a day and update when the listed version is
-newer than theirs.
+The signed build's `update_url` is
+`https://github.com/junyeong-nero/kitsune/releases/latest/download/updates.json`, written by
+`scripts/update_manifest.py` after the PyPI publish succeeds
+([format](https://extensionworkshop.com/documentation/manage/updating-your-extension/)).
 
-- The URL follows GitHub's **latest** release. The workflow marks each new
-  release as latest; any release marked latest by hand must also carry an
-  `updates.json`, or update checks fail until the next release.
-- The job runs only after the PyPI publish succeeds, so the extension update is
-  never offered before the matching server can be installed.
-- The update URL is read from the installed version. Moving `updates.json`
-  elsewhere would require one release that points at the new URL first.
-
-To withdraw a release's extension update, delete `updates.json` from that release
-on GitHub (or replace it with the previous release's file). This stops further
-updates; copies that already updated keep that version, because Firefox never
-downgrades through an update manifest. Keep the XPI asset while `updates.json`
-links to it. To fix the copies that already updated, release a new patch
-version.
+- It follows GitHub's **latest** release; a release marked latest by hand must carry an
+  `updates.json` too.
+- To withdraw an update, delete that release's `updates.json`. Firefox never downgrades, so fix
+  already-updated copies with a new patch release.
 
 ## What is in the packages
 

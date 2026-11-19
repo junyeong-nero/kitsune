@@ -31,7 +31,7 @@ I wanted browser automation that worked alongside me, not in my way.
 - **Keep working while the agent works.** Agent-created tabs open in the background. Selecting a tab for the agent doesn't switch the tab you see.
 - **Your tabs stay yours.** By default, the agent can read your tabs but cannot type, navigate, scroll or close them. It must request a handoff before changing one; you approve and can take it back.
 - **Stay in Firefox, Zen or LibreWolf.** Reuse your existing sessions without opening a separate Chrome browser or installing WebDriver.
-- **A small tool surface.** Six tools on `main`, with Python for browser actions and direct controls for user help and recovery. The 0.8.0 release has 14.
+- **A small tool surface.** Six tools: Python for browser actions, plus direct controls for user help and recovery.
 
 Kitsune is designed to reduce interruptions, not eliminate them: site-opened popups and
 OS-level trusted input can still move focus. See the
@@ -78,7 +78,7 @@ The full documentation is at **[junyeong-nero.github.io/kitsune](https://junyeon
 
 - [Installation](https://junyeong-nero.github.io/kitsune/installation/): every MCP client, version pinning, upgrades
 - [Your tabs and approvals](https://junyeong-nero.github.io/kitsune/your-tabs/): what limits the agent: protected tabs, per-tool approvals, ask-before-act
-- [Tools](https://junyeong-nero.github.io/kitsune/tools/): the minimal and legacy tool lists, and the tool groups
+- [Tools](https://junyeong-nero.github.io/kitsune/tools/): the default and legacy tool lists
 - [Python API](https://junyeong-nero.github.io/kitsune/python-api/): drive the browser from your own scripts with `pip install kitsune-browser`
 - [Troubleshooting](https://junyeong-nero.github.io/kitsune/troubleshooting/) ·
   [FAQ](https://junyeong-nero.github.io/kitsune/faq/) ·

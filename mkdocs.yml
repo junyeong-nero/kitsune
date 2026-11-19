@@ -40,7 +40,6 @@ markdown_extensions:
 exclude_docs: |
   releasing.md
   recording-the-demo.md
-  positioning.md
 
 # Some pages link to source files outside docs/ (../src, ../extension); don't warn on those.
 validation:
@@ -57,14 +56,12 @@ nav:
       - How it works: how-it-works.md
       - Your tabs and approvals: your-tabs.md
       - Tools: tools.md
-      - Minimal tools + Python: minimal-tools.md
       - Security: security.md
   - Guides:
       - Configuration: configuration.md
       - Python API: python-api.md
       - Checkpoint and resume: checkpoint-resume.md
   - Reference:
-      - Tool list: tool-list.md
       - API reference: api-reference.md
   - Help:
       - Troubleshooting: troubleshooting.md

@@ -5,20 +5,6 @@ the browser extension connects over WebSocket (127.0.0.1:47652) and runs them.
 The MCP server starts this daemon on demand, so it is shared by every agent.
 
 Usage: python -m kitsune.bridge
-
-------------------------------------------------------------------------
-AI AGENT NOTICE -- READ BEFORE WRITING SCRAPING BATCH SEQUENCES
-------------------------------------------------------------------------
-Before writing any batch commands that scrape a known website, check:
-    docs/scraping-playbooks/README.md   (relative to repo root)
-Playbooks exist for sites that required non-obvious workarounds:
-  * amazon.md       -- bot detection / scroll-before-extract pattern
-  * bestbuy.md      -- lazy loading / window.scrollTo fix / 2026 selectors
-  * newegg.md       -- silent category redirects / use /p/pl?d= search URL
-  * bhphotovideo.md -- CSS Modules hashed classes / wildcard selector pattern
-Using a playbook avoids re-discovering the same failures from scratch.
-If you solve a new site, add a playbook so future agents benefit.
-------------------------------------------------------------------------
 """
 
 import argparse
@@ -1815,7 +1801,7 @@ def _check_policy(action, params):
         return invalid
     # Agent JavaScript (an if/while condition, waitForResult, syncBarrier) is refused like js.
     if _policy["readonly"] and (action in WRITE_ACTIONS or action in _ASK_JS_ACTIONS):
-        # Read-only ops on cookies/storage/etc. are still allowed; tighten if needed.
+        # Read-only sub-ops on cookies/storage/etc. stay allowed.
         sub_op = params.get("op") if isinstance(params, dict) else None
         if action in ("cookies", "clipboard", "storageOp", "downloads") and sub_op in ("get", "read", "list", "snapshot"):
             return None
