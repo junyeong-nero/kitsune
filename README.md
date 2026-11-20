@@ -9,14 +9,15 @@
 [![Python](https://img.shields.io/pypi/pyversions/kitsune-browser-mcp)](https://pypi.org/project/kitsune-browser-mcp/)
 [![Release](https://img.shields.io/github/v/release/junyeong-nero/kitsune)](https://github.com/junyeong-nero/kitsune/releases/latest)
 [![License: MIT](https://img.shields.io/github/license/junyeong-nero/kitsune)](https://github.com/junyeong-nero/kitsune/blob/main/LICENSE)
-[![Docs](https://img.shields.io/badge/docs-junyeong--nero.github.io%2Fkitsune-orange)](https://junyeong-nero.github.io/kitsune/docs/)
+[![Website](https://img.shields.io/badge/website-junyeong--nero.github.io%2Fkitsune-0c282a)](https://junyeong-nero.github.io/kitsune/)
+[![Docs](https://img.shields.io/badge/docs-junyeong--nero.github.io%2Fkitsune%2Fdocs-orange)](https://junyeong-nero.github.io/kitsune/docs/)
 
 **Delegate browser tasks. Keep your browser yours.**
 
-Kitsune connects Claude Code, Codex, Pi and other MCP clients to the Firefox, Zen or LibreWolf
-browser you already use. It's built for personal browser tasks—researching products, comparing
-pages, and drafting forms—rather than cross-browser testing. Your agent opens its own background
-tabs while you keep working in yours.
+Kitsune is an MCP server and browser extension that connects Claude Code, Codex, Pi and other
+MCP clients to the Firefox, Zen or LibreWolf browser you already use. It's built for personal
+browser tasks—researching products, comparing pages, and drafting forms—rather than
+cross-browser testing. Your agent opens its own background tabs while you keep working in yours.
 
 ![Claude Code asks for the user's Wikipedia tab after researching in background tabs; the user approves in Kitsune's toolbar popup, the agent jumps the tab to the right section, and the user takes the tab back and closes the agent's tabs from the popup](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/demo-handoff.gif)
 
@@ -78,7 +79,9 @@ read the [security guide](https://junyeong-nero.github.io/kitsune/docs/security/
 
 ## Documentation
 
-The full documentation is at **[junyeong-nero.github.io/kitsune/docs](https://junyeong-nero.github.io/kitsune/docs/)**:
+The website, [junyeong-nero.github.io/kitsune](https://junyeong-nero.github.io/kitsune/), has an
+interactive demo of background tabs and handoff. The full documentation is at
+**[junyeong-nero.github.io/kitsune/docs](https://junyeong-nero.github.io/kitsune/docs/)**:
 
 - [Installation](https://junyeong-nero.github.io/kitsune/docs/installation/): every MCP client, version pinning, upgrades
 - [Your tabs and approvals](https://junyeong-nero.github.io/kitsune/docs/your-tabs/): what limits the agent: protected tabs, per-tool approvals, ask-before-act
