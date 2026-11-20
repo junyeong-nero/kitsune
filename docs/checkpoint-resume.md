@@ -110,7 +110,7 @@ minutes). Another client or a restarted server cannot resume it.
 - **Nothing that ran `ok` is resent.** `browser_fill_form` skips fields filled before the hold;
   `browser_type(submit=true)` held at Enter only presses Enter.
 - **It grants nothing a new call wouldn't.** The request passes the current policy and tab
-  permissions again; if the hold no longer applies, it simply runs.
+  permissions again; if the hold no longer applies, it runs.
 - **It never waits for a hold to lift.** With elicitation, a renewed hold is asked about for up
   to `wait` seconds (`wait=0` asks nothing). Without elicitation it returns `needs_user` again at
   once with a new token.

@@ -1,7 +1,7 @@
 # Installation
 
 Kitsune has two parts: an **MCP server** that your agent starts for you, and a **browser
-extension** you install once. Four steps get you from nothing to a working agent.
+extension** you install once. Setup takes four steps.
 
 !!! info "Before you start"
 
@@ -165,10 +165,10 @@ version ([compatibility](#extension-and-server-compatibility)).
 ## 4. Check that it works
 
 1. Keep the browser open and start a new session of your agent.
-2. Ask it: **“List my open browser tabs.”** It should answer with the tabs you have open.
+2. Ask it: **"List my open browser tabs."** It should answer with the tabs you have open.
 3. Click the Kitsune icon in the toolbar. The popup says **Connected**.
 
-That's it. Next, [try a first task](try-it.md).
+Next, [try a first task](try-it.md).
 
 ??? question "It doesn't work"
 

@@ -6,7 +6,7 @@
 | `KITSUNE_HOME` | `~/.kitsune` | Data directory (0700) |
 | `KITSUNE_HTTP_PORT` | `47651` | Bridge HTTP API |
 | `KITSUNE_WS_PORT` | `47652` | Extension WebSocket. Change `WS_URL` in `extension/background/background.js` too |
-| `KITSUNE_TOKEN` | — | Override the token in `~/.kitsune/token` |
+| `KITSUNE_TOKEN` | Unset | Override the token in `~/.kitsune/token` |
 | `KITSUNE_EXTENSION_DIR` | `extension/` in a checkout | Developer build the bridge checks for unreloaded edits ([Connection diagnosis](api-reference.md#connection-diagnosis)) |
 | `KITSUNE_NO_BRIDGE_RESTART` | Unset | `1`: don't replace an outdated bridge automatically |
 | `KITSUNE_BRIDGE_IDLE_TIMEOUT` | `0` (never) | Seconds without activity before the bridge exits ([Idle shutdown](installation.md#idle-shutdown-opt-in)) |

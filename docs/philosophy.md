@@ -9,7 +9,7 @@ The agent is a guest in a browser someone is using.
 - Agent work opens in background tabs; the user's view stays where it is.
 - User tabs, focus and input are off-limits unless the user allows otherwise.
 - Refuse with guidance rather than silently act somewhere else.
-- Don't trade interference for speed, and document where protections have limits.
+- Don't buy speed with interference, and document where protections have limits.
 
 ## 2. Fewer, sharper tools
 

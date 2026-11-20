@@ -1,4 +1,4 @@
-# Kitsune API Reference
+# Kitsune API reference
 
 Base URL: `http://127.0.0.1:47651`
 
@@ -458,6 +458,7 @@ answered, and is left out when the frame the action ran in did not answer in tim
 browser no longer finds (removed from the page) are not read again.
 
 Limits:
+
 - The wait above watches only the document the action ran in, so a frame that changes after it
   goes quiet is not seen.
 - A frame's changes count as seen once its delta is read, even when the result does not show
@@ -1130,20 +1131,24 @@ The result then has `opened_popup` (#329):
 
 - `opened_by` is the ref of the acted-on element, so an item can be matched to the row
   whose control opened the popup.
-- The popup is found in this order: when the aria-expanded of the acted-on element, or of
-  its nearest ancestor that has one, turned `"true"`, the element its `aria-controls` or
-  `aria-owns` names, unless it or an ancestor below `<body>` has `hidden` or
-  `aria-hidden="true"`; else the last `role=menu`, `listbox` or `dialog` element, open
-  `<dialog>` or open `[popover]` that opened or was added during the action; else, when
-  aria-expanded turned `"true"` or the acted-on element (or its nearest ancestor with the
-  attribute) has `aria-haspopup` (other than `"false"`), the open menu, listbox or dialog
-  that items were added to, such as one shared menu that each row refills. A menu, listbox
-  or dialog counts as open unless it is hidden itself or it or an ancestor below `<body>` has
-  `hidden` or `aria-hidden="true"`; a `display: none` ancestor alone does not close it,
-  because a background tab may not have shown it yet.
-  A popup that contains the acted-on element is not reported. The action's own document
-  and shadow root are searched, not other frames. Results without a popup have no
-  `opened_popup` field.
+- The popup is the first of these that exists:
+
+    1. When the aria-expanded of the acted-on element, or of its nearest ancestor that has
+       one, turned `"true"`: the element its `aria-controls` or `aria-owns` names, unless
+       that element or an ancestor of it below `<body>` has `hidden` or `aria-hidden="true"`.
+    2. The last `role=menu`, `listbox` or `dialog` element, open `<dialog>` or open
+       `[popover]` that opened or was added during the action.
+    3. When aria-expanded turned `"true"`, or the acted-on element (or its nearest ancestor
+       with the attribute) has `aria-haspopup` other than `"false"`: the open menu, listbox
+       or dialog that items were added to, such as one shared menu that each row refills.
+
+    A menu, listbox or dialog counts as open unless it is hidden itself or it or an ancestor
+    below `<body>` has `hidden` or `aria-hidden="true"`; a `display: none` ancestor alone does
+    not close it, because a background tab may not have shown it yet.
+    A popup that contains the acted-on element is not reported. The action's own document
+    and shadow root are searched, not other frames. Results without a popup have no
+    `opened_popup` field.
+
 - A menu, listbox or dialog that opened or was added but is not rendered is reported only
   when aria-expanded turned `"true"`, the acted-on element (or its nearest ancestor with the
   attribute) has `aria-haspopup`, or the popup's nearest `display: none` ancestor was already in the page before the action (a shared
@@ -1516,7 +1521,7 @@ MCP clients for the current extension–bridge connection and resets on reconnec
 MCP call counts once, including gateway calls, batches, and approval retries; internal browser
 commands and Python API calls do not count. Reporting is best effort, in memory only, and
 contains no tool names, URLs, arguments or results. Older bridges show usage as unavailable,
-not zero. “Connected” means the bridge is reachable, not that an MCP client is currently running.
+not zero. "Connected" means the bridge is reachable, not that an MCP client is currently running.
 
 Agents often leave the tabs they opened behind, so a long unattended session can pile up
 dozens. Kitsune's toolbar button opens a popup with two ways to clean them up. Both close
@@ -3188,6 +3193,7 @@ permission for the bridge. Elsewhere, or without them, they return `unsupported_
 `permission_required` and type nothing.
 
 Each call:
+
 1. Clicks the target (`selector` or a ref, required) with the OS pointer, as
    `browser_trusted_click` does. A `tab_id` that is not shown is shown for the call
    ([`tab_not_shown`](#action-errors) when the window shows no page). A user or other client's
@@ -3233,6 +3239,7 @@ permission for the bridge. Elsewhere, or without them, it returns `unsupported_p
 `permission_required` and drags nothing.
 
 Each call:
+
 1. Measures the source (`selector` or a ref) as `browser_trusted_click` does: scrolled into view
    and hit-tested (`target_not_at_point`). A `tab_id` that is not shown is shown for the call.
    User and other clients' tabs return `user_tab_read_only` before anything is shown or measured;
@@ -3291,32 +3298,33 @@ request (`askUser`, without the message).
 
 - **On a client with elicitation** the MCP server asks the user in the client's prompt,
   labeled as the agent's request and naming the tab, for up to 120 s. The prompt is one step
-  (#494): the client's Accept (Continue in pi) answers Done, its Decline Can't. Codex chooses
-  Done or Can't in a field, as for [approval prompts](#approval-prompts):
+  (#494): the client's Accept (Continue in pi) answers Done and its Decline answers Can't.
+  Codex chooses Done or Can't in a field, as for [approval prompts](#approval-prompts):
 
-  ```json
-  { "ok": true, "answer": "done", "via": "elicitation", "reason": "sign_in", "tabId": 12,
-    "hint": "Check the page (browser_snapshot) before going on." }
-  ```
+    ```json
+    { "ok": true, "answer": "done", "via": "elicitation", "reason": "sign_in", "tabId": 12,
+      "hint": "Check the page (browser_snapshot) before going on." }
+    ```
 
-  Can't, or a declined prompt, returns `needs_user` with `state.decision: "declined"`; a
-  dismissed prompt, or none answered in time, `"cancelled"` with `call` and `resume_token`:
-  `browser_resume` asks again.
+    Can't, or a declined prompt, returns `needs_user` with `state.decision: "declined"`. A
+    dismissed prompt, or one not answered in time, returns it with `"cancelled"`, `call` and
+    `resume_token`, and `browser_resume` asks again.
+
 - **Without elicitation** it returns `needs_user` at once, for the agent to ask in its reply:
 
-  ```json
-  { "ok": false, "error": "The agent needs the user", "code": "needs_user", "retryable": false,
-    "state": { "reason": "agent_request", "detail": "sign_in", "message": "Sign in to your shop account, please.",
-               "tabId": 12, "url": "https://shop.example/login", "title": "Sign in", "evidence": { "field": "password" } },
-    "call": 61, "resume_token": "…",
-    "hint": "Nothing was done. Ask the user in your reply (state.message) and wait for their answer. Tell the user what to do …" }
-  ```
+    ```json
+    { "ok": false, "error": "The agent needs the user", "code": "needs_user", "retryable": false,
+      "state": { "reason": "agent_request", "detail": "sign_in", "message": "Sign in to your shop account, please.",
+                 "tabId": 12, "url": "https://shop.example/login", "title": "Sign in", "evidence": { "field": "password" } },
+      "call": 61, "resume_token": "…",
+      "hint": "Nothing was done. Ask the user in your reply (state.message) and wait for their answer. Tell the user what to do …" }
+    ```
 
-  When `reason` is `sign_in` or `human_check` and the tab shows that
-  [hint](#needs_user-hints) (`state.evidence`), the result has `call` and `resume_token`:
-  `browser_resume` waits up to `wait` seconds for the hint to be gone from the tab and then
-  returns `{ "ok": true, "answer": "done", "via": "page", … }`. Otherwise there is nothing
-  to wait for, and no `resume_token`. See [Direct calls](checkpoint-resume.md#direct-calls).
+    When `reason` is `sign_in` or `human_check` and the tab shows that
+    [hint](#needs_user-hints) (`state.evidence`), the result has `call` and `resume_token`:
+    `browser_resume` waits up to `wait` seconds for the hint to be gone from the tab and then
+    returns `{ "ok": true, "answer": "done", "via": "page", … }`. Otherwise there is nothing
+    to wait for, and no `resume_token`. See [Direct calls](checkpoint-resume.md#direct-calls).
 
 #### Example: needs_user end to end
 
@@ -3351,7 +3359,7 @@ returns the JSON string containing widget data inside the workflow's `results`.
 
 Requests require a bearer token from `~/.kitsune/token` (or `KITSUNE_TOKEN`).
 
-## Status & Info
+## Status and info
 
 ### GET /api/status
 Connection status and config; `diagnosis` is described under [Connection diagnosis](#connection-diagnosis).
@@ -3423,7 +3431,7 @@ Bridge and extension version info.
 { "bridge": "0.8.0", "api": "1", "extension_connected": true, "extension_version": "0.8.0", "extension_build": "dev", "extension": 25 }
 ```
 
-## Page Data (GET, cached 5s except page-info)
+## Page data (GET, cached 5 s except page-info)
 
 ### GET /api/page-info
 Page metadata plus current dialog policy and recent dialog history. Never cached.
@@ -3527,7 +3535,7 @@ outside this mechanism. Page scripts can also replace or bypass the overrides.
 `accept: true` also disarms `beforeunload` using the same returnValue/preventDefault
 suppression as `browser_close_tab(force=True)`, allowing navigation away. Unload
 events are recorded with type `beforeunload`. `accept: false` leaves native unload
-behavior; the extension cannot answer a native “Leave page?” prompt. Accepting
+behavior; the extension cannot answer a native "Leave page?" prompt. Accepting
 temporarily clears `onbeforeunload`; clearing or dismissing the policy restores the
 saved handler if the page has not supplied a replacement.
 Force-closing remains available regardless of dialog policy.
@@ -3555,8 +3563,10 @@ single reads (see `browser_wait_for`); a zero timeout performs one immediate che
 
 ### POST /api/navigate
 `{ "url": "https://example.com", "tabId": 1, "expectTitle": "Example" }`
-- `tabId` optional (defaults to active tab)
-- `expectTitle` optional — warns if title doesn't match (catches silent redirects)
+
+- `tabId` is optional and defaults to the active tab.
+- `expectTitle` is optional. A title that doesn't match returns a warning, which catches silent
+  redirects.
 - User and other clients' tabs return `user_tab_read_only` without a prompt; the same applies
   to `/api/back`, `/api/forward` and reload. Explicit compatibility opt-outs are described
   in [Protecting your tabs](your-tabs.md#protecting-your-tabs).
@@ -3573,7 +3583,7 @@ for the page it loads and adds the page's readable `snapshot` when it fits 2,000
 `KITSUNE_POST_ACTION_SNAPSHOT=0` the flag does nothing.
 
 ### POST /api/new-tab
-`{ "url": "https://example.com" }` — url optional, defaults to about:blank.
+`{ "url": "https://example.com" }`. `url` is optional and defaults to `about:blank`.
 Opens an agent-owned tab in the background (it is not shown; see
 [Shared browser](#shared-browser)). Returns `{ "ok": true, "tabId": 123 }` immediately.
 
@@ -3617,6 +3627,7 @@ tab of any owner wake it themselves (#449). A tab that is not discarded returns
 waits up to 15 s for the reloaded page to finish loading and answer the content
 script, and then returns `{ "ok": true, "woken": true, "ready": true }`; the next
 command can reach the page. Two results report `ready: false`:
+
 - `{ "ok": true, "woken": true, "ready": false, "unscriptable": true, "state": { "tabId", "url", "status", "title", "httpStatus" } }`:
   the reloaded page loaded but refuses the content script, such as a JSON or PDF
   viewer or an error response with an empty body. Commands fail with `error_page`.
@@ -3634,7 +3645,7 @@ one browser call whose own duration the deadline cannot cut short.
 ## Interaction (POST)
 
 ### POST /api/click
-`{ "selector": "button.submit" }` — also accepts `ref`, `position`.
+`{ "selector": "button.submit" }`. It also accepts `ref` and `position`.
 
 The click moves to the target before pressing: `pointerover`/`mouseover`, non-bubbling
 `pointerenter`/`mouseenter` on newly entered ancestors and the target, then
@@ -3661,7 +3672,7 @@ Add `"wait": true, "timeout": 10000` to wait for the target first (see
 
 ### POST /api/trusted-click
 `{ "selector": "button.submit", "focus": true }` or
-`{ "coords": { "x": 640, "y": 400 }, "coordinateSpace": "viewport" }` — optional
+`{ "coords": { "x": 640, "y": 400 }, "coordinateSpace": "viewport" }`. Optional:
 `tabId`, `title`, `process`, `restorePointer`, `button` (`left`/`right`/`middle`),
 `clickCount` (1 or 2), `modifiers` (`["Shift", "Control", "Alt", "Meta"]`). OS-level click on Windows, macOS and Linux (X11); see
 [`browser_trusted_click`](#browser_trusted_clickselector-x0-y0-coordinate_spaceviewport-focusfalse-tab_idnone-firstfalse-restore_pointertrue-buttonleft-click_count1-modifiersnone-hold_ms0).
@@ -3669,7 +3680,7 @@ Add `"wait": true, "timeout": 10000` to wait for the target first (see
 returns a `timeout` [action error](#action-errors) with `retryable: false`.
 
 ### POST /api/trusted-drag
-`{ "selector": "#knob", "to": "#mark", "steps": 10 }` — refs work for both, plus optional
+`{ "selector": "#knob", "to": "#mark", "steps": 10 }`. Refs work for both ends. Optional:
 `tabId`, `first`, `process` and `focus` (`false` leaves bringing the browser to the front to the
 caller). OS-level drag on macOS; see
 [`browser_trusted_drag`](#browser_trusted_dragselector-to_selector-tab_idnone-steps10-firstfalse).
@@ -3680,7 +3691,9 @@ A drag that does not finish within 35 s returns a `timeout` [action error](#acti
 
 ### POST /api/fill
 `{ "selector": "input#email", "value": "user@example.com" }`
-Handles shadow DOM and React/Vue state. A web-component host is filled through the
+
+A text field's value is set through the native setter and followed by `input` and `change`
+events, so React and Vue state follows it. A web-component host is filled through the
 first input, textarea or select in its open or closed shadow root, else in the shadow
 roots of hosts nested inside it, up to 8 roots deep (closed roots through Firefox's
 `openOrClosedShadowRoot`). `/api/type`, `/api/set-editable-content` and
@@ -3706,12 +3719,14 @@ and the same `state`. A native `<input type=range>`, also inside a `role=slider`
 keeps the value setter.
 
 ### POST /api/scroll
-`{ "direction": "down", "amount": 500 }` — optional container `selector` or `ref`;
-`element` is an audit-only description. Needs `browse`; with `loadMore: true` (the core
-`browser_find`'s `load_more` scrolls, #447) `core` also permits it.
+`{ "direction": "down", "amount": 500 }`. A container `selector` or `ref` is optional;
+`element` is an audit-only description. `loadMore: true` marks the scrolls the core
+`browser_find` sends for `load_more` (#447). On a tab this client cannot write, those run only
+while the tab is not shown ([Tab permissions](#tab-permissions)).
 
 ### POST /api/hover
 `{ "selector": "a.link" }`
+
 Returns `{ "ok": true, "tag": "a" }`, plus [`opened_popup`](#opened-popups) when the hover
 opened a menu, listbox or dialog.
 
@@ -3748,7 +3763,7 @@ click, the background times the pauses: in a background tab, a 500 ms hover with
 579 ms. Values out of range return an error and move nothing.
 
 ### POST /api/drag
-`{ "from": "#card", "to": "#done" }` — or `ref` and `toRef`.
+`{ "from": "#card", "to": "#done" }`, or `ref` and `toRef`.
 Returns `{ "ok": true, "from": "#card", "to": "#done", "via": "html5" }`.
 It presses the source (`pointerdown`, `mousedown`) and dispatches the HTML5 drag events
 (`dragstart` … `drop`, `dragend`). They count (`via: "html5"`) when the source is
@@ -3765,8 +3780,9 @@ synthetic one. `mouseup` lands on the destination.
 
 ### POST /api/find
 `{ "query": "search text" }` or `{ "selector": "a.link" }`
+
 Both `query` and `selector` are accepted (normalized to `query` internally).
-Returns `{ "results": [{ "ref": "r0", "tag": "a", "text": "...", "selector": "...", "bounds": [...] }] }`
+Returns `{ "results": [{ "ref": "r0", "tag": "a", "text": "...", "selector": "...", "bounds": [...] }] }`.
 A query that is not a matching CSS selector is split into words (filler words such as
 "the" or "in" are dropped). Elements are scored per word they match in their text,
 `aria-label`, placeholder, title, alt, id, name or value, or a role word ("button",
@@ -3776,11 +3792,13 @@ matches, the reply is `{ "results": [], "hint": "..." }`.
 
 ### POST /api/js
 `{ "code": "document.title" }`
-Returns `{ "result": "..." }`. Results capped at 50KB with truncation flag.
+
+Returns `{ "result": "..." }`. A result longer than 8,000,000 characters is cut and marked
+`truncated`, with its `fullLength`.
 Page JavaScript is not subject to password redaction.
 
 ### POST /api/highlight
-`{ "selector": "h1" }` — draws red border overlay on element.
+`{ "selector": "h1" }`. Draws a red border over the element.
 
 ### POST /api/clear-highlight
 No body needed. Removes all highlights.
@@ -3789,18 +3807,21 @@ No body needed. Removes all highlights.
 
 ### POST /api/wait-for-element
 `{ "selector": ".loaded", "timeout": 10000, "pollInterval": 200 }`
-Polls until element appears. Returns `{ "ok": true, "found": true, "ref": "r0", "elapsed": 1200 }`;
+
+Polls until the element appears. Returns `{ "ok": true, "found": true, "ref": "r0", "elapsed": 1200 }`;
 timeout returns `ok: false, found: false` with an error. The bridge polls single reads (see
 `browser_wait_for`); a zero timeout performs one immediate check.
 
 ### POST /api/wait-for-result
 `{ "code": "document.querySelector('.data')?.textContent", "timeout": 15000, "pollInterval": 500 }`
-Polls JS expression until non-empty. Returns `{ "ok": true, "result": "...", "elapsed": 2000, "polls": 4 }`
+
+Polls a JavaScript expression until its result is not empty. Returns
+`{ "ok": true, "result": "...", "elapsed": 2000, "polls": 4 }`.
 
 ### POST /api/page-text-by-tab-id
-`{ "tabId": 123 }` — get text from a specific tab (not just active).
+`{ "tabId": 123 }`. Returns the text of that tab, which need not be the active one.
 
-## Batch Execution (POST)
+## Batch execution (POST)
 
 ### POST /api/batch
 Execute multiple commands sequentially or in parallel.
@@ -3830,7 +3851,8 @@ Execute multiple commands sequentially or in parallel.
   }]
 }
 ```
-Note: every command that acts on a tab inside parallel sequences **must** have an explicit `tabId`, and two sequences may not write the same tab (see [Container progress](#container-progress)).
+
+Every command that acts on a tab inside parallel sequences needs an explicit `tabId`, and two sequences may not write the same tab (see [Container progress](#container-progress)).
 
 Returns `{ "results": [...], "progress": [...], "status": "ok", "summary": "..." }`; `progress`, `status` and `summary` are described in [Container progress](#container-progress). When `newTab` commands, nested ones included, opened tabs that a later `closeTab` command did not close, `newTabs` lists their ids, oldest first; the MCP server makes the last one its current tab ([No current tab](#no-current-tab)).
 
@@ -3866,7 +3888,7 @@ The [`needs_user` hint](#needs_user-hints) a tab shows now, which `browser_resum
 Returns `{ "ok": true, "tabId": 12, "needs_user": { "reason": "sign_in", … } }`, with `needs_user: null`
 when the tab shows none.
 
-## Workflows (NEW)
+## Workflows
 
 ### GET /api/workflows
 List workflow files bundled in the `kitsune/workflows` package directory.
@@ -3890,24 +3912,25 @@ milliseconds), `POST /api/history-visits` `{url}`, and `POST /api/bookmarks-sear
 `{query, limit?}` back the `history` tools; see
 [History and bookmarks](#history-and-bookmarks). The bridge adds the policy scope.
 
-## Cache Control (NEW)
+## Cache control
 
 ### POST /api/cache
 Control the response cache (pageText is cached for 5s by default; tab inventories are always read fresh).
 
-Clear cache: `{ "action": "clear" }`
-Check status: `{ "action": "status" }` → `{ "entries": 3, "ttl": 5 }`
-Set TTL: `{ "action": "ttl", "seconds": 10 }` — `seconds` must be a non-negative
-number; anything else answers HTTP 400 and keeps the current TTL.
+- Clear the cache: `{ "action": "clear" }`
+- Check its status: `{ "action": "status" }` returns `{ "entries": 3, "ttl": 5 }`
+- Set the TTL: `{ "action": "ttl", "seconds": 10 }`. `seconds` must be a non-negative
+  number; anything else answers HTTP 400 and keeps the current TTL.
 
-## Error Handling
+## Error handling
 
 All endpoints return `{ "error": "message" }` on failure; classified failures add
 `code`, `retryable`, `hint`, and `state` (see [Action errors](#action-errors)). The
 matching MCP tools mark these results `isError: true` (see
 [MCP error results](#mcp-error-results)). Common errors:
-- `"Kitsune extension not connected. Open Firefox or Zen and make sure the Kitsune extension is loaded."` (`extension_disconnected`) — extension not loaded or browser closed
-- `"Extension disconnected"` (`extension_disconnected`) — extension dropped mid-command (fails fast, no timeout wait)
-- `"No active tab found"` (`browser_window_unavailable`) — no normal browser window the extension can use
-- `"Command timed out after Ns"` (`timeout`) — extension didn't respond in time
-- `"Cannot access browser internal page: about:..."` (`restricted_page`) — can't inject into restricted pages
+
+- `"Kitsune extension not connected. Open Firefox or Zen and make sure the Kitsune extension is loaded."` (`extension_disconnected`): the extension is not loaded or the browser is closed
+- `"Extension disconnected"` (`extension_disconnected`): the extension dropped during a command; the call fails at once instead of waiting for its timeout
+- `"No active tab found"` (`browser_window_unavailable`): there is no normal browser window the extension can use
+- `"Command timed out after Ns"` (`timeout`): the extension did not answer in time
+- `"Cannot access browser internal page: about:..."` (`restricted_page`): the extension cannot script restricted pages
