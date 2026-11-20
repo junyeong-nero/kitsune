@@ -37,17 +37,19 @@ Kitsune is designed to reduce interruptions, not eliminate them: site-opened pop
 OS-level trusted input can still move focus. See the
 [shared-browser limits](https://junyeong-nero.github.io/kitsune/docs/api-reference/#shared-browser).
 
-## Fewest tool calls. Least input.
+## Same success. Less input.
 
-**Kitsune made the fewest tool calls and used the least input in a four-way comparison under two agents.**
-Aside, EgoLite, Playwright MCP and Kitsune on 12 local web tasks, under Claude Code and Codex: 96 attempts,
-graded by what the server received.
+**On 26 realistic web tasks Kitsune passed as many as Playwright MCP, with about 40% of its input and half its tool calls.**
+Aside, EgoLite, Playwright MCP and Kitsune on 26 [WebArena-Pro](https://arxiv.org/abs/2611.17955) tasks under
+Claude Code: 104 attempts, graded by the sites' backend state and the agent's answer. Success was tied: all four
+passed the same 12 tasks.
 
-[![Four-way benchmark, 12 local tasks, 96 attempts. Mean input tokens per attempt, Claude Code / Codex: Kitsune 31k / 66k; Aside 53k / 79k; EgoLite 71k / 76k; Playwright MCP 65k / 93k. Mean tool calls: Kitsune 3.2 / 2.9; Aside 4.7 / 4.8; EgoLite 4.0 / 3.5; Playwright MCP 7.1 / 5.9. Passed: Kitsune 11/12 and 10/12; it missed a native confirm() dialog task under both agents.](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/benchmark-four-way.svg)](https://junyeong-nero.github.io/kitsune/docs/benchmark/)
+[![Four-way benchmark, 26 WebArena-Pro tasks, Claude Code, 104 attempts. Passed: Kitsune 13/26; Playwright MCP 13/26; Aside 12/26; EgoLite 12/26. Mean input tokens per attempt: Kitsune 283k; EgoLite 360k; Aside 463k; Playwright MCP 660k. Mean tool calls: EgoLite 12.8; Kitsune 14.0; Aside 16.1; Playwright MCP 29.8.](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/benchmark-webarena-pro.svg)](https://junyeong-nero.github.io/kitsune/docs/benchmark/)
 
-<sub>claude-opus-5-5 and gpt-6.1-sol, one attempt per task. Input includes cache, not billed cost. Kitsune missed one
-task under both agents: a native confirm() dialog blocked the click. Playwright MCP ran an isolated Firefox; the
-others used the operator's browser. <a href="https://junyeong-nero.github.io/kitsune/docs/benchmark/">Results, methodology and limitations →</a></sub>
+<sub>claude-opus-5-5, one attempt per task. Input includes cache, not billed cost. Grading has no LLM judge, so it is
+stricter than the WebArena-Pro paper's and not comparable to its scores. Aside and EgoLite used the operator's
+browsers; Playwright MCP and Kitsune ran an isolated Firefox. EgoLite made slightly fewer tool calls than Kitsune.
+<a href="https://junyeong-nero.github.io/kitsune/docs/benchmark/">Results, methodology and limitations →</a></sub>
 
 ## Get started
 
