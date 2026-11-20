@@ -33,7 +33,7 @@ macos = ["kitsune-browser[macos]==0.8.0"]
 
 [project.urls]
 Homepage = "https://github.com/junyeong-nero/kitsune"
-Documentation = "https://junyeong-nero.github.io/kitsune/"
+Documentation = "https://junyeong-nero.github.io/kitsune/docs/"
 Issues = "https://github.com/junyeong-nero/kitsune/issues"
 Changelog = "https://github.com/junyeong-nero/kitsune/releases"
 

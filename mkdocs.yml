@@ -1,20 +1,24 @@
 site_name: Kitsune
 site_description: Drive the Firefox, Zen, or LibreWolf browser you already have open from Python or an AI agent.
-site_url: https://junyeong-nero.github.io/kitsune/
+# The landing page (landing/) is served at /kitsune/; the docs live under /kitsune/docs/.
+site_url: https://junyeong-nero.github.io/kitsune/docs/
 repo_url: https://github.com/junyeong-nero/kitsune
 repo_name: junyeong-nero/kitsune
 edit_uri: edit/main/docs/
 
 theme:
   name: material
+  # Colors match assets/kitsune-hero.png; see docs/stylesheets/extra.css.
   palette:
     - scheme: default
-      primary: deep orange
+      primary: custom
+      accent: custom
       toggle:
         icon: material/weather-night
         name: Dark mode
     - scheme: slate
-      primary: deep orange
+      primary: custom
+      accent: custom
       toggle:
         icon: material/weather-sunny
         name: Light mode
@@ -24,6 +28,13 @@ theme:
     - search.suggest
     - search.highlight
     - content.code.copy
+
+extra_css:
+  - stylesheets/extra.css
+
+extra:
+  # The header logo links back to the landing page.
+  homepage: https://junyeong-nero.github.io/kitsune/
 
 markdown_extensions:
   - admonition
