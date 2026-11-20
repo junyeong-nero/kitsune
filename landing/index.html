@@ -210,18 +210,18 @@
     <div class="wrap">
       <h2 id="bench-title">Compared with Aside, EgoLite and Playwright MCP</h2>
       <p class="sec-lead">
-        On 26 realistic WebArena-Pro tasks under Claude Code, Kitsune passed as many as Playwright MCP
-        with about 40% of its input and half its tool calls: 104 attempts, graded by the sites’ backend
-        state and the agent’s answer.
+        On 26 realistic WebArena-Pro tasks, Kitsune passed as many as Playwright MCP under Claude Code
+        and Codex and used the least input of the four tools: 208 attempts, graded by the sites’
+        backend state and the agent’s answer.
       </p>
       <a class="chart" href="docs/benchmark/">
         <img src="https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/benchmark-webarena-pro.svg"
              width="1200" height="830" loading="lazy"
-             alt="Four-way benchmark, 26 WebArena-Pro tasks, Claude Code, 104 attempts. Passed: Kitsune 13/26; Playwright MCP 13/26; Aside 12/26; EgoLite 12/26. Mean input tokens per attempt: Kitsune 283k; EgoLite 360k; Aside 463k; Playwright MCP 660k. Mean tool calls: EgoLite 12.8; Kitsune 14.0; Aside 16.1; Playwright MCP 29.8.">
+             alt="Four-way benchmark, 26 WebArena-Pro tasks, 208 attempts. Passed, Claude Code / Codex: Kitsune 13/26 and 12/26; Playwright MCP 13/26 and 12/26; Aside 12/26 and 12/26; EgoLite 12/26 and 12/26. Mean input tokens per attempt: Kitsune 283k / 414k; Aside 463k / 512k; EgoLite 360k / 622k; Playwright MCP 660k / 809k. Mean tool calls: Kitsune 14.0 / 15.8; Aside 16.1 / 15.6; EgoLite 12.8 / 17.5; Playwright MCP 29.8 / 35.1.">
       </a>
       <ul class="bench-notes">
-        <li>Success was tied: all four tools passed the same 12 tasks. EgoLite made slightly fewer tool calls than Kitsune.</li>
-        <li>Model: claude-opus-5-5, one attempt per task. Input counts include cache and differ from billed cost. Grading has no LLM judge, so scores are not comparable to the WebArena-Pro paper’s.</li>
+        <li>On the tasks every tool passed, Kitsune used 39% of Playwright MCP’s input under Claude Code and 87% under Codex, with about half its tool calls under both. EgoLite (Claude Code) and Aside (Codex) made slightly fewer tool calls than Kitsune.</li>
+        <li>Models: claude-opus-5-5 and gpt-6.1-sol, one attempt per task. Input counts include cache and differ from billed cost. Grading has no LLM judge, so scores are not comparable to the WebArena-Pro paper’s.</li>
         <li>Aside and EgoLite used the operator’s browsers; Playwright MCP and Kitsune ran an isolated Firefox.</li>
       </ul>
       <a class="text-link" href="docs/benchmark/">Read the results and methodology</a>

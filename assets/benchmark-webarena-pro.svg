@@ -1,14 +1,14 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="830" viewBox="0 0 1200 830" role="img" aria-labelledby="title desc">
-<title id="title">Four-way browser benchmark: 26 WebArena-Pro tasks, Claude Code</title>
-<desc id="desc">Kitsune: passed 13/26 (Claude), mean input 283k tokens, mean tool calls 14.0; Aside: passed 12/26 (Claude), mean input 463k tokens, mean tool calls 16.1; EgoLite: passed 12/26 (Claude), mean input 360k tokens, mean tool calls 12.8; Playwright MCP: passed 13/26 (Claude), mean input 660k tokens, mean tool calls 29.8.</desc>
+<title id="title">Four-way browser benchmark: 26 WebArena-Pro tasks, Claude Code and Codex</title>
+<desc id="desc">Kitsune: passed 13/26 (Claude) and 12/26 (Codex), mean input 283k / 414k tokens, mean tool calls 14.0 / 15.8; Aside: passed 12/26 (Claude) and 12/26 (Codex), mean input 463k / 512k tokens, mean tool calls 16.1 / 15.6; EgoLite: passed 12/26 (Claude) and 12/26 (Codex), mean input 360k / 622k tokens, mean tool calls 12.8 / 17.5; Playwright MCP: passed 13/26 (Claude) and 12/26 (Codex), mean input 660k / 809k tokens, mean tool calls 29.8 / 35.1.</desc>
 <defs><linearGradient id="bg" x2="1" y2="1"><stop stop-color="#091f23"/><stop offset="1" stop-color="#10483f"/></linearGradient><linearGradient id="fox"><stop stop-color="#f58b42"/><stop offset="1" stop-color="#ffc36d"/></linearGradient></defs>
 <rect width="1200" height="830" rx="28" fill="url(#bg)"/>
 <g font-family="Arial, Helvetica, sans-serif">
 <rect x="48" y="38" width="372" height="32" rx="16" fill="#173c39" stroke="#46635a"/>
 <circle cx="66" cy="54" r="5" fill="#b8d89d"/>
 <text x="82" y="59.5" fill="#c9ddba" font-size="14" letter-spacing="2">KITSUNE BENCHMARK / FOUR-WAY</text>
-<text x="48" y="122" fill="#fff0d6" font-size="38" font-weight="700">Same tasks passed. Less input.</text>
-<text x="48" y="156" fill="#b5ccc1" font-size="18">26 WebArena-Pro tasks × 4 browser tools · Claude Code · 104 attempts · graded by backend state and answers</text>
+<text x="48" y="122" fill="#fff0d6" font-size="38" font-weight="700">Tied on success. Least input.</text>
+<text x="48" y="156" fill="#b5ccc1" font-size="18">26 WebArena-Pro tasks × 4 browser tools × 2 agents · 208 attempts · graded by backend state and answers</text>
 <g transform="translate(1097.0 33.0) scale(1.25)">
   <path fill="#f58b42" d="M5 26 7 6c.1-1 1.2-1.3 2-.6L19 14h10L39 5.4c.8-.7 1.9-.4 2 .6l2 20c.1.8-.2 1.5-.8 2L26 41.7a3.1 3.1 0 0 1-4 0L5.8 28a2.3 2.3 0 0 1-.8-2Z"/>
   <path fill="#ffc36d" d="m9.6 9.6 6.4 5.6-7.3 3.2 0.9-8.8Z M38.4 9.6 32 15.2l7.3 3.2-.9-8.8Z"/>
@@ -17,6 +17,9 @@
 </g>
 <rect x="520" y="196" width="36.0" height="16" rx="4" fill="#d3ded0"/>
 <text x="566" y="209" fill="#d3ded0" font-size="15">Claude Code · claude-opus-5-5</text>
+<rect x="890" y="196" width="36.0" height="16" rx="4" fill="#d3ded0" fill-opacity="0.38" stroke="#d3ded0" stroke-width="1.5"/>
+<text x="936" y="209" fill="#d3ded0" font-size="15">Codex · gpt-6.1-sol</text>
+<text x="324" y="209" fill="#a5bdb0" font-size="15">Top / bottom bar:</text>
 <text x="48" y="278" fill="#a5bdb0" font-size="13" font-weight="700" letter-spacing="1.2">TOOL</text>
 <g transform="translate(324 261) scale(0.916667)" fill="none" stroke="currentColor" stroke-opacity="1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" color="#a5bdb0">
   <circle cx="12" cy="12" r="9"/>
@@ -31,10 +34,10 @@
 </g><text x="920" y="278" fill="#a5bdb0" font-size="13" font-weight="700" letter-spacing="1.2">TOOL CALLS / ATTEMPT</text>
 <path d="M520 300 V636 M592.5 300 V636 M665 300 V636 M737.5 300 V636 M810 300 V636 M890 300 V636 M940 300 V636 M990 300 V636 M1040 300 V636 M1090 300 V636" stroke="#2f5149" stroke-width="1"/>
 <text x="520" y="656" fill="#a5bdb0" font-size="13" text-anchor="middle">0k</text>
-<text x="592.5" y="656" fill="#a5bdb0" font-size="13" text-anchor="middle">200k</text>
-<text x="665" y="656" fill="#a5bdb0" font-size="13" text-anchor="middle">400k</text>
-<text x="737.5" y="656" fill="#a5bdb0" font-size="13" text-anchor="middle">600k</text>
-<text x="810" y="656" fill="#a5bdb0" font-size="13" text-anchor="middle">800k</text>
+<text x="592.5" y="656" fill="#a5bdb0" font-size="13" text-anchor="middle">250k</text>
+<text x="665" y="656" fill="#a5bdb0" font-size="13" text-anchor="middle">500k</text>
+<text x="737.5" y="656" fill="#a5bdb0" font-size="13" text-anchor="middle">750k</text>
+<text x="810" y="656" fill="#a5bdb0" font-size="13" text-anchor="middle">1000k</text>
 <text x="890" y="656" fill="#a5bdb0" font-size="13" text-anchor="middle">0</text>
 <text x="940" y="656" fill="#a5bdb0" font-size="13" text-anchor="middle">10</text>
 <text x="990" y="656" fill="#a5bdb0" font-size="13" text-anchor="middle">20</text>
@@ -49,12 +52,18 @@
 </g>
 <text x="104" y="339.0" fill="#ffbb73" font-size="20" font-weight="700">Kitsune</text>
 <text x="104" y="359.0" fill="#a5bdb0" font-size="13">MCP · isolated Firefox</text>
-<rect x="324" y="332" width="64" height="20" rx="10" fill="#173b36" stroke="#46635a"/>
-<text x="356" y="347" fill="#fff0d6" font-size="14" font-weight="700" text-anchor="middle">13/26</text>
-<rect x="520" y="332" width="102.6" height="20" rx="4" fill="url(#fox)"/>
-<text x="630.6" y="347" fill="#fff0d6" font-size="14" font-weight="700">283k</text>
-<rect x="890" y="332" width="70.0" height="20" rx="4" fill="url(#fox)"/>
-<text x="968.0" y="347" fill="#fff0d6" font-size="14" font-weight="700">14.0</text>
+<rect x="324" y="319" width="64" height="20" rx="10" fill="#173b36" stroke="#46635a"/>
+<text x="356" y="334" fill="#fff0d6" font-size="14" font-weight="700" text-anchor="middle">13/26</text>
+<rect x="520" y="319" width="82.1" height="20" rx="4" fill="url(#fox)"/>
+<text x="610.1" y="334" fill="#fff0d6" font-size="14" font-weight="700">283k</text>
+<rect x="890" y="319" width="70.0" height="20" rx="4" fill="url(#fox)"/>
+<text x="968.0" y="334" fill="#fff0d6" font-size="14" font-weight="700">14.0</text>
+<rect x="324" y="345" width="64" height="20" rx="10" fill="#173b36" stroke="#46635a"/>
+<text x="356" y="360" fill="#fff0d6" font-size="14" font-weight="700" text-anchor="middle">12/26</text>
+<rect x="520" y="345" width="120.0" height="20" rx="4" fill="url(#fox)" fill-opacity="0.38" stroke="url(#fox)" stroke-width="1.5"/>
+<text x="648.0" y="360" fill="#fff0d6" font-size="14" font-weight="700">414k</text>
+<rect x="890" y="345" width="78.8" height="20" rx="4" fill="url(#fox)" fill-opacity="0.38" stroke="url(#fox)" stroke-width="1.5"/>
+<text x="976.8" y="360" fill="#fff0d6" font-size="14" font-weight="700">15.8</text>
 <path d="M48 384 H1152" stroke="#2f5149" stroke-dasharray="2 4"/>
 <g transform="translate(44.666666666666664 406.0) scale(0.833333)">
   <rect x="5" y="8" width="38" height="32" rx="5" fill="#c6dcb0"/>
@@ -71,12 +80,18 @@
 </g>
 <text x="104" y="423.0" fill="#fff0d6" font-size="20" font-weight="700">Aside</text>
 <text x="104" y="443.0" fill="#a5bdb0" font-size="13">CLI REPL · your browser</text>
-<rect x="324" y="416" width="64" height="20" rx="10" fill="#173b36" stroke="#46635a"/>
-<text x="356" y="431" fill="#fff0d6" font-size="14" font-weight="700" text-anchor="middle">12/26</text>
-<rect x="520" y="416" width="167.8" height="20" rx="4" fill="#c6dcb0"/>
-<text x="695.8" y="431" fill="#fff0d6" font-size="14" font-weight="700">463k</text>
-<rect x="890" y="416" width="80.4" height="20" rx="4" fill="#c6dcb0"/>
-<text x="978.4" y="431" fill="#fff0d6" font-size="14" font-weight="700">16.1</text>
+<rect x="324" y="403" width="64" height="20" rx="10" fill="#173b36" stroke="#46635a"/>
+<text x="356" y="418" fill="#fff0d6" font-size="14" font-weight="700" text-anchor="middle">12/26</text>
+<rect x="520" y="403" width="134.2" height="20" rx="4" fill="#c6dcb0"/>
+<text x="662.2" y="418" fill="#fff0d6" font-size="14" font-weight="700">463k</text>
+<rect x="890" y="403" width="80.4" height="20" rx="4" fill="#c6dcb0"/>
+<text x="978.4" y="418" fill="#fff0d6" font-size="14" font-weight="700">16.1</text>
+<rect x="324" y="429" width="64" height="20" rx="10" fill="#173b36" stroke="#46635a"/>
+<text x="356" y="444" fill="#fff0d6" font-size="14" font-weight="700" text-anchor="middle">12/26</text>
+<rect x="520" y="429" width="148.4" height="20" rx="4" fill="#c6dcb0" fill-opacity="0.38" stroke="#c6dcb0" stroke-width="1.5"/>
+<text x="676.4" y="444" fill="#fff0d6" font-size="14" font-weight="700">512k</text>
+<rect x="890" y="429" width="77.9" height="20" rx="4" fill="#c6dcb0" fill-opacity="0.38" stroke="#c6dcb0" stroke-width="1.5"/>
+<text x="975.9" y="444" fill="#fff0d6" font-size="14" font-weight="700">15.6</text>
 <path d="M48 468 H1152" stroke="#2f5149" stroke-dasharray="2 4"/>
 <g transform="translate(44.666666666666664 490.0) scale(0.833333)">
   <g fill="#718e81">
@@ -89,12 +104,18 @@
 </g>
 <text x="104" y="507.0" fill="#fff0d6" font-size="20" font-weight="700">EgoLite</text>
 <text x="104" y="527.0" fill="#a5bdb0" font-size="13">CLI · your browser</text>
-<rect x="324" y="500" width="64" height="20" rx="10" fill="#173b36" stroke="#46635a"/>
-<text x="356" y="515" fill="#fff0d6" font-size="14" font-weight="700" text-anchor="middle">12/26</text>
-<rect x="520" y="500" width="130.5" height="20" rx="4" fill="#86b9a8"/>
-<text x="658.5" y="515" fill="#fff0d6" font-size="14" font-weight="700">360k</text>
-<rect x="890" y="500" width="64.0" height="20" rx="4" fill="#86b9a8"/>
-<text x="962.0" y="515" fill="#fff0d6" font-size="14" font-weight="700">12.8</text>
+<rect x="324" y="487" width="64" height="20" rx="10" fill="#173b36" stroke="#46635a"/>
+<text x="356" y="502" fill="#fff0d6" font-size="14" font-weight="700" text-anchor="middle">12/26</text>
+<rect x="520" y="487" width="104.4" height="20" rx="4" fill="#86b9a8"/>
+<text x="632.4" y="502" fill="#fff0d6" font-size="14" font-weight="700">360k</text>
+<rect x="890" y="487" width="64.0" height="20" rx="4" fill="#86b9a8"/>
+<text x="962.0" y="502" fill="#fff0d6" font-size="14" font-weight="700">12.8</text>
+<rect x="324" y="513" width="64" height="20" rx="10" fill="#173b36" stroke="#46635a"/>
+<text x="356" y="528" fill="#fff0d6" font-size="14" font-weight="700" text-anchor="middle">12/26</text>
+<rect x="520" y="513" width="180.4" height="20" rx="4" fill="#86b9a8" fill-opacity="0.38" stroke="#86b9a8" stroke-width="1.5"/>
+<text x="708.4" y="528" fill="#fff0d6" font-size="14" font-weight="700">622k</text>
+<rect x="890" y="513" width="87.3" height="20" rx="4" fill="#86b9a8" fill-opacity="0.38" stroke="#86b9a8" stroke-width="1.5"/>
+<text x="985.3" y="528" fill="#fff0d6" font-size="14" font-weight="700">17.5</text>
 <path d="M48 552 H1152" stroke="#2f5149" stroke-dasharray="2 4"/>
 <g transform="translate(44.666666666666664 574.0) scale(0.833333)">
   <path fill="#fff0d6" d="M10 7c4 0 8 3 14 3s10-3 14-3c2.4 0 4 1.8 4 4.2V17c0 12.7-8.1 24-18 24S6 29.7 6 17v-5.8C6 8.8 7.6 7 10 7Z"/>
@@ -102,19 +123,25 @@
 </g>
 <text x="104" y="591.0" fill="#fff0d6" font-size="20" font-weight="700">Playwright MCP</text>
 <text x="104" y="611.0" fill="#a5bdb0" font-size="13">MCP · isolated Firefox</text>
-<rect x="324" y="584" width="64" height="20" rx="10" fill="#173b36" stroke="#46635a"/>
-<text x="356" y="599" fill="#fff0d6" font-size="14" font-weight="700" text-anchor="middle">13/26</text>
-<rect x="520" y="584" width="239.1" height="20" rx="4" fill="#e7d9bd"/>
-<text x="767.1" y="599" fill="#fff0d6" font-size="14" font-weight="700">660k</text>
-<rect x="890" y="584" width="149.2" height="20" rx="4" fill="#e7d9bd"/>
-<text x="1047.2" y="599" fill="#fff0d6" font-size="14" font-weight="700">29.8</text>
+<rect x="324" y="571" width="64" height="20" rx="10" fill="#173b36" stroke="#46635a"/>
+<text x="356" y="586" fill="#fff0d6" font-size="14" font-weight="700" text-anchor="middle">13/26</text>
+<rect x="520" y="571" width="191.3" height="20" rx="4" fill="#e7d9bd"/>
+<text x="719.3" y="586" fill="#fff0d6" font-size="14" font-weight="700">660k</text>
+<rect x="890" y="571" width="149.2" height="20" rx="4" fill="#e7d9bd"/>
+<text x="1047.2" y="586" fill="#fff0d6" font-size="14" font-weight="700">29.8</text>
+<rect x="324" y="597" width="64" height="20" rx="10" fill="#173b36" stroke="#46635a"/>
+<text x="356" y="612" fill="#fff0d6" font-size="14" font-weight="700" text-anchor="middle">12/26</text>
+<rect x="520" y="597" width="234.7" height="20" rx="4" fill="#e7d9bd" fill-opacity="0.38" stroke="#e7d9bd" stroke-width="1.5"/>
+<text x="762.7" y="612" fill="#fff0d6" font-size="14" font-weight="700">809k</text>
+<rect x="890" y="597" width="175.4" height="20" rx="4" fill="#e7d9bd" fill-opacity="0.38" stroke="#e7d9bd" stroke-width="1.5"/>
+<text x="1073.4" y="612" fill="#fff0d6" font-size="14" font-weight="700">35.1</text>
 <rect x="48" y="680" width="1104" height="64" rx="14" fill="#173c39" fill-opacity="0.55" stroke="#b8d89d" stroke-opacity="0.6"/>
 <g transform="translate(66 700) scale(1)" fill="none" stroke="currentColor" stroke-opacity="1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" color="#b8d89d">
   <circle cx="12" cy="12" r="9"/>
   <polyline points="8 12 11 15 16 9"/>
 </g>
-<text x="104" y="707" fill="#fff0d6" font-size="15"><tspan font-weight="700">Success followed the task, not the tool:</tspan> all four passed the same 12 tasks and missed the same 13.</text>
-<text x="104" y="729" fill="#d3ded0" font-size="14">One task split them: Kitsune and Playwright MCP reported the flight number its answer check needs; Aside and EgoLite did not.</text>
+<text x="104" y="707" fill="#fff0d6" font-size="15"><tspan font-weight="700">Success followed the task, not the tool:</tspan> under each agent, all four passed the same 12 tasks.</text>
+<text x="104" y="729" fill="#d3ded0" font-size="14">On those tasks Kitsune used 39% of Playwright MCP’s input under Claude Code and 87% under Codex; over all attempts, 43% and 51%.</text>
 <text x="48" y="776" fill="#bfd1c3" font-size="14">Means per attempt; input includes cache. CLI tool call = one ./browser script (can batch actions); MCP = one tool call.</text>
 <text x="48" y="798" fill="#bfd1c3" font-size="14">One repeat per task. No LLM judge: stricter than the paper, so not comparable to its 62.3%. Aside and EgoLite drove the operator’s browsers. 2026-11-20.</text>
 </g>

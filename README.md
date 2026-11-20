@@ -37,19 +37,20 @@ Kitsune is designed to reduce interruptions, not eliminate them: site-opened pop
 OS-level trusted input can still move focus. See the
 [shared-browser limits](https://junyeong-nero.github.io/kitsune/docs/api-reference/#shared-browser).
 
-## Same success. Less input.
+## Tied on success. Least input.
 
-**On 26 realistic web tasks Kitsune passed as many as Playwright MCP, with about 40% of its input and half its tool calls.**
-Aside, EgoLite, Playwright MCP and Kitsune on 26 [WebArena-Pro](https://arxiv.org/abs/2611.17955) tasks under
-Claude Code: 104 attempts, graded by the sites' backend state and the agent's answer. Success was tied: all four
-passed the same 12 tasks.
+**On 26 realistic web tasks Kitsune passed as many as Playwright MCP under Claude Code and Codex, and used the least input of four browser tools.**
+Aside, EgoLite, Playwright MCP and Kitsune on 26 [WebArena-Pro](https://arxiv.org/abs/2611.17955) tasks: 208
+attempts, graded by the sites' backend state and the agent's answer. How much less input depends on the agent: on
+the tasks every tool passed, Kitsune used 39% of Playwright MCP's input under Claude Code and 87% under Codex, with
+about half its tool calls under both.
 
-[![Four-way benchmark, 26 WebArena-Pro tasks, Claude Code, 104 attempts. Passed: Kitsune 13/26; Playwright MCP 13/26; Aside 12/26; EgoLite 12/26. Mean input tokens per attempt: Kitsune 283k; EgoLite 360k; Aside 463k; Playwright MCP 660k. Mean tool calls: EgoLite 12.8; Kitsune 14.0; Aside 16.1; Playwright MCP 29.8.](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/benchmark-webarena-pro.svg)](https://junyeong-nero.github.io/kitsune/docs/benchmark/)
+[![Four-way benchmark, 26 WebArena-Pro tasks, 208 attempts. Passed, Claude Code / Codex: Kitsune 13/26 and 12/26; Playwright MCP 13/26 and 12/26; Aside 12/26 and 12/26; EgoLite 12/26 and 12/26. Mean input tokens per attempt: Kitsune 283k / 414k; Aside 463k / 512k; EgoLite 360k / 622k; Playwright MCP 660k / 809k. Mean tool calls: Kitsune 14.0 / 15.8; Aside 16.1 / 15.6; EgoLite 12.8 / 17.5; Playwright MCP 29.8 / 35.1.](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/benchmark-webarena-pro.svg)](https://junyeong-nero.github.io/kitsune/docs/benchmark/)
 
-<sub>claude-opus-5-5, one attempt per task. Input includes cache, not billed cost. Grading has no LLM judge, so it is
-stricter than the WebArena-Pro paper's and not comparable to its scores. Aside and EgoLite used the operator's
-browsers; Playwright MCP and Kitsune ran an isolated Firefox. EgoLite made slightly fewer tool calls than Kitsune.
-<a href="https://junyeong-nero.github.io/kitsune/docs/benchmark/">Results, methodology and limitations →</a></sub>
+<sub>claude-opus-5-5 and gpt-6.1-sol, one attempt per task. Input includes cache, not billed cost. Grading has no LLM
+judge, so it is stricter than the WebArena-Pro paper's and not comparable to its scores. Aside and EgoLite used the
+operator's browsers; Playwright MCP and Kitsune ran an isolated Firefox. EgoLite (under Claude Code) and Aside (under
+Codex) made slightly fewer tool calls than Kitsune. <a href="https://junyeong-nero.github.io/kitsune/docs/benchmark/">Results, methodology and limitations →</a></sub>
 
 ## Get started
 
