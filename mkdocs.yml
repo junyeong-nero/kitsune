@@ -7,14 +7,19 @@ edit_uri: edit/main/docs/
 
 theme:
   name: material
+  # overrides/home.html is the landing page template used by docs/index.md.
+  custom_dir: overrides
+  # Colors match assets/kitsune-hero.png; see docs/stylesheets/extra.css.
   palette:
     - scheme: default
-      primary: deep orange
+      primary: custom
+      accent: custom
       toggle:
         icon: material/weather-night
         name: Dark mode
     - scheme: slate
-      primary: deep orange
+      primary: custom
+      accent: custom
       toggle:
         icon: material/weather-sunny
         name: Light mode
@@ -25,6 +30,9 @@ theme:
     - search.highlight
     - content.code.copy
 
+extra_css:
+  - stylesheets/extra.css
+
 markdown_extensions:
   - admonition
   - tables
@@ -32,9 +40,6 @@ markdown_extensions:
       permalink: true
   - pymdownx.highlight
   - pymdownx.superfences
-  # index.md pulls in README.md so the home page and the README stay in sync.
-  - pymdownx.snippets:
-      check_paths: true
 
 # Maintainer-only pages: kept in the repo, left out of the site.
 exclude_docs: |
