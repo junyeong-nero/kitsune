@@ -81,6 +81,9 @@ function harness(onReload = () => {}) {
         if (msg.action === 'ping') h.pings++;
         if (!h.scriptable || !h.receiver) throw new Error(MISSING_RECEIVER);
         if (msg.action === 'userActivity') return { active: false };
+        // An agent tab's dialog default and the dialogs asked for after an action are no commands (#555).
+        if (msg.action === 'setDialogAgentTab') return { ok: true };
+        if (msg.action === 'dialogsSince') return { dialogs: [] };
         if (msg.action !== 'ping') {
           h.sent.push(msg.action);
           return { ok: true };

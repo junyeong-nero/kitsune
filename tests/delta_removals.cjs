@@ -132,7 +132,7 @@ vm.runInContext(fs.readFileSync('extension/content/content.js', 'utf8'), content
 // The background's command path and public short refs, in front of that page.
 const source = fs.readFileSync('extension/background/background.js', 'utf8');
 const background = vm.createContext({
-  console, URL, Map, Set, Promise, setTimeout,
+  console, URL, Map, Set, Promise, setTimeout, clearTimeout,
   browser: { storage: { local: { get: async () => ({}), set: async () => {} } },
     tabs: { sendMessage: async (tabId, msg) => new Promise(resolve => listener(msg, {}, resolve)) } },
   getActiveTabId: async () => 1,
