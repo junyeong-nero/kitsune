@@ -96,7 +96,8 @@ src/kitsune/        The kitsune-browser package
   bridge_client.py  Bridge requests and connection errors; starts the bridge on demand
   bridge.py         Bridge daemon (HTTP API + WebSocket)
   workflows/        Named workflows for browser_workflow
-docs/               Documentation site (mkdocs.yml)
+docs/               Documentation site (mkdocs.yml), served under /docs/
+landing/            Landing page at the site root; scripts/build_site.py builds both
 ```
 
 ## Credits

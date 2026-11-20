@@ -1,14 +1,13 @@
 site_name: Kitsune
 site_description: Drive the Firefox, Zen, or LibreWolf browser you already have open from Python or an AI agent.
-site_url: https://junyeong-nero.github.io/kitsune/
+# The landing page (landing/) is served at /kitsune/; the docs live under /kitsune/docs/.
+site_url: https://junyeong-nero.github.io/kitsune/docs/
 repo_url: https://github.com/junyeong-nero/kitsune
 repo_name: junyeong-nero/kitsune
 edit_uri: edit/main/docs/
 
 theme:
   name: material
-  # overrides/home.html is the landing page template used by docs/index.md.
-  custom_dir: overrides
   # Colors match assets/kitsune-hero.png; see docs/stylesheets/extra.css.
   palette:
     - scheme: default
@@ -33,6 +32,10 @@ theme:
 extra_css:
   - stylesheets/extra.css
 
+extra:
+  # The header logo links back to the landing page.
+  homepage: https://junyeong-nero.github.io/kitsune/
+
 markdown_extensions:
   - admonition
   - tables
@@ -40,6 +43,9 @@ markdown_extensions:
       permalink: true
   - pymdownx.highlight
   - pymdownx.superfences
+  # index.md pulls in README.md so the home page and the README stay in sync.
+  - pymdownx.snippets:
+      check_paths: true
 
 # Maintainer-only pages: kept in the repo, left out of the site.
 exclude_docs: |

@@ -9,7 +9,7 @@
 [![Python](https://img.shields.io/pypi/pyversions/kitsune-browser-mcp)](https://pypi.org/project/kitsune-browser-mcp/)
 [![Release](https://img.shields.io/github/v/release/junyeong-nero/kitsune)](https://github.com/junyeong-nero/kitsune/releases/latest)
 [![License: MIT](https://img.shields.io/github/license/junyeong-nero/kitsune)](https://github.com/junyeong-nero/kitsune/blob/main/LICENSE)
-[![Docs](https://img.shields.io/badge/docs-junyeong--nero.github.io%2Fkitsune-orange)](https://junyeong-nero.github.io/kitsune/)
+[![Docs](https://img.shields.io/badge/docs-junyeong--nero.github.io%2Fkitsune-orange)](https://junyeong-nero.github.io/kitsune/docs/)
 
 **Delegate browser tasks. Keep your browser yours.**
 
@@ -35,7 +35,7 @@ I wanted browser automation that worked alongside me, not in my way.
 
 Kitsune is designed to reduce interruptions, not eliminate them: site-opened popups and
 OS-level trusted input can still move focus. See the
-[shared-browser limits](https://junyeong-nero.github.io/kitsune/api-reference/#shared-browser).
+[shared-browser limits](https://junyeong-nero.github.io/kitsune/docs/api-reference/#shared-browser).
 
 ## Fewest tool calls. Least input.
 
@@ -43,16 +43,16 @@ OS-level trusted input can still move focus. See the
 Aside, EgoLite, Playwright MCP and Kitsune on 12 local web tasks, under Claude Code and Codex: 96 attempts,
 graded by what the server received.
 
-[![Four-way benchmark, 12 local tasks, 96 attempts. Mean input tokens per attempt, Claude Code / Codex: Kitsune 31k / 66k; Aside 53k / 79k; EgoLite 71k / 76k; Playwright MCP 65k / 93k. Mean tool calls: Kitsune 3.2 / 2.9; Aside 4.7 / 4.8; EgoLite 4.0 / 3.5; Playwright MCP 7.1 / 5.9. Passed: Kitsune 11/12 and 10/12; it missed a native confirm() dialog task under both agents.](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/benchmark-four-way.svg)](https://junyeong-nero.github.io/kitsune/benchmark/)
+[![Four-way benchmark, 12 local tasks, 96 attempts. Mean input tokens per attempt, Claude Code / Codex: Kitsune 31k / 66k; Aside 53k / 79k; EgoLite 71k / 76k; Playwright MCP 65k / 93k. Mean tool calls: Kitsune 3.2 / 2.9; Aside 4.7 / 4.8; EgoLite 4.0 / 3.5; Playwright MCP 7.1 / 5.9. Passed: Kitsune 11/12 and 10/12; it missed a native confirm() dialog task under both agents.](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/benchmark-four-way.svg)](https://junyeong-nero.github.io/kitsune/docs/benchmark/)
 
 <sub>claude-opus-5-5 and gpt-6.1-sol, one attempt per task. Input includes cache, not billed cost. Kitsune missed one
 task under both agents: a native confirm() dialog blocked the click. Playwright MCP ran an isolated Firefox; the
-others used the operator's browser. <a href="https://junyeong-nero.github.io/kitsune/benchmark/">Results, methodology and limitations →</a></sub>
+others used the operator's browser. <a href="https://junyeong-nero.github.io/kitsune/docs/benchmark/">Results, methodology and limitations →</a></sub>
 
 ## Get started
 
 1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/).
-2. [Install the browser extension](https://junyeong-nero.github.io/kitsune/installation/#2-install-the-browser-extension)
+2. [Install the browser extension](https://junyeong-nero.github.io/kitsune/docs/installation/#2-install-the-browser-extension)
    in Firefox, Zen or LibreWolf.
 3. Add Kitsune to your agent. For Claude Code:
 
@@ -61,7 +61,7 @@ others used the operator's browser. <a href="https://junyeong-nero.github.io/kit
    ```
 
    Codex, Pi, OpenCode, Claude Desktop and Cursor are in
-   [Installation](https://junyeong-nero.github.io/kitsune/installation/#1-register-the-mcp-server).
+   [Installation](https://junyeong-nero.github.io/kitsune/docs/installation/#1-register-the-mcp-server).
 4. Keep the browser open and ask in plain language:
 
    > Research these three products in background tabs and compare them with links.
@@ -71,17 +71,17 @@ others used the operator's browser. <a href="https://junyeong-nero.github.io/kit
 
 **Trust note:** Python runs locally, not in a sandbox; set `KITSUNE_SCRIPTING=0` to disable it.
 Approvals do not prevent prompt injection. Use a separate profile for sensitive accounts and
-read the [security guide](https://junyeong-nero.github.io/kitsune/security/).
+read the [security guide](https://junyeong-nero.github.io/kitsune/docs/security/).
 
 ## Documentation
 
-The full documentation is at **[junyeong-nero.github.io/kitsune](https://junyeong-nero.github.io/kitsune/)**:
+The full documentation is at **[junyeong-nero.github.io/kitsune/docs](https://junyeong-nero.github.io/kitsune/docs/)**:
 
-- [Installation](https://junyeong-nero.github.io/kitsune/installation/): every MCP client, version pinning, upgrades
-- [Your tabs and approvals](https://junyeong-nero.github.io/kitsune/your-tabs/): what limits the agent: protected tabs, per-tool approvals, ask-before-act
-- [Tools](https://junyeong-nero.github.io/kitsune/tools/): the default and legacy tool lists
-- [Python API](https://junyeong-nero.github.io/kitsune/python-api/): drive the browser from your own scripts with `pip install kitsune-browser`
-- [Troubleshooting](https://junyeong-nero.github.io/kitsune/troubleshooting/) ·
-  [FAQ](https://junyeong-nero.github.io/kitsune/faq/) ·
+- [Installation](https://junyeong-nero.github.io/kitsune/docs/installation/): every MCP client, version pinning, upgrades
+- [Your tabs and approvals](https://junyeong-nero.github.io/kitsune/docs/your-tabs/): what limits the agent: protected tabs, per-tool approvals, ask-before-act
+- [Tools](https://junyeong-nero.github.io/kitsune/docs/tools/): the default and legacy tool lists
+- [Python API](https://junyeong-nero.github.io/kitsune/docs/python-api/): drive the browser from your own scripts with `pip install kitsune-browser`
+- [Troubleshooting](https://junyeong-nero.github.io/kitsune/docs/troubleshooting/) ·
+  [FAQ](https://junyeong-nero.github.io/kitsune/docs/faq/) ·
   [Benchmarks](https://github.com/junyeong-nero/kitsune-benchmark) ·
-  [API reference](https://junyeong-nero.github.io/kitsune/api-reference/)
+  [API reference](https://junyeong-nero.github.io/kitsune/docs/api-reference/)

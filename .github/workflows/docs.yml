@@ -1,6 +1,7 @@
-# Builds the docs site with MkDocs and publishes it to the gh-pages branch, which GitHub
-# Pages serves at https://junyeong-nero.github.io/kitsune/.
-# Preview locally with `uv run --group docs mkdocs serve`.
+# Builds the site and publishes it to the gh-pages branch, which GitHub Pages serves at
+# https://junyeong-nero.github.io/kitsune/: the landing page (landing/) at the root and the
+# MkDocs docs under /docs/. See scripts/build_site.py.
+# Preview the docs alone with `uv run --group docs mkdocs serve`.
 name: Docs
 
 on:
@@ -8,9 +9,10 @@ on:
     branches: [main]
     paths:
       - "docs/**"
-      - "overrides/**"
+      - "landing/**"
       - "README.md"
       - "mkdocs.yml"
+      - "scripts/build_site.py"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 
@@ -31,4 +33,5 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898729+github-actions[bot]@users.noreply.github.com"
-      - run: uv run --only-group docs mkdocs gh-deploy --force
+      - run: uv run --only-group docs python scripts/build_site.py _site
+      - run: uv run --only-group docs ghp-import --no-jekyll --push --force --message "Deploy ${{ github.sha }}" _site
