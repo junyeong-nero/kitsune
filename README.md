@@ -57,21 +57,22 @@ and Aside (under Codex) made slightly fewer tool calls than Kitsune. <a href="ht
 
 1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/).
 2. [Install the browser extension](https://junyeong-nero.github.io/kitsune/docs/installation/#2-install-the-browser-extension)
-   in Firefox, Zen or LibreWolf.
+    in Firefox, Zen or LibreWolf.
 3. Add Kitsune to your agent. For Claude Code:
 
-   ```bash
-   claude mcp add --scope user kitsune -- uvx --from kitsune-browser-mcp kitsune
-   ```
+    ```bash
+    claude mcp add --scope user kitsune -- uvx --from kitsune-browser-mcp kitsune
+    ```
 
-   Codex, Pi, OpenCode, Claude Desktop and Cursor are in
-   [Installation](https://junyeong-nero.github.io/kitsune/docs/installation/#1-register-the-mcp-server).
+    Codex, Pi, OpenCode, Claude Desktop and Cursor are in
+    [Installation](https://junyeong-nero.github.io/kitsune/docs/installation/#1-register-the-mcp-server).
+
 4. Keep the browser open and ask in plain language:
 
-   > Research these three products in background tabs and compare them with links.
-   > Leave my current tab alone.
+    > Research these three products in background tabs and compare them with links.
+    > Leave my current tab alone.
 
-   > Fill in a draft of this form. Don't submit it.
+    > Fill in a draft of this form. Don't submit it.
 
 **Trust note:** Python runs locally, not in a sandbox; set `KITSUNE_SCRIPTING=0` to disable it.
 Approvals do not prevent prompt injection. Use a separate profile for sensitive accounts and
