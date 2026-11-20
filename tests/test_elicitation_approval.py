@@ -19,7 +19,7 @@ from mcp.server.session import ServerSession
 from mcp.shared.exceptions import McpError
 from mcp.shared.memory import create_connected_server_and_client_session
 
-from kitsune import bridge, bridge_client, playwright_tools, server, tools
+from kitsune import bridge, bridge_client, playwright_tools, server
 from kitsune.task_modes import APPROVAL_HEADER, APPROVER_HEADER
 
 USER_TAB, AGENT_TAB = 4, 9

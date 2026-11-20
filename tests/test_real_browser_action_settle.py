@@ -6,7 +6,6 @@ shadow root, a debounced autocomplete list, a status line after a slow request. 
 tabs are hidden, where Firefox delays page timers to at least 1 s.
 """
 from http.server import BaseHTTPRequestHandler
-import json
 import re
 import time
 import unittest

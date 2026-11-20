@@ -4,7 +4,6 @@ import os
 import subprocess
 import sys
 import unittest
-from unittest.mock import Mock
 
 from kitsune import bridge, task_modes
 from test_ask_before_act import AskBeforeActTestCase

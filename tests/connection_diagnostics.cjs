@@ -35,6 +35,9 @@ function background({ tabs = {}, windows = 1, granted = () => true, files = null
         if (msg.action === 'ping') throw new Error('Could not establish connection. Receiving end does not exist.');
         // The user-activity probe only reads; sent records commands.
         if (msg.action === 'userActivity') return { active: false };
+        // Nor do an agent tab's dialog default and the dialogs asked for after an action (#555).
+        if (msg.action === 'setDialogAgentTab') return { ok: true };
+        if (msg.action === 'dialogsSince') return { dialogs: [] };
         sent.push(msg);
         return { ok: true };
       },

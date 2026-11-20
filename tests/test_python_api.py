@@ -15,7 +15,7 @@ import warnings
 import kitsune
 from kitsune import bridge_client, playwright_tools, server, task_modes, tools
 from kitsune.bridge_client import BridgeClient
-from kitsune.browser import Browser, Tab
+from kitsune.browser import Browser
 from kitsune.errors import raise_for
 
 PNG = b"\x89PNG\r\n\x1a\nimage"

@@ -32,7 +32,7 @@ async function main() {
   assert.deepEqual(h.calls, []);
   const writes = [
     'click', 'doubleClick', 'type', 'fill', 'setEditableContent', 'keypress', 'checkBox', 'selectOption',
-    'submitForm', 'formFill', 'drag', 'uploadChunk', 'uploadCommit', 'uploadAbort', 'hover', 'scroll',
+    'submitForm', 'formFill', 'drag', 'uploadChunk', 'uploadCommit', 'hover', 'scroll',
     'focusElement', 'blurElement', 'navigate', 'goBack', 'goForward', 'reloadTabBrowser', 'closeTab',
     'switchTab', 'waitForResult', 'clickAndWaitNavigation', 'elementScreenshot', 'fullPageScreenshot', 'executeJS',
     'pinTab', 'muteTab', 'setZoom', 'resizeWindow', 'moveTab', 'detachTab', 'wakeTab', 'highlight',

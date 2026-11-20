@@ -18,13 +18,18 @@ import re
 import warnings
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from .bridge_client import BridgeClient
 from .errors import ConfirmationRequired, ConnectionFailed, KitsuneError, TimedOut, raise_for
 from .waits import (
     ACTION_REQUEST_SECONDS, NAVIGATE_REQUEST_SECONDS, RESUME_DEADLINE_SECONDS, WORKFLOW_DEADLINE_SECONDS,
     action_request_seconds, batch_deadline_seconds, command_wait_seconds, container_request_seconds,
 )
+
+# Only connect() builds a BridgeClient. A browser_run_python worker (kitsune.script_worker) wraps the
+# host's client and starts with every call, so it must not pay for importing httpx.
+if TYPE_CHECKING:
+    from .bridge_client import BridgeClient
 
 # A snapshot ref (e12) is sent as ref; any other target as a selector, which the bridge's shared
 # resolver reads as CSS, a Playwright-style selector such as text= or role=, or an s1e0/r0 ref
@@ -81,6 +86,8 @@ def connect(*, user_tabs: str | None = None, confirm=None,
     (bridge_version_mismatch) unless replace_bridge=True, which restarts it for every client.
     KITSUNE_HTTP_PORT, KITSUNE_TOKEN and KITSUNE_HOME choose the bridge, as for the MCP server.
     """
+    from .bridge_client import BridgeClient
+
     client = BridgeClient(user_tabs=user_tabs, replace_bridge=replace_bridge)
     error = client.ensure_bridge()
     if error:
@@ -104,7 +111,7 @@ class Browser:
     connecting again. This wrapper is not a sandbox for code with access to that client.
     """
 
-    def __init__(self, client: BridgeClient, *, confirm=None):
+    def __init__(self, client: "BridgeClient", *, confirm=None):
         self.client = client
         self.confirm = confirm
         self.cookies = Cookies(self)

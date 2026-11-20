@@ -3,7 +3,6 @@
 This is not a sandbox. Code has ordinary local Python host access.
 """
 import contextlib
-import inspect
 import json as json_module
 import sys
 import traceback
@@ -52,6 +51,7 @@ def main():
             if isinstance(error, TypeError):
                 # #524: same-named direct tools use different arguments and semantics. Add local
                 # help, not aliases, browser calls or retries; keep the original exception visible.
+                import inspect  # here, not at the top: every call starts a worker, few fail this way
                 for method in (Tab.find, Tab.snapshot):
                     if str(error).startswith(f"{method.__qualname__}() got an unexpected keyword argument "):
                         message += f"\nPython API: {method.__qualname__}{inspect.signature(method)}\n{inspect.getdoc(method)}"

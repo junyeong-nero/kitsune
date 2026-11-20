@@ -8,7 +8,6 @@ are tested in tests/history_lookup.cjs.
 import asyncio
 import json
 import tempfile
-import threading
 import time
 import unittest
 from unittest.mock import AsyncMock, patch

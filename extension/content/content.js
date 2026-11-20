@@ -586,7 +586,6 @@
       // ── 2.1.0 file upload ──
       'uploadChunk':           () => uploadChunk(msg.uploadId, msg.index, msg.data),
       'uploadCommit':          () => uploadCommit(msg.uploadId, msg.selector, msg.files, msg.mode, msg.first, msg.data),
-      'uploadAbort':           () => uploadAbort(msg.uploadId),
     };
 
     // Only respond if we're the latest version
@@ -643,7 +642,6 @@
     (__zlUploads[id] = __zlUploads[id] || [])[index] = data;
     return { ok: true, index };
   }
-  function uploadAbort(id) { delete __zlUploads[id]; return { ok: true }; }
   function uploadCommit(id, selector, files, mode, first, data) {
     // A drop of data alone (browser_drop) sends no chunks.
     const parts = __zlUploads[id] || (files.length ? null : []);
@@ -4307,23 +4305,27 @@
     return isEditingHost(el) || isControl(el);
   }
 
+  // Built once: a snapshot walk calls isControl and inferRole for each element it measures.
+  const CONTROL_TAGS = new Set(['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'DETAILS', 'SUMMARY']);
+  const CONTROL_ROLES = new Set(['button', 'link', 'textbox', 'checkbox', 'radio', 'combobox', 'tab', 'menuitem',
+    'menuitemcheckbox', 'menuitemradio', 'listbox', 'option', 'treeitem', 'spinbutton', 'searchbox', 'switch',
+    'slider']);
+  const INPUT_ROLES = { button: 'button', submit: 'button', reset: 'button',
+    image: 'button', checkbox: 'checkbox', radio: 'radio', range: 'slider', number: 'spinbutton',
+    search: 'searchbox' };
+  const TAG_ROLES = { A: 'link', BUTTON: 'button', SELECT: 'combobox', TEXTAREA: 'textbox', SUMMARY: 'button',
+    DETAILS: 'group', VIDEO: 'video', AUDIO: 'audio' };
+
   function isControl(el) {
-    const interactiveTags = new Set(['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'DETAILS', 'SUMMARY']);
-    if (interactiveTags.has(el.tagName)) return true;
+    if (CONTROL_TAGS.has(el.tagName)) return true;
     if (el.onclick || el.hasAttribute('tabindex')) return true;
     const role = el.getAttribute('role');
-    if (role && ['button', 'link', 'textbox', 'checkbox', 'radio', 'combobox', 'tab', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'listbox', 'option', 'treeitem', 'spinbutton', 'searchbox', 'switch', 'slider'].includes(role)) return true;
-    return false;
+    return !!role && CONTROL_ROLES.has(role);
   }
 
   function inferRole(el) {
-    const inputRole = { button: 'button', submit: 'button', reset: 'button',
-      image: 'button', checkbox: 'checkbox', radio: 'radio', range: 'slider', number: 'spinbutton',
-      search: 'searchbox' };
-    const map = { A: 'link', BUTTON: 'button', INPUT: inputRole[el.type] || 'textbox',
-      SELECT: 'combobox', TEXTAREA: 'textbox', SUMMARY: 'button', DETAILS: 'group',
-      VIDEO: 'video', AUDIO: 'audio' };
-    return map[el.tagName] || '';
+    if (el.tagName === 'INPUT') return INPUT_ROLES[el.type] || 'textbox';
+    return TAG_ROLES[el.tagName] || '';
   }
 
   // Structural reads never return sensitive values or lengths; browser_js is a

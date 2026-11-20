@@ -89,7 +89,7 @@ class _Site(BaseHTTPRequestHandler):
             results_released.wait(30)
         body = (b'{"found":"3 hotels found"}' if self.path == "/api/results" else
                 b'{"ok":true}' if self.path.startswith("/api/") else
-                f"<title>second</title><p>second page</p>".encode() if self.path == "/second" else
+                "<title>second</title><p>second page</p>".encode() if self.path == "/second" else
                 ASYNC_PAGE.encode() if self.path == "/async" else
                 INFINITE_PAGE.encode() if self.path == "/infinite" else
                 EMPTY_PAGE.encode() if self.path == "/empty" else
