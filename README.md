@@ -47,10 +47,10 @@ about half its tool calls under both.
 
 [![Four-way benchmark, 26 WebArena-Pro tasks, 208 attempts. Passed, Claude Code / Codex: Kitsune 13/26 and 12/26; Playwright MCP 13/26 and 12/26; Aside 12/26 and 12/26; EgoLite 12/26 and 12/26. Mean input tokens per attempt: Kitsune 283k / 414k; Aside 463k / 512k; EgoLite 360k / 622k; Playwright MCP 660k / 809k. Mean tool calls: Kitsune 14.0 / 15.8; Aside 16.1 / 15.6; EgoLite 12.8 / 17.5; Playwright MCP 29.8 / 35.1.](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/benchmark-webarena-pro.svg)](https://junyeong-nero.github.io/kitsune/docs/benchmark/)
 
-<sub>claude-opus-5-5 and gpt-6.1-sol, one attempt per task. Input includes cache, not billed cost. Grading has no LLM
-judge, so it is stricter than the WebArena-Pro paper's and not comparable to its scores. Aside and EgoLite used the
-operator's browsers; Playwright MCP and Kitsune ran an isolated Firefox. EgoLite (under Claude Code) and Aside (under
-Codex) made slightly fewer tool calls than Kitsune. <a href="https://junyeong-nero.github.io/kitsune/docs/benchmark/">Results, methodology and limitations →</a></sub>
+<sub>claude-opus-5-5 and gpt-6.1-sol, one attempt per task (19 test, 7 dev). Input includes cache, not billed cost.
+Grading has no LLM judge, so it is stricter than the WebArena-Pro paper's and not comparable to its scores. Aside and
+EgoLite used the operator's browsers; Playwright MCP and Kitsune ran an isolated Firefox. EgoLite (under Claude Code)
+and Aside (under Codex) made slightly fewer tool calls than Kitsune. <a href="https://junyeong-nero.github.io/kitsune/docs/benchmark/">Results, methodology and limitations →</a></sub>
 
 ## Get started
 
