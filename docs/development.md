@@ -80,6 +80,21 @@ directory with a `timeline.jsonl` (bridge requests, fixture requests and navigat
 clock), tails of `browser.log` and `bridge.log` (tokens redacted), `resources.json` and
 `summary.json`.
 
+## Website
+
+GitHub Pages serves the landing page (`landing/`) at
+[junyeong-nero.github.io/kitsune](https://junyeong-nero.github.io/kitsune/) and these docs under
+`/docs/`. A push to `main` that touches either deploys both (`.github/workflows/docs.yml`).
+
+```bash
+uv run --group docs mkdocs serve                        # docs only, live reload
+uv run --only-group docs python scripts/build_site.py   # landing + docs + redirects in _site/
+python -m http.server -d _site
+```
+
+The docs used to live at the site root, so `build_site.py` writes a redirect page at each old
+path. The landing page's copy follows README.md; update both together.
+
 ## Releasing
 
 See [Releasing](https://github.com/junyeong-nero/kitsune/blob/main/docs/releasing.md).
