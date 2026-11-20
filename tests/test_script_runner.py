@@ -2,6 +2,8 @@
 import asyncio
 import json
 import os
+import subprocess
+import sys
 import threading
 import time
 import unittest
@@ -21,6 +23,17 @@ class Client:
         self.called.set()
         reply = self.replies.get(route, {"ok": True})
         return reply() if callable(reply) else reply
+
+
+class ScriptWorkerStartTests(unittest.TestCase):
+    def test_worker_imports_no_bridge_client(self):
+        # Every browser_run_python call starts a worker, whose Browser sends through the host: the
+        # bridge client and httpx, most of a worker's start time, are not loaded for it.
+        loaded = set(subprocess.check_output(
+            [sys.executable, "-c", "import sys, kitsune.script_worker; print(' '.join(sys.modules))"],
+            text=True).split())
+        self.assertIn("kitsune.browser", loaded)
+        self.assertEqual(loaded & {"kitsune.bridge_client", "kitsune.version", "httpx"}, set())
 
 
 class ScriptRunnerTests(unittest.IsolatedAsyncioTestCase):
