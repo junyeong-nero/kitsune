@@ -38,11 +38,19 @@ extra:
 
 markdown_extensions:
   - admonition
+  - attr_list
+  - pymdownx.details
   - tables
   - toc:
       permalink: true
   - pymdownx.highlight
   - pymdownx.superfences
+  # Content tabs (installation steps per client). Slugified ids make tabs linkable: #opencode.
+  - pymdownx.tabbed:
+      alternate_style: true
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        kwds:
+          case: lower
   # index.md pulls in README.md so the home page and the README stay in sync.
   - pymdownx.snippets:
       check_paths: true
