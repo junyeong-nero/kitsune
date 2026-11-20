@@ -208,7 +208,7 @@ Both builds share an add-on ID; a loaded developer build replaces the signed one
 ### Pinning a version
 
 ```bash
-claude mcp add --scope user kitsune -- uvx --from kitsune-browser-mcp==0.8.0 kitsune
+claude mcp add --scope user kitsune -- uvx --from kitsune-browser-mcp==0.8.1 kitsune
 ```
 
 For an unreleased commit, tag or branch, use the Git source and get the extension from the same
