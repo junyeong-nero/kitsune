@@ -1169,7 +1169,7 @@ const USER_GUARDED_ACTIONS = new Set([
 const TAB_WRITE_ACTIONS = new Set([
   ...USER_GUARDED_ACTIONS, 'pinTab', 'muteTab', 'reloadTabBrowser', 'setZoom', 'resizeWindow',
   'moveTab', 'detachTab', 'wakeTab', 'highlight', 'clearHighlight', 'handleDialog',
-  'uploadChunk', 'uploadAbort', 'agentInput', 'neuterUnload', 'keepAlive',
+  'uploadChunk', 'agentInput', 'neuterUnload', 'keepAlive',
   'markScreenshotTarget', 'unmarkScreenshotTarget', 'screenPoint',
   'trustedClick', 'trustedDrag', 'trustedType', 'trustedPressKey', 'uploadFile',
 ]);
@@ -1897,7 +1897,6 @@ async function dispatchCommand(command) {
     case 'fullPageMetrics':
     case 'uploadChunk':
     case 'uploadCommit':
-    case 'uploadAbort':
     case 'keepAlive':
     case 'neuterUnload':
       return await forwardToContent(action, params);

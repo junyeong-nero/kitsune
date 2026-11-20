@@ -586,7 +586,6 @@
       // ── 2.1.0 file upload ──
       'uploadChunk':           () => uploadChunk(msg.uploadId, msg.index, msg.data),
       'uploadCommit':          () => uploadCommit(msg.uploadId, msg.selector, msg.files, msg.mode, msg.first, msg.data),
-      'uploadAbort':           () => uploadAbort(msg.uploadId),
     };
 
     // Only respond if we're the latest version
@@ -643,7 +642,6 @@
     (__zlUploads[id] = __zlUploads[id] || [])[index] = data;
     return { ok: true, index };
   }
-  function uploadAbort(id) { delete __zlUploads[id]; return { ok: true }; }
   function uploadCommit(id, selector, files, mode, first, data) {
     // A drop of data alone (browser_drop) sends no chunks.
     const parts = __zlUploads[id] || (files.length ? null : []);
