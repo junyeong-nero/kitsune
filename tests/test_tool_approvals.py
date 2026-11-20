@@ -6,7 +6,6 @@ bridge's refusals and container steps run in-process; MCP calls go through conne
 in-process bridge whose extension is faked (test_elicitation_approval's harness).
 """
 import asyncio
-import json
 import re
 import unittest
 from pathlib import Path

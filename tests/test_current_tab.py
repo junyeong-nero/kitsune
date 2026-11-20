@@ -3,14 +3,13 @@
 #303: without a current tab, writes that name no tab are refused instead of writing the active tab.
 Tabs the agent opens in a batch or workflow, or by an action on its current tab, become current.
 """
-import asyncio
 import json
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 from kitsune import bridge, playwright_tools, tools
 from test_resume import NOT_FOUND, ResumeTests

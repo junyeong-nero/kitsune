@@ -7,7 +7,6 @@ Opt-in and built on tests/real_browser_harness.py, which documents how to run it
   agent last looked, as on an infinite list that loads a batch when its sentinel is hovered.
 """
 from http.server import BaseHTTPRequestHandler
-import json
 import re
 import time
 import unittest

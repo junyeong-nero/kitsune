@@ -59,7 +59,7 @@ class RealBrowserWaitForNameTests(harness.RealBrowserTestCase):
                 self.assertRegex(match["ref"], r"^e\d+$")
                 line = re.search(rf'- {role} "{re.escape(text)}" \[ref=(e\d+)\]', snapshot)
                 self.assertEqual(match["ref"], line.group(1))
-                self.assertIn(f'(' + source + '), not page text', result["hint"])
+                self.assertIn('(' + source + '), not page text', result["hint"])
                 self.assert_ok(self.call("/api/focus", {"tabId": tab, "ref": match["ref"]}))
 
     def test_page_text_and_unknown_text_keep_their_results(self):
