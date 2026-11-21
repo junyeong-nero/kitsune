@@ -9,8 +9,6 @@ Usage: python -m kitsune.bridge
 
 import argparse
 import asyncio
-import fcntl
-import signal
 import socket
 import json
 import base64
@@ -46,7 +44,7 @@ try:
 except ImportError:
     sys.exit("websockets is not installed. Reinstall kitsune with its dependencies.")
 
-from . import bridge_control, browser_diagnostics
+from . import bridge_control, browser_diagnostics, file_lock, private_files
 from . import tool_approvals
 from .task_modes import (
     APPROVAL_HEADER, APPROVER_HEADER, CALL_HEADER, CLIENT_HEADER, CLIENT_ID_PATTERN, GATEWAY_TOOL_HEADER,
@@ -73,7 +71,7 @@ IDLE_POLL_SECONDS = 1.0
 # Everything the bridge writes (token, cookies from saved sessions,
 # screenshots, logs) stays in one user-only directory.
 DATA_DIR = os.environ.get("KITSUNE_HOME", os.path.join(os.path.expanduser("~"), ".kitsune"))
-os.makedirs(DATA_DIR, mode=0o700, exist_ok=True)
+private_files.ensure_directory(DATA_DIR)
 SCREENSHOT_DIR = os.path.join(DATA_DIR, "screenshots")
 WORKFLOW_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "workflows")
 
@@ -97,6 +95,7 @@ def _load_or_create_token():
     if env_token:
         return env_token
     if os.path.exists(TOKEN_FILE):
+        private_files.secure_file(TOKEN_FILE)
         with open(TOKEN_FILE, encoding="utf-8") as f:
             token = f.read().strip()
         if token:
@@ -104,6 +103,7 @@ def _load_or_create_token():
     token = secrets.token_urlsafe(32)
     fd = os.open(TOKEN_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
+        private_files.secure_file(TOKEN_FILE)
         f.write(token)
     return token
 
@@ -2974,11 +2974,22 @@ def _log_rejected_ws_origin(connection, request, response):
         _log(f"⛔ Rejected WebSocket connection from origin {request.headers.get('Origin') or '(none)'!r}")
 
 
-def serve_extension_ws(port):
+async def serve_extension_ws(port):
     # 2.1.0: websockets defaults to a 1 MiB message cap - a full-page screenshot is several MB and the
     # oversized frame closed the socket ("Extension disconnected"). Allow big frames.
-    return ws_serve(ws_handler, "127.0.0.1", port, origins=ALLOWED_WS_ORIGINS,
-                    process_response=_log_rejected_ws_origin, max_size=256 * 1024 * 1024)
+    options = {"origins": ALLOWED_WS_ORIGINS, "process_response": _log_rejected_ws_origin,
+               "max_size": 256 * 1024 * 1024}
+    if os.name != "nt":
+        return await ws_serve(ws_handler, "127.0.0.1", port, **options)
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        listener.bind(("127.0.0.1", port))
+        listener.setblocking(False)
+        return await ws_serve(ws_handler, sock=listener, **options)
+    except BaseException:
+        listener.close()
+        raise
 
 
 # Action error contract (docs/api-reference.md#action-errors): `error` keeps its text;
@@ -4881,6 +4892,13 @@ class BridgeHTTPServer(ThreadingHTTPServer):
     every accepted request is already counted and an idle shutdown can drain it.
     """
 
+    allow_reuse_address = os.name != "nt"
+
+    def server_bind(self):
+        if os.name == "nt":
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
     def process_request(self, request, client_address):
         _client_activity.begin()
         try:
@@ -6109,9 +6127,11 @@ async def main(idle_timeout=0):
     global loop, shutdown_event
     loop = asyncio.get_running_loop()
     shutdown_event = asyncio.Event()
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, shutdown_event.set)
-    
+    with bridge_control.shutdown_signals(loop, shutdown_event.set):
+        await _serve(idle_timeout)
+
+
+async def _serve(idle_timeout):
     ws_server = await serve_extension_ws(WS_PORT)
     print(f"[{now()}] 🔌 WebSocket server on ws://localhost:{WS_PORT}")
     
@@ -6177,11 +6197,13 @@ async def main(idle_timeout=0):
                     await asyncio.sleep(0.05)
         ws_server.close()
         await ws_server.wait_closed()
-        for sig in (signal.SIGTERM, signal.SIGINT):
-            loop.remove_signal_handler(sig)
 
 
 def run(argv=None):
+    if os.name == "nt":
+        for stream in (sys.stdout, sys.stderr):
+            if hasattr(stream, "reconfigure"):
+                stream.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description="Kitsune shared browser bridge")
     parser.add_argument("command", nargs="?", choices=("start", "stop", "status"), default="start")
     parser.add_argument(
@@ -6226,7 +6248,7 @@ def run(argv=None):
     fd = os.open(bridge_control.PID_FILE, os.O_RDWR | os.O_CREAT, 0o600)
     with os.fdopen(fd, "r+") as pid_file:
         try:
-            fcntl.flock(pid_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            file_lock.lock_exclusive(pid_file, blocking=False)
         except BlockingIOError:
             parser.exit(1, "Kitsune bridge is already running.\n")
         pid_file.seek(0)

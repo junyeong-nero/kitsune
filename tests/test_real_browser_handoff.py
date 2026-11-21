@@ -259,6 +259,19 @@ async def _mcp(env, answers=None, observe=None, name=CLIENT_NAME):
 
 def _server_pids():
     """The kitsune.server processes this test process started."""
+    if os.name == "nt":
+        import psutil
+
+        candidates = {}
+        for process in psutil.Process().children(recursive=True):
+            try:
+                if process.cmdline()[1:3] == ["-m", "kitsune.server"]:
+                    candidates[process.pid] = process
+            except psutil.NoSuchProcess:
+                pass
+        # Exclude a venv redirector when its child is the actual server.
+        parents = {process.ppid() for process in candidates.values()}
+        return [pid for pid in candidates if pid not in parents]
     found = subprocess.run(["pgrep", "-P", str(os.getpid()), "-f", "kitsune.server"],
                            capture_output=True, text=True, check=False)
     return [int(pid) for pid in found.stdout.split()]
@@ -542,7 +555,11 @@ class RealBrowserHandoffTests(harness.RealBrowserTestCase):
         async def scenario(session):
             outcome = await self.hand_over_and_open_own(session, url, own)
             (pid,) = _server_pids()
-            os.kill(pid, signal.SIGKILL)  # no MCP shutdown and no handoff session close
+            if os.name == "nt":
+                import psutil
+                psutil.Process(pid).kill()
+            else:
+                os.kill(pid, signal.SIGKILL)  # no MCP shutdown and no handoff session close
             await asyncio.to_thread(self.wait_for, lambda: self.popup_cards(url) == [],
                                     "the popup still lists the killed client's handoff")
             return outcome

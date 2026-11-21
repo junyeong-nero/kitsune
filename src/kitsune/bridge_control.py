@@ -1,7 +1,6 @@
 """Local bridge lifecycle operations shared by the bridge client and CLI."""
 
-from contextlib import contextmanager
-import fcntl
+from contextlib import contextmanager, ExitStack
 import functools
 import os
 from pathlib import Path
@@ -14,6 +13,8 @@ import time
 
 import httpx
 
+from . import file_lock, private_files
+
 HTTP_PORT = int(os.environ.get("KITSUNE_HTTP_PORT", "47651"))
 WS_PORT = int(os.environ.get("KITSUNE_WS_PORT", "47652"))
 BRIDGE = f"http://127.0.0.1:{HTTP_PORT}"
@@ -23,6 +24,22 @@ LOCK_FILE = os.path.join(DATA_DIR, "bridge.lock")
 PID_FILE = os.path.join(DATA_DIR, "bridge.pid")
 LOG_FILE = os.path.join(DATA_DIR, "bridge.log")
 STOP_TIMEOUT = 5
+
+
+@contextmanager
+def shutdown_signals(loop, callback):
+    """Restore both asyncio and Windows main-thread signal handlers on exit."""
+    with ExitStack() as cleanup:
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                loop.add_signal_handler(sig, callback)
+            except NotImplementedError:
+                previous = signal.getsignal(sig)
+                signal.signal(sig, lambda _signum, _frame: loop.call_soon_threadsafe(callback))
+                cleanup.callback(signal.signal, sig, previous)
+            else:
+                cleanup.callback(loop.remove_signal_handler, sig)
+        yield
 
 
 @functools.cache
@@ -52,6 +69,12 @@ def status(timeout: float = 2) -> dict | None:
         response = httpx.get(f"{BRIDGE}/api/status", headers=headers(), timeout=timeout, verify=tls_context())
     except httpx.ConnectError:
         return None
+    except httpx.ConnectTimeout:
+        # A closed loopback port can time out instead of refusing immediately
+        # on Windows. A bind probe distinguishes it from a hung live listener.
+        if not port_in_use(HTTP_PORT):
+            return None
+        raise
     response.raise_for_status()
     data = response.json()
     if not isinstance(data, dict):
@@ -62,7 +85,10 @@ def status(timeout: float = 2) -> dict | None:
 def port_in_use(port: int) -> bool:
     """Whether the bridge could not listen on this port; binding never contacts its owner."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # as asyncio's listener does
+        if os.name == "nt":
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        else:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind(("127.0.0.1", port))
         except OSError:
@@ -73,19 +99,19 @@ def port_in_use(port: int) -> bool:
 @contextmanager
 def lifecycle_lock():
     """Serialize starts, automatic replacements, and CLI stops across clients."""
-    os.makedirs(DATA_DIR, mode=0o700, exist_ok=True)
+    private_files.ensure_directory(DATA_DIR)
     fd = os.open(LOCK_FILE, os.O_RDWR | os.O_CREAT, 0o600)
     with os.fdopen(fd, "r+") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        file_lock.lock_exclusive(lock)
         yield
 
 
 def try_lifecycle_lock():
     """Non-blocking lifecycle_lock for the daemon; close the returned file to release it."""
-    os.makedirs(DATA_DIR, mode=0o700, exist_ok=True)
+    private_files.ensure_directory(DATA_DIR)
     lock = os.fdopen(os.open(LOCK_FILE, os.O_RDWR | os.O_CREAT, 0o600), "r+")
     try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        file_lock.lock_exclusive(lock, blocking=False)
     except BlockingIOError:
         lock.close()
         return None
@@ -104,9 +130,9 @@ def _locked_pid() -> int | None:
     An unlocked/stale pid file must never be used to signal a recycled PID.
     """
     try:
-        with open(PID_FILE, encoding="utf-8") as pid_file:
+        with open(PID_FILE, "r+", encoding="utf-8") as pid_file:
             try:
-                fcntl.flock(pid_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                file_lock.lock_exclusive(pid_file, blocking=False)
             except BlockingIOError:
                 pid = int(pid_file.read().strip())
                 return pid if pid > 1 and pid != os.getpid() else None
@@ -119,6 +145,8 @@ def _terminate_daemon() -> bool:
     pid = _locked_pid()
     if pid is None:
         return False
+    if os.name == "nt":
+        return _terminate_windows_daemon(pid)
     # A second identity check avoids signaling an unrelated PID even if a
     # malformed pid file happens to be locked by another local program.
     try:
@@ -134,6 +162,25 @@ def _terminate_daemon() -> bool:
         os.kill(pid, signal.SIGTERM)
         return True
     except (OSError, ValueError, subprocess.SubprocessError):
+        return False
+
+
+def _terminate_windows_daemon(pid: int) -> bool:
+    """Use a process object that checks creation identity before termination."""
+    import psutil
+
+    try:
+        process = psutil.Process(pid)
+        args = process.cmdline()
+        is_bridge = args[1:3] == ["-m", "kitsune.bridge"]
+        is_bridge = is_bridge or any(Path(arg).name.lower() == "kitsune-bridge.exe" for arg in args[:2])
+        if not is_bridge or _locked_pid() != pid:
+            return False
+        # psutil.terminate checks PID reuse; os.kill(SIGTERM) on Windows does
+        # not, and parsing the executable name alone could target any Python.
+        process.terminate()
+        return True
+    except (OSError, ValueError, psutil.Error):
         return False
 
 

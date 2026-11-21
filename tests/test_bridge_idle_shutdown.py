@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -115,8 +116,10 @@ class BridgeIdleShutdownProcessTests(unittest.TestCase):
         log_file = os.path.join(self.home, "bridge.log")
         for patcher in (
             patch.dict(os.environ, self.bridge.env, clear=True), self.daemon_paths(),
-            patch.multiple(control, BRIDGE=url, TOKEN_FILE=os.path.join(self.home, "token"), LOG_FILE=log_file),
-            patch.multiple(bridge_client, BRIDGE=url, LOG_FILE=log_file),
+            patch.multiple(control, BRIDGE=url, HTTP_PORT=self.bridge.http_port, WS_PORT=self.bridge.ws_port,
+                           TOKEN_FILE=os.path.join(self.home, "token"), LOG_FILE=log_file),
+            patch.multiple(bridge_client, BRIDGE=url, HTTP_PORT=self.bridge.http_port,
+                           WS_PORT=self.bridge.ws_port, LOG_FILE=log_file),
             patch.object(server._client, "_extension_wait_until", 0.0),
         ):
             patcher.start()
@@ -132,6 +135,8 @@ class BridgeIdleShutdownProcessTests(unittest.TestCase):
         popen = subprocess.Popen
 
         def spawn(*args, **kwargs):
+            if os.name == "nt":
+                kwargs["executable"] = sys._base_executable
             spawned.append(popen(*args, **kwargs))
             return spawned[-1]
 

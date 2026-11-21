@@ -9,6 +9,10 @@ extension** you install once. Setup takes four steps.
     - Firefox 142+, Zen 1.23+ or LibreWolf
     - An MCP client: Claude Code, Codex CLI, Pi, Claude Desktop, Cursor or OpenCode
 
+Native Windows bridge support is available in this development checkout; see
+[Windows setup and verification](windows.md). It is not part of the upstream
+0.8.1 release instructions below.
+
 ## 1. Install uv
 
 [uv](https://docs.astral.sh/uv/getting-started/installation/) downloads and runs the Kitsune
