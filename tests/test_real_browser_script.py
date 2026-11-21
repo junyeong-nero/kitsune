@@ -84,6 +84,27 @@ class RealBrowserScriptTests(harness.RealBrowserTestCase):
 
         self.run_scenario(run)
 
+    def test_queried_href_navigates_and_an_origin_prefix_is_a_coded_failure(self):
+        # #571: the script shape that failed, the origin prepended to a query href that is already absolute.
+        async def run(session, tab_id):
+            find = ("tab.navigate('/deals')\n"
+                    "r = tab.query('a[href^=\"/deals/\"]', fields=['text', 'href'], limit=200)\n"
+                    "m = [x for x in r if 'Radiant Solar' in x['text']]\n")
+            stopped = await session.call_tool("browser_run_python", {
+                "code": find + f"tab.navigate({self.site.origin!r} + m[0]['href'])"})
+            self.assertTrue(stopped.isError, stopped)
+            failed = json.loads(stopped.content[0].text)["failed_operation"]
+            self.assertEqual((failed["code"], failed["retryable"]), ("invalid_url", False), failed)
+            self.assertIn("already absolute", failed["hint"])
+            self.assertEqual(self.call("/api/page-info", {"tabId": tab_id})["title"], "Deals", "nothing was loaded")
+            for url in ("m[0]['href']", "'/deals/48'"):
+                loaded = await session.call_tool("browser_run_python", {
+                    "code": find + f"tab.navigate({url})\nresult = tab.info()"})
+                self.assertFalse(loaded.isError, loaded)
+                info = json.loads(loaded.content[0].text)["result"]
+                self.assertEqual((info["url"], info["title"]), (self.site.origin + "/deals/48", "Deal 48"))
+        self.run_scenario(run)
+
     def test_argument_error_explains_python_api_and_preserves_completed_draft(self):
         async def run(session, tab_id):
             for index, call in enumerate(("tab.find(regex='.')", "tab.find(text='원')",
