@@ -2,14 +2,23 @@
 import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
-from kitsune import script_runner
+from kitsune import script_runner, script_worker
+
+ROOT = Path(__file__).resolve().parent.parent
+# A successful action's reply as the bridge returns it (#575), with fields a script result leaves out.
+DELTA = {"ok": True, "tag": "button", "text": "Save", "visibilityState": "hidden", "target_ref": "e6",
+         "snapshot": '- button "Save" [ref=e6]\n- text "Saved Ada"\n- button "Undo save" [ref=e24]',
+         "snapshot_delta": True}
+ABSENT = object()
 
 
 class Client:
@@ -196,6 +205,115 @@ class ScriptRunnerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(recovered["result"], [{"text": "Delivery: three days"}])
                 self.assertEqual([route for _, route, _ in client.calls],
                                  ["/api/fill", "/api/page-text", "/api/query"], "only observe; never repeat the draft")
+
+    # -- #575: a script of only actions returns what its last action changed ----------------
+
+    async def test_script_of_only_actions_returns_its_last_actions_snapshot(self):
+        client = Client({"/api/page-text": {"text": "Orders"}, "/api/click": DELTA,
+                         "/api/fill": {**DELTA, "snapshot": '- textbox "Name" [ref=e2] [value="Ada"]'}})
+        result = await script_runner.run_python("s = tab.text()\ntab.fill('e2', 'Ada')\ntab.click('e6')",
+                                                client, tab_id=7)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["output"], "")
+        # Labelled with the operation it came from; no other field of the action's reply.
+        self.assertEqual(result["result"], {"last_action": "/api/click", "snapshot": DELTA["snapshot"],
+                                            "snapshot_delta": True})
+        self.assertEqual(result["operations"][-1]["route"], result["result"]["last_action"])
+        self.assertEqual([route for _, route, _ in client.calls], ["/api/page-text", "/api/fill", "/api/click"],
+                         "nothing is read for it")
+
+    async def test_returned_snapshot_says_whether_it_is_a_delta_a_new_page_cut_or_unchanged(self):
+        page = {"ok": True, "url": "https://shop.example/cart", "snapshot": '- heading "Cart" [ref=e40]'}
+        cases = [
+            ("tab.hover('e6')", "/api/hover",
+             {"ok": True, "snapshot": "", "snapshot_delta": True, "no_visible_change": True},
+             {"snapshot": "", "snapshot_delta": True, "no_visible_change": True}),
+            ("tab.press('Enter')", "/api/keypress",
+             {**DELTA, "snapshot_truncated": True, "snapshot_hint": "Snapshot truncated; scope it."},
+             {"snapshot": DELTA["snapshot"], "snapshot_delta": True, "snapshot_truncated": True,
+              "snapshot_hint": "Snapshot truncated; scope it."}),
+            # A click that loaded another document: the new page, not a delta.
+            ("tab.click('e6')", "/api/click",
+             {**page, "navigated": {"url": "https://shop.example/cart", "title": "Cart"}},
+             {"snapshot": page["snapshot"], "navigated": {"url": "https://shop.example/cart", "title": "Cart"}}),
+            ("tab.navigate('https://shop.example/cart')", "/api/navigate", page, {"snapshot": page["snapshot"]}),
+            ("tab.submit_form('#order')", "/api/submit-form", page, {"snapshot": page["snapshot"]}),
+        ]
+        for code, route, reply, expected in cases:
+            with self.subTest(code=code):
+                result = await script_runner.run_python(code, Client({route: reply}), tab_id=7)
+                self.assertTrue(result["ok"], result)
+                self.assertEqual(result["result"], {"last_action": route, **expected})
+
+    async def test_printed_output_or_an_assigned_result_is_all_a_script_returns(self):
+        for chosen, output, selected in [
+                ("print('saved')", "saved\n", ABSENT), ("result = {'saved': True}", "", {"saved": True}),
+                # Assigning a falsy value is still the script's choice.
+                ("result = None", "", ABSENT), ("result = 0", "", 0), ("result = ''", "", ""),
+                ("result = False", "", False), ("result = []", "", []),
+                ("import sys; sys.stderr.write('warned')", "warned", ABSENT)]:
+            with self.subTest(chosen=chosen):
+                result = await script_runner.run_python(f"tab.click('e6')\n{chosen}", Client({"/api/click": DELTA}),
+                                                        tab_id=7)
+                self.assertTrue(result["ok"], result)
+                self.assertEqual(result["output"], output)
+                self.assertEqual(result.get("result", ABSENT), selected)
+
+    async def test_no_snapshot_is_returned_unless_the_last_operation_is_an_action_that_has_one(self):
+        replies = {"/api/click": DELTA, "/api/snapshot": {"snapshot": '- heading "Orders" [ref=e1]'},
+                   "/api/page-text": {"text": "Orders"}, "/api/find": {"results": [{"ref": "e6", "snapshot": "x"}]},
+                   "/api/query": {"items": []}, "/api/wait-for-text": {"ok": True, "snapshot": "- text"},
+                   "/api/tabs": {"tabs": []}, "/api/scroll": {"ok": True, "scrollY": 300}}
+        for last in ("tab.snapshot()", "tab.text()", "tab.find('save button')", "tab.query('h1')",
+                     "tab.wait_for(text='Saved')", "browser.tabs()", "tab.scroll('down', 300)", "pass"):
+            with self.subTest(last=last):
+                code = f"tab.click('e6')\n{last}" if last != "pass" else last
+                result = await script_runner.run_python(code, Client(replies), tab_id=7)
+                self.assertTrue(result["ok"], result)
+                self.assertNotIn("result", result)
+                self.assertEqual(result["output"], "")
+
+    async def test_failed_last_action_keeps_its_failure_and_returns_no_snapshot(self):
+        failure = {"ok": False, "error": "Expected outcome was not observed", "code": "outcome_not_observed",
+                   "retryable": False, "snapshot": DELTA["snapshot"], "snapshot_delta": True}
+        result = await script_runner.run_python("tab.fill('e2', 'Ada')\ntab.click('e6')",
+                                                Client({"/api/fill": DELTA, "/api/click": failure}), tab_id=7)
+        self.assertEqual(result["code"], "script_operation_failed")
+        self.assertEqual(result["failed_operation"], failure)
+        self.assertNotIn("result", result)
+        self.assertEqual([entry["status"] for entry in result["operations"]], ["ok", "failed"])
+        # Nor from a failed reply itself, should one ever reach the worker.
+        self.assertIsNone(script_worker._last_action_snapshot(("/api/click", failure)))
+        self.assertIsNotNone(script_worker._last_action_snapshot(("/api/click", DELTA)))
+        # A script that failed after its last action reports the error only.
+        result = await script_runner.run_python("tab.click('e6')\n1 / 0", Client({"/api/click": DELTA}), tab_id=7)
+        self.assertEqual(result["code"], "script_error")
+        self.assertNotIn("result", result)
+
+    async def test_returned_snapshot_shares_the_output_limit_with_a_selected_result(self):
+        # Bridge snapshots are capped at 4,000 characters; the limit holds for any reply.
+        for size, succeeds in ((15000, True), (16000, False)):
+            with self.subTest(size=size):
+                client = Client({"/api/click": {**DELTA, "snapshot": "x" * size}})
+                result = await script_runner.run_python("tab.fill('e2', 'Ada')\ntab.click('e6')", client, tab_id=7)
+                self.assertEqual(result["ok"], succeeds, result)
+                self.assertEqual([entry["status"] for entry in result["operations"]], ["ok", "ok"])
+                if succeeds:
+                    self.assertEqual(len(result["result"]["snapshot"]), size)
+                else:
+                    self.assertEqual(result["code"], "script_output_limit")
+                    self.assertNotIn("result", result)
+                    self.assertIn("do not replay", result["hint"])
+
+    def test_snapshot_action_routes_are_the_extensions_post_snapshot_actions(self):
+        # The extension decides which actions return a snapshot; the worker lists their routes.
+        source = (ROOT / "extension" / "background" / "background.js").read_text(encoding="utf-8")
+        declared = re.search(r"const POST_SNAPSHOT_ACTIONS = new Map\(\[(.*?)\]\);", source, re.S).group(1)
+        routes = {"click": "/api/click", "type": "/api/type", "fill": "/api/fill", "selectOption": "/api/select-option",
+                  "checkBox": "/api/check", "keypress": "/api/keypress", "submitForm": "/api/submit-form",
+                  "navigate": "/api/navigate", "hover": "/api/hover"}
+        self.assertEqual({routes[action] for action in re.findall(r"\['(\w+)',", declared)},
+                         script_worker.SNAPSHOT_ACTION_ROUTES)
 
     async def test_operation_limit_stops_before_the_extra_call(self):
         client = Client({"/api/tabs": {"tabs": []}})

@@ -6,7 +6,7 @@ import sys
 import unittest
 
 PROBE = '''
-import asyncio, json
+import asyncio, json, re
 from unittest.mock import patch
 from mcp.shared.memory import create_connected_server_and_client_session
 from kitsune import server
@@ -16,6 +16,9 @@ def request(method, route, **kwargs):
         return {"tabs": [{"id": 7}]}
     if route == "/api/snapshot":
         return {"snapshot": '- heading "Example"'}
+    if route == "/api/click" and kwargs["json"].get("ref") == "e15":
+        return {"ok": True, "tag": "button", "target_ref": "e15", "snapshot_delta": True,
+                "snapshot": '- text "Saved Ada"'}
     if route == "/api/click":
         return {"error": "Write needs user help", "code": "needs_user", "call": 1,
                 "state": {"reason": "user_active", "tabId": 7}}
@@ -38,6 +41,9 @@ async def main():
                 snapshots = await session.call_tool("browser_run_python", {
                     "code": 'result = [browser.tab(t["id"]).snapshot() for t in browser.tabs()]'})
                 result["snapshots"] = json.loads(snapshots.content[0].text)
+                example = re.search(r"Example: (.+)\\.\\n", tool.description).group(1)
+                ran = await session.call_tool("browser_run_python", {"code": "tab = browser.tab(7)\\n" + example})
+                result.update(example=example, example_result=json.loads(ran.content[0].text))
                 failed = await session.call_tool("browser_run_python", {"code": "browser.tab(7).click('#send')"})
                 invalid = await session.call_tool("browser_run_python", {"code": "pass", "timeout": 0})
                 described = await session.call_tool("browser_tools_call", {"name": "browser_click"})
@@ -142,6 +148,19 @@ class ScriptMcpTests(unittest.TestCase):
         self.assertTrue(result["snapshots"]["ok"], result["snapshots"])
         self.assertEqual(result["snapshots"]["result"], ['- heading "Example"'])
         self.assertEqual(result["ok"]["result"], [{"id": 7}], "tabs() must keep returning JSON-compatible dicts")
+
+    def test_python_guide_example_returns_what_the_action_changed_not_a_page_read(self):
+        # #575: agents copied an example that ended in a whole-page read after every action.
+        result = self.probe(True)
+        self.assertEqual(result["example"], "tab.fill('e12', 'Ada'); r = tab.click('e15'); result = r['snapshot']")
+        self.assertTrue(result["example_result"]["ok"], result["example_result"])
+        self.assertEqual(result["example_result"]["result"], '- text "Saved Ada"')
+        self.assertEqual([entry["route"] for entry in result["example_result"]["operations"]],
+                         ["/api/fill", "/api/click"])
+        description = " ".join(result["description"].split())
+        for guidance in ("return what changed, with refs, in r['snapshot']", "the new page after a navigation",
+                         "prints nothing and sets no result returns its last action's snapshot"):
+            self.assertIn(guidance, description)
 
     def test_mcp_reports_results_errors_and_never_checkpoints_the_whole_script(self):
         result = self.probe(True)
