@@ -900,7 +900,12 @@ class Tab:
 
     def check(self, target: str, checked: bool = True, *, wait: bool = False, timeout: int = 10000,
               expect: dict | None = None, first: bool = False, confirm: str | None = None) -> dict:
-        """Set a checkbox or radio button's checked state."""
+        """Set a checkbox or radio button's checked state.
+
+        A native input's property is set. An element with role checkbox, switch or radio is
+        clicked once when its aria-checked differs, which must then be the requested state
+        (value_not_reached); any other element raises wrong_element_type.
+        """
         return self._action("/api/check", {**_action_target(target), "checked": checked}, wait=wait,
                             timeout=timeout, expect=expect, first=first, confirm=confirm)
 

@@ -57,6 +57,10 @@ A checked call shows a card in the toolbar popup (and the client's prompt, with 
 The check also applies inside `browser_run_python` scripts and batch or workflow steps. Your own
 Python API scripts are not asked.
 
+Each tool is asked for by its own name. `browser_check` (`tab.check` in a script) clicks custom
+checkboxes, switches and radios (elements with those ARIA roles), so checking only
+`browser_click` does not cover those clicks: check `browser_check` as well.
+
 ## Ask-before-act
 
 An opt-in policy that holds form submits, submit/payment-like buttons ("Place order", "결제하기"),

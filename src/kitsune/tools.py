@@ -1341,6 +1341,7 @@ def browser_check(
                     "unless true; true acts on the first match.")] = False,
 ) -> dict:
     """Set a checkbox or radio's checked state; with wait, hidden native inputs need not render.
+    An element with role checkbox, switch or radio is clicked once when its aria-checked differs.
     ok=true only means dispatched: verify with expect; tabs the action opens come back in
     opened_tabs.
 

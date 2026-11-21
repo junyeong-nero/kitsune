@@ -193,7 +193,7 @@ report `matches` ([Strict selectors](api-reference.md#strict-selectors)).
 | `fill_form(fields)` | Fill several fields keyed by selector, name, label or placeholder |
 | `press(key, target=None, modifiers=None, text=None)` | Key press, e.g. `"Enter"` with `{"ctrl": True}` |
 | `select_option(target, value, by_text=False)` | Choose an `<option>` |
-| `check(target, checked=True)`, `uncheck(target)` | Checkbox or radio |
+| `check(target, checked=True)`, `uncheck(target)` | Checkbox or radio; an element with role `checkbox`, `switch` or `radio` is clicked once when `aria-checked` differs ([details](api-reference.md#post-apicheck)) |
 | `scroll(direction="down", amount=500, target=None)` | Scroll |
 | `submit_form(target=None)` | Submit a form |
 | `handle_dialogs(accept=True, prompt_text=None)` | Answer future dialogs |

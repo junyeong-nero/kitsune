@@ -2291,7 +2291,9 @@ async def _held_reason(action, params):
     if action in _ASK_TAB_ACTIONS:
         submit_key = action == "keypress" and params.get("key") in {"Enter", "Return"}
         screen = action == "trustedClick" and (params.get("coordinateSpace") or params.get("space")) == "screen"
-        inspect = (action in _ASK_CLICK_ACTIONS or submit_key) and not screen
+        # A check clicks an element with role checkbox, switch or radio (#574), so its target is
+        # inspected like a click's.
+        inspect = (action in _ASK_CLICK_ACTIONS or submit_key or action == "checkBox") and not screen
         described = await _describe_target(action, params, inspect)
         if isinstance(described, dict) and described.get("code") == "ambiguous_target":
             return described
