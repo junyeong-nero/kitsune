@@ -40,8 +40,14 @@ class BrowserDiagnosticsTests(unittest.TestCase):
         self.addCleanup(platform.stop)
 
     def run_diagnosis(self, runtime=RUNTIME, contents="Contents.bak", sockets=SOCKETS, after=None):
-        files = f"p20\nftxt\nn{self.bundle}/{contents}/MacOS/zen\nn{self.bundle}/{contents}/MacOS/lib.dylib\n"
-        with patch.object(diag, "_lsof", side_effect=[sockets, files, sockets if after is None else after]) as probe:
+        # lsof emits POSIX paths even when this macOS fixture runs on Windows.
+        bundle = "/Applications/A private browser.app"
+        files = f"p20\nftxt\nn{bundle}/{contents}/MacOS/zen\nn{bundle}/{contents}/MacOS/lib.dylib\n"
+        def fixture_path(root, *parts):
+            return Path(self.bundle if root == bundle else root, *parts)
+        with patch.object(diag, "Path", side_effect=fixture_path), patch.object(
+            diag, "_lsof", side_effect=[sockets, files, sockets if after is None else after]
+        ) as probe:
             result = diag.diagnose(runtime, LOCAL, REMOTE)
         return result, probe
 

@@ -388,7 +388,7 @@ class FailureArtifacts:
         sample = {"t": now_ms(), "label": label, "cpuCount": os.cpu_count()}
         try:
             sample["loadAverage"] = list(os.getloadavg())
-        except OSError as error:
+        except (OSError, AttributeError) as error:
             sample["loadAverageError"] = str(error)
         try:
             sample["processes"] = self.owned_processes()

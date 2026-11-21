@@ -34,7 +34,10 @@ class DistributionTests(unittest.TestCase):
 
     def test_kitsune_browser_needs_no_mcp(self):
         names = {dependency.split("[")[0].split(">")[0].split("=")[0].split("<")[0] for dependency in self.core["dependencies"]}
-        self.assertEqual(names, {"httpx", "pydantic", "websockets"}, "pydantic: kitsune.tools' parameter descriptions")
+        self.assertEqual(names, {"httpx", "pydantic", "websockets", "psutil", "pywin32"})
+        windows = [item for item in self.core["dependencies"] if "sys_platform" in item]
+        self.assertEqual({item.split(">")[0] for item in windows}, {"psutil", "pywin32"})
+        self.assertTrue(all("sys_platform == 'win32'" in item for item in windows))
         self.assertEqual(self.core["optional-dependencies"]["mcp"], ["mcp[cli]>=1.2.0,<2"])
         self.assertEqual(self.core_toml["tool"]["uv"]["workspace"]["members"], ["packages/kitsune-browser-mcp"])
 

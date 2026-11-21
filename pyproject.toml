@@ -28,6 +28,8 @@ dependencies = [
     "httpx>=0.27.0",
     "pydantic>=2.7,<3",  # the agent tools' parameter descriptions (kitsune.tools)
     "websockets>=14.2",
+    "psutil>=7.2; sys_platform == 'win32'",  # PID-reuse-safe Windows bridge shutdown
+    "pywin32>=308; sys_platform == 'win32'",  # private bridge data/token ACLs
 ]
 
 [project.optional-dependencies]
