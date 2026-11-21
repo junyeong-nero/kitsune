@@ -10,9 +10,10 @@ from mcp.client.stdio import stdio_client
 import real_browser_harness as harness
 from test_real_browser_python_api import _Site
 
-# #570: the visible text and the snapshot of this page are each over the 16 KB output limit.
+# #570: the visible text and the snapshot of this page are each over the 16 KB output limit. The
+# buttons are leaf children of one parent, which a snapshot lists in full, not as "more similar items".
 LONG_PAGE = ('<!doctype html><meta charset="utf-8"><title>Long page</title><input id="draft">'
-             + "".join(f'<p><button>배송과 반품 정책 안내 항목 {i}</button> {"참고 자료입니다. " * 10}</p>' for i in range(400)))
+             + "".join(f'<button>배송과 반품 정책 안내 항목 {i}</button> {"참고 자료입니다. " * 10}' for i in range(400)))
 
 
 class _LongSite(BaseHTTPRequestHandler):
