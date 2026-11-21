@@ -6,9 +6,14 @@ returns true. No one answers a native dialog in an agent's background tab, so be
 click waited on it until it timed out. An agent tab now dismisses a dialog no policy answers and
 the action's result reports it; a user tab still shows it, recorded as pending while it is open,
 and a command that waits on it fails with dialog_open instead of timing out.
+
+#569: the same for a confirm() in a form's onsubmit, which the click's default submit runs. A
+confirm the policy accepts submits the form, and the document that recorded it unloads; the
+click's result still reports it.
 """
 from http.server import BaseHTTPRequestHandler
 import json
+import re
 import threading
 import time
 import unittest
@@ -21,6 +26,9 @@ CONFIRM_PAGE = """<!doctype html><meta charset="utf-8"><title>projects</title>
 <form method="post" action="/archive"><input type="hidden" name="project" value="beta"></form>
 <button id="archive" onclick="if (confirm('Archive project beta?')) document.forms[0].submit()">Archive beta</button>
 <button id="notice" onclick="alert('Saved'); document.title = 'after alert'">Save</button>"""
+ONSUBMIT_PAGE = """<!doctype html><meta charset="utf-8"><title>jobs</title>
+<form method="post" action="/delete" onsubmit="return confirm('Delete this job offer?');">
+<input type="hidden" name="job" value="59"><button type="submit">Delete</button></form>"""
 # A command that waits on an open dialog fails within the poll interval, far below the bridge timeout.
 DIALOG_SECONDS = 5
 
@@ -34,7 +42,7 @@ class _Site:
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
                 path = self.path.split("?")[0]
-                self.reply(CONFIRM_PAGE if path == "/confirm" else "<title>other</title>")
+                self.reply({"/confirm": CONFIRM_PAGE, "/onsubmit": ONSUBMIT_PAGE}.get(path, "<title>other</title>"))
 
             def do_POST(self):
                 self.rfile.read(int(self.headers.get("Content-Length") or 0))
@@ -71,6 +79,10 @@ class RealBrowserDialogTests(harness.RealBrowserTestCase):
         cls.addClassCleanup(cls.site.server.stop)
         super().setUpClass()
 
+    def setUp(self):
+        # A failed test's submission is not the next test's.
+        self.site.take_posts(settle=0)
+
     def parent(self, script, *args):
         debugger = harness.RemoteDebugger(self.browser.rdp_port)
         try:
@@ -98,8 +110,50 @@ class RealBrowserDialogTests(harness.RealBrowserTestCase):
         self.assert_ok(self.call("/api/handle-dialog", {"tabId": tab, "accept": True}))
         result = self.assert_ok(self.call("/api/click", {"tabId": tab, "selector": "#archive"}))
         self.assertEqual(result["navigated"]["title"], "archived", result)
+        # The document that recorded the accepted confirm is gone; the click still reports it (#569).
+        self.assertEqual(result["dialogs"], [{"type": "confirm", "message": "Archive project beta?",
+                                              "response": True}])
         self.assertNotIn("dialog_hint", result)
         self.assertEqual(self.site.take_posts(), ["/archive"])
+
+    def test_agent_tab_dismisses_and_reports_an_onsubmit_confirm(self):
+        tab = self.open_tab(self.site.origin + "/onsubmit")
+        result, seconds = self.timed_call("/api/click", {"tabId": tab, "selector": "form button"})
+        self.assert_ok(result)
+        self.assertLess(seconds, DIALOG_SECONDS, result)
+        self.assertEqual(result["dialogs"], [{"type": "confirm", "message": "Delete this job offer?",
+                                              "response": False, "auto_dismissed": True}])
+        self.assertIn("browser_handle_dialog(accept=true)", result["dialog_hint"])
+        self.assertEqual(self.site.take_posts(), [])
+        # The page is not left blocked for the next command.
+        shot, seconds = self.timed_call("/api/screenshot", {"tabId": tab})
+        self.assertNotIn("error", shot)
+        self.assertLess(seconds, DIALOG_SECONDS, shot.get("error"))
+
+        # Accepted after the dismissed click: the repeat submits once and reports the confirm it answered.
+        self.assert_ok(self.call("/api/handle-dialog", {"tabId": tab, "accept": True}))
+        result, seconds = self.timed_call("/api/click", {"tabId": tab, "selector": "form button"})
+        self.assert_ok(result)
+        self.assertLess(seconds, DIALOG_SECONDS, result)
+        self.assertEqual(result["navigated"]["title"], "archived", result)
+        self.assertEqual(result["dialogs"], [{"type": "confirm", "message": "Delete this job offer?",
+                                              "response": True}])
+        self.assertNotIn("dialog_hint", result)
+        self.assertEqual(self.site.take_posts(), ["/delete"])
+
+    def test_agent_tab_accepts_an_onsubmit_confirm_by_policy_set_first(self):
+        tab = self.open_tab(self.site.origin + "/onsubmit")
+        self.assert_ok(self.call("/api/handle-dialog", {"tabId": tab, "accept": True}))
+        snapshot = self.call("/api/snapshot", {"tabId": tab})["snapshot"]
+        ref = re.search(r'button "Delete" \[ref=(\w+)\]', snapshot).group(1)
+        result, seconds = self.timed_call("/api/click", {"tabId": tab, "ref": ref})
+        self.assert_ok(result)
+        self.assertLess(seconds, DIALOG_SECONDS, result)
+        self.assertEqual(result["navigated"]["title"], "archived", result)
+        self.assertEqual(result["dialogs"], [{"type": "confirm", "message": "Delete this job offer?",
+                                              "response": True}])
+        self.assertNotIn("dialog_hint", result)
+        self.assertEqual(self.site.take_posts(), ["/delete"])
 
     def test_agent_tab_alert_returns_at_once(self):
         tab = self.open_tab(self.site.origin + "/confirm")

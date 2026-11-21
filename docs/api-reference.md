@@ -1111,9 +1111,12 @@ confirm or prompt the result adds
 
 A native dialog blocks its page until someone answers it. A command that has waited more than
 1 s on a tab with an open native dialog fails with `dialog_open` instead of timing out. Kitsune
-cannot answer it: ask the user to, then check the page before repeating anything. Dialogs of
-a document the action left (an accepted confirm that submits a form) are not reported; the
-result's `navigated` describes the new page.
+cannot answer it: ask the user to, then check the page before repeating anything.
+
+An action that leaves its document (an accepted confirm that submits a form) still reports the
+dialogs that document recorded before the action returned (#569), next to `navigated`, which
+describes the new page. A dialog the old document opens later, while it unloads, is not
+reported.
 
 ### Opened popups
 

@@ -486,6 +486,16 @@
     return { ...result, visibilityState: 'hidden' };
   }
 
+  // A page action's reply lists the dialogs this document recorded since the action began (#569):
+  // a document the action unloads (a form whose confirm() was accepted) cannot be asked for them
+  // afterwards. The top frame only, as dialogsSince is asked.
+  function withActionDialogs(since, result) {
+    if (typeof since !== 'number' || window !== window.top || !result || typeof result !== 'object' ||
+        Array.isArray(result)) return result;
+    const { dialogs } = dialogsSince(since);
+    return dialogs.length ? { ...result, actionDialogs: dialogs } : result;
+  }
+
   browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const handlers = {
       // A frame's ping names its document (origin and path) for ask-before-act (#343).
@@ -596,7 +606,7 @@
       return false;
     }
 
-    const respond = result => sendResponse(withVisibility(msg.action, result));
+    const respond = result => sendResponse(withActionDialogs(msg.dialogsSince, withVisibility(msg.action, result)));
     try {
       if (['click', 'type', 'fill', 'selectOption', 'checkBox', 'keypress', 'submitForm'].includes(msg.action)) {
         lastActedElement = null;
