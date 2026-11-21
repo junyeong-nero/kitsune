@@ -108,6 +108,13 @@ class RealBrowserScriptTests(harness.RealBrowserTestCase):
             self.assertEqual(opened["last_action"], "/api/navigate")
             self.assertIn('heading "Orders"', opened["snapshot"])
             self.assertNotIn("snapshot_delta", opened)
+
+            # submit_form's snapshot is taken before its navigation: it is not returned as what changed.
+            submitted = await python("tab.fill('#name', 'Bo'); tab.submit_form('#order')")
+            self.assertNotIn("result", submitted)
+            self.assertEqual([entry["route"] for entry in submitted["operations"]], ["/api/fill", "/api/submit-form"])
+            done = await python("tab.wait_for(title='Done'); result = tab.info()['url']")
+            self.assertIn("name=Bo", done["result"])
         self.run_scenario(run)
 
     def test_direct_and_scripted_draft_share_the_tab_and_refuse_foreign_writes(self):

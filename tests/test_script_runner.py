@@ -237,7 +237,6 @@ class ScriptRunnerTests(unittest.IsolatedAsyncioTestCase):
              {**page, "navigated": {"url": "https://shop.example/cart", "title": "Cart"}},
              {"snapshot": page["snapshot"], "navigated": {"url": "https://shop.example/cart", "title": "Cart"}}),
             ("tab.navigate('https://shop.example/cart')", "/api/navigate", page, {"snapshot": page["snapshot"]}),
-            ("tab.submit_form('#order')", "/api/submit-form", page, {"snapshot": page["snapshot"]}),
         ]
         for code, route, reply, expected in cases:
             with self.subTest(code=code):
@@ -273,6 +272,33 @@ class ScriptRunnerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("result", result)
                 self.assertEqual(result["output"], "")
 
+    async def test_snapshot_taken_before_the_page_settled_is_not_returned(self):
+        # It may show the page as it was before the action, which reads as "nothing happened" and
+        # invites doing the action again.
+        form = {"ok": True, "submitted": True, "target_ref": "e1",
+                "snapshot": '- form "" [ref=e1]\n  - textbox "Name" [ref=e2] [value="Ada"]'}
+        navigated = {"url": "https://shop.example/cart", "title": ""}
+        for code, route, reply in [
+                # submit_form's snapshot is of the page that held the form: taken straight after
+                # dispatch, before the submit's navigation.
+                ("tab.submit_form('#order')", "/api/submit-form", form),
+                ("tab.submit_form('#order')", "/api/submit-form", {**form, "snapshot_delta": True}),
+                # A full snapshot on request (KITSUNE_POST_ACTION_SNAPSHOT=full) has no settle wait either.
+                ("tab.click('e6')", "/api/click", {**DELTA, "snapshot_delta": False}),
+                ("tab.fill('e2', 'Ada')", "/api/fill", {key: DELTA[key] for key in ("ok", "snapshot")}),
+                # The page the click started loading had not finished when the snapshot was taken.
+                ("tab.click('e6')", "/api/click",
+                 {"ok": True, "snapshot": form["snapshot"], "navigated": navigated, "navigation_pending": True})]:
+            with self.subTest(code=code, reply=reply):
+                client = Client({route: reply})
+                result = await script_runner.run_python(code, client, tab_id=7)
+                self.assertTrue(result["ok"], result)
+                self.assertNotIn("result", result)
+                self.assertEqual([entry["status"] for entry in result["operations"]], ["ok"])
+                # The action's own return value is untouched for a script that asks for it.
+                asked = await script_runner.run_python(f"result = {code}['snapshot']", client, tab_id=7)
+                self.assertEqual(asked["result"], reply["snapshot"])
+
     async def test_failed_last_action_keeps_its_failure_and_returns_no_snapshot(self):
         failure = {"ok": False, "error": "Expected outcome was not observed", "code": "outcome_not_observed",
                    "retryable": False, "snapshot": DELTA["snapshot"], "snapshot_delta": True}
@@ -305,14 +331,20 @@ class ScriptRunnerTests(unittest.IsolatedAsyncioTestCase):
                     self.assertNotIn("result", result)
                     self.assertIn("do not replay", result["hint"])
 
-    def test_snapshot_action_routes_are_the_extensions_post_snapshot_actions(self):
+    def test_snapshot_action_routes_are_the_extensions_post_snapshot_actions_that_settle_first(self):
         # The extension decides which actions return a snapshot; the worker lists their routes.
         source = (ROOT / "extension" / "background" / "background.js").read_text(encoding="utf-8")
         declared = re.search(r"const POST_SNAPSHOT_ACTIONS = new Map\(\[(.*?)\]\);", source, re.S).group(1)
         routes = {"click": "/api/click", "type": "/api/type", "fill": "/api/fill", "selectOption": "/api/select-option",
                   "checkBox": "/api/check", "keypress": "/api/keypress", "submitForm": "/api/submit-form",
                   "navigate": "/api/navigate", "hover": "/api/hover"}
-        self.assertEqual({routes[action] for action in re.findall(r"\['(\w+)',", declared)},
+        # Only an action with a delta snapshot gets the settle and navigation watch (runCommand).
+        # Of the two without one, navigate waits for its own load; submitForm waits for nothing,
+        # so its route is left out. An action added to either set needs the same check.
+        self.assertIn("const settles = options.deltaSnapshot &&", source)
+        unwatched = re.search(r"const FULL_SNAPSHOT_ACTIONS = new Set\(\[(.*?)\]\);", source).group(1)
+        self.assertEqual(set(re.findall(r"'(\w+)'", unwatched)), {"submitForm", "navigate"})
+        self.assertEqual({routes[action] for action in re.findall(r"\['(\w+)',", declared)} - {"/api/submit-form"},
                          script_worker.SNAPSHOT_ACTION_ROUTES)
 
     async def test_operation_limit_stops_before_the_extra_call(self):

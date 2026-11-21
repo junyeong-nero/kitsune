@@ -12,12 +12,14 @@ from .errors import failed
 
 _INPUT = sys.stdin
 _OUTPUT = sys.stdout
-# Routes of the actions whose successful reply carries the post-action snapshot (the extension's
-# POST_SNAPSHOT_ACTIONS): a delta of what the action changed, or the page it loaded. Reads and
-# waits are not listed, though /api/snapshot replies have a snapshot key too.
+# Routes of the actions whose post-action snapshot (the extension's POST_SNAPSHOT_ACTIONS) is taken
+# once the page settled: a delta of what the action changed, or the page it loaded. Reads and
+# waits are not listed, though /api/snapshot replies have a snapshot key too. Nor is
+# /api/submit-form: its snapshot is taken straight after dispatch, before the submit's navigation,
+# so it shows the page that held the form and would read as "not submitted".
 SNAPSHOT_ACTION_ROUTES = frozenset({
     "/api/click", "/api/type", "/api/fill", "/api/select-option", "/api/check", "/api/keypress",
-    "/api/submit-form", "/api/navigate", "/api/hover"})
+    "/api/navigate", "/api/hover"})
 # The snapshot and the fields that say what it is: a delta or a full page, cut or whole.
 _SNAPSHOT_FIELDS = ("snapshot", "snapshot_delta", "no_visible_change", "snapshot_truncated", "snapshot_hint",
                     "navigated")
@@ -45,11 +47,18 @@ def _last_action_snapshot(last):
     last browser operation returned, when that was a successful action (SNAPSHOT_ACTION_ROUTES),
     under last_action, its route. Agents ran such scripts and then read the whole page to see what
     changed. Nothing is read for it: these are the reply's own fields, so the snapshot keeps its
-    cap and redaction. None after a read, a wait or an action without a snapshot.
+    cap and redaction. None after a read, a wait or an action without a snapshot, and when the
+    reply does not show that the page settled first.
     """
     route, reply = last or (None, None)
     if (route not in SNAPSHOT_ACTION_ROUTES or not isinstance(reply, dict) or failed(reply)
             or not isinstance(reply.get("snapshot"), str)):
+        return None
+    # navigate waits for its load. The others settle only on the delta path, which marks its
+    # snapshot a delta or the page a navigation loaded; a full snapshot on request
+    # (KITSUNE_POST_ACTION_SNAPSHOT=full) or of a page still loading may show the page as it was.
+    if route != "/api/navigate" and reply.get("snapshot_delta") is not True and (
+            "navigated" not in reply or reply.get("navigation_pending")):
         return None
     return {"last_action": route, **{field: reply[field] for field in _SNAPSHOT_FIELDS if field in reply}}
 

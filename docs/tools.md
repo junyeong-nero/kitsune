@@ -26,13 +26,14 @@ network access ([Python scripting](python-api.md#python-scripting-through-mcp)).
 `browser` and the MCP-selected `tab`:
 
 ```python
-tab.hover("#menu")
-result = tab.snapshot(text=True)
+result = tab.hover("#menu")["snapshot"]   # what the hover changed, with refs
 ```
 
 Group only actions whose targets are already known, and return the observation the next
-decision needs. `help(tab.hover)` prints one method's signature. `browser.tabs()` returns
-dicts; wrap one with `browser.tab(t["id"])`.
+decision needs. An action returns what it changed under `snapshot`, and a script that prints
+nothing and sets no `result` returns its last action's snapshot
+([details](python-api.md#python-scripting-through-mcp)). `help(tab.hover)` prints one method's
+signature. `browser.tabs()` returns dicts; wrap one with `browser.tab(t["id"])`.
 
 Approvals and user-tab protection apply to script requests as to direct calls. A tool that
 needs approval is asked about mid-script. Other approval stops end the script without
