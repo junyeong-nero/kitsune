@@ -404,6 +404,18 @@ class SensitiveActionTests(AskBeforeActTestCase):
         self.assertEqual(self.extension.actions(), ["click", "click"])
         self.assertEqual(bridge._unknown_outcomes, {})
 
+    def test_wrong_element_and_missing_option_writes_are_not_held(self):
+        # #574: these dispatched nothing, as before they had a code.
+        for action, body, code in (
+                ("checkBox", {"selector": "#agree", "checked": True, "tabId": 7}, "wrong_element_type"),
+                ("selectOption", {"selector": "#sort", "value": "price_asc", "tabId": 7}, "no_such_option")):
+            with self.subTest(code=code):
+                self.extension.reply = {"error": "refused", "code": code, "retryable": False}
+                for _ in range(2):
+                    self.assertEqual(self.forward(action, body)[1]["code"], code)
+                self.assertEqual(bridge._unknown_outcomes, {})
+        self.assertEqual(self.extension.actions(), ["checkBox", "checkBox", "selectOption", "selectOption"])
+
     def test_unsupported_selector_write_is_not_held(self):
         # #219: an unparseable selector dispatched nothing, so its outcome is not unknown.
         self.extension.reply = {"error": "Unsupported selector: the :near() pseudo-class",

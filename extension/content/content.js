@@ -4980,13 +4980,37 @@
     el.dispatchEvent(new Event('input', { bubbles: true }));
   }
 
+  // The <select> has no such option (#574): nothing was dispatched, and the same command cannot
+  // succeed. state.options lists the first few, so the caller need not read them from the page;
+  // a sensitive select lists none. how: what value was matched against.
+  const SELECT_OPTION_LIMIT = 20;
+  function noSuchOption(el, value, how) {
+    const options = Array.from(el.options);
+    const wanted = String(value).trim();
+    const sensitive = isSensitiveField(el);
+    let hint = 'Nothing was selected. Pass ' + (how === 'text' ? 'a text' : 'a value') + ' from state.options' +
+      (options.length > SELECT_OPTION_LIMIT ? `, the first ${SELECT_OPTION_LIMIT} of ${options.length} options.` : '.');
+    if (sensitive) hint = 'Nothing was selected. Its options are not listed because the field is sensitive.';
+    else if (how === 'value' && options.some(opt => opt.text.trim() === wanted)) {
+      hint = 'Nothing was selected. This is an option\'s text, not its value: pass by_text=True (byText), ' +
+        'or its value from state.options.';
+    } else if (how === 'text' && options.some(opt => opt.value === wanted)) {
+      hint = 'Nothing was selected. This is an option\'s value, not its text: select it without by_text, ' +
+        'or pass its text from state.options.';
+    }
+    return { ...actionError(`No matching option for ${how}: ${value}`, 'no_such_option', hint,
+      { total: options.length, ...(sensitive ? { redacted: true } : { options: options.slice(0, SELECT_OPTION_LIMIT)
+        .map(opt => ({ value: String(opt.value).slice(0, 80), text: opt.text.trim().slice(0, 80) })) }) }),
+      retryable: false };
+  }
+
   // Several values (browser_select_option): each matches an option's value, else its text.
   function selectOptions(el, values) {
     if (values.length > 1 && !el.multiple) return { error: 'This <select> takes one value; got ' + values.length };
     const matched = [];
     for (const value of values) {
       const opt = findSelectOption(el, value, false) || findSelectOption(el, value, true);
-      if (!opt) return { error: `No matching option for value or text: ${value}` };
+      if (!opt) return noSuchOption(el, value, 'value or text');
       matched.push(opt);
     }
     lastActedElement = lastFilledField = el;
@@ -5006,7 +5030,7 @@
     if (el.tagName !== 'SELECT') return { error: 'Element is not a <select>' };
     if (Array.isArray(values)) return selectOptions(el, values);
     const matched = findSelectOption(el, value, byText);
-    if (!matched) return { error: `No matching option for ${byText ? 'text' : 'value'}: ${value}` };
+    if (!matched) return noSuchOption(el, value, byText ? 'text' : 'value');
     lastActedElement = lastFilledField = el;
     applySelectOption(el, matched);
     return { ok: true, value: el.value, text: matched.text };
@@ -5015,7 +5039,14 @@
   function checkBox(selector, checked, first) {
     const el = resolveTarget(selector, null, { first });
     if (!el) return notFound();
-    if (el.type !== 'checkbox' && el.type !== 'radio') return { error: 'Element is not a checkbox/radio' };
+    if (el.type !== 'checkbox' && el.type !== 'radio') {
+      // Nothing was dispatched, and the same command cannot succeed on this element.
+      const shown = el.getAttribute?.('role') || inferRole(el);
+      return { ...actionError('Element is not a checkbox/radio', 'wrong_element_type',
+        'check sets a native checkbox or radio. Nothing was dispatched: click this element instead ' +
+        '(browser_click) and read its state from the result.',
+        { tag: el.tagName.toLowerCase(), ...(shown ? { role: shown } : {}) }), retryable: false };
+    }
     lastActedElement = lastFilledField = el;
     el.checked = !!checked;
     el.dispatchEvent(new Event('input', { bubbles: true }));

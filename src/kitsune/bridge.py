@@ -1755,10 +1755,13 @@ _REPEAT_UNSAFE_ACTIONS = WRITE_ACTIONS | {"uploadCommit", "focusElement", "blurE
 # to parse or validate before anything was dispatched (unsupported_selector), until the user
 # approves closing their tab (needs_user; a v0.7.1 extension's user_tab), until the user grants a
 # browser permission (permission_required), until the container step names a batch action
-# (unknown_action), or until the navigation names a URL that parses (invalid_url).
+# (unknown_action), until the navigation names a URL that parses (invalid_url), or because the
+# target is not what the action sets (wrong_element_type) or its <select> has no such option
+# (no_such_option).
 _PERSISTENT_FAILURE_CODES = {"error_page", "ambiguous_target", "unsupported_selector", "needs_user", "user_tab",
                              "user_tab_read_only", "invalid_tab_id", "invalid_window_id", "window_unavailable",
-                             "invalid_coordinates", "permission_required", "unknown_action", "invalid_url"}
+                             "invalid_coordinates", "permission_required", "unknown_action", "invalid_url",
+                             "wrong_element_type", "no_such_option"}
 
 
 def _url_matches(pattern, url, flags=0):

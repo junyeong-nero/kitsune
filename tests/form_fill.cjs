@@ -134,6 +134,89 @@ async function testFormFill() {
   assert.deepEqual([small.checked, medium.checked], [false, true]);
 }
 
+// #574: a missing option is coded and lists the options there are; nothing is selected.
+async function testNoSuchOption() {
+  const sort = new SelectElement(['relevance', 'price_low', 'price_high']);
+  sort.options[1].text = '  Price: low to high ';
+  const many = new SelectElement(Array.from({ length: 25 }, (_, i) => `v${i}`));
+  const tags = Object.assign(new SelectElement(['a', 'b']), { multiple: true });
+  const secret = new SelectElement(['111', '222']);
+  secret.attrs.autocomplete = 'cc-csc';
+  const elements = { '#sort': sort, '#many': many, '#tags': tags, '#secret': secret };
+  let listener;
+  const context = vm.createContext({
+    console, crypto: webcrypto, Event, CSS: { escape: x => x },
+    HTMLInputElement: class {}, HTMLTextAreaElement: class {},
+    window: { getComputedStyle: () => ({ display: 'block', visibility: 'visible' }) },
+    document: { body: {}, querySelector: selector => elements[selector] || null, querySelectorAll: () => [] },
+    browser: { runtime: { onMessage: { addListener: fn => { listener = fn; } },
+      sendMessage: () => Promise.resolve(null) } },
+  });
+  vm.runInContext(fs.readFileSync('extension/content/content.js', 'utf8'), context);
+  const send = msg => new Promise(resolve => listener(msg, {}, result => resolve(JSON.parse(JSON.stringify(result)))));
+  const options = [{ value: 'relevance', text: 'Relevance' }, { value: 'price_low', text: 'Price: low to high' },
+    { value: 'price_high', text: 'Price_high' }];
+
+  const missing = await send({ action: 'selectOption', selector: '#sort', value: 'price_asc' });
+  assert.deepEqual(missing, { error: 'No matching option for value: price_asc', code: 'no_such_option',
+    retryable: false, hint: 'Nothing was selected. Pass a value from state.options.', state: { total: 3, options } });
+  assert.equal(sort.value, 'relevance', 'the selection is kept');
+  assert.deepEqual(sort.events, []);
+
+  // The value is an option's text (Playwright's label=), or the text an option's value.
+  const label = await send({ action: 'selectOption', selector: '#sort', value: 'Price: low to high' });
+  assert.equal(label.code, 'no_such_option');
+  assert.match(label.hint, /This is an option's text, not its value: pass by_text=True \(byText\)/);
+  const value = await send({ action: 'selectOption', selector: '#sort', value: 'price_low', byText: true });
+  assert.equal(value.error, 'No matching option for text: price_low');
+  assert.match(value.hint, /This is an option's value, not its text: select it without by_text/);
+  assert.deepEqual(value.state, missing.state);
+  const text = await send({ action: 'selectOption', selector: '#sort', value: 'Cheapest', byText: true });
+  assert.equal(text.hint, 'Nothing was selected. Pass a text from state.options.');
+
+  // The first 20 of a long list, with the total; browser_select_option's values path too.
+  const long = await send({ action: 'selectOption', selector: '#many', value: 'v99' });
+  assert.deepEqual([long.state.total, long.state.options.length, long.state.options[19].value], [25, 20, 'v19']);
+  assert.match(long.hint, /the first 20 of 25 options\.$/);
+  const several = await send({ action: 'selectOption', selector: '#tags', values: ['a', 'zz'] });
+  assert.deepEqual([several.error, several.code, several.retryable, several.state.total],
+    ['No matching option for value or text: zz', 'no_such_option', false, 2]);
+  assert.deepEqual(tags.events, [], 'no option of a multiple select changed');
+
+  // A sensitive field's options are not read out.
+  const hidden = await send({ action: 'selectOption', selector: '#secret', value: '999' });
+  assert.deepEqual([hidden.code, hidden.state], ['no_such_option', { total: 2, redacted: true }]);
+  assert.match(hidden.hint, /not listed because the field is sensitive/);
+
+  assert.equal((await send({ action: 'selectOption', selector: '#sort', value: 'price_low' })).ok, true);
+  assert.equal(sort.value, 'price_low');
+}
+
+// #574: check on an element it cannot set is coded and says what the element is.
+async function testCheckOnAnotherElement() {
+  const elements = { '#div': new Element('DIV'), '#link': new Element('A', { role: 'button' }),
+    '#text': Object.assign(new Element('INPUT'), { type: 'text' }) };
+  let listener;
+  const context = vm.createContext({
+    console, crypto: webcrypto, Event, CSS: { escape: x => x },
+    HTMLInputElement: class {}, HTMLTextAreaElement: class {},
+    window: { getComputedStyle: () => ({ display: 'block', visibility: 'visible' }) },
+    document: { body: {}, querySelector: selector => elements[selector] || null, querySelectorAll: () => [] },
+    browser: { runtime: { onMessage: { addListener: fn => { listener = fn; } },
+      sendMessage: () => Promise.resolve(null) } },
+  });
+  vm.runInContext(fs.readFileSync('extension/content/content.js', 'utf8'), context);
+  const send = msg => new Promise(resolve => listener(msg, {}, result => resolve(JSON.parse(JSON.stringify(result)))));
+  for (const [selector, state] of [['#div', { tag: 'div' }], ['#link', { tag: 'a', role: 'button' }],
+    ['#text', { tag: 'input', role: 'textbox' }]]) {
+    const result = await send({ action: 'checkBox', selector, checked: true });
+    assert.equal(result.error, 'Element is not a checkbox/radio', selector);
+    assert.deepEqual([result.code, result.retryable, result.state], ['wrong_element_type', false, state]);
+    assert.match(result.hint, /Nothing was dispatched: click this element instead \(browser_click\)/);
+    assert.deepEqual(elements[selector].events, []);
+  }
+}
+
 // #460: settleState tells the background whether the action keeps the settle floor.
 async function testSettleFloor() {
   const field = (attrs = {}) => Object.assign(new Element('INPUT', attrs), { type: 'text', value: '' });
@@ -294,5 +377,5 @@ async function testRestrictedFields() {
     'readonly does not apply to range inputs');
 }
 
-testFormFill().then(testSettleFloor).then(testLineBreaks).then(testRestrictedFields).then(() => console.log('Form fill checks passed'))
+testFormFill().then(testNoSuchOption).then(testCheckOnAnotherElement).then(testSettleFloor).then(testLineBreaks).then(testRestrictedFields).then(() => console.log('Form fill checks passed'))
   .catch(error => { console.error(error); process.exitCode = 1; });
