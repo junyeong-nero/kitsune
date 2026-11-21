@@ -38,8 +38,9 @@ class _Client:
         line = _INPUT.readline()
         if not line:
             raise RuntimeError("The script host disconnected")
-        self.last = (endpoint, json_module.loads(line))
-        return self.last[1]
+        reply = json_module.loads(line)
+        self.last = (endpoint, reply)
+        return reply
 
 
 def _last_action_snapshot(last):
