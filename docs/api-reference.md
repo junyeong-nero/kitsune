@@ -148,6 +148,7 @@ of them (`ref`, `role`, `name`) and `state.matches` counts them. Pass a candidat
 `ref`, a more specific selector, or `first: true` (`"first": true` on the bridge
 endpoint or batch command) to act on the first match as before. This is an
 intended behavior change: these actions used to act on the first match silently.
+`click` and `hover` take some equivalent matches as one target, as described below.
 
 - Write actions: `click`, `doubleClick`, `hover`, `drag` (both ends), `type`, `fill`,
   `setEditableContent`, `checkBox`, `selectOption`, `submitForm`, `keypress`,
@@ -179,6 +180,35 @@ intended behavior change: these actions used to act on the first match silently.
 - Under [ask-before-act](#ask-before-act), clicks (including trusted and navigation
   clicks) and Enter keypresses check ambiguity before offering confirmation.
   `first=True` is honored both during inspection and dispatch.
+- Inside `browser_run_python` the hint names the Python argument, `first=True`.
+
+`click` and `hover` (and `clickAndWaitNavigation`, which clicks) take several actionable
+matches as one target in two cases (#573). The result then adds `matches`, the number of
+actionable matches, and the reason. Every other action, double and trusted clicks included,
+stays strict on the same matches.
+
+- **Links to the same place** (`same_href: true`): every match is an `<a>` in one document
+  with the same resolved `href` and the same other attributes (`target`, `download`, `rel`,
+  `data-*`, …), apart from `id`, `class`, `style`, `title`, `tabindex` and `aria-*`. The
+  first match is used. A link with no `href`, an `href` starting with `#`, a `javascript:`
+  URL or an inline `on*` handler is never equivalent: such links are usually script buttons.
+- **One better `text=` match** (`preferred`): for a selector ending in `text=…`,
+  `internal:text=…` or a bare quoted string, the one match that is at least as good as every
+  other on both counts and better on one. `preferred` lists the counts that decided:
+  `exact_text` when its whole text is the wanted text, ignoring case, while another match
+  only contains it (`text="…"` matches whole text only, and regex text does not rank on this
+  count), and `interactive` when
+  it is, or is inside, a control (a link, button, field, an element with a control role,
+  `tabindex` or `onclick`, or an editor) while another match is not. Two matches that are
+  equally good, or each better on one count, stay ambiguous.
+
+```json
+{"ok": true, "tag": "a", "text": "Data Science Intern", "matches": 2, "same_href": true}
+{"ok": true, "tag": "a", "text": "View Student Schedule", "matches": 2, "preferred": ["exact_text", "interactive"]}
+```
+
+Under ask-before-act the inspection resolves a click's selector the same way, so the checks
+apply to the element the click acts on.
 
 These tools also accept refs (all new parameters are optional):
 

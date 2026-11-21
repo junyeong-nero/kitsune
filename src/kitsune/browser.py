@@ -522,8 +522,10 @@ class Tab:
 
     Targets are a snapshot ref (e12), CSS or a Playwright-style selector
     (docs/api-reference.md#target-selectors). A write's selector must match one element, else
-    it raises ambiguous_target; first=True acts on the first match. ok=True means an action
-    was dispatched; expect makes the bridge check its outcome (docs/api-reference.md#action-outcomes).
+    it raises ambiguous_target; first=True acts on the first match. click and hover take links
+    to one URL, or the one better text= match, as one target and report matches. ok=True means an
+    action was dispatched; expect makes the bridge check its outcome
+    (docs/api-reference.md#action-outcomes).
     confirm is the token of a ConfirmationRequired error, after the user approved the action.
     """
 
