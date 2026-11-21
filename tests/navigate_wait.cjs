@@ -17,7 +17,8 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
 
 // onNavigate(h, call) runs inside tabs.update/tabs.reload, before the API call resolves. page(),
 // when given, answers the content script's getPageInfo: [location.href, document.readyState], or
-// a promise that never settles for a page that does not answer.
+// a promise that never settles for a page that does not answer. documentStart(frameId) is the
+// first message of a new document's content script, from the top frame unless frameId says otherwise.
 function harness(startUrl, onNavigate = () => {}, page = null) {
   let now = 0, nextId = 0;
   const timers = new Map();
@@ -26,7 +27,7 @@ function harness(startUrl, onNavigate = () => {}, page = null) {
     timers.set(id, { fn, at: now + delay, interval, delay });
     return id;
   };
-  const onUpdated = event(), onRemoved = event();
+  const onUpdated = event(), onRemoved = event(), onMessage = event();
   let tab = { id: 7, url: startUrl, title: 'Start', status: 'complete', discarded: false };
   const calls = [];
   const h = {
@@ -40,6 +41,7 @@ function harness(startUrl, onNavigate = () => {}, page = null) {
       onUpdated.emit(7, changes, { ...tab });
     },
     silentUpdate: changes => { tab = { ...tab, ...changes }; },
+    documentStart: (frameId = 0) => onMessage.emit({ action: 'getDialogPolicy' }, { tab: { id: 7 }, frameId }),
     async tick(ms) {
       const end = now + ms;
       await flush();
@@ -83,7 +85,7 @@ function harness(startUrl, onNavigate = () => {}, page = null) {
       },
       executeScript: async () => { throw new Error('Unexpected content injection'); },
     },
-    runtime: { onMessage: event(), onStartup: event(), onInstalled: event() },
+    runtime: { onMessage, onStartup: event(), onInstalled: event() },
   };
   const context = vm.createContext({
     browser, URL, console: { log() {}, error() {} },
@@ -217,6 +219,51 @@ async function main() {
     warning: 'Title "Start" does not contain expected "Slow" — possible redirect', redirected: true,
   });
   stuck.assertClean();
+
+  // #561: an image-heavy page parses its DOM long before it finishes loading. At the deadline it
+  // is ok with load_pending, as its document started after the navigation and can be read.
+  let heavyPage = ['https://example.com/start', 'complete'];
+  const heavy = harness('https://example.com/start', h => h.update({ status: 'loading' }), () => heavyPage);
+  const heavyNav = start(heavy, { action: 'navigate', url: 'https://example.com/heavy' });
+  await heavy.tick(2000);
+  heavy.documentStart();
+  heavy.update({ url: 'https://example.com/heavy' });
+  heavyPage = ['https://example.com/heavy', 'interactive'];
+  await heavy.tick(12999);
+  assert.equal(heavyNav.settled, false, 'a parsed DOM does not end the load wait early');
+  await heavy.tick(1);
+  assert.equal(heavyNav.settled, true);
+  assert.deepEqual(await heavyNav.result, { ok: true, url: 'https://example.com/heavy', load_pending: true });
+  assert.equal(heavy.pageInfoRequests, 1, 'asked once, at the deadline');
+  heavy.assertClean();
+
+  // The document being navigated away from answers until the new one starts: its parsed DOM is
+  // not the destination's. A frame's content script starting in it is not a new document either.
+  for (const readyState of ['interactive', 'complete']) {
+    const old = harness('https://example.com/start', h => h.update({ status: 'loading' }),
+      () => ['https://example.com/start', readyState]);
+    const oldNav = start(old, { action: 'navigate', url: 'https://example.com/unanswered' });
+    await old.tick(2000);
+    old.documentStart(3);
+    await old.tick(13000);
+    assert.equal(oldNav.settled, true);
+    assert.deepEqual(await oldNav.result, { ok: false, timedOut: true, url: 'https://example.com/unanswered' });
+    assert.equal(old.pageInfoRequests, 0, 'the old document is not asked');
+    old.assertClean();
+  }
+
+  // A new document whose DOM is not parsed by the deadline (a blocking script, a stalled response
+  // body) cannot be read yet: still a timeout.
+  const parsing = harness('https://example.com/start', h => h.update({ status: 'loading' }),
+    () => ['https://example.com/blocked', 'loading']);
+  const parsingNav = start(parsing, { action: 'navigate', url: 'https://example.com/blocked' });
+  await parsing.tick(2000);
+  parsing.documentStart();
+  parsing.update({ url: 'https://example.com/blocked' });
+  await parsing.tick(13000);
+  assert.equal(parsingNav.settled, true);
+  assert.deepEqual(await parsingNav.result, { ok: false, timedOut: true, url: 'https://example.com/blocked' });
+  parsing.assertClean();
 
   const failing = harness('https://example.com/start', () => { throw new Error('Illegal URL'); });
   const failed = start(failing, { action: 'navigate', url: 'https://example.com/next' });

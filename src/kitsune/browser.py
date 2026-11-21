@@ -172,7 +172,8 @@ class Browser:
         """Open url in a background tab that the user does not see, which a client owns.
 
         wait=True waits up to timeout ms for the load; a load that does not finish raises
-        TimedOut and leaves the tab open, with its id in error.result["tabId"].
+        TimedOut and leaves the tab open, with its id in error.result["tabId"], unless the
+        page's DOM is parsed by then, so that it can be read and acted on.
         """
         body = _with_confirm({"url": url}, confirm)
         if not wait:

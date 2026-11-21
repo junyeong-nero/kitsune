@@ -29,6 +29,10 @@ const tabReloads = new Map();
 // The tab's last load as tabs events report it, { at, complete }: replaced when the tab reports
 // loading, complete once it reports complete after that (see wokenPageState).
 const tabLoads = new Map();
+// How many top documents started their content script in the tab, counted by its first message
+// (getDialogPolicy). A new document does so as it starts, so a change says that the tab shows
+// another document than before (#561).
+const tabDocuments = new Map();
 const notifyStatusWaiters = (tabId, closed = false) =>
   [...(mainFrameStatusWaiters.get(tabId) || [])].forEach(notify => notify(closed));
 browser.tabs.onRemoved.addListener(tabId => {
@@ -38,6 +42,7 @@ browser.tabs.onRemoved.addListener(tabId => {
   mainFrameStatus.delete(tabId);
   tabReloads.delete(tabId);
   tabLoads.delete(tabId);
+  tabDocuments.delete(tabId);
   frameUserInputs.delete(tabId);
   actionPages.delete(tabId);
   notifyStatusWaiters(tabId, true);
@@ -883,6 +888,7 @@ browser.runtime.onMessage.addListener((msg, sender) => {
   }
   if (msg.action === 'getDialogPolicy') {
     const tabId = sender.tab?.id;
+    if (tabId != null && sender.frameId === 0) tabDocuments.set(tabId, (tabDocuments.get(tabId) || 0) + 1);
     return agentTabsRestored.then(() => ({ policy: dialogPolicies.get(tabId) || null, agentTab: dialogAgentTab(tabId) }));
   }
   // A hidden tab's timers are throttled to 1 s, the background's are not (#351).
@@ -2037,12 +2043,12 @@ function urlWithoutFragment(url) {
   try { return new URL(url).href.split('#')[0]; } catch { return null; }
 }
 
-// The URL of the tab's top document once it has loaded, from its content script; null while it
-// loads, for an about: page, or when nothing answers within PAGE_URL_TIMEOUT_MS. While Zen's
-// first-run welcome screen hides the tab area, Gecko keeps a loaded tab's url at about:blank and
-// executeScript never returns there (#360), but the content script answers.
+// The tab's top document as its content script reports it, { url, readyState }; null for an
+// about: page, or when nothing answers within PAGE_URL_TIMEOUT_MS. While Zen's first-run welcome
+// screen hides the tab area, Gecko keeps a loaded tab's url at about:blank and executeScript
+// never returns there (#360), but the content script answers.
 const PAGE_URL_TIMEOUT_MS = 500;
-async function loadedPageUrl(tabId) {
+async function pageState(tabId) {
   let timer;
   const info = await Promise.race([
     browser.tabs.sendMessage(tabId, { action: 'getPageInfo' }, TOP_FRAME).catch(() => null),
@@ -2050,8 +2056,18 @@ async function loadedPageUrl(tabId) {
   ]);
   clearTimeout(timer);
   const href = typeof info?.url === 'string' ? info.url : '';
-  return info?.readyState === 'complete' && href && !href.startsWith('about:') ? href : null;
+  return href && !href.startsWith('about:') ? { url: href, readyState: info.readyState } : null;
 }
+
+// The URL of the tab's top document once it has loaded; null while it loads (see pageState).
+async function loadedPageUrl(tabId) {
+  const page = await pageState(tabId);
+  return page?.readyState === 'complete' ? page.url : null;
+}
+
+// A page (see pageState) whose DOM is parsed can be read and acted on, also while its images
+// and other resources still load (#561).
+const domParsed = page => page?.readyState === 'interactive' || page?.readyState === 'complete';
 
 // Runs startNavigation and resolves true once the tab finishes loading, false on timeout.
 // Subscribes first so a fast 'complete' is not missed. Gecko may never emit a fresh
@@ -2113,20 +2129,28 @@ async function navigateTab(url, tabId, expectTitle, authorization) {
     const sameUrl = target !== null && target === urlWithoutFragment((await browser.tabs.get(targetTabId)).url);
 
     let loaded = true;
+    // #561: when the load wait times out, started says whether a document started in the tab since
+    // the navigation began. Only then is the page asked: before that, the document left behind answers.
+    let started = false, page = null;
     if (sameUrl && url.includes('#')) {
       // Same-document (fragment) navigation: no new load, so no status 'complete'.
       requireTabAdmission(authorization);
       await browser.tabs.update(targetTabId, { url });
     } else {
+      const documents = tabDocuments.get(targetTabId);
       loaded = await waitForTabLoad(targetTabId, () => { requireTabAdmission(authorization); return browser.tabs.update(targetTabId, { url }); }, { reload: sameUrl });
+      started = !loaded && tabDocuments.get(targetTabId) !== documents;
+      if (started) page = await pageState(targetTabId);
     }
 
     // Check if page title matches expectation (catches silent redirects)
-    const result = loaded ? { ok: true, url } : { ok: false, timedOut: true, url };
+    const parsed = domParsed(page);
+    const result = loaded || parsed ? { ok: true, url } : { ok: false, timedOut: true, url };
+    if (page?.readyState === 'interactive') result.load_pending = true;
     // #366: the inert blank tab of new_tab_stalled also ignores a later navigation.
-    if (!loaded && !url.startsWith('about:')) {
+    if (!loaded && !parsed && !url.startsWith('about:')) {
       const tab = await browser.tabs.get(targetTabId);
-      if (tab.url === 'about:blank' && tab.status === 'complete' && !await loadedPageUrl(targetTabId)) {
+      if (tab.url === 'about:blank' && tab.status === 'complete' && (started || !await loadedPageUrl(targetTabId))) {
         Object.assign(result, {
           code: 'navigation_stalled', retryable: false,
           hint: 'The tab is still about:blank after the load timeout. '
@@ -2171,7 +2195,7 @@ const STALLED_TAB_HINT = 'Retrying will not fix this: the browser needs an updat
 
 // Opens an agent-owned tab in the background. Immediate by default. With wait, resolves once the
 // tab loads (or the timeout passes, leaving the tab open) and reports the actual URL, so
-// redirects are visible.
+// redirects are visible. A page whose DOM is parsed at the timeout is ok with load_pending (#561).
 async function createTab(url, { wait = false, timeout = 15000, ownerId = null } = {}) {
   try {
     const target = url || 'about:blank';
@@ -2181,11 +2205,15 @@ async function createTab(url, { wait = false, timeout = 15000, ownerId = null } 
     // A new tab has no previous document, so any non-about: 'complete' is the destination.
     const loaded = target.startsWith('about:')
       || await waitForTabLoad(tab.id, () => {}, { reload: true, timeout });
+    // For the same reason, the page that answers after a timeout is the destination's.
+    const page = loaded ? null : await pageState(tab.id);
+    const parsed = domParsed(page);
     const current = await browser.tabs.get(tab.id);
     const shownUrl = current.url.startsWith('about:') && !target.startsWith('about:')
-      && await loadedPageUrl(tab.id) || current.url;
+      && (loaded ? await loadedPageUrl(tab.id) : parsed && page.url) || current.url;
     const result = {
-      ok: loaded, ...(loaded ? {} : { timedOut: true }),
+      ok: loaded || parsed, ...(loaded || parsed ? {} : { timedOut: true }),
+      ...(page?.readyState === 'interactive' ? { load_pending: true } : {}),
       tabId: tab.id, url: shownUrl, status: current.status,
     };
     // #366: an old browser process after an on-disk update can create inert blank tabs.

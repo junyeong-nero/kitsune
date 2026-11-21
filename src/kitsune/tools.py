@@ -443,7 +443,8 @@ def browser_tabs(
     raw: Annotated[bool, Field(description="new: bypass the image viewer.")] = False,
     wait: Annotated[bool, Field(
         description="new: wait up to timeout ms for the load; returns tabId, final url and status, or on "
-                    "timeout ok=false, timedOut=true with the tab open.")] = False,
+                    "timeout ok=false, timedOut=true with the tab open (ok=true, load_pending=true once its "
+                    "DOM is parsed).")] = False,
     timeout: int = 15000,
     confirm_token: Annotated[str | None, Field(description="new/close/request; see browser_check.")] = None,
     reason: str | None = None,
