@@ -279,6 +279,36 @@ class SensitiveActionTests(AskBeforeActTestCase):
         self.assertEqual(self.forward("click", {"ref": "s1e6"}), (200, {"ok": True}))
         self.assertEqual(self.extension.actions(), ["click"])
 
+    def test_click_inspection_resolves_equivalent_matches_as_the_click_does(self):
+        # #573: a click on several equivalent matches acts on one, and the inspection describes that
+        # one. Other actions resolve strictly, and so does their inspection.
+        def inspected():
+            return [p for a, p in self.extension.sent if a == "describeTarget"][-1]
+
+        self.forward("click", {"selector": "a[href='/jobs/46/']"})
+        self.assertEqual(inspected(), {"selector": "a[href='/jobs/46/']", "equivalent": True, "inspect": True})
+        self.forward("clickAndWaitNavigation", {"selector": "text=View"})
+        self.assertIs(inspected()["equivalent"], True)
+        for action, body in [("doubleClick", {"selector": "a"}), ("keypress", {"selector": "a", "key": "Enter"}),
+                             ("click", {"ref": "s1e5"}), ("click", {"coords": {"x": 1, "y": 2}})]:
+            with self.subTest(action=action, body=body):
+                self.forward(action, body)
+                self.assertNotIn("equivalent", inspected())
+        self.call(lambda h: h.handle_trusted_click(), {"selector": "a", "tabId": 7})
+        self.assertNotIn("equivalent", inspected())
+        # The checks apply to the element the inspection reports, as for one match.
+        self.extension.target = {"ok": True, "tag": "a", "submits": False, "submitLabel": False,
+                                 "consequentialLabel": True, "text": "Delete account"}
+        held = self.held(lambda h: h.handle_click(), {"selector": "a[href='/account/delete']"})
+        self.assertEqual(held["state"]["holdReason"], "consequential_label")
+        # An inspection that still finds several targets fails the click before any confirmation.
+        self.extension.target = {"error": "2 elements match the selector; nothing was dispatched",
+                                 "code": "ambiguous_target", "retryable": False}
+        sent = self.extension.actions()
+        status, result = self.forward("click", {"selector": "h3 a"})
+        self.assertEqual(result["code"], "ambiguous_target", (status, result))
+        self.assertEqual(self.extension.actions(), sent, "the ambiguous click was not sent")
+
     def test_submit_labeled_buttons_are_held(self):
         # JS-driven buttons (type=button, role=button) the page labels like a submit or payment.
         self.extension.target = {"ok": True, "tag": "div", "submits": False, "submitLabel": True, "text": "결제하기"}

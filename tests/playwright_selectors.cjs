@@ -104,6 +104,7 @@ class Element extends EventTarget {
   get protocol() { return new URL(this.attrs.href).protocol; }
   getAttribute(key) { return this.attrs[key] ?? null; }
   hasAttribute(key) { return key in this.attrs; }
+  getAttributeNames() { return Object.keys(this.attrs); }
   setAttribute(key, value) { this.attrs[key] = value; }
   removeAttribute(key) { delete this.attrs[key]; }
   matches(selector) { return selectorMatches(this, selector); }
@@ -260,6 +261,35 @@ function captureShadowPage() {
     h('label', { for: 'email' }, 'Email', h('script', {}, 'trackCapture()')), h('input', { id: 'email' }),
     h('script', {}, "document.createElement('capture-host').attachShadow({ mode })"));
   return { html: h('html', {}, body), body, buttons, xpaths: [] };
+}
+
+// #573: matches that are one target for click and hover (two links to one URL, a heading that
+// holds a link's text), next to matches that only look alike and stay ambiguous.
+function equivalentPage() {
+  const link = (id, href, text, attrs = {}) => h('a', { id, href, ...attrs }, text);
+  const pair = (name, href, attrs) => [link(`${name}1`, href, name), link(`${name}2`, href, name, attrs)];
+  const body = h('body', {},
+    link('job-title', 'https://jobs.example/jobs/46/', 'Data Science Intern', { class: 'title' }),
+    link('job-view', 'https://jobs.example/jobs/46/', 'View', { class: 'btn', title: 'Open', 'aria-label': 'View job' }),
+    h('h2', { id: 'schedule-heading' }, 'View Student Schedule by Course Section'),
+    link('schedule-link', 'https://school.example/schedule', 'View Student Schedule'),
+    h('span', { id: 'air-rs' }, 'Air Seoul (RS)'), h('div', { id: 'air' }, 'Air Seoul'),
+    h('h2', { id: 'reports-heading' }, 'Reports archive'), h('button', { id: 'reports-button' }, 'Reports overview'),
+    h('p', { id: 'pay-note' }, 'Pay now or later'), h('button', { id: 'pay' }, h('span', { id: 'pay-text' }, 'Pay now')),
+    h('h2', { id: 'close-heading' }, 'Close'), h('button', { id: 'close-button' }, 'Close'),
+    // Not one target: the links differ in something a click depends on, or go nowhere.
+    ...pair('blank', 'https://jobs.example/blank', { target: '_blank' }),
+    ...pair('handler', 'https://jobs.example/handler', { onclick: 'track()' }),
+    ...pair('method', 'https://jobs.example/posts/1', { 'data-method': 'delete' }),
+    ...pair('pdf', 'https://jobs.example/report.pdf', { download: '' }),
+    ...pair('hash', '#'), ...pair('script', 'javascript:void(0)'),
+    link('other1', 'https://jobs.example/a', 'Other'), link('other2', 'https://jobs.example/b', 'Other'),
+    // Equally good text matches, and matches that are each better on one count.
+    link('edit1', 'https://jobs.example/edit/1', 'Edit'), link('edit2', 'https://jobs.example/edit/2', 'Edit'),
+    h('span', { id: 'save-text' }, 'Save'), h('button', { id: 'save-draft' }, 'Save draft'),
+    ...Array.from({ length: 60 }, (_, i) => h('h3', {}, link(`post${i}`, `https://jobs.example/post/${i}`, `Post ${i}`))),
+    h('input', { id: 'first-name' }), h('input', { id: 'last-name' }));
+  return { html: h('html', {}, body), body, xpaths: [] };
 }
 
 // The same form inside a same-origin frame.
@@ -829,6 +859,88 @@ async function testPlainCssIsUnchanged() {
   assert.deepEqual(clicks([dom.nativeOption, ...dom.pages]), [0, 1, 1, 0]);
 }
 
+async function testEquivalentMatchesAreOneTarget() {
+  // #573: click and hover act on the first of several links to one URL, and say so.
+  const job = 'a[href="https://jobs.example/jobs/46/"]';
+  const { dom, send, result: clicked } = await clickOnly(job, d => d.html.querySelector('#job-title'), equivalentPage);
+  assert.equal(clicked.matches, 2, JSON.stringify(clicked));
+  assert.equal(clicked.same_href, true);
+  assert.equal(clicked.text, 'Data Science Intern');
+  const hovered = await send({ action: 'hover', selector: job });
+  assert.deepEqual([hovered.ok, hovered.matches, hovered.same_href], [true, 2, true], JSON.stringify(hovered));
+  assert.ok(dom.html.querySelector('#job-title').events.includes('mouseover'));
+  assert.ok(!dom.html.querySelector('#job-view').events.includes('mouseover'));
+  const waited = await send({ action: 'click', selector: job, wait: true, timeout: 1000 });
+  assert.equal(waited.matches, 2, JSON.stringify(waited));
+  // One match reports no choice, and first: true takes the first match without one.
+  assert.ok(!('matches' in await send({ action: 'click', selector: '#job-view' })));
+  assert.ok(!('matches' in await send({ action: 'click', selector: job, first: true })));
+
+  // text= prefers the one match that is better: exact text, a control, or both.
+  const preferred = [
+    ['text=View Student Schedule', 'schedule-link', ['exact_text', 'interactive']],
+    ['text=view student schedule', 'schedule-link', ['exact_text', 'interactive']],
+    ['text=Air Seoul', 'air', ['exact_text']],
+    ['text=Reports', 'reports-button', ['interactive']],
+    // The smallest element holding the text is a span inside the button.
+    ['text=Pay now', 'pay-text', ['exact_text', 'interactive']],
+    // Quoted text matches whole text only, so the control decides.
+    ['text="Close"', 'close-button', ['interactive']],
+    ['"Close"', 'close-button', ['interactive']],
+    ['body >> text=Air Seoul', 'air', ['exact_text']],
+  ];
+  for (const [selector, id, why] of preferred) {
+    const { result } = await clickOnly(selector, d => d.html.querySelector('#' + id), equivalentPage);
+    assert.equal(result.matches, 2, `${selector}: ${JSON.stringify(result)}`);
+    assert.deepEqual(result.preferred, why, selector);
+    const hover = await load(equivalentPage())({ action: 'hover', selector });
+    assert.deepEqual([hover.ok, hover.matches, hover.preferred], [true, 2, why], `${selector}: ${JSON.stringify(hover)}`);
+  }
+
+  // Still ambiguous: links that differ or go nowhere, equally good text, different links.
+  const ambiguous = [
+    ['a[href="https://jobs.example/blank"]', 2], ['a[href="https://jobs.example/handler"]', 2],
+    ['a[href="https://jobs.example/posts/1"]', 2], ['a[href="https://jobs.example/report.pdf"]', 2],
+    ['a[href="#"]', 2], ['a[href="javascript:void(0)"]', 2], ['#other1, #other2', 2],
+    ['text=Edit', 2], ['text="Edit"', 2], ['text=Save', 2], ['h3 a', 60],
+    // The preference belongs to the text engine, not to :has-text() or role=.
+    ['h2:has-text("Close"), button:has-text("Close")', 2], ['#schedule-heading, #schedule-link', 2],
+  ];
+  for (const [selector, matches] of ambiguous) {
+    for (const action of ['click', 'hover']) {
+      const page = equivalentPage();
+      const result = await load(page)({ action, selector });
+      assert.equal(result.code, 'ambiguous_target', `${action} ${selector}: ${JSON.stringify(result)}`);
+      assert.equal(result.state.matches, matches, selector);
+      assert.equal(result.state.candidates.length, Math.min(matches, 5), selector);
+      assert.ok(page.html.descendants().every(el => el.events.length === 0), `${action} ${selector} dispatched nothing`);
+    }
+  }
+
+  // Every other action stays strict on the same matches.
+  const strict = [
+    ['fill', { selector: 'input', value: 'x' }], ['type', { selector: 'input', text: 'x' }],
+    ['doubleClick', { selector: job }], ['keypress', { selector: job, key: 'Enter' }],
+    ['focusElement', { selector: job }], ['screenPoint', { selector: job, click: true }],
+    ['drag', { from: job, to: '#pay' }], ['doubleClick', { selector: 'text=View Student Schedule' }],
+    ['keypress', { selector: 'text=View Student Schedule', key: 'Enter' }],
+    // Ask-before-act inspects strictly unless the bridge says the action is a click.
+    ['describeTarget', { selector: job }], ['describeTarget', { selector: job, key: 'Enter', equivalent: false }],
+  ];
+  for (const [action, params] of strict) {
+    const page = equivalentPage();
+    const result = await load(page)({ action, ...params });
+    assert.equal(result.code, 'ambiguous_target', `${action}: ${JSON.stringify(result)}`);
+    assert.equal(result.state.matches, 2, action);
+    assert.ok(page.html.descendants().every(el => el.events.length === 0 && !el.value), `${action} dispatched nothing`);
+  }
+  // For a click, the inspection describes the element the click acts on.
+  const described = await send({ action: 'describeTarget', selector: job, equivalent: true });
+  assert.deepEqual([described.tag, described.text], ['a', 'Data Science Intern'], JSON.stringify(described));
+  const schedule = await send({ action: 'describeTarget', selector: 'text=View Student Schedule', equivalent: true });
+  assert.deepEqual([schedule.tag, schedule.text], ['a', 'View Student Schedule'], JSON.stringify(schedule));
+}
+
 (async () => {
   await testReportedSelectorsResolve();
   await testPlaywrightSelectorsStayStrict();
@@ -844,5 +956,6 @@ async function testPlainCssIsUnchanged() {
   await testRegexValuesAndQuotesInChains();
   await testXPathGuardCoversShadowRootsAndFrames();
   await testScriptTextNeverMatchesAndShadowTextDoes();
+  await testEquivalentMatchesAreOneTarget();
   console.log('Playwright selector checks passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

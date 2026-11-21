@@ -2151,6 +2151,9 @@ _ASK_DATA_ACTIONS = {
 }
 _ASK_NAVIGATION_ACTIONS = {"navigate", "newTab", "createWindow"}
 _ASK_CLICK_ACTIONS = {"click", "doubleClick", "trustedClick", "clickAndWaitNavigation"}
+# Clicks whose selector may match several equivalent elements and act on one (#573): the
+# inspection resolves the selector the same way, so the checks apply to the element clicked.
+_EQUIVALENT_MATCH_CLICKS = {"click", "clickAndWaitNavigation"}
 # Page actions held on payment-like pages; they target one tab, which the token is bound to.
 _ASK_PAGE_ACTIONS = _ASK_CLICK_ACTIONS | {
     "keypress", "type", "setEditableContent", "fill", "formFill", "selectOption", "checkBox",
@@ -2238,11 +2241,13 @@ def _spend_confirm_token(token, binding):
     return None
 
 
-async def _describe_target(params, inspect):
+async def _describe_target(action, params, inspect):
     target = {key: params[key] for key in ("tabId", "selector", "ref", "key", "first") if params.get(key) is not None}
     coords = params.get("coords") or ({"x": params["x"], "y": params["y"]} if "x" in params and "y" in params else None)
     if coords and not target.get("selector") and not target.get("ref"):
         target["coords"] = coords
+    if action in _EQUIVALENT_MATCH_CLICKS and target.get("selector"):
+        target["equivalent"] = True
     return await send_to_extension("describeTarget", {**target, "inspect": inspect}, timeout=10)
 
 
@@ -2284,7 +2289,7 @@ async def _held_reason(action, params):
         submit_key = action == "keypress" and params.get("key") in {"Enter", "Return"}
         screen = action == "trustedClick" and (params.get("coordinateSpace") or params.get("space")) == "screen"
         inspect = (action in _ASK_CLICK_ACTIONS or submit_key) and not screen
-        described = await _describe_target(params, inspect)
+        described = await _describe_target(action, params, inspect)
         if isinstance(described, dict) and described.get("code") == "ambiguous_target":
             return described
         if not isinstance(described, dict) or described.get("error"):
@@ -3865,7 +3870,7 @@ async def _resolve_relative_url(params):
     """
     if not _is_relative_url(params.get("url")):
         return
-    described = await _describe_target(params, False)
+    described = await _describe_target("navigate", params, False)
     base = described.get("url") if isinstance(described, dict) else None
     if not isinstance(base, str):
         return

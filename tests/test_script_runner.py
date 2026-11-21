@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+from pathlib import Path
 import subprocess
 import sys
 import threading
@@ -381,6 +382,21 @@ class ScriptRunnerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(len(client.calls), 1)
                 self.assertEqual(result["failed_operation"], _stale("e334", "e373"))
                 self.assertNotIn("remapped", result["operations"][0])
+
+    async def test_ambiguous_target_hint_names_the_python_argument(self):
+        # #573: the extension words its hint for the JSON tools (first: true); a script passes first=True.
+        hint = "first: true acts on the first match."
+        content = Path(__file__).parent.parent.joinpath("extension/content/content.js").read_text(encoding="utf-8")
+        self.assertIn(hint, content, "the extension's ambiguous_target hint is the text the script host rewrites")
+        failure = {"error": "2 elements match the selector; nothing was dispatched", "code": "ambiguous_target",
+                   "retryable": False, "hint": f"Act on one element: pass its ref or a more specific selector. {hint}",
+                   "state": {"selector": "input", "matches": 2, "candidates": []}}
+        client = Client({"/api/fill": failure})
+        result = await script_runner.run_python("tab.fill('input', 'x')", client, tab_id=7)
+        self.assertEqual(result["code"], "script_operation_failed")
+        self.assertEqual(result["failed_operation"]["code"], "ambiguous_target")
+        self.assertIn("first=True acts on the first match.", result["failed_operation"]["hint"])
+        self.assertNotIn("first: true", json.dumps(result))
 
     async def test_script_cannot_supply_an_approval_token_through_the_provided_api(self):
         client = Client()
