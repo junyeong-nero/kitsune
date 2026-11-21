@@ -73,8 +73,7 @@ uv run --frozen python -m unittest discover -s tests -p test_real_browser_handof
 These tests create their own browser instance/profile and temporary extension,
 use nondefault bridge ports, and exercise the real extension popup. Test cleanup
 targets only the owned process identities and their descendants. No private
-logged-in page is part of the acceptance test, and the tests do not establish
-that Claude's export/email retrieval workflow has completed.
+logged-in page or third-party account workflow is part of the acceptance test.
 
 The platform workflow runs the bridge checks on Windows and Linux, Python 3.12
 and 3.14. A configured CI matrix is not evidence of a completed CI run.
