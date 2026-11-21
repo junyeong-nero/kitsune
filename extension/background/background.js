@@ -3459,8 +3459,9 @@ async function forwardToContent(action, params) {
       if (response.code) response = await withTabState(tabId, response);
     }
     if (response.frames) delete response.frames;
-    // A snapshot's link destinations stay here, with their refs (#572).
-    const hrefs = action === 'getSnapshot' && Array.isArray(response.hrefs) ? response.hrefs : [];
+    // A snapshot's link destinations stay here, with their refs (#572): the top document's only,
+    // where a same element is looked for.
+    const hrefs = action === 'getSnapshot' && !frameId && Array.isArray(response.hrefs) ? response.hrefs : [];
     if (action === 'getSnapshot') delete response.hrefs;
     const result = await compactContentRefs(action, response, tabId, params);
     for (const { ref, href } of hrefs) {
