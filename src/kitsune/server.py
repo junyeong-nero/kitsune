@@ -1414,7 +1414,7 @@ async def browser_run_python(
     tab.click(target); tab.double_click(target); tab.hover(target); tab.drag(source, destination).
     tab.scroll('down', 700, target=None) scrolls window or element; also up/left/right/top/bottom.
     tab.fill(target, value) replaces; tab.type(target, text): fields append, editors insert at caret.
-    tab.fill_form({'#name': 'Ada'}); tab.check(target, True); tab.select_option(target, value).
+    tab.fill_form({'#name': 'Ada'}); tab.check(target, True); tab.select_option(target, value, by_text=False).
     tab.press('Enter', target=None, modifiers={'ctrl': True}); omitted target uses focus, not the last target.
     tab.navigate(url); tab.back().
     tab.wait_for(text='Done', timeout=10000) or target/url/text_gone (one condition, timeout in ms).
