@@ -1500,6 +1500,8 @@ async function runCommandSettled(params, { withSnapshot, deltaSnapshot, textSnap
   // The load a goBack starts, which its page text waits for like an action that navigates (#349).
   const back = pageText && params.action === 'goBack' ? { loadBefore: tabLoads.get(params.tabId) } : null;
   const dialogsSince = Date.now();
+  // The content script adds the dialogs its document recorded since then to the action's reply (#569).
+  if (tracksOpenedTabs) params.dialogsSince = dialogsSince;
   const result = await dispatchCommand(params);
   let navigation = null;
   if (watch && result && !result.error && result.ok !== false) {
@@ -1523,6 +1525,9 @@ async function runCommandSettled(params, { withSnapshot, deltaSnapshot, textSnap
   // A click during which a page script's window.open was refused (#304).
   const scriptPopup = result?.scriptPopup;
   if (scriptPopup) delete result.scriptPopup;
+  // The dialogs the action's document had recorded when it answered (#569).
+  const actionDialogs = result?.actionDialogs;
+  if (actionDialogs) delete result.actionDialogs;
   if (textSnapshot && result && !result.error) result.tabId = params.tabId;
   // Taken before the snapshot, which then lists the popup even when it is not rendered.
   if (popupWatch && params.tabId != null) {
@@ -1591,7 +1596,7 @@ async function runCommandSettled(params, { withSnapshot, deltaSnapshot, textSnap
     }
   }
   if (tracksOpenedTabs && params.tabId != null && result && typeof result === 'object') {
-    await addActionDialogs(params.tabId, dialogsSince, result);
+    await addActionDialogs(params.tabId, dialogsSince, result, dialogEntries(actionDialogs));
   }
   return result;
 }
@@ -1607,14 +1612,22 @@ function publicDialog(dialog) {
     response: dialog.response ?? null, ...(dialog.pending ? { pending: true } : {}),
     ...(dialog.auto_dismissed ? { auto_dismissed: true } : {}) };
 }
-async function pageDialogs(tabId, since) {
+const dialogEntries = dialogs => Array.isArray(dialogs) ? dialogs.filter(d => d && typeof d === 'object').slice(-20) : [];
+async function recordedDialogs(tabId, since) {
   const reply = await Promise.resolve()
     .then(() => browser.tabs.sendMessage(tabId, { action: 'dialogsSince', since }, TOP_FRAME)).catch(() => null);
-  return Array.isArray(reply?.dialogs)
-    ? reply.dialogs.filter(d => d && typeof d === 'object').slice(-20).map(publicDialog) : [];
+  return dialogEntries(reply?.dialogs);
 }
-async function addActionDialogs(tabId, since, result) {
-  const dialogs = await pageDialogs(tabId, since);
+async function pageDialogs(tabId, since) {
+  return (await recordedDialogs(tabId, since)).map(publicDialog);
+}
+// during: the dialogs the action's document reported with its reply (#569). A submitted form
+// unloads that document, so the page cannot be asked for them afterwards; a document that is
+// still there lists them again, and each is reported once.
+async function addActionDialogs(tabId, since, result, during) {
+  const page = await recordedDialogs(tabId, since);
+  const listed = d => page.some(p => p.timestamp === d.timestamp && p.type === d.type && p.message === d.message);
+  const dialogs = [...during.filter(d => !listed(d)), ...page].slice(-20).map(publicDialog);
   if (!dialogs.length) return;
   result.dialogs = dialogs;
   if (dialogs.some(d => d.auto_dismissed && d.type !== 'alert')) result.dialog_hint = DISMISSED_DIALOG_HINT;
