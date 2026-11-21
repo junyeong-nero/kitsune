@@ -3570,7 +3570,11 @@ single reads (see `browser_wait_for`); a zero timeout performs one immediate che
 - User and other clients' tabs return `user_tab_read_only` without a prompt; the same applies
   to `/api/back`, `/api/forward` and reload. Explicit compatibility opt-outs are described
   in [Protecting your tabs](your-tabs.md#protecting-your-tabs).
-- A load that does not finish in 15 s returns `{ "ok": false, "timedOut": true, "url": "..." }`.
+- A load that does not finish in 15 s on a page whose DOM is parsed by then (an image-heavy page,
+  for example) returns `{ "ok": true, "url": "...", "load_pending": true }` with the page's
+  snapshot: the page can be read and acted on while its resources still load (#561). This needs a
+  document that started after the navigation; the page being navigated away from does not count.
+- Any other load that does not finish in 15 s returns `{ "ok": false, "timedOut": true, "url": "..." }`.
   If the tab is still `about:blank` / `complete` and the page cannot confirm a loaded destination,
   it also carries `code: "navigation_stalled"`, `retryable: false`, and the recovery `hint` of
   [`new_tab_stalled`](#post-apinew-tab) (#366). A requested `about:` URL never gets this code.
@@ -3590,13 +3594,16 @@ Opens an agent-owned tab in the background (it is not shown; see
 `{ "url": "https://example.com", "wait": true, "timeout": 15000 }` waits up to
 `timeout` ms (default 15000) for the load and returns
 `{ "ok": true, "tabId": 123, "url": "https://example.com/after-redirect", "status": "complete" }`.
-On timeout the tab stays open and the result is
+On timeout the tab stays open. A page whose DOM is parsed by then (an image-heavy page, for
+example) can already be read and acted on, so the result is
+`{ "ok": true, "load_pending": true, "tabId": 123, "url": "...", "status": "loading" }` (#561);
+otherwise it is
 `{ "ok": false, "timedOut": true, "tabId": 123, "url": "...", "status": "loading" }`.
 While Zen's first-run welcome screen is open, the browser keeps reporting a loaded tab's URL as
 `about:blank` (#360); the wait then asks the page, and `url` is the page's own URL.
 With `wait`, `"pageText": true`, an internal flag the core `browser_tabs action=new url=…` sends,
 adds the loaded page's readable `snapshot` when it fits 2,000 characters, as a `browser_navigate`
-result has it (#448); a larger page, a timeout or `KITSUNE_POST_ACTION_SNAPSHOT=0` adds nothing.
+result has it (#448); a larger page, an `ok: false` timeout or `KITSUNE_POST_ACTION_SNAPSHOT=0` adds nothing.
 
 If the wait times out with the tab still `about:blank` / `complete`, and the page cannot confirm
 a loaded destination, the result also carries `code: "new_tab_stalled"`, `retryable: false`, and

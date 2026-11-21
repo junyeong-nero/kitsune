@@ -87,7 +87,7 @@ On `script_output_limit` the output is incomplete: make a new, smaller read-only
 | `Browser` method | Returns |
 | --- | --- |
 | `tabs()` | `list[dict]`: `id`, `url`, `title`, `active`, `windowId`, `index`, `owned` |
-| `new_tab(url="about:blank", wait=True, timeout=15000)` | A `Tab` for a new background tab. A slow load raises `TimedOut`; the tab id is in `error.result["tabId"]` |
+| `new_tab(url="about:blank", wait=True, timeout=15000)` | A `Tab` for a new background tab. A load still pending after `timeout` raises `TimedOut`, with the tab id in `error.result["tabId"]`, unless the page's DOM is parsed by then |
 | `tab(tab_id)` | A `Tab` for an existing tab |
 | `active_tab()` | The tab you are viewing (`ambiguous_target` with several windows) |
 
