@@ -1318,7 +1318,9 @@ def browser_select_option(
                         wait, timeout, expect)
 
 
-@tool("browse", annotations=dict(title="Check", **ACT))
+# Destructive like the core browser_click: on an element with role checkbox, switch or radio a
+# check is a click (#574).
+@tool("browse", annotations=dict(title="Check", **DESTRUCTIVE))
 def browser_check(
     selector: Annotated[str, Field(description='e.g. "#agree", "input[name=plan]".')] = "",
     checked: bool = True, tab_id: TabId = None,

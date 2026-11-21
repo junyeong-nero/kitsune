@@ -6,7 +6,7 @@ import sys
 import unittest
 from unittest.mock import patch
 
-from kitsune import server, tools
+from kitsune import playwright_tools, server, tools
 
 
 def _run(code: str, env: dict | None = None) -> str:
@@ -24,7 +24,7 @@ class ToolsRegistryTests(unittest.TestCase):
     def test_the_server_registers_the_tools_in_their_order(self):
         # Every registered MCP tool is one of kitsune.tools', in its order, then the gateway's.
         code = """import asyncio, json
-from kitsune import server, tools
+from kitsune import playwright_tools, server, tools
 print(json.dumps({"registered": list(asyncio.run(server.mcp.all_tools())), "defined": list(tools.TOOLS)}))"""
         result = json.loads(_run(code, {"KITSUNE_SCRIPTING": "0"}))
         gateway = [name for name in result["registered"] if name in server.GATEWAY_TOOLS]
@@ -37,6 +37,9 @@ print(json.dumps({"registered": list(asyncio.run(server.mcp.all_tools())), "defi
         self.assertEqual((status.group, status.annotations["title"], status.annotations["readOnlyHint"]),
                          ("admin", "Check browser status", True))
         self.assertEqual(tools.TOOLS["browser_click"].group, "core")
+        # #574: a check clicks an ARIA checkbox, so it carries the click's destructive hint.
+        self.assertIs(tools.TOOLS["browser_check"].annotations["destructiveHint"], True)
+        self.assertIs(playwright_tools.SCHEMAS["browser_click"]["annotations"]["destructiveHint"], True)
         with self.assertRaises(ValueError):
             tools.tool("unknown")
 
