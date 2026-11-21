@@ -1406,6 +1406,7 @@ async def browser_run_python(
     tab.snapshot(target=None, max_depth=None, text=True) includes visible text; no depth/boxes args.
     tab.find(query) searches descriptions, not text/regex; filter scoped reads in Python for those.
     tab.query(selector, fields=['text', 'href'], limit=20) is CSS-only, current document; no refs.
+    Its href/src are absolute URLs; tab.navigate(url) also takes a path like '/deals/48'.
     tab.text(); tab.forms(); tab.info().
     tab.click(target); tab.double_click(target); tab.hover(target); tab.drag(source, destination).
     tab.scroll('down', 700, target=None) scrolls window or element; also up/left/right/top/bottom.

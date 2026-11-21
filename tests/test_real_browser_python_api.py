@@ -32,11 +32,14 @@ document.getElementById('log').addEventListener('click', () => console.warn('kit
 </script>
 """
 DONE = "<!doctype html><title>Done</title><p>Thanks</p>"
+DEALS = '<!doctype html><title>Deals</title><a href="/deals/48">Radiant Solar</a>'
+DEAL = "<!doctype html><title>Deal 48</title><p>Radiant Solar - Custom</p>"
 
 
 class _Site(BaseHTTPRequestHandler):
     def do_GET(self):
-        data = (DONE if self.path.startswith("/done") else PAGE).encode()
+        pages = {"/deals": DEALS, "/deals/48": DEAL}
+        data = (DONE if self.path.startswith("/done") else pages.get(self.path, PAGE)).encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
@@ -144,6 +147,44 @@ class RealBrowserPythonApiTests(harness.RealBrowserTestCase):
         self.assertTrue(self.tab.click(".twin", first=True)["ok"])
         with self.assertRaises(kitsune.TimedOut):
             self.tab.wait_for(text="Never shown", timeout=300)
+
+    def test_navigate_resolves_a_relative_url_and_refuses_a_malformed_one(self):
+        # #571: query reports the resolved href of a link matched by its relative attribute.
+        origin = self.site.origin
+        self.assertTrue(self.tab.navigate("/deals")["ok"])
+        self.assertEqual(self.tab.info()["url"], origin + "/deals")
+        [link] = self.tab.query('a[href^="/deals/"]', fields=["text", "href"])
+        self.assertEqual((link["text"], link["href"]), ("Radiant Solar", origin + "/deals/48"))
+
+        with self.assertRaises(kitsune.KitsuneError) as raised:
+            self.tab.navigate(origin + link["href"])
+        error = raised.exception
+        self.assertEqual((error.code, error.retryable, error.state),
+                         ("invalid_url", False, {"url": f"{origin}{origin}/deals/48"}))
+        self.assertIn("query's href and src values are already absolute", error.hint)
+        self.assertEqual(self.tab.info()["url"], origin + "/deals", "nothing was loaded")
+
+        self.browser.request("/api/set-policy", {"deny": [re.escape(origin) + "/done"]})
+        self.addCleanup(self.browser.request, "/api/set-policy", {"deny": []})
+        with self.assertRaisesRegex(kitsune.KitsuneError, "URL denied by policy .*/done"):
+            self.tab.navigate("/done")
+        self.assertEqual(self.tab.info()["url"], origin + "/deals", "the URL policy read the resolved URL")
+
+        self.assertEqual(self.tab.navigate("/deals/48")["url"], origin + "/deals/48")
+        self.assertEqual((self.tab.info()["url"], self.tab.info()["title"]), (origin + "/deals/48", "Deal 48"))
+        self.assertEqual(self.tab.navigate(link["href"])["url"], origin + "/deals/48")
+
+        with patch.object(tools, "client", bridge_client.BridgeClient()):  # the MCP tool, on the same route
+            self.assertEqual(tools.browser_navigate("../deals", tab_id=self.tab.id)["url"], origin + "/deals")
+            refused = tools.browser_navigate(origin + link["href"], tab_id=self.tab.id)
+        self.assertEqual((refused["code"], refused["retryable"]), ("invalid_url", False), refused)
+        self.assertEqual(self.tab.info()["url"], origin + "/deals")
+
+        blank = self.browser.new_tab("about:blank")
+        self.addCleanup(blank.close)
+        with self.assertRaises(kitsune.KitsuneError) as raised:
+            blank.navigate("/deals/48")
+        self.assertEqual(raised.exception.code, "invalid_url", "about:blank has nothing to resolve a path against")
 
     def test_a_held_submit_runs_once_confirm_approves_it(self):
         self.browser.request("/api/set-policy", {"ask": True})

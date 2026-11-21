@@ -496,11 +496,11 @@ only `error`. MCP tools return these failures with `isError: true` (see
   `false` means a write may already have taken effect (a submit, message, payment
   or deletion can be behind any click or keypress); inspect the page before acting again.
   The exceptions are `error_page`, `ambiguous_target`, `needs_user`,
-  `permission_required`, `unsupported_platform` and
-  `unknown_action`: nothing reached the page, and repeating cannot succeed until the tab
+  `permission_required`, `unsupported_platform`, `unknown_action` and
+  `invalid_url`: nothing reached the page, and repeating cannot succeed until the tab
   navigates, the target is named uniquely, the user approves the close, navigation or action or
-  grants the permission, the bridge runs where the tool is implemented, or the step names a
-  batch action.
+  grants the permission, the bridge runs where the tool is implemented, the step names a
+  batch action, or the navigation names a URL that parses.
 - `hint`: a short recovery step. `state`: the current state that explains the
   failure, where available (for page targets: `tabId`, `url`, `status`).
 
@@ -548,6 +548,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `tab_owned` | Two `parallel` sequences write the same tab (`state.tabId`, `state.owner`); nothing was dispatched | true |
 | `invalid_tab_id` | A batch, workflow or parallel step names a `tabId` that is not a tab id (`0`, `""`, an unresolved `${$N.tabId}`); it was not sent to the active tab instead | true |
 | `unknown_action` | A container step's `action` is not a batch action, so nothing was dispatched (`state.action`). When a batch action is close to it, ignoring case, `state.suggestion` and the hint name it (`html` → `getHTML`) | false |
+| `invalid_url` | A navigation's `url` (`state.url`) is not an absolute URL and could not be resolved against the tab's URL: it does not parse, such as an origin prepended to an `href` that was already absolute, or it is relative while the tab shows no web page. Nothing was loaded (see [`/api/navigate`](#post-apinavigate)) | false |
 | `container_timeout` | A batch or workflow reached its deadline; steps in progress may have taken effect and later steps did not start | false |
 | `tab_claimed` | A resumed `parallel` sequence writes a tab that another call's `parallel` in progress writes (`state.tabId`, `state.call`); nothing in that sequence was sent (see [Checkpoint and resume](checkpoint-resume.md#parallel)) | true |
 | `checkpoint_not_found`, `resume_token_invalid`, `workflow_changed`, `observed_invalid`, `observed_required`, `resume_failed`, `current_tab_changed` | `browser_resume` refused or stopped; see [Checkpoint and resume](checkpoint-resume.md#errors) and, for `current_tab_changed`, [Direct calls](checkpoint-resume.md#direct-calls) | `observed_*`, `current_tab_changed`: true; others: false |
@@ -2408,7 +2409,7 @@ never ran:
 | `status` | Meaning |
 |---|---|
 | `ok` | The command ran without an error. Like any result, this means dispatched, not that the outcome happened (see [Action outcomes](#action-outcomes)) |
-| `failed` | It returned an error that is safe to repeat (`retryable: true`, unclassified errors, `error_page`, `ambiguous_target`, `needs_user` other than an ask-before-act hold, `permission_required`, the pre-dispatch refusal `unknown_action`, or `ok: false`) |
+| `failed` | It returned an error that is safe to repeat (`retryable: true`, unclassified errors, `error_page`, `ambiguous_target`, `needs_user` other than an ask-before-act hold, `permission_required`, the pre-dispatch refusals `unknown_action` and `invalid_url`, or `ok: false`) |
 | `held` | [Ask-before-act](#ask-before-act) held it (`needs_user`, `confirmation_required`); nothing ran |
 | `unknown` | It may have taken effect: an error with `retryable: false`, or it was in progress at the container's deadline. Observe the page before acting again |
 | `skipped` | It never started: an earlier step stopped the container (a held step, `stopOnWarning`, a failed workflow step) or the deadline passed |
@@ -3565,6 +3566,11 @@ single reads (see `browser_wait_for`); a zero timeout performs one immediate che
 `{ "url": "https://example.com", "tabId": 1, "expectTitle": "Example" }`
 
 - `tabId` is optional and defaults to the active tab.
+- `url` is an absolute URL, or a relative one (`"/deals/48"`, `"?page=2"`) that the bridge
+  resolves against the tab's current URL before the URL `allow`/`deny` policy and
+  [ask-before-act](#ask-before-act) read it, so both apply to the URL the tab loads (#571). A
+  batch `navigate` step is resolved the same way. A `url` that does not parse, or a relative one
+  on a tab that shows no web page (`about:blank`), returns `invalid_url` before anything loads.
 - `expectTitle` is optional. A title that doesn't match returns a warning, which catches silent
   redirects.
 - User and other clients' tabs return `user_tab_read_only` without a prompt; the same applies

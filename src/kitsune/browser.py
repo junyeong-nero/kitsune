@@ -608,6 +608,8 @@ class Tab:
         such as :has-text or text=. At most 500 rows; text/value fields are clipped to 400
         characters. A row-limit warning does not report those field clips. Filter locally,
         but absence in returned snippets is not page-wide absence; scope a snapshot for detail.
+        href and src are absolute URLs even when the attribute is relative ('/deals/48'), so
+        pass them to navigate as they are.
         """
         body = {"selector": selector, "limit": limit}
         if fields:
@@ -748,6 +750,8 @@ class Tab:
     # -- Navigation and tabs ---------------------------------------
 
     def navigate(self, url: str, *, expect: dict | None = None, confirm: str | None = None) -> dict:
+        """Load url: an absolute URL, or a relative one ('/deals/48') resolved against the tab's
+        current URL. One that does not parse fails with code invalid_url."""
         return self._action("/api/navigate", {"url": url}, expect=expect, confirm=confirm,
                             base_seconds=NAVIGATE_REQUEST_SECONDS)
 
