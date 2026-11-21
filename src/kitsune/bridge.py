@@ -31,7 +31,7 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from threading import Lock, Thread
 from datetime import datetime, timezone
-from urllib.parse import parse_qs, urlsplit, unquote
+from urllib.parse import parse_qs, urljoin, urlsplit, unquote
 
 import hashlib
 import hmac
@@ -1751,11 +1751,11 @@ _REPEAT_UNSAFE_ACTIONS = WRITE_ACTIONS | {"uploadCommit", "focusElement", "blurE
 # because the command names several targets (ambiguous_target) or its target selector failed
 # to parse or validate before anything was dispatched (unsupported_selector), until the user
 # approves closing their tab (needs_user; a v0.7.1 extension's user_tab), until the user grants a
-# browser permission (permission_required), or until the container step names a batch action
-# (unknown_action).
+# browser permission (permission_required), until the container step names a batch action
+# (unknown_action), or until the navigation names a URL that parses (invalid_url).
 _PERSISTENT_FAILURE_CODES = {"error_page", "ambiguous_target", "unsupported_selector", "needs_user", "user_tab",
                              "user_tab_read_only", "invalid_tab_id", "invalid_window_id", "window_unavailable",
-                             "invalid_coordinates", "permission_required", "unknown_action"}
+                             "invalid_coordinates", "permission_required", "unknown_action", "invalid_url"}
 
 
 def _url_matches(pattern, url, flags=0):
@@ -3843,6 +3843,36 @@ def _wrap_image_url(body):
     return body
 
 
+_URL_SCHEME = _re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:")
+
+
+def _is_relative_url(url):
+    return isinstance(url, str) and bool(url.strip()) and not _URL_SCHEME.match(url.strip())
+
+
+async def _resolve_relative_url(params):
+    """#571 - make a navigate's relative url absolute against its tab's current URL, in place.
+
+    It runs before _check_policy and ask-before-act, so they read the URL the tab loads, and the
+    tab is pinned so the URL loads where it was resolved. A url that cannot be resolved (no tab, a
+    tab on about:blank) stays as given; the extension refuses it with invalid_url.
+    """
+    if not _is_relative_url(params.get("url")):
+        return
+    described = await _describe_target(params, False)
+    base = described.get("url") if isinstance(described, dict) else None
+    if not isinstance(base, str):
+        return
+    try:
+        resolved = urljoin(base, params["url"].strip())
+    except ValueError:
+        return
+    if _URL_SCHEME.match(resolved):
+        params["url"] = resolved
+        if params.get("tabId") is None and described.get("tabId") is not None:
+            params["tabId"] = described["tabId"]
+
+
 # ══════════════════════════════════════════════
 #  HTTP API Server (Claude Desktop calls this)
 # ══════════════════════════════════════════════
@@ -4612,6 +4642,8 @@ async def run_command(cmd):
         tab_err = _check_step_tab(effective_action, params)
         if tab_err:
             return tab_err
+        if effective_action == "navigate":
+            await _resolve_relative_url(params)
         policy_err = _check_policy(effective_action, params)
         if policy_err:
             return policy_err
@@ -5413,7 +5445,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self._send_extension_action("fill", self.read_body())
     
     def handle_navigate(self):
-        self._send_navigation("navigate", _wrap_image_url(self.read_body()))
+        body = self.read_body()
+        if _is_relative_url(body.get("url")):
+            self.run_async(_resolve_relative_url(body))
+        self._send_navigation("navigate", _wrap_image_url(body))
 
     def _send_navigation(self, action, body, timeout=35):
         # Only the bridge sets userTabApproved (on a close the user approved); a caller's never reaches the extension.

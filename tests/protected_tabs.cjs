@@ -29,7 +29,7 @@ function harness({ focusedWindow = 2 } = {}) {
     runtime: { onMessage: event(), onStartup: event(), onInstalled: event() },
   };
   const context = vm.createContext({
-    browser, console: { log() {}, error() {} },
+    browser, URL, console: { log() {}, error() {} },
     WebSocket: class { close() {} },
     setTimeout: () => 0, clearTimeout() {}, setInterval: () => 0, clearInterval() {},
   });

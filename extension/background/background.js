@@ -1795,6 +1795,16 @@ async function openBlockedLink(tabId, link, result, ownerId, authorization) {
       'state.url may contain redacted values and must not be used as a navigation URL.' };
 }
 
+// A navigate url that is not an absolute URL (#571): refused here with a code, where tabs.update
+// only says "Illegal URL". The bridge resolves a relative url against the tab's URL before its
+// URL policy reads it, so the extension never resolves one itself.
+function invalidNavigateUrl(url) {
+  if (urlWithoutFragment(url) !== null) return null;
+  return { error: `Invalid URL: ${url}`, code: 'invalid_url', retryable: false, state: { url },
+    hint: 'Nothing was loaded. Pass an absolute URL, or a path while the tab shows a web page; ' +
+      'query\'s href and src values are already absolute.' };
+}
+
 async function dispatchCommand(command) {
   const { action, id, ...params } = command;
   
@@ -1812,7 +1822,7 @@ async function dispatchCommand(command) {
     case 'waitForUrl':   return await waitForTabProperty('url', params);
     case 'waitForTitle': return await waitForTabProperty('title', params);
     case 'getOpenedTabs': return await getOpenedTabs(params.tabId);
-    case 'navigate':     return await navigateTab(params.url, params.tabId, params.expectTitle, params);
+    case 'navigate':     return invalidNavigateUrl(params.url) || await navigateTab(params.url, params.tabId, params.expectTitle, params);
     case 'switchTab':    return await switchTab(params.tabId, params);
     case 'newTab':       return await createTab(params.url, params);
     case 'closeTab':     return await closeTab(params.tabId, { ...params, userTabApproved: true });
