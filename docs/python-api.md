@@ -54,6 +54,7 @@ result = tab.snapshot()
 ```
 
 - `browser` is the API, routed through the MCP session. **Don't call `kitsune.connect()`.**
+- `time`, `re` and `json` are preloaded; import any other module yourself.
 - `tab` is the MCP-selected tab at start, else the tab you are viewing. Scripts don't change the
   MCP selection. `browser.tabs()` returns dicts with real tab ids (not MCP list indexes); wrap one
   with `browser.tab(t["id"])`.

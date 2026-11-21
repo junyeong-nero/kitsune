@@ -1392,7 +1392,8 @@ async def browser_run_python(
 ) -> CallToolResult:
     """Browse with Python: read, click, scroll, hover, drag, type, fill and wait in one call.
     Trusted local Python with host file/network access, NOT a sandbox. The supplied browser
-    uses this client's session and permissions. No imports or kitsune.connect() are needed.
+    uses this client's session and permissions. time, re and json are preloaded; import other
+    modules yourself. kitsune.connect() is not needed.
     Variables reset each call; tabs persist. tab is the MCP-selected Tab, else the tab the user
     views (None with several windows). Scripts need no browser_tabs list/select first:
     browser.tabs() lists tabs and browser.tab(id) reads or acts on any of them.

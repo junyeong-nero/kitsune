@@ -4,7 +4,9 @@ This is not a sandbox. Code has ordinary local Python host access.
 """
 import contextlib
 import json as json_module
+import re
 import sys
+import time
 import traceback
 
 from .browser import Browser, Tab
@@ -45,7 +47,8 @@ def main():
     request = json_module.loads(_INPUT.readline())
     client = _Client()
     browser = Browser(client)
-    namespace = {"__name__": "__main__", "browser": browser,
+    # #574: scripts used time, re and json without importing them, after earlier operations had run.
+    namespace = {"__name__": "__main__", "browser": browser, "time": time, "re": re, "json": json_module,
                  "tab": browser.tab(request["tab_id"]) if request.get("tab_id") is not None else None,
                  # #568: the exceptions a failed read or wait raises, for except clauses.
                  "KitsuneError": KitsuneError, "TimedOut": TimedOut}

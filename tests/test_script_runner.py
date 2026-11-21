@@ -87,6 +87,19 @@ class ScriptRunnerTests(unittest.IsolatedAsyncioTestCase):
         result = await script_runner.run_python("result = 'secret' in globals()", client)
         self.assertIs(result["result"], False)
 
+    async def test_time_re_and_json_are_preloaded_and_can_still_be_imported(self):
+        # #574: scripts used time.sleep, re and json after earlier operations had been sent.
+        client = Client()
+        code = ("tab.fill('#city', 'Vancouver'); time.sleep(0.01)\n"
+                "result = [re.sub(r'\\d+', '#', 'a1b22'), json.dumps({'a': 1}), json.loads('[1]')]")
+        result = await script_runner.run_python(code, client, tab_id=7)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["result"], ["a#b#", '{"a": 1}', [1]])
+        self.assertEqual([route for _, route, _ in client.calls], ["/api/fill"])
+        code = "import time, re, json\nimport json as j\nresult = [j is json, time.monotonic() > 0, re.escape('.')]"
+        result = await script_runner.run_python(code, client)
+        self.assertEqual(result["result"], [True, True, "\\."])
+
     async def test_errors_and_non_json_results_are_reported(self):
         for code, expected in [("if", "SyntaxError"), ("1 / 0", "ZeroDivisionError"),
                                ("result = b'bytes'", "TypeError"), ("raise SystemExit(2)", "SystemExit")]:
