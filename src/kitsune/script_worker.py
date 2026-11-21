@@ -8,6 +8,7 @@ import sys
 import traceback
 
 from .browser import Browser, Tab
+from .errors import KitsuneError, TimedOut
 
 _INPUT = sys.stdin
 _OUTPUT = sys.stdout
@@ -19,12 +20,15 @@ def _send(message):
 
 
 class _Client:
+    reply = None  # the last call's reply
+
     def request(self, method, endpoint, *, json=None, timeout=15):
         _send({"event": "call", "method": method, "route": endpoint, "body": json, "timeout": timeout})
         line = _INPUT.readline()
         if not line:
             raise RuntimeError("The script host disconnected")
-        return json_module.loads(line)
+        self.reply = json_module.loads(line)
+        return self.reply
 
 
 class _Output:
@@ -39,9 +43,12 @@ class _Output:
 
 def main():
     request = json_module.loads(_INPUT.readline())
-    browser = Browser(_Client())
+    client = _Client()
+    browser = Browser(client)
     namespace = {"__name__": "__main__", "browser": browser,
-                 "tab": browser.tab(request["tab_id"]) if request.get("tab_id") is not None else None}
+                 "tab": browser.tab(request["tab_id"]) if request.get("tab_id") is not None else None,
+                 # #568: the exceptions a failed read or wait raises, for except clauses.
+                 "KitsuneError": KitsuneError, "TimedOut": TimedOut}
     with contextlib.redirect_stdout(_Output()), contextlib.redirect_stderr(_Output()):
         try:
             exec(compile(request["code"], "<kitsune-script>", "exec"), namespace)
@@ -56,7 +63,9 @@ def main():
                     if str(error).startswith(f"{method.__qualname__}() got an unexpected keyword argument "):
                         message += f"\nPython API: {method.__qualname__}{inspect.signature(method)}\n{inspect.getdoc(method)}"
                         break
-            _send({"event": "done", "error": message})
+            # #568: an uncaught failure of the last call ends the script as that failed operation.
+            uncaught_reply = isinstance(error, KitsuneError) and error.result is client.reply
+            _send({"event": "done", "error": message, **({"uncaught_reply": True} if uncaught_reply else {})})
 
 
 if __name__ == "__main__":

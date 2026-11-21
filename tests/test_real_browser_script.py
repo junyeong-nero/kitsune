@@ -125,6 +125,69 @@ class RealBrowserScriptTests(harness.RealBrowserTestCase):
             self.assertEqual(json.loads(help_result.content[0].text)["operations"], [])
         self.run_scenario(run)
 
+    def name_field(self, tab_id):
+        fields = self.call("/api/forms", {"tabId": tab_id})["fields"]
+        return next(field["value"] for field in fields if field.get("name") == "name")
+
+    def test_caught_read_and_wait_failures_continue_but_writes_and_policy_still_stop(self):
+        async def run(session, tab_id):
+            # #568: unmet waits and a failed read raise in the script, which goes on.
+            code = ("seen = []\n"
+                    "for condition in ({'text': 'Never shown'}, {'target': '#missing'}, {'title': 'Never'}):\n"
+                    "    try:\n        tab.wait_for(timeout=300, **condition)\n"
+                    "    except TimedOut as error:\n        seen.append(type(error).__name__)\n"
+                    "try:\n    tab.snapshot(target='e99999')\n"
+                    "except KitsuneError as error:\n    seen.append(error.code)\n"
+                    "tab.fill('#name', 'After the waits')\n"
+                    "result = seen + [tab.wait_for(text='Orders', timeout=2000)['ok']]")
+            continued = await session.call_tool("browser_run_python", {"code": code})
+            self.assertFalse(continued.isError, continued)
+            payload = json.loads(continued.content[0].text)
+            self.assertEqual(payload["result"], ["TimedOut", "TimedOut", "TimedOut", "stale_ref", True])
+            self.assertEqual([entry["status"] for entry in payload["operations"]],
+                             ["failed", "failed", "failed", "failed", "ok", "ok"])
+            self.assertEqual(self.name_field(tab_id), "After the waits")
+
+            # Uncaught, the same wait ends the script as before.
+            uncaught = await session.call_tool("browser_run_python", {
+                "code": "print('progress')\ntab.wait_for(text='Never shown', timeout=300)\ntab.fill('#name', 'must not run')"})
+            self.assertTrue(uncaught.isError, uncaught)
+            payload = json.loads(uncaught.content[0].text)
+            self.assertEqual(payload["code"], "script_operation_failed")
+            self.assertIn("Timed out after 300ms", payload["failed_operation"]["error"])
+            self.assertEqual((payload["output"], [entry["status"] for entry in payload["operations"]]),
+                             ("progress\n", ["failed"]))
+
+            # A failed write stops the script even when it is caught.
+            code = ("tab.fill('#name', 'Before the write')\nprint('progress')\n"
+                    "try:\n    tab.click('#missing')\n"
+                    "except BaseException:\n    tab.fill('#name', 'must not run')\n")
+            stopped = await session.call_tool("browser_run_python", {"code": code})
+            self.assertTrue(stopped.isError, stopped)
+            payload = json.loads(stopped.content[0].text)
+            self.assertEqual((payload["code"], payload["failed_operation"]["code"]),
+                             ("script_operation_failed", "not_found"))
+            self.assertEqual((payload["output"], [entry["status"] for entry in payload["operations"]]),
+                             ("progress\n", ["ok", "failed"]))
+            self.assertEqual(self.name_field(tab_id), "Before the write")
+
+            # So does the bridge's policy refusal of a read, which has no code.
+            self.call("/api/set-policy", {"deny": ["blocked\\.test"]})
+            code = ("try:\n"
+                    f"    browser.request('/api/query', {{'tabId': {tab_id}, 'selector': 'h1', 'url': 'https://blocked.test/'}})\n"
+                    "except BaseException:\n    tab.fill('#name', 'must not run')\n")
+            refused = await session.call_tool("browser_run_python", {"code": code})
+            self.assertTrue(refused.isError, refused)
+            payload = json.loads(refused.content[0].text)
+            self.assertEqual(payload["code"], "script_operation_failed")
+            self.assertIn("URL denied by policy", payload["failed_operation"]["error"])
+            self.assertEqual([entry["status"] for entry in payload["operations"]], ["failed"])
+            self.assertEqual(self.name_field(tab_id), "Before the write")
+        try:
+            self.run_scenario(run)
+        finally:
+            self.call("/api/set-policy", {"deny": []})
+
     def test_approval_stop_keeps_the_draft_and_does_not_offer_script_replay(self):
         self.call("/api/set-policy", {"ask": True})
 

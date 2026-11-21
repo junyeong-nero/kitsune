@@ -63,7 +63,13 @@ result = tab.snapshot()
   the model. Use `browser_take_screenshot` for images.
 - Limits: 64,000 bytes of code; 16,000 bytes of output and result combined (bytes, not
   characters); 100 API calls; 30 s default deadline, 120 s max.
-- A failed API call stops the script, even if caught. Earlier writes stay applied: observe the
+- A failed read or wait raises its exception in the script, as outside scripts: `text`,
+  `snapshot`, `find`, `query`, `forms`, `info` and `wait_for` (except `js=`, which runs JavaScript
+  in the page). Catch `TimedOut` or `KitsuneError` (both are defined in the script) to go on; the
+  call stays `failed` in `operations`. Uncaught, it ends the script like any failed call.
+- Any other failed API call stops the script, even if caught, and so does every call that needs
+  you or that policy refuses (`needs_user`, tab ownership, read-only mode), reads included. Printed
+  output up to the stop is returned, `result` is not. Earlier writes stay applied: observe the
   page and run only the remaining work, never replay the script. An approval stop names a
   `recovery_tool` for `browser_tools_call`. A tool [you require approval for](your-tabs.md#tools-that-need-your-approval)
   pauses the script instead, without counting against the deadline.
