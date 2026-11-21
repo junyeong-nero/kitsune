@@ -219,7 +219,8 @@ current focus. Check the result's `effect` and `prevented`, and read the page, r
 
 ## Waiting
 
-`tab.wait_for(...)` waits up to `timeout` ms (default 10000) for one condition, else `TimedOut`:
+`tab.wait_for(...)` waits up to `timeout` ms (default 10000) for one condition, else `TimedOut`
+(`code` `timeout`, `retryable=True`):
 
 | Condition | Holds when |
 | --- | --- |

@@ -566,7 +566,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `error_page` | A loaded `http(s)` page refused the content script: the browser shows its own document, such as an error response with an empty body. `state` adds `title` and, when the extension saw the response, `httpStatus`. Nothing was dispatched, but reads fail the same way until the tab navigates; for a 4xx/5xx status, `browser_page_text` instead returns an empty result (`text: ""`, `empty: true`, `httpStatus`, `tabId`, `url`, `title`) | false |
 | `extension_disconnected` | The extension is not connected, reconnected before sending, or disconnected while waiting (`state.connected`) | true if not sent; false for writes after |
 | `dialog_open` | A native alert/confirm/prompt is open in the tab and the command waited on it for over 1 s (see [Page dialogs](#page-dialogs)); `state.dialog` names it (`pending: true`). Only the user can answer it, and the command's effect depends on the answer | false |
-| `timeout` | The bridge sent the command but no reply arrived in time (`state.timeoutSeconds`); from the MCP server, the bridge did not answer. An element or text wait whose page reads all went unanswered within its `timeout` (see `browser_wait_for`) | false for writes (MCP: POST) |
+| `timeout` | The bridge sent the command but no reply arrived in time (`state.timeoutSeconds`); from the MCP server, the bridge did not answer. An element or text wait whose page reads all went unanswered within its `timeout` (see `browser_wait_for`). A wait route whose condition did not hold within its `timeout`: `ok: false` with the fields the wait reports (`elapsed`, `text`, `found`, `url`, …); a wait changes nothing, so it is `retryable: true` | false for writes (MCP: POST); true for waits |
 | `bridge_unavailable` | The MCP server cannot reach or start the bridge (`state.exitCode`, `state.logExcerpt` when it exited at startup; `state.reason`, `state.pid` when it runs but does not answer) | true |
 | `bridge_disconnected` | From the MCP server: the bridge closed the connection before its reply. `state.requestSent` is `false` when the request could not be sent in full, so the command did not run | true if not sent; false for writes (MCP: POST) after |
 | `token_mismatch` | The bridge rejected the MCP server's token (`state.port`, `state.tokenSource`) | true |
@@ -3034,6 +3034,10 @@ A met `text` or `text_gone` wait (#403) adds the same changes to its
 `{"ok": true, "text": …, "text_gone": …, "elapsed": …}` result, so a toast that appears as
 a status line goes away is in the result rather than lost before the next snapshot. A
 timed-out or failed text wait returns its result unchanged.
+
+A condition that does not hold within `timeout` returns `ok: false` with the wait's error
+(`Timed out after 10000ms waiting for visible text`), `code: "timeout"`, `retryable: true` and
+a `hint` (#574), from every wait endpoint above. A batch step's wait keeps its uncoded result.
 
 `timeout` is in milliseconds and does not limit an explicit sleep. JS retains
 bridge non-empty-result semantics: `false` and `0` count as results; return

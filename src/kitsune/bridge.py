@@ -3013,6 +3013,23 @@ def _timeout_error(action, timeout):
     )
 
 
+WAIT_TIMEOUT_HINT = ("The condition did not hold in time. Take a browser_snapshot to see what the page shows; "
+                     "wait again only for something the page is still loading.")
+
+
+def _coded_wait_timeout(result):
+    """A wait route's result, whose timeout is coded like other failures (#574).
+
+    A wait that ran out of time answers ok=false with the page's message and what it read. It
+    gains code, retryable (a wait changes nothing) and a hint; a text wait keeps the hint that
+    its text is an element's name. Other failures are returned as they are.
+    """
+    if (isinstance(result, dict) and result.get("ok") is False and not result.get("code")
+            and str(result.get("error") or "").startswith("Timed out")):
+        return {**result, "code": "timeout", "retryable": True, "hint": result.get("hint") or WAIT_TIMEOUT_HINT}
+    return result
+
+
 def _connection_diagnosis():
     """browser_status diagnosis from bridge state (docs/api-reference.md#connection-diagnosis)."""
     if extension_ws is None:
@@ -5125,9 +5142,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "/api/submit-form": lambda: self._forward("submitForm"),
             "/api/form-fill": lambda: self._forward("formFill"),
             "/api/drag": lambda: self._forward("drag"),
-            "/api/wait-for-url": lambda: self._forward("waitForUrl", default_timeout=20),
-            "/api/wait-for-title": lambda: self._forward("waitForTitle", default_timeout=20),
-            "/api/wait-for-network-idle": lambda: self._forward("waitForNetworkIdle", default_timeout=30),
+            "/api/wait-for-url": lambda: self._forward_wait("waitForUrl", 20),
+            "/api/wait-for-title": lambda: self._forward_wait("waitForTitle", 20),
+            "/api/wait-for-network-idle": lambda: self._forward_wait("waitForNetworkIdle", 30),
             "/api/capture-network": lambda: self._forward("captureNetwork"),
             "/api/watch-console": lambda: self._forward("watchConsole"),
             "/api/console-logs": lambda: self._forward("consoleLogs"),
@@ -5604,7 +5621,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
     def handle_wait_for_element(self):
         body = self.read_body()
         result = self.run_async(_poll_page_wait("waitForElement", body))
-        self.send_json(200, result)
+        self.send_json(200, _coded_wait_timeout(result))
 
     def handle_wait_for_text(self):
         body = self.read_body()
@@ -5614,10 +5631,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return
         timeout_s = timeout_ms / 1000 + 5
         result = self.run_async(_poll_page_wait("waitForText", body), timeout=timeout_s + 1)
-        self.send_json(200, result)
+        self.send_json(200, _coded_wait_timeout(result))
 
     def handle_wait_for_result(self):
-        self._send_extension_action("waitForResult", self.read_body())
+        self._forward_wait("waitForResult", 35)
 
     def handle_page_text_by_tab_id(self):
         body = self.read_body()
@@ -5663,6 +5680,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
     def _forward(self, action, default_timeout=15):
         """Forward body + policy check + audit to a named extension action."""
         self._send_extension_action(action, self.read_body(), timeout=default_timeout)
+
+    def _forward_wait(self, action, default_timeout):
+        """_forward for a wait the extension runs, with its timeout coded."""
+        self._send_extension_action(action, self.read_body(), timeout=default_timeout, on_result=_coded_wait_timeout)
 
     # ── 1.4.0 orchestration ──
 

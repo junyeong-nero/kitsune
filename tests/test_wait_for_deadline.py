@@ -5,7 +5,7 @@ import json
 import logging
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from websockets.asyncio.client import connect
 
@@ -335,6 +335,72 @@ class SlowReadDeadlineTests(unittest.TestCase):
             result, wall_ms = run_wait(page, "waitForText", {"text": "Saved", "timeout": 0})
         self.assert_no_read_answered(result, wall_ms, timeout_ms=200)
         self.assertEqual(len(page.calls), 1)  # no second name-diagnosis request
+
+
+class WaitRouteTimeoutCodeTests(unittest.TestCase):
+    """#574: a wait that ran out of time is coded, with its existing fields unchanged."""
+
+    def post(self, route, body, reply):
+        async def page(action, params=None, timeout=30):
+            return dict(reply)
+
+        handler = bridge.BridgeHandler.__new__(bridge.BridgeHandler)
+        handler.read_body = Mock(return_value=dict(body))
+        handler.send_json = Mock()
+        handler.run_async = Mock(side_effect=lambda coro, **kwargs: asyncio.run(watchdog(coro)))
+        handler._held = Mock(return_value=False)
+        with patch.object(bridge, "send_to_extension", page), patch.object(bridge, "_audit"):
+            route(handler)
+        status, result = handler.send_json.call_args.args
+        self.assertEqual(status, 200)
+        return result
+
+    def test_every_wait_route_codes_its_timeout_and_keeps_what_it_reported(self):
+        timed_out = {"ok": False, "url": "https://a.test/", "error": "Timed out"}
+        idle = {"ok": False, "elapsed": 300, "resourceCount": 4, "error": "Timed out"}
+        js = {"ok": False, "result": None, "elapsed": 300,
+              "error": "Timed out after 300ms \u2014 expression never returned non-empty result"}
+        cases = [
+            (lambda h: h.handle_wait_for_text(), {"text": "Saved", "timeout": TIMEOUT_MS}, UNMET_TEXT),
+            (lambda h: h.handle_wait_for_element(), {"selector": "#menu", "timeout": TIMEOUT_MS}, UNMET_ELEMENT),
+            (lambda h: h._forward_wait("waitForUrl", 20), {"pattern": "/done", "timeout": 300}, timed_out),
+            (lambda h: h._forward_wait("waitForTitle", 20), {"pattern": "Done", "timeout": 300},
+             {"ok": False, "title": "Cart", "error": "Timed out"}),
+            (lambda h: h._forward_wait("waitForNetworkIdle", 30), {"idleMs": 500, "timeout": 300}, idle),
+            (lambda h: h.handle_wait_for_result(), {"code": "window.ready", "timeout": 300}, js),
+        ]
+        for route, body, reply in cases:
+            with self.subTest(body=body):
+                result = self.post(route, body, reply)
+                self.assertEqual((result["ok"], result["code"], result["retryable"]), (False, "timeout", True))
+                self.assertEqual(result["hint"], bridge.WAIT_TIMEOUT_HINT)
+                self.assertTrue(result["error"].startswith("Timed out"), result["error"])
+                kept = {key: value for key, value in reply.items() if key not in ("error", "elapsed")}
+                self.assertEqual({key: result[key] for key in kept}, kept)
+
+    def test_the_hint_that_text_is_an_elements_name_is_kept(self):
+        named = {**UNMET_TEXT, "matched_as": "accessible_name", "hint": "Found as the name of textbox"}
+        result = self.post(lambda h: h.handle_wait_for_text(), {"text": "Saved", "timeout": 0}, named)
+        self.assertEqual((result["code"], result["retryable"], result["hint"]),
+                         ("timeout", True, "Found as the name of textbox"))
+
+    def test_met_waits_and_other_failures_are_returned_as_they_are(self):
+        found = {"ok": True, "found": True, "selector": "#menu", "ref": "e3", "tag": "nav"}
+        result = self.post(lambda h: h.handle_wait_for_element(), {"selector": "#menu"}, found)
+        self.assertEqual({key: result[key] for key in found}, found)
+        self.assertNotIn("code", result)
+        for reply in ({"error": "Tab closed while waiting for url"},
+                      {"error": "stale ref, call browser_snapshot again", "code": "stale_ref", "retryable": True},
+                      {"ok": False, "timedOut": True, "url": "https://a.test/"}):
+            with self.subTest(reply=reply):
+                self.assertEqual(self.post(lambda h: h._forward_wait("waitForUrl", 20),
+                                           {"pattern": "x"}, reply), reply)
+
+    def test_a_single_read_inside_the_bridge_stays_uncoded(self):
+        # An action's expect and the polled reads take "timeout" to mean the page did not answer.
+        page = ThrottledPage(UNMET_TEXT)
+        result, _ = run_wait(page, "waitForText", {"text": "Saved", "timeout": TIMEOUT_MS})
+        self.assertNotIn("code", result)
 
 
 class _SchedulerState(unittest.IsolatedAsyncioTestCase):
