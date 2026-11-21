@@ -58,14 +58,18 @@ class RealBrowserLongpageTests(harness.RealBrowserTestCase):
                 self.addCleanup(self.call, "/api/close-tab", {"tabId": tab_id})
                 before = [t["id"] for t in self.call("/api/tabs")["tabs"] if t["active"]]
 
-                stopped = await python("tab.fill('#draft', 'keep this draft')\nresult = tab.text()", error=True)
-                self.assertEqual(stopped["code"], "script_output_limit")
-                self.assertFalse(stopped["retryable"])
-                self.assertNotIn("result", stopped)
-                self.assertNotIn("resume_token", stopped)
-                self.assertIn("incomplete", stopped["hint"])
-                self.assertIn("Page text was cut", stopped["output"])
-                self.assertEqual([op["status"] for op in stopped["operations"]], ["ok", "ok"])
+                # #570: a read over the limit is cut and marked, not a failed call.
+                cut = await python("tab.fill('#draft', 'keep this draft')\nresult = tab.text()")
+                self.assertIs(cut["truncated"], True)
+                self.assertGreater(cut["dropped_bytes"], 0)
+                self.assertTrue(cut["result"].startswith("Topic 0\n\n참고 자료입니다. "), cut["result"][:80])
+                self.assertGreater(len(json.dumps(cut["result"], ensure_ascii=False).encode()), 15000)
+                self.assertLessEqual(len(cut["output"].encode()) +
+                                     len(json.dumps(cut["result"], ensure_ascii=False).encode()), 16000)
+                self.assertNotIn("resume_token", cut)
+                self.assertIn("not page-wide absence", cut["hint"])
+                self.assertIn("Page text was cut", cut["output"])
+                self.assertEqual([op["status"] for op in cut["operations"]], ["ok", "ok"])
 
                 # Omitted rows must remain visible as a warning, not a page-wide "not found".
                 narrow = await python("links = tab.query('nav a', fields=['text'], limit=20)\n"

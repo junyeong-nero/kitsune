@@ -67,11 +67,10 @@ def _epoch_ms(moment: datetime) -> int:
     return int(moment.timestamp() * 1000)
 
 
-def _cut(result: dict, what: str) -> dict:
-    """Warn when the bridge cut a read at its size cap."""
+def _cut(result: dict, what: str, instead: str = "read a part of the page with a target") -> dict:
+    """Warn when the bridge cut a read at its size cap; instead is the advice for a read without a target."""
     if result.get("truncated"):
-        warnings.warn(f"{what} was cut at the bridge's size cap; read a part of the page with a target",
-                      stacklevel=3)
+        warnings.warn(f"{what} was cut at the bridge's size cap; {instead}", stacklevel=3)
     return result
 
 
@@ -571,7 +570,8 @@ class Tab:
 
     def text(self) -> str:
         """The page's visible text; "" for an HTTP error the browser shows without a document."""
-        return _cut(self._request("/api/page-text"), "Page text")["text"]
+        return _cut(self._request("/api/page-text"), "Page text",
+                    "read a part of the page with tab.snapshot(target=..., text=True) or tab.query(...)")["text"]
 
     def snapshot(self, target: str | None = None, *, max_depth: int | None = None, text: bool = False) -> str:
         """The accessibility-style tree of the page, or of target's subtree, with refs for actions.
