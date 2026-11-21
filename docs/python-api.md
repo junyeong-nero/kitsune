@@ -73,6 +73,11 @@ result = tab.snapshot()
   page and run only the remaining work, never replay the script. An approval stop names a
   `recovery_tool` for `browser_tools_call`. A tool [you require approval for](your-tabs.md#tools-that-need-your-approval)
   pauses the script instead, without counting against the deadline.
+- A ref dies when an action loads another document. Only a link's ref is followed: when the tab
+  is your client's own and its new page lists exactly one link with the same name and the same
+  destination, the action runs on that link and reports `remapped: {from, to, role, name}` in its
+  result and its `operations` entry. Any other stale ref fails as `stale_ref`: target by selector
+  or take a new snapshot.
 - On timeout the worker is killed; a command already sent may still finish, so read the page
   before writing again.
 - `help(tab.query)` prints a method's signature.

@@ -1742,6 +1742,9 @@
     // emptiness says nothing about content.
     const explicit = withText && !baseline && observation === 'browser_snapshot';
     const frames = selected.filter(entry => entry.frameId).map(entry => ({ ref: entry.ref, frameId: entry.frameId }));
+    // The background keeps these with the refs and returns them to no client (#572).
+    const hrefs = selected.filter(entry => entry.ref && linkDestination(entry))
+      .map(entry => ({ ref: entry.ref, href: entry.href }));
     return {
       snapshot,
       ...(truncated ? { truncated: true } : {}),
@@ -1749,6 +1752,7 @@
       // For boundPublicSnapshot, which can cut again after aliases and URL redaction.
       ...(cuts ? { cuts: cuts.filter(cut => cut <= selected.length) } : {}),
       ...(frames.length ? { frames } : {}),
+      ...(hrefs.length ? { hrefs } : {}),
       ...(withText && !baseline ? { url: window.location?.href ?? globalThis.location?.href, title: document.title } : {}),
       ...(explicit ? { readyState: document.readyState } : {}),
       ...(explicit && !snapshot && !truncated ? { empty: true, hint: EMPTY_SNAPSHOT_HINT } : {}),
@@ -1766,11 +1770,22 @@
   // The one element a whole-page snapshot would list with this `role "name"` (label), for a
   // ref from another document (#459). A readable cross-origin frame's elements are not seen
   // here, so a page listing one has no answer, as has a label with no or several elements.
+  // href: that element's destination when it is a link with one (linkDestination).
   function sameElement(label) {
     const entries = getSnapshot(undefined, false, null, null, false, undefined, 'labels', false, false);
     if (entries.some(entry => entry.frameId)) return {};
     const matches = entries.filter(entry => entry.label === label);
-    return matches.length === 1 ? { ref: issueRef(matches[0].el) } : {};
+    if (matches.length !== 1) return {};
+    return { ref: issueRef(matches[0].el), ...(linkDestination(matches[0]) ? { href: matches[0].href } : {}) };
+  }
+
+  // Whether a snapshot entry is a link that leads somewhere (#572): a web URL (entry.href) from
+  // an href that is not empty or a bare "#", which only stand for the page they are on. A script's
+  // stale link ref is followed only to a link with the same destination.
+  const LINK_DESTINATION_LIMIT = 2048;
+  function linkDestination(entry) {
+    return !!entry.href && entry.href.length <= LINK_DESTINATION_LIMIT &&
+      !['', '#'].includes((entry.el.getAttribute('href') ?? '').trim());
   }
 
   // ── Find Elements ──

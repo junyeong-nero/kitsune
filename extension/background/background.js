@@ -3068,12 +3068,12 @@ async function withFrameTrees(tabId, response, scope, maxDepth, limit = DOM_TREE
 
 // Public refs never reuse an index. Keep the generation-qualified ref private so the
 // content script can still reject refs from another document or an earlier injection.
-// short -> { tabId, ref, label }: label is the `role "name"` of the ref's snapshot line, which
-// another document's same element is matched by (#459).
+// short -> { tabId, ref, label, href }: label is the `role "name"` of the ref's snapshot line, which
+// another document's same element is matched by (#459); href is a listed link's destination (#572).
 const shortRefs = new Map();
 const publicRefs = new Map();
 // Retired aliases still answer other_document, not not_in_snapshot; bounded, oldest first.
-// short -> its label.
+// short -> its { tabId, label, href }.
 const retiredShortRefs = new Map();
 const RETIRED_SHORT_REFS_MAX = 4096;
 // Retire aliases with their document/tab, without resetting the persisted monotonic counter.
@@ -3084,7 +3084,7 @@ function pruneShortRefs(tabId) {
     if (entry.tabId !== tabId) continue;
     shortRefs.delete(short);
     publicRefs.delete(`${tabId}:${entry.ref}`);
-    retiredShortRefs.set(short, entry.label);
+    retiredShortRefs.set(short, { tabId, label: entry.label, href: entry.href });
   }
   for (const short of retiredShortRefs.keys()) {
     if (retiredShortRefs.size <= RETIRED_SHORT_REFS_MAX) break;
@@ -3139,8 +3139,10 @@ function expandShortRefs(params, tabId) {
     if (!ref) continue;
     const entry = shortRefs.get(ref);
     if (!entry) {
-      return { error: shortRefError(ref, retiredShortRefs.has(ref) ? 'other_document' : 'not_in_snapshot'),
-        label: retiredShortRefs.get(ref) };
+      const retired = retiredShortRefs.get(ref);
+      // href: only for a link ref of this tab's own earlier document (see followsSameLink).
+      return { error: shortRefError(ref, retired ? 'other_document' : 'not_in_snapshot'), label: retired?.label,
+        href: key === 'ref' && retired?.tabId === tabId ? retired.href : undefined };
     }
     if (entry.tabId !== tabId) return { error: shortRefError(ref, 'other_document'), label: entry.label };
     expanded[key] = entry.ref + rest;
@@ -3153,8 +3155,19 @@ function expandShortRefs(params, tabId) {
 // agent can retry without another snapshot (#459). The page there can differ from the one the
 // agent read, so the agent decides: nothing is sent to that element. A lookup that fails or
 // takes longer than SAME_ELEMENT_TIMEOUT_MS leaves the error as it was.
+// href: the destination the stale ref's link had, when the caller may follow it (followsSameLink).
+// same_element.follow then tells the script runner to send the command again with that ref,
+// only when the same element is a link with that destination. Role and name alone would also
+// match another page's lone `button "Delete"`, so nothing else is followed.
 const SAME_ELEMENT_TIMEOUT_MS = 2000;
-async function withSameElement(tabId, error, label, authorization) {
+// Whether a stale ref of this command may be followed (#572): only a browser_run_python script's
+// own request for a write (the bridge sets followSameLink), on a tab this client owns that no
+// user handed over.
+function followsSameLink(action, params, tabId) {
+  return params.followSameLink === true && writesTab(action, params) &&
+    ownsTab(tabId, params.ownerId, params.sessionId) && !handoffs.has(tabId);
+}
+async function withSameElement(tabId, error, label, authorization, href) {
   let timer;
   try {
     const deadline = Date.now() + SAME_ELEMENT_TIMEOUT_MS;
@@ -3167,8 +3180,10 @@ async function withSameElement(tabId, error, label, authorization) {
     if (typeof found?.ref !== 'string') return error;
     const { ref } = await compactContentRefs('sameElement', found, tabId, {});
     const role = label.slice(0, label.indexOf(' "'));
+    const follow = role === 'link' && typeof href === 'string' && found.href === href;
     return { ...error, hint: `${error.hint} The same ${label} here is ${ref}; retry with it.`,
-      state: { ...error.state, same_element: { ref, role, name: JSON.parse(label.slice(role.length + 1)) } } };
+      state: { ...error.state, same_element: { ref, role, name: JSON.parse(label.slice(role.length + 1)),
+        ...(follow ? { follow: true } : {}) } } };
   } catch {
     return error;
   } finally {
@@ -3382,7 +3397,8 @@ async function forwardToContent(action, params) {
     if (expanded.error) {
       // A discarded tab is not woken for a write's error.
       const error = expanded.label && !state.discarded
-        ? await withSameElement(tabId, expanded.error, expanded.label, params) : expanded.error;
+        ? await withSameElement(tabId, expanded.error, expanded.label, params,
+          followsSameLink(action, params, tabId) ? expanded.href : undefined) : expanded.error;
       return await withTabState(tabId, error);
     }
     const frameId = targetFrame(tabId, expanded.params);
@@ -3397,7 +3413,8 @@ async function forwardToContent(action, params) {
       return failure;
     }
 
-    const { [TAB_ADMISSION]: admission, ownerId, sessionId, clientName, userTabsWritable, ...contentParams } = expanded.params;
+    const { [TAB_ADMISSION]: admission, ownerId, sessionId, clientName, userTabsWritable, followSameLink,
+      ...contentParams } = expanded.params;
     let message = { action, ...contentParams };
     if (delta) {
       deltaScope ??= { parent: frameId, depth: 0, budget: frameReadBudget() };
@@ -3442,7 +3459,14 @@ async function forwardToContent(action, params) {
       if (response.code) response = await withTabState(tabId, response);
     }
     if (response.frames) delete response.frames;
+    // A snapshot's link destinations stay here, with their refs (#572).
+    const hrefs = action === 'getSnapshot' && Array.isArray(response.hrefs) ? response.hrefs : [];
+    if (action === 'getSnapshot') delete response.hrefs;
     const result = await compactContentRefs(action, response, tabId, params);
+    for (const { ref, href } of hrefs) {
+      const entry = shortRefs.get(publicRefs.get(`${tabId}:${ref}`));
+      if (entry) entry.href = href;
+    }
     // Waits and drags echo their targets; keep their public spelling too.
     for (const key of REF_PARAMS) {
       if (!leadingShortRef(params[key])) continue;

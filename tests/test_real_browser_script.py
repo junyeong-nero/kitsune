@@ -2,6 +2,7 @@
 import asyncio
 from http.server import BaseHTTPRequestHandler
 import json
+import re
 import sys
 
 from mcp import ClientSession, StdioServerParameters
@@ -29,15 +30,43 @@ class _LongSite(BaseHTTPRequestHandler):
         pass
 
 
+# #572: two pages that share a navigation link. Page B also has a lone namesake of A's button, a
+# link named like A's that leads elsewhere, two links named like one of A's, and nothing named
+# like A's "Only here".
+NAV = '<nav><a href="/bookmarks">Bookmarks</a></nav>'
+PAGES = {
+    "/a": ("Page A", NAV + '<a href="/b">Next</a> <a href="/old">Moved</a> <a href="/twin">Twin</a> '
+           '<a href="/only">Only here</a> <button>Go</button>'),
+    "/b": ("Page B", NAV + '<a href="/new">Moved</a> <a href="/twin">Twin</a> <a href="/twin2">Twin</a> '
+           """<button onclick="document.title = 'Go clicked'">Go</button>"""),
+}
+
+
+class _NavSite(BaseHTTPRequestHandler):
+    def do_GET(self):
+        title, body = PAGES.get(self.path, (self.path.strip("/").capitalize(), "<p>Arrived</p>"))
+        data = f"<!doctype html><title>{title}</title>{body}".encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, *args):
+        pass
+
+
 class RealBrowserScriptTests(harness.RealBrowserTestCase):
     @classmethod
     def setUpClass(cls):
         cls.site = harness.FixtureServer(_Site)
         cls.addClassCleanup(cls.site.stop)
+        cls.nav = harness.FixtureServer(_NavSite)
+        cls.addClassCleanup(cls.nav.stop)
         super().setUpClass()
 
-    async def scenario(self, run):
-        env = {**self.bridge.env, "KITSUNE_SCRIPTING": "1", "KITSUNE_OWNER_ID": "script-smoke"}
+    async def scenario(self, run, **env):
+        env = {**self.bridge.env, "KITSUNE_SCRIPTING": "1", "KITSUNE_OWNER_ID": "script-smoke", **env}
         params = StdioServerParameters(command=sys.executable, args=["-m", "kitsune.server"], env=env)
         async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
             await session.initialize()
@@ -55,8 +84,8 @@ class RealBrowserScriptTests(harness.RealBrowserTestCase):
             self.addCleanup(self.call, "/api/close-tab", {"tabId": tab_id})
             await run(session, tab_id)
 
-    def run_scenario(self, run):
-        asyncio.run(asyncio.wait_for(self.scenario(run), 60))
+    def run_scenario(self, run, **env):
+        asyncio.run(asyncio.wait_for(self.scenario(run, **env), 60))
 
     def test_guide_reads_tab_dicts_and_every_method_runs(self):
         async def run(session, tab_id):
@@ -279,6 +308,128 @@ class RealBrowserScriptTests(harness.RealBrowserTestCase):
                 "code": "tab.wait_for(title='Done'); result = tab.info()['url']"})
             self.assertFalse(done.isError, done)
             self.assertIn("name=Keep+this+draft", json.loads(done.content[0].text)["result"])
+        try:
+            self.run_scenario(run)
+        finally:
+            self.call("/api/set-policy", {"ask": False})
+
+    # -- #572: a stale link ref after an in-script navigation ----------------
+
+    async def page_a_refs(self, session, tab_id):
+        """Open page A in the tab; the refs its snapshot lists, by `role "name"`."""
+        read = await session.call_tool("browser_run_python", {
+            "code": f"tab = browser.tab({tab_id}); tab.navigate({self.nav.origin + '/a'!r}); result = tab.snapshot()"})
+        self.assertFalse(read.isError, read)
+        return {label: ref for label, ref in re.findall(r'- (\w+ "[^"]*") \[ref=(e\d+)\]',
+                                                         json.loads(read.content[0].text)["result"])}
+
+    async def click_next_then(self, session, tab_id, old):
+        """A script that follows page A's Next link to page B, then clicks a ref of page A."""
+        refs = await self.page_a_refs(session, tab_id)
+        code = (f"tab = browser.tab({tab_id})\ntab.click({refs['link \"Next\"']!r})\n"
+                f"result = tab.click({refs[old]!r})")
+        ran = await session.call_tool("browser_run_python", {"code": code})
+        return refs[old], json.loads(ran.content[0].text)
+
+    def title(self, tab_id):
+        return self.call("/api/page-info", {"tabId": tab_id})["title"]
+
+    def assert_stale(self, result, old, same_role=None):
+        """The script stopped on the old ref as before #572: stale_ref, nothing followed."""
+        self.assertEqual(result["code"], "script_operation_failed", result)
+        failed = result["failed_operation"]
+        self.assertEqual((failed["code"], failed["state"]["reason"], failed["state"]["ref"]),
+                         ("stale_ref", "other_document", old), failed)
+        self.assertEqual([entry["status"] for entry in result["operations"]], ["ok", "failed"])
+        self.assertNotIn("remapped", json.dumps(result))
+        if same_role is None:
+            self.assertNotIn("same_element", failed["state"])
+        else:
+            self.assertEqual(sorted(failed["state"]["same_element"]), ["name", "ref", "role"])
+            self.assertEqual(failed["state"]["same_element"]["role"], same_role)
+
+    def test_stale_ref_of_a_shared_nav_link_is_followed_and_reported(self):
+        async def run(session, tab_id):
+            old, result = await self.click_next_then(session, tab_id, 'link "Bookmarks"')
+            self.assertTrue(result.get("ok"), result)
+            remapped = result["result"]["remapped"]
+            self.assertEqual({**remapped, "to": None}, {"from": old, "to": None, "role": "link", "name": "Bookmarks"})
+            self.assertRegex(remapped["to"], r"^e\d+$")
+            self.assertNotEqual(remapped["to"], old)
+            self.assertEqual(result["operations"], [
+                {"method": "POST", "route": "/api/click", "status": "ok", "tab_id": tab_id},
+                {"method": "POST", "route": "/api/click", "status": "ok", "tab_id": tab_id, "remapped": remapped}])
+            self.assertEqual(self.title(tab_id), "Bookmarks", "the link of page B was clicked")
+            self.assertNotIn("follow", json.dumps(result["result"]))
+        self.run_scenario(run)
+
+    def test_stale_ref_without_one_same_link_to_the_same_destination_still_fails(self):
+        async def run(session, tab_id):
+            # No element with that name, two of them, a button with a lone namesake, and a link
+            # with that name that leads elsewhere: nothing on page B is clicked.
+            for old, same_role in (('link "Only here"', None), ('link "Twin"', None),
+                                   ('button "Go"', "button"), ('link "Moved"', "link")):
+                with self.subTest(old=old):
+                    ref, result = await self.click_next_then(session, tab_id, old)
+                    self.assert_stale(result, ref, same_role)
+                    self.assertEqual(self.title(tab_id), "Page B")
+        self.run_scenario(run)
+
+    def test_ref_from_another_tab_is_not_followed(self):
+        async def run(session, tab_id):
+            refs = await self.page_a_refs(session, tab_id)
+            code = (f"other = browser.new_tab({self.nav.origin + '/b'!r})\nprint(other.id)\n"
+                    f"other.click({refs['link \"Bookmarks\"']!r})")
+            result = json.loads((await session.call_tool("browser_run_python", {"code": code})).content[0].text)
+            other = int(result["output"])
+            self.addCleanup(self.call, "/api/close-tab", {"tabId": other})
+            failed = result["failed_operation"]
+            self.assertEqual((failed["code"], failed["state"]["reason"]), ("stale_ref", "other_document"), failed)
+            self.assertEqual(sorted(failed["state"]["same_element"]), ["name", "ref", "role"])
+            self.assertNotIn("remapped", json.dumps(result))
+            self.assertEqual((self.title(other), self.title(tab_id)), ("Page B", "Page A"))
+        self.run_scenario(run)
+
+    def test_stale_ref_on_a_tab_the_client_does_not_own_is_not_followed(self):
+        foreign = self.open_tab(self.nav.origin + "/a")
+
+        async def run(session, tab_id):
+            old, result = await self.click_next_then(session, foreign, 'link "Bookmarks"')
+            self.assert_stale(result, old, "link")
+            self.assertEqual(self.title(foreign), "Page B")
+        # The permission that lets a script write the tab does not make the tab the agent's.
+        self.run_scenario(run, KITSUNE_USER_TABS="writable")
+
+    def test_direct_tool_with_the_same_stale_ref_fails_as_before(self):
+        async def run(session, tab_id):
+            refs = await self.page_a_refs(session, tab_id)
+            old = refs['link "Bookmarks"']
+            clicked = await session.call_tool("browser_tools_call", {
+                "name": "browser_click", "arguments": {"target": refs['link "Next"'], "element": "Next"}})
+            self.assertFalse(clicked.isError, clicked)
+            stale = await session.call_tool("browser_tools_call", {
+                "name": "browser_click", "arguments": {"target": old, "element": "Bookmarks"}})
+            self.assertTrue(stale.isError, stale)
+            failed = json.loads(stale.content[0].text)
+            self.assertEqual((failed["code"], failed["state"]["reason"]), ("stale_ref", "other_document"), failed)
+            same = failed["state"]["same_element"]
+            self.assertEqual({**same, "ref": None}, {"ref": None, "role": "link", "name": "Bookmarks"})
+            self.assertIn(f'The same link "Bookmarks" here is {same["ref"]}; retry with it.', failed["hint"])
+            self.assertNotIn("remapped", failed)
+            self.assertEqual(self.title(tab_id), "Page B")
+        self.run_scenario(run)
+
+    def test_ask_before_act_still_holds_a_stale_ref_instead_of_following_it(self):
+        self.call("/api/set-policy", {"ask": True})
+
+        async def run(session, tab_id):
+            old, result = await self.click_next_then(session, tab_id, 'link "Bookmarks"')
+            self.assertEqual(result["code"], "script_operation_failed", result)
+            failed = result["failed_operation"]
+            self.assertEqual((failed["code"], failed["state"]["detail"], failed["state"]["params"]["ref"]),
+                             ("needs_user", "confirmation_required", old), failed)
+            self.assertNotIn("remapped", json.dumps(result))
+            self.assertEqual(self.title(tab_id), "Page B")
         try:
             self.run_scenario(run)
         finally:

@@ -134,6 +134,12 @@ class ScriptMcpTests(unittest.TestCase):
         self.assertNotIn("help(tab.query)", description)
         self.assertNotIn("appends with key events", description)
 
+    def test_python_guide_says_which_stale_refs_a_script_follows(self):
+        # #572: only a link with the same destination; everything else needs a selector or a new snapshot.
+        description = " ".join(self.probe(True)["description"].split())
+        self.assertIn("Refs die when an action loads a new document; only a link's ref is followed to the one same "
+                      "link with the same destination there (reported as remapped).", description)
+
     def test_python_guide_explains_tab_dicts_and_the_snapshot_example_works(self):
         result = self.probe(True)
         self.assertIn("list[dict]", result["description"])
