@@ -81,7 +81,8 @@ result = tab.snapshot()
   or take a new snapshot.
 - On timeout the worker is killed; a command already sent may still finish, so read the page
   before writing again.
-- `help(tab.query)` prints a method's signature.
+- `help(tab.query)` prints a method's signature. A `Tab` or `Browser` call with unknown, missing or
+  extra arguments fails with a `TypeError` and that signature in the output.
 
 Keep output bounded on long pages: read a known region or a bounded index first, then a scoped
 snapshot of the section you found.

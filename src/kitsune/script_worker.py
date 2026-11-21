@@ -14,6 +14,8 @@ from .errors import KitsuneError, TimedOut
 
 _INPUT = sys.stdin
 _OUTPUT = sys.stdout
+# How CPython starts the TypeError of a call whose arguments did not bind to the method's parameters.
+_UNBOUND_CALL = re.compile(r"(Browser|Tab)\.([A-Za-z]\w*)\(\) ")
 
 
 def _send(message):
@@ -43,6 +45,25 @@ class _Output:
         pass
 
 
+def _unbound_call(error):
+    """The public Browser or Tab method whose call raised this TypeError before the method ran.
+
+    Wrong, unknown or missing arguments raise at the call, so no traceback frame runs the method.
+    A TypeError raised inside a method is about a value, and the signature would not explain it.
+    """
+    named = _UNBOUND_CALL.match(str(error))
+    method = getattr(Tab if named[1] == "Tab" else Browser, named[2], None) if named else None
+    code = getattr(method, "__code__", None)
+    if code is None:
+        return None
+    entry = error.__traceback__
+    while entry is not None:
+        if entry.tb_frame.f_code is code:
+            return None
+        entry = entry.tb_next
+    return method
+
+
 def main():
     request = json_module.loads(_INPUT.readline())
     client = _Client()
@@ -58,14 +79,15 @@ def main():
             _send({"event": "done", "result": namespace.get("result")})
         except BaseException as error:
             message = "".join(traceback.format_exception_only(type(error), error)).strip()
-            if isinstance(error, TypeError):
-                # #524: same-named direct tools use different arguments and semantics. Add local
-                # help, not aliases, browser calls or retries; keep the original exception visible.
+            method = _unbound_call(error) if isinstance(error, TypeError) else None
+            if method is not None:
+                # #524, #574: same-named direct tools and Playwright use different arguments and
+                # semantics. Add local help, not aliases, browser calls or retries; keep the
+                # original exception visible.
                 import inspect  # here, not at the top: every call starts a worker, few fail this way
-                for method in (Tab.find, Tab.snapshot):
-                    if str(error).startswith(f"{method.__qualname__}() got an unexpected keyword argument "):
-                        message += f"\nPython API: {method.__qualname__}{inspect.signature(method)}\n{inspect.getdoc(method)}"
-                        break
+                message += f"\nPython API: {method.__qualname__}{inspect.signature(method)}"
+                if inspect.getdoc(method):
+                    message += f"\n{inspect.getdoc(method)}"
             # #568: an uncaught failure of the last call ends the script as that failed operation.
             uncaught_reply = isinstance(error, KitsuneError) and error.result is client.reply
             _send({"event": "done", "error": message, **({"uncaught_reply": True} if uncaught_reply else {})})

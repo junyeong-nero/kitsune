@@ -143,6 +143,44 @@ class ScriptRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("TypeError", result["output"])
         self.assertNotIn("Python API:", result["output"])
 
+    async def test_any_tab_or_browser_call_that_does_not_bind_prints_the_real_signature(self):
+        # #574: #524's help covered Tab.find and Tab.snapshot only. The first two calls are the run's.
+        cases = [("tab.select_option('e1', label='x')", "Tab.select_option(self, target: str, value: str, *, by_text: bool"),
+                 ("tab.wait_for('e1')", "Tab.wait_for(self, *, target: str | None"),
+                 ("tab.check()", "Tab.check(self, target: str, checked: bool = True"),
+                 ("tab.fill('e1', 'a', value='b')", "Tab.fill(self, target: str, value: str"),
+                 ("tab.uncheck('e1', label='x')", "Tab.check(self, target: str"),
+                 ("tab.back(1)", "Tab.back(self, *, expect"),
+                 ("browser.new_tab(link='https://example.com')", "Browser.new_tab(self, url: str = 'about:blank'"),
+                 ("browser.tab()", "Browser.tab(self, tab_id: int)")]
+        for call, signature in cases:
+            with self.subTest(call=call):
+                client = Client()
+                code = f"tab.fill('#draft', 'keep')\n{call}\ntab.fill('#draft', 'must not run')"
+                result = await script_runner.run_python(code, client, tab_id=7)
+                self.assertEqual(result["code"], "script_error")
+                self.assertIn("TypeError: " + signature.split("(")[0] + "() ", result["output"])
+                self.assertIn("Python API: " + signature, result["output"])
+                self.assertEqual([route for _, route, _ in client.calls], ["/api/fill"])
+        output = (await script_runner.run_python("tab.back(1)", Client(), tab_id=7))["output"]
+        self.assertTrue(output.endswith("-> dict"), "a method without a docstring prints no 'None'")
+
+    async def test_type_errors_raised_inside_a_method_or_outside_the_api_get_no_signature(self):
+        for code in ("tab.click(5)",  # the target is matched as a string inside the call
+                     "tab.wait_for(text='x', timeout='5')",
+                     "tab._request()",  # not public
+                     # The words of a call that did not bind, raised while the method runs.
+                     "def refuse(*args, **kwargs):\n"
+                     "    raise TypeError(\"Tab.text() got an unexpected keyword argument 'x'\")\n"
+                     "browser.client.request = refuse\ntab.text()"):
+            with self.subTest(code=code):
+                client = Client()
+                result = await script_runner.run_python(code, client, tab_id=7)
+                self.assertEqual(result["code"], "script_error")
+                self.assertIn("TypeError", result["output"])
+                self.assertNotIn("Python API:", result["output"])
+                self.assertEqual(client.calls, [])
+
     async def test_failed_operation_stops_even_a_catching_script_and_removes_tokens(self):
         failure = {"code": "needs_user", "error": "Approval required", "retryable": False,
                    "state": {"reason": "approval", "confirmToken": "secret-token"}}
