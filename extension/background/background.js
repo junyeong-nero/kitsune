@@ -1456,6 +1456,9 @@ async function settleAfterAction(tabId, pending, params) {
 // and returns navigated {url, title} with a full snapshot of the new page instead of a delta of
 // the old one; navigation_pending when it has not finished loading by then.
 const ACTION_NAVIGATION_WAIT_MS = 10000;
+// Once the new document's DOM is parsed, its load is waited for only this much longer: an
+// image-heavy page is readable long before its load (#588), and is then reported load_pending.
+const ACTION_LOAD_GRACE_MS = 500;
 // A main-frame request that loads nothing (a download, a 204) is given up after this long.
 const ACTION_NAVIGATION_START_MS = 1000;
 
@@ -1466,11 +1469,14 @@ function navigationStarted(tabId, watch) {
     (request != null && request.requestId !== watch.requestBefore && request.at >= watch.start);
 }
 
-// Resolves to 'loaded', 'pending' (still loading at the deadline) or null (nothing loaded). A
+// Resolves to 'loaded', 'interactive' (a new document whose DOM is parsed, still loading after
+// ACTION_LOAD_GRACE_MS), 'pending' (still loading at the deadline) or null (nothing loaded). A
 // load that kept the document (a 204, a download) is not a navigation: the document that
 // acted still answers with its settle watch.
 async function waitForActionNavigation(tabId, watch, params) {
   const start = Date.now();
+  // The load and document count when the new document was first seen parsed, and when (#588).
+  let parsed = null;
   try {
     while (true) {
       const load = tabLoads.get(tabId);
@@ -1479,6 +1485,16 @@ async function waitForActionNavigation(tabId, watch, params) {
         const kept = await browser.tabs.sendMessage(tabId, { action: 'settleState' }, actionFrame(tabId, params))
           .catch(() => null);
         return kept?.watching ? null : 'loaded';
+      }
+      // Only a document that started since the action is asked: before that, the one left answers.
+      const documents = tabDocuments.get(tabId);
+      if (load !== watch.loadBefore && documents !== watch.documentsBefore) {
+        if (parsed && (parsed.load !== load || parsed.documents !== documents)) parsed = null;
+        if (!parsed && domParsed(await pageState(tabId))) parsed = { load, documents, at: Date.now() };
+        // Gecko may not report a fresh 'complete' (see waitForTabLoad): a loaded document is no pending load.
+        if (parsed && Date.now() - parsed.at >= ACTION_LOAD_GRACE_MS) {
+          return (await pageState(tabId))?.readyState === 'complete' ? 'loaded' : 'interactive';
+        }
       }
       if (load === watch.loadBefore && Date.now() - start >= ACTION_NAVIGATION_START_MS) return null;
       if (Date.now() - start >= ACTION_NAVIGATION_WAIT_MS) return load !== watch.loadBefore ? 'pending' : null;
@@ -1493,7 +1509,7 @@ async function runCommand(params, options) {
   const settles = options.deltaSnapshot && params.tabId != null && params.settle !== false;
   if (!settles) return await runCommandSettled(params, options, null);
   const watch = { pending: new Set(), start: Date.now(), loadBefore: tabLoads.get(params.tabId),
-    requestBefore: mainFrameStatus.get(params.tabId)?.requestId };
+    documentsBefore: tabDocuments.get(params.tabId), requestBefore: mainFrameStatus.get(params.tabId)?.requestId };
   settleRequests.set(params.tabId, watch.pending);
   try {
     return await runCommandSettled(params, options, watch);
@@ -1504,7 +1520,8 @@ async function runCommand(params, options) {
 
 async function runCommandSettled(params, { withSnapshot, deltaSnapshot, textSnapshot, tracksOpenedTabs, pageText }, watch) {
   // The load a goBack starts, which its page text waits for like an action that navigates (#349).
-  const back = pageText && params.action === 'goBack' ? { loadBefore: tabLoads.get(params.tabId) } : null;
+  const back = pageText && params.action === 'goBack'
+    ? { loadBefore: tabLoads.get(params.tabId), documentsBefore: tabDocuments.get(params.tabId) } : null;
   const dialogsSince = Date.now();
   // The content script adds the dialogs its document recorded since then to the action's reply (#569).
   if (tracksOpenedTabs) params.dialogsSince = dialogsSince;
@@ -1518,6 +1535,7 @@ async function runCommandSettled(params, { withSnapshot, deltaSnapshot, textSnap
         const tab = await browser.tabs.get(params.tabId).catch(() => null);
         result.navigated = { url: tab?.url, title: tab?.title };
         if (navigation === 'pending') result.navigation_pending = true;
+        if (navigation === 'interactive') result.load_pending = true;
       }
     }
   }

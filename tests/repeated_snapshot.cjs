@@ -19,7 +19,7 @@ function harness(pages = { 7: {}, 8: {} }) {
     setTimeout, clearTimeout,
     getActiveTabId: async () => 7,
     tabsCreated: 0, openedTabs: [], actionStarts: new Map(), tabLoads: new Map([[7, { complete: true }], [8, { complete: true }]]),
-    mainFrameStatus: new Map(),
+    mainFrameStatus: new Map(), tabDocuments: new Map(),
     userActiveError: async () => null, guardedTabId: async () => null, touchStart() {}, touchEnd() {},
     getOpenedTabs: async () => ({ opened_tabs: [] }),
     takeOpenedPopup: async () => null,

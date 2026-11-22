@@ -427,6 +427,9 @@ may start loading another document in the tab during the wait above. The action 
 that load, like `browser_navigate`, for up to 10 s. It returns
 `navigated: {"url": …, "title": …}` with a full snapshot of the new page instead of a delta of
 the old one, and adds `navigation_pending: true` when the page has not finished loading by then.
+A new page whose DOM is parsed is waited for only 500 ms longer (#588): an image-heavy page that
+is still loading by then returns with `load_pending: true` and a snapshot of the parsed page, as
+`browser_navigate` does.
 A main-frame request that keeps the document (a 204, a download) is not a navigation: the
 action returns its delta, after up to 1 s more.
 
@@ -443,7 +446,8 @@ characters) as before. A short notice or confirmation page then needs no `browse
 The core `browser_tabs action=new url=…` and `browser_navigate_back` results carry the same
 readable snapshot when the page fits 2,000 characters (#448); a larger page adds nothing, so
 their result is as before. Back waits for the page it loads, as an action that navigates does:
-up to 1 s for the load to start and 10 s for it to finish. A back still loading by then carries
+up to 1 s for the load to start and 10 s for it to finish, or 500 ms once a new document's DOM is
+parsed, whose page is then read. A back still loading by then carries
 no snapshot, and one that starts no load (no history, a same-document entry) reads the page as it
 is. `browser_tabs action=new` without a url opens `about:blank` and carries nothing.
 

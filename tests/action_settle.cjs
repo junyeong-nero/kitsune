@@ -15,10 +15,12 @@ const HIDDEN_MIN = constant('SETTLE_HIDDEN_MIN_MS');
 const QUIET = constant('SETTLE_QUIET_MS');
 const CAP = constant('SETTLE_CAP_MS');
 const REQUEST_CAP = constant('SETTLE_REQUEST_CAP_MS');
+const GRACE = constant('ACTION_LOAD_GRACE_MS');
 
 // A page whose last change is given by mutatesUntil (ms after the action, Infinity: never quiet),
 // and a request the action starts that ends after requestMs.
-// navigation: { loadMs } the action loads another document that completes after loadMs;
+// navigation: { loadMs } the action loads another document that completes after loadMs, and with
+// parsedMs, whose content script starts at once and whose DOM is parsed after parsedMs (#588);
 // { requestOnly: true } it starts a main-frame request that loads nothing (a download).
 // floor: what the content script's settleState says (#460); absent, as from an older one, by default;
 // a function of elapsedMs when it changes during the settle (#475).
@@ -27,10 +29,14 @@ function harness({ mutatesUntil = 0, requestMs = null, watching = true, unchange
   let actionAt = null;
   const sent = [];
   const tab = { id: 7, status: 'complete', url: 'https://shop.test/list', title: 'List' };
+  let readyState = 'complete';
   const context = vm.createContext({
     setTimeout, clearTimeout,
     getActiveTabId: async () => 7,
     tabsCreated: 0, openedTabs: [], actionStarts: new Map(), tabLoads: new Map(), mainFrameStatus: new Map(),
+    tabDocuments: new Map(),
+    pageState: async () => ({ url: tab.url, readyState }),
+    domParsed: page => page?.readyState === 'interactive' || page?.readyState === 'complete',
     userActiveError: async () => null, guardedTabId: async () => null, touchStart() {}, touchEnd() {},
     getOpenedTabs: async () => ({ opened_tabs: [] }),
     takeOpenedPopup: async () => null,
@@ -44,8 +50,16 @@ function harness({ mutatesUntil = 0, requestMs = null, watching = true, unchange
         const load = { at: Date.now(), complete: false };
         context.tabLoads.set(7, load);
         Object.assign(tab, { status: 'loading', url: 'https://shop.test/item/1', title: '' });
-        setTimeout(() => { load.complete = true; Object.assign(tab, { status: 'complete', title: 'Item 1' }); },
-          navigation.loadMs);
+        if (navigation.parsedMs != null) {
+          readyState = 'loading';
+          context.tabDocuments.set(7, (context.tabDocuments.get(7) || 0) + 1);
+          setTimeout(() => { readyState = 'interactive'; tab.title = 'Item 1'; }, navigation.parsedMs);
+          // A document that loaded without the tab reporting 'complete' (Gecko, see waitForTabLoad).
+          if (navigation.documentCompleteMs != null) setTimeout(() => { readyState = 'complete'; }, navigation.documentCompleteMs);
+        }
+        setTimeout(() => {
+          load.complete = true; readyState = 'complete'; Object.assign(tab, { status: 'complete', title: 'Item 1' });
+        }, navigation.loadMs);
       }
       if (requestMs != null) {
         context.settleRequests.get(7)?.add('r1');
@@ -228,6 +242,35 @@ async function testANavigatingClickReportsTheNewPage() {
   assert.equal(same.snapshot_delta, true);
 }
 
+async function testANavigatingClickReturnsOncePageIsParsed() {
+  // #588: an image-heavy page is parsed long before its load; the click returns after a grace period.
+  const heavy = harness({ navigation: { loadMs: 8000, parsedMs: 600 } });
+  const result = await heavy.context.handleCommand({ action: 'click', selector: 'a', tabId: 7 });
+  assert.equal(JSON.stringify(result.navigated), JSON.stringify({ url: 'https://shop.test/item/1', title: 'Item 1' }));
+  assert.equal(result.load_pending, true);
+  assert.equal(result.navigation_pending, undefined);
+  assert.equal(result.snapshot, '- heading "Item 1" [ref=s2e1]');
+  within(heavy.snapshotAt(), 600 + GRACE, 600 + GRACE + 300, 'parsed, then the grace period');
+  // A load that completes within the grace period is waited for, and is not pending.
+  const quick = harness({ navigation: { loadMs: 600 + GRACE - 200, parsedMs: 600 } });
+  const loaded = await quick.context.handleCommand({ action: 'click', selector: 'a', tabId: 7 });
+  assert.equal(loaded.load_pending, undefined);
+  assert.equal(loaded.navigation_pending, undefined);
+  within(quick.snapshotAt(), 600 + GRACE - 200, 600 + GRACE, 'after the load');
+  // A document that reports complete while the tab never does is loaded, not pending.
+  const unreported = harness({ navigation: { loadMs: 8000, parsedMs: 300, documentCompleteMs: 400 } });
+  const complete = await unreported.context.handleCommand({ action: 'click', selector: 'a', tabId: 7 });
+  assert.ok(complete.navigated);
+  assert.equal(complete.load_pending, undefined);
+  assert.equal(complete.navigation_pending, undefined);
+  within(unreported.snapshotAt(), 300 + GRACE, 300 + GRACE + 300, 'parsed, then the grace period');
+  // A load whose document never started (no content script answered) is not asked about.
+  const unstarted = harness({ navigation: { loadMs: 1500 } });
+  const waited = await unstarted.context.handleCommand({ action: 'click', selector: 'a', tabId: 7 });
+  assert.equal(waited.load_pending, undefined);
+  within(unstarted.snapshotAt(), 1500, 1700, 'until the load');
+}
+
 (async () => {
   await testQuietPageWaitsTheMinimum();
   await testHiddenTabsWaitForThrottledTimers();
@@ -240,5 +283,6 @@ async function testANavigatingClickReportsTheNewPage() {
   await testNoVisibleChangeAndKeepBaseline();
   await testPendingRequestsAreNotNoVisibleChange();
   await testANavigatingClickReportsTheNewPage();
+  await testANavigatingClickReturnsOncePageIsParsed();
   console.log('action_settle: ok');
 })().catch(e => { console.error(e); process.exit(1); });

@@ -11,6 +11,7 @@ from http.server import BaseHTTPRequestHandler
 import json
 import sys
 import threading
+import time
 import unittest
 
 from mcp import ClientSession, StdioServerParameters
@@ -19,7 +20,9 @@ from mcp.client.stdio import stdio_client
 import real_browser_harness as harness
 
 PAGES = {
-    "/start": "<!doctype html><title>Start</title><h1>Start</h1>",
+    "/start": """<!doctype html><title>Start</title><h1>Start</h1>
+<a href="/heavy">Listings</a> <a href="/plain">Plain</a>""",
+    "/plain": "<!doctype html><title>Plain</title><h1>Plain page</h1>",
     # The image never arrives during a test, so the page stays interactive and its load pending.
     "/heavy": """<!doctype html><title>Heavy</title><h1>Listings</h1>
 <a href="/start">Back to start</a><img src="/held.png" alt="Home">""",
@@ -101,6 +104,27 @@ class RealBrowserNavigateWaitTests(harness.RealBrowserTestCase):
         self.assertIn("Listings", result["carried"], "the navigate result carries the page's snapshot")
         self.assertIn("Listings", result["snapshot"])
         self.assert_heavy_page_is_readable(tab)
+
+    def test_a_click_into_a_page_still_loading_its_images_returns_once_it_is_parsed(self):
+        # #588: the click does not wait for the load, only a short grace period after the DOM is parsed.
+        tab = self.open_tab(f"{self.site.origin}/start")
+        started = time.monotonic()
+        result = self.assert_ok(self.call("/api/click", {"tabId": tab, "selector": "a[href='/heavy']"}))
+        elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 5, result)
+        self.assertEqual(result.get("navigated"), {"url": f"{self.site.origin}/heavy", "title": "Heavy"})
+        self.assertIs(result.get("load_pending"), True, result)
+        self.assertNotIn("navigation_pending", result)
+        self.assertIn('heading "Listings"', result["snapshot"])
+        self.assert_heavy_page_is_readable(tab)
+
+    def test_a_click_into_an_ordinary_page_still_waits_for_its_load(self):
+        tab = self.open_tab(f"{self.site.origin}/start")
+        result = self.assert_ok(self.call("/api/click", {"tabId": tab, "selector": "a[href='/plain']"}))
+        self.assertEqual(result.get("navigated"), {"url": f"{self.site.origin}/plain", "title": "Plain"})
+        self.assertNotIn("load_pending", result)
+        self.assertNotIn("navigation_pending", result)
+        self.assertIn('heading "Plain page"', result["snapshot"])
 
     def test_a_navigation_no_document_answered_is_still_a_timeout(self):
         # The page navigated away from stays shown and loaded: its DOM is not the destination's.
