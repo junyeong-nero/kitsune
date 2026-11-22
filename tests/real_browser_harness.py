@@ -281,6 +281,26 @@ class RealBrowser:
     def stop(self):
         if self.process is None or self.process.poll() is not None:
             return
+        if os.name == "nt":
+            import psutil
+
+            try:
+                parent = psutil.Process(self.process.pid)
+                owned = [parent, *parent.children(recursive=True)]
+                # Freeze the owned identities before killing the parent; each
+                # psutil kill checks PID reuse. Never select Firefox by name.
+                for process in owned:
+                    try:
+                        process.kill()
+                    except psutil.NoSuchProcess:
+                        pass
+                _, alive = psutil.wait_procs(owned, timeout=10)
+                if alive:
+                    raise AssertionError("Owned test browser processes did not exit")
+            except psutil.NoSuchProcess:
+                pass
+            self.process.wait(timeout=10)
+            return
         try:
             os.killpg(self.process.pid, signal.SIGKILL)
         except ProcessLookupError:

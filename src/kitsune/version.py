@@ -35,7 +35,8 @@ def bridge_build() -> str:
     """
     digest = hashlib.sha256()
     paths = [PACKAGE_DIR / name for name in (
-        "bridge.py", "bridge_control.py", "task_modes.py", "tool_approvals.py", "version.py")]
+        "bridge.py", "bridge_control.py", "file_lock.py", "private_files.py",
+        "task_modes.py", "tool_approvals.py", "version.py")]
     extension = SOURCE_ROOT / "extension"
     if extension.is_dir():
         paths += sorted(p for p in extension.rglob("*") if p.suffix in {".js", ".json"})

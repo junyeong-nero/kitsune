@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import stat
 import struct
 import subprocess
 import sys
@@ -37,6 +38,11 @@ def _free_port():
 def _bridge_env(home, http_port, ws_port, token=SYNTHETIC_TOKEN):
     env = {k: v for k, v in os.environ.items() if not k.startswith("KITSUNE_")}
     env.update(HOME=home, KITSUNE_HOME=home, KITSUNE_HTTP_PORT=str(http_port), KITSUNE_WS_PORT=str(ws_port))
+    if os.name == "nt":
+        # CPython's venv redirector otherwise creates a second process. These
+        # tests intentionally compare/kill Popen.pid, so launch the interpreter
+        # directly with the same venv marker its redirector normally supplies.
+        env["__PYVENV_LAUNCHER__"] = sys.executable
     if token is not None:
         env["KITSUNE_TOKEN"] = token
     return env
@@ -86,6 +92,7 @@ class Bridge:
             self.process = subprocess.Popen(
                 [sys.executable, "-m", "kitsune.bridge"], env=self.env, cwd=self.home,
                 stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                executable=sys._base_executable if os.name == "nt" else None,
             )
         return self
 
@@ -479,6 +486,14 @@ class BridgeDaemonLockTests(unittest.TestCase):
             self.assertEqual(Path(pid_file).read_text(encoding="utf-8").strip(), str(bridge.process.pid))
             self.assertIsNone(control._locked_pid())
 
+    def test_a_pid_file_this_user_can_only_read_still_names_the_daemon(self):
+        pid_file = os.path.join(self.home, "bridge.pid")
+        with patch.object(control, "PID_FILE", pid_file):
+            bridge = self.new_bridge().start()
+            os.chmod(pid_file, stat.S_IREAD)
+            self.addCleanup(os.chmod, pid_file, stat.S_IREAD | stat.S_IWRITE)
+            self.assertEqual(control._locked_pid(), bridge.process.pid)
+
     def test_restart_after_stop_reuses_pid_file(self):
         first = self.new_bridge().start()
         first.stop()
@@ -489,7 +504,8 @@ class BridgeDaemonLockTests(unittest.TestCase):
     def test_cli_stop_uses_token_file_and_stops_daemon(self):
         bridge = self.new_bridge(token=None).start()
         token_file = Path(self.home, "token")
-        self.assertEqual(token_file.stat().st_mode & 0o777, 0o600)
+        if os.name != "nt":
+            self.assertEqual(token_file.stat().st_mode & 0o777, 0o600)
         stop = self.cli(bridge, "stop")
         out, err = stop.communicate(timeout=20)
         self.assertEqual(stop.returncode, 0, err)

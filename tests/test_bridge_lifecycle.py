@@ -119,6 +119,7 @@ class BridgeControlTests(unittest.TestCase):
             self.assertIn("manually", control.stop() or "")
             kill.assert_not_called()
 
+    @unittest.skipIf(os.name == "nt", "POSIX ps command verification; native Windows has subprocess coverage")
     def test_pid_fallback_checks_command(self):
         for command, expected in [("/usr/bin/python -m kitsune.bridge", True),
                                   ("/venv/bin/python /venv/bin/kitsune-bridge", True),
@@ -134,7 +135,7 @@ class BridgeControlTests(unittest.TestCase):
 
     def test_stale_pid_file_is_not_trusted(self):
         with patch("builtins.open", mock_open(read_data="12345")), \
-                patch.object(control.fcntl, "flock"), patch.object(control.os, "kill") as kill:
+                patch.object(control.file_lock, "lock_exclusive"), patch.object(control.os, "kill") as kill:
             self.assertIsNone(control._locked_pid())
             kill.assert_not_called()
 
@@ -204,7 +205,7 @@ class BridgeCliAndStatusTests(unittest.TestCase):
     def test_plain_cli_and_explicit_start_keep_starting_daemon(self):
         for args in ([], ["start"]):
             with self.subTest(args=args), patch.object(bridge.os, "open", return_value=42), \
-                    patch.object(bridge.os, "fdopen", mock_open()), patch.object(bridge.fcntl, "flock"), \
+                    patch.object(bridge.os, "fdopen", mock_open()), patch.object(bridge.file_lock, "lock_exclusive"), \
                     patch.object(bridge, "main", new=Mock(return_value="coroutine")), \
                     patch.object(bridge.asyncio, "run") as run:
                 bridge.run(args)
@@ -213,7 +214,7 @@ class BridgeCliAndStatusTests(unittest.TestCase):
     def test_duplicate_daemon_is_rejected_before_start(self):
         with patch.object(bridge.os, "open", return_value=42), \
                 patch.object(bridge.os, "fdopen", mock_open()), \
-                patch.object(bridge.fcntl, "flock", side_effect=BlockingIOError), \
+                patch.object(bridge.file_lock, "lock_exclusive", side_effect=BlockingIOError), \
                 patch.object(bridge.asyncio, "run") as run, patch("sys.stderr", new_callable=io.StringIO):
             with self.assertRaises(SystemExit) as raised:
                 bridge.run([])
@@ -229,7 +230,7 @@ class BridgeCliAndStatusTests(unittest.TestCase):
             http_server = Mock()
             with patch.object(loop, "add_signal_handler"), patch.object(loop, "remove_signal_handler"), \
                     patch.object(bridge.asyncio, "Event", return_value=event), \
-                    patch.object(bridge, "ws_serve", new=AsyncMock(return_value=websocket_server)), \
+                    patch.object(bridge, "serve_extension_ws", new=AsyncMock(return_value=websocket_server)), \
                     patch.object(bridge, "BridgeHTTPServer", return_value=http_server), \
                     patch.object(bridge, "Thread"), patch("builtins.print"), \
                     patch.object(bridge.asyncio, "to_thread", new=AsyncMock()) as to_thread:
@@ -318,7 +319,7 @@ class BridgeIdleShutdownTests(unittest.TestCase):
             environ = {k: v for k, v in os.environ.items() if k != bridge.IDLE_TIMEOUT_ENV}
             with self.subTest(args=args, env=env), patch.dict(os.environ, {**environ, **env}, clear=True), \
                     patch.object(bridge.os, "open", return_value=42), \
-                    patch.object(bridge.os, "fdopen", mock_open()), patch.object(bridge.fcntl, "flock"), \
+                    patch.object(bridge.os, "fdopen", mock_open()), patch.object(bridge.file_lock, "lock_exclusive"), \
                     patch.object(bridge, "main", new=Mock(return_value="coroutine")) as main, \
                     patch.object(bridge.asyncio, "run"):
                 bridge.run(args)
@@ -417,7 +418,7 @@ class BridgeIdleShutdownTests(unittest.TestCase):
             loop.call_later(0.2, self.activity.end)
             with patch.object(loop, "add_signal_handler"), patch.object(loop, "remove_signal_handler"), \
                     patch.object(bridge.asyncio, "Event", return_value=event), \
-                    patch.object(bridge, "ws_serve", new=AsyncMock(return_value=websocket_server)), \
+                    patch.object(bridge, "serve_extension_ws", new=AsyncMock(return_value=websocket_server)), \
                     patch.object(bridge, "BridgeHTTPServer", return_value=Mock()), \
                     patch.object(bridge, "_idle_shutdown_lock", self.lock), \
                     patch.object(bridge, "Thread"), patch("builtins.print"), \
@@ -432,7 +433,7 @@ class BridgeIdleShutdownTests(unittest.TestCase):
         pid_file.return_value.__exit__.side_effect = lambda *args: order.append("pid")
         self.lock.close.side_effect = lambda: order.append("lifecycle")
         with patch.object(bridge.os, "open", return_value=42), patch.object(bridge.os, "fdopen", pid_file), \
-                patch.object(bridge.fcntl, "flock"), patch.object(bridge, "main", new=Mock()), \
+                patch.object(bridge.file_lock, "lock_exclusive"), patch.object(bridge, "main", new=Mock()), \
                 patch.object(bridge.asyncio, "run", side_effect=lambda _: setattr(bridge, "_idle_shutdown_lock", self.lock)):
             bridge.run(["--idle-timeout", "1"])
         self.assertEqual(order, ["pid", "lifecycle"])
@@ -449,7 +450,8 @@ class BridgeVersionTests(unittest.TestCase):
             root = Path(temp)
             package = root / "src" / "kitsune"
             package.mkdir(parents=True)
-            for name in ("bridge.py", "bridge_control.py", "task_modes.py", "tool_approvals.py", "version.py"):
+            for name in ("bridge.py", "bridge_control.py", "file_lock.py", "private_files.py",
+                         "task_modes.py", "tool_approvals.py", "version.py"):
                 (package / name).write_text("original")
             extension = root / "extension"
             extension.mkdir()

@@ -4,7 +4,7 @@ Nothing here contacts a user bridge: bridge state is patched, the extension WebS
 isolated bridges listen on ephemeral ports, and HTTP calls go to ports these tests own.
 """
 import asyncio
-from contextlib import nullcontext
+from contextlib import nullcontext, ExitStack
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 import logging
@@ -46,7 +46,7 @@ def _unpacked_extension(test, files=HASH_FILES):
     directory = Path(temp.name)
     for name, text in files.items():
         (directory / name).parent.mkdir(parents=True, exist_ok=True)
-        (directory / name).write_text(text, encoding="utf-8")
+        (directory / name).write_bytes(text.encode("utf-8"))
     return directory
 
 
@@ -671,9 +671,9 @@ class IsolatedBridgeDiagnosisTests(unittest.TestCase):
         return patch.object(bridge_client, "BRIDGE", f"http://127.0.0.1:{port}"), patch.object(bridge_client, "HTTP_PORT", port)
 
     def test_isolated_bridge_reports_token_mismatch_and_its_extension_port(self):
-        with tempfile.TemporaryDirectory() as home:
+        with tempfile.TemporaryDirectory() as home, ExitStack() as cleanup:
             daemon = Bridge(home).start()
-            self.addCleanup(daemon.stop)
+            cleanup.callback(daemon.stop)
             # Its ephemeral WebSocket port is not the extension's, and no extension ever connected.
             self.assertEqual(daemon.status()["diagnosis"]["state"],
                              {"port": daemon.ws_port, "reason": "extension_ws_port",
@@ -700,7 +700,8 @@ class IsolatedBridgeDiagnosisTests(unittest.TestCase):
             env = _bridge_env(home, http_port, ws_port, SECRET)
             bridge_url = f"http://127.0.0.1:{http_port}"
             with patch.dict(os.environ, env, clear=True), \
-                    patch.object(control, "BRIDGE", bridge_url), patch.object(bridge_client, "BRIDGE", bridge_url), \
+                    patch.multiple(control, BRIDGE=bridge_url, HTTP_PORT=http_port, WS_PORT=ws_port), \
+                    patch.object(bridge_client, "BRIDGE", bridge_url), \
                     patch.object(control, "DATA_DIR", home), \
                     patch.object(control, "LOCK_FILE", os.path.join(home, "bridge.lock")), \
                     patch.object(bridge_client, "LOG_FILE", os.path.join(home, "bridge.log")), \
@@ -713,7 +714,7 @@ class IsolatedBridgeDiagnosisTests(unittest.TestCase):
         self.assertEqual(error["code"], "port_conflict", error)
         self.assertEqual({k: error["state"][k] for k in ("port", "reason", "exitCode")},
                          {"port": ws_port, "reason": "in_use", "exitCode": 1})
-        self.assertIn("in use", error["state"]["logExcerpt"].lower())
+        self.assertRegex(error["state"]["logExcerpt"].lower(), "in use|10048")
         self.assertLessEqual(len(error["state"]["logExcerpt"]), bridge_client.STARTUP_EXCERPT_CHARS)
         self.assertNotIn(SECRET, json.dumps(error))
 
@@ -723,20 +724,23 @@ class IsolatedBridgeDiagnosisTests(unittest.TestCase):
         spawned = []
 
         def spawn_hung_bridge(args, **kwargs):
+            if os.name == "nt":
+                kwargs["executable"] = sys._base_executable
             process = popen([sys.executable, "-c", HUNG_BRIDGE, str(http_port)], **kwargs)
             spawned.append(process)
-            self.addCleanup(process.wait, 10)
-            self.addCleanup(process.kill)
+            cleanup.callback(process.wait, 10)
+            cleanup.callback(process.kill)
             return process
 
-        with tempfile.TemporaryDirectory() as home:
+        with tempfile.TemporaryDirectory() as home, ExitStack() as cleanup:
             http_port, ws_port = _free_port(), _free_port()
             self.assertFalse({bridge.EXTENSION_WS_PORT, 47651} & {http_port, ws_port})
             env = _bridge_env(home, http_port, ws_port, SECRET)
             bridge_url = f"http://127.0.0.1:{http_port}"
             log_file = os.path.join(home, "bridge.log")
             with patch.dict(os.environ, env, clear=True), \
-                    patch.object(control, "BRIDGE", bridge_url), patch.object(bridge_client, "BRIDGE", bridge_url), \
+                    patch.multiple(control, BRIDGE=bridge_url, HTTP_PORT=http_port, WS_PORT=ws_port), \
+                    patch.object(bridge_client, "BRIDGE", bridge_url), \
                     patch.object(control, "DATA_DIR", home), \
                     patch.object(control, "LOCK_FILE", os.path.join(home, "bridge.lock")), \
                     patch.object(control, "PID_FILE", os.path.join(home, "bridge.pid")), \

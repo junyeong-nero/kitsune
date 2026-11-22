@@ -614,7 +614,7 @@ class LockedPolicyTests(AskBeforeActTestCase):
                 patch.dict(bridge._policy, {"ask": False, "askLocked": False}), \
                 patch.object(bridge, "ASK_LOCK_FILE", lock_file or os.path.join(home, "ask-before-act-locked")), \
                 patch.object(bridge_control, "PID_FILE", os.path.join(home, "bridge.pid")), \
-                patch.object(bridge.fcntl, "flock"), \
+                patch.object(bridge.file_lock, "lock_exclusive"), \
                 patch.object(bridge, "main", new=Mock(return_value="coroutine")), \
                 patch.object(bridge.asyncio, "run"):
             bridge.run(list(args))
@@ -629,7 +629,8 @@ class LockedPolicyTests(AskBeforeActTestCase):
                 lock_file = Path(home, "ask-before-act-locked")
                 self.assertEqual(lock_file.exists(), locked)
                 if locked:
-                    self.assertEqual(stat.S_IMODE(lock_file.stat().st_mode), 0o600)
+                    if os.name != "nt":
+                        self.assertEqual(stat.S_IMODE(lock_file.stat().st_mode), 0o600)
                     self.assertIn("delete this file", lock_file.read_text(encoding="utf-8"))
 
     def test_lock_survives_restart_until_file_is_deleted(self):
@@ -644,20 +645,30 @@ class LockedPolicyTests(AskBeforeActTestCase):
 
     def test_unreadable_or_symlinked_lock_file_still_locks(self):
         with tempfile.TemporaryDirectory() as home:
-            os.symlink(os.path.join(home, "missing"), os.path.join(home, "ask-before-act-locked"))
+            try:
+                os.symlink(os.path.join(home, "missing"), os.path.join(home, "ask-before-act-locked"))
+            except OSError as error:
+                if getattr(error, "winerror", None) == 1314:
+                    self.skipTest("Windows symbolic-link privilege is unavailable")
+                raise
             self.assertEqual(self.start_bridge(home), (True, True))
             self.assertFalse(os.path.exists(os.path.join(home, "missing")), "the link is not followed")
 
     def test_lock_that_cannot_be_persisted_still_locks_this_bridge(self):
         with tempfile.TemporaryDirectory() as home:
             read_only = os.path.join(home, "read-only")
-            os.mkdir(read_only, 0o500)
-            try:
-                with patch("sys.stdout", new_callable=io.StringIO) as out:
-                    self.assertEqual(self.start_bridge(home, ["--ask-before-act"],
-                                                       lock_file=os.path.join(read_only, "lock")), (True, True))
-            finally:
-                os.chmod(read_only, 0o700)
+            os.mkdir(read_only)
+            blocked = os.path.join(read_only, "lock")
+            real_open = os.open
+
+            def open_file(path, *args, **kwargs):
+                if os.fspath(path) == blocked:
+                    raise PermissionError("synthetic read-only lock directory")
+                return real_open(path, *args, **kwargs)
+
+            with patch("sys.stdout", new_callable=io.StringIO) as out, \
+                    patch.object(bridge.os, "open", side_effect=open_file):
+                self.assertEqual(self.start_bridge(home, ["--ask-before-act"], lock_file=blocked), (True, True))
             self.assertIn("locked for this bridge only", out.getvalue())
 
     def test_flag_only_applies_to_start(self):
