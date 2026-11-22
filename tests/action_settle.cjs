@@ -54,6 +54,8 @@ function harness({ mutatesUntil = 0, requestMs = null, watching = true, unchange
           readyState = 'loading';
           context.tabDocuments.set(7, (context.tabDocuments.get(7) || 0) + 1);
           setTimeout(() => { readyState = 'interactive'; tab.title = 'Item 1'; }, navigation.parsedMs);
+          // A document that loaded without the tab reporting 'complete' (Gecko, see waitForTabLoad).
+          if (navigation.documentCompleteMs != null) setTimeout(() => { readyState = 'complete'; }, navigation.documentCompleteMs);
         }
         setTimeout(() => {
           load.complete = true; readyState = 'complete'; Object.assign(tab, { status: 'complete', title: 'Item 1' });
@@ -255,6 +257,13 @@ async function testANavigatingClickReturnsOncePageIsParsed() {
   assert.equal(loaded.load_pending, undefined);
   assert.equal(loaded.navigation_pending, undefined);
   within(quick.snapshotAt(), 600 + GRACE - 200, 600 + GRACE, 'after the load');
+  // A document that reports complete while the tab never does is loaded, not pending.
+  const unreported = harness({ navigation: { loadMs: 8000, parsedMs: 300, documentCompleteMs: 400 } });
+  const complete = await unreported.context.handleCommand({ action: 'click', selector: 'a', tabId: 7 });
+  assert.ok(complete.navigated);
+  assert.equal(complete.load_pending, undefined);
+  assert.equal(complete.navigation_pending, undefined);
+  within(unreported.snapshotAt(), 300 + GRACE, 300 + GRACE + 300, 'parsed, then the grace period');
   // A load whose document never started (no content script answered) is not asked about.
   const unstarted = harness({ navigation: { loadMs: 1500 } });
   const waited = await unstarted.context.handleCommand({ action: 'click', selector: 'a', tabId: 7 });

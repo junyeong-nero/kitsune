@@ -1491,7 +1491,10 @@ async function waitForActionNavigation(tabId, watch, params) {
       if (load !== watch.loadBefore && documents !== watch.documentsBefore) {
         if (parsed && (parsed.load !== load || parsed.documents !== documents)) parsed = null;
         if (!parsed && domParsed(await pageState(tabId))) parsed = { load, documents, at: Date.now() };
-        if (parsed && Date.now() - parsed.at >= ACTION_LOAD_GRACE_MS) return 'interactive';
+        // Gecko may not report a fresh 'complete' (see waitForTabLoad): a loaded document is no pending load.
+        if (parsed && Date.now() - parsed.at >= ACTION_LOAD_GRACE_MS) {
+          return (await pageState(tabId))?.readyState === 'complete' ? 'loaded' : 'interactive';
+        }
       }
       if (load === watch.loadBefore && Date.now() - start >= ACTION_NAVIGATION_START_MS) return null;
       if (Date.now() - start >= ACTION_NAVIGATION_WAIT_MS) return load !== watch.loadBefore ? 'pending' : null;
