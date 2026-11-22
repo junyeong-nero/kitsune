@@ -1,5 +1,6 @@
 """Native Windows lifecycle checks against owned processes and temporary homes."""
 
+import io
 import os
 from pathlib import Path
 import subprocess
@@ -97,6 +98,8 @@ class WindowsLifecycleTests(unittest.TestCase):
         import win32con
         import win32security
 
+        # As the MCP server's lifecycle lock does before the log file exists in it.
+        private_files.ensure_directory(self.home)
         bridge = Bridge(self.home, token=None).start()
         self.addCleanup(bridge.stop)
         token = win32security.OpenProcessToken(win32api.GetCurrentProcess(), win32con.TOKEN_QUERY)
@@ -116,6 +119,40 @@ class WindowsLifecycleTests(unittest.TestCase):
             actual = {win32security.ConvertSidToStringSid(acl.GetAce(i)[2])
                       for i in range(acl.GetAceCount())}
             self.assertEqual(actual, expected)
+
+    def dacl(self, path):
+        import win32security
+
+        descriptor = win32security.GetNamedSecurityInfo(
+            str(path), win32security.SE_FILE_OBJECT, win32security.DACL_SECURITY_INFORMATION)
+        return win32security.ConvertSecurityDescriptorToStringSecurityDescriptor(
+            descriptor, win32security.SDDL_REVISION_1, win32security.DACL_SECURITY_INFORMATION)
+
+    def test_a_folder_holding_other_files_keeps_its_acl_and_the_token_stays_private(self):
+        Path(self.home, "notes.txt").write_text("not Kitsune's", encoding="utf-8")
+        before = self.dacl(self.home)
+        with patch.object(private_files, "_warned", set()), \
+                patch("sys.stderr", new_callable=io.StringIO) as err:
+            private_files.ensure_directory(self.home)
+            private_files.ensure_directory(self.home)
+        self.assertEqual(self.dacl(self.home), before)
+        self.assertFalse(private_files._has_private_acl(self.home))
+        self.assertEqual(err.getvalue().count("permissions were left unchanged"), 1, err.getvalue())
+        bridge = Bridge(self.home, token=None).start()
+        self.addCleanup(bridge.stop)
+        self.assertEqual(self.dacl(self.home), before)
+        self.assertTrue(private_files._has_private_acl(str(Path(self.home, "token"))))
+
+    def test_a_directory_the_bridge_made_private_is_reused_without_a_warning(self):
+        home = str(Path(self.home, "new", "kitsune"))
+        private_files.ensure_directory(home)
+        self.assertTrue(private_files._has_private_acl(home))
+        Path(home, "bridge.log").write_text("", encoding="utf-8")
+        with patch.object(private_files, "_warned", set()), \
+                patch("sys.stderr", new_callable=io.StringIO) as err:
+            private_files.ensure_directory(home)
+        self.assertEqual(err.getvalue(), "")
+        self.assertTrue(private_files._has_private_acl(home))
 
     def test_acl_failure_is_not_silently_ignored(self):
         with patch.object(private_files, "_windows_acl", side_effect=OSError("ACL unavailable")):

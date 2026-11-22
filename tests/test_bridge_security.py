@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import stat
 import struct
 import subprocess
 import sys
@@ -484,6 +485,14 @@ class BridgeDaemonLockTests(unittest.TestCase):
             # The stale file keeps the old PID but is no longer locked.
             self.assertEqual(Path(pid_file).read_text(encoding="utf-8").strip(), str(bridge.process.pid))
             self.assertIsNone(control._locked_pid())
+
+    def test_a_pid_file_this_user_can_only_read_still_names_the_daemon(self):
+        pid_file = os.path.join(self.home, "bridge.pid")
+        with patch.object(control, "PID_FILE", pid_file):
+            bridge = self.new_bridge().start()
+            os.chmod(pid_file, stat.S_IREAD)
+            self.addCleanup(os.chmod, pid_file, stat.S_IREAD | stat.S_IWRITE)
+            self.assertEqual(control._locked_pid(), bridge.process.pid)
 
     def test_restart_after_stop_reuses_pid_file(self):
         first = self.new_bridge().start()

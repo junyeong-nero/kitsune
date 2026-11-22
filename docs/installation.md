@@ -5,13 +5,10 @@ extension** you install once. Setup takes four steps.
 
 !!! info "Before you start"
 
-    - macOS or Linux
+    - macOS, Linux or Windows. On Windows, read [Windows](windows.md) first: it needs
+      `KITSUNE_SCRIPTING=0`.
     - Firefox 142+, Zen 1.23+ or LibreWolf
     - An MCP client: Claude Code, Codex CLI, Pi, Claude Desktop, Cursor or OpenCode
-
-Native Windows bridge support is available in this development checkout; see
-[Windows setup and verification](windows.md). It is not part of the upstream
-0.8.1 release instructions below.
 
 ## 1. Install uv
 
@@ -28,6 +25,12 @@ server. It provides `uvx` and Python 3.10+. Skip this step if `uvx --version` al
 
     ```bash
     brew install uv
+    ```
+
+=== "Windows"
+
+    ```powershell
+    powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
     ```
 
 Open a new terminal, then download Kitsune once to check that it runs:

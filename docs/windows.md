@@ -1,51 +1,51 @@
-# Native Windows bridge support
+# Windows
 
-This checkout adds native Windows support to Kitsune's Python bridge. It reuses
-the existing Firefox extension, MCP protocol, tab ownership, and handoff UI.
-OS-level trusted keyboard/mouse features remain platform-specific; this change
-does not implement the macOS native-input features on Windows.
+Kitsune runs natively on Windows with the same extension, MCP server and tab
+handoff as on macOS and Linux. Install it as in [Installation](installation.md), with the
+differences below.
 
-## Install this development checkout
+## Turn off Python scripting
 
-Use Windows 11, Python 3.12 or newer, uv, and an existing supported Firefox.
-From the checkout:
+`browser_run_python` does not run on Windows yet. Start the MCP server with
+`KITSUNE_SCRIPTING=0`, which gives the agent the [direct browser tools](tools.md#core-tools)
+instead. For Claude Code:
 
 ```powershell
-uv sync --frozen
-uv run kitsune-bridge status
+claude mcp add --scope user -e KITSUNE_SCRIPTING=0 kitsune -- uvx --from kitsune-browser-mcp kitsune
 ```
 
-For an MCP client, run this checkout with `KITSUNE_SCRIPTING=0` to use direct
-browser tools. The optional `browser_run_python` worker still uses POSIX
-process-group cleanup and is outside this bridge port. The upstream default
-scripting surface is therefore not supported by this Windows preview.
-Use `uv run --directory C:\path\to\kitsune --frozen kitsune` as the client
-command; `uvx --from kitsune-browser-mcp kitsune` would fetch the unpatched release.
+Other clients set the variable in their MCP server entry, as shown for each client in
+[Add Kitsune to your agent](installation.md#3-add-kitsune-to-your-agent).
 
-The Windows-only dependencies provide process-identity checks and Windows ACLs.
-The configured `KITSUNE_HOME` is private application storage: the bridge secures
-that directory and its credential file for the current user, Administrators,
-and SYSTEM. Choose a dedicated directory, not a general documents/profile root.
-Raw tokens stay local. Bridge listeners bind only to loopback and use exclusive
-Windows socket ownership.
+## The data directory is private
 
-Follow [installation](installation.md) for the signed extension matching this
-checkout's package version. Installing the signed extension into an already
-open Firefox profile does not require copying that profile or its cookies.
-Existing-tab writes still require the extension's handoff approval and can be
-taken back from its popup. This checkout does not install an extension into a
-personal profile or register an MCP server globally for you.
+The bridge keeps its token, log and lock files in `KITSUNE_HOME` (default
+`%USERPROFILE%\.kitsune`). Windows does not honor the POSIX `0700` mode, so the bridge sets
+an access list instead: only your account, SYSTEM and Administrators can open the directory
+and the token file.
 
-An agent host's native Computer Use browser-policy support is separate from
-Kitsune. This port does not modify a host's URL permissions or make an explicitly
-refused native action available. Use an approved MCP integration and the host's
-site-permission controls before connecting a real account. The tests below use
-only disposable profiles, synthetic content, and isolated bridge homes.
+It replaces the directory's access list only when the bridge creates the directory or finds it
+empty. If `KITSUNE_HOME` points at a folder that already holds other files, that folder keeps its
+permissions, the bridge prints a warning, and only the token file is made private. Point
+`KITSUNE_HOME` at a new or empty directory to keep the log and state private too.
 
-## Verification
+The bridge's listeners bind only to `127.0.0.1` and refuse to share their ports with another
+program.
 
-For the Python tests, set a disposable parent home because importing the bridge
-initializes its data directory:
+## Limitations
+
+- **No `browser_run_python`**: see [above](#turn-off-python-scripting).
+- **OS-level input**: native keyboard and drag input (`browser_trusted_type`,
+  `browser_trusted_press_key`, `browser_trusted_drag`) are macOS only and return
+  `unsupported_platform` on Windows.
+- **Building the signed extension**: `scripts/build_extension.py signed` does not yet produce a
+  correct signed build on Windows; `tests/test_build_extension.py` fails there. The released
+  `.xpi` is built on Linux and is not affected.
+
+## Verifying a checkout
+
+Contributors can run the Windows bridge checks from a checkout. Importing the bridge creates its
+data directory, so point `KITSUNE_HOME` at a disposable one:
 
 ```powershell
 $env:KITSUNE_HOME = Join-Path $env:TEMP ('kitsune-tests-' + [guid]::NewGuid())
@@ -57,30 +57,15 @@ uv run --frozen python -m unittest discover -s tests -p test_bridge_websocket.py
 node tests/tab_handoff_races.cjs
 ```
 
-Native subprocess checks cover lock contention, readable locked PIDs, restart
-after a crash, unrelated/recycled PID refusal, private token/data ACLs, signal
-cleanup, non-Unicode parent output, independent homes, and port takeover refusal.
-The existing security suite checks bearer authentication, Host validation,
-WebSocket origin rejection, single-daemon races, and authenticated shutdown.
+They cover lock contention, PIDs that stay readable while locked, restart after a crash,
+refusing to stop an unrelated or recycled PID, the private access lists, signal cleanup,
+non-Unicode parent output, independent homes and port takeover. The `Bridge platforms` workflow
+runs them on Windows and Linux with Python 3.12 and 3.14.
 
-For the real extension's approve/decline/revoke/reconnect journeys:
+The real extension's approve, decline, take-back and reconnect journeys run against a disposable
+browser profile:
 
 ```powershell
 $env:KITSUNE_E2E_BROWSER = 'C:\Program Files\Mozilla Firefox\firefox.exe'
 uv run --frozen python -m unittest discover -s tests -p test_real_browser_handoff.py -k test_popup_approval -k test_popup_decline -k test_take_back -k test_session_end -k test_client_disconnect -k test_a_bridge_reconnect -k test_an_extension_reload -k test_a_grant_to_one_client -v
 ```
-
-These tests create their own browser instance/profile and temporary extension,
-use nondefault bridge ports, and exercise the real extension popup. Test cleanup
-targets only the owned process identities and their descendants. No private
-logged-in page or third-party account workflow is part of the acceptance test.
-
-The platform workflow runs the bridge checks on Windows and Linux, Python 3.12
-and 3.14. A configured CI matrix is not evidence of a completed CI run.
-
-The full upstream suite is not green on this Windows checkout. The broad
-fail-fast run stopped at `test_signed_build_has_no_code_execution` after 306
-tests; the signed-build marker was missing from the generated content script.
-That packaging path and the POSIX scripting worker require follow-up. The
-downloaded upstream signed extension and the isolated development-extension
-handoff tests are separate artifacts.

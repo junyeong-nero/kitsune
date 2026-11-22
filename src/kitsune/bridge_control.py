@@ -130,7 +130,7 @@ def _locked_pid() -> int | None:
     An unlocked/stale pid file must never be used to signal a recycled PID.
     """
     try:
-        with open(PID_FILE, "r+", encoding="utf-8") as pid_file:
+        with open(PID_FILE, encoding="utf-8") as pid_file:
             try:
                 file_lock.lock_exclusive(pid_file, blocking=False)
             except BlockingIOError:

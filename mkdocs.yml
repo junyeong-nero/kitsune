@@ -70,6 +70,7 @@ nav:
   - Home: index.md
   - Getting started:
       - Installation: installation.md
+      - Windows: windows.md
       - Try it: try-it.md
   - Concepts:
       - How it works: how-it-works.md
