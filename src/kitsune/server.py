@@ -1419,7 +1419,10 @@ async def browser_run_python(
     tab.navigate(url); tab.back().
     tab.wait_for(text='Done', timeout=10000) or target/url/text_gone (one condition, timeout in ms).
     wait_for(target=...) accepts CSS/refs, not :has-text or text=/role=; actions may use those.
-    Example: tab.fill('e12', 'Ada'); tab.click('e15'); result = tab.snapshot(text=True).
+    Example: tab.fill('e12', 'Ada'); r = tab.click('e15'); result = r['snapshot'].
+    click/fill/type/check/select_option/press/hover/navigate return what changed, with refs, in
+    r['snapshot'] (the new page after a navigation; max 4,000 chars). A script that prints nothing
+    and sets no result returns its last action's snapshot. Call tab.snapshot() only if that is not enough.
     help(tab.scroll) prints a specific method's signature. Prefer this API over page evaluate.
 
     Limits: 16 KB output/result, 100 API calls, fresh variables, no top-level await.

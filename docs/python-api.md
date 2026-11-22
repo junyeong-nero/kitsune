@@ -62,6 +62,15 @@ result = tab.snapshot()
   `await`.
 - Return data with `print(...)` or a JSON-compatible `result`. Intermediate reads are not sent to
   the model. Use `browser_take_screenshot` for images.
+- A script that prints nothing and assigns no `result` (`result = None` is an assignment) returns
+  what its last operation changed, when that was a successful `click`, `type`, `fill`,
+  `select_option`, `check`, `press`, `hover` or `navigate`: `result` is
+  `{"last_action": "/api/click", "snapshot": "…", "snapshot_delta": true}`, the action's own
+  [post-action snapshot](api-reference.md#post-action-snapshots) with its `no_visible_change`,
+  `navigated`, `snapshot_truncated` and `snapshot_hint`. Nothing is returned after a read, a wait
+  or `submit_form` (its snapshot is taken before the submit's navigation), for a full snapshot
+  taken without the settle wait (`KITSUNE_POST_ACTION_SNAPSHOT=full`), or while a navigation is
+  still loading (`navigation_pending`).
 - Limits: 64,000 bytes of code; 16,000 bytes of output and result combined (bytes, not
   characters); 100 API calls; 30 s default deadline, 120 s max.
 - A failed read or wait raises its exception in the script, as outside scripts: `text`,
@@ -207,7 +216,10 @@ report `matches` ([Strict selectors](api-reference.md#strict-selectors)).
 `outcome_not_observed` when the effect doesn't appear ([Action outcomes](api-reference.md#action-outcomes)),
 and `wait=True` to wait for the target first ([Actionability wait](api-reference.md#actionability-wait)).
 Results list `opened_tabs` and, for clicks and hovers, `opened_popup`
-([Opened popups](api-reference.md#opened-popups)).
+([Opened popups](api-reference.md#opened-popups)). `click`, `type`, `fill`, `select_option`,
+`check`, `press` and `hover` also return what they changed, with refs, under `snapshot`
+([Post-action snapshots](api-reference.md#post-action-snapshots)), so a full `snapshot()` is
+needed only when that is not enough.
 
 ### Editing and focus
 
