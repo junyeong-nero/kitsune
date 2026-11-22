@@ -51,6 +51,11 @@ script sends the refused request again). A container step asks the toolbar popup
 30 seconds; unanswered or declined, it fails unrun. Requests without `X-Kitsune-Approver` (the
 Python API, `kitsune-bridge`) and requests outside a tool call are not checked.
 
+Approval is per tool, not per effect. `browser_check` clicks an element with role `checkbox`,
+`switch` or `radio` (see [`/api/check`](#post-apicheck)), and that click is `browser_check`'s:
+requiring approval for `browser_click` alone does not ask for it. Check `browser_check` too to be
+asked for every click.
+
 `POST /api/tool-approval {tool, summary}` answers `{"ok": true, "required": false}` when nothing is
 needed. Otherwise the extension asks: with `together: true` it returns a `needs_user` with a
 `confirmToken` at once, and the server then sends `{tool, confirmToken, wait: true}` (the popup's
@@ -546,7 +551,9 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `not_found` | No element matches the selector (also `No target`, `from/to element not found`; a scoped `browser_snapshot`/`browser_dom` reports `Selector not found: …` with `state.selector`); after an [actionability wait](#actionability-wait), `state` has `timeoutMs` and `elapsed` | true |
 | `not_editable` | A native field targeted by fill, type, editable-content or form-fill is readonly or disabled (including a disabled fieldset). `state.reason` is `readonly` or `disabled`; `state.tag` names the resolved field, including inside shadow roots. Nothing was focused, changed or dispatched for that field. Use the page's own control, such as its date picker, or an editable field. Earlier successful fields/operations remain completed | false |
 | `not_fillable` | `browser_type` (`type`/`fill` modes) or a `browser_form_fill` key found no field to write. The target is not a field (`fill` and `browser_form_fill`: input, textarea or select; `type`: input, textarea or `contenteditable` region) and has none in its open or closed shadow roots, searched through nested hosts up to 8 roots deep (`fill` and `browser_form_fill` also look in its light DOM). Nothing was written. `state.tag` is the target's tag; `state.reason` is `no_field`, or `shadow_depth` when its shadow roots nest deeper than 8. On an ARIA slider or spinbutton (`state.role`) that `fill` cannot step (no numeric `aria-valuenow`), that `type` mode targets, or that a `browser_form_fill` key names, the hint names the keyboard alternative (click it to focus it, then arrow keys with `browser_press_key` `repeat`), and for `type` and `browser_form_fill` on a slider with `aria-valuenow` also `fill` | true |
-| `value_not_reached` | `fill` on an ARIA slider or spinbutton did not make `aria-valuenow` the value (see [`/api/fill`](#post-apifill)). `state` has `role`, `value` (where it stopped), `target`, `min`, `max`, `keys` and `reason`: `out_of_range` (the value is outside `aria-valuemin`/`aria-valuemax`; nothing was pressed), `stepped_past` (its steps skip the value), `stuck` (it stopped moving: at an end, disabled, ignoring synthetic keys, or rendering only on an animation frame), `moved_away` (its arrow keys moved it away from the value and the other arrow keys did not move it), `key_limit` (1,000 keys) or `time_limit` (20 s) | true for `out_of_range`, else false |
+| `value_not_reached` | `fill` on an ARIA slider or spinbutton did not make `aria-valuenow` the value (see [`/api/fill`](#post-apifill)). `state` has `role`, `value` (where it stopped), `target`, `min`, `max`, `keys` and `reason`: `out_of_range` (the value is outside `aria-valuemin`/`aria-valuemax`; nothing was pressed), `stepped_past` (its steps skip the value), `stuck` (it stopped moving: at an end, disabled, ignoring synthetic keys, or rendering only on an animation frame), `moved_away` (its arrow keys moved it away from the value and the other arrow keys did not move it), `key_limit` (1,000 keys) or `time_limit` (20 s). Also a check of an element with role `checkbox`, `switch` or `radio` whose `aria-checked` is not the requested state afterwards (see [`/api/check`](#post-apicheck)): `state` has `role`, `checked` (`aria-checked` now), `target`, `clicked` and `reason`: `unchanged` (the click left it as it was), `other_state` (it changed to another state), `replaced` (the page replaced the element) or `radio` (unchecking a selected radio; nothing was clicked) | true for `out_of_range` and `radio`, else false |
+| `no_such_option` | `browser_select_option` (`/api/select-option`) found no `<option>` with the value, or with the text for `by_text`; with `values`, none with that value or text. Nothing was selected and no event was dispatched. `state.options` lists the first 20 options as `{value, text}` and `state.total` counts them all; a [sensitive](#sensitive-field-redaction) select has `state.redacted: true` and no `options`. The hint says so when the value is an option's text (use `by_text`) or the text an option's value | false |
+| `wrong_element_type` | `browser_check` (`/api/check`) targets an element that is neither a native checkbox or radio nor has role `checkbox`, `switch` or `radio`. `state.tag` and, when it has one, `state.role` say what the element is. Nothing was dispatched; click it instead | false |
 | `ambiguous_target` | The command names no single target, so nothing was dispatched: a write action's selector matches several actionable elements (`state.selector`, `state.matches`; see [Strict selectors](#strict-selectors)), a `browser_form_fill` label or placeholder key matches several actionable fields (`state.field`, `state.matches`), or `browser_submit_form` without a target found several forms and no filled field naming one (`state.forms`). `state.candidates` lists up to 5 of them with a `ref` to target one | false |
 | `target_not_at_point` | `browser_trusted_click` found another element (`state.hit`, `null` for none) at its target's center (`state.viewportX`, `state.viewportY`), such as an overlay; no OS click was made. `browser_trusted_drag` checks both ends the same way, and a destination out of view has nothing at its point; nothing was dragged | true |
 | `browser_not_at_point` | On macOS, a viewport `browser_trusted_click` would land outside the browser: another app's window (`state.app`, `null` for the desktop) is at the desktop point (`state.screenX`, `state.screenY`; `state.reason: "other_window"`), another window or panel of the browser is there instead of the tab's window (`"other_browser_window"`, `state.window`, `state.targetWindow`), the macOS window list could not be read (`"unknown"`, `state.detail`), or, without Quartz, `focus=True` could not bring the browser to the front (`"not_frontmost"`). Typically the browser is in full screen on another Space; no OS click was made. `browser_trusted_drag` checks both of its points the same way and drags nothing | true |
@@ -566,7 +573,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
 | `error_page` | A loaded `http(s)` page refused the content script: the browser shows its own document, such as an error response with an empty body. `state` adds `title` and, when the extension saw the response, `httpStatus`. Nothing was dispatched, but reads fail the same way until the tab navigates; for a 4xx/5xx status, `browser_page_text` instead returns an empty result (`text: ""`, `empty: true`, `httpStatus`, `tabId`, `url`, `title`) | false |
 | `extension_disconnected` | The extension is not connected, reconnected before sending, or disconnected while waiting (`state.connected`) | true if not sent; false for writes after |
 | `dialog_open` | A native alert/confirm/prompt is open in the tab and the command waited on it for over 1 s (see [Page dialogs](#page-dialogs)); `state.dialog` names it (`pending: true`). Only the user can answer it, and the command's effect depends on the answer | false |
-| `timeout` | The bridge sent the command but no reply arrived in time (`state.timeoutSeconds`); from the MCP server, the bridge did not answer. An element or text wait whose page reads all went unanswered within its `timeout` (see `browser_wait_for`) | false for writes (MCP: POST) |
+| `timeout` | The bridge sent the command but no reply arrived in time (`state.timeoutSeconds`); from the MCP server, the bridge did not answer. An element or text wait whose page reads all went unanswered within its `timeout` (see `browser_wait_for`). A wait route whose condition did not hold within its `timeout`: `ok: false` with the fields the wait reports (`elapsed`, `text`, `found`, `url`, …); a wait changes nothing, so it is `retryable: true` | false for writes (MCP: POST); true for waits |
 | `bridge_unavailable` | The MCP server cannot reach or start the bridge (`state.exitCode`, `state.logExcerpt` when it exited at startup; `state.reason`, `state.pid` when it runs but does not answer) | true |
 | `bridge_disconnected` | From the MCP server: the bridge closed the connection before its reply. `state.requestSent` is `false` when the request could not be sent in full, so the command did not run | true if not sent; false for writes (MCP: POST) after |
 | `token_mismatch` | The bridge rejected the MCP server's token (`state.port`, `state.tokenSource`) | true |
@@ -1870,7 +1877,7 @@ In ask mode the bridge holds:
 | `state.holdReason` | Actions |
 |---|---|
 | `submit` | `browser_submit_form` (`submitForm`) |
-| `submit_control` | Click, double-click, trusted click, or click-and-wait-navigation on a submit control (`button` whose type is submit, `input type=submit/image`, or an element inside one, with a form). Also Enter (`browser_keypress`) on a text-like `input` in a form or on a submit control |
+| `submit_control` | Click, double-click, trusted click, or click-and-wait-navigation on a submit control (`button` whose type is submit, `input type=submit/image`, or an element inside one, with a form). Also `browser_check`, which clicks an element with role `checkbox`, `switch` or `radio` (#574): its target is inspected like a click's, for this reason and the two below. Also Enter (`browser_keypress`) on a text-like `input` in a form or on a submit control |
 | `submit_label` | The same clicks, or Enter, on any other button whose label reads like a submit, order, or payment ("Place order", "Pay $12", "결제하기"), for example a JS-driven `type=button` or `role=button`. See [Submit labels](#submit-labels) |
 | `consequential_label` | The same clicks, or Enter, on a button or link whose label reads like a send, transfer, delete, or account change ("Send", "Delete account", "Unsubscribe", "송금하기"), including icon-only controls named by `aria-label`, `alt` or `title`. See [Submit labels](#submit-labels) |
 | `javascript` | Agent-supplied JavaScript: `browser_js` (including `full=True`), `browser_wait_for(js=...)`, `browser_sync_barrier`, batch `js`, and batch `if`/`while` conditions |
@@ -2449,7 +2456,7 @@ never ran:
 | `status` | Meaning |
 |---|---|
 | `ok` | The command ran without an error. Like any result, this means dispatched, not that the outcome happened (see [Action outcomes](#action-outcomes)) |
-| `failed` | It returned an error that is safe to repeat (`retryable: true`, unclassified errors, `error_page`, `ambiguous_target`, `needs_user` other than an ask-before-act hold, `permission_required`, the pre-dispatch refusals `unknown_action` and `invalid_url`, or `ok: false`) |
+| `failed` | It returned an error that is safe to repeat (`retryable: true`, unclassified errors, `error_page`, `ambiguous_target`, `no_such_option`, `wrong_element_type`, `needs_user` other than an ask-before-act hold, `permission_required`, the pre-dispatch refusals `unknown_action` and `invalid_url`, or `ok: false`) |
 | `held` | [Ask-before-act](#ask-before-act) held it (`needs_user`, `confirmation_required`); nothing ran |
 | `unknown` | It may have taken effect: an error with `retryable: false`, or it was in progress at the container's deadline. Observe the page before acting again |
 | `skipped` | It never started: an earlier step stopped the container (a held step, `stopOnWarning`, a failed workflow step) or the deadline passed |
@@ -3034,6 +3041,10 @@ A met `text` or `text_gone` wait (#403) adds the same changes to its
 `{"ok": true, "text": …, "text_gone": …, "elapsed": …}` result, so a toast that appears as
 a status line goes away is in the result rather than lost before the next snapshot. A
 timed-out or failed text wait returns its result unchanged.
+
+A condition that does not hold within `timeout` returns `ok: false` with the wait's error
+(`Timed out after 10000ms waiting for visible text`), `code: "timeout"`, `retryable: true` and
+a `hint` (#574), from every wait endpoint above. A batch step's wait keeps its uncoded result.
 
 `timeout` is in milliseconds and does not limit an explicit sleep. JS retains
 bridge non-empty-result semantics: `false` and `0` count as results; return
@@ -3770,6 +3781,54 @@ before any key. When a key steps past the value, a key stops moving it, the arro
 it away, or 1,000 keys or 20 s run out, it is a `value_not_reached` with `retryable: false`
 and the same `state`. A native `<input type=range>`, also inside a `role=slider` wrapper,
 keeps the value setter.
+
+### POST /api/select-option
+`{ "selector": "select[name=sort]", "value": "price_low" }`; `"byText": true` matches the option's
+text instead of its value, and `"values": [...]` (the core `browser_select_option`) matches each
+entry against values, then texts.
+
+Returns `{ "ok": true, "value": "price_low", "text": "Price: low to high" }` after `change` and
+`input` events. A value no option has is a `no_such_option` [action error](#action-errors) that
+lists the options (#574), so the caller need not read them from the page:
+
+```json
+{ "error": "No matching option for value: price_asc", "code": "no_such_option", "retryable": false,
+  "hint": "Nothing was selected. Pass a value from state.options.",
+  "state": { "total": 2, "options": [{ "value": "relevance", "text": "Relevance" },
+                                     { "value": "price_low", "text": "Price: low to high" }] } }
+```
+
+### POST /api/check
+`{ "selector": "#agree", "checked": true }`
+
+Sets a native `input[type=checkbox]` or `input[type=radio]`'s `checked` property and dispatches
+`input` and `change`: `{ "ok": true, "checked": true }`.
+
+An element with role `checkbox`, `switch` or `radio` and no native input (a
+`<button role="checkbox" aria-checked="false">`, which a snapshot lists as a checkbox) has no
+property to set, so `/api/check` sets it as a user does (#574): with one click when `aria-checked`
+is not the requested state, and none when it is. A missing `aria-checked` counts as unchecked;
+`"mixed"` is neither state, so it is clicked. The click is [`/api/click`](#post-apiclick)'s, on that
+element, and the result carries what a click reports (`tag`, `text`, a `warning`,
+[`opened_popup`](#opened-popups), `opened_tabs`, `navigated`) plus `role`, `checked` and `clicked`:
+
+```json
+{ "ok": true, "tag": "button", "text": "Dark mode", "role": "checkbox", "checked": true, "clicked": true }
+```
+
+`aria-checked` must then be the requested state: at once, or within 1 s for a page that
+publishes it after a render or a request. Otherwise the result is a `value_not_reached`
+[action error](#action-errors), `retryable: false` because the click was dispatched. It is never
+clicked twice: a tri-state control that steps from `mixed` to the other state fails with the
+state it reached (`reason: "other_state"`), and checking again steps it once more. A selected
+`role="radio"` is not unchecked, as no click unchecks a native radio: nothing is clicked
+(`reason: "radio"`, `retryable: true`); check another radio of its group instead. When the click
+starts unloading the document (a link styled as a checkbox filter), the old document has no state
+left to publish: the result is the click's, with `clicked: true`, `navigated` and no `checked`.
+
+Any other element is a `wrong_element_type` [action error](#action-errors) with `state.tag` and
+`state.role`; nothing was dispatched. [Ask-before-act](#ask-before-act) inspects a check's target
+as it does a click's.
 
 ### POST /api/scroll
 `{ "direction": "down", "amount": 500 }`. A container `selector` or `ref` is optional;

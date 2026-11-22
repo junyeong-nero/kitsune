@@ -4980,13 +4980,37 @@
     el.dispatchEvent(new Event('input', { bubbles: true }));
   }
 
+  // The <select> has no such option (#574): nothing was dispatched, and the same command cannot
+  // succeed. state.options lists the first few, so the caller need not read them from the page;
+  // a sensitive select lists none. how: what value was matched against.
+  const SELECT_OPTION_LIMIT = 20;
+  function noSuchOption(el, value, how) {
+    const options = Array.from(el.options);
+    const wanted = String(value).trim();
+    const sensitive = isSensitiveField(el);
+    let hint = 'Nothing was selected. Pass ' + (how === 'text' ? 'a text' : 'a value') + ' from state.options' +
+      (options.length > SELECT_OPTION_LIMIT ? `, the first ${SELECT_OPTION_LIMIT} of ${options.length} options.` : '.');
+    if (sensitive) hint = 'Nothing was selected. Its options are not listed because the field is sensitive.';
+    else if (how === 'value' && options.some(opt => opt.text.trim() === wanted)) {
+      hint = 'Nothing was selected. This is an option\'s text, not its value: pass by_text=True (byText), ' +
+        'or its value from state.options.';
+    } else if (how === 'text' && options.some(opt => opt.value === wanted)) {
+      hint = 'Nothing was selected. This is an option\'s value, not its text: select it without by_text, ' +
+        'or pass its text from state.options.';
+    }
+    return { ...actionError(`No matching option for ${how}: ${value}`, 'no_such_option', hint,
+      { total: options.length, ...(sensitive ? { redacted: true } : { options: options.slice(0, SELECT_OPTION_LIMIT)
+        .map(opt => ({ value: String(opt.value).slice(0, 80), text: opt.text.trim().slice(0, 80) })) }) }),
+      retryable: false };
+  }
+
   // Several values (browser_select_option): each matches an option's value, else its text.
   function selectOptions(el, values) {
     if (values.length > 1 && !el.multiple) return { error: 'This <select> takes one value; got ' + values.length };
     const matched = [];
     for (const value of values) {
       const opt = findSelectOption(el, value, false) || findSelectOption(el, value, true);
-      if (!opt) return { error: `No matching option for value or text: ${value}` };
+      if (!opt) return noSuchOption(el, value, 'value or text');
       matched.push(opt);
     }
     lastActedElement = lastFilledField = el;
@@ -5006,16 +5030,126 @@
     if (el.tagName !== 'SELECT') return { error: 'Element is not a <select>' };
     if (Array.isArray(values)) return selectOptions(el, values);
     const matched = findSelectOption(el, value, byText);
-    if (!matched) return { error: `No matching option for ${byText ? 'text' : 'value'}: ${value}` };
+    if (!matched) return noSuchOption(el, value, byText ? 'text' : 'value');
     lastActedElement = lastFilledField = el;
     applySelectOption(el, matched);
     return { ok: true, value: el.value, text: matched.text };
   }
 
+  // ── ARIA checkboxes (#574) ──
+  // A role=checkbox, switch or radio without a native input has no checked property to set, so
+  // check sets it as a user does: with one click when aria-checked is not the requested state
+  // (a missing aria-checked is unchecked, "mixed" is neither), and none when it is. The click is
+  // browser_click's, so it reports what a click reports. Then aria-checked must become the
+  // requested state: at once, or within ARIA_CHECK_SETTLE_MS for a page that publishes it after
+  // a render or a request. A document the click starts to unload has no state left to read and
+  // answers as the click.
+  // Never more than one click: a tri-state control that steps to another state fails with the
+  // state it reached, and checking again steps it once more. A selected radio is not unchecked,
+  // as no click unchecks a native one.
+  const ARIA_CHECK_ROLES = new Set(['checkbox', 'switch', 'radio']);
+  const ARIA_CHECK_SETTLE_MS = 1000;
+  const ARIA_CHECK_HINTS = {
+    radio: 'Nothing was clicked: a selected radio is unchecked by checking another radio of its group.',
+    unchanged: 'The click was dispatched and aria-checked did not change. The control may be disabled, ' +
+      'ignore synthetic clicks or publish its state later: read it from a new browser_snapshot before ' +
+      'checking again.',
+    other_state: 'The click was dispatched and aria-checked became state.checked, as a tri-state control ' +
+      'steps through its states: check again to click it once more.',
+    replaced: 'The click was dispatched and the page replaced the element: read the control\'s state from ' +
+      'a new browser_snapshot before checking again.',
+  };
+
+  function ariaCheckRole(el) {
+    const role = String(el.getAttribute?.('role') || '').trim().split(/\s+/)[0].toLowerCase();
+    return ARIA_CHECK_ROLES.has(role) ? role : null;
+  }
+
+  // aria-checked as the page wrote it, lower-cased: "true", "false", "mixed", or null when absent.
+  function ariaChecked(el) {
+    const value = el.getAttribute('aria-checked');
+    return value == null ? null : String(value).trim().toLowerCase();
+  }
+
+  function ariaCheckNotReached(el, role, wanted, reason) {
+    const now = ariaChecked(el);
+    const clicked = reason !== 'radio';
+    return { ...actionError(clicked
+      ? `The ${role}'s aria-checked is ${JSON.stringify(now)} after the click, not "${wanted}"`
+      : 'Cannot uncheck a selected radio', 'value_not_reached', ARIA_CHECK_HINTS[reason],
+    { role, checked: now, target: wanted, clicked, reason }), retryable: !clicked };
+  }
+
+  function checkAriaControl(el, role, wanted) {
+    const reached = () => (ariaChecked(el) ?? 'false') === String(wanted);
+    if (reached()) {
+      lastActedElement = lastFilledField = el;
+      return { ok: true, tag: el.tagName.toLowerCase(), role, checked: wanted, clicked: false };
+    }
+    if (role === 'radio' && !wanted) return ariaCheckNotReached(el, role, wanted, 'radio');
+    const before = ariaChecked(el);
+    lastActedElement = el;
+    return withPopupWatch(withScriptPopupCheck(async () => {
+      let unloading = false;
+      let settle = () => {};
+      const onUnload = () => { unloading = true; settle(); };
+      const views = new Set([window, el.ownerDocument?.defaultView || window]);
+      const observer = new MutationObserver(() => { if (reached()) settle(); });
+      for (const view of views) {
+        view.addEventListener('beforeunload', onUnload);
+        view.addEventListener('pagehide', onUnload);
+      }
+      try {
+        // By its ref, so the click acts on this element and nothing else the selector matches.
+        const click = await clickElement(issueRef(el));
+        if (click.error) return click;
+        if (!reached() && !unloading) {
+          observer.observe(el, { attributes: true, attributeFilter: ['aria-checked'] });
+          await new Promise(resolve => {
+            settle = resolve;
+            pointerPause(ARIA_CHECK_SETTLE_MS).then(resolve);
+          });
+        }
+        if (reached()) {
+          lastFilledField = el;
+          return { ...click, role, checked: wanted, clicked: true };
+        }
+        if (unloading) return { ...click, role, clicked: true };
+        return ariaCheckNotReached(el, role, wanted,
+          !el.isConnected ? 'replaced' : ariaChecked(el) === before ? 'unchanged' : 'other_state');
+      } finally {
+        observer.disconnect();
+        for (const view of views) {
+          view.removeEventListener('beforeunload', onUnload);
+          view.removeEventListener('pagehide', onUnload);
+        }
+      }
+    }));
+  }
+
   function checkBox(selector, checked, first) {
     const el = resolveTarget(selector, null, { first });
     if (!el) return notFound();
-    if (el.type !== 'checkbox' && el.type !== 'radio') return { error: 'Element is not a checkbox/radio' };
+    if (el.type !== 'checkbox' && el.type !== 'radio') {
+      const role = ariaCheckRole(el);
+      if (!role) {
+        // Nothing was dispatched, and the same command cannot succeed on this element.
+        const shown = el.getAttribute?.('role') || inferRole(el);
+        return { ...actionError('Element is not a checkbox/radio', 'wrong_element_type',
+          'check sets a native checkbox or radio, or an element with role checkbox, switch or radio. ' +
+          'Nothing was dispatched: click this element instead (browser_click) and read its state from the result.',
+          { tag: el.tagName.toLowerCase(), ...(shown ? { role: shown } : {}) }), retryable: false };
+      }
+      // Ask-before-act inspected the element a click on this selector acts on, which differs
+      // when the control is not rendered and the selector's first match is another element.
+      const clickTarget = resolveTarget(selector, null, { first, pointer: true });
+      if (clickTarget !== el) {
+        return ambiguousTarget(`The selector's first match is not the ${role}, which is not rendered; nothing was dispatched`,
+          'Act on one element: pass its ref from state.candidates or a new browser_snapshot, or a more specific selector.',
+          { selector, matches: targetMatches(selector).length, candidates: [clickTarget, el].map(targetSummary) });
+      }
+      return checkAriaControl(el, role, !!checked);
+    }
     lastActedElement = lastFilledField = el;
     el.checked = !!checked;
     el.dispatchEvent(new Event('input', { bubbles: true }));

@@ -404,6 +404,60 @@ class SensitiveActionTests(AskBeforeActTestCase):
         self.assertEqual(self.extension.actions(), ["click", "click"])
         self.assertEqual(bridge._unknown_outcomes, {})
 
+    def test_wrong_element_and_missing_option_are_not_held_and_a_check_that_clicked_is(self):
+        # #574: these two dispatched nothing, as before they had a code. A check whose click did
+        # not set aria-checked did dispatch, so repeating it is held like any unknown outcome.
+        for action, body, code in (
+                ("checkBox", {"selector": "#agree", "checked": True, "tabId": 7}, "wrong_element_type"),
+                ("selectOption", {"selector": "#sort", "value": "price_asc", "tabId": 7}, "no_such_option")):
+            with self.subTest(code=code):
+                self.extension.reply = {"error": "refused", "code": code, "retryable": False}
+                for _ in range(2):
+                    self.assertEqual(self.forward(action, body)[1]["code"], code)
+                self.assertEqual(bridge._unknown_outcomes, {})
+        self.assertEqual(self.extension.actions(), ["checkBox", "checkBox", "selectOption", "selectOption"])
+        self.extension.reply = {"error": "aria-checked is \"false\" after the click", "code": "value_not_reached",
+                                "retryable": False}
+        body = {"selector": "#agree", "checked": True, "tabId": 7}
+        self.assertEqual(self.forward("checkBox", body)[1]["code"], "value_not_reached")
+        self.assertEqual(self.held(lambda h: h._forward("checkBox"), body)["state"]["holdReason"], "unknown_outcome")
+
+    def test_a_check_is_inspected_and_held_like_a_click_on_the_same_element(self):
+        # #574: check clicks an element with role checkbox, switch or radio.
+        body = {"ref": "s1e5", "checked": True}
+        # A native checkbox or radio, or a plain ARIA checkbox, is no submit control: it runs.
+        for target in ({"ok": True, "tag": "input", "type": "checkbox", "inForm": True, "submits": False},
+                       {"ok": True, "tag": "input", "type": "radio", "inForm": True, "submits": False},
+                       {"ok": True, "tag": "div", "type": "", "inForm": False, "submits": False, "text": "Dark mode"}):
+            with self.subTest(target=target):
+                self.extension.target, self.extension.sent = target, []
+                self.assertEqual(self.forward("checkBox", body), (200, {"ok": True}))
+                self.assertEqual(self.extension.sent, [("describeTarget", {"ref": "s1e5", "inspect": True}),
+                                                       ("checkBox", body)])
+        # <button role="checkbox"> in a form, without type=button, submits it when clicked.
+        for target, reason, text in (
+                ({"ok": True, "tag": "button", "type": "submit", "submits": True, "text": "Subscribe"},
+                 "submit_control", "clicks a submit control (Subscribe)"),
+                ({"ok": True, "tag": "button", "type": "button", "submits": False, "submitLabel": True,
+                  "text": "Pay now"}, "submit_label", "clicks a button labeled like a submit or payment (Pay now)"),
+                ({"ok": True, "tag": "button", "type": "button", "submits": False, "consequentialLabel": True,
+                  "text": "Delete account"}, "consequential_label", "(Delete account)")):
+            with self.subTest(reason=reason):
+                self.extension.target, self.extension.sent = target, []
+                check = self.held(lambda h: h._forward("checkBox"), body)
+                click = self.held(lambda h: h.handle_click(), {"ref": "s1e5"})
+                self.assertEqual((check["state"]["holdReason"], click["state"]["holdReason"]), (reason, reason))
+                self.assertIn(text, check["error"])
+                self.assertEqual(check["error"], click["error"])
+                self.assertEqual(self.extension.actions(), [])
+        token = check["state"]["confirmToken"]
+        self.assertEqual(self.forward("checkBox", {**body, "confirmToken": token}), (200, {"ok": True}))
+        # Like a click, a check whose target cannot be inspected is held, not sent.
+        self.extension.target, self.extension.sent = {"error": "Element not found", "code": "not_found"}, []
+        held = self.held(lambda h: h._forward("checkBox"), {"selector": "#gone", "checked": True})
+        self.assertEqual(held["state"]["holdReason"], "uninspectable_target")
+        self.assertEqual(self.extension.actions(), [])
+
     def test_unsupported_selector_write_is_not_held(self):
         # #219: an unparseable selector dispatched nothing, so its outcome is not unknown.
         self.extension.reply = {"error": "Unsupported selector: the :near() pseudo-class",

@@ -54,6 +54,7 @@ result = tab.snapshot()
 ```
 
 - `browser` is the API, routed through the MCP session. **Don't call `kitsune.connect()`.**
+- `time`, `re` and `json` are preloaded; import any other module yourself.
 - `tab` is the MCP-selected tab at start, else the tab you are viewing. Scripts don't change the
   MCP selection. `browser.tabs()` returns dicts with real tab ids (not MCP list indexes); wrap one
   with `browser.tab(t["id"])`.
@@ -80,7 +81,8 @@ result = tab.snapshot()
   or take a new snapshot.
 - On timeout the worker is killed; a command already sent may still finish, so read the page
   before writing again.
-- `help(tab.query)` prints a method's signature.
+- `help(tab.query)` prints a method's signature. A `Tab` or `Browser` call with unknown, missing or
+  extra arguments fails with a `TypeError` and that signature in the output.
 
 Keep output bounded on long pages: read a known region or a bounded index first, then a scoped
 snapshot of the section you found.
@@ -191,7 +193,7 @@ report `matches` ([Strict selectors](api-reference.md#strict-selectors)).
 | `fill_form(fields)` | Fill several fields keyed by selector, name, label or placeholder |
 | `press(key, target=None, modifiers=None, text=None)` | Key press, e.g. `"Enter"` with `{"ctrl": True}` |
 | `select_option(target, value, by_text=False)` | Choose an `<option>` |
-| `check(target, checked=True)`, `uncheck(target)` | Checkbox or radio |
+| `check(target, checked=True)`, `uncheck(target)` | Checkbox or radio; an element with role `checkbox`, `switch` or `radio` is clicked once when `aria-checked` differs ([details](api-reference.md#post-apicheck)) |
 | `scroll(direction="down", amount=500, target=None)` | Scroll |
 | `submit_form(target=None)` | Submit a form |
 | `handle_dialogs(accept=True, prompt_text=None)` | Answer future dialogs |
@@ -217,7 +219,8 @@ current focus. Check the result's `effect` and `prevented`, and read the page, r
 
 ## Waiting
 
-`tab.wait_for(...)` waits up to `timeout` ms (default 10000) for one condition, else `TimedOut`:
+`tab.wait_for(...)` waits up to `timeout` ms (default 10000) for one condition, else `TimedOut`
+(`code` `timeout`, `retryable=True`):
 
 | Condition | Holds when |
 | --- | --- |

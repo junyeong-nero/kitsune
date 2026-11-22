@@ -199,6 +199,15 @@ class TabRequestTests(BridgeTestCase):
             warnings.simplefilter("error")
             self.assertEqual(self.tab.query("a"), [])
 
+    def test_query_takes_fields_positionally_and_limit_by_keyword_only(self):
+        # #574: tab.query('tr', ['text'], limit=30) was a TypeError after the script's earlier writes.
+        self.assertEqual(self.tab.query("tr", ["text"], limit=30), [{"text": "a"}])
+        self.assertEqual(self.bridge.last.body, {"selector": "tr", "fields": ["text"], "limit": 30, "tabId": 7})
+        sent = len(self.bridge.requests)
+        with self.assertRaises(TypeError):
+            self.tab.query("tr", ["text"], 30)
+        self.assertEqual(len(self.bridge.requests), sent)
+
     def test_mcp_indices_and_python_ids_never_reinterpret_each_other(self):
         # The MCP list's indices 0/1 refer to actual IDs 3/7, not to tabs 0/1.
         with patch.object(tools, "client", self.browser.client), patch.object(playwright_tools, "_current_tab", None):

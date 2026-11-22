@@ -72,4 +72,6 @@ class RealBrowserWaitForNameTests(harness.RealBrowserTestCase):
                 result = self.wait(tab, text)
                 self.assertIs(result["ok"], False)
                 self.assertNotIn("name_matches", result)
-                self.assertNotIn("hint", result)
+                # #574: a timed-out wait is coded and has the general hint, not the name diagnosis.
+                self.assertEqual((result["code"], result["retryable"]), ("timeout", True))
+                self.assertNotIn("not page text", result["hint"])

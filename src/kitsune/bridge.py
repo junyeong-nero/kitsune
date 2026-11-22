@@ -1755,10 +1755,13 @@ _REPEAT_UNSAFE_ACTIONS = WRITE_ACTIONS | {"uploadCommit", "focusElement", "blurE
 # to parse or validate before anything was dispatched (unsupported_selector), until the user
 # approves closing their tab (needs_user; a v0.7.1 extension's user_tab), until the user grants a
 # browser permission (permission_required), until the container step names a batch action
-# (unknown_action), or until the navigation names a URL that parses (invalid_url).
+# (unknown_action), until the navigation names a URL that parses (invalid_url), or because the
+# target is not what the action sets (wrong_element_type) or its <select> has no such option
+# (no_such_option).
 _PERSISTENT_FAILURE_CODES = {"error_page", "ambiguous_target", "unsupported_selector", "needs_user", "user_tab",
                              "user_tab_read_only", "invalid_tab_id", "invalid_window_id", "window_unavailable",
-                             "invalid_coordinates", "permission_required", "unknown_action", "invalid_url"}
+                             "invalid_coordinates", "permission_required", "unknown_action", "invalid_url",
+                             "wrong_element_type", "no_such_option"}
 
 
 def _url_matches(pattern, url, flags=0):
@@ -2288,7 +2291,9 @@ async def _held_reason(action, params):
     if action in _ASK_TAB_ACTIONS:
         submit_key = action == "keypress" and params.get("key") in {"Enter", "Return"}
         screen = action == "trustedClick" and (params.get("coordinateSpace") or params.get("space")) == "screen"
-        inspect = (action in _ASK_CLICK_ACTIONS or submit_key) and not screen
+        # A check clicks an element with role checkbox, switch or radio (#574), so its target is
+        # inspected like a click's.
+        inspect = (action in _ASK_CLICK_ACTIONS or submit_key or action == "checkBox") and not screen
         described = await _describe_target(action, params, inspect)
         if isinstance(described, dict) and described.get("code") == "ambiguous_target":
             return described
@@ -3011,6 +3016,23 @@ def _timeout_error(action, timeout):
              "with browser_snapshot before repeating it.",
         timeoutSeconds=timeout,
     )
+
+
+WAIT_TIMEOUT_HINT = ("The condition did not hold in time. Take a browser_snapshot to see what the page shows; "
+                     "wait again only for something the page is still loading.")
+
+
+def _coded_wait_timeout(result):
+    """A wait route's result, whose timeout is coded like other failures (#574).
+
+    A wait that ran out of time answers ok=false with the page's message and what it read. It
+    gains code, retryable (a wait changes nothing) and a hint; a text wait keeps the hint that
+    its text is an element's name. Other failures are returned as they are.
+    """
+    if (isinstance(result, dict) and result.get("ok") is False and not result.get("code")
+            and str(result.get("error") or "").startswith("Timed out")):
+        return {**result, "code": "timeout", "retryable": True, "hint": result.get("hint") or WAIT_TIMEOUT_HINT}
+    return result
 
 
 def _connection_diagnosis():
@@ -5125,9 +5147,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "/api/submit-form": lambda: self._forward("submitForm"),
             "/api/form-fill": lambda: self._forward("formFill"),
             "/api/drag": lambda: self._forward("drag"),
-            "/api/wait-for-url": lambda: self._forward("waitForUrl", default_timeout=20),
-            "/api/wait-for-title": lambda: self._forward("waitForTitle", default_timeout=20),
-            "/api/wait-for-network-idle": lambda: self._forward("waitForNetworkIdle", default_timeout=30),
+            "/api/wait-for-url": lambda: self._forward_wait("waitForUrl", 20),
+            "/api/wait-for-title": lambda: self._forward_wait("waitForTitle", 20),
+            "/api/wait-for-network-idle": lambda: self._forward_wait("waitForNetworkIdle", 30),
             "/api/capture-network": lambda: self._forward("captureNetwork"),
             "/api/watch-console": lambda: self._forward("watchConsole"),
             "/api/console-logs": lambda: self._forward("consoleLogs"),
@@ -5604,7 +5626,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
     def handle_wait_for_element(self):
         body = self.read_body()
         result = self.run_async(_poll_page_wait("waitForElement", body))
-        self.send_json(200, result)
+        self.send_json(200, _coded_wait_timeout(result))
 
     def handle_wait_for_text(self):
         body = self.read_body()
@@ -5614,10 +5636,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return
         timeout_s = timeout_ms / 1000 + 5
         result = self.run_async(_poll_page_wait("waitForText", body), timeout=timeout_s + 1)
-        self.send_json(200, result)
+        self.send_json(200, _coded_wait_timeout(result))
 
     def handle_wait_for_result(self):
-        self._send_extension_action("waitForResult", self.read_body())
+        self._forward_wait("waitForResult", 35)
 
     def handle_page_text_by_tab_id(self):
         body = self.read_body()
@@ -5663,6 +5685,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
     def _forward(self, action, default_timeout=15):
         """Forward body + policy check + audit to a named extension action."""
         self._send_extension_action(action, self.read_body(), timeout=default_timeout)
+
+    def _forward_wait(self, action, default_timeout):
+        """_forward for a wait the extension runs, with its timeout coded."""
+        self._send_extension_action(action, self.read_body(), timeout=default_timeout, on_result=_coded_wait_timeout)
 
     # ── 1.4.0 orchestration ──
 
