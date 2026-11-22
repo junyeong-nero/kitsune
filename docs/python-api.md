@@ -177,8 +177,9 @@ result = [line for line in lines if re.search(r"원|USD", line)][:10]
 ## Acting
 
 Targets are a ref, CSS or a [Playwright-style selector](api-reference.md#target-selectors).
-Writes need one match, else `ambiguous_target`; `first=True` takes the first
-([Strict selectors](api-reference.md#strict-selectors)).
+Writes need one match, else `ambiguous_target`; `first=True` takes the first. `click` and
+`hover` take links to the same URL, or the one better `text=` match, as one target and
+report `matches` ([Strict selectors](api-reference.md#strict-selectors)).
 
 | `Tab` method | Does |
 | --- | --- |

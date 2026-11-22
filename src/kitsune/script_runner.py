@@ -237,6 +237,9 @@ async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
                             reply["hint"] = ("Use browser_tools_call(name=recovery_tool) to inspect the direct tool, "
                                              "then execute only the held operation with arguments for approval/help. "
                                              "Earlier script operations remain done; never replay them.")
+                        elif reply.get("code") == "ambiguous_target" and isinstance(reply.get("hint"), str):
+                            # The extension words its hint for the JSON tools; a script passes first=True (#573).
+                            reply["hint"] = reply["hint"].replace("first: true", "first=True")
                         raise operation_failed(reply)
                     await send(reply)
                 else:

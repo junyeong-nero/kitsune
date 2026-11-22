@@ -1,4 +1,5 @@
-"""Playwright selector targets (#219, #240) and hover scrolling (#220), in a real browser.
+"""Playwright selector targets (#219, #240), hover scrolling (#220) and equivalent matches (#573),
+in a real browser.
 
 Opt-in and built on tests/real_browser_harness.py, which documents how to run it.
 tests/playwright_selectors.cjs and tests/hover_scroll.cjs check the same rules on a mocked
@@ -6,12 +7,14 @@ DOM; here Firefox's own CSS parser, layout and scrolling decide. The fixture is 
 the benchmark's ui-select, ui-table and ui-infinite pages, and its list loads ten more items
 whenever its last item scrolls into view inside the list's own scroll container.
 """
+import asyncio
 from http.server import BaseHTTPRequestHandler
 import json
 import re
 import time
 import unittest
 
+from kitsune import script_runner
 import real_browser_harness as harness
 
 PAGE = """<!doctype html><meta charset="utf-8"><title>selectors</title>
@@ -75,6 +78,35 @@ SHADOW = """<!doctype html><meta charset="utf-8"><title>shadow</title>
     '<form class="in-shadow"><input type="password" id="pw"' + (location.search ? ' value="hunter2"' : '') + '></form>';
 </script>"""
 
+# #573: the job board's two links to one posting and the heading that holds a link's text, next
+# to matches that only look alike. Clicks are logged and cancelled, so the page stays.
+EQUIVALENT = """<!doctype html><meta charset="utf-8"><title>equivalent</title>
+<a id="job-title" class="title" href="/jobs/46/">Data Science Intern</a>
+<a id="job-view" class="btn" href="/jobs/46/">View</a>
+<h2 id="schedule-heading">View Student Schedule by Course Section</h2>
+<a id="schedule-link" href="/schedule">View Student Schedule</a>
+<a id="blank1" href="/blank">Blank</a> <a id="blank2" href="/blank" target="_blank">Blank</a>
+<a id="handler1" href="/handler">Handler</a> <a id="handler2" href="/handler" onclick="window.tracked = 1">Handler</a>
+<a id="edit1" href="/edit/1">Edit</a> <a id="edit2" href="/edit/2">Edit</a>
+<a id="delete1" href="/account/delete">Delete account</a> <a id="delete2" href="/account/delete">Delete account</a>
+<input id="first-name"> <input id="last-name">
+<div id="posts"></div>
+<script>
+  const posts = document.getElementById('posts');
+  for (let i = 0; i < 60; i++) {
+    posts.insertAdjacentHTML('beforeend', `<h3><a id="post${i}" href="/post/${i}">Post ${i}</a></h3>`);
+  }
+  const log = (name, id) => {
+    const list = JSON.parse(document.documentElement.dataset[name] || '[]');
+    document.documentElement.dataset[name] = JSON.stringify([...list, id]);
+  };
+  document.addEventListener('click', event => { log('clicked', event.target.id); event.preventDefault(); }, true);
+  document.addEventListener('mouseover', event => log('hovered', event.target.id), true);
+</script>"""
+EQUIVALENT_STATE = """JSON.stringify({clicked: JSON.parse(document.documentElement.dataset.clicked || '[]'),
+    hovered: JSON.parse(document.documentElement.dataset.hovered || '[]'),
+    values: Array.from(document.querySelectorAll('input'), input => input.value)})"""
+
 STATE = """JSON.stringify({clicked: JSON.parse(document.documentElement.dataset.clicked || '[]'),
     hovered: JSON.parse(document.documentElement.dataset.hovered || '[]'),
     items: document.getElementById('feed').children.length, feedTop: document.getElementById('feed').scrollTop})"""
@@ -84,7 +116,7 @@ RESET = "document.documentElement.dataset.clicked = '[]'"
 class _Page(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split("?")[0]
-        body = (GALLERY if path == "/gallery" else SHADOW if path == "/shadow" else PAGE).encode()
+        body = {"/gallery": GALLERY, "/shadow": SHADOW, "/equivalent": EQUIVALENT}.get(path, PAGE).encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
@@ -92,6 +124,16 @@ class _Page(BaseHTTPRequestHandler):
 
     def log_message(self, *args):
         pass
+
+
+class _SuiteBridge:
+    """The script host's bridge client (script_runner.run_python), over the suite's own bridge."""
+
+    def __init__(self, call):
+        self.call = call
+
+    def request(self, method, route, *, json=None, **_):
+        return self.call(route, json)
 
 
 class RealBrowserPlaywrightSelectorTests(harness.RealBrowserTestCase):
@@ -159,6 +201,95 @@ class RealBrowserPlaywrightSelectorTests(harness.RealBrowserTestCase):
         self.assertEqual(last["tag"], "button")
         # A password field's value never matches text, so it is no oracle.
         self.assert_error(self.call("/api/hover", {"tabId": tab, "selector": "text=hunter2-secret"}), "not_found", True)
+
+    def equivalent_state(self, tab):
+        return json.loads(self.call("/api/js", {"tabId": tab, "code": EQUIVALENT_STATE})["result"])
+
+    def test_click_and_hover_take_equivalent_matches_as_one_target(self):
+        # #573: two links to one URL, and a heading that holds the text of a link.
+        tab = self.open_tab(self.page.origin + "/equivalent")
+        job, schedule = 'a[href="/jobs/46/"]', "text=View Student Schedule"
+        clicked = self.assert_ok(self.call("/api/click", {"tabId": tab, "selector": job, "includeSnapshot": False}))
+        self.assertEqual((clicked["matches"], clicked["same_href"], clicked["text"]), (2, True, "Data Science Intern"))
+        chosen = self.assert_ok(self.call("/api/click", {"tabId": tab, "selector": schedule, "includeSnapshot": False}))
+        self.assertEqual((chosen["matches"], chosen["preferred"], chosen["tag"]), (2, ["exact_text", "interactive"], "a"))
+        self.assertEqual(self.equivalent_state(tab)["clicked"], ["job-title", "schedule-link"])
+        for selector, target, why in ((job, "job-title", {"same_href": True}),
+                                      (schedule, "schedule-link", {"preferred": ["exact_text", "interactive"]})):
+            with self.subTest(hover=selector):
+                hovered = self.assert_ok(self.call("/api/hover", {"tabId": tab, "selector": selector}))
+                self.assertEqual({key: hovered.get(key) for key in ("matches", *why)}, {"matches": 2, **why})
+                self.assertEqual(self.equivalent_state(tab)["hovered"][-1], target)
+        # One match, and first: true, report no choice.
+        for body in ({"selector": "#job-view"}, {"selector": job, "first": True}):
+            single = self.assert_ok(self.call("/api/click", {"tabId": tab, **body, "includeSnapshot": False}))
+            self.assertNotIn("matches", single)
+
+    def test_matches_that_only_look_alike_stay_ambiguous(self):
+        tab = self.open_tab(self.page.origin + "/equivalent")
+        # Same href, but one opens a tab or runs a handler; equally good text; different links.
+        for selector, matches in (('a[href="/blank"]', 2), ('a[href="/handler"]', 2), ("text=Edit", 2), ("h3 a", 60)):
+            for endpoint in ("click", "hover"):
+                with self.subTest(endpoint=endpoint, selector=selector):
+                    result = self.call(f"/api/{endpoint}", {"tabId": tab, "selector": selector})
+                    self.assert_error(result, "ambiguous_target", False)
+                    self.assertEqual(result["state"]["matches"], matches)
+                    self.assertEqual(len(result["state"]["candidates"]), min(matches, 5))
+        # Every other action is strict on the matches a click takes as one.
+        for endpoint, body in (("fill", {"selector": "input", "value": "x"}),
+                               ("double-click", {"selector": 'a[href="/jobs/46/"]'}),
+                               ("keypress", {"selector": "text=View Student Schedule", "key": "Enter"})):
+            with self.subTest(endpoint=endpoint):
+                result = self.call(f"/api/{endpoint}", {"tabId": tab, **body})
+                self.assert_error(result, "ambiguous_target", False)
+                self.assertEqual(result["state"]["matches"], 2)
+                self.assertIn("first: true", result["hint"])
+        self.assertEqual(self.equivalent_state(tab), {"clicked": [], "hovered": [], "values": ["", ""]})
+
+    def test_script_clicks_equivalent_matches_and_its_hint_names_the_python_argument(self):
+        tab = self.open_tab(self.page.origin + "/equivalent")
+
+        def run(code):
+            return asyncio.run(script_runner.run_python(code, _SuiteBridge(self.call), tab_id=tab))
+
+        done = run("job = tab.click('a[href=\"/jobs/46/\"]')\n"
+                   "schedule = tab.click('text=View Student Schedule')\n"
+                   "result = [[job['matches'], job['same_href']], [schedule['matches'], schedule['preferred']]]")
+        self.assertEqual(done.get("result"), [[2, True], [2, ["exact_text", "interactive"]]], done)
+        self.assertEqual(self.equivalent_state(tab)["clicked"], ["job-title", "schedule-link"])
+        for call in ("tab.fill('input', 'x')", "tab.click('h3 a')"):
+            with self.subTest(call):
+                stopped = run(call + "\ntab.fill('#first-name', 'must not run')")
+                self.assertEqual(stopped.get("code"), "script_operation_failed", stopped)
+                failure = stopped["failed_operation"]
+                self.assert_error(failure, "ambiguous_target", False)
+                self.assertIn("first=True acts on the first match.", failure["hint"])
+                self.assertNotIn("first: true", json.dumps(stopped))
+        self.assertEqual(self.equivalent_state(tab)["values"], ["", ""])
+
+    def test_ask_before_act_checks_the_equivalent_match_the_click_acts_on(self):
+        tab = self.open_tab(self.page.origin + "/equivalent")
+        self.assert_ok(self.call("/api/set-policy", {"ask": True}))
+        self.addCleanup(self.call, "/api/set-policy", {"ask": False})
+        clicked = self.assert_ok(self.call("/api/click", {
+            "tabId": tab, "selector": 'a[href="/jobs/46/"]', "includeSnapshot": False}))
+        self.assertEqual((clicked["matches"], clicked["same_href"]), (2, True))
+        headers = {**self.bridge.auth(), "Content-Type": "application/json"}
+
+        def post(path):
+            body = json.dumps({"tabId": tab, "selector": 'a[href="/account/delete"]'})
+            status, _, text = harness._request(self.bridge.http_port, "POST", path, headers, self.bridge.host, body)
+            return status, json.loads(text)
+
+        status, held = post("/api/click")
+        self.assertEqual(status, 403, held)
+        self.assert_needs_approval(held, "confirmation_required")
+        self.assertEqual(held["state"]["holdReason"], "consequential_label", held)
+        # The inspection of an action that stays strict fails as the action would.
+        self.assert_error(post("/api/double-click")[1], "ambiguous_target", False)
+        # Reading the page's log with /api/js is itself held in ask mode.
+        self.assert_ok(self.call("/api/set-policy", {"ask": False}))
+        self.assertEqual(self.equivalent_state(tab)["clicked"], ["job-title"])
 
     def test_unsupported_syntax_is_reported_not_retried(self):
         tab = self.open_tab(self.page.origin + "/")

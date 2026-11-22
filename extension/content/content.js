@@ -327,6 +327,8 @@
   // native checkboxes/selects keep working. Stale refs fail at once: they cannot come back.
   const POINTER_WAIT_ACTIONS = new Set(['click', 'doubleClick', 'hover', 'drag']);
   const VALUE_WAIT_ACTIONS = new Set(['type', 'fill', 'setEditableContent', 'selectOption', 'checkBox', 'keypress']);
+  // The actions for which several equivalent matches are one target (oneTargetAmong).
+  const EQUIVALENT_MATCH_ACTIONS = new Set(['click', 'hover']);
   const ACTION_WAIT_TIMEOUT = 10000;
 
   function waitForActionable(msg) {
@@ -337,6 +339,8 @@
     // Coordinate clicks and keypresses on the active element have no target to wait for.
     const targets = msg.action === 'drag' ? [msg.from, msg.to] : [msg.selector];
     const pointer = POINTER_WAIT_ACTIONS.has(msg.action);
+    // As click and hover resolve it.
+    const chosen = EQUIVALENT_MATCH_ACTIONS.has(msg.action) ? {} : null;
     const start = Date.now();
     return new Promise((resolve, reject) => {
       function poll() {
@@ -344,7 +348,7 @@
         try {
           pending = targets.findIndex(selector => {
             if (!selector) return false;
-            el = resolveTarget(selector, null, { first: msg.first, pointer });
+            el = resolveTarget(selector, null, { first: msg.first, pointer, chosen });
             return !el || !el.isConnected || (pointer && !isRendered(el));
           });
         } catch (e) {
@@ -579,7 +583,7 @@
       'keypress':              () => pressKey(msg.selector, msg.key, msg.modifiers, msg.text, msg.first, msg.repeat),
       'doubleClick':           () => withPopupWatch(doubleClick(msg.selector, msg.first, msg.modifiers)),
       'submitForm':            () => submitForm(msg.selector, msg.first),
-      'describeTarget':        () => describeTarget(msg.selector, msg.coords, msg.key, msg.first),
+      'describeTarget':        () => describeTarget(msg.selector, msg.coords, msg.key, msg.first, msg.equivalent),
       'formFill':              () => formFill(msg.fields, msg.first),
       'media':                 () => controlMedia(msg.selector, msg.op, msg.time, msg.first),
       'drag':                  () => dragElement(msg.from, msg.to, msg.first),
@@ -2205,7 +2209,8 @@
     // A user's middle or Ctrl/Cmd click opens a link in a new tab; a synthetic one never does,
     // so newTabLink asks the background to, unless the page cancelled the click (#223).
     const newTab = button === 'middle' || (button === 'left' && (flags.ctrlKey || flags.metaKey));
-    let el = resolveTarget(selector, coords, { first, pointer: true });
+    const chosen = {};
+    let el = resolveTarget(selector, coords, { first, pointer: true, chosen });
     if (!el) return notFound();
 
     // Coordinates resolve to a rendered element by construction.
@@ -2256,7 +2261,7 @@
         { ...released, detail: 1 });
       const link = newTab ? followedLink(el) : null;
       return { ok: true, tag: el.tagName.toLowerCase(), text: redactedText(el).trim().slice(0, 60), button,
-        ...warning, ...(link ? { newTabLink: { url: link.href, prevented: !proceed } } : {}), ...held };
+        ...chosen, ...warning, ...(link ? { newTabLink: { url: link.href, prevented: !proceed } } : {}), ...held };
     }
 
     const link = newTab ? followedLink(el) : blankTargetLink(el);
@@ -2282,7 +2287,7 @@
 
     // A media element's text is its fallback content, which the browser does not show.
     const result = { ok: true, tag: el.tagName.toLowerCase(),
-      text: media ? '' : redactedText(el).trim().slice(0, 60), ...warning, ...linkTab, ...held };
+      text: media ? '' : redactedText(el).trim().slice(0, 60), ...chosen, ...warning, ...linkTab, ...held };
     // Synthetic clicks cannot press the browser's native media controls (they only answer
     // trusted input), so a click the page neither cancelled nor handled toggles playback.
     if (media && clickEvent && !clickEvent.defaultPrevented && media.paused === wasPaused) {
@@ -2666,7 +2671,8 @@
       return { error: `steps must be an integer from 1 to ${HOVER_MAX_STEPS}` };
     }
     steps ??= duration.ms ? HOVER_DEFAULT_STEPS : 0;
-    const el = resolveTarget(selector, coords, { first, pointer: true });
+    const chosen = {};
+    const el = resolveTarget(selector, coords, { first, pointer: true, chosen });
     if (!el) return notFound();
 
     // As a pointer reaching it would, bring the target into view first (#220). scrollIntoView
@@ -2681,7 +2687,7 @@
 
     watchPopups(el);
     movePointerTo(el, { ...init, clientX: xAt(0) });
-    const result = { ok: true, tag: el.tagName.toLowerCase(), ...(selector ? notRenderedWarning(el) : {}) };
+    const result = { ok: true, tag: el.tagName.toLowerCase(), ...chosen, ...(selector ? notRenderedWarning(el) : {}) };
     if (!steps) return result;
     const start = performance.now();
     return (async () => {
@@ -3824,7 +3830,10 @@
     const wanted = normalizeSelectorText(value);
     if (strict) return text => text === wanted;
     const lower = wanted.toLowerCase();
-    return text => text.toLowerCase().includes(lower);
+    const match = text => text.toLowerCase().includes(lower);
+    // The wanted text is the whole text, which preferredTextMatch ranks over containing it.
+    match.whole = text => text.toLowerCase() === lower;
+    return match;
   }
 
   // Parts of a selector that needs this engine (separated by >>), or null for plain CSS.
@@ -4249,13 +4258,14 @@
 
   // Write actions: like resolveElement, but a selector matching several actionable elements
   // is ambiguous unless first is set; one actionable match among others is the target.
-  // Refs and coordinates name one element.
-  function resolveTarget(selector, coords, { first = false, pointer = false } = {}) {
+  // Refs and coordinates name one element. click and hover pass chosen, an empty object:
+  // several matches that are one target (oneTargetAmong) resolve to it, and chosen says why.
+  function resolveTarget(selector, coords, { first = false, pointer = false, chosen = null } = {}) {
     if (!selector || REF_SELECTOR.test(selector)) return resolveElement(selector, coords);
     const matches = targetMatches(selector);
     if (!matches.length) return parseTargetSelector(selector) ? null : resolveElement(selector, coords);
     if (first) return matches[0];
-    const actionable = assertOneTarget(selector, pointer, matches);
+    const actionable = assertOneTarget(selector, pointer, matches, chosen);
     return actionable.length === 1 ? actionable[0] : matches[0];
   }
 
@@ -4266,10 +4276,16 @@
     return !pointer || isRendered(el);
   }
 
-  // The actionable matches, unless there are several.
-  function assertOneTarget(selector, pointer, matches = targetMatches(selector)) {
+  // The actionable matches, unless there are several. With chosen, several that are one
+  // target are that target.
+  function assertOneTarget(selector, pointer, matches = targetMatches(selector), chosen = null) {
     const actionable = matches.filter(el => isActionable(el, pointer));
     if (actionable.length < 2) return actionable;
+    const one = chosen && oneTargetAmong(selector, actionable);
+    if (one) {
+      Object.assign(chosen, { matches: actionable.length, ...one.why });
+      return [one.el];
+    }
     const { error, ...details } = ambiguousTarget(
       `${actionable.length} elements match the selector; nothing was dispatched`,
       'Act on one element: pass its ref from state.candidates or a new browser_snapshot, or a more ' +
@@ -4277,6 +4293,58 @@
       { selector, matches: actionable.length,
         candidates: actionable.slice(0, AMBIGUOUS_CANDIDATE_LIMIT).map(targetSummary) });
     throw new ActionError(error, details);
+  }
+
+  // ── Equivalent matches (#573) ──
+  // For click and hover, several matches can be one target: links to the same place, or the
+  // one text= match that is better than every other. Every other action stays strict.
+  function oneTargetAmong(selector, matches) {
+    return sameDestinationLink(matches) || preferredTextMatch(selector, matches);
+  }
+
+  // Attributes that do not change what following a link does (aria-* are skipped too).
+  const LINK_DESCRIPTIVE_ATTRIBUTES = new Set(['href', 'id', 'class', 'style', 'title', 'tabindex']);
+
+  // What following a link does, as far as its markup shows: the resolved URL and every other
+  // attribute that is not descriptive (target, download, rel, data-*, …). null for a link that
+  // goes nowhere (no href, "#…", javascript:) or has an inline on* handler: those are usually
+  // script buttons, which share an href while doing different things.
+  function linkSignature(el) {
+    if (el.tagName !== 'A' || typeof el.href !== 'string') return null;
+    const href = String(el.getAttribute('href') || '').trim();
+    if (!href || href.startsWith('#') || /^javascript:/i.test(el.href)) return null;
+    const names = el.getAttributeNames()
+      .filter(name => !LINK_DESCRIPTIVE_ATTRIBUTES.has(name) && !name.startsWith('aria-'));
+    if (names.some(name => name.startsWith('on'))) return null;
+    return JSON.stringify([el.href, ...names.sort().map(name => [name, el.getAttribute(name)])]);
+  }
+
+  // The first match, when every match is a link of one document with the same signature.
+  function sameDestinationLink(matches) {
+    const [link, ...others] = matches;
+    const signature = linkSignature(link);
+    if (!signature || others.some(el => docOf(el) !== docOf(link) || linkSignature(el) !== signature)) return null;
+    return { el: link, why: { same_href: true } };
+  }
+
+  // For a selector ending in the text engine (text=, internal:text=, a bare "…"): the one match
+  // that is as good as every other on both counts and better than each on one. The counts: its
+  // whole text is the wanted text, not only text containing it (lax text only), and it is or is
+  // inside a control, not a heading, span or div. null when two matches are equally good or
+  // each is better on one count.
+  function preferredTextMatch(selector, matches) {
+    const part = parseTargetSelector(selector)?.at(-1);
+    if (part?.kind !== 'text') return null;
+    const { whole } = part.match;
+    const ranked = withRedactionCache(() => matches.map(el => ({ el,
+      exact: !!whole && whole(normalizeSelectorText(selectorText(el))),
+      interactive: !!nearestInteractiveAncestor(el) })));
+    const exact = ranked.some(match => match.exact), interactive = ranked.some(match => match.interactive);
+    const best = ranked.filter(match => match.exact === exact && match.interactive === interactive);
+    if (best.length !== 1) return null;
+    return { el: best[0].el, why: { preferred: [
+      ...(exact && ranked.some(match => !match.exact) ? ['exact_text'] : []),
+      ...(interactive && ranked.some(match => !match.interactive) ? ['interactive'] : [])] } };
   }
 
   // Reuse one ref per attached node, across all observation tools.
@@ -5517,8 +5585,8 @@
   // a form, is a button labeled like a submit or payment, or is a button or link labeled like
   // a send, transfer, delete or account change. Resolves the target the way click/keypress
   // do and reports no field values.
-  function describeTarget(selector, coords, key, first) {
-    let el = selector || coords ? resolveTarget(selector, coords, { first, pointer: !key })
+  function describeTarget(selector, coords, key, first, equivalent) {
+    let el = selector || coords ? resolveTarget(selector, coords, { first, pointer: !key, chosen: equivalent ? {} : null })
       : (activeElement() || document.body);
     if (!el) return notFound();
     if (coords) el = nearestInteractiveAncestor(el) || el;
