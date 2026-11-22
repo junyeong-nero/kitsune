@@ -25,6 +25,23 @@ class Client:
         return reply() if callable(reply) else reply
 
 
+class RefClient(Client):
+    """Replies by the request's ref."""
+
+    def request(self, method, route, **kwargs):
+        self.calls.append((method, route, kwargs))
+        return json.loads(json.dumps(self.replies[kwargs["json"]["ref"]]))
+
+
+def _stale(ref, same=None, follow=False):
+    """The extension's other_document error, with same_element and the script-only follow marker (#572)."""
+    state = {"reason": "other_document", "ref": ref, "tabId": 7}
+    if same:
+        state["same_element"] = {"ref": same, "role": "link", "name": "Bookmarks", **({"follow": True} if follow else {})}
+    return {"error": "stale ref, call browser_snapshot again", "code": "stale_ref", "retryable": True,
+            "hint": "Take a new browser_snapshot.", "state": state}
+
+
 class ScriptWorkerStartTests(unittest.TestCase):
     def test_worker_imports_no_bridge_client(self):
         # Every browser_run_python call starts a worker, whose Browser sends through the host: the
@@ -313,6 +330,57 @@ class ScriptRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["failed_operation"]["state"]["decision"], "declined")
         self.assertEqual(asked, ["browser_snapshot"])
         self.assertEqual([route for _, route, _ in client.calls], ["/api/snapshot"])
+
+    async def test_stale_link_ref_the_extension_says_to_follow_is_sent_again_and_reported(self):
+        # #572: one operation, two requests; the second is the same request with the same link's ref.
+        client = RefClient({"e334": _stale("e334", "e373", follow=True), "e373": {"ok": True, "navigated": {"url": "/b"}}})
+        result = await script_runner.run_python("result = browser.tab(7).click('e334', expect={'url': '/b'})", client)
+        self.assertTrue(result["ok"], result)
+        bodies = [kwargs["json"] for _, _, kwargs in client.calls]
+        self.assertEqual([route for _, route, _ in client.calls], ["/api/click", "/api/click"])
+        self.assertEqual(bodies, [{"selector": "", "ref": ref, "expect": {"url": "/b"}, "tabId": 7} for ref in ("e334", "e373")])
+        remapped = {"from": "e334", "to": "e373", "role": "link", "name": "Bookmarks"}
+        self.assertEqual(result["result"], {"ok": True, "navigated": {"url": "/b"}, "remapped": remapped})
+        self.assertEqual(result["operations"], [{"method": "POST", "route": "/api/click", "status": "ok", "tab_id": 7,
+                                                "remapped": remapped}])
+
+    async def test_stale_ref_without_the_follow_marker_fails_as_before(self):
+        for same in ("e373", None):
+            with self.subTest(same=same):
+                client = RefClient({"e334": _stale("e334", same)})
+                result = await script_runner.run_python("browser.tab(7).click('e334')", client)
+                self.assertEqual(result["code"], "script_operation_failed")
+                self.assertEqual(len(client.calls), 1)
+                self.assertEqual(result["failed_operation"], _stale("e334", same))
+                self.assertEqual(result["operations"], [{"method": "POST", "route": "/api/click", "status": "failed", "tab_id": 7}])
+
+    async def test_followed_request_is_checked_like_any_other_and_never_followed_twice(self):
+        held = {"code": "needs_user", "error": "Confirmation required", "retryable": False,
+                "state": {"reason": "approval", "confirmToken": "secret-token", "params": {"ref": "e373"}}}
+        for second, code in ((held, "needs_user"), (_stale("e373", "e400", follow=True), "stale_ref")):
+            with self.subTest(code=code):
+                client = RefClient({"e334": _stale("e334", "e373", follow=True), "e373": second})
+                result = await script_runner.run_python("browser.tab(7).click('e334')", client)
+                self.assertEqual(result["code"], "script_operation_failed")
+                self.assertEqual([kwargs["json"]["ref"] for _, _, kwargs in client.calls], ["e334", "e373"])
+                remapped = {"from": "e334", "to": "e373", "role": "link", "name": "Bookmarks"}
+                self.assertEqual(result["failed_operation"]["code"], code)
+                self.assertEqual(result["failed_operation"]["remapped"], remapped)
+                self.assertEqual(result["operations"][0]["status"], "failed")
+                self.assertEqual(result["operations"][0]["remapped"], remapped)
+                self.assertNotIn("secret-token", json.dumps(result))
+                self.assertNotIn("follow", json.dumps(result["failed_operation"].get("state")))
+
+    async def test_follow_marker_for_another_target_is_dropped_not_followed(self):
+        # Only the request's own ref is replaced: a selector, or a ref the reply does not name, is not.
+        for code in ("browser.tab(7).evaluate('el => el.id', 'e334')", "browser.tab(7).click('e335')"):
+            with self.subTest(code=code):
+                client = Client({route: _stale("e334", "e373", follow=True) for route in ("/api/js", "/api/click")})
+                result = await script_runner.run_python(code, client)
+                self.assertEqual(result["code"], "script_operation_failed")
+                self.assertEqual(len(client.calls), 1)
+                self.assertEqual(result["failed_operation"], _stale("e334", "e373"))
+                self.assertNotIn("remapped", result["operations"][0])
 
     async def test_script_cannot_supply_an_approval_token_through_the_provided_api(self):
         client = Client()

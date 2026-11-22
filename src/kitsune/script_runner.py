@@ -87,6 +87,23 @@ def _fit(result, available):
     return text[:low] or None, max(1, len(text.encode("utf-8")) - len(text[:low].encode("utf-8")))
 
 
+def _same_link(body, reply):
+    """The same_element the extension says to follow for body's stale ref (#572), else None.
+
+    The extension sets follow only on a script's own write to a tab this client owns, for the old
+    ref of a link whose one same element in the tab's new document is a link with the same
+    destination. The marker never reaches the script or the model.
+    """
+    state = reply.get("state") if isinstance(reply, dict) else None
+    same = state.get("same_element") if isinstance(state, dict) else None
+    if not isinstance(same, dict) or same.pop("follow", None) is not True:
+        return None
+    if (reply.get("code") != "stale_ref" or state.get("reason") != "other_document" or not isinstance(body, dict)
+            or body.get("ref") != state.get("ref") or not isinstance(same.get("ref"), str)):
+        return None
+    return same
+
+
 async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
     """Fresh variables and process; preserve the host client and report every API call.
 
@@ -97,7 +114,10 @@ async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
     against timeout. The other exception is a failed read or wait (_catchable, #568): the worker
     raises it in the script, and when the script does not catch it the result is the stop's.
     Output and result over OUTPUT_LIMIT are cut, not failed (#570): the script runs to its end
-    and the reply says truncated with the bytes left out.
+    and the reply says truncated with the bytes left out. A stale link ref the extension says to
+    follow (_same_link, nothing was sent either) is sent once more as a new request with the same
+    element's ref, so every check runs on that element; the operation and its reply report
+    remapped {from, to, role, name}.
     """
     if not isinstance(code, str) or not code.strip() or len(code.encode("utf-8")) > CODE_LIMIT:
         return {"error": f"code must be non-empty Python, at most {CODE_LIMIT} UTF-8 bytes",
@@ -183,11 +203,18 @@ async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
                     if body is not None and type(body.get("tabId")) is int:
                         entry["tab_id"] = body["tabId"]
                     operations.append(entry)
+                    remapped = None
                     while True:
                         reply = await asyncio.to_thread(
                             client.request, method, route, start_bridge=False,
                             timeout=min(seconds, max(0.001, deadline - time.monotonic())),
                             **({"json": body} if method == "POST" else {}))
+                        same = _same_link(body, reply)
+                        if same and remapped is None:
+                            remapped = entry["remapped"] = {"from": body["ref"], "to": same["ref"],
+                                                            "role": same.get("role"), "name": same.get("name")}
+                            body = {**body, "ref": same["ref"]}
+                            continue
                         state = reply.get("state") if isinstance(reply, dict) else None
                         if not (approve and isinstance(state, dict) and reply.get("code") == "needs_user"
                                 and state.get("detail") == "tool_approval" and "decision" not in state):
@@ -200,6 +227,8 @@ async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
                             break
                     entry["status"] = "failed" if failed(reply) else "ok"
                     reply = _without_tokens(reply)
+                    if remapped and isinstance(reply, dict):
+                        reply["remapped"] = remapped
                     delivered = reply if failed(reply) and _catchable(route, body, reply) else None
                     if failed(reply) and delivered is None:
                         if reply.get("code") == "needs_user":

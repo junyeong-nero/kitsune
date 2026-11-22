@@ -182,6 +182,9 @@ _gateway_tool = contextvars.ContextVar("kitsune_gateway_tool", default=None)
 _TOOL_NAME = _re.compile(r"browser_[a-z0-9_]{1,64}")
 # The calling client's id (CLIENT_HEADER, #303), which audit entries record.
 _client_id = contextvars.ContextVar("kitsune_client_id", default=None)
+# Whether the request is a browser_run_python script's (TOOL_HEADER): only its own commands, not
+# its container steps, may follow a stale link ref (#572, followSameLink).
+_script_request = contextvars.ContextVar("kitsune_script_request", default=False)
 _CLIENT_ID = _re.compile(CLIENT_ID_PATTERN)
 # Live handoff channels, not stable owner ids. The secret is hashed and never returned or audited.
 _handoff_lifecycle = contextvars.ContextVar("kitsune_handoff_lifecycle", default=False)
@@ -3215,6 +3218,9 @@ async def _send_to_extension_raw(action, params=None, timeout=30):
     params.pop("ownerId", None)
     if _owner_id.get() is not None:
         params["ownerId"] = _owner_id.get()
+    params.pop("followSameLink", None)
+    if _script_request.get() and _audit_parent.get() is None:
+        params["followSameLink"] = True
     for key in ("sessionId", "clientName", "handoffApproved"):
         params.pop(key, None)
     identity = _handoff_identity.get()
@@ -4987,6 +4993,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         checks = _checks_approvals.set(bool(self.headers.get(APPROVER_HEADER)))
         call = self.headers.get(CALL_HEADER) or ""
         call_token = _call_id.set(call if _CLIENT_ID.fullmatch(call) else None)
+        script = _script_request.set(self.headers.get(TOOL_HEADER) == tool_approvals.SCRIPT_TOOL)
         try:
             header_tool = self.headers.get(TOOL_HEADER) or ""
             tool = tool_approvals.request_tool(path, header_tool if _TOOL_NAME.fullmatch(header_tool) else None)
@@ -5000,6 +5007,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             else:
                 self.refuse(404, {"error": "Not found"})
         finally:
+            _script_request.reset(script)
             _call_id.reset(call_token)
             _checks_approvals.reset(checks)
             _handoff_identity.reset(handoff_token)

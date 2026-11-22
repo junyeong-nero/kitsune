@@ -284,6 +284,13 @@ from, so retry with its ref only if it is the element you meant. With no or seve
 elements, a page listing a readable cross-origin frame, or no answer within 2 s, the error
 is unchanged.
 
+A `browser_run_python` script follows one such ref instead of failing: a link's ref from the
+tab's own earlier document, on a tab the client owns that no user handed over, when that one
+element is a link with the same destination (a web URL; not an empty or `#` href). The action
+is sent again with that element's ref, so approvals and policy apply to it, and its result and
+`operations` entry report `remapped: {from, to, role, name}`. Buttons, fields, refs from
+another tab, container steps, direct tools and the Python API outside scripts fail as above.
+
 After an action, use the refs in its `snapshot`. `target_ref` is the ref of
 the acted-on element (absent for `browser_navigate`, or when that element is gone),
 so a follow-up such as `browser_keypress(key="Enter", ref=target_ref)` needs no

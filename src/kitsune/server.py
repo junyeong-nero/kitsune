@@ -1400,6 +1400,8 @@ async def browser_run_python(
     NOT a list index. browser.new_tab(url) returns a Tab; scripts do not change MCP selection.
     Return JSON via result or print selected output. Group actions whose targets are already
     known, then read the needed result once. Do not guess refs or replay a failed script.
+    Refs die when an action loads a new document; only a link's ref is followed to the one same
+    link with the same destination there (reported as remapped). Else use a selector or new snapshot.
     Print/result share 16,000 UTF-8 bytes: scope reads, filter locally, return evidence with coverage.
 
     Action/scoped-snapshot targets: refs like e12 or supported selectors, not DOM ref attributes.
