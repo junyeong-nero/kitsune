@@ -86,7 +86,12 @@ matches = [l for l in links if "delivery" in l.get("text", "").casefold()]
 result = {"matches": matches[:5], "more": len(matches) > 5}
 ```
 
-On `script_output_limit` the output is incomplete: make a new, smaller read-only observation.
+Output and result over the limit are cut, not failed: the script runs to its end and the reply has
+`ok: true`, `truncated: true` and `dropped_bytes` (the UTF-8 bytes left out). Printed output keeps
+its first 16,000 bytes; `result` gets what the output left, a string cut to its start and any
+other value to the start of its JSON text (a string). The cut content is incomplete: no match in
+it is not absence from the page, so make a new, smaller read-only observation for the rest.
+`operations` lists what the script did; do not replay it.
 
 ## Tabs
 
@@ -129,7 +134,8 @@ On `script_output_limit` the output is incomplete: make a new, smaller read-only
 | `images()`, `iframes()`, `meta()`, `structured_data()`, `readability()` | Images, frames, meta tags, JSON-LD/Open Graph, main article |
 
 Sensitive values are redacted ([Sensitive-field redaction](api-reference.md#sensitive-field-redaction)).
-Reads cut at the bridge's caps warn with a `UserWarning`; pass a `target` to read less.
+Reads cut at the bridge's caps warn with a `UserWarning`; pass a `target` to read less (`text()`
+has none: use `snapshot(target, text=True)` or `query`).
 
 ### Selector contract by method
 

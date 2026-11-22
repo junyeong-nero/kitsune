@@ -1,5 +1,6 @@
 """Python scripting over an actual stdio MCP client and the isolated Zen/Firefox fixture."""
 import asyncio
+from http.server import BaseHTTPRequestHandler
 import json
 import sys
 
@@ -8,6 +9,24 @@ from mcp.client.stdio import stdio_client
 
 import real_browser_harness as harness
 from test_real_browser_python_api import _Site
+
+# #570: the visible text and the snapshot of this page are each over the 16 KB output limit. The
+# buttons are leaf children of one parent, which a snapshot lists in full, not as "more similar items".
+LONG_PAGE = ('<!doctype html><meta charset="utf-8"><title>Long page</title><input id="draft">'
+             + "".join(f'<button>배송과 반품 정책 안내 항목 {i}</button> {"참고 자료입니다. " * 10}' for i in range(400)))
+
+
+class _LongSite(BaseHTTPRequestHandler):
+    def do_GET(self):
+        data = LONG_PAGE.encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, *args):
+        pass
 
 
 class RealBrowserScriptTests(harness.RealBrowserTestCase):
@@ -187,6 +206,44 @@ class RealBrowserScriptTests(harness.RealBrowserTestCase):
             self.run_scenario(run)
         finally:
             self.call("/api/set-policy", {"deny": []})
+
+    def test_reads_over_the_output_limit_are_cut_and_marked_not_failed(self):
+        # #570: a page whose text is over the 16 KB output limit.
+        long_site = harness.FixtureServer(_LongSite)
+        self.addCleanup(long_site.stop)
+
+        async def run(session, tab_id):
+            async def python(code):
+                reply = await session.call_tool("browser_run_python", {"code": code})
+                self.assertFalse(reply.isError, reply)
+                payload = json.loads(reply.content[0].text)
+                self.assertIs(payload["ok"], True)
+                self.assertIs(payload["truncated"], True, payload)
+                self.assertGreater(payload["dropped_bytes"], 0)
+                self.assertIn("not page-wide absence", payload["hint"])
+                shown = len(payload["output"].encode())
+                if "result" in payload:
+                    shown += len(json.dumps(payload["result"], ensure_ascii=False).encode())
+                self.assertGreater(shown, 15000, "usable content")
+                self.assertLessEqual(shown, 16000)
+                return payload
+
+            selected = await python(f"tab.navigate({long_site.origin!r})\n"
+                                    "tab.fill('#draft', 'keep this draft')\nresult = tab.text()")
+            self.assertEqual([entry["status"] for entry in selected["operations"]], ["ok", "ok", "ok"])
+            self.assertTrue(selected["result"].startswith("배송과 반품 정책 안내 항목 0 참고 자료입니다. "), selected["result"][:80])
+            # text() takes no target: the bridge-cap warning names reads that do.
+            self.assertIn("tab.snapshot(target=..., text=True) or tab.query(...)", selected["output"])
+            printed = await python("print(tab.text())")
+            self.assertIn(selected["result"][:5000], printed["output"], "print and result show the same start")
+            snapshot = await python("print(tab.snapshot())\ntab.fill('#draft', 'after the read')")
+            self.assertRegex(snapshot["output"], r"\[ref=e\d+\]")
+            self.assertEqual([entry["status"] for entry in snapshot["operations"]], ["ok", "ok"])
+            wrapped = await python("result = {'scope': 'page', 'evidence': tab.snapshot()}")
+            self.assertTrue(wrapped["result"].startswith('{"scope": "page", "evidence": "'), wrapped["result"][:80])
+            fields = self.call("/api/forms", {"tabId": tab_id})["fields"]
+            self.assertEqual(next(field["value"] for field in fields if field.get("id") == "draft"), "after the read")
+        self.run_scenario(run)
 
     def test_approval_stop_keeps_the_draft_and_does_not_offer_script_replay(self):
         self.call("/api/set-policy", {"ask": True})

@@ -66,6 +66,27 @@ def _without_tokens(value):
     return value
 
 
+def _fit(result, available):
+    """result as it fits in available UTF-8 bytes of JSON, and the UTF-8 bytes left out (#570).
+
+    A result over the budget is cut as text: a string to its start, any other value to the start
+    of its JSON text. None when no character fits; that counts as a byte or more left out, so an
+    empty string that does not fit is marked too.
+    """
+    serialized = json.dumps(result, ensure_ascii=False)
+    if result is None or len(serialized.encode("utf-8")) <= available:
+        return result, 0
+    text = result if isinstance(result, str) else serialized
+    low, high = 0, min(len(text), max(0, available - 2))  # a character takes a byte or more, the quotes two
+    while low < high:  # the longest start whose JSON string fits: escapes make it longer than its text
+        middle = (low + high + 1) // 2
+        if len(json.dumps(text[:middle], ensure_ascii=False).encode("utf-8")) <= available:
+            low = middle
+        else:
+            high = middle - 1
+    return text[:low] or None, max(1, len(text.encode("utf-8")) - len(text[:low].encode("utf-8")))
+
+
 async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
     """Fresh variables and process; preserve the host client and report every API call.
 
@@ -75,6 +96,8 @@ async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
     user, and on True the same request is sent again. The time the user takes does not count
     against timeout. The other exception is a failed read or wait (_catchable, #568): the worker
     raises it in the script, and when the script does not catch it the result is the stop's.
+    Output and result over OUTPUT_LIMIT are cut, not failed (#570): the script runs to its end
+    and the reply says truncated with the bytes left out.
     """
     if not isinstance(code, str) or not code.strip() or len(code.encode("utf-8")) > CODE_LIMIT:
         return {"error": f"code must be non-empty Python, at most {CODE_LIMIT} UTF-8 bytes",
@@ -83,6 +106,7 @@ async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
         return {"error": "timeout must be positive and at most 120 seconds", "code": "invalid_argument", "retryable": False}
 
     output = bytearray()
+    dropped = 0  # UTF-8 bytes of output and result over OUTPUT_LIMIT, left out of the reply
     operations = []
     deadline = time.monotonic() + timeout
     delivered = None  # the failed reply the worker's last call got, until its next call
@@ -95,11 +119,12 @@ async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
                      failed_operation=reply)
 
     def append_output(text):
+        # Nothing follows a cut, and a cut never splits a character.
+        nonlocal dropped
         encoded = text.encode("utf-8")
-        available = OUTPUT_LIMIT - len(output)
-        output.extend(encoded[:available])
-        if len(encoded) > available:
-            raise _Stop("script_output_limit", f"Output exceeded {OUTPUT_LIMIT} UTF-8 bytes")
+        kept = b"" if dropped else encoded[:OUTPUT_LIMIT - len(output)].decode("utf-8", "ignore").encode("utf-8")
+        output.extend(kept)
+        dropped += len(encoded) - len(kept)
 
     with tempfile.TemporaryDirectory(prefix="kitsune-script-") as directory:
         process = await asyncio.create_subprocess_exec(
@@ -119,7 +144,7 @@ async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
                 append_output(chunk.decode("utf-8", "replace"))
 
         async def events():
-            nonlocal deadline, delivered
+            nonlocal deadline, delivered, dropped
             await send({"code": code, "tab_id": tab_id})
             while line := await process.stdout.readline():
                 if len(line) > FRAME_LIMIT:
@@ -132,11 +157,13 @@ async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
                     if "error" in message:
                         if message.get("uncaught_reply") and delivered is not None:
                             raise operation_failed(delivered)
+                        before = dropped
                         append_output(message["error"])
-                        raise _Stop("script_error", "Python execution failed; see output")
-                    result = message.get("result")
-                    if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) + len(output) > OUTPUT_LIMIT:
-                        raise _Stop("script_output_limit", f"Output and result exceeded {OUTPUT_LIMIT} UTF-8 bytes")
+                        # An exception the full output has no room for is said here, not lost (#570).
+                        raise _Stop("script_error", "Python execution failed; see output" if dropped == before
+                                    else "Python execution failed: " + message["error"][:1000])
+                    result, cut = _fit(message.get("result"), OUTPUT_LIMIT - len(output))
+                    dropped += cut
                     return {"ok": True, **({"result": result} if result is not None else {})}
                 elif event == "call":
                     if len(operations) >= OPERATION_LIMIT:
@@ -231,4 +258,16 @@ async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
                               "tab.snapshot(target=..., max_depth=..., text=True) or "
                               "tab.query(CSS, fields=[...], limit=...). Filter locally and return only needed "
                               "evidence. Disclose coverage/truncation: no match in a subset is not page-wide absence.")
+    if dropped:
+        selected = result.pop("result", None)  # after the marker, which is read before the cut content
+        result.update(truncated=True, dropped_bytes=dropped)
+        if result["ok"]:
+            result["hint"] = (f"Output/result was cut at {OUTPUT_LIMIT} UTF-8 bytes; dropped_bytes were left out "
+                              "(a cut non-string result is the start of its JSON text). The script ran to its "
+                              "end and operations lists what was done: do not replay it. No match in the shown "
+                              "part is not page-wide absence. For the rest, in a new read-only script use "
+                              "tab.snapshot(target=..., max_depth=..., text=True) or "
+                              "tab.query(CSS, fields=[...], limit=...) and return only needed evidence.")
+        if selected is not None:
+            result["result"] = selected
     return {**result, "output": output.decode("utf-8", "ignore"), "operations": operations}

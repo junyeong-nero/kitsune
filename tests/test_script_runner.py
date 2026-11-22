@@ -337,52 +337,121 @@ class ScriptRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(client.calls), 1)
         self.assertEqual(result["operations"][0]["status"], "unknown")
 
-    async def test_output_and_selected_result_limits(self):
-        for code in ("print('é' * 20000)", "import sys; sys.stderr.write('x' * 20000)",
-                     "result = 'x' * 20000", "print('x' * 10000); result = 'y' * 10000"):
+    async def test_output_and_selected_result_over_the_limit_are_cut_not_failed(self):
+        # #570: a read over the limit is not a failed call. Printed output keeps its first 16,000
+        # bytes; a string result gets what the output left, its JSON quotes included.
+        for code, output, selected, dropped in (
+                ("print('x' * 20000)", "x" * 16000, None, 4001),
+                ("import sys; sys.stderr.write('x' * 20000)", "x" * 16000, None, 4000),
+                ("result = 'x' * 20000", "", "x" * 15998, 4002),
+                ("print('x' * 10000); result = 'y' * 10000", "x" * 10000 + "\n", "y" * 5997, 4003),
+                ("print('x' * 16000, end=''); print('tail'); result = 'gone'", "x" * 16000, None, 9),
+                # A result left out whole is marked even when it is the empty string.
+                ("print('x' * 16000, end=''); result = ''", "x" * 16000, None, 1)):
             with self.subTest(code=code):
                 result = await script_runner.run_python(code, Client())
-                self.assertEqual(result["code"], "script_output_limit")
-                self.assertLessEqual(len(result["output"].encode()), script_runner.OUTPUT_LIMIT)
-                self.assertNotIn("result", result)
+                self.assertTrue(result["ok"], result)
+                self.assertNotIn("error", result)
+                self.assertNotIn("code", result)
+                self.assertIs(result["truncated"], True)
+                self.assertEqual(result["dropped_bytes"], dropped)
+                self.assertEqual(result["output"], output)
+                self.assertEqual(result.get("result"), selected)
+                self.assertIn("not page-wide absence", result["hint"])
+                self.assertLess(list(result).index("truncated"), list(result).index("output"),
+                                "the marker is read before the cut content")
+        for code in ("print('x' * 16000, end='')", "result = 'x' * 15998"):
+            with self.subTest(code=code):
+                result = await script_runner.run_python(code, Client())
+                self.assertTrue(result["ok"], result)
+                for key in ("truncated", "dropped_bytes", "hint"):
+                    self.assertNotIn(key, result, "what fits is not marked")
 
     async def test_utf8_combined_output_boundary_is_not_a_character_budget(self):
         # 7,998 printed bytes + 8,002 bytes for the JSON string, including its quotes.
-        for suffix, succeeds in (("xx", True), ("xxx", False)):
+        for suffix, dropped in (("xx", 0), ("xxx", 1)):
             code = f"print('é' * 3999, end=''); result = '한' * 2666 + {suffix!r}"
             result = await script_runner.run_python(code, Client())
-            self.assertEqual(result["ok"], succeeds, result)
+            self.assertTrue(result["ok"], result)
             self.assertEqual(result["output"], "é" * 3999)
-            if succeeds:
-                self.assertEqual(len(result["output"].encode()) +
-                                 len(json.dumps(result["result"], ensure_ascii=False).encode()), 16000)
-            else:
-                self.assertEqual(result["code"], "script_output_limit")
-                self.assertNotIn("result", result)
-        result = await script_runner.run_python("print('한' * 6000, end='')", Client())
-        self.assertEqual(result["code"], "script_output_limit")
-        self.assertEqual(result["output"], "한" * 5333, "do not expose a partial UTF-8 character")
+            self.assertEqual(result["result"], "한" * 2666 + "xx")
+            self.assertEqual(len(result["output"].encode()) +
+                             len(json.dumps(result["result"], ensure_ascii=False).encode()), 16000)
+            self.assertEqual(result.get("dropped_bytes", 0), dropped)
+            self.assertEqual("truncated" in result, bool(dropped))
+        result = await script_runner.run_python("print('한' * 6000, end=''); print('x')", Client())
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["output"], "한" * 5333, "no partial UTF-8 character, and nothing after the cut")
+        self.assertEqual(result["dropped_bytes"], 6000 * 3 - 5333 * 3 + 2)
+        # A result is cut between characters too; its JSON escapes count against the limit.
+        result = await script_runner.run_python(r"result = '한\n' * 5000", Client())
+        self.assertEqual(result["result"], "한\n" * 3199 + "한")
+        self.assertEqual(len(json.dumps(result["result"], ensure_ascii=False).encode()), 16000)
+        self.assertEqual(result["dropped_bytes"], 5000 * 4 - (3199 * 4 + 3))
+
+    async def test_non_string_result_over_the_limit_is_the_start_of_its_json_text(self):
+        # #570: the same cut and marker as a string, so wrapping a read in a dict or list is no error.
+        rows = [{"text": "한"} for _ in range(2000)]
+        whole = json.dumps({"rows": rows}, ensure_ascii=False)
+        result = await script_runner.run_python("result = {'rows': [{'text': '한'} for _ in range(2000)]}", Client())
+        self.assertTrue(result["ok"], result)
+        self.assertIs(result["truncated"], True)
+        self.assertIsInstance(result["result"], str)
+        self.assertTrue(whole.startswith(result["result"]))
+        self.assertTrue(result["result"].startswith('{"rows": [{"text": "한"}, '))
+        self.assertLessEqual(len(json.dumps(result["result"], ensure_ascii=False).encode()), script_runner.OUTPUT_LIMIT)
+        self.assertGreater(len(json.dumps(result["result"] + whole[len(result["result"])], ensure_ascii=False).encode()),
+                           script_runner.OUTPUT_LIMIT, "as much as fits")
+        self.assertEqual(result["dropped_bytes"], len(whole.encode()) - len(result["result"].encode()))
+        self.assertIn("start of its JSON text", result["hint"])
+        fits = await script_runner.run_python("result = {'rows': [{'text': '한'} for _ in range(200)]}", Client())
+        self.assertEqual(fits["result"], {"rows": rows[:200]})
+        self.assertNotIn("truncated", fits)
 
     async def test_observation_overflow_keeps_completed_writes_and_gives_scoped_recovery(self):
-        for observation in ("result = tab.text()", "print(tab.text())\ntab.fill('#draft', 'must not run')"):
+        # #570: the script runs to its end, so a write after an overflowing print is done and listed.
+        for observation, routes in (("result = tab.text()", ["/api/fill", "/api/page-text"]),
+                                    ("print(tab.text())\ntab.fill('#note', 'after the read')",
+                                     ["/api/fill", "/api/page-text", "/api/fill"])):
             with self.subTest(observation=observation):
                 client = Client({"/api/page-text": {"text": "한" * 6000},
                                  "/api/query": {"items": [{"text": "Delivery: three days"}]}})
-                stopped = await script_runner.run_python("tab.fill('#draft', 'keep')\n" + observation,
-                                                         client, tab_id=7)
-                self.assertEqual(stopped["code"], "script_output_limit")
-                self.assertFalse(stopped["retryable"])
-                self.assertNotIn("result", stopped)
-                self.assertNotIn("resume_token", stopped)
-                self.assertEqual([route for _, route, _ in client.calls], ["/api/fill", "/api/page-text"])
-                self.assertEqual([op["status"] for op in stopped["operations"]], ["ok", "ok"])
-                for guidance in ("incomplete", "tab.snapshot", "tab.query", "coverage", "do not replay"):
-                    self.assertIn(guidance, stopped["hint"])
+                cut = await script_runner.run_python("tab.fill('#draft', 'keep')\n" + observation,
+                                                     client, tab_id=7)
+                self.assertTrue(cut["ok"], cut)
+                self.assertIs(cut["truncated"], True)
+                self.assertEqual(cut["dropped_bytes"], 6000 * 3 - 5332 * 3 if "result" in cut else 6000 * 3 + 1 - 5333 * 3)
+                self.assertEqual(cut.get("result", cut["output"]), "한" * (5332 if "result" in cut else 5333))
+                self.assertNotIn("resume_token", cut)
+                self.assertEqual([route for _, route, _ in client.calls], routes)
+                self.assertEqual([(op["route"], op["status"]) for op in cut["operations"]],
+                                 [(route, "ok") for route in routes])
+                for guidance in ("was cut", "tab.snapshot", "tab.query", "not page-wide absence", "do not replay"):
+                    self.assertIn(guidance, cut["hint"])
                 recovered = await script_runner.run_python(
                     "result = tab.query('#delivery', fields=['text'], limit=1)", client, tab_id=7)
                 self.assertEqual(recovered["result"], [{"text": "Delivery: three days"}])
                 self.assertEqual([route for _, route, _ in client.calls],
-                                 ["/api/fill", "/api/page-text", "/api/query"], "only observe; never repeat the draft")
+                                 routes + ["/api/query"], "only observe; never repeat the draft")
+
+    async def test_failure_after_cut_output_still_says_why_and_is_marked(self):
+        # #570: output over the limit no longer stops the script, so a later failure must not lose its reason.
+        failed = await script_runner.run_python("print('x' * 20000)\nraise ValueError('boom')", Client())
+        self.assertFalse(failed["ok"])
+        self.assertEqual(failed["code"], "script_error")
+        self.assertIn("ValueError: boom", failed["error"])
+        self.assertIs(failed["truncated"], True)
+        self.assertEqual(failed["output"], "x" * 16000)
+        self.assertIn("do not replay", failed["hint"])
+        client = Client({"/api/click": {"error": "No element", "code": "not_found"}})
+        stopped = await script_runner.run_python("print('x' * 20000)\ntab.click('#gone')", client, tab_id=7)
+        self.assertEqual(stopped["code"], "script_operation_failed")
+        self.assertEqual(stopped["failed_operation"]["code"], "not_found")
+        self.assertEqual((stopped["truncated"], stopped["dropped_bytes"]), (True, 4001))
+        endless = await script_runner.run_python("while True: print('x' * 1000)", Client(), timeout=0.5)
+        self.assertEqual(endless["code"], "script_timeout", "the deadline, not the output limit, ends a print loop")
+        self.assertIs(endless["truncated"], True)
+        self.assertEqual(len(endless["output"]), 16000)
 
     async def test_operation_limit_stops_before_the_extra_call(self):
         client = Client({"/api/tabs": {"tabs": []}})

@@ -177,8 +177,14 @@ class TabRequestTests(BridgeTestCase):
 
     def test_reads_the_bridge_cut_warn(self):
         self.reply("/api/page-text", {"text": "x" * 20000, "truncated": True, "fullLength": 30000})
-        with self.assertWarnsRegex(UserWarning, "Page text was cut"):
+        with self.assertWarnsRegex(UserWarning, "Page text was cut") as caught:
             self.assertEqual(len(self.tab.text()), 20000)
+        # #570: text() takes no target, so its warning names reads that do.
+        self.assertNotIn("with a target", str(caught.warning))
+        self.assertIn("tab.snapshot(target=..., text=True) or tab.query(...)", str(caught.warning))
+        self.reply("/api/markdown", {"markdown": "# x", "truncated": True})
+        with self.assertWarnsRegex(UserWarning, "Markdown was cut at the bridge's size cap; read a part of the page with a target"):
+            self.tab.markdown()
         with warnings.catch_warnings():
             warnings.simplefilter("error")
             self.tab.snapshot()
