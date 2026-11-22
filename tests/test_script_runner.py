@@ -127,6 +127,193 @@ class ScriptRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("secret-token", json.dumps(result))
         self.assertNotIn("resume_token", result)
 
+    async def test_caught_read_and_wait_failures_raise_the_documented_exceptions_and_continue(self):
+        # #568: a read or wait changed nothing, so the script gets its exception as outside scripts.
+        unmet = {"ok": False, "error": "Timed out after 2000ms waiting for visible text", "elapsed": 2000}
+        stale = {"error": "Ref e99 is no longer valid", "code": "stale_ref", "retryable": False}
+        client = Client({"/api/wait-for-text": unmet, "/api/snapshot": stale})
+        code = ("seen = []\n"
+                "try:\n    tab.wait_for(text='Saved', timeout=2000)\n"
+                "except TimedOut as error:\n    seen.append([type(error).__name__, error.result['elapsed']])\n"
+                "try:\n    tab.wait_for(text='Saved', timeout=2000)\n"
+                "except TimeoutError:\n    seen.append('builtin')\n"
+                "try:\n    tab.snapshot(target='e99')\n"
+                "except KitsuneError as error:\n    seen.append(error.code)\n"
+                "tab.fill('#name', 'after the caught failures')\nresult = seen")
+        result = await script_runner.run_python(code, client, tab_id=7)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["result"], [["TimedOut", 2000], "builtin", "stale_ref"])
+        self.assertEqual([route for _, route, _ in client.calls],
+                         ["/api/wait-for-text", "/api/wait-for-text", "/api/snapshot", "/api/fill"])
+        self.assertEqual([entry["status"] for entry in result["operations"]], ["failed", "failed", "failed", "ok"])
+        self.assertNotIn("failed_operation", result)
+
+    async def test_wait_for_help_in_a_script_says_which_unmet_waits_it_can_catch(self):
+        result = await script_runner.run_python("help(tab.wait_for)", Client(), tab_id=7)
+        self.assertTrue(result["ok"], result)
+        shown = " ".join(result["output"].split())
+        self.assertIn("else raise TimedOut", shown)
+        self.assertIn("catch TimedOut (or TimeoutError) to go on after an unmet wait", shown)
+        self.assertIn("A js wait is the exception", shown)
+
+    async def test_every_read_route_delivers_its_failure_and_no_other_route_does(self):
+        failure = {"error": "The tab is loading", "code": "navigating", "retryable": True}
+        code = ("try:\n    browser.request({route!r}, {{'tabId': 7}})\n"
+                "except KitsuneError as error:\n    result = error.code\n")
+        self.assertEqual(script_runner.READ_ROUTES, {
+            "/api/find", "/api/forms", "/api/page-info", "/api/page-text", "/api/query", "/api/snapshot",
+            "/api/wait-for-element", "/api/wait-for-network-idle", "/api/wait-for-text", "/api/wait-for-title",
+            "/api/wait-for-url"})
+        for route in sorted(script_runner.READ_ROUTES):
+            with self.subTest(route=route):
+                result = await script_runner.run_python(code.format(route=route), Client({route: failure}))
+                self.assertTrue(result["ok"], result)
+                self.assertEqual(result["result"], "navigating")
+        # Agent JavaScript, a navigation, a view change, a read that scrolls, and spellings the
+        # bridge also accepts for a read: none is delivered.
+        for route in ("/api/wait-for-result", "/api/js", "/api/navigate", "/api/scroll", "/api/hover",
+                      "/api/element-screenshot", "/api/storage", "/api/batch", "/api/pageText",
+                      "/api/snapshot?tab=7"):
+            with self.subTest(route=route):
+                client = Client({route: failure})
+                result = await script_runner.run_python(code.format(route=route), client)
+                self.assertEqual(result["code"], "script_operation_failed", result)
+                self.assertEqual(result["failed_operation"], failure)
+                self.assertEqual(len(client.calls), 1)
+
+    async def test_read_routes_are_not_bridge_writes_or_held_actions(self):
+        from kitsune import bridge
+        actions = {"/api/find": "find", "/api/forms": "getFormFields", "/api/page-info": "getPageInfo",
+                   "/api/page-text": "getPageText", "/api/query": "query", "/api/snapshot": "getSnapshot",
+                   "/api/wait-for-element": "waitForElement", "/api/wait-for-network-idle": "waitForNetworkIdle",
+                   "/api/wait-for-text": "waitForText", "/api/wait-for-title": "waitForTitle",
+                   "/api/wait-for-url": "waitForUrl"}
+        self.assertEqual(set(actions), script_runner.READ_ROUTES)
+        guarded = (bridge.WRITE_ACTIONS | bridge._REPEAT_UNSAFE_ACTIONS | bridge._ASK_JS_ACTIONS
+                   | bridge._ASK_COOKIE_ACTIONS | set(bridge._ASK_DATA_ACTIONS) | bridge._ASK_NAVIGATION_ACTIONS
+                   | bridge._ASK_TAB_ACTIONS)
+        self.assertEqual(set(actions.values()) & guarded, set())
+
+    async def test_a_find_that_loads_more_scrolls_the_page_and_stops_like_a_write(self):
+        failure = {"error": "The tab is loading", "code": "navigating", "retryable": True}
+        for key in ("loadMore", "load_more"):
+            with self.subTest(key=key):
+                client = Client({"/api/find": failure})
+                code = (f"try:\n    browser.request('/api/find', {{'tabId': 7, 'query': 'row', {key!r}: True}})\n"
+                        "except Exception:\n    browser.tab(7).fill('#other', 'must not run')\n")
+                result = await script_runner.run_python(code, client)
+                self.assertEqual(result["code"], "script_operation_failed", result)
+                self.assertEqual([route for _, route, _ in client.calls], ["/api/find"])
+
+    async def test_uncaught_read_failure_ends_the_script_as_a_failed_operation(self):
+        unmet = {"ok": False, "found": False, "selector": "#row", "elapsed": 2000,
+                 "error": 'Timed out after 2000ms waiting for "#row"', "confirmToken": "secret-token"}
+        client = Client({"/api/wait-for-element": unmet})
+        code = ("tab.fill('#name', 'draft')\nprint('filled')\n"
+                "tab.wait_for(target='#row', timeout=2000)\n"
+                "tab.fill('#other', 'must not run')\n")
+        result = await script_runner.run_python(code, client, tab_id=7)
+        self.assertEqual(result["code"], "script_operation_failed", result)
+        self.assertEqual(result["error"], "A browser operation failed; the script was stopped")
+        self.assertEqual(result["failed_operation"], {key: value for key, value in unmet.items() if key != "confirmToken"})
+        self.assertEqual([route for _, route, _ in client.calls], ["/api/fill", "/api/wait-for-element"])
+        self.assertEqual([entry["status"] for entry in result["operations"]], ["ok", "failed"])
+        self.assertEqual(result["output"], "filled\n")
+        self.assertFalse(result["retryable"])
+        self.assertNotIn("secret-token", json.dumps(result))
+        # An oversized reply is cut as for a write.
+        client = Client({"/api/snapshot": {"error": "failed", "code": "not_found", "snapshot": "x" * 20000}})
+        result = await script_runner.run_python("tab.snapshot(target='#gone')", client, tab_id=7)
+        self.assertEqual(result["failed_operation"], {"error": "failed", "code": "not_found", "truncated": True})
+
+    async def test_a_caught_failure_raised_again_later_is_an_ordinary_script_error(self):
+        unmet = {"ok": False, "error": "Timed out after 100ms waiting for visible text"}
+        client = Client({"/api/wait-for-text": unmet, "/api/page-text": {"text": "later read"}})
+        code = ("try:\n    tab.wait_for(text='Saved', timeout=100)\n"
+                "except TimedOut as error:\n    kept = error\n"
+                "tab.text()\nraise kept\n")
+        result = await script_runner.run_python(code, client, tab_id=7)
+        self.assertEqual(result["code"], "script_error", result)
+        self.assertNotIn("failed_operation", result)
+        self.assertIn("TimedOut", result["output"])
+        self.assertEqual([entry["status"] for entry in result["operations"]], ["failed", "ok"])
+
+    async def test_caught_failed_write_still_stops_the_script_with_earlier_operations_and_output(self):
+        cases = [("tab.click('#send')", "/api/click", {"error": "No element matches", "code": "not_found"}),
+                 ("tab.navigate('https://example.test/next')", "/api/navigate",
+                  {"ok": False, "timedOut": True, "url": "https://example.test/next"}),
+                 ("tab.wait_for(js='window.ready', timeout=100)", "/api/wait-for-result",
+                  {"ok": False, "error": "Timed out after 100ms"})]
+        for call, route, failure in cases:
+            with self.subTest(call=call):
+                client = Client({route: failure})
+                code = ("tab.fill('#name', 'draft')\nprint('collected so far')\n"
+                        f"try:\n    {call}\n"
+                        "except BaseException:\n    tab.fill('#other', 'must not run')\n"
+                        "result = 'must not be returned'\n")
+                result = await script_runner.run_python(code, client, tab_id=7)
+                self.assertEqual(result["code"], "script_operation_failed", result)
+                self.assertEqual(result["failed_operation"], failure)
+                self.assertEqual([called for _, called, _ in client.calls], ["/api/fill", route])
+                self.assertEqual([entry["status"] for entry in result["operations"]], ["ok", "failed"])
+                self.assertEqual(result["output"], "collected so far\n")
+                self.assertNotIn("result", result)
+
+    async def test_user_and_policy_outcomes_on_a_read_route_stop_even_a_catching_script(self):
+        approval = {"reason": "approval", "detail": "tool_approval", "tool": "browser_snapshot"}
+        failures = [
+            {"error": "browser_snapshot needs the user's approval", "code": "needs_user", "retryable": False,
+             "state": approval},
+            {"error": "Approval required", "code": "needs_user", "retryable": False,
+             "state": {"reason": "approval", "detail": "confirmation_required", "confirmToken": "secret-token"}},
+            {"error": "The agent needs the user", "code": "needs_user", "state": {"reason": "agent_request"}},
+            {"error": "Held", "code": "confirmation_required", "state": {"confirmToken": "secret-token"}},
+            {"error": "A user owns the tab", "code": "user_tab_read_only", "retryable": False},
+            {"error": "The user is using the tab", "code": "user_active", "retryable": True},
+            {"error": "Permission needed", "code": "permission_required", "retryable": False},
+            {"error": "Site access is withheld", "code": "host_permission_denied", "retryable": True},
+            # The bridge's policy refusals carry no code.
+            {"error": "Read-only mode is active; refusing action: waitForResult"},
+            {"error": "URL denied by policy (example): https://example.test/"},
+            {"error": "URL not in allowlist: https://example.test/"},
+            {"ok": False, "error": "Timed out after 100ms", "needs_user": {"reason": "human_check"}},
+        ]
+        for failure in failures:
+            for call, route in (("tab.snapshot()", "/api/snapshot"),
+                                ("tab.wait_for(text='Saved', timeout=100)", "/api/wait-for-text")):
+                with self.subTest(failure=failure, route=route):
+                    client = Client({route: failure})
+                    code = ("tab.fill('#name', 'draft')\n"
+                            f"try:\n    {call}\n"
+                            "except BaseException:\n    tab.fill('#other', 'must not run')\n")
+                    result = await script_runner.run_python(code, client, tab_id=7)
+                    self.assertEqual(result["code"], "script_operation_failed", result)
+                    self.assertEqual([called for _, called, _ in client.calls], ["/api/fill", route])
+                    self.assertEqual([entry["status"] for entry in result["operations"]], ["ok", "failed"])
+                    self.assertEqual(result["failed_operation"].get("code"), failure.get("code"))
+                    self.assertNotIn("secret-token", json.dumps(result))
+                    if failure.get("code") == "needs_user":
+                        self.assertEqual(result["failed_operation"]["recovery_tool"],
+                                         "browser_snapshot" if route == "/api/snapshot" else "browser_wait_for")
+
+    async def test_a_declined_tool_approval_on_a_read_route_stops_even_a_catching_script(self):
+        refusal = {"error": "browser_snapshot needs the user's approval", "code": "needs_user", "retryable": False,
+                   "state": {"reason": "approval", "detail": "tool_approval", "tool": "browser_snapshot"}}
+        declined = {**refusal, "state": {**refusal["state"], "decision": "declined"}}
+        asked = []
+
+        async def approve(tool):
+            asked.append(tool)
+            return declined
+
+        client = Client({"/api/snapshot": refusal})
+        code = "try:\n    tab.snapshot()\nexcept BaseException:\n    tab.fill('#other', 'must not run')\n"
+        result = await script_runner.run_python(code, client, tab_id=7, approve=approve)
+        self.assertEqual(result["code"], "script_operation_failed", result)
+        self.assertEqual(result["failed_operation"]["state"]["decision"], "declined")
+        self.assertEqual(asked, ["browser_snapshot"])
+        self.assertEqual([route for _, route, _ in client.calls], ["/api/snapshot"])
+
     async def test_script_cannot_supply_an_approval_token_through_the_provided_api(self):
         client = Client()
         result = await script_runner.run_python("browser.tab(7).click('#send', confirm='pretend-approval')", client)

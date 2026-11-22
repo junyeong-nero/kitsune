@@ -1005,6 +1005,10 @@ class Tab:
         rendered page text (snapshot names from placeholders or aria-labels are not page text). url, title: a
         JavaScript regex on the tab, which survives navigation. js: an expression with a
         non-empty result (developer build only). network_idle: 500 ms without new resources.
+
+        In a browser_run_python script, catch TimedOut (or TimeoutError) to go on after an unmet
+        wait. A js wait is the exception: it runs JavaScript in the page, so when it fails the
+        script stops even if it catches, as after a failed write.
         """
         conditions = (target, text, text_gone, url, title, js)
         if sum(condition is not None for condition in conditions) + bool(network_idle) != 1:

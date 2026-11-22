@@ -22,10 +22,39 @@ OUTPUT_LIMIT = 16000  # UTF-8 bytes, shared by printed output and the selected r
 OPERATION_LIMIT = 100
 FRAME_LIMIT = 2 * 1024 * 1024  # internal browser replies, not model-visible output
 
+# Routes that only read the page or wait on it (#568). None is a bridge WRITE_ACTIONS, agent-JavaScript
+# or ask-before-act action, so a failed one changed nothing and the script gets its failure as the
+# API's exception. Exact spellings only. Not here: /api/wait-for-result (wait_for(js=...)), which
+# runs the script's JavaScript in the page, and reads that scroll it (element and full-page captures).
+READ_ROUTES = frozenset({
+    "/api/find", "/api/forms", "/api/page-info", "/api/page-text", "/api/query", "/api/snapshot",
+    "/api/wait-for-element", "/api/wait-for-network-idle", "/api/wait-for-text", "/api/wait-for-title",
+    "/api/wait-for-url",
+})
+# Refusals for the user's sake (approval, tab ownership, user activity, permissions): they stop a
+# script on every route, so it cannot catch its way past one.
+USER_STOP_CODES = frozenset({"needs_user", "confirmation_required", "user_tab", "user_tab_read_only", "user_active",
+                             "permission_required", "host_permission_denied", "unsupported_target"})
+
 
 class _Stop(Exception):
     def __init__(self, code, message, **details):
         self.result = {"error": message, "code": code, **details}
+
+
+def _catchable(route, body, reply):
+    """Whether a failed reply goes back to the script as its exception instead of stopping it (#568)."""
+    if route not in READ_ROUTES:
+        return False
+    # A find that loads more scrolls the page, which the extension checks as a write.
+    if route == "/api/find" and body and (body.get("loadMore") or body.get("load_more")):
+        return False
+    code = reply.get("code")
+    if code in USER_STOP_CODES or "needs_user" in reply:
+        return False
+    # The bridge's policy refusals (read-only mode, URL allow and deny lists) have no code. Of the
+    # failures without one, only an unmet wait (ok false, as Tab.wait_for reads it) is delivered.
+    return bool(code) or reply.get("ok") is False
 
 
 def _without_tokens(value):
@@ -44,7 +73,8 @@ async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
     No failed call or script is retried. A failed API call stops even a catching script, except
     a refusal for the user's per-tool approval (#525, nothing was sent): approve(tool) asks the
     user, and on True the same request is sent again. The time the user takes does not count
-    against timeout.
+    against timeout. The other exception is a failed read or wait (_catchable, #568): the worker
+    raises it in the script, and when the script does not catch it the result is the stop's.
     """
     if not isinstance(code, str) or not code.strip() or len(code.encode("utf-8")) > CODE_LIMIT:
         return {"error": f"code must be non-empty Python, at most {CODE_LIMIT} UTF-8 bytes",
@@ -55,6 +85,14 @@ async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
     output = bytearray()
     operations = []
     deadline = time.monotonic() + timeout
+    delivered = None  # the failed reply the worker's last call got, until its next call
+
+    def operation_failed(reply):
+        if len(json.dumps(reply, ensure_ascii=False).encode("utf-8")) > OUTPUT_LIMIT:
+            reply = {"error": str(reply.get("error", "Browser operation failed"))[:1000],
+                     "code": str(reply.get("code", ""))[:100], "truncated": True}
+        return _Stop("script_operation_failed", "A browser operation failed; the script was stopped",
+                     failed_operation=reply)
 
     def append_output(text):
         encoded = text.encode("utf-8")
@@ -81,7 +119,7 @@ async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
                 append_output(chunk.decode("utf-8", "replace"))
 
         async def events():
-            nonlocal deadline
+            nonlocal deadline, delivered
             await send({"code": code, "tab_id": tab_id})
             while line := await process.stdout.readline():
                 if len(line) > FRAME_LIMIT:
@@ -92,6 +130,8 @@ async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
                     append_output(message["text"])
                 elif event == "done":
                     if "error" in message:
+                        if message.get("uncaught_reply") and delivered is not None:
+                            raise operation_failed(delivered)
                         append_output(message["error"])
                         raise _Stop("script_error", "Python execution failed; see output")
                     result = message.get("result")
@@ -133,18 +173,15 @@ async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
                             break
                     entry["status"] = "failed" if failed(reply) else "ok"
                     reply = _without_tokens(reply)
-                    if failed(reply):
+                    delivered = reply if failed(reply) and _catchable(route, body, reply) else None
+                    if failed(reply) and delivered is None:
                         if reply.get("code") == "needs_user":
                             if route in ROUTE_TOOLS:
                                 reply["recovery_tool"] = ROUTE_TOOLS[route]
                             reply["hint"] = ("Use browser_tools_call(name=recovery_tool) to inspect the direct tool, "
                                              "then execute only the held operation with arguments for approval/help. "
                                              "Earlier script operations remain done; never replay them.")
-                        if len(json.dumps(reply, ensure_ascii=False).encode("utf-8")) > OUTPUT_LIMIT:
-                            reply = {"error": str(reply.get("error", "Browser operation failed"))[:1000],
-                                     "code": str(reply.get("code", ""))[:100], "truncated": True}
-                        raise _Stop("script_operation_failed", "A browser operation failed; the script was stopped",
-                                    failed_operation=reply)
+                        raise operation_failed(reply)
                     await send(reply)
                 else:
                     raise _Stop("script_protocol_error", "Unknown script message")

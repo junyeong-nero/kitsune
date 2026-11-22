@@ -321,6 +321,20 @@ class McpApprovalTests(ElicitationTestCase):
         asked = [params["tool"] for action, params in self.extension.sent if action == "toolApproval"]
         self.assertEqual(asked, ["browser_cookies"])
 
+    def test_a_read_the_user_does_not_allow_stops_a_script_that_catches_it(self):
+        # #568: a failed read is raised in the script, but a refusal for the user's approval still stops it.
+        bridge._set_approval_tools(["browser_snapshot"])
+        code = ("try:\n    browser.tab(7).snapshot()\n"
+                "except BaseException:\n    browser.tab(7).fill('#name', 'must not run')\n")
+        with patch.object(server, "SCRIPTING", True):
+            result, payload = self.call("browser_run_python", {"code": code})
+        self.assertTrue(result.isError, payload)
+        failure = payload["failed_operation"]
+        self.assertEqual((payload["code"], failure["code"], failure["state"]["detail"], failure["recovery_tool"]),
+                         ("script_operation_failed", "needs_user", "tool_approval", "browser_snapshot"))
+        self.assertEqual([entry["route"] for entry in payload["operations"]], ["/api/snapshot"])
+        self.assertEqual([action for action, _ in self.extension.sent if action != "toolApproval"], [])
+
     def test_browser_run_python_itself_can_need_approval(self):
         bridge._set_approval_tools(["browser_run_python"])
         with patch.object(server, "SCRIPTING", True):

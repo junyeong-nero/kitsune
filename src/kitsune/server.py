@@ -1420,8 +1420,10 @@ async def browser_run_python(
     help(tab.scroll) prints a specific method's signature. Prefer this API over page evaluate.
 
     Limits: 16 KB output/result, 100 API calls, fresh variables, no top-level await.
-    A failed API call stops even if caught; earlier writes remain. For needs_user use the
-    failed operation's direct tool via browser_tools_call, then run ONLY remaining work.
+    A failed read or wait_for raises KitsuneError (TimedOut on a timeout); try/except may catch it.
+    Any other failed call, and any needs_user or policy refusal, stops even if caught; earlier writes
+    remain. For needs_user use the failed operation's direct tool via browser_tools_call, then run
+    ONLY remaining work.
     Never put confirm/resume tokens in scripts. Use browser_tabs for handoff (request),
     browser_ask_user for human help, and browser_take_screenshot for images.
     """
