@@ -181,6 +181,32 @@ async function main() {
   });
   stuck.assertClean();
 
+  // #561: an image-heavy page parses its DOM long before it finishes loading. At the timeout it is
+  // ok with load_pending and the page's own URL, also where the tab still reports about:blank (#360).
+  for (const onCreate of [(h, url) => h.update({ status: 'loading', url }), h => h.update({ status: 'loading' })]) {
+    const heavy = harness(onCreate, () => ['https://example.com/heavy', 'interactive']);
+    const heavyOpen = start(heavy, { action: 'newTab', url: 'https://example.com/heavy', wait: true, timeout: 3000 });
+    await heavy.tick(2999);
+    assert.equal(heavyOpen.settled, false, 'a parsed DOM does not end the load wait early');
+    await heavy.tick(1);
+    assert.equal(heavyOpen.settled, true);
+    assert.deepEqual(await heavyOpen.result, {
+      ok: true, load_pending: true, tabId: 9, url: 'https://example.com/heavy', status: 'loading',
+    });
+    heavy.assertClean();
+  }
+
+  // A document whose DOM is not parsed by the timeout (a blocking script, a stalled response body)
+  // cannot be read yet: still a timeout.
+  const parsing = harness((h, url) => h.update({ status: 'loading', url }), () => ['https://example.com/blocked', 'loading']);
+  const parsingOpen = start(parsing, { action: 'newTab', url: 'https://example.com/blocked', wait: true, timeout: 3000 });
+  await parsing.tick(3000);
+  assert.equal(parsingOpen.settled, true);
+  assert.deepEqual(await parsingOpen.result, {
+    ok: false, timedOut: true, tabId: 9, url: 'https://example.com/blocked', status: 'loading',
+  });
+  parsing.assertClean();
+
   // about: targets have no load to wait for.
   const blank = harness();
   const blankOpen = start(blank, { action: 'newTab', wait: true });
@@ -228,8 +254,8 @@ async function main() {
   assertStalled(await blankWait.result);
   blankPage.assertClean();
 
-  // A page that reports its loaded URL only after the wait timed out (a late #360 answer) is
-  // where the tab is: a timeout with the page's URL, not the inert-tab code.
+  // A page that reports its loaded URL only as the wait times out (a late #360 answer) is where
+  // the tab is: loaded, with the page's URL, not the inert-tab code (#561).
   let late = ['about:blank', 'complete'];
   const latePage = harness(h => h.update({ status: 'loading' }), () => late);
   const lateWait = start(latePage, { action: 'newTab', url: 'https://example.com/late', wait: true, timeout: 1000 });
@@ -241,7 +267,7 @@ async function main() {
   await latePage.tick(1);
   assert.equal(lateWait.settled, true);
   assert.deepEqual(await lateWait.result, {
-    ok: false, timedOut: true, tabId: 9, url: 'https://example.com/late', status: 'complete',
+    ok: true, tabId: 9, url: 'https://example.com/late', status: 'complete',
   });
   latePage.assertClean();
 

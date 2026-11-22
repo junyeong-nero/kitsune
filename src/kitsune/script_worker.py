@@ -4,14 +4,18 @@ This is not a sandbox. Code has ordinary local Python host access.
 """
 import contextlib
 import json as json_module
+import re
 import sys
+import time
 import traceback
 
 from .browser import Browser, Tab
-from .errors import failed
+from .errors import KitsuneError, TimedOut, failed
 
 _INPUT = sys.stdin
 _OUTPUT = sys.stdout
+# How CPython starts the TypeError of a call whose arguments did not bind to the method's parameters.
+_UNBOUND_CALL = re.compile(r"(Browser|Tab)\.([A-Za-z]\w*)\(\) ")
 # Routes of the actions whose post-action snapshot (the extension's POST_SNAPSHOT_ACTIONS) is taken
 # once the page settled: a delta of what the action changed, or the page it loaded. Reads and
 # waits are not listed, though /api/snapshot replies have a snapshot key too. Nor is
@@ -31,6 +35,7 @@ def _send(message):
 
 
 class _Client:
+    reply = None  # the last call's reply
     last = None  # (route, reply) of the script's last browser operation
 
     def request(self, method, endpoint, *, json=None, timeout=15):
@@ -38,9 +43,9 @@ class _Client:
         line = _INPUT.readline()
         if not line:
             raise RuntimeError("The script host disconnected")
-        reply = json_module.loads(line)
-        self.last = (endpoint, reply)
-        return reply
+        self.reply = json_module.loads(line)
+        self.last = (endpoint, self.reply)
+        return self.reply
 
 
 def _last_action_snapshot(last):
@@ -78,28 +83,54 @@ class _Output:
         pass
 
 
+def _unbound_call(error):
+    """The public Browser or Tab method whose call raised this TypeError before the method ran.
+
+    Wrong, unknown or missing arguments raise at the call, so no traceback frame runs the method.
+    A TypeError raised inside a method is about a value, and the signature would not explain it.
+    """
+    named = _UNBOUND_CALL.match(str(error))
+    method = getattr(Tab if named[1] == "Tab" else Browser, named[2], None) if named else None
+    code = getattr(method, "__code__", None)
+    if code is None:
+        return None
+    entry = error.__traceback__
+    while entry is not None:
+        if entry.tb_frame.f_code is code:
+            return None
+        entry = entry.tb_next
+    return method
+
+
 def main():
     request = json_module.loads(_INPUT.readline())
-    browser = Browser(_Client())
-    namespace = {"__name__": "__main__", "browser": browser,
-                 "tab": browser.tab(request["tab_id"]) if request.get("tab_id") is not None else None}
+    client = _Client()
+    browser = Browser(client)
+    # #574: scripts used time, re and json without importing them, after earlier operations had run.
+    namespace = {"__name__": "__main__", "browser": browser, "time": time, "re": re, "json": json_module,
+                 "tab": browser.tab(request["tab_id"]) if request.get("tab_id") is not None else None,
+                 # #568: the exceptions a failed read or wait raises, for except clauses.
+                 "KitsuneError": KitsuneError, "TimedOut": TimedOut}
     with contextlib.redirect_stdout(_Output()), contextlib.redirect_stderr(_Output()):
         try:
             exec(compile(request["code"], "<kitsune-script>", "exec"), namespace)
             chosen = "result" in namespace or _Output.written  # result = None is an assignment too
             _send({"event": "done", "result": namespace.get("result") if chosen
-                   else _last_action_snapshot(browser.client.last)})
+                   else _last_action_snapshot(client.last)})
         except BaseException as error:
             message = "".join(traceback.format_exception_only(type(error), error)).strip()
-            if isinstance(error, TypeError):
-                # #524: same-named direct tools use different arguments and semantics. Add local
-                # help, not aliases, browser calls or retries; keep the original exception visible.
+            method = _unbound_call(error) if isinstance(error, TypeError) else None
+            if method is not None:
+                # #524, #574: same-named direct tools and Playwright use different arguments and
+                # semantics. Add local help, not aliases, browser calls or retries; keep the
+                # original exception visible.
                 import inspect  # here, not at the top: every call starts a worker, few fail this way
-                for method in (Tab.find, Tab.snapshot):
-                    if str(error).startswith(f"{method.__qualname__}() got an unexpected keyword argument "):
-                        message += f"\nPython API: {method.__qualname__}{inspect.signature(method)}\n{inspect.getdoc(method)}"
-                        break
-            _send({"event": "done", "error": message})
+                message += f"\nPython API: {method.__qualname__}{inspect.signature(method)}"
+                if inspect.getdoc(method):
+                    message += f"\n{inspect.getdoc(method)}"
+            # #568: an uncaught failure of the last call ends the script as that failed operation.
+            uncaught_reply = isinstance(error, KitsuneError) and error.result is client.reply
+            _send({"event": "done", "error": message, **({"uncaught_reply": True} if uncaught_reply else {})})
 
 
 if __name__ == "__main__":

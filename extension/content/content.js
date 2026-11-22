@@ -327,6 +327,8 @@
   // native checkboxes/selects keep working. Stale refs fail at once: they cannot come back.
   const POINTER_WAIT_ACTIONS = new Set(['click', 'doubleClick', 'hover', 'drag']);
   const VALUE_WAIT_ACTIONS = new Set(['type', 'fill', 'setEditableContent', 'selectOption', 'checkBox', 'keypress']);
+  // The actions for which several equivalent matches are one target (oneTargetAmong).
+  const EQUIVALENT_MATCH_ACTIONS = new Set(['click', 'hover']);
   const ACTION_WAIT_TIMEOUT = 10000;
 
   function waitForActionable(msg) {
@@ -337,6 +339,8 @@
     // Coordinate clicks and keypresses on the active element have no target to wait for.
     const targets = msg.action === 'drag' ? [msg.from, msg.to] : [msg.selector];
     const pointer = POINTER_WAIT_ACTIONS.has(msg.action);
+    // As click and hover resolve it.
+    const chosen = EQUIVALENT_MATCH_ACTIONS.has(msg.action) ? {} : null;
     const start = Date.now();
     return new Promise((resolve, reject) => {
       function poll() {
@@ -344,7 +348,7 @@
         try {
           pending = targets.findIndex(selector => {
             if (!selector) return false;
-            el = resolveTarget(selector, null, { first: msg.first, pointer });
+            el = resolveTarget(selector, null, { first: msg.first, pointer, chosen });
             return !el || !el.isConnected || (pointer && !isRendered(el));
           });
         } catch (e) {
@@ -486,6 +490,16 @@
     return { ...result, visibilityState: 'hidden' };
   }
 
+  // A page action's reply lists the dialogs this document recorded since the action began (#569):
+  // a document the action unloads (a form whose confirm() was accepted) cannot be asked for them
+  // afterwards. The top frame only, as dialogsSince is asked.
+  function withActionDialogs(since, result) {
+    if (typeof since !== 'number' || window !== window.top || !result || typeof result !== 'object' ||
+        Array.isArray(result)) return result;
+    const { dialogs } = dialogsSince(since);
+    return dialogs.length ? { ...result, actionDialogs: dialogs } : result;
+  }
+
   browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const handlers = {
       // A frame's ping names its document (origin and path) for ask-before-act (#343).
@@ -569,7 +583,7 @@
       'keypress':              () => pressKey(msg.selector, msg.key, msg.modifiers, msg.text, msg.first, msg.repeat),
       'doubleClick':           () => withPopupWatch(doubleClick(msg.selector, msg.first, msg.modifiers)),
       'submitForm':            () => submitForm(msg.selector, msg.first),
-      'describeTarget':        () => describeTarget(msg.selector, msg.coords, msg.key, msg.first),
+      'describeTarget':        () => describeTarget(msg.selector, msg.coords, msg.key, msg.first, msg.equivalent),
       'formFill':              () => formFill(msg.fields, msg.first),
       'media':                 () => controlMedia(msg.selector, msg.op, msg.time, msg.first),
       'drag':                  () => dragElement(msg.from, msg.to, msg.first),
@@ -596,7 +610,7 @@
       return false;
     }
 
-    const respond = result => sendResponse(withVisibility(msg.action, result));
+    const respond = result => sendResponse(withActionDialogs(msg.dialogsSince, withVisibility(msg.action, result)));
     try {
       if (['click', 'type', 'fill', 'selectOption', 'checkBox', 'keypress', 'submitForm'].includes(msg.action)) {
         lastActedElement = null;
@@ -1732,6 +1746,9 @@
     // emptiness says nothing about content.
     const explicit = withText && !baseline && observation === 'browser_snapshot';
     const frames = selected.filter(entry => entry.frameId).map(entry => ({ ref: entry.ref, frameId: entry.frameId }));
+    // The background keeps these with the refs and returns them to no client (#572).
+    const hrefs = selected.filter(entry => entry.ref && linkDestination(entry))
+      .map(entry => ({ ref: entry.ref, href: entry.href }));
     return {
       snapshot,
       ...(truncated ? { truncated: true } : {}),
@@ -1739,6 +1756,7 @@
       // For boundPublicSnapshot, which can cut again after aliases and URL redaction.
       ...(cuts ? { cuts: cuts.filter(cut => cut <= selected.length) } : {}),
       ...(frames.length ? { frames } : {}),
+      ...(hrefs.length ? { hrefs } : {}),
       ...(withText && !baseline ? { url: window.location?.href ?? globalThis.location?.href, title: document.title } : {}),
       ...(explicit ? { readyState: document.readyState } : {}),
       ...(explicit && !snapshot && !truncated ? { empty: true, hint: EMPTY_SNAPSHOT_HINT } : {}),
@@ -1756,11 +1774,22 @@
   // The one element a whole-page snapshot would list with this `role "name"` (label), for a
   // ref from another document (#459). A readable cross-origin frame's elements are not seen
   // here, so a page listing one has no answer, as has a label with no or several elements.
+  // href: that element's destination when it is a link with one (linkDestination).
   function sameElement(label) {
     const entries = getSnapshot(undefined, false, null, null, false, undefined, 'labels', false, false);
     if (entries.some(entry => entry.frameId)) return {};
     const matches = entries.filter(entry => entry.label === label);
-    return matches.length === 1 ? { ref: issueRef(matches[0].el) } : {};
+    if (matches.length !== 1) return {};
+    return { ref: issueRef(matches[0].el), ...(linkDestination(matches[0]) ? { href: matches[0].href } : {}) };
+  }
+
+  // Whether a snapshot entry is a link that leads somewhere (#572): a web URL (entry.href) from
+  // an href that is not empty or a bare "#", which only stand for the page they are on. A script's
+  // stale link ref is followed only to a link with the same destination.
+  const LINK_DESTINATION_LIMIT = 2048;
+  function linkDestination(entry) {
+    return !!entry.href && entry.href.length <= LINK_DESTINATION_LIMIT &&
+      !['', '#'].includes((entry.el.getAttribute('href') ?? '').trim());
   }
 
   // ── Find Elements ──
@@ -2180,7 +2209,8 @@
     // A user's middle or Ctrl/Cmd click opens a link in a new tab; a synthetic one never does,
     // so newTabLink asks the background to, unless the page cancelled the click (#223).
     const newTab = button === 'middle' || (button === 'left' && (flags.ctrlKey || flags.metaKey));
-    let el = resolveTarget(selector, coords, { first, pointer: true });
+    const chosen = {};
+    let el = resolveTarget(selector, coords, { first, pointer: true, chosen });
     if (!el) return notFound();
 
     // Coordinates resolve to a rendered element by construction.
@@ -2231,7 +2261,7 @@
         { ...released, detail: 1 });
       const link = newTab ? followedLink(el) : null;
       return { ok: true, tag: el.tagName.toLowerCase(), text: redactedText(el).trim().slice(0, 60), button,
-        ...warning, ...(link ? { newTabLink: { url: link.href, prevented: !proceed } } : {}), ...held };
+        ...chosen, ...warning, ...(link ? { newTabLink: { url: link.href, prevented: !proceed } } : {}), ...held };
     }
 
     const link = newTab ? followedLink(el) : blankTargetLink(el);
@@ -2257,7 +2287,7 @@
 
     // A media element's text is its fallback content, which the browser does not show.
     const result = { ok: true, tag: el.tagName.toLowerCase(),
-      text: media ? '' : redactedText(el).trim().slice(0, 60), ...warning, ...linkTab, ...held };
+      text: media ? '' : redactedText(el).trim().slice(0, 60), ...chosen, ...warning, ...linkTab, ...held };
     // Synthetic clicks cannot press the browser's native media controls (they only answer
     // trusted input), so a click the page neither cancelled nor handled toggles playback.
     if (media && clickEvent && !clickEvent.defaultPrevented && media.paused === wasPaused) {
@@ -2641,7 +2671,8 @@
       return { error: `steps must be an integer from 1 to ${HOVER_MAX_STEPS}` };
     }
     steps ??= duration.ms ? HOVER_DEFAULT_STEPS : 0;
-    const el = resolveTarget(selector, coords, { first, pointer: true });
+    const chosen = {};
+    const el = resolveTarget(selector, coords, { first, pointer: true, chosen });
     if (!el) return notFound();
 
     // As a pointer reaching it would, bring the target into view first (#220). scrollIntoView
@@ -2656,7 +2687,7 @@
 
     watchPopups(el);
     movePointerTo(el, { ...init, clientX: xAt(0) });
-    const result = { ok: true, tag: el.tagName.toLowerCase(), ...(selector ? notRenderedWarning(el) : {}) };
+    const result = { ok: true, tag: el.tagName.toLowerCase(), ...chosen, ...(selector ? notRenderedWarning(el) : {}) };
     if (!steps) return result;
     const start = performance.now();
     return (async () => {
@@ -3799,7 +3830,10 @@
     const wanted = normalizeSelectorText(value);
     if (strict) return text => text === wanted;
     const lower = wanted.toLowerCase();
-    return text => text.toLowerCase().includes(lower);
+    const match = text => text.toLowerCase().includes(lower);
+    // The wanted text is the whole text, which preferredTextMatch ranks over containing it.
+    match.whole = text => text.toLowerCase() === lower;
+    return match;
   }
 
   // Parts of a selector that needs this engine (separated by >>), or null for plain CSS.
@@ -4224,13 +4258,14 @@
 
   // Write actions: like resolveElement, but a selector matching several actionable elements
   // is ambiguous unless first is set; one actionable match among others is the target.
-  // Refs and coordinates name one element.
-  function resolveTarget(selector, coords, { first = false, pointer = false } = {}) {
+  // Refs and coordinates name one element. click and hover pass chosen, an empty object:
+  // several matches that are one target (oneTargetAmong) resolve to it, and chosen says why.
+  function resolveTarget(selector, coords, { first = false, pointer = false, chosen = null } = {}) {
     if (!selector || REF_SELECTOR.test(selector)) return resolveElement(selector, coords);
     const matches = targetMatches(selector);
     if (!matches.length) return parseTargetSelector(selector) ? null : resolveElement(selector, coords);
     if (first) return matches[0];
-    const actionable = assertOneTarget(selector, pointer, matches);
+    const actionable = assertOneTarget(selector, pointer, matches, chosen);
     return actionable.length === 1 ? actionable[0] : matches[0];
   }
 
@@ -4241,10 +4276,16 @@
     return !pointer || isRendered(el);
   }
 
-  // The actionable matches, unless there are several.
-  function assertOneTarget(selector, pointer, matches = targetMatches(selector)) {
+  // The actionable matches, unless there are several. With chosen, several that are one
+  // target are that target.
+  function assertOneTarget(selector, pointer, matches = targetMatches(selector), chosen = null) {
     const actionable = matches.filter(el => isActionable(el, pointer));
     if (actionable.length < 2) return actionable;
+    const one = chosen && oneTargetAmong(selector, actionable);
+    if (one) {
+      Object.assign(chosen, { matches: actionable.length, ...one.why });
+      return [one.el];
+    }
     const { error, ...details } = ambiguousTarget(
       `${actionable.length} elements match the selector; nothing was dispatched`,
       'Act on one element: pass its ref from state.candidates or a new browser_snapshot, or a more ' +
@@ -4252,6 +4293,58 @@
       { selector, matches: actionable.length,
         candidates: actionable.slice(0, AMBIGUOUS_CANDIDATE_LIMIT).map(targetSummary) });
     throw new ActionError(error, details);
+  }
+
+  // ── Equivalent matches (#573) ──
+  // For click and hover, several matches can be one target: links to the same place, or the
+  // one text= match that is better than every other. Every other action stays strict.
+  function oneTargetAmong(selector, matches) {
+    return sameDestinationLink(matches) || preferredTextMatch(selector, matches);
+  }
+
+  // Attributes that do not change what following a link does (aria-* are skipped too).
+  const LINK_DESCRIPTIVE_ATTRIBUTES = new Set(['href', 'id', 'class', 'style', 'title', 'tabindex']);
+
+  // What following a link does, as far as its markup shows: the resolved URL and every other
+  // attribute that is not descriptive (target, download, rel, data-*, …). null for a link that
+  // goes nowhere (no href, "#…", javascript:) or has an inline on* handler: those are usually
+  // script buttons, which share an href while doing different things.
+  function linkSignature(el) {
+    if (el.tagName !== 'A' || typeof el.href !== 'string') return null;
+    const href = String(el.getAttribute('href') || '').trim();
+    if (!href || href.startsWith('#') || /^javascript:/i.test(el.href)) return null;
+    const names = el.getAttributeNames()
+      .filter(name => !LINK_DESCRIPTIVE_ATTRIBUTES.has(name) && !name.startsWith('aria-'));
+    if (names.some(name => name.startsWith('on'))) return null;
+    return JSON.stringify([el.href, ...names.sort().map(name => [name, el.getAttribute(name)])]);
+  }
+
+  // The first match, when every match is a link of one document with the same signature.
+  function sameDestinationLink(matches) {
+    const [link, ...others] = matches;
+    const signature = linkSignature(link);
+    if (!signature || others.some(el => docOf(el) !== docOf(link) || linkSignature(el) !== signature)) return null;
+    return { el: link, why: { same_href: true } };
+  }
+
+  // For a selector ending in the text engine (text=, internal:text=, a bare "…"): the one match
+  // that is as good as every other on both counts and better than each on one. The counts: its
+  // whole text is the wanted text, not only text containing it (lax text only), and it is or is
+  // inside a control, not a heading, span or div. null when two matches are equally good or
+  // each is better on one count.
+  function preferredTextMatch(selector, matches) {
+    const part = parseTargetSelector(selector)?.at(-1);
+    if (part?.kind !== 'text') return null;
+    const { whole } = part.match;
+    const ranked = withRedactionCache(() => matches.map(el => ({ el,
+      exact: !!whole && whole(normalizeSelectorText(selectorText(el))),
+      interactive: !!nearestInteractiveAncestor(el) })));
+    const exact = ranked.some(match => match.exact), interactive = ranked.some(match => match.interactive);
+    const best = ranked.filter(match => match.exact === exact && match.interactive === interactive);
+    if (best.length !== 1) return null;
+    return { el: best[0].el, why: { preferred: [
+      ...(exact && ranked.some(match => !match.exact) ? ['exact_text'] : []),
+      ...(interactive && ranked.some(match => !match.interactive) ? ['interactive'] : [])] } };
   }
 
   // Reuse one ref per attached node, across all observation tools.
@@ -4887,13 +4980,37 @@
     el.dispatchEvent(new Event('input', { bubbles: true }));
   }
 
+  // The <select> has no such option (#574): nothing was dispatched, and the same command cannot
+  // succeed. state.options lists the first few, so the caller need not read them from the page;
+  // a sensitive select lists none. how: what value was matched against.
+  const SELECT_OPTION_LIMIT = 20;
+  function noSuchOption(el, value, how) {
+    const options = Array.from(el.options);
+    const wanted = String(value).trim();
+    const sensitive = isSensitiveField(el);
+    let hint = 'Nothing was selected. Pass ' + (how === 'text' ? 'a text' : 'a value') + ' from state.options' +
+      (options.length > SELECT_OPTION_LIMIT ? `, the first ${SELECT_OPTION_LIMIT} of ${options.length} options.` : '.');
+    if (sensitive) hint = 'Nothing was selected. Its options are not listed because the field is sensitive.';
+    else if (how === 'value' && options.some(opt => opt.text.trim() === wanted)) {
+      hint = 'Nothing was selected. This is an option\'s text, not its value: pass by_text=True (byText), ' +
+        'or its value from state.options.';
+    } else if (how === 'text' && options.some(opt => opt.value === wanted)) {
+      hint = 'Nothing was selected. This is an option\'s value, not its text: select it without by_text, ' +
+        'or pass its text from state.options.';
+    }
+    return { ...actionError(`No matching option for ${how}: ${value}`, 'no_such_option', hint,
+      { total: options.length, ...(sensitive ? { redacted: true } : { options: options.slice(0, SELECT_OPTION_LIMIT)
+        .map(opt => ({ value: String(opt.value).slice(0, 80), text: opt.text.trim().slice(0, 80) })) }) }),
+      retryable: false };
+  }
+
   // Several values (browser_select_option): each matches an option's value, else its text.
   function selectOptions(el, values) {
     if (values.length > 1 && !el.multiple) return { error: 'This <select> takes one value; got ' + values.length };
     const matched = [];
     for (const value of values) {
       const opt = findSelectOption(el, value, false) || findSelectOption(el, value, true);
-      if (!opt) return { error: `No matching option for value or text: ${value}` };
+      if (!opt) return noSuchOption(el, value, 'value or text');
       matched.push(opt);
     }
     lastActedElement = lastFilledField = el;
@@ -4913,16 +5030,126 @@
     if (el.tagName !== 'SELECT') return { error: 'Element is not a <select>' };
     if (Array.isArray(values)) return selectOptions(el, values);
     const matched = findSelectOption(el, value, byText);
-    if (!matched) return { error: `No matching option for ${byText ? 'text' : 'value'}: ${value}` };
+    if (!matched) return noSuchOption(el, value, byText ? 'text' : 'value');
     lastActedElement = lastFilledField = el;
     applySelectOption(el, matched);
     return { ok: true, value: el.value, text: matched.text };
   }
 
+  // ── ARIA checkboxes (#574) ──
+  // A role=checkbox, switch or radio without a native input has no checked property to set, so
+  // check sets it as a user does: with one click when aria-checked is not the requested state
+  // (a missing aria-checked is unchecked, "mixed" is neither), and none when it is. The click is
+  // browser_click's, so it reports what a click reports. Then aria-checked must become the
+  // requested state: at once, or within ARIA_CHECK_SETTLE_MS for a page that publishes it after
+  // a render or a request. A document the click starts to unload has no state left to read and
+  // answers as the click.
+  // Never more than one click: a tri-state control that steps to another state fails with the
+  // state it reached, and checking again steps it once more. A selected radio is not unchecked,
+  // as no click unchecks a native one.
+  const ARIA_CHECK_ROLES = new Set(['checkbox', 'switch', 'radio']);
+  const ARIA_CHECK_SETTLE_MS = 1000;
+  const ARIA_CHECK_HINTS = {
+    radio: 'Nothing was clicked: a selected radio is unchecked by checking another radio of its group.',
+    unchanged: 'The click was dispatched and aria-checked did not change. The control may be disabled, ' +
+      'ignore synthetic clicks or publish its state later: read it from a new browser_snapshot before ' +
+      'checking again.',
+    other_state: 'The click was dispatched and aria-checked became state.checked, as a tri-state control ' +
+      'steps through its states: check again to click it once more.',
+    replaced: 'The click was dispatched and the page replaced the element: read the control\'s state from ' +
+      'a new browser_snapshot before checking again.',
+  };
+
+  function ariaCheckRole(el) {
+    const role = String(el.getAttribute?.('role') || '').trim().split(/\s+/)[0].toLowerCase();
+    return ARIA_CHECK_ROLES.has(role) ? role : null;
+  }
+
+  // aria-checked as the page wrote it, lower-cased: "true", "false", "mixed", or null when absent.
+  function ariaChecked(el) {
+    const value = el.getAttribute('aria-checked');
+    return value == null ? null : String(value).trim().toLowerCase();
+  }
+
+  function ariaCheckNotReached(el, role, wanted, reason) {
+    const now = ariaChecked(el);
+    const clicked = reason !== 'radio';
+    return { ...actionError(clicked
+      ? `The ${role}'s aria-checked is ${JSON.stringify(now)} after the click, not "${wanted}"`
+      : 'Cannot uncheck a selected radio', 'value_not_reached', ARIA_CHECK_HINTS[reason],
+    { role, checked: now, target: wanted, clicked, reason }), retryable: !clicked };
+  }
+
+  function checkAriaControl(el, role, wanted) {
+    const reached = () => (ariaChecked(el) ?? 'false') === String(wanted);
+    if (reached()) {
+      lastActedElement = lastFilledField = el;
+      return { ok: true, tag: el.tagName.toLowerCase(), role, checked: wanted, clicked: false };
+    }
+    if (role === 'radio' && !wanted) return ariaCheckNotReached(el, role, wanted, 'radio');
+    const before = ariaChecked(el);
+    lastActedElement = el;
+    return withPopupWatch(withScriptPopupCheck(async () => {
+      let unloading = false;
+      let settle = () => {};
+      const onUnload = () => { unloading = true; settle(); };
+      const views = new Set([window, el.ownerDocument?.defaultView || window]);
+      const observer = new MutationObserver(() => { if (reached()) settle(); });
+      for (const view of views) {
+        view.addEventListener('beforeunload', onUnload);
+        view.addEventListener('pagehide', onUnload);
+      }
+      try {
+        // By its ref, so the click acts on this element and nothing else the selector matches.
+        const click = await clickElement(issueRef(el));
+        if (click.error) return click;
+        if (!reached() && !unloading) {
+          observer.observe(el, { attributes: true, attributeFilter: ['aria-checked'] });
+          await new Promise(resolve => {
+            settle = resolve;
+            pointerPause(ARIA_CHECK_SETTLE_MS).then(resolve);
+          });
+        }
+        if (reached()) {
+          lastFilledField = el;
+          return { ...click, role, checked: wanted, clicked: true };
+        }
+        if (unloading) return { ...click, role, clicked: true };
+        return ariaCheckNotReached(el, role, wanted,
+          !el.isConnected ? 'replaced' : ariaChecked(el) === before ? 'unchanged' : 'other_state');
+      } finally {
+        observer.disconnect();
+        for (const view of views) {
+          view.removeEventListener('beforeunload', onUnload);
+          view.removeEventListener('pagehide', onUnload);
+        }
+      }
+    }));
+  }
+
   function checkBox(selector, checked, first) {
     const el = resolveTarget(selector, null, { first });
     if (!el) return notFound();
-    if (el.type !== 'checkbox' && el.type !== 'radio') return { error: 'Element is not a checkbox/radio' };
+    if (el.type !== 'checkbox' && el.type !== 'radio') {
+      const role = ariaCheckRole(el);
+      if (!role) {
+        // Nothing was dispatched, and the same command cannot succeed on this element.
+        const shown = el.getAttribute?.('role') || inferRole(el);
+        return { ...actionError('Element is not a checkbox/radio', 'wrong_element_type',
+          'check sets a native checkbox or radio, or an element with role checkbox, switch or radio. ' +
+          'Nothing was dispatched: click this element instead (browser_click) and read its state from the result.',
+          { tag: el.tagName.toLowerCase(), ...(shown ? { role: shown } : {}) }), retryable: false };
+      }
+      // Ask-before-act inspected the element a click on this selector acts on, which differs
+      // when the control is not rendered and the selector's first match is another element.
+      const clickTarget = resolveTarget(selector, null, { first, pointer: true });
+      if (clickTarget !== el) {
+        return ambiguousTarget(`The selector's first match is not the ${role}, which is not rendered; nothing was dispatched`,
+          'Act on one element: pass its ref from state.candidates or a new browser_snapshot, or a more specific selector.',
+          { selector, matches: targetMatches(selector).length, candidates: [clickTarget, el].map(targetSummary) });
+      }
+      return checkAriaControl(el, role, !!checked);
+    }
     lastActedElement = lastFilledField = el;
     el.checked = !!checked;
     el.dispatchEvent(new Event('input', { bubbles: true }));
@@ -5492,8 +5719,8 @@
   // a form, is a button labeled like a submit or payment, or is a button or link labeled like
   // a send, transfer, delete or account change. Resolves the target the way click/keypress
   // do and reports no field values.
-  function describeTarget(selector, coords, key, first) {
-    let el = selector || coords ? resolveTarget(selector, coords, { first, pointer: !key })
+  function describeTarget(selector, coords, key, first, equivalent) {
+    let el = selector || coords ? resolveTarget(selector, coords, { first, pointer: !key, chosen: equivalent ? {} : null })
       : (activeElement() || document.body);
     if (!el) return notFound();
     if (coords) el = nearestInteractiveAncestor(el) || el;

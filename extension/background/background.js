@@ -29,6 +29,10 @@ const tabReloads = new Map();
 // The tab's last load as tabs events report it, { at, complete }: replaced when the tab reports
 // loading, complete once it reports complete after that (see wokenPageState).
 const tabLoads = new Map();
+// How many top documents started their content script in the tab, counted by its first message
+// (getDialogPolicy). A new document does so as it starts, so a change says that the tab shows
+// another document than before (#561).
+const tabDocuments = new Map();
 const notifyStatusWaiters = (tabId, closed = false) =>
   [...(mainFrameStatusWaiters.get(tabId) || [])].forEach(notify => notify(closed));
 browser.tabs.onRemoved.addListener(tabId => {
@@ -38,6 +42,7 @@ browser.tabs.onRemoved.addListener(tabId => {
   mainFrameStatus.delete(tabId);
   tabReloads.delete(tabId);
   tabLoads.delete(tabId);
+  tabDocuments.delete(tabId);
   frameUserInputs.delete(tabId);
   actionPages.delete(tabId);
   notifyStatusWaiters(tabId, true);
@@ -883,6 +888,7 @@ browser.runtime.onMessage.addListener((msg, sender) => {
   }
   if (msg.action === 'getDialogPolicy') {
     const tabId = sender.tab?.id;
+    if (tabId != null && sender.frameId === 0) tabDocuments.set(tabId, (tabDocuments.get(tabId) || 0) + 1);
     return agentTabsRestored.then(() => ({ policy: dialogPolicies.get(tabId) || null, agentTab: dialogAgentTab(tabId) }));
   }
   // A hidden tab's timers are throttled to 1 s, the background's are not (#351).
@@ -1500,6 +1506,8 @@ async function runCommandSettled(params, { withSnapshot, deltaSnapshot, textSnap
   // The load a goBack starts, which its page text waits for like an action that navigates (#349).
   const back = pageText && params.action === 'goBack' ? { loadBefore: tabLoads.get(params.tabId) } : null;
   const dialogsSince = Date.now();
+  // The content script adds the dialogs its document recorded since then to the action's reply (#569).
+  if (tracksOpenedTabs) params.dialogsSince = dialogsSince;
   const result = await dispatchCommand(params);
   let navigation = null;
   if (watch && result && !result.error && result.ok !== false) {
@@ -1523,6 +1531,9 @@ async function runCommandSettled(params, { withSnapshot, deltaSnapshot, textSnap
   // A click during which a page script's window.open was refused (#304).
   const scriptPopup = result?.scriptPopup;
   if (scriptPopup) delete result.scriptPopup;
+  // The dialogs the action's document had recorded when it answered (#569).
+  const actionDialogs = result?.actionDialogs;
+  if (actionDialogs) delete result.actionDialogs;
   if (textSnapshot && result && !result.error) result.tabId = params.tabId;
   // Taken before the snapshot, which then lists the popup even when it is not rendered.
   if (popupWatch && params.tabId != null) {
@@ -1591,7 +1602,7 @@ async function runCommandSettled(params, { withSnapshot, deltaSnapshot, textSnap
     }
   }
   if (tracksOpenedTabs && params.tabId != null && result && typeof result === 'object') {
-    await addActionDialogs(params.tabId, dialogsSince, result);
+    await addActionDialogs(params.tabId, dialogsSince, result, dialogEntries(actionDialogs));
   }
   return result;
 }
@@ -1607,14 +1618,22 @@ function publicDialog(dialog) {
     response: dialog.response ?? null, ...(dialog.pending ? { pending: true } : {}),
     ...(dialog.auto_dismissed ? { auto_dismissed: true } : {}) };
 }
-async function pageDialogs(tabId, since) {
+const dialogEntries = dialogs => Array.isArray(dialogs) ? dialogs.filter(d => d && typeof d === 'object').slice(-20) : [];
+async function recordedDialogs(tabId, since) {
   const reply = await Promise.resolve()
     .then(() => browser.tabs.sendMessage(tabId, { action: 'dialogsSince', since }, TOP_FRAME)).catch(() => null);
-  return Array.isArray(reply?.dialogs)
-    ? reply.dialogs.filter(d => d && typeof d === 'object').slice(-20).map(publicDialog) : [];
+  return dialogEntries(reply?.dialogs);
 }
-async function addActionDialogs(tabId, since, result) {
-  const dialogs = await pageDialogs(tabId, since);
+async function pageDialogs(tabId, since) {
+  return (await recordedDialogs(tabId, since)).map(publicDialog);
+}
+// during: the dialogs the action's document reported with its reply (#569). A submitted form
+// unloads that document, so the page cannot be asked for them afterwards; a document that is
+// still there lists them again, and each is reported once.
+async function addActionDialogs(tabId, since, result, during) {
+  const page = await recordedDialogs(tabId, since);
+  const listed = d => page.some(p => p.timestamp === d.timestamp && p.type === d.type && p.message === d.message);
+  const dialogs = [...during.filter(d => !listed(d)), ...page].slice(-20).map(publicDialog);
   if (!dialogs.length) return;
   result.dialogs = dialogs;
   if (dialogs.some(d => d.auto_dismissed && d.type !== 'alert')) result.dialog_hint = DISMISSED_DIALOG_HINT;
@@ -1776,6 +1795,16 @@ async function openBlockedLink(tabId, link, result, ownerId, authorization) {
       'state.url may contain redacted values and must not be used as a navigation URL.' };
 }
 
+// A navigate url that is not an absolute URL (#571): refused here with a code, where tabs.update
+// only says "Illegal URL". The bridge resolves a relative url against the tab's URL before its
+// URL policy reads it, so the extension never resolves one itself.
+function invalidNavigateUrl(url) {
+  if (urlWithoutFragment(url) !== null) return null;
+  return { error: `Invalid URL: ${url}`, code: 'invalid_url', retryable: false, state: { url },
+    hint: 'Nothing was loaded. Pass an absolute URL, or a path while the tab shows a web page; ' +
+      'query\'s href and src values are already absolute.' };
+}
+
 async function dispatchCommand(command) {
   const { action, id, ...params } = command;
   
@@ -1793,7 +1822,7 @@ async function dispatchCommand(command) {
     case 'waitForUrl':   return await waitForTabProperty('url', params);
     case 'waitForTitle': return await waitForTabProperty('title', params);
     case 'getOpenedTabs': return await getOpenedTabs(params.tabId);
-    case 'navigate':     return await navigateTab(params.url, params.tabId, params.expectTitle, params);
+    case 'navigate':     return invalidNavigateUrl(params.url) || await navigateTab(params.url, params.tabId, params.expectTitle, params);
     case 'switchTab':    return await switchTab(params.tabId, params);
     case 'newTab':       return await createTab(params.url, params);
     case 'closeTab':     return await closeTab(params.tabId, { ...params, userTabApproved: true });
@@ -2037,12 +2066,12 @@ function urlWithoutFragment(url) {
   try { return new URL(url).href.split('#')[0]; } catch { return null; }
 }
 
-// The URL of the tab's top document once it has loaded, from its content script; null while it
-// loads, for an about: page, or when nothing answers within PAGE_URL_TIMEOUT_MS. While Zen's
-// first-run welcome screen hides the tab area, Gecko keeps a loaded tab's url at about:blank and
-// executeScript never returns there (#360), but the content script answers.
+// The tab's top document as its content script reports it, { url, readyState }; null for an
+// about: page, or when nothing answers within PAGE_URL_TIMEOUT_MS. While Zen's first-run welcome
+// screen hides the tab area, Gecko keeps a loaded tab's url at about:blank and executeScript
+// never returns there (#360), but the content script answers.
 const PAGE_URL_TIMEOUT_MS = 500;
-async function loadedPageUrl(tabId) {
+async function pageState(tabId) {
   let timer;
   const info = await Promise.race([
     browser.tabs.sendMessage(tabId, { action: 'getPageInfo' }, TOP_FRAME).catch(() => null),
@@ -2050,8 +2079,18 @@ async function loadedPageUrl(tabId) {
   ]);
   clearTimeout(timer);
   const href = typeof info?.url === 'string' ? info.url : '';
-  return info?.readyState === 'complete' && href && !href.startsWith('about:') ? href : null;
+  return href && !href.startsWith('about:') ? { url: href, readyState: info.readyState } : null;
 }
+
+// The URL of the tab's top document once it has loaded; null while it loads (see pageState).
+async function loadedPageUrl(tabId) {
+  const page = await pageState(tabId);
+  return page?.readyState === 'complete' ? page.url : null;
+}
+
+// A page (see pageState) whose DOM is parsed can be read and acted on, also while its images
+// and other resources still load (#561).
+const domParsed = page => page?.readyState === 'interactive' || page?.readyState === 'complete';
 
 // Runs startNavigation and resolves true once the tab finishes loading, false on timeout.
 // Subscribes first so a fast 'complete' is not missed. Gecko may never emit a fresh
@@ -2113,20 +2152,28 @@ async function navigateTab(url, tabId, expectTitle, authorization) {
     const sameUrl = target !== null && target === urlWithoutFragment((await browser.tabs.get(targetTabId)).url);
 
     let loaded = true;
+    // #561: when the load wait times out, started says whether a document started in the tab since
+    // the navigation began. Only then is the page asked: before that, the document left behind answers.
+    let started = false, page = null;
     if (sameUrl && url.includes('#')) {
       // Same-document (fragment) navigation: no new load, so no status 'complete'.
       requireTabAdmission(authorization);
       await browser.tabs.update(targetTabId, { url });
     } else {
+      const documents = tabDocuments.get(targetTabId);
       loaded = await waitForTabLoad(targetTabId, () => { requireTabAdmission(authorization); return browser.tabs.update(targetTabId, { url }); }, { reload: sameUrl });
+      started = !loaded && tabDocuments.get(targetTabId) !== documents;
+      if (started) page = await pageState(targetTabId);
     }
 
     // Check if page title matches expectation (catches silent redirects)
-    const result = loaded ? { ok: true, url } : { ok: false, timedOut: true, url };
+    const parsed = domParsed(page);
+    const result = loaded || parsed ? { ok: true, url } : { ok: false, timedOut: true, url };
+    if (page?.readyState === 'interactive') result.load_pending = true;
     // #366: the inert blank tab of new_tab_stalled also ignores a later navigation.
-    if (!loaded && !url.startsWith('about:')) {
+    if (!loaded && !parsed && !url.startsWith('about:')) {
       const tab = await browser.tabs.get(targetTabId);
-      if (tab.url === 'about:blank' && tab.status === 'complete' && !await loadedPageUrl(targetTabId)) {
+      if (tab.url === 'about:blank' && tab.status === 'complete' && (started || !await loadedPageUrl(targetTabId))) {
         Object.assign(result, {
           code: 'navigation_stalled', retryable: false,
           hint: 'The tab is still about:blank after the load timeout. '
@@ -2171,7 +2218,7 @@ const STALLED_TAB_HINT = 'Retrying will not fix this: the browser needs an updat
 
 // Opens an agent-owned tab in the background. Immediate by default. With wait, resolves once the
 // tab loads (or the timeout passes, leaving the tab open) and reports the actual URL, so
-// redirects are visible.
+// redirects are visible. A page whose DOM is parsed at the timeout is ok with load_pending (#561).
 async function createTab(url, { wait = false, timeout = 15000, ownerId = null } = {}) {
   try {
     const target = url || 'about:blank';
@@ -2181,11 +2228,15 @@ async function createTab(url, { wait = false, timeout = 15000, ownerId = null } 
     // A new tab has no previous document, so any non-about: 'complete' is the destination.
     const loaded = target.startsWith('about:')
       || await waitForTabLoad(tab.id, () => {}, { reload: true, timeout });
+    // For the same reason, the page that answers after a timeout is the destination's.
+    const page = loaded ? null : await pageState(tab.id);
+    const parsed = domParsed(page);
     const current = await browser.tabs.get(tab.id);
     const shownUrl = current.url.startsWith('about:') && !target.startsWith('about:')
-      && await loadedPageUrl(tab.id) || current.url;
+      && (loaded ? await loadedPageUrl(tab.id) : parsed && page.url) || current.url;
     const result = {
-      ok: loaded, ...(loaded ? {} : { timedOut: true }),
+      ok: loaded || parsed, ...(loaded || parsed ? {} : { timedOut: true }),
+      ...(page?.readyState === 'interactive' ? { load_pending: true } : {}),
       tabId: tab.id, url: shownUrl, status: current.status,
     };
     // #366: an old browser process after an on-disk update can create inert blank tabs.
@@ -3017,12 +3068,12 @@ async function withFrameTrees(tabId, response, scope, maxDepth, limit = DOM_TREE
 
 // Public refs never reuse an index. Keep the generation-qualified ref private so the
 // content script can still reject refs from another document or an earlier injection.
-// short -> { tabId, ref, label }: label is the `role "name"` of the ref's snapshot line, which
-// another document's same element is matched by (#459).
+// short -> { tabId, ref, label, href }: label is the `role "name"` of the ref's snapshot line, which
+// another document's same element is matched by (#459); href is a listed link's destination (#572).
 const shortRefs = new Map();
 const publicRefs = new Map();
 // Retired aliases still answer other_document, not not_in_snapshot; bounded, oldest first.
-// short -> its label.
+// short -> its { tabId, label, href }.
 const retiredShortRefs = new Map();
 const RETIRED_SHORT_REFS_MAX = 4096;
 // Retire aliases with their document/tab, without resetting the persisted monotonic counter.
@@ -3033,7 +3084,7 @@ function pruneShortRefs(tabId) {
     if (entry.tabId !== tabId) continue;
     shortRefs.delete(short);
     publicRefs.delete(`${tabId}:${entry.ref}`);
-    retiredShortRefs.set(short, entry.label);
+    retiredShortRefs.set(short, { tabId, label: entry.label, href: entry.href });
   }
   for (const short of retiredShortRefs.keys()) {
     if (retiredShortRefs.size <= RETIRED_SHORT_REFS_MAX) break;
@@ -3088,8 +3139,10 @@ function expandShortRefs(params, tabId) {
     if (!ref) continue;
     const entry = shortRefs.get(ref);
     if (!entry) {
-      return { error: shortRefError(ref, retiredShortRefs.has(ref) ? 'other_document' : 'not_in_snapshot'),
-        label: retiredShortRefs.get(ref) };
+      const retired = retiredShortRefs.get(ref);
+      // href: only for a link ref of this tab's own earlier document (see followsSameLink).
+      return { error: shortRefError(ref, retired ? 'other_document' : 'not_in_snapshot'), label: retired?.label,
+        href: key === 'ref' && retired?.tabId === tabId ? retired.href : undefined };
     }
     if (entry.tabId !== tabId) return { error: shortRefError(ref, 'other_document'), label: entry.label };
     expanded[key] = entry.ref + rest;
@@ -3102,8 +3155,19 @@ function expandShortRefs(params, tabId) {
 // agent can retry without another snapshot (#459). The page there can differ from the one the
 // agent read, so the agent decides: nothing is sent to that element. A lookup that fails or
 // takes longer than SAME_ELEMENT_TIMEOUT_MS leaves the error as it was.
+// href: the destination the stale ref's link had, when the caller may follow it (followsSameLink).
+// same_element.follow then tells the script runner to send the command again with that ref,
+// only when the same element is a link with that destination. Role and name alone would also
+// match another page's lone `button "Delete"`, so nothing else is followed.
 const SAME_ELEMENT_TIMEOUT_MS = 2000;
-async function withSameElement(tabId, error, label, authorization) {
+// Whether a stale ref of this command may be followed (#572): only a browser_run_python script's
+// own request for a write (the bridge sets followSameLink), on a tab this client owns that no
+// user handed over.
+function followsSameLink(action, params, tabId) {
+  return params.followSameLink === true && writesTab(action, params) &&
+    ownsTab(tabId, params.ownerId, params.sessionId) && !handoffs.has(tabId);
+}
+async function withSameElement(tabId, error, label, authorization, href) {
   let timer;
   try {
     const deadline = Date.now() + SAME_ELEMENT_TIMEOUT_MS;
@@ -3116,8 +3180,10 @@ async function withSameElement(tabId, error, label, authorization) {
     if (typeof found?.ref !== 'string') return error;
     const { ref } = await compactContentRefs('sameElement', found, tabId, {});
     const role = label.slice(0, label.indexOf(' "'));
+    const follow = role === 'link' && typeof href === 'string' && found.href === href;
     return { ...error, hint: `${error.hint} The same ${label} here is ${ref}; retry with it.`,
-      state: { ...error.state, same_element: { ref, role, name: JSON.parse(label.slice(role.length + 1)) } } };
+      state: { ...error.state, same_element: { ref, role, name: JSON.parse(label.slice(role.length + 1)),
+        ...(follow ? { follow: true } : {}) } } };
   } catch {
     return error;
   } finally {
@@ -3331,7 +3397,8 @@ async function forwardToContent(action, params) {
     if (expanded.error) {
       // A discarded tab is not woken for a write's error.
       const error = expanded.label && !state.discarded
-        ? await withSameElement(tabId, expanded.error, expanded.label, params) : expanded.error;
+        ? await withSameElement(tabId, expanded.error, expanded.label, params,
+          followsSameLink(action, params, tabId) ? expanded.href : undefined) : expanded.error;
       return await withTabState(tabId, error);
     }
     const frameId = targetFrame(tabId, expanded.params);
@@ -3346,7 +3413,8 @@ async function forwardToContent(action, params) {
       return failure;
     }
 
-    const { [TAB_ADMISSION]: admission, ownerId, sessionId, clientName, userTabsWritable, ...contentParams } = expanded.params;
+    const { [TAB_ADMISSION]: admission, ownerId, sessionId, clientName, userTabsWritable, followSameLink,
+      ...contentParams } = expanded.params;
     let message = { action, ...contentParams };
     if (delta) {
       deltaScope ??= { parent: frameId, depth: 0, budget: frameReadBudget() };
@@ -3391,7 +3459,15 @@ async function forwardToContent(action, params) {
       if (response.code) response = await withTabState(tabId, response);
     }
     if (response.frames) delete response.frames;
+    // A snapshot's link destinations stay here, with their refs (#572): the top document's only,
+    // where a same element is looked for.
+    const hrefs = action === 'getSnapshot' && !frameId && Array.isArray(response.hrefs) ? response.hrefs : [];
+    if (action === 'getSnapshot') delete response.hrefs;
     const result = await compactContentRefs(action, response, tabId, params);
+    for (const { ref, href } of hrefs) {
+      const entry = shortRefs.get(publicRefs.get(`${tabId}:${ref}`));
+      if (entry) entry.href = href;
+    }
     // Waits and drags echo their targets; keep their public spelling too.
     for (const key of REF_PARAMS) {
       if (!leadingShortRef(params[key])) continue;

@@ -323,7 +323,7 @@ class TrustedPressKeyTests(TrustedKeysTestCase):
 
 class AskBeforeActTests(unittest.TestCase):
     def held(self, action, params):
-        async def describe(params, inspect):
+        async def describe(action, params, inspect):
             return {"tabId": 7, "url": "https://shop.example/"}
 
         with patch.object(bridge, "_describe_target", new=describe):

@@ -190,6 +190,8 @@ function background(tabs, content, clock = { setTimeout, clearTimeout, Date }) {
   let contentVersion = Infinity;
   let injectError = null;
   let requests = 0;
+  // What the page lists when it is asked for an action's dialogs.
+  let pageDialogs = [];
   const missing = id => new Error(`Invalid tab ID: ${id}`);
   const browser = {
     tabs: {
@@ -209,7 +211,7 @@ function background(tabs, content, clock = { setTimeout, clearTimeout, Date }) {
         if (msg.action === 'userActivity') return { active: false };
         // Nor do an agent tab's dialog default and the dialogs asked for after an action (#555).
         if (msg.action === 'setDialogAgentTab') return { ok: true };
-        if (msg.action === 'dialogsSince') return { dialogs: [] };
+        if (msg.action === 'dialogsSince') return { dialogs: pageDialogs };
         sent.push({ tabId: id, ...msg });
         return content(id, msg);
       },
@@ -240,6 +242,7 @@ function background(tabs, content, clock = { setTimeout, clearTimeout, Date }) {
     restoreReceiver: () => { receiverMissing = false; },
     freezeContent: frozen => { contentFrozen = frozen; },
     setContentVersion: version => { contentVersion = version; },
+    setPageDialogs: dialogs => { pageDialogs = dialogs; },
     statusWaiters: () => vm.runInContext('mainFrameStatusWaiters.size', context),
     failInjection: message => { injectError = message; },
     // A main-frame request starts; response() records its status.
@@ -357,7 +360,8 @@ async function testMissingReceiverRecovery() {
   assert.deepEqual(await recovered, { ok: true });
   assert.deepEqual(h.pinged, [1, 1, 1], 'readiness is checked again on the original tab and confirmed after injecting');
   assert.deepEqual(h.injected, [1], 'the vanished receiver is reinjected');
-  assert.deepEqual(h.sent, [command, command].map(msg => ({ tabId: 1, ...msg })),
+  // dialogsSince: when the action began (#569), on the fake clock.
+  assert.deepEqual(h.sent, [command, command].map(msg => ({ tabId: 1, dialogsSince: 0, ...msg })),
     'the action and target are unchanged despite a focus change');
   assert.equal(effects, 1, 'only the delivered action has a side effect');
   assert.equal(clock.timers.size, 0);
@@ -648,6 +652,37 @@ async function testFocusChangeKeepsTarget() {
   assert.deepEqual(h.sent.map(msg => [msg.action, msg.tabId]), [['click', 1], ['settleState', 1], ['getSnapshot', 1]]);
 }
 
+// A page action reports the dialogs it caused (#555). Its reply lists those its document recorded
+// (actionDialogs), because a submitted form unloads that document before the page is asked (#569).
+async function testActionDialogs() {
+  const recorded = (type, message, timestamp, response, extra = {}) =>
+    ({ type, message, default_value: null, timestamp, response, pending: false, ...extra });
+  const accepted = recorded('confirm', 'Delete?', 5, true);
+  const dismissed = recorded('confirm', 'Delete?', 5, false, { auto_dismissed: true });
+  let reply = { ok: true };
+  const h = background({ 1: page(1, { active: true }) }, () => ({ ...reply }));
+  const click = () => h.send({ action: 'click', tabId: 1, selector: '#go' });
+  assert.deepEqual(await click(), { ok: true });
+
+  // The document that answered the confirm is gone: the page that loaded lists nothing.
+  reply = { ok: true, actionDialogs: [accepted] };
+  assert.deepEqual(await click(), { ok: true, dialogs: [{ type: 'confirm', message: 'Delete?', response: true }] });
+  assert.equal(typeof h.sent.at(-1).dialogsSince, 'number', 'the action says since when it wants dialogs');
+
+  // A document that is still there lists the dialog again; it is reported once.
+  reply = { ok: true, actionDialogs: [dismissed] };
+  h.setPageDialogs([dismissed]);
+  const kept = await click();
+  assert.deepEqual(kept.dialogs, [{ type: 'confirm', message: 'Delete?', response: false, auto_dismissed: true }]);
+  assert.match(kept.dialog_hint, /browser_handle_dialog\(accept=true\)/);
+
+  // The document the action loaded opened a dialog of its own: both, oldest first.
+  reply = { ok: true, actionDialogs: [accepted] };
+  h.setPageDialogs([recorded('alert', 'Deleted', 9, null)]);
+  assert.deepEqual(await click(), { ok: true, dialogs: [{ type: 'confirm', message: 'Delete?', response: true },
+    { type: 'alert', message: 'Deleted', response: null }] });
+}
+
 // A command that never settles leaves node with nothing to run, and it would exit cleanly.
 let finished = false;
 process.on('exit', () => {
@@ -667,6 +702,7 @@ process.on('exit', () => {
   await testErrorPageWaitsForLateStatus();
   await testErrorPageClassification();
   await testFocusChangeKeepsTarget();
+  await testActionDialogs();
   finished = true;
   console.log('action_errors: all tests passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

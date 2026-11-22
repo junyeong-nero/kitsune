@@ -54,6 +54,7 @@ result = tab.snapshot()
 ```
 
 - `browser` is the API, routed through the MCP session. **Don't call `kitsune.connect()`.**
+- `time`, `re` and `json` are preloaded; import any other module yourself.
 - `tab` is the MCP-selected tab at start, else the tab you are viewing. Scripts don't change the
   MCP selection. `browser.tabs()` returns dicts with real tab ids (not MCP list indexes); wrap one
   with `browser.tab(t["id"])`.
@@ -72,13 +73,25 @@ result = tab.snapshot()
   still loading (`navigation_pending`).
 - Limits: 64,000 bytes of code; 16,000 bytes of output and result combined (bytes, not
   characters); 100 API calls; 30 s default deadline, 120 s max.
-- A failed API call stops the script, even if caught. Earlier writes stay applied: observe the
+- A failed read or wait raises its exception in the script, as outside scripts: `text`,
+  `snapshot`, `find`, `query`, `forms`, `info` and `wait_for` (except `js=`, which runs JavaScript
+  in the page). Catch `TimedOut` or `KitsuneError` (both are defined in the script) to go on; the
+  call stays `failed` in `operations`. Uncaught, it ends the script like any failed call.
+- Any other failed API call stops the script, even if caught, and so does every call that needs
+  you or that policy refuses (`needs_user`, tab ownership, read-only mode), reads included. Printed
+  output up to the stop is returned, `result` is not. Earlier writes stay applied: observe the
   page and run only the remaining work, never replay the script. An approval stop names a
   `recovery_tool` for `browser_tools_call`. A tool [you require approval for](your-tabs.md#tools-that-need-your-approval)
   pauses the script instead, without counting against the deadline.
+- A ref dies when an action loads another document. Only a link's ref is followed: when the tab
+  is your client's own and its new page lists exactly one link with the same name and the same
+  destination, the action runs on that link and reports `remapped: {from, to, role, name}` in its
+  result and its `operations` entry. Any other stale ref fails as `stale_ref`: target by selector
+  or take a new snapshot.
 - On timeout the worker is killed; a command already sent may still finish, so read the page
   before writing again.
-- `help(tab.query)` prints a method's signature.
+- `help(tab.query)` prints a method's signature. A `Tab` or `Browser` call with unknown, missing or
+  extra arguments fails with a `TypeError` and that signature in the output.
 
 Keep output bounded on long pages: read a known region or a bounded index first, then a scoped
 snapshot of the section you found.
@@ -89,14 +102,19 @@ matches = [l for l in links if "delivery" in l.get("text", "").casefold()]
 result = {"matches": matches[:5], "more": len(matches) > 5}
 ```
 
-On `script_output_limit` the output is incomplete: make a new, smaller read-only observation.
+Output and result over the limit are cut, not failed: the script runs to its end and the reply has
+`ok: true`, `truncated: true` and `dropped_bytes` (the UTF-8 bytes left out). Printed output keeps
+its first 16,000 bytes; `result` gets what the output left, a string cut to its start and any
+other value to the start of its JSON text (a string). The cut content is incomplete: no match in
+it is not absence from the page, so make a new, smaller read-only observation for the rest.
+`operations` lists what the script did; do not replay it.
 
 ## Tabs
 
 | `Browser` method | Returns |
 | --- | --- |
 | `tabs()` | `list[dict]`: `id`, `url`, `title`, `active`, `windowId`, `index`, `owned` |
-| `new_tab(url="about:blank", wait=True, timeout=15000)` | A `Tab` for a new background tab. A slow load raises `TimedOut`; the tab id is in `error.result["tabId"]` |
+| `new_tab(url="about:blank", wait=True, timeout=15000)` | A `Tab` for a new background tab. A load still pending after `timeout` raises `TimedOut`, with the tab id in `error.result["tabId"]`, unless the page's DOM is parsed by then |
 | `tab(tab_id)` | A `Tab` for an existing tab |
 | `active_tab()` | The tab you are viewing (`ambiguous_target` with several windows) |
 
@@ -121,7 +139,7 @@ On `script_output_limit` the output is incomplete: make a new, smaller read-only
 | `snapshot(target=None, *, max_depth=None, text=False)` | Accessibility-style tree with refs ([Snapshots](api-reference.md#browser_snapshottab_idnone-selectornone-refnone-max_depthnone-textfalse)) |
 | `markdown(target=None)` | The page or a subtree as Markdown |
 | `html(target)` | One element's `outerHTML` (`"html"` for the page) |
-| `query(selector, fields=None, limit=50)` | Fields of matching elements (max 500 rows, 400-char snippets); warns when truncated |
+| `query(selector, fields=None, limit=50)` | Fields of matching elements (max 500 rows, 400-char snippets); warns when truncated. `href` and `src` are absolute URLs, even when the attribute is relative |
 | `find(query)` | Elements matching a description like `"login button"`, best first |
 | `forms()` | Form fields with labels and values |
 | `links(internal_only=False)` | Links |
@@ -132,7 +150,8 @@ On `script_output_limit` the output is incomplete: make a new, smaller read-only
 | `images()`, `iframes()`, `meta()`, `structured_data()`, `readability()` | Images, frames, meta tags, JSON-LD/Open Graph, main article |
 
 Sensitive values are redacted ([Sensitive-field redaction](api-reference.md#sensitive-field-redaction)).
-Reads cut at the bridge's caps warn with a `UserWarning`; pass a `target` to read less.
+Reads cut at the bridge's caps warn with a `UserWarning`; pass a `target` to read less (`text()`
+has none: use `snapshot(target, text=True)` or `query`).
 
 ### Selector contract by method
 
@@ -169,12 +188,13 @@ result = [line for line in lines if re.search(r"원|USD", line)][:10]
 ## Acting
 
 Targets are a ref, CSS or a [Playwright-style selector](api-reference.md#target-selectors).
-Writes need one match, else `ambiguous_target`; `first=True` takes the first
-([Strict selectors](api-reference.md#strict-selectors)).
+Writes need one match, else `ambiguous_target`; `first=True` takes the first. `click` and
+`hover` take links to the same URL, or the one better `text=` match, as one target and
+report `matches` ([Strict selectors](api-reference.md#strict-selectors)).
 
 | `Tab` method | Does |
 | --- | --- |
-| `navigate(url)`, `back()`, `forward()`, `reload(bypass_cache=False)` | Navigate |
+| `navigate(url)`, `back()`, `forward()`, `reload(bypass_cache=False)` | Navigate. `url` may be relative to the tab's current URL (`"/deals/48"`); one that does not parse fails with `invalid_url` |
 | `click(target, button=None, modifiers=None, hold_ms=0)`, `double_click(target)` | Synthetic click; `hold_ms` for long presses |
 | `hover(target, duration_ms=0, steps=None)` | Synthetic hover; `duration_ms`/`steps` for hover-intent controls |
 | `fill(target, value)` | Replace a value |
@@ -182,7 +202,7 @@ Writes need one match, else `ambiguous_target`; `first=True` takes the first
 | `fill_form(fields)` | Fill several fields keyed by selector, name, label or placeholder |
 | `press(key, target=None, modifiers=None, text=None)` | Key press, e.g. `"Enter"` with `{"ctrl": True}` |
 | `select_option(target, value, by_text=False)` | Choose an `<option>` |
-| `check(target, checked=True)`, `uncheck(target)` | Checkbox or radio |
+| `check(target, checked=True)`, `uncheck(target)` | Checkbox or radio; an element with role `checkbox`, `switch` or `radio` is clicked once when `aria-checked` differs ([details](api-reference.md#post-apicheck)) |
 | `scroll(direction="down", amount=500, target=None)` | Scroll |
 | `submit_form(target=None)` | Submit a form |
 | `handle_dialogs(accept=True, prompt_text=None)` | Answer future dialogs |
@@ -211,7 +231,8 @@ current focus. Check the result's `effect` and `prevented`, and read the page, r
 
 ## Waiting
 
-`tab.wait_for(...)` waits up to `timeout` ms (default 10000) for one condition, else `TimedOut`:
+`tab.wait_for(...)` waits up to `timeout` ms (default 10000) for one condition, else `TimedOut`
+(`code` `timeout`, `retryable=True`):
 
 | Condition | Holds when |
 | --- | --- |

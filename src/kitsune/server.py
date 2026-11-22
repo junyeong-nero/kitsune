@@ -1392,7 +1392,8 @@ async def browser_run_python(
 ) -> CallToolResult:
     """Browse with Python: read, click, scroll, hover, drag, type, fill and wait in one call.
     Trusted local Python with host file/network access, NOT a sandbox. The supplied browser
-    uses this client's session and permissions. No imports or kitsune.connect() are needed.
+    uses this client's session and permissions. time, re and json are preloaded; import other
+    modules yourself. kitsune.connect() is not needed.
     Variables reset each call; tabs persist. tab is the MCP-selected Tab, else the tab the user
     views (None with several windows). Scripts need no browser_tabs list/select first:
     browser.tabs() lists tabs and browser.tab(id) reads or acts on any of them.
@@ -1400,17 +1401,20 @@ async def browser_run_python(
     NOT a list index. browser.new_tab(url) returns a Tab; scripts do not change MCP selection.
     Return JSON via result or print selected output. Group actions whose targets are already
     known, then read the needed result once. Do not guess refs or replay a failed script.
+    Refs die when an action loads a new document; only a link's ref is followed to the one same
+    link with the same destination there (reported as remapped). Else use a selector or new snapshot.
     Print/result share 16,000 UTF-8 bytes: scope reads, filter locally, return evidence with coverage.
 
     Action/scoped-snapshot targets: refs like e12 or supported selectors, not DOM ref attributes.
     tab.snapshot(target=None, max_depth=None, text=True) includes visible text; no depth/boxes args.
     tab.find(query) searches descriptions, not text/regex; filter scoped reads in Python for those.
     tab.query(selector, fields=['text', 'href'], limit=20) is CSS-only, current document; no refs.
+    Its href/src are absolute URLs; tab.navigate(url) also takes a path like '/deals/48'.
     tab.text(); tab.forms(); tab.info().
     tab.click(target); tab.double_click(target); tab.hover(target); tab.drag(source, destination).
     tab.scroll('down', 700, target=None) scrolls window or element; also up/left/right/top/bottom.
     tab.fill(target, value) replaces; tab.type(target, text): fields append, editors insert at caret.
-    tab.fill_form({'#name': 'Ada'}); tab.check(target, True); tab.select_option(target, value).
+    tab.fill_form({'#name': 'Ada'}); tab.check(target, True); tab.select_option(target, value, by_text=False).
     tab.press('Enter', target=None, modifiers={'ctrl': True}); omitted target uses focus, not the last target.
     tab.navigate(url); tab.back().
     tab.wait_for(text='Done', timeout=10000) or target/url/text_gone (one condition, timeout in ms).
@@ -1422,8 +1426,10 @@ async def browser_run_python(
     help(tab.scroll) prints a specific method's signature. Prefer this API over page evaluate.
 
     Limits: 16 KB output/result, 100 API calls, fresh variables, no top-level await.
-    A failed API call stops even if caught; earlier writes remain. For needs_user use the
-    failed operation's direct tool via browser_tools_call, then run ONLY remaining work.
+    A failed read or wait_for raises KitsuneError (TimedOut on a timeout); try/except may catch it.
+    Any other failed call, and any needs_user or policy refusal, stops even if caught; earlier writes
+    remain. For needs_user use the failed operation's direct tool via browser_tools_call, then run
+    ONLY remaining work.
     Never put confirm/resume tokens in scripts. Use browser_tabs for handoff (request),
     browser_ask_user for human help, and browser_take_screenshot for images.
     """

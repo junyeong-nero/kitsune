@@ -20,13 +20,15 @@ class Element {
 }
 
 // buttons: the names of the page's buttons; the first is `button`. frame: the page also shows
-// a cross-origin frame its own content script reads.
-function content(buttons = ['Act'], { frame = false } = {}) {
+// a cross-origin frame its own content script reads. links: the page's [name, href] links.
+function content(buttons = ['Act'], { frame = false, links = [] } = {}) {
   const [button, ...others] = buttons.map(name => new Element('BUTTON', name));
+  const anchors = links.map(([name, href]) => Object.assign(new Element('A', name, { href }),
+    { href: new URL(href, 'https://example.com/page').href }));
   const input = Object.assign(new Element('INPUT', '', { 'aria-label': 'Email' }),
     { type: 'text', value: '', id: 'email' });
   const frames = frame ? [Object.assign(new Element('IFRAME'), { contentDocument: null })] : [];
-  const body = new Element('BODY', '', {}, [button, ...others, input, ...frames]);
+  const body = new Element('BODY', '', {}, [button, ...others, input, ...anchors, ...frames]);
   let listener;
   const context = vm.createContext({
     console, URL, crypto: webcrypto, setTimeout,
@@ -42,11 +44,11 @@ function content(buttons = ['Act'], { frame = false } = {}) {
   });
   const install = () => vm.runInContext(fs.readFileSync('extension/content/content.js', 'utf8'), context);
   install();
-  return { button, context, send: msg => new Promise(resolve => listener(msg, {}, resolve)),
+  return { button, anchors, context, send: msg => new Promise(resolve => listener(msg, {}, resolve)),
     reinject() { context.window.__claudeBridgeVersion = 0; install(); } };
 }
 
-function background(documents, stored = {}) {
+function background(documents, stored = {}, globals = {}) {
   const sent = [];
   const context = vm.createContext({
     console, URL, Map, Set, Promise, setTimeout, clearTimeout,
@@ -62,6 +64,7 @@ function background(documents, stored = {}) {
     tabState: async tabId => ({ tabId, status: 'complete', url: `https://example.com/${tabId}` }),
     isRestrictedUrl: () => false, ensureContentScript: async () => {},
     withTabState: async (tabId, response) => ({ ...response, state: { ...response.state, tabId } }),
+    ...globals,
   });
   const source = fs.readFileSync('extension/background/background.js', 'utf8');
   vm.runInContext(fs.readFileSync('extension/background/history.js', 'utf8'), context);
@@ -120,6 +123,76 @@ async function sameElementOffers() {
   const field = (await unlisted.send('getFormFields')).fields[0].ref;
   assert.deepEqual(await unlisted.send('focusElement', { selector: field, tabId: 2 }), otherDocument(field, 2));
   assert.equal(unlisted.sent.some(msg => msg.action === 'sameElement'), false);
+}
+
+// #572: a browser_run_python script's own write (followSameLink, set by the bridge) on a tab
+// its client owns is told to follow a stale ref (same_element.follow) only when the ref was a
+// link of this tab's earlier document and the one same element is a link with the same
+// destination. Role and name alone would also match another page's lone `button "Act"`.
+async function sameLinkFollowed() {
+  const nav = [['Bookmarks', '/bookmarks']];
+  const page = (moved, ...more) => content(['Act'], { links: [...nav, ['Top', '#'], ['Empty', ''],
+    ['Script', 'javascript:void(0)'], ['Moved', moved], ...more] });
+  const docs = { 1: page('/a'), 2: page('/a') };
+  const owned = new Set([1, 2]), handoffs = new Map();
+  const s = background(docs, {}, { ownsTab: tabId => owned.has(tabId), handoffs,
+    writesTab: action => action === 'focusElement' });
+  const first = await s.send('getSnapshot');
+  assert.equal('hrefs' in first, false, 'link destinations are not returned');
+  const refOf = (snapshot, role, name) => snapshot.match(new RegExp(`${role} "${name}" \\[ref=(e\\d+)\\]`))[1];
+  const old = Object.fromEntries(['Bookmarks', 'Top', 'Empty', 'Script', 'Moved']
+    .map(name => [name, refOf(first.snapshot, 'link', name)]));
+  const act = buttonRef(first);
+  const stale = (ref, params = {}) => s.send('focusElement', { ref, followSameLink: true, ...params });
+  const sameElement = async (ref, params) => (await stale(ref, params)).state.same_element;
+
+  // A ref from another tab is never followed, though that tab lists the same link.
+  assert.deepEqual(Object.keys(await sameElement(old.Bookmarks, { tabId: 2 })), ['ref', 'role', 'name']);
+
+  // The tab navigates: its new document has the same links, but Moved leads elsewhere.
+  s.context.pruneShortRefs(1);
+  docs[1] = page('/b');
+  const before = s.sent.length;
+  const followed = await stale(old.Bookmarks);
+  const same = followed.state.same_element.ref;
+  assert.deepEqual(followed, { error: 'stale ref, call browser_snapshot again', code: 'stale_ref', retryable: true,
+    hint: 'The ref belongs to another document: the tab navigated or a different tab is targeted. Take a new ' +
+      'browser_snapshot of the intended tab (select it with browser_tabs, or pass tab_id). ' +
+      `The same link "Bookmarks" here is ${same}; retry with it.`,
+    state: { reason: 'other_document', ref: old.Bookmarks, tabId: 1,
+      same_element: { ref: same, role: 'link', name: 'Bookmarks', follow: true } } });
+  assert.deepEqual(s.sent.slice(before).map(msg => msg.action), ['sameElement'], 'nothing is sent to the link');
+  assert.equal(docs[1].anchors[0].focused, undefined);
+  assert.equal(same, refOf((await s.send('getSnapshot')).snapshot, 'link', 'Bookmarks'));
+
+  // Every other caller and target keeps the error as it was: a direct tool or the Python API
+  // (no followSameLink), a read, a ref passed as a selector, a tab the client does not own or
+  // one a user handed over.
+  const { follow, ...plain } = followed.state.same_element;
+  assert.deepEqual(await sameElement(old.Bookmarks, { followSameLink: undefined }), plain);
+  assert.deepEqual((await s.send('waitForElement', { ref: old.Bookmarks, followSameLink: true })).state.same_element, plain);
+  assert.deepEqual((await s.send('focusElement', { selector: old.Bookmarks, followSameLink: true })).state.same_element, plain);
+  owned.delete(1);
+  assert.deepEqual(await sameElement(old.Bookmarks), plain);
+  owned.add(1);
+  handoffs.set(1, {});
+  assert.deepEqual(await sameElement(old.Bookmarks), plain);
+  handoffs.delete(1);
+  // The tab's own retired ref sent to another tab.
+  assert.equal('follow' in await sameElement(old.Bookmarks, { tabId: 2 }), false);
+  // A button with a lone namesake, a link with the same name and another destination, and
+  // links that lead nowhere (#, an empty href, javascript:).
+  assert.deepEqual(Object.keys(await sameElement(act)), ['ref', 'role', 'name']);
+  for (const name of ['Moved', 'Top', 'Empty', 'Script']) {
+    assert.deepEqual(Object.keys(await sameElement(old[name])), ['ref', 'role', 'name'], name);
+  }
+  // The follow is the script runner's new request with the ref; the marker stays in the background.
+  assert.equal((await s.send('focusElement', { selector: same, followSameLink: true })).ok, true);
+  assert.equal(docs[1].anchors[0].focused, true);
+  assert.equal('followSameLink' in s.sent.at(-1), false);
+  // Two links with that name: no same element at all.
+  docs[1] = page('/b', ...nav);
+  assert.equal((await stale(old.Bookmarks)).state.same_element, undefined);
 }
 
 async function main() {
@@ -363,6 +436,7 @@ async function main() {
   await assert.rejects(background(documents, unwritable).send('getAccessibilityTree'), /storage unavailable/);
 
   await sameElementOffers();
+  await sameLinkFollowed();
   console.log('short refs: ok');
 }
 

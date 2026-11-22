@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+from pathlib import Path
 import re
 import subprocess
 import sys
@@ -32,6 +33,23 @@ class Client:
         self.called.set()
         reply = self.replies.get(route, {"ok": True})
         return reply() if callable(reply) else reply
+
+
+class RefClient(Client):
+    """Replies by the request's ref."""
+
+    def request(self, method, route, **kwargs):
+        self.calls.append((method, route, kwargs))
+        return json.loads(json.dumps(self.replies[kwargs["json"]["ref"]]))
+
+
+def _stale(ref, same=None, follow=False):
+    """The extension's other_document error, with same_element and the script-only follow marker (#572)."""
+    state = {"reason": "other_document", "ref": ref, "tabId": 7}
+    if same:
+        state["same_element"] = {"ref": same, "role": "link", "name": "Bookmarks", **({"follow": True} if follow else {})}
+    return {"error": "stale ref, call browser_snapshot again", "code": "stale_ref", "retryable": True,
+            "hint": "Take a new browser_snapshot.", "state": state}
 
 
 class ScriptWorkerStartTests(unittest.TestCase):
@@ -78,6 +96,19 @@ class ScriptRunnerTests(unittest.IsolatedAsyncioTestCase):
         result = await script_runner.run_python("result = 'secret' in globals()", client)
         self.assertIs(result["result"], False)
 
+    async def test_time_re_and_json_are_preloaded_and_can_still_be_imported(self):
+        # #574: scripts used time.sleep, re and json after earlier operations had been sent.
+        client = Client()
+        code = ("tab.fill('#city', 'Vancouver'); time.sleep(0.01)\n"
+                "result = [re.sub(r'\\d+', '#', 'a1b22'), json.dumps({'a': 1}), json.loads('[1]')]")
+        result = await script_runner.run_python(code, client, tab_id=7)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["result"], ["a#b#", '{"a": 1}', [1]])
+        self.assertEqual([route for _, route, _ in client.calls], ["/api/fill"])
+        code = "import time, re, json\nimport json as j\nresult = [j is json, time.monotonic() > 0, re.escape('.')]"
+        result = await script_runner.run_python(code, client)
+        self.assertEqual(result["result"], [True, True, "\\."])
+
     async def test_errors_and_non_json_results_are_reported(self):
         for code, expected in [("if", "SyntaxError"), ("1 / 0", "ZeroDivisionError"),
                                ("result = b'bytes'", "TypeError"), ("raise SystemExit(2)", "SystemExit")]:
@@ -121,6 +152,44 @@ class ScriptRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("TypeError", result["output"])
         self.assertNotIn("Python API:", result["output"])
 
+    async def test_any_tab_or_browser_call_that_does_not_bind_prints_the_real_signature(self):
+        # #574: #524's help covered Tab.find and Tab.snapshot only. The first two calls are the run's.
+        cases = [("tab.select_option('e1', label='x')", "Tab.select_option(self, target: str, value: str, *, by_text: bool"),
+                 ("tab.wait_for('e1')", "Tab.wait_for(self, *, target: str | None"),
+                 ("tab.check()", "Tab.check(self, target: str, checked: bool = True"),
+                 ("tab.fill('e1', 'a', value='b')", "Tab.fill(self, target: str, value: str"),
+                 ("tab.uncheck('e1', label='x')", "Tab.check(self, target: str"),
+                 ("tab.back(1)", "Tab.back(self, *, expect"),
+                 ("browser.new_tab(link='https://example.com')", "Browser.new_tab(self, url: str = 'about:blank'"),
+                 ("browser.tab()", "Browser.tab(self, tab_id: int)")]
+        for call, signature in cases:
+            with self.subTest(call=call):
+                client = Client()
+                code = f"tab.fill('#draft', 'keep')\n{call}\ntab.fill('#draft', 'must not run')"
+                result = await script_runner.run_python(code, client, tab_id=7)
+                self.assertEqual(result["code"], "script_error")
+                self.assertIn("TypeError: " + signature.split("(")[0] + "() ", result["output"])
+                self.assertIn("Python API: " + signature, result["output"])
+                self.assertEqual([route for _, route, _ in client.calls], ["/api/fill"])
+        output = (await script_runner.run_python("tab.back(1)", Client(), tab_id=7))["output"]
+        self.assertTrue(output.endswith("-> dict"), "a method without a docstring prints no 'None'")
+
+    async def test_type_errors_raised_inside_a_method_or_outside_the_api_get_no_signature(self):
+        for code in ("tab.click(5)",  # the target is matched as a string inside the call
+                     "tab.wait_for(text='x', timeout='5')",
+                     "tab._request()",  # not public
+                     # The words of a call that did not bind, raised while the method runs.
+                     "def refuse(*args, **kwargs):\n"
+                     "    raise TypeError(\"Tab.text() got an unexpected keyword argument 'x'\")\n"
+                     "browser.client.request = refuse\ntab.text()"):
+            with self.subTest(code=code):
+                client = Client()
+                result = await script_runner.run_python(code, client, tab_id=7)
+                self.assertEqual(result["code"], "script_error")
+                self.assertIn("TypeError", result["output"])
+                self.assertNotIn("Python API:", result["output"])
+                self.assertEqual(client.calls, [])
+
     async def test_failed_operation_stops_even_a_catching_script_and_removes_tokens(self):
         failure = {"code": "needs_user", "error": "Approval required", "retryable": False,
                    "state": {"reason": "approval", "confirmToken": "secret-token"}}
@@ -135,6 +204,259 @@ class ScriptRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["failed_operation"]["code"], "needs_user")
         self.assertNotIn("secret-token", json.dumps(result))
         self.assertNotIn("resume_token", result)
+
+    async def test_caught_read_and_wait_failures_raise_the_documented_exceptions_and_continue(self):
+        # #568: a read or wait changed nothing, so the script gets its exception as outside scripts.
+        unmet = {"ok": False, "error": "Timed out after 2000ms waiting for visible text", "elapsed": 2000}
+        stale = {"error": "Ref e99 is no longer valid", "code": "stale_ref", "retryable": False}
+        client = Client({"/api/wait-for-text": unmet, "/api/snapshot": stale})
+        code = ("seen = []\n"
+                "try:\n    tab.wait_for(text='Saved', timeout=2000)\n"
+                "except TimedOut as error:\n    seen.append([type(error).__name__, error.result['elapsed']])\n"
+                "try:\n    tab.wait_for(text='Saved', timeout=2000)\n"
+                "except TimeoutError:\n    seen.append('builtin')\n"
+                "try:\n    tab.snapshot(target='e99')\n"
+                "except KitsuneError as error:\n    seen.append(error.code)\n"
+                "tab.fill('#name', 'after the caught failures')\nresult = seen")
+        result = await script_runner.run_python(code, client, tab_id=7)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["result"], [["TimedOut", 2000], "builtin", "stale_ref"])
+        self.assertEqual([route for _, route, _ in client.calls],
+                         ["/api/wait-for-text", "/api/wait-for-text", "/api/snapshot", "/api/fill"])
+        self.assertEqual([entry["status"] for entry in result["operations"]], ["failed", "failed", "failed", "ok"])
+        self.assertNotIn("failed_operation", result)
+
+    async def test_wait_for_help_in_a_script_says_which_unmet_waits_it_can_catch(self):
+        result = await script_runner.run_python("help(tab.wait_for)", Client(), tab_id=7)
+        self.assertTrue(result["ok"], result)
+        shown = " ".join(result["output"].split())
+        self.assertIn("else raise TimedOut", shown)
+        self.assertIn("catch TimedOut (or TimeoutError) to go on after an unmet wait", shown)
+        self.assertIn("A js wait is the exception", shown)
+
+    async def test_every_read_route_delivers_its_failure_and_no_other_route_does(self):
+        failure = {"error": "The tab is loading", "code": "navigating", "retryable": True}
+        code = ("try:\n    browser.request({route!r}, {{'tabId': 7}})\n"
+                "except KitsuneError as error:\n    result = error.code\n")
+        self.assertEqual(script_runner.READ_ROUTES, {
+            "/api/find", "/api/forms", "/api/page-info", "/api/page-text", "/api/query", "/api/snapshot",
+            "/api/wait-for-element", "/api/wait-for-network-idle", "/api/wait-for-text", "/api/wait-for-title",
+            "/api/wait-for-url"})
+        for route in sorted(script_runner.READ_ROUTES):
+            with self.subTest(route=route):
+                result = await script_runner.run_python(code.format(route=route), Client({route: failure}))
+                self.assertTrue(result["ok"], result)
+                self.assertEqual(result["result"], "navigating")
+        # Agent JavaScript, a navigation, a view change, a read that scrolls, and spellings the
+        # bridge also accepts for a read: none is delivered.
+        for route in ("/api/wait-for-result", "/api/js", "/api/navigate", "/api/scroll", "/api/hover",
+                      "/api/element-screenshot", "/api/storage", "/api/batch", "/api/pageText",
+                      "/api/snapshot?tab=7"):
+            with self.subTest(route=route):
+                client = Client({route: failure})
+                result = await script_runner.run_python(code.format(route=route), client)
+                self.assertEqual(result["code"], "script_operation_failed", result)
+                self.assertEqual(result["failed_operation"], failure)
+                self.assertEqual(len(client.calls), 1)
+
+    async def test_read_routes_are_not_bridge_writes_or_held_actions(self):
+        from kitsune import bridge
+        actions = {"/api/find": "find", "/api/forms": "getFormFields", "/api/page-info": "getPageInfo",
+                   "/api/page-text": "getPageText", "/api/query": "query", "/api/snapshot": "getSnapshot",
+                   "/api/wait-for-element": "waitForElement", "/api/wait-for-network-idle": "waitForNetworkIdle",
+                   "/api/wait-for-text": "waitForText", "/api/wait-for-title": "waitForTitle",
+                   "/api/wait-for-url": "waitForUrl"}
+        self.assertEqual(set(actions), script_runner.READ_ROUTES)
+        guarded = (bridge.WRITE_ACTIONS | bridge._REPEAT_UNSAFE_ACTIONS | bridge._ASK_JS_ACTIONS
+                   | bridge._ASK_COOKIE_ACTIONS | set(bridge._ASK_DATA_ACTIONS) | bridge._ASK_NAVIGATION_ACTIONS
+                   | bridge._ASK_TAB_ACTIONS)
+        self.assertEqual(set(actions.values()) & guarded, set())
+
+    async def test_a_find_that_loads_more_scrolls_the_page_and_stops_like_a_write(self):
+        failure = {"error": "The tab is loading", "code": "navigating", "retryable": True}
+        for key in ("loadMore", "load_more"):
+            with self.subTest(key=key):
+                client = Client({"/api/find": failure})
+                code = (f"try:\n    browser.request('/api/find', {{'tabId': 7, 'query': 'row', {key!r}: True}})\n"
+                        "except Exception:\n    browser.tab(7).fill('#other', 'must not run')\n")
+                result = await script_runner.run_python(code, client)
+                self.assertEqual(result["code"], "script_operation_failed", result)
+                self.assertEqual([route for _, route, _ in client.calls], ["/api/find"])
+
+    async def test_uncaught_read_failure_ends_the_script_as_a_failed_operation(self):
+        unmet = {"ok": False, "found": False, "selector": "#row", "elapsed": 2000,
+                 "error": 'Timed out after 2000ms waiting for "#row"', "confirmToken": "secret-token"}
+        client = Client({"/api/wait-for-element": unmet})
+        code = ("tab.fill('#name', 'draft')\nprint('filled')\n"
+                "tab.wait_for(target='#row', timeout=2000)\n"
+                "tab.fill('#other', 'must not run')\n")
+        result = await script_runner.run_python(code, client, tab_id=7)
+        self.assertEqual(result["code"], "script_operation_failed", result)
+        self.assertEqual(result["error"], "A browser operation failed; the script was stopped")
+        self.assertEqual(result["failed_operation"], {key: value for key, value in unmet.items() if key != "confirmToken"})
+        self.assertEqual([route for _, route, _ in client.calls], ["/api/fill", "/api/wait-for-element"])
+        self.assertEqual([entry["status"] for entry in result["operations"]], ["ok", "failed"])
+        self.assertEqual(result["output"], "filled\n")
+        self.assertFalse(result["retryable"])
+        self.assertNotIn("secret-token", json.dumps(result))
+        # An oversized reply is cut as for a write.
+        client = Client({"/api/snapshot": {"error": "failed", "code": "not_found", "snapshot": "x" * 20000}})
+        result = await script_runner.run_python("tab.snapshot(target='#gone')", client, tab_id=7)
+        self.assertEqual(result["failed_operation"], {"error": "failed", "code": "not_found", "truncated": True})
+
+    async def test_a_caught_failure_raised_again_later_is_an_ordinary_script_error(self):
+        unmet = {"ok": False, "error": "Timed out after 100ms waiting for visible text"}
+        client = Client({"/api/wait-for-text": unmet, "/api/page-text": {"text": "later read"}})
+        code = ("try:\n    tab.wait_for(text='Saved', timeout=100)\n"
+                "except TimedOut as error:\n    kept = error\n"
+                "tab.text()\nraise kept\n")
+        result = await script_runner.run_python(code, client, tab_id=7)
+        self.assertEqual(result["code"], "script_error", result)
+        self.assertNotIn("failed_operation", result)
+        self.assertIn("TimedOut", result["output"])
+        self.assertEqual([entry["status"] for entry in result["operations"]], ["failed", "ok"])
+
+    async def test_caught_failed_write_still_stops_the_script_with_earlier_operations_and_output(self):
+        cases = [("tab.click('#send')", "/api/click", {"error": "No element matches", "code": "not_found"}),
+                 ("tab.navigate('https://example.test/next')", "/api/navigate",
+                  {"ok": False, "timedOut": True, "url": "https://example.test/next"}),
+                 ("tab.wait_for(js='window.ready', timeout=100)", "/api/wait-for-result",
+                  {"ok": False, "error": "Timed out after 100ms"})]
+        for call, route, failure in cases:
+            with self.subTest(call=call):
+                client = Client({route: failure})
+                code = ("tab.fill('#name', 'draft')\nprint('collected so far')\n"
+                        f"try:\n    {call}\n"
+                        "except BaseException:\n    tab.fill('#other', 'must not run')\n"
+                        "result = 'must not be returned'\n")
+                result = await script_runner.run_python(code, client, tab_id=7)
+                self.assertEqual(result["code"], "script_operation_failed", result)
+                self.assertEqual(result["failed_operation"], failure)
+                self.assertEqual([called for _, called, _ in client.calls], ["/api/fill", route])
+                self.assertEqual([entry["status"] for entry in result["operations"]], ["ok", "failed"])
+                self.assertEqual(result["output"], "collected so far\n")
+                self.assertNotIn("result", result)
+
+    async def test_user_and_policy_outcomes_on_a_read_route_stop_even_a_catching_script(self):
+        approval = {"reason": "approval", "detail": "tool_approval", "tool": "browser_snapshot"}
+        failures = [
+            {"error": "browser_snapshot needs the user's approval", "code": "needs_user", "retryable": False,
+             "state": approval},
+            {"error": "Approval required", "code": "needs_user", "retryable": False,
+             "state": {"reason": "approval", "detail": "confirmation_required", "confirmToken": "secret-token"}},
+            {"error": "The agent needs the user", "code": "needs_user", "state": {"reason": "agent_request"}},
+            {"error": "Held", "code": "confirmation_required", "state": {"confirmToken": "secret-token"}},
+            {"error": "A user owns the tab", "code": "user_tab_read_only", "retryable": False},
+            {"error": "The user is using the tab", "code": "user_active", "retryable": True},
+            {"error": "Permission needed", "code": "permission_required", "retryable": False},
+            {"error": "Site access is withheld", "code": "host_permission_denied", "retryable": True},
+            # The bridge's policy refusals carry no code.
+            {"error": "Read-only mode is active; refusing action: waitForResult"},
+            {"error": "URL denied by policy (example): https://example.test/"},
+            {"error": "URL not in allowlist: https://example.test/"},
+            {"ok": False, "error": "Timed out after 100ms", "needs_user": {"reason": "human_check"}},
+        ]
+        for failure in failures:
+            for call, route in (("tab.snapshot()", "/api/snapshot"),
+                                ("tab.wait_for(text='Saved', timeout=100)", "/api/wait-for-text")):
+                with self.subTest(failure=failure, route=route):
+                    client = Client({route: failure})
+                    code = ("tab.fill('#name', 'draft')\n"
+                            f"try:\n    {call}\n"
+                            "except BaseException:\n    tab.fill('#other', 'must not run')\n")
+                    result = await script_runner.run_python(code, client, tab_id=7)
+                    self.assertEqual(result["code"], "script_operation_failed", result)
+                    self.assertEqual([called for _, called, _ in client.calls], ["/api/fill", route])
+                    self.assertEqual([entry["status"] for entry in result["operations"]], ["ok", "failed"])
+                    self.assertEqual(result["failed_operation"].get("code"), failure.get("code"))
+                    self.assertNotIn("secret-token", json.dumps(result))
+                    if failure.get("code") == "needs_user":
+                        self.assertEqual(result["failed_operation"]["recovery_tool"],
+                                         "browser_snapshot" if route == "/api/snapshot" else "browser_wait_for")
+
+    async def test_a_declined_tool_approval_on_a_read_route_stops_even_a_catching_script(self):
+        refusal = {"error": "browser_snapshot needs the user's approval", "code": "needs_user", "retryable": False,
+                   "state": {"reason": "approval", "detail": "tool_approval", "tool": "browser_snapshot"}}
+        declined = {**refusal, "state": {**refusal["state"], "decision": "declined"}}
+        asked = []
+
+        async def approve(tool):
+            asked.append(tool)
+            return declined
+
+        client = Client({"/api/snapshot": refusal})
+        code = "try:\n    tab.snapshot()\nexcept BaseException:\n    tab.fill('#other', 'must not run')\n"
+        result = await script_runner.run_python(code, client, tab_id=7, approve=approve)
+        self.assertEqual(result["code"], "script_operation_failed", result)
+        self.assertEqual(result["failed_operation"]["state"]["decision"], "declined")
+        self.assertEqual(asked, ["browser_snapshot"])
+        self.assertEqual([route for _, route, _ in client.calls], ["/api/snapshot"])
+
+    async def test_stale_link_ref_the_extension_says_to_follow_is_sent_again_and_reported(self):
+        # #572: one operation, two requests; the second is the same request with the same link's ref.
+        client = RefClient({"e334": _stale("e334", "e373", follow=True), "e373": {"ok": True, "navigated": {"url": "/b"}}})
+        result = await script_runner.run_python("result = browser.tab(7).click('e334', expect={'url': '/b'})", client)
+        self.assertTrue(result["ok"], result)
+        bodies = [kwargs["json"] for _, _, kwargs in client.calls]
+        self.assertEqual([route for _, route, _ in client.calls], ["/api/click", "/api/click"])
+        self.assertEqual(bodies, [{"selector": "", "ref": ref, "expect": {"url": "/b"}, "tabId": 7} for ref in ("e334", "e373")])
+        remapped = {"from": "e334", "to": "e373", "role": "link", "name": "Bookmarks"}
+        self.assertEqual(result["result"], {"ok": True, "navigated": {"url": "/b"}, "remapped": remapped})
+        self.assertEqual(result["operations"], [{"method": "POST", "route": "/api/click", "status": "ok", "tab_id": 7,
+                                                "remapped": remapped}])
+
+    async def test_stale_ref_without_the_follow_marker_fails_as_before(self):
+        for same in ("e373", None):
+            with self.subTest(same=same):
+                client = RefClient({"e334": _stale("e334", same)})
+                result = await script_runner.run_python("browser.tab(7).click('e334')", client)
+                self.assertEqual(result["code"], "script_operation_failed")
+                self.assertEqual(len(client.calls), 1)
+                self.assertEqual(result["failed_operation"], _stale("e334", same))
+                self.assertEqual(result["operations"], [{"method": "POST", "route": "/api/click", "status": "failed", "tab_id": 7}])
+
+    async def test_followed_request_is_checked_like_any_other_and_never_followed_twice(self):
+        held = {"code": "needs_user", "error": "Confirmation required", "retryable": False,
+                "state": {"reason": "approval", "confirmToken": "secret-token", "params": {"ref": "e373"}}}
+        for second, code in ((held, "needs_user"), (_stale("e373", "e400", follow=True), "stale_ref")):
+            with self.subTest(code=code):
+                client = RefClient({"e334": _stale("e334", "e373", follow=True), "e373": second})
+                result = await script_runner.run_python("browser.tab(7).click('e334')", client)
+                self.assertEqual(result["code"], "script_operation_failed")
+                self.assertEqual([kwargs["json"]["ref"] for _, _, kwargs in client.calls], ["e334", "e373"])
+                remapped = {"from": "e334", "to": "e373", "role": "link", "name": "Bookmarks"}
+                self.assertEqual(result["failed_operation"]["code"], code)
+                self.assertEqual(result["failed_operation"]["remapped"], remapped)
+                self.assertEqual(result["operations"][0]["status"], "failed")
+                self.assertEqual(result["operations"][0]["remapped"], remapped)
+                self.assertNotIn("secret-token", json.dumps(result))
+                self.assertNotIn("follow", json.dumps(result["failed_operation"].get("state")))
+
+    async def test_follow_marker_for_another_target_is_dropped_not_followed(self):
+        # Only the request's own ref is replaced: a selector, or a ref the reply does not name, is not.
+        for code in ("browser.tab(7).evaluate('el => el.id', 'e334')", "browser.tab(7).click('e335')"):
+            with self.subTest(code=code):
+                client = Client({route: _stale("e334", "e373", follow=True) for route in ("/api/js", "/api/click")})
+                result = await script_runner.run_python(code, client)
+                self.assertEqual(result["code"], "script_operation_failed")
+                self.assertEqual(len(client.calls), 1)
+                self.assertEqual(result["failed_operation"], _stale("e334", "e373"))
+                self.assertNotIn("remapped", result["operations"][0])
+
+    async def test_ambiguous_target_hint_names_the_python_argument(self):
+        # #573: the extension words its hint for the JSON tools (first: true); a script passes first=True.
+        hint = "first: true acts on the first match."
+        content = Path(__file__).parent.parent.joinpath("extension/content/content.js").read_text(encoding="utf-8")
+        self.assertIn(hint, content, "the extension's ambiguous_target hint is the text the script host rewrites")
+        failure = {"error": "2 elements match the selector; nothing was dispatched", "code": "ambiguous_target",
+                   "retryable": False, "hint": f"Act on one element: pass its ref or a more specific selector. {hint}",
+                   "state": {"selector": "input", "matches": 2, "candidates": []}}
+        client = Client({"/api/fill": failure})
+        result = await script_runner.run_python("tab.fill('input', 'x')", client, tab_id=7)
+        self.assertEqual(result["code"], "script_operation_failed")
+        self.assertEqual(result["failed_operation"]["code"], "ambiguous_target")
+        self.assertIn("first=True acts on the first match.", result["failed_operation"]["hint"])
+        self.assertNotIn("first: true", json.dumps(result))
 
     async def test_script_cannot_supply_an_approval_token_through_the_provided_api(self):
         client = Client()
@@ -159,52 +481,121 @@ class ScriptRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(client.calls), 1)
         self.assertEqual(result["operations"][0]["status"], "unknown")
 
-    async def test_output_and_selected_result_limits(self):
-        for code in ("print('é' * 20000)", "import sys; sys.stderr.write('x' * 20000)",
-                     "result = 'x' * 20000", "print('x' * 10000); result = 'y' * 10000"):
+    async def test_output_and_selected_result_over_the_limit_are_cut_not_failed(self):
+        # #570: a read over the limit is not a failed call. Printed output keeps its first 16,000
+        # bytes; a string result gets what the output left, its JSON quotes included.
+        for code, output, selected, dropped in (
+                ("print('x' * 20000)", "x" * 16000, None, 4001),
+                ("import sys; sys.stderr.write('x' * 20000)", "x" * 16000, None, 4000),
+                ("result = 'x' * 20000", "", "x" * 15998, 4002),
+                ("print('x' * 10000); result = 'y' * 10000", "x" * 10000 + "\n", "y" * 5997, 4003),
+                ("print('x' * 16000, end=''); print('tail'); result = 'gone'", "x" * 16000, None, 9),
+                # A result left out whole is marked even when it is the empty string.
+                ("print('x' * 16000, end=''); result = ''", "x" * 16000, None, 1)):
             with self.subTest(code=code):
                 result = await script_runner.run_python(code, Client())
-                self.assertEqual(result["code"], "script_output_limit")
-                self.assertLessEqual(len(result["output"].encode()), script_runner.OUTPUT_LIMIT)
-                self.assertNotIn("result", result)
+                self.assertTrue(result["ok"], result)
+                self.assertNotIn("error", result)
+                self.assertNotIn("code", result)
+                self.assertIs(result["truncated"], True)
+                self.assertEqual(result["dropped_bytes"], dropped)
+                self.assertEqual(result["output"], output)
+                self.assertEqual(result.get("result"), selected)
+                self.assertIn("not page-wide absence", result["hint"])
+                self.assertLess(list(result).index("truncated"), list(result).index("output"),
+                                "the marker is read before the cut content")
+        for code in ("print('x' * 16000, end='')", "result = 'x' * 15998"):
+            with self.subTest(code=code):
+                result = await script_runner.run_python(code, Client())
+                self.assertTrue(result["ok"], result)
+                for key in ("truncated", "dropped_bytes", "hint"):
+                    self.assertNotIn(key, result, "what fits is not marked")
 
     async def test_utf8_combined_output_boundary_is_not_a_character_budget(self):
         # 7,998 printed bytes + 8,002 bytes for the JSON string, including its quotes.
-        for suffix, succeeds in (("xx", True), ("xxx", False)):
+        for suffix, dropped in (("xx", 0), ("xxx", 1)):
             code = f"print('é' * 3999, end=''); result = '한' * 2666 + {suffix!r}"
             result = await script_runner.run_python(code, Client())
-            self.assertEqual(result["ok"], succeeds, result)
+            self.assertTrue(result["ok"], result)
             self.assertEqual(result["output"], "é" * 3999)
-            if succeeds:
-                self.assertEqual(len(result["output"].encode()) +
-                                 len(json.dumps(result["result"], ensure_ascii=False).encode()), 16000)
-            else:
-                self.assertEqual(result["code"], "script_output_limit")
-                self.assertNotIn("result", result)
-        result = await script_runner.run_python("print('한' * 6000, end='')", Client())
-        self.assertEqual(result["code"], "script_output_limit")
-        self.assertEqual(result["output"], "한" * 5333, "do not expose a partial UTF-8 character")
+            self.assertEqual(result["result"], "한" * 2666 + "xx")
+            self.assertEqual(len(result["output"].encode()) +
+                             len(json.dumps(result["result"], ensure_ascii=False).encode()), 16000)
+            self.assertEqual(result.get("dropped_bytes", 0), dropped)
+            self.assertEqual("truncated" in result, bool(dropped))
+        result = await script_runner.run_python("print('한' * 6000, end=''); print('x')", Client())
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["output"], "한" * 5333, "no partial UTF-8 character, and nothing after the cut")
+        self.assertEqual(result["dropped_bytes"], 6000 * 3 - 5333 * 3 + 2)
+        # A result is cut between characters too; its JSON escapes count against the limit.
+        result = await script_runner.run_python(r"result = '한\n' * 5000", Client())
+        self.assertEqual(result["result"], "한\n" * 3199 + "한")
+        self.assertEqual(len(json.dumps(result["result"], ensure_ascii=False).encode()), 16000)
+        self.assertEqual(result["dropped_bytes"], 5000 * 4 - (3199 * 4 + 3))
+
+    async def test_non_string_result_over_the_limit_is_the_start_of_its_json_text(self):
+        # #570: the same cut and marker as a string, so wrapping a read in a dict or list is no error.
+        rows = [{"text": "한"} for _ in range(2000)]
+        whole = json.dumps({"rows": rows}, ensure_ascii=False)
+        result = await script_runner.run_python("result = {'rows': [{'text': '한'} for _ in range(2000)]}", Client())
+        self.assertTrue(result["ok"], result)
+        self.assertIs(result["truncated"], True)
+        self.assertIsInstance(result["result"], str)
+        self.assertTrue(whole.startswith(result["result"]))
+        self.assertTrue(result["result"].startswith('{"rows": [{"text": "한"}, '))
+        self.assertLessEqual(len(json.dumps(result["result"], ensure_ascii=False).encode()), script_runner.OUTPUT_LIMIT)
+        self.assertGreater(len(json.dumps(result["result"] + whole[len(result["result"])], ensure_ascii=False).encode()),
+                           script_runner.OUTPUT_LIMIT, "as much as fits")
+        self.assertEqual(result["dropped_bytes"], len(whole.encode()) - len(result["result"].encode()))
+        self.assertIn("start of its JSON text", result["hint"])
+        fits = await script_runner.run_python("result = {'rows': [{'text': '한'} for _ in range(200)]}", Client())
+        self.assertEqual(fits["result"], {"rows": rows[:200]})
+        self.assertNotIn("truncated", fits)
 
     async def test_observation_overflow_keeps_completed_writes_and_gives_scoped_recovery(self):
-        for observation in ("result = tab.text()", "print(tab.text())\ntab.fill('#draft', 'must not run')"):
+        # #570: the script runs to its end, so a write after an overflowing print is done and listed.
+        for observation, routes in (("result = tab.text()", ["/api/fill", "/api/page-text"]),
+                                    ("print(tab.text())\ntab.fill('#note', 'after the read')",
+                                     ["/api/fill", "/api/page-text", "/api/fill"])):
             with self.subTest(observation=observation):
                 client = Client({"/api/page-text": {"text": "한" * 6000},
                                  "/api/query": {"items": [{"text": "Delivery: three days"}]}})
-                stopped = await script_runner.run_python("tab.fill('#draft', 'keep')\n" + observation,
-                                                         client, tab_id=7)
-                self.assertEqual(stopped["code"], "script_output_limit")
-                self.assertFalse(stopped["retryable"])
-                self.assertNotIn("result", stopped)
-                self.assertNotIn("resume_token", stopped)
-                self.assertEqual([route for _, route, _ in client.calls], ["/api/fill", "/api/page-text"])
-                self.assertEqual([op["status"] for op in stopped["operations"]], ["ok", "ok"])
-                for guidance in ("incomplete", "tab.snapshot", "tab.query", "coverage", "do not replay"):
-                    self.assertIn(guidance, stopped["hint"])
+                cut = await script_runner.run_python("tab.fill('#draft', 'keep')\n" + observation,
+                                                     client, tab_id=7)
+                self.assertTrue(cut["ok"], cut)
+                self.assertIs(cut["truncated"], True)
+                self.assertEqual(cut["dropped_bytes"], 6000 * 3 - 5332 * 3 if "result" in cut else 6000 * 3 + 1 - 5333 * 3)
+                self.assertEqual(cut.get("result", cut["output"]), "한" * (5332 if "result" in cut else 5333))
+                self.assertNotIn("resume_token", cut)
+                self.assertEqual([route for _, route, _ in client.calls], routes)
+                self.assertEqual([(op["route"], op["status"]) for op in cut["operations"]],
+                                 [(route, "ok") for route in routes])
+                for guidance in ("was cut", "tab.snapshot", "tab.query", "not page-wide absence", "do not replay"):
+                    self.assertIn(guidance, cut["hint"])
                 recovered = await script_runner.run_python(
                     "result = tab.query('#delivery', fields=['text'], limit=1)", client, tab_id=7)
                 self.assertEqual(recovered["result"], [{"text": "Delivery: three days"}])
                 self.assertEqual([route for _, route, _ in client.calls],
-                                 ["/api/fill", "/api/page-text", "/api/query"], "only observe; never repeat the draft")
+                                 routes + ["/api/query"], "only observe; never repeat the draft")
+
+    async def test_failure_after_cut_output_still_says_why_and_is_marked(self):
+        # #570: output over the limit no longer stops the script, so a later failure must not lose its reason.
+        failed = await script_runner.run_python("print('x' * 20000)\nraise ValueError('boom')", Client())
+        self.assertFalse(failed["ok"])
+        self.assertEqual(failed["code"], "script_error")
+        self.assertIn("ValueError: boom", failed["error"])
+        self.assertIs(failed["truncated"], True)
+        self.assertEqual(failed["output"], "x" * 16000)
+        self.assertIn("do not replay", failed["hint"])
+        client = Client({"/api/click": {"error": "No element", "code": "not_found"}})
+        stopped = await script_runner.run_python("print('x' * 20000)\ntab.click('#gone')", client, tab_id=7)
+        self.assertEqual(stopped["code"], "script_operation_failed")
+        self.assertEqual(stopped["failed_operation"]["code"], "not_found")
+        self.assertEqual((stopped["truncated"], stopped["dropped_bytes"]), (True, 4001))
+        endless = await script_runner.run_python("while True: print('x' * 1000)", Client(), timeout=0.5)
+        self.assertEqual(endless["code"], "script_timeout", "the deadline, not the output limit, ends a print loop")
+        self.assertIs(endless["truncated"], True)
+        self.assertEqual(len(endless["output"]), 16000)
 
     # -- #575: a script of only actions returns what its last action changed ----------------
 
@@ -318,17 +709,20 @@ class ScriptRunnerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_returned_snapshot_shares_the_output_limit_with_a_selected_result(self):
         # Bridge snapshots are capped at 4,000 characters; the limit holds for any reply.
-        for size, succeeds in ((15000, True), (16000, False)):
+        # Over it, the snapshot is cut and marked like any result (#570), not failed.
+        for size, fits in ((15000, True), (16000, False)):
             with self.subTest(size=size):
                 client = Client({"/api/click": {**DELTA, "snapshot": "x" * size}})
                 result = await script_runner.run_python("tab.fill('e2', 'Ada')\ntab.click('e6')", client, tab_id=7)
-                self.assertEqual(result["ok"], succeeds, result)
+                self.assertIs(result["ok"], True, result)
                 self.assertEqual([entry["status"] for entry in result["operations"]], ["ok", "ok"])
-                if succeeds:
+                if fits:
+                    self.assertNotIn("truncated", result)
                     self.assertEqual(len(result["result"]["snapshot"]), size)
                 else:
-                    self.assertEqual(result["code"], "script_output_limit")
-                    self.assertNotIn("result", result)
+                    self.assertIs(result["truncated"], True)
+                    self.assertGreater(result["dropped_bytes"], 0)
+                    self.assertTrue(result["result"].startswith('{"last_action": "/api/click", "snapshot": "x'))
                     self.assertIn("do not replay", result["hint"])
 
     def test_snapshot_action_routes_are_the_extensions_post_snapshot_actions_that_settle_first(self):

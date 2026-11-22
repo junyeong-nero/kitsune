@@ -31,7 +31,7 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from threading import Lock, Thread
 from datetime import datetime, timezone
-from urllib.parse import parse_qs, urlsplit, unquote
+from urllib.parse import parse_qs, urljoin, urlsplit, unquote
 
 import hashlib
 import hmac
@@ -182,6 +182,9 @@ _gateway_tool = contextvars.ContextVar("kitsune_gateway_tool", default=None)
 _TOOL_NAME = _re.compile(r"browser_[a-z0-9_]{1,64}")
 # The calling client's id (CLIENT_HEADER, #303), which audit entries record.
 _client_id = contextvars.ContextVar("kitsune_client_id", default=None)
+# Whether the request is a browser_run_python script's (TOOL_HEADER): only its own commands, not
+# its container steps, may follow a stale link ref (#572, followSameLink).
+_script_request = contextvars.ContextVar("kitsune_script_request", default=False)
 _CLIENT_ID = _re.compile(CLIENT_ID_PATTERN)
 # Live handoff channels, not stable owner ids. The secret is hashed and never returned or audited.
 _handoff_lifecycle = contextvars.ContextVar("kitsune_handoff_lifecycle", default=False)
@@ -1751,11 +1754,14 @@ _REPEAT_UNSAFE_ACTIONS = WRITE_ACTIONS | {"uploadCommit", "focusElement", "blurE
 # because the command names several targets (ambiguous_target) or its target selector failed
 # to parse or validate before anything was dispatched (unsupported_selector), until the user
 # approves closing their tab (needs_user; a v0.7.1 extension's user_tab), until the user grants a
-# browser permission (permission_required), or until the container step names a batch action
-# (unknown_action).
+# browser permission (permission_required), until the container step names a batch action
+# (unknown_action), until the navigation names a URL that parses (invalid_url), or because the
+# target is not what the action sets (wrong_element_type) or its <select> has no such option
+# (no_such_option).
 _PERSISTENT_FAILURE_CODES = {"error_page", "ambiguous_target", "unsupported_selector", "needs_user", "user_tab",
                              "user_tab_read_only", "invalid_tab_id", "invalid_window_id", "window_unavailable",
-                             "invalid_coordinates", "permission_required", "unknown_action"}
+                             "invalid_coordinates", "permission_required", "unknown_action", "invalid_url",
+                             "wrong_element_type", "no_such_option"}
 
 
 def _url_matches(pattern, url, flags=0):
@@ -2148,6 +2154,9 @@ _ASK_DATA_ACTIONS = {
 }
 _ASK_NAVIGATION_ACTIONS = {"navigate", "newTab", "createWindow"}
 _ASK_CLICK_ACTIONS = {"click", "doubleClick", "trustedClick", "clickAndWaitNavigation"}
+# Clicks whose selector may match several equivalent elements and act on one (#573): the
+# inspection resolves the selector the same way, so the checks apply to the element clicked.
+_EQUIVALENT_MATCH_CLICKS = {"click", "clickAndWaitNavigation"}
 # Page actions held on payment-like pages; they target one tab, which the token is bound to.
 _ASK_PAGE_ACTIONS = _ASK_CLICK_ACTIONS | {
     "keypress", "type", "setEditableContent", "fill", "formFill", "selectOption", "checkBox",
@@ -2235,11 +2244,13 @@ def _spend_confirm_token(token, binding):
     return None
 
 
-async def _describe_target(params, inspect):
+async def _describe_target(action, params, inspect):
     target = {key: params[key] for key in ("tabId", "selector", "ref", "key", "first") if params.get(key) is not None}
     coords = params.get("coords") or ({"x": params["x"], "y": params["y"]} if "x" in params and "y" in params else None)
     if coords and not target.get("selector") and not target.get("ref"):
         target["coords"] = coords
+    if action in _EQUIVALENT_MATCH_CLICKS and target.get("selector"):
+        target["equivalent"] = True
     return await send_to_extension("describeTarget", {**target, "inspect": inspect}, timeout=10)
 
 
@@ -2280,8 +2291,10 @@ async def _held_reason(action, params):
     if action in _ASK_TAB_ACTIONS:
         submit_key = action == "keypress" and params.get("key") in {"Enter", "Return"}
         screen = action == "trustedClick" and (params.get("coordinateSpace") or params.get("space")) == "screen"
-        inspect = (action in _ASK_CLICK_ACTIONS or submit_key) and not screen
-        described = await _describe_target(params, inspect)
+        # A check clicks an element with role checkbox, switch or radio (#574), so its target is
+        # inspected like a click's.
+        inspect = (action in _ASK_CLICK_ACTIONS or submit_key or action == "checkBox") and not screen
+        described = await _describe_target(action, params, inspect)
         if isinstance(described, dict) and described.get("code") == "ambiguous_target":
             return described
         if not isinstance(described, dict) or described.get("error"):
@@ -3005,6 +3018,23 @@ def _timeout_error(action, timeout):
     )
 
 
+WAIT_TIMEOUT_HINT = ("The condition did not hold in time. Take a browser_snapshot to see what the page shows; "
+                     "wait again only for something the page is still loading.")
+
+
+def _coded_wait_timeout(result):
+    """A wait route's result, whose timeout is coded like other failures (#574).
+
+    A wait that ran out of time answers ok=false with the page's message and what it read. It
+    gains code, retryable (a wait changes nothing) and a hint; a text wait keeps the hint that
+    its text is an element's name. Other failures are returned as they are.
+    """
+    if (isinstance(result, dict) and result.get("ok") is False and not result.get("code")
+            and str(result.get("error") or "").startswith("Timed out")):
+        return {**result, "code": "timeout", "retryable": True, "hint": result.get("hint") or WAIT_TIMEOUT_HINT}
+    return result
+
+
 def _connection_diagnosis():
     """browser_status diagnosis from bridge state (docs/api-reference.md#connection-diagnosis)."""
     if extension_ws is None:
@@ -3215,6 +3245,9 @@ async def _send_to_extension_raw(action, params=None, timeout=30):
     params.pop("ownerId", None)
     if _owner_id.get() is not None:
         params["ownerId"] = _owner_id.get()
+    params.pop("followSameLink", None)
+    if _script_request.get() and _audit_parent.get() is None:
+        params["followSameLink"] = True
     for key in ("sessionId", "clientName", "handoffApproved"):
         params.pop(key, None)
     identity = _handoff_identity.get()
@@ -3841,6 +3874,36 @@ def _wrap_image_url(body):
         from urllib.parse import quote
         body = dict(body, url="http://127.0.0.1:%d/view?src=%s" % (HTTP_PORT, quote(url, safe="")), wrappedImage=url)
     return body
+
+
+_URL_SCHEME = _re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:")
+
+
+def _is_relative_url(url):
+    return isinstance(url, str) and bool(url.strip()) and not _URL_SCHEME.match(url.strip())
+
+
+async def _resolve_relative_url(params):
+    """#571 - make a navigate's relative url absolute against its tab's current URL, in place.
+
+    It runs before _check_policy and ask-before-act, so they read the URL the tab loads, and the
+    tab is pinned so the URL loads where it was resolved. A url that cannot be resolved (no tab, a
+    tab on about:blank) stays as given; the extension refuses it with invalid_url.
+    """
+    if not _is_relative_url(params.get("url")):
+        return
+    described = await _describe_target("navigate", params, False)
+    base = described.get("url") if isinstance(described, dict) else None
+    if not isinstance(base, str):
+        return
+    try:
+        resolved = urljoin(base, params["url"].strip())
+    except ValueError:
+        return
+    if _URL_SCHEME.match(resolved):
+        params["url"] = resolved
+        if params.get("tabId") is None and described.get("tabId") is not None:
+            params["tabId"] = described["tabId"]
 
 
 # ══════════════════════════════════════════════
@@ -4612,6 +4675,8 @@ async def run_command(cmd):
         tab_err = _check_step_tab(effective_action, params)
         if tab_err:
             return tab_err
+        if effective_action == "navigate":
+            await _resolve_relative_url(params)
         policy_err = _check_policy(effective_action, params)
         if policy_err:
             return policy_err
@@ -4955,6 +5020,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         checks = _checks_approvals.set(bool(self.headers.get(APPROVER_HEADER)))
         call = self.headers.get(CALL_HEADER) or ""
         call_token = _call_id.set(call if _CLIENT_ID.fullmatch(call) else None)
+        script = _script_request.set(self.headers.get(TOOL_HEADER) == tool_approvals.SCRIPT_TOOL)
         try:
             header_tool = self.headers.get(TOOL_HEADER) or ""
             tool = tool_approvals.request_tool(path, header_tool if _TOOL_NAME.fullmatch(header_tool) else None)
@@ -4968,6 +5034,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             else:
                 self.refuse(404, {"error": "Not found"})
         finally:
+            _script_request.reset(script)
             _call_id.reset(call_token)
             _checks_approvals.reset(checks)
             _handoff_identity.reset(handoff_token)
@@ -5080,9 +5147,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "/api/submit-form": lambda: self._forward("submitForm"),
             "/api/form-fill": lambda: self._forward("formFill"),
             "/api/drag": lambda: self._forward("drag"),
-            "/api/wait-for-url": lambda: self._forward("waitForUrl", default_timeout=20),
-            "/api/wait-for-title": lambda: self._forward("waitForTitle", default_timeout=20),
-            "/api/wait-for-network-idle": lambda: self._forward("waitForNetworkIdle", default_timeout=30),
+            "/api/wait-for-url": lambda: self._forward_wait("waitForUrl", 20),
+            "/api/wait-for-title": lambda: self._forward_wait("waitForTitle", 20),
+            "/api/wait-for-network-idle": lambda: self._forward_wait("waitForNetworkIdle", 30),
             "/api/capture-network": lambda: self._forward("captureNetwork"),
             "/api/watch-console": lambda: self._forward("watchConsole"),
             "/api/console-logs": lambda: self._forward("consoleLogs"),
@@ -5413,7 +5480,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self._send_extension_action("fill", self.read_body())
     
     def handle_navigate(self):
-        self._send_navigation("navigate", _wrap_image_url(self.read_body()))
+        body = self.read_body()
+        if _is_relative_url(body.get("url")):
+            self.run_async(_resolve_relative_url(body))
+        self._send_navigation("navigate", _wrap_image_url(body))
 
     def _send_navigation(self, action, body, timeout=35):
         # Only the bridge sets userTabApproved (on a close the user approved); a caller's never reaches the extension.
@@ -5556,7 +5626,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
     def handle_wait_for_element(self):
         body = self.read_body()
         result = self.run_async(_poll_page_wait("waitForElement", body))
-        self.send_json(200, result)
+        self.send_json(200, _coded_wait_timeout(result))
 
     def handle_wait_for_text(self):
         body = self.read_body()
@@ -5566,10 +5636,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return
         timeout_s = timeout_ms / 1000 + 5
         result = self.run_async(_poll_page_wait("waitForText", body), timeout=timeout_s + 1)
-        self.send_json(200, result)
+        self.send_json(200, _coded_wait_timeout(result))
 
     def handle_wait_for_result(self):
-        self._send_extension_action("waitForResult", self.read_body())
+        self._forward_wait("waitForResult", 35)
 
     def handle_page_text_by_tab_id(self):
         body = self.read_body()
@@ -5615,6 +5685,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
     def _forward(self, action, default_timeout=15):
         """Forward body + policy check + audit to a named extension action."""
         self._send_extension_action(action, self.read_body(), timeout=default_timeout)
+
+    def _forward_wait(self, action, default_timeout):
+        """_forward for a wait the extension runs, with its timeout coded."""
+        self._send_extension_action(action, self.read_body(), timeout=default_timeout, on_result=_coded_wait_timeout)
 
     # ── 1.4.0 orchestration ──
 

@@ -443,7 +443,8 @@ def browser_tabs(
     raw: Annotated[bool, Field(description="new: bypass the image viewer.")] = False,
     wait: Annotated[bool, Field(
         description="new: wait up to timeout ms for the load; returns tabId, final url and status, or on "
-                    "timeout ok=false, timedOut=true with the tab open.")] = False,
+                    "timeout ok=false, timedOut=true with the tab open (ok=true, load_pending=true once its "
+                    "DOM is parsed).")] = False,
     timeout: int = 15000,
     confirm_token: Annotated[str | None, Field(description="new/close/request; see browser_check.")] = None,
     reason: str | None = None,
@@ -1317,7 +1318,9 @@ def browser_select_option(
                         wait, timeout, expect)
 
 
-@tool("browse", annotations=dict(title="Check", **ACT))
+# Destructive like the core browser_click: on an element with role checkbox, switch or radio a
+# check is a click (#574).
+@tool("browse", annotations=dict(title="Check", **DESTRUCTIVE))
 def browser_check(
     selector: Annotated[str, Field(description='e.g. "#agree", "input[name=plan]".')] = "",
     checked: bool = True, tab_id: TabId = None,
@@ -1340,6 +1343,7 @@ def browser_check(
                     "unless true; true acts on the first match.")] = False,
 ) -> dict:
     """Set a checkbox or radio's checked state; with wait, hidden native inputs need not render.
+    An element with role checkbox, switch or radio is clicked once when its aria-checked differs.
     ok=true only means dispatched: verify with expect; tabs the action opens come back in
     opened_tabs.
 

@@ -279,6 +279,36 @@ class SensitiveActionTests(AskBeforeActTestCase):
         self.assertEqual(self.forward("click", {"ref": "s1e6"}), (200, {"ok": True}))
         self.assertEqual(self.extension.actions(), ["click"])
 
+    def test_click_inspection_resolves_equivalent_matches_as_the_click_does(self):
+        # #573: a click on several equivalent matches acts on one, and the inspection describes that
+        # one. Other actions resolve strictly, and so does their inspection.
+        def inspected():
+            return [p for a, p in self.extension.sent if a == "describeTarget"][-1]
+
+        self.forward("click", {"selector": "a[href='/jobs/46/']"})
+        self.assertEqual(inspected(), {"selector": "a[href='/jobs/46/']", "equivalent": True, "inspect": True})
+        self.forward("clickAndWaitNavigation", {"selector": "text=View"})
+        self.assertIs(inspected()["equivalent"], True)
+        for action, body in [("doubleClick", {"selector": "a"}), ("keypress", {"selector": "a", "key": "Enter"}),
+                             ("click", {"ref": "s1e5"}), ("click", {"coords": {"x": 1, "y": 2}})]:
+            with self.subTest(action=action, body=body):
+                self.forward(action, body)
+                self.assertNotIn("equivalent", inspected())
+        self.call(lambda h: h.handle_trusted_click(), {"selector": "a", "tabId": 7})
+        self.assertNotIn("equivalent", inspected())
+        # The checks apply to the element the inspection reports, as for one match.
+        self.extension.target = {"ok": True, "tag": "a", "submits": False, "submitLabel": False,
+                                 "consequentialLabel": True, "text": "Delete account"}
+        held = self.held(lambda h: h.handle_click(), {"selector": "a[href='/account/delete']"})
+        self.assertEqual(held["state"]["holdReason"], "consequential_label")
+        # An inspection that still finds several targets fails the click before any confirmation.
+        self.extension.target = {"error": "2 elements match the selector; nothing was dispatched",
+                                 "code": "ambiguous_target", "retryable": False}
+        sent = self.extension.actions()
+        status, result = self.forward("click", {"selector": "h3 a"})
+        self.assertEqual(result["code"], "ambiguous_target", (status, result))
+        self.assertEqual(self.extension.actions(), sent, "the ambiguous click was not sent")
+
     def test_submit_labeled_buttons_are_held(self):
         # JS-driven buttons (type=button, role=button) the page labels like a submit or payment.
         self.extension.target = {"ok": True, "tag": "div", "submits": False, "submitLabel": True, "text": "결제하기"}
@@ -373,6 +403,60 @@ class SensitiveActionTests(AskBeforeActTestCase):
             self.assertEqual(self.forward("click", {"selector": "#send", "tabId": 7})[1]["code"], "ambiguous_target")
         self.assertEqual(self.extension.actions(), ["click", "click"])
         self.assertEqual(bridge._unknown_outcomes, {})
+
+    def test_wrong_element_and_missing_option_are_not_held_and_a_check_that_clicked_is(self):
+        # #574: these two dispatched nothing, as before they had a code. A check whose click did
+        # not set aria-checked did dispatch, so repeating it is held like any unknown outcome.
+        for action, body, code in (
+                ("checkBox", {"selector": "#agree", "checked": True, "tabId": 7}, "wrong_element_type"),
+                ("selectOption", {"selector": "#sort", "value": "price_asc", "tabId": 7}, "no_such_option")):
+            with self.subTest(code=code):
+                self.extension.reply = {"error": "refused", "code": code, "retryable": False}
+                for _ in range(2):
+                    self.assertEqual(self.forward(action, body)[1]["code"], code)
+                self.assertEqual(bridge._unknown_outcomes, {})
+        self.assertEqual(self.extension.actions(), ["checkBox", "checkBox", "selectOption", "selectOption"])
+        self.extension.reply = {"error": "aria-checked is \"false\" after the click", "code": "value_not_reached",
+                                "retryable": False}
+        body = {"selector": "#agree", "checked": True, "tabId": 7}
+        self.assertEqual(self.forward("checkBox", body)[1]["code"], "value_not_reached")
+        self.assertEqual(self.held(lambda h: h._forward("checkBox"), body)["state"]["holdReason"], "unknown_outcome")
+
+    def test_a_check_is_inspected_and_held_like_a_click_on_the_same_element(self):
+        # #574: check clicks an element with role checkbox, switch or radio.
+        body = {"ref": "s1e5", "checked": True}
+        # A native checkbox or radio, or a plain ARIA checkbox, is no submit control: it runs.
+        for target in ({"ok": True, "tag": "input", "type": "checkbox", "inForm": True, "submits": False},
+                       {"ok": True, "tag": "input", "type": "radio", "inForm": True, "submits": False},
+                       {"ok": True, "tag": "div", "type": "", "inForm": False, "submits": False, "text": "Dark mode"}):
+            with self.subTest(target=target):
+                self.extension.target, self.extension.sent = target, []
+                self.assertEqual(self.forward("checkBox", body), (200, {"ok": True}))
+                self.assertEqual(self.extension.sent, [("describeTarget", {"ref": "s1e5", "inspect": True}),
+                                                       ("checkBox", body)])
+        # <button role="checkbox"> in a form, without type=button, submits it when clicked.
+        for target, reason, text in (
+                ({"ok": True, "tag": "button", "type": "submit", "submits": True, "text": "Subscribe"},
+                 "submit_control", "clicks a submit control (Subscribe)"),
+                ({"ok": True, "tag": "button", "type": "button", "submits": False, "submitLabel": True,
+                  "text": "Pay now"}, "submit_label", "clicks a button labeled like a submit or payment (Pay now)"),
+                ({"ok": True, "tag": "button", "type": "button", "submits": False, "consequentialLabel": True,
+                  "text": "Delete account"}, "consequential_label", "(Delete account)")):
+            with self.subTest(reason=reason):
+                self.extension.target, self.extension.sent = target, []
+                check = self.held(lambda h: h._forward("checkBox"), body)
+                click = self.held(lambda h: h.handle_click(), {"ref": "s1e5"})
+                self.assertEqual((check["state"]["holdReason"], click["state"]["holdReason"]), (reason, reason))
+                self.assertIn(text, check["error"])
+                self.assertEqual(check["error"], click["error"])
+                self.assertEqual(self.extension.actions(), [])
+        token = check["state"]["confirmToken"]
+        self.assertEqual(self.forward("checkBox", {**body, "confirmToken": token}), (200, {"ok": True}))
+        # Like a click, a check whose target cannot be inspected is held, not sent.
+        self.extension.target, self.extension.sent = {"error": "Element not found", "code": "not_found"}, []
+        held = self.held(lambda h: h._forward("checkBox"), {"selector": "#gone", "checked": True})
+        self.assertEqual(held["state"]["holdReason"], "uninspectable_target")
+        self.assertEqual(self.extension.actions(), [])
 
     def test_unsupported_selector_write_is_not_held(self):
         # #219: an unparseable selector dispatched nothing, so its outcome is not unknown.

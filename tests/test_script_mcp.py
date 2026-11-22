@@ -135,10 +135,17 @@ class ScriptMcpTests(unittest.TestCase):
                         "browser_tools_call", "NOT a sandbox", "tab.find(query)", "not text/regex",
                         "max_depth=None", "no depth/boxes args", "CSS-only", "wait_for(target=...) accepts CSS/refs",
                         "fields append, editors insert at caret", "omitted target uses focus, not the last target",
-                        "16,000 UTF-8 bytes", "filter locally", "coverage"):
+                        "16,000 UTF-8 bytes", "filter locally", "coverage", "time, re and json are preloaded",
+                        "tab.select_option(target, value, by_text=False)"):
             self.assertIn(example, description)
         self.assertNotIn("help(tab.query)", description)
         self.assertNotIn("appends with key events", description)
+
+    def test_python_guide_says_which_stale_refs_a_script_follows(self):
+        # #572: only a link with the same destination; everything else needs a selector or a new snapshot.
+        description = " ".join(self.probe(True)["description"].split())
+        self.assertIn("Refs die when an action loads a new document; only a link's ref is followed to the one same "
+                      "link with the same destination there (reported as remapped).", description)
 
     def test_python_guide_explains_tab_dicts_and_the_snapshot_example_works(self):
         result = self.probe(True)

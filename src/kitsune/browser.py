@@ -67,11 +67,10 @@ def _epoch_ms(moment: datetime) -> int:
     return int(moment.timestamp() * 1000)
 
 
-def _cut(result: dict, what: str) -> dict:
-    """Warn when the bridge cut a read at its size cap."""
+def _cut(result: dict, what: str, instead: str = "read a part of the page with a target") -> dict:
+    """Warn when the bridge cut a read at its size cap; instead is the advice for a read without a target."""
     if result.get("truncated"):
-        warnings.warn(f"{what} was cut at the bridge's size cap; read a part of the page with a target",
-                      stacklevel=3)
+        warnings.warn(f"{what} was cut at the bridge's size cap; {instead}", stacklevel=3)
     return result
 
 
@@ -172,7 +171,8 @@ class Browser:
         """Open url in a background tab that the user does not see, which a client owns.
 
         wait=True waits up to timeout ms for the load; a load that does not finish raises
-        TimedOut and leaves the tab open, with its id in error.result["tabId"].
+        TimedOut and leaves the tab open, with its id in error.result["tabId"], unless the
+        page's DOM is parsed by then, so that it can be read and acted on.
         """
         body = _with_confirm({"url": url}, confirm)
         if not wait:
@@ -522,8 +522,10 @@ class Tab:
 
     Targets are a snapshot ref (e12), CSS or a Playwright-style selector
     (docs/api-reference.md#target-selectors). A write's selector must match one element, else
-    it raises ambiguous_target; first=True acts on the first match. ok=True means an action
-    was dispatched; expect makes the bridge check its outcome (docs/api-reference.md#action-outcomes).
+    it raises ambiguous_target; first=True acts on the first match. click and hover take links
+    to one URL, or the one better text= match, as one target and report matches. ok=True means an
+    action was dispatched; expect makes the bridge check its outcome
+    (docs/api-reference.md#action-outcomes).
     confirm is the token of a ConfirmationRequired error, after the user approved the action.
     """
 
@@ -570,7 +572,8 @@ class Tab:
 
     def text(self) -> str:
         """The page's visible text; "" for an HTTP error the browser shows without a document."""
-        return _cut(self._request("/api/page-text"), "Page text")["text"]
+        return _cut(self._request("/api/page-text"), "Page text",
+                    "read a part of the page with tab.snapshot(target=..., text=True) or tab.query(...)")["text"]
 
     def snapshot(self, target: str | None = None, *, max_depth: int | None = None, text: bool = False) -> str:
         """The accessibility-style tree of the page, or of target's subtree, with refs for actions.
@@ -601,13 +604,15 @@ class Tab:
         """
         return self._request("/api/find", {"query": query})["results"]
 
-    def query(self, selector: str, *, fields: list[str] | None = None, limit: int = 50) -> list[dict]:
+    def query(self, selector: str, fields: list[str] | None = None, *, limit: int = 50) -> list[dict]:
         """Fields (text, href, value, src, alt, id, name by default) of elements matching native CSS.
 
         Current document only: no shadow/frame traversal, snapshot refs or Playwright forms
         such as :has-text or text=. At most 500 rows; text/value fields are clipped to 400
         characters. A row-limit warning does not report those field clips. Filter locally,
         but absence in returned snippets is not page-wide absence; scope a snapshot for detail.
+        href and src are absolute URLs even when the attribute is relative ('/deals/48'), so
+        pass them to navigate as they are.
         """
         body = {"selector": selector, "limit": limit}
         if fields:
@@ -748,6 +753,8 @@ class Tab:
     # -- Navigation and tabs ---------------------------------------
 
     def navigate(self, url: str, *, expect: dict | None = None, confirm: str | None = None) -> dict:
+        """Load url: an absolute URL, or a relative one ('/deals/48') resolved against the tab's
+        current URL. One that does not parse fails with code invalid_url."""
         return self._action("/api/navigate", {"url": url}, expect=expect, confirm=confirm,
                             base_seconds=NAVIGATE_REQUEST_SECONDS)
 
@@ -893,7 +900,12 @@ class Tab:
 
     def check(self, target: str, checked: bool = True, *, wait: bool = False, timeout: int = 10000,
               expect: dict | None = None, first: bool = False, confirm: str | None = None) -> dict:
-        """Set a checkbox or radio button's checked state."""
+        """Set a checkbox or radio button's checked state.
+
+        A native input's property is set. An element with role checkbox, switch or radio is
+        clicked once when its aria-checked differs, which must then be the requested state
+        (value_not_reached); any other element raises wrong_element_type.
+        """
         return self._action("/api/check", {**_action_target(target), "checked": checked}, wait=wait,
                             timeout=timeout, expect=expect, first=first, confirm=confirm)
 
@@ -1000,6 +1012,10 @@ class Tab:
         rendered page text (snapshot names from placeholders or aria-labels are not page text). url, title: a
         JavaScript regex on the tab, which survives navigation. js: an expression with a
         non-empty result (developer build only). network_idle: 500 ms without new resources.
+
+        In a browser_run_python script, catch TimedOut (or TimeoutError) to go on after an unmet
+        wait. A js wait is the exception: it runs JavaScript in the page, so when it fails the
+        script stops even if it catches, as after a failed write.
         """
         conditions = (target, text, text_gone, url, title, js)
         if sum(condition is not None for condition in conditions) + bool(network_idle) != 1:

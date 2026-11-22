@@ -177,8 +177,14 @@ class TabRequestTests(BridgeTestCase):
 
     def test_reads_the_bridge_cut_warn(self):
         self.reply("/api/page-text", {"text": "x" * 20000, "truncated": True, "fullLength": 30000})
-        with self.assertWarnsRegex(UserWarning, "Page text was cut"):
+        with self.assertWarnsRegex(UserWarning, "Page text was cut") as caught:
             self.assertEqual(len(self.tab.text()), 20000)
+        # #570: text() takes no target, so its warning names reads that do.
+        self.assertNotIn("with a target", str(caught.warning))
+        self.assertIn("tab.snapshot(target=..., text=True) or tab.query(...)", str(caught.warning))
+        self.reply("/api/markdown", {"markdown": "# x", "truncated": True})
+        with self.assertWarnsRegex(UserWarning, "Markdown was cut at the bridge's size cap; read a part of the page with a target"):
+            self.tab.markdown()
         with warnings.catch_warnings():
             warnings.simplefilter("error")
             self.tab.snapshot()
@@ -192,6 +198,15 @@ class TabRequestTests(BridgeTestCase):
         with warnings.catch_warnings():
             warnings.simplefilter("error")
             self.assertEqual(self.tab.query("a"), [])
+
+    def test_query_takes_fields_positionally_and_limit_by_keyword_only(self):
+        # #574: tab.query('tr', ['text'], limit=30) was a TypeError after the script's earlier writes.
+        self.assertEqual(self.tab.query("tr", ["text"], limit=30), [{"text": "a"}])
+        self.assertEqual(self.bridge.last.body, {"selector": "tr", "fields": ["text"], "limit": 30, "tabId": 7})
+        sent = len(self.bridge.requests)
+        with self.assertRaises(TypeError):
+            self.tab.query("tr", ["text"], 30)
+        self.assertEqual(len(self.bridge.requests), sent)
 
     def test_mcp_indices_and_python_ids_never_reinterpret_each_other(self):
         # The MCP list's indices 0/1 refer to actual IDs 3/7, not to tabs 0/1.
