@@ -3,7 +3,7 @@
 | Variable | Default | Meaning |
 |---|---|---|
 | `KITSUNE_SCRIPTING` | `1` | `1`: the [6 default tools](tools.md#default-tools), including `browser_run_python` (local Python, **not a sandbox**). `0`: the [legacy tool list](tools.md#core-tools) without Python |
-| `KITSUNE_HOME` | `~/.kitsune` | Data directory (0700) |
+| `KITSUNE_HOME` | `~/.kitsune` (Windows: `%USERPROFILE%\.kitsune`) | Data directory (0700; on Windows a [private access list](windows.md#the-data-directory-is-private)) |
 | `KITSUNE_HTTP_PORT` | `47651` | Bridge HTTP API |
 | `KITSUNE_WS_PORT` | `47652` | Extension WebSocket. Change `WS_URL` in `extension/background/background.js` too |
 | `KITSUNE_TOKEN` | Unset | Override the token in `~/.kitsune/token` |
@@ -26,7 +26,7 @@ start; delete them. Approvals are set in the extension's options instead.
 
 | File | Content |
 |---|---|
-| `token` | Bearer token for the HTTP API (0600) |
+| `token` | Bearer token for the HTTP API (0600; private access list on Windows) |
 | `bridge.log` | Daemon output |
 | `sessions/` | Saved sessions, **including cookies** |
 | `screenshots/` | Screenshots |

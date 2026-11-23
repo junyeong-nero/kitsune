@@ -110,8 +110,8 @@ only where you put it differs.
 
 === "Claude Desktop"
 
-    Add this to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS), merging
-    it with any `mcpServers` already there:
+    Add this to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or
+    `%APPDATA%\Claude\claude_desktop_config.json` (Windows), merging it with any `mcpServers` already there:
 
     ```json
     {

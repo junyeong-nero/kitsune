@@ -63,7 +63,8 @@ itself. See [Installation](installation.md#2-install-the-browser-extension).
 
 ## Which platforms are supported?
 
-macOS and Linux. Trusted OS clicks work on macOS and on Linux under X11.
+macOS, Linux and Windows ([Windows](windows.md)). Trusted OS clicks work on macOS, Windows
+and on Linux under X11.
 
 ## Why can't the agent open "Continue with Google"?
 

@@ -1979,7 +1979,7 @@ if one is already running without the lock, stop it (`kitsune-bridge stop`) so t
 the next start applies it.
 
 A locked start also writes `ask-before-act-locked` to the Kitsune home
-(`$KITSUNE_HOME`, default `~/.kitsune`), user-only (`0600`) like the token file.
+(`$KITSUNE_HOME`, default `~/.kitsune`, `%USERPROFILE%\.kitsune` on Windows), user-only (`0600`) like the token file.
 While that file exists, every bridge using that home starts locked, whatever its
 environment. So a restart cannot come up unlocked: `kitsune-bridge stop` followed by
 the next tool call, an idle shutdown, or an MCP server that replaces an outdated
@@ -1993,7 +1993,8 @@ To unlock deliberately:
 1. Remove `KITSUNE_ASK_BEFORE_ACT=1` (or `--ask-before-act`) from every MCP server
    configuration and script that starts the bridge. Otherwise the next start writes
    the file again.
-2. Delete the file: `rm ~/.kitsune/ask-before-act-locked`.
+2. Delete the file: `rm ~/.kitsune/ask-before-act-locked` (PowerShell:
+   `Remove-Item $HOME\.kitsune\ask-before-act-locked`).
 3. Run `kitsune-bridge stop`. The running bridge stays locked until it stops.
 
 Agent-settable ask mode (`browser_set_policy(ask=True)`) is not persisted.
