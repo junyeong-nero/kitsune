@@ -737,6 +737,13 @@ class BrowserAtPointTests(unittest.TestCase):
             # The pointer, drawn around its hotspot at the cursor window level.
             {"kCGWindowBounds": {"X": 755, "Y": 599, "Width": 28, "Height": 40}, "kCGWindowAlpha": 1,
              "kCGWindowLayer": 2147483630, "kCGWindowOwnerPID": 433, "kCGWindowOwnerName": "Window Server"},
+            # Above layer 0 (#591): a menu-bar app panel, the menu bar, the whole-screen Dock window.
+            {"kCGWindowBounds": {"X": 407, "Y": 0, "Width": 986, "Height": 432}, "kCGWindowAlpha": 1,
+             "kCGWindowLayer": 100, "kCGWindowOwnerPID": 900, "kCGWindowOwnerName": "Droppy"},
+            {"kCGWindowBounds": {"X": 0, "Y": 0, "Width": 1920, "Height": 30}, "kCGWindowAlpha": 1,
+             "kCGWindowLayer": 24, "kCGWindowOwnerPID": 433, "kCGWindowOwnerName": "Window Server"},
+            {"kCGWindowBounds": {"X": 0, "Y": 0, "Width": 1920, "Height": 1080}, "kCGWindowAlpha": 1,
+             "kCGWindowLayer": 20, "kCGWindowOwnerPID": 600, "kCGWindowOwnerName": "Dock"},
             {"kCGWindowBounds": {"X": 0, "Y": 0, "Width": 100, "Height": 100}, "kCGWindowAlpha": 1,
              "kCGWindowOwnerPID": 1, "kCGWindowOwnerName": "Elsewhere"},
             {"kCGWindowBounds": {"X": 0, "Y": 0, "Width": 1920, "Height": 1080}, "kCGWindowAlpha": 0,
@@ -753,6 +760,7 @@ class BrowserAtPointTests(unittest.TestCase):
         with patch.dict("sys.modules", {"Quartz": quartz}):
             self.assertEqual(bridge._mac_window_at(760, 604), (4515, "Ghostty", (0, 0, 1920, 1080)))
             self.assertEqual(bridge._mac_window_at(50, 50), (1, "Elsewhere", (0, 0, 100, 100)))
+            self.assertEqual(bridge._mac_window_at(500, 10), (4515, "Ghostty", (0, 0, 1920, 1080)))
             self.assertEqual(bridge._mac_window_at(3000, 50), (0, "", None))
             quartz.CGWindowListCopyWindowInfo.assert_called_with(17, 0)
             # The caller refuses on this (test_a_window_list_that_cannot_be_read_refuses).

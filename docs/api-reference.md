@@ -3216,12 +3216,12 @@ An extension older than this bridge sends no bounds, so any browser window passe
 Full screen, verified on macOS 26.5.1 with Zen 1.24b (#336): in native full screen the hidden
 menu bar is not in the on-screen window list, so it does not refuse clicks. Only a menu bar the
 user shows (the pointer resting at the top edge of the screen) is listed: a `Window Server`
-window at layer 24 over the top 30 points, with Control Center's menu extras at layer 25. A
-click there refuses with `state.reason: "other_window"` and `state.app: "Window Server"` (or
-Control Center, named in the system's language), so it never lands on the menu bar. What
-remains is Zen's own full-screen strip: a second Zen window, 68 points tall, over the top of the
-page (the page starts at 8 points). It moves down below a shown menu bar (30 to 98 points). A
-click on it refuses with `state.reason: "other_browser_window"`, so the top 60 or so points of a
+window at layer 24 over the top 30 points, with Control Center's menu extras at layer 25.
+The check counts only normal windows (layer 0), so it does not refuse there either (#591): the
+menu bar, menu-bar app panels and the whole-screen Dock window that macOS 27 lists above the
+browser are not counted, and a click on a shown menu bar is made. What remains is Zen's own
+full-screen strip: a second Zen window, 68 points tall, over the top of the page (the page
+starts at 8 points). It moves down below a shown menu bar (30 to 98 points). A click on it refuses with `state.reason: "other_browser_window"`, so the top 60 or so points of a
 full-screen Zen page take no trusted click (#431). Scroll the target further down the page, or
 ask the user to leave full screen, then retry. To see which windows macOS reports there on
 another setup, run the opt-in check while nobody uses the machine:

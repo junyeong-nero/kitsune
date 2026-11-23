@@ -423,11 +423,12 @@ def _mac_window_at(x, y):
     windows = Quartz.CGWindowListCopyWindowInfo(
         Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements,
         Quartz.kCGNullWindowID) or []
-    # The pointer is drawn as a small window above everything; it never takes the click.
-    cursor_level = Quartz.CGWindowLevelForKey(Quartz.kCGCursorWindowLevelKey)
+    # Only normal windows (layer 0) count. Above them are the pointer, the menu bar, menu-bar app
+    # panels and, from macOS 27, a whole-screen Dock window; none takes an ordinary click on the
+    # page, and the Dock's would refuse every point (#591).
     for window in windows:
         bounds = window.get("kCGWindowBounds") or {}
-        if not window.get("kCGWindowAlpha", 1) or window.get("kCGWindowLayer") == cursor_level:
+        if not window.get("kCGWindowAlpha", 1) or window.get("kCGWindowLayer") or 0:
             continue
         left, top = bounds.get("X", 0), bounds.get("Y", 0)
         width, height = bounds.get("Width", 0), bounds.get("Height", 0)
