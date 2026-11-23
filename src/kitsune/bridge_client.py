@@ -55,7 +55,7 @@ def owner_id() -> str:
     ancestor process that is not a launcher, else `ppid-<parent pid>`. An MCP client such as
     Claude Code starts a new server process when it reconnects, but it keeps running itself, so
     its id stays the same. A process whose parent is init or launchd, which adopt every orphan,
-    gets `pid-<pid>`, an id no other process shares.
+    gets `pid-<pid>`, an id no other process shares. Windows walks with psutil (#603).
     """
     configured = os.environ.get("KITSUNE_OWNER_ID", "")
     if re.fullmatch(CLIENT_ID_PATTERN, configured):
@@ -69,7 +69,7 @@ def owner_id() -> str:
 def _ancestor_owner(pid: int) -> str | None:
     """`<name>-<pid>` of pid or its nearest ancestor that is not a launcher; None if ps cannot tell."""
     if sys.platform == "win32":
-        return None
+        return _windows_ancestor_owner()
     for _ in range(OWNER_ANCESTOR_LEVELS):
         if pid <= 1:  # init or launchd adopts the processes of every exited client
             return None
@@ -83,10 +83,55 @@ def _ancestor_owner(pid: int) -> str | None:
             return None
         parent, name = int(fields[0]), os.path.basename(fields[1].strip())
         if not _UV.fullmatch(name):
-            pid_text = f"-{pid}"
-            return re.sub(r"[^A-Za-z0-9._:-]", "_", name)[:64 - len(pid_text)] + pid_text
+            return _owner_name(name, pid)
         pid = parent
     return None
+
+
+def _owner_name(name: str, pid: int) -> str:
+    pid_text = f"-{pid}"
+    return re.sub(r"[^A-Za-z0-9._:-]", "_", name)[:64 - len(pid_text)] + pid_text
+
+
+def _windows_ancestor_owner() -> str | None:
+    """_ancestor_owner on Windows, which has no ps (#603).
+
+    A Windows launcher cannot exec, so it starts the next process as its child: uv for uvx, a
+    venv's python.exe and a console-script .exe (uv's trampoline) for the interpreter. Like uv,
+    an ancestor that runs this same server is skipped: one with the same arguments (a venv
+    launcher passes them on), or whose executable is an argument of this command line (a
+    trampoline is the script). Process.parent() checks creation times, so an exited parent's recycled PID is not a
+    parent. The name drops .exe, as ps shows it elsewhere: claude.exe is claude-<pid>.
+    """
+    try:
+        import psutil
+    except ImportError:
+        return None
+    try:
+        own = psutil.Process().cmdline()
+        process = psutil.Process().parent()
+        for _ in range(OWNER_ANCESTOR_LEVELS):
+            if process is None:
+                return None
+            name = process.name()
+            if not (_UV.fullmatch(name) or _runs_this_server(process, own, psutil)):
+                return _owner_name(re.sub(r"(?i)\.exe$", "", name), process.pid)
+            process = process.parent()
+    except (OSError, psutil.Error):
+        return None
+    return None
+
+
+def _runs_this_server(process, own: list[str], psutil) -> bool:
+    try:
+        args = process.cmdline()
+        if own[1:] and args[1:] == own[1:]:
+            return True
+        exe = os.path.normcase(process.exe())
+    except psutil.AccessDenied:
+        return False  # another account's process, so not a launcher of ours
+    # Not own[0]: that is this interpreter, which a Python client may share.
+    return any(os.path.normcase(arg) == exe for arg in own[1:])
 
 
 STARTUP_EXCERPT_CHARS = 300
