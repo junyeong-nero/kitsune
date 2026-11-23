@@ -119,6 +119,13 @@ other value to the start of its JSON text (a string). The cut content is incompl
 it is not absence from the page, so make a new, smaller read-only observation for the rest.
 `operations` lists what the script did; do not replay it.
 
+Each `operations` entry has `route`, `status` (`ok`, `failed`, or `unknown` for a call cut off by
+the deadline), `tab_id`, `remapped` when a ref was followed, and `method` only when it is `GET`.
+Over 10 operations the list is summarized:
+`{"count": 100, "by_route": {"/api/navigate": 50, "/api/page-text": 50}, "tab_id": 7, "notable": [...], "last": [...]}`.
+`notable` keeps every entry that failed, is `unknown`, was remapped or used another tab (up to
+10, then `notable_more`), and `last` the last 3 others, each with its `index`.
+
 ## Tabs
 
 | `Browser` method | Returns |

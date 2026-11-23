@@ -348,7 +348,10 @@ class RealBrowserScriptTests(harness.RealBrowserTestCase):
             self.assertEqual(payload["code"], "script_operation_limit", payload)
             self.assertEqual(payload["output"], "99 {'Bookma'} 0\n")
             self.assertIn("Nothing was written", payload["hint"])
-            self.assertEqual(len(payload["operations"]), 100)
+            # #617: summarized, not 100 entries.
+            self.assertEqual((payload["operations"]["count"], payload["operations"]["by_route"]),
+                             (100, {"/api/navigate": 1, "/api/page-text": 99}))
+            self.assertLess(len(json.dumps(payload["operations"])), 500)
         self.run_scenario(run)
 
     def test_a_navigation_cut_by_the_deadline_is_a_timeout_and_the_script_still_prints(self):
@@ -448,8 +451,8 @@ class RealBrowserScriptTests(harness.RealBrowserTestCase):
             self.assertRegex(remapped["to"], r"^e\d+$")
             self.assertNotEqual(remapped["to"], old)
             self.assertEqual(result["operations"], [
-                {"method": "POST", "route": "/api/click", "status": "ok", "tab_id": tab_id},
-                {"method": "POST", "route": "/api/click", "status": "ok", "tab_id": tab_id, "remapped": remapped}])
+                {"route": "/api/click", "status": "ok", "tab_id": tab_id},
+                {"route": "/api/click", "status": "ok", "tab_id": tab_id, "remapped": remapped}])
             self.assertEqual(self.title(tab_id), "Bookmarks", "the link of page B was clicked")
             self.assertNotIn("follow", json.dumps(result["result"]))
         self.run_scenario(run)
