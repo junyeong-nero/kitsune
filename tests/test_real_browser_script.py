@@ -4,6 +4,7 @@ from http.server import BaseHTTPRequestHandler
 import json
 import re
 import sys
+import time
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -44,6 +45,8 @@ PAGES = {
 
 class _NavSite(BaseHTTPRequestHandler):
     def do_GET(self):
+        if self.path == "/slow":  # #618: answers after a short script's deadline
+            time.sleep(4)
         title, body = PAGES.get(self.path, (self.path.strip("/").capitalize(), "<p>Arrived</p>"))
         data = f"<!doctype html><title>{title}</title>{body}".encode()
         self.send_response(200)
@@ -346,6 +349,20 @@ class RealBrowserScriptTests(harness.RealBrowserTestCase):
             self.assertEqual(payload["output"], "99 {'Bookma'} 0\n")
             self.assertIn("Nothing was written", payload["hint"])
             self.assertEqual(len(payload["operations"]), 100)
+        self.run_scenario(run)
+
+    def test_a_navigation_cut_by_the_deadline_is_a_timeout_and_the_script_still_prints(self):
+        # #618: wap-247's deadline came during a navigate; everything read before it was lost.
+        async def run(session, tab_id):
+            code = (f"tab.navigate({self.nav.origin + '/a'!r})\nrows = []\ntry:\n    rows.append(tab.text()[:9])\n"
+                    f"    tab.navigate({self.nav.origin + '/slow'!r})\nfinally:\n    print(rows)")
+            reply = await session.call_tool("browser_run_python", {"code": code, "timeout": 2})
+            self.assertTrue(reply.isError)
+            payload = json.loads(reply.content[0].text)
+            self.assertEqual((payload["code"], payload["output"]), ("script_timeout", "['Bookmarks']\n"), payload)
+            self.assertEqual([entry["status"] for entry in payload["operations"]], ["ok", "ok", "unknown"])
+            self.assertNotIn("failed_operation", payload)
+            self.assertIn("Nothing was written", payload["hint"])
         self.run_scenario(run)
 
     def test_approval_stop_keeps_the_draft_and_does_not_offer_script_replay(self):

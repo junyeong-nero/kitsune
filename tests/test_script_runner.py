@@ -488,7 +488,32 @@ class ScriptRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(_exited(int(result["output"].strip())))
 
     async def test_timeout_preserves_unknown_inflight_operation_and_does_not_replay(self):
-        def slow_reply():  # past the deadline and its STOP_GRACE (#618), when the worker is killed
+        class SlowClient(Client):
+            """As BridgeClient: gives up at the request's timeout, which the script's deadline cut."""
+            def request(self, method, route, **kwargs):
+                self.calls.append((method, route, kwargs))
+                time.sleep(kwargs["timeout"])
+                return {"error": "timed out", "code": "timeout", "retryable": False}
+        client = SlowClient()
+        # #618: the script still gets to print what it had.
+        result = await script_runner.run_python(
+            "try:\n    browser.tab(7).click('#send'); browser.tab(7).click('#again')\n"
+            "finally:\n    print('kept')", client, timeout=0.5)
+        self.assertEqual(result["code"], "script_timeout", result)
+        self.assertEqual(len(client.calls), 1)
+        self.assertEqual(result["operations"][0]["status"], "unknown")
+        self.assertNotIn("failed_operation", result)
+        self.assertEqual(result["output"], "kept\n")
+        self.assertIn("do not replay the whole script", result["hint"], "the click may have happened")
+
+    async def test_a_call_whose_own_timeout_ends_before_the_deadline_is_a_failed_call(self):
+        timed_out = {"error": "timed out", "code": "timeout", "retryable": False}
+        result = await script_runner.run_python("browser.tab(7).click('#send')", Client({"/api/click": timed_out}))
+        self.assertEqual((result["code"], result["failed_operation"]), ("script_operation_failed", timed_out))
+        self.assertEqual(result["operations"][0]["status"], "failed")
+
+    async def test_a_reply_that_never_comes_ends_at_the_grace(self):
+        def slow_reply():  # a client that ignores its timeout: the worker is killed after STOP_GRACE
             time.sleep(0.8 + script_runner.STOP_GRACE)
             return {"ok": True}
         client = Client({"/api/click": slow_reply})
