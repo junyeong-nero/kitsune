@@ -26,7 +26,11 @@ classifiers = [
     "Topic :: Internet :: WWW/HTTP :: Browsers",
     "Topic :: Software Development :: Testing",
 ]
-dependencies = ["kitsune-browser[mcp]==0.8.2"]
+dependencies = [
+    "kitsune-browser[mcp]==0.8.2",
+    "questionary>=2.1,<3",  # setup's cross-platform checkbox prompt
+    "tomlkit>=0.13,<1",  # preserve comments and settings in Codex config.toml
+]
 
 [project.optional-dependencies]
 # Native trusted clicks on macOS (browser_trusted_click); cliclick on PATH also works.
@@ -39,10 +43,10 @@ Issues = "https://github.com/junyeong-nero/kitsune/issues"
 Changelog = "https://github.com/junyeong-nero/kitsune/releases"
 
 [project.scripts]
-kitsune = "kitsune.server:main"
+kitsune = "kitsune.cli:main"
 # Same entry point under the package name, so `uvx kitsune-browser-mcp` works
 # (MCP Registry clients run PyPI packages that way).
-kitsune-browser-mcp = "kitsune.server:main"
+kitsune-browser-mcp = "kitsune.cli:main"
 # kitsune-browser's command too, so `uvx --from kitsune-browser-mcp kitsune-bridge` runs the
 # bridge of the MCP clients' install without uvx's "provided by a dependency" warning.
 kitsune-bridge = "kitsune.bridge:run"

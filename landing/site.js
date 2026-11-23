@@ -1,4 +1,3 @@
-// The hero demo, install tabs, copy buttons and the recording's pause button.
 // Without JavaScript the demo rests on its request state, as written in the HTML.
 
 const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches
@@ -80,28 +79,6 @@ if (demo) {
   play()
 }
 
-// Install tabs.
-const tabButtons = [...document.querySelectorAll('[role="tab"]')]
-function selectTab(tab) {
-  for (const t of tabButtons) {
-    const on = t === tab
-    t.setAttribute("aria-selected", String(on))
-    t.tabIndex = on ? 0 : -1
-    document.getElementById(t.getAttribute("aria-controls")).hidden = !on
-  }
-}
-for (const tab of tabButtons) {
-  tab.addEventListener("click", () => selectTab(tab))
-  tab.addEventListener("keydown", event => {
-    const step = { ArrowRight: 1, ArrowLeft: -1 }[event.key]
-    if (!step) return
-    const next = tabButtons[(tabButtons.indexOf(tab) + step + tabButtons.length) % tabButtons.length]
-    selectTab(next)
-    next.focus()
-  })
-}
-
-// Copy buttons copy the command or config shown above them.
 for (const button of document.querySelectorAll('[data-act="copy"]')) {
   const label = button.querySelector("span")
   const text = label.textContent

@@ -452,20 +452,6 @@ h2 { font-size: clamp(32px, 3.6vw, 50px); line-height: 1.04; max-width: 22ch; }
 .steps code { color: var(--field-ink); }
 
 .console { border: 1px solid var(--field-line); border-radius: var(--r); background: #081d1f; overflow: hidden; }
-.console-tabs { display: flex; gap: 2px; padding: 8px 8px 0; border-bottom: 1px solid var(--field-line); overflow-x: auto; scrollbar-width: none; }
-.console-tabs button {
-  flex: none;
-  min-height: 44px;
-  padding: 0 14px;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  background: none;
-  color: var(--field-2);
-  font-size: 15px;
-  cursor: pointer;
-}
-.console-tabs button:hover { color: var(--field-ink); }
-.console-tabs button[aria-selected="true"] { border-bottom-color: #f2a26a; color: var(--paper); }
 .console-panel { padding: 22px 20px 6px; }
 .console-panel pre {
   padding: 0;

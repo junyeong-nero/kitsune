@@ -23,12 +23,13 @@ class DistributionTests(unittest.TestCase):
         # The MCP server only uses a bridge of its own build, and both come from kitsune-browser.
         self.assertEqual((self.core["name"], self.mcp["name"]), ("kitsune-browser", "kitsune-browser-mcp"))
         self.assertEqual(self.mcp["version"], self.core["version"])
-        self.assertEqual(self.mcp["dependencies"], [f"kitsune-browser[mcp]=={self.core['version']}"])
+        core_deps = [dep for dep in self.mcp["dependencies"] if dep.startswith("kitsune-browser")]
+        self.assertEqual(core_deps, [f"kitsune-browser[mcp]=={self.core['version']}"])
         self.assertEqual(self.mcp["optional-dependencies"],
                          {"macos": [f"kitsune-browser[macos]=={self.core['version']}"]})
 
     def test_commands(self):
-        self.assertEqual(self.mcp["scripts"], {"kitsune": "kitsune.server:main", "kitsune-browser-mcp": "kitsune.server:main",
+        self.assertEqual(self.mcp["scripts"], {"kitsune": "kitsune.cli:main", "kitsune-browser-mcp": "kitsune.cli:main",
                                                "kitsune-bridge": "kitsune.bridge:run"})
         self.assertEqual(self.core["scripts"], {"kitsune-bridge": "kitsune.bridge:run"})
 
