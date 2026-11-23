@@ -10,6 +10,9 @@ and a command that waits on it fails with dialog_open instead of timing out.
 #569: the same for a confirm() in a form's onsubmit, which the click's default submit runs. A
 confirm the policy accepts submits the form, and the document that recorded it unloads; the
 click's result still reports it.
+
+#598: beforeunload fires on every unload, so it is a dialog only when the page asks to prompt
+(preventDefault, returnValue, or an onbeforeunload that returns a string).
 """
 from http.server import BaseHTTPRequestHandler
 import json
@@ -29,6 +32,15 @@ CONFIRM_PAGE = """<!doctype html><meta charset="utf-8"><title>projects</title>
 ONSUBMIT_PAGE = """<!doctype html><meta charset="utf-8"><title>jobs</title>
 <form method="post" action="/delete" onsubmit="return confirm('Delete this job offer?');">
 <input type="hidden" name="job" value="59"><button type="submit">Delete</button></form>"""
+# #598: leaving a page fires beforeunload whether or not the page asks to prompt. A 204 response
+# loads nothing, so the page that fired it stays, as when a navigation does not commit.
+LEAVE_LINK = '<a id="go" href="/no-content">go</a>'
+UNLOAD_PAGES = {
+    "/plain": "<!doctype html><title>plain</title>" + LEAVE_LINK,
+    "/guard": "<!doctype html><title>guard</title><script>addEventListener('beforeunload', "
+              "e => e.preventDefault())</script>" + LEAVE_LINK,
+    "/legacy": "<!doctype html><title>legacy</title><script>onbeforeunload = () => 'Unsaved'</script>" + LEAVE_LINK,
+}
 # A command that waits on an open dialog fails within the poll interval, far below the bridge timeout.
 DIALOG_SECONDS = 5
 
@@ -42,7 +54,12 @@ class _Site:
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
                 path = self.path.split("?")[0]
-                self.reply({"/confirm": CONFIRM_PAGE, "/onsubmit": ONSUBMIT_PAGE}.get(path, "<title>other</title>"))
+                if path == "/no-content":
+                    self.send_response(204)
+                    self.end_headers()
+                    return
+                self.reply({"/confirm": CONFIRM_PAGE, "/onsubmit": ONSUBMIT_PAGE, **UNLOAD_PAGES}
+                           .get(path, "<title>other</title>"))
 
             def do_POST(self):
                 self.rfile.read(int(self.headers.get("Content-Length") or 0))
@@ -164,6 +181,27 @@ class RealBrowserDialogTests(harness.RealBrowserTestCase):
                                               "auto_dismissed": True}])
         self.assertNotIn("dialog_hint", result)
         self.assertEqual(self.call("/api/page-info", {"tabId": tab})["title"], "after alert")
+
+    def test_beforeunload_is_a_dialog_only_when_the_page_asks_to_prompt(self):
+        for page in UNLOAD_PAGES:
+            for accept in (None, True):
+                for action in ("click", "navigate"):
+                    with self.subTest(page=page, accept=accept, action=action):
+                        tab = self.open_tab(self.site.origin + page)
+                        if accept:
+                            self.assert_ok(self.call("/api/handle-dialog", {"tabId": tab, "accept": True}))
+                        if action == "click":
+                            result = self.call("/api/click", {"tabId": tab, "selector": "#go"})
+                        else:
+                            result = self.call("/api/navigate", {"tabId": tab, "url": self.site.origin + "/no-content"})
+                        self.assert_ok(result)
+                        expected = [] if page == "/plain" else [
+                            {"type": "beforeunload", "message": "", "response": "leave" if accept else "native"}]
+                        self.assertEqual(result.get("dialogs", []), expected, result)
+                        info = self.call("/api/page-info", {"tabId": tab})
+                        self.assertEqual(info["title"], page[1:], "the 204 left the page in place")
+                        self.assertEqual([(d["type"], d["response"]) for d in info["dialogs"]],
+                                         [(d["type"], d["response"]) for d in expected], info)
 
     def test_user_tab_keeps_a_native_dialog_and_reports_it_open(self):
         url = self.site.origin + "/confirm?user"

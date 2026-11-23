@@ -1146,7 +1146,7 @@ and is not wrapped.
 
 A page action (click, type, fill, key press, navigation and the other actions that report
 `opened_tabs`) adds `dialogs` to its result when the page called `alert`, `confirm` or
-`prompt` (or fired `beforeunload`) during it, in the document it acted in or one it loaded
+`prompt` (or asked `beforeunload` to prompt) during it, in the document it acted in or one it loaded
 (#555). Each entry has `type`, `message` (up to 1,000 characters), `default_value` for a
 prompt, `response`, and `pending: true` while a native dialog is still open.
 
@@ -3597,8 +3597,11 @@ cross-origin frames), browser-internal pages, and already-open native dialogs ar
 outside this mechanism. Page scripts can also replace or bypass the overrides.
 
 `accept: true` also disarms `beforeunload` using the same returnValue/preventDefault
-suppression as `browser_close_tab(force=True)`, allowing navigation away. Unload
-events are recorded with type `beforeunload`. `accept: false` leaves native unload
+suppression as `browser_close_tab(force=True)`, allowing navigation away. An unload
+is recorded with type `beforeunload` only when the page asks to prompt: it calls
+`preventDefault()`, sets `returnValue`, or has an `onbeforeunload` handler that returns a
+value (with `accept: true`, a disarmed handler counts). Leaving a page that does not ask
+records nothing (#598). `accept: false` leaves native unload
 behavior; the extension cannot answer a native "Leave page?" prompt. Accepting
 temporarily clears `onbeforeunload`; clearing or dismissing the policy restores the
 saved handler if the page has not supplied a replacement.

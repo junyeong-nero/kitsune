@@ -53,7 +53,21 @@
       try { entry.response = native(); } finally { entry.pending = false; }
       return entry.response;
     };
-    W.__kitsuneDialogSnapshot = expose(() => JSON.stringify({ ...state, default: unattended() ? 'dismiss' : 'native' }));
+    // #598: every unload fires beforeunload, but only one whose page asks to prompt is a dialog. The
+    // capture listener runs before the page's handlers, so the entry is judged when it is read: by
+    // the event once dispatch is over, or, under accept (which disarms the page), by whether the
+    // page tried to prompt.
+    const unloads = new WeakMap();
+    const prompted = entry => {
+      const unload = unloads.get(entry);
+      return !unload || unload.requested || unload.event.defaultPrevented || !!unload.event.returnValue;
+    };
+    const unloadRequested = () => {
+      const last = state.dialogs.findLast(entry => unloads.has(entry));
+      if (last) unloads.get(last).requested = true;
+    };
+    W.__kitsuneDialogSnapshot = expose(() => JSON.stringify({ ...state, dialogs: state.dialogs.filter(prompted),
+      default: unattended() ? 'dismiss' : 'native' }));
     W.__kitsuneDialogAgentTab = expose(flag => { agentTab = flag === true; });
     W.__kitsuneDialogPolicy = expose((json) => {
       const previousAccept = state.policy.accept;
@@ -84,9 +98,12 @@
       record('prompt', args[0], defaultValue, response, dismissed());
       return response;
     });
-    W.addEventListener('beforeunload', expose(() => {
-      record('beforeunload', '', null, state.policy.accept === true ? 'leave' : 'native');
-      if (state.policy.accept === true) suppressUnloadHandler();
+    W.addEventListener('beforeunload', expose(event => {
+      const accept = state.policy.accept === true;
+      const entry = record('beforeunload', '', null, accept ? 'leave' : 'native');
+      // Accepting disarms onbeforeunload when the policy is set, so the saved handler counts too.
+      unloads.set(entry, { event, requested: accept && !!(W.onbeforeunload || savedBeforeUnload) });
+      if (accept) suppressUnloadHandler();
     }), true);
     const proto = W.BeforeUnloadEvent?.prototype;
     if (proto) {
@@ -96,11 +113,12 @@
           get: expose(function() { return descriptor.get.call(this); }),
           set: expose(function(value) {
             if (state.policy.accept !== true) descriptor.set.call(this, value);
+            else if (value) unloadRequested();
           }) });
       }
       const preventDefault = W.Event.prototype.preventDefault;
       W.Event.prototype.preventDefault = expose(function() {
-        if (this.type === 'beforeunload' && state.policy.accept === true) return;
+        if (this.type === 'beforeunload' && state.policy.accept === true) return void unloadRequested();
         return preventDefault.call(this);
       });
     }
