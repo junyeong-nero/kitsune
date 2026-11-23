@@ -522,6 +522,11 @@ command, or `KITSUNE_POST_ACTION_SNAPSHOT=full` in the bridge environment for ev
 action. A full post-action snapshot prioritizes the acted-on target and its ancestor
 context when that block fits, then fills the rest in document order.
 
+`browser_submit_form` still waits like a click (#586): for the page its submit loads, which
+then comes with `navigated` (and `load_pending` or `navigation_pending` as above), or, when
+the submit loads nothing (a form a script handles, a submit the page cancels), until the page
+that held the form is quiet.
+
 ### Action errors
 
 Failures keep the human-readable `error` string (its text is unchanged) and, when
@@ -3007,6 +3012,8 @@ A successful submit names the form it submitted in `form`, with the same fields
 (`action` and `method` as written in the form's attributes, `button` the submit
 control's label). Its `ref` remains valid across the full post-action snapshot while
 that node stays attached in the same document; navigation or replacement invalidates it.
+A submit that loads another page returns `navigated: {url, title}` and a snapshot of that
+page, as a click that navigates does (#586).
 
 ```json
 { "ok": true, "submitted": "button",

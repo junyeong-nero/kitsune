@@ -64,11 +64,12 @@ result = tab.snapshot()
   the model. Use `browser_take_screenshot` for images.
 - A script that prints nothing and assigns no `result` (`result = None` is an assignment) returns
   what its last operation changed, when that was a successful `click`, `type`, `fill`,
-  `select_option`, `check`, `press`, `hover` or `navigate`: `result` is
+  `select_option`, `check`, `press`, `hover`, `navigate` or a `submit_form` that loaded another
+  page (`navigated`, #586): `result` is
   `{"last_action": "/api/click", "snapshot": "…", "snapshot_delta": true}`, the action's own
   [post-action snapshot](api-reference.md#post-action-snapshots) with its `no_visible_change`,
   `navigated`, `snapshot_truncated` and `snapshot_hint`. Nothing is returned after a read, a wait
-  or `submit_form` (its snapshot is taken before the submit's navigation), for a full snapshot
+  or a `submit_form` that loaded nothing, for a full snapshot
   taken without the settle wait (`KITSUNE_POST_ACTION_SNAPSHOT=full`), or while a navigation is
   still loading (`navigation_pending`).
 - Limits: 64,000 bytes of code; 16,000 bytes of output and result combined (bytes, not

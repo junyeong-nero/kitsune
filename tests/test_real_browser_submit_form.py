@@ -19,6 +19,9 @@ PAGES = {
     "/typeless": '<button>Save</button>',
     # No submit control: submitted with requestSubmit.
     "/no-button": '<button type="button">Preview</button>',
+    # A submit the page cancels: nothing is loaded.
+    "/scripted": '<button>Save</button><script>document.querySelector("form").addEventListener('
+                 '"submit", e => e.preventDefault(), true);</script>',
 }
 
 
@@ -92,6 +95,26 @@ class RealBrowserSubmitFormHandlerTests(harness.RealBrowserTestCase):
                 self.assertEqual((result["submitted"], result["form"]["button"]), (submitted, button), result)
                 self.assertEqual(self.site.take_posts(1),
                                  [("/handled", {"title": "hello", "token": "from-handler"})])
+
+    def test_submit_returns_the_page_it_loads(self):
+        # #586: not a snapshot of the form taken before the submit's navigation.
+        tab = self.open_tab(self.site.origin + "/typeless")
+        self.assert_ok(self.call("/api/fill", {"tabId": tab, "selector": "input[name=title]", "value": "hello"}))
+        result = self.assert_ok(self.call("/api/submit-form", {"tabId": tab}))
+        self.assertEqual(len(self.site.take_posts(1)), 1)
+        self.assertEqual(result.get("navigated"), {"url": self.site.origin + "/handled", "title": "done"}, result)
+        self.assertNotIn("navigation_pending", result)
+        self.assertIn("done", result["snapshot"])
+        self.assertNotIn("textbox", result["snapshot"])
+
+    def test_a_submit_that_loads_nothing_returns_the_form_page(self):
+        tab = self.open_tab(self.site.origin + "/scripted")
+        started = time.monotonic()
+        result = self.assert_ok(self.call("/api/submit-form", {"tabId": tab}))
+        self.assertLess(time.monotonic() - started, 5, result)
+        self.assertNotIn("navigated", result)
+        self.assertIn("textbox", result["snapshot"])
+        self.assertEqual(self.site.take_posts(0, timeout=0), [])
 
 
 if __name__ == "__main__":

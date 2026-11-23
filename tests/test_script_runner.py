@@ -627,6 +627,10 @@ class ScriptRunnerTests(unittest.IsolatedAsyncioTestCase):
             ("tab.click('e6')", "/api/click",
              {**page, "navigated": {"url": "https://shop.example/cart", "title": "Cart"}},
              {"snapshot": page["snapshot"], "navigated": {"url": "https://shop.example/cart", "title": "Cart"}}),
+            # A submit that loaded another page waits for it like a click (#586).
+            ("tab.submit_form('#order')", "/api/submit-form",
+             {**page, "submitted": "button", "navigated": {"url": "https://shop.example/cart", "title": "Cart"}},
+             {"snapshot": page["snapshot"], "navigated": {"url": "https://shop.example/cart", "title": "Cart"}}),
             ("tab.navigate('https://shop.example/cart')", "/api/navigate", page, {"snapshot": page["snapshot"]}),
         ]
         for code, route, reply, expected in cases:
@@ -670,10 +674,9 @@ class ScriptRunnerTests(unittest.IsolatedAsyncioTestCase):
                 "snapshot": '- form "" [ref=e1]\n  - textbox "Name" [ref=e2] [value="Ada"]'}
         navigated = {"url": "https://shop.example/cart", "title": ""}
         for code, route, reply in [
-                # submit_form's snapshot is of the page that held the form: taken straight after
-                # dispatch, before the submit's navigation.
+                # A submit that loaded nothing: a full snapshot, which the reply does not mark as
+                # settled (an extension older than #586 took it straight after dispatch).
                 ("tab.submit_form('#order')", "/api/submit-form", form),
-                ("tab.submit_form('#order')", "/api/submit-form", {**form, "snapshot_delta": True}),
                 # A full snapshot on request (KITSUNE_POST_ACTION_SNAPSHOT=full) has no settle wait either.
                 ("tab.click('e6')", "/api/click", {**DELTA, "snapshot_delta": False}),
                 ("tab.fill('e2', 'Ada')", "/api/fill", {key: DELTA[key] for key in ("ok", "snapshot")}),
@@ -732,13 +735,14 @@ class ScriptRunnerTests(unittest.IsolatedAsyncioTestCase):
         routes = {"click": "/api/click", "type": "/api/type", "fill": "/api/fill", "selectOption": "/api/select-option",
                   "checkBox": "/api/check", "keypress": "/api/keypress", "submitForm": "/api/submit-form",
                   "navigate": "/api/navigate", "hover": "/api/hover"}
-        # Only an action with a delta snapshot gets the settle and navigation watch (runCommand).
-        # Of the two without one, navigate waits for its own load; submitForm waits for nothing,
-        # so its route is left out. An action added to either set needs the same check.
-        self.assertIn("const settles = options.deltaSnapshot &&", source)
+        # Only an action with a delta snapshot, or submitForm (#586), gets the settle and navigation
+        # watch (runCommand). navigate, the other full one, waits for its own load. An action added
+        # to the full set needs the same check.
+        self.assertIn("const settles = (options.deltaSnapshot || options.settleOnly) &&", source)
+        self.assertIn("const settleOnly = withSnapshot && params.action === 'submitForm';", source)
         unwatched = re.search(r"const FULL_SNAPSHOT_ACTIONS = new Set\(\[(.*?)\]\);", source).group(1)
         self.assertEqual(set(re.findall(r"'(\w+)'", unwatched)), {"submitForm", "navigate"})
-        self.assertEqual({routes[action] for action in re.findall(r"\['(\w+)',", declared)} - {"/api/submit-form"},
+        self.assertEqual({routes[action] for action in re.findall(r"\['(\w+)',", declared)},
                          script_worker.SNAPSHOT_ACTION_ROUTES)
 
     async def test_operation_limit_stops_before_the_extra_call(self):
