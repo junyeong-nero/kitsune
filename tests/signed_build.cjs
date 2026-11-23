@@ -10,7 +10,7 @@ const { webcrypto } = require('node:crypto');
 
 function build(variant) {
   const out = fs.mkdtempSync(path.join(os.tmpdir(), `kitsune-${variant}-`));
-  const python = process.env.PYTHON || 'python3';
+  const python = process.env.PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
   execFileSync(python, ['scripts/build_extension.py', variant, '--out', out], { stdio: 'pipe' });
   return out;
 }

@@ -21,26 +21,26 @@ class BuildExtensionTests(unittest.TestCase):
 
     def test_signed_build_has_no_code_execution(self):
         out = self.build("signed")
-        content = (out / "content" / "content.js").read_text()
+        content = (out / "content" / "content.js").read_text(encoding="utf-8")
         self.assertNotIn("eval(", content)
         self.assertNotIn(build_extension.START, content)
         self.assertIn("const KITSUNE_BUILD = 'signed';", content)
-        self.assertIn("const KITSUNE_BUILD = 'signed';", (out / "background" / "background.js").read_text())
-        self.assertEqual(json.loads((out / "manifest.json").read_text())["version"], "9.9.9")
+        self.assertIn("const KITSUNE_BUILD = 'signed';", (out / "background" / "background.js").read_text(encoding="utf-8"))
+        self.assertEqual(json.loads((out / "manifest.json").read_text(encoding="utf-8"))["version"], "9.9.9")
 
     def test_dev_build_keeps_javascript_tools(self):
         out = self.build("dev")
-        content = (out / "content" / "content.js").read_text()
+        content = (out / "content" / "content.js").read_text(encoding="utf-8")
         self.assertEqual(content.count("eval("), 2)
         self.assertIn("const KITSUNE_BUILD = 'dev';", content)
 
     def test_only_signed_build_has_update_url(self):
-        signed = json.loads((self.build("signed") / "manifest.json").read_text())
+        signed = json.loads((self.build("signed") / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(signed["browser_specific_settings"]["gecko"]["update_url"], build_extension.UPDATE_URL)
         self.assertEqual(signed["browser_specific_settings"]["gecko"]["id"], "kitsune@junyeong-nero.github.io")
         for manifest in (
-            json.loads((self.build("dev") / "manifest.json").read_text()),
-            json.loads((ROOT / "extension" / "manifest.json").read_text()),
+            json.loads((self.build("dev") / "manifest.json").read_text(encoding="utf-8")),
+            json.loads((ROOT / "extension" / "manifest.json").read_text(encoding="utf-8")),
         ):
             self.assertNotIn("update_url", manifest["browser_specific_settings"]["gecko"])
 
@@ -61,7 +61,7 @@ class BuildExtensionTests(unittest.TestCase):
             build_extension.check_signed(out)
 
     def test_repository_manifest_matches_project_version(self):
-        manifest = json.loads((ROOT / "extension" / "manifest.json").read_text())
+        manifest = json.loads((ROOT / "extension" / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["version"], build_extension.project_version())
 
 
