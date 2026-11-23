@@ -3510,7 +3510,8 @@ Also accepts POST with `{ "tabId": 123 }`. MCP tool: `browser_page_info(tab_id=N
 [`needs_user` hint](#needs_user-hints).
 
 ### GET /api/page-text
-All visible text on the page.
+All visible text on the page (`document.body.innerText`), or of the element `selector`
+names (POST). Text over 20,000 characters is cut and has `truncated: true` and `fullLength`.
 ```json
 { "text": "..." }
 ```

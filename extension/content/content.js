@@ -839,13 +839,7 @@
       if (!el) return { error: 'Selector not found: ' + selector };
       return truncateText(el.innerText);
     }
-    const selectors = ['article', '[role="main"]', 'main', '.content', '.post-content', '.article-body', '.entry-content'];
-    for (const sel of selectors) {
-      const el = document.querySelector(sel);
-      if (el && el.innerText.length > 100) {
-        return truncateText(el.innerText);
-      }
-    }
+    // The whole page: a "main content" guess returned one <article> card of a listing (#613).
     return truncateText(document.body.innerText);
   }
 
@@ -4689,6 +4683,12 @@
     const cap = Math.min(limit || QUERY_LIMIT, QUERY_LIMIT);
     const want = (fields && fields.length) ? fields : DEFAULT_FIELDS;
     const items = [];
+    const clipped = {};
+    const clip = (field, value, max) => {
+      if (value.length <= max) return value;
+      clipped[field] = (clipped[field] || 0) + 1;
+      return value.slice(0, max);
+    };
     for (let i = 0; i < nodes.length && items.length < cap; i++) {
       const el = nodes[i];
       const row = { tag: el.tagName.toLowerCase() };
@@ -4696,11 +4696,11 @@
       for (const f of want) {
         const name = String(f).toLowerCase();
         try {
-          if (f === 'text') row.text = renderedText(el).trim().slice(0, 400);
-          else if (f === 'html') row.html = redactMarkup(el, false).slice(0, 4000);
+          if (f === 'text') row.text = clip(f, renderedText(el).trim(), 400);
+          else if (f === 'html') row.html = clip(f, redactMarkup(el, false), 4000);
           else if (f === 'href') row.href = el.href || el.getAttribute('href') || undefined;
           else if (name === 'value' && sensitive) Object.assign(row, redactedValue(el));
-          else if (f === 'value') row.value = (el.value != null) ? String(el.value).slice(0, 400) : undefined;
+          else if (f === 'value') row.value = (el.value != null) ? clip(f, String(el.value), 400) : undefined;
           else if (f === 'src') row.src = el.src || el.getAttribute('src') || undefined;
           else if (f === 'alt') row.alt = el.alt || el.getAttribute('alt') || undefined;
           else if (f === 'id') row.id = el.id || undefined;
@@ -4718,7 +4718,7 @@
           } else {
             // arbitrary attribute name
             const v = el.getAttribute(f);
-            if (v != null) row[f] = v.slice(0, 400);
+            if (v != null) row[f] = clip(f, v, 400);
           }
         } catch {}
       }
@@ -4726,7 +4726,8 @@
       for (const k of Object.keys(row)) if (row[k] === undefined) delete row[k];
       items.push(row);
     }
-    return { count: items.length, total: nodes.length, truncated: nodes.length > items.length, items };
+    return { count: items.length, total: nodes.length, truncated: nodes.length > items.length, items,
+             ...(Object.keys(clipped).length && { clipped }) };
   }
 
   // ── HTML / bounds / computed style ──
