@@ -581,7 +581,7 @@
       'captureScroll':         () => captureScroll(msg.to, msg.by, msg.left),
       'hideFixed':             () => hideFixed(msg.selector),
       'restoreFixed':          () => restoreFixed(),
-      // ── 1.4.0 additions ──
+      // ── Extraction, interaction and waits ──
       'query':                 () => queryElements(msg.selector, msg.fields, msg.limit),
       'getHTML':               () => getHTML(msg.selector),
       'getLinks':              () => getLinks(msg.internalOnly),
@@ -615,7 +615,7 @@
       'getIframes':            () => getIframes(),
       'explainSelector':       () => explainSelector(msg.selector),
       'fullPageMetrics':       () => fullPageMetrics(),
-      // ── 2.1.0 file upload ──
+      // ── File upload ──
       'uploadChunk':           () => uploadChunk(msg.uploadId, msg.index, msg.data),
       'uploadCommit':          () => uploadCommit(msg.uploadId, msg.selector, msg.files, msg.mode, msg.first, msg.data),
     };
@@ -665,7 +665,7 @@
     return false;
   });
 
-  // ── File upload (2.1.0) ──
+  // ── File upload ──
   // The bridge reads the file from disk and streams it here as independently
   // decodable base64 chunks; commit rebuilds real File objects and attaches
   // them to an <input type=file> (or drops them on a drop zone).
@@ -688,7 +688,7 @@
   }
   const __zlAttachFiles = function(parts, selector, files, mode, data) {
     var toBytes = function (b64) { var bin = atob(b64), a = new Uint8Array(bin.length); for (var i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i); return a; };
-    // 2.1.0: build the File + DataTransfer with the PAGE's own constructors (wrappedJSObject + cloneInto).
+    // Build the File + DataTransfer with the PAGE's own constructors (wrappedJSObject + cloneInto).
     // Content-script Files were silently dropped by some uploaders (YouTube thumbnails, TikTok/Instagram covers).
     var W = (typeof cloneInto === 'function' && window.wrappedJSObject) ? window.wrappedJSObject : null;
     var objs = files.map(function (f) {
@@ -3047,7 +3047,7 @@
   }
 
   // ── Execute JS ──
-  const JS_RESULT_LIMIT = 8000000; // 2.1.0: bridge WebSocket now takes up to 256 MB (was 50 KB under the old 1 MB socket limit)
+  const JS_RESULT_LIMIT = 8000000; // the bridge WebSocket takes up to 256 MB
 
   // @kitsune-dev-only:start
   // A selector or ref binds the element the code sees as __kitsuneElement (browser_evaluate);
@@ -4671,10 +4671,6 @@
     const parent = el.closest('label');
     return parent ? redactedText(parent).trim().slice(0, 80) : (el.ariaLabel || '');
   }
-
-  // ══════════════════════════════════════════════════════════════
-  // 1.4.0 additions
-  // ══════════════════════════════════════════════════════════════
 
   // ── Multi-field extract ──
   const DEFAULT_FIELDS = ['text', 'href', 'value', 'src', 'alt', 'id', 'name'];

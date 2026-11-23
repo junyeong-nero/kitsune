@@ -1188,7 +1188,7 @@ def browser_parallel(
 
 
 # ════════════════════════════════════════════════════════════════════
-#  1.4.0 — Content extraction
+#  Content extraction
 # ════════════════════════════════════════════════════════════════════
 
 @tool("read", annotations=dict(title="Query page elements", **READ))
@@ -1302,7 +1302,7 @@ def browser_explain_selector(selector: str, tab_id: TabId = None) -> dict:
 
 
 # ════════════════════════════════════════════════════════════════════
-#  1.4.0 — Interaction additions
+#  Interaction additions
 # ════════════════════════════════════════════════════════════════════
 
 def browser_select_option(
@@ -1516,7 +1516,7 @@ def browser_click_and_wait_navigation(
 
 
 # ════════════════════════════════════════════════════════════════════
-#  1.4.0 — Visual additions
+#  Visual additions
 # ════════════════════════════════════════════════════════════════════
 
 def browser_upload_file(
@@ -1574,7 +1574,7 @@ def browser_full_page_metrics(tab_id: TabId = None) -> dict:
 
 
 # ════════════════════════════════════════════════════════════════════
-#  1.4.0 — Tab and window management
+#  Tab and window management
 # ════════════════════════════════════════════════════════════════════
 
 @tool("tabs", annotations=dict(title="Pin tab", **IDEMPOTENT_ACT))
@@ -1675,7 +1675,7 @@ def browser_detach_tab(tab_id: Annotated[int, Field(description="The tab to pop 
 
 
 # ════════════════════════════════════════════════════════════════════
-#  1.4.0 — Network, cookies, storage, clipboard, downloads
+#  Network, cookies, storage, clipboard, downloads
 # ════════════════════════════════════════════════════════════════════
 
 @tool("storage", annotations=dict(title="Manage cookies", **DESTRUCTIVE))
@@ -1811,7 +1811,7 @@ def browser_console_logs(
 
 
 # ════════════════════════════════════════════════════════════════════
-#  1.4.0 — Orchestration
+#  Orchestration
 # ════════════════════════════════════════════════════════════════════
 
 @tool("automation", annotations=dict(title="Broadcast", **DESTRUCTIVE))
@@ -1904,7 +1904,7 @@ def browser_pool_release(tab_id: Annotated[int, Field(description="The pooled ta
 
 
 # ════════════════════════════════════════════════════════════════════
-#  1.4.0 — Session save/restore (auth-once-use-many)
+#  Session save/restore (auth-once-use-many)
 # ════════════════════════════════════════════════════════════════════
 
 @tool("storage", annotations=dict(title="Save session", **DESTRUCTIVE))
@@ -1943,7 +1943,7 @@ def browser_delete_session(name: str) -> dict:
 
 
 # ════════════════════════════════════════════════════════════════════
-#  1.4.0 — Observability and policy
+#  Observability and policy
 # ════════════════════════════════════════════════════════════════════
 
 @tool("admin", annotations=dict(title="Check browser health", **READ))

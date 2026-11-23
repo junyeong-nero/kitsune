@@ -1,7 +1,6 @@
 """Native Windows lifecycle checks against owned processes and temporary homes."""
 
 import io
-import os
 from pathlib import Path
 import subprocess
 import socket

@@ -1854,7 +1854,7 @@ async function dispatchCommand(command) {
     case 'reloadExtension': return reloadExtensionAction();
     case 'getPageTextFromTab': return await getPageText(params);
 
-    // 1.4.0 browser-level additions
+    // Tab, window, screenshot and browser-data commands
     case 'pinTab':           return await updateTab(params.tabId, { pinned: !!params.pinned }, params);
     case 'muteTab':          return await updateTab(params.tabId, { muted: !!params.muted }, params);
     case 'duplicateTab':     return await duplicateTab(params.tabId, params.ownerId);
@@ -1915,7 +1915,6 @@ async function dispatchCommand(command) {
     case 'waitForElement':
     case 'focusState':
     case 'waitForResult':
-    // 1.4.0 forwarded actions
     case 'query':
     case 'getHTML':
     case 'getLinks':
@@ -3545,7 +3544,7 @@ async function getActiveTabId() {
 }
 
 // ══════════════════════════════════════════════════════════════
-// 1.4.0 — browser-level handler implementations
+// Browser-level handler implementations
 // ══════════════════════════════════════════════════════════════
 
 // Runs act on tabId or the active tab; any failure is a bare error.
@@ -3559,7 +3558,7 @@ async function onTab(tabId, act) {
 
 const updateTab = (tabId, props, authorization) => onTab(tabId, async id => {
   requireTabAdmission(authorization);
-    const tab = await browser.tabs.update(id, props);
+  const tab = await browser.tabs.update(id, props);
   return { ok: true, tabId: id, pinned: tab.pinned, muted: tab.mutedInfo?.muted };
 });
 
@@ -3572,14 +3571,14 @@ const duplicateTab = (tabId, ownerId = null) => onTab(tabId, async id => {
 const reloadTabBrowser = (tabId, bypassCache, authorization) => onTab(tabId, async id => {
   markReload(id);
   requireTabAdmission(authorization);
-    await browser.tabs.reload(id, { bypassCache: !!bypassCache });
+  await browser.tabs.reload(id, { bypassCache: !!bypassCache });
   return { ok: true, tabId: id, bypassCache: !!bypassCache };
 });
 
 // direction: 'goBack' or 'goForward'.
 const goInHistory = (tabId, direction, authorization) => onTab(tabId, async id => {
   requireTabAdmission(authorization);
-    await browser.tabs[direction](id);
+  await browser.tabs[direction](id);
   return { ok: true, tabId: id };
 });
 
@@ -3587,7 +3586,7 @@ const getZoom = tabId => onTab(tabId, async id => ({ ok: true, tabId: id, factor
 
 const setZoom = (tabId, factor, authorization) => onTab(tabId, async id => {
   requireTabAdmission(authorization);
-    await browser.tabs.setZoom(id, Number(factor) || 1);
+  await browser.tabs.setZoom(id, Number(factor) || 1);
   return { ok: true, tabId: id, factor: Number(factor) || 1 };
 });
 
@@ -3718,7 +3717,7 @@ async function imagePreview(dataUrl) {
 }
 
 // ── Element / full-page screenshot ──
-// 2.1.0: shared helpers for stitched captures
+// Shared helpers for stitched captures
 const CANVAS_MAX = 32000;   // Firefox canvas dimension limit is 32767
 const zlSleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -3745,7 +3744,7 @@ async function zlScrollPosition(tabId, authorization) {
   return { to: r.sy, left: r.sx };
 }
 
-// 2.1.1: scale (1-4) = output pixels per CSS pixel. captureTab renders the viewport at that scale, so
+// scale (1-4) = output pixels per CSS pixel. captureTab renders the viewport at that scale, so
 // scale 2 gives a genuinely sharper image (text in article screenshots), not an upscale. Default 1 = old size.
 async function elementScreenshot(tabId, selector, scale, preview, format, authorization) {
   let hidFixed = false, id = null, captureAttribute = null, scrolled = null, stage = 'resolve target';
@@ -3785,7 +3784,7 @@ async function elementScreenshot(tabId, selector, scale, preview, format, author
     const ctx = canvas.getContext('2d');
     const shot = want > 1 ? { format: 'png', scale: want } : { format: 'png' };
     let covered = 0, segments = 0;
-    // 2.1.0: elements taller than the viewport are scrolled and stitched (they used to come back blank below the fold)
+    // Elements taller than the viewport are scrolled and stitched
     for (let guard = 0; guard < 60 && covered < cssH; guard++) {
       stage = 'tabs.captureTab';
       const dataUrl = await browser.tabs.captureTab(id, shot);
@@ -3861,7 +3860,7 @@ async function fullPageScreenshot(tabId, preview, format, authorization) {
     const ctx = canvas.getContext('2d');
     for (const seg of segments) {
       const img = await loadDataUrl(seg.data);
-      const scale = img.width / vw;   // device pixels per CSS pixel (2.1.0: was ignored -> cropped on HiDPI)
+      const scale = img.width / vw;   // device pixels per CSS pixel; ignoring it crops on HiDPI
       const drawH = Math.min(vh, docH - seg.y);
       if (drawH <= 0) continue;
       ctx.drawImage(img, 0, 0, img.width, drawH * scale, 0, seg.y, vw, drawH);
