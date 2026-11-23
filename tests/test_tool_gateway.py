@@ -186,7 +186,14 @@ class GatewayTests(unittest.TestCase):
         self.assertTrue(submit["isError"])
         self.assertEqual(payload(submit)["code"], "no_form")
         self.assertTrue(invalid["isError"])
-        self.assertIn("validation error", invalid["content"][0]["text"])
+        # #619: a coded error, for the direct call too (the pair above is equal), not pydantic's text.
+        self.assertEqual({**payload(invalid), "state": {**payload(invalid)["state"], "arguments": None}}, {
+            "error": "browser_scroll: amount: Input should be a valid integer, unable to parse string as an integer",
+            "code": "invalid_argument", "retryable": False, "hint": "Pass the arguments in state.arguments.",
+            "state": {"invalid": [{"argument": "amount", "error": "Input should be a valid integer, unable to "
+                                                                "parse string as an integer"}], "arguments": None}})
+        self.assertIn("direction", payload(invalid)["state"]["arguments"])
+        self.assertNotIn("pydantic", invalid["content"][0]["text"])
         self.assertEqual(invalid["requests"], [])
         # A relative file name resolves in the client's root either way.
         self.assertEqual(payload(snapshot)["saved_to"], os.path.join(result["root"], "page.md"))
@@ -253,6 +260,36 @@ class GatewayTests(unittest.TestCase):
         self.assertFalse(payload(search_b)["tools"][0]["listed"])
         # Tools stay callable directly in any session, listed or not.
         self.assertFalse(direct_b["isError"])
+
+
+class ScriptingGatewayArgumentTests(unittest.TestCase):
+    """#619: browser_tools_call on the default surface, with Playwright MCP's argument names."""
+
+    def test_ref_is_the_target_and_a_schema_failure_is_coded(self):
+        result = sessions(environment(KITSUNE_SCRIPTING="1", KITSUNE_USER_TABS="writable"), [
+            via("browser_click", {"element": "Delete button", "ref": "e758"}),
+            via("browser_click", {"element": "Delete button"}),
+            call("browser_click", {"element": "Delete button", "ref": "e758"}),
+        ])
+        clicked, missing, direct = result["results"]
+        # Past validation: the mocked bridge has no current tab for the click to act on.
+        self.assertEqual(payload(clicked)["code"], "no_current_tab", clicked)
+
+        self.assertTrue(missing["isError"])
+        error = payload(missing)
+        self.assertEqual((error["error"], error["code"], error["retryable"]),
+                         ("browser_click: target is required", "invalid_argument", False))
+        self.assertEqual(error["state"]["missing"], ["target"])
+        self.assertIn("target", error["state"]["arguments"])
+        self.assertIn('browser_tools_call(name="browser_click") without arguments', error["hint"])
+        self.assertEqual(missing["requests"], [])
+
+        # A direct call is not aliased (its schema says target), but its failure is coded and names ref.
+        self.assertTrue(direct["isError"])
+        error = payload(direct)
+        self.assertEqual((error["code"], error["state"]["unknown"]), ("invalid_argument", ["ref"]))
+        self.assertTrue(error["hint"].startswith("Pass the ref as target"), error["hint"])
+        self.assertNotIn("pydantic", json.dumps(result))
 
 
 class GatewayAuditTests(AskBeforeActTestCase):
