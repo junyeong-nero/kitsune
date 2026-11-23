@@ -3,9 +3,10 @@
 A check, not a regression test: it prints what the window-at-point helper (_mac_window_at) finds
 near the top of a page in native full screen and which browser_not_at_point reason a viewport
 trusted click there would get. It asserts only what the docs state, after printing the points: at
-the window's top the hidden menu bar is not the window found, and a shown one refuses. The menu bar (a Window Server window
-at the main menu level, with Control Center's menu extras at the status level) is told apart from
-the browser's own full-screen toolbar strip (other_browser_window).
+the window's top the hidden menu bar is not the window found. A shown one does not refuse either:
+windows above layer 0 are not counted (#591). The menu bar (a Window Server window at the main
+menu level, with Control Center's menu extras at the status level) is still listed in `stack`
+and `menuBarWindows`, apart from the browser's own full-screen toolbar strip (other_browser_window).
 
 Opt-in twice, like test_real_browser_trusted_keys.py: besides KITSUNE_E2E_BROWSER (see
 tests/real_browser_harness.py), it runs only on macOS with KITSUNE_E2E_TRUSTED_INPUT=1, because it
@@ -31,8 +32,8 @@ every on-screen window at the menu bar's levels over the full-screen window's di
 it is, to compare the hidden and the revealed menu bar; `browserWindows` lists the suite's
 browser's own on-screen windows (its full-screen window and any toolbar strip over it).
 
-Result on macOS 26.5.1 with Zen 1.24b: the hidden menu bar is not listed; a shown one is (and
-refuses); Zen's 68-point full-screen strip refuses (other_browser_window). See
+Result on macOS 26.5.1 with Zen 1.24b: the hidden menu bar is not listed; a shown one is (it
+refused before #591); Zen's 68-point full-screen strip refuses (other_browser_window). See
 docs/api-reference.md, browser_trusted_click.
 """
 from http.server import BaseHTTPRequestHandler
@@ -65,12 +66,11 @@ class Handler(BaseHTTPRequestHandler):
 
 def on_screen_windows():
     """Every on-screen window, front to back, as _mac_window_at reads them, with `skipped` as its
-    filter decides (alpha 0 or the pointer's window)."""
+    filter decides (alpha 0 or above layer 0)."""
     import Quartz
     windows = Quartz.CGWindowListCopyWindowInfo(
         Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements,
         Quartz.kCGNullWindowID) or []
-    cursor_level = Quartz.CGWindowLevelForKey(Quartz.kCGCursorWindowLevelKey)
     listed = []
     for window in windows:
         bounds = window.get("kCGWindowBounds") or {}
@@ -80,7 +80,7 @@ def on_screen_windows():
                        "layer": int(window.get("kCGWindowLayer") or 0),
                        "alpha": float(window.get("kCGWindowAlpha", 1)),
                        "bounds": [bounds.get("X", 0), bounds.get("Y", 0), bounds.get("Width", 0), bounds.get("Height", 0)],
-                       "skipped": not window.get("kCGWindowAlpha", 1) or window.get("kCGWindowLayer") == cursor_level})
+                       "skipped": bool(not window.get("kCGWindowAlpha", 1) or window.get("kCGWindowLayer") or 0)})
     return listed
 
 
@@ -223,8 +223,8 @@ class RealBrowserFullScreenMenuBarTests(harness.RealBrowserTestCase):
         time.sleep(2)
         print(f"\n#336 pointer back at {pointer_location()}", flush=True)
         hidden_again = self.probe_points("menu bar hidden again", x, target, content_top)
-        # A click must never land on a shown menu bar.
-        self.assertIsNotNone(revealed[0]["refusal"], f"a click on the shown menu bar would be made: {revealed[0]}")
+        # The shown menu bar is above layer 0, so it is not the window found (#591).
+        self.assert_menu_bar_hidden(revealed[0])
         self.assert_menu_bar_hidden(hidden_again[0])
 
     def test_reports_the_window_at_the_top_of_a_full_screen_page(self):
