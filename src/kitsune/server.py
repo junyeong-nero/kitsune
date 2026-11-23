@@ -1417,6 +1417,8 @@ async def browser_run_python(
     tab.fill_form({'#name': 'Ada'}); tab.check(target, True); tab.select_option(target, value, by_text=False).
     tab.press('Enter', target=None, modifiers={'ctrl': True}); omitted target uses focus, not the last target.
     tab.navigate(url); tab.back().
+    tab.handle_dialogs(accept=True, prompt_text=None) answers later confirm/prompt dialogs; an agent tab
+    dismisses them by default, and the reply's dialogs list says so. Then repeat the action.
     tab.wait_for(text='Done', timeout=10000) or target/url/text_gone (one condition, timeout in ms).
     wait_for(target=...) accepts CSS/refs, not :has-text or text=/role=; actions may use those.
     Example: tab.fill('e12', 'Ada'); r = tab.click('e15'); result = r['snapshot'].

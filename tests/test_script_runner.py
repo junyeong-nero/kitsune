@@ -799,6 +799,34 @@ class ScriptRunnerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(ignored["code"], "script_operation_limit", "a call after ScriptLimit stops the script")
             self.assertEqual(len(again.calls), 3)
 
+    async def test_a_dismissed_confirm_is_named_in_the_result_with_the_script_call(self):
+        # #615: wap-096's click printed nothing about its dismissed confirm; the script read as a success.
+        confirm = {"type": "confirm", "message": "Delete this job offer?", "response": False, "auto_dismissed": True}
+        client = Client({"/api/click": {**DELTA, "dialogs": [confirm],
+                                        "dialog_hint": "... call browser_handle_dialog(accept=true) ..."},
+                         "/api/page-text": {"text": "Posted Jobs"},
+                         # Reads and the policy call list the tab's recent dialogs again.
+                         "/api/page-info": {"url": "/jobs", "dialogs": [confirm]},
+                         "/api/handle-dialog": {"ok": True, "dialogs": [confirm]}})
+        result = await script_runner.run_python("r = tab.click('e758')\nprint(r['dialog_hint'])\ntab.text()\n"
+                                                "tab.info()\ntab.handle_dialogs(accept=True)", client, tab_id=7)
+        self.assertIs(result["ok"], True)
+        self.assertEqual(result["dialogs"], [{"operation": 0, **confirm}])
+        self.assertIn("tab.handle_dialogs(accept=True)", result["dialog_hint"])
+        self.assertIn("tab.handle_dialogs(accept=True)", result["output"], "the action's own reply is reworded")
+        self.assertNotIn("browser_handle_dialog", json.dumps(result))
+        self.assertEqual([entry.get("dialog") for entry in result["operations"]], ["dismissed", None, None, None])
+
+    async def test_an_alert_or_an_accepted_confirm_has_no_hint(self):
+        for dialog in ({"type": "alert", "message": "Saved", "response": None, "auto_dismissed": True},
+                       {"type": "confirm", "message": "Delete?", "response": True}):
+            with self.subTest(dialog=dialog["type"]):
+                result = await script_runner.run_python(
+                    "tab.click('#x')", Client({"/api/click": {"ok": True, "dialogs": [dialog]}}), tab_id=7)
+                self.assertEqual(result["dialogs"], [{"operation": 0, **dialog}])
+                self.assertNotIn("dialog_hint", result)
+                self.assertEqual(result["operations"][0]["dialog"], "shown")
+
     async def test_a_long_operations_list_is_summarized(self):
         # #617: 100 navigate/page-text entries were about 7,000 characters of every such reply.
         loop = "for p in range(50):\n    tab.navigate(f'/p/{p}')\n    tab.text()\n"

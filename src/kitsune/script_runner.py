@@ -23,6 +23,13 @@ OPERATION_LIMIT = 100
 # The reply lists this many operations; a longer list is summarized, with the last few (#617).
 OPERATIONS_LISTED = 10
 OPERATIONS_LAST = 3
+# The extension's dialog_hint names the direct tool; a script answers dialogs with its tab (#615).
+DIALOG_HINT = ("Kitsune dismissed this dialog because no policy answers dialogs in an agent tab, so the action "
+               "that opened it may not have taken effect. To accept it, call tab.handle_dialogs(accept=True) "
+               "in a script, then repeat only that action.")
+DIALOGS_LISTED = 5
+# Replies whose dialogs are the tab's recent ones, not those the request opened.
+DIALOG_LIST_ROUTES = frozenset({"/api/handle-dialog"})
 # After the deadline a browser call raises ScriptLimit in the script; the worker is killed only
 # this many seconds later, so a finally or except can still print what it collected (#618).
 STOP_GRACE = 2.0
@@ -86,6 +93,11 @@ def _catchable(route, body, reply):
     return bool(code) or reply.get("ok") is False
 
 
+def _dismissed(dialog):
+    """A confirm or prompt Kitsune dismissed for want of a policy: its action may not have happened."""
+    return dialog.get("auto_dismissed") is True and dialog.get("type") != "alert"
+
+
 def _limit_error(code):
     return (f"Script reached its {OPERATION_LIMIT} browser operations" if code == "script_operation_limit"
             else "Python execution reached its deadline")
@@ -116,7 +128,8 @@ def _compact_operations(operations):
                                    if key != "tab_id" or value != usual_tab}}
 
     notable = [index for index, entry in enumerate(shown)
-               if entry["status"] != "ok" or "remapped" in entry or entry.get("tab_id") != usual_tab]
+               if entry["status"] != "ok" or "remapped" in entry or "dialog" in entry
+               or entry.get("tab_id") != usual_tab]
     last = [index for index in range(len(shown) - OPERATIONS_LAST, len(shown)) if index not in notable]
     by_route = {}
     for entry in shown:
@@ -204,6 +217,7 @@ async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
     deadline = time.monotonic() + timeout
     delivered = None  # the failed reply the worker's last call got, until its next call
     limited = None  # the ScriptLimit code the worker was sent (#618)
+    dialogs = []  # the dialogs the script's actions opened, each with its operation's index (#615)
 
     def operation_failed(reply):
         if len(json.dumps(reply, ensure_ascii=False).encode("utf-8")) > OUTPUT_LIMIT:
@@ -316,6 +330,15 @@ async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
                     reply = _without_tokens(reply)
                     if remapped and isinstance(reply, dict):
                         reply["remapped"] = remapped
+                    if (isinstance(reply, dict) and isinstance(reply.get("dialogs"), list) and reply["dialogs"]
+                            and method != "GET" and route not in READ_ROUTES and route not in DIALOG_LIST_ROUTES):
+                        # #615: a dismissed confirm reads as a success unless the reply says so. Reads
+                        # list the tab's recent dialogs, which an earlier action already reported.
+                        shown = [d for d in reply["dialogs"] if isinstance(d, dict)]
+                        entry["dialog"] = "dismissed" if any(_dismissed(d) for d in shown) else "shown"
+                        dialogs.extend({"operation": len(operations) - 1, **d} for d in shown)
+                        if "dialog_hint" in reply:
+                            reply["dialog_hint"] = DIALOG_HINT
                     delivered = reply if failed(reply) and _catchable(route, body, reply) else None
                     if failed(reply) and delivered is None:
                         if reply.get("code") == "needs_user":
@@ -379,6 +402,10 @@ async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
                               "tab.snapshot(target=..., max_depth=..., text=True) or "
                               "tab.query(CSS, fields=[...], limit=...). Filter locally and return only needed "
                               "evidence. Disclose coverage/truncation: no match in a subset is not page-wide absence.")
+    if dialogs:
+        result["dialogs"] = dialogs[-DIALOGS_LISTED:]
+        if any(_dismissed(d) for d in dialogs):
+            result["dialog_hint"] = DIALOG_HINT
     if dropped:
         selected = result.pop("result", None)  # after the marker, which is read before the cut content
         result.update(truncated=True, dropped_bytes=dropped)
