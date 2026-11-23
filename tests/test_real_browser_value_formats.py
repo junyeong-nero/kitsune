@@ -14,6 +14,7 @@ PAGE = """<!doctype html><meta charset="utf-8"><title>Flights</title>
 <label>Departure <input id=depart type=date min=2026-04-01 max=2027-04-01></label>
 <label>Boarding <input id=boarding type=datetime-local></label>
 <label>Seats <input id=seats type=number min=1 max=9></label>
+<label>Price <input id=price type=number step=5></label>
 <label>Volume <input id=volume type=range min=0 max=10></label>
 <label>Tint <input id=tint type=color></label>
 <output id=events></output>
@@ -95,6 +96,15 @@ class RealBrowserValueFormatTests(harness.RealBrowserTestCase):
         self.assertIn("after max", result["hint"])
         self.assertNotIn("invalid", self.tab.fill("#depart", "2026-12-24"))
         self.assertEqual(self.tab.fill("#seats", "0")["invalid"]["reason"], "rangeUnderflow")
+        off_step = self.tab.fill("#price", "7")
+        self.assertEqual(off_step["invalid"], {"reason": "stepMismatch", "value": "7", "step": "5"})
+        self.assertIn("write a value on its step", off_step["hint"])
+
+    def test_type_still_appends_to_a_number(self):
+        self.tab.fill("#price", "1")
+        self.assertTrue(self.tab.type("#price", "5")["ok"])
+        self.assertEqual(self.value("#price"), "15")
+        self.assert_rejected(lambda: self.tab.type("#price", "x"), "15x", "15", "a number such as 12 or -3.5")
 
     def test_other_sanitized_types(self):
         self.assertTrue(self.tab.fill("#boarding", "2026-05-03 09:00")["ok"], "a normalized value is kept")

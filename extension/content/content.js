@@ -2524,8 +2524,10 @@
     week: 'YYYY-Www', number: 'a number such as 12 or -3.5', range: 'a number between min and max',
     color: '#rrggbb',
   };
-  const VALUE_CONSTRAINTS = { rangeUnderflow: 'before min', rangeOverflow: 'after max',
-    stepMismatch: 'not on a step' };
+  // Types whose value is one token: typing replaces it. A number or range still appends digits.
+  const REPLACED_TYPES = new Set(['date', 'time', 'datetime-local', 'month', 'week', 'color']);
+  const VALUE_CONSTRAINTS = { rangeUnderflow: ['before min', 'within min/max'],
+    rangeOverflow: ['after max', 'within min/max'], stepMismatch: ['not on a step', 'on its step'] };
 
   // Sets a native field's value; for a sanitized type, refuses a value the field did not keep and
   // puts the previous value back before any event, so nothing changed.
@@ -2565,8 +2567,8 @@
     const reason = Object.keys(VALUE_CONSTRAINTS).find(key => el.validity[key]);
     if (!reason) return {};
     return { invalid: { reason, value: el.value, ...boundsOf(el) },
-      hint: `The field took the value, but it is ${VALUE_CONSTRAINTS[reason]}, so a form may refuse it; ` +
-        'write a value within min/max.' };
+      hint: `The field took the value, but it is ${VALUE_CONSTRAINTS[reason][0]}, so a form may refuse it; ` +
+        `write a value ${VALUE_CONSTRAINTS[reason][1]}.` };
   }
 
   // ── Type ──
@@ -2596,7 +2598,7 @@
 
     // Use native value setter to properly trigger React/Vue state. A date/time value is
     // replaced, not appended to: "2026-05-03" + "x" is no value.
-    const rejected = writeFieldValue(el, clear || VALUE_FORMATS[el.type] ? text : el.value + text);
+    const rejected = writeFieldValue(el, clear || REPLACED_TYPES.has(el.type) ? text : el.value + text);
     if (rejected) return rejected;
 
     // Fire all the events React/Vue/Angular listen for
