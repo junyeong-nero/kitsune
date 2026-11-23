@@ -19,7 +19,7 @@ const dialogPolicies = new Map();
 // The last main-frame request per tab, { requestId, url, at, statusCode }, so an unscriptable
 // error page can name its status. A new main-frame request replaces it and a discard or reload
 // clears it, so it never describes a later document. at: when the request started; statusCode:
-// once its headers arrive. These events can reach the background page tens of ms before or after
+// once its headers arrive; answered: whether they have, false again while a redirect is pending. These events can reach the background page tens of ms before or after
 // the tabs events of the same load, so they cannot tell which document a tab shows.
 const mainFrameStatus = new Map();
 // Callbacks waiting for a tab's next status record (see waitForHttpStatus); called with true on close.
@@ -73,7 +73,7 @@ const mainFrameRequest = (tabId, requestId) => {
   return started;
 };
 browser.webRequest?.onBeforeRequest.addListener(({ tabId, requestId, url }) => {
-  if (tabId >= 0) mainFrameRequest(tabId, requestId).url = url;
+  if (tabId >= 0) Object.assign(mainFrameRequest(tabId, requestId), { url, answered: false });
 }, MAIN_FRAME);
 // Requests that keep an action's delta waiting (settleAfterAction, #348).
 const SETTLE_REQUEST_FILTER = { urls: ['<all_urls>'], types: ['xmlhttprequest', 'script', 'sub_frame'] };
@@ -88,7 +88,7 @@ for (const event of ['onCompleted', 'onErrorOccurred']) {
 browser.webRequest?.onHeadersReceived.addListener(
   ({ tabId, requestId, url, statusCode }) => {
     if (tabId < 0) return;
-    Object.assign(mainFrameRequest(tabId, requestId), { url, statusCode });
+    Object.assign(mainFrameRequest(tabId, requestId), { url, statusCode, answered: true });
     notifyStatusWaiters(tabId);
   },
   MAIN_FRAME);
@@ -2195,6 +2195,7 @@ async function navigateTab(url, tabId, expectTitle, authorization) {
     // started says whether a document started in the tab since
     // the navigation began. Only then is the page asked: before that, the document left behind answers.
     let started = false, page = null;
+    const requestBefore = mainFrameStatus.get(targetTabId);
     if (sameUrl && url.includes('#')) {
       // Same-document (fragment) navigation: no new load, so no status 'complete'.
       requireTabAdmission(authorization);
@@ -2221,6 +2222,7 @@ async function navigateTab(url, tabId, expectTitle, authorization) {
         });
       }
     }
+    if (result.timedOut && !result.code) Object.assign(result, timedOutWaitingFor(targetTabId, requestBefore));
     if (expectTitle) {
       const tab = await browser.tabs.get(targetTabId);
       const title = tab.title || '';
@@ -2260,6 +2262,22 @@ const STALLED_TAB_HINT = 'Retrying will not fix this: the browser needs an updat
 // tab loads (or the timeout passes, leaving the tab open) and reports the actual URL, so
 // redirects are visible. A page whose DOM is parsed is ok with load_pending, at the timeout
 // (#561) or a grace period after it was parsed (#601).
+// #605: what a load that timed out still waits for, from the main-frame request sent since it
+// began (not requestBefore): 'response' while that request has no answer, 'page' once it has one
+// but no new document has parsed its DOM. Nothing when no request was seen.
+function timedOutWaitingFor(tabId, requestBefore) {
+  const request = mainFrameStatus.get(tabId);
+  if (!request || request === requestBefore || request.answered == null) return {};
+  if (!request.answered) {
+    return { waiting_for: 'response', hint: 'The server has not answered the request yet, and the tab still '
+      + 'waits for it. The URL is not known to be wrong: read the page again shortly, or repeat the '
+      + 'navigation once if it never arrives.' };
+  }
+  return { waiting_for: 'page', hint: `The server answered (HTTP ${request.statusCode}), but the page has not `
+    + 'been parsed yet: it may still be arriving, or wait on a blocking script. Read it again shortly '
+    + 'instead of repeating the navigation.' };
+}
+
 async function createTab(url, { wait = false, timeout = 15000, ownerId = null } = {}) {
   try {
     const target = url || 'about:blank';
@@ -2290,6 +2308,7 @@ async function createTab(url, { wait = false, timeout = 15000, ownerId = null } 
           + 'Do not open another tab; inspect or close the created one. ' + STALLED_TAB_HINT,
       });
     }
+    if (result.timedOut && !result.code) Object.assign(result, timedOutWaitingFor(tab.id));
     return result;
   } catch (e) {
     return { error: e.message };
