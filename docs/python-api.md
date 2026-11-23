@@ -74,6 +74,13 @@ result = tab.snapshot()
   still loading (`navigation_pending`).
 - Limits: 64,000 bytes of code; 16,000 bytes of output and result combined (bytes, not
   characters); 100 API calls; 30 s default deadline, 120 s max.
+- The 101st call, or the first call after the deadline, is not sent: it raises `ScriptLimit`
+  (`code` `script_operation_limit` or `script_timeout`). It is a `BaseException`, so
+  `except Exception` and `except KitsuneError` let it through while `finally` and
+  `except ScriptLimit` run; print what the loop collected there. The next call stops the script.
+  Uncaught, the script ends with that code, its printed output and its `result` variable, if it
+  set one. `browser.calls_left` and `browser.seconds_left` give the budget left. When every
+  operation was a read or a navigation, the hint says nothing was written.
 - A failed read or wait raises its exception in the script, as outside scripts: `text`,
   `snapshot`, `find`, `query`, `forms`, `info` and `wait_for` (except `js=`, which runs JavaScript
   in the page). Catch `TimedOut` or `KitsuneError` (both are defined in the script) to go on; the
@@ -89,8 +96,8 @@ result = tab.snapshot()
   destination, the action runs on that link and reports `remapped: {from, to, role, name}` in its
   result and its `operations` entry. Any other stale ref fails as `stale_ref`: target by selector
   or take a new snapshot.
-- On timeout the worker is killed; a command already sent may still finish, so read the page
-  before writing again.
+- The worker is killed 2 s after the deadline; a command already sent may still finish, so read
+  the page before writing again.
 - `help(tab.query)` prints a method's signature. A `Tab` or `Browser` call with unknown, missing or
   extra arguments fails with a `TypeError` and that signature in the output.
 

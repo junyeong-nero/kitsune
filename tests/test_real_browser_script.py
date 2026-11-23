@@ -333,6 +333,21 @@ class RealBrowserScriptTests(harness.RealBrowserTestCase):
             self.assertEqual(next(field["value"] for field in fields if field.get("id") == "draft"), "after the read")
         self.run_scenario(run)
 
+    def test_a_read_loop_over_the_call_limit_prints_what_it_collected(self):
+        # #618: wap-144/wap-233 looped navigate + text and lost every page at the 101st call.
+        async def run(session, tab_id):
+            code = (f"tab.navigate({self.nav.origin + '/a'!r})\nrows = []\ntry:\n    while True:\n"
+                    "        try:\n            rows.append(tab.text()[:6])\n        except KitsuneError:\n"
+                    "            continue\nfinally:\n    print(len(rows), set(rows), browser.calls_left)")
+            reply = await session.call_tool("browser_run_python", {"code": code, "timeout": 60})
+            self.assertTrue(reply.isError)
+            payload = json.loads(reply.content[0].text)
+            self.assertEqual(payload["code"], "script_operation_limit", payload)
+            self.assertEqual(payload["output"], "99 {'Bookma'} 0\n")
+            self.assertIn("Nothing was written", payload["hint"])
+            self.assertEqual(len(payload["operations"]), 100)
+        self.run_scenario(run)
+
     def test_approval_stop_keeps_the_draft_and_does_not_offer_script_replay(self):
         self.call("/api/set-policy", {"ask": True})
 

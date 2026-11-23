@@ -488,8 +488,8 @@ class ScriptRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(_exited(int(result["output"].strip())))
 
     async def test_timeout_preserves_unknown_inflight_operation_and_does_not_replay(self):
-        def slow_reply():
-            time.sleep(0.8)
+        def slow_reply():  # past the deadline and its STOP_GRACE (#618), when the worker is killed
+            time.sleep(0.8 + script_runner.STOP_GRACE)
             return {"ok": True}
         client = Client({"/api/click": slow_reply})
         result = await script_runner.run_python("browser.tab(7).click('#send'); browser.tab(7).click('#again')",
@@ -768,6 +768,59 @@ class ScriptRunnerTests(unittest.IsolatedAsyncioTestCase):
             result = await script_runner.run_python("for _ in range(3): browser.tabs()", client)
         self.assertEqual(result["code"], "script_operation_limit")
         self.assertEqual(len(client.calls), 2)
+
+    async def test_a_read_loop_over_the_limit_keeps_what_it_collected(self):
+        # #618: wap-144 read 50 pages and printed them only at the end; the limit lost all of them.
+        client = Client({"/api/page-text": {"text": "page"}})
+        with patch.object(script_runner, "OPERATION_LIMIT", 3):
+            caught = await script_runner.run_python(
+                "rows = []\ntry:\n    for p in range(10):\n        rows.append(tab.text())\n"
+                "except Exception:\n    print('swallowed')\nfinally:\n    print(len(rows), browser.calls_left)",
+                client, tab_id=7)
+            self.assertEqual(caught["code"], "script_operation_limit", caught)
+            self.assertEqual(caught["output"], "3 0\n", "except Exception does not catch it; finally runs")
+            self.assertEqual(len(client.calls), 3, "the call over the limit is not sent")
+            self.assertIn("Nothing was written", caught["hint"])
+
+            kept = await script_runner.run_python(
+                "result = []\nfor p in range(10):\n    result.append(tab.text())", Client({"/api/page-text": {"text": "p"}}),
+                tab_id=7)
+            self.assertEqual((kept["code"], kept["result"]), ("script_operation_limit", ["p", "p", "p"]), kept)
+
+            handled = await script_runner.run_python(
+                "result = []\ntry:\n    while True: result.append(tab.text())\nexcept ScriptLimit as stop:\n"
+                "    print(stop.code)", Client({"/api/page-text": {"text": "p"}}), tab_id=7)
+            self.assertEqual((handled["ok"], handled["output"], handled["result"]),
+                             (True, "script_operation_limit\n", ["p", "p", "p"]), handled)
+
+            again = Client({"/api/page-text": {"text": "p"}})
+            ignored = await script_runner.run_python(
+                "for p in range(10):\n    try:\n        tab.text()\n    except BaseException:\n        pass", again, tab_id=7)
+            self.assertEqual(ignored["code"], "script_operation_limit", "a call after ScriptLimit stops the script")
+            self.assertEqual(len(again.calls), 3)
+
+    async def test_the_budget_is_visible_and_counts_only_sent_calls(self):
+        result = await script_runner.run_python(
+            "before = (browser.calls_left, browser.seconds_left)\nbrowser.tabs()\n"
+            "result = [before, browser.calls_left, browser.seconds_left]",
+            Client({"/api/tabs": {"tabs": []}}), timeout=10)
+        (calls, seconds), after, later = result["result"]
+        self.assertEqual((calls, after), (script_runner.OPERATION_LIMIT, script_runner.OPERATION_LIMIT - 1))
+        self.assertTrue(8 < later <= seconds <= 10, result)
+
+    async def test_a_call_after_the_deadline_raises_and_the_script_can_still_print(self):
+        client = Client({"/api/page-text": {"text": "p"}})
+        result = await script_runner.run_python(
+            "rows = []\ntry:\n    while True:\n        rows.append(tab.text()); time.sleep(0.2)\n"
+            "finally:\n    print(len(rows) > 0, browser.seconds_left)", client, timeout=0.5, tab_id=7)
+        self.assertEqual((result["code"], result["output"]), ("script_timeout", "True 0.0\n"), result)
+        self.assertIn("Nothing was written", result["hint"])
+
+    async def test_a_limit_after_a_write_keeps_the_replay_warning(self):
+        with patch.object(script_runner, "OPERATION_LIMIT", 1):
+            result = await script_runner.run_python("tab.click('#a')\ntab.click('#b')", Client(), tab_id=7)
+        self.assertEqual(result["code"], "script_operation_limit")
+        self.assertIn("do not replay the whole script", result["hint"])
 
     async def test_large_internal_response_is_not_echoed_to_the_model(self):
         client = Client({"/api/page-text": {"text": "x" * script_runner.FRAME_LIMIT}})
