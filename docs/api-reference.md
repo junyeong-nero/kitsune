@@ -87,6 +87,13 @@ match, or `query: ""`, `tools` is empty and `groups` maps each group to its tool
 call and returns that call's result: its content (text, images) and `isError`. An unknown
 name returns `unknown_tool`; a gateway tool returns `invalid_argument`. Its bridge
 requests carry `X-Kitsune-Gateway-Tool`, which [audit entries](#audit-log) record.
+A `ref` argument is passed as `target` to a tool that takes `target` and no `ref`
+(Playwright MCP's name for it).
+
+Arguments that fail a tool's schema, called directly or through `browser_tools_call`, return
+`invalid_argument` with `state.missing`, `state.invalid` (`[{argument, error}]`),
+`state.unknown` (names the tool ignores) and `state.arguments` (the names it takes), e.g.
+`{"error": "browser_click: target is required", "code": "invalid_argument", ...}`.
 
 `browser_tools_publish(names)` takes tool and group names and adds those tools to this
 session's `tools/list`, then sends `notifications/tools/list_changed`.
