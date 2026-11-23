@@ -79,9 +79,16 @@ def _save(path: Path, original: bytes | None, text: str):
         if _read(path) != original:
             raise ValueError("config changed during setup; close the client and retry")
         if os.name == "nt" and original is not None:
-            import win32file
+            import ctypes
+            from ctypes import wintypes
 
-            win32file.ReplaceFile(str(path), str(staged))  # preserve the existing config's ACL
+            # Preserve the destination ACL. pywin32 312 swaps the two paths in its ReplaceFile wrapper.
+            replace = ctypes.WinDLL("kernel32", use_last_error=True).ReplaceFileW
+            replace.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.LPCWSTR,
+                                wintypes.DWORD, wintypes.LPVOID, wintypes.LPVOID]
+            replace.restype = wintypes.BOOL
+            if not replace(str(path), str(staged), None, 0, None, None):
+                raise ctypes.WinError(ctypes.get_last_error())
         else:
             staged.chmod(0o600 if original is None else path.stat().st_mode & 0o777)
             staged.replace(path)
