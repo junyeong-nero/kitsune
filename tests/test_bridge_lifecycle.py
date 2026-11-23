@@ -277,6 +277,11 @@ class BridgeCliAndStatusTests(unittest.TestCase):
             self.assertEqual(server.browser_status()["build"], bridge_client.BRIDGE_BUILD)
 
 
+# Up to Python 3.12, time.monotonic (and so the asyncio clock) on Windows is GetTickCount64, which
+# ticks every 15.6 ms: a measured interval can come out one tick short (0.38999 for 0.39).
+CLOCK_SLACK = 0.02
+
+
 class BridgeIdleShutdownTests(unittest.TestCase):
     """Opt-in idle shutdown: configuration, activity accounting and the watcher."""
 
@@ -370,7 +375,7 @@ class BridgeIdleShutdownTests(unittest.TestCase):
     def test_idle_shutdown_fires_and_holds_lifecycle_lock(self):
         elapsed = self.watch(0.1)
         self.assertIsNotNone(elapsed)
-        self.assertGreaterEqual(elapsed, 0.09)
+        self.assertGreaterEqual(elapsed, 0.1 - CLOCK_SLACK)
         self.try_lock.assert_called_once_with()
         self.assertIs(bridge._idle_shutdown_lock, self.lock)
 
@@ -382,7 +387,7 @@ class BridgeIdleShutdownTests(unittest.TestCase):
                 await asyncio.sleep(0.05)
         elapsed = self.watch(0.15, keep_calling)
         self.assertIsNotNone(elapsed)
-        self.assertGreaterEqual(elapsed, 0.25 + 0.14)  # last call at ~0.25s
+        self.assertGreaterEqual(elapsed, 0.25 + 0.15 - CLOCK_SLACK)  # idle again after the last call at ~0.25s
 
     def test_in_flight_request_blocks_shutdown(self):
         self.activity.begin()
