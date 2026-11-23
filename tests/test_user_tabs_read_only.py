@@ -8,7 +8,6 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
-import select
 import shutil
 import subprocess
 import tempfile
@@ -19,6 +18,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 
 from kitsune import bridge, bridge_client, playwright_tools, task_modes, tools
+from pipe_lines import readline
 from test_bridge_security import Bridge, _request
 from test_tab_inventory_bridge import tab
 from test_tab_owners import OwningExtension
@@ -77,9 +77,10 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
         self.commands.append(command)
         self.background.stdin.write(json.dumps(command) + "\n")
         self.background.stdin.flush()
-        if not select.select([self.background.stdout], [], [], 5)[0]:
+        line = readline(self.background.stdout, 5)
+        if line is None:
             raise AssertionError("actual background did not answer")
-        response = json.loads(self.background.stdout.readline())
+        response = json.loads(line)
         self.dispatched.append(response)
         return response["result"]
 

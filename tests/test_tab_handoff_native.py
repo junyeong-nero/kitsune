@@ -7,7 +7,6 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
-import select
 import shutil
 import subprocess
 import threading
@@ -15,6 +14,7 @@ import unittest
 from unittest.mock import patch
 
 from kitsune import bridge
+from pipe_lines import readline
 
 
 @unittest.skipUnless(shutil.which("node"), "Node is required for background/bridge integration")
@@ -53,8 +53,8 @@ class HandoffNativePolicyTests(unittest.TestCase):
     def request(self, message):
         self.background.stdin.write(json.dumps(message) + "\n")
         self.background.stdin.flush()
-        self.assertTrue(select.select([self.background.stdout], [], [], 5)[0], "background reply timed out")
-        line = self.background.stdout.readline()
+        line = readline(self.background.stdout, 5)
+        self.assertIsNotNone(line, "background reply timed out")
         self.assertTrue(line, "background driver exited")
         result = json.loads(line)
         self.assertNotIn("testError", result)

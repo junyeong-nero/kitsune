@@ -433,7 +433,9 @@ class FailureArtifacts:
             self.omitted += 1
             return None
         self.preserved += 1
-        target = run_directory(self.root) / _safe_name(self.class_name) / f"{self.preserved:02d}-{_safe_name(name)}"
+        # The test's method name only: its class names the parent, and Windows paths stop at 260 characters.
+        test = _safe_name(name.rsplit(".", 1)[-1])
+        target = run_directory(self.root) / _safe_name(self.class_name) / f"{self.preserved:02d}-{test}"
         try:
             return self._write(target, name, snapshot or self.live_snapshot())
         except OSError as error:  # a full or unwritable artifact directory must not stop the run
@@ -455,7 +457,8 @@ class FailureArtifacts:
         logs = {}
         for artifact, process in (("browser.log", self.browser), ("bridge.log", self.bridge)):
             text, truncated = _log_tail(getattr(process, "log_path", None))
-            (target / artifact).write_text(redact(text, self.secrets), encoding="utf-8")
+            # newline="": the tail's line endings as logged, not translated again on Windows.
+            (target / artifact).write_text(redact(text, self.secrets), encoding="utf-8", newline="")
             logs[artifact] = {"truncated": truncated, "limitBytes": MAX_LOG_BYTES}
         (target / "timeline.jsonl").write_text(
             redact("".join(json.dumps(event, sort_keys=True) + "\n" for event in timeline), self.secrets),

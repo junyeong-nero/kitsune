@@ -20,6 +20,9 @@ from mcp.types import ErrorData, ListRootsResult, Root
 from kitsune import playwright_tools, server, tools
 
 
+ROOT = Path(Path.cwd().anchor)  # / or, on Windows, a drive: /work alone is relative to the current drive there
+
+
 def _environment(**settings):
     """os.environ without KITSUNE_OUTPUT_DIR, plus settings."""
     env = {key: value for key, value in os.environ.items() if key != "KITSUNE_OUTPUT_DIR"}
@@ -75,23 +78,23 @@ class PathTests(unittest.TestCase):
             self.assertEqual(playwright_tools._path("snap.txt"), self.cwd / "snap.txt")
 
     def test_the_client_root_replaces_the_server_cwd(self):
-        self.with_root(Path("/work/project"))
+        self.with_root(ROOT / "work/project")
         with _environment():
-            self.assertEqual(playwright_tools._path("out/snap.txt"), Path("/work/project/out/snap.txt"))
+            self.assertEqual(playwright_tools._path("out/snap.txt"), ROOT / "work/project/out/snap.txt")
 
     def test_output_dir_wins_over_the_client_root(self):
-        self.with_root(Path("/work/project"))
-        with _environment(KITSUNE_OUTPUT_DIR="/srv/out"):
-            self.assertEqual(playwright_tools._path("snap.txt"), Path("/srv/out/snap.txt"))
+        self.with_root(ROOT / "work/project")
+        with _environment(KITSUNE_OUTPUT_DIR=str(ROOT / "srv/out")):
+            self.assertEqual(playwright_tools._path("snap.txt"), ROOT / "srv/out/snap.txt")
         with _environment(KITSUNE_OUTPUT_DIR="relative/out"):
             self.assertEqual(playwright_tools._path("snap.txt"), self.cwd / "relative" / "out" / "snap.txt")
         with _environment(KITSUNE_OUTPUT_DIR="~/out"):
             self.assertEqual(playwright_tools._path("snap.txt"), Path("~/out/snap.txt").expanduser())
 
     def test_absolute_and_home_names_are_kept(self):
-        self.with_root(Path("/work/project"))
-        with _environment(KITSUNE_OUTPUT_DIR="/srv/out"):
-            self.assertEqual(playwright_tools._path("/tmp/snap.txt"), Path("/tmp/snap.txt"))
+        self.with_root(ROOT / "work/project")
+        with _environment(KITSUNE_OUTPUT_DIR=str(ROOT / "srv/out")):
+            self.assertEqual(playwright_tools._path(str(ROOT / "tmp/snap.txt")), ROOT / "tmp/snap.txt")
             self.assertEqual(playwright_tools._path("~/snap.txt"), Path("~/snap.txt").expanduser())
 
 
