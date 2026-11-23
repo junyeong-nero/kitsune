@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 
 from kitsune import playwright_tools, server, tools
-from kitsune.bridge import _parse_workflow
+from kitsune.bridge import _parse_workflow_text
 
 
 class ToolSurfaceTests(unittest.TestCase):
@@ -220,7 +220,7 @@ class ToolSurfaceTests(unittest.TestCase):
 
     def test_wordpress_workflow(self):
         path = Path(server.__file__).parent / "workflows/wp-html.md"
-        commands, error = _parse_workflow(path, {"site_url": "https://example.com", "page_id": 5719})
+        commands, error = _parse_workflow_text(path.read_text(encoding="utf-8"), {"site_url": "https://example.com", "page_id": 5719})
         self.assertIsNone(error)
         self.assertEqual(commands[0], {"action": "navigate", "url": "https://example.com/wp-admin/post.php?post=5719&action=elementor"})
         self.assertEqual(commands[1]["action"], "waitForResult")

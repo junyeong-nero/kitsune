@@ -109,7 +109,7 @@ class ExtensionWebSocketTests(unittest.IsolatedAsyncioTestCase):
                             pass
                     self.assertEqual(rejected.exception.response.status_code, 403)
                     self.log.assert_called_with(
-                        f"⛔ Rejected WebSocket connection from origin {origin or '(none)'!r}")
+                        f"Rejected WebSocket connection from origin {origin or '(none)'!r}")
             self.assertIs(bridge.extension_ws, active)
             self.assertEqual(bridge.extension_ws_generation, 1)
             await extension.ping()

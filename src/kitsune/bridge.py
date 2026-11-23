@@ -134,7 +134,7 @@ CACHE_TTL = 5  # seconds
 # we run a background pinger per tab the agent has asked us to keep warm.
 _keep_alive_tasks = {}  # tab_id -> asyncio.Task
 
-# ── 1.4.0 orchestration / state ──
+# ── Orchestration state ──
 _tags = {}  # tag name -> tab_id
 # Reusable tabs never cross the stable ownership boundary, even after release.
 _tab_pools = {}  # owner id -> pool state; mutated on the bridge event loop
@@ -1371,7 +1371,7 @@ TRUSTED_KEY_DEFAULT_DELAY_MS = 30
 TRUSTED_KEY_MAX_DELAY_MS = 1000
 # macOS virtual key codes (US ANSI positions; layouts move characters, not these keys).
 _MAC_KEY_CODES = {
-    **{c: code for c, code in zip("asdfhgzxcv", (0, 1, 2, 3, 4, 5, 6, 7, 8, 9))},
+    **dict(zip("asdfhgzxcv", range(10))),
     "b": 11, "q": 12, "w": 13, "e": 14, "r": 15, "y": 16, "t": 17, "1": 18, "2": 19, "3": 20, "4": 21,
     "6": 22, "5": 23, "=": 24, "9": 25, "7": 26, "-": 27, "8": 28, "0": 29, "]": 30, "o": 31, "u": 32,
     "[": 33, "i": 34, "p": 35, "l": 37, "j": 38, "'": 39, "k": 40, ";": 41, "\\": 42, ",": 43, "/": 44,
@@ -1689,7 +1689,7 @@ def _audit_params(action, params):
             out[k] = AUDIT_REDACTED
         elif action == "formFill" and k == "fields":
             # Keys are selectors/labels and stay; every value is typed content.
-            out[k] = {f: AUDIT_REDACTED for f in v} if isinstance(v, dict) else AUDIT_REDACTED
+            out[k] = dict.fromkeys(v, AUDIT_REDACTED) if isinstance(v, dict) else AUDIT_REDACTED
         else:
             out[k] = scrub(v)
     return out
@@ -2651,30 +2651,27 @@ async def _save_session_async(name, urls):
         return policy_err
     bundle = {"name": name, "saved": int(time.time()), "cookies": [], "storage": {}}
     failures = []
-    # cookies for each url
-    for u in (urls or []):
+    urls = urls or []
+    for u in urls:
         r = await send_to_extension("cookies", {"op": "get", "url": u}, timeout=10)
         if isinstance(r, dict) and "cookies" in r:
             bundle["cookies"].extend(r["cookies"])
         else:
             failures.append(_session_failure(u, "cookies", r))
     # localStorage snapshot of each url, in a temporary tab
-    if urls:
-        for u in urls:
-            # Open a temp tab for each origin, snapshot, close
-            t = await send_to_extension("newTab", {"url": u})
-            tid = t.get("tabId") if isinstance(t, dict) else None
-            if not tid:
-                failures.append(_session_failure(u, "newTab", t))
-                continue
-            # Wait briefly for page
-            await asyncio.sleep(1)
-            snap = await send_to_extension("storageOp", {"tabId": tid, "kind": "local", "op": "snapshot"}, timeout=10)
-            if isinstance(snap, dict) and snap.get("ok"):
-                bundle["storage"][u] = snap.get("items", {})
-            else:
-                failures.append(_session_failure(u, "storage", snap))
-            await send_to_extension("closeTab", {"tabId": tid})
+    for u in urls:
+        t = await send_to_extension("newTab", {"url": u})
+        tid = t.get("tabId") if isinstance(t, dict) else None
+        if not tid:
+            failures.append(_session_failure(u, "newTab", t))
+            continue
+        await asyncio.sleep(1)  # let the page load
+        snap = await send_to_extension("storageOp", {"tabId": tid, "kind": "local", "op": "snapshot"}, timeout=10)
+        if isinstance(snap, dict) and snap.get("ok"):
+            bundle["storage"][u] = snap.get("items", {})
+        else:
+            failures.append(_session_failure(u, "storage", snap))
+        await send_to_extension("closeTab", {"tabId": tid})
     # A partial bundle must not replace a saved session.
     if failures:
         return {"error": f"Session {name!r} not saved: {len(failures)} read(s) failed", "failures": failures}
@@ -2839,13 +2836,8 @@ def _workflow_names():
     return [f[:-3] for f in os.listdir(WORKFLOW_DIR) if f.endswith('.md')]
 
 
-def _parse_workflow(filepath, variables=None):
-    """Parse a workflow .md file into a list of batch commands."""
-    with open(filepath, 'r', encoding='utf-8') as f:
-        return _parse_workflow_text(f.read(), variables)
-
-
 def _parse_workflow_text(content, variables=None):
+    """Parse a workflow .md file's text into a list of batch commands."""
     variables = variables or {}
     blocks = _re.findall(r'```json\s*\n(.*?)\n```', content, _re.DOTALL)
 
@@ -2912,19 +2904,19 @@ async def ws_handler(websocket):
     _tab_openers.clear()
 
     if old_ws is not None and old_ws is not websocket:
-        _log("↻ New extension connection replacing existing one")
+        _log("New extension connection replacing existing one")
         try:
-            await old_ws.close(code=1012, reason="replaced by newer ZenLink connection")
+            await old_ws.close(code=1012, reason="replaced by newer Kitsune connection")
         except Exception:
             pass
-    _log(f"✅ Browser extension connected (generation {my_generation})")
+    _log(f"Browser extension connected (generation {my_generation})")
 
     try:
         async for message in websocket:
             try:
                 data = json.loads(message)
             except (json.JSONDecodeError, UnicodeDecodeError) as e:
-                _log(f"⚠️ Bad message from extension: {e}")
+                _log(f"Bad message from extension: {e}")
                 continue
             cmd_id = data.get("id")
 
@@ -2963,7 +2955,7 @@ async def ws_handler(websocket):
             else:
                 _log(f"← Extension: {json.dumps(data)[:200]}")
     except websockets.exceptions.ConnectionClosed:
-        _log(f"⚠️ Extension disconnected (generation {my_generation})")
+        _log(f"Extension disconnected (generation {my_generation})")
     finally:
         _close_handoff_channels(websocket)
         if extension_ws is websocket:
@@ -2985,11 +2977,11 @@ async def ws_handler(websocket):
 
 def _log_rejected_ws_origin(connection, request, response):
     if response.status_code == 403:
-        _log(f"⛔ Rejected WebSocket connection from origin {request.headers.get('Origin') or '(none)'!r}")
+        _log(f"Rejected WebSocket connection from origin {request.headers.get('Origin') or '(none)'!r}")
 
 
 async def serve_extension_ws(port):
-    # 2.1.0: websockets defaults to a 1 MiB message cap - a full-page screenshot is several MB and the
+    # websockets defaults to a 1 MiB message cap - a full-page screenshot is several MB and the
     # oversized frame closed the socket ("Extension disconnected"). Allow big frames.
     options = {"origins": ALLOWED_WS_ORIGINS, "process_response": _log_rejected_ws_origin,
                "max_size": 256 * 1024 * 1024}
@@ -3788,7 +3780,7 @@ async def _dispatch_with_expectation(action, params, spec, timeout):
 
 
 # ══════════════════════════════════════════════
-#  2.1.0 — File upload (browser_upload_file)
+#  File upload (browser_upload_file)
 # ══════════════════════════════════════════════
 # Pages can't read local files, so the bridge reads them and streams base64
 # chunks to the content script, which rebuilds File objects and attaches them.
@@ -3856,8 +3848,8 @@ JS_FULL_CHUNK = 45000   # content.js caps executeJS results at 50,000 chars
 
 
 async def _js_full_async(body):
-    """2.0.9 - /api/js with {"full": true}: run the code once, park the result in the content-script
-    window, then read it back in slices so callers get results longer than the 50 KB cap."""
+    """/api/js with {"full": true}: run the code once, park the result in the content-script
+    window, then read it back in slices so callers get results longer than one call's cap."""
     tab_id = body.get("tabId")
     wrapped = ("(function(){var __v=eval(%s);window.__zlBig=String(__v===undefined||__v===null?'':__v);"
                "return String(window.__zlBig.length);})()" % json.dumps(body.get("code", "")))
@@ -3879,7 +3871,7 @@ _IMAGE_URL = _re.compile(r"^https?://[^?#]+\.(?:jpe?g|png|gif|webp|avif|bmp)(?:[
 
 
 def _wrap_image_url(body):
-    """2.0.9 - opening a bare image URL (an ImageDocument) knocked the extension offline. Serve it inside
+    """Opening a bare image URL (an ImageDocument) knocks the extension offline. Serve it inside
     a tiny local page instead; the image is #zlimg. Pass {"raw": true} to skip."""
     url = (body or {}).get("url") or ""
     if url and not body.get("raw") and _IMAGE_URL.match(url):
@@ -5080,7 +5072,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "/api/forms": self.handle_forms,
             "/api/version": self.handle_version,
             "/api/workflows": self.handle_list_workflows,
-            # 1.4.0 — read-only routes also reachable via GET
+            # Read-only routes also reachable via GET
             "/api/health": self.handle_health,
             "/api/logs": self.handle_logs,
             "/api/audit": self.handle_audit,
@@ -5146,7 +5138,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "/api/keep-alive": self.handle_keep_alive,
             "/api/keep-alive-stop": self.handle_keep_alive_stop,
             "/api/reload-extension": self.handle_reload_extension,
-            # 1.4.0 — generic passthrough handlers (forward body to extension action)
+            # Generic passthrough handlers (forward body to extension action)
             "/api/query": lambda: self._forward("query"),
             "/api/html": lambda: self._forward("getHTML"),
             "/api/links": lambda: self._forward("getLinks"),
@@ -5199,7 +5191,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "/api/clear-browsing-data": lambda: self._forward("clearBrowsingData", default_timeout=60),
             "/api/intercept": lambda: self._forward("intercept"),
             "/api/click-and-wait-navigation": lambda: self._forward("clickAndWaitNavigation", default_timeout=20),
-            # 1.4.0 — bridge-only orchestration
+            # Bridge-only orchestration
             "/api/broadcast": self.handle_broadcast,
             "/api/sync-barrier": self.handle_sync_barrier,
             "/api/retry": self.handle_retry,
@@ -5510,11 +5502,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self._send_extension_action(action, body, timeout=timeout)
 
     def handle_view(self):
-        """2.0.9 - local wrapper page for bare image URLs (see _wrap_image_url)."""
+        """Local wrapper page for bare image URLs (see _wrap_image_url)."""
         import html as _html
-        from urllib.parse import urlparse, parse_qs
-        src = parse_qs(urlparse(self.path).query).get("src", [""])[0]
-        page = ("<!doctype html><html><head><meta charset='utf-8'><title>ZenLink view</title></head>"
+        src = parse_qs(urlsplit(self.path).query).get("src", [""])[0]
+        page = ("<!doctype html><html><head><meta charset='utf-8'><title>Kitsune view</title></head>"
                 "<body style='margin:0;background:#111'><img id='zlimg' src=\"" + _html.escape(src, quote=True) +
                 "\" style='display:block;max-width:100%'></body></html>")
         data = page.encode("utf-8")
@@ -5699,7 +5690,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         # moot anyway.
         self._send_extension_action("reloadExtension", {}, timeout=5)
 
-    # ── 1.4.0 generic forwarder ──
+    # ── Generic forwarder ──
 
     def _forward(self, action, default_timeout=15):
         """Forward body + policy check + audit to a named extension action."""
@@ -5709,7 +5700,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         """_forward for a wait the extension runs, with its timeout coded."""
         self._send_extension_action(action, self.read_body(), timeout=default_timeout, on_result=_coded_wait_timeout)
 
-    # ── 1.4.0 orchestration ──
+    # ── Orchestration ──
 
     def handle_broadcast(self):
         body = self.read_body()
@@ -5977,7 +5968,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         # The checkpoint keeps the hash of the file the commands came from.
         with open(filepath, "rb") as f:
             content = f.read()
-        # Universal newlines, as _parse_workflow reads a file.
+        # Universal newlines, as a text-mode read gives.
         text = content.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
         commands, err = _parse_workflow_text(text, variables)
         if err:
@@ -6069,7 +6060,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         try:
             return json.loads(raw)
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
-            print(f"[{now()}] ⚠️ Bad request body: {e}")
+            print(f"[{now()}] Bad request body: {e}")
             return {}
 
     def _tab_params(self):
@@ -6193,7 +6184,7 @@ async def _idle_shutdown_watch(idle_timeout):
         _idle_shutdown_lock = bridge_control.try_lifecycle_lock()
         if _idle_shutdown_lock is None:
             continue  # A client is starting or stopping the bridge right now.
-        print(f"[{now()}] 💤 No client activity for {idle_timeout:g}s; shutting down")
+        print(f"[{now()}] No client activity for {idle_timeout:g}s; shutting down")
         shutdown_event.set()
         return
 
@@ -6208,7 +6199,7 @@ async def main(idle_timeout=0):
 
 async def _serve(idle_timeout):
     ws_server = await serve_extension_ws(WS_PORT)
-    print(f"[{now()}] 🔌 WebSocket server on ws://localhost:{WS_PORT}")
+    print(f"[{now()}] WebSocket server on ws://localhost:{WS_PORT}")
     
     http_server = None
     idle_watch = None
@@ -6217,40 +6208,8 @@ async def _serve(idle_timeout):
         http_server = BridgeHTTPServer(("127.0.0.1", HTTP_PORT), BridgeHandler)
         http_thread = Thread(target=http_server.serve_forever, daemon=True)
         http_thread.start()
-        print(f"[{now()}] 🌐 HTTP API server on http://localhost:{HTTP_PORT}")
-    
-        print(f"[{now()}] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        print(f"[{now()}] Kitsune bridge is ready!")
-        print(f"[{now()}] Waiting for extension to connect...")
-        print(f"[{now()}] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        print()
-        print("API Endpoints:")
-        print(f"  GET  http://localhost:{HTTP_PORT}/api/status             - Connection status")
-        print(f"  GET  http://localhost:{HTTP_PORT}/api/screenshot          - Capture page")
-        print(f"  GET  http://localhost:{HTTP_PORT}/api/page-info           - Page metadata")
-        print(f"  GET  http://localhost:{HTTP_PORT}/api/page-text           - Page text content")
-        print(f"  GET  http://localhost:{HTTP_PORT}/api/tabs                - List open tabs")
-        print(f"  GET  http://localhost:{HTTP_PORT}/api/dom                 - Accessibility tree")
-        print(f"  GET  http://localhost:{HTTP_PORT}/api/forms               - Form fields")
-        print(f"  POST http://localhost:{HTTP_PORT}/api/click               - Click element")
-        print(f"  POST http://localhost:{HTTP_PORT}/api/type                - Type text")
-        print(f"  POST http://localhost:{HTTP_PORT}/api/scroll              - Scroll page")
-        print(f"  POST http://localhost:{HTTP_PORT}/api/hover               - Hover element")
-        print(f"  POST http://localhost:{HTTP_PORT}/api/fill                - Fill form field")
-        print(f"  POST http://localhost:{HTTP_PORT}/api/navigate            - Go to URL")
-        print(f"  POST http://localhost:{HTTP_PORT}/api/find                - Find elements")
-        print(f"  POST http://localhost:{HTTP_PORT}/api/js                  - Execute JavaScript")
-        print(f"  POST http://localhost:{HTTP_PORT}/api/highlight           - Highlight element")
-        print(f"  POST http://localhost:{HTTP_PORT}/api/wait-for-element    - Wait for element to appear")
-        print(f"  POST http://localhost:{HTTP_PORT}/api/wait-for-result     - Poll JS expression until non-empty")
-        print(f"  GET  http://localhost:{HTTP_PORT}/api/version             - Bridge/extension version info")
-        print(f"  GET  http://localhost:{HTTP_PORT}/api/workflows           - List available workflows")
-        print(f"  POST http://localhost:{HTTP_PORT}/api/workflow            - Execute a named workflow")
-        print(f"  POST http://localhost:{HTTP_PORT}/api/cache               - Cache control (clear/status/ttl)")
-        print(f"  POST http://localhost:{HTTP_PORT}/api/wake-tab            - Reload a discarded tab and wait for ready")
-        print(f"  POST http://localhost:{HTTP_PORT}/api/keep-alive          - Pin a list of tabs against the Tab Unloader")
-        print(f"  POST http://localhost:{HTTP_PORT}/api/keep-alive-stop     - Stop keep-alive (omit tabIds to stop all)")
-        print()
+        print(f"[{now()}] HTTP API server on http://localhost:{HTTP_PORT}")
+        print(f"[{now()}] Kitsune bridge is ready; waiting for the extension to connect")
 
         if idle_timeout:
             _client_activity.touch()
