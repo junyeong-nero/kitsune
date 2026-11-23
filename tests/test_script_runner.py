@@ -14,6 +14,19 @@ from unittest.mock import patch
 
 from kitsune import script_runner, script_worker
 
+
+def _exited(pid):
+    """Whether no process runs with pid. On Windows os.kill(pid, 0) would terminate it."""
+    if os.name == "nt":
+        import psutil
+
+        return not psutil.pid_exists(pid)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    return False
+
 ROOT = Path(__file__).resolve().parent.parent
 # A successful action's reply as the bridge returns it (#575), with fields a script result leaves out.
 DELTA = {"ok": True, "tag": "button", "text": "Save", "visibilityState": "hidden", "target_ref": "e6",
@@ -464,11 +477,16 @@ class ScriptRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["code"], "script_approval_required")
         self.assertEqual(client.calls, [])
 
+    async def test_non_ascii_output_and_result_cross_the_pipes(self):
+        # Without UTF-8 mode a Windows worker would write its pipes in the ANSI code page.
+        with patch.dict(os.environ, {"PYTHONUTF8": "0"}):
+            result = await script_runner.run_python("print('여우 ✓')\nresult = '꼬리'", Client())
+        self.assertEqual((result["output"], result["result"]), ("여우 ✓\n", "꼬리"), result)
+
     async def test_timeout_reaps_the_worker(self):
         result = await script_runner.run_python("import os\nprint(os.getpid())\nwhile True: pass", Client(), timeout=0.5)
         self.assertEqual(result["code"], "script_timeout")
-        with self.assertRaises(ProcessLookupError):
-            os.kill(int(result["output"].strip()), 0)
+        self.assertTrue(_exited(int(result["output"].strip())))
 
     async def test_timeout_preserves_unknown_inflight_operation_and_does_not_replay(self):
         def slow_reply():
@@ -781,8 +799,7 @@ class ScriptRunnerTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(asyncio.CancelledError):
                 await task
         self.assertIsNotNone(processes[0].returncode)
-        with self.assertRaises(ProcessLookupError):
-            os.kill(processes[0].pid, 0)
+        self.assertTrue(_exited(processes[0].pid))
 
     async def test_raw_stdout_is_a_protocol_error_not_a_fake_success(self):
         result = await script_runner.run_python("import os; os.write(1, b'not-json\\n')", Client())

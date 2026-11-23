@@ -37,6 +37,29 @@ USER_STOP_CODES = frozenset({"needs_user", "confirmation_required", "user_tab", 
                              "permission_required", "host_permission_denied", "unsupported_target"})
 
 
+def _kill_tree(pid):
+    """Kill the worker and every process it started."""
+    if os.name != "nt":
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        return
+    # Windows has no process groups: kill the worker's descendants, then the worker.
+    import psutil
+
+    try:
+        worker = psutil.Process(pid)
+        tree = [*worker.children(recursive=True), worker]
+    except psutil.NoSuchProcess:
+        return
+    for member in tree:
+        try:
+            member.kill()
+        except psutil.NoSuchProcess:
+            pass
+
+
 class _Stop(Exception):
     def __init__(self, code, message, **details):
         self.result = {"error": message, "code": code, **details}
@@ -149,6 +172,7 @@ async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
     with tempfile.TemporaryDirectory(prefix="kitsune-script-") as directory:
         process = await asyncio.create_subprocess_exec(
             sys.executable, "-m", "kitsune.script_worker", cwd=directory, start_new_session=True,
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},  # frames are UTF-8, not the Windows code page
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             limit=FRAME_LIMIT + 1)
 
@@ -271,10 +295,7 @@ async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
         finally:
             # Cancelled MCP calls also reach here. Kill the process group before draining its pipes.
             with anyio.CancelScope(shield=True):
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+                _kill_tree(process.pid)
                 for task in (*tasks, watchdog):
                     task.cancel()
                 await asyncio.gather(*tasks, watchdog, return_exceptions=True)
