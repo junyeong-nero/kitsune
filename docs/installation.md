@@ -5,8 +5,7 @@ extension** you install once. Setup takes four steps.
 
 !!! info "Before you start"
 
-    - macOS, Linux or Windows. On Windows, read [Windows](windows.md) first: it needs
-      `KITSUNE_SCRIPTING=0`.
+    - macOS, Linux or Windows (see [Windows](windows.md))
     - Firefox 142+, Zen 1.23+ or LibreWolf
     - An MCP client: Claude Code, Codex CLI, Pi, Claude Desktop, Cursor or OpenCode
 

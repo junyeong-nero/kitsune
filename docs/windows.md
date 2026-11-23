@@ -1,21 +1,8 @@
 # Windows
 
-Kitsune runs natively on Windows with the same extension, MCP server and tab
+Kitsune runs natively on Windows with the same extension, MCP server, tools and tab
 handoff as on macOS and Linux. Install it as in [Installation](installation.md), with the
 differences below.
-
-## Turn off Python scripting
-
-`browser_run_python` does not run on Windows yet. Start the MCP server with
-`KITSUNE_SCRIPTING=0`, which gives the agent the [direct browser tools](tools.md#core-tools)
-instead. For Claude Code:
-
-```powershell
-claude mcp add --scope user -e KITSUNE_SCRIPTING=0 kitsune -- uvx --from kitsune-browser-mcp kitsune
-```
-
-Other clients set the variable in their MCP server entry, as shown for each client in
-[Add Kitsune to your agent](installation.md#3-add-kitsune-to-your-agent).
 
 ## The data directory is private
 
@@ -34,13 +21,9 @@ program.
 
 ## Limitations
 
-- **No `browser_run_python`**: see [above](#turn-off-python-scripting).
 - **OS-level input**: native keyboard and drag input (`browser_trusted_type`,
   `browser_trusted_press_key`, `browser_trusted_drag`) are macOS only and return
   `unsupported_platform` on Windows.
-- **Building the signed extension**: `scripts/build_extension.py signed` does not yet produce a
-  correct signed build on Windows; `tests/test_build_extension.py` fails there. The released
-  `.xpi` is built on Linux and is not affected.
 
 ## Verifying a checkout
 
