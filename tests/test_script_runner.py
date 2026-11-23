@@ -414,7 +414,7 @@ class ScriptRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bodies, [{"selector": "", "ref": ref, "expect": {"url": "/b"}, "tabId": 7} for ref in ("e334", "e373")])
         remapped = {"from": "e334", "to": "e373", "role": "link", "name": "Bookmarks"}
         self.assertEqual(result["result"], {"ok": True, "navigated": {"url": "/b"}, "remapped": remapped})
-        self.assertEqual(result["operations"], [{"method": "POST", "route": "/api/click", "status": "ok", "tab_id": 7,
+        self.assertEqual(result["operations"], [{"route": "/api/click", "status": "ok", "tab_id": 7,
                                                 "remapped": remapped}])
 
     async def test_stale_ref_without_the_follow_marker_fails_as_before(self):
@@ -425,7 +425,7 @@ class ScriptRunnerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(result["code"], "script_operation_failed")
                 self.assertEqual(len(client.calls), 1)
                 self.assertEqual(result["failed_operation"], _stale("e334", same))
-                self.assertEqual(result["operations"], [{"method": "POST", "route": "/api/click", "status": "failed", "tab_id": 7}])
+                self.assertEqual(result["operations"], [{"route": "/api/click", "status": "failed", "tab_id": 7}])
 
     async def test_followed_request_is_checked_like_any_other_and_never_followed_twice(self):
         held = {"code": "needs_user", "error": "Confirmation required", "retryable": False,
@@ -798,6 +798,37 @@ class ScriptRunnerTests(unittest.IsolatedAsyncioTestCase):
                 "for p in range(10):\n    try:\n        tab.text()\n    except BaseException:\n        pass", again, tab_id=7)
             self.assertEqual(ignored["code"], "script_operation_limit", "a call after ScriptLimit stops the script")
             self.assertEqual(len(again.calls), 3)
+
+    async def test_a_long_operations_list_is_summarized(self):
+        # #617: 100 navigate/page-text entries were about 7,000 characters of every such reply.
+        loop = "for p in range(50):\n    tab.navigate(f'/p/{p}')\n    tab.text()\n"
+        for code, error in ((loop, None), (loop + "tab.text()", "script_operation_limit")):
+            with self.subTest(error=error):
+                client = Client({"/api/page-text": {"text": "p"}})
+                result = await script_runner.run_python(code, client, tab_id=7)
+                self.assertEqual(result.get("code"), error, result)
+                self.assertLess(len(json.dumps(result["operations"])), 500)
+                self.assertEqual(result["operations"], {
+                    "count": 100, "by_route": {"/api/navigate": 50, "/api/page-text": 50}, "tab_id": 7,
+                    "last": [{"index": 97, "route": "/api/page-text", "status": "ok"},
+                             {"index": 98, "route": "/api/navigate", "status": "ok"},
+                             {"index": 99, "route": "/api/page-text", "status": "ok"}]})
+
+    async def test_a_summary_keeps_failed_remapped_and_other_tab_entries(self):
+        replies = iter([{"text": "p"}] * 4 + [{"error": "gone", "code": "not_found"}] + [{"text": "p"}] * 20)
+        client = Client({"/api/page-text": lambda: next(replies), "/api/click": {"error": "x", "code": "not_found"}})
+        result = await script_runner.run_python(
+            "for p in range(12):\n    try: tab.text()\n    except KitsuneError: pass\n"
+            "browser.tab(9).text()\ntab.click('#go')", client, tab_id=7)
+        self.assertEqual(result["code"], "script_operation_failed")
+        operations = result["operations"]
+        self.assertEqual((operations["count"], operations["tab_id"]), (14, 7))
+        self.assertEqual(operations["notable"], [
+            {"index": 4, "route": "/api/page-text", "status": "failed"},
+            {"index": 12, "route": "/api/page-text", "status": "ok", "tab_id": 9},
+            {"index": 13, "route": "/api/click", "status": "failed"}])
+        self.assertEqual(operations["last"], [{"index": 11, "route": "/api/page-text", "status": "ok"}],
+                         "an entry is not repeated in last")
 
     async def test_the_budget_is_visible_and_counts_only_sent_calls(self):
         result = await script_runner.run_python(

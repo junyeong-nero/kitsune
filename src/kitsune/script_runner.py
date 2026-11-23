@@ -20,6 +20,9 @@ from .tool_approvals import ROUTE_TOOLS
 CODE_LIMIT = 64000
 OUTPUT_LIMIT = 16000  # UTF-8 bytes, shared by printed output and the selected result
 OPERATION_LIMIT = 100
+# The reply lists this many operations; a longer list is summarized, with the last few (#617).
+OPERATIONS_LISTED = 10
+OPERATIONS_LAST = 3
 # After the deadline a browser call raises ScriptLimit in the script; the worker is killed only
 # this many seconds later, so a finally or except can still print what it collected (#618).
 STOP_GRACE = 2.0
@@ -92,6 +95,36 @@ def _wrote(operations):
     """Whether an operation other than a read, a GET or a navigation was sent (#618)."""
     return any(entry["method"] != "GET" and entry["route"] not in READ_ROUTES and entry["route"] != "/api/navigate"
                for entry in operations)
+
+
+def _compact_operations(operations):
+    """operations as the reply shows them (#617): a list up to OPERATIONS_LISTED, else a summary.
+
+    A 100-call loop's list was 7,000 characters, three quarters of a failed reply. The summary
+    keeps every entry that says something (a failure, an unknown outcome, a remap, another tab)
+    and the last ones, each with its index, and counts the rest by route.
+    """
+    shown = [{key: value for key, value in entry.items() if (key, value) != ("method", "POST")}
+             for entry in operations]
+    if len(shown) <= OPERATIONS_LISTED:
+        return shown
+    tabs = [entry.get("tab_id") for entry in shown]
+    usual_tab = max(tabs, key=tabs.count)
+
+    def indexed(index):  # the entry, its tab_id left out when it is the summary's
+        return {"index": index, **{key: value for key, value in shown[index].items()
+                                   if key != "tab_id" or value != usual_tab}}
+
+    notable = [index for index, entry in enumerate(shown)
+               if entry["status"] != "ok" or "remapped" in entry or entry.get("tab_id") != usual_tab]
+    last = [index for index in range(len(shown) - OPERATIONS_LAST, len(shown)) if index not in notable]
+    by_route = {}
+    for entry in shown:
+        by_route[entry["route"]] = by_route.get(entry["route"], 0) + 1
+    return {"count": len(shown), "by_route": by_route, **({"tab_id": usual_tab} if usual_tab is not None else {}),
+            **({"notable": [indexed(index) for index in notable[:OPERATIONS_LISTED]]} if notable else {}),
+            **({"notable_more": len(notable) - OPERATIONS_LISTED} if len(notable) > OPERATIONS_LISTED else {}),
+            "last": [indexed(index) for index in last]}
 
 
 def _without_tokens(value):
@@ -352,10 +385,10 @@ async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
         if result["ok"]:
             result["hint"] = (f"Output/result was cut at {OUTPUT_LIMIT} UTF-8 bytes; dropped_bytes were left out "
                               "(a cut non-string result is the start of its JSON text). The script ran to its "
-                              "end and operations lists what was done: do not replay it. No match in the shown "
+                              "end and operations shows what was done: do not replay it. No match in the shown "
                               "part is not page-wide absence. For the rest, in a new read-only script use "
                               "tab.snapshot(target=..., max_depth=..., text=True) or "
                               "tab.query(CSS, fields=[...], limit=...) and return only needed evidence.")
         if selected is not None:
             result["result"] = selected
-    return {**result, "output": output.decode("utf-8", "ignore"), "operations": operations}
+    return {**result, "output": output.decode("utf-8", "ignore"), "operations": _compact_operations(operations)}
