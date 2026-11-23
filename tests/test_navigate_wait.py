@@ -17,7 +17,7 @@ EXTENSION_SECONDS = waits.NAVIGATION_LOAD_SECONDS + waits.PAGE_URL_SECONDS
 
 class NavigateWaitTests(unittest.TestCase):
     def test_wait_bounds_match_the_extension(self):
-        source = BACKGROUND.read_text()
+        source = BACKGROUND.read_text(encoding="utf-8")
         load_ms = re.search(r"function waitForTabLoad\([^)]*timeout = (\d+)", source).group(1)
         page_ms = re.search(r"const PAGE_URL_TIMEOUT_MS = (\d+);", source).group(1)
         self.assertEqual(waits.NAVIGATION_LOAD_SECONDS, int(load_ms) / 1000)

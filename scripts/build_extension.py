@@ -96,7 +96,7 @@ def build(variant: str, out: Path, version: str) -> Path:
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
     for path in sorted(out.rglob("*.js")):
-        name = str(path.relative_to(out))
+        name = path.relative_to(out).as_posix()  # BUILD_FILES spelling, also on Windows
         text = path.read_text(encoding="utf-8")
         # Validate markers in both variants so a broken region fails before release.
         stripped = strip_dev_only(text, name)

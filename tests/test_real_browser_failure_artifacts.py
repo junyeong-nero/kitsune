@@ -250,7 +250,7 @@ class _FakeBrowser:
     def __init__(self, binary, root, ws_port, prefs, scripts, headed=False):
         self.root = Path(root)
         self.log_path = self.root / "browser.log"
-        self.log_path.write_text("x" * (artifacts.MAX_LOG_BYTES + 10) + "\nbrowser tail line\n")
+        self.log_path.write_text("x" * (artifacts.MAX_LOG_BYTES + 10) + "\nbrowser tail line\n", newline="")
         self.process = None
         self.rdp_port = None
         self.stopped = False
@@ -367,6 +367,9 @@ class HarnessRetentionTests(unittest.TestCase):
         owned = {os.getpid(): "test-runner", _FakeBridge.instances[0].process.pid: "bridge",
                  _FakeBrowser.instances[0].process.pid: "browser-group"}
         for sample in resources:
+            if os.name == "nt":  # no ps or pgrep: the sample says why it has no processes
+                self.assertIn("processesError", sample)
+                continue
             self.assertEqual({row["pid"]: row["role"] for row in sample["processes"]}, owned)
         self.assertFalse(_FakeBrowser.instances[0].process.alive)
         self.assertEqual(_FakeBridge.instances[0].env["PYTHONUNBUFFERED"], "1")

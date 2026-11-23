@@ -32,4 +32,6 @@ jobs:
       - run: uv run --frozen python -m unittest discover -s tests -p test_bridge_lifecycle.py -q
       - run: uv run --frozen python -m unittest discover -s tests -p test_bridge_security.py -q
       - run: uv run --frozen python -m unittest discover -s tests -p test_windows_lifecycle.py -q
+      - run: uv run --frozen python -m unittest discover -s tests -p test_script_runner.py -q
+      - run: uv run --frozen python -m unittest discover -s tests -p test_build_extension.py -q
       - run: node tests/tab_handoff_races.cjs

@@ -697,7 +697,7 @@ class McpParityTests(BridgeTestCase):
             (lambda: tools.browser_retry(command, max_attempts=2, tab_id=7),
              lambda: browser.retry(command, max_attempts=2, tab=tab)),
             (lambda: tools.browser_clear_browsing_data(types=["cache"], since_ms=1000),
-             lambda: browser.clear_browsing_data(["cache"], since=datetime.fromtimestamp(1))),
+             lambda: browser.clear_browsing_data(["cache"], since=datetime.fromtimestamp(1, timezone.utc))),
             (lambda: tools.browser_health(), lambda: browser.health()),
             (lambda: tools.browser_logs(limit=50), lambda: browser.logs(limit=50)),
             (lambda: tools.browser_audit(limit=10), lambda: browser.audit(limit=10)),
