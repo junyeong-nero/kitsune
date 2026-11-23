@@ -126,6 +126,18 @@ class RealBrowserNavigateWaitTests(harness.RealBrowserTestCase):
         self.assertNotIn("navigation_pending", result)
         self.assertIn('heading "Plain page"', result["snapshot"])
 
+    def test_navigating_away_from_a_page_still_loading_waits_for_the_new_page(self):
+        # Leaving a page whose load is pending ends that load with a late 'complete' for its URL. It is
+        # not the destination's: each navigate waited one page behind and returned at once (#561).
+        tab = self.open_tab(f"{self.site.origin}/start")
+        self.assertIs(self.assert_ok(self.call("/api/click", {"tabId": tab, "selector": "a[href='/heavy']"}))
+                      .get("load_pending"), True)
+        for path, heading in (("/plain", "Plain page"), ("/start", "Start")):
+            result = self.assert_ok(self.call("/api/navigate", {"tabId": tab, "url": self.site.origin + path}))
+            self.assertIn(f'heading "{heading}"', result.get("snapshot", ""), result)
+            info = self.call("/api/page-info", {"tabId": tab})
+            self.assertEqual((info["url"], info["readyState"]), (self.site.origin + path, "complete"), info)
+
     def test_a_navigation_no_document_answered_is_still_a_timeout(self):
         # The page navigated away from stays shown and loaded: its DOM is not the destination's.
         tab = self.open_tab(f"{self.site.origin}/start")
