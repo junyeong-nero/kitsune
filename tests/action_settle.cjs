@@ -271,6 +271,24 @@ async function testANavigatingClickReturnsOncePageIsParsed() {
   within(unstarted.snapshotAt(), 1500, 1700, 'until the load');
 }
 
+async function testASubmitReportsThePageItLoads() {
+  // #586: a submit's snapshot is full, but it waits for the page the submit loads.
+  const h = harness({ navigation: { loadMs: 700 } });
+  const result = await h.context.handleCommand({ action: 'submitForm', selector: '#order', tabId: 7 });
+  assert.deepEqual([h.sent[0].deltaBaseline, h.sent[0].settleWatch], [undefined, true]);
+  assert.equal(JSON.stringify(result.navigated), JSON.stringify({ url: 'https://shop.test/item/1', title: 'Item 1' }));
+  assert.equal(result.snapshot, '- heading "Item 1" [ref=s2e1]');
+  assert.equal(result.snapshot_delta, undefined);
+  within(h.snapshotAt(), 700, 900, 'after the load');
+  // A submit a script handles loads nothing: a full snapshot of the quiet page, no navigated.
+  const handled = harness({ mutatesUntil: 100 });
+  const plain = await handled.context.handleCommand({ action: 'submitForm', selector: '#order', tabId: 7 });
+  assert.equal(plain.navigated, undefined);
+  assert.equal(plain.snapshot_delta, undefined);
+  assert.equal(handled.sent.find(m => m.action === 'getSnapshot').delta, undefined);
+  within(handled.snapshotAt(), MIN, MIN + 150, 'quiet page');
+}
+
 (async () => {
   await testQuietPageWaitsTheMinimum();
   await testHiddenTabsWaitForThrottledTimers();
@@ -284,5 +302,6 @@ async function testANavigatingClickReturnsOncePageIsParsed() {
   await testPendingRequestsAreNotNoVisibleChange();
   await testANavigatingClickReportsTheNewPage();
   await testANavigatingClickReturnsOncePageIsParsed();
+  await testASubmitReportsThePageItLoads();
   console.log('action_settle: ok');
 })().catch(e => { console.error(e); process.exit(1); });

@@ -1347,10 +1347,13 @@ async function handleCommand(command) {
   // The content script records the delta's baseline right before it acts. keepBaseline: diff
   // against the baseline an earlier action recorded (deltaBaseline without a snapshot), as
   // browser_fill_form does for its fields (#348); this action only starts the settle watch.
+  // A submit's snapshot is full, but it settles like a click: it waits for the page the submit
+  // loads and reports navigated, or snapshots the page that held the form once it is quiet (#586).
+  const settleOnly = withSnapshot && params.action === 'submitForm';
   if (deltaSnapshot) {
     if (params.keepBaseline) params.settleWatch = true;
     else params.deltaBaseline = true;
-  }
+  } else if (settleOnly) params.settleWatch = true;
   // Text snapshots report which tab they read.
   const textSnapshot = params.action === 'getSnapshot' && !!params.text;
   const tracksOpenedTabs = OPENER_ACTIONS.has(params.action);
@@ -1378,7 +1381,7 @@ async function handleCommand(command) {
   const touched = touches ? params.tabId : null;
   if (touched != null) touchStart(touched);
   try {
-    const result = await runCommand(params, { withSnapshot, deltaSnapshot, textSnapshot, tracksOpenedTabs, pageText });
+    const result = await runCommand(params, { withSnapshot, deltaSnapshot, settleOnly, textSnapshot, tracksOpenedTabs, pageText });
     if (['screenPoint', 'agentInput', 'focusState'].includes(params.action)) return tabAdmissionError(params) || result;
     return repeatSnapshot && params.tabId != null ? await unchangedSince(params.tabId, actionCaller(params), result) : result;
   } catch (e) {
@@ -1506,7 +1509,7 @@ async function waitForActionNavigation(tabId, watch, params) {
 }
 
 async function runCommand(params, options) {
-  const settles = options.deltaSnapshot && params.tabId != null && params.settle !== false;
+  const settles = (options.deltaSnapshot || options.settleOnly) && params.tabId != null && params.settle !== false;
   if (!settles) return await runCommandSettled(params, options, null);
   const watch = { pending: new Set(), start: Date.now(), loadBefore: tabLoads.get(params.tabId),
     documentsBefore: tabDocuments.get(params.tabId), requestBefore: mainFrameStatus.get(params.tabId)?.requestId };

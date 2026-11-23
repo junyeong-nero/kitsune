@@ -18,12 +18,11 @@ _OUTPUT = sys.stdout
 _UNBOUND_CALL = re.compile(r"(Browser|Tab)\.([A-Za-z]\w*)\(\) ")
 # Routes of the actions whose post-action snapshot (the extension's POST_SNAPSHOT_ACTIONS) is taken
 # once the page settled: a delta of what the action changed, or the page it loaded. Reads and
-# waits are not listed, though /api/snapshot replies have a snapshot key too. Nor is
-# /api/submit-form: its snapshot is taken straight after dispatch, before the submit's navigation,
-# so it shows the page that held the form and would read as "not submitted".
+# waits are not listed, though /api/snapshot replies have a snapshot key too. /api/submit-form
+# waits for the page its submit loads (#586); its snapshot is returned only with navigated.
 SNAPSHOT_ACTION_ROUTES = frozenset({
     "/api/click", "/api/type", "/api/fill", "/api/select-option", "/api/check", "/api/keypress",
-    "/api/navigate", "/api/hover"})
+    "/api/navigate", "/api/hover", "/api/submit-form"})
 # The snapshot and the fields that say what it is: a delta or a full page, cut or whole.
 _SNAPSHOT_FIELDS = ("snapshot", "snapshot_delta", "no_visible_change", "snapshot_truncated", "snapshot_hint",
                     "navigated")
