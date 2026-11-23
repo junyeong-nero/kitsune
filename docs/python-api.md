@@ -98,6 +98,11 @@ result = tab.snapshot()
   destination, the action runs on that link and reports `remapped: {from, to, role, name}` in its
   result and its `operations` entry. Any other stale ref fails as `stale_ref`: target by selector
   or take a new snapshot.
+- An agent tab dismisses a confirm or prompt no policy answers. A script whose action opened one
+  returns `dialogs` (the last 5, each with its `operation` index) and, for a dismissed confirm or
+  prompt, `dialog_hint`, whether or not it printed the action's reply; that operation's entry has
+  `dialog: "dismissed"` (or `"shown"`). Call `tab.handle_dialogs(accept=True)` and repeat the
+  action, in the same script if you like.
 - The worker is killed 2 s after the deadline; a command already sent may still finish, so read
   the page before writing again.
 - `help(tab.query)` prints a method's signature. A `Tab` or `Browser` call with unknown, missing or

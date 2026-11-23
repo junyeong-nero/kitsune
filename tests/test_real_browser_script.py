@@ -40,6 +40,9 @@ PAGES = {
            '<a href="/only">Only here</a> <button>Go</button>'),
     "/b": ("Page B", NAV + '<a href="/new">Moved</a> <a href="/twin">Twin</a> <a href="/twin2">Twin</a> '
            """<button onclick="document.title = 'Go clicked'">Go</button>"""),
+    # #615: wap-096's delete button.
+    "/confirm": ("Jobs", """<button onclick="if (confirm('Delete this job offer?')) document.title = 'Deleted'">"""
+                 "Delete</button>"),
 }
 
 
@@ -352,6 +355,29 @@ class RealBrowserScriptTests(harness.RealBrowserTestCase):
             self.assertEqual((payload["operations"]["count"], payload["operations"]["by_route"]),
                              (100, {"/api/navigate": 1, "/api/page-text": 99}))
             self.assertLess(len(json.dumps(payload["operations"])), 500)
+        self.run_scenario(run)
+
+    def test_a_dismissed_confirm_is_reported_and_accepted_from_a_script(self):
+        async def run(session, tab_id):
+            async def python(code):
+                reply = await session.call_tool("browser_run_python", {"code": code})
+                self.assertFalse(reply.isError, reply)
+                return json.loads(reply.content[0].text)
+
+            dismissed = await python(f"tab.navigate({self.nav.origin + '/confirm'!r})\n"
+                                     "tab.click('button')\nprint(tab.info()['title'])")
+            self.assertEqual(dismissed["output"], "Jobs\n")
+            self.assertEqual([(d["operation"], d["type"], d["auto_dismissed"]) for d in dismissed["dialogs"]],
+                             [(1, "confirm", True)])
+            self.assertIn("tab.handle_dialogs(accept=True)", dismissed["dialog_hint"])
+            self.assertEqual(dismissed["operations"][1]["dialog"], "dismissed")
+
+            accepted = await python("tab.handle_dialogs(accept=True)\ntab.click('button')\n"
+                                    "print(tab.info()['title'])")
+            self.assertEqual(accepted["output"], "Deleted\n")
+            self.assertNotIn("dialog_hint", accepted)
+            self.assertEqual(accepted["dialogs"][0]["response"], True)
+            self.call("/api/handle-dialog", {"tabId": tab_id, "accept": None})
         self.run_scenario(run)
 
     def test_a_navigation_cut_by_the_deadline_is_a_timeout_and_the_script_still_prints(self):
