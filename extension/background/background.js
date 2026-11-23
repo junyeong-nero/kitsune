@@ -2116,8 +2116,10 @@ const domParsed = page => page?.readyState === 'interactive' || page?.readyState
 // Runs startNavigation and resolves true once the tab finishes loading, false on timeout.
 // Subscribes first so a fast 'complete' is not missed. Gecko may never emit a fresh
 // 'complete' (e.g. reloading a page with iframes in headed Zen), so tab.status is also
-// polled: a reload accepts any 'complete', other loads only one seen after 'loading'. A
-// complete tab still at about: counts when its page reports a loaded web URL (loadedPageUrl).
+// polled: a reload accepts any 'complete', other loads only one seen after 'loading', in the
+// listener as in the poll. Leaving a page whose load is pending ends that load with a late
+// 'complete' for the old URL before the new load starts (#561). A complete tab still at
+// about: counts when its page reports a loaded web URL (loadedPageUrl).
 function waitForTabLoad(tabId, startNavigation, { reload = false, timeout = 15000 } = {}) {
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -2138,7 +2140,7 @@ function waitForTabLoad(tabId, startNavigation, { reload = false, timeout = 1500
     function listener(updatedTabId, changeInfo, tab) {
       if (updatedTabId !== tabId || settled) return;
       if (changeInfo.status === 'loading') sawLoading = true;
-      if (changeInfo.status === 'complete' && isLoaded(tab)) finish(true);
+      if (changeInfo.status === 'complete' && (sawLoading || reload) && isLoaded(tab)) finish(true);
     }
     const check = async () => {
       if (checking) return;
