@@ -93,11 +93,14 @@ result = tab.snapshot()
   page and run only the remaining work, never replay the script. An approval stop names a
   `recovery_tool` for `browser_tools_call`. A tool [you require approval for](your-tabs.md#tools-that-need-your-approval)
   pauses the script instead, without counting against the deadline.
-- A ref dies when an action loads another document. Only a link's ref is followed: when the tab
-  is your client's own and its new page lists exactly one link with the same name and the same
-  destination, the action runs on that link and reports `remapped: {from, to, role, name}` in its
-  result and its `operations` entry. Any other stale ref fails as `stale_ref`: target by selector
-  or take a new snapshot.
+- A ref dies when an action loads another document, even a reload of the same URL. Links and
+  fields are followed: when the tab is your client's own and its new page lists exactly one link
+  with the same name and the same destination, or (#616) is back at the URL the ref's snapshot
+  was taken on and lists exactly one textbox, searchbox, combobox or spinbutton with the same name
+  and the same tag, `type`, `name` and `id`, the action runs on that element and reports
+  `remapped: {from, to, role, name}` in its result and its `operations` entry. Only refs from
+  `tab.snapshot()` are followed this way. Any other stale ref fails as `stale_ref`: target by
+  selector, use the refs `tab.navigate(url)` returns in `r['snapshot']`, or take a new snapshot.
 - An agent tab dismisses a confirm or prompt no policy answers. A script whose action opened one
   returns `dialogs` (the last 5, each with its `operation` index) and, for a dismissed confirm or
   prompt, `dialog_hint`, whether or not it printed the action's reply; that operation's entry has

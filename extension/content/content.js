@@ -1768,6 +1768,9 @@
     // The background keeps these with the refs and returns them to no client (#572).
     const hrefs = selected.filter(entry => entry.ref && linkDestination(entry))
       .map(entry => ({ ref: entry.ref, href: entry.href }));
+    // Native fields' identity and this document's URL, kept the same way (#616).
+    const fields = selected.filter(entry => entry.ref && fieldIdentity(entry.el))
+      .map(entry => ({ ref: entry.ref, field: fieldIdentity(entry.el) }));
     return {
       snapshot,
       ...(truncated ? { truncated: true } : {}),
@@ -1776,6 +1779,7 @@
       ...(cuts ? { cuts: cuts.filter(cut => cut <= selected.length) } : {}),
       ...(frames.length ? { frames } : {}),
       ...(hrefs.length ? { hrefs } : {}),
+      ...(fields.length ? { fields, documentUrl: documentUrl() } : {}),
       ...(withText && !baseline ? { url: window.location?.href ?? globalThis.location?.href, title: document.title } : {}),
       ...(explicit ? { readyState: document.readyState } : {}),
       ...(explicit && !snapshot && !truncated ? { empty: true, hint: EMPTY_SNAPSHOT_HINT } : {}),
@@ -1799,7 +1803,21 @@
     if (entries.some(entry => entry.frameId)) return {};
     const matches = entries.filter(entry => entry.label === label);
     if (matches.length !== 1) return {};
-    return { ref: issueRef(matches[0].el), ...(linkDestination(matches[0]) ? { href: matches[0].href } : {}) };
+    const field = fieldIdentity(matches[0].el);
+    return { ref: issueRef(matches[0].el), ...(linkDestination(matches[0]) ? { href: matches[0].href } : {}),
+      ...(field ? { field, documentUrl: documentUrl() } : {}) };
+  }
+
+  const documentUrl = () => window.location?.href ?? globalThis.location?.href;
+
+  // What tells a native field apart beyond its `role "name"` (#616): a script's stale field ref is
+  // followed only to a field with the same identity, in a document at the same URL.
+  const IDENTITY_LIMIT = 256;
+  function fieldIdentity(el) {
+    if (!el || !['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)) return null;
+    const identity = { tag: el.tagName.toLowerCase(), type: el.type || '', name: el.getAttribute('name') || '',
+      id: el.id || '' };
+    return Object.values(identity).some(value => value.length > IDENTITY_LIMIT) ? null : identity;
   }
 
   // Whether a snapshot entry is a link that leads somewhere (#572): a web URL (entry.href) from

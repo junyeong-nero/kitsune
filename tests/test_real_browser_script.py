@@ -40,14 +40,21 @@ PAGES = {
            '<a href="/only">Only here</a> <button>Go</button>'),
     "/b": ("Page B", NAV + '<a href="/new">Moved</a> <a href="/twin">Twin</a> <a href="/twin2">Twin</a> '
            """<button onclick="document.title = 'Go clicked'">Go</button>"""),
+    # #616: a search field, the same field at another URL.
+    "/search": ("Search", '<form action="/results"><input name=q aria-label="Search"></form>'),
+    "/search2": ("Search 2", '<form action="/results"><input name=q aria-label="Search"></form>'),
     # #615: wap-096's delete button.
     "/confirm": ("Jobs", """<button onclick="if (confirm('Delete this job offer?')) document.title = 'Deleted'">"""
                  "Delete</button>"),
 }
+FLIPS = []  # /flip renames its field on every load
 
 
 class _NavSite(BaseHTTPRequestHandler):
     def do_GET(self):
+        if self.path == "/flip":
+            FLIPS.append(None)
+            PAGES["/flip"] = ("Flip", f'<input name=q{len(FLIPS) % 2} aria-label="Search">')
         if self.path == "/slow":  # #618: answers after a short script's deadline
             time.sleep(4)
         title, body = PAGES.get(self.path, (self.path.strip("/").capitalize(), "<p>Arrived</p>"))
@@ -493,6 +500,65 @@ class RealBrowserScriptTests(harness.RealBrowserTestCase):
                     ref, result = await self.click_next_then(session, tab_id, old)
                     self.assert_stale(result, ref, same_role)
                     self.assertEqual(self.title(tab_id), "Page B")
+        self.run_scenario(run)
+
+    # -- #616: a stale field ref after returning to the same URL --------------
+
+    async def field_then(self, session, tab_id, page, back_to, how="fill"):
+        """A script that leaves page for a 404, goes to back_to, and writes to page's Search field ref."""
+        read = await session.call_tool("browser_run_python", {
+            "code": f"tab = browser.tab({tab_id}); tab.navigate({self.nav.origin + page!r}); result = tab.snapshot()"})
+        old = re.search(r'textbox "Search" \[ref=(e\d+)\]', json.loads(read.content[0].text)["result"]).group(1)
+        write = f"tab.fill({old!r}, 'transit')" if how == "fill" else f"tab.press('Enter', target={old!r})"
+        code = (f"tab = browser.tab({tab_id})\ntab.navigate({self.nav.origin + '/search?q=transit'!r})\n"
+                f"tab.navigate({self.nav.origin + back_to!r})\nresult = {write}")
+        ran = await session.call_tool("browser_run_python", {"code": code})
+        return old, json.loads(ran.content[0].text)
+
+    def field_value(self, tab_id):
+        return next(field.get("value") for field in self.call("/api/forms", {"tabId": tab_id})["fields"]
+                    if field.get("label") == "Search" or (field.get("name") or "").startswith("q"))
+
+    def test_a_field_ref_is_followed_back_on_the_same_url(self):
+        # wap-258: the agent left the page, came back with tab.navigate and used the field's old ref.
+        async def run(session, tab_id):
+            old, result = await self.field_then(session, tab_id, "/search", "/search")
+            self.assertTrue(result.get("ok"), result)
+            remapped = result["result"]["remapped"]
+            self.assertEqual({**remapped, "to": None}, {"from": old, "to": None, "role": "textbox", "name": "Search"})
+            self.assertEqual(result["operations"][-1]["remapped"], remapped)
+            self.assertEqual(self.field_value(tab_id), "transit")
+
+            _, pressed = await self.field_then(session, tab_id, "/search", "/search", how="press")
+            self.assertTrue(pressed.get("ok"), pressed)
+            self.assertEqual(pressed["result"]["remapped"]["role"], "textbox")
+        self.run_scenario(run)
+
+    def test_a_field_ref_is_not_followed_to_another_url_or_another_field(self):
+        async def run(session, tab_id):
+            for page, back_to in (("/search", "/search2"), ("/flip", "/flip")):
+                with self.subTest(page=page, back_to=back_to):
+                    old, result = await self.field_then(session, tab_id, page, back_to)
+                    self.assertEqual(result["code"], "script_operation_failed", result)
+                    failed = result["failed_operation"]
+                    self.assertEqual((failed["code"], failed["state"]["ref"]), ("stale_ref", old), failed)
+                    self.assertEqual(sorted(failed["state"]["same_element"]), ["name", "ref", "role"])
+                    self.assertNotIn("remapped", json.dumps(result))
+                    self.assertEqual(self.field_value(tab_id), "")
+        self.run_scenario(run)
+
+    def test_a_direct_tool_does_not_follow_a_field_ref(self):
+        async def run(session, tab_id):
+            read = await session.call_tool("browser_run_python", {
+                "code": f"tab.navigate({self.nav.origin + '/search'!r}); result = tab.snapshot()"})
+            old = re.search(r'textbox "Search" \[ref=(e\d+)\]', json.loads(read.content[0].text)["result"]).group(1)
+            await session.call_tool("browser_run_python", {"code": f"tab.navigate({self.nav.origin + '/search'!r})"})
+            typed = await session.call_tool("browser_tools_call", {
+                "name": "browser_type", "arguments": {"target": old, "text": "transit"}})
+            self.assertTrue(typed.isError, typed)
+            failed = json.loads(typed.content[0].text)
+            self.assertEqual((failed["code"], failed["state"]["same_element"]["role"]), ("stale_ref", "textbox"))
+            self.assertNotIn("follow", failed["state"]["same_element"])
         self.run_scenario(run)
 
     def test_ref_from_another_tab_is_not_followed(self):

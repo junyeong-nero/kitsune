@@ -330,8 +330,13 @@ A `browser_run_python` script follows one such ref instead of failing: a link's 
 tab's own earlier document, on a tab the client owns that no user handed over, when that one
 element is a link with the same destination (a web URL; not an empty or `#` href). The action
 is sent again with that element's ref, so approvals and policy apply to it, and its result and
-`operations` entry report `remapped: {from, to, role, name}`. Buttons, fields, refs from
-another tab, container steps, direct tools and the Python API outside scripts fail as above.
+`operations` entry report `remapped: {from, to, role, name}`. A native field's ref is followed
+the same way (#616) when the tab's document is at the exact URL of the snapshot that issued
+the ref and the one same element is a textbox, searchbox, combobox or spinbutton with the same
+tag, `type`, `name` and `id`: the script went back to that page. Only refs a `getSnapshot`
+issued carry the link destination or field identity this needs. Buttons, fields at another
+URL, refs from another tab, container steps, direct tools and the Python API outside scripts
+fail as above.
 
 After an action, use the refs in its `snapshot`. `target_ref` is the ref of
 the acted-on element (absent for `browser_navigate`, or when that element is gone),
