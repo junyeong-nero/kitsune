@@ -28,6 +28,7 @@ function harness(startUrl, onNavigate = () => {}, page = null) {
     return id;
   };
   const onUpdated = event(), onRemoved = event(), onMessage = event();
+  const webRequest = { onBeforeRequest: event(), onHeadersReceived: event(), onCompleted: event(), onErrorOccurred: event() };
   let tab = { id: 7, url: startUrl, title: 'Start', status: 'complete', discarded: false };
   const calls = [];
   const h = {
@@ -42,6 +43,10 @@ function harness(startUrl, onNavigate = () => {}, page = null) {
     },
     silentUpdate: changes => { tab = { ...tab, ...changes }; },
     documentStart: (frameId = 0) => onMessage.emit({ action: 'getDialogPolicy' }, { tab: { id: 7 }, frameId }),
+    // The tab's main-frame request (#605): sent, then answered with a status (a redirect sends again).
+    request: (requestId, url) => webRequest.onBeforeRequest.emit({ tabId: 7, requestId, url, type: 'main_frame' }),
+    headers: (requestId, url, statusCode) =>
+      webRequest.onHeadersReceived.emit({ tabId: 7, requestId, url, statusCode, type: 'main_frame' }),
     async tick(ms) {
       const end = now + ms;
       await flush();
@@ -86,6 +91,7 @@ function harness(startUrl, onNavigate = () => {}, page = null) {
       executeScript: async () => { throw new Error('Unexpected content injection'); },
     },
     runtime: { onMessage, onStartup: event(), onInstalled: event() },
+    webRequest,
   };
   const context = vm.createContext({
     browser, URL, console: { log() {}, error() {} },
@@ -219,6 +225,37 @@ async function main() {
     warning: 'Title "Start" does not contain expected "Slow" — possible redirect', redirected: true,
   });
   stuck.assertClean();
+
+  // #605: a timed-out navigation says what it still waits for: the server's answer, or the page
+  // after one (a redirect waits for an answer again). Nothing when no request was seen (above).
+  const waitingCases = [
+    ['response', h => h.request('r1', 'https://example.com/slow'), undefined],
+    ['page', h => { h.request('r1', 'https://example.com/slow'); h.headers('r1', 'https://example.com/slow', 200); },
+      '(HTTP 200)'],
+    ['response', h => {
+      h.request('r1', 'https://example.com/slow'); h.headers('r1', 'https://example.com/slow', 302);
+      h.request('r1', 'https://example.com/after-redirect');
+    }, undefined],
+  ];
+  for (const [waitingFor, requests, status] of waitingCases) {
+    const waiting = harness('https://example.com/start', h => { h.update({ status: 'loading' }); requests(h); });
+    const waitingNav = start(waiting, { action: 'navigate', url: 'https://example.com/slow' });
+    await waiting.tick(15000);
+    assert.equal(waitingNav.settled, true);
+    const result = await waitingNav.result;
+    assert.deepEqual({ ok: result.ok, timedOut: result.timedOut, waiting_for: result.waiting_for },
+      { ok: false, timedOut: true, waiting_for: waitingFor });
+    if (status) assert.ok(result.hint.includes(status), result.hint);
+    else assert.ok(result.hint.includes('has not answered'), result.hint);
+    waiting.assertClean();
+  }
+  // A request seen before the navigation began is not this navigation's.
+  const earlier = harness('https://example.com/start', h => h.update({ status: 'loading' }));
+  earlier.request('r0', 'https://example.com/start');
+  const earlierNav = start(earlier, { action: 'navigate', url: 'https://example.com/slow' });
+  await earlier.tick(15000);
+  assert.deepEqual(await earlierNav.result, { ok: false, timedOut: true, url: 'https://example.com/slow' });
+  earlier.assertClean();
 
   // #561: an image-heavy page parses its DOM long before it finishes loading. Its document started
   // after the navigation and can be read: ok with load_pending, once it has been parsed for

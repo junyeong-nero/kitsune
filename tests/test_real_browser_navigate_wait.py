@@ -146,10 +146,21 @@ class RealBrowserNavigateWaitTests(harness.RealBrowserTestCase):
         tab = self.open_tab(f"{self.site.origin}/start")
         url = f"{self.site.origin}/unanswered"
         result = self.call("/api/navigate", {"tabId": tab, "url": url})
-        self.assertEqual({key: result.get(key) for key in ("ok", "timedOut", "load_pending", "url")},
-                         {"ok": False, "timedOut": True, "load_pending": None, "url": url})
+        self.assertEqual({key: result.get(key) for key in ("ok", "timedOut", "load_pending", "url", "waiting_for")},
+                         {"ok": False, "timedOut": True, "load_pending": None, "url": url,
+                          "waiting_for": "response"})
+        self.assertIn("has not answered", result["hint"])
         self.assertNotIn("snapshot", result)
         self.assertEqual(self.call("/api/page-info", {"tabId": tab})["title"], "Start")
+
+    def test_a_navigation_answered_but_not_parsed_says_it_waits_for_the_page(self):
+        # #605: the server answered; the page waits on a blocking script, so reading again may do.
+        tab = self.open_tab(f"{self.site.origin}/start")
+        url = f"{self.site.origin}/blocked"
+        result = self.call("/api/navigate", {"tabId": tab, "url": url})
+        self.assertEqual({key: result.get(key) for key in ("ok", "timedOut", "waiting_for")},
+                         {"ok": False, "timedOut": True, "waiting_for": "page"}, result)
+        self.assertIn("(HTTP 200)", result["hint"])
 
     def test_a_new_tab_still_loading_its_images_is_ok_with_load_pending(self):
         url = f"{self.site.origin}/heavy"
@@ -191,7 +202,8 @@ class RealBrowserNavigateWaitTests(harness.RealBrowserTestCase):
         result = self.call("/api/new-tab", {"url": url, "wait": True, "timeout": 3000})
         self.addCleanup(self.call, "/api/close-tab", {"tabId": result.get("tabId")})
         self.assertEqual(result, {"ok": False, "timedOut": True, "tabId": result.get("tabId"), "url": url,
-                                  "status": "loading"})
+                                  "status": "loading", "waiting_for": "page", "hint": result.get("hint")})
+        self.assertIn("(HTTP 200)", result["hint"])
 
 
 if __name__ == "__main__":

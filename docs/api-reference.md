@@ -3650,6 +3650,10 @@ single reads (see `browser_wait_for`); a zero timeout performs one immediate che
   read and acted on while its resources still load (#561). This needs a document that started
   after the navigation; the page being navigated away from does not count.
 - Any other load that does not finish in 15 s returns `{ "ok": false, "timedOut": true, "url": "..." }`.
+  When the tab sent a request for it, `waiting_for` says what is still missing, with a `hint`
+  (#605): `"response"`, the server has not answered (read again shortly, or repeat the
+  navigation once), or `"page"`, it answered but the page is not parsed yet, for example behind a
+  blocking script (read again instead of repeating it). A redirect waits for a response again.
   If the tab is still `about:blank` / `complete` and the page cannot confirm a loaded destination,
   it also carries `code: "navigation_stalled"`, `retryable: false`, and the recovery `hint` of
   [`new_tab_stalled`](#post-apinew-tab) (#366). A requested `about:` URL never gets this code.
@@ -3673,7 +3677,8 @@ On timeout the tab stays open. A page whose DOM is parsed (an image-heavy page, 
 already be read and acted on: 500 ms after it is parsed, or at the timeout, a page still loading
 returns `{ "ok": true, "load_pending": true, "tabId": 123, "url": "...", "status": "loading" }`
 (#561, #601); a load that ends without a parsed page is
-`{ "ok": false, "timedOut": true, "tabId": 123, "url": "...", "status": "loading" }`.
+`{ "ok": false, "timedOut": true, "tabId": 123, "url": "...", "status": "loading" }`, with
+`waiting_for` and `hint` as for [navigate](#post-apinavigate) (#605).
 While Zen's first-run welcome screen is open, the browser keeps reporting a loaded tab's URL as
 `about:blank` (#360); the wait then asks the page, and `url` is the page's own URL.
 With `wait`, `"pageText": true`, an internal flag the core `browser_tabs action=new url=…` sends,
