@@ -4,7 +4,8 @@ Opt-in and built on tests/real_browser_harness.py, which documents how to run it
 An image-heavy page is readable long before its load finishes. browser_navigate and a new tab
 that waits for its load return ok with load_pending once their wait times out on such a page, so a
 browser_run_python script goes on. A navigation that no document answered, or whose document has
-not parsed its DOM, is still a timeout. The navigations wait their full 15 s.
+not parsed its DOM, is still a timeout, after the full 15 s. Since #601 a parsed page does not wait
+that long: like a click (#588), navigate and a waiting new tab return shortly after its DOM is parsed.
 """
 import asyncio
 from http.server import BaseHTTPRequestHandler
@@ -98,7 +99,9 @@ class RealBrowserNavigateWaitTests(harness.RealBrowserTestCase):
                 self.assertFalse(script.isError, script)
                 return tab, json.loads(script.content[0].text)["result"]
 
+        started = time.monotonic()
         tab, result = asyncio.run(asyncio.wait_for(scenario(), 90))
+        self.assertLess(time.monotonic() - started, 10, "the navigate did not wait out its 15 s (#601)")
         self.assertEqual({key: result[key] for key in ("ok", "load_pending", "found")},
                          {"ok": True, "load_pending": True, "found": "Back to start"})
         self.assertIn("Listings", result["carried"], "the navigate result carries the page's snapshot")
@@ -155,6 +158,33 @@ class RealBrowserNavigateWaitTests(harness.RealBrowserTestCase):
         self.assertEqual(result, {"ok": True, "load_pending": True, "tabId": result.get("tabId"), "url": url,
                                   "status": "loading"})
         self.assert_heavy_page_is_readable(result["tabId"])
+
+    def test_navigate_and_a_waiting_new_tab_return_once_a_page_is_parsed(self):
+        # #601: within the default 15 s wait, a parsed page still loading returns after a short grace.
+        url = f"{self.site.origin}/heavy"
+        tab = self.open_tab(f"{self.site.origin}/start")
+        started = time.monotonic()
+        result = self.call("/api/navigate", {"tabId": tab, "url": url})
+        self.assertLess(time.monotonic() - started, 5, result)
+        self.assertEqual({key: result.get(key) for key in ("ok", "load_pending", "url")},
+                         {"ok": True, "load_pending": True, "url": url}, result)
+        self.assertIn('heading "Listings"', result["snapshot"])
+        self.assert_heavy_page_is_readable(tab)
+
+        started = time.monotonic()
+        result = self.call("/api/new-tab", {"url": url, "wait": True})
+        self.addCleanup(self.call, "/api/close-tab", {"tabId": result.get("tabId")})
+        self.assertLess(time.monotonic() - started, 5, result)
+        self.assertEqual(result, {"ok": True, "load_pending": True, "tabId": result.get("tabId"), "url": url,
+                                  "status": "loading"})
+        self.assert_heavy_page_is_readable(result["tabId"])
+
+    def test_navigate_to_an_ordinary_page_still_waits_for_its_load(self):
+        tab = self.open_tab(f"{self.site.origin}/start")
+        result = self.assert_ok(self.call("/api/navigate", {"tabId": tab, "url": f"{self.site.origin}/plain"}))
+        self.assertNotIn("load_pending", result)
+        self.assertIn('heading "Plain page"', result["snapshot"])
+        self.assertEqual(self.call("/api/page-info", {"tabId": tab})["readyState"], "complete")
 
     def test_a_new_tab_whose_dom_is_not_parsed_is_still_a_timeout(self):
         url = f"{self.site.origin}/blocked"

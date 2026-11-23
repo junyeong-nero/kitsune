@@ -1461,6 +1461,7 @@ async function settleAfterAction(tabId, pending, params) {
 const ACTION_NAVIGATION_WAIT_MS = 10000;
 // Once the new document's DOM is parsed, its load is waited for only this much longer: an
 // image-heavy page is readable long before its load (#588), and is then reported load_pending.
+// navigate and a new tab that waits use it too (waitForTabLoad's parsedGrace, #601).
 const ACTION_LOAD_GRACE_MS = 500;
 // A main-frame request that loads nothing (a download, a 204) is given up after this long.
 const ACTION_NAVIGATION_START_MS = 1000;
@@ -2120,9 +2121,16 @@ const domParsed = page => page?.readyState === 'interactive' || page?.readyState
 // listener as in the poll. Leaving a page whose load is pending ends that load with a late
 // 'complete' for the old URL before the new load starts (#561). A complete tab still at
 // about: counts when its page reports a loaded web URL (loadedPageUrl).
-function waitForTabLoad(tabId, startNavigation, { reload = false, timeout = 15000 } = {}) {
+// With parsedGrace, a document that started since the wait began (any document in a newTab) and
+// has parsed its DOM ends the wait ACTION_LOAD_GRACE_MS later, as for a click (#588, #601): the
+// caller reads it as at the deadline, ok with load_pending while it still loads.
+function waitForTabLoad(tabId, startNavigation,
+  { reload = false, timeout = 15000, parsedGrace = false, newTab = false } = {}) {
+  const documentsBefore = newTab ? undefined : tabDocuments.get(tabId);
   return new Promise((resolve, reject) => {
     let settled = false;
+    // The document count when a started document was first seen parsed, and when.
+    let parsed = null;
     let sawLoading = false;
     let poll = null;
     // A check that asks the page (loadedPageUrl) can outlast the poll interval; one at a time.
@@ -2148,7 +2156,15 @@ function waitForTabLoad(tabId, startNavigation, { reload = false, timeout = 1500
       try {
         const tab = await browser.tabs.get(tabId);
         if (settled) return;
-        if (tab.status === 'loading') sawLoading = true;
+        if (tab.status === 'loading') {
+          sawLoading = true;
+          const documents = tabDocuments.get(tabId);
+          if (parsedGrace && documents !== documentsBefore) {
+            if (parsed && parsed.documents !== documents) parsed = null;
+            if (!parsed && domParsed(await pageState(tabId))) parsed = { documents, at: Date.now() };
+            if (parsed && Date.now() - parsed.at >= ACTION_LOAD_GRACE_MS) finish(false);
+          }
+        }
         else if ((sawLoading || reload) && isLoaded(tab)) finish(true);
         else if ((sawLoading || reload) && tab.status === 'complete' && tab.url?.startsWith('about:')
           && await loadedPageUrl(tabId)) finish(true);
@@ -2175,7 +2191,8 @@ async function navigateTab(url, tabId, expectTitle, authorization) {
     const sameUrl = target !== null && target === urlWithoutFragment((await browser.tabs.get(targetTabId)).url);
 
     let loaded = true;
-    // #561: when the load wait times out, started says whether a document started in the tab since
+    // #561: when the load wait ends unloaded (its deadline, or #601's grace after a parsed DOM),
+    // started says whether a document started in the tab since
     // the navigation began. Only then is the page asked: before that, the document left behind answers.
     let started = false, page = null;
     if (sameUrl && url.includes('#')) {
@@ -2184,7 +2201,7 @@ async function navigateTab(url, tabId, expectTitle, authorization) {
       await browser.tabs.update(targetTabId, { url });
     } else {
       const documents = tabDocuments.get(targetTabId);
-      loaded = await waitForTabLoad(targetTabId, () => { requireTabAdmission(authorization); return browser.tabs.update(targetTabId, { url }); }, { reload: sameUrl });
+      loaded = await waitForTabLoad(targetTabId, () => { requireTabAdmission(authorization); return browser.tabs.update(targetTabId, { url }); }, { reload: sameUrl, parsedGrace: true });
       started = !loaded && tabDocuments.get(targetTabId) !== documents;
       if (started) page = await pageState(targetTabId);
     }
@@ -2241,7 +2258,8 @@ const STALLED_TAB_HINT = 'Retrying will not fix this: the browser needs an updat
 
 // Opens an agent-owned tab in the background. Immediate by default. With wait, resolves once the
 // tab loads (or the timeout passes, leaving the tab open) and reports the actual URL, so
-// redirects are visible. A page whose DOM is parsed at the timeout is ok with load_pending (#561).
+// redirects are visible. A page whose DOM is parsed is ok with load_pending, at the timeout
+// (#561) or a grace period after it was parsed (#601).
 async function createTab(url, { wait = false, timeout = 15000, ownerId = null } = {}) {
   try {
     const target = url || 'about:blank';
@@ -2250,7 +2268,7 @@ async function createTab(url, { wait = false, timeout = 15000, ownerId = null } 
     if (!wait) return { ok: true, tabId: tab.id };
     // A new tab has no previous document, so any non-about: 'complete' is the destination.
     const loaded = target.startsWith('about:')
-      || await waitForTabLoad(tab.id, () => {}, { reload: true, timeout });
+      || await waitForTabLoad(tab.id, () => {}, { reload: true, timeout, parsedGrace: true, newTab: true });
     // For the same reason, the page that answers after a timeout is the destination's.
     const page = loaded ? null : await pageState(tab.id);
     const parsed = domParsed(page);

@@ -220,8 +220,9 @@ async function main() {
   });
   stuck.assertClean();
 
-  // #561: an image-heavy page parses its DOM long before it finishes loading. At the deadline it
-  // is ok with load_pending, as its document started after the navigation and can be read.
+  // #561: an image-heavy page parses its DOM long before it finishes loading. Its document started
+  // after the navigation and can be read: ok with load_pending, once it has been parsed for
+  // ACTION_LOAD_GRACE_MS (#601), not at the 15 s deadline.
   let heavyPage = ['https://example.com/start', 'complete'];
   const heavy = harness('https://example.com/start', h => h.update({ status: 'loading' }), () => heavyPage);
   const heavyNav = start(heavy, { action: 'navigate', url: 'https://example.com/heavy' });
@@ -229,13 +230,28 @@ async function main() {
   heavy.documentStart();
   heavy.update({ url: 'https://example.com/heavy' });
   heavyPage = ['https://example.com/heavy', 'interactive'];
-  await heavy.tick(12999);
-  assert.equal(heavyNav.settled, false, 'a parsed DOM does not end the load wait early');
-  await heavy.tick(1);
-  assert.equal(heavyNav.settled, true);
+  await heavy.tick(400);
+  assert.equal(heavyNav.settled, false, 'a parsed DOM gets a grace period for its load');
+  await heavy.tick(600);
+  assert.equal(heavyNav.settled, true, 'a parsed DOM ends the load wait after the grace period');
   assert.deepEqual(await heavyNav.result, { ok: true, url: 'https://example.com/heavy', load_pending: true });
-  assert.equal(heavy.pageInfoRequests, 1, 'asked once, at the deadline');
+  assert.equal(heavy.pageInfoRequests, 2, 'asked once until parsed, once for the result');
   heavy.assertClean();
+
+  // A parsed page whose load completes within the grace period is loaded, with no flag.
+  let quickPage = ['https://example.com/start', 'complete'];
+  const quick = harness('https://example.com/start', h => h.update({ status: 'loading' }), () => quickPage);
+  const quickNav = start(quick, { action: 'navigate', url: 'https://example.com/quick' });
+  await quick.tick(200);
+  quick.documentStart();
+  quickPage = ['https://example.com/quick', 'interactive'];
+  await quick.tick(300);
+  quickPage = ['https://example.com/quick', 'complete'];
+  quick.update({ status: 'complete', url: 'https://example.com/quick' });
+  await quick.tick(0);
+  assert.equal(quickNav.settled, true);
+  assert.deepEqual(await quickNav.result, { ok: true, url: 'https://example.com/quick' });
+  quick.assertClean();
 
   // The document being navigated away from answers until the new one starts: its parsed DOM is
   // not the destination's. A frame's content script starting in it is not a new document either.
