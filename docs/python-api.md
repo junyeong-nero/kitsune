@@ -74,6 +74,15 @@ result = tab.snapshot()
   still loading (`navigation_pending`).
 - Limits: 64,000 bytes of code; 16,000 bytes of output and result combined (bytes, not
   characters); 100 API calls; 30 s default deadline, 120 s max.
+- The 101st call, or the first call after the deadline, is not sent: it raises `ScriptLimit`
+  (`code` `script_operation_limit` or `script_timeout`). It is a `BaseException`, so
+  `except Exception` and `except KitsuneError` let it through while `finally` and
+  `except ScriptLimit` run; print what the loop collected there. The next call stops the script.
+  A call still waiting for its reply at the deadline raises it too, and stays `unknown` in
+  `operations`: the bridge may still run it.
+  Uncaught, the script ends with that code, its printed output and its `result` variable, if it
+  set one. `browser.calls_left` and `browser.seconds_left` give the budget left. When every
+  operation was a read or a navigation, the hint says nothing was written.
 - A failed read or wait raises its exception in the script, as outside scripts: `text`,
   `snapshot`, `find`, `query`, `forms`, `info` and `wait_for` (except `js=`, which runs JavaScript
   in the page). Catch `TimedOut` or `KitsuneError` (both are defined in the script) to go on; the
@@ -92,8 +101,13 @@ result = tab.snapshot()
   `remapped: {from, to, role, name}` in its result and its `operations` entry. Only refs from
   `tab.snapshot()` are followed this way. Any other stale ref fails as `stale_ref`: target by
   selector, use the refs `tab.navigate(url)` returns in `r['snapshot']`, or take a new snapshot.
-- On timeout the worker is killed; a command already sent may still finish, so read the page
-  before writing again.
+- An agent tab dismisses a confirm or prompt no policy answers. A script whose action opened one
+  returns `dialogs` (the last 5, each with its `operation` index) and, for a dismissed confirm or
+  prompt, `dialog_hint`, whether or not it printed the action's reply; that operation's entry has
+  `dialog: "dismissed"` (or `"shown"`). Call `tab.handle_dialogs(accept=True)` and repeat the
+  action, in the same script if you like.
+- The worker is killed 2 s after the deadline; a command already sent may still finish, so read
+  the page before writing again.
 - `help(tab.query)` prints a method's signature. A `Tab` or `Browser` call with unknown, missing or
   extra arguments fails with a `TypeError` and that signature in the output.
 
@@ -112,6 +126,13 @@ its first 16,000 bytes; `result` gets what the output left, a string cut to its 
 other value to the start of its JSON text (a string). The cut content is incomplete: no match in
 it is not absence from the page, so make a new, smaller read-only observation for the rest.
 `operations` lists what the script did; do not replay it.
+
+Each `operations` entry has `route`, `status` (`ok`, `failed`, or `unknown` for a call cut off by
+the deadline), `tab_id`, `remapped` when a ref was followed, and `method` only when it is `GET`.
+Over 10 operations the list is summarized:
+`{"count": 100, "by_route": {"/api/navigate": 50, "/api/page-text": 50}, "tab_id": 7, "notable": [...], "last": [...]}`.
+`notable` keeps every entry that failed, is `unknown`, was remapped or used another tab (up to
+10, then `notable_more`), and `last` the last 3 others, each with its `index`.
 
 ## Tabs
 

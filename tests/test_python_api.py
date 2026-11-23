@@ -199,6 +199,14 @@ class TabRequestTests(BridgeTestCase):
             warnings.simplefilter("error")
             self.assertEqual(self.tab.query("a"), [])
 
+    def test_query_warns_when_a_field_was_clipped(self):
+        # #613: a clipped text field read like the element's whole text.
+        self.reply("/api/query", {"items": [{"text": "x" * 400}], "count": 1, "total": 1, "truncated": False,
+                                  "clipped": {"text": 1, "value": 2}})
+        with self.assertWarnsRegex(UserWarning, r"clipped \(text in 1 rows, value in 2 rows\); read one element "
+                                                r"in full with tab\.markdown\(target\)"):
+            self.tab.query("p")
+
     def test_query_takes_fields_positionally_and_limit_by_keyword_only(self):
         # #574: tab.query('tr', ['text'], limit=30) was a TypeError after the script's earlier writes.
         self.assertEqual(self.tab.query("tr", ["text"], limit=30), [{"text": "a"}])

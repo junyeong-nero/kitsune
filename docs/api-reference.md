@@ -87,6 +87,13 @@ match, or `query: ""`, `tools` is empty and `groups` maps each group to its tool
 call and returns that call's result: its content (text, images) and `isError`. An unknown
 name returns `unknown_tool`; a gateway tool returns `invalid_argument`. Its bridge
 requests carry `X-Kitsune-Gateway-Tool`, which [audit entries](#audit-log) record.
+A `ref` argument is passed as `target` to a tool that takes `target` and no `ref`
+(Playwright MCP's name for it).
+
+Arguments that fail a tool's schema, called directly or through `browser_tools_call`, return
+`invalid_argument` with `state.missing`, `state.invalid` (`[{argument, error}]`),
+`state.unknown` (names the tool ignores) and `state.arguments` (the names it takes), e.g.
+`{"error": "browser_click: target is required", "code": "invalid_argument", ...}`.
 
 `browser_tools_publish(names)` takes tool and group names and adds those tools to this
 session's `tools/list`, then sends `notifications/tools/list_changed`.
@@ -564,6 +571,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
 |---|---|---|
 | `not_found` | No element matches the selector (also `No target`, `from/to element not found`; a scoped `browser_snapshot`/`browser_dom` reports `Selector not found: …` with `state.selector`); after an [actionability wait](#actionability-wait), `state` has `timeoutMs` and `elapsed` | true |
 | `not_editable` | A native field targeted by fill, type, editable-content or form-fill is readonly or disabled (including a disabled fieldset). `state.reason` is `readonly` or `disabled`; `state.tag` names the resolved field, including inside shadow roots. Nothing was focused, changed or dispatched for that field. Use the page's own control, such as its date picker, or an editable field. Earlier successful fields/operations remain completed | false |
+| `value_rejected` | Fill, type or form-fill wrote a value a `date`, `time`, `datetime-local`, `month`, `week`, `number`, `range` or `color` input did not keep (`05/03/2026` in a date input reads back as `""`; a range clamps; a color falls back). `state` has `type`, `expected_format`, `written`, the field's `value` (its previous value, put back) and `min`/`max`/`step` when set. No event was dispatched. A value the field keeps but that breaks its `min`/`max`/`step` is not an error: the result has `invalid: {reason, value, min, max}` (`reason` is `rangeUnderflow`, `rangeOverflow` or `stepMismatch`) and a `hint`. Snapshots list these inputs as `textbox "Departure" [type=date min=2026-04-01 max=2027-04-01 value=""]` | false |
 | `not_fillable` | `browser_type` (`type`/`fill` modes) or a `browser_form_fill` key found no field to write. The target is not a field (`fill` and `browser_form_fill`: input, textarea or select; `type`: input, textarea or `contenteditable` region) and has none in its open or closed shadow roots, searched through nested hosts up to 8 roots deep (`fill` and `browser_form_fill` also look in its light DOM). Nothing was written. `state.tag` is the target's tag; `state.reason` is `no_field`, or `shadow_depth` when its shadow roots nest deeper than 8. On an ARIA slider or spinbutton (`state.role`) that `fill` cannot step (no numeric `aria-valuenow`), that `type` mode targets, or that a `browser_form_fill` key names, the hint names the keyboard alternative (click it to focus it, then arrow keys with `browser_press_key` `repeat`), and for `type` and `browser_form_fill` on a slider with `aria-valuenow` also `fill` | true |
 | `value_not_reached` | `fill` on an ARIA slider or spinbutton did not make `aria-valuenow` the value (see [`/api/fill`](#post-apifill)). `state` has `role`, `value` (where it stopped), `target`, `min`, `max`, `keys` and `reason`: `out_of_range` (the value is outside `aria-valuemin`/`aria-valuemax`; nothing was pressed), `stepped_past` (its steps skip the value), `stuck` (it stopped moving: at an end, disabled, ignoring synthetic keys, or rendering only on an animation frame), `moved_away` (its arrow keys moved it away from the value and the other arrow keys did not move it), `key_limit` (1,000 keys) or `time_limit` (20 s). Also a check of an element with role `checkbox`, `switch` or `radio` whose `aria-checked` is not the requested state afterwards (see [`/api/check`](#post-apicheck)): `state` has `role`, `checked` (`aria-checked` now), `target`, `clicked` and `reason`: `unchanged` (the click left it as it was), `other_state` (it changed to another state), `replaced` (the page replaced the element) or `radio` (unchecking a selected radio; nothing was clicked) | true for `out_of_range` and `radio`, else false |
 | `no_such_option` | `browser_select_option` (`/api/select-option`) found no `<option>` with the value, or with the text for `by_text`; with `values`, none with that value or text. Nothing was selected and no event was dispatched. `state.options` lists the first 20 options as `{value, text}` and `state.total` counts them all; a [sensitive](#sensitive-field-redaction) select has `state.redacted: true` and no `options`. The hint says so when the value is an option's text (use `by_text`) or the text an option's value | false |
@@ -3515,7 +3523,8 @@ Also accepts POST with `{ "tabId": 123 }`. MCP tool: `browser_page_info(tab_id=N
 [`needs_user` hint](#needs_user-hints).
 
 ### GET /api/page-text
-All visible text on the page.
+All visible text on the page (`document.body.innerText`), or of the element `selector`
+names (POST). Text over 20,000 characters is cut and has `truncated: true` and `fullLength`.
 ```json
 { "text": "..." }
 ```

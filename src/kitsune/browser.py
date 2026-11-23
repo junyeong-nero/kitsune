@@ -609,7 +609,7 @@ class Tab:
 
         Current document only: no shadow/frame traversal, snapshot refs or Playwright forms
         such as :has-text or text=. At most 500 rows; text/value fields are clipped to 400
-        characters. A row-limit warning does not report those field clips. Filter locally,
+        characters. A warning reports a row limit and clipped fields. Filter locally,
         but absence in returned snippets is not page-wide absence; scope a snapshot for detail.
         href and src are absolute URLs even when the attribute is relative ('/deals/48'), so
         pass them to navigate as they are.
@@ -621,6 +621,10 @@ class Tab:
         if result.get("truncated"):
             warnings.warn("Query results were truncated; narrow the selector or increase limit",
                           stacklevel=2)
+        if result.get("clipped"):
+            fields = ", ".join(f"{name} in {count} rows" for name, count in result["clipped"].items())
+            warnings.warn(f"Query fields were clipped ({fields}); read one element in full with "
+                          "tab.markdown(target)", stacklevel=2)
         return result["items"]
 
     def html(self, target: str) -> str:

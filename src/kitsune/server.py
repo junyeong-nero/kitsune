@@ -26,6 +26,7 @@ from urllib.request import url2pathname
 
 import anyio
 from mcp.server.fastmcp import FastMCP, Image as McpImage
+from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.lowlevel import NotificationOptions
 from mcp.shared.exceptions import McpError
 from mcp.types import (CallToolResult, CancelledNotification, CancelledNotificationParams, ClientCapabilities,
@@ -222,6 +223,10 @@ class KitsuneMCP(FastMCP):
         call = None if nested else _current_call.set(secrets.token_hex(8))
         try:
             return await self._call_tool(name, arguments)
+        except ToolError as error:
+            if not _argument_error(name, error.__cause__):
+                raise
+            return self._invalid_arguments(name, arguments or {}, error.__cause__)
         finally:
             if call is not None:
                 _current_call.reset(call)
@@ -295,6 +300,26 @@ class KitsuneMCP(FastMCP):
             finally:
                 playwright_tools.client_root.reset(root)
         return await super().call_tool(name, arguments)
+
+    def _invalid_arguments(self, name, arguments, error) -> CallToolResult:
+        """A coded invalid_argument for arguments that fail the tool's schema (#619), not pydantic's text."""
+        tool = self._tool_manager.get_tool(name)
+        accepted = list(tool.parameters.get("properties", {})) if tool is not None else []
+        missing = [str(e["loc"][0]) for e in error.errors() if e["type"] == "missing" and e["loc"]]
+        invalid = [{"argument": ".".join(map(str, e["loc"])), "error": e["msg"]}
+                   for e in error.errors() if e["type"] != "missing"]
+        unknown = [key for key in arguments if key not in accepted]
+        problems = [f"{argument} is required" for argument in missing] + \
+                   [f"{item['argument']}: {item['error']}" for item in invalid]
+        hint = "Pass the arguments in state.arguments."
+        if "ref" in unknown and "target" in missing:
+            hint = 'Pass the ref as target, for example {"target": "e12"}. ' + hint
+        if SCRIPTING:
+            hint += f' browser_tools_call(name="{name}") without arguments returns its input schema.'
+        return _error_result(f"{name}: {'; '.join(problems)}", "invalid_argument", retryable=False, hint=hint,
+                             state={**({"missing": missing} if missing else {}),
+                                    **({"invalid": invalid} if invalid else {}),
+                                    **({"unknown": unknown} if unknown else {}), "arguments": accepted})
 
     def _repeatable(self, name) -> bool:
         """Whether a held call of this tool can be repeated with a confirm token."""
@@ -1106,6 +1131,11 @@ async def _page_resolved(session, request, reason: str, state: dict, wait: float
     return resolved
 
 
+def _argument_error(name: str, error: BaseException | None) -> bool:
+    """Whether error is FastMCP's validation of name's arguments, not an error inside the tool."""
+    return isinstance(error, ValidationError) and error.title == f"{name}Arguments"
+
+
 def _error_result(error: str, code: str, *, retryable: bool, hint: str, state: dict) -> CallToolResult:
     result = {"error": error, "code": code, "retryable": retryable, "hint": hint, "state": state}
     return CallToolResult(content=[_compact_json(result)], isError=True)
@@ -1307,9 +1337,16 @@ async def browser_tools_call(
         tool = (await mcp.all_tools())[name]
         return CallToolResult(content=[_compact_json(tool.model_dump(
             mode="json", exclude_none=True, include={"name", "description", "inputSchema", "annotations"}))])
+    arguments = arguments or {}
+    if "ref" in arguments and "target" not in arguments:
+        # Snapshots print [ref=e12]; Playwright MCP calls the argument ref. A tool that takes target
+        # gets it there (#619); one with its own ref argument keeps it.
+        accepted = (await mcp.all_tools())[name].inputSchema.get("properties", {})
+        if "target" in accepted and "ref" not in accepted:
+            arguments = {"target": arguments["ref"], **{k: v for k, v in arguments.items() if k != "ref"}}
     token = _gateway_call.set(name)
     try:
-        result = await mcp.call_tool(name, arguments or {})
+        result = await mcp.call_tool(name, arguments)
     except Exception as error:
         # The text a direct call's error result carries (the MCP server's error result).
         return CallToolResult(content=[TextContent(type="text", text=str(error))], isError=True)
@@ -1418,6 +1455,8 @@ async def browser_run_python(
     tab.fill_form({'#name': 'Ada'}); tab.check(target, True); tab.select_option(target, value, by_text=False).
     tab.press('Enter', target=None, modifiers={'ctrl': True}); omitted target uses focus, not the last target.
     tab.navigate(url); tab.back().
+    tab.handle_dialogs(accept=True, prompt_text=None) answers later confirm/prompt dialogs; an agent tab
+    dismisses them by default, and the reply's dialogs list says so. Then repeat the action.
     tab.wait_for(text='Done', timeout=10000) or target/url/text_gone (one condition, timeout in ms).
     wait_for(target=...) accepts CSS/refs, not :has-text or text=/role=; actions may use those.
     Example: tab.fill('e12', 'Ada'); r = tab.click('e15'); result = r['snapshot'].
@@ -1427,6 +1466,8 @@ async def browser_run_python(
     help(tab.scroll) prints a specific method's signature. Prefer this API over page evaluate.
 
     Limits: 16 KB output/result, 100 API calls, fresh variables, no top-level await.
+    Past 100 calls or the deadline, a call raises ScriptLimit (not caught by except Exception; finally
+    runs) and the next stops the script. In long loops check browser.calls_left/seconds_left and print.
     A failed read or wait_for raises KitsuneError (TimedOut on a timeout); try/except may catch it.
     Any other failed call, and any needs_user or policy refusal, stops even if caught; earlier writes
     remain. For needs_user use the failed operation's direct tool via browser_tools_call, then run

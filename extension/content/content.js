@@ -839,13 +839,7 @@
       if (!el) return { error: 'Selector not found: ' + selector };
       return truncateText(el.innerText);
     }
-    const selectors = ['article', '[role="main"]', 'main', '.content', '.post-content', '.article-body', '.entry-content'];
-    for (const sel of selectors) {
-      const el = document.querySelector(sel);
-      if (el && el.innerText.length > 100) {
-        return truncateText(el.innerText);
-      }
-    }
+    // The whole page: a "main content" guess returned one <article> card of a listing (#613).
     return truncateText(document.body.innerText);
   }
 
@@ -1358,6 +1352,13 @@
         ref = full ? elementRefs.get(el) || `s${refGeneration}e${refCounter++}` : null;
         const states = [];
         if (role === 'heading') states.push(`level=${el.getAttribute('aria-level') || el.tagName.slice(1)}`);
+        // A date/time/color input reads as a textbox; say which, with its bounds (#614).
+        if (el.tagName === 'INPUT' && VALUE_FORMATS[el.type]) {
+          if (role === 'textbox') states.push(`type=${el.type}`);
+          for (const bound of ['min', 'max']) {
+            if (el.getAttribute(bound)) states.push(`${bound}=${clean(el.getAttribute(bound))}`);
+          }
+        }
         if ('value' in el && !isSensitiveField(el)) states.push(`value=${JSON.stringify(clean(el.value))}`);
         // An editor's content is its value (#385), cut like a field's and marked when cut.
         else if (isEditingHost(el) && !isSensitiveField(el)) {
@@ -2528,6 +2529,60 @@
     return el.tagName === 'INPUT' && typeof text === 'string' ? text.replace(/\r\n|\r|\n/g, ' ') : text;
   }
 
+  // Input types whose value the browser sanitizes: a value not in the format reads back as ""
+  // (range: clamped, color: #000000), and their value setter reports nothing (#614).
+  const VALUE_FORMATS = {
+    date: 'YYYY-MM-DD', time: 'HH:MM or HH:MM:SS', 'datetime-local': 'YYYY-MM-DDTHH:MM', month: 'YYYY-MM',
+    week: 'YYYY-Www', number: 'a number such as 12 or -3.5', range: 'a number between min and max',
+    color: '#rrggbb',
+  };
+  // Types whose value is one token: typing replaces it. A number or range still appends digits.
+  const REPLACED_TYPES = new Set(['date', 'time', 'datetime-local', 'month', 'week', 'color']);
+  const VALUE_CONSTRAINTS = { rangeUnderflow: ['before min', 'within min/max'],
+    rangeOverflow: ['after max', 'within min/max'], stepMismatch: ['not on a step', 'on its step'] };
+
+  // Sets a native field's value; for a sanitized type, refuses a value the field did not keep and
+  // puts the previous value back before any event, so nothing changed.
+  function writeFieldValue(el, text) {
+    const setter = nativeValueSetter(el);
+    const previous = el.value;
+    if (setter) setter.call(el, text); else el.value = text;
+    const format = el.tagName === 'INPUT' && VALUE_FORMATS[el.type];
+    if (!format || !valueRejected(el, text)) return null;
+    if (setter) setter.call(el, previous); else el.value = previous;
+    const state = { type: el.type, expected_format: format, written: text, value: el.value,
+      ...boundsOf(el) };
+    return { ...actionError(`The ${el.type} input did not take ${JSON.stringify(text)}; it expects ${format}`,
+      'value_rejected', `Write the value as ${format}` +
+        (state.min || state.max ? `, within min/max` : '') +
+        ' with fill (browser_type and tab.type replace a date/time value, they do not key its segments). ' +
+        'Nothing was changed.', state), retryable: false };
+  }
+
+  // A kept value may be normalized ("2026-05-03 09:00" reads "2026-05-03T09:00"); only a
+  // dropped one, or a range's clamp and a color's fallback, is a rejection.
+  function valueRejected(el, text) {
+    if (el.type === 'color') return el.value !== text.toLowerCase();
+    if (el.type === 'range') return Number(el.value) !== Number(text) || text.trim() === '';
+    return el.value === '' && text !== '';
+  }
+
+  function boundsOf(el) {
+    const bounds = {};
+    for (const name of ['min', 'max', 'step']) if (el.getAttribute(name)) bounds[name] = el.getAttribute(name);
+    return bounds;
+  }
+
+  // The value was taken but breaks the field's min/max/step: the form stays invalid (#614).
+  function constraintViolation(el) {
+    if (el.tagName !== 'INPUT' || !VALUE_FORMATS[el.type] || !el.validity) return {};
+    const reason = Object.keys(VALUE_CONSTRAINTS).find(key => el.validity[key]);
+    if (!reason) return {};
+    return { invalid: { reason, value: el.value, ...boundsOf(el) },
+      hint: `The field took the value, but it is ${VALUE_CONSTRAINTS[reason][0]}, so a form may refuse it; ` +
+        `write a value ${VALUE_CONSTRAINTS[reason][1]}.` };
+  }
+
   // ── Type ──
   function typeText(selector, text, clear, first) {
     const host = resolveTarget(selector, null, { first });
@@ -2553,11 +2608,10 @@
     el.focus();
     text = singleLineValue(el, text);
 
-    // Use native value setter to properly trigger React/Vue state
-    const setter = nativeValueSetter(el);
-    if (setter) setter.call(el, clear ? text : el.value + text);
-    else if (clear) el.value = text;
-    else el.value += text;
+    // Use native value setter to properly trigger React/Vue state. A date/time value is
+    // replaced, not appended to: "2026-05-03" + "x" is no value.
+    const rejected = writeFieldValue(el, clear || REPLACED_TYPES.has(el.type) ? text : el.value + text);
+    if (rejected) return rejected;
 
     // Fire all the events React/Vue/Angular listen for
     el.dispatchEvent(new Event('input', { bubbles: true }));
@@ -2565,7 +2619,7 @@
     el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true }));
     el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
 
-    return { ok: true };
+    return { ok: true, ...constraintViolation(el) };
   }
 
   // ── Set Editable Content ──
@@ -2827,17 +2881,12 @@
     } else {
       // Use native setter to trigger React/Vue/custom element state
       target.focus();
-      const setter = nativeValueSetter(target);
-      const text = singleLineValue(target, String(value));
-      if (setter) {
-        setter.call(target, text);
-      } else {
-        target.value = text;
-      }
+      const rejected = writeFieldValue(target, singleLineValue(target, String(value)));
+      if (rejected) return rejected;
       target.dispatchEvent(new Event('input', { bubbles: true }));
       target.dispatchEvent(new Event('change', { bubbles: true }));
     }
-    return { ok: true, pierced: target !== el, tag: target.tagName.toLowerCase() };
+    return { ok: true, pierced: target !== el, tag: target.tagName.toLowerCase(), ...constraintViolation(target) };
   }
 
   const EDITOR_SELECTOR = '[contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"]';
@@ -4707,6 +4756,12 @@
     const cap = Math.min(limit || QUERY_LIMIT, QUERY_LIMIT);
     const want = (fields && fields.length) ? fields : DEFAULT_FIELDS;
     const items = [];
+    const clipped = {};
+    const clip = (field, value, max) => {
+      if (value.length <= max) return value;
+      clipped[field] = (clipped[field] || 0) + 1;
+      return value.slice(0, max);
+    };
     for (let i = 0; i < nodes.length && items.length < cap; i++) {
       const el = nodes[i];
       const row = { tag: el.tagName.toLowerCase() };
@@ -4714,11 +4769,11 @@
       for (const f of want) {
         const name = String(f).toLowerCase();
         try {
-          if (f === 'text') row.text = renderedText(el).trim().slice(0, 400);
-          else if (f === 'html') row.html = redactMarkup(el, false).slice(0, 4000);
+          if (f === 'text') row.text = clip(f, renderedText(el).trim(), 400);
+          else if (f === 'html') row.html = clip(f, redactMarkup(el, false), 4000);
           else if (f === 'href') row.href = el.href || el.getAttribute('href') || undefined;
           else if (name === 'value' && sensitive) Object.assign(row, redactedValue(el));
-          else if (f === 'value') row.value = (el.value != null) ? String(el.value).slice(0, 400) : undefined;
+          else if (f === 'value') row.value = (el.value != null) ? clip(f, String(el.value), 400) : undefined;
           else if (f === 'src') row.src = el.src || el.getAttribute('src') || undefined;
           else if (f === 'alt') row.alt = el.alt || el.getAttribute('alt') || undefined;
           else if (f === 'id') row.id = el.id || undefined;
@@ -4736,7 +4791,7 @@
           } else {
             // arbitrary attribute name
             const v = el.getAttribute(f);
-            if (v != null) row[f] = v.slice(0, 400);
+            if (v != null) row[f] = clip(f, v, 400);
           }
         } catch {}
       }
@@ -4744,7 +4799,8 @@
       for (const k of Object.keys(row)) if (row[k] === undefined) delete row[k];
       items.push(row);
     }
-    return { count: items.length, total: nodes.length, truncated: nodes.length > items.length, items };
+    return { count: items.length, total: nodes.length, truncated: nodes.length > items.length, items,
+             ...(Object.keys(clipped).length && { clipped }) };
   }
 
   // ── HTML / bounds / computed style ──
@@ -5930,13 +5986,11 @@
           results[key] = { ok: true, tag: el.tagName.toLowerCase(), checked: el.checked };
         } else {
           el.focus();
-          const setter = nativeValueSetter(el);
-          const text = singleLineValue(el, String(value));
-          if (setter) setter.call(el, text);
-          else el.value = text;
+          const rejected = writeFieldValue(el, singleLineValue(el, String(value)));
+          if (rejected) { results[key] = rejected; continue; }
           el.dispatchEvent(new Event('input', { bubbles: true }));
           el.dispatchEvent(new Event('change', { bubbles: true }));
-          results[key] = { ok: true, tag: el.tagName.toLowerCase() };
+          results[key] = { ok: true, tag: el.tagName.toLowerCase(), ...constraintViolation(el) };
         }
       } catch (e) {
         results[key] = { error: e.message };

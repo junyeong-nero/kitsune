@@ -4,6 +4,7 @@ from http.server import BaseHTTPRequestHandler
 import json
 import re
 import sys
+import time
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -42,6 +43,9 @@ PAGES = {
     # #616: a search field, the same field at another URL.
     "/search": ("Search", '<form action="/results"><input name=q aria-label="Search"></form>'),
     "/search2": ("Search 2", '<form action="/results"><input name=q aria-label="Search"></form>'),
+    # #615: wap-096's delete button.
+    "/confirm": ("Jobs", """<button onclick="if (confirm('Delete this job offer?')) document.title = 'Deleted'">"""
+                 "Delete</button>"),
 }
 FLIPS = []  # /flip renames its field on every load
 
@@ -51,6 +55,8 @@ class _NavSite(BaseHTTPRequestHandler):
         if self.path == "/flip":
             FLIPS.append(None)
             PAGES["/flip"] = ("Flip", f'<input name=q{len(FLIPS) % 2} aria-label="Search">')
+        if self.path == "/slow":  # #618: answers after a short script's deadline
+            time.sleep(4)
         title, body = PAGES.get(self.path, (self.path.strip("/").capitalize(), "<p>Arrived</p>"))
         data = f"<!doctype html><title>{title}</title>{body}".encode()
         self.send_response(200)
@@ -340,6 +346,61 @@ class RealBrowserScriptTests(harness.RealBrowserTestCase):
             self.assertEqual(next(field["value"] for field in fields if field.get("id") == "draft"), "after the read")
         self.run_scenario(run)
 
+    def test_a_read_loop_over_the_call_limit_prints_what_it_collected(self):
+        # #618: wap-144/wap-233 looped navigate + text and lost every page at the 101st call.
+        async def run(session, tab_id):
+            code = (f"tab.navigate({self.nav.origin + '/a'!r})\nrows = []\ntry:\n    while True:\n"
+                    "        try:\n            rows.append(tab.text()[:6])\n        except KitsuneError:\n"
+                    "            continue\nfinally:\n    print(len(rows), set(rows), browser.calls_left)")
+            reply = await session.call_tool("browser_run_python", {"code": code, "timeout": 60})
+            self.assertTrue(reply.isError)
+            payload = json.loads(reply.content[0].text)
+            self.assertEqual(payload["code"], "script_operation_limit", payload)
+            self.assertEqual(payload["output"], "99 {'Bookma'} 0\n")
+            self.assertIn("Nothing was written", payload["hint"])
+            # #617: summarized, not 100 entries.
+            self.assertEqual((payload["operations"]["count"], payload["operations"]["by_route"]),
+                             (100, {"/api/navigate": 1, "/api/page-text": 99}))
+            self.assertLess(len(json.dumps(payload["operations"])), 500)
+        self.run_scenario(run)
+
+    def test_a_dismissed_confirm_is_reported_and_accepted_from_a_script(self):
+        async def run(session, tab_id):
+            async def python(code):
+                reply = await session.call_tool("browser_run_python", {"code": code})
+                self.assertFalse(reply.isError, reply)
+                return json.loads(reply.content[0].text)
+
+            dismissed = await python(f"tab.navigate({self.nav.origin + '/confirm'!r})\n"
+                                     "tab.click('button')\nprint(tab.info()['title'])")
+            self.assertEqual(dismissed["output"], "Jobs\n")
+            self.assertEqual([(d["operation"], d["type"], d["auto_dismissed"]) for d in dismissed["dialogs"]],
+                             [(1, "confirm", True)])
+            self.assertIn("tab.handle_dialogs(accept=True)", dismissed["dialog_hint"])
+            self.assertEqual(dismissed["operations"][1]["dialog"], "dismissed")
+
+            accepted = await python("tab.handle_dialogs(accept=True)\ntab.click('button')\n"
+                                    "print(tab.info()['title'])")
+            self.assertEqual(accepted["output"], "Deleted\n")
+            self.assertNotIn("dialog_hint", accepted)
+            self.assertEqual(accepted["dialogs"][0]["response"], True)
+            self.call("/api/handle-dialog", {"tabId": tab_id, "accept": None})
+        self.run_scenario(run)
+
+    def test_a_navigation_cut_by_the_deadline_is_a_timeout_and_the_script_still_prints(self):
+        # #618: wap-247's deadline came during a navigate; everything read before it was lost.
+        async def run(session, tab_id):
+            code = (f"tab.navigate({self.nav.origin + '/a'!r})\nrows = []\ntry:\n    rows.append(tab.text()[:9])\n"
+                    f"    tab.navigate({self.nav.origin + '/slow'!r})\nfinally:\n    print(rows)")
+            reply = await session.call_tool("browser_run_python", {"code": code, "timeout": 2})
+            self.assertTrue(reply.isError)
+            payload = json.loads(reply.content[0].text)
+            self.assertEqual((payload["code"], payload["output"]), ("script_timeout", "['Bookmarks']\n"), payload)
+            self.assertEqual([entry["status"] for entry in payload["operations"]], ["ok", "ok", "unknown"])
+            self.assertNotIn("failed_operation", payload)
+            self.assertIn("Nothing was written", payload["hint"])
+        self.run_scenario(run)
+
     def test_approval_stop_keeps_the_draft_and_does_not_offer_script_replay(self):
         self.call("/api/set-policy", {"ask": True})
 
@@ -423,8 +484,8 @@ class RealBrowserScriptTests(harness.RealBrowserTestCase):
             self.assertRegex(remapped["to"], r"^e\d+$")
             self.assertNotEqual(remapped["to"], old)
             self.assertEqual(result["operations"], [
-                {"method": "POST", "route": "/api/click", "status": "ok", "tab_id": tab_id},
-                {"method": "POST", "route": "/api/click", "status": "ok", "tab_id": tab_id, "remapped": remapped}])
+                {"route": "/api/click", "status": "ok", "tab_id": tab_id},
+                {"route": "/api/click", "status": "ok", "tab_id": tab_id, "remapped": remapped}])
             self.assertEqual(self.title(tab_id), "Bookmarks", "the link of page B was clicked")
             self.assertNotIn("follow", json.dumps(result["result"]))
         self.run_scenario(run)
