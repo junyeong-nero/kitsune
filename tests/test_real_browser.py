@@ -130,10 +130,10 @@ PAGES = {
   item.addEventListener('pointermove', move);
   item.addEventListener('pointerup', up);
 }});</script>""",
-    # #137: review filters below a 150-link header. The toggle shows the options and pushes a
+    # #137: review filters below a 250-link header (past 12k chars with path-only /url lines, #587). The toggle shows the options and pushes a
     # URL; an option click selects it. Home reports clicks.
     "reviews": """<header><button id="home" onclick="fetch('/hit?page={name}')">Home</button>
-<script>for (let i = 0; i < 150; i++) document.currentScript.before(Object.assign(document.createElement('a'),
+<script>for (let i = 0; i < 250; i++) document.currentScript.before(Object.assign(document.createElement('a'),
   {{ href: '/store-' + i, textContent: 'Store link ' + i }}));</script></header>
 <main><h2>Reviews</h2><div role="region" aria-label="Review filters">
 <button id="toggle" aria-expanded="false" onclick="this.setAttribute('aria-expanded', 'true');
@@ -310,7 +310,7 @@ class RealBrowserActionRaceTests(harness.RealBrowserTestCase):
         # Default readable snapshots must still reach controls beyond 12k (#218).
         readable = self.call("/api/snapshot", {"tabId": tab_id})
         self.assertNotIn("truncated", readable)
-        self.assertGreater(len(readable["snapshot"]), 12000)
+        self.assertGreater(readable["snapshot"].index('button "Review type"'), 12000)
         self.assertIn("/url:", readable["snapshot"])
         page = readable["snapshot"]
         [home], [toggle] = refs_named(page, "Home"), refs_named(page, "Review type")
