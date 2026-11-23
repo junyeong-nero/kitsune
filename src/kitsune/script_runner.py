@@ -306,10 +306,13 @@ async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
                     operations.append(entry)
                     remapped = None
                     while True:
+                        left = max(0.001, deadline - time.monotonic())
                         reply = await asyncio.to_thread(
-                            client.request, method, route, start_bridge=False,
-                            timeout=min(seconds, max(0.001, deadline - time.monotonic())),
+                            client.request, method, route, start_bridge=False, timeout=min(seconds, left),
                             **({"json": body} if method == "POST" else {}))
+                        # The script's deadline, not the call's own timeout, ended the wait for it.
+                        expired = (left < seconds and isinstance(reply, dict) and reply.get("code") == "timeout"
+                                   and time.monotonic() >= deadline)
                         same = _same_link(body, reply)
                         if same and remapped is None:
                             remapped = entry["remapped"] = {"from": body["ref"], "to": same["ref"],
@@ -326,6 +329,12 @@ async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
                         if allowed is not True:
                             reply = allowed if isinstance(allowed, dict) else reply
                             break
+                    if expired:
+                        # As before #618 this is the script's timeout and the call's outcome stays
+                        # unknown: the bridge may still run it. The script gets ScriptLimit for it.
+                        limited, delivered = "script_timeout", None
+                        await send({"limit": limited, "error": _limit_error(limited)})
+                        continue
                     entry["status"] = "failed" if failed(reply) else "ok"
                     reply = _without_tokens(reply)
                     if remapped and isinstance(reply, dict):

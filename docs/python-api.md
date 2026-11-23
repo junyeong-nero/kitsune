@@ -78,6 +78,8 @@ result = tab.snapshot()
   (`code` `script_operation_limit` or `script_timeout`). It is a `BaseException`, so
   `except Exception` and `except KitsuneError` let it through while `finally` and
   `except ScriptLimit` run; print what the loop collected there. The next call stops the script.
+  A call still waiting for its reply at the deadline raises it too, and stays `unknown` in
+  `operations`: the bridge may still run it.
   Uncaught, the script ends with that code, its printed output and its `result` variable, if it
   set one. `browser.calls_left` and `browser.seconds_left` give the budget left. When every
   operation was a read or a navigation, the hint says nothing was written.
