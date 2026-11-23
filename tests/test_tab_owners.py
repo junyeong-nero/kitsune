@@ -42,6 +42,98 @@ def ps_replies(chain):
     return run
 
 
+class _PsutilError(Exception):
+    pass
+
+
+class _AccessDenied(_PsutilError):
+    pass
+
+
+class FakeProcess:
+    """A psutil.Process stand-in; denied makes cmdline() and exe() raise AccessDenied."""
+
+    def __init__(self, pid, name, cmdline, parent=None, exe=None, denied=False):
+        self.pid, self._name, self._cmdline, self._parent = pid, name, cmdline, parent
+        self._exe, self.denied = exe or cmdline[0], denied
+
+    def name(self):
+        return self._name
+
+    def cmdline(self):
+        if self.denied:
+            raise _AccessDenied()
+        return self._cmdline
+
+    def exe(self):
+        if self.denied:
+            raise _AccessDenied()
+        return self._exe
+
+    def parent(self):
+        return self._parent
+
+
+def fake_psutil(me):
+    return Mock(Process=lambda pid=None: me, Error=_PsutilError, AccessDenied=_AccessDenied)
+
+
+class WindowsOwnerIdTests(unittest.TestCase):
+    """#603: Windows launchers start the next process as a child, so the walk skips them too."""
+
+    SERVER = ["-m", "kitsune.server"]
+
+    def setUp(self):
+        bridge_client._ancestor_owner.cache_clear()
+        self.addCleanup(bridge_client._ancestor_owner.cache_clear)
+        for patcher in (patch.dict("os.environ", {}), patch.object(bridge_client.sys, "platform", "win32"),
+                        patch.object(bridge_client.os, "getppid", return_value=150)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        bridge_client.os.environ.pop("KITSUNE_OWNER_ID", None)
+
+    def owner(self, me):
+        bridge_client._ancestor_owner.cache_clear()
+        with patch.dict("sys.modules", {"psutil": fake_psutil(me)}), \
+                patch.object(bridge_client.subprocess, "run", side_effect=AssertionError("no ps on Windows")):
+            return bridge_client.owner_id()
+
+    def test_uvx_and_a_venv_launcher_lead_to_the_client(self):
+        claude = FakeProcess(300, "claude.exe", ["C:/Users/me/.local/bin/claude.exe"])
+        uvx = FakeProcess(250, "uvx.exe", ["uvx", "kitsune"], claude)
+        uv = FakeProcess(200, "uv.exe", ["uv", "tool", "run", "kitsune"], uvx)
+        launcher = FakeProcess(150, "python.exe", ["C:/venv/Scripts/python.exe", *self.SERVER], uv)
+        me = FakeProcess(100, "python.exe", ["C:/Python313/python.exe", *self.SERVER], launcher)
+        self.assertEqual(self.owner(me), "claude-300")
+
+    def test_a_console_script_trampoline_is_a_launcher(self):
+        claude = FakeProcess(300, "Claude.exe", ["C:/Program Files/Claude/Claude.exe", "--type=utility"])
+        trampoline = FakeProcess(150, "kitsune.exe", ["C:/tools/kitsune.exe"], claude)
+        me = FakeProcess(100, "python.exe", ["C:/Python313/python.exe", "C:/tools/kitsune.exe"], trampoline)
+        self.assertEqual(self.owner(me), "Claude-300")
+
+    def test_a_python_client_is_the_client(self):
+        client = FakeProcess(300, "python.exe", ["C:/Python313/python.exe", "agent.py"])
+        me = FakeProcess(100, "python.exe", ["C:/Python313/python.exe", *self.SERVER], client)
+        self.assertEqual(self.owner(me), "python-300")
+
+    def test_another_accounts_process_is_the_client(self):
+        # An elevated client: its command line cannot be read, and it is no launcher of ours.
+        client = FakeProcess(300, "Code.exe", ["C:/Code.exe"], denied=True)
+        me = FakeProcess(100, "python.exe", ["C:/Python313/python.exe", *self.SERVER], client)
+        self.assertEqual(self.owner(me), "Code-300")
+
+    def test_falls_back_to_the_parent_pid(self):
+        # No parent: it exited, or its PID now names a newer process (parent() checks creation times).
+        me = FakeProcess(100, "python.exe", ["C:/Python313/python.exe", *self.SERVER])
+        self.assertEqual(self.owner(me), "ppid-150")
+        process = FakeProcess(300, "claude.exe", ["claude.exe"])
+        for level in range(bridge_client.OWNER_ANCESTOR_LEVELS):
+            process = FakeProcess(200 - level, "uv.exe", ["uv", "run"], process)
+        me = FakeProcess(100, "python.exe", ["C:/Python313/python.exe", *self.SERVER], process)
+        self.assertEqual(self.owner(me), "ppid-150", "only a few levels are walked")
+
+
 class OwnerIdTests(unittest.TestCase):
     def setUp(self):
         bridge_client._ancestor_owner.cache_clear()
@@ -96,9 +188,9 @@ class OwnerIdTests(unittest.TestCase):
         bridge_client._ancestor_owner.cache_clear()
         with patch.object(bridge_client.subprocess, "run", side_effect=subprocess.TimeoutExpired("ps", 2)):
             self.assertEqual(bridge_client.owner_id(), "ppid-100")
-        with patch.object(bridge_client.sys, "platform", "win32"):
+        with patch.object(bridge_client.sys, "platform", "win32"), patch.dict("sys.modules", {"psutil": None}):
             owner, run = self.owner({100: (1, "claude")})
-        self.assertEqual(owner, "ppid-100")
+        self.assertEqual(owner, "ppid-100", "Windows without psutil")
         run.assert_not_called()
 
     def test_an_orphan_gets_an_id_no_other_process_shares(self):
@@ -115,7 +207,7 @@ class OwnerIdTests(unittest.TestCase):
         with patch.object(bridge_client.os, "getppid", wraps=bridge_client.os.getpid):
             self.assertTrue(bridge._CLIENT_ID.fullmatch(bridge_client.owner_id()))
 
-    @unittest.skipIf(sys.platform == "win32" or not shutil.which("ps"), "the owner walk needs ps")
+    @unittest.skipIf(sys.platform != "win32" and not shutil.which("ps"), "the owner walk needs ps")
     def test_servers_of_one_client_share_its_owner_and_sibling_clients_do_not(self):
         # Real processes: two sibling clients, each starting servers directly and through uv run.
         env = {k: v for k, v in os.environ.items() if k != "KITSUNE_OWNER_ID"}

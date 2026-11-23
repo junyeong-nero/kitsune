@@ -1843,8 +1843,10 @@ value is ignored). Otherwise it is `<name>-<pid>` of the nearest process above t
 server that is not `uv` or `uvx` (at most 4 levels, read with `ps`), such as
 `claude-48190`: an MCP client that reconnects starts a new server process but keeps
 running itself. Any other process is the MCP client, a Python one too, such as a client
-built on the MCP Python SDK. When `ps` cannot tell, and on Windows, it is
-`ppid-<parent pid>`. A server whose parent is pid 1 (started by launchd or systemd, or
+built on the MCP Python SDK. On Windows the walk reads processes with `psutil` and also skips
+the launchers there that start the server as a child: a process running the same server (a
+venv's `python.exe`, a console-script `.exe`); `claude.exe` gives `claude-<pid>` (#603). When
+the walk cannot tell, it is `ppid-<parent pid>`. A server whose parent is pid 1 (started by launchd or systemd, or
 orphaned) or pid 0 gets `pid-<its own pid>`, which no other server shares, so it is offered
 no tabs after a restart. Set `KITSUNE_OWNER_ID` when the MCP client runs its server through
 another launcher, such as a shell script or a Python wrapper, or to keep the id across MCP
