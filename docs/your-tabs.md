@@ -69,7 +69,7 @@ and payment-like URLs until you approve ([details](api-reference.md#ask-before-a
 
 - `browser_set_policy(ask=True)`: the agent can turn it off again, so it only guards accidents.
 - Locked: `KITSUNE_ASK_BEFORE_ACT=1` or `kitsune-bridge start --ask-before-act`. It writes
-  `~/.kitsune/ask-before-act-locked`, and every bridge starts locked while that file exists. To
+  `~/.kitsune/ask-before-act-locked` (Windows: `%USERPROFILE%\.kitsune\ask-before-act-locked`), and every bridge starts locked while that file exists. To
   unlock, remove the variable, delete the file and run `kitsune-bridge stop`.
 
 ```toml

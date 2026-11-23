@@ -78,6 +78,8 @@ hint with `reason: "sign_in"`. Two ways through:
   `brew install cliclick`), grant Accessibility permission to the app running the bridge, then
   run `kitsune-bridge stop` so the next start picks it up. The bridge uses the Python and `PATH`
   of whichever client started it, so add the extra to every client.
+- **Windows**: works without extra setup. `focus=True` finds the browser by window title; set
+  `KITSUNE_BROWSER_WINDOW_TITLE` if yours differs.
 - **Linux**: `xdotool` in an X11 session (not Wayland). HiDPI scaling is not compensated.
 
 A target covered by another element returns `target_not_at_point` without clicking.
