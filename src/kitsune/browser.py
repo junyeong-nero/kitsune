@@ -632,7 +632,7 @@ class Tab:
         return _cut(self._request("/api/html", _action_target(target)), "HTML")["html"]
 
     def markdown(self, target: str | None = None) -> str:
-        """The page, or target's subtree, as Markdown."""
+        """The page, or target's subtree, as Markdown; an input or textarea target reads as its exact value."""
         return _cut(self._request("/api/markdown", _scope(target)), "Markdown")["markdown"]
 
     def links(self, *, internal_only: bool = False) -> list[dict]:
