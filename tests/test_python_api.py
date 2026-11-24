@@ -191,6 +191,12 @@ class TabRequestTests(BridgeTestCase):
             warnings.simplefilter("error")
             self.tab.navigate("https://example.com/")
 
+    def test_cached_page_text_warns(self):
+        # #627: an opted-in read cache can serve text the page has since replaced.
+        self.reply("/api/page-text", {"text": "Loading...", "_cached": True})
+        with self.assertWarnsRegex(UserWarning, "read cache and may be stale"):
+            self.assertEqual(self.tab.text(), "Loading...")
+
     def test_reads_the_bridge_cut_warn(self):
         self.reply("/api/page-text", {"text": "x" * 20000, "truncated": True, "fullLength": 30000})
         with self.assertWarnsRegex(UserWarning, "Page text was cut") as caught:

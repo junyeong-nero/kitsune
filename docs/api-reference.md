@@ -3510,7 +3510,7 @@ Bridge and extension version info.
 { "bridge": "0.8.2", "api": "1", "extension_connected": true, "extension_version": "0.8.2", "extension_build": "dev", "extension": 25 }
 ```
 
-## Page data (GET, cached 5 s except page-info)
+## Page data (GET)
 
 ### GET /api/page-info
 Page metadata plus current dialog policy and recent dialog history. Never cached.
@@ -4072,7 +4072,9 @@ milliseconds), `POST /api/history-visits` `{url}`, and `POST /api/bookmarks-sear
 ## Cache control
 
 ### POST /api/cache
-Control the response cache (pageText is cached for 5s by default; tab inventories are always read fresh).
+Control the response cache. It is off by default (TTL 0): pages change their text without a
+bridge write, so a cached read can be stale. With a TTL above 0, pageText replies are reused for
+that many seconds and carry `"_cached": true`; tab inventories are always read fresh.
 
 - Clear the cache: `{ "action": "clear" }`
 - Check its status: `{ "action": "status" }` returns `{ "entries": 3, "ttl": 5 }`

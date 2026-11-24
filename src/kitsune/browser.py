@@ -585,8 +585,12 @@ class Tab:
 
     def text(self) -> str:
         """The page's visible text; "" for an HTTP error the browser shows without a document."""
-        return _cut(self._request("/api/page-text"), "Page text",
-                    "read a part of the page with tab.snapshot(target=..., text=True) or tab.query(...)")["text"]
+        result = _cut(self._request("/api/page-text"), "Page text",
+                      "read a part of the page with tab.snapshot(target=..., text=True) or tab.query(...)")
+        if result.get("_cached"):
+            warnings.warn("Page text came from the bridge's read cache and may be stale; "
+                          "browser.cache(\"ttl\", seconds=0) turns the cache off", stacklevel=2)
+        return result["text"]
 
     def snapshot(self, target: str | None = None, *, max_depth: int | None = None, text: bool = False) -> str:
         """The accessibility-style tree of the page, or of target's subtree, with refs for actions.
@@ -645,7 +649,7 @@ class Tab:
         return _cut(self._request("/api/html", _action_target(target)), "HTML")["html"]
 
     def markdown(self, target: str | None = None) -> str:
-        """The page, or target's subtree, as Markdown."""
+        """The page, or target's subtree, as Markdown; an input or textarea target reads as its exact value."""
         return _cut(self._request("/api/markdown", _scope(target)), "Markdown")["markdown"]
 
     def links(self, *, internal_only: bool = False) -> list[dict]:
