@@ -3663,6 +3663,13 @@ single reads (see `browser_wait_for`); a zero timeout performs one immediate che
   `{ "ok": true, "url": "...", "load_pending": true }` with the page's snapshot: the page can be
   read and acted on while its resources still load (#561). This needs a document that started
   after the navigation; the page being navigated away from does not count.
+- A loaded page can still be rendering its content (a client-rendered app, #631). When the page
+  has no content yet, has a line that is only a loading placeholder (`Loading...`, `Please wait`,
+  `Just a moment`), or shows an element with `aria-busy="true"`, the result adds
+  `"rendering": true`, the `placeholder` line when there is one, and a `rendering_hint` naming the
+  wait to use (`browser_wait_for` with `text_gone` set to the placeholder, or with `text`). It is
+  an observation, not an error, and adds no wait. The Python `tab.navigate` and
+  `browser.new_tab` warn with a `UserWarning` instead.
 - Any other load that does not finish in 15 s returns `{ "ok": false, "timedOut": true, "url": "..." }`.
   When the tab sent a request for it, `waiting_for` says what is still missing, with a `hint`
   (#605): `"response"`, the server has not answered (read again shortly, or repeat the
@@ -3692,7 +3699,8 @@ already be read and acted on: 500 ms after it is parsed, or at the timeout, a pa
 returns `{ "ok": true, "load_pending": true, "tabId": 123, "url": "...", "status": "loading" }`
 (#561, #601); a load that ends without a parsed page is
 `{ "ok": false, "timedOut": true, "tabId": 123, "url": "...", "status": "loading" }`, with
-`waiting_for` and `hint` as for [navigate](#post-apinavigate) (#605).
+`waiting_for` and `hint` as for [navigate](#post-apinavigate) (#605). A loaded page that looks
+like it is still rendering adds `rendering`, `placeholder` and `rendering_hint` as for navigate (#631).
 While Zen's first-run welcome screen is open, the browser keeps reporting a loaded tab's URL as
 `about:blank` (#360); the wait then asks the page, and `url` is the page's own URL.
 With `wait`, `"pageText": true`, an internal flag the core `browser_tabs action=new url=…` sends,

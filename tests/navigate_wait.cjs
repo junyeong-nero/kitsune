@@ -83,6 +83,7 @@ function harness(startUrl, onNavigate = () => {}, page = null) {
       update: async (id, props) => navigate({ method: 'update', id, ...props }),
       reload: async id => navigate({ method: 'reload', id }),
       sendMessage: async (id, message) => {
+        if (message.action === 'renderState' && h.renderState) return h.renderState;
         if (!page || message.action !== 'getPageInfo') throw new Error('Unexpected content message');
         h.pageInfoRequests++;
         const [url, readyState] = await page();
@@ -155,6 +156,34 @@ async function main() {
   assert.equal(fastNav.settled, true, 'fast complete must not be missed');
   assert.deepEqual(await fastNav.result, { ok: true, url: 'https://example.com/next' });
   fast.assertClean();
+
+  // #631: a page that still renders says so, with the wait to use instead of a sleep.
+  for (const [state, extra, hint] of [
+    [{ rendering: true, placeholder: 'Loading...' }, { placeholder: 'Loading...' },
+      /still shows "Loading\.\.\.".*browser_wait_for\(text_gone="Loading\.\.\."\)/],
+    [{ rendering: true }, {}, /no content yet or is marked busy.*browser_wait_for\(text=\.\.\.\)/],
+  ]) {
+    const h = harness('https://example.com/start', (h, call) => {
+      h.update({ status: 'loading', url: call.url });
+      h.update({ status: 'complete' });
+    });
+    h.renderState = state;
+    const pending = start(h, { action: 'navigate', url: 'https://example.com/deals/48' });
+    await h.tick(0);
+    const { rendering_hint, ...result } = await pending.result;
+    assert.deepEqual(result, { ok: true, url: 'https://example.com/deals/48', rendering: true, ...extra });
+    assert.match(rendering_hint, hint);
+    h.assertClean();
+  }
+  // A rendered page adds nothing.
+  const rendered = harness('https://example.com/start', (h, call) => {
+    h.update({ status: 'loading', url: call.url });
+    h.update({ status: 'complete' });
+  });
+  rendered.renderState = {};
+  const renderedNav = start(rendered, { action: 'navigate', url: 'https://example.com/next' });
+  await rendered.tick(0);
+  assert.deepEqual(await renderedNav.result, { ok: true, url: 'https://example.com/next' });
 
   // Same URL without a fragment is a reload; Gecko may emit no fresh 'complete'.
   for (const [from, to] of [

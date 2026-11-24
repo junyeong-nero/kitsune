@@ -74,6 +74,18 @@ def _cut(result: dict, what: str, instead: str = "read a part of the page with a
     return result
 
 
+def _rendering(result: dict) -> dict:
+    """Warn when the page a navigate or new tab loaded looks like it is still rendering (#631)."""
+    if result.get("rendering"):
+        placeholder = result.get("placeholder")
+        wait = (f"tab.wait_for(text_gone={placeholder!r})" if placeholder
+                else "tab.wait_for(text=...) with text you expect")
+        shows = f"still shows {placeholder!r}" if placeholder else "shows no content yet or is marked busy"
+        warnings.warn(f"The page {shows} and may still be rendering; wait with {wait} "
+                      "before reading it, instead of a fixed sleep", stacklevel=3)
+    return result
+
+
 def connect(*, user_tabs: str | None = None, confirm=None,
             replace_bridge: bool = False) -> "Browser":
     """Connect to the shared bridge, starting it if none runs, and check that the extension is connected.
@@ -179,7 +191,8 @@ class Browser:
             return Tab(self, self.request("/api/new-tab", body)["tabId"])
         if timeout <= 0:
             raise ValueError("timeout must be positive")
-        result = self.request("/api/new-tab", {**body, "wait": True, "timeout": timeout}, timeout=timeout / 1000 + 10)
+        result = _rendering(self.request("/api/new-tab", {**body, "wait": True, "timeout": timeout},
+                                         timeout=timeout / 1000 + 10))
         return Tab(self, result["tabId"])
 
     def batch(self, commands: list[dict], *, tab=None) -> dict:
@@ -762,9 +775,10 @@ class Tab:
 
     def navigate(self, url: str, *, expect: dict | None = None, confirm: str | None = None) -> dict:
         """Load url: an absolute URL, or a relative one ('/deals/48') resolved against the tab's
-        current URL. One that does not parse fails with code invalid_url."""
-        return self._action("/api/navigate", {"url": url}, expect=expect, confirm=confirm,
-                            base_seconds=NAVIGATE_REQUEST_SECONDS)
+        current URL. One that does not parse fails with code invalid_url. A page that looks like it
+        is still rendering (no content, a "Loading..." line, aria-busy) warns with the wait to use."""
+        return _rendering(self._action("/api/navigate", {"url": url}, expect=expect, confirm=confirm,
+                                       base_seconds=NAVIGATE_REQUEST_SECONDS))
 
     def back(self, *, expect: dict | None = None, confirm: str | None = None) -> dict:
         return self._action("/api/back", {}, expect=expect, confirm=confirm)
