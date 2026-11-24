@@ -192,8 +192,18 @@ class TabRequestTests(BridgeTestCase):
     def test_query_warns_when_filtering_an_incomplete_result(self):
         self.reply("/api/query", {"items": [{"text": "first"}], "count": 1, "total": 3, "truncated": True})
         with self.assertWarnsRegex(UserWarning, "Query results were truncated"):
-            self.assertEqual(self.tab.query("a", fields=["text"], limit=1), [{"text": "first"}])
+            self.assertEqual(self.tab.query("a", fields=["text"]), [{"text": "first"}])
+        self.assertEqual(self.bridge.last.body["limit"], 50)
         self.assertEqual(len(self.bridge.requests), 1, "do not fetch or replay automatically")
+        # #633: an explicit limit took the rows it asked for, so it does not warn...
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            self.assertEqual(self.tab.query("a", fields=["text"], limit=1), [{"text": "first"}])
+            self.tab.query("a", limit=50)
+        # ...unless it reached the 500-row ceiling.
+        self.reply("/api/query", {"items": [{}] * 500, "count": 500, "total": 900, "truncated": True})
+        with self.assertWarnsRegex(UserWarning, "Query results were truncated"):
+            self.tab.query("a", limit=1000)
         self.reply("/api/query", {"items": [], "count": 0, "total": 0, "truncated": False})
         with warnings.catch_warnings():
             warnings.simplefilter("error")
@@ -206,6 +216,21 @@ class TabRequestTests(BridgeTestCase):
         with self.assertWarnsRegex(UserWarning, r"clipped \(text in 1 rows, value in 2 rows\); read one element "
                                                 r"in full with tab\.markdown\(target\)"):
             self.tab.query("p")
+
+    def test_query_warns_once_about_fields_no_row_has(self):
+        # #633: fields=['outerHTML'] read as an attribute gave rows without it and no word why.
+        self.reply("/api/query", {"items": [{"tag": "button", "text": ""}], "count": 1, "total": 1,
+                                  "truncated": False, "unknownFields": ["outerHTML", "herf"]})
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            self.tab.query("button", fields=["text", "outerHTML", "herf"])
+        self.assertEqual([str(w.message) for w in caught],
+                         ["Query fields outerHTML, herf: no such field or attribute on any row; use html for the "
+                          "inner markup or tab.html(target) for one element's outerHTML"])
+        self.reply("/api/query", {"items": [{"tag": "a"}], "count": 1, "total": 1, "truncated": False,
+                                  "unknownFields": ["herf"]})
+        with self.assertWarnsRegex(UserWarning, r"^Query fields herf: no such field or attribute on any row$"):
+            self.tab.query("a", fields=["herf"])
 
     def test_query_takes_fields_positionally_and_limit_by_keyword_only(self):
         # #574: tab.query('tr', ['text'], limit=30) was a TypeError after the script's earlier writes.

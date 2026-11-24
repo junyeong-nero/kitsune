@@ -4741,6 +4741,7 @@
 
   // ── Multi-field extract ──
   const DEFAULT_FIELDS = ['text', 'href', 'value', 'src', 'alt', 'id', 'name'];
+  const QUERY_BUILTIN_FIELDS = new Set([...DEFAULT_FIELDS, 'html', 'bounds', 'attrs']);
   const QUERY_LIMIT = 500;
 
   function queryElements(selector, fields, limit) {
@@ -4799,8 +4800,11 @@
       for (const k of Object.keys(row)) if (row[k] === undefined) delete row[k];
       items.push(row);
     }
+    // #633: a requested attribute no returned row has may be a typo or a property such as outerHTML.
+    const unknownFields = !items.length ? [] : [...new Set(want.map(String))]
+      .filter(f => !QUERY_BUILTIN_FIELDS.has(f) && !items.some(row => Object.hasOwn(row, f)));
     return { count: items.length, total: nodes.length, truncated: nodes.length > items.length, items,
-             ...(Object.keys(clipped).length && { clipped }) };
+             ...(Object.keys(clipped).length && { clipped }), ...(unknownFields.length && { unknownFields }) };
   }
 
   // ── HTML / bounds / computed style ──

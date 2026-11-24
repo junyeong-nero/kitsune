@@ -1204,7 +1204,8 @@ def browser_query(
     Much faster and cheaper than calling browser_evaluate per element. The default
     fields cover the common ones (text, href, value, src, alt, id, name);
     pass `fields=["text","data-foo","bounds","attrs"]` to get arbitrary
-    attributes or `bounds`/`attrs`/`html` extras.
+    attributes or `bounds`/`attrs`/`html` extras. `unknownFields` lists requested
+    attributes no returned row has, such as `outerHTML` (`html` is the inner markup).
     """
     body = {"selector": selector, "limit": limit}
     if fields: body["fields"] = fields
