@@ -164,7 +164,7 @@ Over 10 operations the list is summarized:
 | `snapshot(target=None, *, max_depth=None, text=False)` | Accessibility-style tree with refs ([Snapshots](api-reference.md#browser_snapshottab_idnone-selectornone-refnone-max_depthnone-textfalse)) |
 | `markdown(target=None)` | The page or a subtree as Markdown |
 | `html(target)` | One element's `outerHTML` (`"html"` for the page) |
-| `query(selector, fields=None, limit=50)` | Fields of matching elements (max 500 rows, 400-char snippets); warns when truncated. `href` and `src` are absolute URLs, even when the attribute is relative |
+| `query(selector, fields=None, limit=50)` | Fields of matching elements (max 500 rows, 400-char snippets); warns when truncated, and when nothing matches a tag that elements carry as their role (`article` for `role="article"`). `href` and `src` are absolute URLs, even when the attribute is relative |
 | `find(query)` | Elements matching a description like `"login button"`, best first |
 | `forms()` | Form fields with labels and values |
 | `links(internal_only=False)` | Links |

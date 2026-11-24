@@ -175,6 +175,13 @@ class TabRequestTests(BridgeTestCase):
         self.assertEqual(self.tab.links(), [{"href": "https://example.com/"}])
         self.assertEqual(self.tab.click("e3"), {"ok": True}, "actions return the bridge's result")
 
+    def test_an_empty_query_warns_with_the_role_hint(self):
+        # #628: "article" matches <article> only; the page's cards are role="article".
+        hint = 'No <article> element is on the page, but 2 elements have role="article": use [role=article].'
+        self.reply("/api/query", {"items": [], "count": 0, "total": 0, "truncated": False, "hint": hint})
+        with self.assertWarnsRegex(UserWarning, r"Query matched no elements: .*\[role=article\]"):
+            self.assertEqual(self.tab.query("article"), [])
+
     def test_reads_the_bridge_cut_warn(self):
         self.reply("/api/page-text", {"text": "x" * 20000, "truncated": True, "fullLength": 30000})
         with self.assertWarnsRegex(UserWarning, "Page text was cut") as caught:

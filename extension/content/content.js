@@ -274,6 +274,33 @@
       'No element matches; take a new browser_snapshot, or browser_wait_for the element if the page is still updating.');
   }
 
+  // Snapshots print ARIA roles, which agents reuse as CSS type selectors (#628): `article` matches
+  // <article> only, not role="article". For a selector naming a tag no element on the page has but
+  // elements carry as their role, a hint naming the role selector; null otherwise. roleEngine:
+  // whether the Playwright role= form works too (actions), or only CSS (query).
+  function roleSelectorHint(selector, roleEngine = true) {
+    if (typeof selector !== 'string') return null;
+    const bare = selector.replace(/(["'])(?:\\.|(?!\1).)*\1/g, '""').replace(/\[[^\]]*\]|\([^)]*\)/g, '');
+    for (const [, tag] of bare.matchAll(/(?:^|[\s>+~,])([a-z][a-z0-9-]*)(?=$|[\s>+~,.#:])/gi)) {
+      let count = 0;
+      try {
+        if (document.querySelector(tag)) continue;
+        count = document.querySelectorAll(`[role~="${tag}"]`).length;
+      } catch { continue; }
+      if (!count) continue;
+      return `No <${tag}> element is on the page, but ${count} element${count > 1 ? 's have' : ' has'} ` +
+        `role="${tag}" (snapshots list roles, not tags): use [role=${tag}]` +
+        (roleEngine ? ` in CSS, or role=${tag}.` : '.');
+    }
+    return null;
+  }
+
+  function withRoleHint(msg, result) {
+    if (result?.code !== 'not_found' || typeof msg.selector !== 'string') return result;
+    const hint = roleSelectorHint(msg.selector);
+    return hint ? { ...result, hint } : result;
+  }
+
   // A scoped read whose selector matched nothing.
   function selectorNotFound(selector) {
     return { ...notFound(`Selector not found: ${selector}`), state: { selector } };
@@ -628,7 +655,8 @@
       return false;
     }
 
-    const respond = result => sendResponse(withActionDialogs(msg.dialogsSince, withVisibility(msg.action, result)));
+    const respond = result => sendResponse(withActionDialogs(msg.dialogsSince,
+      withVisibility(msg.action, withRoleHint(msg, result))));
     try {
       if (['click', 'type', 'fill', 'selectOption', 'checkBox', 'keypress', 'submitForm'].includes(msg.action)) {
         lastActedElement = null;
@@ -4799,8 +4827,9 @@
       for (const k of Object.keys(row)) if (row[k] === undefined) delete row[k];
       items.push(row);
     }
+    const roleHint = nodes.length ? null : roleSelectorHint(selector, false);
     return { count: items.length, total: nodes.length, truncated: nodes.length > items.length, items,
-             ...(Object.keys(clipped).length && { clipped }) };
+             ...(Object.keys(clipped).length && { clipped }), ...(roleHint && { hint: roleHint }) };
   }
 
   // ── HTML / bounds / computed style ──
