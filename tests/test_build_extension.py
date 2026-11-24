@@ -1,6 +1,7 @@
 """Extension build variants (scripts/build_extension.py)."""
 import importlib.util
 import json
+import re
 from pathlib import Path
 import tempfile
 import unittest
@@ -43,6 +44,47 @@ class BuildExtensionTests(unittest.TestCase):
             json.loads((ROOT / "extension" / "manifest.json").read_text(encoding="utf-8")),
         ):
             self.assertNotIn("update_url", manifest["browser_specific_settings"]["gecko"])
+
+    def test_firefox_builds_leave_out_chrome_files(self):
+        for variant in ("signed", "dev"):
+            with self.subTest(variant):
+                self.assertFalse((self.build(variant) / "chrome").exists())
+
+    def test_chrome_build_is_mv3(self):
+        out = self.build("chrome")
+        manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["manifest_version"], 3)
+        self.assertEqual(manifest["version"], "9.9.9")
+        self.assertEqual(manifest["background"], {"service_worker": "chrome/service-worker.js"})
+        self.assertEqual(manifest["host_permissions"], ["<all_urls>"])
+        self.assertIn("scripting", manifest["permissions"])
+        for dropped in ("<all_urls>", "webRequestBlocking", "theme"):
+            self.assertNotIn(dropped, manifest["permissions"])
+        self.assertIn("action", manifest)
+        self.assertNotIn("browser_action", manifest)
+        self.assertNotIn("browser_specific_settings", manifest)
+        for entry in manifest["content_scripts"]:
+            self.assertEqual(entry["js"][0], "chrome/compat.js")
+        # Every file the manifest and the service worker name is in the build.
+        for name in [manifest["background"]["service_worker"],
+                     *(name for entry in manifest["content_scripts"] for name in entry["js"])]:
+            self.assertTrue((out / name).is_file(), name)
+        worker = (out / "chrome" / "service-worker.js").read_text(encoding="utf-8")
+        for name in re.findall(r"'/([^']+\.js)'", worker):
+            self.assertTrue((out / name).is_file(), name)
+
+    def test_chrome_build_strips_dev_only_code(self):
+        out = self.build("chrome")
+        for name in build_extension.BUILD_FILES:
+            text = (out / name).read_text(encoding="utf-8")
+            self.assertIn("const KITSUNE_BUILD = 'chrome';", text)
+            self.assertNotIn(build_extension.START, text)
+
+    def test_chrome_pages_load_compat_first(self):
+        out = self.build("chrome")
+        for page in build_extension.CHROME_PAGES:
+            scripts = re.findall(r'<script src="([^"]+)"', (out / page).read_text(encoding="utf-8"))
+            self.assertEqual(scripts[0], "../chrome/compat.js", page)
 
     def test_markers_must_balance(self):
         for text, message in (

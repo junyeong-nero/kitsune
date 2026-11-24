@@ -81,7 +81,8 @@ WORKFLOW_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "workflo
 # origins. The token lives in a user-only file that the MCP server also reads.
 TOKEN_FILE = os.path.join(DATA_DIR, "token")
 ALLOWED_HOSTS = {f"127.0.0.1:{HTTP_PORT}", f"localhost:{HTTP_PORT}"}
-ALLOWED_WS_ORIGIN_PREFIX = "moz-extension://"
+# Firefox, and Chrome for its build (#589).
+ALLOWED_WS_ORIGIN_PREFIXES = ("moz-extension://", "chrome-extension://")
 # Paths that a browser tab navigates to directly and cannot attach a token.
 UNAUTHENTICATED_GET_PATHS = {"/view"}
 # The largest body the bridge reads to answer an unauthenticated request (see drain_body).
@@ -2867,7 +2868,7 @@ def _parse_workflow_text(content, variables=None):
 # websockets rejects any other Origin (or a missing one) with HTTP 403 during
 # the handshake, before ws_handler runs: a web page connecting here would
 # otherwise replace the real extension and receive its commands.
-ALLOWED_WS_ORIGINS = [_re.compile(_re.escape(ALLOWED_WS_ORIGIN_PREFIX) + ".*")]
+ALLOWED_WS_ORIGINS = [_re.compile(_re.escape(prefix) + ".*") for prefix in ALLOWED_WS_ORIGIN_PREFIXES]
 
 
 async def _publish_popup_usage():
