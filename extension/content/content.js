@@ -127,24 +127,65 @@
   const pageWindow = window.wrappedJSObject || window;
   const WINDOW_OPEN_CALL_LIMIT = 20;
   const WINDOW_OPEN_URL_LIMIT = 2048;
+  // Chrome's content scripts cannot reach the page's window (#589): there the page answers this
+  // script's calls through a DOM event, whose string details cross between the two worlds.
+  const PAGE_CALL_EVENT = '__kitsunePageCall';
+  function installPageCalls(W, eventName) {
+    if (W.__kitsunePageCalls) return;
+    W.__kitsunePageCalls = true;
+    W.document.addEventListener(eventName, event => {
+      let result = null;
+      try {
+        const { name, arg } = JSON.parse(event.detail);
+        if (/^__kitsune[A-Za-z]+$/.test(name) && typeof W[name] === 'function') result = { value: W[name](arg) ?? null };
+      } catch {}
+      W.document.dispatchEvent(new CustomEvent(eventName + 'Result', { detail: JSON.stringify(result) }));
+    });
+  }
+  // The Chrome build also runs this script in the page's main world, which has no extension API
+  // (no `browser`, see chrome/compat.js). There it only installs the page-world functions:
+  // Chrome's content scripts can neither reach them nor add an inline script that would.
+  if (KITSUNE_BUILD === 'chrome' && typeof browser === 'undefined') {
+    try { installWindowOpenWatch(window, WINDOW_OPEN_CALL_LIMIT, WINDOW_OPEN_URL_LIMIT); } catch {}
+    installDialogs(window, f => f);
+    installPageCalls(window, PAGE_CALL_EVENT);
+    return;
+  }
   // Both page-world installs share one <script>, so a strict CSP blocks (and reports) one script,
   // not two; a failed window.open watch still leaves the dialogs installed.
-  injectPageScript('try { (' + installWindowOpenWatch.toString() + ')(window, ' + WINDOW_OPEN_CALL_LIMIT + ', ' +
+  if (KITSUNE_BUILD !== 'chrome') injectPageScript('try { (' + installWindowOpenWatch.toString() + ')(window, ' + WINDOW_OPEN_CALL_LIMIT + ', ' +
     WINDOW_OPEN_URL_LIMIT + '); } catch {}\n(' + installDialogs.toString() + ')(window, f => f);');
   if (!pageWindow.__kitsuneDialogSnapshot && typeof exportFunction === 'function') {
     installDialogs(pageWindow, fn => exportFunction(fn, pageWindow));
   }
+  // Calls a page-world function: { value } with its result, or null if the page has none.
+  function pageCall(name, arg) {
+    if (KITSUNE_BUILD !== 'chrome') {
+      const fn = pageWindow[name];
+      return typeof fn === 'function' ? { value: fn(arg) } : null;
+    }
+    let answer = null;
+    const listen = event => { answer = event.detail; };
+    document.addEventListener(PAGE_CALL_EVENT + 'Result', listen);
+    try {
+      document.dispatchEvent(new CustomEvent(PAGE_CALL_EVENT, { detail: JSON.stringify({ name, arg }) }));
+    } finally {
+      document.removeEventListener(PAGE_CALL_EVENT + 'Result', listen);
+    }
+    try { return typeof answer === 'string' ? JSON.parse(answer) : null; } catch { return null; }
+  }
   function dialogInfo() {
-    if (!pageWindow.__kitsuneDialogSnapshot) return { error: 'Page-world dialog capture unavailable' };
-    return JSON.parse(pageWindow.__kitsuneDialogSnapshot());
+    const snapshot = pageCall('__kitsuneDialogSnapshot');
+    if (!snapshot) return { error: 'Page-world dialog capture unavailable' };
+    return JSON.parse(snapshot.value);
   }
   function handleDialog(accept, promptText) {
-    if (!pageWindow.__kitsuneDialogPolicy) return dialogInfo();
-    pageWindow.__kitsuneDialogPolicy(JSON.stringify({ accept: accept ?? null, prompt_text: accept == null ? null : promptText ?? null }));
+    const policy = JSON.stringify({ accept: accept ?? null, prompt_text: accept == null ? null : promptText ?? null });
+    if (!pageCall('__kitsuneDialogPolicy', policy)) return dialogInfo();
     return { ok: true, ...dialogInfo() };
   }
   function setDialogAgentTab(agentTab) {
-    pageWindow.__kitsuneDialogAgentTab?.(agentTab === true);
+    pageCall('__kitsuneDialogAgentTab', agentTab === true);
     return { ok: true };
   }
   // Dialogs recorded since a time (ms), for an action's result (#555).
@@ -182,8 +223,7 @@
   // The record is page data a page can replace, so this reads a bounded, type-checked copy.
   function readWindowOpenCalls() {
     try {
-      const read = pageWindow.__kitsuneWindowOpenCalls;
-      const json = typeof read === 'function' ? read() : null;
+      const json = pageCall('__kitsuneWindowOpenCalls')?.value ?? null;
       if (typeof json !== 'string' || json.length > 100000) return null;
       const calls = JSON.parse(json);
       if (!Array.isArray(calls)) return null;

@@ -63,8 +63,14 @@ class BuildExtensionTests(unittest.TestCase):
         self.assertIn("action", manifest)
         self.assertNotIn("browser_action", manifest)
         self.assertNotIn("browser_specific_settings", manifest)
-        for entry in manifest["content_scripts"]:
+        isolated = [entry for entry in manifest["content_scripts"] if "world" not in entry]
+        for entry in isolated:
             self.assertEqual(entry["js"][0], "chrome/compat.js")
+        # content.js again in the main world, under another name (Chrome injects a file once).
+        main = [entry for entry in manifest["content_scripts"] if entry.get("world") == "MAIN"]
+        self.assertEqual([entry["js"] for entry in main], [[build_extension.CHROME_PAGE_WORLD]])
+        self.assertEqual((out / build_extension.CHROME_PAGE_WORLD).read_bytes(),
+                         (out / "content" / "content.js").read_bytes())
         # Every file the manifest and the service worker name is in the build.
         for name in [manifest["background"]["service_worker"],
                      *(name for entry in manifest["content_scripts"] for name in entry["js"])]:

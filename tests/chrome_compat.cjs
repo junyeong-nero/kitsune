@@ -12,6 +12,8 @@ const SOURCE = fs.readFileSync(path.join(__dirname, '..', 'extension', 'chrome',
 function chromeApi() {
   const listeners = new Set();
   const injected = [];
+  const stored = {};
+  const removedListeners = new Set();
   const deliver = message => new Promise((resolve, reject) => {
     let answered = false;
     const sendResponse = value => { answered = true; resolve(value); };
@@ -25,14 +27,43 @@ function chromeApi() {
       onMessage: { addListener: fn => listeners.add(fn), removeListener: fn => listeners.delete(fn) },
       sendMessage: deliver,
     },
-    tabs: { sendMessage: (tabId, message) => deliver(message) },
+    stored,
+    closeTab: tabId => [...removedListeners].forEach(fn => fn(tabId)),
+    pageHistory: { canGoBack: false, steps: [] },
+    tabs: {
+      sendMessage: (tabId, message) => deliver(message),
+      onRemoved: { addListener: fn => removedListeners.add(fn) },
+      goBack: async tabId => { if (tabId !== 1) throw new Error('Cannot find a next page in history.'); },
+      goForward: async () => { throw new Error('Cannot find a next page in history.'); },
+    },
+    sessions: {},
+    storage: {
+      session: {
+        get: async key => key === null ? { ...stored } : (key in stored ? { [key]: stored[key] } : {}),
+        set: async items => { Object.assign(stored, items); },
+        remove: async keys => { for (const key of [keys].flat()) delete stored[key]; },
+      },
+    },
     scripting: {
-      executeScript: async details => { injected.push(details); return [{ frameId: 0, result: 'done' }]; },
+      executeScript: async function (details) {
+        if (details.func) {
+          // The page's history, in a tab whose entries Chrome's tabs.goBack skips.
+          const { pageHistory } = this.owner;
+          const navigation = { canGoBack: pageHistory.canGoBack, canGoForward: false };
+          const history = { back: () => pageHistory.steps.push('back'), forward: () => pageHistory.steps.push('forward') };
+          const result = new Function('navigation', 'history', `return (${details.func})(...arguments[2])`)(
+            navigation, history, details.args);
+          return [{ frameId: 0, result }];
+        }
+        injected.push(details);
+        return [{ frameId: 0, result: 'done' }];
+      },
     },
   };
 }
 
 function load(globals) {
+  if (globals.chrome) globals.chrome.scripting.owner = globals.chrome;
   const context = vm.createContext({ ...globals });
   context.globalThis = context;
   vm.runInContext(SOURCE, context);
@@ -67,14 +98,39 @@ function load(globals) {
   });
   assert.deepEqual(await browser.runtime.sendMessage({ value: 4 }), { late: 4 });
 
-  // tabs.executeScript's file form injects compat.js first, into the frames Firefox would.
+  // tabs.executeScript's file form injects compat.js first, into the frames Firefox would;
+  // content.js also into the main world.
   assert.deepEqual(await browser.tabs.executeScript(5, { file: '/content/content.js' }), ['done']);
   await browser.tabs.executeScript(5, { file: '/content/content.js', frameId: 3 });
   await browser.tabs.executeScript(5, { file: '/content/frame-input.js', allFrames: true, matchAboutBlank: true });
   assert.deepEqual(JSON.parse(JSON.stringify(chrome.injected)), [
+    { target: { tabId: 5 }, files: ['/chrome/page-world.js'], world: 'MAIN' },
     { target: { tabId: 5 }, files: ['/chrome/compat.js', '/content/content.js'] },
+    { target: { tabId: 5, frameIds: [3] }, files: ['/chrome/page-world.js'], world: 'MAIN' },
     { target: { tabId: 5, frameIds: [3] }, files: ['/chrome/compat.js', '/content/content.js'] },
     { target: { tabId: 5, allFrames: true }, files: ['/chrome/compat.js', '/content/frame-input.js'] },
   ]);
+
+  // Session tab values live in storage.session, per tab, and go when the tab closes.
+  await browser.sessions.setTabValue(1, 'kitsune.owned', { v: 2, owner: 'a' });
+  await browser.sessions.setTabValue(10, 'kitsune.owned', { v: 1 });
+  assert.deepEqual({ ...(await browser.sessions.getTabValue(1, 'kitsune.owned')) }, { v: 2, owner: 'a' });
+  assert.equal(await browser.sessions.getTabValue(2, 'kitsune.owned'), undefined);
+  chrome.closeTab(1);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(await browser.sessions.getTabValue(1, 'kitsune.owned'), undefined);
+  assert.deepEqual({ ...(await browser.sessions.getTabValue(10, 'kitsune.owned')) }, { v: 1 });
+  await browser.sessions.removeTabValue(10, 'kitsune.owned');
+  assert.deepEqual(Object.keys(chrome.stored), []);
+
+  // goBack/goForward fall back to the page's history for entries Chrome's tabs API skips, and fail
+  // as before when the page has none either.
+  await browser.tabs.goBack(1);
+  assert.deepEqual(chrome.pageHistory.steps, []);
+  await assert.rejects(browser.tabs.goBack(2), /Cannot find a next page/);
+  chrome.pageHistory.canGoBack = true;
+  await browser.tabs.goBack(2);
+  assert.deepEqual(chrome.pageHistory.steps, ['back']);
+  await assert.rejects(browser.tabs.goForward(2), /Cannot find a next page/);
   console.log('chrome_compat: ok');
 })().catch(error => { console.error(error); process.exit(1); });
