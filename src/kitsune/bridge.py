@@ -127,7 +127,7 @@ _scheduler_queued = {}
 # ── Cache ──
 import re as _re
 _cache = {}  # key -> (timestamp, data)
-CACHE_TTL = 5  # seconds
+CACHE_TTL = 0  # seconds; opt-in, since pages change text without a bridge write (#627)
 
 # ── Keep-alive (tab unloader defense) ──
 # Zen aggressively unloads inactive tabs. For reliable parallel multi-tab work
