@@ -35,6 +35,9 @@ if TYPE_CHECKING:
 # resolver reads as CSS, a Playwright-style selector such as text= or role=, or an s1e0/r0 ref
 # (docs/api-reference.md#target-selectors). The core MCP tools send targets the same way.
 _REF = re.compile(r"e\d+")
+# tab.query rows without a limit, and the content script's ceiling (QUERY_LIMIT).
+_QUERY_DEFAULT_LIMIT = 50
+_QUERY_MAX_LIMIT = 500
 
 
 def _action_target(target: str) -> dict:
@@ -625,29 +628,38 @@ class Tab:
         """
         return self._request("/api/find", {"query": query})["results"]
 
-    def query(self, selector: str, fields: list[str] | None = None, *, limit: int = 50) -> list[dict]:
+    def query(self, selector: str, fields: list[str] | None = None, *, limit: int | None = None) -> list[dict]:
         """Fields (text, href, value, src, alt, id, name by default) of elements matching native CSS.
 
         Current document only: no shadow/frame traversal, snapshot refs or Playwright forms
-        such as :has-text or text=. At most 500 rows; text/value fields are clipped to 400
-        characters. A warning reports a row limit and clipped fields. Filter locally,
-        but absence in returned snippets is not page-wide absence; scope a snapshot for detail.
+        such as :has-text or text=. 50 rows unless limit is given, at most 500; text/value fields
+        are clipped to 400 characters. Other field names are read as attributes. A warning
+        reports more matches than the default limit or 500 rows, clipped fields, and a field
+        no row has (the html field is the inner markup; tab.html(target) is the outerHTML).
+        Filter locally, but absence in returned snippets is not page-wide absence; scope a snapshot for detail.
         href and src are absolute URLs even when the attribute is relative ('/deals/48'), so
         pass them to navigate as they are.
         """
-        body = {"selector": selector, "limit": limit}
+        body = {"selector": selector, "limit": _QUERY_DEFAULT_LIMIT if limit is None else limit}
         if fields:
             body["fields"] = fields
         result = self._request("/api/query", body)
         if not result["items"] and result.get("hint"):
             warnings.warn(f"Query matched no elements: {result['hint']}", stacklevel=2)
-        if result.get("truncated"):
+        # #633: an explicit limit below the ceiling chose its rows; the advice is noise there.
+        if result.get("truncated") and (limit is None or result.get("count", 0) >= _QUERY_MAX_LIMIT):
             warnings.warn("Query results were truncated; narrow the selector or increase limit",
                           stacklevel=2)
         if result.get("clipped"):
             fields = ", ".join(f"{name} in {count} rows" for name, count in result["clipped"].items())
             warnings.warn(f"Query fields were clipped ({fields}); read one element in full with "
                           "tab.markdown(target)", stacklevel=2)
+        if result.get("unknownFields"):
+            unknown = result["unknownFields"]
+            markup = any(name.lower() in ("outerhtml", "innerhtml") for name in unknown)
+            warnings.warn(f"Query fields {', '.join(unknown)}: no such field or attribute on any row"
+                          + ("; use html for the inner markup or tab.html(target) for one element's outerHTML"
+                             if markup else ""), stacklevel=2)
         return result["items"]
 
     def html(self, target: str) -> str:

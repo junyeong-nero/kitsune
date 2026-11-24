@@ -164,7 +164,7 @@ Over 10 operations the list is summarized:
 | `snapshot(target=None, *, max_depth=None, text=False)` | Accessibility-style tree with refs ([Snapshots](api-reference.md#browser_snapshottab_idnone-selectornone-refnone-max_depthnone-textfalse)) |
 | `markdown(target=None)` | The page or a subtree as Markdown; an input or textarea target reads as its exact value, line breaks included |
 | `html(target)` | One element's `outerHTML` (`"html"` for the page) |
-| `query(selector, fields=None, limit=50)` | Fields of matching elements (max 500 rows, 400-char snippets); warns when truncated, and when nothing matches a tag that elements carry as their role (`article` for `role="article"`). `href` and `src` are absolute URLs, even when the attribute is relative |
+| `query(selector, fields=None, *, limit=None)` | Fields of matching elements (50 rows unless `limit` is given, max 500; 400-char snippets). Warns when more matched than the default limit or 500 rows, not when an explicit `limit` cut them, and when nothing matches a tag that elements carry as their role (`article` for `role="article"`). A field other than `text`, `html` (inner markup), `href`, `value`, `src`, `alt`, `id`, `name`, `bounds` and `attrs` is read as an attribute, and one no row has (such as `outerHTML`) is named in a warning. `href` and `src` are absolute URLs, even when the attribute is relative |
 | `find(query)` | Elements matching a description like `"login button"`, best first |
 | `forms()` | Form fields with labels and values |
 | `links(internal_only=False)` | Links |

@@ -76,7 +76,8 @@ class RealBrowserLongpageTests(harness.RealBrowserTestCase):
                 self.assertIs((await python(f"result = {EVIDENCE!r} in tab.text()"))["result"], True)
 
                 # Omitted rows must remain visible as a warning, not a page-wide "not found".
-                narrow = await python("links = tab.query('nav a', fields=['text'], limit=20)\n"
+                # #633: at the default limit; an explicit one chose its rows.
+                narrow = await python("links = tab.query('nav a', fields=['text'])\n"
                                       "result = [link for link in links if 'Delivery' in link['text']]")
                 self.assertEqual(narrow["result"], [])
                 self.assertIn("Query results were truncated", narrow["output"])
