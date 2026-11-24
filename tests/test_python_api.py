@@ -128,7 +128,7 @@ class TabRequestTests(BridgeTestCase):
             (lambda t: t.show(), "/api/switch-tab", {}),
             (lambda t: t.close(force=True), "/api/close-tab", {"force": True}),
             (lambda t: t.info(), "/api/page-info", {}),
-            (lambda t: t.text(), "/api/page-text", {}),
+            (lambda t: t.text(), "/api/page-text", {"full": True}),
             (lambda t: t.snapshot(), "/api/snapshot", {"text": False}),
             (lambda t: t.snapshot("main", max_depth=2, text=True), "/api/snapshot",
              {"selector": "main", "maxDepth": 2, "text": True}),
@@ -175,10 +175,39 @@ class TabRequestTests(BridgeTestCase):
         self.assertEqual(self.tab.links(), [{"href": "https://example.com/"}])
         self.assertEqual(self.tab.click("e3"), {"ok": True}, "actions return the bridge's result")
 
+    def test_an_empty_query_warns_with_the_role_hint(self):
+        # #628: "article" matches <article> only; the page's cards are role="article".
+        hint = 'No <article> element is on the page, but 2 elements have role="article": use [role=article].'
+        self.reply("/api/query", {"items": [], "count": 0, "total": 0, "truncated": False, "hint": hint})
+        with self.assertWarnsRegex(UserWarning, r"Query matched no elements: .*\[role=article\]"):
+            self.assertEqual(self.tab.query("article"), [])
+
+    def test_navigate_and_new_tab_warn_while_the_page_renders(self):
+        # #631: a page read right after its DOM is parsed may still show only a placeholder.
+        rendering = {"ok": True, "rendering": True, "placeholder": "Loading...", "rendering_hint": "..."}
+        self.reply("/api/navigate", rendering)
+        with self.assertWarnsRegex(UserWarning, r"still shows 'Loading\.\.\.'.*tab\.wait_for\(text_gone='Loading\.\.\.'\)") as caught:
+            self.assertEqual(self.tab.navigate("/deals/48"), rendering)
+        self.assertEqual(caught.filename, __file__, "the warning names the caller's line")
+        self.reply("/api/new-tab", {"ok": True, "tabId": 9, "rendering": True})
+        with self.assertWarnsRegex(UserWarning, r"no content yet.*tab\.wait_for\(text=\.\.\.\)") as caught:
+            self.assertEqual(self.browser.new_tab("https://example.com/").id, 9)
+        self.assertEqual(caught.filename, __file__)
+        self.reply("/api/navigate", {"ok": True})
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            self.tab.navigate("https://example.com/")
+
+    def test_cached_page_text_warns(self):
+        # #627: an opted-in read cache can serve text the page has since replaced.
+        self.reply("/api/page-text", {"text": "Loading...", "_cached": True})
+        with self.assertWarnsRegex(UserWarning, "read cache and may be stale"):
+            self.assertEqual(self.tab.text(), "Loading...")
+
     def test_reads_the_bridge_cut_warn(self):
-        self.reply("/api/page-text", {"text": "x" * 20000, "truncated": True, "fullLength": 30000})
+        self.reply("/api/page-text", {"text": "x" * 500000, "truncated": True, "fullLength": 600000})
         with self.assertWarnsRegex(UserWarning, "Page text was cut") as caught:
-            self.assertEqual(len(self.tab.text()), 20000)
+            self.assertEqual(len(self.tab.text()), 500000)
         # #570: text() takes no target, so its warning names reads that do.
         self.assertNotIn("with a target", str(caught.warning))
         self.assertIn("tab.snapshot(target=..., text=True) or tab.query(...)", str(caught.warning))
@@ -575,7 +604,6 @@ class McpParityTests(BridgeTestCase):
             (lambda: tools.browser_handle_dialog(accept=True, prompt_text="Ada", tab_id=7),
              lambda: self.tab.handle_dialogs(True, "Ada")),
             (lambda: tools.browser_wait_for(url="/done$", tab_id=7), lambda: self.tab.wait_for(url="/done$")),
-            (lambda: tools.browser_page_text(tab_id=7), lambda: self.tab.text()),
             (lambda: tools.browser_snapshot(tab_id=7, ref="e2", max_depth=1), lambda: self.tab.snapshot("e2", max_depth=1)),
             (lambda: tools.browser_query(selector="a", fields=["href"], limit=5, tab_id=7),
              lambda: self.tab.query("a", fields=["href"], limit=5)),
@@ -604,6 +632,11 @@ class McpParityTests(BridgeTestCase):
         sent = self.sent(lambda: self.tab.wait_for(text="Done", timeout=3000))
         self.assertEqual(self.sent(lambda: tools.browser_wait_for(text="Done", timeout=3000, tab_id=7)),
                          sent + [("/api/snapshot", {"sinceObservation": True, "maxChars": 4000, "tabId": 7}, 15)])
+
+    def test_page_text_is_whole_for_python_and_bounded_for_the_mcp_tool(self):
+        # #630: a script's read is not model-visible; the direct tool's result is.
+        self.assertEqual(self.sent(lambda: self.tab.text()), [("/api/page-text", {"full": True, "tabId": 7}, 15)])
+        self.assertEqual(self.sent(lambda: tools.browser_page_text(tab_id=7)), [("/api/page-text", {"tabId": 7}, 15)])
 
     def test_every_other_capability_matches_its_mcp_tool(self):
         tab, browser = self.tab, self.browser

@@ -1609,6 +1609,9 @@ async function runCommandSettled(params, { withSnapshot, deltaSnapshot, textSnap
       await carryPageText(tabId, PAGE_TEXT_ACTIONS.get(params.action), result, actionCaller(params));
     }
   }
+  if (params.action === 'navigate' || (params.action === 'newTab' && params.wait)) {
+    await addRenderingHint(params.action === 'newTab' ? result?.tabId : params.tabId, result);
+  }
   if (blankLink && params.tabId != null) await openBlockedLink(params.tabId, blankLink, result, params.ownerId, params);
   // A middle or Ctrl/Cmd click's link opens like a popup-blocked one; a cancelled click is the page's.
   if (newTabLink && !newTabLink.prevented && params.tabId != null) {
@@ -1659,6 +1662,31 @@ async function addActionDialogs(tabId, since, result, during) {
   if (!dialogs.length) return;
   result.dialogs = dialogs;
   if (dialogs.some(d => d.auto_dismissed && d.type !== 'alert')) result.dialog_hint = DISMISSED_DIALOG_HINT;
+}
+
+// #631: navigate and a new tab return once the DOM is parsed (#601), so a client-rendered page may
+// still show nothing or a "Loading..." placeholder. The result says so, with the wait to use instead
+// of a fixed sleep. It adds no wait of its own.
+async function addRenderingHint(tabId, result) {
+  if (tabId == null || !result || result.error || result.ok === false) return;
+  try {
+    const url = await tabUrl(tabId);
+    if (typeof url !== 'string' || url.startsWith('about:') || isRestrictedUrl(url)) return;
+    let timer;
+    const state = await Promise.race([
+      browser.tabs.sendMessage(tabId, { action: 'renderState' }, TOP_FRAME).catch(() => null),
+      new Promise(resolve => { timer = setTimeout(() => resolve(null), PAGE_URL_TIMEOUT_MS); }),
+    ]);
+    clearTimeout(timer);
+    if (!state?.rendering) return;
+    result.rendering = true;
+    if (state.placeholder) result.placeholder = state.placeholder;
+    result.rendering_hint = state.placeholder
+      ? `The page still shows "${state.placeholder}" and may still be rendering. Wait with ` +
+        `browser_wait_for(text_gone="${state.placeholder}") or for text you expect, then read it.`
+      : 'The page shows no content yet or is marked busy, and may still be rendering. Wait for text ' +
+        'you expect with browser_wait_for(text=...), then read it; a loaded page can also be empty.';
+  } catch {}
 }
 
 async function tabUrl(tabId) {

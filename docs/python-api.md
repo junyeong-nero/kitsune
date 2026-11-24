@@ -162,9 +162,9 @@ Over 10 operations the list is summarized:
 | --- | --- |
 | `text()` | Visible text |
 | `snapshot(target=None, *, max_depth=None, text=False)` | Accessibility-style tree with refs ([Snapshots](api-reference.md#browser_snapshottab_idnone-selectornone-refnone-max_depthnone-textfalse)) |
-| `markdown(target=None)` | The page or a subtree as Markdown |
+| `markdown(target=None)` | The page or a subtree as Markdown; an input or textarea target reads as its exact value, line breaks included |
 | `html(target)` | One element's `outerHTML` (`"html"` for the page) |
-| `query(selector, fields=None, limit=50)` | Fields of matching elements (max 500 rows, 400-char snippets); warns when truncated. `href` and `src` are absolute URLs, even when the attribute is relative |
+| `query(selector, fields=None, limit=50)` | Fields of matching elements (max 500 rows, 400-char snippets); warns when truncated, and when nothing matches a tag that elements carry as their role (`article` for `role="article"`). `href` and `src` are absolute URLs, even when the attribute is relative |
 | `find(query)` | Elements matching a description like `"login button"`, best first |
 | `forms()` | Form fields with labels and values |
 | `links(internal_only=False)` | Links |
@@ -176,7 +176,8 @@ Over 10 operations the list is summarized:
 
 Sensitive values are redacted ([Sensitive-field redaction](api-reference.md#sensitive-field-redaction)).
 Reads cut at the bridge's caps warn with a `UserWarning`; pass a `target` to read less (`text()`
-has none: use `snapshot(target, text=True)` or `query`).
+has none: use `snapshot(target, text=True)` or `query`). `text()` reads up to 500,000 characters,
+not the direct tool's 20,000: a script's reads are not model-visible, only what it prints (#630).
 
 ### Selector contract by method
 
@@ -219,7 +220,7 @@ report `matches` ([Strict selectors](api-reference.md#strict-selectors)).
 
 | `Tab` method | Does |
 | --- | --- |
-| `navigate(url)`, `back()`, `forward()`, `reload(bypass_cache=False)` | Navigate. `url` may be relative to the tab's current URL (`"/deals/48"`); one that does not parse fails with `invalid_url` |
+| `navigate(url)`, `back()`, `forward()`, `reload(bypass_cache=False)` | Navigate. `url` may be relative to the tab's current URL (`"/deals/48"`); one that does not parse fails with `invalid_url`. A page that still looks like it is rendering (no content, a `Loading...` line, `aria-busy`) warns with the `wait_for` to use; `new_tab` warns the same way |
 | `click(target, button=None, modifiers=None, hold_ms=0)`, `double_click(target)` | Synthetic click; `hold_ms` for long presses |
 | `hover(target, duration_ms=0, steps=None)` | Synthetic hover; `duration_ms`/`steps` for hover-intent controls |
 | `fill(target, value)` | Replace a value |

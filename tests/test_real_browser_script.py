@@ -333,8 +333,9 @@ class RealBrowserScriptTests(harness.RealBrowserTestCase):
                                     "tab.fill('#draft', 'keep this draft')\nresult = tab.text()")
             self.assertEqual([entry["status"] for entry in selected["operations"]], ["ok", "ok", "ok"])
             self.assertTrue(selected["result"].startswith("배송과 반품 정책 안내 항목 0 참고 자료입니다. "), selected["result"][:80])
-            # text() takes no target: the bridge-cap warning names reads that do.
-            self.assertIn("tab.snapshot(target=..., text=True) or tab.query(...)", selected["output"])
+            # #630: a script reads the page whole, past the direct tool's 20,000 characters; only the
+            # output limit cuts what is shown.
+            self.assertNotIn("Page text was cut", selected["output"])
             printed = await python("print(tab.text())")
             self.assertIn(selected["result"][:5000], printed["output"], "print and result show the same start")
             snapshot = await python("print(tab.snapshot())\ntab.fill('#draft', 'after the read')")
