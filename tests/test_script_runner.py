@@ -115,7 +115,7 @@ class ScriptRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("private intermediate", json.dumps(result))
         self.assertEqual([(method, route) for method, route, _ in client.calls],
                          [("GET", "/api/tabs"), ("POST", "/api/page-text")])
-        self.assertEqual(client.calls[1][2]["json"], {"tabId": 7})
+        self.assertEqual(client.calls[1][2]["json"], {"full": True, "tabId": 7})
         self.assertEqual([entry["status"] for entry in result["operations"]], ["ok", "ok"])
 
     async def test_selected_tab_uses_the_same_browser_without_an_extra_request(self):

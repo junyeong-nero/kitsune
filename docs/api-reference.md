@@ -131,7 +131,7 @@ method-specific recovery hint. See the [method matrix](python-api.md#selector-co
 | `internal:role=button[name="Save"i]` | `getByRole`: as `role=`, but `"…"i` is a substring |
 | `internal:label="Email"i` | `getByLabel`: elements whose `aria-labelledby` text, else `aria-label`, else `<label>` (for a form control) contains the text, ignoring case. `"Email"` and `"Email"s` are the whole label, case-sensitive; `/…/flags` is a regex |
 | `:has-text("…")`, `:text-is("…")`, `:text("…")`, `:visible` | CSS pseudo-classes: contains the text (lax), whose whole text it is, the smallest element containing it, rendered |
-| `a, b` | A CSS list, with or without the pseudo-classes above: the union of its alternatives |
+| `a, b` | A CSS list, with or without the pseudo-classes above: the union of its alternatives. Its items are CSS only: a list such as `a.delete, text=Delete` fails with `unsupported_selector` naming the Playwright item (#635) |
 | `a >> b` | Chains: `b` searched inside each match of `a`. A chain may start with a ref (`e12 >> xpath=..`, `e12 >> text=Save`) |
 | `nth=N` | The Nth match so far (0-based; `-1` is the last); not first in a chain |
 | `xpath=..`, `..` | The parent element; at the top of a shadow root, the shadow host. Only a bare `..` step leaves a shadow root: write `.. >> ..`, not `xpath=../..` |
@@ -569,7 +569,7 @@ only `error`. MCP tools return these failures with `isError: true` (see
 
 | `code` | Meaning | `retryable` |
 |---|---|---|
-| `not_found` | No element matches the selector (also `No target`, `from/to element not found`; a scoped `browser_snapshot`/`browser_dom` reports `Selector not found: …` with `state.selector`); after an [actionability wait](#actionability-wait), `state` has `timeoutMs` and `elapsed` | true |
+| `not_found` | No element matches the selector (also `No target`, `from/to element not found`; a scoped `browser_snapshot`/`browser_dom` reports `Selector not found: …` with `state.selector`); after an [actionability wait](#actionability-wait), `state` has `timeoutMs` and `elapsed`. When the selector names a tag no element has but elements carry as their ARIA role (`article` for `role="article"`, as snapshots print it), the `hint` names `[role=article]` and `role=article` (#628); `browser_query` adds that `hint` to an empty result | true |
 | `not_editable` | A native field targeted by fill, type, editable-content or form-fill is readonly or disabled (including a disabled fieldset). `state.reason` is `readonly` or `disabled`; `state.tag` names the resolved field, including inside shadow roots. Nothing was focused, changed or dispatched for that field. Use the page's own control, such as its date picker, or an editable field. Earlier successful fields/operations remain completed | false |
 | `value_rejected` | Fill, type or form-fill wrote a value a `date`, `time`, `datetime-local`, `month`, `week`, `number`, `range` or `color` input did not keep (`05/03/2026` in a date input reads back as `""`; a range clamps; a color falls back). `state` has `type`, `expected_format`, `written`, the field's `value` (its previous value, put back) and `min`/`max`/`step` when set. No event was dispatched. A value the field keeps but that breaks its `min`/`max`/`step` is not an error: the result has `invalid: {reason, value, min, max}` (`reason` is `rangeUnderflow`, `rangeOverflow` or `stepMismatch`) and a `hint`. Snapshots list these inputs as `textbox "Departure" [type=date min=2026-04-01 max=2027-04-01 value=""]` | false |
 | `not_fillable` | `browser_type` (`type`/`fill` modes) or a `browser_form_fill` key found no field to write. The target is not a field (`fill` and `browser_form_fill`: input, textarea or select; `type`: input, textarea or `contenteditable` region) and has none in its open or closed shadow roots, searched through nested hosts up to 8 roots deep (`fill` and `browser_form_fill` also look in its light DOM). Nothing was written. `state.tag` is the target's tag; `state.reason` is `no_field`, or `shadow_depth` when its shadow roots nest deeper than 8. On an ARIA slider or spinbutton (`state.role`) that `fill` cannot step (no numeric `aria-valuenow`), that `type` mode targets, or that a `browser_form_fill` key names, the hint names the keyboard alternative (click it to focus it, then arrow keys with `browser_press_key` `repeat`), and for `type` and `browser_form_fill` on a slider with `aria-valuenow` also `fill` | true |
@@ -2716,6 +2716,14 @@ reported as buttons; their children remain discoverable. Explicit roles and nati
 controls are preserved. Custom controls use explicit labels/title/alt, then direct
 text; subtree text is used only when at most 80 characters and five elements long.
 
+A control left without a name (an icon-only button) carries one state that tells it apart
+from its unnamed neighbors (#632), the first that exists: a submit control's form action
+(`formaction`, else its form's `action`) as its path, with its origin when that is another,
+never its query or fragment (`button "" [ref=e263] [action="/bookmark/t835" value=""]`);
+its `data-testid` or `data-test` (`[testid="bookmark-post-t836" value=""]`); or its icon,
+an inner `<svg>`'s `<title>` or the id after `#` in a `<use href>` (`[icon="icon-repost"]`).
+Named controls and sensitive fields have none.
+
 Consecutive composite siblings (children containing elements, or list items) with
 identical tag/role/input-type structure show the first five items, followed by
 `- … N more similar items; snapshot e14 to list all`. A marker always hides at least three
@@ -3510,7 +3518,7 @@ Bridge and extension version info.
 { "bridge": "0.8.2", "api": "1", "extension_connected": true, "extension_version": "0.8.2", "extension_build": "dev", "extension": 25 }
 ```
 
-## Page data (GET, cached 5 s except page-info)
+## Page data (GET)
 
 ### GET /api/page-info
 Page metadata plus current dialog policy and recent dialog history. Never cached.
@@ -3525,6 +3533,8 @@ Also accepts POST with `{ "tabId": 123 }`. MCP tool: `browser_page_info(tab_id=N
 ### GET /api/page-text
 All visible text on the page (`document.body.innerText`), or of the element `selector`
 names (POST). Text over 20,000 characters is cut and has `truncated: true` and `fullLength`.
+POST `{ "full": true }`, which the Python `tab.text()` sends, raises the cut to 500,000
+characters: a script's reads are not model-visible (#630).
 ```json
 { "text": "..." }
 ```
@@ -3663,6 +3673,13 @@ single reads (see `browser_wait_for`); a zero timeout performs one immediate che
   `{ "ok": true, "url": "...", "load_pending": true }` with the page's snapshot: the page can be
   read and acted on while its resources still load (#561). This needs a document that started
   after the navigation; the page being navigated away from does not count.
+- A loaded page can still be rendering its content (a client-rendered app, #631). When the page
+  has no content yet, has a line that is only a loading placeholder (`Loading...`, `Please wait`,
+  `Just a moment`), or shows an element with `aria-busy="true"`, the result adds
+  `"rendering": true`, the `placeholder` line when there is one, and a `rendering_hint` naming the
+  wait to use (`browser_wait_for` with `text_gone` set to the placeholder, or with `text`). It is
+  an observation, not an error, and adds no wait. The Python `tab.navigate` and
+  `browser.new_tab` warn with a `UserWarning` instead.
 - Any other load that does not finish in 15 s returns `{ "ok": false, "timedOut": true, "url": "..." }`.
   When the tab sent a request for it, `waiting_for` says what is still missing, with a `hint`
   (#605): `"response"`, the server has not answered (read again shortly, or repeat the
@@ -3692,7 +3709,8 @@ already be read and acted on: 500 ms after it is parsed, or at the timeout, a pa
 returns `{ "ok": true, "load_pending": true, "tabId": 123, "url": "...", "status": "loading" }`
 (#561, #601); a load that ends without a parsed page is
 `{ "ok": false, "timedOut": true, "tabId": 123, "url": "...", "status": "loading" }`, with
-`waiting_for` and `hint` as for [navigate](#post-apinavigate) (#605).
+`waiting_for` and `hint` as for [navigate](#post-apinavigate) (#605). A loaded page that looks
+like it is still rendering adds `rendering`, `placeholder` and `rendering_hint` as for navigate (#631).
 While Zen's first-run welcome screen is open, the browser keeps reporting a loaded tab's URL as
 `about:blank` (#360); the wait then asks the page, and `url` is the page's own URL.
 With `wait`, `"pageText": true`, an internal flag the core `browser_tabs action=new url=…` sends,
@@ -4064,7 +4082,9 @@ milliseconds), `POST /api/history-visits` `{url}`, and `POST /api/bookmarks-sear
 ## Cache control
 
 ### POST /api/cache
-Control the response cache (pageText is cached for 5s by default; tab inventories are always read fresh).
+Control the response cache. It is off by default (TTL 0): pages change their text without a
+bridge write, so a cached read can be stale. With a TTL above 0, pageText replies are reused for
+that many seconds and carry `"_cached": true`; tab inventories are always read fresh.
 
 - Clear the cache: `{ "action": "clear" }`
 - Check its status: `{ "action": "status" }` returns `{ "entries": 3, "ttl": 5 }`

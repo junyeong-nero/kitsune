@@ -21,6 +21,7 @@ class Element {
   hasAttribute(key) { return key in this.attrs; }
   matches() { return false; }
   closest() { return null; }
+  querySelector() { return null; }
   getBoundingClientRect() { return { x: 0, y: 0, width: 100, height: 30 }; }
 }
 const h = (tagName, attrs, ...nodes) => new Element(tagName, attrs, nodes);
