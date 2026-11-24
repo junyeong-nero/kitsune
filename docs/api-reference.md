@@ -2716,6 +2716,14 @@ reported as buttons; their children remain discoverable. Explicit roles and nati
 controls are preserved. Custom controls use explicit labels/title/alt, then direct
 text; subtree text is used only when at most 80 characters and five elements long.
 
+A control left without a name (an icon-only button) carries one state that tells it apart
+from its unnamed neighbors (#632), the first that exists: a submit control's form action
+(`formaction`, else its form's `action`) as its path, with its origin when that is another,
+never its query or fragment (`button "" [ref=e263] [action="/bookmark/t835" value=""]`);
+its `data-testid` or `data-test` (`[testid="bookmark-post-t836" value=""]`); or its icon,
+an inner `<svg>`'s `<title>` or the id after `#` in a `<use href>` (`[icon="icon-repost"]`).
+Named controls and sensitive fields have none.
+
 Consecutive composite siblings (children containing elements, or list items) with
 identical tag/role/input-type structure show the first five items, followed by
 `- … N more similar items; snapshot e14 to list all`. A marker always hides at least three
