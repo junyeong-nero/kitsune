@@ -799,6 +799,41 @@ async function testSelectorListsAndScopedMisses() {
   assert.equal(unsupported.code, 'unsupported_selector', JSON.stringify(unsupported));
 }
 
+async function testSelectorListNamesPlaywrightItems() {
+  // #635: a comma list is CSS only; the error names its Playwright item and how to try it.
+  const lists = {
+    'a.delete, #rcmbtn_delete, text=Delete': ['`text=Delete` is a Playwright form',
+      'Try each alternative in turn, or use `:is(a.delete, #rcmbtn_delete)` plus a separate `text=Delete`.'],
+    'a.delete, text=Delete': ['`text=Delete` is a Playwright form',
+      'Try each alternative in turn, or use `a.delete` plus a separate `text=Delete`.'],
+    'button:has-text("#66"), role=button[name="a, b"]': ['`role=button[name="a, b"]` is a Playwright form',
+      'Try each alternative in turn, or use `button:has-text("#66")` plus a separate `role=button[name="a, b"]`.'],
+    '#cell1, xpath=//button, "저장"': ['`xpath=//button`, `"저장"` are Playwright forms',
+      'Try each alternative in turn, or use `#cell1` plus a separate `xpath=//button`, `"저장"`.'],
+    'css=#cell1, internal:label="Email"': ['`css=#cell1`, `internal:label="Email"` are Playwright forms',
+      'Try each alternative in turn.'],
+  };
+  for (const [selector, [reason, hint]] of Object.entries(lists)) {
+    const dom = galleryPage();
+    const send = load(dom);
+    for (const action of ['click', 'getSnapshot']) {
+      const result = await send({ action, selector });
+      assert.equal(result.code, 'unsupported_selector', `${selector}: ${JSON.stringify(result)}`);
+      assert.equal(result.retryable, false);
+      assert.equal(result.error, `Unsupported selector: a comma selector list is CSS only; ${reason}`, selector);
+      assert.equal(result.hint, hint, selector);
+    }
+    assert.equal(dom.html.descendants().some(el => el.events.length), false, `${selector} dispatched nothing`);
+  }
+  // Commas inside quotes and brackets do not split the list, and other invalid CSS keeps its error.
+  const send = load(galleryPage());
+  const quoted = await send({ action: 'click', selector: '#missing, [aria-label="a, text=b"]' });
+  assert.equal(quoted.code, 'not_found', JSON.stringify(quoted));
+  const invalid = await send({ action: 'click', selector: 'div[, text=Delete' });
+  assert.equal(invalid.error, 'Unsupported selector: it is not valid CSS');
+  assert.match(invalid.hint, /text=.*role=.*>> chains/);
+}
+
 async function testMethodSelectorContractMatrix() {
   // #541: a valid action/snapshot selector is not automatically a query/wait selector.
   const dom = page();
@@ -953,6 +988,7 @@ async function testEquivalentMatchesAreOneTarget() {
   await testRefStartsChain();
   await testParentStepLeavesShadowRoot();
   await testSelectorListsAndScopedMisses();
+  await testSelectorListNamesPlaywrightItems();
   await testRegexValuesAndQuotesInChains();
   await testXPathGuardCoversShadowRootsAndFrames();
   await testScriptTextNeverMatchesAndShadowTextDoes();
