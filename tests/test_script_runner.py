@@ -75,7 +75,30 @@ class ScriptWorkerStartTests(unittest.TestCase):
         self.assertEqual(loaded & {"kitsune.bridge_client", "kitsune.version", "httpx"}, set())
 
 
+class TabClient(Client):
+    """Replies with the text of the tab the request names, after a short delay."""
+
+    def request(self, method, route, **kwargs):
+        self.calls.append((method, route, kwargs))
+        time.sleep(0.005)
+        return {"text": str(kwargs["json"]["tabId"])}
+
+
 class ScriptRunnerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_threads_each_read_their_own_reply(self):
+        # #634: calls from a script's threads share one frame stream; each must get its own reply.
+        code = ("import threading\nwrong = []\n"
+                "def work(i):\n"
+                "    for _ in range(5):\n"
+                "        text = browser.tab(i).text()\n"
+                "        if text != str(i): wrong.append((i, text))\n"
+                "threads = [threading.Thread(target=work, args=(i,)) for i in range(1, 9)]\n"
+                "[t.start() for t in threads]; [t.join() for t in threads]\n"
+                "result = wrong")
+        result = await script_runner.run_python(code, TabClient())
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["result"], [])
+
     async def test_print_and_selected_structured_results(self):
         result = await script_runner.run_python("print('hello'); result = {'values': [n * 2 for n in range(3)]}", Client())
         self.assertTrue(result["ok"], result)

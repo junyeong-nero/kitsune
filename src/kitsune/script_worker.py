@@ -6,6 +6,7 @@ import contextlib
 import json as json_module
 import re
 import sys
+import threading
 import time
 import traceback
 
@@ -28,9 +29,17 @@ _SNAPSHOT_FIELDS = ("snapshot", "snapshot_delta", "no_visible_change", "snapshot
                     "navigated")
 
 
+# Threads of one script share the frame stream to the host (#634): a frame is written whole, and a
+# call holds the stream until its reply arrives, so each thread reads its own reply. The host runs
+# one call at a time; browser.parallel runs tabs concurrently.
+_SEND_LOCK = threading.Lock()
+_CALL_LOCK = threading.Lock()
+
+
 def _send(message):
-    _OUTPUT.write(json_module.dumps(message, ensure_ascii=False) + "\n")
-    _OUTPUT.flush()
+    with _SEND_LOCK:
+        _OUTPUT.write(json_module.dumps(message, ensure_ascii=False) + "\n")
+        _OUTPUT.flush()
 
 
 class ScriptLimit(BaseException):
@@ -55,20 +64,21 @@ class _Client:
         self.deadline = time.monotonic() + seconds_left
 
     def request(self, method, endpoint, *, json=None, timeout=15):
-        _send({"event": "call", "method": method, "route": endpoint, "body": json, "timeout": timeout})
-        line = _INPUT.readline()
-        if not line:
-            raise RuntimeError("The script host disconnected")
-        frame = json_module.loads(line)
-        if "limit" in frame:
-            self.calls_left = 0
-            raise ScriptLimit(frame["limit"], frame["error"])
-        # The host's clock: its deadline moves while the user is asked to approve a tool.
-        self.calls_left -= 1
-        self.deadline = time.monotonic() + frame["seconds_left"]
-        self.reply = frame["reply"]
-        self.last = (endpoint, self.reply)
-        return self.reply
+        with _CALL_LOCK:
+            _send({"event": "call", "method": method, "route": endpoint, "body": json, "timeout": timeout})
+            line = _INPUT.readline()
+            if not line:
+                raise RuntimeError("The script host disconnected")
+            frame = json_module.loads(line)
+            if "limit" in frame:
+                self.calls_left = 0
+                raise ScriptLimit(frame["limit"], frame["error"])
+            # The host's clock: its deadline moves while the user is asked to approve a tool.
+            self.calls_left -= 1
+            self.deadline = time.monotonic() + frame["seconds_left"]
+            reply = self.reply = frame["reply"]
+            self.last = (endpoint, reply)
+            return reply
 
 
 class _ScriptBrowser(Browser):

@@ -276,6 +276,11 @@ Failures don't raise: see `results` and `progress`. An unfinished call returns `
 `resume_token` for `browser.resume(...)` ([Checkpoint and resume](checkpoint-resume.md)).
 `browser.retry(command, max_attempts=3)` retries retryable failures.
 
+In `browser_run_python`, a script's browser calls run one at a time, also when the script
+starts threads: threads on four tabs take as long as one tab (#634). To work on several tabs at
+once, give `browser.parallel` one sequence per tab; in a local measurement, 12 navigations to
+a page answering in 1 s took 13 s with four threads and 3.2 s with `browser.parallel`.
+
 `browser.keep_alive(tabs)` / `stop_keep_alive()` prevent tab unloading,
 `browser.broadcast(tabs, command)` runs a command in each tab, and
 `browser.sync_barrier(tabs, predicate)` waits for a JS predicate in all of them.

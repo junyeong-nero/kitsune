@@ -1468,6 +1468,8 @@ async def browser_run_python(
     Limits: 16 KB output/result, 100 API calls, fresh variables, no top-level await.
     Past 100 calls or the deadline, a call raises ScriptLimit (not caught by except Exception; finally
     runs) and the next stops the script. In long loops check browser.calls_left/seconds_left and print.
+    Browser calls run one at a time, also from threads; for many pages use several tabs with
+    browser.parallel([[{'action': 'navigate', 'url': u, 'tabId': t.id}], ...]), one sequence per tab.
     A failed read or wait_for raises KitsuneError (TimedOut on a timeout); try/except may catch it.
     Any other failed call, and any needs_user or policy refusal, stops even if caught; earlier writes
     remain. For needs_user use the failed operation's direct tool via browser_tools_call, then run
