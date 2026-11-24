@@ -639,6 +639,8 @@ class Tab:
         if fields:
             body["fields"] = fields
         result = self._request("/api/query", body)
+        if not result["items"] and result.get("hint"):
+            warnings.warn(f"Query matched no elements: {result['hint']}", stacklevel=2)
         if result.get("truncated"):
             warnings.warn("Query results were truncated; narrow the selector or increase limit",
                           stacklevel=2)

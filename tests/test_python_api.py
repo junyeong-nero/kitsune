@@ -175,6 +175,13 @@ class TabRequestTests(BridgeTestCase):
         self.assertEqual(self.tab.links(), [{"href": "https://example.com/"}])
         self.assertEqual(self.tab.click("e3"), {"ok": True}, "actions return the bridge's result")
 
+    def test_an_empty_query_warns_with_the_role_hint(self):
+        # #628: "article" matches <article> only; the page's cards are role="article".
+        hint = 'No <article> element is on the page, but 2 elements have role="article": use [role=article].'
+        self.reply("/api/query", {"items": [], "count": 0, "total": 0, "truncated": False, "hint": hint})
+        with self.assertWarnsRegex(UserWarning, r"Query matched no elements: .*\[role=article\]"):
+            self.assertEqual(self.tab.query("article"), [])
+
     def test_navigate_and_new_tab_warn_while_the_page_renders(self):
         # #631: a page read right after its DOM is parsed may still show only a placeholder.
         rendering = {"ok": True, "rendering": True, "placeholder": "Loading...", "rendering_hint": "..."}
