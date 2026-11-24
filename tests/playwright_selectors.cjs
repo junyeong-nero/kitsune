@@ -469,6 +469,10 @@ async function testUnsupportedSyntaxIsNotRetryable() {
     '저장': /not an element name/,
     'e12 > button': /not an element name/,
     'div[': /not valid CSS/,
+    'a.delete, text=Delete': /comma selector list is CSS only.*text=Delete/,
+    'a.delete, #rcmbtn_delete, role=button[name="Delete"]': /comma selector list is CSS only.*role=button\[name="Delete"\]/,
+    'a.delete, xpath=//button': /comma selector list is CSS only.*xpath=\/\/button/,
+    'a.delete, internal:text="Delete"': /comma selector list is CSS only.*internal:text="Delete"/,
   };
   for (const [selector, reason] of Object.entries(selectors)) {
     const dom = page();

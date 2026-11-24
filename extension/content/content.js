@@ -3833,9 +3833,23 @@
   // A native CSS failure: invalid syntax can never match, so it is not a retryable not_found.
   function cssSelectorError(selector, e) {
     if (e?.name !== 'SyntaxError') return null;
-    return tabTargetError(selector) || unsupportedSelector(selector, SNAPSHOT_LABEL.test(selector.trim())
+    return tabTargetError(selector) || mixedSelectorListError(selector) || unsupportedSelector(selector, SNAPSHOT_LABEL.test(selector.trim())
       ? 'this is a snapshot line\'s role and name; pass that line\'s ref instead'
       : 'it is not valid CSS');
+  }
+
+  const PLAYWRIGHT_LIST_ITEM = /^(?:(?:text|role|xpath|nth)\s*=|internal:)/i;
+
+  function mixedSelectorListError(selector) {
+    const items = splitTopLevel(selector, ',').map(item => item.trim()).filter(Boolean);
+    if (items.length < 2) return null;
+    const bad = items.find(item => PLAYWRIGHT_LIST_ITEM.test(item));
+    if (!bad) return null;
+    return unsupportedSelector(
+      selector,
+      `a comma selector list is CSS only; ${bad} is a Playwright form. ` +
+      `Try each alternative in turn, or use :is(...) plus a separate ${bad}`
+    );
   }
 
   // A target that names a tab, not an element; null for any other selector. Its hint is the
@@ -4038,6 +4052,8 @@
   // CSS whose compounds may carry :has-text(), :text-is(), :text() or :visible. Each
   // alternative is a list of { combinator, css, filters }, matched right to left.
   function cssPart(css, selector) {
+    const mixed = mixedSelectorListError(selector);
+    if (mixed) throw mixed;
     if (!PLAYWRIGHT_PSEUDO.test(withoutStrings(css))) return { kind: 'css', css };
     return { kind: 'css', css, alternatives: splitTopLevel(css, ',').map(alt => complexSelector(alt.trim(), selector)) };
   }
