@@ -22,6 +22,7 @@ class TabInventoryTests(unittest.TestCase):
         handler.send_json = Mock()
         handler.run_async = Mock(side_effect=lambda coro, **kwargs: asyncio.run(coro))
         handler._tab_params = Mock(return_value={})
+        handler.command = "POST"
         return handler
 
     def test_inventory_is_read_fresh_with_cache_enabled(self):
@@ -66,6 +67,18 @@ class TabInventoryTests(unittest.TestCase):
             handler.handle_page_text()
         send.assert_awaited_once()
         self.assertEqual(handler.send_json.call_args.args[1], {**page, "_cached": True})
+
+    def test_page_text_passes_full_and_the_tab_only(self):
+        # #630: the Python API asks for the whole page; nothing else in the body reaches the page.
+        for body, sent in (({"tabId": 3, "full": True, "selector": "main"}, {"tabId": 3, "full": True}),
+                           ({"full": "yes"}, {}), ({}, {})):
+            with self.subTest(body=body):
+                bridge._cache.clear()
+                handler = self.handler(body)
+                with patch.object(bridge, "send_to_extension", new_callable=AsyncMock,
+                                  return_value={"text": "x"}) as send:
+                    handler.handle_page_text()
+                send.assert_awaited_once_with("getPageText", sent)
 
 
 class NewTabWaitTests(unittest.TestCase):

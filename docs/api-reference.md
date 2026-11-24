@@ -3525,6 +3525,8 @@ Also accepts POST with `{ "tabId": 123 }`. MCP tool: `browser_page_info(tab_id=N
 ### GET /api/page-text
 All visible text on the page (`document.body.innerText`), or of the element `selector`
 names (POST). Text over 20,000 characters is cut and has `truncated: true` and `fullLength`.
+POST `{ "full": true }`, which the Python `tab.text()` sends, raises the cut to 500,000
+characters: a script's reads are not model-visible (#630).
 ```json
 { "text": "..." }
 ```

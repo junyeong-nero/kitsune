@@ -531,7 +531,7 @@
       'dialogsSince':          () => dialogsSince(Number(msg.since) || 0),
       'waitForText':           () => waitForText(msg.text, msg.text_gone, msg.timeout, msg.diagnose === true,
                                      msg.text_seen),
-      'getPageText':           () => getPageText(msg.selector),
+      'getPageText':           () => getPageText(msg.selector, msg.full === true),
       'getSnapshot':           () => {
                                      // sinceObservation (#350): the delta against the page the agent last saw.
                                      if (msg.sinceObservation) actionBaseline = lastObservation;
@@ -825,23 +825,26 @@
 
   // ── Page Text ──
   const PAGE_TEXT_LIMIT = 20000;
+  // full (#630): a script's read, which the model does not see; bounded by the script's 2 MB reply frame.
+  const FULL_PAGE_TEXT_LIMIT = 500000;
 
-  function truncateText(raw) {
-    const truncated = raw.length > PAGE_TEXT_LIMIT;
+  function truncateText(raw, full = false) {
+    const limit = full ? FULL_PAGE_TEXT_LIMIT : PAGE_TEXT_LIMIT;
+    const truncated = raw.length > limit;
     return {
-      text: truncated ? raw.slice(0, PAGE_TEXT_LIMIT) : raw,
+      text: truncated ? raw.slice(0, limit) : raw,
       ...(truncated && { truncated: true, fullLength: raw.length }),
     };
   }
 
-  function getPageText(selector) {
+  function getPageText(selector, full) {
     if (selector) {
       const el = document.querySelector(selector);
       if (!el) return { error: 'Selector not found: ' + selector };
-      return truncateText(el.innerText);
+      return truncateText(el.innerText, full);
     }
     // The whole page: a "main content" guess returned one <article> card of a listing (#613).
-    return truncateText(document.body.innerText);
+    return truncateText(document.body.innerText, full);
   }
 
   // Whether a page that navigate or a new tab just loaded looks like it is still rendering (#631):
