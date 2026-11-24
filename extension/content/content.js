@@ -524,6 +524,7 @@
       'ping':                  () => ({ ok: true, version: CONTENT_VERSION,
                                      ...(window !== window.top ? { frameUrl: location.origin + location.pathname } : {}) }),
       'settleState':           () => settleState(),
+      'renderState':           () => renderState(),
       'getPageInfo':           () => getPageInfo(),
       'handleDialog':          () => handleDialog(msg.accept, msg.prompt_text),
       'setDialogAgentTab':     () => setDialogAgentTab(msg.agentTab),
@@ -844,6 +845,22 @@
     }
     // The whole page: a "main content" guess returned one <article> card of a listing (#613).
     return truncateText(document.body.innerText, full);
+  }
+
+  // Whether a page that navigate or a new tab just loaded looks like it is still rendering (#631):
+  // it has no content yet, shows a line that is only a loading placeholder, or marks an element
+  // aria-busy. An observation for a hint, not proof: a page can also stay this way.
+  const PLACEHOLDER_LINE = /^(loading|please wait|just a moment)\s*(\.{2,}|…)?$/i;
+  function renderState() {
+    const body = document.body;
+    if (!body) return {};
+    const lines = String(body.innerText || '').split('\n').map(line => line.trim()).filter(Boolean);
+    const placeholder = lines.find(line => PLACEHOLDER_LINE.test(line));
+    const busy = Array.from(document.querySelectorAll('[aria-busy="true"]')).some(el => !isHidden(el));
+    const empty = !lines.length &&
+      !body.querySelector('img, video, canvas, svg, input, select, textarea, iframe, embed, object');
+    if (!placeholder && !busy && !empty) return {};
+    return { rendering: true, ...(placeholder ? { placeholder } : {}) };
   }
 
   // ── Accessibility Tree ──
@@ -4985,6 +5002,11 @@
   function getMarkdown(selector) {
     const root = selector ? resolveElement(selector) : document.body;
     if (!root) return notFound();
+    // A field reads as its exact value, line breaks included, so a value query clipped can be read in full (#629).
+    if (['INPUT', 'TEXTAREA'].includes(root.tagName)) {
+      const value = isSensitiveField(root) ? '' : String(root.value ?? '');
+      return { markdown: value.slice(0, 80000), length: value.length, ...(value.length > 80000 && { truncated: true }) };
+    }
     // An element's own text nodes are left out when its text is sensitive.
     function walkChildren(el) {
       const sensitive = holdsSensitiveText(el);
@@ -5013,6 +5035,7 @@
           return '`' + children() + '`';
         }
         case 'pre': return '\n\n```\n' + renderedText(node) + '\n```\n\n';
+        case 'textarea': return '\n\n' + node.value + '\n\n';
         case 'a': {
           const href = node.getAttribute('href') || '';
           const t = children().trim();

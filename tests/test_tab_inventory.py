@@ -36,9 +36,9 @@ class TabInventoryTests(unittest.TestCase):
             tabs((2, "https://a.test/", True)),
             tabs((2, "https://a.test/", True), (3, "https://a.test/reopened", False)),
         ]
-        self.assertGreater(bridge.CACHE_TTL, 0)
         handler = self.handler()
-        with patch.object(bridge, "send_to_extension", new_callable=AsyncMock,
+        with patch.object(bridge, "CACHE_TTL", 5), \
+             patch.object(bridge, "send_to_extension", new_callable=AsyncMock,
                           side_effect=states) as send:
             for _ in states:
                 handler.handle_tabs()
@@ -46,10 +46,22 @@ class TabInventoryTests(unittest.TestCase):
         self.assertEqual([c.args[1] for c in handler.send_json.call_args_list], states)
         self.assertEqual(bridge._cache, {})
 
-    def test_page_text_cache_is_unchanged(self):
+    def test_page_text_is_read_fresh_by_default(self):
+        # A page changes its own text (a fetch, a timer) without a bridge write (#627).
+        handler = self.handler()
+        pages = [{"text": "Loading..."}, {"text": "Radiant Solar"}]
+        with patch.object(bridge, "send_to_extension", new_callable=AsyncMock,
+                          side_effect=pages) as send:
+            handler.handle_page_text()
+            handler.handle_page_text()
+        self.assertEqual(send.await_count, 2)
+        self.assertEqual([c.args[1] for c in handler.send_json.call_args_list], pages)
+
+    def test_page_text_cache_is_opt_in(self):
         handler = self.handler()
         page = {"text": "hello"}
-        with patch.object(bridge, "send_to_extension", new_callable=AsyncMock,
+        with patch.object(bridge, "CACHE_TTL", 5), \
+             patch.object(bridge, "send_to_extension", new_callable=AsyncMock,
                           return_value=page) as send:
             handler.handle_page_text()
             handler.handle_page_text()

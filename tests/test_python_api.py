@@ -175,6 +175,28 @@ class TabRequestTests(BridgeTestCase):
         self.assertEqual(self.tab.links(), [{"href": "https://example.com/"}])
         self.assertEqual(self.tab.click("e3"), {"ok": True}, "actions return the bridge's result")
 
+    def test_navigate_and_new_tab_warn_while_the_page_renders(self):
+        # #631: a page read right after its DOM is parsed may still show only a placeholder.
+        rendering = {"ok": True, "rendering": True, "placeholder": "Loading...", "rendering_hint": "..."}
+        self.reply("/api/navigate", rendering)
+        with self.assertWarnsRegex(UserWarning, r"still shows 'Loading\.\.\.'.*tab\.wait_for\(text_gone='Loading\.\.\.'\)") as caught:
+            self.assertEqual(self.tab.navigate("/deals/48"), rendering)
+        self.assertEqual(caught.filename, __file__, "the warning names the caller's line")
+        self.reply("/api/new-tab", {"ok": True, "tabId": 9, "rendering": True})
+        with self.assertWarnsRegex(UserWarning, r"no content yet.*tab\.wait_for\(text=\.\.\.\)") as caught:
+            self.assertEqual(self.browser.new_tab("https://example.com/").id, 9)
+        self.assertEqual(caught.filename, __file__)
+        self.reply("/api/navigate", {"ok": True})
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            self.tab.navigate("https://example.com/")
+
+    def test_cached_page_text_warns(self):
+        # #627: an opted-in read cache can serve text the page has since replaced.
+        self.reply("/api/page-text", {"text": "Loading...", "_cached": True})
+        with self.assertWarnsRegex(UserWarning, "read cache and may be stale"):
+            self.assertEqual(self.tab.text(), "Loading...")
+
     def test_reads_the_bridge_cut_warn(self):
         self.reply("/api/page-text", {"text": "x" * 500000, "truncated": True, "fullLength": 600000})
         with self.assertWarnsRegex(UserWarning, "Page text was cut") as caught:
