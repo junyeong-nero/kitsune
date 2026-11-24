@@ -176,7 +176,8 @@ Over 10 operations the list is summarized:
 
 Sensitive values are redacted ([Sensitive-field redaction](api-reference.md#sensitive-field-redaction)).
 Reads cut at the bridge's caps warn with a `UserWarning`; pass a `target` to read less (`text()`
-has none: use `snapshot(target, text=True)` or `query`).
+has none: use `snapshot(target, text=True)` or `query`). `text()` reads up to 500,000 characters,
+not the direct tool's 20,000: a script's reads are not model-visible, only what it prints (#630).
 
 ### Selector contract by method
 

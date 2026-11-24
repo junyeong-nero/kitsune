@@ -571,8 +571,12 @@ class Tab:
         return self._request("/api/page-info")
 
     def text(self) -> str:
-        """The page's visible text; "" for an HTTP error the browser shows without a document."""
-        return _cut(self._request("/api/page-text"), "Page text",
+        """The page's visible text; "" for an HTTP error the browser shows without a document.
+
+        Up to 500,000 characters, unlike the direct MCP tool's 20,000: a script's reads are not
+        model-visible, only what it prints.
+        """
+        return _cut(self._request("/api/page-text", {"full": True}), "Page text",
                     "read a part of the page with tab.snapshot(target=..., text=True) or tab.query(...)")["text"]
 
     def snapshot(self, target: str | None = None, *, max_depth: int | None = None, text: bool = False) -> str:
