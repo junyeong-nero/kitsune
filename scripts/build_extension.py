@@ -38,6 +38,8 @@ UPDATE_URL = "https://github.com/junyeong-nero/kitsune/releases/latest/download/
 VARIANTS = ("signed", "dev", "chrome")
 CHROME_DIR = "chrome"
 CHROME_COMPAT = f"{CHROME_DIR}/compat.js"
+# content.js again, for the page's main world: Chrome injects a file listed twice only once.
+CHROME_PAGE_WORLD = f"{CHROME_DIR}/page-world.js"
 # MV3 keeps host permissions apart. Chrome has no theme API, and only policy-installed extensions
 # may block in webRequest.
 CHROME_HOST_PERMISSIONS = ("<all_urls>",)
@@ -106,8 +108,11 @@ def chrome_manifest(manifest: dict) -> dict:
     manifest["host_permissions"] = [p for p in permissions if p in CHROME_HOST_PERMISSIONS]
     manifest["action"] = manifest.pop("browser_action")
     manifest["background"] = {"service_worker": f"{CHROME_DIR}/service-worker.js"}
-    manifest["content_scripts"] = [{**entry, "js": [CHROME_COMPAT, *entry["js"]]}
-                                   for entry in manifest["content_scripts"]]
+    entries = manifest["content_scripts"]
+    # content.js also runs in the page's main world, to install what Firefox injects there.
+    manifest["content_scripts"] = ([{**entry, "js": [CHROME_COMPAT, *entry["js"]]} for entry in entries] +
+                                   [{**entry, "js": [CHROME_PAGE_WORLD], "world": "MAIN"}
+                                    for entry in entries if entry["js"] == ["content/content.js"]])
     return manifest
 
 
@@ -152,6 +157,8 @@ def build(variant: str, out: Path, version: str) -> Path:
                     raise BuildError(f"{name}: expected exactly one {BUILD_LINE!r}")
                 text = text.replace(BUILD_LINE, f"const KITSUNE_BUILD = '{variant}';")
             path.write_text(text, encoding="utf-8")
+    if variant == "chrome":
+        shutil.copyfile(out / "content" / "content.js", out / CHROME_PAGE_WORLD)
     if variant != "dev":
         check_signed(out)
     return out

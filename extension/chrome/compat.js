@@ -38,12 +38,46 @@
     if (send) namespace[name] = (...args) => send(...args).then(unwrap);
   }
 
+  // Chrome has no session tab values, which keep the agent's tabs (background.js, #376) across a
+  // service worker restart. storage.session lasts as long as Chrome's tab ids do, until the browser
+  // quits, and only the extension itself reads it. A value goes with its tab. Unlike Firefox,
+  // a duplicated or reopened tab gets no copy: it is the user's either way.
+  if (api.storage?.session && api.sessions && !api.sessions.getTabValue) {
+    const store = api.storage.session;
+    const prefix = tabId => `kitsune.tab.${tabId}.`;
+    api.sessions.getTabValue = (tabId, key) => store.get(prefix(tabId) + key).then(found => found[prefix(tabId) + key]);
+    api.sessions.setTabValue = (tabId, key, value) => store.set({ [prefix(tabId) + key]: value });
+    api.sessions.removeTabValue = (tabId, key) => store.remove(prefix(tabId) + key);
+    api.tabs.onRemoved.addListener(tabId => store.get(null)
+      .then(all => store.remove(Object.keys(all).filter(key => key.startsWith(prefix(tabId)))))
+      .catch(() => {}));
+  }
+
+  // Chrome's back button, and tabs.goBack/goForward, skip history entries that a page added without
+  // user activation, such as those of the agent's synthetic clicks. Firefox goes to them, and so does
+  // the page's own history.
+  for (const [name, step, can] of [['goBack', 'back', 'canGoBack'], ['goForward', 'forward', 'canGoForward']]) {
+    const go = api.scripting && api.tabs?.[name]?.bind(api.tabs);
+    if (!go) continue;
+    api.tabs[name] = (tabId, ...rest) => go(tabId, ...rest).catch(async error => {
+      const [{ result } = {}] = await api.scripting.executeScript({ target: { tabId },
+        func: (step, can) => (navigation[can] ? (history[step](), true) : false), args: [step, can] })
+        .catch(() => []);
+      if (result !== true) throw error;
+    });
+  }
+
   // MV3 has no tabs.executeScript; Firefox's file form maps to scripting.executeScript. The compat
-  // shim goes first so the injected script finds `browser`.
+  // shim goes first so the injected script finds `browser`. content.js also goes into the page's
+  // main world, as the manifest has it (as page-world.js, its copy in the build).
   if (api.scripting && api.tabs && !api.tabs.executeScript) {
-    api.tabs.executeScript = (tabId, { file, allFrames, frameId } = {}) => api.scripting.executeScript({
-      target: { tabId, ...(allFrames ? { allFrames: true } : frameId ? { frameIds: [frameId] } : {}) },
-      files: ['/chrome/compat.js', file],
-    }).then(results => results.map(entry => entry.result));
+    api.tabs.executeScript = async (tabId, { file, allFrames, frameId } = {}) => {
+      const target = { tabId, ...(allFrames ? { allFrames: true } : frameId ? { frameIds: [frameId] } : {}) };
+      if (file === '/content/content.js') {
+        await api.scripting.executeScript({ target, files: ['/chrome/page-world.js'], world: 'MAIN' }).catch(() => {});
+      }
+      const results = await api.scripting.executeScript({ target, files: ['/chrome/compat.js', file] });
+      return results.map(entry => entry.result);
+    };
   }
 })();
