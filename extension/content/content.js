@@ -274,6 +274,33 @@
       'No element matches; take a new browser_snapshot, or browser_wait_for the element if the page is still updating.');
   }
 
+  // Snapshots print ARIA roles, which agents reuse as CSS type selectors (#628): `article` matches
+  // <article> only, not role="article". For a selector naming a tag no element on the page has but
+  // elements carry as their role, a hint naming the role selector; null otherwise. roleEngine:
+  // whether the Playwright role= form works too (actions), or only CSS (query).
+  function roleSelectorHint(selector, roleEngine = true) {
+    if (typeof selector !== 'string') return null;
+    const bare = selector.replace(/(["'])(?:\\.|(?!\1).)*\1/g, '""').replace(/\[[^\]]*\]|\([^)]*\)/g, '');
+    for (const [, tag] of bare.matchAll(/(?:^|[\s>+~,])([a-z][a-z0-9-]*)(?=$|[\s>+~,.#:])/gi)) {
+      let count = 0;
+      try {
+        if (document.querySelector(tag)) continue;
+        count = document.querySelectorAll(`[role~="${tag}"]`).length;
+      } catch { continue; }
+      if (!count) continue;
+      return `No <${tag}> element is on the page, but ${count} element${count > 1 ? 's have' : ' has'} ` +
+        `role="${tag}" (snapshots list roles, not tags): use [role=${tag}]` +
+        (roleEngine ? ` in CSS, or role=${tag}.` : '.');
+    }
+    return null;
+  }
+
+  function withRoleHint(msg, result) {
+    if (result?.code !== 'not_found' || typeof msg.selector !== 'string') return result;
+    const hint = roleSelectorHint(msg.selector);
+    return hint ? { ...result, hint } : result;
+  }
+
   // A scoped read whose selector matched nothing.
   function selectorNotFound(selector) {
     return { ...notFound(`Selector not found: ${selector}`), state: { selector } };
@@ -524,13 +551,14 @@
       'ping':                  () => ({ ok: true, version: CONTENT_VERSION,
                                      ...(window !== window.top ? { frameUrl: location.origin + location.pathname } : {}) }),
       'settleState':           () => settleState(),
+      'renderState':           () => renderState(),
       'getPageInfo':           () => getPageInfo(),
       'handleDialog':          () => handleDialog(msg.accept, msg.prompt_text),
       'setDialogAgentTab':     () => setDialogAgentTab(msg.agentTab),
       'dialogsSince':          () => dialogsSince(Number(msg.since) || 0),
       'waitForText':           () => waitForText(msg.text, msg.text_gone, msg.timeout, msg.diagnose === true,
                                      msg.text_seen),
-      'getPageText':           () => getPageText(msg.selector),
+      'getPageText':           () => getPageText(msg.selector, msg.full === true),
       'getSnapshot':           () => {
                                      // sinceObservation (#350): the delta against the page the agent last saw.
                                      if (msg.sinceObservation) actionBaseline = lastObservation;
@@ -628,7 +656,8 @@
       return false;
     }
 
-    const respond = result => sendResponse(withActionDialogs(msg.dialogsSince, withVisibility(msg.action, result)));
+    const respond = result => sendResponse(withActionDialogs(msg.dialogsSince,
+      withVisibility(msg.action, withRoleHint(msg, result))));
     try {
       if (['click', 'type', 'fill', 'selectOption', 'checkBox', 'keypress', 'submitForm'].includes(msg.action)) {
         lastActedElement = null;
@@ -824,23 +853,42 @@
 
   // ── Page Text ──
   const PAGE_TEXT_LIMIT = 20000;
+  // full (#630): a script's read, which the model does not see; bounded by the script's 2 MB reply frame.
+  const FULL_PAGE_TEXT_LIMIT = 500000;
 
-  function truncateText(raw) {
-    const truncated = raw.length > PAGE_TEXT_LIMIT;
+  function truncateText(raw, full = false) {
+    const limit = full ? FULL_PAGE_TEXT_LIMIT : PAGE_TEXT_LIMIT;
+    const truncated = raw.length > limit;
     return {
-      text: truncated ? raw.slice(0, PAGE_TEXT_LIMIT) : raw,
+      text: truncated ? raw.slice(0, limit) : raw,
       ...(truncated && { truncated: true, fullLength: raw.length }),
     };
   }
 
-  function getPageText(selector) {
+  function getPageText(selector, full) {
     if (selector) {
       const el = document.querySelector(selector);
       if (!el) return { error: 'Selector not found: ' + selector };
-      return truncateText(el.innerText);
+      return truncateText(el.innerText, full);
     }
     // The whole page: a "main content" guess returned one <article> card of a listing (#613).
-    return truncateText(document.body.innerText);
+    return truncateText(document.body.innerText, full);
+  }
+
+  // Whether a page that navigate or a new tab just loaded looks like it is still rendering (#631):
+  // it has no content yet, shows a line that is only a loading placeholder, or marks an element
+  // aria-busy. An observation for a hint, not proof: a page can also stay this way.
+  const PLACEHOLDER_LINE = /^(loading|please wait|just a moment)\s*(\.{2,}|…)?$/i;
+  function renderState() {
+    const body = document.body;
+    if (!body) return {};
+    const lines = String(body.innerText || '').split('\n').map(line => line.trim()).filter(Boolean);
+    const placeholder = lines.find(line => PLACEHOLDER_LINE.test(line));
+    const busy = Array.from(document.querySelectorAll('[aria-busy="true"]')).some(el => !isHidden(el));
+    const empty = !lines.length &&
+      !body.querySelector('img, video, canvas, svg, input, select, textarea, iframe, embed, object');
+    if (!placeholder && !busy && !empty) return {};
+    return { rendering: true, ...(placeholder ? { placeholder } : {}) };
   }
 
   // ── Accessibility Tree ──
@@ -1289,6 +1337,27 @@
     const page = (() => {
       try { return new URL(window.location?.href ?? globalThis.location?.href); } catch { return null; }
     })();
+    // What tells an unnamed control apart from its unnamed neighbors (#632): a submit control's
+    // form action as its path (with its origin when another, like a frame's src; never query or
+    // fragment), else its data-testid or data-test, else its icon's <svg><title> or <use href> id.
+    function unnamedControlIdentity(el) {
+      if (isSensitiveField(el)) return null;
+      const action = ['submit', 'image'].includes(el.type) && el.form &&
+        (el.getAttribute('formaction') || el.form.getAttribute('action'));
+      if (action) {
+        let url;
+        try { url = new URL(action, el.baseURI); } catch {}
+        if (url && ['http:', 'https:'].includes(url.protocol)) {
+          return `action=${JSON.stringify(url.origin === page?.origin ? url.pathname : url.origin + url.pathname)}`;
+        }
+      }
+      const testId = clean(el.getAttribute('data-testid') || el.getAttribute('data-test'));
+      if (testId) return `testid=${JSON.stringify(testId)}`;
+      const use = el.querySelector('svg use');
+      const icon = clean(el.querySelector('svg title')?.textContent ||
+        (use?.getAttribute('href') || use?.getAttribute('xlink:href') || '').split('#')[1]);
+      return icon ? `icon=${JSON.stringify(icon)}` : null;
+    }
     // The last entry under each parent entry, for a link's previous sibling line.
     const lastChild = new Map();
     function append(entry) {
@@ -1350,7 +1419,10 @@
           else role = 'button';
         }
         ref = full ? elementRefs.get(el) || `s${refGeneration}e${refCounter++}` : null;
+        const name = shownPopup ? popupName(el) : nameOf(el, interactive || el === target);
         const states = [];
+        const identity = !name && interactive && !media ? unnamedControlIdentity(el) : null;
+        if (identity) states.push(identity);
         if (role === 'heading') states.push(`level=${el.getAttribute('aria-level') || el.tagName.slice(1)}`);
         // A date/time/color input reads as a textbox; say which, with its bounds (#614).
         if (el.tagName === 'INPUT' && VALUE_FORMATS[el.type]) {
@@ -1382,7 +1454,7 @@
           states.push(`src=${JSON.stringify(src)}`, `duration=${duration}`, `currentTime=${currentTime}`,
             `paused=${paused}`, `muted=${muted}`, `controls=${controls}`);
         }
-        const label = `${role} ${JSON.stringify(shownPopup ? popupName(el) : nameOf(el, interactive || el === target))}`;
+        const label = `${role} ${JSON.stringify(name)}`;
         const head = `${'  '.repeat(Math.min(depth, 12))}- ${label} [ref=`;
         const stateTail = `]${states.length ? ' [' + states.join(' ') + ']' : ''}${shownPopup ? ' [not_rendered]' : ''}`;
         // Boxes stay out of the signature, so repeated siblings still group.
@@ -4803,8 +4875,10 @@
     // #633: a requested attribute no returned row has may be a typo or a property such as outerHTML.
     const unknownFields = !items.length ? [] : [...new Set(want.map(String))]
       .filter(f => !QUERY_BUILTIN_FIELDS.has(f) && !items.some(row => Object.hasOwn(row, f)));
+    const roleHint = nodes.length ? null : roleSelectorHint(selector, false);
     return { count: items.length, total: nodes.length, truncated: nodes.length > items.length, items,
-             ...(Object.keys(clipped).length && { clipped }), ...(unknownFields.length && { unknownFields }) };
+             ...(Object.keys(clipped).length && { clipped }), ...(unknownFields.length && { unknownFields }),
+             ...(roleHint && { hint: roleHint }) };
   }
 
   // ── HTML / bounds / computed style ──
@@ -4986,6 +5060,11 @@
   function getMarkdown(selector) {
     const root = selector ? resolveElement(selector) : document.body;
     if (!root) return notFound();
+    // A field reads as its exact value, line breaks included, so a value query clipped can be read in full (#629).
+    if (['INPUT', 'TEXTAREA'].includes(root.tagName)) {
+      const value = isSensitiveField(root) ? '' : String(root.value ?? '');
+      return { markdown: value.slice(0, 80000), length: value.length, ...(value.length > 80000 && { truncated: true }) };
+    }
     // An element's own text nodes are left out when its text is sensitive.
     function walkChildren(el) {
       const sensitive = holdsSensitiveText(el);
@@ -5014,6 +5093,7 @@
           return '`' + children() + '`';
         }
         case 'pre': return '\n\n```\n' + renderedText(node) + '\n```\n\n';
+        case 'textarea': return '\n\n' + node.value + '\n\n';
         case 'a': {
           const href = node.getAttribute('href') || '';
           const t = children().trim();
