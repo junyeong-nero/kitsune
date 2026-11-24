@@ -4982,6 +4982,11 @@
   function getMarkdown(selector) {
     const root = selector ? resolveElement(selector) : document.body;
     if (!root) return notFound();
+    // A field reads as its exact value, line breaks included, so a value query clipped can be read in full (#629).
+    if (['INPUT', 'TEXTAREA'].includes(root.tagName)) {
+      const value = isSensitiveField(root) ? '' : String(root.value ?? '');
+      return { markdown: value.slice(0, 80000), length: value.length, ...(value.length > 80000 && { truncated: true }) };
+    }
     // An element's own text nodes are left out when its text is sensitive.
     function walkChildren(el) {
       const sensitive = holdsSensitiveText(el);
@@ -5010,6 +5015,7 @@
           return '`' + children() + '`';
         }
         case 'pre': return '\n\n```\n' + renderedText(node) + '\n```\n\n';
+        case 'textarea': return '\n\n' + node.value + '\n\n';
         case 'a': {
           const href = node.getAttribute('href') || '';
           const t = children().trim();

@@ -162,7 +162,7 @@ Over 10 operations the list is summarized:
 | --- | --- |
 | `text()` | Visible text |
 | `snapshot(target=None, *, max_depth=None, text=False)` | Accessibility-style tree with refs ([Snapshots](api-reference.md#browser_snapshottab_idnone-selectornone-refnone-max_depthnone-textfalse)) |
-| `markdown(target=None)` | The page or a subtree as Markdown |
+| `markdown(target=None)` | The page or a subtree as Markdown; an input or textarea target reads as its exact value, line breaks included |
 | `html(target)` | One element's `outerHTML` (`"html"` for the page) |
 | `query(selector, fields=None, limit=50)` | Fields of matching elements (max 500 rows, 400-char snippets); warns when truncated. `href` and `src` are absolute URLs, even when the attribute is relative |
 | `find(query)` | Elements matching a description like `"login button"`, best first |
