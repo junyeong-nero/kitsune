@@ -3510,7 +3510,7 @@ Bridge and extension version info.
 { "bridge": "0.8.2", "api": "1", "extension_connected": true, "extension_version": "0.8.2", "extension_build": "dev", "extension": 25 }
 ```
 
-## Page data (GET, cached 5 s except page-info)
+## Page data (GET)
 
 ### GET /api/page-info
 Page metadata plus current dialog policy and recent dialog history. Never cached.
@@ -3525,6 +3525,8 @@ Also accepts POST with `{ "tabId": 123 }`. MCP tool: `browser_page_info(tab_id=N
 ### GET /api/page-text
 All visible text on the page (`document.body.innerText`), or of the element `selector`
 names (POST). Text over 20,000 characters is cut and has `truncated: true` and `fullLength`.
+POST `{ "full": true }`, which the Python `tab.text()` sends, raises the cut to 500,000
+characters: a script's reads are not model-visible (#630).
 ```json
 { "text": "..." }
 ```
@@ -3663,6 +3665,13 @@ single reads (see `browser_wait_for`); a zero timeout performs one immediate che
   `{ "ok": true, "url": "...", "load_pending": true }` with the page's snapshot: the page can be
   read and acted on while its resources still load (#561). This needs a document that started
   after the navigation; the page being navigated away from does not count.
+- A loaded page can still be rendering its content (a client-rendered app, #631). When the page
+  has no content yet, has a line that is only a loading placeholder (`Loading...`, `Please wait`,
+  `Just a moment`), or shows an element with `aria-busy="true"`, the result adds
+  `"rendering": true`, the `placeholder` line when there is one, and a `rendering_hint` naming the
+  wait to use (`browser_wait_for` with `text_gone` set to the placeholder, or with `text`). It is
+  an observation, not an error, and adds no wait. The Python `tab.navigate` and
+  `browser.new_tab` warn with a `UserWarning` instead.
 - Any other load that does not finish in 15 s returns `{ "ok": false, "timedOut": true, "url": "..." }`.
   When the tab sent a request for it, `waiting_for` says what is still missing, with a `hint`
   (#605): `"response"`, the server has not answered (read again shortly, or repeat the
@@ -3692,7 +3701,8 @@ already be read and acted on: 500 ms after it is parsed, or at the timeout, a pa
 returns `{ "ok": true, "load_pending": true, "tabId": 123, "url": "...", "status": "loading" }`
 (#561, #601); a load that ends without a parsed page is
 `{ "ok": false, "timedOut": true, "tabId": 123, "url": "...", "status": "loading" }`, with
-`waiting_for` and `hint` as for [navigate](#post-apinavigate) (#605).
+`waiting_for` and `hint` as for [navigate](#post-apinavigate) (#605). A loaded page that looks
+like it is still rendering adds `rendering`, `placeholder` and `rendering_hint` as for navigate (#631).
 While Zen's first-run welcome screen is open, the browser keeps reporting a loaded tab's URL as
 `about:blank` (#360); the wait then asks the page, and `url` is the page's own URL.
 With `wait`, `"pageText": true`, an internal flag the core `browser_tabs action=new url=…` sends,
@@ -4064,7 +4074,9 @@ milliseconds), `POST /api/history-visits` `{url}`, and `POST /api/bookmarks-sear
 ## Cache control
 
 ### POST /api/cache
-Control the response cache (pageText is cached for 5s by default; tab inventories are always read fresh).
+Control the response cache. It is off by default (TTL 0): pages change their text without a
+bridge write, so a cached read can be stale. With a TTL above 0, pageText replies are reused for
+that many seconds and carry `"_cached": true`; tab inventories are always read fresh.
 
 - Clear the cache: `{ "action": "clear" }`
 - Check its status: `{ "action": "status" }` returns `{ "entries": 3, "ttl": 5 }`

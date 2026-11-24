@@ -74,6 +74,18 @@ def _cut(result: dict, what: str, instead: str = "read a part of the page with a
     return result
 
 
+def _rendering(result: dict) -> dict:
+    """Warn when the page a navigate or new tab loaded looks like it is still rendering (#631)."""
+    if result.get("rendering"):
+        placeholder = result.get("placeholder")
+        wait = (f"tab.wait_for(text_gone={placeholder!r})" if placeholder
+                else "tab.wait_for(text=...) with text you expect")
+        shows = f"still shows {placeholder!r}" if placeholder else "shows no content yet or is marked busy"
+        warnings.warn(f"The page {shows} and may still be rendering; wait with {wait} "
+                      "before reading it, instead of a fixed sleep", stacklevel=3)
+    return result
+
+
 def connect(*, user_tabs: str | None = None, confirm=None,
             replace_bridge: bool = False) -> "Browser":
     """Connect to the shared bridge, starting it if none runs, and check that the extension is connected.
@@ -179,7 +191,8 @@ class Browser:
             return Tab(self, self.request("/api/new-tab", body)["tabId"])
         if timeout <= 0:
             raise ValueError("timeout must be positive")
-        result = self.request("/api/new-tab", {**body, "wait": True, "timeout": timeout}, timeout=timeout / 1000 + 10)
+        result = _rendering(self.request("/api/new-tab", {**body, "wait": True, "timeout": timeout},
+                                         timeout=timeout / 1000 + 10))
         return Tab(self, result["tabId"])
 
     def batch(self, commands: list[dict], *, tab=None) -> dict:
@@ -571,9 +584,17 @@ class Tab:
         return self._request("/api/page-info")
 
     def text(self) -> str:
-        """The page's visible text; "" for an HTTP error the browser shows without a document."""
-        return _cut(self._request("/api/page-text"), "Page text",
-                    "read a part of the page with tab.snapshot(target=..., text=True) or tab.query(...)")["text"]
+        """The page's visible text; "" for an HTTP error the browser shows without a document.
+
+        Up to 500,000 characters, unlike the direct MCP tool's 20,000: a script's reads are not
+        model-visible, only what it prints.
+        """
+        result = _cut(self._request("/api/page-text", {"full": True}), "Page text",
+                      "read a part of the page with tab.snapshot(target=..., text=True) or tab.query(...)")
+        if result.get("_cached"):
+            warnings.warn("Page text came from the bridge's read cache and may be stale; "
+                          "browser.cache(\"ttl\", seconds=0) turns the cache off", stacklevel=2)
+        return result["text"]
 
     def snapshot(self, target: str | None = None, *, max_depth: int | None = None, text: bool = False) -> str:
         """The accessibility-style tree of the page, or of target's subtree, with refs for actions.
@@ -634,7 +655,7 @@ class Tab:
         return _cut(self._request("/api/html", _action_target(target)), "HTML")["html"]
 
     def markdown(self, target: str | None = None) -> str:
-        """The page, or target's subtree, as Markdown."""
+        """The page, or target's subtree, as Markdown; an input or textarea target reads as its exact value."""
         return _cut(self._request("/api/markdown", _scope(target)), "Markdown")["markdown"]
 
     def links(self, *, internal_only: bool = False) -> list[dict]:
@@ -760,9 +781,10 @@ class Tab:
 
     def navigate(self, url: str, *, expect: dict | None = None, confirm: str | None = None) -> dict:
         """Load url: an absolute URL, or a relative one ('/deals/48') resolved against the tab's
-        current URL. One that does not parse fails with code invalid_url."""
-        return self._action("/api/navigate", {"url": url}, expect=expect, confirm=confirm,
-                            base_seconds=NAVIGATE_REQUEST_SECONDS)
+        current URL. One that does not parse fails with code invalid_url. A page that looks like it
+        is still rendering (no content, a "Loading..." line, aria-busy) warns with the wait to use."""
+        return _rendering(self._action("/api/navigate", {"url": url}, expect=expect, confirm=confirm,
+                                       base_seconds=NAVIGATE_REQUEST_SECONDS))
 
     def back(self, *, expect: dict | None = None, confirm: str | None = None) -> dict:
         return self._action("/api/back", {}, expect=expect, confirm=confirm)
