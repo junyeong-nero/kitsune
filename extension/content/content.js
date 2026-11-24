@@ -3905,9 +3905,25 @@
   // A native CSS failure: invalid syntax can never match, so it is not a retryable not_found.
   function cssSelectorError(selector, e) {
     if (e?.name !== 'SyntaxError') return null;
-    return tabTargetError(selector) || unsupportedSelector(selector, SNAPSHOT_LABEL.test(selector.trim())
+    return tabTargetError(selector) || selectorListError(selector) ||
+      unsupportedSelector(selector, SNAPSHOT_LABEL.test(selector.trim())
       ? 'this is a snapshot line\'s role and name; pass that line\'s ref instead'
       : 'it is not valid CSS');
+  }
+
+  // A comma list with a Playwright item (a.delete, text=Delete); null for any other selector.
+  // A list is CSS only, so the error names that item and how to try it on its own (#635).
+  const PLAYWRIGHT_LIST_ITEM = /^(?:(?:text|role|css|nth|xpath|internal:[a-z]+)\s*=|\/\/|\.\.|["'])/i;
+  function selectorListError(selector) {
+    const items = splitTopLevel(selector, ',').map(item => item.trim());
+    const playwright = items.filter(item => PLAYWRIGHT_LIST_ITEM.test(item));
+    if (items.length < 2 || !playwright.length) return null;
+    const css = items.filter(item => item && !playwright.includes(item));
+    const forms = playwright.map(item => `\`${item}\``).join(', ');
+    const together = css.length > 1 ? `:is(${css.join(', ')})` : css[0];
+    return unsupportedSelector(selector, `a comma selector list is CSS only; ${forms} ` +
+      `${playwright.length > 1 ? 'are Playwright forms' : 'is a Playwright form'}`,
+      `Try each alternative in turn${together ? `, or use \`${together}\` plus a separate ${forms}` : ''}.`);
   }
 
   // A target that names a tab, not an element; null for any other selector. Its hint is the

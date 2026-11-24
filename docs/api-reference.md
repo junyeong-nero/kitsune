@@ -131,7 +131,7 @@ method-specific recovery hint. See the [method matrix](python-api.md#selector-co
 | `internal:role=button[name="Save"i]` | `getByRole`: as `role=`, but `"…"i` is a substring |
 | `internal:label="Email"i` | `getByLabel`: elements whose `aria-labelledby` text, else `aria-label`, else `<label>` (for a form control) contains the text, ignoring case. `"Email"` and `"Email"s` are the whole label, case-sensitive; `/…/flags` is a regex |
 | `:has-text("…")`, `:text-is("…")`, `:text("…")`, `:visible` | CSS pseudo-classes: contains the text (lax), whose whole text it is, the smallest element containing it, rendered |
-| `a, b` | A CSS list, with or without the pseudo-classes above: the union of its alternatives |
+| `a, b` | A CSS list, with or without the pseudo-classes above: the union of its alternatives. Its items are CSS only: a list such as `a.delete, text=Delete` fails with `unsupported_selector` naming the Playwright item (#635) |
 | `a >> b` | Chains: `b` searched inside each match of `a`. A chain may start with a ref (`e12 >> xpath=..`, `e12 >> text=Save`) |
 | `nth=N` | The Nth match so far (0-based; `-1` is the last); not first in a chain |
 | `xpath=..`, `..` | The parent element; at the top of a shadow root, the shadow host. Only a bare `..` step leaves a shadow root: write `.. >> ..`, not `xpath=../..` |
