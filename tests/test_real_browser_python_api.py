@@ -102,8 +102,10 @@ class RealBrowserPythonApiTests(harness.RealBrowserTestCase):
         batch = self.browser.batch([{"action": "pageText"}], tab=self.tab)
         self.assertIn("Saved Ada", batch["results"][0]["text"])
 
-    def test_query_reports_that_a_filtered_subset_is_incomplete(self):
-        with self.assertWarnsRegex(UserWarning, "Query results were truncated"):
+    def test_query_returns_the_rows_an_explicit_limit_asked_for(self):
+        # #633: without a truncation warning; the default limit's is in test_real_browser_query_warnings.
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
             values = self.tab.query("#size option", fields=["value"], limit=1)
         self.assertEqual([item["value"] for item in values], ["s"])
         self.assertEqual([item["value"] for item in self.tab.query("#size option", fields=["value"], limit=2)],

@@ -35,6 +35,9 @@ if TYPE_CHECKING:
 # resolver reads as CSS, a Playwright-style selector such as text= or role=, or an s1e0/r0 ref
 # (docs/api-reference.md#target-selectors). The core MCP tools send targets the same way.
 _REF = re.compile(r"e\d+")
+# tab.query rows without a limit, and the content script's ceiling (QUERY_LIMIT).
+_QUERY_DEFAULT_LIMIT = 50
+_QUERY_MAX_LIMIT = 500
 
 
 def _action_target(target: str) -> dict:
@@ -71,6 +74,18 @@ def _cut(result: dict, what: str, instead: str = "read a part of the page with a
     """Warn when the bridge cut a read at its size cap; instead is the advice for a read without a target."""
     if result.get("truncated"):
         warnings.warn(f"{what} was cut at the bridge's size cap; {instead}", stacklevel=3)
+    return result
+
+
+def _rendering(result: dict) -> dict:
+    """Warn when the page a navigate or new tab loaded looks like it is still rendering (#631)."""
+    if result.get("rendering"):
+        placeholder = result.get("placeholder")
+        wait = (f"tab.wait_for(text_gone={placeholder!r})" if placeholder
+                else "tab.wait_for(text=...) with text you expect")
+        shows = f"still shows {placeholder!r}" if placeholder else "shows no content yet or is marked busy"
+        warnings.warn(f"The page {shows} and may still be rendering; wait with {wait} "
+                      "before reading it, instead of a fixed sleep", stacklevel=3)
     return result
 
 
@@ -179,7 +194,8 @@ class Browser:
             return Tab(self, self.request("/api/new-tab", body)["tabId"])
         if timeout <= 0:
             raise ValueError("timeout must be positive")
-        result = self.request("/api/new-tab", {**body, "wait": True, "timeout": timeout}, timeout=timeout / 1000 + 10)
+        result = _rendering(self.request("/api/new-tab", {**body, "wait": True, "timeout": timeout},
+                                         timeout=timeout / 1000 + 10))
         return Tab(self, result["tabId"])
 
     def batch(self, commands: list[dict], *, tab=None) -> dict:
@@ -571,9 +587,17 @@ class Tab:
         return self._request("/api/page-info")
 
     def text(self) -> str:
-        """The page's visible text; "" for an HTTP error the browser shows without a document."""
-        return _cut(self._request("/api/page-text"), "Page text",
-                    "read a part of the page with tab.snapshot(target=..., text=True) or tab.query(...)")["text"]
+        """The page's visible text; "" for an HTTP error the browser shows without a document.
+
+        Up to 500,000 characters, unlike the direct MCP tool's 20,000: a script's reads are not
+        model-visible, only what it prints.
+        """
+        result = _cut(self._request("/api/page-text", {"full": True}), "Page text",
+                      "read a part of the page with tab.snapshot(target=..., text=True) or tab.query(...)")
+        if result.get("_cached"):
+            warnings.warn("Page text came from the bridge's read cache and may be stale; "
+                          "browser.cache(\"ttl\", seconds=0) turns the cache off", stacklevel=2)
+        return result["text"]
 
     def snapshot(self, target: str | None = None, *, max_depth: int | None = None, text: bool = False) -> str:
         """The accessibility-style tree of the page, or of target's subtree, with refs for actions.
@@ -604,27 +628,38 @@ class Tab:
         """
         return self._request("/api/find", {"query": query})["results"]
 
-    def query(self, selector: str, fields: list[str] | None = None, *, limit: int = 50) -> list[dict]:
+    def query(self, selector: str, fields: list[str] | None = None, *, limit: int | None = None) -> list[dict]:
         """Fields (text, href, value, src, alt, id, name by default) of elements matching native CSS.
 
         Current document only: no shadow/frame traversal, snapshot refs or Playwright forms
-        such as :has-text or text=. At most 500 rows; text/value fields are clipped to 400
-        characters. A warning reports a row limit and clipped fields. Filter locally,
-        but absence in returned snippets is not page-wide absence; scope a snapshot for detail.
+        such as :has-text or text=. 50 rows unless limit is given, at most 500; text/value fields
+        are clipped to 400 characters. Other field names are read as attributes. A warning
+        reports more matches than the default limit or 500 rows, clipped fields, and a field
+        no row has (the html field is the inner markup; tab.html(target) is the outerHTML).
+        Filter locally, but absence in returned snippets is not page-wide absence; scope a snapshot for detail.
         href and src are absolute URLs even when the attribute is relative ('/deals/48'), so
         pass them to navigate as they are.
         """
-        body = {"selector": selector, "limit": limit}
+        body = {"selector": selector, "limit": _QUERY_DEFAULT_LIMIT if limit is None else limit}
         if fields:
             body["fields"] = fields
         result = self._request("/api/query", body)
-        if result.get("truncated"):
+        if not result["items"] and result.get("hint"):
+            warnings.warn(f"Query matched no elements: {result['hint']}", stacklevel=2)
+        # #633: an explicit limit below the ceiling chose its rows; the advice is noise there.
+        if result.get("truncated") and (limit is None or result.get("count", 0) >= _QUERY_MAX_LIMIT):
             warnings.warn("Query results were truncated; narrow the selector or increase limit",
                           stacklevel=2)
         if result.get("clipped"):
             fields = ", ".join(f"{name} in {count} rows" for name, count in result["clipped"].items())
             warnings.warn(f"Query fields were clipped ({fields}); read one element in full with "
                           "tab.markdown(target)", stacklevel=2)
+        if result.get("unknownFields"):
+            unknown = result["unknownFields"]
+            markup = any(name.lower() in ("outerhtml", "innerhtml") for name in unknown)
+            warnings.warn(f"Query fields {', '.join(unknown)}: no such field or attribute on any row"
+                          + ("; use html for the inner markup or tab.html(target) for one element's outerHTML"
+                             if markup else ""), stacklevel=2)
         return result["items"]
 
     def html(self, target: str) -> str:
@@ -632,7 +667,7 @@ class Tab:
         return _cut(self._request("/api/html", _action_target(target)), "HTML")["html"]
 
     def markdown(self, target: str | None = None) -> str:
-        """The page, or target's subtree, as Markdown."""
+        """The page, or target's subtree, as Markdown; an input or textarea target reads as its exact value."""
         return _cut(self._request("/api/markdown", _scope(target)), "Markdown")["markdown"]
 
     def links(self, *, internal_only: bool = False) -> list[dict]:
@@ -758,9 +793,10 @@ class Tab:
 
     def navigate(self, url: str, *, expect: dict | None = None, confirm: str | None = None) -> dict:
         """Load url: an absolute URL, or a relative one ('/deals/48') resolved against the tab's
-        current URL. One that does not parse fails with code invalid_url."""
-        return self._action("/api/navigate", {"url": url}, expect=expect, confirm=confirm,
-                            base_seconds=NAVIGATE_REQUEST_SECONDS)
+        current URL. One that does not parse fails with code invalid_url. A page that looks like it
+        is still rendering (no content, a "Loading..." line, aria-busy) warns with the wait to use."""
+        return _rendering(self._action("/api/navigate", {"url": url}, expect=expect, confirm=confirm,
+                                       base_seconds=NAVIGATE_REQUEST_SECONDS))
 
     def back(self, *, expect: dict | None = None, confirm: str | None = None) -> dict:
         return self._action("/api/back", {}, expect=expect, confirm=confirm)

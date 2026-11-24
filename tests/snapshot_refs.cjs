@@ -15,6 +15,7 @@ class Element {
   setAttribute(key, value) { this.attrs[key] = value; }
   removeAttribute(key) { delete this.attrs[key]; }
   closest() { return null; }
+  querySelector() { return null; }
   focus() { this.focused = true; }
   blur() { this.blurred = true; }
   dispatchEvent(event) { (this.events ??= []).push(event); return true; }
@@ -99,7 +100,15 @@ async function testContent() {
     const expected = tagName === 'UL' ? '- First\n- Second' : '1. First\n2. Second';
     assert.equal(markdown.markdown, expected);
   }
+  // #629: a textarea keeps its line breaks, and a field target reads as its exact value.
+  const multiline = 'First paragraph.\n\nSecond paragraph:\n- one\n- two';
+  button.childNodes = [Object.assign(new Element('TEXTAREA', 'stale default'), { value: multiline })];
+  assert.equal((await send({ action: 'getMarkdown', selector: ref })).markdown, multiline);
   button.childNodes = originalChildren;
+  const inputRef = first.snapshot.match(/textbox "Email address" \[ref=(s\d+e\d+)\]/)[1];
+  input.value = `  ${multiline}\n\n\n`;
+  assert.equal((await send({ action: 'getMarkdown', selector: inputRef })).markdown, input.value);
+  input.value = 'a@b';
   const marker = await send({ action: 'markScreenshotTarget', selector: ref });
   assert.equal(button.hasAttribute(marker.attribute), true);
   const found = (await send({ action: 'find', query: 'button' })).results[0].ref;

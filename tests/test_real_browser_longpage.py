@@ -70,11 +70,14 @@ class RealBrowserLongpageTests(harness.RealBrowserTestCase):
                                      len(json.dumps(cut["result"], ensure_ascii=False).encode()), 16000)
                 self.assertNotIn("resume_token", cut)
                 self.assertIn("not page-wide absence", cut["hint"])
-                self.assertIn("Page text was cut", cut["output"])
+                # #630: only the output limit cuts what is shown; the script read the page whole.
+                self.assertNotIn("Page text was cut", cut["output"])
                 self.assertEqual([op["status"] for op in cut["operations"]], ["ok", "ok"])
+                self.assertIs((await python(f"result = {EVIDENCE!r} in tab.text()"))["result"], True)
 
                 # Omitted rows must remain visible as a warning, not a page-wide "not found".
-                narrow = await python("links = tab.query('nav a', fields=['text'], limit=20)\n"
+                # #633: at the default limit; an explicit one chose its rows.
+                narrow = await python("links = tab.query('nav a', fields=['text'])\n"
                                       "result = [link for link in links if 'Delivery' in link['text']]")
                 self.assertEqual(narrow["result"], [])
                 self.assertIn("Query results were truncated", narrow["output"])
