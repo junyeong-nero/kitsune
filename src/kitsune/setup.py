@@ -106,6 +106,25 @@ def _standard_launcher(command, args) -> bool:
             and args[2] in {"kitsune", PACKAGE})
 
 
+def _launcher(entry, opencode: bool):
+    """An entry's (command, args); OpenCode keeps both in one command list."""
+    command, args = entry.get("command"), entry.get("args")
+    if opencode and isinstance(command, list) and command:
+        command, args = command[0], command[1:]
+    return command, args
+
+
+def _runs_kitsune(entry, opencode: bool) -> bool:
+    """Whether an entry under another name starts Kitsune through uv, standard or not."""
+    if not isinstance(entry, dict):
+        return False
+    command, args = _launcher(entry, opencode)
+    return (isinstance(command, str) and Path(command).name.lower() in {"uv", "uvx", "uv.exe", "uvx.exe"}
+            and isinstance(args, list)
+            and any(isinstance(a, str) and a.partition("@")[0].partition("==")[0] in {"kitsune", PACKAGE}
+                    for a in args))
+
+
 def register(client: Client, uvx: str) -> str:
     path = client.config.resolve()  # update the target of a dotfiles symlink, not the link
     original = _read(path)
@@ -125,24 +144,30 @@ def register(client: Client, uvx: str) -> str:
     if not isinstance(servers, dict):
         raise ValueError(f"{key} must be an object")
     launch = {"type": "local", "command": [uvx, LATEST]} if opencode else {"command": uvx, "args": [LATEST]}
-    if "kitsune" in servers:
-        entry = servers["kitsune"]
+    name = "kitsune"
+    if name not in servers:
+        # Kitsune registered under another name (`pi mcp add kitsune-browser ...`): update that entry
+        # rather than add a second server to the client.
+        others = [key for key, entry in servers.items() if _runs_kitsune(entry, opencode)]
+        if len(others) > 1:
+            raise ValueError(f"Kitsune is registered more than once ({', '.join(others)}); keep one and retry")
+        name = others[0] if others else name
+    if name in servers:
+        entry = servers[name]
         if not isinstance(entry, dict):
-            raise ValueError("existing kitsune entry is not an object; left unchanged")
-        command, args = entry.get("command"), entry.get("args")
-        if opencode and isinstance(command, list) and command:
-            command, args = command[0], command[1:]
+            raise ValueError(f"existing {name} entry is not an object; left unchanged")
+        command, args = _launcher(entry, opencode)
         local = "local" if opencode else "stdio"
         if entry.get("type", local) != local or "url" in entry or not _standard_launcher(command, args):
-            raise ValueError("existing kitsune entry uses a custom launcher; update it manually")
+            raise ValueError(f"existing {name} entry uses a custom launcher; update it manually")
         if all(entry.get(k) == v for k, v in launch.items()):
-            return "Already configured"
+            return "Already configured" + (f" as {name}" if name != "kitsune" else "")
         entry.update(launch)  # keep env, disabled state, approvals and other client options
     else:
         servers["kitsune"] = launch
     text = tomlkit.dumps(data) if codex else json.dumps(data, ensure_ascii=False, indent=2) + "\n"
     _save(path, original, text)
-    return "Configured"
+    return "Configured" + (f" as {name}" if name != "kitsune" else "")
 
 
 def run(*, list_only: bool, auto: bool) -> int:

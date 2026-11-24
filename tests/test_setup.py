@@ -114,6 +114,45 @@ class SetupTests(unittest.TestCase):
                 with patch.object(setup, "_save", side_effect=AssertionError("redundant write")):
                     self.assertEqual(setup.register(c, self.uvx), "Already configured")
 
+    def test_kitsune_under_another_name_is_updated_not_added_twice(self):
+        with patch.object(sys, "platform", "darwin"):
+            clients = setup.clients()
+
+        def entry(opencode, command, *args):
+            return {"type": "local", "command": [command, *args]} if opencode else {"command": command, "args": list(args)}
+
+        for c in clients:
+            opencode, codex = c.name == "OpenCode", c.name == "Codex CLI"
+            key = {"OpenCode": "mcp", "Codex CLI": "mcp_servers"}.get(c.name, "mcpServers")
+            standard = entry(opencode, "uvx", "--from", "kitsune-browser-mcp", "kitsune")
+            checkout = entry(opencode, "/home/me/.local/bin/uv", "run", "--directory", "/src/kitsune", "kitsune")
+            unrelated = entry(opencode, "uvx", "other-mcp")
+            for servers, outcome in (
+                    ({"kitsune-browser": standard, "tool": unrelated}, "Configured as kitsune-browser"),
+                    ({"kitsune-browser": checkout}, "custom launcher"),
+                    ({"a": standard, "b": standard}, "registered more than once (a, b)"),
+                    ({"tool": unrelated}, "Configured")):
+                with self.subTest(client=c.name, servers=list(servers)):
+                    c.config.parent.mkdir(parents=True, exist_ok=True)
+                    data = {key: json.loads(json.dumps(servers))}
+                    before = tomlkit.dumps(data) if codex else json.dumps(data)
+                    c.config.write_text(before, encoding="utf-8")
+                    if outcome.startswith("Configured"):
+                        self.assertEqual(setup.register(c, self.uvx), outcome)
+                        text = c.config.read_text(encoding="utf-8")
+                        written = (tomlkit.parse(text) if codex else json.loads(text))[key]
+                        name = outcome.removeprefix("Configured as ") if " as " in outcome else "kitsune"
+                        self.assertEqual(sorted(written), sorted({*servers, name}), "one Kitsune entry")
+                        launch = written[name]["command"] if opencode else [written[name]["command"],
+                                                                             *written[name]["args"]]
+                        self.assertEqual(list(launch), [self.uvx, "kitsune-browser-mcp@latest"])
+                        self.assertEqual(json.loads(json.dumps(written["tool"])) if "tool" in written else None,
+                                         unrelated if "tool" in servers else None)
+                    else:
+                        with self.assertRaisesRegex(ValueError, outcome.replace("(", r"\(").replace(")", r"\)")):
+                            setup.register(c, self.uvx)
+                        self.assertEqual(c.config.read_text(encoding="utf-8"), before, "left unchanged")
+
     def test_bad_configs_do_not_block_other_clients(self):
         clients = {c.name: c.config for c in setup.clients()}
         bad = {
