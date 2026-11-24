@@ -1289,6 +1289,27 @@
     const page = (() => {
       try { return new URL(window.location?.href ?? globalThis.location?.href); } catch { return null; }
     })();
+    // What tells an unnamed control apart from its unnamed neighbors (#632): a submit control's
+    // form action as its path (with its origin when another, like a frame's src; never query or
+    // fragment), else its data-testid or data-test, else its icon's <svg><title> or <use href> id.
+    function unnamedControlIdentity(el) {
+      if (isSensitiveField(el)) return null;
+      const action = ['submit', 'image'].includes(el.type) && el.form &&
+        (el.getAttribute('formaction') || el.form.getAttribute('action'));
+      if (action) {
+        let url;
+        try { url = new URL(action, el.baseURI); } catch {}
+        if (url && ['http:', 'https:'].includes(url.protocol)) {
+          return `action=${JSON.stringify(url.origin === page?.origin ? url.pathname : url.origin + url.pathname)}`;
+        }
+      }
+      const testId = clean(el.getAttribute('data-testid') || el.getAttribute('data-test'));
+      if (testId) return `testid=${JSON.stringify(testId)}`;
+      const use = el.querySelector('svg use');
+      const icon = clean(el.querySelector('svg title')?.textContent ||
+        (use?.getAttribute('href') || use?.getAttribute('xlink:href') || '').split('#')[1]);
+      return icon ? `icon=${JSON.stringify(icon)}` : null;
+    }
     // The last entry under each parent entry, for a link's previous sibling line.
     const lastChild = new Map();
     function append(entry) {
@@ -1350,7 +1371,10 @@
           else role = 'button';
         }
         ref = full ? elementRefs.get(el) || `s${refGeneration}e${refCounter++}` : null;
+        const name = shownPopup ? popupName(el) : nameOf(el, interactive || el === target);
         const states = [];
+        const identity = !name && interactive && !media ? unnamedControlIdentity(el) : null;
+        if (identity) states.push(identity);
         if (role === 'heading') states.push(`level=${el.getAttribute('aria-level') || el.tagName.slice(1)}`);
         // A date/time/color input reads as a textbox; say which, with its bounds (#614).
         if (el.tagName === 'INPUT' && VALUE_FORMATS[el.type]) {
@@ -1382,7 +1406,7 @@
           states.push(`src=${JSON.stringify(src)}`, `duration=${duration}`, `currentTime=${currentTime}`,
             `paused=${paused}`, `muted=${muted}`, `controls=${controls}`);
         }
-        const label = `${role} ${JSON.stringify(shownPopup ? popupName(el) : nameOf(el, interactive || el === target))}`;
+        const label = `${role} ${JSON.stringify(name)}`;
         const head = `${'  '.repeat(Math.min(depth, 12))}- ${label} [ref=`;
         const stateTail = `]${states.length ? ' [' + states.join(' ') + ']' : ''}${shownPopup ? ' [not_rendered]' : ''}`;
         // Boxes stay out of the signature, so repeated siblings still group.

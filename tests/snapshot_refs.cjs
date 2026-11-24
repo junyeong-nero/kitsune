@@ -15,6 +15,7 @@ class Element {
   setAttribute(key, value) { this.attrs[key] = value; }
   removeAttribute(key) { delete this.attrs[key]; }
   closest() { return null; }
+  querySelector() { return null; }
   focus() { this.focused = true; }
   blur() { this.blurred = true; }
   dispatchEvent(event) { (this.events ??= []).push(event); return true; }
