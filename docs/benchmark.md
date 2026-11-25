@@ -11,7 +11,8 @@ Two agents, Claude Code (`claude-opus-5-5`) and Codex (`gpt-6.1-sol`), one attem
 Kitsune's Claude Code row is v0.8.3: its 26 attempts were run again alone on 2026-11-25, on the same model, tasks,
 sites and grading, with an API key instead of a subscription. The other seven rows are from 2026-11-20, when Kitsune
 itself measured 13/26, 283k input and 14.0 tool calls per attempt under Claude Code. Kitsune's Codex row is that
-earlier build.
+earlier build. The v0.8.3 run used commit `0a8ada9`; the release adds only the `kitsune setup` command on top, with
+no change to the server, tools or extension.
 
 ![Four-way benchmark, 26 WebArena-Pro tasks, 208 attempts. Passed, Claude Code / Codex: Kitsune 13/26 and 12/26; Playwright MCP 13/26 and 12/26; Aside 12/26 and 12/26; EgoLite 12/26 and 12/26. Mean input tokens per attempt: Kitsune 201k / 414k; Aside 463k / 512k; EgoLite 360k / 622k; Playwright MCP 660k / 809k. Mean tool calls: Kitsune 12.1 / 15.8; Aside 16.1 / 15.6; EgoLite 12.8 / 17.5; Playwright MCP 29.8 / 35.1.](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/benchmark-webarena-pro.svg)
 
