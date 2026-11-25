@@ -90,6 +90,10 @@ EQUIVALENT = """<!doctype html><meta charset="utf-8"><title>equivalent</title>
 <a id="edit1" href="/edit/1">Edit</a> <a id="edit2" href="/edit/2">Edit</a>
 <a id="delete1" href="/account/delete">Delete account</a> <a id="delete2" href="/account/delete">Delete account</a>
 <input id="first-name"> <input id="last-name">
+<button id="jane"><div>Jane Smith</div><div>Jane Smith</div></button>
+<button id="flight"><div>Flight Search</div><div>agent1</div></button>
+<button id="ann1"><div>Ann Lee</div></button><button id="ann2"><div>Ann Lee</div></button>
+<div id="region" tabindex="-1"><p>Kim Park</p><p>Kim Park</p></div>
 <div id="posts"></div>
 <script>
   const posts = document.getElementById('posts');
@@ -225,10 +229,25 @@ class RealBrowserPlaywrightSelectorTests(harness.RealBrowserTestCase):
             single = self.assert_ok(self.call("/api/click", {"tabId": tab, **body, "includeSnapshot": False}))
             self.assertNotIn("matches", single)
 
+    def test_click_and_hover_take_matches_inside_one_control_as_that_control(self):
+        # #654: a list button whose title and subtitle both hold the text.
+        tab = self.open_tab(self.page.origin + "/equivalent")
+        clicked = self.assert_ok(self.call("/api/click", {"tabId": tab, "selector": "text=Jane Smith",
+                                                          "includeSnapshot": False}))
+        self.assertEqual((clicked["matches"], clicked["same_control"], clicked["tag"]), (2, True, "button"), clicked)
+        hovered = self.assert_ok(self.call("/api/hover", {"tabId": tab, "selector": "text=Jane Smith"}))
+        self.assertEqual((hovered["matches"], hovered["same_control"]), (2, True), hovered)
+        state = self.equivalent_state(tab)
+        self.assertEqual((state["clicked"], state["hovered"][-1]), (["jane"], "jane"), state)
+        single = self.assert_ok(self.call("/api/click", {"tabId": tab, "selector": "text=Flight Search",
+                                                         "includeSnapshot": False}))
+        self.assertNotIn("matches", single)
+
     def test_matches_that_only_look_alike_stay_ambiguous(self):
         tab = self.open_tab(self.page.origin + "/equivalent")
         # Same href, but one opens a tab or runs a handler; equally good text; different links.
-        for selector, matches in (('a[href="/blank"]', 2), ('a[href="/handler"]', 2), ("text=Edit", 2), ("h3 a", 60)):
+        for selector, matches in (('a[href="/blank"]', 2), ('a[href="/handler"]', 2), ("text=Edit", 2), ("h3 a", 60),
+                                  ("text=Ann Lee", 2), ("text=Kim Park", 2)):
             for endpoint in ("click", "hover"):
                 with self.subTest(endpoint=endpoint, selector=selector):
                     result = self.call(f"/api/{endpoint}", {"tabId": tab, "selector": selector})
