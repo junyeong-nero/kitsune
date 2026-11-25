@@ -8,14 +8,23 @@ booking the cheapest weekend trip, registering for a course that fits a schedule
 Two agents, Claude Code (`claude-opus-5-5`) and Codex (`gpt-6.1-sol`), one attempt per task: 208 attempts with a
 600 s budget each. An attempt passes only with a full score from the task's backend-state and answer checks.
 
-![Four-way benchmark, 26 WebArena-Pro tasks, 208 attempts. Passed, Claude Code / Codex: Kitsune 13/26 and 12/26; Playwright MCP 13/26 and 12/26; Aside 12/26 and 12/26; EgoLite 12/26 and 12/26. Mean input tokens per attempt: Kitsune 283k / 414k; Aside 463k / 512k; EgoLite 360k / 622k; Playwright MCP 660k / 809k. Mean tool calls: Kitsune 14.0 / 15.8; Aside 16.1 / 15.6; EgoLite 12.8 / 17.5; Playwright MCP 29.8 / 35.1.](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/benchmark-webarena-pro.svg)
+Kitsune's Claude Code row is v0.8.3: its 26 attempts were run again alone on 2026-11-25, on the same model, tasks,
+sites and grading, with an API key instead of a subscription. The other seven rows are from 2026-11-20, when Kitsune
+itself measured 13/26, 283k input and 14.0 tool calls per attempt under Claude Code. Kitsune's Codex row is that
+earlier build. The v0.8.3 run used commit `0a8ada9`; the release adds only the `kitsune setup` command on top, with
+no change to the server, tools or extension.
+
+![Four-way benchmark, 26 WebArena-Pro tasks, 208 attempts. Passed, Claude Code / Codex: Kitsune 13/26 and 12/26; Playwright MCP 13/26 and 12/26; Aside 12/26 and 12/26; EgoLite 12/26 and 12/26. Mean input tokens per attempt: Kitsune 201k / 414k; Aside 463k / 512k; EgoLite 360k / 622k; Playwright MCP 660k / 809k. Mean tool calls: Kitsune 12.1 / 15.8; Aside 16.1 / 15.6; EgoLite 12.8 / 17.5; Playwright MCP 29.8 / 35.1.](https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/benchmark-webarena-pro.svg)
 
 | Arm | Passed (Claude / Codex) | Mean score | Tool calls / attempt | Input / attempt, incl. cache | Median s |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| **Kitsune** | 13/26 / 12/26 | 0.63 / 0.57 | 14.0 / 15.8 | **283k / 414k** | **59.9** / 70.3 |
+| **Kitsune** | 13/26 / 12/26 | 0.64 / 0.57 | **12.1** / 15.8 | **201k / 414k** | 45.5† / 70.3 |
 | Playwright MCP | 13/26 / 12/26 | 0.64 / 0.57 | 29.8 / 35.1 | 660k / 809k | **59.9** / 64.0 |
 | Aside (CLI REPL) | 12/26 / 12/26 | 0.61 / 0.57 | 16.1 / **15.6** | 463k / 512k | 67.7 / **58.6** |
-| EgoLite (CLI) | 12/26 / 12/26 | 0.61 / 0.59 | **12.8** / 17.5 | 360k / 622k | 63.9 / 68.5 |
+| EgoLite (CLI) | 12/26 / 12/26 | 0.61 / 0.59 | 12.8 / 17.5 | 360k / 622k | 63.9 / 68.5 |
+
+† Measured on another day and with API-key billing, so this time is not compared with the other arms'. On
+2026-11-20 Kitsune's median was 59.9 s.
 
 By split: of the 19 test tasks, Kitsune and Playwright MCP passed 7 under Claude Code and Aside and EgoLite 6; every
 arm passed 6 under Codex. Every arm passed 6 of the 7 dev tasks under both agents.
@@ -25,7 +34,7 @@ ratios of those totals to Playwright MCP's, not reductions:
 
 | Arm | Input, incl. cache (Claude / Codex) | vs Playwright MCP | Tool calls (Claude / Codex) |
 | --- | ---: | ---: | ---: |
-| **Kitsune** | **1.08M / 2.76M** | 39% / 87% | **91** / 135 |
+| **Kitsune** | **1.10M / 2.76M** | 40% / 87% | **90** / 135 |
 | Aside (CLI REPL) | 2.76M / 3.13M | 99% / 98% | 140 / **128** |
 | EgoLite (CLI) | 2.14M / 3.74M | 77% / 117% | 94 / 133 |
 | Playwright MCP | 2.78M / 3.19M | 100% / 100% | 201 / 258 |
@@ -34,12 +43,13 @@ ratios of those totals to Playwright MCP's, not reductions:
   Playwright MCP passed one more: its answer check needs the flight number, which their answers included and the
   Aside and EgoLite answers left out.
 - **Input:** Kitsune used the least under both agents, but by how much depends on the agent and on which attempts
-  count. Per attempt it used 43% of Playwright MCP's input under Claude Code and 51% under Codex. On the tasks every
-  arm passed, where a short failed attempt cannot look cheap, it used 39% and 87%.
-- **Tool calls:** about half of Playwright MCP's under both agents. Per attempt Kitsune did not make the fewest:
-  EgoLite did under Claude Code and Aside under Codex.
+  count. Per attempt it used 31% of Playwright MCP's input under Claude Code and 51% under Codex. On the tasks every
+  arm passed, where a short failed attempt cannot look cheap, it used 40% and 87%. From the 2026-11-20 build to
+  v0.8.3, Kitsune's input under Claude Code fell on the tasks it failed and stayed the same on the tasks it passed.
+- **Tool calls:** about half of Playwright MCP's under both agents. Per attempt Kitsune made the fewest under Claude
+  Code and Aside under Codex.
 - **Time:** no consistent difference. Under Codex, Kitsune had the highest median.
-- **Kitsune's problems:** navigation to image-heavy pages timed out 7 times under Claude Code and 3 times under
+- **Kitsune's problems on 2026-11-20:** navigation to image-heavy pages timed out 7 times under Claude Code and 3 times under
   Codex, which stopped the script that made it ([#561](https://github.com/junyeong-nero/kitsune/issues/561)). Under
   Codex, 9 scripts ran into the 16 KB output limit. In one Claude Code task the agent asked which posts to save
   instead of saving them.
@@ -47,6 +57,8 @@ ratios of those totals to Playwright MCP's, not reductions:
 Limits:
 
 - One attempt per task and agent; a one-task difference is within noise.
+- Kitsune's Claude Code row is from a later day and build than the rows it is compared with, and was billed through
+  an API key, not a subscription. The model, tasks, sites and grading are the same.
 - Grading has no LLM judge or UI evidence, so a rubric the backend check cannot prove fails. It is stricter than the
   paper's grading, and these scores are not comparable to its 62.3%. Of the tasks no arm passed, the failing rubric
   fell through to that judge in 11 of 13 under Claude Code and 12 of 14 under Codex.
@@ -59,7 +71,9 @@ Limits:
 
 Source: the [kitsune-benchmark report](https://github.com/junyeong-nero/kitsune-benchmark/blob/b9e1fa8/docs/results/2026-11-20-webarena-pro-four-way.md)
 and its [per-attempt CSV](https://github.com/junyeong-nero/kitsune-benchmark/blob/b9e1fa8/docs/results/2026-11-20-webarena-pro-four-way.csv),
-which has every attempt's status, score, time, tool calls, tool errors and token counts.
+which has every attempt's status, score, time, tool calls, tool errors and token counts. Kitsune's Claude Code row:
+the [v0.8.3 check](https://github.com/junyeong-nero/kitsune-benchmark/blob/480b818/docs/results/2026-11-25-kitsune-main-0a8ada9-claude-api.md)
+and its [CSV](https://github.com/junyeong-nero/kitsune-benchmark/blob/480b818/docs/results/2026-11-25-kitsune-main-0a8ada9-claude-api.csv).
 
 ## Earlier results
 

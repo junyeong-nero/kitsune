@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="830" viewBox="0 0 1200 830" role="img" aria-labelledby="title desc">
 <title id="title">Four-way browser benchmark: 26 WebArena-Pro tasks, Claude Code and Codex</title>
-<desc id="desc">Kitsune: passed 13/26 (Claude) and 12/26 (Codex), mean input 283k / 414k tokens, mean tool calls 14.0 / 15.8; Aside: passed 12/26 (Claude) and 12/26 (Codex), mean input 463k / 512k tokens, mean tool calls 16.1 / 15.6; EgoLite: passed 12/26 (Claude) and 12/26 (Codex), mean input 360k / 622k tokens, mean tool calls 12.8 / 17.5; Playwright MCP: passed 13/26 (Claude) and 12/26 (Codex), mean input 660k / 809k tokens, mean tool calls 29.8 / 35.1.</desc>
+<desc id="desc">Kitsune: passed 13/26 (Claude) and 12/26 (Codex), mean input 201k / 414k tokens, mean tool calls 12.1 / 15.8; Aside: passed 12/26 (Claude) and 12/26 (Codex), mean input 463k / 512k tokens, mean tool calls 16.1 / 15.6; EgoLite: passed 12/26 (Claude) and 12/26 (Codex), mean input 360k / 622k tokens, mean tool calls 12.8 / 17.5; Playwright MCP: passed 13/26 (Claude) and 12/26 (Codex), mean input 660k / 809k tokens, mean tool calls 29.8 / 35.1.</desc>
 <defs><linearGradient id="bg" x2="1" y2="1"><stop stop-color="#091f23"/><stop offset="1" stop-color="#10483f"/></linearGradient><linearGradient id="fox"><stop stop-color="#f58b42"/><stop offset="1" stop-color="#ffc36d"/></linearGradient></defs>
 <rect width="1200" height="830" rx="28" fill="url(#bg)"/>
 <g font-family="Arial, Helvetica, sans-serif">
@@ -54,10 +54,10 @@
 <text x="104" y="359.0" fill="#a5bdb0" font-size="13">MCP · isolated Firefox</text>
 <rect x="324" y="319" width="64" height="20" rx="10" fill="#173b36" stroke="#46635a"/>
 <text x="356" y="334" fill="#fff0d6" font-size="14" font-weight="700" text-anchor="middle">13/26</text>
-<rect x="520" y="319" width="82.1" height="20" rx="4" fill="url(#fox)"/>
-<text x="610.1" y="334" fill="#fff0d6" font-size="14" font-weight="700">283k</text>
-<rect x="890" y="319" width="70.0" height="20" rx="4" fill="url(#fox)"/>
-<text x="968.0" y="334" fill="#fff0d6" font-size="14" font-weight="700">14.0</text>
+<rect x="520" y="319" width="58.4" height="20" rx="4" fill="url(#fox)"/>
+<text x="586.4" y="334" fill="#fff0d6" font-size="14" font-weight="700">201k</text>
+<rect x="890" y="319" width="60.4" height="20" rx="4" fill="url(#fox)"/>
+<text x="958.4" y="334" fill="#fff0d6" font-size="14" font-weight="700">12.1</text>
 <rect x="324" y="345" width="64" height="20" rx="10" fill="#173b36" stroke="#46635a"/>
 <text x="356" y="360" fill="#fff0d6" font-size="14" font-weight="700" text-anchor="middle">12/26</text>
 <rect x="520" y="345" width="120.0" height="20" rx="4" fill="url(#fox)" fill-opacity="0.38" stroke="url(#fox)" stroke-width="1.5"/>
@@ -141,8 +141,8 @@
   <polyline points="8 12 11 15 16 9"/>
 </g>
 <text x="104" y="707" fill="#fff0d6" font-size="15"><tspan font-weight="700">Success followed the task, not the tool:</tspan> under each agent, all four passed the same 12 tasks.</text>
-<text x="104" y="729" fill="#d3ded0" font-size="14">On those tasks Kitsune used 39% of Playwright MCP’s input under Claude Code and 87% under Codex; over all attempts, 43% and 51%.</text>
-<text x="48" y="776" fill="#bfd1c3" font-size="14">Means per attempt; input includes cache. CLI tool call = one ./browser script (can batch actions); MCP = one tool call.</text>
-<text x="48" y="798" fill="#bfd1c3" font-size="14">One repeat per task. No LLM judge: stricter than the paper, so not comparable to its 62.3%. Aside and EgoLite drove the operator’s browsers. 2026-11-20.</text>
+<text x="104" y="729" fill="#d3ded0" font-size="14">On those tasks Kitsune used 40% of Playwright MCP’s input under Claude Code and 87% under Codex; over all attempts, 31% and 51%.</text>
+<text x="48" y="776" fill="#bfd1c3" font-size="14">Means per attempt; input includes cache. CLI tool call = one ./browser script (can batch actions); MCP = one tool call. One repeat per task.</text>
+<text x="48" y="798" fill="#bfd1c3" font-size="14">No LLM judge, so not comparable to the paper’s 62.3%. Aside and EgoLite drove the operator’s browsers. 2026-11-20; Kitsune’s Claude Code bars: v0.8.3, 2026-11-25.</text>
 </g>
 </svg>
