@@ -223,7 +223,7 @@ report `matches` ([Strict selectors](api-reference.md#strict-selectors)).
 
 | `Tab` method | Does |
 | --- | --- |
-| `navigate(url)`, `back()`, `forward()`, `reload(bypass_cache=False)` | Navigate. `url` may be relative to the tab's current URL (`"/deals/48"`); one that does not parse fails with `invalid_url`. A page that still looks like it is rendering (no content, a `Loading...` line, `aria-busy`) warns with the `wait_for` to use; `new_tab` warns the same way |
+| `navigate(url)`, `back()`, `forward()`, `reload(bypass_cache=False)` | Navigate. `url` may be relative to the tab's current URL (`"/deals/48"`); one that does not parse fails with `invalid_url`. A page that still looks like it is rendering (no content, a `Loading...` line, `aria-busy`) warns with the `wait_for` to use; `new_tab` warns the same way. The warning comes at the tab's first read after the navigation (`text`, `snapshot`, `query`, `forms`, `find`, `markdown`, `html`), once, and not when a `wait_for` on the tab comes first (#651) |
 | `click(target, button=None, modifiers=None, hold_ms=0)`, `double_click(target)` | Synthetic click; `hold_ms` for long presses |
 | `hover(target, duration_ms=0, steps=None)` | Synthetic hover; `duration_ms`/`steps` for hover-intent controls |
 | `fill(target, value)` | Replace a value |

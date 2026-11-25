@@ -3709,7 +3709,9 @@ single reads (see `browser_wait_for`); a zero timeout performs one immediate che
   `"rendering": true`, the `placeholder` line when there is one, and a `rendering_hint` naming the
   wait to use (`browser_wait_for` with `text_gone` set to the placeholder, or with `text`). It is
   an observation, not an error, and adds no wait. The Python `tab.navigate` and
-  `browser.new_tab` warn with a `UserWarning` instead.
+  `browser.new_tab` warn with a `UserWarning` instead, at the tab's first read after them
+  (`text`, `snapshot`, `query`, `forms`, `find`, `markdown`, `html`) and only when no
+  `tab.wait_for` on that tab came in between (#651).
 - Any other load that does not finish in 15 s returns `{ "ok": false, "timedOut": true, "url": "..." }`.
   When the tab sent a request for it, `waiting_for` says what is still missing, with a `hint`
   (#605): `"response"`, the server has not answered (read again shortly, or repeat the
