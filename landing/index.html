@@ -200,7 +200,7 @@
           </dd>
         </div>
         <div><dt>Tools</dt><dd>Six: <code translate="no">browser_run_python</code> for reads and inputs, plus tabs, screenshots, asking you for help and recovery.</dd></div>
-        <div><dt>Clients</dt><dd>Every MCP client runs the same command: <code translate="no">uvx --from kitsune-browser-mcp kitsune</code></dd></div>
+        <div><dt>Clients</dt><dd>Any MCP client that can run a local server over stdio. <a class="text-link" href="docs/installation/#manual-registration">Manual setup</a></dd></div>
         <div><dt>Limits</dt><dd>Site-opened popups and OS-level trusted input can still move focus. <a class="text-link" href="docs/api-reference/#shared-browser">Shared-browser limits</a></dd></div>
       </dl>
     </div>
@@ -234,42 +234,15 @@
       <div>
         <h2 id="install-title">Install Kitsune</h2>
         <ol class="steps">
-          <li><h3>Install uv</h3><p><a class="text-link" href="https://docs.astral.sh/uv/getting-started/installation/">uv</a> provides <code translate="no">uvx</code> and Python 3.10+.</p></li>
-          <li><h3>Add the extension to your browser</h3><p>Download it from the same release as the server. <a class="text-link" href="docs/installation/#2-install-the-browser-extension">Extension setup</a></p></li>
-          <li><h3>Register the MCP server</h3><p>One command for your client.</p></li>
-          <li><h3>Ask in plain language</h3><p>Keep the browser open. Your agent opens its own tabs.</p></li>
+          <li><h3>Install the browser extension</h3><p><a class="text-link" href="docs/installation/#1-install-the-browser-extension">Add Kitsune to Firefox, Zen or LibreWolf</a> and keep the browser open.</p></li>
+          <li><h3>Register the MCP server</h3><p>Run the command in a terminal. Restart the clients you select, or type <code>/reload</code> in Pi.</p></li>
         </ol>
       </div>
       <div class="console" translate="no">
-        <div class="console-tabs" role="tablist" aria-label="MCP client">
-          <button role="tab" id="tab-claude" aria-controls="p-claude" aria-selected="true">Claude Code</button>
-          <button role="tab" id="tab-codex" aria-controls="p-codex" aria-selected="false" tabindex="-1">Codex CLI</button>
-          <button role="tab" id="tab-pi" aria-controls="p-pi" aria-selected="false" tabindex="-1">Pi</button>
-          <button role="tab" id="tab-json" aria-controls="p-json" aria-selected="false" tabindex="-1">JSON</button>
-        </div>
-        <div class="console-panel" role="tabpanel" id="p-claude" aria-labelledby="tab-claude">
-          <pre data-copy-source><code>claude mcp add --scope user kitsune -- uvx --from kitsune-browser-mcp kitsune</code></pre>
+        <div class="console-panel">
+          <pre data-copy-source><code><a class="text-link" href="https://docs.astral.sh/uv/getting-started/installation/" title="Install uv (includes uvx)">uvx</a> kitsune-browser-mcp@latest setup</code></pre>
           <button type="button" class="copy" data-act="copy"><svg class="icon icon-copy"><use href="#i-copy"/></svg><svg class="icon icon-done"><use href="#i-check"/></svg><span>Copy command</span></button>
-        </div>
-        <div class="console-panel" role="tabpanel" id="p-codex" aria-labelledby="tab-codex" hidden>
-          <pre data-copy-source><code>codex mcp add kitsune -- uvx --from kitsune-browser-mcp kitsune</code></pre>
-          <button type="button" class="copy" data-act="copy"><svg class="icon icon-copy"><use href="#i-copy"/></svg><svg class="icon icon-done"><use href="#i-check"/></svg><span>Copy command</span></button>
-        </div>
-        <div class="console-panel" role="tabpanel" id="p-pi" aria-labelledby="tab-pi" hidden>
-          <pre data-copy-source><code>pi mcp add kitsune -- uvx --from kitsune-browser-mcp kitsune</code></pre>
-          <button type="button" class="copy" data-act="copy"><svg class="icon icon-copy"><use href="#i-copy"/></svg><svg class="icon icon-done"><use href="#i-check"/></svg><span>Copy command</span></button>
-        </div>
-        <div class="console-panel" role="tabpanel" id="p-json" aria-labelledby="tab-json" hidden>
-          <pre data-copy-source><code>{
-  "mcpServers": {
-    "kitsune": {
-      "command": "uvx",
-      "args": ["--from", "kitsune-browser-mcp", "kitsune"]
-    }
-  }
-}</code></pre>
-          <button type="button" class="copy" data-act="copy"><svg class="icon icon-copy"><use href="#i-copy"/></svg><svg class="icon icon-done"><use href="#i-check"/></svg><span>Copy config</span></button>
-          <p class="console-note">For Claude Desktop, Cursor and other <code>mcpServers</code> clients. OpenCode: <a class="text-link" href="docs/installation/#opencode">Installation</a></p>
+          <p class="console-note">Press Enter to use the detected clients, or Space to change the selection first. <a class="text-link" href="docs/installation/#2-register-the-mcp-server">Setup options</a></p>
         </div>
         <p class="trust">
           Python runs locally without a sandbox; set <code>KITSUNE_SCRIPTING=0</code> to turn it off.

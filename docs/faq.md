@@ -22,7 +22,7 @@ Not yet. For Chrome, try a Chromium extension MCP such as
 ## Which agents can use it?
 
 Any MCP client that runs local stdio servers. See
-[Register the MCP server](installation.md#1-register-the-mcp-server).
+[Register the MCP server](installation.md#2-register-the-mcp-server).
 
 ## Will the agent take over the tab I'm using?
 
@@ -59,7 +59,7 @@ to your agent and its model provider.
 ## Do I need the developer build?
 
 Only for agent JavaScript (`browser_evaluate`). The signed build installs once and updates
-itself. See [Installation](installation.md#2-install-the-browser-extension).
+itself. See [Installation](installation.md#1-install-the-browser-extension).
 
 ## Which platforms are supported?
 

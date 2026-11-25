@@ -56,24 +56,21 @@ rest are from 2026-11-20. <a href="https://junyeong-nero.github.io/kitsune/docs/
 
 ## Get started
 
-1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/).
-2. [Install the browser extension](https://junyeong-nero.github.io/kitsune/docs/installation/#2-install-the-browser-extension)
+1. [Install the browser extension](https://junyeong-nero.github.io/kitsune/docs/installation/#1-install-the-browser-extension)
     in Firefox, Zen or LibreWolf.
-3. Add Kitsune to your agent. For Claude Code:
+2. Register the MCP server with your agents:
 
-    ```bash
-    claude mcp add --scope user kitsune -- uvx --from kitsune-browser-mcp kitsune
-    ```
+    <pre><code><a href="https://docs.astral.sh/uv/getting-started/installation/" title="Install uv (includes uvx)">uvx</a> kitsune-browser-mcp@latest setup</code></pre>
 
-    Codex, Pi, OpenCode, Claude Desktop and Cursor are in
-    [Installation](https://junyeong-nero.github.io/kitsune/docs/installation/#1-register-the-mcp-server).
+    Setup checks the clients it finds. Use **Space** to change the selection and **Enter** to save it.
+    Restart those clients, or run `/reload` in Pi.
 
-4. Keep the browser open and ask in plain language:
+With the browser open, try asking:
 
-    > Research these three products in background tabs and compare them with links.
-    > Leave my current tab alone.
+> Research these three products in background tabs and compare them with links.
+> Leave my current tab alone.
 
-    > Fill in a draft of this form. Don't submit it.
+> Fill in a draft of this form. Don't submit it.
 
 **Trust note:** Python runs locally, not in a sandbox; set `KITSUNE_SCRIPTING=0` to disable it.
 Approvals do not prevent prompt injection. Use a separate profile for sensitive accounts and

@@ -2,19 +2,15 @@
 
 <!-- mcp-name: io.github.junyeong-nero/kitsune -->
 
-The [Kitsune](https://github.com/junyeong-nero/kitsune) MCP server lets AI agents such as Claude
-Code, Codex, Pi, and OpenCode use the Firefox, Zen, or LibreWolf browser you already have open,
-through the Kitsune browser extension.
+[Kitsune](https://github.com/junyeong-nero/kitsune) connects your MCP client to the Firefox,
+Zen or LibreWolf browser you already have open.
 
-This package has no code of its own. It installs
-[kitsune-browser](https://pypi.org/project/kitsune-browser/) of the same version, with its MCP
-extra, and the commands: `kitsune` starts the server (also named `kitsune-browser-mcp`), and
-`kitsune-bridge status` / `stop` inspect or stop the shared bridge.
+1. [Install the browser extension](https://junyeong-nero.github.io/kitsune/docs/installation/#1-install-the-browser-extension).
+2. Register the MCP server with your agents:
 
-```bash
-claude mcp add --scope user kitsune -- uvx --from kitsune-browser-mcp kitsune
-```
+    <pre><code><a href="https://docs.astral.sh/uv/getting-started/installation/" title="Install uv (includes uvx)">uvx</a> kitsune-browser-mcp@latest setup</code></pre>
 
-[Installation](https://junyeong-nero.github.io/kitsune/docs/installation/) covers the other clients
-and the browser extension. To drive the browser from your own Python code, install
-kitsune-browser instead ([Python API](https://junyeong-nero.github.io/kitsune/docs/python-api/)).
+    Select your clients with **Space**, then press **Enter**. Restart them, or run `/reload` in Pi.
+
+See [Installation](https://junyeong-nero.github.io/kitsune/docs/installation/) for manual setup and
+`kitsune-bridge` commands. For Python scripts, use [kitsune-browser](https://junyeong-nero.github.io/kitsune/docs/python-api/) instead.

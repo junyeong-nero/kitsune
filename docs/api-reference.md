@@ -3541,7 +3541,7 @@ absence of `browser_diagnostics` is not a successful build comparison.
 ### GET /api/version
 Bridge and extension version info.
 ```json
-{ "bridge": "0.8.2", "api": "1", "extension_connected": true, "extension_version": "0.8.2", "extension_build": "dev", "extension": 25 }
+{ "bridge": "0.8.3", "api": "1", "extension_connected": true, "extension_version": "0.8.3", "extension_build": "dev", "extension": 25 }
 ```
 
 ## Page data (GET)

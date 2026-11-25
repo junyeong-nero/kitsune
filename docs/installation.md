@@ -1,50 +1,11 @@
 # Installation
 
-Kitsune has two parts: an **MCP server** that your agent starts for you, and a **browser
-extension** you install once. Setup takes four steps.
+You'll need Firefox 142+, Zen 1.23+ or LibreWolf on macOS, Linux or [Windows](windows.md).
+Setup recognizes Claude Code, Codex CLI, Pi, Cursor, OpenCode and Claude Desktop (macOS or Windows).
 
-!!! info "Before you start"
+<a id="2-install-the-browser-extension"></a>
 
-    - macOS, Linux or Windows (see [Windows](windows.md))
-    - Firefox 142+, Zen 1.23+ or LibreWolf
-    - An MCP client: Claude Code, Codex CLI, Pi, Claude Desktop, Cursor or OpenCode
-
-## 1. Install uv
-
-[uv](https://docs.astral.sh/uv/getting-started/installation/) downloads and runs the Kitsune
-server. It provides `uvx` and Python 3.10+. Skip this step if `uvx --version` already works.
-
-=== "Installer script"
-
-    ```bash
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    ```
-
-=== "Homebrew"
-
-    ```bash
-    brew install uv
-    ```
-
-=== "Windows"
-
-    ```powershell
-    powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-    ```
-
-Open a new terminal, then download Kitsune once to check that it runs:
-
-```bash
-uvx --from kitsune-browser-mcp kitsune-bridge status
-```
-
-It prints `"status": "stopped"`. That is expected: your agent starts the bridge later.
-
-!!! warning "The package is `kitsune-browser-mcp`"
-
-    `kitsune-mcp` is an unrelated project.
-
-## 2. Install the browser extension
+## 1. Install the browser extension
 
 [Open the latest release](https://github.com/junyeong-nero/kitsune/releases/latest){ .md-button .md-button--primary }
 
@@ -55,24 +16,67 @@ It prints `"status": "stopped"`. That is expected: your agent starts the bridge 
 5. Pin Kitsune to the toolbar: click the **Extensions** (puzzle) button, then the gear next to
    Kitsune, then **Pin to Toolbar**. Tab handoff requests and tool approvals show up in its popup.
 
-This is the signed build. It installs once and updates itself. Use the extension from the same
-release as the server; `uvx` runs the latest release unless you [pin a version](#pinning-a-version).
-If your agent needs to run its own JavaScript in pages, use the [developer build](#developer-build)
-instead.
+The signed extension updates itself. If you [pin the server](#pinning-a-version), use the XPI
+from the same release. To let your agent run its own JavaScript in pages, use the
+[developer build](#developer-build) instead.
 
+<a id="1-install-uv"></a>
 <a id="1-register-the-mcp-server"></a>
+<a id="3-add-kitsune-to-your-agent"></a>
 
-## 3. Add Kitsune to your agent
+## 2. Register the MCP server
 
-Pick your client. Every client runs the same command, `uvx --from kitsune-browser-mcp kitsune`;
-only where you put it differs.
+Close the clients you want to configure, then run:
+
+<pre><code><a href="https://docs.astral.sh/uv/getting-started/installation/" title="Install uv (includes uvx)">uvx</a> kitsune-browser-mcp@latest setup</code></pre>
+
+If `uvx` isn't on your PATH, the link above takes you to the uv installer.
+Press **Enter** to use the detected clients, or change the selection with **↑/↓** and **Space** first.
+Reopen the clients you selected, or run `/reload` in Pi.
+
+??? info "Setup flags and config changes"
+
+    - `--list` shows each supported client, its detection status and its config path. It doesn't write anything.
+    - `--auto` registers only detected clients, without a prompt.
+
+    Setup edits the `kitsune` entry in each selected client's user config. It switches standard PyPI
+    commands, including version pins, to `@latest` and keeps settings such as `env`. Unchecked clients
+    aren't changed. For a checkout, a `[macos]` extra, or JSON with comments or trailing commas,
+    use [manual registration](#manual-registration).
+
+<a id="4-check-that-it-works"></a>
+
+## Check that it works
+
+Keep the browser open and ask your agent: **"List my open browser tabs."** The Kitsune toolbar
+popup should say **Connected**. Once you see your tabs, [try a first task](try-it.md).
+
+??? question "It doesn't work"
+
+    Check the bridge from a terminal:
+
+    ```bash
+    uvx --from kitsune-browser-mcp kitsune-bridge status
+    ```
+
+    - `"status": "stopped"`: check the [MCP registration](#2-register-the-mcp-server) and restart the agent.
+    - `"extension_connected": false`: make sure the extension is enabled in `about:addons` and the browser is open.
+    - `"extension_connected": true`: the setup works. If a tool call fails, its error's `hint` says what to fix.
+
+    More in [Troubleshooting](troubleshooting.md#setup-and-installation).
+
+## More setup options
+
+### Manual registration
+
+If you prefer to configure a client yourself, register the **server** command without `setup`:
 
 === "Claude Code"
 
     Run once:
 
     ```bash
-    claude mcp add --scope user kitsune -- uvx --from kitsune-browser-mcp kitsune
+    claude mcp add --scope user kitsune -- uvx kitsune-browser-mcp@latest
     ```
 
     Then start a new Claude Code session. To set an environment variable, add `-e` before the
@@ -83,7 +87,7 @@ only where you put it differs.
     Run once:
 
     ```bash
-    codex mcp add kitsune -- uvx --from kitsune-browser-mcp kitsune
+    codex mcp add kitsune -- uvx kitsune-browser-mcp@latest
     ```
 
     Then start a new Codex session. Or add it to `~/.codex/config.toml` yourself:
@@ -91,7 +95,7 @@ only where you put it differs.
     ```toml
     [mcp_servers.kitsune]
     command = "uvx"
-    args = ["--from", "kitsune-browser-mcp", "kitsune"]
+    args = ["kitsune-browser-mcp@latest"]
 
     [mcp_servers.kitsune.env]  # optional
     KITSUNE_SCRIPTING = "0"
@@ -102,7 +106,7 @@ only where you put it differs.
     Run once:
 
     ```bash
-    pi mcp add kitsune -- uvx --from kitsune-browser-mcp kitsune
+    pi mcp add kitsune -- uvx kitsune-browser-mcp@latest
     ```
 
     This writes `~/.pi/agent/mcp.json` (`--local` writes `.pi/mcp.json`). In a running session,
@@ -118,7 +122,7 @@ only where you put it differs.
       "mcpServers": {
         "kitsune": {
           "command": "uvx",
-          "args": ["--from", "kitsune-browser-mcp", "kitsune"]
+          "args": ["kitsune-browser-mcp@latest"]
         }
       }
     }
@@ -137,7 +141,7 @@ only where you put it differs.
       "mcpServers": {
         "kitsune": {
           "command": "uvx",
-          "args": ["--from", "kitsune-browser-mcp", "kitsune"]
+          "args": ["kitsune-browser-mcp@latest"]
         }
       }
     }
@@ -148,7 +152,7 @@ only where you put it differs.
 
 === "OpenCode"
 
-    Add this to `~/.config/opencode/opencode.json`, or to a project's `opencode.json`:
+    Merge this into `~/.config/opencode/opencode.json` (or `opencode.jsonc`), or a project's `opencode.json`:
 
     ```json
     {
@@ -156,7 +160,7 @@ only where you put it differs.
       "mcp": {
         "kitsune": {
           "type": "local",
-          "command": ["uvx", "--from", "kitsune-browser-mcp", "kitsune"],
+          "command": ["uvx", "kitsune-browser-mcp@latest"],
           "enabled": true
         }
       }
@@ -167,32 +171,6 @@ only where you put it differs.
 
 Using more than one client? They share one bridge, so register them all with the same source and
 version ([compatibility](#extension-and-server-compatibility)).
-
-## 4. Check that it works
-
-1. Keep the browser open and start a new session of your agent.
-2. Ask it: **"List my open browser tabs."** It should answer with the tabs you have open.
-3. Click the Kitsune icon in the toolbar. The popup says **Connected**.
-
-Next, [try a first task](try-it.md).
-
-??? question "It doesn't work"
-
-    Check the bridge from a terminal:
-
-    ```bash
-    uvx --from kitsune-browser-mcp kitsune-bridge status
-    ```
-
-    - `"status": "stopped"`: the agent hasn't started Kitsune. Check step 3 and restart the agent.
-    - `"extension_connected": false`: the extension isn't connected. Check that it is installed and
-      enabled in `about:addons`, and that the browser is open.
-    - `"extension_connected": true`: the setup works. If a tool call still fails, its error's
-      `hint` says what to fix.
-
-    More in [Troubleshooting](troubleshooting.md#setup-and-installation).
-
-## More setup options
 
 ### Developer build
 
@@ -214,7 +192,7 @@ Both builds share an add-on ID; a loaded developer build replaces the signed one
 ### Pinning a version
 
 ```bash
-claude mcp add --scope user kitsune -- uvx --from kitsune-browser-mcp==0.8.2 kitsune
+claude mcp add --scope user kitsune -- uvx --from kitsune-browser-mcp==0.8.3 kitsune
 ```
 
 For an unreleased commit, tag or branch, use the Git source and get the extension from the same
@@ -226,14 +204,9 @@ claude mcp add --scope user kitsune -- uvx --from "git+https://github.com/junyeo
 
 ### Upgrading
 
-**Server.** uvx keeps using its cached version. Refresh it, then reconnect the client:
-
-```bash
-uvx --refresh --from kitsune-browser-mcp kitsune-bridge status
-```
-
-Or register `kitsune-browser-mcp@latest` to check on every start. For pinned versions, change
-the version in the client config. In a checkout: `git pull && uv sync`.
+**Server.** `uvx kitsune-browser-mcp@latest` checks for a new release each time the server starts.
+Restart the client to update. If an older config keeps launching a cached version, rerun setup.
+To keep a version pin, edit it manually instead. In a checkout: `git pull && uv sync`.
 
 **Bridge.** The MCP server restarts a bridge whose `build` differs from its own, briefly
 interrupting other clients; `KITSUNE_NO_BRIDGE_RESTART=1` opts out. Manage it manually with

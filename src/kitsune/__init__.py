@@ -1,4 +1,4 @@
-__version__ = "0.8.2"
+__version__ = "0.8.3"
 
 from .browser import Bookmarks, Browser, Cookies, History, Tab, connect
 from .errors import ConfirmationRequired, ConnectionFailed, KitsuneError, TimedOut

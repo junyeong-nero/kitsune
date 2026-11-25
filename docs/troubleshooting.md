@@ -13,7 +13,7 @@ Start with `browser_status`: it reports a `diagnosis.code` and `diagnosis.hint`
 | `Remove KITSUNE_CAPS from the MCP server environment` | Removed setting: delete it (and `KITSUNE_PUBLISH`, `KITSUNE_MODE`) from the client config |
 | A call waits, or returns `needs_user` with `state.detail: "tool_approval"` | You require approval for that tool: answer in the toolbar popup, or uncheck it in [the options](your-tabs.md#tools-that-need-your-approval) |
 | `tool_moved_to_python` | The [default tools](tools.md#default-tools) use `browser_run_python`; `KITSUNE_SCRIPTING=0` restores the legacy list |
-| Upgrade not picked up | Restart the client; use `uvx --refresh …` ([Upgrading](installation.md#upgrading)) |
+| Upgrade not picked up | Restart the client; rerun setup to switch an older launcher to `@latest` ([Upgrading](installation.md#upgrading)) |
 | The bridge restarts whenever another client starts | Clients use different sources or refs ([compatibility](installation.md#extension-and-server-compatibility)) |
 | "needs the developer extension build" | The signed build cannot run agent JavaScript; load the [developer build](installation.md#developer-build) |
 | Stop or restart the bridge | `kitsune-bridge stop` with the same source as your clients; the next call starts it again |
