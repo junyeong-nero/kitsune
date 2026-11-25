@@ -132,9 +132,10 @@ class TabRequestTests(BridgeTestCase):
             (lambda t: t.snapshot(), "/api/snapshot", {"text": False}),
             (lambda t: t.snapshot("main", max_depth=2, text=True), "/api/snapshot",
              {"selector": "main", "maxDepth": 2, "text": True}),
-            (lambda t: t.forms(), "/api/forms", {}),
+            (lambda t: t.forms(), "/api/forms", {"full": True}),
             (lambda t: t.find("login button"), "/api/find", {"query": "login button"}),
-            (lambda t: t.query("a", fields=["href"], limit=5), "/api/query", {"selector": "a", "fields": ["href"], "limit": 5}),
+            (lambda t: t.query("a", fields=["href"], limit=5), "/api/query",
+             {"selector": "a", "fields": ["href"], "limit": 5, "full": True}),
             (lambda t: t.html("e2"), "/api/html", {"selector": "", "ref": "e2"}),
             (lambda t: t.markdown(), "/api/markdown", {}),
             (lambda t: t.links(internal_only=True), "/api/links", {"internalOnly": True}),
@@ -204,6 +205,13 @@ class TabRequestTests(BridgeTestCase):
         with self.assertWarnsRegex(UserWarning, "read cache and may be stale"):
             self.assertEqual(self.tab.text(), "Loading...")
 
+    def test_a_cut_form_value_warns(self):
+        # #650: forms() names the cut it made; the value ends with … and its row has valueClipped.
+        fields = [{"ref": "e1", "value": "x" * 100000 + "…", "valueClipped": True}, {"ref": "e2", "value": "y"}]
+        self.reply("/api/forms", {"fields": fields})
+        with self.assertWarnsRegex(UserWarning, r"Form field values were cut \(1 field; .*valueClipped"):
+            self.assertEqual(self.tab.forms(), fields)
+
     def test_reads_the_bridge_cut_warn(self):
         self.reply("/api/page-text", {"text": "x" * 500000, "truncated": True, "fullLength": 600000})
         with self.assertWarnsRegex(UserWarning, "Page text was cut") as caught:
@@ -264,7 +272,8 @@ class TabRequestTests(BridgeTestCase):
     def test_query_takes_fields_positionally_and_limit_by_keyword_only(self):
         # #574: tab.query('tr', ['text'], limit=30) was a TypeError after the script's earlier writes.
         self.assertEqual(self.tab.query("tr", ["text"], limit=30), [{"text": "a"}])
-        self.assertEqual(self.bridge.last.body, {"selector": "tr", "fields": ["text"], "limit": 30, "tabId": 7})
+        self.assertEqual(self.bridge.last.body, {"selector": "tr", "fields": ["text"], "limit": 30, "full": True,
+                                                 "tabId": 7})
         sent = len(self.bridge.requests)
         with self.assertRaises(TypeError):
             self.tab.query("tr", ["text"], 30)
@@ -630,8 +639,6 @@ class McpParityTests(BridgeTestCase):
              lambda: self.tab.handle_dialogs(True, "Ada")),
             (lambda: tools.browser_wait_for(url="/done$", tab_id=7), lambda: self.tab.wait_for(url="/done$")),
             (lambda: tools.browser_snapshot(tab_id=7, ref="e2", max_depth=1), lambda: self.tab.snapshot("e2", max_depth=1)),
-            (lambda: tools.browser_query(selector="a", fields=["href"], limit=5, tab_id=7),
-             lambda: self.tab.query("a", fields=["href"], limit=5)),
             (lambda: tools.browser_html(ref="e5", tab_id=7), lambda: self.tab.html("e5")),
             (lambda: tools.browser_markdown(selector="main", tab_id=7), lambda: self.tab.markdown("main")),
             (lambda: tools.browser_find(query="login", tab_id=7), lambda: self.tab.find("login")),
@@ -662,6 +669,14 @@ class McpParityTests(BridgeTestCase):
         # #630: a script's read is not model-visible; the direct tool's result is.
         self.assertEqual(self.sent(lambda: self.tab.text()), [("/api/page-text", {"full": True, "tabId": 7}, 15)])
         self.assertEqual(self.sent(lambda: tools.browser_page_text(tab_id=7)), [("/api/page-text", {"tabId": 7}, 15)])
+
+    def test_query_and_form_values_are_whole_for_python_and_bounded_for_the_mcp_tools(self):
+        # #650: a script that reads a value and writes it back must not write a cut one.
+        self.assertEqual(self.sent(lambda: self.tab.query("a", fields=["href"], limit=5)),
+                         [("/api/query", {"selector": "a", "limit": 5, "full": True, "fields": ["href"], "tabId": 7}, 15)])
+        self.assertEqual(self.sent(lambda: tools.browser_query(selector="a", fields=["href"], limit=5, tab_id=7)),
+                         [("/api/query", {"selector": "a", "fields": ["href"], "limit": 5, "tabId": 7}, 15)])
+        self.assertEqual(self.sent(lambda: self.tab.forms()), [("/api/forms", {"full": True, "tabId": 7}, 15)])
 
     def test_every_other_capability_matches_its_mcp_tool(self):
         tab, browser = self.tab, self.browser
