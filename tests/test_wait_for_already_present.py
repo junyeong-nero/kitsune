@@ -109,6 +109,18 @@ class ToolTests(unittest.TestCase):
         playwright_tools.browser_wait_for(text="code", newOnly=True)
         self.assertIs(self.waited()[1]["new_only"], True)
 
+    def test_both_tools_wait_for_content_with_no_text(self):
+        # #652: the no-content rendering hint names browser_wait_for(content=true); the core tool
+        # accepts content without publishing it, as it does newOnly.
+        self.assertNotIn("content", playwright_tools.SCHEMAS["browser_wait_for"]["inputSchema"]["properties"])
+        playwright_tools.browser_wait_for(content=True)
+        self.assertEqual(self.waited(), ("/api/wait-for-text", {"timeout": 10000, "content": True}))
+        tools.browser_wait_for(content=True, tab_id=9)
+        self.assertEqual(self.waited(), ("/api/wait-for-text", {"timeout": 10000, "content": True, "tabId": 9}))
+        self.post.reset_mock()
+        self.assertIn("error", tools.browser_wait_for(content=True, text="Flights"))
+        self.post.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

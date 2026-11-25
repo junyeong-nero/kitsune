@@ -23,6 +23,9 @@ PAGES = {
     # #651: PipeCRM's deal page, rendered 800 ms after its DOM.
     "/deal": """<!doctype html><title>Deal</title><div id="root"><div>Loading...</div></div>
 <script>setTimeout(() => { root.innerHTML = '<h1>Deal Info</h1><p>$97,700</p>' }, 800)</script>""",
+    # #652: the flight-search start page, empty for 800 ms.
+    "/flights": """<!doctype html><title>Flights</title><div id="root"></div>
+<script>setTimeout(() => { root.innerHTML = '<h1>Flights</h1><p>Explore the world</p>' }, 800)</script>""",
     "/busy": """<!doctype html><title>Vault</title><h1>Vault</h1><section aria-busy="true">Items</section>""",
     "/plain": "<!doctype html><title>Plain</title><h1>Plain page</h1>",
 }
@@ -77,7 +80,11 @@ class RealBrowserRenderingTests(harness.RealBrowserTestCase):
         self.addCleanup(self.call, "/api/close-tab", {"tabId": result.get("tabId")})
         self.assertIs(result.get("rendering"), True, result)
         self.assertNotIn("placeholder", result)
-        self.assertIn("browser_wait_for(text=...)", result["rendering_hint"])
+        self.assertIn("browser_wait_for(content=true)", result["rendering_hint"])
+        # #652: the wait it names needs no text of the page.
+        waited = self.call("/api/wait-for-text", {"tabId": result["tabId"], "content": True, "timeout": 10000})
+        self.assertEqual((waited.get("ok"), waited.get("content")), (True, True), waited)
+        self.assertIn("Flight search", self.call("/api/page-text", {"tabId": result["tabId"]})["text"])
 
     def test_an_aria_busy_section_says_so(self):
         tab = self.open_tab(f"{self.site.origin}/plain")
@@ -114,6 +121,21 @@ class RealBrowserRenderingTests(harness.RealBrowserTestCase):
         message, line = read["warnings"][0]
         self.assertIn("tab.wait_for(text_gone='Loading...')", message)
         self.assertEqual(line, 5, "the warning names the text() line")
+
+    def test_a_script_waits_for_content_it_knows_no_text_of(self):
+        url = f"{self.site.origin}/flights"
+        tab = self.open_tab(f"{self.site.origin}/plain")
+        read = self.run_script(tab, [f"tab.navigate({url!r})", "text = tab.text()"])
+        self.assertEqual(read["text"], "")
+        self.assertEqual(len(read["warnings"]), 1, read)
+        self.assertIn("wait with tab.wait_for(content=True)", read["warnings"][0][0])
+        waited = self.run_script(tab, [f"tab.navigate({url!r})", "tab.wait_for(content=True)", "text = tab.text()"])
+        self.assertEqual(waited, {"text": "Flights\n\nExplore the world", "warnings": []})
+        # A page that keeps rendering ends the wait at its timeout.
+        busy = self.run_script(tab, [f"tab.navigate({self.site.origin + '/busy'!r})",
+                                     "try:\n        tab.wait_for(content=True, timeout=500)\n        text = 'met'\n"
+                                     "    except TimeoutError as error:\n        text = str(error)"])
+        self.assertIn("waiting for page content", busy["text"])
 
 
 if __name__ == "__main__":

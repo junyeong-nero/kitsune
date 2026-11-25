@@ -1684,8 +1684,8 @@ async function addRenderingHint(tabId, result) {
     result.rendering_hint = state.placeholder
       ? `The page still shows "${state.placeholder}" and may still be rendering. Wait with ` +
         `browser_wait_for(text_gone="${state.placeholder}") or for text you expect, then read it.`
-      : 'The page shows no content yet or is marked busy, and may still be rendering. Wait for text ' +
-        'you expect with browser_wait_for(text=...), then read it; a loaded page can also be empty.';
+      : 'The page shows no content yet or is marked busy, and may still be rendering. Wait with ' +
+        'browser_wait_for(content=true), then read it; a loaded page can also be empty.';
   } catch {}
 }
 

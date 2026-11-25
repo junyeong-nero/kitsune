@@ -1005,7 +1005,7 @@ def browser_wait_for(
     timeout: int = 10000, tab_id: TabId = None,
     ref: str | None = None, element: str | None = None,
     confirm_token: Annotated[str | None, Field(description="js waits; see browser_check.")] = None,
-    new_only: bool = False,
+    new_only: bool = False, content: bool = False,
 ) -> dict:
     """Wait for exactly one condition, or sleep for time seconds: selector/ref (a visible
     element, see browser_check; ref wins), text/text_gone (rendered page text, literal
@@ -1013,7 +1013,9 @@ def browser_wait_for(
     already shown reports already_present, and new_only waits for a new occurrence), js
     (a non-empty result, including false/0; developer extension build only),
     url/title (JavaScript regex on tab metadata, so it survives navigation) or network_idle
-    (500 ms without new resources). timeout is the maximum wait in ms; it does not limit time.
+    (500 ms without new resources), or content (the page is no longer empty, placeholder-only or
+    busy: a navigate's rendering check, needing no text of the page). timeout is the maximum wait
+    in ms; it does not limit time.
     A met text/text_gone wait and a time sleep return what changed since the page was last seen.
 
     Other conditions run in the current document and should be started after navigation.
@@ -1022,8 +1024,9 @@ def browser_wait_for(
     """
     element_condition = selector is not None or ref is not None
     conditions = [text, text_gone, js, url, title, time]
-    if element_condition + sum(value is not None for value in conditions) + bool(network_idle) != 1:
-        return {"error": "Provide exactly one of selector/ref, text, text_gone, js, url, title, network_idle, time"}
+    if element_condition + sum(value is not None for value in conditions) + bool(network_idle) + bool(content) != 1:
+        return {"error": "Provide exactly one of selector/ref, text, text_gone, js, url, title, network_idle, "
+                         "content, time"}
     if new_only and text is None:
         return {"error": "new_only applies only to text"}
     if timeout <= 0:
@@ -1048,6 +1051,9 @@ def browser_wait_for(
         # What changed while waiting, as after a time sleep (#403): a toast that shows up as the
         # text resolves can be gone by the agent's next snapshot.
         return result if _failed(result) else {**result, **_changes_since_observation(tab_id)}
+    elif content:
+        endpoint = "/api/wait-for-text"
+        body["content"] = True
     elif js is not None:
         endpoint = "/api/wait-for-result"
         body.update(code=js, pollInterval=500)

@@ -161,7 +161,7 @@ async function main() {
   for (const [state, extra, hint] of [
     [{ rendering: true, placeholder: 'Loading...' }, { placeholder: 'Loading...' },
       /still shows "Loading\.\.\.".*browser_wait_for\(text_gone="Loading\.\.\."\)/],
-    [{ rendering: true }, {}, /no content yet or is marked busy.*browser_wait_for\(text=\.\.\.\)/],
+    [{ rendering: true }, {}, /no content yet or is marked busy.*browser_wait_for\(content=true\)/],
   ]) {
     const h = harness('https://example.com/start', (h, call) => {
       h.update({ status: 'loading', url: call.url });

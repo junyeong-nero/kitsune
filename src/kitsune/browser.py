@@ -82,8 +82,7 @@ def _rendering_warning(result: dict) -> str | None:
     if not result.get("rendering"):
         return None
     placeholder = result.get("placeholder")
-    wait = (f"tab.wait_for(text_gone={placeholder!r})" if placeholder
-            else "tab.wait_for(text=...) with text you expect")
+    wait = f"tab.wait_for(text_gone={placeholder!r})" if placeholder else "tab.wait_for(content=True)"
     shows = f"still shows {placeholder!r}" if placeholder else "shows no content yet or is marked busy"
     return (f"The page {shows} and may still be rendering; wait with {wait} "
             "before reading it, instead of a fixed sleep")
@@ -1083,7 +1082,8 @@ class Tab:
 
     def wait_for(self, *, target: str | None = None, text: str | None = None, text_gone: str | None = None,
                  url: str | None = None, title: str | None = None, js: str | None = None,
-                 network_idle: bool = False, timeout: int = 10000, confirm: str | None = None) -> dict:
+                 network_idle: bool = False, content: bool = False, timeout: int = 10000,
+                 confirm: str | None = None) -> dict:
         """Wait up to timeout ms for exactly one condition, else raise TimedOut.
 
         target: a snapshot ref or native CSS for a visible element, not Playwright forms
@@ -1092,14 +1092,16 @@ class Tab:
         rendered page text (snapshot names from placeholders or aria-labels are not page text). url, title: a
         JavaScript regex on the tab, which survives navigation. js: an expression with a
         non-empty result (developer build only). network_idle: 500 ms without new resources.
+        content: the page shows content, needing no text of it: not empty, no line that is only a
+        loading placeholder, no aria-busy element (what a navigate's rendering warning checks).
 
         In a browser_run_python script, catch TimedOut (or TimeoutError) to go on after an unmet
         wait. A js wait is the exception: it runs JavaScript in the page, so when it fails the
         script stops even if it catches, as after a failed write.
         """
         conditions = (target, text, text_gone, url, title, js)
-        if sum(condition is not None for condition in conditions) + bool(network_idle) != 1:
-            raise ValueError("Pass exactly one of target, text, text_gone, url, title, js, network_idle")
+        if sum(condition is not None for condition in conditions) + bool(network_idle) + bool(content) != 1:
+            raise ValueError("Pass exactly one of target, text, text_gone, url, title, js, network_idle, content")
         if timeout <= 0:
             raise ValueError("timeout must be positive")
         body = {"timeout": timeout}
@@ -1111,6 +1113,9 @@ class Tab:
                 raise ValueError("text and text_gone must be non-empty")
             route = "/api/wait-for-text"
             body.update(text=text, text_gone=text_gone)
+        elif content:
+            route = "/api/wait-for-text"
+            body["content"] = True
         elif js is not None:
             route = "/api/wait-for-result"
             body = _with_confirm({**body, "code": js, "pollInterval": 500}, confirm)
