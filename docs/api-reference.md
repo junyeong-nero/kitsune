@@ -2722,6 +2722,14 @@ and keeps its `value` as a state (`button "Delete" [ref=e5] [value="delete"]`); 
 when it is empty or equal to its name (`button "Search" [ref=e4]`, #656); a field keeps an empty
 one (`textbox "Title" [ref=e6] [value=""]`).
 
+A field without `aria-label`, `aria-labelledby` or an associated `<label>` is named by a
+`<label>` that names no control (no `for`, no field inside) before its placeholder (#655): the
+field's previous sibling when no other field follows that label before the next one, else the
+only label in the field's parent when the parent holds no other field. A label that two fields
+share names neither. `browser_forms` (`label`) and `role=textbox[name=…]` use the same name. A
+field named by a label keeps its placeholder as a state:
+`textbox "Email" [ref=e18] [placeholder="john@example.com" value=""]`.
+
 A line's `value` is the element's own: a `<form>` that holds a control named `value` has none,
 and neither does its row in `browser_query(fields=["value"])` (#648).
 
