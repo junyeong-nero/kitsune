@@ -84,14 +84,14 @@ class RealBrowserUnnamedControlTests(harness.RealBrowserTestCase):
         snapshot = self.call("/api/snapshot", {"tabId": tab, "text": False})["snapshot"]
         lines = [line.strip() for line in snapshot.splitlines() if line.strip().startswith("- button")]
         self.assertEqual([re.sub(r"\[ref=\w+\]", "[ref]", line) for line in lines], [
-            '- button "" [ref] [testid="bookmark-post-t836" value=""]',
-            '- button "0" [ref] [value=""]',
+            '- button "" [ref] [testid="bookmark-post-t836"]',
+            '- button "0" [ref]',
             # The action's path only: its query and fragment can hold tokens.
-            '- button "" [ref] [action="/bookmark/t835" value=""]',
-            '- button "" [ref] [icon="icon-repost" value=""]',
+            '- button "" [ref] [action="/bookmark/t835"]',
+            '- button "" [ref] [icon="icon-repost"]',
             # A type=button does not submit to its form's action.
-            '- button "" [ref] [value=""]',
-            '- button "Follow" [ref] [value=""]',
+            '- button "" [ref]',
+            '- button "Follow" [ref]',
         ], snapshot)
         self.assertNotIn("s3cret", snapshot)
 
