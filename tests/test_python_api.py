@@ -183,21 +183,40 @@ class TabRequestTests(BridgeTestCase):
         with self.assertWarnsRegex(UserWarning, r"Query matched no elements: .*\[role=article\]"):
             self.assertEqual(self.tab.query("article"), [])
 
-    def test_navigate_and_new_tab_warn_while_the_page_renders(self):
+    def test_a_read_after_navigate_or_new_tab_warns_while_the_page_renders(self):
         # #631: a page read right after its DOM is parsed may still show only a placeholder.
+        # #651: the warning comes at the first read, once, and not after a wait_for.
         rendering = {"ok": True, "rendering": True, "placeholder": "Loading...", "rendering_hint": "..."}
         self.reply("/api/navigate", rendering)
-        with self.assertWarnsRegex(UserWarning, r"still shows 'Loading\.\.\.'.*tab\.wait_for\(text_gone='Loading\.\.\.'\)") as caught:
-            self.assertEqual(self.tab.navigate("/deals/48"), rendering)
-        self.assertEqual(caught.filename, __file__, "the warning names the caller's line")
-        self.reply("/api/new-tab", {"ok": True, "tabId": 9, "rendering": True})
-        with self.assertWarnsRegex(UserWarning, r"no content yet.*tab\.wait_for\(text=\.\.\.\)") as caught:
-            self.assertEqual(self.browser.new_tab("https://example.com/").id, 9)
-        self.assertEqual(caught.filename, __file__)
-        self.reply("/api/navigate", {"ok": True})
+        self.reply("/api/page-text", {"text": "Loading..."})
         with warnings.catch_warnings():
             warnings.simplefilter("error")
+            self.assertEqual(self.tab.navigate("/deals/48"), rendering)
+        with self.assertWarnsRegex(UserWarning, r"still shows 'Loading\.\.\.'.*tab\.wait_for\(text_gone='Loading\.\.\.'\)") as caught:
+            self.assertEqual(self.tab.text(), "Loading...")
+        self.assertEqual(caught.filename, __file__, "the warning names the caller's line")
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            self.tab.text()
+
+        self.reply("/api/new-tab", {"ok": True, "tabId": 9, "rendering": True})
+        self.reply("/api/snapshot", {"snapshot": ""})
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            opened = self.browser.new_tab("https://example.com/")
+        with self.assertWarnsRegex(UserWarning, r"no content yet.*tab\.wait_for\(text=\.\.\.\)") as caught:
+            self.assertEqual(opened.snapshot(), "")
+        self.assertEqual(caught.filename, __file__)
+
+        self.reply("/api/wait-for-text", {"ok": True})
+        self.tab.navigate("/deals/48")
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            self.tab.wait_for(text_gone="Loading...")
+            self.tab.text()
+            self.reply("/api/navigate", {"ok": True})
             self.tab.navigate("https://example.com/")
+            self.tab.text()
 
     def test_cached_page_text_warns(self):
         # #627: an opted-in read cache can serve text the page has since replaced.
