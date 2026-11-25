@@ -1431,7 +1431,10 @@
             if (el.getAttribute(bound)) states.push(`${bound}=${clean(el.getAttribute(bound))}`);
           }
         }
-        if ('value' in el && !isSensitiveField(el)) states.push(`value=${JSON.stringify(clean(el.value))}`);
+        // Only a value of the element's own: a <form>'s value is a control named "value" (#648).
+        if (['string', 'number'].includes(typeof el.value) && !isSensitiveField(el)) {
+          states.push(`value=${JSON.stringify(clean(el.value))}`);
+        }
         // An editor's content is its value (#385), cut like a field's and marked when cut.
         else if (isEditingHost(el) && !isSensitiveField(el)) {
           const text = normalize(renderedText(el));
@@ -4862,7 +4865,9 @@
           else if (f === 'html') row.html = clip(f, redactMarkup(el, false), 4000);
           else if (f === 'href') row.href = el.href || el.getAttribute('href') || undefined;
           else if (name === 'value' && sensitive) Object.assign(row, redactedValue(el));
-          else if (f === 'value') row.value = (el.value != null) ? clip(f, String(el.value), 400) : undefined;
+          else if (f === 'value') {
+            row.value = ['string', 'number'].includes(typeof el.value) ? clip(f, String(el.value), 400) : undefined;
+          }
           else if (f === 'src') row.src = el.src || el.getAttribute('src') || undefined;
           else if (f === 'alt') row.alt = el.alt || el.getAttribute('alt') || undefined;
           else if (f === 'id') row.id = el.id || undefined;

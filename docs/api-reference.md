@@ -2716,6 +2716,9 @@ reported as buttons; their children remain discoverable. Explicit roles and nati
 controls are preserved. Custom controls use explicit labels/title/alt, then direct
 text; subtree text is used only when at most 80 characters and five elements long.
 
+A line's `value` is the element's own: a `<form>` that holds a control named `value` has none,
+and neither does its row in `browser_query(fields=["value"])` (#648).
+
 A control left without a name (an icon-only button) carries one state that tells it apart
 from its unnamed neighbors (#632), the first that exists: a submit control's form action
 (`formaction`, else its form's `action`) as its path, with its origin when that is another,
