@@ -609,7 +609,7 @@
                                    },
       'getAccessibilityTree':  () => getAccessibilityTree(msg.depth ?? 6, msg.ref || msg.selector,
                                      Number.isFinite(msg.limit) ? msg.limit : DOM_TREE_LIMIT),
-      'getFormFields':         () => getFormFields(),
+      'getFormFields':         () => getFormFields(msg.full === true),
       'click':                 () => withPopupWatch(withScriptPopupCheck(() =>
                                      clickElement(msg.selector, msg.coords, msg.first, msg.button, msg.modifiers,
                                        msg.holdMs)),
@@ -647,7 +647,7 @@
       'hideFixed':             () => hideFixed(msg.selector),
       'restoreFixed':          () => restoreFixed(),
       // ── Extraction, interaction and waits ──
-      'query':                 () => queryElements(msg.selector, msg.fields, msg.limit),
+      'query':                 () => queryElements(msg.selector, msg.fields, msg.limit, msg.full === true),
       'getHTML':               () => getHTML(msg.selector),
       'getLinks':              () => getLinks(msg.internalOnly),
       'getImages':             () => getImages(),
@@ -3205,8 +3205,16 @@
   }
 
   // ── Get Form Fields ──
+  // full (#650): a script's read of field values, which the model does not see, so a script that
+  // reads a value and writes it back gets it whole.
+  const FULL_VALUE_LIMIT = 100000;
+  // A field value cut at max ends with … and its row says valueClipped (#650).
+  function cutValue(value, max) {
+    return value.length <= max ? { value } : { value: value.slice(0, max) + '…', valueClipped: true };
+  }
+
   // Fields in same-origin frames name their frame; unreadable frames are listed.
-  function getFormFields() {
+  function getFormFields(full = false) {
     const fields = [];
     deepQuerySelectorAll('input, select, textarea').forEach(el => {
       if (isHidden(el)) return;
@@ -3223,7 +3231,7 @@
         name: el.name || '',
         id: el.id || '',
         placeholder: el.placeholder || '',
-        ...(isSensitiveField(el) ? redactedValue(el) : { value: (el.value || '').slice(0, 100) }),
+        ...(isSensitiveField(el) ? redactedValue(el) : cutValue(el.value || '', full ? FULL_VALUE_LIMIT : 100)),
         label: findLabel(el),
         required: el.required,
         selector: buildSelector(el),
@@ -4928,7 +4936,7 @@
   const QUERY_BUILTIN_FIELDS = new Set([...DEFAULT_FIELDS, 'html', 'bounds', 'attrs']);
   const QUERY_LIMIT = 500;
 
-  function queryElements(selector, fields, limit) {
+  function queryElements(selector, fields, limit, full = false) {
     if (!selector) return { error: 'queryElements requires selector' };
     if (valueSelectorBlocked(selector)) return { error: VALUE_SELECTOR_ERROR };
     let nodes;
@@ -4959,7 +4967,10 @@
           else if (f === 'href') row.href = el.href || el.getAttribute('href') || undefined;
           else if (name === 'value' && sensitive) Object.assign(row, redactedValue(el));
           else if (f === 'value') {
-            row.value = ['string', 'number'].includes(typeof el.value) ? clip(f, String(el.value), 400) : undefined;
+            if (!['string', 'number'].includes(typeof el.value)) continue;
+            const cut = cutValue(String(el.value), full ? FULL_VALUE_LIMIT : 400);
+            if (cut.valueClipped) clipped.value = (clipped.value || 0) + 1;
+            Object.assign(row, cut);
           }
           else if (f === 'src') row.src = el.src || el.getAttribute('src') || undefined;
           else if (f === 'alt') row.alt = el.alt || el.getAttribute('alt') || undefined;

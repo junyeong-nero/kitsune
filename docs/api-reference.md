@@ -3586,6 +3586,10 @@ Sensitive fields report `redacted`/`hasValue` instead of `value`. A tree past th
 ### GET /api/forms
 All form fields on the page. Sensitive fields have `redacted`/`hasValue`
 instead of `value` (see [Sensitive-field redaction](#sensitive-field-redaction)).
+A `value` over 100 characters is cut, ends with `…` and its field has `"valueClipped": true`.
+POST `{ "full": true }`, which the Python `tab.forms()` sends, raises the cut to 100,000
+characters, and so does `full` on `/api/query`, whose `value` is otherwise cut at 400 the same
+way (and counted in `clipped`): a script's reads are not model-visible (#650).
 ```json
 { "fields": [{ "ref": "e0", "tag": "input", "type": "password", "name": "password", "id": "password", "placeholder": "", "redacted": true, "hasValue": true, "label": "Password", "required": false, "selector": "#password", "bounds": [...] }] }
 ```

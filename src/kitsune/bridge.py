@@ -5346,7 +5346,12 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.send_json(200, result)
 
     def handle_forms(self):
-        result = self.run_async(send_to_extension("getFormFields", self._tab_params()))
+        body = self.read_body() if self.command == 'POST' else {}
+        params = {'tabId': body['tabId']} if body.get('tabId') is not None else {}
+        # The Python API's reads are not model-visible, so it asks for whole values (#650).
+        if body.get('full') is True:
+            params['full'] = True
+        result = self.run_async(send_to_extension("getFormFields", params))
         self.send_json(200, result)
 
     def handle_version(self):

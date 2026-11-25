@@ -3088,12 +3088,14 @@ async function withFrameFinds(tabId, response, query, scope) {
 // Each frame's fields follow the page's, with frame set to the frame's title or src (as
 // unavailableFrames names it) unless a frame inside it is named. A frame read leaves
 // unavailableFrames; frames inside it that were not read join it.
-async function withFrameForms(tabId, response, scope) {
+async function withFrameForms(tabId, response, scope, full = false) {
   const { frames, ...result } = response;
   if (!frames?.length || !Array.isArray(result.fields)) return result;
-  const { read, unread, tooDeep } = await readFrames(tabId, frames, scope, () => ({ action: 'getFormFields' }),
+  const { read, unread, tooDeep } = await readFrames(tabId, frames, scope,
+    () => ({ action: 'getFormFields', ...(full ? { full } : {}) }),
     child => Array.isArray(child.fields) ? resultRefs(child) : null);
-  const children = await Promise.all(read.map(({ frame, child }) => withFrameForms(tabId, child, innerScope(scope, frame))));
+  const children = await Promise.all(read.map(({ frame, child }) =>
+    withFrameForms(tabId, child, innerScope(scope, frame), full)));
   const { unavailableFrames = [], ...rest } = result;
   const entries = new Map(unavailableFrames.map(entry => [entry.ref, entry]));
   if (tooDeep) for (const { ref } of frames) if (entries.has(ref)) entries.get(ref).content = 'too_deep';
@@ -3548,7 +3550,9 @@ async function forwardToContent(action, params) {
       } else if (action === 'getSnapshot') response = await withFrameSnapshots(tabId, response, params, frameScope());
     }
     if (action === 'find') response = await withFrameFinds(tabId, response, expanded.params.query, frameScope());
-    if (action === 'getFormFields') response = await withFrameForms(tabId, response, frameScope());
+    if (action === 'getFormFields') {
+      response = await withFrameForms(tabId, response, frameScope(), expanded.params.full === true);
+    }
     if (action === 'getAccessibilityTree') {
       response = await withFrameTrees(tabId, response, frameScope(), expanded.params.depth ?? 6);
     }

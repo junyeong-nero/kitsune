@@ -615,8 +615,18 @@ class Tab:
         return _cut(self._request("/api/snapshot", body), "Snapshot")["snapshot"]
 
     def forms(self) -> list[dict]:
-        """Every form field with its label and value; sensitive values read redacted/hasValue instead."""
-        return self._request("/api/forms")["fields"]
+        """Every form field with its label and value; sensitive values read redacted/hasValue instead.
+
+        Values are whole up to 100,000 characters, unlike the direct MCP tool's 100: a script's
+        reads are not model-visible. A longer value ends with … and its row has valueClipped (warned).
+        """
+        fields = self._request("/api/forms", {"full": True})["fields"]
+        clipped = sum(1 for field in fields if field.get("valueClipped"))
+        if clipped:
+            warnings.warn(f"Form field values were cut ({clipped} field{'s' if clipped > 1 else ''}; a cut value "
+                          "ends with … and its row has valueClipped); read one in full with tab.markdown(target)",
+                          stacklevel=2)
+        return fields
 
     def find(self, query: str) -> list[dict]:
         """Elements matching a description such as "login button", best first, each with a ref.
@@ -632,15 +642,17 @@ class Tab:
         """Fields (text, href, value, src, alt, id, name by default) of elements matching native CSS.
 
         Current document only: no shadow/frame traversal, snapshot refs or Playwright forms
-        such as :has-text or text=. 50 rows unless limit is given, at most 500; text/value fields
-        are clipped to 400 characters. Other field names are read as attributes. A warning
+        such as :has-text or text=. 50 rows unless limit is given, at most 500; text is clipped to
+        400 characters and value to 100,000 (the direct MCP tool's 400), a cut value ending with …
+        and its row having valueClipped. Other field names are read as attributes. A warning
         reports more matches than the default limit or 500 rows, clipped fields, and a field
         no row has (the html field is the inner markup; tab.html(target) is the outerHTML).
         Filter locally, but absence in returned snippets is not page-wide absence; scope a snapshot for detail.
         href and src are absolute URLs even when the attribute is relative ('/deals/48'), so
         pass them to navigate as they are.
         """
-        body = {"selector": selector, "limit": _QUERY_DEFAULT_LIMIT if limit is None else limit}
+        # #650: a script's reads are not model-visible, so values come whole.
+        body = {"selector": selector, "limit": _QUERY_DEFAULT_LIMIT if limit is None else limit, "full": True}
         if fields:
             body["fields"] = fields
         result = self._request("/api/query", body)

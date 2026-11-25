@@ -164,9 +164,9 @@ Over 10 operations the list is summarized:
 | `snapshot(target=None, *, max_depth=None, text=False)` | Accessibility-style tree with refs ([Snapshots](api-reference.md#browser_snapshottab_idnone-selectornone-refnone-max_depthnone-textfalse)) |
 | `markdown(target=None)` | The page or a subtree as Markdown; an input or textarea target reads as its exact value, line breaks included |
 | `html(target)` | One element's `outerHTML` (`"html"` for the page) |
-| `query(selector, fields=None, *, limit=None)` | Fields of matching elements (50 rows unless `limit` is given, max 500; 400-char snippets). Warns when more matched than the default limit or 500 rows, not when an explicit `limit` cut them, and when nothing matches a tag that elements carry as their role (`article` for `role="article"`) or a snapshot's `action`/`testid` state read as an attribute (`button[action="/x"]`, named as `form[action="/x"] button`). A field other than `text`, `html` (inner markup), `href`, `value`, `src`, `alt`, `id`, `name`, `bounds` and `attrs` is read as an attribute, and one no row has (such as `outerHTML`) is named in a warning. `href` and `src` are absolute URLs, even when the attribute is relative |
+| `query(selector, fields=None, *, limit=None)` | Fields of matching elements (50 rows unless `limit` is given, max 500; 400-char text, whole values). Warns when more matched than the default limit or 500 rows, not when an explicit `limit` cut them, and when nothing matches a tag that elements carry as their role (`article` for `role="article"`) or a snapshot's `action`/`testid` state read as an attribute (`button[action="/x"]`, named as `form[action="/x"] button`). A field other than `text`, `html` (inner markup), `href`, `value`, `src`, `alt`, `id`, `name`, `bounds` and `attrs` is read as an attribute, and one no row has (such as `outerHTML`) is named in a warning. `href` and `src` are absolute URLs, even when the attribute is relative |
 | `find(query)` | Elements matching a description like `"login button"`, best first |
-| `forms()` | Form fields with labels and values |
+| `forms()` | Form fields with labels and values; warns when a value was cut |
 | `links(internal_only=False)` | Links |
 | `info()` | URL, title, `readyState`, sizes, scroll, recent dialogs |
 | `screenshot(path=None, target=None, full_page=False, format="png")` | Image bytes, optionally written to `path` |
@@ -178,6 +178,9 @@ Sensitive values are redacted ([Sensitive-field redaction](api-reference.md#sens
 Reads cut at the bridge's caps warn with a `UserWarning`; pass a `target` to read less (`text()`
 has none: use `snapshot(target, text=True)` or `query`). `text()` reads up to 500,000 characters,
 not the direct tool's 20,000: a script's reads are not model-visible, only what it prints (#630).
+For the same reason `query(..., fields=["value"])` and `forms()` return values whole up to 100,000
+characters, not the direct tools' 400 and 100, so a script can read a value and write it back. A
+value still cut ends with `…`, its row has `valueClipped: True`, and both calls warn (#650).
 
 ### Selector contract by method
 
