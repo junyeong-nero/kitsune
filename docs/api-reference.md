@@ -2718,7 +2718,9 @@ text; subtree text is used only when at most 80 characters and five elements lon
 
 A `<button>` is named by its `aria-label`, label or text, the name `role=button[name=…]` matches,
 and keeps its `value` as a state (`button "Delete" [ref=e5] [value="delete"]`); an
-`<input type=button|submit|reset>` is named by its value (#649).
+`<input type=button|submit|reset>` is named by its value (#649). A button's `value` is left out
+when it is empty or equal to its name (`button "Search" [ref=e4]`, #656); a field keeps an empty
+one (`textbox "Title" [ref=e6] [value=""]`).
 
 A line's `value` is the element's own: a `<form>` that holds a control named `value` has none,
 and neither does its row in `browser_query(fields=["value"])` (#648).
@@ -2726,8 +2728,8 @@ and neither does its row in `browser_query(fields=["value"])` (#648).
 A control left without a name (an icon-only button) carries one state that tells it apart
 from its unnamed neighbors (#632), the first that exists: a submit control's form action
 (`formaction`, else its form's `action`) as its path, with its origin when that is another,
-never its query or fragment (`button "" [ref=e263] [action="/bookmark/t835" value=""]`);
-its `data-testid` or `data-test` (`[testid="bookmark-post-t836" value=""]`); or its icon,
+never its query or fragment (`button "" [ref=e263] [action="/bookmark/t835"]`);
+its `data-testid` or `data-test` (`[testid="bookmark-post-t836"]`); or its icon,
 an inner `<svg>`'s `<title>` or the id after `#` in a `<use href>` (`[icon="icon-repost"]`).
 Named controls and sensitive fields have none.
 

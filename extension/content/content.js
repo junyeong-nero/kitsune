@@ -1434,8 +1434,12 @@
           }
         }
         // Only a value of the element's own: a <form>'s value is a control named "value" (#648).
+        // A button's value is left out when empty or its name (#656); a field's empty value is kept.
+        const buttonLike = el.tagName === 'BUTTON' ||
+          (el.tagName === 'INPUT' && ['button', 'submit', 'reset', 'image'].includes(el.type));
         if (['string', 'number'].includes(typeof el.value) && !isSensitiveField(el)) {
-          states.push(`value=${JSON.stringify(clean(el.value))}`);
+          const value = clean(el.value);
+          if (!buttonLike || (value && value !== name)) states.push(`value=${JSON.stringify(value)}`);
         }
         // An editor's content is its value (#385), cut like a field's and marked when cut.
         else if (isEditingHost(el) && !isSensitiveField(el)) {
