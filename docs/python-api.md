@@ -270,6 +270,7 @@ current focus. Check the result's `effect` and `prevented`, and read the page, r
 | `url=`, `title=` | URL or title matches a JS regex |
 | `js=` | An expression returns a non-empty result (developer build) |
 | `network_idle=True` | No new resource for 500 ms |
+| `content=True` | The page shows content: not empty, no line that is only a loading placeholder, no `aria-busy` element. Needs no text of the page; a navigate's or new tab's no-content warning names it (#652) |
 
 ## Batches, parallel tabs and workflows
 

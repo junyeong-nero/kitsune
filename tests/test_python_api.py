@@ -147,6 +147,7 @@ class TabRequestTests(BridgeTestCase):
             (lambda t: t.wait_for(js="window.ready"), "/api/wait-for-result",
              {"timeout": 10000, "code": "window.ready", "pollInterval": 500}),
             (lambda t: t.wait_for(network_idle=True), "/api/wait-for-network-idle", {"timeout": 10000, "idleMs": 500}),
+            (lambda t: t.wait_for(content=True), "/api/wait-for-text", {"timeout": 10000, "content": True}),
         ]
         for call, route, body in cases:
             with self.subTest(route=route, body=body):
@@ -204,7 +205,7 @@ class TabRequestTests(BridgeTestCase):
         with warnings.catch_warnings():
             warnings.simplefilter("error")
             opened = self.browser.new_tab("https://example.com/")
-        with self.assertWarnsRegex(UserWarning, r"no content yet.*tab\.wait_for\(text=\.\.\.\)") as caught:
+        with self.assertWarnsRegex(UserWarning, r"no content yet.*tab\.wait_for\(content=True\)") as caught:
             self.assertEqual(opened.snapshot(), "")
         self.assertEqual(caught.filename, __file__)
 

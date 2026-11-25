@@ -3682,6 +3682,14 @@ field's label, say), adds `already_present: true` and a `hint` (#402). With `"ne
 counts the text's occurrences at its start and is met only once more occur. The bridge polls
 single reads (see `browser_wait_for`); a zero timeout performs one immediate check.
 
+`{ "content": true, "timeout": 10000 }` waits for page content instead, needing no text of the
+page (#652): it is met once the page is no longer empty, has no line that is only a loading
+placeholder and no visible `aria-busy="true"` element, the check that sets a navigate's
+`rendering`. It returns `{ok: true, content: true, elapsed}`, and on timeout `ok: false` with
+`Timed out after …ms waiting for page content`. MCP tool: `browser_wait_for(content=true)`;
+the core tool accepts `content` but does not publish it, as with `newOnly`. Python:
+`tab.wait_for(content=True)`.
+
 ## Navigation (POST)
 
 ### POST /api/navigate
@@ -3707,7 +3715,8 @@ single reads (see `browser_wait_for`); a zero timeout performs one immediate che
   has no content yet, has a line that is only a loading placeholder (`Loading...`, `Please wait`,
   `Just a moment`), or shows an element with `aria-busy="true"`, the result adds
   `"rendering": true`, the `placeholder` line when there is one, and a `rendering_hint` naming the
-  wait to use (`browser_wait_for` with `text_gone` set to the placeholder, or with `text`). It is
+  wait to use (`browser_wait_for` with `text_gone` set to the placeholder, else
+  `browser_wait_for(content=true)`, which needs no text of the page, #652). It is
   an observation, not an error, and adds no wait. The Python `tab.navigate` and
   `browser.new_tab` warn with a `UserWarning` instead, at the tab's first read after them
   (`text`, `snapshot`, `query`, `forms`, `find`, `markdown`, `html`) and only when no

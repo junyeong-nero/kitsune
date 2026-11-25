@@ -593,8 +593,9 @@
       'handleDialog':          () => handleDialog(msg.accept, msg.prompt_text),
       'setDialogAgentTab':     () => setDialogAgentTab(msg.agentTab),
       'dialogsSince':          () => dialogsSince(Number(msg.since) || 0),
-      'waitForText':           () => waitForText(msg.text, msg.text_gone, msg.timeout, msg.diagnose === true,
-                                     msg.text_seen),
+      'waitForText':           () => msg.content === true ? waitForContent(msg.timeout)
+                                     : waitForText(msg.text, msg.text_gone, msg.timeout, msg.diagnose === true,
+                                       msg.text_seen),
       'getPageText':           () => getPageText(msg.selector, msg.full === true),
       'getSnapshot':           () => {
                                      // sinceObservation (#350): the delta against the page the agent last saw.
@@ -3329,6 +3330,23 @@
           error: `Timed out after ${timeout}ms waiting for ${textSeen ? 'new ' : ''}visible text`,
           ...(diagnose && !appeared ? textNameDiagnosis(text) : {}) });
         else setTimeout(poll, Math.min(100, timeout - elapsed));
+      }
+      poll();
+    });
+  }
+
+  // A wait that needs no text of the page (#652): met once renderState, which set a navigate's or
+  // new tab's rendering, no longer reports an empty, placeholder-only or busy page.
+  function waitForContent(timeout = 10000) {
+    if (!Number.isFinite(timeout) || timeout < 0) return { error: 'Provide a non-negative timeout' };
+    const start = Date.now();
+    return new Promise(resolve => {
+      function poll() {
+        const elapsed = Date.now() - start;
+        if (!renderState().rendering) resolve({ ok: true, content: true, elapsed });
+        else if (elapsed >= timeout) {
+          resolve({ ok: false, content: true, elapsed, error: `Timed out after ${timeout}ms waiting for page content` });
+        } else setTimeout(poll, Math.min(100, timeout - elapsed));
       }
       poll();
     });
