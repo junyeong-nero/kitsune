@@ -87,6 +87,13 @@ match, or `query: ""`, `tools` is empty and `groups` maps each group to its tool
 call and returns that call's result: its content (text, images) and `isError`. An unknown
 name returns `unknown_tool`; a gateway tool returns `invalid_argument`. Its bridge
 requests carry `X-Kitsune-Gateway-Tool`, which [audit entries](#audit-log) record.
+A `ref` argument is passed as `target` to a tool that takes `target` and no `ref`
+(Playwright MCP's name for it).
+
+Arguments that fail a tool's schema, called directly or through `browser_tools_call`, return
+`invalid_argument` with `state.missing`, `state.invalid` (`[{argument, error}]`),
+`state.unknown` (names the tool ignores) and `state.arguments` (the names it takes), e.g.
+`{"error": "browser_click: target is required", "code": "invalid_argument", ...}`.
 
 `browser_tools_publish(names)` takes tool and group names and adds those tools to this
 session's `tools/list`, then sends `notifications/tools/list_changed`.
@@ -124,7 +131,7 @@ method-specific recovery hint. See the [method matrix](python-api.md#selector-co
 | `internal:role=button[name="Save"i]` | `getByRole`: as `role=`, but `"…"i` is a substring |
 | `internal:label="Email"i` | `getByLabel`: elements whose `aria-labelledby` text, else `aria-label`, else `<label>` (for a form control) contains the text, ignoring case. `"Email"` and `"Email"s` are the whole label, case-sensitive; `/…/flags` is a regex |
 | `:has-text("…")`, `:text-is("…")`, `:text("…")`, `:visible` | CSS pseudo-classes: contains the text (lax), whose whole text it is, the smallest element containing it, rendered |
-| `a, b` | A CSS list, with or without the pseudo-classes above: the union of its alternatives |
+| `a, b` | A CSS list, with or without the pseudo-classes above: the union of its alternatives. Its items are CSS only: a list such as `a.delete, text=Delete` fails with `unsupported_selector` naming the Playwright item (#635) |
 | `a >> b` | Chains: `b` searched inside each match of `a`. A chain may start with a ref (`e12 >> xpath=..`, `e12 >> text=Save`) |
 | `nth=N` | The Nth match so far (0-based; `-1` is the last); not first in a chain |
 | `xpath=..`, `..` | The parent element; at the top of a shadow root, the shadow host. Only a bare `..` step leaves a shadow root: write `.. >> ..`, not `xpath=../..` |
@@ -188,7 +195,7 @@ intended behavior change: these actions used to act on the first match silently.
 - Inside `browser_run_python` the hint names the Python argument, `first=True`.
 
 `click` and `hover` (and `clickAndWaitNavigation`, which clicks) take several actionable
-matches as one target in two cases (#573). The result then adds `matches`, the number of
+matches as one target in three cases (#573, #654). The result then adds `matches`, the number of
 actionable matches, and the reason. Every other action, double and trusted clicks included,
 stays strict on the same matches.
 
@@ -206,10 +213,17 @@ stays strict on the same matches.
   it is, or is inside, a control (a link, button, field, an element with a control role,
   `tabindex` or `onclick`, or an editor) while another match is not. Two matches that are
   equally good, or each better on one count, stay ambiguous.
+- **Matches inside one control** (`same_control: true`): every match is, or is inside, the
+  same control, such as a list button whose title and subtitle both read `Jane Smith`. That
+  control is used. The control must be one a click activates as a whole: a link, button or
+  `<summary>`, or a `button`, `link`, `checkbox`, `radio`, `tab`, `menuitem`, `option` or
+  `switch` role. Matches in no control, in different ones, or in a container that is only
+  focusable (`tabindex`), a listbox, a field or an editor stay ambiguous.
 
 ```json
 {"ok": true, "tag": "a", "text": "Data Science Intern", "matches": 2, "same_href": true}
 {"ok": true, "tag": "a", "text": "View Student Schedule", "matches": 2, "preferred": ["exact_text", "interactive"]}
+{"ok": true, "tag": "button", "matches": 2, "same_control": true}
 ```
 
 Under ask-before-act the inspection resolves a click's selector the same way, so the checks
@@ -323,8 +337,13 @@ A `browser_run_python` script follows one such ref instead of failing: a link's 
 tab's own earlier document, on a tab the client owns that no user handed over, when that one
 element is a link with the same destination (a web URL; not an empty or `#` href). The action
 is sent again with that element's ref, so approvals and policy apply to it, and its result and
-`operations` entry report `remapped: {from, to, role, name}`. Buttons, fields, refs from
-another tab, container steps, direct tools and the Python API outside scripts fail as above.
+`operations` entry report `remapped: {from, to, role, name}`. A native field's ref is followed
+the same way (#616) when the tab's document is at the exact URL of the snapshot that issued
+the ref and the one same element is a textbox, searchbox, combobox or spinbutton with the same
+tag, `type`, `name` and `id`: the script went back to that page. Only refs a `getSnapshot`
+issued carry the link destination or field identity this needs. Buttons, fields at another
+URL, refs from another tab, container steps, direct tools and the Python API outside scripts
+fail as above.
 
 After an action, use the refs in its `snapshot`. `target_ref` is the ref of
 the acted-on element (absent for `browser_navigate`, or when that element is gone),
@@ -557,8 +576,9 @@ only `error`. MCP tools return these failures with `isError: true` (see
 
 | `code` | Meaning | `retryable` |
 |---|---|---|
-| `not_found` | No element matches the selector (also `No target`, `from/to element not found`; a scoped `browser_snapshot`/`browser_dom` reports `Selector not found: …` with `state.selector`); after an [actionability wait](#actionability-wait), `state` has `timeoutMs` and `elapsed` | true |
+| `not_found` | No element matches the selector (also `No target`, `from/to element not found`; a scoped `browser_snapshot`/`browser_dom` reports `Selector not found: …` with `state.selector`); after an [actionability wait](#actionability-wait), `state` has `timeoutMs` and `elapsed`. When the selector names a tag no element has but elements carry as their ARIA role (`article` for `role="article"`, as snapshots print it), the `hint` names `[role=article]` and `role=article` (#628). When a CSS selector reads a snapshot's `action` or `testid` state as an attribute (`button[action="/bookmark/t833"]`, `[testid="retweet-post-t833"]`), the `hint` names the selector that matches: `form[action="/bookmark/t833"] button` (with `*=` when the form's `action` also holds a query) or `[data-testid="retweet-post-t833"]` (#653); `browser_query` adds that `hint` to an empty result | true |
 | `not_editable` | A native field targeted by fill, type, editable-content or form-fill is readonly or disabled (including a disabled fieldset). `state.reason` is `readonly` or `disabled`; `state.tag` names the resolved field, including inside shadow roots. Nothing was focused, changed or dispatched for that field. Use the page's own control, such as its date picker, or an editable field. Earlier successful fields/operations remain completed | false |
+| `value_rejected` | Fill, type or form-fill wrote a value a `date`, `time`, `datetime-local`, `month`, `week`, `number`, `range` or `color` input did not keep (`05/03/2026` in a date input reads back as `""`; a range clamps; a color falls back). `state` has `type`, `expected_format`, `written`, the field's `value` (its previous value, put back) and `min`/`max`/`step` when set. No event was dispatched. A value the field keeps but that breaks its `min`/`max`/`step` is not an error: the result has `invalid: {reason, value, min, max}` (`reason` is `rangeUnderflow`, `rangeOverflow` or `stepMismatch`) and a `hint`. Snapshots list these inputs as `textbox "Departure" [type=date min=2026-04-01 max=2027-04-01 value=""]` | false |
 | `not_fillable` | `browser_type` (`type`/`fill` modes) or a `browser_form_fill` key found no field to write. The target is not a field (`fill` and `browser_form_fill`: input, textarea or select; `type`: input, textarea or `contenteditable` region) and has none in its open or closed shadow roots, searched through nested hosts up to 8 roots deep (`fill` and `browser_form_fill` also look in its light DOM). Nothing was written. `state.tag` is the target's tag; `state.reason` is `no_field`, or `shadow_depth` when its shadow roots nest deeper than 8. On an ARIA slider or spinbutton (`state.role`) that `fill` cannot step (no numeric `aria-valuenow`), that `type` mode targets, or that a `browser_form_fill` key names, the hint names the keyboard alternative (click it to focus it, then arrow keys with `browser_press_key` `repeat`), and for `type` and `browser_form_fill` on a slider with `aria-valuenow` also `fill` | true |
 | `value_not_reached` | `fill` on an ARIA slider or spinbutton did not make `aria-valuenow` the value (see [`/api/fill`](#post-apifill)). `state` has `role`, `value` (where it stopped), `target`, `min`, `max`, `keys` and `reason`: `out_of_range` (the value is outside `aria-valuemin`/`aria-valuemax`; nothing was pressed), `stepped_past` (its steps skip the value), `stuck` (it stopped moving: at an end, disabled, ignoring synthetic keys, or rendering only on an animation frame), `moved_away` (its arrow keys moved it away from the value and the other arrow keys did not move it), `key_limit` (1,000 keys) or `time_limit` (20 s). Also a check of an element with role `checkbox`, `switch` or `radio` whose `aria-checked` is not the requested state afterwards (see [`/api/check`](#post-apicheck)): `state` has `role`, `checked` (`aria-checked` now), `target`, `clicked` and `reason`: `unchanged` (the click left it as it was), `other_state` (it changed to another state), `replaced` (the page replaced the element) or `radio` (unchecking a selected radio; nothing was clicked) | true for `out_of_range` and `radio`, else false |
 | `no_such_option` | `browser_select_option` (`/api/select-option`) found no `<option>` with the value, or with the text for `by_text`; with `values`, none with that value or text. Nothing was selected and no event was dispatched. `state.options` lists the first 20 options as `{value, text}` and `state.total` counts them all; a [sensitive](#sensitive-field-redaction) select has `state.redacted: true` and no `options`. The hint says so when the value is an option's text (use `by_text`) or the text an option's value | false |
@@ -2703,6 +2723,33 @@ reported as buttons; their children remain discoverable. Explicit roles and nati
 controls are preserved. Custom controls use explicit labels/title/alt, then direct
 text; subtree text is used only when at most 80 characters and five elements long.
 
+A `<button>` is named by its `aria-label`, label or text, the name `role=button[name=…]` matches,
+and keeps its `value` as a state (`button "Delete" [ref=e5] [value="delete"]`); an
+`<input type=button|submit|reset>` is named by its value (#649). A button's `value` is left out
+when it is empty or equal to its name (`button "Search" [ref=e4]`, #656); a field keeps an empty
+one (`textbox "Title" [ref=e6] [value=""]`).
+
+A field without `aria-label`, `aria-labelledby` or an associated `<label>` is named by a
+`<label>` that names no control (no `for`, no field inside) before its placeholder (#655): the
+field's previous sibling when no other field follows that label before the next one, else the
+only label in the field's parent when the parent holds no other field. A label that two fields
+share names neither. `browser_forms` (`label`) and `role=textbox[name=…]` use the same name. A
+field named by a label keeps its placeholder as a state:
+`textbox "Email" [ref=e18] [placeholder="john@example.com" value=""]`.
+
+A line's `value` is the element's own: a `<form>` that holds a control named `value` has none,
+and neither does its row in `browser_query(fields=["value"])` (#648).
+
+A control left without a name (an icon-only button) carries one state that tells it apart
+from its unnamed neighbors (#632), the first that exists: a submit control's form action
+(`formaction`, else its form's `action`) as its path, with its origin when that is another,
+never its query or fragment (`button "" [ref=e263] [action="/bookmark/t835"]`);
+its `data-testid` or `data-test` (`[testid="bookmark-post-t836"]`); or its icon,
+an inner `<svg>`'s `<title>` or the id after `#` in a `<use href>` (`[icon="icon-repost"]`).
+Named controls and sensitive fields have none. These states are not attributes of the control:
+select by `form[action="/bookmark/t835"] button` or `[data-testid="bookmark-post-t836"]`, which
+a `not_found` hint names for a selector such as `button[action=…]` (#653).
+
 Consecutive composite siblings (children containing elements, or list items) with
 identical tag/role/input-type structure show the first five items, followed by
 `- … N more similar items; snapshot e14 to list all`. A marker always hides at least three
@@ -3497,7 +3544,7 @@ Bridge and extension version info.
 { "bridge": "0.8.2", "api": "1", "extension_connected": true, "extension_version": "0.8.2", "extension_build": "dev", "extension": 25 }
 ```
 
-## Page data (GET, cached 5 s except page-info)
+## Page data (GET)
 
 ### GET /api/page-info
 Page metadata plus current dialog policy and recent dialog history. Never cached.
@@ -3510,7 +3557,10 @@ Also accepts POST with `{ "tabId": 123 }`. MCP tool: `browser_page_info(tab_id=N
 [`needs_user` hint](#needs_user-hints).
 
 ### GET /api/page-text
-All visible text on the page.
+All visible text on the page (`document.body.innerText`), or of the element `selector`
+names (POST). Text over 20,000 characters is cut and has `truncated: true` and `fullLength`.
+POST `{ "full": true }`, which the Python `tab.text()` sends, raises the cut to 500,000
+characters: a script's reads are not model-visible (#630).
 ```json
 { "text": "..." }
 ```
@@ -3536,6 +3586,10 @@ Sensitive fields report `redacted`/`hasValue` instead of `value`. A tree past th
 ### GET /api/forms
 All form fields on the page. Sensitive fields have `redacted`/`hasValue`
 instead of `value` (see [Sensitive-field redaction](#sensitive-field-redaction)).
+A `value` over 100 characters is cut, ends with `…` and its field has `"valueClipped": true`.
+POST `{ "full": true }`, which the Python `tab.forms()` sends, raises the cut to 100,000
+characters, and so does `full` on `/api/query`, whose `value` is otherwise cut at 400 the same
+way (and counted in `clipped`): a script's reads are not model-visible (#650).
 ```json
 { "fields": [{ "ref": "e0", "tag": "input", "type": "password", "name": "password", "id": "password", "placeholder": "", "redacted": true, "hasValue": true, "label": "Password", "required": false, "selector": "#password", "bounds": [...] }] }
 ```
@@ -3628,6 +3682,14 @@ field's label, say), adds `already_present: true` and a `hint` (#402). With `"ne
 counts the text's occurrences at its start and is met only once more occur. The bridge polls
 single reads (see `browser_wait_for`); a zero timeout performs one immediate check.
 
+`{ "content": true, "timeout": 10000 }` waits for page content instead, needing no text of the
+page (#652): it is met once the page is no longer empty, has no line that is only a loading
+placeholder and no visible `aria-busy="true"` element, the check that sets a navigate's
+`rendering`. It returns `{ok: true, content: true, elapsed}`, and on timeout `ok: false` with
+`Timed out after …ms waiting for page content`. MCP tool: `browser_wait_for(content=true)`;
+the core tool accepts `content` but does not publish it, as with `newOnly`. Python:
+`tab.wait_for(content=True)`.
+
 ## Navigation (POST)
 
 ### POST /api/navigate
@@ -3649,6 +3711,16 @@ single reads (see `browser_wait_for`); a zero timeout performs one immediate che
   `{ "ok": true, "url": "...", "load_pending": true }` with the page's snapshot: the page can be
   read and acted on while its resources still load (#561). This needs a document that started
   after the navigation; the page being navigated away from does not count.
+- A loaded page can still be rendering its content (a client-rendered app, #631). When the page
+  has no content yet, has a line that is only a loading placeholder (`Loading...`, `Please wait`,
+  `Just a moment`), or shows an element with `aria-busy="true"`, the result adds
+  `"rendering": true`, the `placeholder` line when there is one, and a `rendering_hint` naming the
+  wait to use (`browser_wait_for` with `text_gone` set to the placeholder, else
+  `browser_wait_for(content=true)`, which needs no text of the page, #652). It is
+  an observation, not an error, and adds no wait. The Python `tab.navigate` and
+  `browser.new_tab` warn with a `UserWarning` instead, at the tab's first read after them
+  (`text`, `snapshot`, `query`, `forms`, `find`, `markdown`, `html`) and only when no
+  `tab.wait_for` on that tab came in between (#651).
 - Any other load that does not finish in 15 s returns `{ "ok": false, "timedOut": true, "url": "..." }`.
   When the tab sent a request for it, `waiting_for` says what is still missing, with a `hint`
   (#605): `"response"`, the server has not answered (read again shortly, or repeat the
@@ -3678,7 +3750,8 @@ already be read and acted on: 500 ms after it is parsed, or at the timeout, a pa
 returns `{ "ok": true, "load_pending": true, "tabId": 123, "url": "...", "status": "loading" }`
 (#561, #601); a load that ends without a parsed page is
 `{ "ok": false, "timedOut": true, "tabId": 123, "url": "...", "status": "loading" }`, with
-`waiting_for` and `hint` as for [navigate](#post-apinavigate) (#605).
+`waiting_for` and `hint` as for [navigate](#post-apinavigate) (#605). A loaded page that looks
+like it is still rendering adds `rendering`, `placeholder` and `rendering_hint` as for navigate (#631).
 While Zen's first-run welcome screen is open, the browser keeps reporting a loaded tab's URL as
 `about:blank` (#360); the wait then asks the page, and `url` is the page's own URL.
 With `wait`, `"pageText": true`, an internal flag the core `browser_tabs action=new url=…` sends,
@@ -4050,7 +4123,9 @@ milliseconds), `POST /api/history-visits` `{url}`, and `POST /api/bookmarks-sear
 ## Cache control
 
 ### POST /api/cache
-Control the response cache (pageText is cached for 5s by default; tab inventories are always read fresh).
+Control the response cache. It is off by default (TTL 0): pages change their text without a
+bridge write, so a cached read can be stale. With a TTL above 0, pageText replies are reused for
+that many seconds and carry `"_cached": true`; tab inventories are always read fresh.
 
 - Clear the cache: `{ "action": "clear" }`
 - Check its status: `{ "action": "status" }` returns `{ "entries": 3, "ttl": 5 }`

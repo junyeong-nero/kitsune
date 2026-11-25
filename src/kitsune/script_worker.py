@@ -6,6 +6,7 @@ import contextlib
 import json as json_module
 import re
 import sys
+import threading
 import time
 import traceback
 
@@ -28,23 +29,68 @@ _SNAPSHOT_FIELDS = ("snapshot", "snapshot_delta", "no_visible_change", "snapshot
                     "navigated")
 
 
+# Threads of one script share the frame stream to the host (#634): a frame is written whole, and a
+# call holds the stream until its reply arrives, so each thread reads its own reply. The host runs
+# one call at a time; browser.parallel runs tabs concurrently.
+_SEND_LOCK = threading.Lock()
+_CALL_LOCK = threading.Lock()
+
+
 def _send(message):
-    _OUTPUT.write(json_module.dumps(message, ensure_ascii=False) + "\n")
-    _OUTPUT.flush()
+    with _SEND_LOCK:
+        _OUTPUT.write(json_module.dumps(message, ensure_ascii=False) + "\n")
+        _OUTPUT.flush()
+
+
+class ScriptLimit(BaseException):
+    """The script reached its call limit or deadline (#618); the call that raised it was not sent.
+
+    Not an Exception, so `except Exception` and `except KitsuneError` let it through while
+    `finally` and `except ScriptLimit` still run. code is script_operation_limit or script_timeout.
+    Any further browser call stops the script.
+    """
+
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
 
 
 class _Client:
     reply = None  # the last call's reply
     last = None  # (route, reply) of the script's last browser operation
 
+    def __init__(self, calls_left, seconds_left):
+        self.calls_left = calls_left
+        self.deadline = time.monotonic() + seconds_left
+
     def request(self, method, endpoint, *, json=None, timeout=15):
-        _send({"event": "call", "method": method, "route": endpoint, "body": json, "timeout": timeout})
-        line = _INPUT.readline()
-        if not line:
-            raise RuntimeError("The script host disconnected")
-        self.reply = json_module.loads(line)
-        self.last = (endpoint, self.reply)
-        return self.reply
+        with _CALL_LOCK:
+            _send({"event": "call", "method": method, "route": endpoint, "body": json, "timeout": timeout})
+            line = _INPUT.readline()
+            if not line:
+                raise RuntimeError("The script host disconnected")
+            frame = json_module.loads(line)
+            if "limit" in frame:
+                self.calls_left = 0
+                raise ScriptLimit(frame["limit"], frame["error"])
+            # The host's clock: its deadline moves while the user is asked to approve a tool.
+            self.calls_left -= 1
+            self.deadline = time.monotonic() + frame["seconds_left"]
+            reply = self.reply = frame["reply"]
+            self.last = (endpoint, reply)
+            return reply
+
+
+class _ScriptBrowser(Browser):
+    @property
+    def calls_left(self) -> int:
+        """Browser calls this script may still make before ScriptLimit."""
+        return max(0, self.client.calls_left)
+
+    @property
+    def seconds_left(self) -> float:
+        """Seconds until the script's deadline; a call after it raises ScriptLimit."""
+        return max(0.0, round(self.client.deadline - time.monotonic(), 1))
 
 
 def _last_action_snapshot(last):
@@ -103,19 +149,28 @@ def _unbound_call(error):
 
 def main():
     request = json_module.loads(_INPUT.readline())
-    client = _Client()
-    browser = Browser(client)
+    client = _Client(request["calls_left"], request["seconds_left"])
+    browser = _ScriptBrowser(client)
     # #574: scripts used time, re and json without importing them, after earlier operations had run.
     namespace = {"__name__": "__main__", "browser": browser, "time": time, "re": re, "json": json_module,
                  "tab": browser.tab(request["tab_id"]) if request.get("tab_id") is not None else None,
                  # #568: the exceptions a failed read or wait raises, for except clauses.
-                 "KitsuneError": KitsuneError, "TimedOut": TimedOut}
+                 "KitsuneError": KitsuneError, "TimedOut": TimedOut, "ScriptLimit": ScriptLimit}
     with contextlib.redirect_stdout(_Output()), contextlib.redirect_stderr(_Output()):
         try:
             exec(compile(request["code"], "<kitsune-script>", "exec"), namespace)
             chosen = "result" in namespace or _Output.written  # result = None is an assignment too
             _send({"event": "done", "result": namespace.get("result") if chosen
                    else _last_action_snapshot(client.last)})
+        except ScriptLimit as error:
+            # #618: what the script had in result, so a stopped loop does not lose it.
+            kept = {}
+            if "result" in namespace:
+                try:
+                    kept = {"result": json_module.loads(json_module.dumps(namespace["result"], ensure_ascii=False))}
+                except (TypeError, ValueError):
+                    pass
+            _send({"event": "done", "error": str(error), "limit": error.code, **kept})
         except BaseException as error:
             message = "".join(traceback.format_exception_only(type(error), error)).strip()
             method = _unbound_call(error) if isinstance(error, TypeError) else None

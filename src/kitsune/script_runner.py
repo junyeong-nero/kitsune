@@ -20,6 +20,19 @@ from .tool_approvals import ROUTE_TOOLS
 CODE_LIMIT = 64000
 OUTPUT_LIMIT = 16000  # UTF-8 bytes, shared by printed output and the selected result
 OPERATION_LIMIT = 100
+# The reply lists this many operations; a longer list is summarized, with the last few (#617).
+OPERATIONS_LISTED = 10
+OPERATIONS_LAST = 3
+# The extension's dialog_hint names the direct tool; a script answers dialogs with its tab (#615).
+DIALOG_HINT = ("Kitsune dismissed this dialog because no policy answers dialogs in an agent tab, so the action "
+               "that opened it may not have taken effect. To accept it, call tab.handle_dialogs(accept=True) "
+               "in a script, then repeat only that action.")
+DIALOGS_LISTED = 5
+# Replies whose dialogs are the tab's recent ones, not those the request opened.
+DIALOG_LIST_ROUTES = frozenset({"/api/handle-dialog"})
+# After the deadline a browser call raises ScriptLimit in the script; the worker is killed only
+# this many seconds later, so a finally or except can still print what it collected (#618).
+STOP_GRACE = 2.0
 FRAME_LIMIT = 2 * 1024 * 1024  # internal browser replies, not model-visible output
 
 # Routes that only read the page or wait on it (#568). None is a bridge WRITE_ACTIONS, agent-JavaScript
@@ -78,6 +91,53 @@ def _catchable(route, body, reply):
     # The bridge's policy refusals (read-only mode, URL allow and deny lists) have no code. Of the
     # failures without one, only an unmet wait (ok false, as Tab.wait_for reads it) is delivered.
     return bool(code) or reply.get("ok") is False
+
+
+def _dismissed(dialog):
+    """A confirm or prompt Kitsune dismissed for want of a policy: its action may not have happened."""
+    return dialog.get("auto_dismissed") is True and dialog.get("type") != "alert"
+
+
+def _limit_error(code):
+    return (f"Script reached its {OPERATION_LIMIT} browser operations" if code == "script_operation_limit"
+            else "Python execution reached its deadline")
+
+
+def _wrote(operations):
+    """Whether an operation other than a read, a GET or a navigation was sent (#618)."""
+    return any(entry["method"] != "GET" and entry["route"] not in READ_ROUTES and entry["route"] != "/api/navigate"
+               for entry in operations)
+
+
+def _compact_operations(operations):
+    """operations as the reply shows them (#617): a list up to OPERATIONS_LISTED, else a summary.
+
+    A 100-call loop's list was 7,000 characters, three quarters of a failed reply. The summary
+    keeps every entry that says something (a failure, an unknown outcome, a remap, another tab)
+    and the last ones, each with its index, and counts the rest by route.
+    """
+    shown = [{key: value for key, value in entry.items() if (key, value) != ("method", "POST")}
+             for entry in operations]
+    if len(shown) <= OPERATIONS_LISTED:
+        return shown
+    tabs = [entry.get("tab_id") for entry in shown]
+    usual_tab = max(tabs, key=tabs.count)
+
+    def indexed(index):  # the entry, its tab_id left out when it is the summary's
+        return {"index": index, **{key: value for key, value in shown[index].items()
+                                   if key != "tab_id" or value != usual_tab}}
+
+    notable = [index for index, entry in enumerate(shown)
+               if entry["status"] != "ok" or "remapped" in entry or "dialog" in entry
+               or entry.get("tab_id") != usual_tab]
+    last = [index for index in range(len(shown) - OPERATIONS_LAST, len(shown)) if index not in notable]
+    by_route = {}
+    for entry in shown:
+        by_route[entry["route"]] = by_route.get(entry["route"], 0) + 1
+    return {"count": len(shown), "by_route": by_route, **({"tab_id": usual_tab} if usual_tab is not None else {}),
+            **({"notable": [indexed(index) for index in notable[:OPERATIONS_LISTED]]} if notable else {}),
+            **({"notable_more": len(notable) - OPERATIONS_LISTED} if len(notable) > OPERATIONS_LISTED else {}),
+            "last": [indexed(index) for index in last]}
 
 
 def _without_tokens(value):
@@ -140,7 +200,10 @@ async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
     and the reply says truncated with the bytes left out. A stale link ref the extension says to
     follow (_same_link, nothing was sent either) is sent once more as a new request with the same
     element's ref, so every check runs on that element; the operation and its reply report
-    remapped {from, to, role, name}.
+    remapped {from, to, role, name}. The call over OPERATION_LIMIT, or the first after the deadline,
+    is not sent: the worker raises ScriptLimit for it (#618), and the next call stops the script.
+    The worker is killed STOP_GRACE seconds after the deadline. An uncaught ScriptLimit ends with
+    that limit's code and the script's result variable, when it had one.
     """
     if not isinstance(code, str) or not code.strip() or len(code.encode("utf-8")) > CODE_LIMIT:
         return {"error": f"code must be non-empty Python, at most {CODE_LIMIT} UTF-8 bytes",
@@ -153,6 +216,8 @@ async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
     operations = []
     deadline = time.monotonic() + timeout
     delivered = None  # the failed reply the worker's last call got, until its next call
+    limited = None  # the ScriptLimit code the worker was sent (#618)
+    dialogs = []  # the dialogs the script's actions opened, each with its operation's index (#615)
 
     def operation_failed(reply):
         if len(json.dumps(reply, ensure_ascii=False).encode("utf-8")) > OUTPUT_LIMIT:
@@ -188,8 +253,9 @@ async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
                 append_output(chunk.decode("utf-8", "replace"))
 
         async def events():
-            nonlocal deadline, delivered, dropped
-            await send({"code": code, "tab_id": tab_id})
+            nonlocal deadline, delivered, dropped, limited
+            await send({"code": code, "tab_id": tab_id, "calls_left": OPERATION_LIMIT,
+                        "seconds_left": deadline - time.monotonic()})
             while line := await process.stdout.readline():
                 if len(line) > FRAME_LIMIT:
                     raise _Stop("script_output_limit", "Script message exceeded the output limit")
@@ -198,6 +264,12 @@ async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
                 if event == "output":
                     append_output(message["text"])
                 elif event == "done":
+                    if "error" in message and limited and message.get("limit") == limited:
+                        kept = {}
+                        if "result" in message:
+                            kept["result"], cut = _fit(message["result"], OUTPUT_LIMIT - len(output))
+                            dropped += cut
+                        raise _Stop(limited, _limit_error(limited), **kept)
                     if "error" in message:
                         if message.get("uncaught_reply") and delivered is not None:
                             raise operation_failed(delivered)
@@ -210,8 +282,13 @@ async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
                     dropped += cut
                     return {"ok": True, **({"result": result} if result is not None else {})}
                 elif event == "call":
-                    if len(operations) >= OPERATION_LIMIT:
-                        raise _Stop("script_operation_limit", f"Script exceeded {OPERATION_LIMIT} browser operations")
+                    if limited:  # a call after its ScriptLimit
+                        raise _Stop(limited, _limit_error(limited))
+                    if len(operations) >= OPERATION_LIMIT or time.monotonic() >= deadline:
+                        limited = "script_operation_limit" if len(operations) >= OPERATION_LIMIT else "script_timeout"
+                        delivered = None
+                        await send({"limit": limited, "error": _limit_error(limited)})
+                        continue
                     method, route, body = message["method"], message["route"], message.get("body")
                     if (method not in ("GET", "POST") or not isinstance(route, str)
                             or not route.startswith("/api/") or len(route) > 256):
@@ -229,10 +306,13 @@ async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
                     operations.append(entry)
                     remapped = None
                     while True:
+                        left = max(0.001, deadline - time.monotonic())
                         reply = await asyncio.to_thread(
-                            client.request, method, route, start_bridge=False,
-                            timeout=min(seconds, max(0.001, deadline - time.monotonic())),
+                            client.request, method, route, start_bridge=False, timeout=min(seconds, left),
                             **({"json": body} if method == "POST" else {}))
+                        # The script's deadline, not the call's own timeout, ended the wait for it.
+                        expired = (left < seconds and isinstance(reply, dict) and reply.get("code") == "timeout"
+                                   and time.monotonic() >= deadline)
                         same = _same_link(body, reply)
                         if same and remapped is None:
                             remapped = entry["remapped"] = {"from": body["ref"], "to": same["ref"],
@@ -249,10 +329,25 @@ async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
                         if allowed is not True:
                             reply = allowed if isinstance(allowed, dict) else reply
                             break
+                    if expired:
+                        # As before #618 this is the script's timeout and the call's outcome stays
+                        # unknown: the bridge may still run it. The script gets ScriptLimit for it.
+                        limited, delivered = "script_timeout", None
+                        await send({"limit": limited, "error": _limit_error(limited)})
+                        continue
                     entry["status"] = "failed" if failed(reply) else "ok"
                     reply = _without_tokens(reply)
                     if remapped and isinstance(reply, dict):
                         reply["remapped"] = remapped
+                    if (isinstance(reply, dict) and isinstance(reply.get("dialogs"), list) and reply["dialogs"]
+                            and method != "GET" and route not in READ_ROUTES and route not in DIALOG_LIST_ROUTES):
+                        # #615: a dismissed confirm reads as a success unless the reply says so. Reads
+                        # list the tab's recent dialogs, which an earlier action already reported.
+                        shown = [d for d in reply["dialogs"] if isinstance(d, dict)]
+                        entry["dialog"] = "dismissed" if any(_dismissed(d) for d in shown) else "shown"
+                        dialogs.extend({"operation": len(operations) - 1, **d} for d in shown)
+                        if "dialog_hint" in reply:
+                            reply["dialog_hint"] = DIALOG_HINT
                     delivered = reply if failed(reply) and _catchable(route, body, reply) else None
                     if failed(reply) and delivered is None:
                         if reply.get("code") == "needs_user":
@@ -265,14 +360,14 @@ async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
                             # The extension words its hint for the JSON tools; a script passes first=True (#573).
                             reply["hint"] = reply["hint"].replace("first: true", "first=True")
                         raise operation_failed(reply)
-                    await send(reply)
+                    await send({"reply": reply, "seconds_left": max(0, deadline - time.monotonic())})
                 else:
                     raise _Stop("script_protocol_error", "Unknown script message")
             raise _Stop("script_error", "Python exited without returning a result")
 
         async def expire():
             # The deadline moves while the user is asked to approve a tool.
-            while (left := deadline - time.monotonic()) > 0:
+            while (left := deadline + STOP_GRACE - time.monotonic()) > 0:
                 await asyncio.sleep(left)
             raise asyncio.TimeoutError
 
@@ -305,22 +400,31 @@ async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
         result.update(ok=False, retryable=False,
                       hint="Earlier operations may have taken effect. Inspect the page; do not replay the whole script. "
                            "Use browser_tools_call for direct approval/recovery, then a new script for remaining work.")
-        if result.get("code") == "script_output_limit":
+        if result.get("code") in ("script_operation_limit", "script_timeout") and not _wrote(operations):
+            # A read-only loop has nothing to inspect for partial writes (#618).
+            result["hint"] = ("Nothing was written: every operation was a read or a navigation. Run the rest in "
+                              "smaller batches; print or set result as you go, or in finally. browser.calls_left "
+                              "and browser.seconds_left give the budget left.")
+        elif result.get("code") == "script_output_limit":
             result["hint"] = ("Output/result is incomplete. Earlier operations may have taken effect; do not replay "
                               "the whole script or completed writes. In a new read-only script, use "
                               "tab.snapshot(target=..., max_depth=..., text=True) or "
                               "tab.query(CSS, fields=[...], limit=...). Filter locally and return only needed "
                               "evidence. Disclose coverage/truncation: no match in a subset is not page-wide absence.")
+    if dialogs:
+        result["dialogs"] = dialogs[-DIALOGS_LISTED:]
+        if any(_dismissed(d) for d in dialogs):
+            result["dialog_hint"] = DIALOG_HINT
     if dropped:
         selected = result.pop("result", None)  # after the marker, which is read before the cut content
         result.update(truncated=True, dropped_bytes=dropped)
         if result["ok"]:
             result["hint"] = (f"Output/result was cut at {OUTPUT_LIMIT} UTF-8 bytes; dropped_bytes were left out "
                               "(a cut non-string result is the start of its JSON text). The script ran to its "
-                              "end and operations lists what was done: do not replay it. No match in the shown "
+                              "end and operations shows what was done: do not replay it. No match in the shown "
                               "part is not page-wide absence. For the rest, in a new read-only script use "
                               "tab.snapshot(target=..., max_depth=..., text=True) or "
                               "tab.query(CSS, fields=[...], limit=...) and return only needed evidence.")
         if selected is not None:
             result["result"] = selected
-    return {**result, "output": output.decode("utf-8", "ignore"), "operations": operations}
+    return {**result, "output": output.decode("utf-8", "ignore"), "operations": _compact_operations(operations)}

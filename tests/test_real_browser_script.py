@@ -4,6 +4,7 @@ from http.server import BaseHTTPRequestHandler
 import json
 import re
 import sys
+import time
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -39,11 +40,23 @@ PAGES = {
            '<a href="/only">Only here</a> <button>Go</button>'),
     "/b": ("Page B", NAV + '<a href="/new">Moved</a> <a href="/twin">Twin</a> <a href="/twin2">Twin</a> '
            """<button onclick="document.title = 'Go clicked'">Go</button>"""),
+    # #616: a search field, the same field at another URL.
+    "/search": ("Search", '<form action="/results"><input name=q aria-label="Search"></form>'),
+    "/search2": ("Search 2", '<form action="/results"><input name=q aria-label="Search"></form>'),
+    # #615: wap-096's delete button.
+    "/confirm": ("Jobs", """<button onclick="if (confirm('Delete this job offer?')) document.title = 'Deleted'">"""
+                 "Delete</button>"),
 }
+FLIPS = []  # /flip renames its field on every load
 
 
 class _NavSite(BaseHTTPRequestHandler):
     def do_GET(self):
+        if self.path == "/flip":
+            FLIPS.append(None)
+            PAGES["/flip"] = ("Flip", f'<input name=q{len(FLIPS) % 2} aria-label="Search">')
+        if self.path == "/slow":  # #618: answers after a short script's deadline
+            time.sleep(4)
         title, body = PAGES.get(self.path, (self.path.strip("/").capitalize(), "<p>Arrived</p>"))
         data = f"<!doctype html><title>{title}</title>{body}".encode()
         self.send_response(200)
@@ -320,8 +333,9 @@ class RealBrowserScriptTests(harness.RealBrowserTestCase):
                                     "tab.fill('#draft', 'keep this draft')\nresult = tab.text()")
             self.assertEqual([entry["status"] for entry in selected["operations"]], ["ok", "ok", "ok"])
             self.assertTrue(selected["result"].startswith("배송과 반품 정책 안내 항목 0 참고 자료입니다. "), selected["result"][:80])
-            # text() takes no target: the bridge-cap warning names reads that do.
-            self.assertIn("tab.snapshot(target=..., text=True) or tab.query(...)", selected["output"])
+            # #630: a script reads the page whole, past the direct tool's 20,000 characters; only the
+            # output limit cuts what is shown.
+            self.assertNotIn("Page text was cut", selected["output"])
             printed = await python("print(tab.text())")
             self.assertIn(selected["result"][:5000], printed["output"], "print and result show the same start")
             snapshot = await python("print(tab.snapshot())\ntab.fill('#draft', 'after the read')")
@@ -331,6 +345,61 @@ class RealBrowserScriptTests(harness.RealBrowserTestCase):
             self.assertTrue(wrapped["result"].startswith('{"scope": "page", "evidence": "'), wrapped["result"][:80])
             fields = self.call("/api/forms", {"tabId": tab_id})["fields"]
             self.assertEqual(next(field["value"] for field in fields if field.get("id") == "draft"), "after the read")
+        self.run_scenario(run)
+
+    def test_a_read_loop_over_the_call_limit_prints_what_it_collected(self):
+        # #618: wap-144/wap-233 looped navigate + text and lost every page at the 101st call.
+        async def run(session, tab_id):
+            code = (f"tab.navigate({self.nav.origin + '/a'!r})\nrows = []\ntry:\n    while True:\n"
+                    "        try:\n            rows.append(tab.text()[:6])\n        except KitsuneError:\n"
+                    "            continue\nfinally:\n    print(len(rows), set(rows), browser.calls_left)")
+            reply = await session.call_tool("browser_run_python", {"code": code, "timeout": 60})
+            self.assertTrue(reply.isError)
+            payload = json.loads(reply.content[0].text)
+            self.assertEqual(payload["code"], "script_operation_limit", payload)
+            self.assertEqual(payload["output"], "99 {'Bookma'} 0\n")
+            self.assertIn("Nothing was written", payload["hint"])
+            # #617: summarized, not 100 entries.
+            self.assertEqual((payload["operations"]["count"], payload["operations"]["by_route"]),
+                             (100, {"/api/navigate": 1, "/api/page-text": 99}))
+            self.assertLess(len(json.dumps(payload["operations"])), 500)
+        self.run_scenario(run)
+
+    def test_a_dismissed_confirm_is_reported_and_accepted_from_a_script(self):
+        async def run(session, tab_id):
+            async def python(code):
+                reply = await session.call_tool("browser_run_python", {"code": code})
+                self.assertFalse(reply.isError, reply)
+                return json.loads(reply.content[0].text)
+
+            dismissed = await python(f"tab.navigate({self.nav.origin + '/confirm'!r})\n"
+                                     "tab.click('button')\nprint(tab.info()['title'])")
+            self.assertEqual(dismissed["output"], "Jobs\n")
+            self.assertEqual([(d["operation"], d["type"], d["auto_dismissed"]) for d in dismissed["dialogs"]],
+                             [(1, "confirm", True)])
+            self.assertIn("tab.handle_dialogs(accept=True)", dismissed["dialog_hint"])
+            self.assertEqual(dismissed["operations"][1]["dialog"], "dismissed")
+
+            accepted = await python("tab.handle_dialogs(accept=True)\ntab.click('button')\n"
+                                    "print(tab.info()['title'])")
+            self.assertEqual(accepted["output"], "Deleted\n")
+            self.assertNotIn("dialog_hint", accepted)
+            self.assertEqual(accepted["dialogs"][0]["response"], True)
+            self.call("/api/handle-dialog", {"tabId": tab_id, "accept": None})
+        self.run_scenario(run)
+
+    def test_a_navigation_cut_by_the_deadline_is_a_timeout_and_the_script_still_prints(self):
+        # #618: wap-247's deadline came during a navigate; everything read before it was lost.
+        async def run(session, tab_id):
+            code = (f"tab.navigate({self.nav.origin + '/a'!r})\nrows = []\ntry:\n    rows.append(tab.text()[:9])\n"
+                    f"    tab.navigate({self.nav.origin + '/slow'!r})\nfinally:\n    print(rows)")
+            reply = await session.call_tool("browser_run_python", {"code": code, "timeout": 2})
+            self.assertTrue(reply.isError)
+            payload = json.loads(reply.content[0].text)
+            self.assertEqual((payload["code"], payload["output"]), ("script_timeout", "['Bookmarks']\n"), payload)
+            self.assertEqual([entry["status"] for entry in payload["operations"]], ["ok", "ok", "unknown"])
+            self.assertNotIn("failed_operation", payload)
+            self.assertIn("Nothing was written", payload["hint"])
         self.run_scenario(run)
 
     def test_approval_stop_keeps_the_draft_and_does_not_offer_script_replay(self):
@@ -416,8 +485,8 @@ class RealBrowserScriptTests(harness.RealBrowserTestCase):
             self.assertRegex(remapped["to"], r"^e\d+$")
             self.assertNotEqual(remapped["to"], old)
             self.assertEqual(result["operations"], [
-                {"method": "POST", "route": "/api/click", "status": "ok", "tab_id": tab_id},
-                {"method": "POST", "route": "/api/click", "status": "ok", "tab_id": tab_id, "remapped": remapped}])
+                {"route": "/api/click", "status": "ok", "tab_id": tab_id},
+                {"route": "/api/click", "status": "ok", "tab_id": tab_id, "remapped": remapped}])
             self.assertEqual(self.title(tab_id), "Bookmarks", "the link of page B was clicked")
             self.assertNotIn("follow", json.dumps(result["result"]))
         self.run_scenario(run)
@@ -432,6 +501,65 @@ class RealBrowserScriptTests(harness.RealBrowserTestCase):
                     ref, result = await self.click_next_then(session, tab_id, old)
                     self.assert_stale(result, ref, same_role)
                     self.assertEqual(self.title(tab_id), "Page B")
+        self.run_scenario(run)
+
+    # -- #616: a stale field ref after returning to the same URL --------------
+
+    async def field_then(self, session, tab_id, page, back_to, how="fill"):
+        """A script that leaves page for a 404, goes to back_to, and writes to page's Search field ref."""
+        read = await session.call_tool("browser_run_python", {
+            "code": f"tab = browser.tab({tab_id}); tab.navigate({self.nav.origin + page!r}); result = tab.snapshot()"})
+        old = re.search(r'textbox "Search" \[ref=(e\d+)\]', json.loads(read.content[0].text)["result"]).group(1)
+        write = f"tab.fill({old!r}, 'transit')" if how == "fill" else f"tab.press('Enter', target={old!r})"
+        code = (f"tab = browser.tab({tab_id})\ntab.navigate({self.nav.origin + '/search?q=transit'!r})\n"
+                f"tab.navigate({self.nav.origin + back_to!r})\nresult = {write}")
+        ran = await session.call_tool("browser_run_python", {"code": code})
+        return old, json.loads(ran.content[0].text)
+
+    def field_value(self, tab_id):
+        return next(field.get("value") for field in self.call("/api/forms", {"tabId": tab_id})["fields"]
+                    if field.get("label") == "Search" or (field.get("name") or "").startswith("q"))
+
+    def test_a_field_ref_is_followed_back_on_the_same_url(self):
+        # wap-258: the agent left the page, came back with tab.navigate and used the field's old ref.
+        async def run(session, tab_id):
+            old, result = await self.field_then(session, tab_id, "/search", "/search")
+            self.assertTrue(result.get("ok"), result)
+            remapped = result["result"]["remapped"]
+            self.assertEqual({**remapped, "to": None}, {"from": old, "to": None, "role": "textbox", "name": "Search"})
+            self.assertEqual(result["operations"][-1]["remapped"], remapped)
+            self.assertEqual(self.field_value(tab_id), "transit")
+
+            _, pressed = await self.field_then(session, tab_id, "/search", "/search", how="press")
+            self.assertTrue(pressed.get("ok"), pressed)
+            self.assertEqual(pressed["result"]["remapped"]["role"], "textbox")
+        self.run_scenario(run)
+
+    def test_a_field_ref_is_not_followed_to_another_url_or_another_field(self):
+        async def run(session, tab_id):
+            for page, back_to in (("/search", "/search2"), ("/flip", "/flip")):
+                with self.subTest(page=page, back_to=back_to):
+                    old, result = await self.field_then(session, tab_id, page, back_to)
+                    self.assertEqual(result["code"], "script_operation_failed", result)
+                    failed = result["failed_operation"]
+                    self.assertEqual((failed["code"], failed["state"]["ref"]), ("stale_ref", old), failed)
+                    self.assertEqual(sorted(failed["state"]["same_element"]), ["name", "ref", "role"])
+                    self.assertNotIn("remapped", json.dumps(result))
+                    self.assertEqual(self.field_value(tab_id), "")
+        self.run_scenario(run)
+
+    def test_a_direct_tool_does_not_follow_a_field_ref(self):
+        async def run(session, tab_id):
+            read = await session.call_tool("browser_run_python", {
+                "code": f"tab.navigate({self.nav.origin + '/search'!r}); result = tab.snapshot()"})
+            old = re.search(r'textbox "Search" \[ref=(e\d+)\]', json.loads(read.content[0].text)["result"]).group(1)
+            await session.call_tool("browser_run_python", {"code": f"tab.navigate({self.nav.origin + '/search'!r})"})
+            typed = await session.call_tool("browser_tools_call", {
+                "name": "browser_type", "arguments": {"target": old, "text": "transit"}})
+            self.assertTrue(typed.isError, typed)
+            failed = json.loads(typed.content[0].text)
+            self.assertEqual((failed["code"], failed["state"]["same_element"]["role"]), ("stale_ref", "textbox"))
+            self.assertNotIn("follow", failed["state"]["same_element"])
         self.run_scenario(run)
 
     def test_ref_from_another_tab_is_not_followed(self):

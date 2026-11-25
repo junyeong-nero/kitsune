@@ -6,6 +6,7 @@ from http.server import BaseHTTPRequestHandler
 import os
 import re
 from unittest.mock import patch
+import warnings
 
 import kitsune
 from kitsune import bridge_client, bridge_control, tools
@@ -34,11 +35,18 @@ document.getElementById('log').addEventListener('click', () => console.warn('kit
 DONE = "<!doctype html><title>Done</title><p>Thanks</p>"
 DEALS = '<!doctype html><title>Deals</title><a href="/deals/48">Radiant Solar</a>'
 DEAL = "<!doctype html><title>Deal 48</title><p>Radiant Solar - Custom</p>"
+# #613: a listing whose first <article> (the host panel) has over 100 characters of text.
+LISTING = ("<!doctype html><title>Listing</title><main>"
+           "<article><h2>Hosted by Rob</h2><p>" + "Travel, beaches, dogs, water, boats. " * 5 + "</p></article>"
+           "<article><h2>Price</h2><p>$206.54 per night</p></article>"
+           "<article><h2>Reviews</h2><p>Great stay</p></article></main>"
+           "<footer>Footer note</footer>"
+           '<p class="bio">' + "long " * 100 + "</p>")
 
 
 class _Site(BaseHTTPRequestHandler):
     def do_GET(self):
-        pages = {"/deals": DEALS, "/deals/48": DEAL}
+        pages = {"/deals": DEALS, "/deals/48": DEAL, "/listing": LISTING}
         data = (DONE if self.path.startswith("/done") else pages.get(self.path, PAGE)).encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -94,12 +102,31 @@ class RealBrowserPythonApiTests(harness.RealBrowserTestCase):
         batch = self.browser.batch([{"action": "pageText"}], tab=self.tab)
         self.assertIn("Saved Ada", batch["results"][0]["text"])
 
-    def test_query_reports_that_a_filtered_subset_is_incomplete(self):
-        with self.assertWarnsRegex(UserWarning, "Query results were truncated"):
+    def test_query_returns_the_rows_an_explicit_limit_asked_for(self):
+        # #633: without a truncation warning; the default limit's is in test_real_browser_query_warnings.
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
             values = self.tab.query("#size option", fields=["value"], limit=1)
         self.assertEqual([item["value"] for item in values], ["s"])
         self.assertEqual([item["value"] for item in self.tab.query("#size option", fields=["value"], limit=2)],
                          ["s", "l"])
+
+    def test_text_reads_the_whole_page_not_its_first_article(self):
+        self.tab.navigate("/listing")
+        text = self.tab.text()
+        for part in ("Hosted by Rob", "$206.54 per night", "Great stay", "Footer note"):
+            self.assertIn(part, text)
+        self.assertEqual(self.browser.request("/api/page-text", {"tabId": self.tab.id, "selector": "article"})
+                         ["text"].split("\n")[0], "Hosted by Rob", "a selector still scopes the read")
+
+    def test_query_warns_when_a_field_was_clipped(self):
+        self.tab.navigate("/listing")
+        with self.assertWarnsRegex(UserWarning, r"Query fields were clipped \(text in 1 rows\).*tab\.markdown"):
+            [bio] = self.tab.query(".bio", fields=["text"])
+        self.assertEqual(len(bio["text"]), 400)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            self.tab.query("h2", fields=["text"])
 
     def test_host_client_is_shared(self):
         client = bridge_client.BridgeClient()

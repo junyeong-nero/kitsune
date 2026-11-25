@@ -444,6 +444,8 @@ const editable = (tagName, props = {}) => new Element(tagName, {
     { action: 'waitForElement', selector: '#masked-static', timeout: 0 },
     { action: 'getBounds', selector: '#vault' },
     { action: 'getMarkdown', selector: '#secret-note-chip' },
+    { action: 'getMarkdown', selector: '#field1' },
+    { action: 'getMarkdown', selector: '#recovery' },
     { action: 'getReadability' },
     { action: 'explainSelector', selector: 'p' },
     { action: 'explainSelector', selector: '#masked-box' },

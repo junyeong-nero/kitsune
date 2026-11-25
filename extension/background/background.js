@@ -1609,6 +1609,9 @@ async function runCommandSettled(params, { withSnapshot, deltaSnapshot, textSnap
       await carryPageText(tabId, PAGE_TEXT_ACTIONS.get(params.action), result, actionCaller(params));
     }
   }
+  if (params.action === 'navigate' || (params.action === 'newTab' && params.wait)) {
+    await addRenderingHint(params.action === 'newTab' ? result?.tabId : params.tabId, result);
+  }
   if (blankLink && params.tabId != null) await openBlockedLink(params.tabId, blankLink, result, params.ownerId, params);
   // A middle or Ctrl/Cmd click's link opens like a popup-blocked one; a cancelled click is the page's.
   if (newTabLink && !newTabLink.prevented && params.tabId != null) {
@@ -1659,6 +1662,31 @@ async function addActionDialogs(tabId, since, result, during) {
   if (!dialogs.length) return;
   result.dialogs = dialogs;
   if (dialogs.some(d => d.auto_dismissed && d.type !== 'alert')) result.dialog_hint = DISMISSED_DIALOG_HINT;
+}
+
+// #631: navigate and a new tab return once the DOM is parsed (#601), so a client-rendered page may
+// still show nothing or a "Loading..." placeholder. The result says so, with the wait to use instead
+// of a fixed sleep. It adds no wait of its own.
+async function addRenderingHint(tabId, result) {
+  if (tabId == null || !result || result.error || result.ok === false) return;
+  try {
+    const url = await tabUrl(tabId);
+    if (typeof url !== 'string' || url.startsWith('about:') || isRestrictedUrl(url)) return;
+    let timer;
+    const state = await Promise.race([
+      browser.tabs.sendMessage(tabId, { action: 'renderState' }, TOP_FRAME).catch(() => null),
+      new Promise(resolve => { timer = setTimeout(() => resolve(null), PAGE_URL_TIMEOUT_MS); }),
+    ]);
+    clearTimeout(timer);
+    if (!state?.rendering) return;
+    result.rendering = true;
+    if (state.placeholder) result.placeholder = state.placeholder;
+    result.rendering_hint = state.placeholder
+      ? `The page still shows "${state.placeholder}" and may still be rendering. Wait with ` +
+        `browser_wait_for(text_gone="${state.placeholder}") or for text you expect, then read it.`
+      : 'The page shows no content yet or is marked busy, and may still be rendering. Wait with ' +
+        'browser_wait_for(content=true), then read it; a loaded page can also be empty.';
+  } catch {}
 }
 
 async function tabUrl(tabId) {
@@ -3060,12 +3088,14 @@ async function withFrameFinds(tabId, response, query, scope) {
 // Each frame's fields follow the page's, with frame set to the frame's title or src (as
 // unavailableFrames names it) unless a frame inside it is named. A frame read leaves
 // unavailableFrames; frames inside it that were not read join it.
-async function withFrameForms(tabId, response, scope) {
+async function withFrameForms(tabId, response, scope, full = false) {
   const { frames, ...result } = response;
   if (!frames?.length || !Array.isArray(result.fields)) return result;
-  const { read, unread, tooDeep } = await readFrames(tabId, frames, scope, () => ({ action: 'getFormFields' }),
+  const { read, unread, tooDeep } = await readFrames(tabId, frames, scope,
+    () => ({ action: 'getFormFields', ...(full ? { full } : {}) }),
     child => Array.isArray(child.fields) ? resultRefs(child) : null);
-  const children = await Promise.all(read.map(({ frame, child }) => withFrameForms(tabId, child, innerScope(scope, frame))));
+  const children = await Promise.all(read.map(({ frame, child }) =>
+    withFrameForms(tabId, child, innerScope(scope, frame), full)));
   const { unavailableFrames = [], ...rest } = result;
   const entries = new Map(unavailableFrames.map(entry => [entry.ref, entry]));
   if (tooDeep) for (const { ref } of frames) if (entries.has(ref)) entries.get(ref).content = 'too_deep';
@@ -3143,7 +3173,8 @@ function pruneShortRefs(tabId) {
     if (entry.tabId !== tabId) continue;
     shortRefs.delete(short);
     publicRefs.delete(`${tabId}:${entry.ref}`);
-    retiredShortRefs.set(short, { tabId, label: entry.label, href: entry.href });
+    retiredShortRefs.set(short, { tabId, label: entry.label, href: entry.href, field: entry.field,
+      documentUrl: entry.documentUrl });
   }
   for (const short of retiredShortRefs.keys()) {
     if (retiredShortRefs.size <= RETIRED_SHORT_REFS_MAX) break;
@@ -3199,9 +3230,11 @@ function expandShortRefs(params, tabId) {
     const entry = shortRefs.get(ref);
     if (!entry) {
       const retired = retiredShortRefs.get(ref);
-      // href: only for a link ref of this tab's own earlier document (see followsSameLink).
+      // href, field: only for a ref of this tab's own earlier document (see followsSameLink).
+      const own = key === 'ref' && retired?.tabId === tabId;
       return { error: shortRefError(ref, retired ? 'other_document' : 'not_in_snapshot'), label: retired?.label,
-        href: key === 'ref' && retired?.tabId === tabId ? retired.href : undefined };
+        ...(own ? { followable: { href: retired.href, field: retired.field, documentUrl: retired.documentUrl } }
+          : {}) };
     }
     if (entry.tabId !== tabId) return { error: shortRefError(ref, 'other_document'), label: entry.label };
     expanded[key] = entry.ref + rest;
@@ -3214,10 +3247,18 @@ function expandShortRefs(params, tabId) {
 // agent can retry without another snapshot (#459). The page there can differ from the one the
 // agent read, so the agent decides: nothing is sent to that element. A lookup that fails or
 // takes longer than SAME_ELEMENT_TIMEOUT_MS leaves the error as it was.
-// href: the destination the stale ref's link had, when the caller may follow it (followsSameLink).
+// followable: what the stale ref's element was, when the caller may follow it (followsSameLink).
 // same_element.follow then tells the script runner to send the command again with that ref,
-// only when the same element is a link with that destination. Role and name alone would also
-// match another page's lone `button "Delete"`, so nothing else is followed.
+// only when the same element is a link with that destination (#572), or a native field with the
+// same tag/type/name/id in a document at the same URL as the ref's (#616: the script went back to
+// the page). Role and name alone would also match another page's lone `button "Delete"`, so
+// nothing else is followed.
+const FOLLOWED_FIELD_ROLES = new Set(['textbox', 'searchbox', 'combobox', 'spinbutton']);
+function sameField(before, found) {
+  return !!before?.field && !!found?.field && typeof before.documentUrl === 'string' &&
+    before.documentUrl === found.documentUrl &&
+    ['tag', 'type', 'name', 'id'].every(key => before.field[key] === found.field[key]);
+}
 const SAME_ELEMENT_TIMEOUT_MS = 2000;
 // Whether a stale ref of this command may be followed (#572): only a browser_run_python script's
 // own request for a write (the bridge sets followSameLink), on a tab this client owns that no
@@ -3226,7 +3267,7 @@ function followsSameLink(action, params, tabId) {
   return params.followSameLink === true && writesTab(action, params) &&
     ownsTab(tabId, params.ownerId, params.sessionId) && !handoffs.has(tabId);
 }
-async function withSameElement(tabId, error, label, authorization, href) {
+async function withSameElement(tabId, error, label, authorization, followable) {
   let timer;
   try {
     const deadline = Date.now() + SAME_ELEMENT_TIMEOUT_MS;
@@ -3239,7 +3280,8 @@ async function withSameElement(tabId, error, label, authorization, href) {
     if (typeof found?.ref !== 'string') return error;
     const { ref } = await compactContentRefs('sameElement', found, tabId, {});
     const role = label.slice(0, label.indexOf(' "'));
-    const follow = role === 'link' && typeof href === 'string' && found.href === href;
+    const follow = !!followable && (role === 'link' ? typeof followable.href === 'string' && found.href === followable.href
+      : FOLLOWED_FIELD_ROLES.has(role) && sameField(followable, found));
     return { ...error, hint: `${error.hint} The same ${label} here is ${ref}; retry with it.`,
       state: { ...error.state, same_element: { ref, role, name: JSON.parse(label.slice(role.length + 1)),
         ...(follow ? { follow: true } : {}) } } };
@@ -3457,7 +3499,7 @@ async function forwardToContent(action, params) {
       // A discarded tab is not woken for a write's error.
       const error = expanded.label && !state.discarded
         ? await withSameElement(tabId, expanded.error, expanded.label, params,
-          followsSameLink(action, params, tabId) ? expanded.href : undefined) : expanded.error;
+          followsSameLink(action, params, tabId) ? expanded.followable : undefined) : expanded.error;
       return await withTabState(tabId, error);
     }
     const frameId = targetFrame(tabId, expanded.params);
@@ -3508,7 +3550,9 @@ async function forwardToContent(action, params) {
       } else if (action === 'getSnapshot') response = await withFrameSnapshots(tabId, response, params, frameScope());
     }
     if (action === 'find') response = await withFrameFinds(tabId, response, expanded.params.query, frameScope());
-    if (action === 'getFormFields') response = await withFrameForms(tabId, response, frameScope());
+    if (action === 'getFormFields') {
+      response = await withFrameForms(tabId, response, frameScope(), expanded.params.full === true);
+    }
     if (action === 'getAccessibilityTree') {
       response = await withFrameTrees(tabId, response, frameScope(), expanded.params.depth ?? 6);
     }
@@ -3521,11 +3565,18 @@ async function forwardToContent(action, params) {
     // A snapshot's link destinations stay here, with their refs (#572): the top document's only,
     // where a same element is looked for.
     const hrefs = action === 'getSnapshot' && !frameId && Array.isArray(response.hrefs) ? response.hrefs : [];
-    if (action === 'getSnapshot') delete response.hrefs;
+    // Fields' identity and their document's URL (#616), likewise.
+    const fields = action === 'getSnapshot' && !frameId && Array.isArray(response.fields) ? response.fields : [];
+    const documentUrl = response.documentUrl;
+    if (action === 'getSnapshot') { delete response.hrefs; delete response.fields; delete response.documentUrl; }
     const result = await compactContentRefs(action, response, tabId, params);
     for (const { ref, href } of hrefs) {
       const entry = shortRefs.get(publicRefs.get(`${tabId}:${ref}`));
       if (entry) entry.href = href;
+    }
+    for (const { ref, field } of fields) {
+      const entry = shortRefs.get(publicRefs.get(`${tabId}:${ref}`));
+      if (entry && typeof documentUrl === 'string') Object.assign(entry, { field, documentUrl });
     }
     // Waits and drags echo their targets; keep their public spelling too.
     for (const key of REF_PARAMS) {

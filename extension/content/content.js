@@ -274,6 +274,70 @@
       'No element matches; take a new browser_snapshot, or browser_wait_for the element if the page is still updating.');
   }
 
+  // Snapshots print ARIA roles, which agents reuse as CSS type selectors (#628): `article` matches
+  // <article> only, not role="article". For a selector naming a tag no element on the page has but
+  // elements carry as their role, a hint naming the role selector; null otherwise. roleEngine:
+  // whether the Playwright role= form works too (actions), or only CSS (query).
+  function roleSelectorHint(selector, roleEngine = true) {
+    if (typeof selector !== 'string') return null;
+    const bare = selector.replace(/(["'])(?:\\.|(?!\1).)*\1/g, '""').replace(/\[[^\]]*\]|\([^)]*\)/g, '');
+    for (const [, tag] of bare.matchAll(/(?:^|[\s>+~,])([a-z][a-z0-9-]*)(?=$|[\s>+~,.#:])/gi)) {
+      let count = 0;
+      try {
+        if (document.querySelector(tag)) continue;
+        count = document.querySelectorAll(`[role~="${tag}"]`).length;
+      } catch { continue; }
+      if (!count) continue;
+      return `No <${tag}> element is on the page, but ${count} element${count > 1 ? 's have' : ' has'} ` +
+        `role="${tag}" (snapshots list roles, not tags): use [role=${tag}]` +
+        (roleEngine ? ` in CSS, or role=${tag}.` : '.');
+    }
+    return null;
+  }
+
+  // An unnamed control's snapshot states read like its attributes (#653): agents write
+  // button[action="/bookmark/t833"] or [testid="…"], which match nothing. The action is the
+  // control's form's and the test id is data-testid (or data-test). For a CSS selector with such an
+  // attribute, a hint naming the rewritten selector when that one matches; null otherwise.
+  const SNAPSHOT_STATE_ATTRIBUTE =
+    /\[\s*(action|testid)\s*([~|^$*]?=)\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\]\s]+)\s*([is])?\s*\]/i;
+  function snapshotStateSelectorHint(selector) {
+    if (typeof selector !== 'string') return null;
+    const attribute = SNAPSHOT_STATE_ATTRIBUTE.exec(selector);
+    if (!attribute) return null;
+    const [written, name, operator, value, flag = ''] = attribute;
+    const before = selector.slice(0, attribute.index), after = selector.slice(attribute.index + written.length);
+    const matches = candidate => { try { return !!document.querySelector(candidate); } catch { return false; } };
+    if (name.toLowerCase() === 'testid') {
+      for (const real of ['data-testid', 'data-test']) {
+        const candidate = `${before}[${real}${operator}${value}${flag && ' ' + flag}]${after}`;
+        if (matches(candidate)) {
+          return `Snapshots print a control's ${real} as testid, which is no attribute: use ${candidate}.`;
+        }
+      }
+      return null;
+    }
+    // The compound selector holding [action=…] moves under the form: button[action="/x"] →
+    // form[action="/x"] button. Quoted text and brackets are masked so their spaces do not count.
+    const masked = before.replace(/(["'])(?:\\.|(?!\1).)*\1|\[[^\]]*\]|\([^)]*\)/g, part => 'x'.repeat(part.length));
+    const start = Math.max(...[' ', '>', '+', '~', ',', '\t', '\n'].map(c => masked.lastIndexOf(c))) + 1;
+    const control = before.slice(start) + after;
+    if (!control.trim()) return null;
+    for (const op of [operator, '*=']) {
+      const candidate = `${before.slice(0, start)}form[action${op}${value}${flag && ' ' + flag}] ${control}`;
+      if (matches(candidate)) {
+        return `Snapshots print a control's form action as action, which is the form's attribute: use ${candidate}.`;
+      }
+    }
+    return null;
+  }
+
+  function withRoleHint(msg, result) {
+    if (result?.code !== 'not_found' || typeof msg.selector !== 'string') return result;
+    const hint = roleSelectorHint(msg.selector) || snapshotStateSelectorHint(msg.selector);
+    return hint ? { ...result, hint } : result;
+  }
+
   // A scoped read whose selector matched nothing.
   function selectorNotFound(selector) {
     return { ...notFound(`Selector not found: ${selector}`), state: { selector } };
@@ -524,13 +588,15 @@
       'ping':                  () => ({ ok: true, version: CONTENT_VERSION,
                                      ...(window !== window.top ? { frameUrl: location.origin + location.pathname } : {}) }),
       'settleState':           () => settleState(),
+      'renderState':           () => renderState(),
       'getPageInfo':           () => getPageInfo(),
       'handleDialog':          () => handleDialog(msg.accept, msg.prompt_text),
       'setDialogAgentTab':     () => setDialogAgentTab(msg.agentTab),
       'dialogsSince':          () => dialogsSince(Number(msg.since) || 0),
-      'waitForText':           () => waitForText(msg.text, msg.text_gone, msg.timeout, msg.diagnose === true,
-                                     msg.text_seen),
-      'getPageText':           () => getPageText(msg.selector),
+      'waitForText':           () => msg.content === true ? waitForContent(msg.timeout)
+                                     : waitForText(msg.text, msg.text_gone, msg.timeout, msg.diagnose === true,
+                                       msg.text_seen),
+      'getPageText':           () => getPageText(msg.selector, msg.full === true),
       'getSnapshot':           () => {
                                      // sinceObservation (#350): the delta against the page the agent last saw.
                                      if (msg.sinceObservation) actionBaseline = lastObservation;
@@ -544,7 +610,7 @@
                                    },
       'getAccessibilityTree':  () => getAccessibilityTree(msg.depth ?? 6, msg.ref || msg.selector,
                                      Number.isFinite(msg.limit) ? msg.limit : DOM_TREE_LIMIT),
-      'getFormFields':         () => getFormFields(),
+      'getFormFields':         () => getFormFields(msg.full === true),
       'click':                 () => withPopupWatch(withScriptPopupCheck(() =>
                                      clickElement(msg.selector, msg.coords, msg.first, msg.button, msg.modifiers,
                                        msg.holdMs)),
@@ -582,7 +648,7 @@
       'hideFixed':             () => hideFixed(msg.selector),
       'restoreFixed':          () => restoreFixed(),
       // ── Extraction, interaction and waits ──
-      'query':                 () => queryElements(msg.selector, msg.fields, msg.limit),
+      'query':                 () => queryElements(msg.selector, msg.fields, msg.limit, msg.full === true),
       'getHTML':               () => getHTML(msg.selector),
       'getLinks':              () => getLinks(msg.internalOnly),
       'getImages':             () => getImages(),
@@ -628,7 +694,8 @@
       return false;
     }
 
-    const respond = result => sendResponse(withActionDialogs(msg.dialogsSince, withVisibility(msg.action, result)));
+    const respond = result => sendResponse(withActionDialogs(msg.dialogsSince,
+      withVisibility(msg.action, withRoleHint(msg, result))));
     try {
       if (['click', 'type', 'fill', 'selectOption', 'checkBox', 'keypress', 'submitForm'].includes(msg.action)) {
         lastActedElement = null;
@@ -824,29 +891,42 @@
 
   // ── Page Text ──
   const PAGE_TEXT_LIMIT = 20000;
+  // full (#630): a script's read, which the model does not see; bounded by the script's 2 MB reply frame.
+  const FULL_PAGE_TEXT_LIMIT = 500000;
 
-  function truncateText(raw) {
-    const truncated = raw.length > PAGE_TEXT_LIMIT;
+  function truncateText(raw, full = false) {
+    const limit = full ? FULL_PAGE_TEXT_LIMIT : PAGE_TEXT_LIMIT;
+    const truncated = raw.length > limit;
     return {
-      text: truncated ? raw.slice(0, PAGE_TEXT_LIMIT) : raw,
+      text: truncated ? raw.slice(0, limit) : raw,
       ...(truncated && { truncated: true, fullLength: raw.length }),
     };
   }
 
-  function getPageText(selector) {
+  function getPageText(selector, full) {
     if (selector) {
       const el = document.querySelector(selector);
       if (!el) return { error: 'Selector not found: ' + selector };
-      return truncateText(el.innerText);
+      return truncateText(el.innerText, full);
     }
-    const selectors = ['article', '[role="main"]', 'main', '.content', '.post-content', '.article-body', '.entry-content'];
-    for (const sel of selectors) {
-      const el = document.querySelector(sel);
-      if (el && el.innerText.length > 100) {
-        return truncateText(el.innerText);
-      }
-    }
-    return truncateText(document.body.innerText);
+    // The whole page: a "main content" guess returned one <article> card of a listing (#613).
+    return truncateText(document.body.innerText, full);
+  }
+
+  // Whether a page that navigate or a new tab just loaded looks like it is still rendering (#631):
+  // it has no content yet, shows a line that is only a loading placeholder, or marks an element
+  // aria-busy. An observation for a hint, not proof: a page can also stay this way.
+  const PLACEHOLDER_LINE = /^(loading|please wait|just a moment)\s*(\.{2,}|…)?$/i;
+  function renderState() {
+    const body = document.body;
+    if (!body) return {};
+    const lines = String(body.innerText || '').split('\n').map(line => line.trim()).filter(Boolean);
+    const placeholder = lines.find(line => PLACEHOLDER_LINE.test(line));
+    const busy = Array.from(document.querySelectorAll('[aria-busy="true"]')).some(el => !isHidden(el));
+    const empty = !lines.length &&
+      !body.querySelector('img, video, canvas, svg, input, select, textarea, iframe, embed, object');
+    if (!placeholder && !busy && !empty) return {};
+    return { rendering: true, ...(placeholder ? { placeholder } : {}) };
   }
 
   // ── Accessibility Tree ──
@@ -1289,12 +1369,35 @@
       else fallback = redactedText(el) || el.title;
       return clean(el.getAttribute('aria-label') || findLabel(el) ||
         (el.type === 'image' ? el.alt : '') ||
-        (['button', 'submit', 'reset'].includes(el.type) && !isSensitiveField(el) ? el.value : '') || fallback);
+        // A <button> is named by its text, as role= selectors match it (#649), not its value.
+        (el.tagName === 'INPUT' && ['button', 'submit', 'reset'].includes(el.type) && !isSensitiveField(el)
+          ? el.value : '') || fallback);
     }
     // A same-origin link URL is printed as its path (#310).
     const page = (() => {
       try { return new URL(window.location?.href ?? globalThis.location?.href); } catch { return null; }
     })();
+    // What tells an unnamed control apart from its unnamed neighbors (#632): a submit control's
+    // form action as its path (with its origin when another, like a frame's src; never query or
+    // fragment), else its data-testid or data-test, else its icon's <svg><title> or <use href> id.
+    function unnamedControlIdentity(el) {
+      if (isSensitiveField(el)) return null;
+      const action = ['submit', 'image'].includes(el.type) && el.form &&
+        (el.getAttribute('formaction') || el.form.getAttribute('action'));
+      if (action) {
+        let url;
+        try { url = new URL(action, el.baseURI); } catch {}
+        if (url && ['http:', 'https:'].includes(url.protocol)) {
+          return `action=${JSON.stringify(url.origin === page?.origin ? url.pathname : url.origin + url.pathname)}`;
+        }
+      }
+      const testId = clean(el.getAttribute('data-testid') || el.getAttribute('data-test'));
+      if (testId) return `testid=${JSON.stringify(testId)}`;
+      const use = el.querySelector('svg use');
+      const icon = clean(el.querySelector('svg title')?.textContent ||
+        (use?.getAttribute('href') || use?.getAttribute('xlink:href') || '').split('#')[1]);
+      return icon ? `icon=${JSON.stringify(icon)}` : null;
+    }
     // The last entry under each parent entry, for a link's previous sibling line.
     const lastChild = new Map();
     function append(entry) {
@@ -1356,9 +1459,33 @@
           else role = 'button';
         }
         ref = full ? elementRefs.get(el) || `s${refGeneration}e${refCounter++}` : null;
+        const name = shownPopup ? popupName(el) : nameOf(el, interactive || el === target);
         const states = [];
+        const identity = !name && interactive && !media ? unnamedControlIdentity(el) : null;
+        if (identity) states.push(identity);
         if (role === 'heading') states.push(`level=${el.getAttribute('aria-level') || el.tagName.slice(1)}`);
-        if ('value' in el && !isSensitiveField(el)) states.push(`value=${JSON.stringify(clean(el.value))}`);
+        // A date/time/color input reads as a textbox; say which, with its bounds (#614).
+        if (el.tagName === 'INPUT' && VALUE_FORMATS[el.type]) {
+          if (role === 'textbox') states.push(`type=${el.type}`);
+          for (const bound of ['min', 'max']) {
+            if (el.getAttribute(bound)) states.push(`${bound}=${clean(el.getAttribute(bound))}`);
+          }
+        }
+        // Only a value of the element's own: a <form>'s value is a control named "value" (#648).
+        // A button's value is left out when empty or its name (#656); a field's empty value is kept.
+        const buttonLike = el.tagName === 'BUTTON' ||
+          (el.tagName === 'INPUT' && ['button', 'submit', 'reset', 'image'].includes(el.type));
+        // A field named by a <label> keeps its placeholder, often an example or a format (#655).
+        // Without aria naming, a field's name is its label's text unless it is the placeholder.
+        const placeholder = ['INPUT', 'TEXTAREA'].includes(el.tagName) ? clean(el.placeholder) : '';
+        if (placeholder && name && name !== placeholder &&
+            !el.getAttribute('aria-label') && !el.getAttribute('aria-labelledby')) {
+          states.push(`placeholder=${JSON.stringify(placeholder)}`);
+        }
+        if (['string', 'number'].includes(typeof el.value) && !isSensitiveField(el)) {
+          const value = clean(el.value);
+          if (!buttonLike || (value && value !== name)) states.push(`value=${JSON.stringify(value)}`);
+        }
         // An editor's content is its value (#385), cut like a field's and marked when cut.
         else if (isEditingHost(el) && !isSensitiveField(el)) {
           const text = normalize(renderedText(el));
@@ -1381,7 +1508,7 @@
           states.push(`src=${JSON.stringify(src)}`, `duration=${duration}`, `currentTime=${currentTime}`,
             `paused=${paused}`, `muted=${muted}`, `controls=${controls}`);
         }
-        const label = `${role} ${JSON.stringify(shownPopup ? popupName(el) : nameOf(el, interactive || el === target))}`;
+        const label = `${role} ${JSON.stringify(name)}`;
         const head = `${'  '.repeat(Math.min(depth, 12))}- ${label} [ref=`;
         const stateTail = `]${states.length ? ' [' + states.join(' ') + ']' : ''}${shownPopup ? ' [not_rendered]' : ''}`;
         // Boxes stay out of the signature, so repeated siblings still group.
@@ -1767,6 +1894,9 @@
     // The background keeps these with the refs and returns them to no client (#572).
     const hrefs = selected.filter(entry => entry.ref && linkDestination(entry))
       .map(entry => ({ ref: entry.ref, href: entry.href }));
+    // Native fields' identity and this document's URL, kept the same way (#616).
+    const fields = selected.filter(entry => entry.ref && fieldIdentity(entry.el))
+      .map(entry => ({ ref: entry.ref, field: fieldIdentity(entry.el) }));
     return {
       snapshot,
       ...(truncated ? { truncated: true } : {}),
@@ -1775,6 +1905,7 @@
       ...(cuts ? { cuts: cuts.filter(cut => cut <= selected.length) } : {}),
       ...(frames.length ? { frames } : {}),
       ...(hrefs.length ? { hrefs } : {}),
+      ...(fields.length ? { fields, documentUrl: documentUrl() } : {}),
       ...(withText && !baseline ? { url: window.location?.href ?? globalThis.location?.href, title: document.title } : {}),
       ...(explicit ? { readyState: document.readyState } : {}),
       ...(explicit && !snapshot && !truncated ? { empty: true, hint: EMPTY_SNAPSHOT_HINT } : {}),
@@ -1798,7 +1929,21 @@
     if (entries.some(entry => entry.frameId)) return {};
     const matches = entries.filter(entry => entry.label === label);
     if (matches.length !== 1) return {};
-    return { ref: issueRef(matches[0].el), ...(linkDestination(matches[0]) ? { href: matches[0].href } : {}) };
+    const field = fieldIdentity(matches[0].el);
+    return { ref: issueRef(matches[0].el), ...(linkDestination(matches[0]) ? { href: matches[0].href } : {}),
+      ...(field ? { field, documentUrl: documentUrl() } : {}) };
+  }
+
+  const documentUrl = () => window.location?.href ?? globalThis.location?.href;
+
+  // What tells a native field apart beyond its `role "name"` (#616): a script's stale field ref is
+  // followed only to a field with the same identity, in a document at the same URL.
+  const IDENTITY_LIMIT = 256;
+  function fieldIdentity(el) {
+    if (!el || !['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)) return null;
+    const identity = { tag: el.tagName.toLowerCase(), type: el.type || '', name: el.getAttribute('name') || '',
+      id: el.id || '' };
+    return Object.values(identity).some(value => value.length > IDENTITY_LIMIT) ? null : identity;
   }
 
   // Whether a snapshot entry is a link that leads somewhere (#572): a web URL (entry.href) from
@@ -2510,6 +2655,60 @@
     return el.tagName === 'INPUT' && typeof text === 'string' ? text.replace(/\r\n|\r|\n/g, ' ') : text;
   }
 
+  // Input types whose value the browser sanitizes: a value not in the format reads back as ""
+  // (range: clamped, color: #000000), and their value setter reports nothing (#614).
+  const VALUE_FORMATS = {
+    date: 'YYYY-MM-DD', time: 'HH:MM or HH:MM:SS', 'datetime-local': 'YYYY-MM-DDTHH:MM', month: 'YYYY-MM',
+    week: 'YYYY-Www', number: 'a number such as 12 or -3.5', range: 'a number between min and max',
+    color: '#rrggbb',
+  };
+  // Types whose value is one token: typing replaces it. A number or range still appends digits.
+  const REPLACED_TYPES = new Set(['date', 'time', 'datetime-local', 'month', 'week', 'color']);
+  const VALUE_CONSTRAINTS = { rangeUnderflow: ['before min', 'within min/max'],
+    rangeOverflow: ['after max', 'within min/max'], stepMismatch: ['not on a step', 'on its step'] };
+
+  // Sets a native field's value; for a sanitized type, refuses a value the field did not keep and
+  // puts the previous value back before any event, so nothing changed.
+  function writeFieldValue(el, text) {
+    const setter = nativeValueSetter(el);
+    const previous = el.value;
+    if (setter) setter.call(el, text); else el.value = text;
+    const format = el.tagName === 'INPUT' && VALUE_FORMATS[el.type];
+    if (!format || !valueRejected(el, text)) return null;
+    if (setter) setter.call(el, previous); else el.value = previous;
+    const state = { type: el.type, expected_format: format, written: text, value: el.value,
+      ...boundsOf(el) };
+    return { ...actionError(`The ${el.type} input did not take ${JSON.stringify(text)}; it expects ${format}`,
+      'value_rejected', `Write the value as ${format}` +
+        (state.min || state.max ? `, within min/max` : '') +
+        ' with fill (browser_type and tab.type replace a date/time value, they do not key its segments). ' +
+        'Nothing was changed.', state), retryable: false };
+  }
+
+  // A kept value may be normalized ("2026-05-03 09:00" reads "2026-05-03T09:00"); only a
+  // dropped one, or a range's clamp and a color's fallback, is a rejection.
+  function valueRejected(el, text) {
+    if (el.type === 'color') return el.value !== text.toLowerCase();
+    if (el.type === 'range') return Number(el.value) !== Number(text) || text.trim() === '';
+    return el.value === '' && text !== '';
+  }
+
+  function boundsOf(el) {
+    const bounds = {};
+    for (const name of ['min', 'max', 'step']) if (el.getAttribute(name)) bounds[name] = el.getAttribute(name);
+    return bounds;
+  }
+
+  // The value was taken but breaks the field's min/max/step: the form stays invalid (#614).
+  function constraintViolation(el) {
+    if (el.tagName !== 'INPUT' || !VALUE_FORMATS[el.type] || !el.validity) return {};
+    const reason = Object.keys(VALUE_CONSTRAINTS).find(key => el.validity[key]);
+    if (!reason) return {};
+    return { invalid: { reason, value: el.value, ...boundsOf(el) },
+      hint: `The field took the value, but it is ${VALUE_CONSTRAINTS[reason][0]}, so a form may refuse it; ` +
+        `write a value ${VALUE_CONSTRAINTS[reason][1]}.` };
+  }
+
   // ── Type ──
   function typeText(selector, text, clear, first) {
     const host = resolveTarget(selector, null, { first });
@@ -2535,11 +2734,10 @@
     el.focus();
     text = singleLineValue(el, text);
 
-    // Use native value setter to properly trigger React/Vue state
-    const setter = nativeValueSetter(el);
-    if (setter) setter.call(el, clear ? text : el.value + text);
-    else if (clear) el.value = text;
-    else el.value += text;
+    // Use native value setter to properly trigger React/Vue state. A date/time value is
+    // replaced, not appended to: "2026-05-03" + "x" is no value.
+    const rejected = writeFieldValue(el, clear || REPLACED_TYPES.has(el.type) ? text : el.value + text);
+    if (rejected) return rejected;
 
     // Fire all the events React/Vue/Angular listen for
     el.dispatchEvent(new Event('input', { bubbles: true }));
@@ -2547,7 +2745,7 @@
     el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true }));
     el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
 
-    return { ok: true };
+    return { ok: true, ...constraintViolation(el) };
   }
 
   // ── Set Editable Content ──
@@ -2809,17 +3007,12 @@
     } else {
       // Use native setter to trigger React/Vue/custom element state
       target.focus();
-      const setter = nativeValueSetter(target);
-      const text = singleLineValue(target, String(value));
-      if (setter) {
-        setter.call(target, text);
-      } else {
-        target.value = text;
-      }
+      const rejected = writeFieldValue(target, singleLineValue(target, String(value)));
+      if (rejected) return rejected;
       target.dispatchEvent(new Event('input', { bubbles: true }));
       target.dispatchEvent(new Event('change', { bubbles: true }));
     }
-    return { ok: true, pierced: target !== el, tag: target.tagName.toLowerCase() };
+    return { ok: true, pierced: target !== el, tag: target.tagName.toLowerCase(), ...constraintViolation(target) };
   }
 
   const EDITOR_SELECTOR = '[contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"]';
@@ -3013,8 +3206,16 @@
   }
 
   // ── Get Form Fields ──
+  // full (#650): a script's read of field values, which the model does not see, so a script that
+  // reads a value and writes it back gets it whole.
+  const FULL_VALUE_LIMIT = 100000;
+  // A field value cut at max ends with … and its row says valueClipped (#650).
+  function cutValue(value, max) {
+    return value.length <= max ? { value } : { value: value.slice(0, max) + '…', valueClipped: true };
+  }
+
   // Fields in same-origin frames name their frame; unreadable frames are listed.
-  function getFormFields() {
+  function getFormFields(full = false) {
     const fields = [];
     deepQuerySelectorAll('input, select, textarea').forEach(el => {
       if (isHidden(el)) return;
@@ -3031,7 +3232,7 @@
         name: el.name || '',
         id: el.id || '',
         placeholder: el.placeholder || '',
-        ...(isSensitiveField(el) ? redactedValue(el) : { value: (el.value || '').slice(0, 100) }),
+        ...(isSensitiveField(el) ? redactedValue(el) : cutValue(el.value || '', full ? FULL_VALUE_LIMIT : 100)),
         label: findLabel(el),
         required: el.required,
         selector: buildSelector(el),
@@ -3129,6 +3330,23 @@
           error: `Timed out after ${timeout}ms waiting for ${textSeen ? 'new ' : ''}visible text`,
           ...(diagnose && !appeared ? textNameDiagnosis(text) : {}) });
         else setTimeout(poll, Math.min(100, timeout - elapsed));
+      }
+      poll();
+    });
+  }
+
+  // A wait that needs no text of the page (#652): met once renderState, which set a navigate's or
+  // new tab's rendering, no longer reports an empty, placeholder-only or busy page.
+  function waitForContent(timeout = 10000) {
+    if (!Number.isFinite(timeout) || timeout < 0) return { error: 'Provide a non-negative timeout' };
+    const start = Date.now();
+    return new Promise(resolve => {
+      function poll() {
+        const elapsed = Date.now() - start;
+        if (!renderState().rendering) resolve({ ok: true, content: true, elapsed });
+        else if (elapsed >= timeout) {
+          resolve({ ok: false, content: true, elapsed, error: `Timed out after ${timeout}ms waiting for page content` });
+        } else setTimeout(poll, Math.min(100, timeout - elapsed));
       }
       poll();
     });
@@ -3766,9 +3984,25 @@
   // A native CSS failure: invalid syntax can never match, so it is not a retryable not_found.
   function cssSelectorError(selector, e) {
     if (e?.name !== 'SyntaxError') return null;
-    return tabTargetError(selector) || unsupportedSelector(selector, SNAPSHOT_LABEL.test(selector.trim())
+    return tabTargetError(selector) || selectorListError(selector) ||
+      unsupportedSelector(selector, SNAPSHOT_LABEL.test(selector.trim())
       ? 'this is a snapshot line\'s role and name; pass that line\'s ref instead'
       : 'it is not valid CSS');
+  }
+
+  // A comma list with a Playwright item (a.delete, text=Delete); null for any other selector.
+  // A list is CSS only, so the error names that item and how to try it on its own (#635).
+  const PLAYWRIGHT_LIST_ITEM = /^(?:(?:text|role|css|nth|xpath|internal:[a-z]+)\s*=|\/\/|\.\.|["'])/i;
+  function selectorListError(selector) {
+    const items = splitTopLevel(selector, ',').map(item => item.trim());
+    const playwright = items.filter(item => PLAYWRIGHT_LIST_ITEM.test(item));
+    if (items.length < 2 || !playwright.length) return null;
+    const css = items.filter(item => item && !playwright.includes(item));
+    const forms = playwright.map(item => `\`${item}\``).join(', ');
+    const together = css.length > 1 ? `:is(${css.join(', ')})` : css[0];
+    return unsupportedSelector(selector, `a comma selector list is CSS only; ${forms} ` +
+      `${playwright.length > 1 ? 'are Playwright forms' : 'is a Playwright form'}`,
+      `Try each alternative in turn${together ? `, or use \`${together}\` plus a separate ${forms}` : ''}.`);
   }
 
   // A target that names a tab, not an element; null for any other selector. Its hint is the
@@ -4314,10 +4548,26 @@
   }
 
   // ── Equivalent matches (#573) ──
-  // For click and hover, several matches can be one target: links to the same place, or the
-  // one text= match that is better than every other. Every other action stays strict.
+  // For click and hover, several matches can be one target: links to the same place, the
+  // one text= match that is better than every other, or matches inside one control (#654).
+  // Every other action stays strict.
   function oneTargetAmong(selector, matches) {
-    return sameDestinationLink(matches) || preferredTextMatch(selector, matches);
+    return sameDestinationLink(matches) || preferredTextMatch(selector, matches) || sameControl(matches);
+  }
+
+  // The control every match is or is inside, such as a list button whose title and subtitle
+  // both hold the text. null when a match is in no control or in another one, or when the
+  // control is not one a click activates as a whole wherever it lands: a container that is
+  // only focusable (tabindex) or has a handler, a listbox, a field or an editor.
+  const WHOLE_CONTROL_TAGS = new Set(['A', 'BUTTON', 'SUMMARY']);
+  const WHOLE_CONTROL_ROLES = new Set(['button', 'link', 'checkbox', 'radio', 'tab', 'menuitem',
+    'menuitemcheckbox', 'menuitemradio', 'option', 'switch']);
+  function sameControl(matches) {
+    const control = nearestInteractiveAncestor(matches[0]);
+    if (!control || matches.some(el => nearestInteractiveAncestor(el) !== control)) return null;
+    const role = control.getAttribute('role');
+    if (!(role ? WHOLE_CONTROL_ROLES.has(role) : WHOLE_CONTROL_TAGS.has(control.tagName))) return null;
+    return { el: control, why: { same_control: true } };
   }
 
   // Attributes that do not change what following a link does (aria-* are skipped too).
@@ -4669,14 +4919,42 @@
       if (lbl) return redactedText(lbl).trim().slice(0, 80);
     }
     const parent = el.closest('label');
-    return parent ? redactedText(parent).trim().slice(0, 80) : (el.ariaLabel || '');
+    return parent ? redactedText(parent).trim().slice(0, 80) : (el.ariaLabel || unassociatedLabel(el));
+  }
+
+  // A field's visible <label> that names no control (no `for`, no field inside), #655: the field's
+  // previous sibling when no other field follows it before the next label, else the only label in
+  // the field's parent when that holds no other field. A label shared by two fields names neither.
+  const isLabeledField = el => ['TEXTAREA', 'SELECT'].includes(el.tagName) ||
+    (el.tagName === 'INPUT' && !['hidden', 'button', 'submit', 'reset', 'image'].includes(el.type));
+  function unassociatedLabel(el) {
+    if (!isLabeledField(el)) return '';
+    const free = label => label?.tagName === 'LABEL' && !label.hasAttribute('for') && !label.control;
+    const fieldsIn = node => (isLabeledField(node) ? 1 : 0) +
+      Array.from(node.querySelectorAll('input, select, textarea')).filter(isLabeledField).length;
+    let label = null;
+    const previous = el.previousElementSibling;
+    if (free(previous)) {
+      let fields = 0;
+      for (let next = previous.nextElementSibling; next && next.tagName !== 'LABEL'; next = next.nextElementSibling) {
+        fields += fieldsIn(next);
+      }
+      if (fields === 1) label = previous;
+    }
+    const wrapper = el.parentElement;
+    if (!label && wrapper && fieldsIn(wrapper) === 1) {
+      const labels = wrapper.querySelectorAll('label');
+      if (labels.length === 1 && free(labels[0])) label = labels[0];
+    }
+    return label ? redactedText(label).trim().slice(0, 80) : '';
   }
 
   // ── Multi-field extract ──
   const DEFAULT_FIELDS = ['text', 'href', 'value', 'src', 'alt', 'id', 'name'];
+  const QUERY_BUILTIN_FIELDS = new Set([...DEFAULT_FIELDS, 'html', 'bounds', 'attrs']);
   const QUERY_LIMIT = 500;
 
-  function queryElements(selector, fields, limit) {
+  function queryElements(selector, fields, limit, full = false) {
     if (!selector) return { error: 'queryElements requires selector' };
     if (valueSelectorBlocked(selector)) return { error: VALUE_SELECTOR_ERROR };
     let nodes;
@@ -4689,6 +4967,12 @@
     const cap = Math.min(limit || QUERY_LIMIT, QUERY_LIMIT);
     const want = (fields && fields.length) ? fields : DEFAULT_FIELDS;
     const items = [];
+    const clipped = {};
+    const clip = (field, value, max) => {
+      if (value.length <= max) return value;
+      clipped[field] = (clipped[field] || 0) + 1;
+      return value.slice(0, max);
+    };
     for (let i = 0; i < nodes.length && items.length < cap; i++) {
       const el = nodes[i];
       const row = { tag: el.tagName.toLowerCase() };
@@ -4696,11 +4980,16 @@
       for (const f of want) {
         const name = String(f).toLowerCase();
         try {
-          if (f === 'text') row.text = renderedText(el).trim().slice(0, 400);
-          else if (f === 'html') row.html = redactMarkup(el, false).slice(0, 4000);
+          if (f === 'text') row.text = clip(f, renderedText(el).trim(), 400);
+          else if (f === 'html') row.html = clip(f, redactMarkup(el, false), 4000);
           else if (f === 'href') row.href = el.href || el.getAttribute('href') || undefined;
           else if (name === 'value' && sensitive) Object.assign(row, redactedValue(el));
-          else if (f === 'value') row.value = (el.value != null) ? String(el.value).slice(0, 400) : undefined;
+          else if (f === 'value') {
+            if (!['string', 'number'].includes(typeof el.value)) continue;
+            const cut = cutValue(String(el.value), full ? FULL_VALUE_LIMIT : 400);
+            if (cut.valueClipped) clipped.value = (clipped.value || 0) + 1;
+            Object.assign(row, cut);
+          }
           else if (f === 'src') row.src = el.src || el.getAttribute('src') || undefined;
           else if (f === 'alt') row.alt = el.alt || el.getAttribute('alt') || undefined;
           else if (f === 'id') row.id = el.id || undefined;
@@ -4718,7 +5007,7 @@
           } else {
             // arbitrary attribute name
             const v = el.getAttribute(f);
-            if (v != null) row[f] = v.slice(0, 400);
+            if (v != null) row[f] = clip(f, v, 400);
           }
         } catch {}
       }
@@ -4726,7 +5015,13 @@
       for (const k of Object.keys(row)) if (row[k] === undefined) delete row[k];
       items.push(row);
     }
-    return { count: items.length, total: nodes.length, truncated: nodes.length > items.length, items };
+    // #633: a requested attribute no returned row has may be a typo or a property such as outerHTML.
+    const unknownFields = !items.length ? [] : [...new Set(want.map(String))]
+      .filter(f => !QUERY_BUILTIN_FIELDS.has(f) && !items.some(row => Object.hasOwn(row, f)));
+    const roleHint = nodes.length ? null : roleSelectorHint(selector, false) || snapshotStateSelectorHint(selector);
+    return { count: items.length, total: nodes.length, truncated: nodes.length > items.length, items,
+             ...(Object.keys(clipped).length && { clipped }), ...(unknownFields.length && { unknownFields }),
+             ...(roleHint && { hint: roleHint }) };
   }
 
   // ── HTML / bounds / computed style ──
@@ -4908,6 +5203,11 @@
   function getMarkdown(selector) {
     const root = selector ? resolveElement(selector) : document.body;
     if (!root) return notFound();
+    // A field reads as its exact value, line breaks included, so a value query clipped can be read in full (#629).
+    if (['INPUT', 'TEXTAREA'].includes(root.tagName)) {
+      const value = isSensitiveField(root) ? '' : String(root.value ?? '');
+      return { markdown: value.slice(0, 80000), length: value.length, ...(value.length > 80000 && { truncated: true }) };
+    }
     // An element's own text nodes are left out when its text is sensitive.
     function walkChildren(el) {
       const sensitive = holdsSensitiveText(el);
@@ -4936,6 +5236,7 @@
           return '`' + children() + '`';
         }
         case 'pre': return '\n\n```\n' + renderedText(node) + '\n```\n\n';
+        case 'textarea': return '\n\n' + node.value + '\n\n';
         case 'a': {
           const href = node.getAttribute('href') || '';
           const t = children().trim();
@@ -5912,13 +6213,11 @@
           results[key] = { ok: true, tag: el.tagName.toLowerCase(), checked: el.checked };
         } else {
           el.focus();
-          const setter = nativeValueSetter(el);
-          const text = singleLineValue(el, String(value));
-          if (setter) setter.call(el, text);
-          else el.value = text;
+          const rejected = writeFieldValue(el, singleLineValue(el, String(value)));
+          if (rejected) { results[key] = rejected; continue; }
           el.dispatchEvent(new Event('input', { bubbles: true }));
           el.dispatchEvent(new Event('change', { bubbles: true }));
-          results[key] = { ok: true, tag: el.tagName.toLowerCase() };
+          results[key] = { ok: true, tag: el.tagName.toLowerCase(), ...constraintViolation(el) };
         }
       } catch (e) {
         results[key] = { error: e.message };

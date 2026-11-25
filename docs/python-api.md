@@ -74,6 +74,15 @@ result = tab.snapshot()
   still loading (`navigation_pending`).
 - Limits: 64,000 bytes of code; 16,000 bytes of output and result combined (bytes, not
   characters); 100 API calls; 30 s default deadline, 120 s max.
+- The 101st call, or the first call after the deadline, is not sent: it raises `ScriptLimit`
+  (`code` `script_operation_limit` or `script_timeout`). It is a `BaseException`, so
+  `except Exception` and `except KitsuneError` let it through while `finally` and
+  `except ScriptLimit` run; print what the loop collected there. The next call stops the script.
+  A call still waiting for its reply at the deadline raises it too, and stays `unknown` in
+  `operations`: the bridge may still run it.
+  Uncaught, the script ends with that code, its printed output and its `result` variable, if it
+  set one. `browser.calls_left` and `browser.seconds_left` give the budget left. When every
+  operation was a read or a navigation, the hint says nothing was written.
 - A failed read or wait raises its exception in the script, as outside scripts: `text`,
   `snapshot`, `find`, `query`, `forms`, `info` and `wait_for` (except `js=`, which runs JavaScript
   in the page). Catch `TimedOut` or `KitsuneError` (both are defined in the script) to go on; the
@@ -84,13 +93,21 @@ result = tab.snapshot()
   page and run only the remaining work, never replay the script. An approval stop names a
   `recovery_tool` for `browser_tools_call`. A tool [you require approval for](your-tabs.md#tools-that-need-your-approval)
   pauses the script instead, without counting against the deadline.
-- A ref dies when an action loads another document. Only a link's ref is followed: when the tab
-  is your client's own and its new page lists exactly one link with the same name and the same
-  destination, the action runs on that link and reports `remapped: {from, to, role, name}` in its
-  result and its `operations` entry. Any other stale ref fails as `stale_ref`: target by selector
-  or take a new snapshot.
-- On timeout the worker is killed; a command already sent may still finish, so read the page
-  before writing again.
+- A ref dies when an action loads another document, even a reload of the same URL. Links and
+  fields are followed: when the tab is your client's own and its new page lists exactly one link
+  with the same name and the same destination, or (#616) is back at the URL the ref's snapshot
+  was taken on and lists exactly one textbox, searchbox, combobox or spinbutton with the same name
+  and the same tag, `type`, `name` and `id`, the action runs on that element and reports
+  `remapped: {from, to, role, name}` in its result and its `operations` entry. Only refs from
+  `tab.snapshot()` are followed this way. Any other stale ref fails as `stale_ref`: target by
+  selector, use the refs `tab.navigate(url)` returns in `r['snapshot']`, or take a new snapshot.
+- An agent tab dismisses a confirm or prompt no policy answers. A script whose action opened one
+  returns `dialogs` (the last 5, each with its `operation` index) and, for a dismissed confirm or
+  prompt, `dialog_hint`, whether or not it printed the action's reply; that operation's entry has
+  `dialog: "dismissed"` (or `"shown"`). Call `tab.handle_dialogs(accept=True)` and repeat the
+  action, in the same script if you like.
+- The worker is killed 2 s after the deadline; a command already sent may still finish, so read
+  the page before writing again.
 - `help(tab.query)` prints a method's signature. A `Tab` or `Browser` call with unknown, missing or
   extra arguments fails with a `TypeError` and that signature in the output.
 
@@ -109,6 +126,13 @@ its first 16,000 bytes; `result` gets what the output left, a string cut to its 
 other value to the start of its JSON text (a string). The cut content is incomplete: no match in
 it is not absence from the page, so make a new, smaller read-only observation for the rest.
 `operations` lists what the script did; do not replay it.
+
+Each `operations` entry has `route`, `status` (`ok`, `failed`, or `unknown` for a call cut off by
+the deadline), `tab_id`, `remapped` when a ref was followed, and `method` only when it is `GET`.
+Over 10 operations the list is summarized:
+`{"count": 100, "by_route": {"/api/navigate": 50, "/api/page-text": 50}, "tab_id": 7, "notable": [...], "last": [...]}`.
+`notable` keeps every entry that failed, is `unknown`, was remapped or used another tab (up to
+10, then `notable_more`), and `last` the last 3 others, each with its `index`.
 
 ## Tabs
 
@@ -138,11 +162,11 @@ it is not absence from the page, so make a new, smaller read-only observation fo
 | --- | --- |
 | `text()` | Visible text |
 | `snapshot(target=None, *, max_depth=None, text=False)` | Accessibility-style tree with refs ([Snapshots](api-reference.md#browser_snapshottab_idnone-selectornone-refnone-max_depthnone-textfalse)) |
-| `markdown(target=None)` | The page or a subtree as Markdown |
+| `markdown(target=None)` | The page or a subtree as Markdown; an input or textarea target reads as its exact value, line breaks included |
 | `html(target)` | One element's `outerHTML` (`"html"` for the page) |
-| `query(selector, fields=None, limit=50)` | Fields of matching elements (max 500 rows, 400-char snippets); warns when truncated. `href` and `src` are absolute URLs, even when the attribute is relative |
+| `query(selector, fields=None, *, limit=None)` | Fields of matching elements (50 rows unless `limit` is given, max 500; 400-char text, whole values). Warns when more matched than the default limit or 500 rows, not when an explicit `limit` cut them, and when nothing matches a tag that elements carry as their role (`article` for `role="article"`) or a snapshot's `action`/`testid` state read as an attribute (`button[action="/x"]`, named as `form[action="/x"] button`). A field other than `text`, `html` (inner markup), `href`, `value`, `src`, `alt`, `id`, `name`, `bounds` and `attrs` is read as an attribute, and one no row has (such as `outerHTML`) is named in a warning. `href` and `src` are absolute URLs, even when the attribute is relative |
 | `find(query)` | Elements matching a description like `"login button"`, best first |
-| `forms()` | Form fields with labels and values |
+| `forms()` | Form fields with labels and values; warns when a value was cut |
 | `links(internal_only=False)` | Links |
 | `info()` | URL, title, `readyState`, sizes, scroll, recent dialogs |
 | `screenshot(path=None, target=None, full_page=False, format="png")` | Image bytes, optionally written to `path` |
@@ -152,7 +176,11 @@ it is not absence from the page, so make a new, smaller read-only observation fo
 
 Sensitive values are redacted ([Sensitive-field redaction](api-reference.md#sensitive-field-redaction)).
 Reads cut at the bridge's caps warn with a `UserWarning`; pass a `target` to read less (`text()`
-has none: use `snapshot(target, text=True)` or `query`).
+has none: use `snapshot(target, text=True)` or `query`). `text()` reads up to 500,000 characters,
+not the direct tool's 20,000: a script's reads are not model-visible, only what it prints (#630).
+For the same reason `query(..., fields=["value"])` and `forms()` return values whole up to 100,000
+characters, not the direct tools' 400 and 100, so a script can read a value and write it back. A
+value still cut ends with `…`, its row has `valueClipped: True`, and both calls warn (#650).
 
 ### Selector contract by method
 
@@ -195,7 +223,7 @@ report `matches` ([Strict selectors](api-reference.md#strict-selectors)).
 
 | `Tab` method | Does |
 | --- | --- |
-| `navigate(url)`, `back()`, `forward()`, `reload(bypass_cache=False)` | Navigate. `url` may be relative to the tab's current URL (`"/deals/48"`); one that does not parse fails with `invalid_url` |
+| `navigate(url)`, `back()`, `forward()`, `reload(bypass_cache=False)` | Navigate. `url` may be relative to the tab's current URL (`"/deals/48"`); one that does not parse fails with `invalid_url`. A page that still looks like it is rendering (no content, a `Loading...` line, `aria-busy`) warns with the `wait_for` to use; `new_tab` warns the same way. The warning comes at the tab's first read after the navigation (`text`, `snapshot`, `query`, `forms`, `find`, `markdown`, `html`), once, and not when a `wait_for` on the tab comes first (#651) |
 | `click(target, button=None, modifiers=None, hold_ms=0)`, `double_click(target)` | Synthetic click; `hold_ms` for long presses |
 | `hover(target, duration_ms=0, steps=None)` | Synthetic hover; `duration_ms`/`steps` for hover-intent controls |
 | `fill(target, value)` | Replace a value |
@@ -242,6 +270,7 @@ current focus. Check the result's `effect` and `prevented`, and read the page, r
 | `url=`, `title=` | URL or title matches a JS regex |
 | `js=` | An expression returns a non-empty result (developer build) |
 | `network_idle=True` | No new resource for 500 ms |
+| `content=True` | The page shows content: not empty, no line that is only a loading placeholder, no `aria-busy` element. Needs no text of the page; a navigate's or new tab's no-content warning names it (#652) |
 
 ## Batches, parallel tabs and workflows
 
@@ -251,6 +280,11 @@ request, `browser.parallel(sequences)` runs one sequence per tab, and
 Failures don't raise: see `results` and `progress`. An unfinished call returns `call` and
 `resume_token` for `browser.resume(...)` ([Checkpoint and resume](checkpoint-resume.md)).
 `browser.retry(command, max_attempts=3)` retries retryable failures.
+
+In `browser_run_python`, a script's browser calls run one at a time, also when the script
+starts threads: threads on four tabs take as long as one tab (#634). To work on several tabs at
+once, give `browser.parallel` one sequence per tab; in a local measurement, 12 navigations to
+a page answering in 1 s took 13 s with four threads and 3.2 s with `browser.parallel`.
 
 `browser.keep_alive(tabs)` / `stop_keep_alive()` prevent tab unloading,
 `browser.broadcast(tabs, command)` runs a command in each tab, and

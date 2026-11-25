@@ -35,6 +35,9 @@ if TYPE_CHECKING:
 # resolver reads as CSS, a Playwright-style selector such as text= or role=, or an s1e0/r0 ref
 # (docs/api-reference.md#target-selectors). The core MCP tools send targets the same way.
 _REF = re.compile(r"e\d+")
+# tab.query rows without a limit, and the content script's ceiling (QUERY_LIMIT).
+_QUERY_DEFAULT_LIMIT = 50
+_QUERY_MAX_LIMIT = 500
 
 
 def _action_target(target: str) -> dict:
@@ -72,6 +75,17 @@ def _cut(result: dict, what: str, instead: str = "read a part of the page with a
     if result.get("truncated"):
         warnings.warn(f"{what} was cut at the bridge's size cap; {instead}", stacklevel=3)
     return result
+
+
+def _rendering_warning(result: dict) -> str | None:
+    """The warning for a navigate or new tab whose page looks like it is still rendering (#631)."""
+    if not result.get("rendering"):
+        return None
+    placeholder = result.get("placeholder")
+    wait = f"tab.wait_for(text_gone={placeholder!r})" if placeholder else "tab.wait_for(content=True)"
+    shows = f"still shows {placeholder!r}" if placeholder else "shows no content yet or is marked busy"
+    return (f"The page {shows} and may still be rendering; wait with {wait} "
+            "before reading it, instead of a fixed sleep")
 
 
 def connect(*, user_tabs: str | None = None, confirm=None,
@@ -124,6 +138,16 @@ class Browser:
         self.pool = Pool(self)
         self.intercept = Intercept(self)
         self.policy = Policy(self)
+        # #651: the rendering warning of a tab's last navigate or new tab, raised by the tab's next
+        # read unless a wait_for on the tab comes first, by tab id.
+        self._rendering: dict[int, str] = {}
+
+    def _note_rendering(self, tab_id: int, result: dict) -> None:
+        warning = _rendering_warning(result)
+        if warning:
+            self._rendering[tab_id] = warning
+        else:
+            self._rendering.pop(tab_id, None)
 
     def request(self, route: str, body: dict | None = None, *, timeout: float = 15) -> dict:
         """Send a bridge request, GET without a body, else POST; return its result or raise KitsuneError.
@@ -172,14 +196,17 @@ class Browser:
 
         wait=True waits up to timeout ms for the load; a load that does not finish raises
         TimedOut and leaves the tab open, with its id in error.result["tabId"], unless the
-        page's DOM is parsed by then, so that it can be read and acted on.
+        page's DOM is parsed by then, so that it can be read and acted on. A page that looks like
+        it is still rendering warns at the tab's next read, unless a tab.wait_for comes first.
         """
         body = _with_confirm({"url": url}, confirm)
         if not wait:
             return Tab(self, self.request("/api/new-tab", body)["tabId"])
         if timeout <= 0:
             raise ValueError("timeout must be positive")
-        result = self.request("/api/new-tab", {**body, "wait": True, "timeout": timeout}, timeout=timeout / 1000 + 10)
+        result = self.request("/api/new-tab", {**body, "wait": True, "timeout": timeout},
+                              timeout=timeout / 1000 + 10)
+        self._note_rendering(result["tabId"], result)
         return Tab(self, result["tabId"])
 
     def batch(self, commands: list[dict], *, tab=None) -> dict:
@@ -548,6 +575,12 @@ class Tab:
     def _request(self, route: str, body: dict | None = None, *, timeout: float = 15) -> dict:
         return self.browser.request(route, {**(body or {}), "tabId": self.id}, timeout=timeout)
 
+    def _warn_rendering(self) -> None:
+        """At the first read after a navigate or new tab left the page rendering, with no wait_for since (#651)."""
+        warning = self.browser._rendering.pop(self.id, None)
+        if warning:
+            warnings.warn(warning, stacklevel=3)
+
     def _action(self, route: str, body: dict, *, wait: bool = False, timeout: int = 10000,
                 expect: dict | None = None, first: bool = False, confirm: str | None = None,
                 pointer_ms: int = 0, base_seconds: float = ACTION_REQUEST_SECONDS) -> dict:
@@ -571,9 +604,18 @@ class Tab:
         return self._request("/api/page-info")
 
     def text(self) -> str:
-        """The page's visible text; "" for an HTTP error the browser shows without a document."""
-        return _cut(self._request("/api/page-text"), "Page text",
-                    "read a part of the page with tab.snapshot(target=..., text=True) or tab.query(...)")["text"]
+        """The page's visible text; "" for an HTTP error the browser shows without a document.
+
+        Up to 500,000 characters, unlike the direct MCP tool's 20,000: a script's reads are not
+        model-visible, only what it prints.
+        """
+        self._warn_rendering()
+        result = _cut(self._request("/api/page-text", {"full": True}), "Page text",
+                      "read a part of the page with tab.snapshot(target=..., text=True) or tab.query(...)")
+        if result.get("_cached"):
+            warnings.warn("Page text came from the bridge's read cache and may be stale; "
+                          "browser.cache(\"ttl\", seconds=0) turns the cache off", stacklevel=2)
+        return result["text"]
 
     def snapshot(self, target: str | None = None, *, max_depth: int | None = None, text: bool = False) -> str:
         """The accessibility-style tree of the page, or of target's subtree, with refs for actions.
@@ -585,14 +627,26 @@ class Tab:
         """
         if max_depth is not None and (type(max_depth) is not int or max_depth < 0):
             raise ValueError("max_depth must be a non-negative integer")
+        self._warn_rendering()
         body = {**_scope(target), "text": text}
         if max_depth is not None:
             body["maxDepth"] = max_depth
         return _cut(self._request("/api/snapshot", body), "Snapshot")["snapshot"]
 
     def forms(self) -> list[dict]:
-        """Every form field with its label and value; sensitive values read redacted/hasValue instead."""
-        return self._request("/api/forms")["fields"]
+        """Every form field with its label and value; sensitive values read redacted/hasValue instead.
+
+        Values are whole up to 100,000 characters, unlike the direct MCP tool's 100: a script's
+        reads are not model-visible. A longer value ends with … and its row has valueClipped (warned).
+        """
+        self._warn_rendering()
+        fields = self._request("/api/forms", {"full": True})["fields"]
+        clipped = sum(1 for field in fields if field.get("valueClipped"))
+        if clipped:
+            warnings.warn(f"Form field values were cut ({clipped} field{'s' if clipped > 1 else ''}; a cut value "
+                          "ends with … and its row has valueClipped); read one in full with tab.markdown(target)",
+                          stacklevel=2)
+        return fields
 
     def find(self, query: str) -> list[dict]:
         """Elements matching a description such as "login button", best first, each with a ref.
@@ -602,33 +656,54 @@ class Tab:
         there are no text/regex arguments. Filter a scoped snapshot or bounded query in Python
         for those; matches only cover that returned subset, not the whole page.
         """
+        self._warn_rendering()
         return self._request("/api/find", {"query": query})["results"]
 
-    def query(self, selector: str, fields: list[str] | None = None, *, limit: int = 50) -> list[dict]:
+    def query(self, selector: str, fields: list[str] | None = None, *, limit: int | None = None) -> list[dict]:
         """Fields (text, href, value, src, alt, id, name by default) of elements matching native CSS.
 
         Current document only: no shadow/frame traversal, snapshot refs or Playwright forms
-        such as :has-text or text=. At most 500 rows; text/value fields are clipped to 400
-        characters. A row-limit warning does not report those field clips. Filter locally,
-        but absence in returned snippets is not page-wide absence; scope a snapshot for detail.
+        such as :has-text or text=. 50 rows unless limit is given, at most 500; text is clipped to
+        400 characters and value to 100,000 (the direct MCP tool's 400), a cut value ending with …
+        and its row having valueClipped. Other field names are read as attributes. A warning
+        reports more matches than the default limit or 500 rows, clipped fields, and a field
+        no row has (the html field is the inner markup; tab.html(target) is the outerHTML).
+        Filter locally, but absence in returned snippets is not page-wide absence; scope a snapshot for detail.
         href and src are absolute URLs even when the attribute is relative ('/deals/48'), so
         pass them to navigate as they are.
         """
-        body = {"selector": selector, "limit": limit}
+        self._warn_rendering()
+        # #650: a script's reads are not model-visible, so values come whole.
+        body = {"selector": selector, "limit": _QUERY_DEFAULT_LIMIT if limit is None else limit, "full": True}
         if fields:
             body["fields"] = fields
         result = self._request("/api/query", body)
-        if result.get("truncated"):
+        if not result["items"] and result.get("hint"):
+            warnings.warn(f"Query matched no elements: {result['hint']}", stacklevel=2)
+        # #633: an explicit limit below the ceiling chose its rows; the advice is noise there.
+        if result.get("truncated") and (limit is None or result.get("count", 0) >= _QUERY_MAX_LIMIT):
             warnings.warn("Query results were truncated; narrow the selector or increase limit",
                           stacklevel=2)
+        if result.get("clipped"):
+            fields = ", ".join(f"{name} in {count} rows" for name, count in result["clipped"].items())
+            warnings.warn(f"Query fields were clipped ({fields}); read one element in full with "
+                          "tab.markdown(target)", stacklevel=2)
+        if result.get("unknownFields"):
+            unknown = result["unknownFields"]
+            markup = any(name.lower() in ("outerhtml", "innerhtml") for name in unknown)
+            warnings.warn(f"Query fields {', '.join(unknown)}: no such field or attribute on any row"
+                          + ("; use html for the inner markup or tab.html(target) for one element's outerHTML"
+                             if markup else ""), stacklevel=2)
         return result["items"]
 
     def html(self, target: str) -> str:
         """The outerHTML of one element ("html" for the whole page), with sensitive values redacted."""
+        self._warn_rendering()
         return _cut(self._request("/api/html", _action_target(target)), "HTML")["html"]
 
     def markdown(self, target: str | None = None) -> str:
-        """The page, or target's subtree, as Markdown."""
+        """The page, or target's subtree, as Markdown; an input or textarea target reads as its exact value."""
+        self._warn_rendering()
         return _cut(self._request("/api/markdown", _scope(target)), "Markdown")["markdown"]
 
     def links(self, *, internal_only: bool = False) -> list[dict]:
@@ -754,9 +829,13 @@ class Tab:
 
     def navigate(self, url: str, *, expect: dict | None = None, confirm: str | None = None) -> dict:
         """Load url: an absolute URL, or a relative one ('/deals/48') resolved against the tab's
-        current URL. One that does not parse fails with code invalid_url."""
-        return self._action("/api/navigate", {"url": url}, expect=expect, confirm=confirm,
-                            base_seconds=NAVIGATE_REQUEST_SECONDS)
+        current URL. One that does not parse fails with code invalid_url. A page that looks like it
+        is still rendering (no content, a "Loading..." line, aria-busy) warns with the wait to use at
+        the next read of the tab, unless a tab.wait_for comes first."""
+        result = self._action("/api/navigate", {"url": url}, expect=expect, confirm=confirm,
+                              base_seconds=NAVIGATE_REQUEST_SECONDS)
+        self.browser._note_rendering(self.id, result)
+        return result
 
     def back(self, *, expect: dict | None = None, confirm: str | None = None) -> dict:
         return self._action("/api/back", {}, expect=expect, confirm=confirm)
@@ -1003,7 +1082,8 @@ class Tab:
 
     def wait_for(self, *, target: str | None = None, text: str | None = None, text_gone: str | None = None,
                  url: str | None = None, title: str | None = None, js: str | None = None,
-                 network_idle: bool = False, timeout: int = 10000, confirm: str | None = None) -> dict:
+                 network_idle: bool = False, content: bool = False, timeout: int = 10000,
+                 confirm: str | None = None) -> dict:
         """Wait up to timeout ms for exactly one condition, else raise TimedOut.
 
         target: a snapshot ref or native CSS for a visible element, not Playwright forms
@@ -1012,14 +1092,16 @@ class Tab:
         rendered page text (snapshot names from placeholders or aria-labels are not page text). url, title: a
         JavaScript regex on the tab, which survives navigation. js: an expression with a
         non-empty result (developer build only). network_idle: 500 ms without new resources.
+        content: the page shows content, needing no text of it: not empty, no line that is only a
+        loading placeholder, no aria-busy element (what a navigate's rendering warning checks).
 
         In a browser_run_python script, catch TimedOut (or TimeoutError) to go on after an unmet
         wait. A js wait is the exception: it runs JavaScript in the page, so when it fails the
         script stops even if it catches, as after a failed write.
         """
         conditions = (target, text, text_gone, url, title, js)
-        if sum(condition is not None for condition in conditions) + bool(network_idle) != 1:
-            raise ValueError("Pass exactly one of target, text, text_gone, url, title, js, network_idle")
+        if sum(condition is not None for condition in conditions) + bool(network_idle) + bool(content) != 1:
+            raise ValueError("Pass exactly one of target, text, text_gone, url, title, js, network_idle, content")
         if timeout <= 0:
             raise ValueError("timeout must be positive")
         body = {"timeout": timeout}
@@ -1031,6 +1113,9 @@ class Tab:
                 raise ValueError("text and text_gone must be non-empty")
             route = "/api/wait-for-text"
             body.update(text=text, text_gone=text_gone)
+        elif content:
+            route = "/api/wait-for-text"
+            body["content"] = True
         elif js is not None:
             route = "/api/wait-for-result"
             body = _with_confirm({**body, "code": js, "pollInterval": 500}, confirm)
@@ -1040,6 +1125,7 @@ class Tab:
         else:
             route = "/api/wait-for-network-idle"
             body["idleMs"] = 500
+        self.browser._rendering.pop(self.id, None)  # #651: the script waits before it reads
         try:
             return self._request(route, body, timeout=timeout / 1000 + 10)
         except KitsuneError as error:
