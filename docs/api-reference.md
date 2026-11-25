@@ -2716,6 +2716,10 @@ reported as buttons; their children remain discoverable. Explicit roles and nati
 controls are preserved. Custom controls use explicit labels/title/alt, then direct
 text; subtree text is used only when at most 80 characters and five elements long.
 
+A `<button>` is named by its `aria-label`, label or text, the name `role=button[name=…]` matches,
+and keeps its `value` as a state (`button "Delete" [ref=e5] [value="delete"]`); an
+`<input type=button|submit|reset>` is named by its value (#649).
+
 A line's `value` is the element's own: a `<form>` that holds a control named `value` has none,
 and neither does its row in `browser_query(fields=["value"])` (#648).
 

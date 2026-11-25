@@ -1331,7 +1331,9 @@
       else fallback = redactedText(el) || el.title;
       return clean(el.getAttribute('aria-label') || findLabel(el) ||
         (el.type === 'image' ? el.alt : '') ||
-        (['button', 'submit', 'reset'].includes(el.type) && !isSensitiveField(el) ? el.value : '') || fallback);
+        // A <button> is named by its text, as role= selectors match it (#649), not its value.
+        (el.tagName === 'INPUT' && ['button', 'submit', 'reset'].includes(el.type) && !isSensitiveField(el)
+          ? el.value : '') || fallback);
     }
     // A same-origin link URL is printed as its path (#310).
     const page = (() => {
