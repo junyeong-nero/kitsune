@@ -28,8 +28,11 @@ class Element {
       children.map(child => child.cloneNode(true))), props);
   }
   querySelectorAll(selector) {
-    assert.equal(selector, '*');
-    return this.children.flatMap(child => [child, ...child.querySelectorAll(selector)]);
+    const all = this.children.flatMap(child => [child, ...child.querySelectorAll('*')]);
+    if (selector === '*') return all;
+    // An unlabeled field's wrapper is searched for other fields (#655).
+    assert.equal(selector, 'input, select, textarea');
+    return all.filter(el => ['INPUT', 'SELECT', 'TEXTAREA'].includes(el.tagName));
   }
   closest() { return null; }
   focus() { this.focused = true; }

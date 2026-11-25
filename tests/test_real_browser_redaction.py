@@ -301,7 +301,9 @@ class RealBrowserRedactionTests(harness.RealBrowserTestCase):
         self.assertEqual((rows["dom"]["value"], rows["dom"].get("redacted")), (value, None), field_id)
         self.assertEqual((rows["query"]["value"], rows["query"].get("redacted")), (value, None), field_id)
         for tool in ("browser_snapshot", "browser_snapshot text"):
-            self.assertIn(f"[value={json.dumps(value)}]", reads[tool]["snapshot"], f"{tool}: {field_id}")
+            # A labeled field's placeholder comes first, as a state of its own (#655).
+            shown = rf'\[(placeholder="[^"]*" )?value={re.escape(json.dumps(value))}\]'
+            self.assertRegex(reads[tool]["snapshot"], shown, f"{tool}: {field_id}")
         found = self.call("/api/find", {"query": value, "tabId": tab_id})["results"]
         self.assertTrue(any(r["selector"] == f"#{field_id}" and r["score"] > 1 for r in found), found)
 

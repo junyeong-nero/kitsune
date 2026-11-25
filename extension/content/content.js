@@ -1437,6 +1437,13 @@
         // A button's value is left out when empty or its name (#656); a field's empty value is kept.
         const buttonLike = el.tagName === 'BUTTON' ||
           (el.tagName === 'INPUT' && ['button', 'submit', 'reset', 'image'].includes(el.type));
+        // A field named by a <label> keeps its placeholder, often an example or a format (#655).
+        // Without aria naming, a field's name is its label's text unless it is the placeholder.
+        const placeholder = ['INPUT', 'TEXTAREA'].includes(el.tagName) ? clean(el.placeholder) : '';
+        if (placeholder && name && name !== placeholder &&
+            !el.getAttribute('aria-label') && !el.getAttribute('aria-labelledby')) {
+          states.push(`placeholder=${JSON.stringify(placeholder)}`);
+        }
         if (['string', 'number'].includes(typeof el.value) && !isSensitiveField(el)) {
           const value = clean(el.value);
           if (!buttonLike || (value && value !== name)) states.push(`value=${JSON.stringify(value)}`);
@@ -4833,7 +4840,34 @@
       if (lbl) return redactedText(lbl).trim().slice(0, 80);
     }
     const parent = el.closest('label');
-    return parent ? redactedText(parent).trim().slice(0, 80) : (el.ariaLabel || '');
+    return parent ? redactedText(parent).trim().slice(0, 80) : (el.ariaLabel || unassociatedLabel(el));
+  }
+
+  // A field's visible <label> that names no control (no `for`, no field inside), #655: the field's
+  // previous sibling when no other field follows it before the next label, else the only label in
+  // the field's parent when that holds no other field. A label shared by two fields names neither.
+  const isLabeledField = el => ['TEXTAREA', 'SELECT'].includes(el.tagName) ||
+    (el.tagName === 'INPUT' && !['hidden', 'button', 'submit', 'reset', 'image'].includes(el.type));
+  function unassociatedLabel(el) {
+    if (!isLabeledField(el)) return '';
+    const free = label => label?.tagName === 'LABEL' && !label.hasAttribute('for') && !label.control;
+    const fieldsIn = node => (isLabeledField(node) ? 1 : 0) +
+      Array.from(node.querySelectorAll('input, select, textarea')).filter(isLabeledField).length;
+    let label = null;
+    const previous = el.previousElementSibling;
+    if (free(previous)) {
+      let fields = 0;
+      for (let next = previous.nextElementSibling; next && next.tagName !== 'LABEL'; next = next.nextElementSibling) {
+        fields += fieldsIn(next);
+      }
+      if (fields === 1) label = previous;
+    }
+    const wrapper = el.parentElement;
+    if (!label && wrapper && fieldsIn(wrapper) === 1) {
+      const labels = wrapper.querySelectorAll('label');
+      if (labels.length === 1 && free(labels[0])) label = labels[0];
+    }
+    return label ? redactedText(label).trim().slice(0, 80) : '';
   }
 
   // ── Multi-field extract ──
