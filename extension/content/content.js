@@ -295,9 +295,46 @@
     return null;
   }
 
+  // An unnamed control's snapshot states read like its attributes (#653): agents write
+  // button[action="/bookmark/t833"] or [testid="…"], which match nothing. The action is the
+  // control's form's and the test id is data-testid (or data-test). For a CSS selector with such an
+  // attribute, a hint naming the rewritten selector when that one matches; null otherwise.
+  const SNAPSHOT_STATE_ATTRIBUTE =
+    /\[\s*(action|testid)\s*([~|^$*]?=)\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\]\s]+)\s*([is])?\s*\]/i;
+  function snapshotStateSelectorHint(selector) {
+    if (typeof selector !== 'string') return null;
+    const attribute = SNAPSHOT_STATE_ATTRIBUTE.exec(selector);
+    if (!attribute) return null;
+    const [written, name, operator, value, flag = ''] = attribute;
+    const before = selector.slice(0, attribute.index), after = selector.slice(attribute.index + written.length);
+    const matches = candidate => { try { return !!document.querySelector(candidate); } catch { return false; } };
+    if (name.toLowerCase() === 'testid') {
+      for (const real of ['data-testid', 'data-test']) {
+        const candidate = `${before}[${real}${operator}${value}${flag && ' ' + flag}]${after}`;
+        if (matches(candidate)) {
+          return `Snapshots print a control's ${real} as testid, which is no attribute: use ${candidate}.`;
+        }
+      }
+      return null;
+    }
+    // The compound selector holding [action=…] moves under the form: button[action="/x"] →
+    // form[action="/x"] button. Quoted text and brackets are masked so their spaces do not count.
+    const masked = before.replace(/(["'])(?:\\.|(?!\1).)*\1|\[[^\]]*\]|\([^)]*\)/g, part => 'x'.repeat(part.length));
+    const start = Math.max(...[' ', '>', '+', '~', ',', '\t', '\n'].map(c => masked.lastIndexOf(c))) + 1;
+    const control = before.slice(start) + after;
+    if (!control.trim()) return null;
+    for (const op of [operator, '*=']) {
+      const candidate = `${before.slice(0, start)}form[action${op}${value}${flag && ' ' + flag}] ${control}`;
+      if (matches(candidate)) {
+        return `Snapshots print a control's form action as action, which is the form's attribute: use ${candidate}.`;
+      }
+    }
+    return null;
+  }
+
   function withRoleHint(msg, result) {
     if (result?.code !== 'not_found' || typeof msg.selector !== 'string') return result;
-    const hint = roleSelectorHint(msg.selector);
+    const hint = roleSelectorHint(msg.selector) || snapshotStateSelectorHint(msg.selector);
     return hint ? { ...result, hint } : result;
   }
 
@@ -4952,7 +4989,7 @@
     // #633: a requested attribute no returned row has may be a typo or a property such as outerHTML.
     const unknownFields = !items.length ? [] : [...new Set(want.map(String))]
       .filter(f => !QUERY_BUILTIN_FIELDS.has(f) && !items.some(row => Object.hasOwn(row, f)));
-    const roleHint = nodes.length ? null : roleSelectorHint(selector, false);
+    const roleHint = nodes.length ? null : roleSelectorHint(selector, false) || snapshotStateSelectorHint(selector);
     return { count: items.length, total: nodes.length, truncated: nodes.length > items.length, items,
              ...(Object.keys(clipped).length && { clipped }), ...(unknownFields.length && { unknownFields }),
              ...(roleHint && { hint: roleHint }) };
