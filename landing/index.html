@@ -217,10 +217,11 @@
       <a class="chart" href="docs/benchmark/">
         <img src="https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/benchmark-webarena-pro.svg"
              width="1200" height="830" loading="lazy"
-             alt="Four-way benchmark, 26 WebArena-Pro tasks, 208 attempts. Passed, Claude Code / Codex: Kitsune 13/26 and 12/26; Playwright MCP 13/26 and 12/26; Aside 12/26 and 12/26; EgoLite 12/26 and 12/26. Mean input tokens per attempt: Kitsune 283k / 414k; Aside 463k / 512k; EgoLite 360k / 622k; Playwright MCP 660k / 809k. Mean tool calls: Kitsune 14.0 / 15.8; Aside 16.1 / 15.6; EgoLite 12.8 / 17.5; Playwright MCP 29.8 / 35.1.">
+             alt="Four-way benchmark, 26 WebArena-Pro tasks, 208 attempts. Passed, Claude Code / Codex: Kitsune 13/26 and 12/26; Playwright MCP 13/26 and 12/26; Aside 12/26 and 12/26; EgoLite 12/26 and 12/26. Mean input tokens per attempt: Kitsune 201k / 414k; Aside 463k / 512k; EgoLite 360k / 622k; Playwright MCP 660k / 809k. Mean tool calls: Kitsune 12.1 / 15.8; Aside 16.1 / 15.6; EgoLite 12.8 / 17.5; Playwright MCP 29.8 / 35.1.">
       </a>
       <ul class="bench-notes">
-        <li>On the tasks every tool passed, Kitsune used 39% of Playwright MCP’s input under Claude Code and 87% under Codex, with about half its tool calls under both. EgoLite (Claude Code) and Aside (Codex) made slightly fewer tool calls than Kitsune.</li>
+        <li>On the tasks every tool passed, Kitsune used 40% of Playwright MCP’s input under Claude Code and 87% under Codex, with about half its tool calls under both. Aside (Codex) made slightly fewer tool calls than Kitsune.</li>
+        <li>Kitsune’s Claude Code numbers are v0.8.3, run again alone on 2026-11-25. The rest are from 2026-11-20.</li>
         <li>Models: claude-opus-5-5 and gpt-6.1-sol, one attempt per task (19 test, 7 dev). Input counts include cache and differ from billed cost. Grading has no LLM judge, so scores are not comparable to the WebArena-Pro paper’s.</li>
         <li>Aside and EgoLite used the operator’s browsers; Playwright MCP and Kitsune ran an isolated Firefox.</li>
       </ul>
