@@ -4485,10 +4485,26 @@
   }
 
   // ── Equivalent matches (#573) ──
-  // For click and hover, several matches can be one target: links to the same place, or the
-  // one text= match that is better than every other. Every other action stays strict.
+  // For click and hover, several matches can be one target: links to the same place, the
+  // one text= match that is better than every other, or matches inside one control (#654).
+  // Every other action stays strict.
   function oneTargetAmong(selector, matches) {
-    return sameDestinationLink(matches) || preferredTextMatch(selector, matches);
+    return sameDestinationLink(matches) || preferredTextMatch(selector, matches) || sameControl(matches);
+  }
+
+  // The control every match is or is inside, such as a list button whose title and subtitle
+  // both hold the text. null when a match is in no control or in another one, or when the
+  // control is not one a click activates as a whole wherever it lands: a container that is
+  // only focusable (tabindex) or has a handler, a listbox, a field or an editor.
+  const WHOLE_CONTROL_TAGS = new Set(['A', 'BUTTON', 'SUMMARY']);
+  const WHOLE_CONTROL_ROLES = new Set(['button', 'link', 'checkbox', 'radio', 'tab', 'menuitem',
+    'menuitemcheckbox', 'menuitemradio', 'option', 'switch']);
+  function sameControl(matches) {
+    const control = nearestInteractiveAncestor(matches[0]);
+    if (!control || matches.some(el => nearestInteractiveAncestor(el) !== control)) return null;
+    const role = control.getAttribute('role');
+    if (!(role ? WHOLE_CONTROL_ROLES.has(role) : WHOLE_CONTROL_TAGS.has(control.tagName))) return null;
+    return { el: control, why: { same_control: true } };
   }
 
   // Attributes that do not change what following a link does (aria-* are skipped too).

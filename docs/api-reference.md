@@ -195,7 +195,7 @@ intended behavior change: these actions used to act on the first match silently.
 - Inside `browser_run_python` the hint names the Python argument, `first=True`.
 
 `click` and `hover` (and `clickAndWaitNavigation`, which clicks) take several actionable
-matches as one target in two cases (#573). The result then adds `matches`, the number of
+matches as one target in three cases (#573, #654). The result then adds `matches`, the number of
 actionable matches, and the reason. Every other action, double and trusted clicks included,
 stays strict on the same matches.
 
@@ -213,10 +213,17 @@ stays strict on the same matches.
   it is, or is inside, a control (a link, button, field, an element with a control role,
   `tabindex` or `onclick`, or an editor) while another match is not. Two matches that are
   equally good, or each better on one count, stay ambiguous.
+- **Matches inside one control** (`same_control: true`): every match is, or is inside, the
+  same control, such as a list button whose title and subtitle both read `Jane Smith`. That
+  control is used. The control must be one a click activates as a whole: a link, button or
+  `<summary>`, or a `button`, `link`, `checkbox`, `radio`, `tab`, `menuitem`, `option` or
+  `switch` role. Matches in no control, in different ones, or in a container that is only
+  focusable (`tabindex`), a listbox, a field or an editor stay ambiguous.
 
 ```json
 {"ok": true, "tag": "a", "text": "Data Science Intern", "matches": 2, "same_href": true}
 {"ok": true, "tag": "a", "text": "View Student Schedule", "matches": 2, "preferred": ["exact_text", "interactive"]}
+{"ok": true, "tag": "button", "matches": 2, "same_control": true}
 ```
 
 Under ask-before-act the inspection resolves a click's selector the same way, so the checks
