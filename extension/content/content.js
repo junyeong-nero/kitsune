@@ -332,6 +332,66 @@
     return null;
   }
 
+  // A submit control's form action as snapshots print it (#632): formaction, else its form's
+  // action, as its path, with its origin when that is not the page's; never its query or fragment.
+  function submitActionPath(el, pageOrigin) {
+    const action = ['submit', 'image'].includes(el.type) && el.form &&
+      (el.getAttribute('formaction') || el.form.getAttribute('action'));
+    if (!action) return null;
+    let url;
+    try { url = new URL(action, el.baseURI); } catch { return null; }
+    if (!['http:', 'https:'].includes(url.protocol)) return null;
+    return url.origin === pageOrigin ? url.pathname : url.origin + url.pathname;
+  }
+
+  // Selectors snapshotStateTarget resolved, with why; the reply reports it (#670).
+  const snapshotStateResolutions = new Map();
+
+  // The element a CSS selector that reads a snapshot state as an attribute names, when the
+  // selector itself matches nothing (#670): <tag>[action="X"] is the one submit control of that
+  // tag whose form action snapshots print as X, [testid="X"] the one element with that data-testid
+  // (else data-test). null when none or several are; the not_found hint (#653) then stays.
+  function snapshotStateTarget(selector) {
+    const attribute = SNAPSHOT_STATE_ATTRIBUTE.exec(selector);
+    if (!attribute) return null;
+    const [written, name, operator, value, flag = ''] = attribute;
+    const before = selector.slice(0, attribute.index), after = selector.slice(attribute.index + written.length);
+    const all = candidate => { try { return deepQuerySelectorAll(candidate); } catch { return []; } };
+    let matches = [], why = null;
+    if (name.toLowerCase() === 'testid') {
+      for (const real of ['data-testid', 'data-test']) {
+        matches = all(`${before}[${real}${operator}${value}${flag && ' ' + flag}]${after}`);
+        why = { [real.replace('-', '_')]: true };
+        if (matches.length) break;
+      }
+    } else if (operator === '=') {
+      // An exact action only: snapshots print the path, the selector names that path.
+      const path = /^["']/.test(value) ? value.slice(1, -1).replace(/\\(.)/g, '$1') : value;
+      const same = flag.toLowerCase() === 'i' ? s => s.toLowerCase() === path.toLowerCase() : s => s === path;
+      // A bare [action=…] is any submit control's.
+      const bare = /(^|[\s>+~,(])$/.test(before) && /^($|[\s>+~,)])/.test(after);
+      let pageOrigin = null;
+      try { pageOrigin = new URL(window.location?.href ?? globalThis.location?.href).origin; } catch {}
+      matches = all(before + (bare ? '*' : '') + after).filter(el => {
+        const action = submitActionPath(el, pageOrigin);
+        return action !== null && same(action);
+      });
+      why = { form_action: true };
+    }
+    if (matches.length !== 1) return null;
+    snapshotStateResolutions.set(selector, why);
+    return matches[0];
+  }
+
+  function withSnapshotStateResolution(msg, result) {
+    const selectors = [msg.selector, msg.from, msg.to].filter(s => snapshotStateResolutions.has(s));
+    if (!selectors.length) return result;
+    const why = Object.assign({}, ...selectors.map(s => snapshotStateResolutions.get(s)));
+    for (const s of selectors) snapshotStateResolutions.delete(s);
+    if (!result || typeof result !== 'object' || Array.isArray(result) || result.error) return result;
+    return { ...result, ...why };
+  }
+
   function withRoleHint(msg, result) {
     if (result?.code !== 'not_found' || typeof msg.selector !== 'string') return result;
     const hint = roleSelectorHint(msg.selector) || snapshotStateSelectorHint(msg.selector);
@@ -694,8 +754,9 @@
       return false;
     }
 
+    for (const s of [msg.selector, msg.from, msg.to]) snapshotStateResolutions.delete(s);
     const respond = result => sendResponse(withActionDialogs(msg.dialogsSince,
-      withVisibility(msg.action, withRoleHint(msg, result))));
+      withVisibility(msg.action, withRoleHint(msg, withSnapshotStateResolution(msg, result)))));
     try {
       if (['click', 'type', 'fill', 'selectOption', 'checkBox', 'keypress', 'submitForm'].includes(msg.action)) {
         lastActedElement = null;
@@ -1382,15 +1443,8 @@
     // fragment), else its data-testid or data-test, else its icon's <svg><title> or <use href> id.
     function unnamedControlIdentity(el) {
       if (isSensitiveField(el)) return null;
-      const action = ['submit', 'image'].includes(el.type) && el.form &&
-        (el.getAttribute('formaction') || el.form.getAttribute('action'));
-      if (action) {
-        let url;
-        try { url = new URL(action, el.baseURI); } catch {}
-        if (url && ['http:', 'https:'].includes(url.protocol)) {
-          return `action=${JSON.stringify(url.origin === page?.origin ? url.pathname : url.origin + url.pathname)}`;
-        }
-      }
+      const action = submitActionPath(el, page?.origin);
+      if (action) return `action=${JSON.stringify(action)}`;
       const testId = clean(el.getAttribute('data-testid') || el.getAttribute('data-test'));
       if (testId) return `testid=${JSON.stringify(testId)}`;
       const use = el.querySelector('svg use');
@@ -4500,7 +4554,7 @@
     const parts = parseTargetSelector(selector);
     if (parts) return withRedactionCache(() => matchSelectorParts(parts, selector))[0] || null;
     // Try CSS selector
-    try { return deepQuerySelector(selector) || cssMiss(selector); } catch (e) {
+    try { return deepQuerySelector(selector) || snapshotStateTarget(selector) || cssMiss(selector); } catch (e) {
       if (e instanceof ActionError) throw e;
       const error = cssSelectorError(selector, e);
       if (error) throw error;
