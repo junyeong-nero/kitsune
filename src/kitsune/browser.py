@@ -985,8 +985,8 @@ class Tab:
 
     def fill_form(self, fields: dict, *, expect: dict | None = None, first: bool = False,
                   confirm: str | None = None) -> dict:
-        """Fill several fields, each key matched as a CSS selector, name, label or placeholder;
-        returns per-key results."""
+        """Fill several fields, each key a snapshot ref or matched as a CSS selector, name, label or
+        placeholder; returns per-key results."""
         return self._action("/api/form-fill", {"fields": fields}, expect=expect, first=first, confirm=confirm)
 
     def press(self, key: str, target: str | None = None, *, modifiers: dict | None = None, text: str | None = None,

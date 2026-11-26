@@ -229,7 +229,7 @@ report `matches` ([Strict selectors](api-reference.md#strict-selectors)).
 | `hover(target, duration_ms=0, steps=None)` | Synthetic hover; `duration_ms`/`steps` for hover-intent controls |
 | `fill(target, value)` | Replace a value |
 | `type(target, text, clear=False)` | Append to input/textarea; insert at the caret in contenteditable |
-| `fill_form(fields)` | Fill several fields keyed by selector, name, label or placeholder |
+| `fill_form(fields)` | Fill several fields keyed by ref, selector, name, label or placeholder |
 | `press(key, target=None, modifiers=None, text=None)` | Key press, e.g. `"Enter"` with `{"ctrl": True}` |
 | `select_option(target, value, by_text=False)` | Choose an `<option>` |
 | `check(target, checked=True)`, `uncheck(target)` | Checkbox or radio; an element with role `checkbox`, `switch` or `radio` is clicked once when `aria-checked` differs ([details](api-reference.md#post-apicheck)) |

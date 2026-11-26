@@ -6188,7 +6188,8 @@
   }
 
   // Collect every label match, else every placeholder match, per searched tree. Multiple
-  // labels for the same control name one target, not several.
+  // labels for the same control name one target, not several. A field's unassociated label
+  // (#655), which names it in the snapshot and browser_forms, is its label here too (#666).
   function fieldsByLabelText(key) {
     const text = key.toLowerCase();
     const fields = new Set();
@@ -6199,6 +6200,11 @@
         const el = lbl.htmlFor ? root.getElementById(lbl.htmlFor) : lbl.querySelector('input, textarea, select');
         if (el) labeled.push(el);
       }
+      for (const el of root.querySelectorAll('input, textarea, select')) {
+        // As in findLabel: only a field with no associated label or aria-label.
+        const label = el.labels?.length || el.ariaLabel ? '' : unassociatedLabel(el);
+        if (label && label.toLowerCase().includes(text)) labeled.push(el);
+      }
       const matches = labeled.length ? labeled
         : Array.from(root.querySelectorAll('input[placeholder], textarea[placeholder]'))
           .filter(inp => inp.placeholder.toLowerCase().includes(text));
@@ -6207,7 +6213,9 @@
     return [...fields];
   }
 
+  // A snapshot ref key arrives expanded by the background script, as fill's target does.
   function resolveFormField(key, first) {
+    if (REF_SELECTOR.test(key)) return refElement(key);
     let el = null;
     for (const selector of [key, `[name="${CSS.escape(key)}"]`]) {
       try { el = deepQuerySelector(selector); } catch {}
@@ -6228,6 +6236,7 @@
     return matches[0] || null;
   }
 
+  const FORM_KEY_HINT = 'A key is a ref, a CSS selector, a name, a label or a placeholder.';
   function formFill(fieldMap, first) {
     if (!fieldMap || typeof fieldMap !== 'object') return { error: 'fields must be an object' };
     const results = {};
@@ -6236,7 +6245,7 @@
       let el;
       try { el = resolveFormField(key, first); }
       catch (e) { results[key] = errorResult(e); continue; }
-      if (!el) { results[key] = { error: 'Not found' }; continue; }
+      if (!el) { results[key] = { error: 'Not found', hint: FORM_KEY_HINT }; continue; }
       // The same lookup as browser_type's fill mode, through nested open and closed shadow roots.
       const field = getFillTarget(el);
       if (!FILL_TAGS.includes(field.tagName)) { results[key] = notFillable(el, 'input, textarea or select'); continue; }

@@ -3009,9 +3009,13 @@ HTML insertion use `browser_js`; the underlying endpoint still accepts `format="
 
 ### `browser_form_fill(fields, tab_id=None)`
 
-Fills several fields in one call via POST `/api/form-fill`. Each key is matched
-as a CSS selector, then `name` attribute, label text, and placeholder; results
-are returned per key, and one failing key does not stop the others. A matched
+Fills several fields in one call via POST `/api/form-fill`. Each key is a snapshot
+ref (`e12`), or is matched as a CSS selector, then `name` attribute, label text, and
+placeholder; results are returned per key, and one failing key does not stop the others.
+Label text includes a field's unassociated `<label>`, the name the snapshot and
+`browser_forms` show for it (#655). A ref key from another snapshot or document gets
+`stale_ref`; a key that matches nothing gets `{"error": "Not found"}` with a `hint` naming
+what a key can be. A matched
 web-component host is filled through the same shadow-root lookup as
 [`/api/fill`](#post-apifill); a key with no reachable field gets a `not_fillable`
 [action error](#action-errors). Selectors, names, labels and placeholders also match

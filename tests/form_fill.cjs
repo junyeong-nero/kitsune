@@ -130,7 +130,11 @@ async function testFormFill() {
   const badRadio = await send({ action: 'formFill', fields: { '#small': 'checked' } });
   assert.match(badRadio.results['#small'].error, /^Invalid radio value: "checked"/);
   assert.equal(badRadio.error, 'No field was filled');
-  assert.equal((await send({ action: 'formFill', fields: { '#missing': 'x' } })).error, 'No field was filled');
+  const missing = await send({ action: 'formFill', fields: { '#missing': 'x' } });
+  assert.equal(missing.error, 'No field was filled');
+  // #666: a key that matches nothing says what a key can be.
+  assert.deepEqual(missing.results['#missing'],
+    { error: 'Not found', hint: 'A key is a ref, a CSS selector, a name, a label or a placeholder.' });
   assert.deepEqual([small.checked, medium.checked], [false, true]);
 }
 
