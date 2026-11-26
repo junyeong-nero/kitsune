@@ -217,7 +217,8 @@ function assertNotFillable(result, label, tag, reason) {
       const form = await send({ action: 'formFill', fields: { [selector]: value, '#missing': value } });
       assert.equal(form.error, 'No field was filled');
       assertNotFillable(form.results[selector], `formFill ${selector}`, tag, reason);
-      assert.deepEqual(form.results['#missing'], { error: 'Not found' });
+      assert.deepEqual(form.results['#missing'], { error: 'Not found',
+        hint: 'A key is a ref, a CSS selector, a name, a label or a placeholder.' });
       assert.doesNotMatch(JSON.stringify(form), /KITSUNE_FAKE/, 'form_fill does not echo the value');
     }
     assert.equal(fields.tooDeep.value, '');

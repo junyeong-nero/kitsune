@@ -195,6 +195,36 @@ async function sameLinkFollowed() {
   assert.equal((await stale(old.Bookmarks)).state.same_element, undefined);
 }
 
+// #666: a browser_form_fill key that is a snapshot ref reaches the page expanded, as a target
+// does, and its result keeps the caller's key. A key whose ref does not expand gets stale_ref
+// without reaching the page, and the call fails as a whole only when no key was filled.
+async function formFillRefKeys() {
+  const removed = key => ({ error: 'stale ref, call browser_snapshot again', code: 'stale_ref',
+    state: { reason: 'element_removed', ref: key } });
+  const page = { send: async msg => msg.action === 'getSnapshot'
+    ? { snapshot: '- textbox "First name" [ref=s4e1]\n- textbox "Last name" [ref=s4e2]' }
+    : { results: Object.fromEntries(Object.keys(msg.fields).map(key =>
+      [key, key === 's4e2' ? removed(key) : { ok: true, tag: 'input' }])) } };
+  const h = background({ 1: page });
+  const sentFields = () => JSON.parse(JSON.stringify(h.sent.at(-1).fields));
+  const [first, last] = [...(await h.send('getSnapshot')).snapshot.matchAll(/\[ref=(e\d+)\]/g)].map(m => m[1]);
+  const filled = await h.send('formFill', { fields: { [first]: 'Ada', [last]: 'Lovelace', '#city': 'London' } });
+  assert.deepEqual(sentFields(), { s4e1: 'Ada', s4e2: 'Lovelace', '#city': 'London' });
+  assert.deepEqual(Object.keys(filled.results), [first, last, '#city']);
+  assert.deepEqual(filled.results[first], { ok: true, tag: 'input' });
+  assert.equal(filled.results[last].state.ref, last, "a page error names the caller's ref");
+  assert.equal(filled.error, undefined);
+
+  const unknown = await h.send('formFill', { fields: { e999999999: 'x', [first]: 'Ada' } });
+  assert.deepEqual(sentFields(), { s4e1: 'Ada' }, 'an unknown ref does not reach the page');
+  assert.equal(unknown.results.e999999999.code, 'stale_ref');
+  assert.equal(unknown.results.e999999999.state.reason, 'not_in_snapshot');
+  assert.equal(unknown.error, undefined, 'another key was filled');
+  const none = await h.send('formFill', { fields: { e999999999: 'x' } });
+  assert.equal(none.error, 'No field was filled');
+  assert.deepEqual(Object.keys(none.results), ['e999999999']);
+}
+
 async function main() {
   const documents = { 1: content(), 2: content() };
   const h = background(documents);
@@ -437,6 +467,7 @@ async function main() {
 
   await sameElementOffers();
   await sameLinkFollowed();
+  await formFillRefKeys();
   console.log('short refs: ok');
 }
 

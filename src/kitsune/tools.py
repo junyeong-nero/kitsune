@@ -1474,8 +1474,8 @@ def browser_form_fill(
     """Fill many fields via fuzzy matching; ambiguous keys fail unless first=True.
     ok=true means dispatched; verify with expect (see browser_check).
 
-    Each key in `fields` is matched as: CSS selector → name attribute →
-    label text (case-insensitive contains) → placeholder. Each value is
+    Each key in `fields` is a snapshot ref, or is matched as: CSS selector →
+    name attribute → label text (case-insensitive contains) → placeholder. Each value is
     applied via the appropriate setter (.value for inputs/textareas, .checked
     for checkboxes/radios, value for selects). Returns per-key results.
     A select value must match an option value; otherwise that key returns an

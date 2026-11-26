@@ -3242,6 +3242,40 @@ function expandShortRefs(params, tabId) {
   return { params: expanded };
 }
 
+// browser_form_fill keys that are snapshot refs, expanded like a target (#666). A key whose ref
+// does not expand gets its stale_ref error and does not reach the page. internal: each expanded
+// key's ref in the page.
+function expandFormFieldRefs(fields, tabId) {
+  const expanded = {}, internal = new Map(), stale = {};
+  for (const [key, value] of Object.entries(fields)) {
+    const ref = leadingShortRef(key) && expandShortRefs({ ref: key }, tabId);
+    if (!ref) expanded[key] = value;
+    else if (ref.error) stale[key] = ref.error;
+    else {
+      expanded[ref.params.ref] = value;
+      internal.set(key, ref.params.ref);
+    }
+  }
+  return { fields: expanded, keys: Object.keys(fields), internal, stale };
+}
+
+// formFill's per-key results under the caller's keys, in their order; with the stale keys, the
+// call fails as a whole when no key was filled.
+function withFormFieldKeys(response, formRefs) {
+  if (!response?.results || response.code) return response;
+  const results = {};
+  for (const key of formRefs.keys) {
+    const ref = formRefs.internal.get(key);
+    let result = formRefs.stale[key] ?? response.results[ref ?? key];
+    if (ref && result?.state?.ref === ref) result = { ...result, state: { ...result.state, ref: key.trim() } };
+    results[key] = result;
+  }
+  const { error, ...rest } = response;
+  const values = Object.values(results);
+  return values.length && values.every(result => result?.error)
+    ? { ...rest, error: 'No field was filled', results } : { ...rest, results };
+}
+
 // A ref from another document whose snapshot line is known (label): when the targeted tab's
 // page lists exactly one element with the same `role "name"`, the error names its ref, so the
 // agent can retry without another snapshot (#459). The page there can differ from the one the
@@ -3516,6 +3550,10 @@ async function forwardToContent(action, params) {
 
     const { [TAB_ADMISSION]: admission, ownerId, sessionId, clientName, userTabsWritable, followSameLink,
       ...contentParams } = expanded.params;
+    const formFields = action === 'formFill' ? contentParams.fields : null;
+    const formRefs = formFields && typeof formFields === 'object' && !Array.isArray(formFields)
+      ? expandFormFieldRefs(formFields, tabId) : null;
+    if (formRefs) contentParams.fields = formRefs.fields;
     let message = { action, ...contentParams };
     if (delta) {
       deltaScope ??= { parent: frameId, depth: 0, budget: frameReadBudget() };
@@ -3539,6 +3577,7 @@ async function forwardToContent(action, params) {
     }
     if (!response) return await tabFailure(tabId, 'No response from content script', true);
     if (response.code) response = await withTabState(tabId, response);
+    if (formRefs) response = withFormFieldKeys(response, formRefs);
     // Reads of cross-origin frames (#343, #354), with a budget of their own.
     const frameScope = () => ({ parent: frameId, depth: 0, budget: frameReadBudget() });
     if (typeof response.snapshot === 'string') {
