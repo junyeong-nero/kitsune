@@ -3716,7 +3716,8 @@ the core tool accepts `content` but does not publish it, as with `newOnly`. Pyth
   `Just a moment`), or shows an element with `aria-busy="true"`, the result adds
   `"rendering": true`, the `placeholder` line when there is one, and a `rendering_hint` naming the
   wait to use (`browser_wait_for` with `text_gone` set to the placeholder, else
-  `browser_wait_for(content=true)`, which needs no text of the page, #652). It is
+  `browser_wait_for(content=true)`, which needs no text of the page, #652), and its script form
+  (`tab.wait_for(...)`) for the code-first tool-set, which has no `browser_wait_for` (#667). It is
   an observation, not an error, and adds no wait. The Python `tab.navigate` and
   `browser.new_tab` warn with a `UserWarning` instead, at the tab's first read after them
   (`text`, `snapshot`, `query`, `forms`, `find`, `markdown`, `html`) and only when no

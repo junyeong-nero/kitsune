@@ -7,7 +7,12 @@ In a script the warning comes at the first read after the navigation, unless a w
 """
 import asyncio
 from http.server import BaseHTTPRequestHandler
+import json
+import sys
 import unittest
+
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
 
 from kitsune import script_runner
 import real_browser_harness as harness
@@ -70,7 +75,8 @@ class RealBrowserRenderingTests(harness.RealBrowserTestCase):
         tab = self.open_tab(f"{self.site.origin}/plain")
         result = self.assert_ok(self.call("/api/navigate", {"tabId": tab, "url": f"{self.site.origin}/loading"}))
         self.assertEqual((result.get("rendering"), result.get("placeholder")), (True, "Loading..."), result)
-        self.assertIn('text_gone="Loading..."', result["rendering_hint"])
+        self.assertIn('browser_wait_for(text_gone="Loading..."), or tab.wait_for(text_gone="Loading...")',
+                      result["rendering_hint"])
         waited = self.call("/api/wait-for-text", {"tabId": tab, "text_gone": "Loading...", "timeout": 10000})
         self.assertIs(waited.get("ok"), True, waited)
         self.assertIn("Radiant Solar", self.call("/api/page-text", {"tabId": tab})["text"])
@@ -80,11 +86,29 @@ class RealBrowserRenderingTests(harness.RealBrowserTestCase):
         self.addCleanup(self.call, "/api/close-tab", {"tabId": result.get("tabId")})
         self.assertIs(result.get("rendering"), True, result)
         self.assertNotIn("placeholder", result)
-        self.assertIn("browser_wait_for(content=true)", result["rendering_hint"])
+        self.assertIn("browser_wait_for(content=true), or tab.wait_for(content=True) in a script",
+                      result["rendering_hint"])
         # #652: the wait it names needs no text of the page.
         waited = self.call("/api/wait-for-text", {"tabId": result["tabId"], "content": True, "timeout": 10000})
         self.assertEqual((waited.get("ok"), waited.get("content")), (True, True), waited)
         self.assertIn("Flight search", self.call("/api/page-text", {"tabId": result["tabId"]})["text"])
+
+    def test_browser_tabs_names_the_content_wait_on_both_mcp_surfaces(self):
+        # #667: the code-first surface has no browser_wait_for tool; its next call is a script.
+        async def new_tab_hint(scripting):
+            env = {**self.bridge.env, "KITSUNE_SCRIPTING": scripting, "KITSUNE_OWNER_ID": f"rendering-{scripting}"}
+            params = StdioServerParameters(command=sys.executable, args=["-m", "kitsune.server"], env=env)
+            async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
+                await session.initialize()
+                opened = await session.call_tool("browser_tabs", {"action": "new", "url": f"{self.site.origin}/empty"})
+                await session.call_tool("browser_tabs", {"action": "close"})
+                self.assertFalse(opened.isError, opened)
+                return json.loads(opened.content[0].text).get("rendering_hint")
+
+        for scripting, wait in (("1", "tab.wait_for(content=True)"), ("0", "browser_wait_for(content=true)")):
+            with self.subTest(scripting=scripting):
+                hint = asyncio.run(asyncio.wait_for(new_tab_hint(scripting), 60))
+                self.assertIn(wait, hint or "")
 
     def test_an_aria_busy_section_says_so(self):
         tab = self.open_tab(f"{self.site.origin}/plain")
