@@ -103,10 +103,11 @@ def _limit_error(code):
             else "Python execution reached its deadline")
 
 
-def _wrote(operations):
-    """Whether an operation other than a read, a GET or a navigation was sent (#618)."""
-    return any(entry["method"] != "GET" and entry["route"] not in READ_ROUTES and entry["route"] != "/api/navigate"
-               for entry in operations)
+def _wrote(operations, *, batches_read=False):
+    """Whether an operation other than a read, a GET or a navigation was sent (#618); with
+    batches_read, a batch or parallel call counts as a read (#669)."""
+    reads = {*READ_ROUTES, "/api/navigate", *(("/api/batch",) if batches_read else ())}
+    return any(entry["method"] != "GET" and entry["route"] not in reads for entry in operations)
 
 
 def _compact_operations(operations):
@@ -405,6 +406,13 @@ async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
             result["hint"] = ("Nothing was written: every operation was a read or a navigation. Run the rest in "
                               "smaller batches; print or set result as you go, or in finally. browser.calls_left "
                               "and browser.seconds_left give the budget left.")
+        elif result.get("code") in ("script_operation_limit", "script_timeout") and not _wrote(
+                operations, batches_read=True):
+            # Batch steps may have written, but a script reading pages through batches lost its
+            # reads as a read loop does (#669).
+            result["hint"] = ("Earlier batch steps may have taken effect; do not replay the whole script. Run the "
+                              "rest in smaller batches; print or set result as you go, or in finally. "
+                              "browser.calls_left and browser.seconds_left give the budget left.")
         elif result.get("code") == "script_output_limit":
             result["hint"] = ("Output/result is incomplete. Earlier operations may have taken effect; do not replay "
                               "the whole script or completed writes. In a new read-only script, use "
