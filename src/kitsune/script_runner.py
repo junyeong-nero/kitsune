@@ -218,6 +218,7 @@ async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
     delivered = None  # the failed reply the worker's last call got, until its next call
     limited = None  # the ScriptLimit code the worker was sent (#618)
     dialogs = []  # the dialogs the script's actions opened, each with its operation's index (#615)
+    name_error = False  # the script ended with an uncaught NameError (#668)
 
     def operation_failed(reply):
         if len(json.dumps(reply, ensure_ascii=False).encode("utf-8")) > OUTPUT_LIMIT:
@@ -253,7 +254,7 @@ async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
                 append_output(chunk.decode("utf-8", "replace"))
 
         async def events():
-            nonlocal deadline, delivered, dropped, limited
+            nonlocal deadline, delivered, dropped, limited, name_error
             await send({"code": code, "tab_id": tab_id, "calls_left": OPERATION_LIMIT,
                         "seconds_left": deadline - time.monotonic()})
             while line := await process.stdout.readline():
@@ -274,6 +275,7 @@ async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
                         if message.get("uncaught_reply") and delivered is not None:
                             raise operation_failed(delivered)
                         before = dropped
+                        name_error = message.get("name_error") is True
                         append_output(message["error"])
                         # An exception the full output has no room for is said here, not lost (#570).
                         raise _Stop("script_error", "Python execution failed; see output" if dropped == before
@@ -411,6 +413,15 @@ async def run_python(code, client, *, timeout=30, tab_id=None, approve=None):
                               "tab.snapshot(target=..., max_depth=..., text=True) or "
                               "tab.query(CSS, fields=[...], limit=...). Filter locally and return only needed "
                               "evidence. Disclose coverage/truncation: no match in a subset is not page-wide absence.")
+        elif result.get("code") == "script_error" and name_error:
+            # #668: most often a name an earlier script defined; each script starts with fresh variables.
+            result["hint"] = ("Variables do not carry over between scripts. Get a tab again with browser.tab(id), "
+                              "and define values again.")
+            if operations:
+                result["hint"] += " Earlier operations may have taken effect. Inspect the page; do not replay the whole script."
+        elif result.get("code") == "script_error" and not operations:
+            # #668: no browser call was sent, so nothing on the page is left to inspect.
+            result["hint"] = "No browser operation ran. Fix the script and run it again."
     if dialogs:
         result["dialogs"] = dialogs[-DIALOGS_LISTED:]
         if any(_dismissed(d) for d in dialogs):

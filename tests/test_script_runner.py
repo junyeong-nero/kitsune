@@ -153,6 +153,28 @@ class ScriptRunnerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(result["code"], "script_error")
                 self.assertIn(expected, result["output"])
                 self.assertFalse(result["retryable"])
+                self.assertEqual(result["operations"], [])
+                self.assertEqual(result["hint"], "No browser operation ran. Fix the script and run it again.")
+
+    async def test_name_error_hint_says_variables_do_not_carry_over(self):
+        # #668: a name from an earlier script got the hint that earlier operations may have taken effect.
+        variables = ("Variables do not carry over between scripts. Get a tab again with browser.tab(id), "
+                     "and define values again.")
+        result = await script_runner.run_python("print(t3.id)", Client())
+        self.assertEqual(result["code"], "script_error")
+        self.assertIn("NameError: name 't3' is not defined", result["output"])
+        self.assertEqual(result["operations"], [])
+        self.assertEqual(result["hint"], variables)
+        client = Client()
+        result = await script_runner.run_python("tab.fill('#draft', 'keep')\nt2.close()", client, tab_id=7)
+        self.assertEqual(result["code"], "script_error")
+        self.assertEqual([entry["status"] for entry in result["operations"]], ["ok"])
+        self.assertTrue(result["hint"].startswith(variables + " Earlier operations may have taken effect."))
+        self.assertIn("do not replay the whole script", result["hint"])
+        # A function's own local read before assignment is not a variable of an earlier script.
+        result = await script_runner.run_python("def f():\n    x += 1\nf()", Client())
+        self.assertIn("UnboundLocalError", result["output"])
+        self.assertNotIn("carry over", result["hint"])
 
     async def test_direct_tool_keywords_explain_the_python_contract_without_replaying_writes(self):
         cases = [("tab.find(regex='.')", "Tab.find", "description", "query"),
@@ -651,7 +673,7 @@ class ScriptRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("ValueError: boom", failed["error"])
         self.assertIs(failed["truncated"], True)
         self.assertEqual(failed["output"], "x" * 16000)
-        self.assertIn("do not replay", failed["hint"])
+        self.assertIn("No browser operation ran", failed["hint"], "#668: nothing was sent, nothing to replay")
         client = Client({"/api/click": {"error": "No element", "code": "not_found"}})
         stopped = await script_runner.run_python("print('x' * 20000)\ntab.click('#gone')", client, tab_id=7)
         self.assertEqual(stopped["code"], "script_operation_failed")

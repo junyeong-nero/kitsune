@@ -184,7 +184,9 @@ def main():
                     message += f"\n{inspect.getdoc(method)}"
             # #568: an uncaught failure of the last call ends the script as that failed operation.
             uncaught_reply = isinstance(error, KitsuneError) and error.result is client.reply
-            _send({"event": "done", "error": message, **({"uncaught_reply": True} if uncaught_reply else {})})
+            _send({"event": "done", "error": message, **({"uncaught_reply": True} if uncaught_reply else {}),
+                   # #668: not UnboundLocalError, a function's own local read before assignment.
+                   **({"name_error": True} if type(error) is NameError else {})})
 
 
 if __name__ == "__main__":
