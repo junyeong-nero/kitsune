@@ -381,12 +381,16 @@ class BridgeWebSocketOriginTests(unittest.TestCase):
     def test_non_extension_origins_are_rejected(self):
         for origin in (None, "", "null", "https://evil.example", "http://127.0.0.1",
                        f"http://localhost:{self.bridge.http_port}", "https://moz-extension.evil.example",
-                       "file://"):
+                       "https://chrome-extension.evil.example", "file://"):
             with self.subTest(origin=origin):
                 self.assert_rejected(origin)
                 status = self.bridge.status()
                 self.assertFalse(status["extension_connected"])
                 self.assertEqual(status["extension_generation"], 0)
+
+    def test_chrome_extension_origin_connects(self):
+        ws = self.connect("chrome-extension://abcdefghijklmnopabcdefghijklmnop")
+        self.assertTrue(ws.upgraded)
 
     def test_extension_origin_connects(self):
         ws = self.connect(self.EXTENSION_ORIGIN)
