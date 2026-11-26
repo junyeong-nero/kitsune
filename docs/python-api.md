@@ -59,7 +59,8 @@ result = tab.snapshot()
   MCP selection. `browser.tabs()` returns dicts with real tab ids (not MCP list indexes); wrap one
   with `browser.tab(t["id"])`.
 - Each run has fresh variables and a temporary working directory; tabs persist. No top-level
-  `await`.
+  `await`. A `NameError` gets a hint to get the tab again with `browser.tab(id)` and define
+  values again. A `script_error` before any API call says no browser operation ran.
 - Return data with `print(...)` or a JSON-compatible `result`. Intermediate reads are not sent to
   the model. Use `browser_take_screenshot` for images.
 - A script that prints nothing and assigns no `result` (`result = None` is an assignment) returns
